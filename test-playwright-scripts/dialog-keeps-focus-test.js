@@ -13,12 +13,12 @@
  * Needs a claude credential and a project on a containerless server. Creates
  * three workspaces and stops them at the end.
  *
- * Run: YAAC_DATA_DIR=<data dir> PROJECT=<slug> node test-playwright-scripts/dialog-keeps-focus-test.js
+ * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/dialog-keeps-focus-test.js
  */
-import { api, check, finish, origin, requirePlaywright } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT
-if (!PROJECT) throw new Error('set PROJECT=<slug>')
+if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
+const PROJECT = (await resolveProject(process.env.PROJECT)).id
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()

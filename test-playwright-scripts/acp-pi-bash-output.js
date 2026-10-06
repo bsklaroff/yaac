@@ -9,7 +9,7 @@
  * Needs no credentials. The script serves a mock OpenAI-compatible model on
  * MOCK_PORT that answers the first request with a bash call and the next
  * with "done", and adds it as provider `mock` to PROJECT's pi models.json.
- * The project defaults to `yaac`. It then creates a pi acp workspace on
+ * PROJECT is a name or id and defaults to `yaac`. It then creates a pi acp workspace on
  * `mock/mock-1`. At the end it stops the workspace and puts models.json back
  * as it found it, deleting it if the script created it. The server must be
  * containerless so the workspace can reach the mock on the host's loopback.
@@ -19,9 +19,9 @@
 import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
-import { DATA_DIR, SHOTS, api, check, createWorkspace, finish, origin, requirePlaywright, until } from './lib.js'
+import { DATA_DIR, SHOTS, api, check, createWorkspace, finish, origin, requirePlaywright, resolveProject, until } from './lib.js'
 
-const PROJECT = process.env.PROJECT ?? 'yaac'
+const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 const MOCK_PORT = Number(process.env.MOCK_PORT ?? 18799)
 const COMMAND = 'echo hello-from-bash; for i in $(seq 1 6000); do echo line-$i; [ $((i % 500)) = 0 ] && sleep 0.4; done; echo $((6 * 7))-answer'
 

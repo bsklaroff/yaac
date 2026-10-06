@@ -62,13 +62,13 @@ function SkillTags({ skill }: { skill: SkillSummary }): JSX.Element {
 
 /** The read-only detail pane for the selected skill: metadata + full SKILL.md. */
 function SkillDetailPane(
-  { projectSlug, tool, branch, skill }:
-  { projectSlug: string; tool: AgentTool; branch: string | undefined; skill: SkillSummary },
+  { projectId, tool, branch, skill }:
+  { projectId: string; tool: AgentTool; branch: string | undefined; skill: SkillSummary },
 ): JSX.Element {
   const { data, isLoading, isError } = useQuery({
-    queryKey: ['skill-body', projectSlug, tool, branch ?? null, skill.id],
-    queryFn: () => api.project[':slug'].skills.body.$get({
-      param: { slug: projectSlug },
+    queryKey: ['skill-body', projectId, tool, branch ?? null, skill.id],
+    queryFn: () => api.project[':projectId'].skills.body.$get({
+      param: { projectId },
       query: { id: skill.id, tool, ...(branch ? { branch } : {}) },
     }),
     staleTime: 30_000,
@@ -112,7 +112,7 @@ function SkillDetailPane(
  * row shows its full `SKILL.md`. Agent-bundled built-ins are list-only (name
  * and description), with a placeholder body.
  */
-export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Element {
+export function SkillsButton({ projectId }: { projectId: string }): JSX.Element {
   const open = useUiStore((s) => s.skillsOverlayOpen)
   const openOverlay = useUiStore((s) => s.openSkillsOverlay)
   const closeOverlay = useUiStore((s) => s.closeSkillsOverlay)
@@ -126,15 +126,15 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
   const [pickerQuery, setPickerQuery] = useState('')
   const isMobile = useIsMobile()
 
-  const { data: branchData } = useProjectBranches(projectSlug, open)
+  const { data: branchData } = useProjectBranches(projectId, open)
 
   const defaultBranch = branchData?.defaultBranch
   const effectiveBranch = branch ?? defaultBranch
 
   const { data, isLoading } = useQuery({
-    queryKey: ['skills', projectSlug, tool, effectiveBranch ?? null],
-    queryFn: () => api.project[':slug'].skills.$get({
-      param: { slug: projectSlug },
+    queryKey: ['skills', projectId, tool, effectiveBranch ?? null],
+    queryFn: () => api.project[':projectId'].skills.$get({
+      param: { projectId },
       query: { tool, ...(effectiveBranch ? { branch: effectiveBranch } : {}) },
     }),
     enabled: open,
@@ -307,7 +307,7 @@ export function SkillsButton({ projectSlug }: { projectSlug: string }): JSX.Elem
               </>
             }
             detail={selected
-              ? <SkillDetailPane key={selected.id} projectSlug={projectSlug} tool={tool} branch={effectiveBranch} skill={selected} />
+              ? <SkillDetailPane key={selected.id} projectId={projectId} tool={tool} branch={effectiveBranch} skill={selected} />
               : <div className="flex-1" />}
           />
         )}

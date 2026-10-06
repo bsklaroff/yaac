@@ -2,7 +2,7 @@ import { api } from './api'
 
 /**
  * Client for the build-files routes: the files in a Dockerfile's build
- * context. The project scope (`/project/:slug/build-files`) and the user
+ * context. The project scope (`/project/:projectId/build-files`) and the user
  * scope (`/config/user-build-files`) share one interface, so the settings
  * panel renders both with one component.
  */
@@ -45,18 +45,18 @@ export function encodeBase64(data: ArrayBuffer): string {
 }
 
 /** Build-files client for a project's Dockerfile.yaac context. */
-export function projectBuildFilesApi(slug: string): BuildFilesApi {
-  const bf = api.project[':slug']['build-files']
+export function projectBuildFilesApi(projectId: string): BuildFilesApi {
+  const bf = api.project[':projectId']['build-files']
   return {
-    key: ['build-files', 'project', slug],
-    list: async () => (await bf.$get({ param: { slug } })).files,
-    read: (path) => bf.file.$get({ param: { slug }, query: { path } }),
-    saveText: (path, content) => bf.file.$put({ param: { slug }, json: { path, content } }),
+    key: ['build-files', 'project', projectId],
+    list: async () => (await bf.$get({ param: { projectId } })).files,
+    read: (path) => bf.file.$get({ param: { projectId }, query: { path } }),
+    saveText: (path, content) => bf.file.$put({ param: { projectId }, json: { path, content } }),
     upload: (path, data) =>
-      bf.file.$put({ param: { slug }, json: { path, contentBase64: encodeBase64(data) } }),
-    rename: (from, to) => bf.rename.$post({ param: { slug }, json: { from, to } }),
+      bf.file.$put({ param: { projectId }, json: { path, contentBase64: encodeBase64(data) } }),
+    rename: (from, to) => bf.rename.$post({ param: { projectId }, json: { from, to } }),
     remove: async (path) => {
-      await bf.file.$delete({ param: { slug }, query: { path } })
+      await bf.file.$delete({ param: { projectId }, query: { path } })
     },
   }
 }

@@ -10,6 +10,7 @@ import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshot } from '#lib/useSnapshot'
+import { useProjectName } from '#lib/projectIdentity'
 import { useUiStore } from '#lib/store'
 import type { GitCredentialSummary, ProjectSummary } from '@yaac/shared/types'
 
@@ -42,16 +43,16 @@ export function GitCredentials(): JSX.Element {
 
   const refresh = (): Promise<void> => queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
 
-  const assign = async (slug: string, credentialId: string): Promise<void> => {
-    const { knownHostsEntry: hostKey } = await api.project[':slug']['git-credential'].$put({
-      param: { slug },
+  const assign = async (projectId: string, credentialId: string): Promise<void> => {
+    const { knownHostsEntry: hostKey } = await api.project[':projectId']['git-credential'].$put({
+      param: { projectId },
       json: { credentialId },
     })
     setFocus(null)
     setTrusted((t) => {
       const next = { ...t }
-      if (hostKey === null) delete next[slug]
-      else next[slug] = hostKey
+      if (hostKey === null) delete next[projectId]
+      else next[projectId] = hostKey
       return next
     })
     await refresh()
@@ -101,13 +102,13 @@ export function GitCredentials(): JSX.Element {
         <Group label="Projects without git authentication" hint="Assign each a credential to create workspaces in it.">
           <div className="space-y-2 text-xs">
             {unassigned.map((p) => (
-              <ProjectRow key={p.slug} slug={p.slug} focused={focus === p.slug}>
+              <ProjectRow key={p.id} projectId={p.id} name={p.name} focused={focus === p.id}>
                 <p className="truncate font-mono text-[11px] text-text-faint">{p.remoteUrl}</p>
                 <GitCredentialPicker
                   kind={remoteKind(p.remoteUrl)}
-                  project={p.slug}
+                  projectName={p.name}
                   actionLabel="Assign"
-                  onSubmit={(id) => assign(p.slug, id)}
+                  onSubmit={(id) => assign(p.id, id)}
                 />
               </ProjectRow>
             ))}
@@ -139,7 +140,7 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
   trusted: Record<string, string>
   /** The public key a Replace just generated, not yet acknowledged. */
   newKey: string | undefined
-  onAssign: (slug: string, credentialId: string) => Promise<void>
+  onAssign: (projectId: string, credentialId: string) => Promise<void>
   onReplaced: (id: string, publicKey?: string) => void
   onChanged: () => void
   /** A Delete or Replace failed, possibly after the server made it. */
@@ -178,7 +179,8 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
     if (token.trim() !== '' && !busy) replace()
   }
 
-  const using = c.projects.join(', ')
+  const projectName = useProjectName()
+  const using = c.projects.map(projectName).join(', ')
   return (
     <div className="flex flex-col gap-2 rounded-md bg-bg px-2.5 py-1.5">
       <div className="flex items-center gap-2">
@@ -249,15 +251,16 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
         </div>
       ) : c.publicKey !== undefined && <PublicKey publicKey={c.publicKey} />}
       {c.projects.length === 0 && <p className="text-[11px] text-text-faint">No assigned projects</p>}
-      {c.projects.map((slug) => (
+      {c.projects.map((projectId) => (
         <UsingProject
-          key={slug}
-          slug={slug}
+          key={projectId}
+          projectId={projectId}
+          name={projectName(projectId)}
           credentialId={c.id}
-          remoteUrl={projects.find((p) => p.slug === slug)?.remoteUrl}
-          focused={focus === slug}
-          trusted={trusted[slug]}
-          onAssign={(id) => onAssign(slug, id)}
+          remoteUrl={projects.find((p) => p.id === projectId)?.remoteUrl}
+          focused={focus === projectId}
+          trusted={trusted[projectId]}
+          onAssign={(id) => onAssign(projectId, id)}
         />
       ))}
       {renaming.error && <p className="text-[11px] text-red-400">{renaming.error.message}</p>}
@@ -289,8 +292,9 @@ function CredentialRow({ credential: c, projects, focus, trusted, newKey, onAssi
 
 /** A project under the credential it uses, with "Change" to assign it
  *  another. */
-function UsingProject({ slug, credentialId, remoteUrl, focused, trusted, onAssign }: {
-  slug: string
+function UsingProject({ projectId, name, credentialId, remoteUrl, focused, trusted, onAssign }: {
+  projectId: string
+  name: string
   /** The credential it uses now, which "Change" does not offer. */
   credentialId: string
   /** Absent until the snapshot names the project. */
@@ -301,7 +305,7 @@ function UsingProject({ slug, credentialId, remoteUrl, focused, trusted, onAssig
 }): JSX.Element {
   const [changing, setChanging] = useState(focused)
   return (
-    <ProjectRow slug={slug} focused={focused} nested>
+    <ProjectRow projectId={projectId} name={name} focused={focused} nested>
       {!changing && remoteUrl !== undefined && (
         <button type="button" onClick={() => setChanging(true)} className={clsx(TEXT_BUTTON, 'absolute right-1.5 top-1')}>
           Change
@@ -311,7 +315,7 @@ function UsingProject({ slug, credentialId, remoteUrl, focused, trusted, onAssig
       {changing && remoteUrl !== undefined && (
         <GitCredentialPicker
           kind={remoteKind(remoteUrl)}
-          project={slug}
+          projectName={name}
           exclude={credentialId}
           actionLabel="Assign"
           onSubmit={async (id) => { await onAssign(id); setChanging(false) }}
@@ -322,10 +326,11 @@ function UsingProject({ slug, credentialId, remoteUrl, focused, trusted, onAssig
   )
 }
 
-/** A project's row: its slug, then whatever it offers. Focused, it scrolls
+/** A project's row: its name, then whatever it offers. Focused, it scrolls
  *  into view and stands out. */
-function ProjectRow({ slug, focused, nested = false, children }: {
-  slug: string
+function ProjectRow({ projectId, name, focused, nested = false, children }: {
+  projectId: string
+  name: string
   focused: boolean
   nested?: boolean
   children: ReactNode
@@ -337,14 +342,14 @@ function ProjectRow({ slug, focused, nested = false, children }: {
   return (
     <div
       ref={ref}
-      data-project={slug}
+      data-project={projectId}
       className={clsx(
         'relative flex flex-col gap-1.5 rounded-md px-2.5 py-1.5',
         nested ? 'border border-hairline-soft' : 'bg-bg',
         focused && 'ring-1 ring-accent',
       )}
     >
-      <span className="font-mono text-text-dim">{slug}</span>
+      <span className="font-mono text-text-dim">{name}</span>
       {children}
     </div>
   )
@@ -368,7 +373,7 @@ function AddCredential({ onDone }: { onDone: () => void }): JSX.Element {
       <GitCredentialPicker
         key={kind}
         kind={kind}
-        project=""
+        projectName=""
         offerExisting={false}
         actionLabel={kind === 'ssh' ? 'Done' : 'Save'}
         onSubmit={() => { onDone(); return Promise.resolve() }}

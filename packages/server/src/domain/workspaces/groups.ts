@@ -15,7 +15,7 @@ export async function listWorkspaceGroups(
   const rows = await listWorkspaceGroupRows(projectFilter)
   return rows.map((r) => ({
     groupId: r.groupId,
-    projectSlug: r.projectSlug,
+    projectId: r.projectId,
     name: r.name,
     pinned: r.pinned,
     createdAt: formatUtcTimestamp(r.createdAt.getTime()),
@@ -36,11 +36,11 @@ export interface ResolvedGroup {
  * group (`--group` on create, `yaac-mama create --group`, queueing).
  */
 export async function resolveGroup(
-  projectSlug: string,
+  projectId: string,
   group: string,
   opts: { create?: boolean } = {},
 ): Promise<ResolvedGroup> {
-  const rows = await listWorkspaceGroupRows(projectSlug)
+  const rows = await listWorkspaceGroupRows(projectId)
   const byId = rows.find((r) => r.groupId === group)
   if (byId) return { groupId: byId.groupId, name: byId.name }
 
@@ -50,15 +50,15 @@ export async function resolveGroup(
   if (byName.length > 1) {
     throw new ServerError(
       'VALIDATION',
-      `"${group}" names ${byName.length} groups in ${projectSlug} — pass the group id instead `
+      `"${group}" names ${byName.length} groups in ${projectId} — pass the group id instead `
       + `(${byName.map((r) => r.groupId).join(', ')})`,
     )
   }
 
   if (opts.create !== true) {
-    throw new ServerError('NOT_FOUND', `No such workspace group in ${projectSlug}: ${group}`)
+    throw new ServerError('NOT_FOUND', `No such workspace group in ${projectId}: ${group}`)
   }
   if (wanted === '') throw new ServerError('VALIDATION', 'group name must not be blank')
-  const created = await createWorkspaceGroup(projectSlug, group, null)
+  const created = await createWorkspaceGroup(projectId, group, null)
   return { groupId: created.groupId, name: created.name }
 }

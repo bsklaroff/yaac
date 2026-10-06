@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
-  resolveVacantSelection, unreadWaitingBySlug, useUiStore,
+  resolveVacantSelection, unreadWaitingByProject, useUiStore,
 } from '#lib/store'
 import type { ListedAgentStatus, ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { PREVIEW_TARGET } from '#lib/preview'
@@ -33,7 +33,7 @@ describe('pending-delete tracking', () => {
 
 describe('optimistic deleted tracking', () => {
   const entry = (workspaceId: string) => ({
-    workspaceId, projectSlug: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
+    workspaceId, projectId: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
     prompt: 'hi', seen: false, agentSessions: [],
   })
 
@@ -119,9 +119,9 @@ describe('isUnreadWaiting', () => {
   })
 })
 
-describe('unreadWaitingBySlug', () => {
-  const s = (workspaceId: string, projectSlug: string, status: ListedAgentStatus, waitingSinceMs?: number) =>
-    ({ workspaceId, projectSlug, status, waitingSinceMs })
+describe('unreadWaitingByProject', () => {
+  const s = (workspaceId: string, projectId: string, status: ListedAgentStatus, waitingSinceMs?: number) =>
+    ({ workspaceId, projectId, status, waitingSinceMs })
 
   it('counts only unread waiting sessions, grouped by project', () => {
     const sessions = [
@@ -130,44 +130,44 @@ describe('unreadWaitingBySlug', () => {
       s('r1', 'p1', 'running'),
       s('w3', 'p2', 'waiting', 300),
     ]
-    expect(unreadWaitingBySlug(sessions, { w2: 200 })).toEqual({ p1: 1, p2: 1 })
+    expect(unreadWaitingByProject(sessions, { w2: 200 })).toEqual({ p1: 1, p2: 1 })
   })
 
   it('counts an asking session even once viewed, and no background one', () => {
     const sessions = [{ ...s('a1', 'p1', 'waiting', 100), asking: true as const }, s('b1', 'p1', 'background')]
-    expect(unreadWaitingBySlug(sessions, { a1: 100 })).toEqual({ p1: 1 })
+    expect(unreadWaitingByProject(sessions, { a1: 100 })).toEqual({ p1: 1 })
   })
 
   it('re-counts a session whose mark is from an earlier spell', () => {
     const sessions = [s('w1', 'p1', 'waiting', 500)]
-    expect(unreadWaitingBySlug(sessions, { w1: 100 })).toEqual({ p1: 1 })
+    expect(unreadWaitingByProject(sessions, { w1: 100 })).toEqual({ p1: 1 })
   })
 
   it('omits projects with no unread waiting sessions', () => {
     const sessions = [s('w1', 'p1', 'waiting', 100), s('r1', 'p2', 'running')]
-    expect(unreadWaitingBySlug(sessions, { w1: 100 })).toEqual({})
+    expect(unreadWaitingByProject(sessions, { w1: 100 })).toEqual({})
   })
 
   it('excludes sessions whose delete is in flight (pendingDeleteIds)', () => {
     // A just-deleted session, not yet reflected in the snapshot, must not
     // count on its way out.
     const sessions = [s('w1', 'p1', 'waiting'), s('w2', 'p1', 'waiting', 200)]
-    expect(unreadWaitingBySlug(sessions, {}, ['w1'])).toEqual({ p1: 1 })
+    expect(unreadWaitingByProject(sessions, {}, ['w1'])).toEqual({ p1: 1 })
   })
 
   it('excludes server-marked stopping sessions', () => {
     const sessions = [
-      { workspaceId: 'w1', projectSlug: 'p1', status: 'waiting' as const, stopping: true },
+      { workspaceId: 'w1', projectId: 'p1', status: 'waiting' as const, stopping: true },
       s('w2', 'p1', 'waiting', 200),
     ]
-    expect(unreadWaitingBySlug(sessions, {})).toEqual({ p1: 1 })
+    expect(unreadWaitingByProject(sessions, {})).toEqual({ p1: 1 })
   })
 })
 
 describe('resolveVacantSelection', () => {
   const args = (over: Partial<Parameters<typeof resolveVacantSelection>[0]> = {}) => ({
-    previousProjectSlug: 'p1',
-    activeProjectSlug: 'p1',
+    previousProjectId: 'p1',
+    activeProjectId: 'p1',
     selectedWorkspaceId: 'w1',
     rowIds: ['w1', 'w2'],
     claims: {},
@@ -199,7 +199,7 @@ describe('resolveVacantSelection', () => {
     }))).toBe('spare')
     // A project switch is not the create resolving, so take the top row.
     expect(resolveVacantSelection(args({
-      previousProjectSlug: 'p0', selectedWorkspaceId: 'req', claims,
+      previousProjectId: 'p0', selectedWorkspaceId: 'req', claims,
     }))).toBe('w1')
   })
 
@@ -211,7 +211,7 @@ describe('resolveVacantSelection', () => {
 
   it('takes the topmost row of a project switched into', () => {
     expect(resolveVacantSelection(args({
-      previousProjectSlug: 'p0', selectedWorkspaceId: null,
+      previousProjectId: 'p0', selectedWorkspaceId: null,
     }))).toBe('w1')
   })
 
@@ -219,7 +219,7 @@ describe('resolveVacantSelection', () => {
     // Nothing persisted: no previous project, nothing selected, so nobody has
     // chosen a workspace yet.
     expect(resolveVacantSelection(args({
-      previousProjectSlug: null, selectedWorkspaceId: null,
+      previousProjectId: null, selectedWorkspaceId: null,
     }))).toBeNull()
     // Same project, selection cleared by the user (a dismissed provisioning row).
     expect(resolveVacantSelection(args({ selectedWorkspaceId: null }))).toBeNull()
@@ -227,7 +227,7 @@ describe('resolveVacantSelection', () => {
 
   it('has nothing to fill the pane with when no row is selectable', () => {
     expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone', rowIds: [] }))).toBeNull()
-    expect(resolveVacantSelection(args({ activeProjectSlug: null }))).toBeNull()
+    expect(resolveVacantSelection(args({ activeProjectId: null }))).toBeNull()
   })
 })
 
@@ -240,13 +240,13 @@ describe('selection + project switching', () => {
   it('setActiveProject clears the open session', () => {
     useUiStore.getState().selectWorkspace('s1')
     useUiStore.getState().setActiveProject('proj')
-    expect(useUiStore.getState().activeProjectSlug).toBe('proj')
+    expect(useUiStore.getState().activeProjectId).toBe('proj')
     expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
   })
 
   it('openWorkspace sets both project and session', () => {
     useUiStore.getState().openWorkspace('proj', 's2')
-    expect(useUiStore.getState().activeProjectSlug).toBe('proj')
+    expect(useUiStore.getState().activeProjectId).toBe('proj')
     expect(useUiStore.getState().selectedWorkspaceId).toBe('s2')
   })
 
@@ -281,7 +281,7 @@ describe('selection + project switching', () => {
 
 describe('optimistic provisioning tracking', () => {
   const entry = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
-    workspaceId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
+    workspaceId, projectId: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
 
@@ -314,7 +314,7 @@ describe('optimistic provisioning tracking', () => {
 
 describe('reconcileSnapshot', () => {
   const prov = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
-    workspaceId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
+    workspaceId, projectId: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
   const live = (workspaceId: string) => ({ workspaceId }) as WorkspaceListEntry
@@ -357,7 +357,7 @@ describe('reconcileSnapshot', () => {
 
 describe('mergeProvisioning', () => {
   const e = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
-    workspaceId, projectSlug: 'p', tool: 'claude', kind: 'create', message: 'm',
+    workspaceId, projectId: 'p', tool: 'claude', kind: 'create', message: 'm',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
 

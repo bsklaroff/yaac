@@ -11,6 +11,9 @@ import { createWorkspaceGroup } from '#db/group-store'
 import { listWorkspaceAgentSessions } from '#db/agent-session-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+const ELSEWHERE = '916a4314-2e8d-4811-8766-75eeedc5ae4a'
+
 describe('applyWorkspaceEvent', () => {
   let tmpDir: string
 
@@ -21,7 +24,7 @@ describe('applyWorkspaceEvent', () => {
     pushes = 0
     onWorkspaceListChanged(() => { pushes += 1 })
     tmpDir = await createTempDataDir()
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'wt-1' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-1' })
   })
 
   afterEach(async () => {
@@ -31,28 +34,28 @@ describe('applyWorkspaceEvent', () => {
   })
 
   const rowOf = async (workspaceId: string) =>
-    (await getProjectWorkspaceRows('proj')).get(workspaceId)
+    (await getProjectWorkspaceRows(PROJ)).get(workspaceId)
 
   const created = (workspaceId: string, extra = {}): Promise<void> =>
     applyWorkspaceEvent({
-      type: 'workspace-created', projectSlug: 'proj', workspaceId, ...extra,
+      type: 'workspace-created', projectId: PROJ, workspaceId, ...extra,
     })
 
   const stopped = (workspaceId: string, extra = {}): Promise<void> =>
     applyWorkspaceEvent({
-      type: 'workspace-stopped', projectSlug: 'proj', workspaceId, ...extra,
+      type: 'workspace-stopped', projectId: PROJ, workspaceId, ...extra,
     })
 
   const failed = (workspaceId: string, extra = {}): Promise<void> =>
     applyWorkspaceEvent({
-      type: 'workspace-create-failed', projectSlug: 'proj', workspaceId, ...extra,
+      type: 'workspace-create-failed', projectId: PROJ, workspaceId, ...extra,
     })
 
   it('records a reported workspace, with the branch when the emitter knew it', async () => {
     await created('wt-new', { baseBranch: 'main' })
 
     expect(await rowOf('wt-new')).toMatchObject({
-      projectSlug: 'proj', workspaceId: 'wt-new', baseBranch: 'main', deathSeen: false,
+      projectId: PROJ, workspaceId: 'wt-new', baseBranch: 'main', deathSeen: false,
     })
   })
 
@@ -69,7 +72,7 @@ describe('applyWorkspaceEvent', () => {
   // lands, up or down, and a restart records what it relaunched in.
   it('follows a posture the agent moved to, either way', async () => {
     const moved = (permissionMode: 'bypass' | 'plan'): Promise<void> => applyWorkspaceEvent({
-      type: 'permission-mode-changed', projectSlug: 'proj', workspaceId: 'wt-p', permissionMode,
+      type: 'permission-mode-changed', projectId: PROJ, workspaceId: 'wt-p', permissionMode,
     })
     const posture = async (): Promise<string | undefined> => (await rowOf('wt-p'))?.permissionMode
     await created('wt-p', { permissionMode: 'accept-edits', model: 'claude-opus-5-5', mode: 'tui' })
@@ -90,23 +93,23 @@ describe('applyWorkspaceEvent', () => {
   // posting a live workspace's id could re-stamp it and then tear it down
   // as its own when the create failed.
   it('refuses a fresh create on a taken id, in this project or another, leaving the row be', async () => {
-    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectSlug: 'proj', workspaceId: 'wt-1', baseBranch: 'main' })
+    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', baseBranch: 'main' })
     await stopped('wt-1', { cause: { reason: 'oom' } })
     const before = await rowOf('wt-1')
 
     await expect(created('wt-1', { baseBranch: 'other' })).rejects.toMatchObject({ code: 'CONFLICT' })
     await expect(applyWorkspaceEvent({
-      type: 'workspace-created', projectSlug: 'elsewhere', workspaceId: 'wt-1',
+      type: 'workspace-created', projectId: ELSEWHERE, workspaceId: 'wt-1',
     })).rejects.toMatchObject({ code: 'CONFLICT' })
 
     expect(await rowOf('wt-1')).toEqual(before)
-    expect((await getProjectWorkspaceRows('elsewhere')).size).toBe(0)
+    expect((await getProjectWorkspaceRows(ELSEWHERE)).size).toBe(0)
   })
 
   it('re-stamps a resumed workspace\'s live fields, keeping what belongs to the workspace', async () => {
-    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectSlug: 'proj', workspaceId: 'wt-1', baseBranch: 'main' })
-    await setWorkspaceTitle('proj', 'wt-1', 'my workspace')
-    const group = await createWorkspaceGroup('proj', 'release', 'wt-1')
+    await applyWorkspaceEvent({ type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-1', baseBranch: 'main' })
+    await setWorkspaceTitle(PROJ, 'wt-1', 'my workspace')
+    const group = await createWorkspaceGroup(PROJ, 'release', 'wt-1')
     await stopped('wt-1', { cause: { reason: 'oom', detail: 'exit code 137' } })
     const before = await rowOf('wt-1')
 
@@ -135,7 +138,7 @@ describe('applyWorkspaceEvent', () => {
   it('stamps a resolved base branch onto an existing row', async () => {
     await applyWorkspaceEvent({
       type: 'base-branch-resolved',
-      projectSlug: 'proj',
+      projectId: PROJ,
       workspaceId: 'wt-1',
       baseBranch: 'develop',
     })
@@ -148,7 +151,7 @@ describe('applyWorkspaceEvent', () => {
   it('links launched conversations and marks them active, in launch order', async () => {
     await applyWorkspaceEvent({
       type: 'sessions-launched',
-      projectSlug: 'proj',
+      projectId: PROJ,
       workspaceId: 'wt-1',
       sessions: [
         {
@@ -159,7 +162,7 @@ describe('applyWorkspaceEvent', () => {
       ],
     })
 
-    const links = await listWorkspaceAgentSessions('proj', 'wt-1')
+    const links = await listWorkspaceAgentSessions(PROJ, 'wt-1')
     expect(links.map((l) => [l.agentSessionId, l.ordinal, l.active, l.paneId])).toEqual([
       ['conv-a', 0, true, 'claude'],
       ['conv-b', 1, true, 'claude-2'],
@@ -173,7 +176,7 @@ describe('applyWorkspaceEvent', () => {
   it('stamps the stop, and the cause when a reaper supplied one', async () => {
     await applyWorkspaceEvent({
       type: 'workspace-stopped',
-      projectSlug: 'proj',
+      projectId: PROJ,
       workspaceId: 'wt-1',
       cause: { reason: 'oom', detail: 'exit code 137' },
     })
@@ -191,7 +194,7 @@ describe('applyWorkspaceEvent', () => {
   // reader claim the session died of something.
   it('records a causeless stop without inventing a reason', async () => {
     await applyWorkspaceEvent({
-      type: 'workspace-stopped', projectSlug: 'proj', workspaceId: 'wt-1',
+      type: 'workspace-stopped', projectId: PROJ, workspaceId: 'wt-1',
     })
 
     const row = await rowOf('wt-1')
@@ -201,10 +204,10 @@ describe('applyWorkspaceEvent', () => {
   })
 
   it('touches only the workspace the event names', async () => {
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'wt-2' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-2' })
 
     await applyWorkspaceEvent({
-      type: 'workspace-stopped', projectSlug: 'proj', workspaceId: 'wt-1',
+      type: 'workspace-stopped', projectId: PROJ, workspaceId: 'wt-1',
     })
 
     expect((await rowOf('wt-2'))?.stoppedAt).toBeUndefined()
@@ -221,7 +224,7 @@ describe('applyWorkspaceEvent', () => {
     await created('wt-fresh')
     await applyWorkspaceEvent({
       type: 'sessions-launched',
-      projectSlug: 'proj',
+      projectId: PROJ,
       workspaceId: 'wt-fresh',
       sessions: [{ tool: 'claude', agentSessionId: 'conv-x' }],
     })
@@ -229,7 +232,7 @@ describe('applyWorkspaceEvent', () => {
     await failed('wt-fresh')
 
     expect(await rowOf('wt-fresh')).toBeUndefined()
-    expect(await listWorkspaceAgentSessions('proj', 'wt-fresh')).toEqual([])
+    expect(await listWorkspaceAgentSessions(PROJ, 'wt-fresh')).toEqual([])
   })
 
   // The row keeps its stop until a restart succeeds, so a failed resume
@@ -250,13 +253,13 @@ describe('applyWorkspaceEvent', () => {
     const before = pushes
     await created('wt-2')
     await applyWorkspaceEvent({
-      type: 'base-branch-resolved', projectSlug: 'proj', workspaceId: 'wt-2', baseBranch: 'main',
+      type: 'base-branch-resolved', projectId: PROJ, workspaceId: 'wt-2', baseBranch: 'main',
     })
     await applyWorkspaceEvent({
-      type: 'sessions-discovered', projectSlug: 'proj', workspaceId: 'wt-2', sessions: [],
+      type: 'sessions-discovered', projectId: PROJ, workspaceId: 'wt-2', sessions: [],
     })
     await applyWorkspaceEvent({
-      type: 'sessions-active', projectSlug: 'proj', workspaceId: 'wt-2', active: [],
+      type: 'sessions-active', projectId: PROJ, workspaceId: 'wt-2', active: [],
     })
     await stopped('wt-2')
     expect(pushes - before).toBe(5)

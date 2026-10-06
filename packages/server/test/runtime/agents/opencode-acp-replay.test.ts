@@ -27,9 +27,9 @@ const rowsOf = async (name: string): Promise<Array<Record<string, unknown>>> =>
 
 const ROOT = 'ses_eeef51727ffedBWQdWdy0dzOE2'
 const TUI_ROOT = 'ses_eeef3d5d7ffe59Y8NLt9AueoWZ'
-const slug = 'demo'
+const projectId = 'demo'
 const ws = 'ws-1'
-const checkpoint = (): string => opencodeCheckpointDir(slug, ws)
+const checkpoint = (): string => opencodeCheckpointDir(projectId, ws)
 
 /** opencode's two tables, holding just the columns the reader asks for. */
 async function writeDatabase(rows: Array<Record<string, unknown>>): Promise<void> {
@@ -105,7 +105,7 @@ describe('opencodeTranscriptAsAcp', () => {
     await writeDatabase(await rowsOf('rows.jsonl'))
     const live = rendered(replayAcpLog(await fixture('live.jsonl')))
 
-    const events = await opencodeTranscriptAsAcp(slug, ws, ROOT)
+    const events = await opencodeTranscriptAsAcp(projectId, ws, ROOT)
     expect(rendered(events)).toEqual(live)
     // A sample of what that covers, so a fixture gone empty cannot pass.
     const calls = events.flatMap((e) => e.type === 'tool' ? [e.call] : [])
@@ -125,7 +125,7 @@ describe('opencodeTranscriptAsAcp', () => {
       db.prepare('insert into session_message values (?, ?, ?, ?, ?, ?)')
         .run('msg_late', ROOT, 'user', 999, 999, JSON.stringify({ text: 'one more thing', files: [] }))
       expect(await fs.readdir(checkpoint())).toContain('opencode.db-wal')
-      expect((await opencodeTranscriptAsAcp(slug, ws, ROOT)).at(-1))
+      expect((await opencodeTranscriptAsAcp(projectId, ws, ROOT)).at(-1))
         .toMatchObject({ type: 'user', content: [{ type: 'text', text: 'one more thing' }] })
     } finally {
       db.close()
@@ -136,20 +136,20 @@ describe('opencodeTranscriptAsAcp', () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
     // A database a sandboxed workspace wrote is never opened, whatever it says.
     await writeDatabase([{ session: ROOT, type: 'session', parent: null, title: 'planted', directory: '/' }])
-    expect(await opencodeTranscriptAsAcp(slug, ws, ROOT)).toEqual([])
+    expect(await opencodeTranscriptAsAcp(projectId, ws, ROOT)).toEqual([])
 
     const exported = await writeExport(ROOT, await fixture('rows.jsonl'))
     const live = rendered(replayAcpLog(await fixture('live.jsonl')))
-    expect(rendered(await opencodeTranscriptAsAcp(slug, ws, ROOT))).toEqual(live)
+    expect(rendered(await opencodeTranscriptAsAcp(projectId, ws, ROOT))).toEqual(live)
 
     // A link the workspace planted in place of the export is not followed.
     await fs.rm(exported)
     const elsewhere = path.join(tmp, 'elsewhere.jsonl')
     await fs.writeFile(elsewhere, await fixture('rows.jsonl'))
     await fs.symlink(elsewhere, exported)
-    expect(await opencodeTranscriptAsAcp(slug, ws, ROOT)).toEqual([])
+    expect(await opencodeTranscriptAsAcp(projectId, ws, ROOT)).toEqual([])
     // Nor is an id that could name a path.
-    expect(await opencodeTranscriptAsAcp(slug, ws, '../ses_x')).toEqual([])
+    expect(await opencodeTranscriptAsAcp(projectId, ws, '../ses_x')).toEqual([])
   })
 
   it('stays linear on a crafted export of many subagent calls and unrelated sessions', async () => {
@@ -167,7 +167,7 @@ describe('opencodeTranscriptAsAcp', () => {
     await writeExport(ROOT, lines.map((l) => JSON.stringify(l)).join('\n'))
 
     const started = Date.now()
-    const events = await opencodeTranscriptAsAcp(slug, ws, ROOT)
+    const events = await opencodeTranscriptAsAcp(projectId, ws, ROOT)
     expect(Date.now() - started).toBeLessThan(5_000)
     expect(events.filter((e) => e.type === 'subagent')).toEqual([])
     expect(events.filter((e) => e.type === 'tool')).toHaveLength(2 * n)
@@ -177,7 +177,7 @@ describe('opencodeTranscriptAsAcp', () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
     const rows = await rowsOf('tui-rows.jsonl')
     await writeExport(TUI_ROOT, rows.map((r) => JSON.stringify(r)).join('\n'))
-    const events = rendered(await opencodeTranscriptAsAcp(slug, ws, TUI_ROOT))
+    const events = rendered(await opencodeTranscriptAsAcp(projectId, ws, TUI_ROOT))
     const child = 'ses_eeef395a5ffe8hMSGoDwXlBf53'
 
     expect(events).toMatchObject([
@@ -214,7 +214,7 @@ describe('opencodeTranscriptAsAcp', () => {
       }
     })
     await writeExport(TUI_ROOT, running.map((r) => JSON.stringify(r)).join('\n'))
-    const replayed = rendered(await opencodeTranscriptAsAcp(slug, ws, TUI_ROOT))
+    const replayed = rendered(await opencodeTranscriptAsAcp(projectId, ws, TUI_ROOT))
     const callAt = replayed.findIndex((e) => (e as { call?: { toolCallId: string } }).call?.toolCallId === 'call_22')
     expect(replayed[callAt]).toMatchObject({ call: { status: 'in_progress' } })
     expect(replayed[callAt + 1]).toMatchObject({ type: 'subagent', subagent: { id: child } })

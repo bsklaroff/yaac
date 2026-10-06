@@ -32,7 +32,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`)
+  await page.goto(`${origin}/?project=${workspace.projectId}&workspace=${workspace.workspaceId}`)
   const box = page.getByPlaceholder('Message the agent…')
   await box.waitFor({ state: 'visible', timeout: 120_000 })
   // Let the snapshot list the windows, so the window sync has run.

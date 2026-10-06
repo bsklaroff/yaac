@@ -12,7 +12,7 @@ const session = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
 
 const workspace = (agentSessions: AgentSessionEntry[]): WorkspaceListEntry => ({
   workspaceId: 's1',
-  projectSlug: 'proj',
+  projectId: 'proj',
   tool: 'claude',
   status: 'running',
   createdAt: '2026-08-10 00:00:00',

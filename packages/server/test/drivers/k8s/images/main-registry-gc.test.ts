@@ -54,9 +54,9 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const DAY_MS = 24 * 60 * 60_000
-const DEMO = { slug: 'demo', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
-const USER = `yaac-user-${DEMO.id}`
-const CACHE = `yaac-buildcache-${DEMO.id}`
+const DEMO = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+const USER = `yaac-user-${DEMO}`
+const CACHE = `yaac-buildcache-${DEMO}`
 const hex = (c: string): string => c.repeat(16)
 const ref = (tag: string): string => `${registryHost()}/${tag}`
 
@@ -244,7 +244,7 @@ describe('reconcileMainRegistryGc', () => {
     const stillRunning = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
     const justAdded = 'd2e3f4a5-b6c7-4d8e-9f0a-b1c2d3e4f5a6'
     for (const tag of [
-      `yaac-proj-${DEMO.id}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
+      `yaac-proj-${DEMO}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
       // A removed project's repos.
       `yaac-proj-${gone}:${hex('1')}`, `yaac-user-${gone}:${hex('1')}`,
       `yaac-buildcache-${gone}:${'a'.repeat(64)}`,
@@ -265,7 +265,7 @@ describe('reconcileMainRegistryGc', () => {
     await runPass()
 
     expect(await survivors()).toEqual([
-      `yaac-proj-${DEMO.id}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
+      `yaac-proj-${DEMO}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
       `yaac-proj-${stillRunning}:${hex('1')}`,
       `yaac-test-user-${gone}:${hex('1')}`, `yaac-test-proj-${gone}:${hex('1')}`,
       `yaac-tools:${hex('1')}`,

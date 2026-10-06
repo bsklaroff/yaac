@@ -20,14 +20,14 @@ const FAILURES = [{ host: 'github.com', status: 401, atMs: 1751700000000 }]
 
 describe('GitAuthFailureBadge', () => {
   it('renders a labeled trigger', () => {
-    render(<GitAuthFailureBadge projectSlug="proj" failures={FAILURES} iconSize={12} />)
+    render(<GitAuthFailureBadge projectId="proj" failures={FAILURES} iconSize={12} />)
 
     const trigger = screen.getByRole('button', { name: 'Git authentication failed' })
     expect(trigger.textContent).toBe('git auth')
   })
 
   it('explains the failure, and its button opens settings on the project\'s credential', () => {
-    render(<GitAuthFailureBadge projectSlug="proj" failures={FAILURES} iconSize={12} />)
+    render(<GitAuthFailureBadge projectId="proj" failures={FAILURES} iconSize={12} />)
 
     expect(screen.queryByText('github.com — HTTP 401')).toBeNull()
 

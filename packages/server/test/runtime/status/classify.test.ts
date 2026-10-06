@@ -33,8 +33,7 @@ function pod(overrides: {
     jobName: overrides.jobName ?? 'yaac-proj-s1',
     podName: overrides.podName ?? `${overrides.jobName ?? 'yaac-proj-s1'}-abcde`,
     workspaceId: overrides.workspaceId ?? 's1',
-    projectSlug: overrides.project ?? 'proj',
-    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
+    projectId: overrides.project ?? 'proj',
     tool: 'claude',
     phase: overrides.phase ?? (running ? 'Running' : 'Failed'),
     running,
@@ -65,7 +64,7 @@ describe('classifyWorkspaces', () => {
     const stuckRes = await classifyWorkspaces([stuck], now(), probe('dead'), GRACE_MS)
     expect(stuckRes.stale).toEqual([
       {
-        jobName: 'yaac-proj-stuck', projectSlug: 'proj', workspaceId: 'sp2', zombie: true,
+        jobName: 'yaac-proj-stuck', projectId: 'proj', workspaceId: 'sp2', zombie: true,
         deathCause: { reason: 'agent-exited' },
       },
     ])
@@ -77,7 +76,7 @@ describe('classifyWorkspaces', () => {
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
       {
-        jobName: 'yaac-proj-zombie', projectSlug: 'proj', workspaceId: 'z1', zombie: true,
+        jobName: 'yaac-proj-zombie', projectId: 'proj', workspaceId: 'z1', zombie: true,
         deathCause: { reason: 'agent-exited' },
       },
     ])
@@ -98,7 +97,7 @@ describe('classifyWorkspaces', () => {
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([
       {
-        jobName: 'yaac-proj-dead', projectSlug: 'proj', workspaceId: 'd1', zombie: false,
+        jobName: 'yaac-proj-dead', projectId: 'proj', workspaceId: 'd1', zombie: false,
         deathCause: { reason: 'pod-stopped' },
       },
     ])
@@ -126,7 +125,7 @@ describe('classifyWorkspaces', () => {
     const result = await classifyWorkspaces([p], now(), probe('dead'), GRACE_MS)
     expect(result.stale).toEqual([
       {
-        jobName: 'yaac-proj-stuck', projectSlug: 'proj', workspaceId: 's1', zombie: true,
+        jobName: 'yaac-proj-stuck', projectId: 'proj', workspaceId: 's1', zombie: true,
         deathCause: { reason: 'agent-exited' },
       },
     ])
@@ -147,12 +146,12 @@ describe('classifyWorkspaces', () => {
     expect(result.stale[0].zombie).toBe(false)
   })
 
-  it('tolerates empty labels — a pod without slug/session-id still becomes stale', async () => {
+  it('tolerates empty labels — a pod without projectId/session-id still becomes stale', async () => {
     const p = pod({ jobName: 'abc123', workspaceId: '', project: '', running: false })
     const result = await classifyWorkspaces([p], now(), probe('alive'), GRACE_MS)
     expect(result.stale).toEqual([
       {
-        jobName: 'abc123', projectSlug: '', workspaceId: '', zombie: false,
+        jobName: 'abc123', projectId: '', workspaceId: '', zombie: false,
         deathCause: { reason: 'pod-stopped' },
       },
     ])
@@ -163,7 +162,7 @@ describe('classifyWorkspaces', () => {
     const probeFn = vi.fn<(target: ProbeTarget) => Promise<TmuxLiveness>>().mockResolvedValue('alive')
     await classifyWorkspaces([p], now(), probeFn, GRACE_MS)
     expect(probeFn).toHaveBeenCalledWith(expect.objectContaining({
-      projectSlug: 'proj', workspaceId: 's1', jobName: 'yaac-proj-s1',
+      projectId: 'proj', workspaceId: 's1', jobName: 'yaac-proj-s1',
     }))
   })
 

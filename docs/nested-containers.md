@@ -322,8 +322,9 @@ the MITM proxy, not this registry.
   later nested workspaces of the project then resolve locally.
 - **Named by the project's immutable id** (`yaac-reg-<id>`, with its PVC,
   policies and one-shot pods named after it), as is the node-local store
-  (`shared-images/<id>`). A project re-added under a freed slug gets a new,
-  empty registry and store, even if the old project's removal failed.
+  (`shared-images/<id>`). Ids are never reused, so a project added again
+  gets a new, empty registry and store, even if the old project's removal
+  failed.
 - **Three NetworkPolicies**:
   - an allow policy from the project's workspaces to its registry (the pod
     must carry the project's `yaac.project-id` label and a

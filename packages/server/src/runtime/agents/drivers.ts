@@ -25,7 +25,7 @@ import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 
 /** The session a driver is connected to. */
 export interface DrivenWorkspace {
-  slug: string
+  projectId: string
   /** The workspace id, which streams are addressed by. */
   workspaceId: string
   jobName: string

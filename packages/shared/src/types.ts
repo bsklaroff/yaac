@@ -475,7 +475,10 @@ export type ToolAuthEntry =
   })
 
 export interface ProjectMeta {
-  slug: string
+  /** The project's immutable id, which names it in every route and row. */
+  id: string
+  /** Display name derived from the repo path; not unique. */
+  name: string
   remoteUrl: string
   addedAt: string
 }
@@ -778,7 +781,7 @@ export interface AgentSessionEntry {
 
 export interface WorkspaceListEntry {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   /**
    * The most pressing of its agent sessions' statuses: `waiting` (including
@@ -839,7 +842,7 @@ export interface WorkspaceListEntry {
  */
 export interface WorkspaceGroupSummary {
   groupId: string
-  projectSlug: string
+  projectId: string
   name: string
   /** Keep the group listed even with no live workspace in it. */
   pinned: boolean
@@ -1026,7 +1029,7 @@ export interface SkillDetail {
 
 export interface StaleWorkspaceInfo {
   jobName: string
-  projectSlug: string
+  projectId: string
   workspaceId: string
   /** True when the pod is still running but tmux is gone. */
   zombie: boolean
@@ -1037,14 +1040,14 @@ export interface StaleWorkspaceInfo {
 export interface ActiveWorkspacesResult {
   workspaces: WorkspaceListEntry[]
   stale: StaleWorkspaceInfo[]
-  /** Project slug -> git credentials the upstream rejected. Only projects
+  /** Project id -> git credentials the upstream rejected. Only projects
    *  with a failing host appear. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
 export interface StoppedWorkspaceEntry {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). Workspace birth time. */
   createdAt: string
@@ -1090,7 +1093,8 @@ export interface WorkspaceTerminalEntry {
 
 /** Project row in the snapshot, and what `listProjects` answers. */
 export interface ProjectSummary {
-  slug: string
+  id: string
+  name: string
   remoteUrl: string
   addedAt: string
   workspaceCount: number
@@ -1115,7 +1119,7 @@ export interface ProjectSummary {
  */
 export interface ProvisioningWorkspaceEntry {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   kind: 'create' | 'restart'
   /** The title a create was given, or the one its draft or queued entry was
@@ -1149,7 +1153,7 @@ export interface ProvisioningWorkspaceEntry {
  */
 export interface QueuedWorkspaceEntry {
   id: string
-  projectSlug: string
+  projectId: string
   parentWorkspaceId?: string
   parentQueuedId?: string
   prompt: string
@@ -1218,7 +1222,7 @@ export type DraftWorkspaceSettings = z.infer<typeof draftWorkspaceSettingsSchema
 /** A create-dialog's contents the user kept instead of running. */
 export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
   id: string
-  projectSlug: string
+  projectId: string
   /** Generated from the prompt; never set for a draft with a `title`. */
   generatedTitle?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
@@ -1234,7 +1238,7 @@ export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
  */
 export interface HeldWorkspaceEntry {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   title?: string
   prompt?: string
@@ -1259,7 +1263,7 @@ export interface ImageBuildEntry {
   /** The chain step. */
   layer: ImageLayerName
   /** Every project that requested this tag. */
-  projectSlugs: string[]
+  projectIds: string[]
   reason: 'session' | 'prewarm'
   status: 'running' | 'succeeded' | 'failed'
   /** Parsed from podman's `STEP N/M: <instruction>` output lines. */

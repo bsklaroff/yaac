@@ -26,7 +26,7 @@ beforeAll(() => {
 
 const entry = (over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
   workspaceId: 's1',
-  projectSlug: 'proj',
+  projectId: 'proj',
   tool: 'claude',
   createdAt: '2026-07-13 00:00:00',
   stoppedAt: '2026-07-13 01:00:00',
@@ -67,7 +67,7 @@ const listing = (rows: StoppedWorkspaceEntry[]): void => server.route(LIST, rows
 function Harness({ live = [], provisioning = [] }: { live?: string[]; provisioning?: string[] }): JSX.Element {
   const ids = (list: string[]): { workspaceId: string }[] => list.map((workspaceId) => ({ workspaceId }))
   const stopped = useStoppedWorkspaces('proj', ids(live), ids(provisioning))
-  return <StoppedWorkspacesButton projectSlug="proj" stopped={stopped} />
+  return <StoppedWorkspacesButton projectId="proj" stopped={stopped} />
 }
 
 function renderButton(): void {
@@ -196,7 +196,7 @@ describe('StoppedWorkspacesButton', () => {
     fireEvent.click(screen.getAllByText('OOMed run')[0])
     // Persisted via the server; the cached list is patched optimistically so
     // the dot clears without a refetch.
-    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectSlug: 'proj', workspaceId: 's3' }]))
+    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectId: 'proj', workspaceId: 's3' }]))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
   })
 
@@ -226,7 +226,7 @@ describe('StoppedWorkspacesButton', () => {
     expect(await screen.findByTitle('1 workspace died unexpectedly')).toBeTruthy()
     expect(server.called(MARK)).toEqual([]) // the plain delete isn't a death
     fireEvent.click(screen.getAllByText('OOMed run')[0]) // view it → marked seen
-    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectSlug: 'proj', workspaceId: 's3' }]))
+    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectId: 'proj', workspaceId: 's3' }]))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
   })
 
@@ -240,7 +240,7 @@ describe('StoppedWorkspacesButton', () => {
     expect(await screen.findByTitle('2 workspaces died unexpectedly')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Mark all as read' }))
-    await waitFor(() => expect(server.called(MARK_ALL).map((c) => c.body)).toEqual([{ projectSlug: 'proj' }]))
+    await waitFor(() => expect(server.called(MARK_ALL).map((c) => c.body)).toEqual([{ projectId: 'proj' }]))
     // Optimistic patch: the dot clears without a refetch, and with nothing left
     // unread the button itself goes away.
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())

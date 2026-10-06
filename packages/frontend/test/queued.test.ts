@@ -4,7 +4,7 @@ import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 const q = (id: string, parent: { workspace?: string; queued?: string }, prompt = id): QueuedWorkspaceEntry => ({
   id,
-  projectSlug: 'p',
+  projectId: 'p',
   ...(parent.workspace !== undefined ? { parentWorkspaceId: parent.workspace } : {}),
   ...(parent.queued !== undefined ? { parentQueuedId: parent.queued } : {}),
   prompt,

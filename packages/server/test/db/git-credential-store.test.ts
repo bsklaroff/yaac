@@ -19,6 +19,8 @@ import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 import { generateSshKey } from '#lib/ssh-key'
 
+const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
+
 /**
  * The named git credentials, sealed at rest.
  *
@@ -115,11 +117,11 @@ describe('renameGitCredential', () => {
 describe('deleteGitCredential', () => {
   it('deletes even while a project uses it, leaving the project with no credential or host key', async () => {
     const row = await insertGitCredential({ name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac a' })
-    await recordProject({ slug: 'p', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' })
-    await setProjectGitCredential('p', row.id, 'x ssh-ed25519 HOST')
+    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' })
+    await setProjectGitCredential(P, row.id, 'x ssh-ed25519 HOST')
 
     expect(await deleteGitCredential(row.id)).toBe(true)
-    expect(await getProjectRow('p')).toMatchObject({ gitCredentialId: null, knownHostsEntry: null })
+    expect(await getProjectRow(P)).toMatchObject({ gitCredentialId: null, knownHostsEntry: null })
     expect(await listGitCredentials()).toEqual([])
     expect(await deleteGitCredential(row.id)).toBe(false)
   })
@@ -128,14 +130,14 @@ describe('deleteGitCredential', () => {
 describe('replaceGitCredential', () => {
   it('moves the name and every project onto a new row, keeping their host keys, and drops the old one', async () => {
     const old = await insertGitCredential({ name: 'deploy', kind: 'ssh', secret: 'b2xk', publicKey: 'ssh-ed25519 OLD yaac deploy' })
-    await recordProject({ slug: 'p', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' })
-    await setProjectGitCredential('p', old.id, 'x ssh-ed25519 HOST')
+    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' })
+    await setProjectGitCredential(P, old.id, 'x ssh-ed25519 HOST')
 
     const fresh = await replaceGitCredential(old.id, { secret: 'bmV3', publicKey: 'ssh-ed25519 NEW yaac deploy' })
     expect(fresh?.id).not.toBe(old.id)
     expect(fresh).toMatchObject({ name: 'deploy', kind: 'ssh', publicKey: 'ssh-ed25519 NEW yaac deploy' })
     expect(await fresh?.openSecret()).toBe('bmV3')
-    expect(await getProjectRow('p')).toMatchObject({ gitCredentialId: fresh?.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
+    expect(await getProjectRow(P)).toMatchObject({ gitCredentialId: fresh?.id, knownHostsEntry: 'x ssh-ed25519 HOST' })
     expect((await listGitCredentials()).map((c) => c.id)).toEqual([fresh?.id])
     expect(await replaceGitCredential(old.id, { secret: 'x' })).toBeUndefined()
   })

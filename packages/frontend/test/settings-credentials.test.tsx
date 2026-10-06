@@ -327,21 +327,23 @@ describe('Settings → Credentials → CLI install', () => {
 
 describe('Settings → Credentials → git', () => {
   const TOKEN: GitCredentialSummary = {
-    id: 'c-token', name: 'alpha-token', kind: 'https', preview: '***abcd', projects: ['alpha'],
+    id: 'c-token', name: 'alpha-token', kind: 'https', preview: '***abcd', projects: ['id-alpha'],
   }
   const KEY: GitCredentialSummary = {
     id: 'c-key', name: 'gitlab-key', kind: 'ssh', preview: 'ssh-ed25519 AAAAkey gitlab-key',
     publicKey: 'ssh-ed25519 AAAAkey gitlab-key', projects: [],
   }
-  const project = (slug: string, remoteUrl: string, gitCredential: ProjectSummary['gitCredential']): ProjectSummary =>
-    ({ slug, remoteUrl, addedAt: '', workspaceCount: 0, createDefaults: {}, gitCredential })
+  /** A project keyed by `id-<name>`, so the rows show the name, not the key. */
+  const project = (name: string, remoteUrl: string, gitCredential: ProjectSummary['gitCredential']): ProjectSummary =>
+    ({ id: `id-${name}`, name, remoteUrl, addedAt: '', workspaceCount: 0, createDefaults: {}, gitCredential })
   const ALPHA = project('alpha', 'https://github.com/o/alpha.git', { id: 'c-token', name: 'alpha-token' })
   const BETA = project('beta', 'git@gitlab.com:o/beta.git', null)
   const GAMMA = project('gamma', 'https://github.com/o/gamma', null)
 
-  /** A project's row — under its credential, or in the unassigned list. */
-  const projectRow = (slug: string): HTMLElement =>
-    document.querySelector(`[data-project="${slug}"]`) as HTMLElement
+  /** A project's row, by name — under its credential, or in the unassigned
+   *  list. */
+  const projectRow = (name: string): HTMLElement =>
+    document.querySelector(`[data-project="id-${name}"]`) as HTMLElement
   const credentialRow = (name: string): HTMLElement =>
     screen.getByRole('button', { name }).closest('div.rounded-md') as HTMLElement
   const pickerOptions = (row: HTMLElement): string[] =>
@@ -397,8 +399,8 @@ describe('Settings → Credentials → git', () => {
     expect(within(projectRow('gamma')).getByLabelText<HTMLInputElement>('Credential name').value).toBe('gamma-token')
 
     // Assigning trusts the host key, which is shown under the credential.
-    server.route('PUT /api/project/beta/git-credential', { knownHostsEntry: 'gitlab.com ssh-ed25519 HOSTKEY' })
-    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, projects: ['beta'] }] }
+    server.route('PUT /api/project/id-beta/git-credential', { knownHostsEntry: 'gitlab.com ssh-ed25519 HOSTKEY' })
+    authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, { ...KEY, projects: ['id-beta'] }] }
     snapshot.mockReturnValue({
       driver: 'k8s', projects: [ALPHA, { ...BETA, gitCredential: { id: 'c-key', name: 'gitlab-key' } }, GAMMA],
     })
@@ -407,7 +409,7 @@ describe('Settings → Credentials → git', () => {
     fireEvent.click(within(beta).getByRole('button', { name: 'Assign' }))
 
     await waitFor(() => expect(within(credentialRow('gitlab-key')).getByText('beta')).toBeTruthy())
-    expect(server.called('PUT /api/project/beta/git-credential').map((c) => c.body)).toEqual([{ credentialId: 'c-key' }])
+    expect(server.called('PUT /api/project/id-beta/git-credential').map((c) => c.body)).toEqual([{ credentialId: 'c-key' }])
     expect(within(projectRow('beta')).getByText('gitlab.com ssh-ed25519 HOSTKEY')).toBeTruthy()
   })
 
@@ -506,7 +508,7 @@ describe('Settings → Credentials → git', () => {
   })
 
   it('opens onto a focused project, its "Change" picker offering all but its current credential', async () => {
-    useUiStore.getState().openSettings('credentials', undefined, 'alpha')
+    useUiStore.getState().openSettings('credentials', undefined, 'id-alpha')
     renderSettings()
 
     // alpha's row is under its credential and highlighted.

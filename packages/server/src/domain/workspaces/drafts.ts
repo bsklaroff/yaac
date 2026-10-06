@@ -21,17 +21,17 @@ import type { DraftWorkspaceEntry, DraftWorkspaceSettings } from '@yaac/shared/t
 /** Save a new draft, or replace draft `id`'s settings. A blank title leaves
  *  the draft to be auto-titled. */
 export async function saveDraftWorkspace(
-  projectSlug: string,
+  projectId: string,
   { title, ...rest }: DraftWorkspaceSettings,
   id?: string,
 ): Promise<DraftWorkspaceEntry> {
-  if (!await getProjectRow(projectSlug)) throw new ServerError('NOT_FOUND', `project ${projectSlug} not found`)
+  if (!await getProjectRow(projectId)) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   const named = normalizeTitle(title ?? '')
   const settings = { ...rest, ...(named !== '' ? { title: named } : {}) }
   const row = id === undefined
-    ? await insertDraftWorkspace(projectSlug, settings)
-    : await updateDraftWorkspace(projectSlug, id, settings)
-  if (!row) throw new ServerError('NOT_FOUND', `project ${projectSlug} has no draft workspace ${id}`)
+    ? await insertDraftWorkspace(projectId, settings)
+    : await updateDraftWorkspace(projectId, id, settings)
+  if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} has no draft workspace ${id}`)
   return toEntry(row)
 }
 
@@ -59,14 +59,14 @@ const NO_DRAFT: DraftClaim = { generatedTitle: () => undefined, run: (fn) => fn(
  * a second tab, a retry or a double click cannot make two workspaces from
  * one draft.
  */
-export async function claimDraft(projectSlug: string, id: string | undefined): Promise<DraftClaim> {
+export async function claimDraft(projectId: string, id: string | undefined): Promise<DraftClaim> {
   if (id === undefined) return NO_DRAFT
   if (launching.has(id)) throw new ServerError('CONFLICT', `draft workspace ${id} is already being created from`)
   launching.add(id)
-  const draft = (await listDraftWorkspaceRows()).find((d) => d.id === id && d.projectSlug === projectSlug)
+  const draft = (await listDraftWorkspaceRows()).find((d) => d.id === id && d.projectId === projectId)
   if (!draft) {
     launching.delete(id)
-    throw new ServerError('NOT_FOUND', `project ${projectSlug} has no draft workspace ${id}`)
+    throw new ServerError('NOT_FOUND', `project ${projectId} has no draft workspace ${id}`)
   }
   notifyWorkspaceListChanged()
   const release = (): void => {

@@ -44,7 +44,7 @@ try {
   })
   const started = Date.now()
 
-  await page.goto(`${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`)
+  await page.goto(`${origin}/?project=${workspace.projectId}&workspace=${workspace.workspaceId}`)
   await page.locator('[title="New shell"]').waitFor({ state: 'visible', timeout: 120_000 })
   // A reload would drop this; the SPA's own URL updates do not.
   await page.evaluate(() => { window.__noReload = true })

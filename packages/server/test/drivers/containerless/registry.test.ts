@@ -27,7 +27,7 @@ let dataDir: string
 
 function marker(workspaceId: string, over: Partial<WorkspaceMarker> = {}): WorkspaceMarker {
   return {
-    projectSlug: 'demo', workspaceId, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId, tool: 'claude', mode: 'tui',
     prewarm: false, createdAtMs: 1_000, launchEnv: {}, ...over,
   }
 }
@@ -64,7 +64,7 @@ describe('findForTeardown', () => {
   it('hands back the unit name a stop has to address, a spare only when asked', () => {
     rememberWorkspace(marker(A, { prewarm: true }))
     expect(findForTeardown(A, { spares: true })).toEqual({
-      projectSlug: 'demo', workspaceId: A, unitName: containerlessJobName('demo', A),
+      projectId: 'demo', workspaceId: A, unitName: containerlessJobName('demo', A),
     })
     expect(findForTeardown(A)).toBeUndefined()
     expect(findForTeardown(A.slice(0, 8), { spares: true })).toBeUndefined()
@@ -74,7 +74,7 @@ describe('findForTeardown', () => {
 describe('listWorkspaces', () => {
   it('filters to one project when asked', () => {
     rememberWorkspace(marker(A))
-    rememberWorkspace(marker(B, { projectSlug: 'other' }))
+    rememberWorkspace(marker(B, { projectId: 'other' }))
     expect(listWorkspaces('demo').map((w) => w.workspaceId)).toEqual([A])
     expect(listWorkspaces()).toHaveLength(2)
   })
@@ -91,7 +91,7 @@ describe('listWorkspaces', () => {
     expect(listWorkspaces()).toEqual([])
 
     await writeMarker(marker(A, { tmuxPid: 4242, sshAgentPid: 777, declaredTool: 'codex' }))
-    await writeMarker(marker(B, { projectSlug: 'other' }))
+    await writeMarker(marker(B, { projectId: 'other' }))
     await restart()
     expect(listWorkspaces().map((w) => w.workspaceId).sort()).toEqual([B, A].sort())
     expect(findWorkspace(A)?.declaredTool).toBe('codex')
@@ -104,13 +104,13 @@ describe('listWorkspaces', () => {
     // Otherwise a copied state dir would claim to be its source workspace.
     await writeMarker(marker(A))
     await fsp.writeFile(markerPath('demo', A), JSON.stringify({
-      ...marker(A), projectSlug: 'somewhere-else', workspaceId: 'not-this-one',
+      ...marker(A), projectId: 'somewhere-else', workspaceId: 'not-this-one',
     }))
     // One bad file must not fail the whole recovery.
     await fsp.mkdir(path.dirname(markerPath('demo', B)), { recursive: true })
     await fsp.writeFile(markerPath('demo', B), 'not json')
     await restart()
-    expect(listWorkspaces().map((w) => [w.projectSlug, w.workspaceId])).toEqual([['demo', A]])
+    expect(listWorkspaces().map((w) => [w.projectId, w.workspaceId])).toEqual([['demo', A]])
   })
 })
 

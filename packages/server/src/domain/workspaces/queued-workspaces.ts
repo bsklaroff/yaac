@@ -102,15 +102,15 @@ const launching = new Set<string>()
 
 /** Queue a create request under a workspace or another entry. */
 export async function queueWorkspace(
-  projectSlug: string,
+  projectId: string,
   request: QueueRequest,
   source: QueueSource,
   generatedTitle?: string,
 ): Promise<QueuedWorkspaceEntry> {
   checkPrompt(request.prompt)
-  const parent = await resolveParent(projectSlug, request.parent)
-  const settings = await resolveSettings(projectSlug, parent, request, source)
-  const row = await insertQueuedWorkspace(projectSlug, parent.pointer, settings, generatedTitle)
+  const parent = await resolveParent(projectId, request.parent)
+  const settings = await resolveSettings(projectId, parent, request, source)
+  const row = await insertQueuedWorkspace(projectId, parent.pointer, settings, generatedTitle)
   return (await toEntries([row]))[0]
 }
 
@@ -128,10 +128,10 @@ export async function updateQueuedWorkspace(
   const row = await editableRow(id)
   if (patch.prompt !== undefined) checkPrompt(patch.prompt)
   const parent = patch.parent !== undefined
-    ? await resolveParent(row.projectSlug, patch.parent)
-    : await parentInfo(row.projectSlug, pointerOf(row))
+    ? await resolveParent(row.projectId, patch.parent)
+    : await parentInfo(row.projectId, pointerOf(row))
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
-  const settings = await resolveSettings(row.projectSlug, parent, {
+  const settings = await resolveSettings(row.projectId, parent, {
     prompt: patch.prompt ?? row.prompt,
     tool: patch.tool ?? row.tool,
     mode: patch.mode ?? row.mode,
@@ -171,8 +171,8 @@ export async function runQueuedWorkspace(id: string): Promise<{ workspaceId: str
 }
 
 /** Launch every entry waiting directly on a workspace that stopped. */
-export async function startQueuedChildren(projectSlug: string, workspaceId: string): Promise<void> {
-  for (const row of await releaseQueuedChildren(projectSlug, workspaceId)) {
+export async function startQueuedChildren(projectId: string, workspaceId: string): Promise<void> {
+  for (const row of await releaseQueuedChildren(projectId, workspaceId)) {
     await launch(row)
   }
 }
@@ -193,16 +193,16 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
   const waiting = (await listQueuedWorkspaceRows())
     .filter((r) => r.launchWorkspaceId === undefined && r.parentWorkspaceId !== undefined)
   if (waiting.length === 0) return []
-  const parents = new Set(waiting.map((r) => `${r.projectSlug}/${r.parentWorkspaceId}`))
-  const slugs = [...new Set(waiting.map((r) => r.projectSlug))]
-  const held = (await Promise.all(slugs.map((slug) => listWorkspaceRows(slug)))).flat()
-    .filter((w) => w.stoppedAt !== undefined && parents.has(`${w.projectSlug}/${w.workspaceId}`))
+  const parents = new Set(waiting.map((r) => `${r.projectId}/${r.parentWorkspaceId}`))
+  const projectIds = [...new Set(waiting.map((r) => r.projectId))]
+  const held = (await Promise.all(projectIds.map((projectId) => listWorkspaceRows(projectId)))).flat()
+    .filter((w) => w.stoppedAt !== undefined && parents.has(`${w.projectId}/${w.workspaceId}`))
   const sessions = await getAgentSessionsFor(held)
   return held.map((w) => {
-    const first = sessions.get(`${w.projectSlug}/${w.workspaceId}`)?.[0]
+    const first = sessions.get(`${w.projectId}/${w.workspaceId}`)?.[0]
     return {
       workspaceId: w.workspaceId,
-      projectSlug: w.projectSlug,
+      projectId: w.projectId,
       tool: first?.tool ?? 'claude',
       ...(w.title !== undefined ? { title: w.title } : {}),
       ...(first?.firstPrompt !== undefined ? { prompt: first.firstPrompt } : {}),
@@ -273,7 +273,7 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
   void (async () => {
     try {
       await runProvisioned(workspaceId, (onProgress) => startWorkspace({
-        projectSlug: row.projectSlug,
+        projectId: row.projectId,
         workspaceId,
         tool: row.tool,
         model: row.model,
@@ -337,17 +337,17 @@ function pointerOf(row: QueuedWorkspaceRow): QueuedParent {
  * `id=$(yaac-mama create …); yaac-mama queue --parent-workspace "$id"` does
  * not race the row write.
  */
-async function resolveParent(projectSlug: string, parent: string): Promise<ParentInfo> {
+async function resolveParent(projectId: string, parent: string): Promise<ParentInfo> {
   const target = parent.trim()
   const [workspace, entries] = await Promise.all([
-    resolveWorkspace(target, { projectSlug }),
-    listQueuedWorkspaceRows(projectSlug),
+    resolveWorkspace(target, { projectId }),
+    listQueuedWorkspaceRows(projectId),
   ])
   const asWorkspace = (workspaceId: string): Promise<ParentInfo> =>
-    parentInfo(projectSlug, { parentWorkspaceId: workspaceId })
+    parentInfo(projectId, { parentWorkspaceId: workspaceId })
   // A full id wins outright; only a prefix can be ambiguous.
   if (workspace.ok && workspace.workspaceId === target) return await asWorkspace(target)
-  if (inFlightCreate(target)?.projectSlug === projectSlug) return await asWorkspace(target)
+  if (inFlightCreate(target)?.projectId === projectId) return await asWorkspace(target)
   let entry = entries.find((e) => e.id === target)
   if (entry === undefined) {
     const prefixed = target === '' ? [] : entries.filter((e) => e.id.startsWith(target))
@@ -355,14 +355,14 @@ async function resolveParent(projectSlug: string, parent: string): Promise<Paren
     if (workspaceMatches + prefixed.length > 1) {
       throw new ServerError(
         'VALIDATION',
-        `'${target}' matches more than one workspace or queued workspace in ${projectSlug} — use a longer prefix`,
+        `'${target}' matches more than one workspace or queued workspace in ${projectId} — use a longer prefix`,
       )
     }
     if (workspace.ok) return await asWorkspace(workspace.workspaceId)
     entry = prefixed[0]
   }
   if (entry === undefined) {
-    throw new ServerError('NOT_FOUND', `no workspace or queued workspace '${target}' in ${projectSlug}`)
+    throw new ServerError('NOT_FOUND', `no workspace or queued workspace '${target}' in ${projectId}`)
   }
   return {
     ...settingsOf(entry),
@@ -375,15 +375,15 @@ async function resolveParent(projectSlug: string, parent: string): Promise<Paren
 /** A parent's defaults: an entry's stored settings, or a workspace's first
  *  conversation (current model) and row, falling back to what an in-flight
  *  create asked for. */
-async function parentInfo(projectSlug: string, pointer: QueuedParent): Promise<ParentInfo> {
+async function parentInfo(projectId: string, pointer: QueuedParent): Promise<ParentInfo> {
   if ('parentQueuedId' in pointer) {
     const entry = await getQueuedWorkspaceRow(pointer.parentQueuedId)
     return { pointer, ...(entry !== undefined ? settingsOf(entry) : {}) }
   }
   const workspaceId = pointer.parentWorkspaceId
   const [row, first] = await Promise.all([
-    getProjectWorkspaceRows(projectSlug).then((rows) => rows.get(workspaceId)),
-    firstAgentSession(projectSlug, workspaceId),
+    getProjectWorkspaceRows(projectId).then((rows) => rows.get(workspaceId)),
+    firstAgentSession(projectId, workspaceId),
   ])
   const creating = inFlightCreate(workspaceId)
   const model = first?.model ?? row?.model ?? creating?.model
@@ -419,12 +419,12 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
  * fixed now, so moving the parent later does not move it.
  */
 async function resolveSettings(
-  projectSlug: string,
+  projectId: string,
   parent: ParentInfo,
   request: Omit<QueueRequest, 'parent'>,
   source: QueueSource,
 ): Promise<QueuedWorkspaceSettings> {
-  const tool = request.tool ?? parent.tool ?? (await getProjectRow(projectSlug))?.lastTool ?? 'claude'
+  const tool = request.tool ?? parent.tool ?? (await getProjectRow(projectId))?.lastTool ?? 'claude'
   const sameTool = tool === parent.tool
   // The UI mode is not tool-specific, so it is borrowed whatever the tool.
   // With the parent's tool unknown, borrow the permission mode (checked
@@ -451,7 +451,7 @@ async function resolveSettings(
     permissionMode = inherited
   }
 
-  const setup = await resolveCreate(projectSlug, {
+  const setup = await resolveCreate(projectId, {
     tool,
     ...(mode !== undefined ? { mode } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
@@ -465,14 +465,14 @@ async function resolveSettings(
   const title = normalizeTitle(request.title ?? '')
   const groupId = request.group === undefined ? parent.groupId
     : request.group === null ? undefined
-    : (await resolveGroup(projectSlug, request.group, { create: true })).groupId
+    : (await resolveGroup(projectId, request.group, { create: true })).groupId
   return {
     prompt: request.prompt,
     tool: setup.tool,
     model: setup.model,
     mode: setup.mode,
     permissionMode: setup.permissionMode,
-    branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectSlug)),
+    branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)),
     ...(title !== '' ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
   }
@@ -481,16 +481,16 @@ async function resolveSettings(
 /** Wire entries, flagging the ones whose parent workspace is gone. */
 async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEntry[]> {
   if (rows.length === 0) return []
-  const slugs = [...new Set(rows.map((r) => r.projectSlug))]
-  const known = new Set((await Promise.all(slugs.map(async (slug) =>
-    [...(await getProjectWorkspaceRows(slug)).keys()].map((id) => `${slug}/${id}`)))).flat())
-  for (const p of listProvisioning()) known.add(`${p.projectSlug}/${p.workspaceId}`)
+  const projectIds = [...new Set(rows.map((r) => r.projectId))]
+  const known = new Set((await Promise.all(projectIds.map(async (projectId) =>
+    [...(await getProjectWorkspaceRows(projectId)).keys()].map((id) => `${projectId}/${id}`)))).flat())
+  for (const p of listProvisioning()) known.add(`${p.projectId}/${p.workspaceId}`)
   return rows.map((r) => {
     const modelName = modelDisplayName(r.tool, r.model)
-    const orphaned = r.parentWorkspaceId !== undefined && !known.has(`${r.projectSlug}/${r.parentWorkspaceId}`)
+    const orphaned = r.parentWorkspaceId !== undefined && !known.has(`${r.projectId}/${r.parentWorkspaceId}`)
     return {
       id: r.id,
-      projectSlug: r.projectSlug,
+      projectId: r.projectId,
       ...(r.parentWorkspaceId !== undefined ? { parentWorkspaceId: r.parentWorkspaceId } : {}),
       ...(r.parentQueuedId !== undefined ? { parentQueuedId: r.parentQueuedId } : {}),
       prompt: r.prompt,

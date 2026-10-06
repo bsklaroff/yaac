@@ -19,7 +19,7 @@ and on phones, the filter (quick-open) is the way to find a file.
 ### Plain `fs` on the server's filesystem
 
 `#domain/workspaces` (`files.ts`) reads and writes the checkout with plain
-`fs` on `workspaceDir(slug, id)`. Under k8s the server pod mounts that path;
+`fs` on `workspaceDir(projectId, id)`. Under k8s the server pod mounts that path;
 under containerless it is the host checkout. So there is no driver verb, and
 both drivers behave the same. The cost: node-local checkouts
 (docs/plans/node-local-checkouts.md) would need an in-pod path.

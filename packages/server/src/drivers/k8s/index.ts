@@ -79,7 +79,7 @@ export function createK8sDriver(): WorkspaceDriver {
 
     find: (workspaceId, opts) => findWorkspace(workspaceId, opts),
     findForTeardown: (workspaceId, opts) => findWorkspaceForTeardown(workspaceId, opts),
-    list: (projectSlug, opts) => listWorkspaces(projectSlug, opts),
+    list: (projectId, opts) => listWorkspaces(projectId, opts),
     count: () => countWorkspaces(),
     changes: (jobName, base, defaultBase) => getWorkspaceChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),
@@ -115,7 +115,7 @@ export function createK8sDriver(): WorkspaceDriver {
     prepareImage: (opts) => prepareWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
     syncCredentials: (bundle) => syncProxyCredentials(bundle),
-    syncProjectSecrets: (projectSlug, values) => syncProjectSecrets(projectSlug, values),
+    syncProjectSecrets: (projectId, values) => syncProjectSecrets(projectId, values),
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),

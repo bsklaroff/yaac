@@ -114,7 +114,7 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
   const context = useContext(QueueContext)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const edit = (): void => openCreateWorkspace({ projectSlug: entry.projectSlug, editId: entry.id })
+  const edit = (): void => openCreateWorkspace({ projectId: entry.projectId, editId: entry.id })
   const report = (e: unknown): void => setError(e instanceof Error ? e.message : String(e))
   const failure = error ?? entry.launchError
 
@@ -152,7 +152,7 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
           { label: 'Edit…', onSelect: edit },
           {
             label: 'Queue workspace after this…',
-            onSelect: () => openCreateWorkspace({ projectSlug: entry.projectSlug, parent: entry.id, focus: 'prompt' }),
+            onSelect: () => openCreateWorkspace({ projectId: entry.projectId, parent: entry.id, focus: 'prompt' }),
           },
           'separator',
           { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
@@ -206,8 +206,8 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
   const createWorkspace = useCreateWorkspace()
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const name = queuedTitle(draft)
-  const open = (): void => openCreateWorkspace({ projectSlug: draft.projectSlug, draftId: draft.id, focus: 'prompt' })
-  const run = (): void => createWorkspace(draft.projectSlug, draft.tool, {
+  const open = (): void => openCreateWorkspace({ projectId: draft.projectId, draftId: draft.id, focus: 'prompt' })
+  const run = (): void => createWorkspace(draft.projectId, draft.tool, {
     model: draft.model ?? '',
     permissionMode: draft.permissionMode,
     mode: draft.mode,

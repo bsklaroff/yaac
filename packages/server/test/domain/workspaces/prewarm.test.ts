@@ -90,7 +90,7 @@ import type { AgentTool } from '@yaac/shared/types'
 
 // The runtime verbs the claim calls. The fake driver installed below just
 // delegates to these.
-const mockList = vi.fn<(projectSlug?: string) => Promise<RuntimeHandle[]>>()
+const mockList = vi.fn<(projectId?: string) => Promise<RuntimeHandle[]>>()
 const mockClaimSpare = vi.fn<(workspaceId: string, tool: AgentTool) => Promise<void>>()
 const mockExec = vi.fn<(jobName: string, cmd: string) => Promise<{ stdout: string; stderr: string }>>()
 /** The spare checkout's HEAD: origin's tip unless a case moves it. Kept
@@ -118,7 +118,7 @@ function spare(o: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return handleFixture({
     jobName: 'yaac-p-spare',
     workspaceId: 'spare1',
-    projectSlug: 'p',
+    projectId: 'p',
     tool: 'claude',
     declaredTool: 'claude',
     createdAtMs: 1_000,
@@ -135,8 +135,8 @@ function setup(tool: AgentTool = 'claude', o: Partial<CreateSetup> = {}): Create
 
 /** Stub the spare's row as warming left it, from `main` unless given. */
 function launched(o: Partial<WorkspaceRow> = {}): void {
-  vi.mocked(getWorkspaceRow).mockImplementation((projectSlug, workspaceId) => Promise.resolve({
-    projectSlug, workspaceId, permissionMode: 'bypass', mode: 'tui', baseBranch: 'main', ...o,
+  vi.mocked(getWorkspaceRow).mockImplementation((projectId, workspaceId) => Promise.resolve({
+    projectId, workspaceId, permissionMode: 'bypass', mode: 'tui', baseBranch: 'main', ...o,
   } as WorkspaceRow))
 }
 
@@ -148,7 +148,7 @@ describe('tryClaimPrewarmed', () => {
     clearPrewarmStateForTests()
     clearAllProvisioningForTests()
     // The create's provisioning row, which the claim points at its spare.
-    registerProvisioning({ workspaceId: 'req', projectSlug: 'p', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId: 'req', projectId: 'p', tool: 'claude', kind: 'create' })
     // The claim reports events instead of writing rows; they are captured
     // here and asserted.
     appliedEvents.length = 0
@@ -219,7 +219,7 @@ describe('tryClaimPrewarmed', () => {
 
     expect(mockRegister).toHaveBeenCalledWith({
       workspaceId: 'spare1',
-      projectSlug: 'p',
+      projectId: 'p',
       tool: 'claude',
       config: { setAllowedUrls: ['*'] },
       remoteUrl: 'https://example.com/p.git',
@@ -242,7 +242,7 @@ describe('tryClaimPrewarmed', () => {
     await flush()
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(vi.mocked(restoreSpareWorkspace))
-      .toHaveBeenCalledWith(expect.objectContaining({ projectSlug: 'p', workspaceId: 'spare1' }))
+      .toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p', workspaceId: 'spare1' }))
     expect(claiming.size).toBe(0)
 
     mockList.mockResolvedValue([spare({ tool: 'codex', declaredTool: 'codex' })])
@@ -264,7 +264,7 @@ describe('tryClaimPrewarmed', () => {
     expect(appliedEvents).toEqual([
       {
         type: 'sessions-launched',
-        projectSlug: 'p',
+        projectId: 'p',
         workspaceId: 'spare1',
         sessions: [{ tool: 'claude', agentSessionId: 'spare1' }],
       },
@@ -277,7 +277,7 @@ describe('tryClaimPrewarmed', () => {
 
     expect(appliedEvents.filter((e) => e.type === 'base-branch-resolved')).toEqual([
       {
-        type: 'base-branch-resolved', projectSlug: 'p', workspaceId: 'spare1', baseBranch: 'dev',
+        type: 'base-branch-resolved', projectId: 'p', workspaceId: 'spare1', baseBranch: 'dev',
       },
     ])
   })
@@ -294,7 +294,7 @@ describe('tryClaimPrewarmed', () => {
 
     expect(mockDeleteState).toHaveBeenCalledWith('p', 'spare1')
     expect(appliedEvents.at(-1)).toEqual({
-      type: 'workspace-create-failed', projectSlug: 'p', workspaceId: 'spare1',
+      type: 'workspace-create-failed', projectId: 'p', workspaceId: 'spare1',
     })
     // The awaited teardown runs first, so the checkout is never removed under
     // a mounted workspace. The row goes last, so a partial failure leaves
@@ -379,7 +379,7 @@ describe('tryClaimPrewarmed', () => {
     expect(claimedDuringRetool).toBe('spare1')
     expect(listProvisioning()[0].claimedId).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledWith({
-      jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 'spare1',
+      jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 'spare1',
     })
     // The reservation is kept so a concurrent claim cannot take the dying
     // spare.
@@ -608,7 +608,7 @@ describe('tryClaimPrewarmed', () => {
     // Restored to its warm-time launch settings, which the next claim reads
     // to decide whether to respawn the agent.
     expect(vi.mocked(restoreSpareWorkspace)).toHaveBeenCalledWith(expect.objectContaining({
-      projectSlug: 'p', workspaceId: 'spare1', permissionMode: 'bypass',
+      projectId: 'p', workspaceId: 'spare1', permissionMode: 'bypass',
     }))
   })
 
@@ -618,7 +618,7 @@ describe('tryClaimPrewarmed', () => {
 
     expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit, { branch: 'dev' })).toBeUndefined()
     expect(mockCleanup).toHaveBeenCalledWith({
-      jobName: 'yaac-p-spare', projectSlug: 'p', workspaceId: 'spare1',
+      jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 'spare1',
     })
     expect(claiming.has('yaac-p-spare')).toBe(true)
   })
@@ -683,7 +683,7 @@ describe('tryClaimPrewarmed', () => {
       spare({ jobName: 'yaac-p-new', workspaceId: 'new', createdAtMs: 9_000 }),
       spare({ createdAtMs: 1_000 }),
     ])
-    vi.mocked(getWorkspaceRow).mockImplementation((_slug, id) => Promise.resolve({
+    vi.mocked(getWorkspaceRow).mockImplementation((_projectId, id) => Promise.resolve({
       permissionMode: 'bypass', mode: 'tui', ...(id === 'spare1' ? { model: 'claude-opus-5-5' } : {}),
     } as WorkspaceRow))
 

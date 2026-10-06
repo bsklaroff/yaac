@@ -298,7 +298,7 @@ async function runPass(
     resync,
     signal: new AbortController().signal,
     snapshot: () => snapshotFixture(),
-    projects: () => Promise.resolve([]),
+    projectIds: () => Promise.resolve([]),
     projectConfig: () => Promise.resolve(undefined),
         terminating: () => false,
   }

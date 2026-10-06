@@ -45,11 +45,11 @@ export async function listStoppedWorkspaces(
     .filter((r) => !runningIds.has(r.workspaceId))
 
   const linksByWorkspace = await getAgentSessionsFor(rows.map((r) => ({
-    projectSlug: r.projectSlug,
+    projectId: r.projectId,
     workspaceId: r.workspaceId,
   })))
   const linksOf = (r: WorkspaceRow): AgentSessionLinkRow[] =>
-    linksByWorkspace.get(`${r.projectSlug}/${r.workspaceId}`) ?? []
+    linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
   const activeMs = async (r: WorkspaceRow): Promise<number> =>
     await lastActiveMs(r, linksOf(r)) ?? r.createdAt.getTime()
 
@@ -72,7 +72,7 @@ export async function listStoppedWorkspaces(
     const prompt = await stoppedPrompt(r, links)
     return {
       workspaceId: r.workspaceId,
-      projectSlug: r.projectSlug,
+      projectId: r.projectId,
       // From the first conversation; claude if none, as restart assumes.
       tool: first?.tool ?? 'claude',
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
@@ -110,7 +110,7 @@ async function lastActiveMs(
   // No readable links (died before the registry ran): try the transcript of
   // the conversation named after the workspace id.
   const pinned = await sessionTranscriptPath(
-    r.projectSlug, r.workspaceId, links[0]?.tool ?? 'claude',
+    r.projectId, r.workspaceId, links[0]?.tool ?? 'claude',
   )
   return pinned === undefined ? undefined : await transcriptLastActiveMs(pinned)
 }
@@ -130,12 +130,12 @@ async function stoppedPrompt(
   // Fall back to the conventional path: the registry records paths only for
   // running pods, so a pod that died early has none.
   const transcript = recordedTranscript(first)
-    ?? await sessionTranscriptPath(r.projectSlug, r.workspaceId, first.tool)
+    ?? await sessionTranscriptPath(r.projectId, r.workspaceId, first.tool)
   const prompt = await getAgentSessionFirstMessage(first.tool, transcript)
   if (prompt === undefined) return undefined
   // The column is project-relative; skip the path if it cannot be expressed.
   const stored = transcript !== undefined ? toProjectRelative(transcript) : null
-  await setAgentSessionCapture(r.projectSlug, first.tool, first.agentSessionId, {
+  await setAgentSessionCapture(r.projectId, first.tool, first.agentSessionId, {
     firstPrompt: prompt,
     ...(stored !== null ? { transcriptPath: stored } : {}),
   })

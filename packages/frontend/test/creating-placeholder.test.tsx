@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { screen, cleanup } from '@testing-library/react'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
+import { SNAPSHOT_KEY } from '#lib/useEvents'
+import { renderWithClient, testQueryClient } from './harness'
 import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 afterEach(() => {
@@ -10,7 +12,7 @@ afterEach(() => {
 
 const failed = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
   workspaceId: 'w1',
-  projectSlug: 'demo',
+  projectId: 'demo',
   tool: 'claude',
   kind: 'create',
   message: '',
@@ -21,16 +23,19 @@ const failed = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWor
 
 describe('CreatingPlaceholder', () => {
   it('shows a failure with a way to clear it', () => {
-    render(<CreatingPlaceholder creating={failed()} />)
+    renderWithClient(<CreatingPlaceholder creating={failed()} />)
     expect(screen.getByText('a tool is missing')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy()
   })
 
-  it('shows progress rather than a dismiss while it is still working', () => {
-    render(<CreatingPlaceholder creating={{
+  it('shows progress, naming the project, rather than a dismiss while it is still working', () => {
+    const client = testQueryClient()
+    client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: 'demo', name: 'widgets' }] })
+    renderWithClient(<CreatingPlaceholder creating={{
       ...failed(), error: undefined, message: 'Pulling image…',
-    }} />)
+    }} />, client)
     expect(screen.getByText('Pulling image…')).toBeTruthy()
+    expect(screen.getByText(/in widgets/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 })

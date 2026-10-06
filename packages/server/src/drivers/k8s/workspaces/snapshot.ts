@@ -27,7 +27,7 @@ export function createRuntimeSnapshot(resync = true): RuntimeSnapshot {
         .map((j) => ({
           workspaceId: j.workspaceId,
           unitName: j.jobName,
-          projectSlug: j.projectSlug,
+          projectId: j.projectId,
           createdAtMs: j.createdAtMs,
         }))
     },

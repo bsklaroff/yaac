@@ -14,7 +14,6 @@ import { notifyWorkspaceListChanged } from '#notify'
 import { stripAnsi } from '@yaac/shared/ansi'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { ImageBuildEntry, ImageLayerName } from '@yaac/shared/types'
-import type { ProjectRef } from '#drivers/contract'
 
 export type ImageBuildReason = 'session' | 'prewarm'
 
@@ -23,7 +22,7 @@ interface BuildRecord {
   tag: string
   layer: ImageLayerName
   /** The projects waiting on it — what a retry rebuilds. */
-  projects: ProjectRef[]
+  projectIds: string[]
   reason: ImageBuildReason
   status: 'running' | 'succeeded' | 'failed'
   stepCurrent?: number
@@ -78,7 +77,7 @@ function prune(): void {
 export function registerImageBuild(input: {
   tag: string
   layer: ImageLayerName
-  project: ProjectRef
+  projectId: string
   reason: ImageBuildReason
 }): string {
   for (const [id, e] of entries) {
@@ -91,7 +90,7 @@ export function registerImageBuild(input: {
     id,
     tag: input.tag,
     layer: input.layer,
-    projects: [input.project],
+    projectIds: [input.projectId],
     reason: input.reason,
     status: 'running',
     log: '',
@@ -104,10 +103,10 @@ export function registerImageBuild(input: {
 
 /** Add a project waiting on an in-flight build. No-op when it is already
  *  attached or the id is gone. */
-export function attachImageBuildProject(id: string, project: ProjectRef): void {
+export function attachImageBuildProject(id: string, projectId: string): void {
   const e = entries.get(id)
-  if (!e || e.projects.some((p) => p.id === project.id)) return
-  e.projects.push(project)
+  if (!e || e.projectIds.includes(projectId)) return
+  e.projectIds.push(projectId)
   notifyWorkspaceListChanged()
 }
 
@@ -177,7 +176,7 @@ function project(e: BuildRecord): ImageBuildEntry {
     id: e.id,
     tag: e.tag,
     layer: e.layer,
-    projectSlugs: e.projects.map((p) => p.slug),
+    projectIds: [...e.projectIds],
     reason: e.reason,
     status: e.status,
     ...(e.stepCurrent !== undefined ? { stepCurrent: e.stepCurrent } : {}),
@@ -206,8 +205,8 @@ export function getImageBuild(id: string): ImageBuildEntry | undefined {
 
 /** The projects waiting on a build, which a retry rebuilds. Empty for
  *  an unknown id. */
-export function imageBuildProjects(id: string): ProjectRef[] {
-  return [...entries.get(id)?.projects ?? []]
+export function imageBuildProjectIds(id: string): string[] {
+  return [...entries.get(id)?.projectIds ?? []]
 }
 
 /** The accumulated log tail for one entry, or undefined if unknown. */

@@ -6,26 +6,26 @@
  * selector (Claude/Codex/OpenCode/Pi) rescans that tool's dirs.
  *
  * Seeds a personal Claude skill and a Codex skill under
- * <data dir>/global/projects/<slug>/ and removes them afterwards, so it
+ * <data dir>/global/projects/<project id>/ and removes them afterwards, so it
  * is safe to re-run. The project (repo) tier is not seeded: it is read from
  * origin/<branch>, so a working-tree file would not be listed.
  *
  * Needs a running `yaac server` with a project (PROJECT, default yaac).
  *
- * Run: YAAC_DATA_DIR=... PROJECT=<slug> node test-playwright-scripts/skills-viewer-test.js
+ * Run: YAAC_DATA_DIR=... PROJECT=<name or id> node test-playwright-scripts/skills-viewer-test.js
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { DATA_DIR, SHOTS, check, finish, origin, requirePlaywright, until } from './lib.js'
+import { DATA_DIR, SHOTS, check, finish, origin, requirePlaywright, resolveProject, until } from './lib.js'
 
 /** Base dir for a project's on-disk config/repo (mirrors @yaac/shared paths). */
-function projectBase(slug) {
-  return path.join(DATA_DIR, 'global', 'projects', slug)
+function projectBase(projectId) {
+  return path.join(DATA_DIR, 'global', 'projects', projectId)
 }
 
 /** Seed a personal Claude skill and a Codex skill; return their dirs. */
-function seedSkills(slug) {
-  const base = projectBase(slug)
+function seedSkills(projectId) {
+  const base = projectBase(projectId)
   const fixtures = [
     [path.join(base, 'claude', 'skills', 'hello-personal'),
       '---\nname: hello-personal\ndescription: A live-test personal skill\nallowed-tools: [Read, Grep]\n---\n# Hello\nThis is the personal skill body.\n'],
@@ -40,7 +40,7 @@ function seedSkills(slug) {
 }
 
 const { chromium } = requirePlaywright()
-const project = process.env.PROJECT || 'yaac'
+const project = (await resolveProject(process.env.PROJECT || 'yaac')).id
 const seededDirs = seedSkills(project)
 
 const browser = await chromium.launch()

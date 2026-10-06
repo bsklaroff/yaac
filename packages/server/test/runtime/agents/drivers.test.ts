@@ -115,7 +115,7 @@ function acpDial(acpd: (s: DrivenWorkspace, argv: string[]) => StreamChild): Non
 }
 
 const session: DrivenWorkspace = {
-  slug: 'demo',
+  projectId: 'demo',
   workspaceId: 'wt-1',
   jobName: 'yaac-demo-wt-1',
   tool: 'claude',
@@ -135,7 +135,7 @@ function collect(conversation: AcpConversation): AcpEventInit[] {
  * learns what the agent is doing.
  */
 async function record(agentSessionId: string, lines: unknown[]): Promise<void> {
-  const dir = acpLogDir(session.slug, session.workspaceId)
+  const dir = acpLogDir(session.projectId, session.workspaceId)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(
     path.join(dir, `${agentSessionId}.jsonl`),

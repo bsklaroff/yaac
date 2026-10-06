@@ -53,11 +53,11 @@ const mockCleanup = vi.mocked(cleanupWorkspaceDetached)
 const appliedEvents: WorkspaceEvent[] = []
 const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
   .filter((e) => e.type === 'workspace-stopped')
-  .map((e) => [e.projectSlug, e.workspaceId, e.cause])
+  .map((e) => [e.projectId, e.workspaceId, e.cause])
 /** What the reaper's DB read returns, plus which creates are in flight
  *  (registered in the real provisioning registry). */
 interface DesiredSetup {
-  live: Array<{ projectSlug: string; workspaceId: string; ran: boolean }>
+  live: Array<{ projectId: string; workspaceId: string; ran: boolean }>
   stopped: string[]
   provisioning: string[]
 }
@@ -66,7 +66,7 @@ const setDesired = (d: Partial<DesiredSetup>): void => {
   lastDesired = { live: [], stopped: [], provisioning: [], ...d }
   clearAllProvisioningForTests()
   for (const workspaceId of lastDesired.provisioning) {
-    registerProvisioning({ workspaceId, projectSlug: 'proj', tool: 'claude', kind: 'create' })
+    registerProvisioning({ workspaceId, projectId: 'proj', tool: 'claude', kind: 'create' })
   }
   vi.mocked(desiredWorkspaces).mockResolvedValue({
     live: lastDesired.live, stopped: lastDesired.stopped,
@@ -80,8 +80,7 @@ function pod(workspaceId: string, running = true): RuntimeHandle {
     jobName: `yaac-proj-${workspaceId}`,
     podName: `yaac-proj-${workspaceId}-x1`,
     workspaceId,
-    projectSlug: 'proj',
-    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
+    projectId: 'proj',
     tool: 'claude',
     phase: running ? 'Running' : 'Failed',
     running,
@@ -93,7 +92,7 @@ function pod(workspaceId: string, running = true): RuntimeHandle {
 
 /** A runtime unit with no workspace behind it. */
 function stray(workspaceId: string, createdAtMs = 1): StrayUnit {
-  return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectSlug: 'proj', createdAtMs }
+  return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectId: 'proj', createdAtMs }
 }
 
 function loggedLines(): string {
@@ -379,7 +378,7 @@ describe('reconcileStaleWorkspaces', () => {
 
   describe('rows whose pod is missing', () => {
     const row = (workspaceId: string, ran = false) => ({
-      projectSlug: 'proj',
+      projectId: 'proj',
       workspaceId,
       ran,
     })

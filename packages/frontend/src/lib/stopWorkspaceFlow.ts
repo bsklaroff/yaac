@@ -35,7 +35,7 @@ export function stopWorkspaceOptimistic(workspace: WorkspaceListEntry, rowIds: s
   if (workspace.prompt) {
     state.addOptimisticStopped({
       workspaceId: id,
-      projectSlug: workspace.projectSlug,
+      projectId: workspace.projectId,
       tool: workspace.tool,
       createdAt: workspace.createdAt,
       stoppedAt: formatUtcTimestamp(Date.now()),

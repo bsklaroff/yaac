@@ -49,7 +49,7 @@ if (!wt) {
   console.error('usage: node test-playwright-scripts/file-editor.js <live-workspace-id>')
   process.exit(1)
 }
-const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectSlug, 'workspaces', wt.workspaceId)
+const checkout = path.join(DATA_DIR, 'global', 'projects', wt.projectId, 'workspaces', wt.workspaceId)
 const onDisk = (rel) => fs.readFileSync(path.join(checkout, rel), 'utf8')
 fs.writeFileSync(path.join(checkout, 'pw-a.ts'), 'export const a = 1\n')
 fs.writeFileSync(path.join(checkout, 'pw-b.ts'), 'export const b = 2\n')
@@ -62,7 +62,7 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1600, height: 900 } })
 const puts = []
 page.on('request', (req) => { if (req.method() === 'PUT' && req.url().includes('/file')) puts.push(req.postData()) })
-const query = new URLSearchParams({ project: wt.projectSlug, workspace: wt.workspaceId })
+const query = new URLSearchParams({ project: wt.projectId, workspace: wt.workspaceId })
 await page.goto(`${origin}/?${query}`)
 await page.waitForSelector('[aria-label="Browse files"]', { timeout: 20000 })
 await page.locator('.xterm').first().click()

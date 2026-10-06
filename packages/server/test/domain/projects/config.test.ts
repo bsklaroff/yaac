@@ -7,12 +7,12 @@ import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir, projectConfigDir } from '@yaac/shared/project-paths'
 import type { YaacConfig } from '@yaac/shared/types'
 
-const slug = 'test-project'
+const projectId = 'test-project'
 let dataDir: string
 
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-config-test-'))
-  await fs.mkdir(path.join(dataDir, 'global', 'projects', slug, 'repo'), { recursive: true })
+  await fs.mkdir(path.join(dataDir, 'global', 'projects', projectId, 'repo'), { recursive: true })
   setDataDir(dataDir)
 })
 
@@ -23,7 +23,7 @@ afterEach(async () => {
 /** Store a project's yaac-config.json verbatim. Takes text so malformed
  *  files are testable. */
 async function storeConfig(raw: string): Promise<void> {
-  const dir = projectConfigDir(slug)
+  const dir = projectConfigDir(projectId)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(path.join(dir, 'yaac-config.json'), raw)
 }
@@ -31,30 +31,30 @@ async function storeConfig(raw: string): Promise<void> {
 /** Store `config` as JSON and resolve it back, as a caller would. Returns a
  *  promise chain so rejection cases can use `.rejects`. */
 function roundTrip(config: unknown): Promise<YaacConfig | null> {
-  return storeConfig(JSON.stringify(config)).then(() => resolveProjectConfig(slug))
+  return storeConfig(JSON.stringify(config)).then(() => resolveProjectConfig(projectId))
 }
 
 describe('resolveProjectConfig', () => {
   it('returns null when the project has no stored config', async () => {
-    expect(await resolveProjectConfig(slug)).toBeNull()
+    expect(await resolveProjectConfig(projectId)).toBeNull()
   })
 
   it('ignores a yaac-config.json checked into the cloned repo', async () => {
     // Only the per-project config dir is a config source.
     await fs.writeFile(
-      path.join(dataDir, 'global', 'projects', slug, 'repo', 'yaac-config.json'),
+      path.join(dataDir, 'global', 'projects', projectId, 'repo', 'yaac-config.json'),
       JSON.stringify({ initCommands: ['pnpm install'] }),
     )
-    expect(await resolveProjectConfig(slug)).toBeNull()
+    expect(await resolveProjectConfig(projectId)).toBeNull()
   })
 
   it('rejects a file that is not a JSON object', async () => {
     await storeConfig('[]')
-    await expect(resolveProjectConfig(slug)).rejects.toThrow('must be a JSON object')
+    await expect(resolveProjectConfig(projectId)).rejects.toThrow('must be a JSON object')
     await storeConfig('"a string"')
-    await expect(resolveProjectConfig(slug)).rejects.toThrow('must be a JSON object')
+    await expect(resolveProjectConfig(projectId)).rejects.toThrow('must be a JSON object')
     await storeConfig('{ not json')
-    await expect(resolveProjectConfig(slug)).rejects.toThrow()
+    await expect(resolveProjectConfig(projectId)).rejects.toThrow()
   })
 
   it('warns about unknown fields but keeps the known ones', async () => {
@@ -299,7 +299,7 @@ describe('resolveEphemeralModulesPaths', () => {
 })
 
 describe('retryImageBuild', () => {
-  type RetryVerb = (id: string, cfg: (slug: string) => Promise<YaacConfig | undefined>) => boolean
+  type RetryVerb = (id: string, cfg: (projectId: string) => Promise<YaacConfig | undefined>) => boolean
 
   // The runtime cannot read config itself; a rebuild without it would drop
   // a nested project's nestable layer. A missing config (null from the
@@ -312,7 +312,7 @@ describe('retryImageBuild', () => {
     expect(retryImageBuild('b1')).toBe(true)
 
     const reader = mockRetry.mock.calls[0][1]
-    await expect(reader(slug)).resolves.toEqual({ nestedContainers: true })
+    await expect(reader(projectId)).resolves.toEqual({ nestedContainers: true })
     await expect(reader('unconfigured')).resolves.toBeUndefined()
   })
 

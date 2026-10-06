@@ -6,7 +6,7 @@ import { getWorkspaceRow } from '#db'
  * cannot change it; the checkout's upstream moves to the pushed branch after
  * `git push -u`, which would show no changes.
  */
-export async function workspaceForkBranch(projectSlug: string, workspaceId: string): Promise<string | null> {
-  const row = await getWorkspaceRow(projectSlug, workspaceId).catch(() => undefined)
+export async function workspaceForkBranch(projectId: string, workspaceId: string): Promise<string | null> {
+  const row = await getWorkspaceRow(projectId, workspaceId).catch(() => undefined)
   return row?.baseBranch ?? null
 }

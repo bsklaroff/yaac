@@ -48,10 +48,10 @@ import {
 } from '#drivers/k8s/workspaces/teardown'
 import type { TeardownTarget } from '#drivers/contract'
 
+const PROJECT = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const TARGET: TeardownTarget = {
-  projectSlug: 'proj', workspaceId: 's1', unitName: 'yaac-proj-s1',
+  projectId: PROJECT, workspaceId: 's1', unitName: 'yaac-proj-s1',
 }
-const PROJECT = { slug: 'proj', id: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c' }
 
 /** Put the workspace's pod in the cluster, labelled with `labels`. */
 function seedPod(labels: Record<string, string>): void {
@@ -64,8 +64,7 @@ function seedPod(labels: Record<string, string>): void {
       labels: {
         [LABEL_DATA_DIR_HASH]: dataDirHash(),
         'batch.kubernetes.io/job-name': 'yaac-proj-s1',
-          'yaac.workspace-id': 's1',
-          'yaac.project': 'proj',
+        'yaac.workspace-id': 's1',
         'yaac.tool': 'claude',
         ...labels,
       },
@@ -91,7 +90,7 @@ beforeEach(() => {
   order.length = 0
   kubectlArgs.length = 0
   kubectlFailure.error = null
-  seedPod({ 'yaac.project-id': PROJECT.id })
+  seedPod({ 'yaac.project-id': PROJECT })
   seedRegistration()
   fakeCluster.intercept((c) => { if (c.verb === 'delete') order.push(`delete ${c.kind}`) })
   mockStopForwarders.mockReset().mockImplementation(() => { order.push('stop forwarders') })
@@ -121,10 +120,10 @@ describe('deregisterWorkspace', () => {
 })
 
 describe('salvageWorkspaceImages', () => {
-  it('salvages by the unit the workspace runs in, into the registry its pod\'s project id names', async () => {
+  it('salvages by the unit the workspace runs in, into its project\'s registry', async () => {
     await salvageWorkspaceImages(TARGET)
     expect(mockSalvage).toHaveBeenCalledWith({
-      jobName: 'yaac-proj-s1', project: PROJECT, workspaceId: 's1',
+      jobName: 'yaac-proj-s1', projectId: PROJECT, workspaceId: 's1',
     })
   })
 
@@ -156,7 +155,7 @@ describe('destroyWorkspace', () => {
 
     expect(jobDelete()).toEqual(expect.arrayContaining([
       'delete', 'job', 'yaac-proj-s1',
-      '--ignore-not-found', '--cascade=foreground', '--wait=true', '--timeout=30s',
+      '--ignore-not-found', '--cascade=foreground', '--wait=true', '--timeout=90s',
     ]))
   })
 
@@ -221,20 +220,19 @@ describe('detachedTeardownCommand', () => {
 describe('destroyProjectSubstrate', () => {
   it('removes the project registry and its egress secrets', async () => {
     await destroyProjectSubstrate(PROJECT)
-    // The registry is keyed by id; egress secrets by slug.
-    expect(mockRemoveRegistry).toHaveBeenCalledWith(PROJECT.id)
-    expect(mockRemoveSecrets).toHaveBeenCalledWith('proj')
+    expect(mockRemoveRegistry).toHaveBeenCalledWith(PROJECT)
+    expect(mockRemoveSecrets).toHaveBeenCalledWith(PROJECT)
   })
 
   // One failing piece must not block the other.
   it('still removes each when the other fails', async () => {
     mockRemoveRegistry.mockRejectedValue(new Error('cluster offline'))
     await expect(destroyProjectSubstrate(PROJECT)).resolves.toBeUndefined()
-    expect(mockRemoveSecrets).toHaveBeenCalledWith('proj')
+    expect(mockRemoveSecrets).toHaveBeenCalledWith(PROJECT)
 
     mockRemoveRegistry.mockReset()
     mockRemoveSecrets.mockRejectedValue(new Error('cluster offline'))
     await expect(destroyProjectSubstrate(PROJECT)).resolves.toBeUndefined()
-    expect(mockRemoveRegistry).toHaveBeenCalledWith(PROJECT.id)
+    expect(mockRemoveRegistry).toHaveBeenCalledWith(PROJECT)
   })
 })

@@ -2,6 +2,10 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
+const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
+
 // The DB and group resolution are real. Only process boundaries are mocked:
 // pod listing, the create a spawn detaches into, and the teardown a stop
 // detaches into.
@@ -52,7 +56,7 @@ import path from 'node:path'
 
 const CALLER: MamaCaller = {
   workspaceId: 'caller-workspace',
-  projectSlug: 'proj',
+  projectId: PROJ,
   tool: 'codex',
 }
 
@@ -62,8 +66,8 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   installRealWorkspaceDriver()
   // The caller's project always exists, since the caller runs in it.
-  await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
-  await recordProject({ slug: 'other', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' })
   clearAllProvisioningForTests()
   _clearListActiveInflightForTests()
   vi.mocked(listWorkspacePods).mockResolvedValue([])
@@ -134,8 +138,8 @@ describe('runMamaCommand', () => {
     expect(proto.ok).toBe(false)
 
     // Options a command does take still pass.
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'caller-workspace' })
-    expect((await run('create', 'p', {
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+    expect((await run('create', P, {
       tool: 'claude', model: 'opus', 'permission-mode': 'plan', 'ui-mode': 'acp', branch: 'b', group: 'g', title: 't',
     })).ok).toBe(true)
   })
@@ -143,14 +147,14 @@ describe('runMamaCommand', () => {
   it('answers rather than throws when a command fails', async () => {
     // A transport holds the request open, so every path must answer.
     const outcome = await run('group-move', 'anywhere', { workspace: 'nope' })
-    expect(outcome).toEqual({ ok: false, error: "no workspace 'nope' in proj" })
+    expect(outcome).toEqual({ ok: false, error: "no workspace 'nope' in this project" })
   })
 
   describe('list', () => {
     it('reports the project\'s workspaces and groups, marking the caller', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'caller-workspace' })
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'other-workspace' })
-      const group = await createWorkspaceGroup('proj', 'review', 'other-workspace')
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'other-workspace' })
+      const group = await createWorkspaceGroup(PROJ, 'review', 'other-workspace')
       vi.mocked(listWorkspacePods).mockResolvedValue([
         podFor('caller-workspace'), podFor('other-workspace'),
       ])
@@ -167,19 +171,19 @@ describe('runMamaCommand', () => {
 
     it('says so plainly when there is nothing to report', async () => {
       const text = await output('list')
-      expect(text).toContain('No running workspaces in proj')
+      expect(text).toContain('No running workspaces in this project')
       expect(text).toContain('No groups yet')
     })
 
     it('narrows to the named running and queued workspaces, with full prompts', async () => {
       const long = `fix the flaky test\n\nthen ${'and more '.repeat(20)}end`
       await recordWorkspaceCreated({
-        projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
       })
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'unnamed-workspace' })
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-two' })
-      await recordAgentSessions('proj', 'sibling-workspace', [
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'unnamed-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-two' })
+      await recordAgentSessions(PROJ, 'sibling-workspace', [
         { tool: 'claude', agentSessionId: 'conv', firstPrompt: long },
       ])
       vi.mocked(listWorkspacePods).mockResolvedValue([
@@ -209,18 +213,18 @@ describe('runMamaCommand', () => {
 
       // Every id must name exactly one workspace.
       expect(await run('list', 'nope')).toEqual({
-        ok: false, error: "no running or queued workspace 'nope' in proj",
+        ok: false, error: "no running or queued workspace 'nope' in this project",
       })
       expect(await run('list', 'sibling')).toEqual({
-        ok: false, error: "'sibling' matches more than one running or queued workspace in proj — use a longer prefix",
+        ok: false, error: "'sibling' matches more than one running or queued workspace in this project — use a longer prefix",
       })
       expect(await run('list', '')).toMatchObject({ ok: true })
     })
 
     it('never shows another project\'s workspaces', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'elsewhere' })
-      await createWorkspaceGroup('other', 'theirs', 'elsewhere')
-      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('elsewhere', 'other')])
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'elsewhere' })
+      await createWorkspaceGroup(OTHER, 'theirs', 'elsewhere')
+      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('elsewhere', OTHER)])
 
       const text = await output('list')
 
@@ -232,7 +236,7 @@ describe('runMamaCommand', () => {
   describe('create', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({
-        projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'auto', mode: 'tui',
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'auto', mode: 'tui',
       })
     })
 
@@ -244,8 +248,8 @@ describe('runMamaCommand', () => {
       await created()
 
       expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1)
-      const [slug, opts] = vi.mocked(createWorkspace).mock.calls[0]
-      expect(slug).toBe('proj')
+      const [projectId, opts] = vi.mocked(createWorkspace).mock.calls[0]
+      expect(projectId).toBe(PROJ)
       // The caller's tool, permission mode and UI mode, unless others are
       // requested.
       expect(opts).toMatchObject({ initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto', mode: 'tui' })
@@ -282,7 +286,7 @@ describe('runMamaCommand', () => {
       expect(outcome.ok).toBe(true)
       await created()
 
-      const rows = await listWorkspaceGroupRows('proj')
+      const rows = await listWorkspaceGroupRows(PROJ)
       expect(rows.map((r) => r.name)).toEqual(['release train'])
       // The group is resolved to an id before the create, so the workspace is
       // filed as soon as its row exists.
@@ -291,11 +295,11 @@ describe('runMamaCommand', () => {
     })
 
     it('reuses an existing group rather than making a second of the same name', async () => {
-      const existing = await createWorkspaceGroup('proj', 'review', null)
+      const existing = await createWorkspaceGroup(PROJ, 'review', null)
       await run('create', 'do it', { group: 'review' })
       await created()
 
-      expect(await listWorkspaceGroupRows('proj')).toHaveLength(1)
+      expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(1)
       expect(vi.mocked(createWorkspace).mock.calls[0][1].groupId).toBe(existing.groupId)
     })
 
@@ -329,12 +333,12 @@ describe('runMamaCommand', () => {
     // A refused request (mode limit, unknown parent, a user's entry above the
     // caller) must not change the user's sidebar.
     await recordWorkspaceCreated({
-      projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+      projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
     })
     await recordWorkspaceCreated({
-      projectSlug: 'proj', workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
+      projectId: PROJ, workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
     })
-    const entry = await queueWorkspace('proj', {
+    const entry = await queueWorkspace(PROJ, {
       parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
     }, 'user')
     const refused: Array<[string, Record<string, string>]> = [
@@ -345,16 +349,16 @@ describe('runMamaCommand', () => {
     for (const [command, args] of refused) {
       expect((await run(command, 'x', args)).ok, command).toBe(false)
     }
-    expect(await listWorkspaceGroupRows('proj')).toEqual([])
+    expect(await listWorkspaceGroupRows(PROJ)).toEqual([])
   })
 
   describe('queue', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({
-        projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
       })
       await recordWorkspaceCreated({
-        projectSlug: 'proj', workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
+        projectId: PROJ, workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
       })
     })
 
@@ -365,7 +369,7 @@ describe('runMamaCommand', () => {
       expect(first).toMatch(/^[0-9a-f-]{36}$/)
       const second = await output('queue', 'step 3', { 'parent-workspace': first.slice(0, 8) })
 
-      const rows = await listQueuedWorkspaceRows('proj')
+      const rows = await listQueuedWorkspaceRows(PROJ)
       expect(rows.find((r) => r.id === first)).toMatchObject({
         parentWorkspaceId: 'caller-workspace', prompt: 'step 2', permissionMode: 'accept-edits', branch: 'main',
       })
@@ -386,8 +390,8 @@ describe('runMamaCommand', () => {
         ...ME, tool: 'claude', model: 'opus', 'permission-mode': 'manual', 'ui-mode': 'acp',
         branch: 'feature/x', group: 'follow-ups', title: 'Step two',
       })
-      const group = (await listWorkspaceGroupRows('proj')).find((g) => g.name === 'follow-ups')
-      expect((await listQueuedWorkspaceRows('proj')).find((r) => r.id === id)).toMatchObject({
+      const group = (await listWorkspaceGroupRows(PROJ)).find((g) => g.name === 'follow-ups')
+      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)).toMatchObject({
         tool: 'claude', model: 'opus', permissionMode: 'manual', mode: 'acp',
         branch: 'feature/x', groupId: group?.groupId, title: 'Step two',
       })
@@ -396,7 +400,7 @@ describe('runMamaCommand', () => {
     it('never grants more than the caller has, and refuses rather than queueing', async () => {
       // Under a more permissive sibling, the mode is capped at the caller's.
       await output('queue', 'x', { 'parent-workspace': 'loose-sibling', tool: 'claude' })
-      expect((await listQueuedWorkspaceRows('proj'))[0].permissionMode).toBe('accept-edits')
+      expect((await listQueuedWorkspaceRows(PROJ))[0].permissionMode).toBe('accept-edits')
 
       const refusals: Array<Record<string, string>> = [
         // More permissive than the caller.
@@ -416,24 +420,24 @@ describe('runMamaCommand', () => {
         expect((await run('queue', 'x', args)).ok, JSON.stringify(args)).toBe(false)
       }
       expect(await run('queue', '  ', ME)).toMatchObject({ ok: false })
-      expect(await listQueuedWorkspaceRows('proj')).toHaveLength(1)
+      expect(await listQueuedWorkspaceRows(PROJ)).toHaveLength(1)
     })
   })
 
   describe('edit-queued', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({
-        projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
       })
       await recordWorkspaceCreated({
-        projectSlug: 'proj', workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
+        projectId: PROJ, workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
       })
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace', baseBranch: 'main' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
     })
 
     const ME = { 'parent-workspace': 'caller-workspace' }
-    const rowOf = async (id: string, slug = 'proj') =>
-      (await listQueuedWorkspaceRows(slug)).find((r) => r.id === id)
+    const rowOf = async (id: string, projectId = PROJ) =>
+      (await listQueuedWorkspaceRows(projectId)).find((r) => r.id === id)
 
     it('rewrites a queued workspace by short id, keeping what the edit does not name', async () => {
       const id = await output('queue', 'step 2', { ...ME, tool: 'claude', model: 'opus' })
@@ -451,7 +455,7 @@ describe('runMamaCommand', () => {
         queued: id, 'parent-workspace': 'loose-sibling', model: 'sonnet', 'permission-mode': 'plan',
         'ui-mode': 'acp', branch: 'feature/y', group: 'later', title: 'Lint too',
       })
-      const group = (await listWorkspaceGroupRows('proj')).find((g) => g.name === 'later')
+      const group = (await listWorkspaceGroupRows(PROJ)).find((g) => g.name === 'later')
       expect(await rowOf(id)).toMatchObject({
         prompt: 'step 2, but also run the linter', parentWorkspaceId: 'loose-sibling', model: 'sonnet',
         permissionMode: 'plan', mode: 'acp', branch: 'feature/y', groupId: group?.groupId, title: 'Lint too',
@@ -461,7 +465,7 @@ describe('runMamaCommand', () => {
     it('holds an entry the user queued above the caller to its ceiling', async () => {
       // The user queued this at `bypass`; an agent in `accept-edits` may not
       // rewrite its prompt, and the mode is not silently lowered.
-      const entry = await queueWorkspace('proj', {
+      const entry = await queueWorkspace(PROJ, {
         parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
       }, 'user')
       const refused = await run('edit-queued', 'agent wrote this', { queued: entry.id })
@@ -475,7 +479,7 @@ describe('runMamaCommand', () => {
     })
 
     it('refuses what it cannot find, a no-op, a cycle, and another project\u2019s entry', async () => {
-      const foreign = await queueWorkspace('other', {
+      const foreign = await queueWorkspace(OTHER, {
         parent: 'foreign-workspace', prompt: 'theirs', tool: 'claude',
       }, 'user')
       const id = await output('queue', 'mine', { ...ME, tool: 'claude' })
@@ -492,19 +496,19 @@ describe('runMamaCommand', () => {
       for (const [body, args] of refusals) {
         expect((await run('edit-queued', body, args)).ok, JSON.stringify([body, args])).toBe(false)
       }
-      expect(await rowOf(foreign.id, 'other')).toMatchObject({ prompt: 'theirs' })
+      expect(await rowOf(foreign.id, OTHER)).toMatchObject({ prompt: 'theirs' })
       expect(await rowOf(id)).toMatchObject({ prompt: 'mine', parentWorkspaceId: 'caller-workspace' })
     })
   })
 
   describe('rename', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'caller-workspace' })
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
     })
 
-    const titleOf = async (id: string, slug = 'proj'): Promise<string | undefined> =>
-      (await getProjectWorkspaceRows(slug)).get(id)?.title
+    const titleOf = async (id: string, projectId = PROJ): Promise<string | undefined> =>
+      (await getProjectWorkspaceRows(projectId)).get(id)?.title
 
     it('renames the CALLER when no workspace is named', async () => {
       // With no workspace named, an agent renames itself.
@@ -550,17 +554,17 @@ describe('runMamaCommand', () => {
     })
 
     it('cannot rename another project\u2019s workspace', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
       const outcome = await run('rename', 'mine now', { workspace: 'foreign-workspace' })
       expect(outcome.ok).toBe(false)
-      expect(await titleOf('foreign-workspace', 'other')).toBeUndefined()
+      expect(await titleOf('foreign-workspace', OTHER)).toBeUndefined()
     })
   })
 
   describe('stop', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'caller-workspace' })
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
       vi.mocked(listWorkspacePods).mockResolvedValue([
         podFor('caller-workspace'), podFor('sibling-workspace'),
       ])
@@ -573,8 +577,8 @@ describe('runMamaCommand', () => {
       expect(vi.mocked(cleanupWorkspaceDetached)).toHaveBeenCalledTimes(1)
       expect(vi.mocked(cleanupWorkspaceDetached).mock.calls[0][0]).toMatchObject({
         workspaceId: 'sibling-workspace',
-        projectSlug: 'proj',
-        jobName: 'yaac-proj-sibling-workspace',
+        projectId: PROJ,
+        jobName: 'yaac-sibling-workspace',
       })
       expect(text).toContain('sibling-')
       // The reply must say a stop is reversible, or an agent may treat it as
@@ -603,8 +607,8 @@ describe('runMamaCommand', () => {
     })
 
     it('cannot stop another project\'s workspace', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace' })
-      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('foreign-workspace', 'other')])
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
+      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('foreign-workspace', OTHER)])
 
       const outcome = await run('stop', '', { workspace: 'foreign-workspace' })
 
@@ -613,7 +617,7 @@ describe('runMamaCommand', () => {
     })
 
     it('refuses an ambiguous prefix rather than stopping the wrong workspace', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-second' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-second' })
 
       const outcome = await run('stop', '', { workspace: 'sibling' })
 
@@ -627,14 +631,14 @@ describe('runMamaCommand', () => {
 
   describe('send', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace', permissionMode: 'manual' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', permissionMode: 'manual' })
       vi.mocked(listWorkspacePods).mockResolvedValue([podFor('caller-workspace'), podFor('sibling-workspace')])
-      await recordAgentSessions('proj', 'sibling-workspace', [
+      await recordAgentSessions(PROJ, 'sibling-workspace', [
         { tool: 'claude', agentSessionId: 'first-conv' },
         { tool: 'claude', agentSessionId: 'second-conv' },
       ])
-      await setActiveAgentSessions('proj', 'sibling-workspace', [
+      await setActiveAgentSessions(PROJ, 'sibling-workspace', [
         { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
         { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
       ])
@@ -664,7 +668,7 @@ describe('runMamaCommand', () => {
 
       // Headed with the sender, so the agent knows who is asking.
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nrebase onto main\nthen push')).toEqual({
-        jobName: 'yaac-proj-sibling-workspace', pane: '%3', carries: true,
+        jobName: 'yaac-sibling-workspace', pane: '%3', carries: true,
       })
       expect(text).toContain('Sent to sibling-')
       expect(text).toContain('first-co')
@@ -678,9 +682,9 @@ describe('runMamaCommand', () => {
     })
 
     it('strips control characters before any tool sees them, pi\'s editor-free path included', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'pi-workspace', permissionMode: 'manual' })
-      await recordAgentSessions('proj', 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv' }])
-      await setActiveAgentSessions('proj', 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv', paneId: '%5' }])
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'pi-workspace', permissionMode: 'manual' })
+      await recordAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv' }])
+      await setActiveAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv', paneId: '%5' }])
       vi.mocked(listWorkspacePods).mockResolvedValue([podFor('caller-workspace'), podFor('pi-workspace')])
 
       await output('send', 'look\x1b]52;c;cGF5bG9hZA==\x07 here\x1b[6n', { workspace: 'pi-workspace' })
@@ -710,7 +714,7 @@ describe('runMamaCommand', () => {
       vi.mocked(podExec).mockReturnValueOnce(new Promise((resolve) => {
         release = () => resolve({ stdout: '', stderr: '' })
       }))
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'third-workspace', permissionMode: 'manual' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'third-workspace', permissionMode: 'manual' })
       vi.mocked(listWorkspacePods).mockResolvedValue([
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('third-workspace'),
       ])
@@ -731,14 +735,14 @@ describe('runMamaCommand', () => {
     })
 
     it('refuses a target it must not or cannot message, sending nothing', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'bypass-workspace', permissionMode: 'bypass' })
-      await recordAgentSessions('proj', 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv' }])
-      await setActiveAgentSessions('proj', 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv', paneId: '%1' }])
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'stopped-workspace', permissionMode: 'plan' })
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'bypass-workspace', permissionMode: 'bypass' })
+      await recordAgentSessions(PROJ, 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv' }])
+      await setActiveAgentSessions(PROJ, 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv', paneId: '%1' }])
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'stopped-workspace', permissionMode: 'plan' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', permissionMode: 'plan' })
       vi.mocked(listWorkspacePods).mockResolvedValue([
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('bypass-workspace'),
-        podFor('foreign-workspace', 'other'),
+        podFor('foreign-workspace', OTHER),
       ])
       const refusal = async (body: string, args: Record<string, string>): Promise<string> => {
         const outcome = await run('send', body, args)
@@ -749,7 +753,7 @@ describe('runMamaCommand', () => {
       // A message is as good as a prompt, so the caller's posture caps it:
       // the row's, and the conversation's own when it reported one.
       expect(await refusal('go', { workspace: 'bypass' })).toContain('more than this workspace\'s own')
-      setLiveAgents('proj', 'sibling-workspace', [
+      setLiveAgents(PROJ, 'sibling-workspace', [
         { handle: '%3', tool: 'claude', agentSessionId: 'first-conv', reportedMode: 'bypassPermissions' },
         { handle: '%7', tool: 'claude', agentSessionId: 'second-conv', reportedMode: 'mystery' },
       ])
@@ -762,7 +766,7 @@ describe('runMamaCommand', () => {
       expect(await refusal('go', { workspace: 'foreign-workspace' })).toContain('no workspace')
       expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toContain('no running conversation')
       expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')
-      await setActiveAgentSessions('proj', 'sibling-workspace', [])
+      await setActiveAgentSessions(PROJ, 'sibling-workspace', [])
       expect(await refusal('go', { workspace: 'sibling' })).toContain('has no running conversation yet')
       expect(vi.mocked(podExec)).not.toHaveBeenCalled()
     })
@@ -773,7 +777,7 @@ describe('runMamaCommand', () => {
       const text = await output('group-create', 'release train')
       expect(text).toContain('release train')
 
-      const rows = await listWorkspaceGroupRows('proj')
+      const rows = await listWorkspaceGroupRows(PROJ)
       expect(rows).toHaveLength(1)
       // Pinned, or an empty group would not be listed anywhere.
       expect(rows[0]).toMatchObject({ name: 'release train', pinned: true })
@@ -782,7 +786,7 @@ describe('runMamaCommand', () => {
     it('is idempotent, so an agent can name a group without checking first', async () => {
       await output('group-create', 'review')
       await output('group-create', 'review')
-      expect(await listWorkspaceGroupRows('proj')).toHaveLength(1)
+      expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(1)
     })
 
     it('reports the name as stored, not as typed', async () => {
@@ -792,7 +796,7 @@ describe('runMamaCommand', () => {
       expect(text).toContain('"release train"')
 
       await output('group-create', ' release train ')
-      expect(await listWorkspaceGroupRows('proj')).toHaveLength(1)
+      expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(1)
     })
 
     it('refuses a name longer than the store keeps', async () => {
@@ -801,36 +805,36 @@ describe('runMamaCommand', () => {
       const outcome = await run('group-create', 'x'.repeat(MAX_TITLE_LENGTH + 1))
       expect(outcome.ok).toBe(false)
       if (!outcome.ok) expect(outcome.error).toContain(`exceeds ${MAX_TITLE_LENGTH}`)
-      expect(await listWorkspaceGroupRows('proj')).toEqual([])
+      expect(await listWorkspaceGroupRows(PROJ)).toEqual([])
     })
 
     it('refuses a blank name', async () => {
       const outcome = await run('group-create', '   ')
       expect(outcome).toEqual({ ok: false, error: 'group name must not be empty' })
-      expect(await listWorkspaceGroupRows('proj')).toEqual([])
+      expect(await listWorkspaceGroupRows(PROJ)).toEqual([])
     })
   })
 
   describe('group-move', () => {
     beforeEach(async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'aaaabbbb-1111-2222' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'aaaabbbb-1111-2222' })
     })
 
-    const groupOf = async (id: string, slug = 'proj'): Promise<string | undefined> =>
-      (await getProjectWorkspaceRows(slug)).get(id)?.groupId
+    const groupOf = async (id: string, projectId = PROJ): Promise<string | undefined> =>
+      (await getProjectWorkspaceRows(projectId)).get(id)?.groupId
 
     it('files a workspace by short id prefix, creating the group', async () => {
       const text = await output('group-move', 'release', { workspace: 'aaaabbbb' })
       expect(text).toContain('into "release"')
 
-      const rows = await listWorkspaceGroupRows('proj')
+      const rows = await listWorkspaceGroupRows(PROJ)
       expect(await groupOf('aaaabbbb-1111-2222')).toBe(rows[0].groupId)
     })
 
     it('reports the group’s name when it was addressed by id', async () => {
       // The ambiguity error tells agents to pass an id, so the reply must
       // name the group, not echo a uuid.
-      const group = await createWorkspaceGroup('proj', 'release train', null)
+      const group = await createWorkspaceGroup(PROJ, 'release train', null)
 
       const text = await output('group-move', group.groupId, { workspace: 'aaaabbbb' })
 
@@ -845,20 +849,20 @@ describe('runMamaCommand', () => {
       expect(text).toContain('out of its group')
       expect(await groupOf('aaaabbbb-1111-2222')).toBeUndefined()
       // The group itself survives its last member leaving.
-      expect(await listWorkspaceGroupRows('proj')).toHaveLength(1)
+      expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(1)
     })
 
     it('cannot move another project\'s workspace', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
 
       const outcome = await run('group-move', 'release', { workspace: 'foreign-workspace' })
 
       expect(outcome.ok).toBe(false)
-      expect(await groupOf('foreign-workspace', 'other')).toBeUndefined()
+      expect(await groupOf('foreign-workspace', OTHER)).toBeUndefined()
     })
 
     it('refuses an ambiguous prefix rather than moving the wrong workspace', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'aaaabbbb-3333-4444' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'aaaabbbb-3333-4444' })
       const outcome = await run('group-move', 'release', { workspace: 'aaaabbbb' })
       expect(outcome.ok).toBe(false)
       // The message asks for a longer prefix rather than sending the caller
@@ -877,9 +881,9 @@ describe('runMamaCommand', () => {
 
     it('bundles a stopped sibling\'s branches by short id, and nothing of another project\'s', async () => {
       // A stopped workspace: a row and a checkout, no unit.
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace' })
-      const checkout = workspaceDir('proj', 'sibling-workspace')
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
+      const checkout = workspaceDir(PROJ, 'sibling-workspace')
       await fs.mkdir(checkout, { recursive: true })
       await git(checkout, ['init', '-q', '-b', 'agent/sibling'])
       await fs.writeFile(path.join(checkout, 'notes.txt'), 'work\n')
@@ -894,7 +898,7 @@ describe('runMamaCommand', () => {
       expect(Buffer.from(await new Response(outcome.body).arrayBuffer()).toString('latin1')).toContain(`${tip} refs/heads/agent/sibling\n${tip} HEAD\n`)
 
       expect(await run('fetch', '', { workspace: 'foreign-workspace' }))
-        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in proj' })
+        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in this project' })
       expect(await run('fetch')).toEqual({ ok: false, error: 'fetch needs a workspace id' })
     })
   })
@@ -907,19 +911,19 @@ describe('runMamaCommand', () => {
     }
 
     it('lists a stopped sibling\'s conversations, prints one\'s transcripts, and hands out each file', async () => {
-      await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'sibling-workspace' })
-      await recordWorkspaceCreated({ projectSlug: 'other', workspaceId: 'foreign-workspace' })
-      await recordAgentSessions('proj', 'sibling-workspace', [
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
+      await recordAgentSessions(PROJ, 'sibling-workspace', [
         { tool: 'claude', agentSessionId: 'claude-conv', firstPrompt: 'write the report' },
         { tool: 'opencode', agentSessionId: 'opencode-conv' },
       ])
-      const conversations = path.join(agentHistoryDir('proj', 'sibling-workspace', 'claude'), '-workspace')
+      const conversations = path.join(agentHistoryDir(PROJ, 'sibling-workspace', 'claude'), '-workspace')
       await fs.mkdir(path.join(conversations, 'claude-conv', 'subagents'), { recursive: true })
       // The main transcript lacks its final newline, as a live one can.
       await fs.writeFile(path.join(conversations, 'claude-conv.jsonl'), '{"main":1}')
       await fs.writeFile(path.join(conversations, 'claude-conv', 'subagents', 'agent-a.jsonl'), '{"sub":1}\n')
-      await fs.mkdir(opencodeCheckpointDir('proj', 'sibling-workspace'), { recursive: true })
-      await fs.writeFile(path.join(opencodeCheckpointDir('proj', 'sibling-workspace'), 'opencode.db'), 'SQLite')
+      await fs.mkdir(opencodeCheckpointDir(PROJ, 'sibling-workspace'), { recursive: true })
+      await fs.writeFile(path.join(opencodeCheckpointDir(PROJ, 'sibling-workspace'), 'opencode.db'), 'SQLite')
 
       const listing = await output('history', '', { workspace: 'sibling' })
       expect(listing).toContain('Conversations of sibling-')
@@ -962,7 +966,7 @@ describe('runMamaCommand', () => {
       expect(await run('history', '', { workspace: 'sibling', conversation: 'nope' }))
         .toEqual({ ok: false, error: 'no conversation \'nope\' in sibling- (see: yaac-mama history sibling-)' })
       expect(await run('history', '', { workspace: 'foreign-workspace' }))
-        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in proj' })
+        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in this project' })
       expect(await run('history')).toEqual({ ok: false, error: 'history needs a workspace id' })
     })
   })
@@ -982,13 +986,12 @@ describe('runMamaCommand', () => {
   })
 })
 
-function podFor(workspaceId: string, projectSlug = 'proj'): podsModule.PodInfo {
+function podFor(workspaceId: string, projectId = PROJ): podsModule.PodInfo {
   return {
-    jobName: `yaac-${projectSlug}-${workspaceId}`,
-    podName: `yaac-${projectSlug}-${workspaceId}-abcde`,
+    jobName: `yaac-${workspaceId}`,
+    podName: `yaac-${workspaceId}-abcde`,
     workspaceId: workspaceId,
-    projectSlug,
-    projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
+    projectId,
     tool: 'claude',
     phase: 'Running',
     running: true,

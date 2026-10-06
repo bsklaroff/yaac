@@ -23,12 +23,12 @@ import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 const list = vi.fn<WorkspaceDriver['list']>()
 
 function workspace(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
-  return handleFixture({ projectSlug: 'proj', workspaceId: 'w1', jobName: 'yaac-proj-w1', ...overrides })
+  return handleFixture({ projectId: 'proj', workspaceId: 'w1', jobName: 'yaac-proj-w1', ...overrides })
 }
 
 /** Alive to the display path, which reads stream health rather than probing. */
-function streaming(slug: string, id: string): void {
-  setWorkspaceStreamHealth(slug, id, true)
+function streaming(projectId: string, id: string): void {
+  setWorkspaceStreamHealth(projectId, id, true)
 }
 
 beforeEach(() => {
@@ -68,7 +68,7 @@ describe('observeWorkspaces', () => {
     expect(report.workspaces[0]).toMatchObject({
       terminals: [{ target: 'window:@1', name: 'shell' }],
       workspaceId: 'w1',
-      projectSlug: 'proj',
+      projectId: 'proj',
       phase: 'running',
       blockedHosts: ['evil.test'],
       forwardedPorts: [{ containerPort: 3000, hostPort: 19000 }],
@@ -143,7 +143,7 @@ describe('observeWorkspaces', () => {
     expect(report.workspaces).toEqual([])
     expect(report.stale).toEqual([{
       jobName: 'yaac-proj-w1',
-      projectSlug: 'proj',
+      projectId: 'proj',
       workspaceId: 'w1',
       zombie: false,
       deathCause: { reason: 'crashed', detail: 'exit code 1' },

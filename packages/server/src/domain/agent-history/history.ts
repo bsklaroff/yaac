@@ -44,35 +44,35 @@ import { serverLog } from '#log'
  * links are moved in at the next create. The moves are best-effort.
  */
 export async function convergeAgentHistory(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   runtime: { layers: boolean },
 ): Promise<void> {
-  const history = agentHistoryDir(slug, workspaceId)
+  const history = agentHistoryDir(projectId, workspaceId)
   await Promise.all(AGENT_HISTORY_PARTS.map((part) => fs.mkdir(path.join(history, part), { recursive: true })))
   await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD), { recursive: true })
   if (runtime.layers) {
     // The memory mount source and every nested mountpoint.
-    await fs.mkdir(path.join(claudeDir(slug), 'projects', CLAUDE_POD_REPO, 'memory'), { recursive: true })
+    await fs.mkdir(path.join(claudeDir(projectId), 'projects', CLAUDE_POD_REPO, 'memory'), { recursive: true })
     await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD, 'memory'), { recursive: true })
-    await fs.mkdir(path.join(claudeDir(slug), 'file-history'), { recursive: true })
-    await fs.mkdir(path.join(codexDir(slug), 'sessions'), { recursive: true })
+    await fs.mkdir(path.join(claudeDir(projectId), 'file-history'), { recursive: true })
+    await fs.mkdir(path.join(codexDir(projectId), 'sessions'), { recursive: true })
     return
   }
 
-  const rows = await listWorkspaceAgentSessions(slug, workspaceId)
-  const shared = await siblingConversations(slug, workspaceId)
-  const ids = await conversationIds(slug, workspaceId, rows, shared)
+  const rows = await listWorkspaceAgentSessions(projectId, workspaceId)
+  const shared = await siblingConversations(projectId, workspaceId)
+  const ids = await conversationIds(projectId, workspaceId, rows, shared)
   for (const step of [
-    () => moveClaude(slug, history, ids),
-    () => moveCodex(slug, history, ids, shared, rows),
-    () => linkOut(slug, workspaceId, history, shared),
+    () => moveClaude(projectId, history, ids),
+    () => moveCodex(projectId, history, ids, shared, rows),
+    () => linkOut(projectId, workspaceId, history, shared),
   ]) {
     await step().catch((err: unknown) => {
-      serverLog(`[agent-history] ${slug}/${workspaceId}: ${String(err)}`)
+      serverLog(`[agent-history] ${projectId}/${workspaceId}: ${String(err)}`)
     })
   }
-  await repointRows(slug, workspaceId, rows.filter((r) => !shared.has(r.agentSessionId)))
+  await repointRows(projectId, workspaceId, rows.filter((r) => !shared.has(r.agentSessionId)))
 }
 
 /**
@@ -82,8 +82,8 @@ export async function convergeAgentHistory(
  * repaired next time. The shared home is checked `no-links`, since through
  * the links into the history every moved file would look unmoved.
  */
-async function repointRows(slug: string, workspaceId: string, rows: AgentSessionLinkRow[]): Promise<void> {
-  const project = projectDir(slug)
+async function repointRows(projectId: string, workspaceId: string, rows: AgentSessionLinkRow[]): Promise<void> {
+  const project = projectDir(projectId)
   const sessions = []
   for (const r of rows) {
     const stored = r.transcriptPath
@@ -96,7 +96,7 @@ async function repointRows(slug: string, workspaceId: string, rows: AgentSession
     sessions.push({ tool: r.tool, agentSessionId: r.agentSessionId, transcriptPath: to })
   }
   if (sessions.length > 0) {
-    await applyWorkspaceEvent({ type: 'sessions-discovered', projectSlug: slug, workspaceId, sessions })
+    await applyWorkspaceEvent({ type: 'sessions-discovered', projectId, workspaceId, sessions })
   }
 }
 
@@ -115,15 +115,15 @@ function historyDestination(workspaceId: string, stored: string): string | undef
  * which would otherwise dangle. Only for a workspace being removed; a stop
  * keeps everything.
  */
-export async function removeAgentHistory(slug: string, workspaceId: string): Promise<void> {
-  const history = agentHistoryDir(slug, workspaceId)
+export async function removeAgentHistory(projectId: string, workspaceId: string): Promise<void> {
+  const history = agentHistoryDir(projectId, workspaceId)
   const links = [
-    ...(await checkoutForms(slug, workspaceId))
-      .map((form) => path.join(claudeDir(slug), 'projects', claudeProjectDirName(form))),
+    ...(await checkoutForms(projectId, workspaceId))
+      .map((form) => path.join(claudeDir(projectId), 'projects', claudeProjectDirName(form))),
     ...(await fs.readdir(path.join(history, 'claude-file-history')).catch(() => []))
-      .map((sid) => path.join(claudeDir(slug), 'file-history', sid)),
+      .map((sid) => path.join(claudeDir(projectId), 'file-history', sid)),
     ...(await filesUnder(path.join(history, 'codex')))
-      .map((rel) => path.join(codexDir(slug), 'sessions', rel)),
+      .map((rel) => path.join(codexDir(projectId), 'sessions', rel)),
   ]
   // Only remove links that still point into this history.
   for (const link of links) {
@@ -163,9 +163,9 @@ async function moveIn(home: ConfinedRoot, rel: string, dest: string): Promise<vo
  * both, though neither's pod can resume it) rather than going to whichever
  * converges first.
  */
-async function siblingConversations(slug: string, workspaceId: string): Promise<Set<string>> {
-  const siblings = [...(await listProjectWorkspaceIds(slug)).keys()].filter((id) => id !== workspaceId)
-  const links = await getProjectAgentSessions(slug, siblings)
+async function siblingConversations(projectId: string, workspaceId: string): Promise<Set<string>> {
+  const siblings = [...(await listProjectWorkspaceIds(projectId)).keys()].filter((id) => id !== workspaceId)
+  const links = await getProjectAgentSessions(projectId, siblings)
   return new Set([...links.values()].flat().map((r) => r.agentSessionId))
 }
 
@@ -176,17 +176,17 @@ async function siblingConversations(slug: string, workspaceId: string): Promise<
  * shared ones and any id failing the id schema, since each becomes a path.
  */
 async function conversationIds(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   rows: AgentSessionLinkRow[],
   shared: Set<string>,
 ): Promise<Set<string>> {
-  const records = (await fs.readdir(acpLogDir(slug, workspaceId)).catch(() => []))
+  const records = (await fs.readdir(acpLogDir(projectId, workspaceId)).catch(() => []))
     .filter((name) => name.endsWith('.jsonl'))
     .map((name) => name.slice(0, -'.jsonl'.length))
   const ids = [workspaceId, ...rows.map((r) => r.agentSessionId), ...records]
   for (const id of ids.filter((i) => shared.has(i))) {
-    serverLog(`[agent-history] ${slug}/${workspaceId}: ${id} is a sibling's conversation too; left shared`)
+    serverLog(`[agent-history] ${projectId}/${workspaceId}: ${id} is a sibling's conversation too; left shared`)
   }
   return new Set(ids.filter((id) => !shared.has(id) && agentSessionIdSchema.safeParse(id).success))
 }
@@ -196,8 +196,8 @@ async function conversationIds(
  * results, subagents) from any cwd folder into the history's single folder,
  * plus its file-history (used by `/rewind`).
  */
-async function moveClaude(slug: string, history: string, ids: Set<string>): Promise<void> {
-  const home = await openRoot(claudeDir(slug), 'no-links').catch(() => null)
+async function moveClaude(projectId: string, history: string, ids: Set<string>): Promise<void> {
+  const home = await openRoot(claudeDir(projectId), 'no-links').catch(() => null)
   if (home === null) return
   const into = path.join(history, 'claude', CLAUDE_POD_CWD)
   for (const cwd of await home.readdir('projects')) {
@@ -223,13 +223,13 @@ async function moveClaude(slug: string, history: string, ids: Set<string>): Prom
  * joins.
  */
 async function moveCodex(
-  slug: string,
+  projectId: string,
   history: string,
   ids: Set<string>,
   shared: Set<string>,
   rows: AgentSessionLinkRow[],
 ): Promise<void> {
-  const homeDir = codexDir(slug)
+  const homeDir = codexDir(projectId)
   const home = await openRoot(homeDir, 'no-links').catch(() => null)
   if (home === null) return
   const rollouts: Array<{ rel: string; thread: string | undefined; parent?: Promise<string | undefined> }> = []
@@ -246,7 +246,7 @@ async function moveCodex(
   const threads = new Set(ids)
   const parentOf = (r: typeof rollouts[number]): Promise<string | undefined> => {
     r.parent ??= r.rel.endsWith('.jsonl')
-      ? codexRolloutParent({ slug, dir: homeDir, rel: r.rel })
+      ? codexRolloutParent({ projectId, dir: homeDir, rel: r.rel })
       : Promise.resolve(undefined)
     return r.parent
   }
@@ -289,14 +289,14 @@ async function moveCodex(
  * Every spelling of each path gets a link: the data dir as named and as
  * resolved (macOS's `/var` is `/private/var`).
  */
-async function linkOut(slug: string, workspaceId: string, history: string, shared: Set<string>): Promise<void> {
-  const projects = path.join(claudeDir(slug), 'projects')
+async function linkOut(projectId: string, workspaceId: string, history: string, shared: Set<string>): Promise<void> {
+  const projects = path.join(claudeDir(projectId), 'projects')
   const conversations = path.join(history, 'claude', CLAUDE_POD_CWD)
-  for (const form of await checkoutForms(slug, workspaceId)) {
+  for (const form of await checkoutForms(projectId, workspaceId)) {
     const link = path.join(projects, claudeProjectDirName(form))
     const stat = await fs.lstat(link).catch(() => null)
     if (stat?.isDirectory() === true) {
-      const home = await openRoot(claudeDir(slug), 'no-links')
+      const home = await openRoot(claudeDir(projectId), 'no-links')
       for (const name of await fs.readdir(link)) {
         // A shared conversation stays, so the folder stays real.
         if (shared.has(name.replace(/\.jsonl$/, ''))) continue
@@ -318,12 +318,12 @@ async function linkOut(slug: string, workspaceId: string, history: string, share
 
   for (const sid of await fs.readdir(path.join(history, 'claude-file-history'))) {
     await ensureLink(
-      path.join(claudeDir(slug), 'file-history', sid),
+      path.join(claudeDir(projectId), 'file-history', sid),
       path.join(history, 'claude-file-history', sid),
     )
   }
   for (const rel of await filesUnder(path.join(history, 'codex'))) {
-    await ensureLink(path.join(codexDir(slug), 'sessions', rel), path.join(history, 'codex', rel))
+    await ensureLink(path.join(codexDir(projectId), 'sessions', rel), path.join(history, 'codex', rel))
   }
 }
 
@@ -345,15 +345,15 @@ async function ensureLink(link: string, target: string): Promise<void> {
 
 /** A project path in every spelling a host tool may resolve it to: as the
  *  data dir names it, and through its links. */
-async function forms(slug: string, of: string): Promise<string[]> {
-  const project = projectDir(slug)
+async function forms(projectId: string, of: string): Promise<string[]> {
+  const project = projectDir(projectId)
   const real = await fs.realpath(project).catch(() => project)
   const rel = path.relative(project, of)
   return [...new Set([of, path.join(real, rel)])]
 }
 
-const checkoutForms = (slug: string, workspaceId: string): Promise<string[]> =>
-  forms(slug, workspaceDir(slug, workspaceId))
+const checkoutForms = (projectId: string, workspaceId: string): Promise<string[]> =>
+  forms(projectId, workspaceDir(projectId, workspaceId))
 
 /** Every file below `dir`, relative to it; [] when there is no `dir`. */
 async function filesUnder(dir: string): Promise<string[]> {

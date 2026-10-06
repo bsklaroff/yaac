@@ -52,7 +52,7 @@ function renderPane(
   { baseBranch = 'main', focusKey }: { baseBranch?: string; focusKey?: number } = {},
 ): RenderResult {
   return renderWithClient(
-    <WorkspaceChanges workspaceId="s1" projectSlug="proj" baseBranch={baseBranch} focusKey={focusKey} />,
+    <WorkspaceChanges workspaceId="s1" projectId="proj" baseBranch={baseBranch} focusKey={focusKey} />,
   )
 }
 

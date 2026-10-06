@@ -3,7 +3,8 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, type FetchMock } from './harness'
+import { SNAPSHOT_KEY } from '#lib/useEvents'
+import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
@@ -16,11 +17,12 @@ beforeAll(() => {
 
 const REMOTE = 'https://github.com/acme/widgets.git'
 
-const REMOVE = 'DELETE /api/project/widgets'
+const ID = 'f3b1c2d4-0000-4000-8000-000000000001'
+const REMOVE = `DELETE /api/project/${ID}`
 let server: FetchMock
 
 beforeEach(() => {
-  useUiStore.setState({ activeProjectSlug: 'widgets' })
+  useUiStore.setState({ activeProjectId: ID })
   server = mockFetch({ [REMOVE]: undefined })
 })
 
@@ -29,12 +31,15 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-/** Render the menu and click through to the remove-confirm dialog. */
+/** Render the menu, labeled with the project's name, and click through to
+ *  the remove-confirm dialog. */
 async function openConfirm(): Promise<void> {
-  renderWithClient(<ProjectActionsMenu slug="widgets" remoteUrl={REMOTE} />)
+  const client = testQueryClient()
+  client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: ID, name: 'widgets' }] })
+  renderWithClient(<ProjectActionsMenu projectId={ID} remoteUrl={REMOTE} />, client)
   fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
   fireEvent.click(await screen.findByText('Remove project'))
-  await screen.findByText('Remove project?')
+  await screen.findByText('Removes "widgets" and all its workspaces. This can\'t be undone.')
 }
 
 describe('ProjectActionsMenu', () => {
@@ -51,7 +56,7 @@ describe('ProjectActionsMenu', () => {
     fireEvent.click(remove)
 
     await waitFor(() => expect(server.called(REMOVE)).toHaveLength(1))
-    await waitFor(() => expect(useUiStore.getState().activeProjectSlug).toBeNull())
+    await waitFor(() => expect(useUiStore.getState().activeProjectId).toBeNull())
   })
 
   it('does not remove on a wrong URL', async () => {
@@ -63,6 +68,6 @@ describe('ProjectActionsMenu', () => {
     fireEvent.click(remove)
 
     expect(server.called(REMOVE)).toHaveLength(0)
-    expect(useUiStore.getState().activeProjectSlug).toBe('widgets')
+    expect(useUiStore.getState().activeProjectId).toBe(ID)
   })
 })

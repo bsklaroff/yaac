@@ -52,8 +52,10 @@ let server: SpawnedServer
 let serverEnv: NodeJS.ProcessEnv
 let repoPath: string
 let workspaceId: string
+/** The project's id, minted when beforeAll adds it as `NAME`. */
+let projectId: string
 
-const SLUG = 'cl-demo'
+const NAME = 'cl-demo'
 /** The project's git credential: an HTTPS token, assigned in beforeAll. */
 const GIT_TOKEN = 'ghp_containerless_test'
 /**
@@ -262,7 +264,7 @@ const origin = (): string => `http://127.0.0.1:${String(server.lock.port)}`
 
 /** The tmux socket the driver uses for a workspace. */
 function sockFor(id: string): string {
-  return containerlessWorkspacePaths(containerlessJobName(SLUG, id)).tmuxSock
+  return containerlessWorkspacePaths(containerlessJobName(projectId, id)).tmuxSock
 }
 
 interface ListedWorkspace {
@@ -330,7 +332,7 @@ async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<st
 /** Run `yaac workspace create` with exactly `args`; the new id and stdout. */
 async function createWorkspaceFrom(...args: string[]): Promise<{ workspaceId: string; stdout: string }> {
   const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
-  const { stdout, stderr, exitCode } = await runYaac(cliEnv(), 'workspace', 'create', SLUG, ...args)
+  const { stdout, stderr, exitCode } = await runYaac(cliEnv(), 'workspace', 'create', NAME, ...args)
   if (exitCode !== 0) {
     throw new Error(`create failed (exit ${String(exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
   }
@@ -401,11 +403,11 @@ beforeAll(async () => {
   // Create needs a tool credential.
   await runYaac(serverEnv, 'auth', 'fake', 'claude-oauth')
 
-  repoPath = await createTestRepo(path.join(testEnv.scratchDir, SLUG))
+  repoPath = await createTestRepo(path.join(testEnv.scratchDir, NAME))
   // A local path is refused as a remote, so use a GitHub URL that is never
   // fetched, with a git credential assigned.
-  await addTestProject(server, repoPath, { remoteUrl: `https://github.com/test/${SLUG}.git` })
-  await assignTestGitCredential(server, SLUG, GIT_TOKEN)
+  projectId = await addTestProject(server, repoPath, { remoteUrl: `https://github.com/test/${NAME}.git` })
+  await assignTestGitCredential(server, NAME, GIT_TOKEN)
 })
 
 afterAll(async () => {
@@ -487,7 +489,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   it('gives the workspace a real checkout on the host, which is what the agent sees', async () => {
     const dir = path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId,
+      testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId,
     )
     // The server's checkout is the workspace itself.
     await expect(fs.stat(path.join(dir, 'README.md'))).resolves.toBeDefined()
@@ -496,12 +498,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // Its own clone, borrowing objects from the main clone.
     expect((await fs.stat(path.join(dir, '.git'))).isDirectory()).toBe(true)
     expect(await fs.readFile(path.join(dir, '.git', 'objects', 'info', 'alternates'), 'utf8'))
-      .toBe(`${path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git', 'objects')}\n`)
+      .toBe(`${path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo', '.git', 'objects')}\n`)
   })
 
   it('runs the review diff with host git in that checkout', async () => {
     const dir = path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId,
+      testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId,
     )
     await fs.writeFile(path.join(dir, 'NEW.md'), '# added by the test\n')
     const res = await fetch(`${origin()}/api/workspace/${workspaceId}/changes`)
@@ -521,7 +523,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(created.status).toBe(200)
     const { version } = await created.json() as { version: string }
     expect((await put({ path: '.gitignore', content: 'node_modules/\n', baseVersion: null })).status).toBe(200)
-    const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
+    const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     await fs.mkdir(path.join(checkout, 'node_modules', 'pkg'), { recursive: true })
     await fs.writeFile(path.join(checkout, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
 
@@ -570,8 +572,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // The checkout's `origin` has no token and the private HOME hides the
     // user's git config, so real git must get the credential from the
     // config the create wrote.
-    const home = workspaceHome(SLUG, workspaceId)
-    const dir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
+    const home = workspaceHome(projectId, workspaceId)
+    const dir = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     // Read from the workspace's tmux environment, which also shows the
     // launch set it. The host's own GIT_CONFIG_GLOBAL would otherwise leak in.
     const gitConfigGlobal = await workspaceEnvVar(workspaceId, 'GIT_CONFIG_GLOBAL')
@@ -760,7 +762,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // the script on the workspace's PATH, the pane option it sets, and the
     // watcher on a pane that is not an agent window. The command must not
     // name an in-image path.
-    const project = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
+    const project = path.join(testEnv.dataDir, 'global', 'projects', projectId)
     const commandsIn = async (file: string, event: string): Promise<string[]> => {
       const { hooks } = JSON.parse(await fs.readFile(file, 'utf8')) as
         { hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }
@@ -866,7 +868,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // The token is never written to the marker a restarted server rebuilds
     // the environment from.
     const marker = await fs.readFile(path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', workspaceId,
+      testEnv.dataDir, 'global', 'projects', projectId, 'sessions', workspaceId,
       'containerless', 'workspace.json',
     ), 'utf8')
     expect(marker).toContain(creds.YAAC_MAMA_URL)
@@ -889,7 +891,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     // Replaced ones point at the project's directories, not per-workspace
     // paths (claude keys its macOS Keychain item on this string).
-    const projectDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
+    const projectDir = path.join(testEnv.dataDir, 'global', 'projects', projectId)
     expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(projectDir, 'claude'))
     expect(env.CODEX_HOME).toBe(path.join(projectDir, 'codex'))
     expect(env.PI_CODING_AGENT_DIR).toBe(path.join(projectDir, 'pi', 'agent'))
@@ -902,11 +904,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // in `node-local/`, keyed by project id
     // (docs/containerless-driver.md, "Storage"). pnpm itself is asked, since
     // a misnamed variable would fail silently.
-    const projectsRoot = path.join(testEnv.dataDir, 'node-local', 'projects')
     const store = env.pnpm_config_store_dir ?? ''
-    const projectId = path.relative(projectsRoot, store).split(path.sep)[0]
-    expect(projectId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
-    const nodeLocalProject = path.join(projectsRoot, projectId)
+    const nodeLocalProject = path.join(testEnv.dataDir, 'node-local', 'projects', projectId)
     expect(store).toBe(path.join(nodeLocalProject, '.cached-packages', 'pnpm-store'))
     expect(env.npm_config_store_dir).toBe(store)
     // Nothing else is node-local here; opencode opens its global data
@@ -958,7 +957,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(moved.code).toBe(0)
 
     // Visible through the ordinary API.
-    const res = await fetch(`${origin()}/api/workspace/group/list?project=${SLUG}`)
+    const res = await fetch(`${origin()}/api/workspace/group/list?project=${NAME}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     expect(groups.map((g) => g.name)).toContain('nightly')
 
@@ -972,7 +971,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(renamed.code).toBe(0)
     expect(renamed.out).toContain('wiring up the mama channel')
 
-    const res = await fetch(`${origin()}/api/workspace/list?project=${SLUG}`)
+    const res = await fetch(`${origin()}/api/workspace/list?project=${NAME}`)
     const body = await res.json() as { workspaces: Array<{ workspaceId: string; title?: string }> }
     const mine = body.workspaces.find((w) => w.workspaceId === workspaceId)
     expect(mine?.title).toBe('wiring up the mama channel')
@@ -1019,7 +1018,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       })
       expect(res.status).toBe(200)
 
-      const listed = await fetch(`${origin()}/api/workspace/list?project=${SLUG}`)
+      const listed = await fetch(`${origin()}/api/workspace/list?project=${NAME}`)
       const body = await listed.json() as {
         workspaces: Array<{ workspaceId: string; title?: string }>
       }
@@ -1086,14 +1085,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     expect(gone).toBe(true)
     // A stop keeps the checkout.
-    const doomedCheckout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', doomed)
+    const doomedCheckout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', doomed)
     await expect(fs.stat(doomedCheckout)).resolves.toBeDefined()
 
     // ...and its committed work stays readable: this workspace fetches it
     // into its own checkout, standing in that checkout as an agent does.
     await execFileAsync('git', ['-C', doomedCheckout, '-c', 'user.email=t@t', '-c', 'user.name=T',
       'commit', '--allow-empty', '-qm', 'left behind'])
-    const mine = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
+    const mine = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     const creds = await mamaCreds()
     const { stdout } = await execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'),
       ['fetch', doomed.slice(0, 8)],
@@ -1105,7 +1104,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
     // Its conversation history stays readable too. The founding claude
     // conversation runs under the workspace id; give it a subagent.
-    const conversations = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'history', doomed, 'claude', '-workspace')
+    const conversations = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'history', doomed, 'claude', '-workspace')
     await fs.mkdir(path.join(conversations, doomed, 'subagents'), { recursive: true })
     await fs.appendFile(path.join(conversations, `${doomed}.jsonl`), '{"left":"behind"}\n')
     await fs.writeFile(path.join(conversations, doomed, 'subagents', 'agent-e2e.jsonl'), '{"sub":"agent"}\n')
@@ -1136,14 +1135,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     expect(names.length).toBeGreaterThan(0)
 
-    const home = workspaceHome(SLUG, workspaceId)
+    const home = workspaceHome(projectId, workspaceId)
     for (const name of names) {
       const viaHome = path.join(home, '.claude', 'skills', name, 'SKILL.md')
       expect(await fs.readFile(viaHome, 'utf8')).toContain('---')
     }
     // Linked, not copied, so an upgrade reaches every workspace. The target
     // is the built server's install, so only its shape is checked.
-    for (const root of sharedSkillRoots(SLUG)) {
+    for (const root of sharedSkillRoots(projectId)) {
       const target = await fs.readlink(path.join(root, names[0]))
       expect(target.endsWith(path.join('builtin-skills', names[0]))).toBe(true)
       await expect(fs.access(path.join(target, 'SKILL.md'))).resolves.toBeUndefined()
@@ -1153,7 +1152,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('signs in with a real bundle, then lets a running workspace\'s refresh win', async () => {
     // The credential cycle with no proxy, in the order it happens.
     const hostCreds = path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json')
-    const projectCreds = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', '.credentials.json')
+    const projectCreds = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'claude', '.credentials.json')
     const readBundle = async (p: string): Promise<Record<string, unknown>> => {
       const parsed = JSON.parse(await fs.readFile(p, 'utf8')) as { claudeAiOauth: Record<string, unknown> }
       return parsed.claudeAiOauth
@@ -1207,7 +1206,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // A checkout gets a git dir and config of its own (docs/server-git.md).
     // Plant a filter driver and hooks (each leaves a marker) in the main
     // clone and a sibling; the new checkout must run none of them.
-    const gitDir = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
+    const gitDir = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo', '.git')
     const markers = path.join(testEnv.scratchDir, 'planted-markers')
     const hooks = path.join(testEnv.scratchDir, 'planted-hooks')
     const evil = path.join(testEnv.scratchDir, 'planted.sh')
@@ -1222,7 +1221,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const configPath = path.join(gitDir, 'config')
     const attributesPath = path.join(gitDir, 'info', 'attributes')
     const configBefore = await fs.readFile(configPath, 'utf8')
-    const sibling = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId, '.git')
+    const sibling = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId, '.git')
     const siblingConfigBefore = await fs.readFile(path.join(sibling, 'config'), 'utf8')
     for (const [key, value] of [
       ['filter.planted.smudge', `"${evil}" smudge`],
@@ -1238,7 +1237,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     let id: string | undefined
     try {
       id = await createWorkspace()
-      const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', id)
+      const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', id)
       expect(await fs.readFile(path.join(checkout, 'README.md'), 'utf8')).toBe('# Test repo\n')
       expect(await fs.readdir(markers)).toEqual([])
       await expect(execFileAsync('git', ['-C', checkout, 'config', 'core.hooksPath'])).rejects.toThrow()
@@ -1258,14 +1257,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project: SLUG, tool: 'claude', mode: 'tui', prompt: 'a founding ask', title: 'Dialog title',
+        project: NAME, tool: 'claude', mode: 'tui', prompt: 'a founding ask', title: 'Dialog title',
         group: 'dialog-group',
       }),
     })
     expect(res.status).toBe(200)
     const { workspaceId: id } = await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})
     try {
-      const groups = await (await fetch(`${origin()}/api/workspace/group/list?project=${SLUG}`)).json() as {
+      const groups = await (await fetch(`${origin()}/api/workspace/group/list?project=${NAME}`)).json() as {
         groups: Array<{ groupId: string; name: string }>
       }
       const group = groups.groups.find((g) => g.name === 'dialog-group')
@@ -1284,7 +1283,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
    */
   it('follows a mode the agent reports, down and back up past the one it was created in', async () => {
     const settings = JSON.parse(await fs.readFile(
-      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'claude', 'settings.json'), 'utf8',
+      path.join(testEnv.dataDir, 'global', 'projects', projectId, 'claude', 'settings.json'), 'utf8',
     )) as { hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>> }
     const command = settings.hooks?.UserPromptSubmit
       ?.flatMap((m) => m.hooks?.map((h) => h.command) ?? [])
@@ -1311,7 +1310,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(yaacTmux?.split(',')[0]).toBe(sockFor(workspaceId))
 
     const home = path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', workspaceId, 'containerless', 'home',
+      testEnv.dataDir, 'global', 'projects', projectId, 'sessions', workspaceId, 'containerless', 'home',
     )
     const binDir = path.join(home, '.local', 'bin')
     // Run the registered command through `sh -c`, as claude does.
@@ -1353,7 +1352,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('stops the workspace by taking its tmux server down', async () => {
     // Here ephemeral paths live in the checkout, and stop removes them
     // (checked in the next case).
-    const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
+    const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
     const { exitCode } = await runYaac(serverEnv, 'workspace', 'stop', workspaceId)
     expect(exitCode).toBe(0)
@@ -1367,7 +1366,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   it('leaves the checkout behind, and stays stopped rather than flickering back', async () => {
     const dir = path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId,
+      testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId,
     )
     await expect(fs.stat(dir)).resolves.toBeDefined()
     // Without its ephemeral paths, which would otherwise be a full copy of
@@ -1395,8 +1394,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   // The launch updates the checkout's `origin/*` from the main clone.
   it('restarts the stopped workspace back onto a live tmux server', async () => {
-    const repoGit = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'repo', '.git')
-    const checkout = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', workspaceId)
+    const repoGit = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo', '.git')
+    const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
     const base = (await execFileAsync('git', ['--git-dir', repoGit, 'symbolic-ref', 'refs/remotes/origin/HEAD'])).stdout.trim()
     const upstream = (await execFileAsync('git', [
       '--git-dir', repoGit, 'commit-tree', '-p', base, '-m', 'upstream', `${base}^{tree}`,
@@ -1404,7 +1403,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await execFileAsync('git', ['--git-dir', repoGit, 'update-ref', base, upstream])
     // History a pod leaves in the workspace's `history/`, which this host
     // reaches through links (docs/workspace-storage.md, "Agent history").
-    const project = path.join(testEnv.dataDir, 'global', 'projects', SLUG)
+    const project = path.join(testEnv.dataDir, 'global', 'projects', projectId)
     const history = path.join(project, 'history', workspaceId)
     const rollout = path.join('2026', '09', '29', 'rollout-2026-09-29T08-32-40-pod-thread.jsonl')
     for (const [file, body] of [
@@ -1458,7 +1457,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   // and an unprompted workspace has no conversation.
   it('keeps resuming a codex conversation across restarts, and starts one never prompted anew', async () => {
     const launches = async (id: string): Promise<string[]> => (await fs.readFile(
-      path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `launches-${id}`), 'utf8',
+      path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `launches-${id}`), 'utf8',
     ).catch(() => '')).split('\n').filter(Boolean)
     const codexSessions = async (id: string) => (await listWorkspaces())
       .find((w) => w.workspaceId === id)?.agentSessions.filter((s) => s.tool === 'codex' && s.active) ?? []
@@ -1597,7 +1596,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       // The record is renamed to the session id once `session/new` answers,
       // so its name shows the handshake completed.
       const record = path.join(
-        testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, `e2e-acp-${tool}.jsonl`,
+        testEnv.dataDir, 'global', 'projects', projectId, 'acp', id, `e2e-acp-${tool}.jsonl`,
       )
       await vi.waitFor(async () => {
         expect(await fs.readFile(record, 'utf8')).toContain('initialize')
@@ -1622,7 +1621,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       const created = relayed.find((m) => m.result?.sessionId === `e2e-acp-${tool}`)
       // `process.cwd()` resolves symlinks, so compare resolved paths.
       expect(created?.result?.cwd).toBe(
-        await fs.realpath(path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces', id)),
+        await fs.realpath(path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', id)),
       )
 
       // The posture is sent over the protocol, only where the adapter
@@ -1653,7 +1652,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     // JSONL, the subagent's session after its parent's.
     const id = await createWorkspaceWith('opencode', '--mode', 'acp')
     const short = id.slice(0, 8)
-    const db = new DatabaseSync(path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'opencode-data', id, 'opencode.db'))
+    const db = new DatabaseSync(path.join(testEnv.dataDir, 'global', 'projects', projectId, 'opencode-data', id, 'opencode.db'))
     try {
       db.exec(`pragma journal_mode = wal; pragma wal_autocheckpoint = 0;
         create table session_v2 (id text primary key, parent_id text, time_created integer);
@@ -1699,7 +1698,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       'claude', '--mode', 'acp', '--permission-mode', 'accept-edits', '--prompt', ENTER_PLAN_MODE,
     )
     const record = path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, 'e2e-acp-claude.jsonl',
+      testEnv.dataDir, 'global', 'projects', projectId, 'acp', id, 'e2e-acp-claude.jsonl',
     )
     const relayed = async (): Promise<Array<{
       id?: unknown; method?: string; params?: { modeId?: string }; result?: unknown
@@ -1738,7 +1737,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     const id = await createWorkspaceWith(
       'claude', '--mode', 'acp', '--permission-mode', 'plan', '--prompt', 'enter bypassPermissions mode',
     )
-    const record = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, 'e2e-acp-claude.jsonl')
+    const record = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'acp', id, 'e2e-acp-claude.jsonl')
     const relayed = async (): Promise<Array<{
       id?: unknown; method?: string; params?: { modeId?: string; id?: string }
     }>> => (await fs.readFile(record, 'utf8').catch(() => '')).split('\n').flatMap((line) => {
@@ -1784,7 +1783,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     const { path: pasted } = await res.json() as { path: string }
     expect(await fs.readFile(pasted)).toEqual(png)
     const home = path.join(
-      testEnv.dataDir, 'global', 'projects', SLUG, 'sessions', id, 'containerless', 'home',
+      testEnv.dataDir, 'global', 'projects', projectId, 'sessions', id, 'containerless', 'home',
     )
     expect(await fs.readFile(path.join(home, '.yaac-attachments', path.basename(pasted)))).toEqual(png)
 
@@ -1807,7 +1806,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     const first = await vi.waitFor(attach, { timeout: 30_000, interval: 500 })
     const image = { type: 'image', mimeType: 'image/png', data: png.toString('base64') }
     first.ws.send(JSON.stringify({ type: 'prompt', text: 'what is this?', images: [image] }))
-    const record = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'acp', id, 'e2e-acp-claude.jsonl')
+    const record = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'acp', id, 'e2e-acp-claude.jsonl')
     await vi.waitFor(async () => {
       const prompt = (await fs.readFile(record, 'utf8')).split('\n')
         .map((l) => { try { return JSON.parse(l) as { method?: string; params?: { prompt?: unknown } } } catch { return {} } })
@@ -1832,7 +1831,7 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     try {
       const started = Date.now()
       const { exitCode, stdout, stderr } = await runYaac(
-        serverEnv, 'workspace', 'create', SLUG, '--tool', 'claude', '--mode', 'acp',
+        serverEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--mode', 'acp',
       )
       expect(exitCode, `${stdout}${stderr}`).toBe(0)
       expect(Date.now() - started).toBeLessThan(30_000)
@@ -1879,14 +1878,15 @@ describe.skipIf(!CAN_RUN)('yaac forward against a containerless server on this m
 })
 
 /**
- * The `--group` flag of `yaac workspace create`. The k8s suite covers the
- * same server code through `yaac-mama create --group`.
+ * The `--group` flag of `yaac workspace create`, and the project refs
+ * `yaac workspace list` accepts. The k8s suite covers the same server code
+ * through `yaac-mama create --group`.
  */
 describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
-  it('creates the named group and files the new workspace into it', async () => {
+  it('creates the named group and files the new workspace into it, listed by any project ref', async () => {
     const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'workspace', 'create', SLUG, '--tool', 'claude', '--group', 'friday batch',
+      serverEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--group', 'friday batch',
     )
     if (exitCode !== 0) {
       throw new Error(`create failed (exit ${String(exitCode)})\n${stdout}\n${stderr}`)
@@ -1895,14 +1895,32 @@ describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
     expect(fresh).toBeDefined()
 
     // The group is created by name.
-    const res = await fetch(`${origin()}/api/workspace/group/list?project=${SLUG}`)
+    const res = await fetch(`${origin()}/api/workspace/group/list?project=${NAME}`)
     const { groups } = await res.json() as { groups: Array<{ groupId: string; name: string }> }
     const made = groups.find((g) => g.name === 'friday batch')
     expect(made).toBeDefined()
 
-    // And the workspace is filed in it.
-    const listed = await runYaac(serverEnv, 'workspace', 'list', SLUG)
-    expect(listed.stdout).toMatch(new RegExp(`${fresh!.workspaceId.slice(0, 8)}[^\\n]*friday batch`))
+    // And the workspace is filed in it, found by the project's name, full
+    // id or id prefix alike.
+    for (const ref of [NAME, projectId, projectId.slice(0, 8)]) {
+      const listed = await runYaac(serverEnv, 'workspace', 'list', ref)
+      expect(listed.stdout, ref).toMatch(new RegExp(`${fresh!.workspaceId.slice(0, 8)}[^\\n]*friday batch`))
+      expect(listed.stdout, ref).toContain(NAME)
+    }
+
+    // A second project from the same remote shares the name, so the name
+    // alone is refused with both candidates; the twin is removed after.
+    const twinRepo = await createTestRepo(path.join(testEnv.scratchDir, 'twin', NAME))
+    const twin = await addTestProject(server, twinRepo, { remoteUrl: `https://github.com/test/${NAME}.git` })
+    try {
+      const ambiguous = await runYaac(serverEnv, 'workspace', 'list', NAME)
+      expect(ambiguous.exitCode).not.toBe(0)
+      expect(ambiguous.stderr).toContain(projectId)
+      expect(ambiguous.stderr).toContain(twin)
+    } finally {
+      const removed = await fetch(`${origin()}/api/project/${twin}`, { method: 'DELETE' })
+      expect(removed.status).toBe(204)
+    }
 
     await runYaac(serverEnv, 'workspace', 'stop', fresh!.workspaceId)
   }, 180_000)
@@ -1917,7 +1935,7 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
       // The fake codex exits 127 with `--model sick`, so tmux closes the
       // window, though `respawn-window` reports success.
       const { exitCode } = await runYaac(
-        serverEnv, 'workspace', 'create', SLUG, '--tool', 'codex', '--mode', 'tui', '--model', 'sick',
+        serverEnv, 'workspace', 'create', NAME, '--tool', 'codex', '--mode', 'tui', '--model', 'sick',
       )
       // Create succeeds: the launch check runs afterwards, so it never
       // slows a create down.
@@ -2004,7 +2022,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         expect(sessions.some((a) => /^thread-\d+$/.test(a.agentSessionId))).toBe(true)
       }, { timeout: 30_000, interval: 250 })
       const launches = await fs.readFile(
-        path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `launches-${childWorkspace}`), 'utf8',
+        path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `launches-${childWorkspace}`), 'utf8',
       )
       expect(launches).toContain('--sandbox read-only')
       expect(launches).toContain('--model gpt-5.5')
@@ -2016,7 +2034,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         const child = childWorkspace!
         expect(await mamaAs(sender, 'send', child.slice(0, 8), 'a message from a peer'))
           .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
-        const sent = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'codex', `sent-${child}`)
+        const sent = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `sent-${child}`)
         await vi.waitFor(async () => {
           expect(await fs.readFile(sent, 'utf8').catch(() => ''))
             .toContain(`Sent from ${sender} via yaac-mama:\n\na message from a peer\n`)
@@ -2027,7 +2045,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
 
       // The grandchild waits for the child's own stop.
       const entry = latest().queuedWorkspaces.find((q) => q.id === grandchild)
-      const group = latest().workspaceGroups.find((g) => g.projectSlug === SLUG && g.name === 'e2e follow-ups')
+      const group = latest().workspaceGroups.find((g) => g.projectId === projectId && g.name === 'e2e follow-ups')
       expect(entry).toMatchObject({
         parentWorkspaceId: childWorkspace, prompt: 'after that', mode: 'acp', branch: 'release/next',
         groupId: group?.groupId,
@@ -2057,7 +2075,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       const res = await fetch(`${origin()}/api/workspace/queue/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project: SLUG, parent, prompt: 'never on a crash' }),
+        body: JSON.stringify({ project: NAME, parent, prompt: 'never on a crash' }),
       })
       expect(res.status).toBe(200)
       const { id } = await res.json() as { id: string }

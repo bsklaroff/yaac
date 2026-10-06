@@ -29,14 +29,14 @@ afterEach(() => {
 describe('containerlessJobName', () => {
   it('encodes both halves of the identity so a handle alone can be resolved', () => {
     const jobName = containerlessJobName('demo', UUID)
-    expect(refFromJobName(jobName)).toEqual({ projectSlug: 'demo', workspaceId: UUID })
+    expect(refFromJobName(jobName)).toEqual({ projectId: 'demo', workspaceId: UUID })
   })
 
-  it('survives a slug carrying the same separator it joins with', () => {
-    // The id is a fixed-width tail, so a dashed slug is not split wrongly.
+  it('survives a projectId carrying the same separator it joins with', () => {
+    // The id is a fixed-width tail, so a dashed project id is not split wrongly.
     const jobName = containerlessJobName('my-cool-repo', UUID)
     expect(refFromJobName(jobName))
-      .toEqual({ projectSlug: 'my-cool-repo', workspaceId: UUID })
+      .toEqual({ projectId: 'my-cool-repo', workspaceId: UUID })
   })
 })
 

@@ -34,7 +34,7 @@ const SCP_REGEX = /^(?:([\w._-]+)@)?([\w.-]+):(?![/:])(.+)$/
  *   - SCP-style: [user@]<host>:<path>[.git]
  * `<path>` may be any depth. Throws on ssh://, http://, explicit ports, or
  * unparseable input. A trailing slash is stripped so the last path segment
- * (used for the project slug) is the repo name.
+ * (used for the project name) is the repo name.
  */
 export function parseGitRemote(remoteUrl: string): ParsedGitRemote {
   if (remoteUrl.startsWith('ssh://')) {
@@ -187,13 +187,13 @@ function sshCredential(cred: GitCredentialRow, knownHostsEntry: string): Resolve
 
 /** Assign a project its git credential; returns the trusted host key. */
 export async function assignProjectCredential(
-  slug: string,
+  projectId: string,
   credentialId: string,
 ): Promise<{ knownHostsEntry: string | null }> {
-  const row = await getProjectRow(slug)
-  if (!row) throw new ServerError('NOT_FOUND', `Project "${slug}" not found`)
+  const row = await getProjectRow(projectId)
+  if (!row) throw new ServerError('NOT_FOUND', `Project "${projectId}" not found`)
   const { knownHostsEntry } = await resolveCredentialForRemote(credentialId, row.remoteUrl)
-  await setProjectGitCredential(slug, credentialId, knownHostsEntry)
+  await setProjectGitCredential(projectId, credentialId, knownHostsEntry)
   return { knownHostsEntry }
 }
 
@@ -213,7 +213,7 @@ function usableAssignment(row: ProjectRow, cred: GitCredentialRow | undefined): 
   return cred.kind === scheme && (scheme === 'https' || row.knownHostsEntry !== null)
 }
 
-/** The credential each project can use, by slug — for the listing. */
+/** The credential each project can use, by project id — for the listing. */
 export async function projectCredentialNames(
   rows: ProjectRow[],
 ): Promise<Map<string, { id: string; name: string }>> {
@@ -221,15 +221,15 @@ export async function projectCredentialNames(
   const out = new Map<string, { id: string; name: string }>()
   for (const row of rows) {
     const cred = row.gitCredentialId === null ? undefined : creds.get(row.gitCredentialId)
-    if (usableAssignment(row, cred)) out.set(row.slug, { id: cred.id, name: cred.name })
+    if (usableAssignment(row, cred)) out.set(row.id, { id: cred.id, name: cred.name })
   }
   return out
 }
 
 /** The project's git credential, resolved for git; null when it has none
  *  it can use. */
-export async function resolveProjectCredential(slug: string): Promise<ResolvedGitCredential | null> {
-  const row = await getProjectRow(slug)
+export async function resolveProjectCredential(projectId: string): Promise<ResolvedGitCredential | null> {
+  const row = await getProjectRow(projectId)
   if (row?.gitCredentialId == null) return null
   const cred = await getGitCredential(row.gitCredentialId)
   if (!usableAssignment(row, cred)) return null
@@ -243,10 +243,10 @@ export async function resolveProjectCredential(slug: string): Promise<ResolvedGi
 }
 
 /** The create error for a project with no usable credential. */
-export function missingCredentialError(slug: string): ServerError {
+export function missingCredentialError(projectName: string): ServerError {
   return new ServerError(
     'VALIDATION',
-    `Project "${slug}" has no git credential. Assign one in Settings → Git credentials.`,
+    `Project "${projectName}" has no git credential. Assign one in Settings → Git credentials.`,
   )
 }
 
@@ -274,7 +274,7 @@ export async function listCredentialSummaries(): Promise<GitCredentialSummary[]>
   const out: GitCredentialSummary[] = []
   for (const c of creds) {
     const secret = await c.openSecret()
-    const projects = rows.filter((r) => r.gitCredentialId === c.id).map((r) => r.slug)
+    const projects = rows.filter((r) => r.gitCredentialId === c.id).map((r) => r.id)
     if (c.kind === 'https') {
       const preview = secret === undefined ? '(unreadable — replace it)'
         : secret.length > 4 ? '***' + secret.slice(-4) : '****'
@@ -303,14 +303,14 @@ export async function runtimeGitCredentials(): Promise<{ git: HttpsCredentialEnt
     const secret = await c.openSecret()
     if (secret === undefined) continue
     if (c.kind === 'https') {
-      git.push({ token: secret, projects: users.map((r) => r.slug) })
+      git.push({ token: secret, projects: users.map((r) => r.id) })
       continue
     }
     ssh.push({
       privateKey: encodeOpenSshPrivateKey(Buffer.from(secret, 'base64'), c.name),
       publicKey: c.publicKey ?? '',
       projects: users.map((r) => ({
-        slug: r.slug,
+        projectId: r.id,
         host: parseGitRemote(r.remoteUrl).host,
         knownHostsEntry: r.knownHostsEntry ?? '',
       })),

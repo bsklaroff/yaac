@@ -187,12 +187,12 @@ export function resolveAgentPermissionMode(
  */
 export async function resolveAgentModel(
   tool: AgentTool,
-  projectSlug: string,
+  projectId: string,
   observed: string,
 ): Promise<string | undefined> {
   const value = observed.trim()
   if (value === '') return undefined
-  return tool === 'codex' ? codexModelSlug(projectSlug, value) : value
+  return tool === 'codex' ? codexModelSlug(projectId, value) : value
 }
 
 /**

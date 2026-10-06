@@ -7,10 +7,12 @@ import {
   applyObject,
   createObject,
   deleteObject,
+  deleteObjects,
   isAbsent,
   k8sNamespace,
   listObjects,
   readObject,
+  LABEL_PROXY_INPUT,
   LABEL_ROLE,
   PRIVILEGED_PSS_LABELS,
   PROXY_APP_NAME,
@@ -206,16 +208,27 @@ export async function syncProxyCredentials(bundle: CredentialBundle): Promise<vo
 /** Replace one project's secret values for the proxy (an empty set is
  *  applied too, so deleted secrets stop being injected). */
 export async function syncProjectSecrets(
-  projectSlug: string,
+  projectId: string,
   values: Record<string, string>,
 ): Promise<void> {
-  await applyObject(buildProjectSecretsManifest(projectSlug, values))
+  await applyObject(buildProjectSecretsManifest(projectId, values))
+}
+
+/**
+ * Delete the secret values objects named by project slug, which only those
+ * still label `yaac.project` (id-named ones carry `yaac.project-id`). A
+ * legacy-compat sweep: see docs/legacy-compat-shims.md.
+ */
+export async function deleteSlugNamedProjectSecrets(): Promise<void> {
+  await deleteObjects('v1', 'Secret', {
+    namespace: k8sNamespace(), labelSelector: `app=${PROXY_APP_NAME},${LABEL_PROXY_INPUT}=secrets,yaac.project`,
+  })
 }
 
 /** Delete a project's secret values object. */
-export async function removeProjectSecrets(projectSlug: string): Promise<void> {
+export async function removeProjectSecrets(projectId: string): Promise<void> {
   await deleteObject({
-    apiVersion: 'v1', kind: 'Secret', name: proxyProjectSecretsName(projectSlug), namespace: k8sNamespace(),
+    apiVersion: 'v1', kind: 'Secret', name: proxyProjectSecretsName(projectId), namespace: k8sNamespace(),
   })
 }
 

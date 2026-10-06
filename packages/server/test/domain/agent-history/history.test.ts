@@ -23,7 +23,7 @@ import { convergeAgentHistory, removeAgentHistory } from '#domain/agent-history'
  * the outside world this feature hands its result to.
  */
 
-const SLUG = 'demo'
+const SLUG = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
 const WT = 'wt-a'
 const SIBLING = 'wt-b'
 
@@ -31,8 +31,8 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: WT })
-  await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: SIBLING })
+  await recordWorkspaceCreated({ projectId: SLUG, workspaceId: WT })
+  await recordWorkspaceCreated({ projectId: SLUG, workspaceId: SIBLING })
 })
 
 afterEach(async () => {

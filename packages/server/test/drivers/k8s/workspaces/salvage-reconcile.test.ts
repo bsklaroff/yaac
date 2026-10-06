@@ -33,7 +33,6 @@ function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
     jobName: `yaac-p-${workspaceId}`,
     podName: `yaac-p-${workspaceId}-x1`,
     workspaceId,
-    projectSlug: 'p',
     projectId: PROJECT_ID,
     tool: 'claude',
     phase: 'Running',
@@ -61,7 +60,7 @@ describe('reconcileImageSalvage', () => {
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000)
     expect(mockSalvage).toHaveBeenCalledTimes(1)
     expect(mockSalvage).toHaveBeenCalledWith({
-      jobName: 'yaac-p-s1', project: { slug: 'p', id: PROJECT_ID }, workspaceId: 's1',
+      jobName: 'yaac-p-s1', projectId: PROJECT_ID, workspaceId: 's1',
     })
 
     await reconcileImageSalvage(isWorkspaceTerminating, 1_000 + SALVAGE_INTERVAL_MS - 1)

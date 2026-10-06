@@ -70,7 +70,7 @@ function spawnedArgv(): string[] {
 
 function running(): void {
   rememberWorkspace({
-    projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+    projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
     prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242,
   })
 }
@@ -162,7 +162,7 @@ describe('sweepPorts', () => {
   it('reports nothing for a workspace whose tmux pid was never recorded', async () => {
     // Without a tree root pid, the workspace's ports go unreported.
     rememberWorkspace({
-      projectSlug: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
+      projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
       prewarm: false, createdAtMs: 1_000, launchEnv: {},
     })
     await sweepPorts()

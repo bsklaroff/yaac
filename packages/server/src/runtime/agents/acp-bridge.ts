@@ -75,12 +75,12 @@ function isTaskOutputPath(file: string, taskId: string): boolean {
  * like `WorkspaceTerminal` does on a dropped PTY.
  */
 export function attachAcp(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   agentSessionId: string,
   sock: AcpSocket,
 ): void {
-  const conversation = acpConversation(slug, workspaceId, agentSessionId)
+  const conversation = acpConversation(projectId, workspaceId, agentSessionId)
   const send = (msg: AcpServerMessage): void => {
     try {
       sock.send(JSON.stringify(msg))
@@ -109,7 +109,7 @@ export function attachAcp(
    *  path is never taken from the browser. */
   let tasks = new Map<string, AcpTask>()
   const tail = tailAcpLog(
-    { slug, workspaceId, agentSessionId },
+    { projectId, workspaceId, agentSessionId },
     (events, reset) => {
       // A read already in progress still reports after close.
       if (detached) return

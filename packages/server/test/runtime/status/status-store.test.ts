@@ -24,7 +24,7 @@ beforeEach(() => {
  * the snapshot reads, and re-reads whenever `#notify` announces a change.
  */
 describe('readWorkspaceStatus', () => {
-  it('reads waiting until a status is written, keyed by slug and session id', () => {
+  it('reads waiting until a status is written, keyed by projectId and session id', () => {
     expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
     setAgentStatus('demo', 's1', '%0', 'running')
     expect(readWorkspaceStatus('demo', 's1')).toBe('running')

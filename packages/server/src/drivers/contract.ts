@@ -27,17 +27,6 @@ import type {
  * containerless, so no verb here names a Job, label or namespace.
  */
 
-/**
- * A project as handed to the driver. The slug is for display, labels and
- * logs. Per-project runtime objects are named by the id, which is never
- * reused, so a project re-added under the same slug cannot inherit an old
- * one's leftovers.
- */
-export interface ProjectRef {
-  slug: string
-  id: string
-}
-
 /** What `reapNodeLocal` must keep, from the caller's records. If they
  *  cannot be read, the caller skips the sweep rather than pass empty sets. */
 export interface NodeLocalLiveSet {
@@ -52,7 +41,7 @@ export interface NodeLocalLiveSet {
  */
 export interface RuntimeHandle {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   /** The runtime's name for the unit; what an exec addresses. */
   jobName: string
   /** The tool to run; falls back to the default if the declared one is
@@ -96,7 +85,7 @@ export interface AgentLiveness {
  * workspace is gone.
  */
 export interface TeardownTarget {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   unitName: string
 }
@@ -108,7 +97,7 @@ export interface TeardownTarget {
 export interface StrayUnit {
   workspaceId: string
   unitName: string
-  projectSlug: string
+  projectId: string
   /** Lets a sweep tell an orphan from a launch whose workspace has not
    *  appeared yet. */
   createdAtMs: number
@@ -135,7 +124,7 @@ export interface RuntimeSnapshot {
  */
 export interface WorkspaceRegistration {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   config: YaacConfig
   /** The project's `origin` remote, as the workspace will see it. */
@@ -168,7 +157,7 @@ export interface SshCredentialEntry {
   privateKey: string
   /** The public key, one OpenSSH line. */
   publicKey: string
-  projects: Array<{ slug: string; host: string; knownHostsEntry: string }>
+  projects: Array<{ projectId: string; host: string; knownHostsEntry: string }>
 }
 
 /**
@@ -221,8 +210,6 @@ export interface WorkspaceResources {
  * policies.
  */
 export interface SubstrateIntent {
-  projectSlug: string
-  /** Names the project's substrate objects (see `ProjectRef`). */
   projectId: string
   workspaceId: string
   tool: AgentTool
@@ -263,7 +250,7 @@ export type WorkspaceGitCredential =
  * cluster needs).
  */
 export interface WorkspaceSpec {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   tool: AgentTool
   mode: AgentMode
@@ -404,16 +391,17 @@ export interface PassContext {
   signal: AbortSignal
   /** The pass's shared runtime view — memoized, created on first use. */
   snapshot: () => RuntimeSnapshot
-  /** Which projects exist, memoized. Passed down so driver steps never read
-   *  `#db`. Rejects if unreadable rather than resolving empty, which a
-   *  garbage-collecting step would read as "collect everything". */
-  projects: () => Promise<ProjectRef[]>
+  /** The ids of the projects that exist, memoized. Passed down so driver
+   *  steps never read `#db`. Rejects if unreadable rather than resolving
+   *  empty, which a garbage-collecting step would read as "collect
+   *  everything". */
+  projectIds: () => Promise<string[]>
   /**
    * One project's resolved config, memoized per project for the pass.
    * Passed down so driver steps never read project files themselves.
    * `undefined` means no config (all defaults), not a failure.
    */
-  projectConfig: (projectSlug: string) => Promise<YaacConfig | undefined>
+  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>
   /**
    * Whether a teardown was issued for this workspace but is not yet visible
    * in the substrate. The marks live in `#runtime`, which drivers cannot
@@ -539,7 +527,7 @@ export interface WorkspaceDriver {
    * Display paths pass `preferCache`; reapers and resolvers that need the
    * substrate's own answer do not.
    */
-  list(projectSlug?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
+  list(projectId?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
   /** Live counts per project, spares excluded. Empty when unreachable. */
   count(): Promise<Record<string, number>>
   /** A running workspace's diff, read inside it. Rejects with
@@ -584,7 +572,7 @@ export interface WorkspaceDriver {
    */
   retryImageBuild(
     id: string,
-    projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+    projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
   ): boolean
   /**
    * Let one running workspace reach `host`, until it stops. The caller
@@ -593,7 +581,7 @@ export interface WorkspaceDriver {
    * the target has no egress registration.
    */
   allowHost(
-    target: { workspaceId: string; projectSlug: string },
+    target: { workspaceId: string; projectId: string },
     host: string,
     opts: { fanOutToProject: boolean },
   ): Promise<void>
@@ -604,7 +592,7 @@ export interface WorkspaceDriver {
    * a sibling may not be listening yet.
    */
   forwardPort(
-    target: { workspaceId: string; projectSlug: string; jobName: string },
+    target: { workspaceId: string; projectId: string; jobName: string },
     containerPort: number,
     opts: { fanOutToProject: boolean },
   ): Promise<PortMapping>
@@ -673,7 +661,7 @@ export interface WorkspaceDriver {
   ensureRuntimeReachable(): Promise<void>
   /** Build or reuse the project's workspace image and return its ref. */
   prepareImage(opts: {
-    project: ProjectRef
+    projectId: string
     nestedContainers: boolean
     onProgress?: (message: string) => void
   }): Promise<string>
@@ -692,7 +680,7 @@ export interface WorkspaceDriver {
   syncCredentials(bundle: CredentialBundle): Promise<void>
   /** Replace one project's proxied secret values. A no-op without mediated
    *  egress, where values go into the workspace at launch. */
-  syncProjectSecrets(projectSlug: string, values: Record<string, string>): Promise<void>
+  syncProjectSecrets(projectId: string, values: Record<string, string>): Promise<void>
   /** OAuth tokens the egress path captured from a workspace's refresh,
    *  which the host store may not have yet. Empty if none. */
   refreshedCredentials(): RefreshedToolCredentials
@@ -766,7 +754,7 @@ export interface WorkspaceDriver {
    *  workspaces, including secret values and the node-local tree on every
    *  node. The caller tears down workspaces first and removes the global
    *  tree after. Best-effort per part. */
-  destroyProjectSubstrate(project: ProjectRef): Promise<void>
+  destroyProjectSubstrate(projectId: string): Promise<void>
   /**
    * Delete node-local leftovers on every node: project trees not in
    * `live.projectIds` and workspace working copies not in

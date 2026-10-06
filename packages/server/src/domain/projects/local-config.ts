@@ -10,8 +10,8 @@ import type { YaacConfig } from '@yaac/shared/types'
  * Write the per-project yaac-config.json, validated with the load-time
  * parser.
  */
-export async function writeProjectConfig(slug: string, rawConfig: unknown): Promise<YaacConfig> {
-  await assertProjectExists(slug)
+export async function writeProjectConfig(projectId: string, rawConfig: unknown): Promise<YaacConfig> {
+  await assertProjectExists(projectId)
 
   let config: YaacConfig
   try {
@@ -20,7 +20,7 @@ export async function writeProjectConfig(slug: string, rawConfig: unknown): Prom
     throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
   }
 
-  const dir = projectConfigDir(slug)
+  const dir = projectConfigDir(projectId)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(
     path.join(dir, 'yaac-config.json'),
@@ -42,14 +42,14 @@ export function withAllowedHost(config: YaacConfig, host: string): YaacConfig {
 
 /** Add an allowed host to a project's stored config, so future workspaces
  *  inherit it. */
-export async function addAllowedHostToProjectConfig(slug: string, host: string): Promise<YaacConfig> {
+export async function addAllowedHostToProjectConfig(projectId: string, host: string): Promise<YaacConfig> {
   let overlay: YaacConfig | null
   try {
-    overlay = await resolveProjectConfig(slug)
+    overlay = await resolveProjectConfig(projectId)
   } catch (err) {
     throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
   }
-  return writeProjectConfig(slug, withAllowedHost(overlay ?? {}, host))
+  return writeProjectConfig(projectId, withAllowedHost(overlay ?? {}, host))
 }
 
 /**
@@ -65,26 +65,26 @@ export function withPortForward(config: YaacConfig, containerPort: number): Yaac
 /** Add a port forward to a project's stored config, so future workspaces
  *  inherit it (the webapp's "forward this port" with `persist: true`). */
 export async function addPortForwardToProjectConfig(
-  slug: string,
+  projectId: string,
   containerPort: number,
 ): Promise<YaacConfig> {
   let overlay: YaacConfig | null
   try {
-    overlay = await resolveProjectConfig(slug)
+    overlay = await resolveProjectConfig(projectId)
   } catch (err) {
     throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
   }
-  return writeProjectConfig(slug, withPortForward(overlay ?? {}, containerPort))
+  return writeProjectConfig(projectId, withPortForward(overlay ?? {}, containerPort))
 }
 
 /**
  * The per-project yaac-config.json as raw text ('' when absent), unparsed so
  * a malformed file can be opened and fixed.
  */
-export async function readProjectConfigRaw(slug: string): Promise<string> {
-  await assertProjectExists(slug)
+export async function readProjectConfigRaw(projectId: string): Promise<string> {
+  await assertProjectExists(projectId)
   try {
-    return await fs.readFile(path.join(projectConfigDir(slug), 'yaac-config.json'), 'utf8')
+    return await fs.readFile(path.join(projectConfigDir(projectId), 'yaac-config.json'), 'utf8')
   } catch {
     return ''
   }
@@ -94,7 +94,7 @@ export async function readProjectConfigRaw(slug: string): Promise<string> {
  * Remove the per-project yaac-config.json, if present. Only that file: the
  * config dir also holds the build dir.
  */
-export async function removeProjectConfig(slug: string): Promise<void> {
-  await assertProjectExists(slug)
-  await fs.rm(path.join(projectConfigDir(slug), 'yaac-config.json'), { force: true })
+export async function removeProjectConfig(projectId: string): Promise<void> {
+  await assertProjectExists(projectId)
+  await fs.rm(path.join(projectConfigDir(projectId), 'yaac-config.json'), { force: true })
 }

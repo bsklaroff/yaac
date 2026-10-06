@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as createModule from '#domain/workspaces/create'
 
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+
 // Only createWorkspace is stubbed; setup resolution, the provisioning row and
 // the spare decision run for real.
 vi.mock('#domain/workspaces/create', async (importOriginal) => ({
@@ -26,13 +28,13 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 
-type CreateFn = (slug: string, opts: WorkspaceCreateOptions) => Promise<WorkspaceCreateResult>
+type CreateFn = (projectId: string, opts: WorkspaceCreateOptions) => Promise<WorkspaceCreateResult>
 
 function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
   return {
     requestId: 'req-1',
     callerWorkspaceId: 'caller-session',
-    callerProjectSlug: 'proj',
+    callerProjectId: PROJ,
     callerTool: 'codex',
     callerPermissionMode: 'bypass',
     prompt: 'write the report',
@@ -43,7 +45,7 @@ function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
 /** Stub createWorkspace so it only records its arguments. */
 function stubCreate(impl?: CreateFn): ReturnType<typeof vi.mocked<typeof createWorkspace>> {
   const create = vi.mocked(createWorkspace)
-  create.mockReset().mockImplementation(impl ?? ((_slug, opts) => Promise.resolve({
+  create.mockReset().mockImplementation(impl ?? ((_projectId, opts) => Promise.resolve({
     workspaceId: opts.workspaceId ?? 'minted', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
   } as WorkspaceCreateResult)))
   return create
@@ -68,7 +70,7 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   installFakeWorkspaceDriver({ list: listSpares })
   listSpares.mockClear()
-  await recordProject({ slug: 'proj', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
   clearAllProvisioningForTests()
   stubCreate()
 })
@@ -86,7 +88,7 @@ describe('decideSpawn', () => {
     const decision = await decideSpawn(makeRequest(), { mintIdFn: () => 'minted-id' })
     expect(decision).toEqual({ ok: true, workspaceId: 'minted-id' })
     const [opts] = await createdWith(create)
-    expect(create.mock.calls[0][0]).toBe('proj')
+    expect(create.mock.calls[0][0]).toBe(PROJ)
     expect(opts).toMatchObject({
       workspaceId: 'minted-id',
       tool: 'codex', // the caller's tool, absent an explicit request
@@ -102,7 +104,7 @@ describe('decideSpawn', () => {
 
   it('provisions under a sidebar row: registered on spawn, dropped on success', async () => {
     let rowDuringCreate: ReturnType<typeof listProvisioning>[number] | undefined
-    stubCreate((_slug, opts) => {
+    stubCreate((_projectId, opts) => {
       opts.onProgress?.('Creating job...')
       rowDuringCreate = listProvisioning().find((p) => p.workspaceId === 'minted-id')
       return Promise.resolve({
@@ -114,7 +116,7 @@ describe('decideSpawn', () => {
     expect(listProvisioning().map((p) => p.workspaceId)).toEqual(['minted-id'])
     await vi.waitFor(() => { expect(rowDuringCreate).toBeDefined() })
     expect(rowDuringCreate).toMatchObject({
-      workspaceId: 'minted-id', projectSlug: 'proj', tool: 'codex', kind: 'create', message: 'Creating job...',
+      workspaceId: 'minted-id', projectId: PROJ, tool: 'codex', kind: 'create', message: 'Creating job...',
     })
     await vi.waitFor(() => { expect(listProvisioning()).toEqual([]) })
   })
@@ -143,7 +145,7 @@ describe('decideSpawn', () => {
       makeRequest({ callerTool: undefined }),
       { lastToolFn },
     )).ok).toBe(true)
-    expect(lastToolFn).toHaveBeenCalledWith(makeRequest().callerProjectSlug)
+    expect(lastToolFn).toHaveBeenCalledWith(makeRequest().callerProjectId)
     expect((await createdWith(withDefault))[0].tool).toBe('pi')
     await settle()
 

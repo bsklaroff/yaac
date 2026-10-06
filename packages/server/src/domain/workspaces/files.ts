@@ -47,7 +47,7 @@ const mutate = createKeyedMutex()
 
 interface Checkout {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   dir: string
   /** The confined checkout. Its `.git` counts as outside, so the editor
    *  cannot plant a hook or config there. */
@@ -55,10 +55,10 @@ interface Checkout {
 }
 
 async function openCheckout(idOrName: string): Promise<Checkout> {
-  const { projectSlug, workspaceId } = await resolveWorkspaceRecord(idOrName)
-  const dir = workspaceDir(projectSlug, workspaceId)
+  const { projectId, workspaceId } = await resolveWorkspaceRecord(idOrName)
+  const dir = workspaceDir(projectId, workspaceId)
   try {
-    return { workspaceId, projectSlug, dir, root: await openRoot(dir, 'inside', { exclude: ['.git'] }) }
+    return { workspaceId, projectId, dir, root: await openRoot(dir, 'inside', { exclude: ['.git'] }) }
   } catch {
     throw new ServerError('NOT_FOUND', `workspace ${idOrName} has no checkout`)
   }
@@ -68,7 +68,7 @@ async function openCheckout(idOrName: string): Promise<Checkout> {
  * The running workspace to run a git read in. `CONFLICT` if it exists but is
  * not running, `NOT_FOUND` if unknown.
  */
-async function runningWorkspace(idOrName: string): Promise<{ jobName: string; projectSlug: string; workspaceId: string }> {
+async function runningWorkspace(idOrName: string): Promise<{ jobName: string; projectId: string; workspaceId: string }> {
   const { jobName } = await resolveWorkspaceRecord(idOrName)
   if (jobName === undefined) throw new ServerError('CONFLICT', `workspace ${idOrName} is not running`)
   return resolveWorkspaceContainer(idOrName, { requireRunning: true })
@@ -268,14 +268,14 @@ export async function listWorkspaceFiles(idOrName: string): Promise<WorkspaceFil
  * the workspace forked from — the same default the Changes diff takes.
  */
 export async function getWorkspaceGitStatus(idOrName: string, base?: string): Promise<WorkspaceGitStatus> {
-  const { jobName, projectSlug, workspaceId } = await runningWorkspace(idOrName)
-  const branch = base?.trim() || await workspaceForkBranch(projectSlug, workspaceId)
+  const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
+  const branch = base?.trim() || await workspaceForkBranch(projectId, workspaceId)
   if (!branch) return { base: null, comparison: null }
   const found = await checkoutAheadBehind(jobName, branch)
   if (!found) return { base: branch, comparison: null }
   const { remote, ...comparison } = found
   const fetchedAtMs = remote
-    ? await lastFetchedAtMs(repoDir(projectSlug), branch, path.join(workspaceDir(projectSlug, workspaceId), '.git'))
+    ? await lastFetchedAtMs(repoDir(projectId), branch, path.join(workspaceDir(projectId, workspaceId), '.git'))
     : null
   return {
     base: branch,

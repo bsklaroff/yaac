@@ -12,10 +12,12 @@ import { isGitSmartHttpPath } from './injection'
 const WRITE_DEBOUNCE_MS = 250
 /** Retry after a failed write; the next change also retries it. */
 const WRITE_RETRY_MS = 5_000
+/** A project id. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export class ObservedState {
   private readonly blockedHosts = new Map<string, Set<string>>()
-  /** projectSlug -> hostname -> failure. Keyed by project because the
+  /** project id -> hostname -> failure. Keyed by project because the
    *  credential is the project's. */
   private readonly gitAuthFailures = new Map<string, Map<string, GitAuthFailureRecord>>()
   private writeTimer: NodeJS.Timeout | null = null
@@ -26,8 +28,15 @@ export class ObservedState {
     for (const [workspaceId, hosts] of Object.entries(state.blockedHosts)) {
       this.blockedHosts.set(workspaceId, new Set(hosts))
     }
-    for (const [slug, entries] of Object.entries(state.gitAuthFailures)) {
-      this.gitAuthFailures.set(slug, new Map(entries.map(({ host, status, atMs }) => [host, { status, atMs }])))
+    for (const [projectId, entries] of Object.entries(state.gitAuthFailures)) {
+      // An entry keyed by a project slug matches no project any more, so it
+      // is dropped and the record rewritten without it; see
+      // docs/legacy-compat-shims.md.
+      if (!UUID.test(projectId)) {
+        this.scheduleWrite()
+        continue
+      }
+      this.gitAuthFailures.set(projectId, new Map(entries.map(({ host, status, atMs }) => [host, { status, atMs }])))
     }
   }
 
@@ -36,8 +45,8 @@ export class ObservedState {
     for (const [workspaceId, hosts] of this.blockedHosts) {
       if (hosts.size > 0) state.blockedHosts[workspaceId] = [...hosts]
     }
-    for (const [slug, byHost] of this.gitAuthFailures) {
-      if (byHost.size > 0) state.gitAuthFailures[slug] = [...byHost].map(([host, rec]) => ({ host, ...rec }))
+    for (const [projectId, byHost] of this.gitAuthFailures) {
+      if (byHost.size > 0) state.gitAuthFailures[projectId] = [...byHost].map(([host, rec]) => ({ host, ...rec }))
     }
     return state
   }
@@ -82,24 +91,24 @@ export class ObservedState {
    * clears it, e.g. after `yaac auth update`.
    */
   noteGitUpstreamStatus(
-    projectSlug: string | undefined,
+    projectId: string | undefined,
     hostname: string,
     requestPath: string,
     status: number,
   ): void {
-    if (!projectSlug || !isGitSmartHttpPath(requestPath)) return
-    const byHost = this.gitAuthFailures.get(projectSlug)
+    if (!projectId || !isGitSmartHttpPath(requestPath)) return
+    const byHost = this.gitAuthFailures.get(projectId)
     if (status === 401 || status === 403) {
       if (byHost?.has(hostname)) return
-      console.log(`[proxy] GIT AUTH FAILED for ${hostname} (HTTP ${status}, project ${projectSlug})`)
+      console.log(`[proxy] GIT AUTH FAILED for ${hostname} (HTTP ${status}, project ${projectId})`)
       const hosts = byHost ?? new Map<string, GitAuthFailureRecord>()
       hosts.set(hostname, { status, atMs: Date.now() })
-      this.gitAuthFailures.set(projectSlug, hosts)
+      this.gitAuthFailures.set(projectId, hosts)
       this.scheduleWrite()
       return
     }
     if (status >= 200 && status < 300 && byHost?.delete(hostname)) {
-      console.log(`[proxy] git auth recovered for ${hostname} (project ${projectSlug})`)
+      console.log(`[proxy] git auth recovered for ${hostname} (project ${projectId})`)
       this.scheduleWrite()
     }
   }

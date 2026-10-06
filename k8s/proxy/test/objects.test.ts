@@ -34,7 +34,7 @@ const CLAUDE_BUNDLE: ClaudeOAuthBundle = {
 const SSH_ENTRY = {
   privateKey: 'KEY',
   publicKey: `ssh-ed25519 ${Buffer.from('key-blob').toString('base64')} yaac key`,
-  projects: [{ slug: 'acme', host: 'github.com', knownHostsEntry: 'github.com ssh-ed25519 AAA' }],
+  projects: [{ projectId: 'acme', host: 'github.com', knownHostsEntry: 'github.com ssh-ed25519 AAA' }],
 }
 const CODEX_BUNDLE: CodexOAuthBundle = {
   accessToken: 'codex-access', refreshToken: 'codex-refresh', idTokenRawJwt: 'h.p.s',
@@ -84,7 +84,7 @@ describe('decodeCredentials', () => {
       'opencode.json': { kind: 'api-key', apiKey: 'k', provider: 'openrouter' },
       'pi.json': { kind: 'api-key', apiKey: 'k', apiHost: '' },
       // A tokenless entry injects nothing, and one naming no project list
-      // is not scoped at all; a non-slug in the list is dropped on its own.
+      // is not scoped at all; a non-string in the list is dropped on its own.
       'git-tokens.json': [
         { token: '', projects: ['acme'] },
         { token: 'ghp' },
@@ -98,7 +98,7 @@ describe('decodeCredentials', () => {
         { ...SSH_ENTRY, projects: 'acme' },
         // A grant without its known_hosts line cannot be constrained; the
         // key stays, with the grants that can be.
-        { ...SSH_ENTRY, projects: [{ slug: 'acme', host: 'h', knownHostsEntry: '' }, ...SSH_ENTRY.projects] },
+        { ...SSH_ENTRY, projects: [{ projectId: 'acme', host: 'h', knownHostsEntry: '' }, ...SSH_ENTRY.projects] },
         'junk',
       ],
     }))
@@ -124,7 +124,7 @@ describe('sshKeyBlobsByProject', () => {
   it('indexes each key\'s canonical blob under every project it is assigned to', () => {
     const blobA = Buffer.from('key-a').toString('base64')
     const blobB = Buffer.from('key-b').toString('base64')
-    const grant = (slug: string) => ({ slug, host: 'github.com', knownHostsEntry: 'github.com ssh-ed25519 H' })
+    const grant = (projectId: string) => ({ projectId, host: 'github.com', knownHostsEntry: 'github.com ssh-ed25519 H' })
     const index = sshKeyBlobsByProject([
       { privateKey: 'A', publicKey: `ssh-ed25519 ${blobA} yaac a`, projects: [grant('one'), grant('two')] },
       { privateKey: 'B', publicKey: `ssh-ed25519 ${blobB}`, projects: [grant('two')] },
@@ -161,7 +161,7 @@ describe('decodeRegistration', () => {
       allowedHosts: ['api.example.com', 7],
       repoUrl: 'https://github.com/acme/repo',
       tool: 'claude',
-      projectSlug: 'demo',
+      projectId: 'demo',
       upstreamRedirects: {
         'api.anthropic.com': { host: 'mock', port: 8080, tls: false },
         'bad': { host: 'mock' },
@@ -175,15 +175,15 @@ describe('decodeRegistration', () => {
       allowedHosts: ['api.example.com'],
       repoUrl: 'https://github.com/acme/repo',
       tool: 'claude',
-      projectSlug: 'demo',
+      projectId: 'demo',
       upstreamRedirects: { 'api.anthropic.com': { host: 'mock', port: 8080, tls: false } },
     })
   })
 
   it('drops a registration without a tool, a project, its lists, or its label', () => {
-    const base = { rules: [], allowedHosts: [], tool: 'claude', projectSlug: 'demo' }
+    const base = { rules: [], allowedHosts: [], tool: 'claude', projectId: 'demo' }
     expect(decodeRegistration(cm({ ...base, tool: '' }))).toBeNull()
-    expect(decodeRegistration(cm({ ...base, projectSlug: undefined }))).toBeNull()
+    expect(decodeRegistration(cm({ ...base, projectId: undefined }))).toBeNull()
     expect(decodeRegistration(cm({ ...base, rules: 'x' }))).toBeNull()
     expect(decodeRegistration(cm({ ...base, allowedHosts: undefined }))).toBeNull()
     expect(decodeRegistration(cm(base, {}))).toBeNull()

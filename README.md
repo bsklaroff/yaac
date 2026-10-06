@@ -221,7 +221,10 @@ Dev runs need the `yaac` CLI on PATH. See
 ## CLI
 
 `yaac <command> --help` shows every option. A `<workspace-id>` can be a unique
-prefix of the id.
+prefix of the id. A `<project>` can be the project's name, its id, or a unique
+prefix of the id; `yaac project list` shows both. Names need not be unique
+(adding a remote twice makes two projects), so a shared name is refused with
+the candidates' ids.
 
 ```
 yaac server                     The yaac server the CLI and web app talk to
@@ -282,7 +285,7 @@ yaac group                      Named sidebar groups of workspaces
   create <project> <name>
   list [project]
   move <workspace-id> [group]   Omit the group to ungroup
-    --project <slug>            Required for a stopped workspace
+    --project <project>         Required for a stopped workspace
   delete <project> <group>      Its workspaces return to the default list
 
 yaac forward [workspace-id]     Bind a workspace's forwarded ports here (all
@@ -387,7 +390,7 @@ The data dir (`~/.yaac`) has three tiers:
 A client machine keeps its own state (the selected server, the auth daemon
 lock) in `~/.yaac-client`.
 
-Under `global/projects/<project>/`:
+Under `global/projects/<project id>/`:
 
 | Path | In the workspace | Holds |
 |------|------------------|-------|
@@ -435,7 +438,7 @@ works against a remote server too. An example:
   also offers to forward ports it sees a workspace listening on
   ([docs/auto-forward-ports.md](docs/auto-forward-ports.md)).
 - **cacheVolumes:** named directories that persist across workspaces. Keys
-  are names (stored at `global/projects/<project>/cache-volumes/<name>`),
+  are names (stored at `global/projects/<project id>/cache-volumes/<name>`),
   values are absolute paths in the workspace.
 - **addAllowedUrls:** hosts to allow in addition to the proxy's default
   allowlist (`DEFAULT_ALLOWED_HOSTS` in `packages/server/src/lib/allowed-hosts.ts`).

@@ -70,7 +70,7 @@ export const authApp = new Hono()
   )
   // Named git credentials (docs/git-credentials.md). Replace and delete push
   // to the runtime. Add and rename don't need to: a new credential serves no
-  // project until assigned (`PUT /project/:slug/git-credential` pushes), and a
+  // project until assigned (`PUT /project/:projectId/git-credential` pushes), and a
   // rename only changes a key's comment.
   .post(
     '/git/credentials',

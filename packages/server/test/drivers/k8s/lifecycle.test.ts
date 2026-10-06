@@ -17,7 +17,7 @@ const cacheStub = {
   onDelta: (fn: (source: string) => void) => { onDeltaHandlers.push(fn) },
   start: () => { order.push('cache.start') },
   stop: () => { order.push('cache.stop') },
-  workspacePods: () => [{ workspaceId: 'w1', projectSlug: 'demo', jobName: 'yaac-demo-w1' }],
+  workspacePods: () => [{ workspaceId: 'w1', projectId: 'demo', jobName: 'yaac-w1' }],
 }
 
 vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
@@ -27,6 +27,7 @@ vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
 }))
 vi.mock('#drivers/k8s/cluster', () => ({
+  deleteSlugNamedProjectSecrets: vi.fn().mockResolvedValue(undefined),
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
 }))

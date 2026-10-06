@@ -64,12 +64,12 @@ export function builtinSkillsDir(): string {
  * a pod mounts at `TOOL_SKILL_ROOTS` (containerless links them instead). All
  * four tools, regardless of the active one.
  */
-export function sharedSkillRoots(slug: string): string[] {
-  return SKILL_HOMES.map(([home, rel]) => path.join(home(slug), rel))
+export function sharedSkillRoots(projectId: string): string[] {
+  return SKILL_HOMES.map(([home, rel]) => path.join(home(projectId), rel))
 }
 
 /** Each root as (tool home, path within it). */
-const SKILL_HOMES: ReadonlyArray<readonly [home: (slug: string) => string, rel: string]> = [
+const SKILL_HOMES: ReadonlyArray<readonly [home: (projectId: string) => string, rel: string]> = [
   [claudeDir, 'skills'],
   [codexDir, 'skills'],
   [opencodeConfigDir, 'skills'],
@@ -149,13 +149,13 @@ export type SkillDelivery = 'link' | 'mountpoint'
  * an unshipped empty directory may be the user's.
  */
 export async function reconcileSharedSkillRoots(
-  srcDir: string, slug: string, delivery: SkillDelivery,
+  srcDir: string, projectId: string, delivery: SkillDelivery,
 ): Promise<string[]> {
   const names = await listBuiltinSkills(srcDir)
   for (const [homeOf, rel] of SKILL_HOMES) {
     // With nothing shipped, create nothing; only prune existing roots.
-    if (names.length > 0) await fs.mkdir(homeOf(slug), { recursive: true })
-    const home = await openSandboxDir(slug, homeOf(slug)).catch(() => null)
+    if (names.length > 0) await fs.mkdir(homeOf(projectId), { recursive: true })
+    const home = await openSandboxDir(projectId, homeOf(projectId)).catch(() => null)
     if (home === null) continue
     if (names.length > 0) await home.mkdirp(rel)
     // All operations below go through the pinned root, so a pod that swaps

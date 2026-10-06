@@ -29,10 +29,10 @@ const label = (d: StoppedWorkspaceEntry): string => d.title || d.prompt || 'New 
  * recreates the workspace and resumes the tool.
  */
 export function StoppedWorkspacesButton({
-  projectSlug,
+  projectId,
   stopped,
 }: {
-  projectSlug: string
+  projectId: string
   /** The project's stopped workspaces, from `useStoppedWorkspaces`. */
   stopped: StoppedWorkspaceEntry[]
 }): JSX.Element {
@@ -78,11 +78,11 @@ export function StoppedWorkspacesButton({
   // A failed write shows in the header, and a refetch puts the dot back.
   const markSeen = useMutation({
     mutationFn: (workspaceId: string | null) => (workspaceId === null
-      ? api.workspace['mark-all-deaths-seen'].$post({ json: { projectSlug } })
-      : api.workspace['mark-death-seen'].$post({ json: { projectSlug, workspaceId } })),
-    onMutate: (workspaceId) => patchStopped(queryClient, projectSlug, (e) =>
+      ? api.workspace['mark-all-deaths-seen'].$post({ json: { projectId } })
+      : api.workspace['mark-death-seen'].$post({ json: { projectId, workspaceId } })),
+    onMutate: (workspaceId) => patchStopped(queryClient, projectId, (e) =>
       (e.deathReason && (workspaceId === null || e.workspaceId === workspaceId) ? { ...e, seen: true } : e)),
-    onError: () => queryClient.invalidateQueries({ queryKey: ['stopped', projectSlug] }),
+    onError: () => queryClient.invalidateQueries({ queryKey: ['stopped', projectId] }),
   })
   // A row is marked at most once per page load, so a failing write, whose
   // refetch brings the row back unseen, can't loop.
@@ -99,7 +99,7 @@ export function StoppedWorkspacesButton({
     removeOptimisticStopped(entry.workspaceId)
     // Close so the main pane can show the restart's progress.
     closeOverlay()
-    provision(projectSlug, entry.tool, 'restart', entry.workspaceId,
+    provision(projectId, entry.tool, 'restart', entry.workspaceId,
       (sid, onProgress) => restartWorkspace(sid, onProgress),
       entry.groupId)
   }

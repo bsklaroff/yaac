@@ -20,6 +20,8 @@ import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from 
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import { WorkspaceExecError } from '#drivers/contract'
 
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+
 // A stop runs the (fake) driver's teardown, then creates whatever was queued
 // after the stopped workspace. Both run for real, over a real project.
 let tmpDir: string
@@ -29,22 +31,22 @@ let launched: string[]
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await seedProject('proj')
+  await seedProject(PROJ)
   clearAllProvisioningForTests()
   clearQueuedLaunchesForTests()
   deregistered = []
   launched = []
   installFakeWorkspaceDriver({
     findForTeardown: (id) => Promise.resolve(id === 'parent'
-      ? { workspaceId: 'parent', projectSlug: 'proj', unitName: 'yaac-proj-parent' }
+      ? { workspaceId: 'parent', projectId: PROJ, unitName: 'yaac-proj-parent' }
       : undefined),
     deregisterWorkspace: (id) => { deregistered.push(id); return Promise.resolve() },
     launch: (spec) => {
       launched.push(spec.workspaceId)
-      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectSlug: 'proj' }))
+      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
     },
   })
-  await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'parent', baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
+  await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'parent', baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
 })
 
 afterEach(async () => {
@@ -57,7 +59,7 @@ afterEach(async () => {
 /** The workspace whose first conversation began with `prompt`. */
 async function launchedWith(prompt: string): Promise<string | undefined> {
   for (const id of launched) {
-    if ((await listWorkspaceAgentSessions('proj', id))[0]?.firstPrompt === prompt) return id
+    if ((await listWorkspaceAgentSessions(PROJ, id))[0]?.firstPrompt === prompt) return id
   }
   return undefined
 }
@@ -71,7 +73,7 @@ describe('stopWorkspace', () => {
       findForTeardown: (id, opts) => {
         asked.push(opts)
         return Promise.resolve(id === 'spare1' && opts?.spares === true
-          ? { workspaceId: 'spare1', projectSlug: 'proj', unitName: 'yaac-proj-spare1' }
+          ? { workspaceId: 'spare1', projectId: PROJ, unitName: 'yaac-proj-spare1' }
           : undefined)
       },
     })
@@ -81,12 +83,12 @@ describe('stopWorkspace', () => {
   })
 
   it('tears the workspace down, then starts what was queued after it — only the top of a chain', async () => {
-    const child = await queueWorkspace('proj', { parent: 'parent', prompt: 'child', tool: 'claude' }, 'user')
-    const sibling = await queueWorkspace('proj', { parent: 'parent', prompt: 'sibling', tool: 'claude' }, 'user')
-    const grandchild = await queueWorkspace('proj', { parent: child.id, prompt: 'grandchild' }, 'user')
+    const child = await queueWorkspace(PROJ, { parent: 'parent', prompt: 'child', tool: 'claude' }, 'user')
+    const sibling = await queueWorkspace(PROJ, { parent: 'parent', prompt: 'sibling', tool: 'claude' }, 'user')
+    const grandchild = await queueWorkspace(PROJ, { parent: child.id, prompt: 'grandchild' }, 'user')
 
     // Addressed by a prefix, which the rows expand.
-    expect(await stopWorkspace('par')).toMatchObject({ workspaceId: 'parent', projectSlug: 'proj' })
+    expect(await stopWorkspace('par')).toMatchObject({ workspaceId: 'parent', projectId: PROJ })
     expect(deregistered).toEqual(['parent'])
 
     // Both direct children start from their stored settings: the parent's
@@ -98,7 +100,7 @@ describe('stopWorkspace', () => {
     expect(launched).toHaveLength(2)
     const becameId = await launchedWith('child')
     expect(await launchedWith('sibling')).toBeDefined()
-    expect(await getWorkspaceRow('proj', becameId!)).toMatchObject({ baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
+    expect(await getWorkspaceRow(PROJ, becameId!)).toMatchObject({ baseBranch: 'dev', permissionMode: 'auto', mode: 'tui' })
     // The grandchild now waits for the child's new workspace to stop.
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
     expect(waiting).toMatchObject({ parentWorkspaceId: becameId })
@@ -128,7 +130,7 @@ describe('stopWorkspace', () => {
         ...(driver.prepareImage !== undefined ? { prepareImage: driver.prepareImage } : {}),
         launch: (spec) => {
           launched.push(spec.workspaceId)
-          return Promise.resolve(handleFixture({ workspaceId: id, projectSlug: 'proj', jobName: `yaac-proj-${id}` }))
+          return Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJ, jobName: `yaac-proj-${id}` }))
         },
         ...(driver.awaitReady !== undefined ? { awaitReady: driver.awaitReady } : {}),
         exec: async (_job, cmd) => {
@@ -136,18 +138,18 @@ describe('stopWorkspace', () => {
           return { stdout: '', stderr: '' }
         },
         findForTeardown: (asked) => Promise.resolve(asked === id
-          ? { workspaceId: id, projectSlug: 'proj', unitName: `yaac-proj-${id}` }
+          ? { workspaceId: id, projectId: PROJ, unitName: `yaac-proj-${id}` }
           : undefined),
         destroy: (target) => {
           destroyed.push(target.unitName)
           return Promise.resolve(true)
         },
       })
-      registerProvisioning({ workspaceId: id, projectSlug: 'proj', tool: 'claude', kind })
+      registerProvisioning({ workspaceId: id, projectId: PROJ, tool: 'claude', kind })
       const create = kind === 'restart'
         ? runProvisioned(id, (onProgress) => restartWorkspace(id, { onProgress }))
         : runProvisioned(id, (onProgress) => startWorkspace({
-          projectSlug: 'proj',
+          projectId: PROJ,
           workspaceId: 'new',
           tool: 'claude',
           mode: 'tui',
@@ -174,7 +176,7 @@ describe('stopWorkspace', () => {
       })
       await vi.waitFor(() => expect(launched).toEqual(['new']), { timeout: 30_000 })
 
-      expect(await stopWorkspace('new')).toEqual({ workspaceId: 'new', projectSlug: 'proj', provisioning: true })
+      expect(await stopWorkspace('new')).toEqual({ workspaceId: 'new', projectId: PROJ, provisioning: true })
       expect(listProvisioning()).toEqual([
         expect.objectContaining({ workspaceId: 'new', stopping: true, message: 'Stopping…' }),
       ])
@@ -185,9 +187,9 @@ describe('stopWorkspace', () => {
       expect(destroyed).toEqual(['yaac-proj-new'])
       // Dropped, not left as a failed row.
       expect(listProvisioning()).toEqual([])
-      await vi.waitFor(async () => expect(await getWorkspaceRow('proj', 'new')).toBeUndefined())
+      await vi.waitFor(async () => expect(await getWorkspaceRow(PROJ, 'new')).toBeUndefined())
       expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({
-        projectSlug: 'proj', prompt: 'build it', title: 'Build', tool: 'claude', mode: 'tui', permissionMode: 'plan',
+        projectId: PROJ, prompt: 'build it', title: 'Build', tool: 'claude', mode: 'tui', permissionMode: 'plan',
       })])
     })
 
@@ -200,14 +202,14 @@ describe('stopWorkspace', () => {
       const checking = new Promise<void>((resolve) => { asked = resolve })
       const { create } = startCreate({ assertCanLaunch: () => { asked(); return allowed } })
       await checking
-      expect(await getWorkspaceRow('proj', 'new')).toBeUndefined()
+      expect(await getWorkspaceRow(PROJ, 'new')).toBeUndefined()
 
-      expect(await stopWorkspace('ne')).toEqual({ workspaceId: 'new', projectSlug: 'proj', provisioning: true })
+      expect(await stopWorkspace('ne')).toEqual({ workspaceId: 'new', projectId: PROJ, provisioning: true })
       allow()
 
       await expect(create).rejects.toThrow('kept as a draft')
       expect(launched).toEqual([])
-      expect(await getWorkspaceRow('proj', 'new')).toBeUndefined()
+      expect(await getWorkspaceRow(PROJ, 'new')).toBeUndefined()
       expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({ prompt: 'build it' })])
     })
 
@@ -266,7 +268,7 @@ describe('stopWorkspace', () => {
 
       await expect(create).resolves.toMatchObject({ workspaceId: id })
       await probeFailed
-      await vi.waitFor(async () => expect((await getWorkspaceRow('proj', id))?.stoppedAt).toBeDefined())
+      await vi.waitFor(async () => expect((await getWorkspaceRow(PROJ, id))?.stoppedAt).toBeDefined())
       await new Promise((resolve) => setTimeout(resolve, 100))
       expect(listProvisioning()).toEqual([])
       expect(deregistered.slice(before)).toEqual([id])

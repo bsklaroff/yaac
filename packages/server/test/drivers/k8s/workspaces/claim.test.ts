@@ -32,7 +32,6 @@ function pod(workspaceId: string, labels: Record<string, string> = {}): Paramete
         [LABEL_DATA_DIR_HASH]: dataDirHash(),
         'batch.kubernetes.io/job-name': `yaac-proj-${workspaceId}`,
         'yaac.workspace-id': workspaceId,
-        'yaac.project': 'proj',
         'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
         'yaac.tool': 'claude',
         ...labels,
@@ -167,7 +166,7 @@ describe('claimSpareWorkspace and the npm cache', () => {
 describe('registerWorkspace', () => {
   const reg = (o: Partial<WorkspaceRegistration> = {}): WorkspaceRegistration => ({
     workspaceId: 's1',
-    projectSlug: 'proj',
+    projectId: 'proj',
     tool: 'codex',
     config: {},
     remoteUrl: 'https://github.com/example/repo.git',

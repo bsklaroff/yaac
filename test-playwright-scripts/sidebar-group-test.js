@@ -18,12 +18,12 @@
  * (fake credentials, no prompt, so no model is called) in two groups named
  * for this run, then stops them and deletes the groups.
  * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/sidebar-group-test.js
- * (PROJECT defaults to yaac)
+ * (PROJECT, a project name or id, defaults to yaac)
  */
 import path from 'node:path'
-import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspaces } from './lib.js'
+import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspaces, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT ?? 'yaac'
+const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 const RUN = Date.now().toString(36).slice(-4)
 const MIXED = `Release ${RUN}`
 const STOPPED = `Parked ${RUN}`
@@ -43,7 +43,7 @@ function sidebarShape(groupName) {
 
 // Empty groups are created pinned, which keeps STOPPED listed once its only
 // member stops. MIXED is created by the workspace create, unpinned.
-const parked = await post('/workspace/group/create', { projectSlug: PROJECT, name: STOPPED })
+const parked = await post('/workspace/group/create', { projectId: PROJECT, name: STOPPED })
 console.log('creating three workspaces…')
 const [A, B, C] = await createWorkspaces([
   pi({ title: `PW member A ${RUN}`, group: MIXED }),
@@ -168,7 +168,7 @@ try {
   await Promise.allSettled([A, B].map(stop))
   const { groups } = await api(`/workspace/group/list?project=${PROJECT}`)
   for (const g of groups.filter((x) => x.name === MIXED || x.name === STOPPED)) {
-    await post('/workspace/group/delete', { projectSlug: PROJECT, groupId: g.groupId })
+    await post('/workspace/group/delete', { projectId: PROJECT, groupId: g.groupId })
   }
 }
 finish()

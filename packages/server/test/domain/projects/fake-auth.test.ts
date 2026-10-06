@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { assignProjectCredential, listCredentialSummaries, resolveProjectCredential, seedFakeAuth } from '#domain/projects'
@@ -19,6 +20,8 @@ import {
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@yaac/shared/tool-auth'
 import { projectDir, claudeDir, projectClaudeCredentialsFile } from '@yaac/shared/project-paths'
+
+const WEB = '2567a5ec-9705-4b7a-82c9-84033e06189d'
 
 let tmpDir: string
 
@@ -49,13 +52,13 @@ describe('seedFakeAuth', () => {
   })
 
   it('fans the claude bundle out to projects added before the seed', async () => {
-    await fs.mkdir(claudeDir('demo'), { recursive: true })
-    await fs.mkdir(projectDir('demo'), { recursive: true })
+    await fs.mkdir(claudeDir(DEMO_PROJECT_ID), { recursive: true })
+    await fs.mkdir(projectDir(DEMO_PROJECT_ID), { recursive: true })
 
     await seedFakeAuth(['claude-oauth'])
 
     const parsed = JSON.parse(
-      await fs.readFile(projectClaudeCredentialsFile('demo'), 'utf8'),
+      await fs.readFile(projectClaudeCredentialsFile(DEMO_PROJECT_ID), 'utf8'),
     ) as { claudeAiOauth: { accessToken: string } }
     expect(parsed.claudeAiOauth.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
   })
@@ -89,9 +92,9 @@ describe('seedFakeAuth', () => {
       projects: [],
     }])
     // A project added with it clones with the placeholder a parent proxy swaps.
-    await recordProject({ slug: 'web', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
-    await assignProjectCredential('web', listing[0].id)
-    expect(await resolveProjectCredential('web')).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
+    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
+    await assignProjectCredential(WEB, listing[0].id)
+    expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
   })
 
   it('refuses, seeding nothing, over a real credential — and re-seeds over a fake', async () => {

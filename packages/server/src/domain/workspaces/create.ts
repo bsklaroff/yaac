@@ -194,7 +194,7 @@ export interface WorkspaceCreateOptions {
   branch?: string
   /**
    * Resume an existing workspace: reuse the workspace at
-   * `workspaceDir(projectSlug, workspaceId)` if present and launch the agent
+   * `workspaceDir(projectId, workspaceId)` if present and launch the agent
    * with `--resume` so it loads the prior transcript. Requires `workspaceId`.
    */
   resume?: boolean
@@ -278,7 +278,7 @@ const WORKSPACE_RESOURCES: WorkspaceResources = {
 
 interface WorkspaceSetupParams {
   spec: WorkspaceSpec
-  projectSlug: string
+  projectId: string
   workspaceId: string
   tool: AgentTool
   mode: AgentMode
@@ -312,7 +312,7 @@ interface WorkspaceSetupParams {
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
-    spec, projectSlug, workspaceId, tool, mode, launching, initWindows, piProvider,
+    spec, projectId, workspaceId, tool, mode, launching, initWindows, piProvider,
     permissionMode, onLaunched, options, workspace,
   } = params
   const runtime = workspaceDriver()
@@ -346,7 +346,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
 
   // Link the checkout to the main clone's objects and update its `origin/*`,
   // on every launch, so the agent starts current.
-  await runtime.exec(jobName, buildCloneLinkExec(path.join(repoDir(projectSlug), '.git'), paths))
+  await runtime.exec(jobName, buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths))
 
   // yaac-workspace-init starts the in-pod engine in the background. Wait for
   // it so a broken engine fails the create with a clear error.
@@ -409,7 +409,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
       if (options.prewarm === true) return
       void reportAgentLaunchFailure({
         workspaceId,
-        projectSlug,
+        projectId,
         tool,
         kind: options.resume === true ? 'restart' : 'create',
         error: runtime.kind === 'containerless'
@@ -434,7 +434,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
  * logged, not thrown: the workspace is usable either way.
  */
 export async function handOverAgent(input: {
-  projectSlug: string
+  projectId: string
   workspaceId: string
   jobName: string
   tool: AgentTool
@@ -442,14 +442,14 @@ export async function handOverAgent(input: {
   prompt?: string
   emit: (message: string) => void
 }): Promise<void> {
-  const { projectSlug, workspaceId, jobName, tool, mode, prompt, emit } = input
+  const { projectId, workspaceId, jobName, tool, mode, prompt, emit } = input
   const window = agentWindowName(tool, 0)
   let conversationUp = true
   if (mode === 'acp') {
     emit(`Connecting to ${TOOL_LABELS[tool]}...`)
-    conversationUp = await awaitConversation(projectSlug, workspaceId, jobName, window)
+    conversationUp = await awaitConversation(projectId, workspaceId, jobName, window)
     if (conversationUp) {
-      await reconcileWorkspaceAgentSessions(projectSlug, workspaceId, mode, jobName).catch((err: unknown) => {
+      await reconcileWorkspaceAgentSessions(projectId, workspaceId, mode, jobName).catch((err: unknown) => {
         serverLog(`[server] create ${workspaceId}: recording the conversation failed: ${String(err)}`)
       })
     }
@@ -460,7 +460,7 @@ export async function handOverAgent(input: {
     return
   }
   emit('Sending initial prompt...')
-  await agentDriver(mode).deliverPrompt({ slug: projectSlug, workspaceId, jobName, tool }, window, prompt)
+  await agentDriver(mode).deliverPrompt({ projectId, workspaceId, jobName, tool }, window, prompt)
     .catch((err: unknown) => {
       serverLog(`[server] create ${workspaceId}: initial prompt failed: ${String(err)}`)
     })
@@ -473,13 +473,13 @@ export async function handOverAgent(input: {
  * gone, which the window probe (an exec) checks every two seconds.
  */
 async function awaitConversation(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   jobName: string,
   window: string,
 ): Promise<boolean> {
   let settled = false
-  const conversation = whenAcpConversation(projectSlug, workspaceId, window, ACP_CONVERSATION_WAIT_MS)
+  const conversation = whenAcpConversation(projectId, workspaceId, window, ACP_CONVERSATION_WAIT_MS)
     .finally(() => { settled = true })
   const windowGone = waitFor(async () => settled || await verifyAgentWindowAlive(jobName, [window])
     .then(() => false, (err: unknown) => err instanceof AgentLaunchDeadError),
@@ -523,13 +523,13 @@ export function failedCreateCollectsCheckout(
  * undone. `#db` decides what undo means for a resume (apply-workspace-event.ts).
  */
 async function reportCreateFailed(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   options: WorkspaceCreateOptions,
 ): Promise<void> {
   await applyWorkspaceEvent({
     type: 'workspace-create-failed',
-    projectSlug,
+    projectId,
     workspaceId,
     resume: options.resume,
   }).catch(() => {
@@ -594,10 +594,10 @@ export interface CreateSetup {
  * `createWorkspace` directly.
  */
 export async function resolveCreate(
-  projectSlug: string,
+  projectId: string,
   request: { tool?: AgentTool; model?: string; permissionMode?: PermissionMode; mode?: AgentMode },
 ): Promise<CreateSetup> {
-  const row = await getProjectRow(projectSlug)
+  const row = await getProjectRow(projectId)
   const tool = request.tool ?? row?.lastTool ?? 'claude'
   const remembered = row?.createDefaults[tool]
   const mode = request.mode ?? remembered?.mode ?? DEFAULT_AGENT_MODE
@@ -625,13 +625,13 @@ export async function resolveCreate(
 }
 
 export async function createWorkspace(
-  projectSlug: string,
+  projectId: string,
   options: WorkspaceCreateOptions,
 ): Promise<WorkspaceCreateResult> {
   try {
-    await fs.access(projectDir(projectSlug))
+    await fs.access(projectDir(projectId))
   } catch {
-    throw new ServerError('NOT_FOUND', `project ${projectSlug} not found`)
+    throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   }
 
   if (options.resume && !options.workspaceId) {
@@ -660,23 +660,23 @@ export async function createWorkspace(
     )
   }
 
-  const repo = repoDir(projectSlug)
+  const repo = repoDir(projectId)
 
-  const config: YaacConfig = await resolveProjectConfig(projectSlug) ?? {}
+  const config: YaacConfig = await resolveProjectConfig(projectId) ?? {}
 
   // Plain variables plus the secrets the egress path injects. Stored as rows,
   // since a remote client cannot set the server's own environment
   // (docs/remote-hosting.md).
-  const projectEnv = await resolveProjectEnv(projectSlug)
+  const projectEnv = await resolveProjectEnv(projectId)
 
-  const projectRow = await getProjectRow(projectSlug)
-  if (!projectRow) throw new ServerError('NOT_FOUND', `project ${projectSlug} not found`)
-  const { remoteUrl, id: projectId } = projectRow
+  const projectRow = await getProjectRow(projectId)
+  if (!projectRow) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  const { remoteUrl } = projectRow
 
   // Without a git credential the agent could neither fetch nor push.
   const parsedRemote = parseGitRemote(remoteUrl)
-  const credential = await resolveProjectCredential(projectSlug)
-  if (!credential) throw missingCredentialError(projectSlug)
+  const credential = await resolveProjectCredential(projectId)
+  if (!credential) throw missingCredentialError(projectRow.name)
 
   // Fail now rather than let the agent hit a confusing proxy 403 on fetch.
   const allowedHosts = resolveAllowedHosts(config)
@@ -756,7 +756,7 @@ export async function createWorkspace(
   throwIfProvisionStopped(workspaceId)
   await applyWorkspaceEvent({
     type: 'workspace-created',
-    projectSlug,
+    projectId,
     workspaceId,
     ...(refBranch !== undefined ? { baseBranch: refBranch } : {}),
     permissionMode,
@@ -767,7 +767,7 @@ export async function createWorkspace(
     ...(options.prewarm === true ? { spare: true } : {}),
   })
 
-  const wtDir = workspaceDir(projectSlug, workspaceId)
+  const wtDir = workspaceDir(projectId, workspaceId)
 
   // Pre-create the checkout dir so its hostPath mount (type Directory)
   // works while the checkout is still running.
@@ -780,15 +780,15 @@ export async function createWorkspace(
   // Set group and title now, so the workspace shows in its group while it
   // provisions.
   if (options.groupId !== undefined) {
-    await setWorkspaceGroup(projectSlug, workspaceId, options.groupId)
+    await setWorkspaceGroup(projectId, workspaceId, options.groupId)
   }
-  if (options.title !== undefined) await setWorkspaceTitle(projectSlug, workspaceId, options.title)
+  if (options.title !== undefined) await setWorkspaceTitle(projectId, workspaceId, options.title)
 
   // Start a new life after the row exists and before any handle is
   // recorded; this clears the previous life's handles.
   await applyWorkspaceEvent({
     type: 'workspace-life-started',
-    projectSlug,
+    projectId,
     workspaceId,
   })
 
@@ -802,7 +802,7 @@ export async function createWorkspace(
       // id is unknown until the pane exists; the registry fills it in.
       await applyWorkspaceEvent({
         type: 'sessions-launched',
-        projectSlug,
+        projectId,
         workspaceId,
         sessions: launching.map((a, i) => ({
           tool: a.tool,
@@ -829,7 +829,7 @@ export async function createWorkspace(
   const imageTask: Promise<string | undefined> = runtime.kind === 'containerless'
     ? Promise.resolve(undefined)
     : runtime.prepareImage({
-      project: { slug: projectSlug, id: projectId },
+      projectId,
       nestedContainers,
       onProgress: (m) => emit(m, options),
     })
@@ -840,7 +840,7 @@ export async function createWorkspace(
     if (!testEnv.e2eSkipFetch) {
       emit('Fetching latest from remote...', options)
       try {
-        await fetchProjectOrigin(projectSlug)
+        await fetchProjectOrigin(projectId)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         if (isGitAuthError(msg)) {
@@ -871,7 +871,6 @@ export async function createWorkspace(
 
   // Egress registration and registry plumbing, owned by the workspace.
   const substrateTask = runtime.prepareSubstrate({
-    projectSlug,
     projectId,
     workspaceId: workspaceId,
     tool,
@@ -903,12 +902,12 @@ export async function createWorkspace(
       ...(piAuth?.kind === 'api-key' ? { pi: piProviderInfo(piAuth.piProvider) } : {}),
     }
 
-    const claude = claudeDir(projectSlug)
-    const codex = codexDir(projectSlug)
+    const claude = claudeDir(projectId)
+    const codex = codexDir(projectId)
     const opencodeData = opencodeDataDir(projectId, workspaceId)
-    const opencodeCheckpoint = opencodeCheckpointDir(projectSlug, workspaceId)
-    const opencodeConfig = opencodeConfigDir(projectSlug)
-    const pi = piDir(projectSlug)
+    const opencodeCheckpoint = opencodeCheckpointDir(projectId, workspaceId)
+    const opencodeConfig = opencodeConfigDir(projectId)
+    const pi = piDir(projectId)
     const cachedPackages = cachedPackagesDir(projectId)
 
     // Create the shared dirs the pod mounts before launch, or the kubelet
@@ -924,14 +923,14 @@ export async function createWorkspace(
     await fs.mkdir(pi, { recursive: true })
     // Put every tool's history for this workspace in the layout this driver
     // uses (mounted over the tool homes, or linked into them).
-    await convergeAgentHistory(projectSlug, workspaceId, { layers: layersToolHomes })
+    await convergeAgentHistory(projectId, workspaceId, { layers: layersToolHomes })
     // acpd's conversation records. Kept under the project dir (which
     // teardown does not prune) so the server can read them after the pod is
     // gone. Only `acp` workspaces get the dir and mount.
-    const acpLogs = mode === 'acp' ? acpLogDir(projectSlug, workspaceId) : undefined
+    const acpLogs = mode === 'acp' ? acpLogDir(projectId, workspaceId) : undefined
     if (acpLogs !== undefined) await fs.mkdir(acpLogs, { recursive: true })
     // Pasted images (`saveWorkspaceAttachment`); must exist for its mount.
-    const attachments = workspaceAttachmentsDir(projectSlug, workspaceId)
+    const attachments = workspaceAttachmentsDir(projectId, workspaceId)
     await fs.mkdir(attachments, { recursive: true })
 
     // SSH remotes need a known_hosts file, written from the host key the
@@ -939,7 +938,7 @@ export async function createWorkspace(
     // driver's concern.
     let sshKnownHostsFile: string | undefined
     if (credential.kind === 'ssh') {
-      sshKnownHostsFile = path.join(projectDir(projectSlug), 'known_hosts')
+      sshKnownHostsFile = path.join(projectDir(projectId), 'known_hosts')
       await writeKnownHostsFile([credential.knownHostsEntry], sshKnownHostsFile)
     }
 
@@ -947,26 +946,26 @@ export async function createWorkspace(
     // they hold placeholders the proxy swaps; without it, the real
     // credentials (docs/containerless-driver.md), merged so a token a running
     // workspace refreshed is not overwritten (#domain/auth).
-    await seedProjectToolHome(projectSlug, { mediatedEgress })
+    await seedProjectToolHome(projectId, { mediatedEgress })
 
     // Seed every tool's config (a retooled spare needs it too). Claude gets
     // onboarding state so it skips the first-run wizard and login, and its
     // trusted roots as the agent will see them. The homes are writable by
     // the workspace, so writes go through a sandboxed dir handle that
     // replaces a planted symlink rather than following it.
-    const claudeHome = await openSandboxDir(projectSlug, claude)
+    const claudeHome = await openSandboxDir(projectId, claude)
     await seedClaudeJson(
       claudeHome,
       mediatedEgress ? ['/workspace'] : await withResolved([wtDir]),
     )
     await seedClaudeSettings(claudeHome)
-    const piHome = await openSandboxDir(projectSlug, pi)
-    const opencodeConfigHome = await openSandboxDir(projectSlug, opencodeConfig)
+    const piHome = await openSandboxDir(projectId, pi)
+    const opencodeConfigHome = await openSandboxDir(projectId, opencodeConfig)
     // Hook up the reporters that publish each agent's conversation, model and
     // mode on its pane. Best-effort: agents still run without them.
     await (async () => ensureAgentReporters({
       claude: claudeHome,
-      codex: await openSandboxDir(projectSlug, codex),
+      codex: await openSandboxDir(projectId, codex),
       pi: piHome,
       opencodeConfig: opencodeConfigHome,
     }))().catch(() => {})
@@ -985,20 +984,20 @@ export async function createWorkspace(
       }
     }
     for (const [key] of cacheVolumeEntries) {
-      await fs.mkdir(cacheVolumeDir(projectSlug, key), { recursive: true })
+      await fs.mkdir(cacheVolumeDir(projectId, key), { recursive: true })
     }
 
     // yaac's bundled skills: a pod gets a per-workspace copy mounted
     // read-only into each tool's skills root; containerless links them into
     // the project's shared skills roots instead.
-    const builtinSkillsStaging = path.join(workspaceStateDir(projectSlug, workspaceId), 'builtin-skills')
+    const builtinSkillsStaging = path.join(workspaceStateDir(projectId, workspaceId), 'builtin-skills')
     const builtinSkillNames = layersToolHomes
       ? await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
-      : await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'link')
+      : await reconcileSharedSkillRoots(builtinSkillsDir(), projectId, 'link')
 
     // In-workspace helper commands (yaac-mama, yaac-workspace-init), staged
     // like the skills.
-    const workspaceBinStaging = path.join(workspaceStateDir(projectSlug, workspaceId), 'bin')
+    const workspaceBinStaging = path.join(workspaceStateDir(projectId, workspaceId), 'bin')
     const workspaceBinNames = await stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging)
     // Without the init script the pod has no git identity, tmux or streamd.
     if (!workspaceBinNames.includes(WORKSPACE_INIT_SCRIPT)) {
@@ -1012,7 +1011,7 @@ export async function createWorkspace(
       // the kubelet would create them root-owned, blocking the agent's own
       // skills and a later containerless run. Best-effort: the skills mount
       // either way.
-      await reconcileSharedSkillRoots(builtinSkillsDir(), projectSlug, 'mountpoint')
+      await reconcileSharedSkillRoots(builtinSkillsDir(), projectId, 'mountpoint')
         .catch((err: unknown) => {
           serverLog(`[server] create ${workspaceId}: skills roots: ${String(err)}`)
         })
@@ -1056,7 +1055,7 @@ export async function createWorkspace(
   if (!mediatedEgress && !options.prewarm) {
     const mamaToken = crypto.randomBytes(32).toString('hex')
     await setWorkspaceMamaTokenHash(
-      projectSlug,
+      projectId,
       workspaceId,
       createHash('sha256').update(mamaToken).digest('hex'),
     )
@@ -1170,7 +1169,7 @@ export async function createWorkspace(
   env.push(`YAAC_TOOL=${tool}`)
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
   env.push(`YAAC_GIT_EMAIL=${gitUser.email}`)
-  env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(projectSlug, workspaceId, forwardedPorts)}`)
+  env.push(`YAAC_STATUS_RIGHT=${buildStatusRight(workspaceId, forwardedPorts)}`)
   if (nestedContainers) env.push('YAAC_NESTED_ENGINE=1')
 
   // Mounts are declared against host paths; each driver realizes them its
@@ -1187,7 +1186,7 @@ export async function createWorkspace(
       { source: { kind: 'hostPath', path: opencodeData }, mountPath: CONTAINER_OPENCODE_DATA },
       { source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_CHECKPOINT },
     ]
-  const history = (part: AgentHistoryPart): string => agentHistoryDir(projectSlug, workspaceId, part)
+  const history = (part: AgentHistoryPart): string => agentHistoryDir(projectId, workspaceId, part)
   const mounts: WorkspaceMount[] = [
     { source: { kind: 'hostPath', path: wtDir }, mountPath: '/workspace' },
     // Read-only, at the server's own path: the checkout's alternates file
@@ -1228,7 +1227,7 @@ export async function createWorkspace(
     { source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR },
     // Global, so the next workspace gets the warm cache wherever it runs.
     ...cacheVolumeEntries.map(([key, containerPath]): WorkspaceMount => ({
-      source: { kind: 'hostPath', path: cacheVolumeDir(projectSlug, key) },
+      source: { kind: 'hostPath', path: cacheVolumeDir(projectId, key) },
       mountPath: containerPath,
     })),
     // Server-staged skills and helper commands. Without layering the skills
@@ -1247,7 +1246,7 @@ export async function createWorkspace(
   }
 
   const spec: WorkspaceSpec = {
-    projectSlug,
+    projectId,
     workspaceId: workspaceId,
     tool,
     mode,
@@ -1282,10 +1281,10 @@ export async function createWorkspace(
       : `environment variable ${name} is set to two different values`)
     throwIfProvisionStopped(workspaceId)
     handle = await launchWithSetup({
-      spec, projectSlug, workspaceId, tool, mode, launching, initWindows, permissionMode,
+      spec, projectId, workspaceId, tool, mode, launching, initWindows, permissionMode,
       piProvider: toolAuthByTool.pi?.piProvider,
       onLaunched: (h) => {
-        target = { projectSlug, workspaceId: workspaceId, unitName: h.jobName }
+        target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },
       options, workspace: workspaceTask,
     })
@@ -1303,7 +1302,7 @@ export async function createWorkspace(
     let podGone: boolean
     try {
       target ??= await workspaceDriver().findForTeardown(workspaceId, { spares: options.prewarm === true })
-      if (target !== undefined && target.projectSlug !== projectSlug) target = undefined
+      if (target !== undefined && target.projectId !== projectId) target = undefined
       podGone = target === undefined
         ? true
         : await workspaceDriver().destroy(target, { salvageImages: false, unitOnly })
@@ -1325,13 +1324,13 @@ export async function createWorkspace(
       if (failedCreateCollectsCheckout(options)) {
         void workspaceTask
           .catch(() => { /* the failure is already the caller's */ })
-          .then(() => podGone && deleteWorkspaceState(projectSlug, workspaceId))
+          .then(() => podGone && deleteWorkspaceState(projectId, workspaceId))
           .then((removed) => (removed
-            ? reportCreateFailed(projectSlug, workspaceId, options)
+            ? reportCreateFailed(projectId, workspaceId, options)
             : undefined))
           .catch(() => { /* best-effort; nothing else can retry it */ })
       } else {
-        await reportCreateFailed(projectSlug, workspaceId, options)
+        await reportCreateFailed(projectId, workspaceId, options)
       }
     }
     throw err
@@ -1340,7 +1339,7 @@ export async function createWorkspace(
   // A spare's agent is handed over when it is claimed.
   if (options.prewarm !== true) {
     await handOverAgent({
-      projectSlug,
+      projectId,
       workspaceId,
       jobName: handle.jobName,
       tool,

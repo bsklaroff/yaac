@@ -63,7 +63,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
 
     find: (workspaceId) => Promise.resolve(findWorkspace(workspaceId)),
     findForTeardown: (workspaceId, opts) => Promise.resolve(findForTeardown(workspaceId, opts)),
-    list: (projectSlug) => Promise.resolve(listWorkspaces(projectSlug)),
+    list: (projectId) => Promise.resolve(listWorkspaces(projectId)),
     count: () => Promise.resolve(countWorkspaces()),
     changes: (jobName, base, defaultBase) => getWorkspaceChanges(jobName, base, defaultBase),
     snapshot: (resync) => createRuntimeSnapshot(resync),

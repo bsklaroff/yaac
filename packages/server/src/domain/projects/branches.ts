@@ -18,14 +18,14 @@ export interface ProjectBranches {
  * CLI or `yaac-mama --branch` need not be listed, since create fetches and
  * validates it.
  */
-export async function getProjectBranches(slug: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
-  const repo = repoDir(slug)
+export async function getProjectBranches(projectId: string, opts: { refresh?: boolean } = {}): Promise<ProjectBranches> {
+  const repo = repoDir(projectId)
 
   if (opts.refresh) {
     // With no credential (or a local-path remote in tests) the fetch is
     // unauthenticated.
     try {
-      await fetchProjectOrigin(slug)
+      await fetchProjectOrigin(projectId)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (isGitAuthError(msg)) {

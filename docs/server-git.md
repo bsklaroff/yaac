@@ -1,6 +1,6 @@
 # Server-side git
 
-A project has one **main clone**, at `global/projects/<slug>/repo`. Each
+A project has one **main clone**, at `global/projects/<project id>/repo`. Each
 workspace's checkout is a separate clone that borrows the main clone's
 objects. The server owns the main clone; each workspace owns its checkout.
 
@@ -28,7 +28,7 @@ ones, and writes its own alternates path.
 **The alternates line** is the only path stored in a checkout's git state. It
 always holds the main clone's objects dir as the server sees it, and a pod
 mounts the main clone at that same path
-(`/yaac/global/projects/<slug>/repo/.git` under the in-cluster server), so the
+(`/yaac/global/projects/<project id>/repo/.git` under the in-cluster server), so the
 line is valid everywhere. Every create and restart rewrites it
 (`buildCloneLinkExec`), which repairs a checkout last launched by a server
 that saw the data dir at another path.
@@ -213,7 +213,7 @@ discovers one from its cwd.
 
 The URL a fetch goes to, the credential matched to it, and the `repoUrl` the
 k8s proxy uses to limit the project's https credential to one host and to
-gate the ssh agent all come from `projectRemoteUrl(slug)` in
+gate the ssh agent all come from `projectRemoteUrl(projectId)` in
 `#domain/projects`, which reads the project row. `fetchOrigin` fetches by
 explicit URL and refspec, never by the remote name `origin`, so a
 repository's `remote.origin.*` cannot change where a fetch goes or which

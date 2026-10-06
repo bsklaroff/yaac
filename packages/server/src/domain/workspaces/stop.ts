@@ -9,7 +9,7 @@ import { ServerError } from '@yaac/shared/errors'
 
 export interface StoppedWorkspaceInfo {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   /** Set when it was still being created or restarted, so there is nothing
    *  to tear down yet: a create becomes a draft, a restart stays stopped. */
   provisioning?: true
@@ -33,7 +33,7 @@ export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspac
     void provisioning.ranAs
       .then((ranAs) => (ranAs === undefined ? undefined : stopRunning(ranAs, ranAs)))
       .catch((err: unknown) => serverLog(`[server] stopping ${workspaceId} once provisioned failed: ${String(err)}`))
-    return { workspaceId, projectSlug: provisioning.projectSlug, provisioning: true }
+    return { workspaceId, projectId: provisioning.projectId, provisioning: true }
   }
   return await stopRunning(workspaceId, idOrPrefix)
 }
@@ -49,20 +49,20 @@ async function stopRunning(workspaceId: string, idOrPrefix: string): Promise<Sto
 
   // Adopt any token the agent refreshed (without a proxy it exists only in
   // the project's tool home). Best-effort.
-  await harvestToolCredentials({ slug: target.projectSlug })
+  await harvestToolCredentials({ projectId: target.projectId })
     .catch((err: unknown) => serverLog(`[server] credential harvest on stop failed: ${String(err)}`))
 
   await cleanupWorkspaceDetached({
     jobName: target.unitName,
-    projectSlug: target.projectSlug,
+    projectId: target.projectId,
     workspaceId: target.workspaceId,
   })
   // No need to wait for the runtime to be gone. On failure, the reconcile
   // step launches whatever was released.
-  await startQueuedChildren(target.projectSlug, target.workspaceId)
+  await startQueuedChildren(target.projectId, target.workspaceId)
     .catch((err: unknown) => serverLog(`[server] starting queued workspaces on stop failed: ${String(err)}`))
   return {
     workspaceId: target.workspaceId,
-    projectSlug: target.projectSlug,
+    projectId: target.projectId,
   }
 }

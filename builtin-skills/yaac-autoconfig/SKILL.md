@@ -24,7 +24,7 @@ The job has three parts:
 ## How yaac-config.json actually behaves (read this first)
 
 - **The repo-root file is a template, not the live config.** yaac reads each
-  project's config from `~/.yaac/projects/<slug>/config/yaac-config.json` on the
+  project's config from `~/.yaac/projects/<project id>/config/yaac-config.json` on the
   host, which is populated **only** via `yaac config edit <project>` or the web
   app's project config editor. The `yaac-config.json` you write at the repo root
   is **never read automatically** by session create — it's a convenient,

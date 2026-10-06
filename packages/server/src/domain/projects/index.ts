@@ -48,6 +48,7 @@ export {
   assertProjectExists,
   getProjectDetail,
   projectRemoteUrl,
+  resolveProjectId,
   resolveProjectConfigWithSource,
 } from './detail'
 export { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from './dockerfile'

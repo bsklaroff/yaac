@@ -77,12 +77,11 @@ const mockPush = vi.mocked(pushImageToRegistry)
 const mockImageExists = vi.mocked(imageExists)
 
 const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
-const PROJECT = { slug: 'demo', id: ID }
 const registrySelector = (id: string): string =>
   `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()},yaac.project-id=${id}`
 /** The labels every registry object of project `id` carries. */
-const registryLabels = (id: string, slug = 'demo'): Record<string, string> => ({
-  app: REGISTRY_APP_LABEL, [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(), 'yaac.project': slug, 'yaac.project-id': id,
+const registryLabels = (id: string): Record<string, string> => ({
+  app: REGISTRY_APP_LABEL, [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(), 'yaac.project-id': id,
 })
 
 const NODE_IP = '10.89.0.7'
@@ -143,7 +142,7 @@ function stageLiveCluster(podPhase = 'Succeeded', podLogs = ''): void {
 describe('projectRegistryHost', () => {
   it('is the svc-DNS FQDN of the registry named by the project id, with its port', () => {
     // Full FQDN because the proxy forwards only `.cluster.local`. Named by
-    // id, so a project re-added under an old slug gets its own registry.
+    // id, so a project re-added under an old name gets its own registry.
     expect(projectRegistryHost(ID)).toBe(`yaac-reg-${ID}.test-ns.svc.cluster.local:5000`)
   })
 })
@@ -168,7 +167,7 @@ describe('ensureProjectRegistry', () => {
   })
 
   it('applies PVC, Deployment, Service, and all network policies, then waits and runs the hosts-writer pod', async () => {
-    await ensureProjectRegistry(PROJECT)
+    await ensureProjectRegistry(ID)
 
     const kinds = applied().map((m) => m.kind)
     // The claim first, so the rollout wait never sees a pod Pending on a
@@ -207,7 +206,7 @@ describe('ensureProjectRegistry', () => {
   })
 
   it('names every object after the project id, within the DNS-label cap', async () => {
-    await ensureProjectRegistry(PROJECT)
+    await ensureProjectRegistry(ID)
     const objects = applied<{ kind: string; metadata: { name: string; labels: Record<string, string> } }>()
       .filter((m) => m.kind !== 'Pod')
     expect(objects.map((m) => m.kind).sort()).toEqual([
@@ -217,8 +216,7 @@ describe('ensureProjectRegistry', () => {
     for (const { metadata } of objects) {
       expect(metadata.name.startsWith(`yaac-reg-${ID}`)).toBe(true)
       expect(metadata.name.length).toBeLessThanOrEqual(63)
-      // Selectors and the orphan GC use the id; the slug is for humans.
-      expect(metadata.labels).toMatchObject({ 'yaac.project-id': ID, 'yaac.project': 'demo' })
+      expect(metadata.labels).toMatchObject({ 'yaac.project-id': ID })
     }
   })
 
@@ -226,7 +224,7 @@ describe('ensureProjectRegistry', () => {
     // The store lives on the claim. A bound volume carries its own node
     // affinity, which the scheduler enforces, so a hand-written pin could
     // only contradict it.
-    await ensureProjectRegistry(PROJECT)
+    await ensureProjectRegistry(ID)
 
     const deploy = applied<{
         kind: string
@@ -286,8 +284,8 @@ describe('ensureProjectRegistry', () => {
       return Promise.resolve({ stdout: '', stderr: '' })
     })
 
-    const first = ensureProjectRegistry(PROJECT)
-    const second = ensureProjectRegistry(PROJECT)
+    const first = ensureProjectRegistry(ID)
+    const second = ensureProjectRegistry(ID)
     await new Promise((r) => setTimeout(r, 10))
     // While the first ensure waits on its rollout, only its six object
     // applies have happened; the second has not started.
@@ -302,12 +300,12 @@ describe('ensureProjectRegistry', () => {
     fakeCluster.reset()
     stageLiveCluster('Failed', 'read-only file system\n')
 
-    await expect(ensureProjectRegistry(PROJECT))
+    await expect(ensureProjectRegistry(ID))
       .rejects.toThrow(/did not complete \(phase Failed\); logs: read-only file system/)
   })
 
   it('runs the registry as untrusted-free infra off its own claim', async () => {
-    await ensureProjectRegistry(PROJECT)
+    await ensureProjectRegistry(ID)
 
     const dep = appliedKind('Deployment') as {
       metadata: { name: string; namespace: string; labels: Record<string, string> }
@@ -376,7 +374,7 @@ describe('ensureProjectRegistry', () => {
   })
 
   it('fences the registry to its own project: sessions in, nothing out', async () => {
-    await ensureProjectRegistry(PROJECT)
+    await ensureProjectRegistry(ID)
 
     const nps = appliedAllKind('NetworkPolicy') as unknown as Array<{
       metadata: { name: string; namespace: string }
@@ -390,7 +388,7 @@ describe('ensureProjectRegistry', () => {
     const name = projectRegistryName(ID)
 
     // Only this project's workspaces may reach its registry. Selected by
-    // id, so a later project with the same slug is not admitted.
+    // id, so a later project with the same name is not admitted.
     const sessions = nps.find((m) => m.metadata.name === `${name}-sessions`)!
     expect(sessions.spec.podSelector.matchLabels).toEqual({ 'yaac.project-id': ID })
     expect(sessions.spec.policyTypes).toEqual(['Egress'])
@@ -411,7 +409,7 @@ describe('ensureProjectRegistry', () => {
     // `yaac cluster install` mirrors the image. The server has no container
     // engine, so it only looks the mirror tag up.
     mockHasTag.mockResolvedValue(true)
-    await ensureProjectRegistry(PROJECT)
+    await ensureProjectRegistry(ID)
     expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
     expect(otherChildren()).toEqual([])
     expect(mockPush).not.toHaveBeenCalled()
@@ -421,7 +419,7 @@ describe('ensureProjectRegistry', () => {
     stageLiveCluster()
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
-    await expect(ensureProjectRegistry(PROJECT))
+    await expect(ensureProjectRegistry(ID))
       .rejects.toThrow(/Registry image .* is missing.*yaac cluster install/s)
     expect(otherChildren()).toEqual([])
   })
@@ -434,7 +432,7 @@ describe('ensureProjectRegistry', () => {
         ? Promise.reject(new Error('timed out waiting for the condition'))
         : Promise.resolve({ stdout: '', stderr: '' })
     ))
-    await expect(ensureProjectRegistry(PROJECT))
+    await expect(ensureProjectRegistry(ID))
       .rejects.toThrow(/get pods,pvc .* no default StorageClass/s)
   })
 
@@ -442,7 +440,7 @@ describe('ensureProjectRegistry', () => {
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
     mockHasTag.mockResolvedValue(false)
     mockImageExists.mockResolvedValue(false)
-    await expect(ensureProjectRegistry(PROJECT)).rejects.toThrow(/missing/)
+    await expect(ensureProjectRegistry(ID)).rejects.toThrow(/missing/)
     expect(otherChildren()).toEqual([])
     vi.unstubAllEnvs()
   })
@@ -485,19 +483,18 @@ describe('gcOrphanProjectRegistries', () => {
   }
 
   it('removes registries no live project id owns, keeping the rest', async () => {
-    const labelled = (id: string, slug: string): Record<string, string> => registryLabels(id, slug)
     stageRegistries([
       // A live project's registry, in every kind it is made of.
-      { kind: 'Service', metadata: { name: `yaac-reg-${LIVE}`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
-      { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${LIVE}-storage`, labels: labelled(LIVE, 'app'), creationTimestamp: OLD } },
+      { kind: 'Service', metadata: { name: `yaac-reg-${LIVE}`, labels: registryLabels(LIVE), creationTimestamp: OLD } },
+      { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${LIVE}-storage`, labels: registryLabels(LIVE), creationTimestamp: OLD } },
       // A removed project's.
-      { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${GONE}-storage`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
-      { kind: 'Deployment', metadata: { name: `yaac-reg-${GONE}`, labels: labelled(GONE, 'app'), creationTimestamp: OLD } },
+      { kind: 'PersistentVolumeClaim', metadata: { name: `yaac-reg-${GONE}-storage`, labels: registryLabels(GONE), creationTimestamp: OLD } },
+      { kind: 'Deployment', metadata: { name: `yaac-reg-${GONE}`, labels: registryLabels(GONE), creationTimestamp: OLD } },
       // Too young: a project added after the live set was read may be
       // creating it right now.
-      { kind: 'Service', metadata: { name: 'yaac-reg-new', labels: labelled('5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9', 'new'), creationTimestamp: new Date(NOW - 1000).toISOString() } },
+      { kind: 'Service', metadata: { name: 'yaac-reg-new', labels: registryLabels('5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9'), creationTimestamp: new Date(NOW - 1000).toISOString() } },
       // An unreadable age is never old enough to delete.
-      { kind: 'Service', metadata: { name: 'yaac-reg-ageless', labels: labelled('6f7a8b9c-0d1e-4f2a-b3c4-d5e6f7a8b9c0', 'ageless'), creationTimestamp: '' } },
+      { kind: 'Service', metadata: { name: 'yaac-reg-ageless', labels: registryLabels('6f7a8b9c-0d1e-4f2a-b3c4-d5e6f7a8b9c0'), creationTimestamp: '' } },
     ])
 
     await gcOrphanProjectRegistries(new Set([LIVE]), NOW)
@@ -593,7 +590,6 @@ describe('reconcileProjectRegistryGc', () => {
           labelSelector: {
             matchLabels: {
               app: REGISTRY_APP_LABEL,
-              'yaac.project': 'demo',
               'yaac.project-id': ID,
               [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
             },

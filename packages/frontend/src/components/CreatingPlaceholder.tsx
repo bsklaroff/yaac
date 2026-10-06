@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import { LoadingIcon } from '#lib/icons'
 import { agentLabel } from '#lib/agentLabel'
+import { useProjectName } from '#lib/projectIdentity'
 import { dismissProvisioning } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
@@ -11,6 +12,7 @@ import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorkspaceEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
+  const projectName = useProjectName()
 
   const dismiss = (): void => {
     void dismissProvisioning(creating.workspaceId).catch(() => { /* best-effort */ })
@@ -39,7 +41,7 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorksp
           <div className="flex items-center gap-2 text-sm text-text">
             <LoadingIcon size={15} className="animate-spin text-text-dim" />
             {creating.kind === 'restart' ? 'Restarting' : 'Creating'} {agentLabel(creating.tool, creating)} workspace
-            in {creating.projectSlug}
+            in {projectName(creating.projectId)}
           </div>
           <p className="text-xs text-text-faint">{creating.message}</p>
           {!creating.stopping && (

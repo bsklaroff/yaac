@@ -23,7 +23,6 @@ import { listObjects } from '#drivers/k8s/substrate'
 import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { testEnv } from '@yaac/shared/env'
 import type { YaacConfig } from '@yaac/shared/types'
-import type { ProjectRef } from '#drivers/contract'
 import { serverLog } from '#log'
 import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
@@ -232,25 +231,25 @@ async function readInUse(): Promise<Set<string>> {
  * every chain at once.
  */
 async function readLiveImages(
-  projects: ProjectRef[],
-  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+  projectIds: string[],
+  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
 ): Promise<LiveImages> {
   const inUse = await readInUse()
   let wanted: Set<string> | null = new Set<string>()
   const prefix = testEnv.imagePrefix ?? 'yaac'
-  for (const project of projects) {
+  for (const projectId of projectIds) {
     try {
-      const nested = (await projectConfig(project.slug))?.nestedContainers === true
-      const { layers } = await resolveImageChain(project, prefix, nested)
+      const nested = (await projectConfig(projectId))?.nestedContainers === true
+      const { layers } = await resolveImageChain(projectId, prefix, nested)
       for (const { tag } of layers) wanted.add(tag)
     } catch (err) {
-      serverLog(`[main-registry-gc] ${project.slug}: cannot resolve its image chain, `
+      serverLog(`[main-registry-gc] ${projectId}: cannot resolve its image chain, `
         + `so no image generation is retired this pass: ${String(err)}`)
       wanted = null
       break
     }
   }
-  return { projectIds: projects.map((p) => p.id), inUse, wanted }
+  return { projectIds, inUse, wanted }
 }
 
 /**
@@ -318,12 +317,12 @@ export function _mainRegistryGcSettledForTests(): Promise<void> {
  * one collecting mid-run could delete a blob another run is pushing.
  */
 export function reconcileMainRegistryGc(
-  projects: ProjectRef[],
-  projectConfig: (slug: string) => Promise<YaacConfig | undefined>,
+  projectIds: string[],
+  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
 ): Promise<void> {
   if (testEnv.k8sNamespace !== 'yaac' || inFlightPass) return Promise.resolve()
   inFlightPass = (async () => {
-    const live = await readLiveImages(projects, projectConfig)
+    const live = await readLiveImages(projectIds, projectConfig)
     const { retired, busy, collected } = await gcMainRegistry(live)
     if (busy) {
       serverLog('[main-registry-gc] registry has pushes in flight, leaving the collect for later')

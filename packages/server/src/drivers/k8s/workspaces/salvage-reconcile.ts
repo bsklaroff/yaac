@@ -50,7 +50,7 @@ export async function reconcileImageSalvage(
     lastAttemptMs.set(p.workspaceId, nowMs)
     void salvageJobImages({
       jobName: p.jobName,
-      project: { slug: p.projectSlug, id: p.projectId },
+      projectId: p.projectId,
       workspaceId: p.workspaceId,
     }).catch(() => { /* logged inside; teardown salvage retries */ })
   }

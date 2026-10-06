@@ -33,8 +33,8 @@ import { firstSnapshot } from '@yaac/test-utils/events-ws'
  * Tests run in declaration order over one data dir, so order matters:
  *  - the 'empty state' describe runs first, before any project exists;
  *  - the validation-error tests create no state;
- *  - the 'with seeded projects' describe runs last, with a unique slug per
- *    project.
+ *  - later tests seed projects, each under a unique name, except the
+ *    ambiguity case, which gives two projects one name on purpose.
  * Nothing here may seed credentials: the create tests expect the
  * missing-credential error.
  *
@@ -170,7 +170,8 @@ describe('server WebSocket surface (real server, no containers)', () => {
 
 /**
  * Provisioning entries in the `/api/events` snapshot. A create for a
- * missing project fails fast, with no cluster work. Checks that the entry
+ * project with no git credential fails fast, with no cluster work. Checks
+ * that the entry
  * appears with kind, createdAt and its error, survives a reconnect (as on a
  * page reload), and goes away when dismissed. The entry is in memory only
  * and dismissed at the end, so nothing leaks into later tests.
@@ -179,13 +180,16 @@ describe('provisioning sessions in the server snapshot (real server, no containe
   it('surfaces a create as a provisioning entry, survives a reconnect, then dismisses', async () => {
     const base = `http://127.0.0.1:${server.lock.port}`
     const workspaceId = crypto.randomUUID()
+    const repo = path.join(testEnv.scratchDir, 'proj-provisioning')
+    await createTestRepo(repo)
+    const projectId = await addTestProject(server, repo)
 
-    // The entry is registered first, then marked failed on NOT_FOUND and
-    // kept until dismissed.
+    // The entry is registered first, then marked failed on the missing
+    // credential and kept until dismissed.
     const res = await fetch(`${base}/api/workspace/create`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ project: 'ghost-project', tool: 'claude', workspaceId }),
+      body: JSON.stringify({ project: 'proj-provisioning', tool: 'claude', workspaceId }),
     })
     expect(res.status).toBe(200)
     const ndjson = await res.text()
@@ -200,7 +204,7 @@ describe('provisioning sessions in the server snapshot (real server, no containe
       return found!
     }, { timeout: 10_000, interval: 100 })
     expect(entry.kind).toBe('create')
-    expect(entry.projectSlug).toBe('ghost-project')
+    expect(entry.projectId).toBe(projectId)
     expect(entry.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
 
     const dismiss = await fetch(`${base}/api/workspace/provisioning/${workspaceId}/dismiss`, {
@@ -247,13 +251,13 @@ describe('validation errors (no state created)', () => {
     expect(stderr).toMatch(/No workspace found/i)
   })
 
-  it('workspace list <project> 404s with a helpful message for an unknown slug', async () => {
+  it('workspace list <project> 404s with a helpful message for an unknown project', async () => {
     const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'list', 'no-such-project')
     expect(exitCode).not.toBe(0)
     expect(stderr.toLowerCase()).toMatch(/not found|no-such-project/)
   })
 
-  it('workspace create errors with NOT_FOUND when the project slug does not exist', async () => {
+  it('workspace create errors with NOT_FOUND when the project does not exist', async () => {
     const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', 'nope')
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/project nope not found/)
@@ -261,7 +265,7 @@ describe('validation errors (no state created)', () => {
 })
 
 /**
- * From here on, tests seed projects, each with a unique slug. None seed
+ * From here on, tests seed projects, each under a unique name. None seed
  * credentials (see the file header).
  */
 describe('with seeded projects', () => {
@@ -291,14 +295,17 @@ describe('with seeded projects', () => {
     /**
      * Stopped-workspace rows, written as a create-then-stop would.
      *
-     * DEL_SLUG's workspace has no recorded prompt or transcript path, as
+     * proj-del's workspace has no recorded prompt or transcript path, as
      * when a pod dies before the prompt is captured. Its prompt then comes
      * from the transcript at claude's default path (`stoppedPrompt`'s
      * fallback), which is what that test checks.
+     *
+     * The listings name these projects by id prefix and by full id.
      */
-    const DEL_SLUG = 'proj-del'
-    const CAP_SLUG = 'proj-del-many'
-    const ALL_SLUG = 'proj-del-all'
+    const DEL_NAME = 'proj-del'
+    let delId: string
+    let capId: string
+    let allId: string
     const promptWorkspaceId = crypto.randomUUID()
     const capIds = Array.from(
       { length: 5 },
@@ -306,35 +313,38 @@ describe('with seeded projects', () => {
     )
     const allIds = Array.from({ length: 3 }, () => crypto.randomUUID())
 
-    async function seedTranscript(slug: string, workspaceId: string, body: string): Promise<void> {
+    async function seedTranscript(projectId: string, workspaceId: string, body: string): Promise<void> {
       const dir = path.join(
-        testEnv.dataDir, 'global', 'projects', slug, 'claude', 'projects', '-workspace',
+        testEnv.dataDir, 'global', 'projects', projectId, 'claude', 'projects', '-workspace',
       )
       await fs.mkdir(dir, { recursive: true })
       await fs.writeFile(path.join(dir, `${workspaceId}.jsonl`), body)
     }
 
     /** One recorded workspace that is stopped, with one claude conversation. */
-    async function seedStopped(slug: string, workspaceId: string): Promise<void> {
-      await recordWorkspaceCreated({ projectSlug: slug, workspaceId })
-      await recordAgentSessions(slug, workspaceId, [
+    async function seedStopped(projectId: string, workspaceId: string): Promise<void> {
+      await recordWorkspaceCreated({ projectId: projectId, workspaceId })
+      await recordAgentSessions(projectId, workspaceId, [
         { tool: 'claude', agentSessionId: crypto.randomUUID() },
       ])
-      await recordWorkspaceStopped(slug, workspaceId)
+      await recordWorkspaceStopped(projectId, workspaceId)
     }
 
     beforeAll(async () => {
-      for (const slug of [DEL_SLUG, CAP_SLUG, ALL_SLUG]) {
-        const repo = path.join(testEnv.scratchDir, slug)
+      const add = async (name: string): Promise<string> => {
+        const repo = path.join(testEnv.scratchDir, name)
         await createTestRepo(repo)
-        await addTestProject(server, repo)
+        return await addTestProject(server, repo)
       }
+      delId = await add(DEL_NAME)
+      capId = await add('proj-del-many')
+      allId = await add('proj-del-all')
       const firstMsg = JSON.stringify({
         type: 'user',
         message: { role: 'user', content: 'port the lexer to rust' },
       })
       // The fallback looks up the transcript by workspace id.
-      await seedTranscript(DEL_SLUG, promptWorkspaceId, [
+      await seedTranscript(delId, promptWorkspaceId, [
         `{"type":"permission-mode","workspaceId":"${promptWorkspaceId}"}`,
         firstMsg,
         '',
@@ -343,20 +353,20 @@ describe('with seeded projects', () => {
       // The DB allows one writer, so stop the server to write rows.
       await server.stop()
       setDataDir(testEnv.dataDir)
-      await seedStopped(DEL_SLUG, promptWorkspaceId)
-      for (const id of capIds) await seedStopped(CAP_SLUG, id)
-      for (const id of allIds) await seedStopped(ALL_SLUG, id)
+      await seedStopped(delId, promptWorkspaceId)
+      for (const id of capIds) await seedStopped(capId, id)
+      for (const id of allIds) await seedStopped(allId, id)
       await closeDb()
       server = await spawnYaacServer(testEnv.env)
     })
 
     it('workspace list --stopped renders stopped workspaces with their prompts', async () => {
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'list', DEL_SLUG, '--stopped',
+        testEnv.env, 'workspace', 'list', delId.slice(0, 8), '--stopped',
       )
       expect(exitCode).toBe(0)
       expect(stdout).toContain(promptWorkspaceId.slice(0, 8))
-      expect(stdout).toContain(DEL_SLUG)
+      expect(stdout).toContain(DEL_NAME)
       expect(stdout).toContain('claude')
       expect(stdout).toContain('PROMPT')
       expect(stdout).toContain('port the lexer to rust')
@@ -364,7 +374,7 @@ describe('with seeded projects', () => {
 
     it('workspace list --stopped -n caps the rendered rows and hints at the cap', async () => {
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'list', CAP_SLUG, '--stopped', '-n', '2',
+        testEnv.env, 'workspace', 'list', capId, '--stopped', '-n', '2',
       )
       expect(exitCode).toBe(0)
       const matches = capIds.filter((id) => stdout.includes(id.slice(0, 8)))
@@ -374,7 +384,7 @@ describe('with seeded projects', () => {
 
     it('workspace list --stopped --all omits the cap hint', async () => {
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'list', ALL_SLUG, '--stopped', '--all',
+        testEnv.env, 'workspace', 'list', allId, '--stopped', '--all',
       )
       expect(exitCode).toBe(0)
       for (const id of allIds) expect(stdout).toContain(id.slice(0, 8))
@@ -384,22 +394,22 @@ describe('with seeded projects', () => {
 
   /** `yaac workspace rename`: titles are recorded state, so stopped workspaces work. */
   describe('yaac workspace rename (real CLI + real server)', () => {
-    const REN_SLUG = 'proj-rename'
+    const REN_NAME = 'proj-rename'
     const renameId = crypto.randomUUID()
     // Two ids sharing a prefix, for the terminal commands' ambiguity check.
     const twinIds = ['feedface-0000-4000-8000-000000000001', 'feedface-0000-4000-8000-000000000002']
 
     beforeAll(async () => {
-      const repo = path.join(testEnv.scratchDir, REN_SLUG)
+      const repo = path.join(testEnv.scratchDir, REN_NAME)
       await createTestRepo(repo)
-      await addTestProject(server, repo)
+      const projectId = await addTestProject(server, repo)
       await server.stop()
       setDataDir(testEnv.dataDir)
-      await recordWorkspaceCreated({ projectSlug: REN_SLUG, workspaceId: renameId })
-      await recordWorkspaceStopped(REN_SLUG, renameId)
+      await recordWorkspaceCreated({ projectId, workspaceId: renameId })
+      await recordWorkspaceStopped(projectId, renameId)
       for (const id of twinIds) {
-        await recordWorkspaceCreated({ projectSlug: REN_SLUG, workspaceId: id })
-        await recordWorkspaceStopped(REN_SLUG, id)
+        await recordWorkspaceCreated({ projectId, workspaceId: id })
+        await recordWorkspaceStopped(projectId, id)
       }
       await closeDb()
       server = await spawnYaacServer(testEnv.env)
@@ -412,7 +422,7 @@ describe('with seeded projects', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('porting the lexer to rust')
 
-      const listed = await runYaac(testEnv.env, 'workspace', 'list', REN_SLUG, '--stopped')
+      const listed = await runYaac(testEnv.env, 'workspace', 'list', REN_NAME, '--stopped')
       expect(listed.stdout).toContain('porting the lexer to rust')
     })
 
@@ -437,28 +447,30 @@ describe('with seeded projects', () => {
   /**
    * Sidebar groups from the terminal, addressed by name rather than the
    * uuid the webapp uses. Recorded state only, so no cluster is needed.
+   * The project is named by name (GRP_NAME), full id or id prefix.
    */
   describe('yaac group (real CLI + real server)', () => {
-    const GRP_SLUG = 'proj-groups'
+    const GRP_NAME = 'proj-groups'
+    let grpId: string
     const memberId = crypto.randomUUID()
     const otherId = crypto.randomUUID()
 
     beforeAll(async () => {
-      const repo = path.join(testEnv.scratchDir, GRP_SLUG)
+      const repo = path.join(testEnv.scratchDir, GRP_NAME)
       await createTestRepo(repo)
-      await addTestProject(server, repo)
+      grpId = await addTestProject(server, repo)
 
       // Write rows with the server stopped (single DB writer).
       await server.stop()
       setDataDir(testEnv.dataDir)
-      await recordWorkspaceCreated({ projectSlug: GRP_SLUG, workspaceId: memberId })
-      await recordWorkspaceCreated({ projectSlug: GRP_SLUG, workspaceId: otherId })
+      await recordWorkspaceCreated({ projectId: grpId, workspaceId: memberId })
+      await recordWorkspaceCreated({ projectId: grpId, workspaceId: otherId })
       await closeDb()
       server = await spawnYaacServer(testEnv.env)
     })
 
     it('group list reports the empty state with the command that fixes it', async () => {
-      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', grpId)
       expect(exitCode).toBe(0)
       expect(stdout).toContain('No workspace groups')
       expect(stdout).toContain('yaac group create')
@@ -466,36 +478,36 @@ describe('with seeded projects', () => {
 
     it('group create is idempotent, so it cannot manufacture an ambiguous name', async () => {
       // Matches `yaac-mama group create`, which reuses a group by name.
-      const first = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'nightly')
+      const first = await runYaac(testEnv.env, 'group', 'create', GRP_NAME, 'nightly')
       expect(first.exitCode).toBe(0)
-      const again = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'nightly')
+      const again = await runYaac(testEnv.env, 'group', 'create', GRP_NAME, 'nightly')
       expect(again.exitCode).toBe(0)
       expect(again.stdout).toContain('already exists')
 
-      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(listed.stdout.match(/nightly/g)).toHaveLength(1)
 
       // Names are compared after the server's whitespace normalization.
-      const spaced = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'spaced  out')
+      const spaced = await runYaac(testEnv.env, 'group', 'create', GRP_NAME, 'spaced  out')
       expect(spaced.exitCode).toBe(0)
       expect(spaced.stdout).toContain('"spaced out"')
-      const retyped = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'spaced   out')
+      const retyped = await runYaac(testEnv.env, 'group', 'create', GRP_NAME, 'spaced   out')
       expect(retyped.exitCode).toBe(0)
       expect(retyped.stdout).toContain('already exists')
 
-      const both = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const both = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(both.stdout.match(/spaced out/g)).toHaveLength(1)
     })
 
     it('group move by id reports the group\u2019s name, not the id it was given', async () => {
-      const made = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'by id')
+      const made = await runYaac(testEnv.env, 'group', 'create', GRP_NAME, 'by id')
       const id = /\(([0-9a-f-]{36})\)/.exec(made.stdout)?.[1]
       expect(id).toBeTruthy()
 
       // The ambiguity error suggests passing an id; the reply still shows
       // the name.
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'group', 'move', memberId, id!, '--project', GRP_SLUG,
+        testEnv.env, 'group', 'move', memberId, id!, '--project', GRP_NAME,
       )
       expect(exitCode).toBe(0)
       expect(stdout).toContain('"by id"')
@@ -503,11 +515,11 @@ describe('with seeded projects', () => {
     })
 
     it('group create makes an empty group, and group list shows it', async () => {
-      const created = await runYaac(testEnv.env, 'group', 'create', GRP_SLUG, 'release train')
+      const created = await runYaac(testEnv.env, 'group', 'create', grpId.slice(0, 8), 'release train')
       expect(created.exitCode).toBe(0)
       expect(created.stdout).toContain('release train')
 
-      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(exitCode).toBe(0)
       expect(stdout).toMatch(/GROUP\s+PROJECT\s+RUNNING\s+PINNED\s+CREATED/)
       expect(stdout).toContain('release train')
@@ -517,7 +529,7 @@ describe('with seeded projects', () => {
 
     it('group move files a workspace by name, and omitting one ungroups it', async () => {
       const moved = await runYaac(
-        testEnv.env, 'group', 'move', memberId, 'release train', '--project', GRP_SLUG,
+        testEnv.env, 'group', 'move', memberId, 'release train', '--project', grpId,
       )
       expect(moved.exitCode).toBe(0)
       expect(moved.stdout).toContain('release train')
@@ -526,17 +538,17 @@ describe('with seeded projects', () => {
       // given by its 8-char prefix, which must be resolved to the full id
       // before the write.
       const fresh = await runYaac(
-        testEnv.env, 'group', 'move', otherId.slice(0, 8), 'brand new', '--project', GRP_SLUG,
+        testEnv.env, 'group', 'move', otherId.slice(0, 8), 'brand new', '--project', grpId.slice(0, 8),
       )
       expect(fresh.exitCode).toBe(0)
-      const grouped = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const grouped = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(grouped.stdout).toMatch(/brand new\s+proj-groups\s+0/)
-      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(listed.stdout).toContain('brand new')
 
       // No group moves it back to the default list.
       const out = await runYaac(
-        testEnv.env, 'group', 'move', memberId, '--project', GRP_SLUG,
+        testEnv.env, 'group', 'move', memberId, '--project', GRP_NAME,
       )
       expect(out.exitCode).toBe(0)
       expect(out.stdout).toContain('out of its group')
@@ -563,14 +575,14 @@ describe('with seeded projects', () => {
 
     it('group delete releases its members instead of stopping anything', async () => {
       const { stdout, exitCode } = await runYaac(
-        testEnv.env, 'group', 'delete', GRP_SLUG, 'brand new',
+        testEnv.env, 'group', 'delete', grpId.slice(0, 8), 'brand new',
       )
       expect(exitCode).toBe(0)
       expect(stdout).toContain('default list')
 
-      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(listed.stdout).not.toContain('brand new')
-      const stopped = await runYaac(testEnv.env, 'workspace', 'list', GRP_SLUG, '--stopped')
+      const stopped = await runYaac(testEnv.env, 'workspace', 'list', GRP_NAME, '--stopped')
       expect(stopped.stdout).toContain(otherId.slice(0, 8))
     })
 
@@ -581,30 +593,30 @@ describe('with seeded projects', () => {
         const res = await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/group/create`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ projectSlug: GRP_SLUG, name: 'twin' }),
+          body: JSON.stringify({ projectId: grpId, name: 'twin' }),
         })
         expect(res.ok).toBe(true)
       }
 
       const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'group', 'delete', GRP_SLUG, 'twin',
+        testEnv.env, 'group', 'delete', GRP_NAME, 'twin',
       )
       expect(exitCode).not.toBe(0)
       expect(stderr).toContain('names 2 groups')
 
       // Both survive, and the id from the error removes one.
-      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_SLUG)
+      const listed = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(listed.stdout.match(/twin/g)).toHaveLength(2)
       const id = /\(([0-9a-f-]{36})\)/.exec(stderr)?.[1]
         ?? /([0-9a-f-]{36})/.exec(stderr)?.[1]
       expect(id).toBeTruthy()
-      const byId = await runYaac(testEnv.env, 'group', 'delete', GRP_SLUG, id!)
+      const byId = await runYaac(testEnv.env, 'group', 'delete', grpId, id!)
       expect(byId.exitCode).toBe(0)
     })
 
     it('group delete rejects a name that names nothing', async () => {
       const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'group', 'delete', GRP_SLUG, 'never existed',
+        testEnv.env, 'group', 'delete', GRP_NAME, 'never existed',
       )
       expect(exitCode).not.toBe(0)
       expect(stderr).toContain('No such group')
@@ -616,16 +628,16 @@ describe('with seeded projects', () => {
    * state that outlives its pod, so no cluster is needed.
    */
   describe('yaac workspace agents (real CLI + real server)', () => {
-    const AG_SLUG = 'proj-agents'
+    const AG_NAME = 'proj-agents'
     const stoppedId = crypto.randomUUID()
     const convA = crypto.randomUUID()
     const convB = crypto.randomUUID()
     const bareId = crypto.randomUUID()
 
     beforeAll(async () => {
-      const repo = path.join(testEnv.scratchDir, AG_SLUG)
+      const repo = path.join(testEnv.scratchDir, AG_NAME)
       await createTestRepo(repo)
-      await addTestProject(server, repo)
+      const projectId = await addTestProject(server, repo)
 
       // The DB allows a single writer (db/client.ts): writes made beside a
       // running server are lost. So stop the server, write the rows, close
@@ -635,17 +647,17 @@ describe('with seeded projects', () => {
 
       // A stopped workspace with two conversations: one open at stop, one
       // closed by a /clear.
-      await recordWorkspaceCreated({ projectSlug: AG_SLUG, workspaceId: stoppedId })
-      await recordAgentSessions(AG_SLUG, stoppedId, [
+      await recordWorkspaceCreated({ projectId, workspaceId: stoppedId })
+      await recordAgentSessions(projectId, stoppedId, [
         { tool: 'claude', agentSessionId: convA, firstPrompt: 'the original ask' },
         { tool: 'claude', agentSessionId: convB, firstPrompt: 'after the clear' },
       ])
-      await setActiveAgentSessions(AG_SLUG, stoppedId, [
+      await setActiveAgentSessions(projectId, stoppedId, [
         { tool: 'claude', agentSessionId: convB },
       ])
-      await recordWorkspaceStopped(AG_SLUG, stoppedId)
+      await recordWorkspaceStopped(projectId, stoppedId)
       // A workspace with no conversation, for the empty case.
-      await recordWorkspaceCreated({ projectSlug: AG_SLUG, workspaceId: bareId })
+      await recordWorkspaceCreated({ projectId, workspaceId: bareId })
 
       await closeDb()
       server = await spawnYaacServer(testEnv.env)
@@ -685,11 +697,14 @@ describe('with seeded projects', () => {
     it('filters by the [project] argument and honors -n <seconds>', async () => {
       const repo = path.join(testEnv.scratchDir, 'proj-mon')
       await createTestRepo(repo)
-      await addTestProject(server, repo)
+      const prefix = (await addTestProject(server, repo)).slice(0, 8)
 
-      const stdout = await runMonitorUntilFirstRender('proj-mon', '-n', '1')
-      expect(stdout).toMatch(/\(every 1s/)
-      expect(stdout).toContain('No running workspaces for project "proj-mon"')
+      // The project by name, then by id prefix.
+      for (const ref of ['proj-mon', prefix]) {
+        const stdout = await runMonitorUntilFirstRender(ref, '-n', '1')
+        expect(stdout).toMatch(/\(every 1s/)
+        expect(stdout).toContain(`No running workspaces for project "${ref}"`)
+      }
     })
   })
 
@@ -733,10 +748,11 @@ describe('with seeded projects', () => {
       // Reaching the credential error shows opencode passed tool validation.
       const repo = path.join(testEnv.scratchDir, 'repo-demo-opencode')
       await createTestRepo(repo)
-      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-opencode.git' })
+      const id = await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-opencode.git' })
 
+      // Named by full id.
       const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'create', 'repo-demo-opencode', '--tool', 'opencode',
+        testEnv.env, 'workspace', 'create', id, '--tool', 'opencode',
       )
       expect(exitCode).not.toBe(0)
       expect(stderr).toMatch(/has no git credential/)
@@ -746,10 +762,11 @@ describe('with seeded projects', () => {
       // Reaching the credential error shows --model passed validation.
       const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
       await createTestRepo(repo)
-      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-model-tool.git' })
+      const id = await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-model-tool.git' })
 
+      // Named by id prefix.
       const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'create', 'repo-demo-model-tool',
+        testEnv.env, 'workspace', 'create', id.slice(0, 8),
         '--tool', 'codex', '--model', 'gpt-5.2-codex',
       )
       expect(exitCode).not.toBe(0)
@@ -767,6 +784,35 @@ describe('with seeded projects', () => {
       )
       expect(exitCode).not.toBe(0)
       expect(stderr.toLowerCase()).toContain('model')
+    })
+  })
+
+  /**
+   * Adding the same remote twice gives two projects with one name, which
+   * every `<project>` argument then refuses, listing both ids.
+   */
+  describe('a project name two projects share', () => {
+    it('is refused by every command that takes a project, naming both candidates', async () => {
+      const ids: string[] = []
+      for (const dir of ['twin-a', 'twin-b']) {
+        const repo = path.join(testEnv.scratchDir, dir, 'proj-twin')
+        await createTestRepo(repo)
+        ids.push(await addTestProject(server, repo))
+      }
+      for (const args of [
+        ['workspace', 'create', 'proj-twin', '--tool', 'claude'],
+        ['workspace', 'list', 'proj-twin'],
+        ['workspace', 'list', 'proj-twin', '--stopped'],
+        ['group', 'create', 'proj-twin', 'g'],
+        ['group', 'list', 'proj-twin'],
+        ['group', 'delete', 'proj-twin', 'g'],
+        ['group', 'move', crypto.randomUUID(), 'g', '--project', 'proj-twin'],
+      ]) {
+        const { stderr, exitCode } = await runYaac(testEnv.env, ...args)
+        expect(exitCode, args.join(' ')).not.toBe(0)
+        expect(stderr, args.join(' ')).toContain('matches more than one project')
+        for (const id of ids) expect(stderr, args.join(' ')).toContain(id)
+      }
     })
   })
 })

@@ -47,10 +47,10 @@ export interface CreateDefaults {
  * The create form's defaults for a project, from its remembered choices in
  * the snapshot and each credential's model list.
  */
-export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
+export function useCreateDefaults(projectId: string | null): CreateDefaults {
   const snapshot = useSnapshot()
   const auth = useAuthList()
-  const project = snapshot?.projects.find((p) => p.slug === projectSlug)
+  const project = snapshot?.projects.find((p) => p.id === projectId)
   const driver = snapshot?.driver
   return {
     ready: driver !== undefined && driver !== null && auth !== undefined,
@@ -83,7 +83,7 @@ export function useCreateDefaults(projectSlug: string | null): CreateDefaults {
  * become the project's defaults for that agent.
  */
 export function useCreateWorkspace(): (
-  projectSlug: string,
+  projectId: string,
   tool: AgentTool,
   setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'mode'> & {
     modelName?: string
@@ -99,12 +99,12 @@ export function useCreateWorkspace(): (
   branch?: string,
 ) => void {
   const provision = useProvisionWorkspace()
-  return useCallback((projectSlug, tool, setup, branch) => {
+  return useCallback((projectId, tool, setup, branch) => {
     const { model, modelName, permissionMode, mode, prompt, title, shownTitle, groupId, newGroup, draftId } = setup
     const label = title || shownTitle
-    provision(projectSlug, tool, 'create', randomUUID(),
+    provision(projectId, tool, 'create', randomUUID(),
       (sid, onProgress) =>
-        createWorkspace(projectSlug, tool, onProgress, sid, {
+        createWorkspace(projectId, tool, onProgress, sid, {
           ...(branch !== undefined ? { branch } : {}),
           // Empty when the provider lists no models; launch without one.
           ...(model !== '' ? { model } : {}),

@@ -20,15 +20,15 @@ import { normalizeTitle } from '@yaac/shared/titles'
 
 /** A group row as the display paths consume it. */
 export interface WorkspaceGroupRow {
-  projectSlug: string
+  projectId: string
   groupId: string
   name: string
   pinned: boolean
   createdAt: Date
 }
 
-const key = (projectSlug: string, groupId: string) =>
-  and(eq(workspaceGroups.projectSlug, projectSlug), eq(workspaceGroups.groupId, groupId))
+const key = (projectId: string, groupId: string) =>
+  and(eq(workspaceGroups.projectId, projectId), eq(workspaceGroups.groupId, groupId))
 
 /**
  * Create a group around a founding workspace, or empty (`null`).
@@ -45,13 +45,13 @@ const key = (projectSlug: string, groupId: string) =>
  * and `yaac group delete` can reach it, and project teardown removes it.
  */
 export async function createWorkspaceGroup(
-  projectSlug: string,
+  projectId: string,
   name: string,
   workspaceId: string | null,
 ): Promise<WorkspaceGroupRow> {
   const groupId = crypto.randomUUID()
   const row: WorkspaceGroupRow = {
-    projectSlug,
+    projectId,
     groupId,
     name: groupName(name),
     pinned: workspaceId === null,
@@ -62,9 +62,9 @@ export async function createWorkspaceGroup(
     await tx.insert(workspaceGroups).values(row)
     if (workspaceId === null) return
     const filed = await tx.update(workspaces).set({ groupId })
-      .where(and(eq(workspaces.projectSlug, projectSlug), eq(workspaces.workspaceId, workspaceId)))
+      .where(and(eq(workspaces.projectId, projectId), eq(workspaces.workspaceId, workspaceId)))
       .returning({ workspaceId: workspaces.workspaceId })
-    if (filed.length === 0) throw unknownWorkspace(projectSlug, workspaceId)
+    if (filed.length === 0) throw unknownWorkspace(projectId, workspaceId)
   })
   notifyWorkspaceListChanged()
   return row
@@ -73,25 +73,25 @@ export async function createWorkspaceGroup(
 /** Rename a group. A blank name is ignored, since a group has only its name
  *  to show. */
 export async function renameWorkspaceGroup(
-  projectSlug: string,
+  projectId: string,
   groupId: string,
   name: string,
 ): Promise<void> {
   const normalized = groupName(name)
   if (normalized === '') return
   const db = await getDb()
-  await db.update(workspaceGroups).set({ name: normalized }).where(key(projectSlug, groupId))
+  await db.update(workspaceGroups).set({ name: normalized }).where(key(projectId, groupId))
   notifyWorkspaceListChanged()
 }
 
 /** Pin or unpin a group; a pinned group stays shown with no live workspace. */
 export async function setWorkspaceGroupPinned(
-  projectSlug: string,
+  projectId: string,
   groupId: string,
   pinned: boolean,
 ): Promise<void> {
   const db = await getDb()
-  await db.update(workspaceGroups).set({ pinned }).where(key(projectSlug, groupId))
+  await db.update(workspaceGroups).set({ pinned }).where(key(projectId, groupId))
   notifyWorkspaceListChanged()
 }
 
@@ -101,34 +101,34 @@ export async function setWorkspaceGroupPinned(
  * confirmation.
  */
 export async function deleteWorkspaceGroup(
-  projectSlug: string,
+  projectId: string,
   groupId: string,
 ): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
     await tx.update(workspaces).set({ groupId: null })
-      .where(and(eq(workspaces.projectSlug, projectSlug), eq(workspaces.groupId, groupId)))
+      .where(and(eq(workspaces.projectId, projectId), eq(workspaces.groupId, groupId)))
     // Launched entries record where they launched, so leave them.
     await tx.update(queuedWorkspaces).set({ groupId: null })
       .where(and(
-        eq(queuedWorkspaces.projectSlug, projectSlug),
+        eq(queuedWorkspaces.projectId, projectId),
         eq(queuedWorkspaces.groupId, groupId),
         isNull(queuedWorkspaces.launchedWorkspaceId),
       ))
     await tx.update(draftWorkspaces).set({ groupId: null })
-      .where(and(eq(draftWorkspaces.projectSlug, projectSlug), eq(draftWorkspaces.groupId, groupId)))
-    await tx.delete(workspaceGroups).where(key(projectSlug, groupId))
+      .where(and(eq(draftWorkspaces.projectId, projectId), eq(draftWorkspaces.groupId, groupId)))
+    await tx.delete(workspaceGroups).where(key(projectId, groupId))
   })
   notifyWorkspaceListChanged()
 }
 
 /** Every group of a project, or of all projects (the snapshot's source). */
-export async function listWorkspaceGroupRows(projectSlug?: string): Promise<WorkspaceGroupRow[]> {
+export async function listWorkspaceGroupRows(projectId?: string): Promise<WorkspaceGroupRow[]> {
   const db = await getDb()
-  return projectSlug === undefined
+  return projectId === undefined
     ? await db.select().from(workspaceGroups)
     : await db.select().from(workspaceGroups)
-      .where(eq(workspaceGroups.projectSlug, projectSlug))
+      .where(eq(workspaceGroups.projectId, projectId))
 }
 
 /**
@@ -138,29 +138,29 @@ export async function listWorkspaceGroupRows(projectSlug?: string): Promise<Work
  * throws NOT_FOUND.
  */
 export async function setWorkspaceGroup(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   groupId: string | null,
 ): Promise<void> {
   const db = await getDb()
   if (groupId !== null) {
     const rows = await db.select({ groupId: workspaceGroups.groupId })
-      .from(workspaceGroups).where(key(projectSlug, groupId))
+      .from(workspaceGroups).where(key(projectId, groupId))
     if (rows.length === 0) {
       throw new ServerError('NOT_FOUND', `No such workspace group: ${groupId}`)
     }
   }
   const filed = await db.update(workspaces).set({ groupId })
-    .where(and(eq(workspaces.projectSlug, projectSlug), eq(workspaces.workspaceId, workspaceId)))
+    .where(and(eq(workspaces.projectId, projectId), eq(workspaces.workspaceId, workspaceId)))
     .returning({ workspaceId: workspaces.workspaceId })
-  if (filed.length === 0) throw unknownWorkspace(projectSlug, workspaceId)
+  if (filed.length === 0) throw unknownWorkspace(projectId, workspaceId)
   notifyWorkspaceListChanged()
 }
 
 /** Delete a project's groups, on project removal. */
-export async function deleteProjectWorkspaceGroups(projectSlug: string): Promise<void> {
+export async function deleteProjectWorkspaceGroups(projectId: string): Promise<void> {
   const db = await getDb()
-  await db.delete(workspaceGroups).where(eq(workspaceGroups.projectSlug, projectSlug))
+  await db.delete(workspaceGroups).where(eq(workspaceGroups.projectId, projectId))
 }
 
 /** Group names are normalized like workspace titles. */
@@ -170,6 +170,6 @@ function groupName(name: string): string {
 
 /** Membership writes are project-scoped, so a workspace in another project
  *  is reported as unknown. */
-function unknownWorkspace(projectSlug: string, workspaceId: string): ServerError {
-  return new ServerError('NOT_FOUND', `No such workspace in ${projectSlug}: ${workspaceId}`)
+function unknownWorkspace(projectId: string, workspaceId: string): ServerError {
+  return new ServerError('NOT_FOUND', `No such workspace in ${projectId}: ${workspaceId}`)
 }

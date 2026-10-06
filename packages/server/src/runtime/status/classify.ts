@@ -31,7 +31,7 @@ export async function classifyWorkspaces(
       terminating.push(p)
       continue
     }
-    if (p.running && p.projectSlug && p.workspaceId) {
+    if (p.running && p.projectId && p.workspaceId) {
       const liveness = await probeLiveness(p)
       if (liveness === 'alive') {
         running.push(p)
@@ -56,7 +56,7 @@ export async function classifyWorkspaces(
     const zombie = p.running
     stale.push({
       jobName: p.jobName,
-      projectSlug: p.projectSlug,
+      projectId: p.projectId,
       workspaceId: p.workspaceId,
       zombie,
       deathCause: zombie ? { reason: 'agent-exited' } : p.deathCause,
@@ -74,6 +74,6 @@ export async function classifyWorkspaces(
  */
 export function watcherDisplayLiveness(target: ProbeTarget): Promise<TmuxLiveness> {
   return Promise.resolve(
-    isWorkspaceStreamHealthy(target.projectSlug, target.workspaceId) ? 'alive' : 'unknown',
+    isWorkspaceStreamHealthy(target.projectId, target.workspaceId) ? 'alive' : 'unknown',
   )
 }

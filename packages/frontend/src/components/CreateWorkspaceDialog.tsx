@@ -113,7 +113,7 @@ const DRAFT_FIELDS = [
 /** A typed prompt that closing would lose, held while the user decides
  *  whether to save it as a draft. */
 interface PendingDraft {
-  projectSlug: string
+  projectId: string
   /** The draft the dialog was reopened on, which a save replaces. */
   id?: string
   settings: DraftWorkspaceSettings
@@ -123,7 +123,7 @@ interface PendingDraft {
  *  been deleted, save a new one instead. */
 async function keepDraft(pending: PendingDraft): Promise<void> {
   const save = (id?: string) => api.workspace.draft.save.$post({
-    json: { project: pending.projectSlug, ...pending.settings, ...(id !== undefined ? { id } : {}) },
+    json: { project: pending.projectId, ...pending.settings, ...(id !== undefined ? { id } : {}) },
   })
   try {
     await save(pending.id)
@@ -216,15 +216,15 @@ function CreateWorkspaceForm({
   setBusy: (busy: boolean) => void
   draftRef: RefObject<PendingDraft | null>
 }): JSX.Element {
-  const { projectSlug } = opts
+  const { projectId } = opts
   const snapshot = useSnapshot()
-  const defaults = useCreateDefaults(projectSlug)
+  const defaults = useCreateDefaults(projectId)
   const createWorkspace = useCreateWorkspace()
   const openSettings = useUiStore((s) => s.openSettings)
   const queryClient = useQueryClient()
   const driver = snapshot?.driver
 
-  const entries = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectSlug === projectSlug)
+  const entries = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectId === projectId)
   const editing = opts.editId !== undefined ? entries.find((e) => e.id === opts.editId) : undefined
   // Captured once, so later snapshots don't overwrite the form's fields.
   const [initial] = useState(editing)
@@ -301,7 +301,7 @@ function CreateWorkspaceForm({
   // entry in sidebar order. An edit excludes the entry and its descendants
   // (a cycle could never start) and always offers its current parent.
   const live = (snapshot?.workspaces ?? [])
-    .filter((w) => w.projectSlug === projectSlug && !w.stopping)
+    .filter((w) => w.projectId === projectId && !w.stopping)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   const excluded = initial !== undefined
     ? new Set([initial.id, ...queuedDescendants(entries, initial.id)])
@@ -333,7 +333,7 @@ function CreateWorkspaceForm({
   const queued = start !== ''
 
   const groups = (snapshot?.workspaceGroups ?? [])
-    .filter((g) => g.projectSlug === projectSlug)
+    .filter((g) => g.projectId === projectId)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   // A group deleted since it was chosen falls back to none.
   const wantedGroup = groupPick !== undefined ? groupPick : seed?.groupId ?? null
@@ -369,7 +369,7 @@ function CreateWorkspaceForm({
   const signedIn = defaults.configured.has(tool)
   const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
-  const { data: branchData, isError: branchesFailed } = useProjectBranches(projectSlug)
+  const { data: branchData, isError: branchesFailed } = useProjectBranches(projectId)
 
   // On open, refetch credentials; they may have changed via the CLI.
   useEffect(() => {
@@ -426,7 +426,7 @@ function CreateWorkspaceForm({
   const unsaved = opts.editId === undefined && text !== '' && (draft === undefined
     || DRAFT_FIELDS.some((k) => current[k] !== draft[k]))
   const pending: PendingDraft | null = unsaved
-    ? { projectSlug, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
+    ? { projectId, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
   useEffect(() => { draftRef.current = pending })
   // Also warn before a reload or tab close.
@@ -477,7 +477,7 @@ function CreateWorkspaceForm({
       open()
     }
     if (needsGitAuth) {
-      handOff(() => openSettings('credentials', undefined, projectSlug))
+      handOff(() => openSettings('credentials', undefined, projectId))
       return
     }
     if (!signedIn) {
@@ -488,7 +488,7 @@ function CreateWorkspaceForm({
     // The server deletes the source draft only once the create succeeds.
     if (!storesEntry) {
       finish()
-      createWorkspace(projectSlug, tool, {
+      createWorkspace(projectId, tool, {
         model,
         ...(modelName !== undefined ? { modelName } : {}),
         permissionMode,
@@ -520,7 +520,7 @@ function CreateWorkspaceForm({
     const queue = api.workspace.queue
     const op = initial === undefined
       ? queue.create.$post({
-        json: { project: projectSlug, parent: start, ...settings, ...(draft !== undefined ? { draftId: draft.id } : {}) },
+        json: { project: projectId, parent: start, ...settings, ...(draft !== undefined ? { draftId: draft.id } : {}) },
       }).then(reveal)
       : queue.update.$post({ json: { id: initial.id, ...settings, ...(moved ? { parent: start } : {}) } })
         .then(async (e) => {

@@ -33,7 +33,7 @@ interface Applied {
 
 interface FakeNode { ip: string; uid: string; ready: boolean }
 
-const PROJECTS = [{ slug: 'web', id: 'p1' }, { slug: 'docs', id: 'p2' }]
+const PROJECTS = ['p1', 'p2']
 
 /** The cluster's nodes by name, and which nodes' writer pods fail. */
 let nodes: Record<string, FakeNode> = {}

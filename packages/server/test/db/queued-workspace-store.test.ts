@@ -21,6 +21,10 @@ import { deleteProjectWorkspaces, recordWorkspaceCreated } from '#db/workspace-s
 import { deleteWorkspaceGroup } from '#db/group-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
 
+const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
+
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+
 describe('queued workspace store', () => {
   let tmpDir: string
   let pushes: number
@@ -41,8 +45,8 @@ describe('queued workspace store', () => {
   const settings = {
     prompt: 'next', tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'bypass', branch: 'main',
   } as const
-  const queue = (parent: QueuedParent, prompt = 'next', projectSlug = 'proj'): Promise<QueuedWorkspaceRow> =>
-    insertQueuedWorkspace(projectSlug, parent, { ...settings, prompt })
+  const queue = (parent: QueuedParent, prompt = 'next', projectId = PROJ): Promise<QueuedWorkspaceRow> =>
+    insertQueuedWorkspace(projectId, parent, { ...settings, prompt })
 
   const parentOf = async (id: string): Promise<QueuedParent | undefined> => {
     const row = await getQueuedWorkspaceRow(id)
@@ -56,7 +60,7 @@ describe('queued workspace store', () => {
     const top = await queue({ parentWorkspaceId: 'wt-a' })
     expect(pushes).toBe(1)
     const child = await queue({ parentQueuedId: top.id })
-    expect(child).toMatchObject({ parentQueuedId: top.id, projectSlug: 'proj', branch: 'main' })
+    expect(child).toMatchObject({ parentQueuedId: top.id, projectId: PROJ, branch: 'main' })
     expect(child.parentWorkspaceId).toBeUndefined()
 
     // Re-parented onto a workspace, the entry column clears.
@@ -100,7 +104,7 @@ describe('queued workspace store', () => {
     expect(await titleOf()).toBeUndefined()
 
     // An insert carries a draft's generated title.
-    const fromDraft = await insertQueuedWorkspace('proj', { parentWorkspaceId: 'wt-a' }, settings, 'From draft')
+    const fromDraft = await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'wt-a' }, settings, 'From draft')
     expect(fromDraft.generatedTitle).toBe('From draft')
   })
 
@@ -129,10 +133,10 @@ describe('queued workspace store', () => {
     // A child that ended up on the entry anyway follows it to the workspace.
     const late = await queue({ parentWorkspaceId: 'wt-a' })
     await updateQueuedWorkspace(late.id, { ...settings, parent: { parentQueuedId: top.id } })
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'wt-new' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-new' })
     await finishQueuedLaunch(top.id, 'wt-new')
     expect(await getQueuedWorkspaceRow(top.id)).toBeUndefined()
-    expect((await listQueuedWorkspaceRows('proj')).map((r) => r.id)).not.toContain(top.id)
+    expect((await listQueuedWorkspaceRows(PROJ)).map((r) => r.id)).not.toContain(top.id)
     expect(await parentOf(child.id)).toEqual({ parentWorkspaceId: 'wt-new' })
     expect(await parentOf(late.id)).toEqual({ parentWorkspaceId: 'wt-new' })
 
@@ -145,19 +149,19 @@ describe('queued workspace store', () => {
     expect(await deleteQueuedWorkspace(top.id)).toBe(false)
     await failQueuedLaunch(top.id, 'wt-new', 'x')
     expect(await launched()).toEqual([{ launched_workspace_id: 'wt-new' }])
-    await deleteProjectWorkspaces('proj')
+    await deleteProjectWorkspaces(PROJ)
     expect(await launched()).toEqual([])
   })
 
   it('leaves a launched entry\'s record as it was queued when its old parent or group changes', async () => {
     // Run now on a child of a pending entry: it launches still pointing at it.
     const parent = await queue({ parentWorkspaceId: 'wt-a' })
-    const child = await insertQueuedWorkspace('proj', { parentQueuedId: parent.id }, { ...settings, groupId: 'g1' })
+    const child = await insertQueuedWorkspace(PROJ, { parentQueuedId: parent.id }, { ...settings, groupId: 'g1' })
     await claimQueuedLaunch(child.id, 'wt-child')
-    await recordWorkspaceCreated({ projectSlug: 'proj', workspaceId: 'wt-child' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-child' })
     await finishQueuedLaunch(child.id, 'wt-child')
 
-    await deleteWorkspaceGroup('proj', 'g1')
+    await deleteWorkspaceGroup(PROJ, 'g1')
     await claimQueuedLaunch(parent.id, 'wt-parent')
     await failQueuedLaunch(parent.id, 'wt-parent', 'x')
     expect(await deleteQueuedWorkspace(parent.id)).toBe(true)
@@ -179,7 +183,7 @@ describe('queued workspace store', () => {
     // The new workspace's stop released this one before the launch failed.
     await releaseQueuedWorkspace(released.id)
     // Another project's workspace with the same id is not this one.
-    const elsewhere = await queue({ parentWorkspaceId: 'wt-new' }, 'x', 'other')
+    const elsewhere = await queue({ parentWorkspaceId: 'wt-new' }, 'x', OTHER)
 
     await failQueuedLaunch(top.id, 'wt-new', 'image build exploded')
 
@@ -202,10 +206,10 @@ describe('queued workspace store', () => {
     const c = await queue({ parentQueuedId: b.id }, 'c')
     await queue({ parentWorkspaceId: 'wt-a' }, 'sibling')
 
-    const released = await releaseQueuedChildren('proj', 'wt-a')
+    const released = await releaseQueuedChildren(PROJ, 'wt-a')
     expect(released.map((r) => r.prompt).sort()).toEqual(['a', 'sibling'])
     expect((await getQueuedWorkspaceRow(b.id))?.releasedAt).toBeUndefined()
-    expect(await releaseQueuedChildren('other', 'wt-a')).toEqual([])
+    expect(await releaseQueuedChildren(OTHER, 'wt-a')).toEqual([])
 
     // Discarding the middle of a chain moves the rest up one link.
     expect(await deleteQueuedWorkspace(b.id)).toBe(true)
@@ -216,10 +220,10 @@ describe('queued workspace store', () => {
     expect(await deleteQueuedWorkspace(a.id)).toBe(false)
 
     // Oldest first.
-    expect((await listQueuedWorkspaceRows('proj')).map((r) => r.prompt)).toEqual(['c', 'sibling'])
-    await queue({ parentWorkspaceId: 'wt-z' }, 'z', 'other')
-    await deleteProjectQueuedWorkspaces('proj')
-    expect(await listQueuedWorkspaceRows('proj')).toEqual([])
+    expect((await listQueuedWorkspaceRows(PROJ)).map((r) => r.prompt)).toEqual(['c', 'sibling'])
+    await queue({ parentWorkspaceId: 'wt-z' }, 'z', OTHER)
+    await deleteProjectQueuedWorkspaces(PROJ)
+    expect(await listQueuedWorkspaceRows(PROJ)).toEqual([])
     expect(await listQueuedWorkspaceRows()).toHaveLength(1)
   })
 })

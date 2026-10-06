@@ -8,15 +8,11 @@ import type { PortMapping } from '@yaac/shared/types'
  * is defined once here and each caller runs the command over its own
  * transport.
  */
-export function buildStatusRight(
-  projectSlug: string,
-  workspaceId: string,
-  ports: ReadonlyArray<PortMapping>,
-): string {
+export function buildStatusRight(workspaceId: string, ports: ReadonlyArray<PortMapping>): string {
   const portInfo = ports.length > 0
     ? ' ' + ports.map((p) => `:${p.hostPort}->${p.containerPort}`).join(' ')
     : ''
-  return ` ${projectSlug} ${workspaceId.slice(0, 8)}${portInfo} `
+  return ` ${workspaceId.slice(0, 8)}${portInfo} `
 }
 
 /**

@@ -47,7 +47,7 @@ beforeAll(async () => {
   })
   objects.applyRegistration({
     metadata: { name: 'yaac-proxy-reg-ws', labels: { [LABEL_WORKSPACE_ID]: 'ws' } },
-    data: { 'registration.json': JSON.stringify({ rules: [], allowedHosts: ['*'], tool: 'claude', projectSlug: 'demo' }) },
+    data: { 'registration.json': JSON.stringify({ rules: [], allowedHosts: ['*'], tool: 'claude', projectId: 'demo' }) },
   })
   ctx = {
     ca: generateCA(),

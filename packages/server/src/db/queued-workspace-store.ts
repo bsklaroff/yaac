@@ -55,7 +55,7 @@ function parentColumns(parent: QueuedParent): { parentWorkspaceId: string | null
     : { parentWorkspaceId: null, parentQueuedId: parent.parentQueuedId }
 }
 
-function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspaces.$inferInsert, 'projectSlug'> {
+function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspaces.$inferInsert, 'projectId'> {
   return { ...s, title: s.title ?? null, groupId: s.groupId ?? null }
 }
 
@@ -67,7 +67,7 @@ const pending = isNull(queuedWorkspaces.launchedWorkspaceId)
 
 /** `generatedTitle` is the one generated for the draft the entry came from. */
 export async function insertQueuedWorkspace(
-  projectSlug: string,
+  projectId: string,
   parent: QueuedParent,
   settings: QueuedWorkspaceSettings,
   generatedTitle?: string,
@@ -75,7 +75,7 @@ export async function insertQueuedWorkspace(
   const db = await getDb()
   const [row] = await db.insert(queuedWorkspaces)
     .values({
-      projectSlug,
+      projectId,
       ...parentColumns(parent),
       ...settingsColumns(settings),
       generatedTitle: generatedTitle ?? null,
@@ -107,7 +107,7 @@ export async function updateQueuedWorkspace(
     if (!self) return []
     if (parent !== undefined) {
       const entries = (await tx.select().from(queuedWorkspaces)
-        .where(and(eq(queuedWorkspaces.projectSlug, self.projectSlug), pending))).map(toRow)
+        .where(and(eq(queuedWorkspaces.projectId, self.projectId), pending))).map(toRow)
       if (closesCycle(id, parent, entries)) {
         throw new ServerError('VALIDATION', 'a queued workspace cannot wait on itself or on one queued after it')
       }
@@ -174,10 +174,10 @@ export async function getQueuedWorkspaceRow(id: string): Promise<QueuedWorkspace
 
 /** Every entry of a project (or of all), oldest first, including launching
  *  ones. */
-export async function listQueuedWorkspaceRows(projectSlug?: string): Promise<QueuedWorkspaceRow[]> {
+export async function listQueuedWorkspaceRows(projectId?: string): Promise<QueuedWorkspaceRow[]> {
   const db = await getDb()
   const rows = await db.select().from(queuedWorkspaces)
-    .where(projectSlug === undefined ? pending : and(eq(queuedWorkspaces.projectSlug, projectSlug), pending))
+    .where(projectId === undefined ? pending : and(eq(queuedWorkspaces.projectId, projectId), pending))
     .orderBy(asc(queuedWorkspaces.createdAt))
   return rows.map(toRow)
 }
@@ -207,14 +207,14 @@ export async function setQueuedWorkspaceTitle(id: string, prompt: string, title:
  * released entries.
  */
 export async function releaseQueuedChildren(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<QueuedWorkspaceRow[]> {
   const db = await getDb()
   const rows = await db.update(queuedWorkspaces)
     .set({ releasedAt: new Date(), launchError: null })
     .where(and(
-      eq(queuedWorkspaces.projectSlug, projectSlug),
+      eq(queuedWorkspaces.projectId, projectId),
       eq(queuedWorkspaces.parentWorkspaceId, workspaceId),
       notLaunching,
     ))
@@ -301,7 +301,7 @@ export async function failQueuedLaunch(id: string, workspaceId: string, error: s
     await tx.update(queuedWorkspaces)
       .set({ parentWorkspaceId: null, parentQueuedId: id })
       .where(and(
-        eq(queuedWorkspaces.projectSlug, row.projectSlug),
+        eq(queuedWorkspaces.projectId, row.projectId),
         eq(queuedWorkspaces.parentWorkspaceId, workspaceId),
         isNull(queuedWorkspaces.releasedAt),
         notLaunching,
@@ -311,7 +311,7 @@ export async function failQueuedLaunch(id: string, workspaceId: string, error: s
 }
 
 /** Delete all of a project's entries, launched ones too, on project removal. */
-export async function deleteProjectQueuedWorkspaces(projectSlug: string): Promise<void> {
+export async function deleteProjectQueuedWorkspaces(projectId: string): Promise<void> {
   const db = await getDb()
-  await db.delete(queuedWorkspaces).where(eq(queuedWorkspaces.projectSlug, projectSlug))
+  await db.delete(queuedWorkspaces).where(eq(queuedWorkspaces.projectId, projectId))
 }

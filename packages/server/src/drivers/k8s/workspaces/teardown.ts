@@ -9,7 +9,7 @@ import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorkspaceForwarders } from '#drivers/k8s/forwarders'
 import { salvageJobImages } from '#drivers/k8s/images'
 import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluster'
-import type { ProjectRef, TeardownTarget } from '#drivers/contract'
+import type { TeardownTarget } from '#drivers/contract'
 
 /**
  * How the k8s driver destroys a workspace's cluster objects
@@ -50,16 +50,14 @@ export async function salvageWorkspaceImages(target: TeardownTarget): Promise<vo
   if (!pod) return
   await salvageJobImages({
     jobName: target.unitName,
-    project: { slug: target.projectSlug, id: pod.projectId },
+    projectId: target.projectId,
     workspaceId: target.workspaceId,
   }).then(() => undefined, () => undefined)
 }
 
-/** Deadline for the Job delete to report its pod actually gone. */
-const UNIT_DELETE_TIMEOUT = '30s'
-
-/** The detached delete's wait: past a hooked pod's grace period, with room. */
-const DETACHED_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
+/** Deadline for the Job delete to report its pod actually gone: past a
+ *  hooked pod's grace period, with room. */
+const UNIT_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + 30)}s`
 
 /**
  * Tear down a workspace's runtime and wait until it is gone. In order:
@@ -114,7 +112,7 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
   // including the preStop script. The timeout keeps a stuck pod from
   // blocking those removals.
   return `kubectl delete job ${target.unitName} -n ${k8sNamespace()}`
-    + ` --ignore-not-found --cascade=foreground --wait=true --timeout=${DETACHED_DELETE_TIMEOUT}`
+    + ` --ignore-not-found --cascade=foreground --wait=true --timeout=${UNIT_DELETE_TIMEOUT}`
     + ' 2>/dev/null || true'
 }
 
@@ -124,16 +122,16 @@ export function detachedTeardownCommand(target: TeardownTarget): string {
  * best-effort on its own, since they fail for unrelated reasons. The
  * node-local sweep reaps the project's node-local data and image stores.
  */
-export async function destroyProjectSubstrate(project: ProjectRef): Promise<void> {
+export async function destroyProjectSubstrate(projectId: string): Promise<void> {
   try {
-    await removeProjectRegistry(project.id)
+    await removeProjectRegistry(projectId)
   } catch {
     // Unreachable cluster — the orphan registry GC collects it by id.
   }
   try {
-    await removeProjectSecrets(project.slug)
+    await removeProjectSecrets(projectId)
   } catch (err) {
     // The object lingers, naming a project nothing registers under.
-    console.warn(`Failed to remove the egress secrets of ${project.slug}: ${(err as Error).message}`)
+    console.warn(`Failed to remove the egress secrets of ${projectId}: ${(err as Error).message}`)
   }
 }

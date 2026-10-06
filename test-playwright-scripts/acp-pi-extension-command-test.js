@@ -7,7 +7,7 @@
  * patches it; unpatched, the pane stays busy forever. No model call.
  *
  * Needs a pi extension registering `/status` in the project's pi agent dir
- * (`<data dir>/global/projects/<project>/pi/agent/extensions/` under
+ * (`<data dir>/global/projects/<project id>/pi/agent/extensions/` under
  * containerless), which seeds each new workspace's own, BEFORE the
  * workspace starts, e.g.:
  *
@@ -31,7 +31,7 @@ const browser = await chromium.launch()
 try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${workspace.projectSlug}&workspace=${workspace.workspaceId}`)
+  await page.goto(`${origin}/?project=${workspace.projectId}&workspace=${workspace.workspaceId}`)
   const box = page.getByPlaceholder('Message the agent…').filter({ visible: true })
   await box.waitFor({ state: 'visible', timeout: 60_000 })
   const stop = page.getByRole('button', { name: 'Stop turn', exact: true }).filter({ visible: true })

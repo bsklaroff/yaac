@@ -37,7 +37,7 @@ async function load(
     objects.applyRegistration({
       metadata: { name: `yaac-proxy-reg-${workspaceId}`, labels: { [LABEL_WORKSPACE_ID]: workspaceId } },
       data: { 'registration.json': JSON.stringify({
-        rules: [], allowedHosts: ['*'], tool: 'claude', projectSlug: 'demo', ...reg,
+        rules: [], allowedHosts: ['*'], tool: 'claude', projectId: 'demo', ...reg,
       }) },
     })
   }
@@ -106,7 +106,7 @@ describe('buildDynamicRules', () => {
       { 'git-tokens.json': [{ token: 'ghp_real', projects: ['demo'] }] },
       {
         ws: { repoUrl: 'https://github.com/acme/repo.git' },
-        other: { projectSlug: 'elsewhere', repoUrl: 'https://github.com/acme/repo.git' },
+        other: { projectId: 'elsewhere', repoUrl: 'https://github.com/acme/repo.git' },
         gitlab: { repoUrl: 'https://gitlab.com/acme/repo.git' },
       },
     )

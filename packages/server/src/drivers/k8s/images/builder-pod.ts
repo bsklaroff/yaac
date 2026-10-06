@@ -58,11 +58,10 @@ import {
 import { runStreamingProcess } from '#drivers/k8s/container'
 import { serverLog, pipeToServerLog } from '#log'
 import { stringHash, type ImageLayer } from '#drivers/k8s/image-engine'
-import type { ProjectRef } from '#drivers/contract'
 
 interface EngineBuildContext {
   /** Project whose chain is being built (its id keys the step-cache repo). */
-  project: ProjectRef
+  projectId: string
   onLog?: (line: string) => void
   /** Builder pod shared by adjacent untrusted layers of one request, owned
    *  and released by the coordinator. */
@@ -128,8 +127,8 @@ export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
  * Per-project registry repo for step-cache images. Cache entries are used
  * without a provenance check, so a hostile build could poison later hits;
  * a per-project repo limits that to the project the attacker already
- * controls. Named by project id, so a new project reusing a slug starts
- * with an empty cache.
+ * controls. Named by project id, so a new project starts with an empty
+ * cache.
  */
 function buildCacheRepo(projectId: string): string {
   return `yaac-buildcache-${projectId}`
@@ -599,7 +598,7 @@ async function runLayerBuild(
   // the pod's lifetime.
   const authFile = await registryAuthFile(
     clusterHost,
-    builderGrantRepos(layer, ctx.project.id),
+    builderGrantRepos(layer, ctx.projectId),
     BUILDER_ACTIVE_DEADLINE_SECONDS + 60,
   )
   await execInBuilderPod(
@@ -613,7 +612,7 @@ async function runLayerBuild(
     ['podman', ...builderBuildArgs(layer, {
       dockerfileRel: plan.dockerfileRel,
       clusterHost,
-      cacheRepo: buildCacheRepo(ctx.project.id),
+      cacheRepo: buildCacheRepo(ctx.projectId),
     })],
     { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
   )

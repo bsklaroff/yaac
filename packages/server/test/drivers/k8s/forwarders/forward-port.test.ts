@@ -36,14 +36,13 @@ const mockDeclared = vi.mocked(getWorkspacePorts)
 const mockIsDetected = vi.mocked(isDetectedPort)
 const mockRelayDial = vi.mocked(relayDial)
 
-const target = { workspaceId: 'sess-1', projectSlug: 'proj', jobName: 'yaac-proj-sess-1' }
+const target = { workspaceId: 'sess-1', projectId: 'proj', jobName: 'yaac-proj-sess-1' }
 
 function pod(workspaceId: string, over: Partial<PodInfo> = {}): PodInfo {
   return {
     jobName: `yaac-proj-${workspaceId}`,
     podName: `yaac-proj-${workspaceId}-abc`,
     workspaceId,
-    projectSlug: 'proj',
     projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
     tool: 'claude',
     phase: 'Running',
@@ -75,7 +74,7 @@ describe('forwardWorkspacePort', () => {
   it('forwards only the target session when no fan-out is asked for', async () => {
     const mapping = await forwardWorkspacePort(target, 8090, { fanOutToProject: false })
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
-    expect(mockAdd).toHaveBeenCalledExactlyOnceWith('proj', 'sess-1', 'yaac-proj-sess-1', 8090)
+    expect(mockAdd).toHaveBeenCalledExactlyOnceWith('sess-1', 'yaac-proj-sess-1', 8090)
     expect(mockList).not.toHaveBeenCalled()
   })
 
@@ -91,12 +90,12 @@ describe('forwardWorkspacePort', () => {
 
     expect(mockList).toHaveBeenCalledWith('proj')
     // Target plus the one running, non-prewarmed sibling.
-    expect(mockAdd.mock.calls.map((c) => c[1]).sort()).toEqual(['sess-1', 'sess-2'])
+    expect(mockAdd.mock.calls.map((c) => c[0]).sort()).toEqual(['sess-1', 'sess-2'])
   })
 
   it('tolerates a sibling forward failure', async () => {
     mockList.mockResolvedValue([pod('sess-1'), pod('sess-2')])
-    mockAdd.mockImplementation((_slug, workspaceId) => {
+    mockAdd.mockImplementation((workspaceId) => {
       if (workspaceId === 'sess-2') return Promise.reject(new Error('sibling down'))
       return Promise.resolve({ containerPort: 8090, hostPort: 8090 })
     })

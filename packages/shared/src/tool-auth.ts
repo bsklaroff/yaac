@@ -387,13 +387,13 @@ export function buildPlaceholderBundle(bundle: ClaudeOAuthBundle): ClaudeOAuthBu
 
 /** Write a placeholder `.credentials.json` to one project's Claude dir. */
 export async function writeProjectClaudePlaceholder(
-  slug: string,
+  projectId: string,
   bundle: ClaudeOAuthBundle,
 ): Promise<void> {
-  await fs.mkdir(claudeDir(slug), { recursive: true })
+  await fs.mkdir(claudeDir(projectId), { recursive: true })
   const payload = { claudeAiOauth: buildPlaceholderBundle(bundle) }
   await writeCredentialsFileAtomic(
-    projectClaudeCredentialsFile(slug),
+    projectClaudeCredentialsFile(projectId),
     JSON.stringify(payload, null, 2) + '\n',
   )
 }
@@ -404,12 +404,12 @@ export async function writeProjectClaudePlaceholder(
  * (docs/containerless-driver.md).
  */
 export async function writeProjectClaudeCredentials(
-  slug: string,
+  projectId: string,
   bundle: ClaudeOAuthBundle,
 ): Promise<void> {
-  await fs.mkdir(claudeDir(slug), { recursive: true })
+  await fs.mkdir(claudeDir(projectId), { recursive: true })
   await writeCredentialsFileAtomic(
-    projectClaudeCredentialsFile(slug),
+    projectClaudeCredentialsFile(projectId),
     JSON.stringify({ claudeAiOauth: bundle }, null, 2) + '\n',
   )
 }
@@ -444,9 +444,9 @@ export function isPlaceholderCodexBundle(bundle: CodexOAuthBundle): boolean {
  * Placeholders are returned too; null means no parseable credential. The
  * caller decides whether a placeholder counts.
  */
-export async function readProjectClaudeBundle(slug: string): Promise<ClaudeOAuthBundle | null> {
-  const fromKeychain = readScopedClaudeKeychainPayload(claudeKeychainService(claudeDir(slug)))
-  const raw = fromKeychain ?? await fs.readFile(projectClaudeCredentialsFile(slug), 'utf8').catch(() => null)
+export async function readProjectClaudeBundle(projectId: string): Promise<ClaudeOAuthBundle | null> {
+  const fromKeychain = readScopedClaudeKeychainPayload(claudeKeychainService(claudeDir(projectId)))
+  const raw = fromKeychain ?? await fs.readFile(projectClaudeCredentialsFile(projectId), 'utf8').catch(() => null)
   if (raw === null) return null
   return extractClaudeOAuthBundle(raw)
 }
@@ -459,8 +459,8 @@ export async function readProjectClaudeBundle(slug: string): Promise<ClaudeOAuth
  * decides which of two credentials is newer, so a missing one must never
  * win. Neither codex nor yaac omits the field; this is only a guard.
  */
-export async function readProjectCodexBundle(slug: string): Promise<CodexOAuthBundle | null> {
-  const raw = await fs.readFile(projectCodexAuthFile(slug), 'utf8').catch(() => null)
+export async function readProjectCodexBundle(projectId: string): Promise<CodexOAuthBundle | null> {
+  const raw = await fs.readFile(projectCodexAuthFile(projectId), 'utf8').catch(() => null)
   if (raw === null) return null
   const bundle = extractCodexOAuthBundle(raw)
   if (!bundle) return null
@@ -480,9 +480,9 @@ function hasCodexRefreshStamp(raw: string): boolean {
 }
 
 /**
- * Every tracked project slug. A missing projects dir reads as none.
+ * Every tracked project id. A missing projects dir reads as none.
  */
-export async function listCredentialProjectSlugs(): Promise<string[]> {
+export async function listCredentialProjectIds(): Promise<string[]> {
   try {
     return await fs.readdir(getProjectsDir())
   } catch {
@@ -500,17 +500,17 @@ export async function listCredentialProjectSlugs(): Promise<string[]> {
  * `deleteScopedClaudeKeychainItem` refuses the unsuffixed service, so the
  * user's own claude install is never touched. A no-op off darwin.
  */
-export function dropProjectClaudeKeychainItem(slug: string): void {
-  deleteScopedClaudeKeychainItem(claudeKeychainService(claudeDir(slug)))
+export function dropProjectClaudeKeychainItem(projectId: string): void {
+  deleteScopedClaudeKeychainItem(claudeKeychainService(claudeDir(projectId)))
 }
 
 /**
- * Run `fn` for every tracked project slug. A missing projects dir is a
+ * Run `fn` for every tracked project id. A missing projects dir is a
  * no-op; a per-project failure is warned (as `Warning: <warnLabel> for
- * project "<slug>": <message>`) and does not block the rest.
+ * project "<id>": <message>`) and does not block the rest.
  */
 async function forEachProject(
-  fn: (slug: string) => Promise<void>,
+  fn: (projectId: string) => Promise<void>,
   warnLabel: string,
 ): Promise<void> {
   let projects: string[]
@@ -519,11 +519,11 @@ async function forEachProject(
   } catch {
     return
   }
-  for (const slug of projects) {
+  for (const projectId of projects) {
     try {
-      await fn(slug)
+      await fn(projectId)
     } catch (err) {
-      console.warn(`Warning: ${warnLabel} for project "${slug}": ${err instanceof Error ? err.message : String(err)}`)
+      console.warn(`Warning: ${warnLabel} for project "${projectId}": ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 }
@@ -534,7 +534,7 @@ async function forEachProject(
  * `project add`.
  */
 export async function fanOutClaudePlaceholders(bundle: ClaudeOAuthBundle): Promise<void> {
-  await forEachProject((slug) => writeProjectClaudePlaceholder(slug, bundle), 'failed to seed placeholder creds')
+  await forEachProject((projectId) => writeProjectClaudePlaceholder(projectId, bundle), 'failed to seed placeholder creds')
 }
 
 /**
@@ -558,10 +558,10 @@ export function buildCodexPlaceholderBundle(bundle: CodexOAuthBundle): CodexOAut
  * shape Codex's `AuthDotJson` deserializer expects.
  */
 export async function writeProjectCodexPlaceholder(
-  slug: string,
+  projectId: string,
   bundle: CodexOAuthBundle,
 ): Promise<void> {
-  await fs.mkdir(codexDir(slug), { recursive: true })
+  await fs.mkdir(codexDir(projectId), { recursive: true })
   const placeholder = buildCodexPlaceholderBundle(bundle)
   const payload: Record<string, unknown> = {
     OPENAI_API_KEY: null,
@@ -575,7 +575,7 @@ export async function writeProjectCodexPlaceholder(
     last_refresh: placeholder.lastRefresh,
   }
   await writeCredentialsFileAtomic(
-    projectCodexAuthFile(slug),
+    projectCodexAuthFile(projectId),
     JSON.stringify(payload, null, 2) + '\n',
   )
 }
@@ -585,10 +585,10 @@ export async function writeProjectCodexPlaceholder(
  * with no proxy (see `writeProjectClaudeCredentials`).
  */
 export async function writeProjectCodexAuth(
-  slug: string,
+  projectId: string,
   bundle: CodexOAuthBundle,
 ): Promise<void> {
-  await fs.mkdir(codexDir(slug), { recursive: true })
+  await fs.mkdir(codexDir(projectId), { recursive: true })
   const payload: Record<string, unknown> = {
     OPENAI_API_KEY: null,
     auth_mode: 'chatgpt',
@@ -601,7 +601,7 @@ export async function writeProjectCodexAuth(
     last_refresh: bundle.lastRefresh,
   }
   await writeCredentialsFileAtomic(
-    projectCodexAuthFile(slug),
+    projectCodexAuthFile(projectId),
     JSON.stringify(payload, null, 2) + '\n',
   )
 }
@@ -611,7 +611,7 @@ export async function writeProjectCodexAuth(
  * `codex/auth.json` with a placeholder.
  */
 export async function fanOutCodexPlaceholders(bundle: CodexOAuthBundle): Promise<void> {
-  await forEachProject((slug) => writeProjectCodexPlaceholder(slug, bundle), 'failed to seed Codex placeholder')
+  await forEachProject((projectId) => writeProjectCodexPlaceholder(projectId, bundle), 'failed to seed Codex placeholder')
 }
 
 async function unlinkIgnoreMissing(filePath: string): Promise<void> {
@@ -632,9 +632,9 @@ async function unlinkIgnoreMissing(filePath: string): Promise<void> {
  * alone is not enough. The user's own claude install is never touched.
  */
 export async function cleanupProjectClaudePlaceholders(): Promise<void> {
-  await forEachProject(async (slug) => {
-    await unlinkIgnoreMissing(projectClaudeCredentialsFile(slug))
-    deleteScopedClaudeKeychainItem(claudeKeychainService(claudeDir(slug)))
+  await forEachProject(async (projectId) => {
+    await unlinkIgnoreMissing(projectClaudeCredentialsFile(projectId))
+    deleteScopedClaudeKeychainItem(claudeKeychainService(claudeDir(projectId)))
   }, 'failed to remove Claude placeholder')
 }
 
@@ -644,5 +644,5 @@ export async function cleanupProjectClaudePlaceholders(): Promise<void> {
  * in place.
  */
 export async function cleanupProjectCodexPlaceholders(): Promise<void> {
-  await forEachProject((slug) => unlinkIgnoreMissing(projectCodexAuthFile(slug)), 'failed to remove Codex placeholder')
+  await forEachProject((projectId) => unlinkIgnoreMissing(projectCodexAuthFile(projectId)), 'failed to remove Codex placeholder')
 }

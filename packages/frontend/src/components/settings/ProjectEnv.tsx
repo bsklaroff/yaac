@@ -63,23 +63,23 @@ function ruleFromDraft(draft: Draft): SecretProxyRule {
  * client on another machine can set them. A secret's value is write-only:
  * leaving it blank in an edit keeps the stored value.
  */
-export function ProjectEnv({ slug, mediatedEgress }: {
-  slug: string
+export function ProjectEnv({ projectId, mediatedEgress }: {
+  projectId: string
   mediatedEgress: boolean
 }): JSX.Element {
   const [draft, setDraft] = useState<Draft>(EMPTY)
   const [editing, setEditing] = useState<string | null>(null)
   const queryClient = useQueryClient()
-  const queryKey = ['project-env', slug]
+  const queryKey = ['project-env', projectId]
   const { data: vars, error: loadError } = useQuery({
     queryKey,
-    queryFn: async () => (await api.project[':slug'].env.$get({ param: { slug } })).vars,
+    queryFn: async () => (await api.project[':projectId'].env.$get({ param: { projectId } })).vars,
     staleTime: 0,
   })
 
   const save = useMutation({
-    mutationFn: () => api.project[':slug'].env.$put({
-      param: { slug },
+    mutationFn: () => api.project[':projectId'].env.$put({
+      param: { projectId },
       json: {
         name: draft.name.trim(),
         // Omit a blank secret value so the server keeps the stored one.
@@ -95,7 +95,7 @@ export function ProjectEnv({ slug, mediatedEgress }: {
     onSettled: () => queryClient.invalidateQueries({ queryKey }),
   })
   const remove = useMutation({
-    mutationFn: (v: ProjectEnvVar) => api.project[':slug'].env[':id'].$delete({ param: { slug, id: v.id } }),
+    mutationFn: (v: ProjectEnvVar) => api.project[':projectId'].env[':id'].$delete({ param: { projectId, id: v.id } }),
     onSuccess: (_, v) => {
       if (editing === v.id) {
         setEditing(null)

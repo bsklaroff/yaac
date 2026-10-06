@@ -229,23 +229,26 @@ export async function requireCluster(): Promise<void> {
 }
 
 /**
- * Add a local test repo as a project on `server`: clone it into the data
- * dir, then register it, skipping the URL checks `project add` does.
+ * Add a local test repo as a project on `server`, named after the repo's
+ * directory: clone it into the data dir, then register it, skipping the URL
+ * checks `project add` does. Returns the project's id.
  *
  * `remoteUrl` is what the project row records. It defaults to a
- * GitHub-shaped URL for the slug, which nothing dials under
+ * GitHub-shaped URL for the name, which nothing dials under
  * YAAC_E2E_SKIP_FETCH.
  */
 export async function addTestProject(
   server: SpawnedServer,
   localRepoPath: string,
   opts: { remoteUrl?: string } = {},
-): Promise<void> {
-  const slug = path.basename(localRepoPath)
-  await fs.mkdir(projectDir(slug), { recursive: true })
-  await cloneRepo(localRepoPath, repoDir(slug), null)
-  await fs.mkdir(claudeDir(slug), { recursive: true })
-  await registerTestProject(server, slug, opts.remoteUrl ?? `https://github.com/test-org/${slug}.git`)
+): Promise<string> {
+  const name = path.basename(localRepoPath)
+  const projectId = crypto.randomUUID()
+  await fs.mkdir(projectDir(projectId), { recursive: true })
+  await cloneRepo(localRepoPath, repoDir(projectId), null)
+  await fs.mkdir(claudeDir(projectId), { recursive: true })
+  await registerTestProject(server, projectId, name, opts.remoteUrl ?? `https://github.com/test-org/${name}.git`)
+  return projectId
 }
 
 /** The current yaac data dir (for assertions). */

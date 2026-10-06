@@ -73,8 +73,8 @@ afterAll(async () => {
 let seq = 0
 /** A fresh conversation log and the ref a reader uses for it. */
 async function record(): Promise<{ file: string; ref: AcpRecordRef }> {
-  const ref = { slug: 'demo', workspaceId: `wt-${String(++seq)}`, agentSessionId: 'acp-1' }
-  const dir = acpLogDir(ref.slug, ref.workspaceId)
+  const ref = { projectId: 'demo', workspaceId: `wt-${String(++seq)}`, agentSessionId: 'acp-1' }
+  const dir = acpLogDir(ref.projectId, ref.workspaceId)
   await fs.mkdir(dir, { recursive: true })
   return { ref, file: path.join(dir, 'acp-1.jsonl') }
 }

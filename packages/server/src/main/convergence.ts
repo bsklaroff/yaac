@@ -3,6 +3,7 @@ import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#
 import { restoreAllWorkspaceForwarders } from '#runtime/ports'
 import { findWorkspaceRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
+import { moveProjectDirsToIds } from '#domain/workspaces'
 import { serverLog } from '#log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
@@ -41,7 +42,7 @@ export async function attachConvergence(opts: {
   // re-address a live agent or `session/load` after a restart.
   const manager = new StatusWatcherManager({
     recordedSessions: (session) =>
-      recordedConversationHandles(session.slug, session.workspaceId),
+      recordedConversationHandles(session.projectId, session.workspaceId),
     // For `acp` the permission mode is sent over the protocol, so the
     // connection needs it. A missing row yields `undefined`, not a default:
     // assuming an unrestricted mode could auto-answer asks the user should
@@ -65,11 +66,17 @@ export async function attachConvergence(opts: {
     workspacesChanged: (workspaces: RuntimeHandle[]) => manager.sync(workspaces),
     // A restart loses the in-memory forwarder registry while running
     // workspaces still advertise their ports in tmux `status-right`.
-    // Rebuild forwarders before anything watches.
+    // Rebuild forwarders before anything watches. Slug-named project dirs
+    // are moved first, since that stops every workspace.
     recover: async () => {
       try {
+        await moveProjectDirsToIds()
+      } catch (err) {
+        serverLog(`[server] moving project dirs to their ids failed: ${String(err)}`)
+      }
+      try {
         await restoreAllWorkspaceForwarders(
-          (slug: string) => resolveProjectConfig(slug).then((c) => c ?? undefined),
+          (projectId: string) => resolveProjectConfig(projectId).then((c) => c ?? undefined),
         )
       } catch (err) {
         serverLog(`[server] restore forwarders failed: ${String(err)}`)

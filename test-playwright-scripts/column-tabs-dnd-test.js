@@ -46,7 +46,7 @@ try {
   })
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
-  await page.goto(`${origin}/?project=${ws.projectSlug}&workspace=${ws.workspaceId}`)
+  await page.goto(`${origin}/?project=${ws.projectId}&workspace=${ws.workspaceId}`)
   await page.locator('section[style]').nth(2).waitFor({ state: 'visible', timeout: 15_000 })
   await page.waitForTimeout(2000)
   const shot = (n) => page.screenshot({ path: path.join(SHOTS, `dnd-${n}.png`) })

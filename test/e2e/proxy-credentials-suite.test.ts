@@ -283,7 +283,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       allowedHosts: [MITM_HOST, MCP_PROXY_HOST, TOKEN_HOST, GIT_HOST],
       repoUrl: `https://${GIT_HOST}/acme/app.git`,
       tool: 'claude',
-      projectSlug: 'creds-suite',
+      projectId: 'creds-suite',
       upstreamRedirects: {
         [MITM_HOST]: redirect, [MCP_PROXY_HOST]: redirect, [TOKEN_HOST]: redirect, [GIT_HOST]: redirect,
       },
@@ -360,7 +360,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       ssh: keys.map((k, i) => ({
         privateKey: k.privateKey,
         publicKey: k.publicKey,
-        projects: [{ slug: 'creds-suite', host: `git.${i === 0 ? 'a' : 'b'}.example`, knownHostsEntry: k.knownHostsEntry }],
+        projects: [{ projectId: 'creds-suite', host: `git.${i === 0 ? 'a' : 'b'}.example`, knownHostsEntry: k.knownHostsEntry }],
       })),
     })
     // Two hosts, so known_hosts has several entries. ssh-add must be given
@@ -460,7 +460,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     await syncProxyCredentials({ ...EMPTY, git: GIT_TOKENS })
     await curlUntil(podName, gitProbe, (r) => r.exit === 0 && echoedOf(r.out).headers.authorization !== undefined)
     // Re-registered under a project the token is not assigned to.
-    await applyProxyRegistration(workspaceId, { ...registration, projectSlug: 'creds-other' })
+    await applyProxyRegistration(workspaceId, { ...registration, projectId: 'creds-other' })
     try {
       const r = await curlUntil(podName, gitProbe,
         (res) => res.exit === 0 && echoedOf(res.out).headers.authorization === undefined)

@@ -222,9 +222,9 @@ function grantScopeOf(authFile: string): { repos: string[]; expiry: number } | n
   const [, expiry, scope] = payload.split('|')
   return { repos: scope.split(','), expiry: Number(expiry) }
 }
-const PROJ = { slug: 'proj', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
-const PROJ_A = { slug: 'proj-a', id: '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e' }
-const PROJ_B = { slug: 'proj-b', id: 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5' }
+const PROJ = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+const PROJ_A = '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e'
+const PROJ_B = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
 const LAYERED_DOCKERFILE = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n'
 
 /**
@@ -250,7 +250,7 @@ async function makeContext(files: Record<string, string>): Promise<string> {
 async function podLayer(over: Partial<ImageLayer> = {}, files?: Record<string, string>): Promise<ImageLayer> {
   const dir = await makeContext(files ?? { 'Dockerfile.yaac': LAYERED_DOCKERFILE })
   return {
-    tag: `yaac-proj-${PROJ.id}:p1`,
+    tag: `yaac-proj-${PROJ}:p1`,
     name: 'project',
     dockerfile: path.join(dir, 'Dockerfile.yaac'),
     context: dir,
@@ -382,11 +382,11 @@ describe('ensureImage', () => {
 
   it('coalesces a shared layer across chains and fans out the distinct ones', async () => {
     const shared = await podLayer({ tag: 'yaac-base:shared', buildArgs: undefined })
-    mockResolveChain.mockImplementation(async (project) => ({
+    mockResolveChain.mockImplementation(async (projectId) => ({
       layers: [shared, await podLayer({
-        tag: `yaac-user-${project.id}:x`, name: 'user', buildArgs: { BASE_IMAGE: shared.tag },
+        tag: `yaac-user-${projectId}:x`, name: 'user', buildArgs: { BASE_IMAGE: shared.tag },
       })],
-      finalTag: `yaac-user-${project.id}:x`,
+      finalTag: `yaac-user-${projectId}:x`,
     }))
     const nextBuild = holdInPodBuilds()
 
@@ -394,22 +394,22 @@ describe('ensureImage', () => {
     const b = ensureImage(PROJ_B, undefined, false, false, { reason: 'prewarm' })
 
     // Both chains wait on one shared build and attach to its single entry.
-    // Which project registered first is a race, so compare slugs as a set.
+    // Which project registered first is a race, so compare ids as a set.
     await nextBuild()
     await flush()
     expect(held).toHaveLength(1)
     const entries = listImageBuilds()
     expect(entries).toHaveLength(1)
     expect(entries[0].status).toBe('running')
-    expect([...entries[0].projectSlugs].sort()).toEqual(['proj-a', 'proj-b'])
+    expect([...entries[0].projectIds].sort()).toEqual([PROJ_A, PROJ_B].sort())
 
     // Once the shared layer finishes, both downstream layers build.
     held[0].close(0)
     await vi.waitFor(() => { expect(held.length).toBe(3) })
 
     for (const h of held.slice(1)) h.close(0)
-    expect(await a).toBe(`yaac-user-${PROJ_A.id}:x`)
-    expect(await b).toBe(`yaac-user-${PROJ_B.id}:x`)
+    expect(await a).toBe(`yaac-user-${PROJ_A}:x`)
+    expect(await b).toBe(`yaac-user-${PROJ_B}:x`)
     expect(listImageBuilds().every((e) => e.status === 'succeeded')).toBe(true)
   })
 
@@ -593,7 +593,7 @@ describe('ensureImage', () => {
     expect(remote[3][2]).toBe(`umask 077 && cat > ${BUILDER_AUTHFILE}`)
     const grantExec = spawned.filter((s) => s.file === 'kubectl')[3]
     const grant = grantScopeOf(grantExec.stdin)
-    expect(grant?.repos).toEqual([`yaac-proj-${PROJ.id}`, `yaac-buildcache-${PROJ.id}`])
+    expect(grant?.repos).toEqual([`yaac-proj-${PROJ}`, `yaac-buildcache-${PROJ}`])
     // Valid for the pod's maximum lifetime, and not much longer.
     expect(grant!.expiry - Date.now() / 1000).toBeGreaterThan(BUILDER_ACTIVE_DEADLINE_SECONDS)
     expect(grant!.expiry - Date.now() / 1000).toBeLessThan(BUILDER_ACTIVE_DEADLINE_SECONDS + 120)
@@ -601,7 +601,7 @@ describe('ensureImage', () => {
     // Build: chroot isolation, per-project registry step cache.
     expect(remote[4].slice(0, 4)).toEqual(['podman', 'build', '--isolation', 'chroot'])
     expect(remote[4]).toContain(project.tag)
-    const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-${PROJ.id}`
+    const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-${PROJ}`
     expect(remote[4].join(' '))
       .toContain(`--cache-from ${cacheRef} --cache-to ${cacheRef} --cache-ttl 168h`)
     expect(remote[4].join(' ')).toContain(`--authfile ${BUILDER_AUTHFILE}`)
@@ -635,19 +635,19 @@ describe('ensureImage', () => {
     expect(tarLists[0]).toContain('Dockerfile.yaac')
   })
 
-  it('names the step-cache repo by the project id, never its slug', async () => {
-    // A project re-added under an old slug must not hit the old cache.
+  it('names the step-cache repo by the project id, never its name', async () => {
+    // A project re-added under an old name must not hit the old cache.
     chain([await podLayer({ buildArgs: undefined })])
-    await ensureImage({ slug: 'demo', id: PROJ_B.id })
+    await ensureImage(PROJ_B)
     const build = remoteCommands()[3].join(' ')
-    expect(build).toContain(`${CLUSTER_HOST}/yaac-buildcache-${PROJ_B.id}`)
+    expect(build).toContain(`${CLUSTER_HOST}/yaac-buildcache-${PROJ_B}`)
     expect(build).not.toContain('buildcache-demo')
   })
 
   it('reuses one builder pod across adjacent untrusted layers and deletes it once', async () => {
     const first = await podLayer({ buildArgs: undefined })
     const second = await podLayer({
-      tag: `yaac-user-${PROJ.id}:u1`, name: 'user', buildArgs: { BASE_IMAGE: first.tag },
+      tag: `yaac-user-${PROJ}:u1`, name: 'user', buildArgs: { BASE_IMAGE: first.tag },
     })
     chain([first, second])
 
@@ -660,8 +660,8 @@ describe('ensureImage', () => {
       .filter((s) => s.file === 'kubectl' && s.args.at(-1)?.includes(BUILDER_AUTHFILE) && s.args.at(-1)?.startsWith('umask'))
       .map((s) => grantScopeOf(s.stdin)?.repos)
     expect(grants).toEqual([
-      [`yaac-proj-${PROJ.id}`, `yaac-buildcache-${PROJ.id}`],
-      [`yaac-user-${PROJ.id}`, `yaac-buildcache-${PROJ.id}`],
+      [`yaac-proj-${PROJ}`, `yaac-buildcache-${PROJ}`],
+      [`yaac-user-${PROJ}`, `yaac-buildcache-${PROJ}`],
     ])
   })
 

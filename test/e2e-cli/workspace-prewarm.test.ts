@@ -69,13 +69,14 @@ describe('yaac prewarmed sessions', () => {
   })
 
   const FAKE_REMOTE = 'https://github.com/test-org/repo-demo.git'
+  const PROJECT_ID = crypto.randomUUID()
 
   /**
    * Put a project and fake claude creds on disk, as `project add` would.
    * It is registered with the server once the server is up.
    */
   async function stageProject(): Promise<void> {
-    const projectDir = path.join(testEnv.dataDir, 'global', 'projects', 'repo-demo')
+    const projectDir = path.join(testEnv.dataDir, 'global', 'projects', PROJECT_ID)
     const repoDir = path.join(projectDir, 'repo')
     await fs.mkdir(path.join(projectDir, 'claude'), { recursive: true })
 
@@ -126,7 +127,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     }
     server = await spawnYaacServer(serverEnv)
     await setTestGitIdentity(serverEnv)
-    await registerTestProject(server, 'repo-demo', FAKE_REMOTE)
+    await registerTestProject(server, PROJECT_ID, 'repo-demo', FAKE_REMOTE)
     await assignTestGitCredential(server, 'repo-demo', 'fake-ghp-token')
 
     // 1. A cold create gives the project an open workspace.
@@ -136,7 +137,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
 
     // 2. Wait for a spare that is running with tmux up, so it is claimable.
     const spare = await vi.waitFor(async () => {
-      const pods = await listWorkspacePods('repo-demo')
+      const pods = await listWorkspacePods(PROJECT_ID)
       const s = pods.find((p) => isPrewarmed(p) && p.running)
       if (!s || !await tmuxAliveInPod(s.jobName)) throw new Error('no claimable spare yet')
       return s
@@ -144,15 +145,15 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     const spareJob = spare.jobName
 
     // 3. The spare is hidden from listings and the project's count.
-    const allPods = await listWorkspacePods('repo-demo')
+    const allPods = await listWorkspacePods(PROJECT_ID)
     expect(allPods.filter(isPrewarmed)).toHaveLength(1)
     expect(allPods.filter((p) => !isPrewarmed(p))).toHaveLength(1)
 
-    const active = await listActiveWorkspaces('repo-demo')
+    const active = await listActiveWorkspaces(PROJECT_ID)
     expect(active.workspaces).toHaveLength(1)
     expect(active.workspaces[0].workspaceId).not.toBe(spare.workspaceId)
 
-    const proj = (await listProjects()).find((p) => p.slug === 'repo-demo')
+    const proj = (await listProjects()).find((p) => p.id === PROJECT_ID)
     expect(proj?.workspaceCount).toBe(1)
 
     // 4. Spares work for any tool and branch: a codex create on `dev`
@@ -168,7 +169,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     expect(third.stdout).toContain('Using prewarmed session...')
 
     // The spare's own pod, no longer marked prewarmed and retooled.
-    const retooled = (await listWorkspacePods('repo-demo')).find((p) => p.jobName === spareJob)
+    const retooled = (await listWorkspacePods(PROJECT_ID)).find((p) => p.jobName === spareJob)
     expect(retooled).toBeDefined()
     expect(isPrewarmed(retooled!)).toBe(false)
     expect(retooled!.tool).toBe('codex')
@@ -188,7 +189,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     // 5. A replacement spare is warmed with the project's last-used tool
     //    (codex). Nothing claims it, so running is enough.
     const refilled = await vi.waitFor(async () => {
-      const pods = await listWorkspacePods('repo-demo')
+      const pods = await listWorkspacePods(PROJECT_ID)
       const s = pods.find((p) => isPrewarmed(p) && p.running && p.jobName !== spareJob)
       if (!s) throw new Error('no replacement spare yet')
       return s

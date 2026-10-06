@@ -263,6 +263,18 @@ export async function listeningPorts(pids: number[]): Promise<Listener[]> {
   return [...byPort.values()].sort((a, b) => a.port - b.port)
 }
 
+/** The pids of a set still running (or not ours to signal). */
+export function livePids(pids: number[]): number[] {
+  return pids.filter((pid) => {
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'EPERM'
+    }
+  })
+}
+
 /** Signal a set of pids, ignoring the ones that already went away. */
 export function killPids(pids: number[], signal: NodeJS.Signals): void {
   for (const pid of pids) {

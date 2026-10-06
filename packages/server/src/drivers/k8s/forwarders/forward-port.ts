@@ -17,7 +17,7 @@ import type { PortMapping } from '@yaac/shared/types'
  * workspaces is best-effort; a failure on the target itself is thrown.
  */
 export async function forwardWorkspacePort(
-  target: { workspaceId: string; projectSlug: string; jobName: string },
+  target: { workspaceId: string; projectId: string; jobName: string },
   containerPort: number,
   opts: { fanOutToProject: boolean },
 ): Promise<PortMapping> {
@@ -28,17 +28,15 @@ export async function forwardWorkspacePort(
     )
   }
 
-  const mapping = await addWorkspaceForwarder(
-    target.projectSlug, target.workspaceId, target.jobName, containerPort,
-  )
+  const mapping = await addWorkspaceForwarder(target.workspaceId, target.jobName, containerPort)
 
   if (opts.fanOutToProject) {
-    const pods = await readWorkspacePods(target.projectSlug)
+    const pods = await readWorkspacePods(target.projectId)
     await Promise.all(
       pods
         .filter((p) => p.running && p.workspaceId && p.workspaceId !== target.workspaceId && !isPrewarmed(p))
         .map((p) =>
-          addWorkspaceForwarder(p.projectSlug, p.workspaceId, p.jobName, containerPort)
+          addWorkspaceForwarder(p.workspaceId, p.jobName, containerPort)
             .catch((err: unknown) => {
               serverLog(
                 `[server] forward-port fan-out to ${p.workspaceId.slice(0, 8)} failed: `

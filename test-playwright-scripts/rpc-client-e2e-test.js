@@ -12,11 +12,11 @@
  * credential (`yaac auth fake claude-oauth` is enough). The workspace it
  * creates is stopped at the end.
  *
- * Run: YAAC_DATA_DIR=... PROJECT=<slug> node test-playwright-scripts/rpc-client-e2e-test.js
+ * Run: YAAC_DATA_DIR=... PROJECT=<name or id> node test-playwright-scripts/rpc-client-e2e-test.js
  */
-import { api, check, finish, origin, requirePlaywright, until } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, resolveProject, until } from './lib.js'
 
-const project = process.env.PROJECT || 'yaac'
+const project = (await resolveProject(process.env.PROJECT || 'yaac')).id
 const isAsset = (p) => !p.startsWith('/api/') || p === '/api/events'
 
 const { chromium } = requirePlaywright()

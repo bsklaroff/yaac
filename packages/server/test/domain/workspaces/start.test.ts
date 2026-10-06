@@ -8,6 +8,8 @@ import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from 
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import type { WorkspaceDriver } from '#drivers/contract'
 
+const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+
 // Everything runs for real down to the fake driver, over a real project.
 let tmpDir: string
 let launched: string[]
@@ -16,7 +18,7 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
   installFakeWorkspaceDriver({
     launch: (spec) => {
       launched.push(spec.workspaceId)
-      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectSlug: 'proj' }))
+      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
     },
     ...overrides,
   })
@@ -24,7 +26,7 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await seedProject('proj')
+  await seedProject(PROJ)
   clearAllProvisioningForTests()
   launched = []
 })
@@ -49,7 +51,7 @@ describe('startWorkspace', () => {
     })
 
     const result = await startWorkspace({
-      projectSlug: 'proj',
+      projectId: PROJ,
       workspaceId: 'wt-1',
       tool: 'claude',
       model: 'claude-opus-5-5',
@@ -64,15 +66,15 @@ describe('startWorkspace', () => {
     expect(result.workspaceId).toBe('wt-1')
     // The row names what is coming up before any agent has answered.
     expect(row).toMatchObject({ kind: 'create', tool: 'claude', model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
-    expect(await getWorkspaceRow('proj', 'wt-1')).toMatchObject({
+    expect(await getWorkspaceRow(PROJ, 'wt-1')).toMatchObject({
       model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui', baseBranch: 'dev',
     })
-    expect(await listWorkspaceAgentSessions('proj', 'wt-1')).toEqual([
+    expect(await listWorkspaceAgentSessions(PROJ, 'wt-1')).toEqual([
       expect.objectContaining({ tool: 'claude', firstPrompt: 'go' }),
     ])
     // No spare was looked for, and nothing was remembered for the project.
     expect(list).not.toHaveBeenCalled()
-    const project = await getProjectRow('proj')
+    const project = await getProjectRow(PROJ)
     expect(project?.lastTool).toBeUndefined()
     expect(project?.lastBranch).toBeUndefined()
   })
@@ -82,7 +84,7 @@ describe('startWorkspace', () => {
     installDriver({ list })
 
     await startWorkspace({
-      projectSlug: 'proj',
+      projectId: PROJ,
       workspaceId: 'wt-2',
       tool: 'codex',
       permissionMode: 'accept-edits',
@@ -92,7 +94,7 @@ describe('startWorkspace', () => {
     }, () => {})
 
     expect(list).toHaveBeenCalled()
-    expect(await getProjectRow('proj')).toMatchObject({
+    expect(await getProjectRow(PROJ)).toMatchObject({
       lastTool: 'codex',
       lastBranch: 'dev',
       createDefaults: { codex: { permissionMode: 'accept-edits' } },

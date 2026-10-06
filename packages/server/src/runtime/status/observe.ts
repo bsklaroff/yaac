@@ -28,14 +28,14 @@ export interface RuntimeReport {
   workspaces: WorkspaceRuntimeReport[]
   /** Recorded workspaces whose runtime is gone, for the caller to tear down. */
   stale: StaleWorkspaceInfo[]
-  /** Project slug → git credentials the upstream rejected. Project-wide: a
+  /** Project id → git credentials the upstream rejected. Project-wide: a
    *  bad token blocks new work even with nothing running. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
 }
 
 export interface WorkspaceRuntimeReport {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   /** A `terminating` workspace is a non-interactive placeholder; its agents
    *  are already evicted, so it reports none. */
@@ -105,16 +105,16 @@ export async function observeWorkspaces(projectFilter?: string): Promise<Runtime
 
 async function observeRunning(w: RuntimeHandle): Promise<WorkspaceRuntimeReport> {
   const base = emptyReport(w, 'running')
-  if (!w.workspaceId || !w.projectSlug) return base
+  if (!w.workspaceId || !w.projectId) return base
   const driver = workspaceDriver()
-  const waitingSinceMs = readWorkspaceWaitingSince(w.projectSlug, w.workspaceId)
-  const terminals = readWorkspaceTerminals(w.projectSlug, w.workspaceId)
+  const waitingSinceMs = readWorkspaceWaitingSince(w.projectId, w.workspaceId)
+  const terminals = readWorkspaceTerminals(w.projectId, w.workspaceId)
   return {
     ...base,
     // Aggregate over the workspace's live agents (see status-store).
-    status: readWorkspaceStatus(w.projectSlug, w.workspaceId),
+    status: readWorkspaceStatus(w.projectId, w.workspaceId),
     ...(waitingSinceMs !== undefined ? { waitingSinceMs } : {}),
-    agents: agentLiveness(w.projectSlug, w.workspaceId),
+    agents: agentLiveness(w.projectId, w.workspaceId),
     ...(terminals !== undefined ? { terminals } : {}),
     blockedHosts: await driver.blockedHosts(w.workspaceId),
     forwardedPorts: await driver.forwardedPorts(w.workspaceId),
@@ -125,7 +125,7 @@ async function observeRunning(w: RuntimeHandle): Promise<WorkspaceRuntimeReport>
 function emptyReport(w: RuntimeHandle, phase: 'running' | 'terminating'): WorkspaceRuntimeReport {
   return {
     workspaceId: w.workspaceId,
-    projectSlug: w.projectSlug,
+    projectId: w.projectId,
     tool: w.tool,
     phase,
     createdAtMs: w.createdAtMs,
@@ -138,15 +138,15 @@ function emptyReport(w: RuntimeHandle, phase: 'running' | 'terminating'): Worksp
 }
 
 /** Each live agent's own busy/idle, by the handle it is running on. */
-function agentLiveness(projectSlug: string, workspaceId: string): AgentLiveness[] {
-  const observed = liveAgents(projectSlug, workspaceId)
+function agentLiveness(projectId: string, workspaceId: string): AgentLiveness[] {
+  const observed = liveAgents(projectId, workspaceId)
   if (observed === undefined) return []
   const seen = new Set<string>()
   const out: AgentLiveness[] = []
   for (const { handle } of observed) {
     if (seen.has(handle)) continue
     seen.add(handle)
-    const agent = readAgentStatus(projectSlug, workspaceId, handle)
+    const agent = readAgentStatus(projectId, workspaceId, handle)
     if (agent === undefined) continue
     out.push({
       handle,

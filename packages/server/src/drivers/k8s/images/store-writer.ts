@@ -34,7 +34,6 @@ import { ensureBuilderImage } from '#drivers/k8s/cluster'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#log'
-import type { ProjectRef } from '#drivers/contract'
 
 /** In-pod mount point of the store (Dockerfile.nestable's
  *  `additionalimagestores`). The image ships it empty, so a workspace with
@@ -389,26 +388,25 @@ interface EnsureStoreOptions {
  * {@link STORE_REFRESH_RETRY_MS}.
  */
 export async function ensureNodeImageStore(
-  project: ProjectRef,
+  projectId: string,
   opts: EnsureStoreOptions = {},
 ): Promise<boolean> {
-  const { id } = project
   const now = opts.nowMs ?? Date.now()
-  const last = lastRefreshMs.get(id)
+  const last = lastRefreshMs.get(projectId)
   if (!opts.force && last !== undefined && now - last < STORE_REFRESH_INTERVAL_MS) return false
-  if (refreshing.has(id)) return false
-  refreshing.add(id)
-  lastRefreshMs.set(id, now)
+  if (refreshing.has(projectId)) return false
+  refreshing.add(projectId)
+  lastRefreshMs.set(projectId, now)
   try {
-    const wrote = await storeEnsureMutex(id, () => writeOneStore(project))
-    if (!wrote) lastRefreshMs.set(id, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
+    const wrote = await storeEnsureMutex(projectId, () => writeOneStore(projectId))
+    if (!wrote) lastRefreshMs.set(projectId, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
     return wrote
   } catch (err) {
-    serverLog(`[image-store] ${project.slug}: ${String(err)}`)
-    lastRefreshMs.set(id, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
+    serverLog(`[image-store] ${projectId}: ${String(err)}`)
+    lastRefreshMs.set(projectId, now - STORE_REFRESH_INTERVAL_MS + STORE_REFRESH_RETRY_MS)
     return false
   } finally {
-    refreshing.delete(id)
+    refreshing.delete(projectId)
   }
 }
 
@@ -418,21 +416,20 @@ export async function ensureNodeImageStore(
  * capabilities. False when nothing was published (no project registry, or
  * every node failed).
  */
-async function writeOneStore(project: ProjectRef): Promise<boolean> {
-  const { slug, id } = project
-  const clusterIp = await projectRegistryClusterIp(id)
+async function writeOneStore(projectId: string): Promise<boolean> {
+  const clusterIp = await projectRegistryClusterIp(projectId)
   if (!clusterIp) return false
   const imageRef = await ensureBuilderImage()
-  const keep = await generationsInUse(id)
+  const keep = await generationsInUse(projectId)
   // Unknown live set: keep every complete generation.
-  const keepNames = keep ?? await listStoreGenerations(id)
+  const keepNames = keep ?? await listStoreGenerations(projectId)
   // Same name on every node, since the server picks the mount from its
   // own node's generations.
   const genName = generationName()
   const registryEndpoint = `${clusterIp}:${PROJECT_REGISTRY_PORT}`
   const runs = await runOnEachNode({
-    name: `yaac-store-${id}`,
-    labels: storeLabels(id),
+    name: `yaac-store-${projectId}`,
+    labels: storeLabels(projectId),
     timeoutMs: STORE_REFRESH_TIMEOUT_MS,
     pod: () => ({
       image: imageRef,
@@ -450,7 +447,7 @@ async function writeOneStore(project: ProjectRef): Promise<boolean> {
         hostNetwork: true,
         volumes: [{
           name: 'store',
-          hostPath: { path: nodeLocalHostPath(imageStoreDir(id)), type: 'DirectoryOrCreate' },
+          hostPath: { path: nodeLocalHostPath(imageStoreDir(projectId)), type: 'DirectoryOrCreate' },
         }],
       },
     }),
@@ -458,8 +455,8 @@ async function writeOneStore(project: ProjectRef): Promise<boolean> {
   for (const { node, phase, logs } of runs) {
     const tail = logs.trim().split('\n').slice(-4).join(' | ')
     serverLog(phase === 'Succeeded'
-      ? `[image-store] ${slug} on ${node}: ${genName} ${tail}`
-      : `[image-store] ${slug} on ${node}: pod ${phase}${tail ? `; ${tail}` : ''}`)
+      ? `[image-store] ${projectId} on ${node}: ${genName} ${tail}`
+      : `[image-store] ${projectId} on ${node}: pod ${phase}${tail ? `; ${tail}` : ''}`)
   }
   return runs.some((r) => r.phase === 'Succeeded')
 }
@@ -468,8 +465,8 @@ async function writeOneStore(project: ProjectRef): Promise<boolean> {
  * Reconcile step: refresh each project's store in the background,
  * throttled by {@link STORE_REFRESH_INTERVAL_MS}.
  */
-export function reconcileNodeImageStores(projects: ProjectRef[]): void {
-  for (const project of projects) {
-    void ensureNodeImageStore(project)
+export function reconcileNodeImageStores(projectIds: string[]): void {
+  for (const projectId of projectIds) {
+    void ensureNodeImageStore(projectId)
   }
 }

@@ -340,14 +340,14 @@ const group = program
 group
   .command('create')
   .description('Create an empty group (pinned, so it stays listed until it has workspaces)')
-  .argument('<project>', 'Project slug')
+  .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Group name')
   .action(groupCreate)
 
 group
   .command('list')
   .description('List workspace groups and how many running workspaces each holds')
-  .argument('[project]', 'Filter by project slug')
+  .argument('[project]', 'Filter by project name, id, or id prefix')
   .action(groupList)
 
 group
@@ -357,13 +357,13 @@ group
   // Optional rather than a `--none` sentinel: commander eats a bare `--` as
   // its end-of-options marker, so it could never reach the handler.
   .argument('[group]', 'Group name; omit it to return the workspace to the default list')
-  .option('--project <slug>', 'Project the workspace belongs to (required for a stopped workspace)')
+  .option('--project <project>', 'Project (name, id, or id prefix) the workspace belongs to (required for a stopped workspace)')
   .action(groupMove)
 
 group
   .command('delete')
   .description('Delete a group; its workspaces return to the default list (nothing is stopped)')
-  .argument('<project>', 'Project slug')
+  .argument('<project>', 'Project name, id, or id prefix')
   .argument('<group>', 'Group name')
   .action(groupDelete)
 
@@ -374,7 +374,7 @@ const workspace = program
 workspace
   .command('create')
   .description('Create a new workspace for a project')
-  .argument('<project>', 'Project slug')
+  .argument('<project>', 'Project name, id, or id prefix')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, or pi). Defaults to the agent this project was last created with, else claude')
   .option('-b, --branch <branch>', 'Reference branch for the workspace (defaults to the remote default branch)')
   .option('-p, --prompt <text>', 'Initial prompt typed into the agent once the workspace is up')
@@ -387,7 +387,7 @@ workspace
 workspace
   .command('list')
   .description('List running workspaces')
-  .argument('[project]', 'Filter by project slug')
+  .argument('[project]', 'Filter by project name, id, or id prefix')
   .option('-s, --stopped', 'List stopped workspaces (their checkouts are kept, and they can be restarted)')
   .option('-n, --num <n>', 'With -s, cap stopped results to N rows (default 25)', (v) => Number.parseInt(v, 10))
   .option('-a, --all', 'With -s, show all stopped rows without a cap')
@@ -434,7 +434,7 @@ workspace
 workspace
   .command('monitor')
   .description('Poll and display running workspaces in real-time')
-  .argument('[project]', 'Filter by project slug')
+  .argument('[project]', 'Filter by project name, id, or id prefix')
   .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
   .action(workspaceMonitor)
 
@@ -445,13 +445,13 @@ const config = program
 config
   .command('edit')
   .description("Open the project's yaac-config.json in $EDITOR")
-  .argument('<project>', 'Project slug')
+  .argument('<project>', 'Project name, id, or id prefix')
   .action(configEditProject)
 
 config
   .command('edit-dockerfile')
   .description("Open the project's Dockerfile.yaac in $EDITOR")
-  .argument('<project>', 'Project slug')
+  .argument('<project>', 'Project name, id, or id prefix')
   .action(configEditDockerfile)
 
 config

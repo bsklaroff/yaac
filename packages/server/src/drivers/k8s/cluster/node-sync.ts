@@ -1,5 +1,4 @@
 import { applyObject, listObjects } from '#drivers/k8s/substrate'
-import type { ProjectRef } from '#drivers/contract'
 import { serverLog } from '#log'
 import { nodeIpBlocks } from './cluster-cidrs'
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
@@ -44,7 +43,7 @@ interface RawNode {
  * Re-render the node-address policies if the address set changed, and
  * start writing hosts.toml to Ready nodes that do not have it yet.
  */
-export async function reconcileNodeSet(projects: ProjectRef[]): Promise<void> {
+export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
   const nodeCidrs = await nodeIpBlocks({ fresh: true })
   const addresses = nodeCidrs.join(',')
   if (addresses !== renderedAddresses) {
@@ -56,7 +55,7 @@ export async function reconcileNodeSet(projects: ProjectRef[]): Promise<void> {
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)
     await applyMainRegistryIngress(nodeCidrs)
-    for (const project of projects) await applyProjectRegistryIngress(project, nodeCidrs)
+    for (const projectId of projectIds) await applyProjectRegistryIngress(projectId, nodeCidrs)
     renderedAddresses = addresses
   }
 
@@ -66,16 +65,16 @@ export async function reconcileNodeSet(projects: ProjectRef[]): Promise<void> {
     .map((n) => ({ name: n.metadata?.name ?? '', key: `${n.metadata?.name ?? ''}/${n.metadata?.uid ?? ''}` }))
     .filter((n) => n.name && !hostsWritten.has(n.key))
   if (pending.length === 0) return
-  hostsRun = writeHostsTo(pending, projects).finally(() => { hostsRun = null })
+  hostsRun = writeHostsTo(pending, projectIds).finally(() => { hostsRun = null })
 }
 
 /** Write every registry's hosts.toml to each node in turn; a failed node is retried on a later pass. */
-async function writeHostsTo(nodes: Array<{ name: string; key: string }>, projects: ProjectRef[]): Promise<void> {
+async function writeHostsTo(nodes: Array<{ name: string; key: string }>, projectIds: string[]): Promise<void> {
   for (const node of nodes) {
     const only = new Set([node.name])
     try {
       await writeMainRegistryHosts(only)
-      for (const project of projects) await writeProjectRegistryHosts(project, only)
+      for (const projectId of projectIds) await writeProjectRegistryHosts(projectId, only)
       hostsWritten.add(node.key)
     } catch (err) {
       serverLog(`[node-sync] registry hosts.toml on ${node.name} failed (retried next pass): ${String(err)}`)

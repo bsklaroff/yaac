@@ -2,7 +2,7 @@ import {
   dropProjectClaudeKeychainItem,
   isPlaceholderClaudeBundle,
   isPlaceholderCodexBundle,
-  listCredentialProjectSlugs,
+  listCredentialProjectIds,
   loadClaudeCredentialsFile,
   loadCodexCredentialsFile,
   readProjectClaudeBundle,
@@ -21,7 +21,7 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
 /**
  * Keeps OAuth credentials consistent between the host store
  * (`~/.yaac/.credentials/*.json`) and each project's tool home
- * (`~/.yaac/projects/<slug>/{claude,codex}`), which agents read.
+ * (`~/.yaac/projects/<id>/{claude,codex}`), which agents read.
  *
  * With mediated egress (k8s) the project home holds a sentinel and the proxy
  * writes every refresh to the host store, so they never disagree. Without a
@@ -111,19 +111,19 @@ export function codexBundleIsNewer(candidate: CodexOAuthBundle, current: CodexOA
 // ── Harvest: project tool homes → host store ───────────────────────────
 
 /**
- * Adopt the newest Claude bundle among `slugs` into the host store. A
+ * Adopt the newest Claude bundle among `projectIds` into the host store. A
  * compare-and-set skips the write if another writer changed the store while
  * the projects were read; the next sweep re-reads.
  */
-async function harvestClaude(slugs: string[]): Promise<void> {
+async function harvestClaude(projectIds: string[]): Promise<void> {
   const stored = await loadClaudeCredentialsFile()
   // Nothing to harvest for api-key auth, and a leftover project file must
   // not sign a signed-out user back in.
   if (stored?.kind !== 'oauth') return
   const base = stored.claudeAiOauth
   let best = base
-  for (const slug of slugs) {
-    const candidate = await readProjectClaudeBundle(slug).catch(() => null)
+  for (const projectId of projectIds) {
+    const candidate = await readProjectClaudeBundle(projectId).catch(() => null)
     // Never adopt a sentinel (see `isPlaceholderClaudeBundle`).
     if (!candidate || isPlaceholderClaudeBundle(candidate)) continue
     if (claudeBundleIsNewer(candidate, best)) best = candidate
@@ -137,13 +137,13 @@ async function harvestClaude(slugs: string[]): Promise<void> {
 }
 
 /** The Codex version of `harvestClaude`. */
-async function harvestCodex(slugs: string[]): Promise<void> {
+async function harvestCodex(projectIds: string[]): Promise<void> {
   const stored = await loadCodexCredentialsFile()
   if (stored?.kind !== 'oauth') return
   const base = stored.codexOauth
   let best = base
-  for (const slug of slugs) {
-    const candidate = await readProjectCodexBundle(slug).catch(() => null)
+  for (const projectId of projectIds) {
+    const candidate = await readProjectCodexBundle(projectId).catch(() => null)
     if (!candidate || isPlaceholderCodexBundle(candidate)) continue
     if (codexBundleIsNewer(candidate, best)) best = candidate
   }
@@ -162,17 +162,17 @@ async function harvestCodex(slugs: string[]): Promise<void> {
  * resync) instead of using a watcher.
  *
  * `tool` limits the sweep to one tool (plan usage runs per tool, and on macOS
- * each Claude read spawns `security`); `slug` limits it to one project.
+ * each Claude read spawns `security`); `projectId` limits it to one project.
  * Unreadable projects are skipped.
  */
 export async function harvestToolCredentials(
-  opts: { tool?: 'claude' | 'codex'; slug?: string } = {},
+  opts: { tool?: 'claude' | 'codex'; projectId?: string } = {},
 ): Promise<void> {
   if (runtimeMediatesEgress()) return
-  const slugs = opts.slug !== undefined ? [opts.slug] : await listCredentialProjectSlugs()
-  if (slugs.length === 0) return
-  if (opts.tool !== 'codex') await harvestClaude(slugs)
-  if (opts.tool !== 'claude') await harvestCodex(slugs)
+  const projectIds = opts.projectId !== undefined ? [opts.projectId] : await listCredentialProjectIds()
+  if (projectIds.length === 0) return
+  if (opts.tool !== 'codex') await harvestClaude(projectIds)
+  if (opts.tool !== 'claude') await harvestCodex(projectIds)
 }
 
 // ── Push: host store → project tool homes ──────────────────────────────
@@ -187,11 +187,11 @@ export async function harvestToolCredentials(
  * prefers the item, so a stale one would shadow the new file, and dropping
  * it first could leave the project with neither.
  */
-async function pushClaude(slug: string): Promise<void> {
+async function pushClaude(projectId: string): Promise<void> {
   const stored = await loadClaudeCredentialsFile()
   if (stored?.kind !== 'oauth') return
   const host = stored.claudeAiOauth
-  const current = await readProjectClaudeBundle(slug).catch(() => null)
+  const current = await readProjectClaudeBundle(projectId).catch(() => null)
   // Same token: nothing to do. This also covers yaac-in-yaac, where both
   // hold the same sentinel.
   if (current && current.accessToken === host.accessToken) return
@@ -200,20 +200,20 @@ async function pushClaude(slug: string): Promise<void> {
   // A project with a sentinel or nothing takes whatever the host has.
   if (current && !isPlaceholderClaudeBundle(current)
       && (isPlaceholderClaudeBundle(host) || !claudeBundleIsNewer(host, current))) return
-  await writeProjectClaudeCredentials(slug, host)
-  dropProjectClaudeKeychainItem(slug)
+  await writeProjectClaudeCredentials(projectId, host)
+  dropProjectClaudeKeychainItem(projectId)
 }
 
 /** The Codex version of `pushClaude` (codex uses no Keychain item). */
-async function pushCodex(slug: string): Promise<void> {
+async function pushCodex(projectId: string): Promise<void> {
   const stored = await loadCodexCredentialsFile()
   if (stored?.kind !== 'oauth') return
   const host = stored.codexOauth
-  const current = await readProjectCodexBundle(slug).catch(() => null)
+  const current = await readProjectCodexBundle(projectId).catch(() => null)
   if (current && current.accessToken === host.accessToken) return
   if (current && !isPlaceholderCodexBundle(current)
       && (isPlaceholderCodexBundle(host) || !codexBundleIsNewer(host, current))) return
-  await writeProjectCodexAuth(slug, host)
+  await writeProjectCodexAuth(projectId, host)
 }
 
 // ── The composed operations ────────────────────────────────────────────
@@ -225,19 +225,19 @@ async function pushCodex(slug: string): Promise<void> {
  * credential. With a proxy it just writes sentinels.
  */
 export async function seedProjectToolHome(
-  slug: string,
+  projectId: string,
   opts: { mediatedEgress: boolean },
 ): Promise<void> {
   if (opts.mediatedEgress) {
     const claude = await loadClaudeCredentialsFile()
-    if (claude?.kind === 'oauth') await writeProjectClaudePlaceholder(slug, claude.claudeAiOauth)
+    if (claude?.kind === 'oauth') await writeProjectClaudePlaceholder(projectId, claude.claudeAiOauth)
     const codex = await loadCodexCredentialsFile()
-    if (codex?.kind === 'oauth') await writeProjectCodexPlaceholder(slug, codex.codexOauth)
+    if (codex?.kind === 'oauth') await writeProjectCodexPlaceholder(projectId, codex.codexOauth)
     return
   }
-  await harvestToolCredentials({ slug })
-  await pushClaude(slug)
-  await pushCodex(slug)
+  await harvestToolCredentials({ projectId })
+  await pushClaude(projectId)
+  await pushCodex(projectId)
 }
 
 /**
@@ -248,16 +248,16 @@ export async function seedProjectToolHome(
  */
 export async function syncToolCredentials(): Promise<void> {
   if (runtimeMediatesEgress()) return
-  const slugs = await listCredentialProjectSlugs()
-  if (slugs.length === 0) return
-  await harvestClaude(slugs)
-  await harvestCodex(slugs)
-  for (const slug of slugs) {
+  const projectIds = await listCredentialProjectIds()
+  if (projectIds.length === 0) return
+  await harvestClaude(projectIds)
+  await harvestCodex(projectIds)
+  for (const projectId of projectIds) {
     try {
-      await pushClaude(slug)
-      await pushCodex(slug)
+      await pushClaude(projectId)
+      await pushCodex(projectId)
     } catch (err) {
-      serverLog(`[server] credential-sync: push to project "${slug}" failed: ${String(err)}`)
+      serverLog(`[server] credential-sync: push to project "${projectId}" failed: ${String(err)}`)
     }
   }
 }
@@ -275,29 +275,29 @@ export async function fanOutToolCredentials(
 ): Promise<void> {
   // opencode and pi authenticate by env var and keep no project file.
   if (tool !== 'claude' && tool !== 'codex') return
-  const slugs = await listCredentialProjectSlugs()
-  if (slugs.length === 0) return
+  const projectIds = await listCredentialProjectIds()
+  if (projectIds.length === 0) return
 
   // api-key auth has no bundle; the key is passed as an env var.
   const stored = tool === 'claude' ? await loadClaudeCredentialsFile() : await loadCodexCredentialsFile()
   if (stored?.kind !== 'oauth') return
 
-  for (const slug of slugs) {
+  for (const projectId of projectIds) {
     try {
       if ('claudeAiOauth' in stored) {
         if (opts.mediatedEgress) {
-          await writeProjectClaudePlaceholder(slug, stored.claudeAiOauth)
+          await writeProjectClaudePlaceholder(projectId, stored.claudeAiOauth)
         } else {
-          await writeProjectClaudeCredentials(slug, stored.claudeAiOauth)
-          dropProjectClaudeKeychainItem(slug)
+          await writeProjectClaudeCredentials(projectId, stored.claudeAiOauth)
+          dropProjectClaudeKeychainItem(projectId)
         }
       } else if (opts.mediatedEgress) {
-        await writeProjectCodexPlaceholder(slug, stored.codexOauth)
+        await writeProjectCodexPlaceholder(projectId, stored.codexOauth)
       } else {
-        await writeProjectCodexAuth(slug, stored.codexOauth)
+        await writeProjectCodexAuth(projectId, stored.codexOauth)
       }
     } catch (err) {
-      serverLog(`[server] credential-sync: ${tool} fan-out to project "${slug}" failed: ${String(err)}`)
+      serverLog(`[server] credential-sync: ${tool} fan-out to project "${projectId}" failed: ${String(err)}`)
     }
   }
 }

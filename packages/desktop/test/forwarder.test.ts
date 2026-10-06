@@ -14,7 +14,7 @@ const OTHER: ServerTarget = { baseUrl: 'https://srv.ts.net' }
 function workspace(workspaceId: string, ports: Array<[number, number]>): WorkspaceListEntry {
   return {
     workspaceId,
-    projectSlug: 'proj',
+    projectId: 'proj',
     tool: 'claude',
     mode: 'tui',
     status: 'running',

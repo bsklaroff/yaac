@@ -9,12 +9,12 @@ import { useUiStore } from '#lib/store'
  * focus ring on the button.
  */
 export function NewWorkspaceButton(
-  { projectSlug, variant = 'icon' }: { projectSlug: string; variant?: 'icon' | 'cta' },
+  { projectId, variant = 'icon' }: { projectId: string; variant?: 'icon' | 'cta' },
 ): JSX.Element {
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const open = (e: MouseEvent<HTMLButtonElement>): void => {
     e.currentTarget.blur()
-    openCreateWorkspace({ projectSlug, focus: 'prompt' })
+    openCreateWorkspace({ projectId, focus: 'prompt' })
   }
   return variant === 'cta' ? (
     <button

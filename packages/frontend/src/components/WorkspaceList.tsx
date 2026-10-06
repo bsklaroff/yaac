@@ -78,7 +78,7 @@ export interface SidebarLayout {
 function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
   return {
     workspaceId: h.workspaceId,
-    projectSlug: h.projectSlug,
+    projectId: h.projectId,
     tool: h.tool,
     createdAt: h.stoppedAt,
     stoppedAt: h.stoppedAt,
@@ -194,7 +194,7 @@ export function sidebarRowIds(
  *  the default list). */
 interface RowDrag {
   workspaceId: string
-  projectSlug: string
+  projectId: string
   from: string | null
 }
 
@@ -206,7 +206,7 @@ interface RowDrag {
  * can each wrap it.
  */
 export function WorkspaceList({
-  projectSlug,
+  projectId,
   workspaces,
   groups,
   provisioning,
@@ -214,7 +214,7 @@ export function WorkspaceList({
   held = [],
   drafts = [],
 }: {
-  projectSlug: string | null
+  projectId: string | null
   workspaces: WorkspaceListEntry[]
   /** The active project's groups, from the snapshot. */
   groups: WorkspaceGroupSummary[]
@@ -230,7 +230,7 @@ export function WorkspaceList({
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   // For the empty-state text: there's no project rail on a phone.
   const isMobile = useIsMobile()
-  const stopped = useStoppedWorkspaces(projectSlug, workspaces, provisioning)
+  const stopped = useStoppedWorkspaces(projectId, workspaces, provisioning)
 
   const layout = sidebarLayout(workspaces, groups, stopped, provisioning, queued, held)
   // So a stop from a row's menu can select the next row.
@@ -303,7 +303,7 @@ export function WorkspaceList({
       if (over === undefined || over === item.from) return
       // Not optimistic: the next snapshot moves the row. If the group was
       // deleted mid-drag the server answers NOT_FOUND.
-      api.workspace['set-group'].$post({ json: { projectSlug: item.projectSlug, workspaceId: item.workspaceId, groupId: over } })
+      api.workspace['set-group'].$post({ json: { projectId: item.projectId, workspaceId: item.workspaceId, groupId: over } })
         .catch((e: unknown) => console.error('group move failed', e))
     },
   })
@@ -314,7 +314,7 @@ export function WorkspaceList({
       if (e.pointerType !== 'mouse') return
       start(e, {
         workspaceId: workspace.workspaceId,
-        projectSlug: workspace.projectSlug,
+        projectId: workspace.projectId,
         from: layout.groups.some((s) => s.group.groupId === workspace.groupId) ? workspace.groupId ?? null : null,
       }, onSelect)
     },
@@ -330,7 +330,7 @@ export function WorkspaceList({
   return (
     <QueueContext.Provider value={queueContext}>
       <div className="flex-1 overflow-y-auto py-1">
-        {!projectSlug && (
+        {!projectId && (
           <EmptyState
             compact
             className="py-10"
@@ -340,7 +340,7 @@ export function WorkspaceList({
               : 'Pick a project from the rail on the left.'}
           />
         )}
-        {projectSlug && visibleCount === 0 && provisioning.length === 0 && queued.length === 0
+        {projectId && visibleCount === 0 && provisioning.length === 0 && queued.length === 0
           && drafts.length === 0 && (
           <EmptyState
             compact
@@ -402,7 +402,7 @@ export function WorkspaceList({
           />
         ))}
 
-        {projectSlug && <StoppedWorkspacesButton projectSlug={projectSlug} stopped={stopped} />}
+        {projectId && <StoppedWorkspacesButton projectId={projectId} stopped={stopped} />}
       </div>
     </QueueContext.Provider>
   )

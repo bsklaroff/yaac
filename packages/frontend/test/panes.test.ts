@@ -18,7 +18,7 @@ function session(over: Partial<AgentSessionEntry> = {}): AgentSessionEntry {
 function workspace(sessions: AgentSessionEntry[]): WorkspaceListEntry {
   return {
     workspaceId: 'w1',
-    projectSlug: 'proj',
+    projectId: 'proj',
     tool: 'claude',
     status: 'running',
     createdAt: '2026-01-01 00:00:00',

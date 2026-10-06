@@ -11,7 +11,7 @@ import {
 import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 
 /** A file as the readers take it: its dir plus its name. */
-const at = (file: string): SandboxFile => ({ slug: 'demo', dir: path.dirname(file), rel: path.basename(file) })
+const at = (file: string): SandboxFile => ({ projectId: 'demo', dir: path.dirname(file), rel: path.basename(file) })
 
 
 describe('getCodexPermissionMode', () => {

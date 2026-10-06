@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
 import fs from 'node:fs/promises'
@@ -49,7 +50,7 @@ describe('session detail helpers', () => {
   })
 
   it('getWorkspaceDetail reports what the runtime says about the workspace', async () => {
-    mockFind.mockResolvedValue(handleFixture({ workspaceId: 'w1', projectSlug: 'demo' }))
+    mockFind.mockResolvedValue(handleFixture({ workspaceId: 'w1', projectId: DEMO_PROJECT_ID }))
     mockBlockedHosts.mockResolvedValue(['evil.example', 'blocked.example'])
 
     const detail = await getWorkspaceDetail('w1')
@@ -57,7 +58,7 @@ describe('session detail helpers', () => {
     expect(mockBlockedHosts).toHaveBeenCalledWith('w1')
     expect(detail).toMatchObject({
       workspaceId: 'w1',
-      projectSlug: 'demo',
+      projectId: DEMO_PROJECT_ID,
       blockedHostsCount: 2,
     })
   })
@@ -93,10 +94,10 @@ describe('getWorkspaceChanges', () => {
   /** A running workspace whose row records `base` as its fork branch. */
   async function installRunning(base: string | null = 'main'): Promise<string> {
     const workspaceId = `chg-${seq}`
-    if (base !== null) await recordWorkspaceCreated({ projectSlug: 'demo', workspaceId: workspaceId, baseBranch: base })
+    if (base !== null) await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: workspaceId, baseBranch: base })
     installFakeWorkspaceDriver({
       find: () => Promise.resolve(handleFixture({
-        workspaceId, projectSlug: 'demo', jobName: `yaac-demo-${workspaceId}`, state: 'running',
+        workspaceId, projectId: DEMO_PROJECT_ID, jobName: `yaac-demo-${workspaceId}`, state: 'running',
       })),
       changes: mockChanges,
     })
@@ -185,14 +186,14 @@ describe('getWorkspaceChanges', () => {
  * the stopped list, and a server whose substrate is down.
  */
 describe('getWorkspacePrompt', () => {
-  const SLUG = 'demo'
+  const PROJECT = DEMO_PROJECT_ID
   const WORKSPACE = 'wt-prompt'
   const SESSION = '33333333-3333-3333-3333-333333333333'
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
-    await recordWorkspaceCreated({ projectSlug: SLUG, workspaceId: WORKSPACE })
+    await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: WORKSPACE })
   })
 
   afterEach(async () => {
@@ -204,10 +205,10 @@ describe('getWorkspacePrompt', () => {
     firstPrompt?: string
     transcriptPath?: string
   }): Promise<void> {
-    await recordAgentSessions(SLUG, WORKSPACE, [
+    await recordAgentSessions(PROJECT, WORKSPACE, [
       { tool: 'claude', agentSessionId: SESSION, mode: 'tui' },
     ])
-    await setAgentSessionCapture(SLUG, 'claude', SESSION, capture)
+    await setAgentSessionCapture(PROJECT, 'claude', SESSION, capture)
   }
 
   it('answers from the captured row when the substrate cannot be asked', async () => {
@@ -223,14 +224,14 @@ describe('getWorkspacePrompt', () => {
   // path the row records.
   it('falls back to the recorded transcript of a workspace with no pod', async () => {
     installFakeWorkspaceDriver({ find: () => Promise.resolve(undefined) })
-    const file = path.join(claudeDir(SLUG), 'projects', '-workspace', `${SESSION}.jsonl`)
+    const file = path.join(claudeDir(PROJECT), 'projects', '-workspace', `${SESSION}.jsonl`)
     await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.writeFile(file, JSON.stringify({
       type: 'user', uuid: 'u1', parentUuid: null, sessionId: SESSION, cwd: '/workspace',
       timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'what changed?' },
     }) + '\n')
     await seedConversation({
-      transcriptPath: path.relative(projectDir(SLUG), file),
+      transcriptPath: path.relative(projectDir(PROJECT), file),
     })
 
     await expect(getWorkspacePrompt(WORKSPACE)).resolves.toBe('what changed?')

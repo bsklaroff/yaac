@@ -63,8 +63,8 @@ would never remove it.
   against a real API server.
 - **What breaks silently if it goes too early.** A key yaac stops sending
   stays on an upgraded install. Examples are a signed-out credential in
-  `yaac-proxy-credentials` or a project secret, which the proxy keeps
-  injecting, or an install env var such as `YAAC_USE_TOR` that is unset on
+  `yaac-proxy-credentials`, which the proxy keeps injecting, or an install
+  env var such as `YAAC_USE_TOR` that is unset on
   re-install. The last-applied annotation also keeps a frozen copy of old
   Secret data.
 - **When it is safe to remove.** Once every object yaac still re-applies
@@ -82,10 +82,7 @@ would never remove it.
   -A --show-managed-fields -o json | jq -r '.items[] | select(.metadata.name
   | startswith("yaac")) | select(any(.metadata.managedFields[]?;
   .manager == "kubectl-client-side-apply")) | "\(.kind)/\(.metadata.name)"'`.
-  It is safe once that list holds only objects yaac never re-applies. A
-  project's secrets Secret is re-applied on that project's next sync, so it
-  stays on the list, and the shim stays needed, until every project has
-  synced since the upgrade.
+  It is safe once that list holds only objects yaac never re-applies.
 
 ## The proxy relays yaac-mama's old `/cmd` path
 
@@ -151,3 +148,100 @@ prompts behind it. An older install reports only the run's end and fails a
 - **When it is safe to remove.** Once every running pi acp workspace was
   started on patch revision 3 or later: restart any older one. Then delete
   both flags, the code reading them, and their tests.
+
+## Backfilling project ids into the slug-keyed rows
+
+Projects were keyed by a slug derived from the repo name, and every table
+naming a project had a `project_slug` column. The `key_projects_by_id`
+migration (`packages/server/drizzle/*_key_projects_by_id/migration.sql`)
+re-keys them by `projects.id`.
+
+- **What it reads.** Each `project_slug`, joined to `projects.slug` to fill
+  `project_id`; `projects.slug` itself is copied into the new `name`
+  column. Rows whose slug names no project are deleted, since nothing can
+  reach them.
+- **What breaks silently if it goes too early.** It is a migration, so it
+  can only go with a squash of the migration history. A squash that drops
+  its backfill turns an older install's workspaces, conversations, groups,
+  queued and draft workspaces, env vars and create defaults into rows that
+  name no project, or fails the migration outright.
+- **When it is safe to remove.** When the migrations are squashed and no
+  install still has a `project_slug` column (`\d projects` shows no
+  `slug`). Nothing else depends on it, except that the project dir move
+  below reads the `name` it wrote.
+
+## Moving slug-named project dirs to their ids
+
+Each project's data dir was `projects/<slug>/`; it is `projects/<id>/`.
+`moveProjectDirsToIds` in
+`packages/server/src/domain/workspaces/project-dir-migration.ts` runs on
+every server start, from the driver's `recover` hook (before any watch or
+reconcile pass), and merges each dir still named after a project's `name`
+into `projects/<id>/`, which a request may already have created; of a file
+both hold, the newer copy wins. When the old dir holds the main clone, the
+project's running workspaces mount and hold paths inside it, so they are
+stopped first, recorded as stopped, and resume their conversations on
+restart. A project whose workspaces cannot be confirmed stopped keeps its
+old dir until the next start. Before moving, it harvests a refreshed token
+from the old tool homes, drops the macOS Keychain item claude keyed on the
+old path, repoints each checkout's `alternates` at where the main clone is
+going (so a stopped workspace's diff still reads), and drops claude's
+history links named after the old checkout paths. A dir named after a name
+several projects share goes to the oldest of them.
+
+- **What it reads.** `projects.name`, `projects.id` and `addedAt`, and
+  whether `projects/<name>/` and its `repo/` exist. Containerless
+  workspaces in an old dir report the dir's name as their project, which it
+  maps back to the id.
+- **What breaks silently if it goes too early.** An older install's
+  projects keep their files under `projects/<slug>/`, where nothing looks:
+  workspaces fail to create or restart, config, history and tool logins
+  appear lost, and the old tree is never cleaned up.
+- **When it is safe to remove.** Once every install has started a server
+  with this change: no `projects/` entry in any data dir's global tier is
+  anything but a uuid (`ls ~/.yaac/global/projects`, or the global claim
+  under the in-cluster server).
+- **Order.** It reads `name` as the old dir name, so it must go before
+  project names become editable, and before the planned per-owner dir move
+  (docs/plans/multi-user-deployment.md), which must start from id-named
+  dirs.
+
+## Deleting slug-named proxy secrets Secrets
+
+The proxy's per-project secret values Secret was named after a hash of the
+project slug and labelled `yaac.project=<slug>`. It is
+`yaac-proxy-secrets-<id>` with `yaac.project-id`, written at every server
+start. `deleteSlugNamedProjectSecrets` in
+`packages/server/src/drivers/k8s/cluster/proxy-apply.ts` deletes the old
+ones on every k8s driver start.
+
+- **What it reads.** Secrets in the install namespace labelled
+  `app=yaac-proxy,yaac.proxy-input=secrets` that still carry the
+  `yaac.project` label, which only the old ones have. The old Secrets
+  carried no install label, so the sweep is namespace-wide: an older install
+  sharing the namespace (whose names hashed its data dir to keep them apart)
+  loses its secret values until its server re-syncs them.
+- **What breaks silently if it goes too early.** Nothing visible: the
+  proxy only resolves `<id>/<NAME>` refs, so an old Secret is never used,
+  but it keeps a decrypted copy of the project's secret values in the
+  cluster, and a removed secret survives there.
+- **When it is safe to remove.** Once
+  `kubectl get secret -n <namespace> -l yaac.proxy-input=secrets,yaac.project`
+  is empty on every cluster yaac manages.
+
+## The proxy drops slug-keyed git auth failures
+
+The proxy records git credentials an upstream rejected per project, in the
+`yaac-proxy-state` ConfigMap it seeds from at boot. Those entries were keyed
+by slug, and a slug-keyed entry never clears, since no request carries that
+key any more.
+
+- **What it reads.** `ObservedState.seed` in `k8s/proxy/observed-state.ts`
+  skips `gitAuthFailures` keys that are not uuids.
+- **What breaks silently if it goes too early.** A failure recorded before
+  the change is reported forever under a key that names no project: the
+  CLI's `workspace list` prints it as an unknown project.
+- **When it is safe to remove.** Once every install's proxy has booted
+  with the change and written its state since: the `gitAuthFailures` keys
+  in `kubectl get configmap yaac-proxy-state -n <namespace> -o json` are
+  all uuids.

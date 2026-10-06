@@ -15,7 +15,7 @@ import type {
 export function handleFixture(overrides: Partial<RuntimeHandle> = {}): RuntimeHandle {
   return {
     workspaceId: 'sess-1',
-    projectSlug: 'demo',
+    projectId: 'demo',
     jobName: 'yaac-demo-sess-1',
     tool: 'claude',
     mode: 'tui',
@@ -168,8 +168,8 @@ function defaultRuntime(): WorkspaceDriver {
     // exec addresses the workspace that was asked for.
     launch: (spec) => Promise.resolve(handleFixture({
       workspaceId: spec.workspaceId,
-      projectSlug: spec.projectSlug,
-      jobName: `unit-${spec.projectSlug}-${spec.workspaceId}`,
+      projectId: spec.projectId,
+      jobName: `unit-${spec.projectId}-${spec.workspaceId}`,
       tool: spec.tool,
       declaredTool: spec.tool,
       mode: spec.mode,

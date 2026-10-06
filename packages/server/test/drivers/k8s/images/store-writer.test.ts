@@ -47,7 +47,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
-const PROJECT = { slug: 'demo', id: ID }
+const PROJECT = ID
 const NODE = 'yaac-control-plane'
 const CLUSTER_IP = '10.96.0.50'
 
@@ -520,10 +520,10 @@ describe('nodeImageStoreMount', () => {
 describe('reconcileNodeImageStores', () => {
   it('fires one detached build per project', async () => {
     stageLiveCluster()
-    const other = { slug: 'other', id: '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9' }
+    const other = '0b1c2d3e-4f50-4617-8293-a4b5c6d7e8f9'
     fakeCluster.seed({
       apiVersion: 'v1', kind: 'Service',
-      metadata: { name: `yaac-reg-${other.id}`, namespace: k8sNamespace() },
+      metadata: { name: `yaac-reg-${other}`, namespace: k8sNamespace() },
       spec: { clusterIP: CLUSTER_IP },
     })
     reconcileNodeImageStores([PROJECT, other])
@@ -531,6 +531,6 @@ describe('reconcileNodeImageStores', () => {
     expect(appliedPods()).toHaveLength(0)
     await vi.waitFor(() => expect(appliedPods()).toHaveLength(2))
     const ids = appliedPods().map((p) => p.metadata.labels['yaac.project-id'])
-    expect(new Set(ids)).toEqual(new Set([ID, other.id]))
+    expect(new Set(ids)).toEqual(new Set([ID, other]))
   })
 })

@@ -28,7 +28,7 @@ import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 /** Which conversation's record; acpd names each `<agentSessionId>.jsonl`
  *  in its workspace's record dir. */
 export interface AcpRecordRef {
-  slug: string
+  projectId: string
   workspaceId: string
   agentSessionId: string
 }
@@ -41,7 +41,7 @@ export interface AcpRecordRef {
  */
 export function acpRecord(ref: AcpRecordRef): SandboxFile | undefined {
   if (!agentSessionIdSchema.safeParse(ref.agentSessionId).success) return undefined
-  return { slug: ref.slug, dir: acpLogDir(ref.slug, ref.workspaceId), rel: `${ref.agentSessionId}.jsonl` }
+  return { projectId: ref.projectId, dir: acpLogDir(ref.projectId, ref.workspaceId), rel: `${ref.agentSessionId}.jsonl` }
 }
 
 /** Size cap for the whole-file readers below. */

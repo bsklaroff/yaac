@@ -10,9 +10,8 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { HASH_RE, setupStackingHarness } from '#test/drivers/k8s/image-engine/stacking-harness'
-import type { ProjectRef } from '#drivers/contract'
 
-const PROJECT: ProjectRef = { slug: 'myproject', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
+const PROJECT = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
 
 /** The layers `yaac cluster install` produces, by name. */
 const PREBUILT = new Set(['base', 'tools', 'nestable'])
@@ -22,7 +21,7 @@ describe('ensureImage', () => {
 
   /** Put every yaac-shipped layer of this project's chain in the registry. */
   async function stagePrebuilt(
-    resolveImageChain: (project: ProjectRef, prefix: string, nested?: boolean) => Promise<{
+    resolveImageChain: (projectId: string, prefix: string, nested?: boolean) => Promise<{
       layers: Array<{ name: string; tag: string }>
     }>,
     nested = false,
@@ -32,7 +31,7 @@ describe('ensureImage', () => {
   }
 
   it('takes the yaac-shipped layers from the registry and builds only the rest', async () => {
-    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
     await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
     await fs.writeFile(
       path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),
@@ -47,14 +46,14 @@ describe('ensureImage', () => {
     // builder pod.
     expect(h.operations).toEqual([
       expect.stringMatching(
-        new RegExp(`^build yaac-user-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
+        new RegExp(`^build yaac-user-${PROJECT}:${HASH_RE} \\[BASE_IMAGE=yaac-tools:${HASH_RE}\\]$`),
       ),
     ])
-    expect(result).toMatch(new RegExp(`^yaac-user-${PROJECT.id}:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-user-${PROJECT}:${HASH_RE}$`))
   })
 
   it('needs nothing built at all when the chain is yaac-shipped end to end', async () => {
-    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
 
     const { ensureImage, resolveImageChain } = await h.load()
     await stagePrebuilt(resolveImageChain)
@@ -67,7 +66,7 @@ describe('ensureImage', () => {
   it('refuses, naming the command that produces it, when a shipped layer is missing', async () => {
     // Nothing staged, as when install never ran or predates a Dockerfile
     // change. The server cannot build these, so the error names the command.
-    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
 
     const { ensureImage } = await h.load()
     await expect(ensureImage(PROJECT)).rejects.toThrow(/yaac cluster install/)
@@ -75,8 +74,8 @@ describe('ensureImage', () => {
   })
 
   it('layers a project Dockerfile on nestable when nestedContainers is set', async () => {
-    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    const buildDir = path.join(h.dataDir, 'global', 'projects', PROJECT, 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(
       path.join(buildDir, 'Dockerfile.yaac'),
@@ -91,7 +90,7 @@ describe('ensureImage', () => {
     // image carries the in-pod container engine.
     expect(h.operations).toEqual([
       expect.stringMatching(
-        new RegExp(`^build yaac-proj-${PROJECT.id}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
+        new RegExp(`^build yaac-proj-${PROJECT}:${HASH_RE} \\[BASE_IMAGE=yaac-nestable:${HASH_RE}\\]$`),
       ),
     ])
   })
@@ -99,8 +98,8 @@ describe('ensureImage', () => {
   it('realizes a standalone Dockerfile.yaac with no prebuilt layer at all', async () => {
     // A standalone project Dockerfile replaces the yaac-shipped chain, and
     // is untrusted, so it builds in a pod.
-    const buildDir = path.join(h.dataDir, 'global', 'projects', 'myproject', 'config', 'build')
-    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    const buildDir = path.join(h.dataDir, 'global', 'projects', PROJECT, 'config', 'build')
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(
       path.join(buildDir, 'Dockerfile.yaac'),
@@ -111,13 +110,13 @@ describe('ensureImage', () => {
     const result = await ensureImage(PROJECT)
 
     expect(h.operations).toEqual([
-      expect.stringMatching(new RegExp(`^build yaac-proj-${PROJECT.id}:${HASH_RE}$`)),
+      expect.stringMatching(new RegExp(`^build yaac-proj-${PROJECT}:${HASH_RE}$`)),
     ])
-    expect(result).toMatch(new RegExp(`^yaac-proj-${PROJECT.id}:${HASH_RE}$`))
+    expect(result).toMatch(new RegExp(`^yaac-proj-${PROJECT}:${HASH_RE}$`))
   })
 
   it('rejects Dockerfile.user without ARG BASE_IMAGE', async () => {
-    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', 'myproject', 'repo'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
     await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
     await fs.writeFile(
       path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),

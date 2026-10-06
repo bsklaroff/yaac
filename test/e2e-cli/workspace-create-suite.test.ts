@@ -226,13 +226,22 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     await testEnv.cleanup()
   })
 
+  /** Each staged project's id, by the name the cases address it by. */
+  const projectIds = new Map<string, string>()
+  const idOf = (name: string): string => {
+    const id = projectIds.get(name)
+    if (!id) throw new Error(`project ${name} was never set up`)
+    return id
+  }
+
   /**
-   * Stage a project as `yaac project add` would for
-   * github.com/test-org/<slug>.git: clone the local bare repo, then set the
-   * remote to the github URL so the proxy treats it as github.
+   * Stage a project named `name` as `yaac project add` would for
+   * github.com/test-org/<name>.git: clone the local bare repo, then set the
+   * remote to the github URL so the proxy treats it as github. Returns its
+   * directory; `idOf(name)` gives its id.
    */
   async function setupProject(
-    slug: string,
+    name: string,
     opts: {
       yaacConfig?: Record<string, unknown>
       files?: Record<string, string>
@@ -243,16 +252,18 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       'README.md': '# demo\n',
       ...(opts.files ?? {}),
     }
-    await seedMockGitRepo(mockGit!, slug, { files, extraBranches: opts.extraBranches })
+    await seedMockGitRepo(mockGit!, name, { files, extraBranches: opts.extraBranches })
 
-    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', slug)
+    const projectId = randomUUID()
+    projectIds.set(name, projectId)
+    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', projectId)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
-    await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
-    const fakeRemote = `https://github.com/test-org/${slug}.git`
+    await cloneRepo(path.join(mockGit!.reposDir, `${name}.git`), repoPath, null)
+    const fakeRemote = `https://github.com/test-org/${name}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
-    await registerTestProject(server!, slug, fakeRemote)
-    await assignTestGitCredential(server!, slug, 'fake-ghp-token')
+    await registerTestProject(server!, projectId, name, fakeRemote)
+    await assignTestGitCredential(server!, projectId, 'fake-ghp-token')
 
     if (opts.yaacConfig) {
       const configDir = path.join(projectPath, 'config')
@@ -275,26 +286,27 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     return stdout.trim()
   }
 
-  async function findWorkspacePod(slug: string, exclude = new Set<string>()): Promise<PodInfo> {
+  async function findWorkspacePod(name: string, exclude = new Set<string>()): Promise<PodInfo> {
     // Scoped to this data dir's pods. Oldest first; callers that keep an
     // older workspace alive in the project pass its id in `exclude`.
-    const pods = (await listWorkspacePods(slug)).filter((p) => !exclude.has(p.workspaceId))
+    const pods = (await listWorkspacePods(idOf(name))).filter((p) => !exclude.has(p.workspaceId))
     const pod = pods.sort((a, b) => a.createdAtMs - b.createdAtMs)[0]
-    if (!pod) throw new Error(`no session pod found for project ${slug}`)
+    if (!pod) throw new Error(`no session pod found for project ${name}`)
     return pod
   }
 
+  /** `yaac workspace create`, naming the project by `name` as typed. */
   async function createWorkspace(
-    slug: string,
+    name: string,
     ...extraArgs: string[]
   ): Promise<{ jobName: string; stdout: string }> {
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'workspace', 'create', slug, '--mode', 'tui', ...extraArgs,
+      serverEnv, 'workspace', 'create', name, '--mode', 'tui', ...extraArgs,
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    return { jobName: (await findWorkspacePod(slug)).jobName, stdout }
+    return { jobName: (await findWorkspacePod(name)).jobName, stdout }
   }
 
 
@@ -480,7 +492,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('provisions pod, workspace, mounts, git, and tmux', async () => {
       const pod = await findWorkspacePod('kitchen')
       expect(pod.running).toBe(true)
-      expect(pod.labels['yaac.project']).toBe('kitchen')
+      expect(pod.labels['yaac.project-id']).toBe(idOf('kitchen'))
       expect(pod.labels['yaac.tool']).toBe('claude')
 
       await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
@@ -1335,7 +1347,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }).then((r) => r.text())
 
       await vi.waitFor(() => expect(sub.latest()?.provisioning.find((p) => p.workspaceId === workspaceId))
-        .toMatchObject({ kind: 'create', projectSlug: 'no-ephemeral' }), { timeout: 20_000, interval: 200 })
+        .toMatchObject({ kind: 'create', projectId: idOf('no-ephemeral') }), { timeout: 20_000, interval: 200 })
 
       const ndjson = await createDone
       expect(ndjson).toContain('"type":"result"')
@@ -1618,7 +1630,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(restarted.exitCode, restarted.stderr).toBe(0)
       jobName = (await findWorkspacePod('oc-demo')).jobName
       const line = (await fs.readFile(alternates, 'utf8')).trim()
-      expect(line).toMatch(/\/projects\/oc-demo\/repo\/\.git\/objects$/)
+      expect(line).toMatch(new RegExp(`/projects/${idOf('oc-demo')}/repo/\\.git/objects$`))
       expect(line).not.toBe(path.join(projectPath, 'repo', '.git', 'objects'))
       await execInJob(jobName, ['git', '-C', '/workspace', 'status', '--porcelain'])
       // The main clone is read-only.
@@ -1641,13 +1653,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
   /** --prompt, --model, --permission-mode and --branch on one workspace. */
   describe('create-time overrides (--prompt, --model, --branch)', () => {
-    const SLUG = 'overridden'
+    const NAME = 'overridden'
     let jobName = ''
     let createStdout = ''
     const marker = 'summarize the pinned issues'
 
     beforeAll(async () => {
-      const projectPath = await setupProject(SLUG, {
+      const projectPath = await setupProject(NAME, {
         extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
       })
       // Skip claude's onboarding, as in the kitchen-sink workspace.
@@ -1665,7 +1677,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }) + '\n')
 
       const created = await createWorkspace(
-        SLUG, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8',
+        NAME, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8',
         '--permission-mode', 'accept-edits', '--branch', 'dev',
       )
       jobName = created.jobName
@@ -1712,16 +1724,16 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // The checkout dir is staged before provisioning, and its row is
       // rolled back on failure, so no later sweep would find a leftover dir.
       // Counted, since the server picks the id.
-      const workspacesRoot = path.join(testEnv.dataDir, 'global', 'projects', SLUG, 'workspaces')
+      const workspacesRoot = path.join(testEnv.dataDir, 'global', 'projects', idOf(NAME), 'workspaces')
       const ls = async (dir: string): Promise<string[]> =>
         (await fs.readdir(dir).catch((): string[] => [])).sort()
       const checkoutsBefore = await ls(workspacesRoot)
-      const podsBefore = (await listWorkspacePods(SLUG)).length
+      const podsBefore = (await listWorkspacePods(idOf(NAME))).length
 
-      const bad = await runYaac(serverEnv, 'workspace', 'create', SLUG, '--branch', 'ghost')
+      const bad = await runYaac(serverEnv, 'workspace', 'create', NAME, '--branch', 'ghost')
       expect(bad.exitCode).not.toBe(0)
       expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin')
-      expect((await listWorkspacePods(SLUG)).length).toBe(podsBefore)
+      expect((await listWorkspacePods(idOf(NAME))).length).toBe(podsBefore)
 
       // Polled: removal waits for the checkout step to settle, so it cannot
       // run before a still-fetching checkout lands.
@@ -1730,7 +1742,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 60_000)
   })
   describe('agent mode (--mode acp)', () => {
-    const SLUG = 'acped'
+    const NAME = 'acped'
     let jobName = ''
     let workspaceId = ''
     let agentSessionId = ''
@@ -1741,16 +1753,16 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     // `session/set_mode` and unsettled asks go to the pane. No case needs a
     // turn to finish.
     beforeAll(async () => {
-      await setupProject(SLUG)
+      await setupProject(NAME)
       const created = await createWorkspace(
-        SLUG, '--tool', 'claude', '--mode', 'acp', '--permission-mode', 'accept-edits',
+        NAME, '--tool', 'claude', '--mode', 'acp', '--permission-mode', 'accept-edits',
       )
       jobName = created.jobName
-      workspaceId = (await findWorkspacePod(SLUG)).workspaceId
+      workspaceId = (await findWorkspacePod(NAME)).workspaceId
 
       // The ACP handshake creates the conversation id, which gets recorded.
       agentSessionId = await vi.waitFor(async () => {
-        const res = await fetch(`${base}/api/workspace/list?project=${SLUG}`)
+        const res = await fetch(`${base}/api/workspace/list?project=${NAME}`)
         const body = await res.json() as {
           workspaces: Array<{
             workspaceId: string
@@ -1936,11 +1948,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it.each(REAL_ADAPTERS)('drives $tool through its real adapter',
       async ({ tool, posture, launch, modeId, method, defaultModeId }) => {
         // Exclude existing pods to find the new one.
-        const older = new Set((await listWorkspacePods(SLUG)).map((p) => p.workspaceId))
+        const older = new Set((await listWorkspacePods(idOf(NAME))).map((p) => p.workspaceId))
         await createWorkspace(
-          SLUG, '--tool', tool, '--mode', 'acp', '--permission-mode', posture,
+          NAME, '--tool', tool, '--mode', 'acp', '--permission-mode', posture,
         )
-        const job = (await findWorkspacePod(SLUG, older)).jobName
+        const job = (await findWorkspacePod(NAME, older)).jobName
         const { stdout: startCmd } = await execInJob(job, [
           'sh', '-c',
           `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:${tool} "#{pane_start_command}"`,
@@ -1969,7 +1981,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     // does nothing.
     it('refuses a posture the tool does not have', async () => {
       await setupProject('no-posture')
-      const podsBefore = (await listWorkspacePods('no-posture')).length
+      const podsBefore = (await listWorkspacePods(idOf('no-posture'))).length
       // pi has no permission system, so no `plan`.
       const noPlan = await runYaac(
         serverEnv, 'workspace', 'create', 'no-posture',
@@ -1977,7 +1989,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       )
       expect(noPlan.exitCode).not.toBe(0)
       expect(noPlan.stdout + noPlan.stderr).toMatch(/pi has no "plan" permission mode/)
-      expect((await listWorkspacePods('no-posture')).length).toBe(podsBefore)
+      expect((await listWorkspacePods(idOf('no-posture'))).length).toBe(podsBefore)
     }, 120_000)
 
     // Under acp the posture is not a launch flag but a `session/set_mode`

@@ -2,7 +2,7 @@ import { resolveProjectPath, type SandboxFile } from '#runtime/agents'
 import type { AgentSessionLinkRow } from '#db'
 
 /** The row fields needed to resolve a stored transcript path. */
-type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectSlug' | 'workspaceId' | 'tool' | 'transcriptPath'>
+type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectId' | 'workspaceId' | 'tool' | 'transcriptPath'>
 
 /**
  * The transcript file a recorded conversation names, or undefined when it
@@ -16,5 +16,5 @@ type RecordedTranscript = Pick<AgentSessionLinkRow, 'projectSlug' | 'workspaceId
  */
 export function recordedTranscript(row: RecordedTranscript | undefined): SandboxFile | undefined {
   if (row?.transcriptPath === undefined) return undefined
-  return resolveProjectPath(row.projectSlug, row.workspaceId, row.tool, row.transcriptPath)
+  return resolveProjectPath(row.projectId, row.workspaceId, row.tool, row.transcriptPath)
 }

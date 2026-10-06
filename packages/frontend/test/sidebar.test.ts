@@ -18,7 +18,7 @@ const entry = (
   extra: Partial<WorkspaceListEntry> = {},
 ): WorkspaceListEntry => ({
   workspaceId,
-  projectSlug: 'p',
+  projectId: 'p',
   tool: 'claude',
   status: 'running',
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
@@ -35,7 +35,7 @@ const group = (
   extra: Partial<WorkspaceGroupSummary> = {},
 ): WorkspaceGroupSummary => ({
   groupId,
-  projectSlug: 'p',
+  projectId: 'p',
   name: groupId,
   pinned: false,
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
@@ -48,7 +48,7 @@ const stopped = (
   groupId?: string,
 ): StoppedWorkspaceEntry => ({
   workspaceId,
-  projectSlug: 'p',
+  projectId: 'p',
   tool: 'claude',
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
   seen: false,
@@ -63,7 +63,7 @@ const prov = (
   extra: Partial<ProvisioningWorkspaceEntry> = {},
 ): ProvisioningWorkspaceEntry => ({
   workspaceId,
-  projectSlug: 'p',
+  projectId: 'p',
   tool: 'claude',
   kind: 'restart',
   message: 'Starting…',
@@ -208,7 +208,7 @@ const queued = (
   const { chained, ...rest } = extra
   return {
     id,
-    projectSlug: 'p',
+    projectId: 'p',
     ...(chained === true ? { parentQueuedId: parent } : { parentWorkspaceId: parent }),
     prompt: id,
     tool: 'claude',
@@ -223,7 +223,7 @@ const queued = (
 
 const held = (workspaceId: string, groupId?: string): HeldWorkspaceEntry => ({
   workspaceId,
-  projectSlug: 'p',
+  projectId: 'p',
   tool: 'claude',
   stoppedAt: '2026-01-01 00:00:05',
   ...(groupId !== undefined ? { groupId } : {}),

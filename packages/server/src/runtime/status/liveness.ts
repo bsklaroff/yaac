@@ -17,7 +17,7 @@ import { isWorkspaceStreamHealthy } from './status-store'
  * Taken whole because building a unit name would encode the driver's
  * naming scheme; callers already hold a `RuntimeHandle`.
  */
-export type ProbeTarget = Pick<RuntimeHandle, 'projectSlug' | 'workspaceId' | 'jobName'>
+export type ProbeTarget = Pick<RuntimeHandle, 'projectId' | 'workspaceId' | 'jobName'>
 
 /**
  * Outcome of a tmux liveness probe.
@@ -29,7 +29,7 @@ export type ProbeTarget = Pick<RuntimeHandle, 'projectSlug' | 'workspaceId' | 'j
 export type TmuxLiveness = 'alive' | 'dead' | 'unknown'
 
 /**
- * Cache of exec-probed tmux liveness, keyed by `${slug}/${workspaceId}`.
+ * Cache of exec-probed tmux liveness, keyed by `${projectId}/${workspaceId}`.
  * Entries are a settled (value, expiresAt) or an in-flight Promise, so
  * concurrent callers share one probe.
  *
@@ -50,8 +50,8 @@ type TmuxAliveEntry =
 
 const tmuxAliveCache = new Map<string, TmuxAliveEntry>()
 
-function tmuxAliveKey(slug: string, workspaceId: string): string {
-  return `${slug}/${workspaceId}`
+function tmuxAliveKey(projectId: string, workspaceId: string): string {
+  return `${projectId}/${workspaceId}`
 }
 
 /**
@@ -102,9 +102,9 @@ async function probeTmuxLivenessUncached(target: ProbeTarget): Promise<TmuxLiven
  * destructive action. Stream health can only produce `alive`, never `dead`.
  */
 export async function probeTmuxLiveness(target: ProbeTarget): Promise<TmuxLiveness> {
-  const { projectSlug, workspaceId } = target
-  if (isWorkspaceStreamHealthy(projectSlug, workspaceId)) return 'alive'
-  const key = tmuxAliveKey(projectSlug, workspaceId)
+  const { projectId, workspaceId } = target
+  if (isWorkspaceStreamHealthy(projectId, workspaceId)) return 'alive'
+  const key = tmuxAliveKey(projectId, workspaceId)
   const now = Date.now()
   const cached = tmuxAliveCache.get(key)
   if (cached) {
@@ -154,7 +154,7 @@ const agentStartedCache = new Set<string>()
  * placeholder's `pane_current_command` is `sleep`.
  */
 export async function probeAgentPaneState(target: ProbeTarget): Promise<AgentPaneState> {
-  const key = tmuxAliveKey(target.projectSlug, target.workspaceId)
+  const key = tmuxAliveKey(target.projectId, target.workspaceId)
   if (agentStartedCache.has(key)) return 'started'
   try {
     const driver = workspaceDriver()
@@ -182,8 +182,8 @@ export function _clearAgentStartedCacheForTests(): void {
  * Drop a workspace's cached probe verdicts. Called on teardown so a new
  * workspace reusing the id cannot read a stale value.
  */
-export function forgetLiveness(slug: string, workspaceId: string): void {
-  const key = tmuxAliveKey(slug, workspaceId)
+export function forgetLiveness(projectId: string, workspaceId: string): void {
+  const key = tmuxAliveKey(projectId, workspaceId)
   tmuxAliveCache.delete(key)
   agentStartedCache.delete(key)
 }

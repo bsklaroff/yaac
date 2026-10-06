@@ -60,7 +60,7 @@ const BRANCHES: ProjectBranches = {
 function project(memory: Record<string, unknown> = {}, driver = 'k8s', extra: Record<string, unknown> = {}): unknown {
   return {
     driver,
-    projects: [{ slug: 'proj', createDefaults: {}, gitCredential: { id: 'c1', name: 'github.com token' }, ...memory }],
+    projects: [{ id: 'proj', name: 'proj', createDefaults: {}, gitCredential: { id: 'c1', name: 'github.com token' }, ...memory }],
     workspaces: [],
     queuedWorkspaces: [],
     heldWorkspaces: [],
@@ -73,7 +73,7 @@ function project(memory: Record<string, unknown> = {}, driver = 'k8s', extra: Re
 /** A live workspace to queue after: codex on gpt-5.5, forked from dev. */
 const PARENT: WorkspaceListEntry = {
   workspaceId: 'w-parent',
-  projectSlug: 'proj',
+  projectId: 'proj',
   tool: 'codex',
   status: 'running',
   createdAt: '2026-01-01 00:00:01',
@@ -89,14 +89,14 @@ const PARENT: WorkspaceListEntry = {
 }
 
 const GROUPS = [
-  { groupId: 'g-review', projectSlug: 'proj', name: 'Review', pinned: false, createdAt: '2026-01-01 00:00:00' },
-  { groupId: 'g-other', projectSlug: 'proj', name: 'Other', pinned: true, createdAt: '2026-01-02 00:00:00' },
-  { groupId: 'g-theirs', projectSlug: 'else', name: 'Theirs', pinned: true, createdAt: '2026-01-02 00:00:00' },
+  { groupId: 'g-review', projectId: 'proj', name: 'Review', pinned: false, createdAt: '2026-01-01 00:00:00' },
+  { groupId: 'g-other', projectId: 'proj', name: 'Other', pinned: true, createdAt: '2026-01-02 00:00:00' },
+  { groupId: 'g-theirs', projectId: 'else', name: 'Theirs', pinned: true, createdAt: '2026-01-02 00:00:00' },
 ]
 
 const entry = (id: string, extra: Partial<QueuedWorkspaceEntry> = {}): QueuedWorkspaceEntry => ({
   id,
-  projectSlug: 'proj',
+  projectId: 'proj',
   parentWorkspaceId: 'w-parent',
   prompt: `step ${id}`,
   tool: 'claude',
@@ -134,7 +134,7 @@ beforeEach(() => {
   // Run the op passed to the provisioning flow, so the test can check what
   // the create sends.
   provision.mockImplementation(
-    (_slug, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
+    (_projectId, _tool, _kind, sid: string, op: (sid: string, p: () => void) => unknown) => {
       void op(sid, () => {})
     })
   server = mockFetch({
@@ -143,14 +143,14 @@ beforeEach(() => {
     // The create's NDJSON stream, cut to its terminal event.
     [CREATE]: { type: 'result', result: { workspaceId: 'w-new', jobName: 'job', tool: 'claude' } },
     [QUEUE]: ({ body }: { body: Body }) => {
-      const { project: projectSlug, parent, draftId: _draftId, ...settings } = body
-      return { id: 'q-new', projectSlug, parentWorkspaceId: parent, createdAt: '', ...settings }
+      const { project: projectId, parent, draftId: _draftId, ...settings } = body
+      return { id: 'q-new', projectId, parentWorkspaceId: parent, createdAt: '', ...settings }
     },
     [UPDATE]: ({ body }: { body: Body }) => entry(body.id as string),
     [RUN]: { workspaceId: 'w-run' },
     [SAVE_DRAFT]: ({ body }: { body: Body }) => {
-      const { project: projectSlug, id, ...settings } = body
-      return { id: id ?? 'd-new', projectSlug, createdAt: '', updatedAt: '', ...settings }
+      const { project: projectId, id, ...settings } = body
+      return { id: id ?? 'd-new', projectId, createdAt: '', updatedAt: '', ...settings }
     },
     [DISCARD_DRAFT]: undefined,
   })
@@ -165,7 +165,7 @@ afterEach(() => {
 function mount(): void {
   renderWithClient(
     <>
-      <NewWorkspaceButton projectSlug="proj" />
+      <NewWorkspaceButton projectId="proj" />
       <CreateWorkspaceDialog />
     </>,
   )
@@ -181,7 +181,7 @@ async function openMenu(): Promise<void> {
 /** Open the dialog the way a row menu or queued row does. */
 async function openWith(opts: { parent?: string; editId?: string; draftId?: string }): Promise<void> {
   mount()
-  act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', ...opts }))
+  act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', ...opts }))
   await waitFor(() => expect(screen.getByLabelText('Agent')).toBeTruthy())
   await waitFor(() => expect(submitButton().title).not.toBe('Loading…'))
 }
@@ -400,7 +400,7 @@ describe('CreateWorkspaceDialog', () => {
   })
 
   it('renders a labeled trigger in the cta variant', () => {
-    render(<NewWorkspaceButton projectSlug="proj" variant="cta" />)
+    render(<NewWorkspaceButton projectId="proj" variant="cta" />)
     // The icon variant's trigger is icon-only; the CTA carries a visible label.
     expect(screen.getByRole('button', { name: /New workspace/ }).textContent).toContain('New workspace')
   })
@@ -410,7 +410,7 @@ describe('CreateWorkspaceDialog', () => {
   it('focuses the prompt as it opens, before the dialog\'s own focus handling gets there', () => {
     // Keys typed right after opening must reach the prompt.
     mount()
-    act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', focus: 'prompt' }))
+    act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', focus: 'prompt' }))
     expect(document.activeElement).toBe(promptInput())
   })
 
@@ -702,7 +702,7 @@ describe('CreateWorkspaceDialog', () => {
     it('offers a held parent it already waits on, and "Now" saves then runs', async () => {
       snapshot.mockReturnValue(project({}, 'k8s', {
         queuedWorkspaces: [entry('q1', { parentWorkspaceId: 'w-held' })],
-        heldWorkspaces: [{ workspaceId: 'w-held', projectSlug: 'proj', tool: 'claude', title: 'Died', stoppedAt: '' }],
+        heldWorkspaces: [{ workspaceId: 'w-held', projectId: 'proj', tool: 'claude', title: 'Died', stoppedAt: '' }],
       }))
       await openWith({ editId: 'q1' })
       expect(option('Start', 'After “Died” stops')).toBeTruthy()
@@ -717,7 +717,7 @@ describe('CreateWorkspaceDialog', () => {
 
     it('says so when the entry has already started', async () => {
       mount()
-      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', editId: 'gone' }))
+      act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', editId: 'gone' }))
       await waitFor(() => expect(screen.getByText('Queued workspace gone')).toBeTruthy())
     })
   })
@@ -725,7 +725,7 @@ describe('CreateWorkspaceDialog', () => {
   describe('drafts', () => {
     const closeX = (): void => { fireEvent.click(screen.getByRole('button', { name: 'Close' })) }
     const draft = (extra: Partial<DraftWorkspaceEntry> = {}): DraftWorkspaceEntry => ({
-      id: 'd1', projectSlug: 'proj', prompt: 'half an idea', tool: 'codex', mode: 'tui',
+      id: 'd1', projectId: 'proj', prompt: 'half an idea', tool: 'codex', mode: 'tui',
       permissionMode: 'read-only', model: 'gpt-5.5', branch: 'dev', createdAt: '', updatedAt: '', ...extra,
     })
 
@@ -821,7 +821,7 @@ describe('CreateWorkspaceDialog', () => {
       // Its Start parent has gone since it was saved: it starts now instead.
       snapshot.mockReturnValue(project({}, 'k8s', { draftWorkspaces: [draft({ startAfter: 'w-gone' })] }))
       mount()
-      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+      act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', draftId: 'd1' }))
       await createReady()
       expect(promptInput().value).toBe('half an idea')
       expect(heading()).toBe('New workspace')
@@ -857,7 +857,7 @@ describe('CreateWorkspaceDialog', () => {
         ? serverError('NOT_FOUND', 'project proj has no draft workspace d1', 404)
         : { ...draft(), ...body, id: 'd-new' }))
       mount()
-      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+      act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', draftId: 'd1' }))
       await createReady()
       fireEvent.change(promptInput(), { target: { value: 'kept anyway' } })
       closeX()
@@ -870,7 +870,7 @@ describe('CreateWorkspaceDialog', () => {
       cleanup()
       snapshot.mockReturnValue(project({}, 'k8s', { draftWorkspaces: [draft()] }))
       mount()
-      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+      act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', draftId: 'd1' }))
       await createReady()
       const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save draft' })
       expect(save.disabled).toBe(true)
@@ -883,7 +883,7 @@ describe('CreateWorkspaceDialog', () => {
       cleanup()
       forget()
       mount()
-      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+      act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', draftId: 'd1' }))
       await createReady()
       fireEvent.change(select('Permissions'), { target: { value: 'bypass' } })
       fireEvent.click(screen.getByRole('button', { name: 'Save draft' }))
@@ -896,7 +896,7 @@ describe('CreateWorkspaceDialog', () => {
         draftWorkspaces: [draft({ title: 'Named', groupId: 'g-other' })], workspaceGroups: GROUPS,
       }))
       mount()
-      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+      act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', draftId: 'd1' }))
       await createReady()
       expect(heading()).toBe('Named')
       expect(select('Group').value).toBe('g-other')
@@ -919,7 +919,7 @@ describe('CreateWorkspaceDialog', () => {
           workspaces: [{ ...PARENT, groupId: 'g-review' }, other], workspaceGroups: GROUPS, draftWorkspaces: [d],
         }))
         mount()
-        act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+        act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', draftId: 'd1' }))
         await waitFor(() => expect(screen.getByLabelText('Group')).toBeTruthy())
       }
       // Saved following its Start's group: it still follows.
@@ -942,7 +942,7 @@ describe('CreateWorkspaceDialog', () => {
         draftWorkspaces: [draft({ groupId: 'g-other' })], workspaceGroups: GROUPS,
       }))
       mount()
-      act(() => useUiStore.getState().openCreateWorkspace({ projectSlug: 'proj', draftId: 'd1' }))
+      act(() => useUiStore.getState().openCreateWorkspace({ projectId: 'proj', draftId: 'd1' }))
       await waitFor(() => expect(screen.getByLabelText('Group')).toBeTruthy())
       fireEvent.change(select('Group'), { target: { value: option('Group', '+ New group').value } })
       fireEvent.change(screen.getByLabelText('New group name'), { target: { value: 'Not yet made' } })

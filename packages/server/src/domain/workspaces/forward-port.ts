@@ -26,9 +26,9 @@ export async function forwardWorkspacePort(
       `port ${containerPort} is not an unforwarded listener in session ${target.workspaceId.slice(0, 8)}`,
     )
   }
-  if (opts.persist) await addPortForwardToProjectConfig(target.projectSlug, containerPort)
+  if (opts.persist) await addPortForwardToProjectConfig(target.projectId, containerPort)
   return runtime.forwardPort(
-    { workspaceId: target.workspaceId, projectSlug: target.projectSlug, jobName: target.jobName },
+    { workspaceId: target.workspaceId, projectId: target.projectId, jobName: target.jobName },
     containerPort,
     { fanOutToProject: opts.persist },
   )

@@ -22,8 +22,8 @@ in the namespace.
 Some names are not the repo's to choose, so they keep their spelling:
 
 - **The on-disk layout.** A workspace's state tree lives under
-  `projects/<slug>/sessions/<id>`. The helper is `workspaceStateDir`, but the
-  path segment stays because it names data already on users' disks.
+  `projects/<project id>/sessions/<id>`. The helper is `workspaceStateDir`,
+  but the path segment stays because it names data already on users' disks.
 - **Protocol fields.** `legacy_session_id` in a TLS ClientHello (RFC 8446) and
   `session-bind@openssh.com` in the ssh-agent protocol are other people's wire
   formats, parsed by the proxy.

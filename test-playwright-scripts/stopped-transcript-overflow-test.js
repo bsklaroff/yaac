@@ -80,7 +80,7 @@ const EVENTS = [
 
 const STOPPED = [{
   workspaceId: 'w-overflow-probe',
-  projectSlug: 'probe',
+  projectId: 'probe',
   tool: 'claude',
   createdAt: '2026-01-01 00:00:00',
   lastActiveAt: '2026-01-01 00:05:00',

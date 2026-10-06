@@ -145,7 +145,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
    */
   let sharedJob = ''
   let sharedSessionId = ''
-  /** The shared project's id, read off its pod's `yaac.project-id` label. */
+  /** The shared project's id. */
   let sharedProjectId = ''
   /** A registry stood up for an id no project holds (the isolation test). */
   let orphanRegistryId = ''
@@ -162,24 +162,28 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     }) + '\n')
   }
 
-  /** `seeded`: the mock remote already holds the repo (a re-add). */
-  async function setupProject(slug: string, opts: { seeded?: boolean } = {}): Promise<void> {
+  /**
+   * Stage and register a project named `name`; returns its id. `seeded`:
+   * the mock remote already holds the repo (a re-add).
+   */
+  async function setupProject(name: string, opts: { seeded?: boolean } = {}): Promise<string> {
     if (!opts.seeded) {
-      await seedMockGitRepo(mockGit!, slug, {
+      await seedMockGitRepo(mockGit!, name, {
         files: { 'README.md': '# demo\n' },
       })
     }
-    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', slug)
+    const projectId = crypto.randomUUID()
+    const projectPath = path.join(testEnv.dataDir, 'global', 'projects', projectId)
     const repoPath = path.join(projectPath, 'repo')
     await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
-    await cloneRepo(path.join(mockGit!.reposDir, `${slug}.git`), repoPath, null)
-    const fakeRemote = `https://github.com/test-org/${slug}.git`
+    await cloneRepo(path.join(mockGit!.reposDir, `${name}.git`), repoPath, null)
+    const fakeRemote = `https://github.com/test-org/${name}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
-    await registerTestProject(server!, slug, fakeRemote)
+    await registerTestProject(server!, projectId, name, fakeRemote)
     // The first add's credential outlives the project, so a re-add needs a
     // new name.
     await assignTestGitCredential(
-      server!, slug, 'fake-ghp-token', opts.seeded ? `${slug} token (re-add)` : undefined,
+      server!, projectId, 'fake-ghp-token', opts.seeded ? `${name} token (re-add)` : `${name} token`,
     )
     const configDir = path.join(projectPath, 'config')
     await fs.mkdir(configDir, { recursive: true })
@@ -187,26 +191,27 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       path.join(configDir, 'yaac-config.json'),
       JSON.stringify({ nestedContainers: true }, null, 2) + '\n',
     )
+    return projectId
   }
 
-  async function findWorkspacePod(slug: string, exclude: Set<string> = new Set()): Promise<PodInfo> {
-    const pods = (await listWorkspacePods(slug))
+  async function findWorkspacePod(projectId: string, exclude: Set<string> = new Set()): Promise<PodInfo> {
+    const pods = (await listWorkspacePods(projectId))
       .filter((p) => !exclude.has(p.workspaceId))
       .sort((a, b) => a.createdAtMs - b.createdAtMs)
-    if (!pods[0]) throw new Error(`no session pod found for project ${slug}`)
+    if (!pods[0]) throw new Error(`no session pod found for project ${projectId}`)
     return pods[0]
   }
 
-  async function createWorkspace(slug: string): Promise<PodInfo> {
+  /** `yaac workspace create`, naming the project by its full id. */
+  async function createWorkspace(projectId: string): Promise<PodInfo> {
     const { stdout, stderr, exitCode } = await runYaac(
-      serverEnv, 'workspace', 'create', slug, '--tool', 'claude', '--mode', 'tui',
+      serverEnv, 'workspace', 'create', projectId, '--tool', 'claude', '--mode', 'tui',
     )
     if (exitCode !== 0) {
       throw new Error(`session create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
     }
-    const pod = await findWorkspacePod(slug)
-    if (!pod.projectId) throw new Error(`session pod ${pod.jobName} carries no project id`)
-    createdRegistries.push(pod.projectId)
+    const pod = await findWorkspacePod(projectId)
+    createdRegistries.push(projectId)
     return pod
   }
 
@@ -249,11 +254,10 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     server = await spawnYaacServer(serverEnv)
     await setTestGitIdentity(serverEnv)
 
-    await setupProject('nested-shared')
-    const shared = await createWorkspace('nested-shared')
+    sharedProjectId = await setupProject('nested-shared')
+    const shared = await createWorkspace(sharedProjectId)
     sharedJob = shared.jobName
     sharedSessionId = shared.workspaceId
-    sharedProjectId = shared.projectId
   }, 900_000)
 
   afterAll(async () => {
@@ -336,10 +340,9 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   }
 
   it('builds with in-pod podman and reuses layers across sessions via the project registry', async () => {
-    const slug = 'nested-cache'
-    await setupProject(slug)
+    const projectId = await setupProject('nested-cache')
 
-    const session1 = await createWorkspace(slug)
+    const session1 = await createWorkspace(projectId)
     const name1 = session1.jobName
 
     // The docker CLI talks to the rootful in-pod podman, the engine uses
@@ -356,7 +359,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       'cat', '/etc/containers/registries.conf.d/yaac-project-registry.conf',
     ])
     const registryHost = /location = "([^"]+)"/.exec(regConf)?.[1] ?? ''
-    // Named by project id, not slug.
     expect(registryHost.startsWith(`yaac-reg-${session1.projectId}.`), registryHost).toBe(true)
     expect(registryHost.endsWith(':5000'), registryHost).toBe(true)
     expect(regConf).toContain('insecure = true')
@@ -406,7 +408,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     // the test does.
     await waitForStoreGeneration(session1.projectId, 600_000)
 
-    const session2 = await createWorkspace(slug)
+    const session2 = await createWorkspace(projectId)
     expect(session2.workspaceId).not.toBe(session1.workspaceId)
 
     // The store is read-only even to in-pod root. gVisor's gofer enforces
@@ -596,13 +598,12 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
     // Another project's registry must be unreachable: no policy admits
     // this pod, so curl times out.
-    const other = { slug: 'nested-registry-other', id: crypto.randomUUID() }
-    orphanRegistryId = other.id
-    createdRegistries.push(other.id)
-    await ensureProjectRegistry(other)
+    orphanRegistryId = crypto.randomUUID()
+    createdRegistries.push(orphanRegistryId)
+    await ensureProjectRegistry(orphanRegistryId)
     const { stdout: cross } = await execInJob(name, [
       'sh', '-c',
-      `curl -sS --max-time 5 http://${projectRegistryHost(other.id)}/v2/ >/dev/null 2>&1`
+      `curl -sS --max-time 5 http://${projectRegistryHost(orphanRegistryId)}/v2/ >/dev/null 2>&1`
       + ' && echo CROSS_REACHED || echo CROSS_BLOCKED',
     ], { timeout: 30_000 })
     expect(cross).toContain('CROSS_BLOCKED')
@@ -741,7 +742,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
   // Runs last: it stops the shared workspace and removes the project.
   it('keeps the project registry across workspace stop, and never hands it to a re-added project', async () => {
-    const slug = 'nested-shared'
     const regName = projectRegistryName(sharedProjectId)
 
     const { exitCode } = await runYaac(serverEnv, 'workspace', 'stop', sharedSessionId)
@@ -754,11 +754,11 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
 
     // Remove the project (API only; no CLI verb) and re-add the same
     // remote. The new project id gets a new, empty registry.
-    const removed = await makeServerApiClient(server!).project[':slug'].$delete({ param: { slug } })
+    const removed = await makeServerApiClient(server!).project[':projectId'].$delete({
+      param: { projectId: sharedProjectId },
+    })
     expect(removed.ok, await removed.text()).toBe(true)
-    await setupProject(slug, { seeded: true })
-    const readded = await createWorkspace(slug)
-    expect(readded.projectId).toBeTruthy()
+    const readded = await createWorkspace(await setupProject('nested-shared', { seeded: true }))
     expect(readded.projectId).not.toBe(sharedProjectId)
     const newRegName = projectRegistryName(readded.projectId)
     const newSvc = await readObject({ apiVersion: 'v1', kind: 'Service', name: newRegName, namespace: k8sNamespace() })

@@ -114,15 +114,11 @@ export function stopAllWorkspaceForwarders(): void {
 }
 
 /** Rewrite the workspace's tmux status-right from its current forwards. */
-async function refreshStatusRight(
-  jobName: string,
-  projectSlug: string,
-  workspaceId: string,
-): Promise<void> {
+async function refreshStatusRight(jobName: string, workspaceId: string): Promise<void> {
   await podExec(
     jobName,
     setStatusRightCmd(
-      buildStatusRight(projectSlug, workspaceId, getWorkspacePorts(workspaceId)),
+      buildStatusRight(workspaceId, getWorkspacePorts(workspaceId)),
       k8sWorkspacePaths().tmuxSock,
     ),
   )
@@ -136,7 +132,6 @@ async function refreshStatusRight(
  * one synchronous step, so concurrent requests can't get the same port.
  */
 export async function addWorkspaceForwarder(
-  projectSlug: string,
   workspaceId: string,
   jobName: string,
   containerPort: number,
@@ -153,7 +148,7 @@ export async function addWorkspaceForwarder(
   const mapping = { containerPort, hostPort: allocateHostPort(containerPort) }
   record(workspaceId, [mapping])
 
-  await refreshStatusRight(jobName, projectSlug, workspaceId)
+  await refreshStatusRight(jobName, workspaceId)
     .catch(() => { /* cosmetic */ })
 
   return mapping

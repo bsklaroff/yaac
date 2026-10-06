@@ -10,7 +10,7 @@ import { setBuiltinSkillsDir } from '#domain/skills/builtin'
 import { git } from '@yaac/test-utils/git'
 import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 
-const slug = 'proj'
+const projectId = 'proj'
 
 /** Commit `files` (relPath → contents) onto `branch` of a repo at
  *  `repoDir(s)` and set the `origin/<branch>` ref discovery reads, with no
@@ -98,7 +98,7 @@ beforeEach(async () => {
   setClaudeBundledSkills([])
   setBuiltinSkillsDir(path.join(tmp, 'no-builtins'))
 
-  const claude = claudeDir(slug)
+  const claude = claudeDir(projectId)
   // Personal
   await writeSkill(
     path.join(claude, 'skills', 'push-branch'),
@@ -112,15 +112,15 @@ beforeEach(async () => {
     path.join(claude, 'plugins', 'marketplaces', 'off', 'plugins', 'code-review', 'skills', 'review'),
     '---\ndescription: Review a PR\nallowed-tools: [Read, Grep]\n---\nbody-plugin\n',
   )
-  await seedClaudeEnabled(slug, { 'code-review@off': true, 'imessage@off': true })
+  await seedClaudeEnabled(projectId, { 'code-review@off': true, 'imessage@off': true })
   // Project (repo checkout)
   await writeSkill(
-    path.join(repoDir(slug), '.claude', 'skills', 'deploy'),
+    path.join(repoDir(projectId), '.claude', 'skills', 'deploy'),
     '---\nname: deploy\ndescription: Deploy it\nuser-invocable: false\n---\nbody-deploy\n',
   )
   // Project skill whose name collides with the personal one → shadowed
   await writeSkill(
-    path.join(repoDir(slug), '.claude', 'skills', 'push-branch'),
+    path.join(repoDir(projectId), '.claude', 'skills', 'push-branch'),
     '---\nname: push-branch\ndescription: project override\n---\nbody-proj\n',
   )
 })
@@ -142,7 +142,7 @@ async function seedBuiltin(): Promise<void> {
 
 describe('getProjectSkills', () => {
   it('discovers personal, plugin, and project skills sorted by source then name', async () => {
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     expect(skills.map((s) => [s.source, s.name])).toEqual([
       ['personal', 'push-branch'],
       ['plugin', 'review'],
@@ -152,7 +152,7 @@ describe('getProjectSkills', () => {
   })
 
   it('maps frontmatter into summary fields', async () => {
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     const personal = skills.find((s) => s.source === 'personal')
     expect(personal).toMatchObject({
       id: 'personal:push-branch',
@@ -174,15 +174,15 @@ describe('getProjectSkills', () => {
   it('reads a symlinked skill dir only where no sandbox writes the home', async () => {
     // Under containerless, symlinks are followed while they stay inside the
     // project.
-    await writeSkill(path.join(claudeDir(slug), '..', 'shared-skills', 'linked'),
+    await writeSkill(path.join(claudeDir(projectId), '..', 'shared-skills', 'linked'),
       '---\nname: linked\ndescription: symlinked in\n---\nb')
     await fs.symlink(
-      path.join(claudeDir(slug), '..', 'shared-skills', 'linked'),
-      path.join(claudeDir(slug), 'skills', 'linked'),
+      path.join(claudeDir(projectId), '..', 'shared-skills', 'linked'),
+      path.join(claudeDir(projectId), 'skills', 'linked'),
       'dir',
     )
     installFakeWorkspaceDriver({ kind: 'containerless' })
-    const found = (await getProjectSkills('claude', slug)).skills.find((s) => s.name === 'linked')
+    const found = (await getProjectSkills('claude', projectId)).skills.find((s) => s.name === 'linked')
     expect(found).toMatchObject({ source: 'personal', description: 'symlinked in' })
   })
 
@@ -191,11 +191,11 @@ describe('getProjectSkills', () => {
     // file the server can read.
     const secret = path.join(tmp, 'secret.md')
     await fs.writeFile(secret, '---\nname: leaked\ndescription: server file\n---\nb')
-    await fs.mkdir(path.join(claudeDir(slug), 'skills', 'planted'), { recursive: true })
-    await fs.symlink(secret, path.join(claudeDir(slug), 'skills', 'planted', 'SKILL.md'))
-    await fs.symlink(path.dirname(secret), path.join(claudeDir(slug), 'skills', 'dirlink'), 'dir')
+    await fs.mkdir(path.join(claudeDir(projectId), 'skills', 'planted'), { recursive: true })
+    await fs.symlink(secret, path.join(claudeDir(projectId), 'skills', 'planted', 'SKILL.md'))
+    await fs.symlink(path.dirname(secret), path.join(claudeDir(projectId), 'skills', 'dirlink'), 'dir')
     installFakeWorkspaceDriver({ kind: 'k8s' })
-    const names = (await getProjectSkills('claude', slug)).skills.map((s) => s.name)
+    const names = (await getProjectSkills('claude', projectId)).skills.map((s) => s.name)
     expect(names).not.toContain('leaked')
     expect(names).not.toContain('planted')
     expect(names).not.toContain('dirlink')
@@ -238,15 +238,15 @@ describe('getProjectSkills', () => {
 
   it('discovers plugin skills under external_plugins too, not just plugins', async () => {
     await writeSkill(
-      path.join(claudeDir(slug), 'plugins', 'marketplaces', 'off', 'external_plugins', 'imessage', 'skills', 'access'),
+      path.join(claudeDir(projectId), 'plugins', 'marketplaces', 'off', 'external_plugins', 'imessage', 'skills', 'access'),
       '---\nname: access\ndescription: external plugin skill\n---\nbody\n',
     )
-    const ext = (await getProjectSkills('claude', slug)).skills.find((s) => s.name === 'access')
+    const ext = (await getProjectSkills('claude', projectId)).skills.find((s) => s.name === 'access')
     expect(ext).toMatchObject({ source: 'plugin', sourceLabel: 'imessage', id: 'plugin:imessage:access' })
   })
 
   it('marks a project skill shadowed by a same-named personal skill', async () => {
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     const projPush = skills.find((s) => s.source === 'project' && s.name === 'push-branch')
     expect(projPush?.shadowedBy).toBe('personal')
     // The personal one and the unrelated project skill are not shadowed.
@@ -257,18 +257,18 @@ describe('getProjectSkills', () => {
   it('excludes a plugin present in the marketplace clone but not enabled', async () => {
     // `wallaby@off` is cloned to disk but absent from enabledPlugins.
     await writeSkill(
-      path.join(claudeDir(slug), 'plugins', 'marketplaces', 'off', 'plugins', 'wallaby', 'skills', 'trace'),
+      path.join(claudeDir(projectId), 'plugins', 'marketplaces', 'off', 'plugins', 'wallaby', 'skills', 'trace'),
       '---\nname: trace\ndescription: uninstalled plugin\n---\nb',
     )
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     expect(skills.find((s) => s.name === 'trace')).toBeUndefined()
     // The enabled code-review plugin still shows.
     expect(skills.find((s) => s.source === 'plugin' && s.name === 'review')).toBeDefined()
   })
 
   it('excludes a plugin explicitly disabled (enabledPlugins=false)', async () => {
-    await seedClaudeEnabled(slug, { 'code-review@off': false })
-    const { skills } = await getProjectSkills('claude', slug)
+    await seedClaudeEnabled(projectId, { 'code-review@off': false })
+    const { skills } = await getProjectSkills('claude', projectId)
     expect(skills.find((s) => s.source === 'plugin')).toBeUndefined()
   })
 
@@ -276,33 +276,33 @@ describe('getProjectSkills', () => {
     // Only user-tier code-review is enabled by beforeEach; enable a second
     // plugin via the repo-local settings.local.json tier.
     await writeSkill(
-      path.join(claudeDir(slug), 'plugins', 'marketplaces', 'off', 'plugins', 'ripgrep', 'skills', 'search'),
+      path.join(claudeDir(projectId), 'plugins', 'marketplaces', 'off', 'plugins', 'ripgrep', 'skills', 'search'),
       '---\nname: search\ndescription: local-tier enabled\n---\nb',
     )
     await seedClaudeEnabled(
-      slug,
+      projectId,
       { 'ripgrep@off': true },
-      path.join(repoDir(slug), '.claude', 'settings.local.json'),
+      path.join(repoDir(projectId), '.claude', 'settings.local.json'),
     )
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     expect(skills.find((s) => s.name === 'search')).toBeDefined()
   })
 
   it('treats unreadable and enabledPlugins-less settings tiers as enabling nothing', async () => {
     // Unparseable JSON, valid JSON without the map, and a non-object map: each
     // tier degrades to "nothing enabled" rather than throwing.
-    await writeFile(path.join(claudeDir(slug), 'settings.json'), '{not json')
-    await writeFile(path.join(repoDir(slug), '.claude', 'settings.json'), '{"other": 1}')
-    await writeFile(path.join(repoDir(slug), '.claude', 'settings.local.json'), '{"enabledPlugins": 5}')
+    await writeFile(path.join(claudeDir(projectId), 'settings.json'), '{not json')
+    await writeFile(path.join(repoDir(projectId), '.claude', 'settings.json'), '{"other": 1}')
+    await writeFile(path.join(repoDir(projectId), '.claude', 'settings.local.json'), '{"enabledPlugins": 5}')
 
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     expect(skills.find((s) => s.source === 'plugin')).toBeUndefined()
     // The non-plugin tiers are unaffected.
     expect(skills.map((s) => s.name)).toContain('push-branch')
   })
 
   it('returns nothing for non-claude tools when nothing is set up', async () => {
-    expect((await getProjectSkills('codex', slug)).skills).toEqual([])
+    expect((await getProjectSkills('codex', projectId)).skills).toEqual([])
   })
 
   it('is empty-safe when a project has no skill dirs', async () => {
@@ -314,7 +314,7 @@ describe('getProjectSkills', () => {
       { name: 'code-review', description: 'Review the current diff.' },
       { name: 'deep-research', description: 'Fan out web searches.' },
     ])
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     const system = skills.filter((s) => s.source === 'system')
     expect(system.map((s) => `${s.sourceLabel}:${s.name}`)).toEqual([
       'bundled:code-review',
@@ -329,7 +329,7 @@ describe('getProjectSkills', () => {
 
   it('does not append the claude bundled tier to other tools', async () => {
     setClaudeBundledSkills([{ name: 'code-review', description: 'x' }])
-    const { skills } = await getProjectSkills('codex', slug)
+    const { skills } = await getProjectSkills('codex', projectId)
     expect(skills.find((s) => s.sourceLabel === 'bundled')).toBeUndefined()
   })
 
@@ -337,7 +337,7 @@ describe('getProjectSkills', () => {
     'injects the yaac builtin tier into every tool as system/yaac (%s)',
     async (tool) => {
       await seedBuiltin()
-      const { skills } = await getProjectSkills(tool, slug)
+      const { skills } = await getProjectSkills(tool, projectId)
       expect(skills.find((s) => s.sourceLabel === 'yaac')).toMatchObject({
         id: 'system:yaac:yaac-welcome',
         name: 'yaac-welcome',
@@ -354,7 +354,7 @@ describe('getProjectSkills', () => {
     // A bundled skill whose name sorts before the yaac one: tier rank, not
     // name, keeps yaac first so the viewer shows two groups.
     setClaudeBundledSkills([{ name: 'aardvark-review', description: 'x' }])
-    const { skills } = await getProjectSkills('claude', slug)
+    const { skills } = await getProjectSkills('claude', projectId)
     const system = skills.filter((s) => s.source === 'system')
     expect(system.map((s) => `${s.sourceLabel}:${s.name}`)).toEqual([
       'yaac:yaac-welcome',
@@ -367,41 +367,41 @@ describe('getProjectSkills', () => {
     // roots. They must not be listed again as `personal`.
     await seedBuiltin()
     const builtin = path.join(tmp, 'builtin-skills', 'yaac-welcome')
-    for (const root of [path.join(claudeDir(slug), 'skills'), path.join(piDir(slug), 'agent', 'skills')]) {
+    for (const root of [path.join(claudeDir(projectId), 'skills'), path.join(piDir(projectId), 'agent', 'skills')]) {
       await fs.mkdir(root, { recursive: true })
       await fs.symlink(builtin, path.join(root, 'yaac-welcome'), 'dir')
     }
     // The user's own symlink in the same root stays personal.
-    const theirs = path.join(claudeDir(slug), '..', 'shared-skills', 'theirs')
+    const theirs = path.join(claudeDir(projectId), '..', 'shared-skills', 'theirs')
     await writeSkill(theirs, '---\nname: theirs\ndescription: t\n---\nb')
-    await fs.symlink(theirs, path.join(claudeDir(slug), 'skills', 'theirs'), 'dir')
+    await fs.symlink(theirs, path.join(claudeDir(projectId), 'skills', 'theirs'), 'dir')
     installFakeWorkspaceDriver({ kind: 'containerless' })
 
     for (const tool of ['claude', 'pi'] as const) {
-      const { skills } = await getProjectSkills(tool, slug)
+      const { skills } = await getProjectSkills(tool, projectId)
       expect(skills.filter((s) => s.name === 'yaac-welcome').map((s) => `${s.source}:${s.sourceLabel ?? ''}`))
         .toEqual(['system:yaac'])
     }
-    expect((await getProjectSkills('claude', slug)).skills.find((s) => s.name === 'theirs'))
+    expect((await getProjectSkills('claude', projectId)).skills.find((s) => s.name === 'theirs'))
       .toMatchObject({ source: 'personal' })
   })
 
   it('reads codex personal + plugin + project dirs plus the built-in .system tier', async () => {
-    await writeSkill(path.join(codexDir(slug), 'skills', 'push-branch'),
+    await writeSkill(path.join(codexDir(projectId), 'skills', 'push-branch'),
       '---\nname: push-branch\ndescription: cx personal\n---\nb')
     // OpenAI-bundled tier is materialized to a dot-hidden dir → surfaced as `system`.
-    await writeSkill(path.join(codexDir(slug), 'skills', '.system', 'skill-creator'),
+    await writeSkill(path.join(codexDir(projectId), 'skills', '.system', 'skill-creator'),
       '---\nname: skill-creator\ndescription: bundled\n---\nb')
-    await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
+    await writeSkill(path.join(codexDir(projectId), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
       '---\nname: sentry\ndescription: cx plugin\n---\nb')
     // A catalog plugin cloned to disk but never installed → excluded.
-    await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'stripe', 'skills', 'stripe'),
+    await writeSkill(path.join(codexDir(projectId), '.tmp', 'plugins', 'plugins', 'stripe', 'skills', 'stripe'),
       '---\nname: stripe\ndescription: cx uninstalled\n---\nb')
-    await writeSkill(path.join(repoDir(slug), '.agents', 'skills', 'deploy'),
+    await writeSkill(path.join(repoDir(projectId), '.agents', 'skills', 'deploy'),
       '---\nname: deploy\ndescription: cx project\n---\nb')
-    await seedCodexPlugins(slug, { 'sentry@openai-curated': {} })
+    await seedCodexPlugins(projectId, { 'sentry@openai-curated': {} })
 
-    const { skills } = await getProjectSkills('codex', slug)
+    const { skills } = await getProjectSkills('codex', projectId)
     expect(skills.map((s) => `${s.source}:${s.name}`)).toEqual([
       'personal:push-branch',
       'plugin:sentry',
@@ -417,36 +417,36 @@ describe('getProjectSkills', () => {
   })
 
   it('reads only .system, not other dot-hidden siblings of skills/, as built-in', async () => {
-    await writeSkill(path.join(codexDir(slug), 'skills', '.system', 'skill-creator'),
+    await writeSkill(path.join(codexDir(projectId), 'skills', '.system', 'skill-creator'),
       '---\nname: skill-creator\ndescription: bundled\n---\nb')
     // A stray dot-dir that isn't the `.system` tier must not leak in.
-    await writeSkill(path.join(codexDir(slug), 'skills', '.cache', 'junk'),
+    await writeSkill(path.join(codexDir(projectId), 'skills', '.cache', 'junk'),
       '---\nname: junk\ndescription: not a skill\n---\nb')
-    const { skills } = await getProjectSkills('codex', slug)
+    const { skills } = await getProjectSkills('codex', projectId)
     expect(skills.map((s) => `${s.source}:${s.name}`)).toEqual(['system:skill-creator'])
   })
 
   it('excludes codex plugins disabled in config.toml or absent from its [plugins] table', async () => {
-    await writeSkill(path.join(codexDir(slug), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
+    await writeSkill(path.join(codexDir(projectId), '.tmp', 'plugins', 'plugins', 'sentry', 'skills', 'sentry'),
       '---\nname: sentry\ndescription: cx plugin\n---\nb')
-    await seedCodexPlugins(slug, { 'sentry@openai-curated': { enabled: false } })
-    expect((await getProjectSkills('codex', slug)).skills.find((s) => s.name === 'sentry')).toBeUndefined()
+    await seedCodexPlugins(projectId, { 'sentry@openai-curated': { enabled: false } })
+    expect((await getProjectSkills('codex', projectId)).skills.find((s) => s.name === 'sentry')).toBeUndefined()
 
     // A config.toml that parses but declares no plugins installs nothing.
-    await writeFile(path.join(codexDir(slug), 'config.toml'), 'model = "gpt-5-codex"\n')
-    expect((await getProjectSkills('codex', slug)).skills.find((s) => s.name === 'sentry')).toBeUndefined()
+    await writeFile(path.join(codexDir(projectId), 'config.toml'), 'model = "gpt-5-codex"\n')
+    expect((await getProjectSkills('codex', projectId)).skills.find((s) => s.name === 'sentry')).toBeUndefined()
   })
 
   it('reads opencode singular + plural native dirs and the claude-compat dir, deduping by id', async () => {
     // Global native, singular `skill/` dir.
-    await writeSkill(path.join(opencodeConfigDir(slug), 'skill', 'greet'),
+    await writeSkill(path.join(opencodeConfigDir(projectId), 'skill', 'greet'),
       '---\nname: greet\ndescription: oc global singular\n---\nb')
     // Project native `.opencode/skills/deploy` — same name as the beforeEach
     // `.claude/skills/deploy`, so the two collapse to one project:deploy.
-    await writeSkill(path.join(repoDir(slug), '.opencode', 'skills', 'deploy'),
+    await writeSkill(path.join(repoDir(projectId), '.opencode', 'skills', 'deploy'),
       '---\nname: deploy\ndescription: oc project native\n---\nb')
 
-    const { skills } = await getProjectSkills('opencode', slug)
+    const { skills } = await getProjectSkills('opencode', projectId)
     const names = skills.map((s) => `${s.source}:${s.name}`)
     expect(names).toContain('personal:greet') // singular skill/ found
     expect(names).toContain('personal:push-branch') // reads claudeDir/skills (claude-compat)
@@ -456,14 +456,14 @@ describe('getProjectSkills', () => {
   it('reads pi personal skills from piDir/agent/skills plus project skills from the repo', async () => {
     // pi's ~/.pi home is per-project, so its global skills tier is visible
     // on the host.
-    await writeSkill(path.join(piDir(slug), 'agent', 'skills', 'globby'),
+    await writeSkill(path.join(piDir(projectId), 'agent', 'skills', 'globby'),
       '---\nname: globby\ndescription: pi personal skill\n---\nb')
-    await writeSkill(path.join(repoDir(slug), '.pi', 'skills', 'ship'),
+    await writeSkill(path.join(repoDir(projectId), '.pi', 'skills', 'ship'),
       '---\nname: ship\ndescription: pi project skill\n---\nb')
-    await writeSkill(path.join(repoDir(slug), '.agents', 'skills', 'shared'),
+    await writeSkill(path.join(repoDir(projectId), '.agents', 'skills', 'shared'),
       '---\nname: shared\ndescription: agents-compat skill\n---\nb')
 
-    const { skills } = await getProjectSkills('pi', slug)
+    const { skills } = await getProjectSkills('pi', projectId)
     expect(skills.map((s) => `${s.source}:${s.name}`)).toEqual([
       'personal:globby',
       'project:shared',
@@ -527,7 +527,7 @@ describe('getProjectSkills', () => {
 
 describe('getSkillDetail', () => {
   it('returns the full body and frontmatter for a discovered id', async () => {
-    const detail = await getSkillDetail('claude', slug, 'personal:push-branch')
+    const detail = await getSkillDetail('claude', projectId, 'personal:push-branch')
     expect(detail).toMatchObject({
       id: 'personal:push-branch',
       name: 'push-branch',
@@ -539,11 +539,11 @@ describe('getSkillDetail', () => {
 
   it('flattens every frontmatter value type for display', async () => {
     await writeSkill(
-      path.join(claudeDir(slug), 'skills', 'flat'),
+      path.join(claudeDir(projectId), 'skills', 'flat'),
       '---\nname: flat\ndescription:\nallowed-tools: [Read, Grep]\nuser-invocable: true\n'
       + 'metadata:\n  version: "1"\n  author: me\n---\nflat-body\n',
     )
-    const detail = await getSkillDetail('claude', slug, 'personal:flat')
+    const detail = await getSkillDetail('claude', projectId, 'personal:flat')
     expect(detail.frontmatter).toEqual({
       name: 'flat',
       // an empty `description:` is null and drops out entirely
@@ -555,21 +555,21 @@ describe('getSkillDetail', () => {
   })
 
   it('throws NOT_FOUND for an unknown id (no path is taken from the client)', async () => {
-    await expect(getSkillDetail('claude', slug, 'personal:../../etc/passwd')).rejects.toMatchObject({
+    await expect(getSkillDetail('claude', projectId, 'personal:../../etc/passwd')).rejects.toMatchObject({
       code: 'NOT_FOUND',
     })
   })
 
   it('serves a placeholder body for a list-only claude bundled skill', async () => {
     setClaudeBundledSkills([{ name: 'verify', description: 'Confirm a change works.' }])
-    const detail = await getSkillDetail('claude', slug, 'system:bundled:verify')
+    const detail = await getSkillDetail('claude', projectId, 'system:bundled:verify')
     expect(detail).toMatchObject({ name: 'verify', source: 'system' })
     expect(detail.body).toContain('Built-in Claude Code skill')
   })
 
   it('serves the full SKILL.md body for a yaac builtin skill (not a placeholder)', async () => {
     await seedBuiltin()
-    const detail = await getSkillDetail('claude', slug, 'system:yaac:yaac-welcome')
+    const detail = await getSkillDetail('claude', projectId, 'system:yaac:yaac-welcome')
     expect(detail).toMatchObject({ name: 'yaac-welcome', source: 'system' })
     expect(detail.body.trim()).toBe('welcome-body')
   })

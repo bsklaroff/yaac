@@ -56,7 +56,7 @@ function codexIsNewer(candidate: CodexOAuthBundle, current: CodexOAuthBundle): b
 
 export class ProxyObjects {
   private creds: ProxyCredentials = EMPTY_CREDENTIALS
-  /** `<projectSlug>/<NAME>` -> value, across every project's Secret. */
+  /** `<projectId>/<NAME>` -> value, across every project's Secret. */
   private readonly secrets = new Map<string, string>()
   /** The refs each secrets object contributed, so an update or delete
    *  forgets exactly those. */

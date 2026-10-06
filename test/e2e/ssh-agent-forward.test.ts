@@ -172,17 +172,17 @@ beforeAll(async () => {
     ssh: [{
       privateKey: key.privateKey,
       publicKey: key.publicKey,
-      projects: [{ slug: 'agentfwd', host: SSH_HOST, knownHostsEntry: key.knownHostsEntry }],
+      projects: [{ projectId: 'agentfwd', host: SSH_HOST, knownHostsEntry: key.knownHostsEntry }],
     }],
   })
 
   // The proxy only serves the agent to workspaces with an SSH remote.
   await applyProxyRegistration(sshSession, {
-    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
+    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd',
     repoUrl: `git@${SSH_HOST}:acme/app.git`,
   })
   await applyProxyRegistration(httpsSession, {
-    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd',
+    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd',
     repoUrl: 'https://github.com/acme/app.git',
   })
 
@@ -262,7 +262,7 @@ describe('ssh-agent forwarding over the proxy', () => {
   it('shows a session only the keys assigned to its own project', async () => {
     // Re-registered under a project the key is not assigned to.
     await applyProxyRegistration(sshSession, {
-      rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectSlug: 'agentfwd-other',
+      rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd-other',
       repoUrl: `git@${SSH_HOST}:acme/app.git`,
     })
     let listed = { exit: 0, out: '' }

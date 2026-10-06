@@ -67,8 +67,8 @@ const terminals = new Map<string, WorkspaceTerminalEntry[]>()
 let liveAgentsListener: (() => void) | null = null
 let streamHealthLostListener: (() => void) | null = null
 
-function key(slug: string, workspaceId: string): string {
-  return `${slug}/${workspaceId}`
+function key(projectId: string, workspaceId: string): string {
+  return `${projectId}/${workspaceId}`
 }
 
 /**
@@ -120,8 +120,8 @@ const STATUS_PRECEDENCE: readonly AgentStatus[] = ['asking', 'waiting', 'running
  * The workspace's status: its most pressing agent's (`STATUS_PRECEDENCE`),
  * or `waiting` when nothing is classified yet.
  */
-export function readWorkspaceStatus(slug: string, workspaceId: string): AgentStatus {
-  const statuses = new Set([...store.get(key(slug, workspaceId))?.agents.values() ?? []].map((a) => a.status))
+export function readWorkspaceStatus(projectId: string, workspaceId: string): AgentStatus {
+  const statuses = new Set([...store.get(key(projectId, workspaceId))?.agents.values() ?? []].map((a) => a.status))
   return STATUS_PRECEDENCE.find((s) => statuses.has(s)) ?? 'waiting'
 }
 
@@ -131,8 +131,8 @@ export function readWorkspaceStatus(slug: string, workspaceId: string): AgentSta
  * second agent going idle or asking does not reset a client's per-spell
  * read mark, and answering it does not bring back a spell already seen.
  */
-export function readWorkspaceWaitingSince(slug: string, workspaceId: string): number | undefined {
-  const e = store.get(key(slug, workspaceId))
+export function readWorkspaceWaitingSince(projectId: string, workspaceId: string): number | undefined {
+  const e = store.get(key(projectId, workspaceId))
   if (!e) return undefined
   let earliest: number | undefined
   for (const a of e.agents.values()) {
@@ -145,11 +145,11 @@ export function readWorkspaceWaitingSince(slug: string, workspaceId: string): nu
 
 /** One conversation's status, for the per-agent dot on its tab. */
 export function readAgentStatus(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   handle: string,
 ): AgentStatusEntry | undefined {
-  return store.get(key(slug, workspaceId))?.agents.get(handle)
+  return store.get(key(projectId, workspaceId))?.agents.get(handle)
 }
 
 /**
@@ -157,16 +157,16 @@ export function readAgentStatus(
  * first enumeration. The agent-session registry marks those naming a
  * conversation active, and skips the update on undefined.
  */
-export function liveAgents(slug: string, workspaceId: string): LiveAgent[] | undefined {
-  return store.get(key(slug, workspaceId))?.liveAgents
+export function liveAgents(projectId: string, workspaceId: string): LiveAgent[] | undefined {
+  return store.get(key(projectId, workspaceId))?.liveAgents
 }
 
 /**
  * Whether the workspace's watcher connection is healthy, i.e. a driver is
  * attached to its tmux right now. No entry → false (unknown, not dead).
  */
-export function isWorkspaceStreamHealthy(slug: string, workspaceId: string): boolean {
-  return store.get(key(slug, workspaceId))?.streamHealthy ?? false
+export function isWorkspaceStreamHealthy(projectId: string, workspaceId: string): boolean {
+  return store.get(key(projectId, workspaceId))?.streamHealthy ?? false
 }
 
 /**
@@ -177,13 +177,13 @@ export function isWorkspaceStreamHealthy(slug: string, workspaceId: string): boo
  * `agentLiveness`), not just the aggregate. A true no-op does not notify.
  */
 export function setAgentStatus(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   handle: string,
   status: AgentStatus,
 ): void {
-  const k = key(slug, workspaceId)
-  const before = readWorkspaceStatus(slug, workspaceId)
+  const k = key(projectId, workspaceId)
+  const before = readWorkspaceStatus(projectId, workspaceId)
   const hadEntry = store.has(k)
   const wasHealthy = store.get(k)?.streamHealthy ?? false
   const e = entry(k)
@@ -210,7 +210,7 @@ export function setAgentStatus(
     || prev.status !== status
     || prev.waitingSinceMs !== waitingSinceMs
   if (entryChanged || !hadEntry || !wasHealthy
-    || readWorkspaceStatus(slug, workspaceId) !== before) {
+    || readWorkspaceStatus(projectId, workspaceId) !== before) {
     notifyWorkspaceListChanged()
   }
 }
@@ -219,9 +219,9 @@ export function setAgentStatus(
  * Publish the conversations running now. Vanished ones lose their status,
  * or a dead agent's `waiting` would stay in the aggregate forever.
  */
-export function setLiveAgents(slug: string, workspaceId: string, agents: LiveAgent[]): void {
-  const k = key(slug, workspaceId)
-  const before = readWorkspaceStatus(slug, workspaceId)
+export function setLiveAgents(projectId: string, workspaceId: string, agents: LiveAgent[]): void {
+  const k = key(projectId, workspaceId)
+  const before = readWorkspaceStatus(projectId, workspaceId)
   const e = entry(k)
   const next = new Set(agents.map((a) => a.handle))
   const previous = e.liveAgents
@@ -237,7 +237,7 @@ export function setLiveAgents(slug: string, workspaceId: string, agents: LiveAge
   // registry joins against them), so a new ACP conversation becomes a row
   // without waiting for the resync.
   if (changed) liveAgentsListener?.()
-  if (changed || readWorkspaceStatus(slug, workspaceId) !== before) notifyWorkspaceListChanged()
+  if (changed || readWorkspaceStatus(projectId, workspaceId) !== before) notifyWorkspaceListChanged()
 }
 
 /**
@@ -245,8 +245,8 @@ export function setLiveAgents(slug: string, workspaceId: string, agents: LiveAge
  * healthy creates an entry (the attach proves tmux is up); marking it
  * unhealthy does nothing.
  */
-export function setWorkspaceStreamHealth(slug: string, workspaceId: string, healthy: boolean): void {
-  const k = key(slug, workspaceId)
+export function setWorkspaceStreamHealth(projectId: string, workspaceId: string, healthy: boolean): void {
+  const k = key(projectId, workspaceId)
   const prev = store.get(k)
   if (!prev) {
     if (!healthy) return
@@ -267,11 +267,11 @@ export function setWorkspaceStreamHealth(slug: string, workspaceId: string, heal
 
 /** Record the workspace's terminals, notifying only on a change. */
 export function setWorkspaceTerminals(
-  slug: string,
+  projectId: string,
   workspaceId: string,
   entries: WorkspaceTerminalEntry[],
 ): void {
-  const k = key(slug, workspaceId)
+  const k = key(projectId, workspaceId)
   if (JSON.stringify(terminals.get(k)) === JSON.stringify(entries)) return
   terminals.set(k, entries)
   notifyWorkspaceListChanged()
@@ -279,8 +279,8 @@ export function setWorkspaceTerminals(
 
 /** The workspace's terminals, or undefined before its watcher first listed
  *  them (unknown, not none). */
-export function readWorkspaceTerminals(slug: string, workspaceId: string): WorkspaceTerminalEntry[] | undefined {
-  return terminals.get(key(slug, workspaceId))
+export function readWorkspaceTerminals(projectId: string, workspaceId: string): WorkspaceTerminalEntry[] | undefined {
+  return terminals.get(key(projectId, workspaceId))
 }
 
 /**
@@ -288,8 +288,8 @@ export function readWorkspaceTerminals(slug: string, workspaceId: string): Works
  * when the watcher manager retires a workspace, so a reused id never sees
  * the previous status.
  */
-export function evictWorkspaceStatus(slug: string, workspaceId: string): void {
-  const k = key(slug, workspaceId)
+export function evictWorkspaceStatus(projectId: string, workspaceId: string): void {
+  const k = key(projectId, workspaceId)
   const hadTerminals = terminals.delete(k)
   if (store.delete(k) || hadTerminals) notifyWorkspaceListChanged()
 }

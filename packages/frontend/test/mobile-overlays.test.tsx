@@ -115,7 +115,7 @@ describe('MasterDetail', () => {
 describe('StoppedWorkspacesButton on a phone', () => {
   const stopped = (over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
     workspaceId: 's1',
-    projectSlug: 'proj',
+    projectId: 'proj',
     tool: 'claude',
     createdAt: '2026-07-13 00:00:00',
     stoppedAt: '2026-07-13 01:00:00',
@@ -125,7 +125,7 @@ describe('StoppedWorkspacesButton on a phone', () => {
   })
 
   function Harness(): JSX.Element {
-    return <StoppedWorkspacesButton projectSlug="proj" stopped={useStoppedWorkspaces('proj', [], [])} />
+    return <StoppedWorkspacesButton projectId="proj" stopped={useStoppedWorkspaces('proj', [], [])} />
   }
 
   const openOverlay = async (): Promise<void> => {
@@ -158,7 +158,7 @@ describe('StoppedWorkspacesButton on a phone', () => {
     // Detail-only content: the prompt, the metadata grid, and Restart.
     await waitFor(() => expect(screen.getByText('fix the parser')).toBeTruthy())
     expect(screen.getByText('Cause')).toBeTruthy()
-    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectSlug: 'proj', workspaceId: 's1' }]))
+    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectId: 'proj', workspaceId: 's1' }]))
 
     fireEvent.click(screen.getByRole('button', { name: 'Back to stopped workspaces' }))
     await waitFor(() => expect(screen.queryByText('fix the parser')).toBeNull())
@@ -193,7 +193,7 @@ describe('SkillsButton on a phone', () => {
 
   const openOverlay = (): void => {
     useUiStore.setState({ skillsOverlayOpen: false })
-    renderWithClient(<SkillsButton projectSlug="proj" />)
+    renderWithClient(<SkillsButton projectId="proj" />)
     fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
   }
 
@@ -230,7 +230,7 @@ describe('ImageBuildsOverlay on a phone', () => {
     id: 'build-1',
     tag: 'yaac-base:abc123def',
     layer: 'base',
-    projectSlugs: ['proj'],
+    projectIds: ['proj'],
     reason: 'prewarm',
     status: 'running',
     startedAt: '2026-07-06 00:00:00',

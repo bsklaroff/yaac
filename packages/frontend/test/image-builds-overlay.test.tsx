@@ -2,7 +2,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
-import { mockFetch, renderWithClient as render, serverError, type FetchMock } from './harness'
+import { SNAPSHOT_KEY } from '#lib/useEvents'
+import { mockFetch, renderWithClient as render, serverError, testQueryClient, type FetchMock } from './harness'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
@@ -49,7 +50,7 @@ function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
     id: 'build-1',
     tag: 'yaac-base:abc123def',
     layer: 'base',
-    projectSlugs: ['proj'],
+    projectIds: ['proj'],
     reason: 'prewarm',
     status: 'running',
     startedAt: '2026-07-06 00:00:00',
@@ -72,7 +73,9 @@ describe('ImageBuildsOverlay', () => {
       build({ stepCurrent: 3, stepTotal: 14, stepText: 'RUN apt-get update' }),
       build({ id: 'build-2', tag: 'yaac-user-p:def', layer: 'user', status: 'failed', error: 'registry down' }),
     ]
-    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
+    const client = testQueryClient()
+    client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: 'proj', name: 'widgets' }] })
+    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />, client)
 
     expect(screen.getByText('Image builds')).toBeTruthy()
     expect(screen.getByText('base layer')).toBeTruthy()
@@ -81,6 +84,7 @@ describe('ImageBuildsOverlay', () => {
     expect(screen.getByText('RUN apt-get update')).toBeTruthy()
     expect(screen.getByText('user layer')).toBeTruthy()
     expect(screen.getByText('registry down')).toBeTruthy()
+    expect(screen.getAllByText(/^widgets · prewarm/)).toHaveLength(2)
   })
 
   it('defaults the log pane to the newest running build and polls it', async () => {

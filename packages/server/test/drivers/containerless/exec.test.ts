@@ -59,7 +59,7 @@ describe('execInWorkspace', () => {
   it('runs with the launch\'s own entries after a restart, over the workspace floor', async () => {
     // After a restart, only the marker on disk is available.
     await writeMarker({
-      projectSlug: 'demo', workspaceId: UUID, tool: 'opencode', mode: 'tui',
+      projectId: 'demo', workspaceId: UUID, tool: 'opencode', mode: 'tui',
       prewarm: false, createdAtMs: 1_000,
       launchEnv: { CODEX_HOME: '/projects/demo/codex', PROJECT_SETTING: 'on' },
     })

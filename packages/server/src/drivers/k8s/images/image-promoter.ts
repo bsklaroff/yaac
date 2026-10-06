@@ -3,7 +3,6 @@ import { projectRegistryHost } from '#drivers/k8s/cluster'
 import { shellQuote } from '#lib/shell'
 import { ensureNodeImageStore } from './store-writer'
 import { serverLog } from '#log'
-import type { ProjectRef } from '#drivers/contract'
 
 /**
  * The push half of the nested-workspace image cache
@@ -461,7 +460,7 @@ export function _resetSalvageMemoForTests(): void {
  */
 export async function salvageJobImages(params: {
   jobName: string
-  project: ProjectRef
+  projectId: string
   workspaceId: string
 }): Promise<boolean> {
   const { workspaceId } = params
@@ -476,11 +475,11 @@ export async function salvageJobImages(params: {
 
 async function salvageJobImagesUncoalesced(params: {
   jobName: string
-  project: ProjectRef
+  projectId: string
   workspaceId: string
 }): Promise<boolean> {
-  const { jobName, project, workspaceId } = params
-  const registryHost = projectRegistryHost(project.id)
+  const { jobName, projectId, workspaceId } = params
+  const registryHost = projectRegistryHost(projectId)
 
   let report: SurveyReport
   try {
@@ -543,6 +542,6 @@ async function salvageJobImagesUncoalesced(params: {
 
   // New content in the registry: refresh the node image store now rather
   // than waiting for its throttle.
-  if (pushed > 0) void ensureNodeImageStore(project, { force: true })
+  if (pushed > 0) void ensureNodeImageStore(projectId, { force: true })
   return true
 }

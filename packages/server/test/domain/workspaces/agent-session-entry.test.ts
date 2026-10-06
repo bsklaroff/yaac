@@ -4,7 +4,7 @@ import type { AgentSessionLinkRow } from '#db'
 
 function link(over: Partial<AgentSessionLinkRow> = {}): AgentSessionLinkRow {
   return {
-    projectSlug: 'proj',
+    projectId: 'proj',
     workspaceId: 'wt1',
     agentSessionId: 'sid-1',
     tool: 'claude',

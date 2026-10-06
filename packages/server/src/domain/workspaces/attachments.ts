@@ -23,7 +23,7 @@ export async function saveWorkspaceAttachment(
   const kind = sniffImage(bytes)
   if (!kind) throw new ServerError('VALIDATION', 'not a PNG, JPEG, GIF or WebP image')
   const name = `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}.${kind.ext}`
-  const dir = workspaceAttachmentsDir(wt.projectSlug, wt.workspaceId)
+  const dir = workspaceAttachmentsDir(wt.projectId, wt.workspaceId)
   // Write only if absent: an existing file already holds these bytes, and
   // rewriting could truncate it mid-read or follow a symlink the agent made.
   await fs.writeFile(path.join(dir, name), bytes, { flag: 'wx' }).catch((err: NodeJS.ErrnoException) => {

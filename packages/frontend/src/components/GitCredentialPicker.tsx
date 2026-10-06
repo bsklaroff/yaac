@@ -3,7 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
-import { projectSlugFor } from '@yaac/shared/project-slug'
+import { projectNameFor } from '@yaac/shared/project-name'
 
 export type GitCredentialKind = 'https' | 'ssh'
 
@@ -15,9 +15,9 @@ export function remoteKind(remoteUrl: string): GitCredentialKind {
   return SCP_RE.test(remoteUrl) ? 'ssh' : 'https'
 }
 
-/** The project slug the server would derive from a remote, or '' if the
+/** The project name the server would derive from a remote, or '' if the
  *  remote doesn't parse. */
-export function remoteSlug(remoteUrl: string): string {
+export function remoteProjectName(remoteUrl: string): string {
   let repoPath = SCP_RE.exec(remoteUrl)?.[2]
   if (repoPath === undefined) {
     try {
@@ -26,13 +26,13 @@ export function remoteSlug(remoteUrl: string): string {
       return ''
     }
   }
-  return projectSlugFor(repoPath.replace(/\/$/, '').replace(/\.git$/, ''))
+  return projectNameFor(repoPath.replace(/\/$/, '').replace(/\.git$/, ''))
 }
 
-/** `<project>-token` or `<project>-key` (`git-…` without a project), with
- *  `-2`, `-3`… appended until the name is free. */
-export function defaultCredentialName(kind: GitCredentialKind, project: string, taken: readonly string[]): string {
-  const base = `${project || 'git'}-${kind === 'ssh' ? 'key' : 'token'}`
+/** `<project name>-token` or `<project name>-key` (`git-…` without a
+ *  project), with `-2`, `-3`… appended until the name is free. */
+export function defaultCredentialName(kind: GitCredentialKind, projectName: string, taken: readonly string[]): string {
+  const base = `${projectName || 'git'}-${kind === 'ssh' ? 'key' : 'token'}`
   let name = base
   for (let n = 2; taken.includes(name); n++) name = `${base}-${n}`
   return name
@@ -55,7 +55,7 @@ export const INPUT = 'min-w-0 flex-1 rounded-md border border-border bg-bg px-2.
  */
 export function GitCredentialPicker({
   kind,
-  project,
+  projectName,
   exclude,
   actionLabel,
   onSubmit,
@@ -64,8 +64,9 @@ export function GitCredentialPicker({
   offerExisting = true,
 }: {
   kind: GitCredentialKind
-  /** The project's slug, for the default name ('' when there is none). */
-  project: string
+  /** The project's name, for the default credential name ('' when there is
+   *  no project). */
+  projectName: string
   exclude?: string
   actionLabel: string
   /** Run with the chosen credential's id; a throw shows its message here. */
@@ -89,7 +90,7 @@ export function GitCredentialPicker({
 
   const choice = pick === NEW || existing.some((c) => c.id === pick) ? pick as string
     : existing.length > 0 || (offerExisting && !auth) ? '' : NEW
-  const shownName = name ?? defaultCredentialName(kind, project, all.map((c) => c.name))
+  const shownName = name ?? defaultCredentialName(kind, projectName, all.map((c) => c.name))
   // Ignore a generated key if the remote is no longer SSH.
   const key = kind === 'ssh' ? generated : null
   const refresh = (): Promise<void> => queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })

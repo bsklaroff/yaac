@@ -16,7 +16,7 @@ import type { SkillSummary } from '@yaac/shared/types'
 import { builtinSkillsDir, getProjectSkills, getSkillDetail, stageBuiltinSkills } from '#domain/skills'
 
 // A project with nothing on disk, so discovery finds only the packaged tier.
-const slug = 'shipped-skills'
+const projectId = 'shipped-skills'
 
 let tmp: string
 let staged: string[]
@@ -26,7 +26,7 @@ beforeAll(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-shipped-skills-'))
   setDataDir(tmp)
   staged = await stageBuiltinSkills(builtinSkillsDir(), path.join(tmp, 'stage'))
-  shipped = (await getProjectSkills('claude', slug)).skills
+  shipped = (await getProjectSkills('claude', projectId)).skills
 })
 
 afterAll(async () => {
@@ -44,7 +44,7 @@ function expectShipped(name: string): SkillSummary {
 }
 
 const bodyOf = async (name: string): Promise<string> =>
-  (await getSkillDetail('claude', slug, `system:yaac:${name}`)).body
+  (await getSkillDetail('claude', projectId, `system:yaac:${name}`)).body
 
 describe('builtin-skills/', () => {
   it('ships only skills — every staged dir is discovered as system/yaac', () => {

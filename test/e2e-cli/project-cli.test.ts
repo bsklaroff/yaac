@@ -14,9 +14,8 @@ import { makeServerApiClient } from '@yaac/test-utils/api'
  *  - The `project add` validation tests leave no project behind (rejects
  *    happen before any write; a failed clone rolls back). They use the
  *    `fake-github` credential beforeAll seeds.
- *  - The CONFLICT tests create bare project dirs (`repo`, `myrepo`) that
- *    persist, so the seeded `project list` test runs before them.
- *  - Seeded slugs are unique across the file (repo-alpha/repo-beta, demo-*).
+ *  - Seeded project names are unique across the file (repo-alpha/repo-beta,
+ *    demo-*) except where a case makes two projects share one on purpose.
  */
 
 let testEnv: YaacTestEnv
@@ -98,59 +97,20 @@ describe('yaac project (real CLI + real server)', () => {
     expect(stderr).toMatch(/Unrecognized|Invalid|HTTPS/i)
   })
 
-  // Must precede the CONFLICT tests (see the file header).
-  it('project list shows each seeded project with slug, remote, and session count', async () => {
+  it('project list shows each seeded project with its name, id prefix, remote, and session count', async () => {
     const repoAlpha = path.join(testEnv.scratchDir, 'repo-alpha')
     const repoBeta = path.join(testEnv.scratchDir, 'repo-beta')
     await createTestRepo(repoAlpha)
     await createTestRepo(repoBeta)
-    await addTestProject(server, repoAlpha)
-    await addTestProject(server, repoBeta)
+    const alpha = await addTestProject(server, repoAlpha)
+    const beta = await addTestProject(server, repoBeta)
 
     const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
     expect(exitCode).toBe(0)
-    expect(stdout).toContain('PROJECT')
-    expect(stdout).toContain('WORKSPACES')
-    expect(stdout).toContain('repo-alpha')
-    expect(stdout).toContain('repo-beta')
-    expect(stdout).toContain('https://github.com/test-org/repo-alpha.git')
-    expect(stdout).toContain('https://github.com/test-org/repo-beta.git')
+    expect(stdout).toMatch(/PROJECT\s+ID\s+REMOTE\s+WORKSPACES/)
     // No workspaces started, so 0 sessions each.
-    expect(stdout).toMatch(/repo-alpha\s+\S.*\s+0/)
-    expect(stdout).toMatch(/repo-beta\s+\S.*\s+0/)
-  })
-
-  it('project add returns CONFLICT when a project with the same slug exists', async () => {
-    // An existing project dir makes the server answer CONFLICT before
-    // resolving credentials.
-    await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'repo'), { recursive: true })
-
-    const { stderr, exitCode } = await runYaac(
-      testEnv.env, 'project', 'add', 'https://github.com/org/repo', 'fake-github',
-    )
-    expect(exitCode).not.toBe(0)
-    expect(stderr).toContain('already exists')
-  })
-
-  it('project add lowercases the slug regardless of the URL case', async () => {
-    // The slug is used as a pod label value (projectSlugFor), so it is
-    // lowercased. The CONFLICT message shows the derived slug before any
-    // clone happens.
-    await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', 'myrepo'), { recursive: true })
-
-    const github = await runYaac(
-      testEnv.env, 'project', 'add', 'https://github.com/Acme/MyRepo', 'fake-github',
-    )
-    expect(github.exitCode).not.toBe(0)
-    expect(github.stderr).toContain('"myrepo"')
-    expect(github.stderr).toContain('already exists')
-
-    const gitlab = await runYaac(
-      testEnv.env, 'project', 'add', 'https://gitlab.com/Acme/MyRepo', 'fake-github',
-    )
-    expect(gitlab.exitCode).not.toBe(0)
-    expect(gitlab.stderr).toContain('"myrepo"')
-    expect(gitlab.stderr).toContain('already exists')
+    expect(stdout).toMatch(new RegExp(`repo-alpha\\s+${alpha.slice(0, 8)}\\s+https://github.com/test-org/repo-alpha.git\\s+0`))
+    expect(stdout).toMatch(new RegExp(`repo-beta\\s+${beta.slice(0, 8)}\\s+https://github.com/test-org/repo-beta.git\\s+0`))
   })
 })
 
@@ -165,15 +125,22 @@ describe('yaac config (real CLI + real server)', () => {
     return editorPath
   }
 
-  // Each test uses a unique `demo-*` slug, since the data dir is shared.
-  async function seedProject(slug: string): Promise<void> {
-    const repo = path.join(testEnv.scratchDir, slug)
+  /**
+   * Add a project named `name` and return its id. Each test uses a unique
+   * `demo-*` name, since the data dir is shared; `dir` places a second repo
+   * of the same name elsewhere.
+   */
+  async function seedProject(name: string, dir = testEnv.scratchDir): Promise<string> {
+    const repo = path.join(dir, name)
     await createTestRepo(repo)
-    await addTestProject(server, repo)
+    return await addTestProject(server, repo)
   }
 
-  it('config edit round-trips yaac-config.json through the server (validated)', async () => {
-    await seedProject('demo-edit')
+  const configFile = (projectId: string, ...rel: string[]): string =>
+    path.join(testEnv.dataDir, 'global', 'projects', projectId, 'config', ...rel)
+
+  it('config edit round-trips yaac-config.json through the server (validated), named by project name', async () => {
+    const id = await seedProject('demo-edit')
 
     const editor = await writeStubEditor('config', '{ "initCommands": ["echo MARKER"] }')
     const { exitCode, stderr } = await runYaac(
@@ -182,13 +149,12 @@ describe('yaac config (real CLI + real server)', () => {
     )
     expect(exitCode, stderr).toBe(0)
 
-    const target = path.join(testEnv.dataDir, 'global', 'projects', 'demo-edit', 'config', 'yaac-config.json')
-    const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { initCommands?: string[] }
+    const saved = JSON.parse(await fs.readFile(configFile(id, 'yaac-config.json'), 'utf8')) as { initCommands?: string[] }
     expect(saved.initCommands).toEqual(['echo MARKER'])
   })
 
   it('config edit rejects invalid JSON, keeps the edits, and leaves the server file alone', async () => {
-    await seedProject('demo-badjson')
+    const id = await seedProject('demo-badjson')
 
     const editor = await writeStubEditor('bad-json', '{ not json')
     const { exitCode, stderr } = await runYaac(
@@ -201,24 +167,20 @@ describe('yaac config (real CLI + real server)', () => {
     const kept = /Your edits are kept at (.+)/.exec(stderr)?.[1] as string
     expect(await fs.readFile(kept.trim(), 'utf8')).toBe('{ not json')
 
-    const target = path.join(testEnv.dataDir, 'global', 'projects', 'demo-badjson', 'config', 'yaac-config.json')
-    await expect(fs.access(target)).rejects.toThrow()
+    await expect(fs.access(configFile(id, 'yaac-config.json'))).rejects.toThrow()
   })
 
-  it('config edit-dockerfile writes Dockerfile.yaac verbatim via the server', async () => {
-    await seedProject('demo-dockerfile')
+  it('config edit-dockerfile writes Dockerfile.yaac verbatim via the server, named by id prefix', async () => {
+    const id = await seedProject('demo-dockerfile')
 
     const editor = await writeStubEditor('dockerfile', 'RUN echo dockerfile-marker\n')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
-      'config', 'edit-dockerfile', 'demo-dockerfile',
+      'config', 'edit-dockerfile', id.slice(0, 8),
     )
     expect(exitCode, stderr).toBe(0)
 
-    const target = path.join(
-      testEnv.dataDir, 'global', 'projects', 'demo-dockerfile', 'config', 'build', 'Dockerfile.yaac',
-    )
-    expect(await fs.readFile(target, 'utf8')).toBe('RUN echo dockerfile-marker\n')
+    expect(await fs.readFile(configFile(id, 'build', 'Dockerfile.yaac'), 'utf8')).toBe('RUN echo dockerfile-marker\n')
   })
 
   it('config edit-user-dockerfile saves a layered Dockerfile.user via the server', async () => {
@@ -234,18 +196,18 @@ describe('yaac config (real CLI + real server)', () => {
     expect(await fs.readFile(target, 'utf8')).toBe(layered)
   })
 
-  it('config edit opens the editor even when yaac-config.json is malformed', async () => {
-    await seedProject('demo-malformed')
+  it('config edit opens the editor even when yaac-config.json is malformed, named by full id', async () => {
+    const id = await seedProject('demo-malformed')
 
     // Broken content reaches the editor verbatim so it can be repaired.
-    const target = path.join(testEnv.dataDir, 'global', 'projects', 'demo-malformed', 'config', 'yaac-config.json')
+    const target = configFile(id, 'yaac-config.json')
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, '{ this is not valid json')
 
     const editor = await writeStubEditor('repair', '{ "initCommands": ["echo REPAIRED"] }')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
-      'config', 'edit', 'demo-malformed',
+      'config', 'edit', id,
     )
     expect(exitCode, stderr).toBe(0)
     const saved = JSON.parse(await fs.readFile(target, 'utf8')) as { initCommands?: string[] }
@@ -254,18 +216,18 @@ describe('yaac config (real CLI + real server)', () => {
 
   it('accepts the nestedContainers key through the config-write route', async () => {
     // The config-write route uses the same parser as workspace create.
-    await seedProject('demo-nested')
+    const id = await seedProject('demo-nested')
 
     const client = makeServerApiClient(server)
 
-    const nested = await client.project[':slug'].config.$put({
-      param: { slug: 'demo-nested' },
+    const nested = await client.project[':projectId'].config.$put({
+      param: { projectId: id },
       json: { config: { nestedContainers: true } },
     })
     expect(nested.status).toBe(200)
   })
 
-  it('config edit fails with a clear error for an unknown project slug', async () => {
+  it('config edit fails with a clear error for an unknown project', async () => {
     const editor = await writeStubEditor('should-not-run', 'unused')
     const { exitCode, stderr } = await runYaac(
       { ...testEnv.env, EDITOR: editor },
@@ -273,5 +235,20 @@ describe('yaac config (real CLI + real server)', () => {
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/no-such-project|not found/i)
+  })
+
+  // Adding the same remote twice gives two projects with one name.
+  it('config edit and edit-dockerfile refuse a name two projects share, listing both', async () => {
+    const first = await seedProject('demo-twin')
+    const second = await seedProject('demo-twin', path.join(testEnv.scratchDir, 'twin'))
+    const editor = await writeStubEditor('should-not-run-twin', 'unused')
+    for (const command of ['edit', 'edit-dockerfile']) {
+      const { exitCode, stderr } = await runYaac(
+        { ...testEnv.env, EDITOR: editor }, 'config', command, 'demo-twin',
+      )
+      expect(exitCode, command).not.toBe(0)
+      expect(stderr, command).toContain(first)
+      expect(stderr, command).toContain(second)
+    }
   })
 })

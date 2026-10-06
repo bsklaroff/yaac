@@ -29,7 +29,7 @@ await page.routeWebSocket(/\/api\/events$/, (route) => {
     const parsed = typeof message === 'string' ? JSON.parse(message) : null
     if (injectFailure && parsed?.type === 'snapshot') {
       const fake = [{ host: 'github.com', status: 401, atMs: 1_784_000_000_000 }]
-      parsed.data.gitAuthFailures = Object.fromEntries(parsed.data.projects.map((p) => [p.slug, fake]))
+      parsed.data.gitAuthFailures = Object.fromEntries(parsed.data.projects.map((p) => [p.id, fake]))
       route.send(JSON.stringify(parsed))
     } else {
       route.send(message)

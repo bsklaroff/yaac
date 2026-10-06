@@ -17,7 +17,7 @@ import { nullsToUndefined } from '#lib/nulls'
  */
 
 export interface AgentSessionRow {
-  projectSlug: string
+  projectId: string
   tool: AgentTool
   agentSessionId: string
   /** Which protocol drives it (see the `mode` column). */
@@ -84,7 +84,7 @@ export interface DiscoveredAgentSession {
  * Does not touch `active`; only `setActiveAgentSessions` writes it.
  */
 export async function recordAgentSessions(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   discovered: DiscoveredAgentSession[],
 ): Promise<void> {
@@ -97,7 +97,7 @@ export async function recordAgentSessions(
         tool: workspaceAgentSessions.tool,
         agentSessionId: workspaceAgentSessions.agentSessionId,
         ordinal: workspaceAgentSessions.ordinal,
-      }).from(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
+      }).from(workspaceAgentSessions).where(linkKey(projectId, workspaceId))
       const ordinalOf = new Map(existing.map((e) => [`${e.tool}/${e.agentSessionId}`, e.ordinal]))
       let nextOrdinal = existing.reduce((max, e) => Math.max(max, e.ordinal + 1), 0)
 
@@ -113,12 +113,12 @@ export async function recordAgentSessions(
           // agent reported its own), and always its prompt: a `--prompt` is
           // the real opening message, while opencode's is only a title.
           const [pin] = await db.delete(agentSessions).where(and(
-            eq(agentSessions.projectSlug, projectSlug),
+            eq(agentSessions.projectId, projectId),
             eq(agentSessions.tool, reported.tool),
             eq(agentSessions.agentSessionId, workspaceId),
           )).returning()
           await db.delete(workspaceAgentSessions).where(and(
-            linkKey(projectSlug, workspaceId),
+            linkKey(projectId, workspaceId),
             eq(workspaceAgentSessions.tool, reported.tool),
             eq(workspaceAgentSessions.agentSessionId, workspaceId),
           ))
@@ -153,7 +153,7 @@ export async function recordAgentSessions(
             : {}),
         }
         const values = {
-          projectSlug,
+          projectId,
           tool: d.tool,
           agentSessionId: d.agentSessionId,
           createdAt: seenAt,
@@ -164,7 +164,7 @@ export async function recordAgentSessions(
           model: d.model?.slice(0, MAX_MODEL_LENGTH) ?? null,
         }
         const target = [
-          agentSessions.projectSlug,
+          agentSessions.projectId,
           agentSessions.tool,
           agentSessions.agentSessionId,
         ]
@@ -174,7 +174,7 @@ export async function recordAgentSessions(
 
         const ordinal = ordinalOf.get(linkId) ?? nextOrdinal++
         await db.insert(workspaceAgentSessions).values({
-          projectSlug,
+          projectId,
           workspaceId,
           tool: d.tool,
           agentSessionId: d.agentSessionId,
@@ -184,7 +184,7 @@ export async function recordAgentSessions(
           lastSeenAt: now,
         }).onConflictDoUpdate({
           target: [
-            workspaceAgentSessions.projectSlug,
+            workspaceAgentSessions.projectId,
             workspaceAgentSessions.workspaceId,
             workspaceAgentSessions.tool,
             workspaceAgentSessions.agentSessionId,
@@ -198,8 +198,8 @@ export async function recordAgentSessions(
   }
 }
 
-const linkKey = (projectSlug: string, workspaceId: string) => and(
-  eq(workspaceAgentSessions.projectSlug, projectSlug),
+const linkKey = (projectId: string, workspaceId: string) => and(
+  eq(workspaceAgentSessions.projectId, projectId),
   eq(workspaceAgentSessions.workspaceId, workspaceId),
 )
 
@@ -211,7 +211,7 @@ const linkKey = (projectSlug: string, workspaceId: string) => and(
  * last set alone, since it is what a restart brings back.
  */
 export async function setActiveAgentSessions(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
   live: Array<{ tool: AgentTool; agentSessionId: string; paneId?: string }>,
 ): Promise<void> {
@@ -224,7 +224,7 @@ export async function setActiveAgentSessions(
       agentSessionId: workspaceAgentSessions.agentSessionId,
       active: workspaceAgentSessions.active,
       paneId: workspaceAgentSessions.paneId,
-    }).from(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
+    }).from(workspaceAgentSessions).where(linkKey(projectId, workspaceId))
 
     for (const row of rows) {
       const isLive = liveIds.includes(`${row.tool}/${row.agentSessionId}`)
@@ -238,7 +238,7 @@ export async function setActiveAgentSessions(
         lastSeenAt: now,
         ...(isLive ? { paneId: paneId ?? null } : {}),
       }).where(and(
-        linkKey(projectSlug, workspaceId),
+        linkKey(projectId, workspaceId),
         eq(workspaceAgentSessions.tool, row.tool),
         eq(workspaceAgentSessions.agentSessionId, row.agentSessionId),
       ))
@@ -251,7 +251,7 @@ export async function setActiveAgentSessions(
 /** Join shape shared by the link readers. */
 function selectLinked() {
   return {
-    projectSlug: workspaceAgentSessions.projectSlug,
+    projectId: workspaceAgentSessions.projectId,
     workspaceId: workspaceAgentSessions.workspaceId,
     tool: workspaceAgentSessions.tool,
     agentSessionId: workspaceAgentSessions.agentSessionId,
@@ -275,21 +275,21 @@ function selectLinked() {
  * module load order.
  */
 const linkJoin = () => and(
-  eq(workspaceAgentSessions.projectSlug, agentSessions.projectSlug),
+  eq(workspaceAgentSessions.projectId, agentSessions.projectId),
   eq(workspaceAgentSessions.tool, agentSessions.tool),
   eq(workspaceAgentSessions.agentSessionId, agentSessions.agentSessionId),
 )
 
 /** One workspace's conversations, in restore order. */
 export async function listWorkspaceAgentSessions(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<AgentSessionLinkRow[]> {
   const db = await getDb()
   const rows = await db.select(selectLinked())
     .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
-    .where(linkKey(projectSlug, workspaceId))
+    .where(linkKey(projectId, workspaceId))
     .orderBy(asc(workspaceAgentSessions.ordinal))
   return rows.map(nullsToUndefined)
 }
@@ -299,14 +299,14 @@ export async function listWorkspaceAgentSessions(
  * the workspace was last observed running, in window order.
  */
 export async function listActiveAgentSessions(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<AgentSessionLinkRow[]> {
   const db = await getDb()
   const rows = await db.select(selectLinked())
     .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
-    .where(and(linkKey(projectSlug, workspaceId), eq(workspaceAgentSessions.active, true)))
+    .where(and(linkKey(projectId, workspaceId), eq(workspaceAgentSessions.active, true)))
     .orderBy(asc(workspaceAgentSessions.ordinal))
   return rows.map(nullsToUndefined)
 }
@@ -320,10 +320,10 @@ export async function listActiveAgentSessions(
  * history rather than failing the workspace's status stream.
  */
 export async function recordedConversationHandles(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<Array<{ handle: string; agentSessionId: string }>> {
-  const links = await listActiveAgentSessions(projectSlug, workspaceId).catch(() => [])
+  const links = await listActiveAgentSessions(projectId, workspaceId).catch(() => [])
   return links.flatMap((l) => (l.paneId === undefined
     ? []
     : [{ handle: l.paneId, agentSessionId: l.agentSessionId }]))
@@ -335,7 +335,7 @@ export async function recordedConversationHandles(
  * and reading a whole project's history on every list build would be costly.
  */
 export async function getProjectAgentSessions(
-  projectSlug: string,
+  projectId: string,
   workspaceIds: string[],
 ): Promise<Map<string, AgentSessionLinkRow[]>> {
   if (workspaceIds.length === 0) return new Map()
@@ -344,7 +344,7 @@ export async function getProjectAgentSessions(
     .from(workspaceAgentSessions)
     .innerJoin(agentSessions, linkJoin())
     .where(and(
-      eq(workspaceAgentSessions.projectSlug, projectSlug),
+      eq(workspaceAgentSessions.projectId, projectId),
       inArray(workspaceAgentSessions.workspaceId, workspaceIds),
     ))
     .orderBy(asc(workspaceAgentSessions.ordinal))
@@ -359,7 +359,7 @@ export async function getProjectAgentSessions(
 /** The same, for a set of workspaces across projects (the stopped listing,
  *  which is capped before it reads anything). */
 export async function getAgentSessionsFor(
-  workspaceIds: Array<{ projectSlug: string; workspaceId: string }>,
+  workspaceIds: Array<{ projectId: string; workspaceId: string }>,
 ): Promise<Map<string, AgentSessionLinkRow[]>> {
   if (workspaceIds.length === 0) return new Map()
   const db = await getDb()
@@ -368,15 +368,15 @@ export async function getAgentSessionsFor(
     .innerJoin(agentSessions, linkJoin())
     // Narrowed by both columns in SQL; `wanted` below is the exact pair filter.
     .where(and(
-      inArray(workspaceAgentSessions.projectSlug, [...new Set(workspaceIds.map((w) => w.projectSlug))]),
+      inArray(workspaceAgentSessions.projectId, [...new Set(workspaceIds.map((w) => w.projectId))]),
       inArray(workspaceAgentSessions.workspaceId, [...new Set(workspaceIds.map((w) => w.workspaceId))]),
     ))
     .orderBy(asc(workspaceAgentSessions.ordinal))
-  const wanted = new Set(workspaceIds.map((w) => `${w.projectSlug}/${w.workspaceId}`))
+  const wanted = new Set(workspaceIds.map((w) => `${w.projectId}/${w.workspaceId}`))
   const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
   for (const r of rows) {
     const row: AgentSessionLinkRow = nullsToUndefined(r)
-    const k = `${row.projectSlug}/${row.workspaceId}`
+    const k = `${row.projectId}/${row.workspaceId}`
     if (!wanted.has(k)) continue
     byWorkspace.set(k, [...(byWorkspace.get(k) ?? []), row])
   }
@@ -390,7 +390,7 @@ export async function getAgentSessionsFor(
  * first. An absent field leaves the stored value alone.
  */
 export async function setAgentSessionCapture(
-  projectSlug: string,
+  projectId: string,
   tool: AgentTool,
   agentSessionId: string,
   capture: { firstPrompt?: string; transcriptPath?: string },
@@ -407,7 +407,7 @@ export async function setAgentSessionCapture(
   try {
     const db = await getDb()
     await db.update(agentSessions).set(values).where(and(
-      eq(agentSessions.projectSlug, projectSlug),
+      eq(agentSessions.projectId, projectId),
       eq(agentSessions.tool, tool),
       eq(agentSessions.agentSessionId, agentSessionId),
     ))
@@ -417,11 +417,11 @@ export async function setAgentSessionCapture(
 }
 
 /** Delete a project's conversations, on project removal. */
-export async function deleteProjectAgentSessions(projectSlug: string): Promise<void> {
+export async function deleteProjectAgentSessions(projectId: string): Promise<void> {
   const db = await getDb()
   await db.delete(workspaceAgentSessions)
-    .where(eq(workspaceAgentSessions.projectSlug, projectSlug))
-  await db.delete(agentSessions).where(eq(agentSessions.projectSlug, projectSlug))
+    .where(eq(workspaceAgentSessions.projectId, projectId))
+  await db.delete(agentSessions).where(eq(agentSessions.projectId, projectId))
 }
 
 /**
@@ -430,7 +430,7 @@ export async function deleteProjectAgentSessions(projectSlug: string): Promise<v
  * conversation resumed into another workspace is kept.
  */
 export async function deleteWorkspaceAgentSessions(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
@@ -441,19 +441,19 @@ export async function deleteWorkspaceAgentSessions(
     agentSessionId: workspaceAgentSessions.agentSessionId,
   }
   const dropped = await db.select(linkedColumns)
-    .from(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
-  await db.delete(workspaceAgentSessions).where(linkKey(projectSlug, workspaceId))
+    .from(workspaceAgentSessions).where(linkKey(projectId, workspaceId))
+  await db.delete(workspaceAgentSessions).where(linkKey(projectId, workspaceId))
   if (dropped.length === 0) return
 
   // Queried after the delete so this workspace's own links don't count.
   const survivors = new Set((await db.select(linkedColumns)
     .from(workspaceAgentSessions).where(and(
-      eq(workspaceAgentSessions.projectSlug, projectSlug),
+      eq(workspaceAgentSessions.projectId, projectId),
       inArray(workspaceAgentSessions.agentSessionId, dropped.map((l) => l.agentSessionId)),
     ))).map(key))
   for (const orphan of dropped.filter((l) => !survivors.has(key(l)))) {
     await db.delete(agentSessions).where(and(
-      eq(agentSessions.projectSlug, projectSlug),
+      eq(agentSessions.projectId, projectId),
       eq(agentSessions.tool, orphan.tool),
       eq(agentSessions.agentSessionId, orphan.agentSessionId),
     ))
@@ -467,17 +467,17 @@ export async function deleteWorkspaceAgentSessions(
  * handle undefined.
  */
 export async function firstAgentSession(
-  projectSlug: string,
+  projectId: string,
   workspaceId: string,
 ): Promise<AgentSessionLinkRow | undefined> {
-  const [first] = await listWorkspaceAgentSessions(projectSlug, workspaceId)
+  const [first] = await listWorkspaceAgentSessions(projectId, workspaceId)
   return first
 }
 
-/** The first conversation of each named workspace, keyed `<slug>/<id>`, in
+/** The first conversation of each named workspace, keyed `<projectId>/<id>`, in
  *  one query for listings. */
 export async function firstAgentSessionsFor(
-  workspaces: Array<{ projectSlug: string; workspaceId: string }>,
+  workspaces: Array<{ projectId: string; workspaceId: string }>,
 ): Promise<Map<string, AgentSessionLinkRow>> {
   const byWorkspace = await getAgentSessionsFor(workspaces)
   const firsts = new Map<string, AgentSessionLinkRow>()

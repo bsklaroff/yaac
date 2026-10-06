@@ -4,7 +4,7 @@ import {
   notificationFor,
   AttentionMonitor,
 } from '#attention'
-import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
+import type { ProjectSummary, ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
 const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   driver: 'k8s',
@@ -14,7 +14,7 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   draftWorkspaces: [],
   workspaces: entries.map((s, i): WorkspaceListEntry => ({
     workspaceId: s.workspaceId ?? `s${i}`,
-    projectSlug: s.projectSlug ?? 'proj',
+    projectId: s.projectId ?? 'proj',
     tool: s.tool ?? 'claude',
     status: s.status ?? 'running',
     createdAt: '2026-01-01 00:00:00',
@@ -41,13 +41,17 @@ describe('badgeText', () => {
 
 describe('notificationFor', () => {
   it('names the project and workspace, by title, else prompt, else id', () => {
-    const [titled, prompted, bare] = snap([
-      { workspaceId: 'a', projectSlug: 'proj', title: 'Fix bug' },
+    const projects = [{ id: 'proj', name: 'Widgets' } as ProjectSummary]
+    const [titled, prompted, bare, orphan] = snap([
+      { workspaceId: 'a', projectId: 'proj', title: 'Fix bug' },
       { workspaceId: 'b', prompt: 'P' },
       { workspaceId: 'c' },
+      { workspaceId: 'd', projectId: 'gone' },
     ]).workspaces
-    expect(notificationFor(titled)).toEqual({ title: 'Workspace waiting for you', body: 'proj · Fix bug' })
-    expect([prompted, bare].map((w) => notificationFor(w).body)).toEqual(['proj · P', 'proj · c'])
+    expect(notificationFor(titled, projects)).toEqual({ title: 'Workspace waiting for you', body: 'Widgets · Fix bug' })
+    expect([prompted, bare].map((w) => notificationFor(w, projects).body)).toEqual(['Widgets · P', 'Widgets · c'])
+    // A project missing from the list is named by its id.
+    expect(notificationFor(orphan, projects).body).toBe('gone · d')
   })
 })
 

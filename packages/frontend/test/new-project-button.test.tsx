@@ -21,7 +21,7 @@ const NEW_KEY = 'POST /api/auth/git/ssh-keys'
 let server: FetchMock
 
 beforeEach(() => {
-  useUiStore.setState({ activeProjectSlug: null })
+  useUiStore.setState({ activeProjectId: null })
   server = mockFetch({ [AUTH_LIST]: list(TOKEN) })
 })
 
@@ -36,9 +36,9 @@ let client: QueryClient
  * Push a snapshot frame listing these projects, as `useEvents` would, and let
  * React Query's batched notify (a zero timeout) reach the component.
  */
-async function snapshotLists(...slugs: string[]): Promise<void> {
+async function snapshotLists(...projectIds: string[]): Promise<void> {
   await act(async () => {
-    client.setQueryData(SNAPSHOT_KEY, { projects: slugs.map((slug) => ({ slug })) })
+    client.setQueryData(SNAPSHOT_KEY, { projects: projectIds.map((id) => ({ id })) })
     await new Promise((r) => setTimeout(r, 0))
   })
 }
@@ -57,7 +57,7 @@ const addButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('
 describe('NewProjectButton', () => {
   it('generates a new SSH key and shows its public half before the clone that needs it', async () => {
     server.route(NEW_KEY, { id: 'c-key', publicKey: 'ssh-ed25519 AAAAkey yaac repo-key' })
-    server.route(ADD, { project: { slug: 'repo' }, knownHostsEntry: 'github.com ssh-ed25519 HOSTKEY' })
+    server.route(ADD, { project: { id: 'id-repo', name: 'repo' }, knownHostsEntry: 'github.com ssh-ed25519 HOSTKEY' })
     await openWith('git@github.com:o/repo.git')
 
     // No SSH key exists (the token is the wrong kind), so the picker offers
@@ -80,9 +80,9 @@ describe('NewProjectButton', () => {
     // Selected only once the snapshot lists it, or the shell's fallback for
     // an unknown project would switch straight back.
     await snapshotLists('alpha')
-    expect(useUiStore.getState().activeProjectSlug).toBeNull()
-    await snapshotLists('alpha', 'repo')
-    expect(useUiStore.getState().activeProjectSlug).toBe('repo')
+    expect(useUiStore.getState().activeProjectId).toBeNull()
+    await snapshotLists('alpha', 'id-repo')
+    expect(useUiStore.getState().activeProjectId).toBe('id-repo')
   })
 
   it('stores a new HTTPS token first, and a failed clone retries with it rather than another', async () => {
@@ -90,14 +90,14 @@ describe('NewProjectButton', () => {
     let adds = 0
     server.route(ADD, () => (adds++ === 0
       ? serverError('VALIDATION', 'git authentication failed for github.com', 400)
-      : { project: { slug: 'repo' }, knownHostsEntry: null }))
+      : { project: { id: 'id-repo', name: 'repo' }, knownHostsEntry: null }))
     await openWith('https://github.com/o/Repo.git/')
 
     // A matching token exists, so nothing is preselected.
     await waitFor(() => expect(screen.getByRole('option', { name: 'repo-token' })).toBeTruthy())
     expect(addButton().disabled).toBe(true)
-    // Named for the project slug (last URL segment, lowercased), avoiding the
-    // taken name.
+    // Named for the project name the server derives (last URL segment,
+    // lowercased), avoiding the taken name.
     fireEvent.change(screen.getByLabelText('Git credential'), { target: { value: 'new' } })
     expect(screen.getByLabelText<HTMLInputElement>('Credential name').value).toBe('repo-token-2')
     fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'ghp_x' } })
@@ -112,8 +112,8 @@ describe('NewProjectButton', () => {
 
     fireEvent.click(addButton())
     await waitFor(() => expect(server.called(ADD)).toHaveLength(2))
-    await snapshotLists('repo')
-    expect(useUiStore.getState().activeProjectSlug).toBe('repo')
+    await snapshotLists('id-repo')
+    expect(useUiStore.getState().activeProjectId).toBe('id-repo')
     expect(server.called(NEW_TOKEN)).toHaveLength(1)
     const retried = { remoteUrl: 'https://github.com/o/Repo.git/', gitCredentialId: 'c-new' }
     expect(server.called(ADD).map((c) => c.body)).toEqual([retried, retried])

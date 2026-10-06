@@ -15,12 +15,12 @@
  * workspaces in it. Creates four `pi` ACP workspaces (fake credentials, no
  * prompt, so no model is called) and stops them all.
  * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/sidebar-delete-selection-test.js
- * (PROJECT defaults to yaac)
+ * (PROJECT, a project name or id, defaults to yaac)
  */
 import path from 'node:path'
-import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspaces } from './lib.js'
+import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspaces, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT ?? 'yaac'
+const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 
 const stop = (workspaceId) => api('/workspace/stop', { method: 'POST', body: { workspaceId } })
 

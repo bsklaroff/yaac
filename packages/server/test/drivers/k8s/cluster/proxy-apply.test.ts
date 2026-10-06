@@ -44,6 +44,7 @@ vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
 import {
+  deleteSlugNamedProjectSecrets,
   ensureBuilderRoleGuard,
   ensureCaConfigMap,
   ensureNamespace,
@@ -103,6 +104,7 @@ const mockImageExists = vi.mocked(imageExists)
 const mockHasTag = vi.mocked(registryHasTag)
 
 const NODE_IP = '10.89.0.7'
+const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 
 interface Manifest {
   kind: string
@@ -639,7 +641,7 @@ describe('syncProxyCredentials', () => {
       git: [{ token: 'ghp-secret', projects: ['acme'] }],
       ssh: [{
         privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
-        projects: [{ slug: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+        projects: [{ projectId: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
       }],
     })
     const secret = applied()[0]
@@ -656,39 +658,61 @@ describe('syncProxyCredentials', () => {
     expect(JSON.parse(b64d(secret.data!['git-tokens.json']))).toEqual([{ token: 'ghp-secret', projects: ['acme'] }])
     expect(JSON.parse(b64d(secret.data!['ssh-keys.json']))).toEqual([{
       privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
-      projects: [{ slug: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+      projects: [{ projectId: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
     }])
     for (const [msg] of vi.mocked(serverLog).mock.calls) expect(msg).not.toContain('secret')
   })
 })
 
 describe('syncProjectSecrets', () => {
-  it('names the project safely and scopes every ref, replacing the set whole', async () => {
-    await syncProjectSecrets('My Project/1', { KEY: 'v1', OTHER: '' })
+  it('names the object after the project id and scopes every ref, replacing the set whole', async () => {
+    await syncProjectSecrets(PROJECT_ID, { KEY: 'v1', OTHER: '' })
     const secret = applied()[0]
     expect(secret.kind).toBe('Secret')
-    // The slug is not DNS-safe, so it is sanitized and given a hash suffix
-    // that also spans the install.
-    expect(secret.metadata.name).toMatch(/^yaac-proxy-secrets-my-project-1-[0-9a-f]{8}$/)
+    expect(secret.metadata.name).toBe(`yaac-proxy-secrets-${PROJECT_ID}`)
     expect(secret.metadata.labels).toEqual({
-      app: 'yaac-proxy', 'yaac.proxy-input': 'secrets', 'yaac.project': 'My Project/1',
+      app: 'yaac-proxy', 'yaac.proxy-input': 'secrets', 'yaac.project-id': PROJECT_ID,
     })
-    expect(JSON.parse(b64d(secret.data!['values.json']))).toEqual({ 'My Project/1/KEY': 'v1', 'My Project/1/OTHER': '' })
+    expect(JSON.parse(b64d(secret.data!['values.json'])))
+      .toEqual({ [`${PROJECT_ID}/KEY`]: 'v1', [`${PROJECT_ID}/OTHER`]: '' })
 
     // An emptied set is applied as such, so a deleted secret stops being injected.
-    await syncProjectSecrets('My Project/1', {})
+    await syncProjectSecrets(PROJECT_ID, {})
     expect(JSON.parse(b64d(applied()[1].data!['values.json']))).toEqual({})
+  })
+})
+
+describe('deleteSlugNamedProjectSecrets', () => {
+  it('deletes only the proxy secrets objects still labelled by slug', async () => {
+    const secret = (name: string, labels: Record<string, string>) => ({
+      apiVersion: 'v1', kind: 'Secret', metadata: { name, namespace: 'test-ns', labels },
+    })
+    const proxySecrets = { app: 'yaac-proxy', 'yaac.proxy-input': 'secrets' }
+    fakeCluster.seed(
+      secret('yaac-proxy-secrets-demo-1a2b3c4d', { ...proxySecrets, 'yaac.project': 'demo' }),
+      secret(`yaac-proxy-secrets-${PROJECT_ID}`, { ...proxySecrets, 'yaac.project-id': PROJECT_ID }),
+      secret('yaac-proxy-credentials', { app: 'yaac-proxy', 'yaac.proxy-input': 'credentials' }),
+      secret('unrelated', { 'yaac.project': 'demo' }),
+    )
+
+    await deleteSlugNamedProjectSecrets()
+
+    expect(fakeCluster.objects('Secret').map((o) => o.metadata.name).sort()).toEqual([
+      'unrelated', 'yaac-proxy-credentials', `yaac-proxy-secrets-${PROJECT_ID}`,
+    ])
+    // With nothing left to sweep it is a no-op.
+    await expect(deleteSlugNamedProjectSecrets()).resolves.toBeUndefined()
   })
 })
 
 describe('removeProjectSecrets', () => {
   it('deletes the project’s object by its install-scoped name', async () => {
-    await syncProjectSecrets('demo', { A: '1' })
+    await syncProjectSecrets(PROJECT_ID, { A: '1' })
     const name = applied()[0].metadata.name
-    await removeProjectSecrets('demo')
+    await removeProjectSecrets(PROJECT_ID)
     expect(fakeCluster.get('Secret', name, 'test-ns')).toBeUndefined()
     // Already gone is success.
-    await removeProjectSecrets('demo')
+    await removeProjectSecrets(PROJECT_ID)
   })
 })
 

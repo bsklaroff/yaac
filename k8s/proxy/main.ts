@@ -395,7 +395,7 @@ const mitmContext: MitmContext = {
   refreshFlights,
   captureRefreshed,
   noteGitUpstreamStatus: (workspaceId, hostname, requestPath, status) => observed.noteGitUpstreamStatus(
-    objects.registration(workspaceId)?.projectSlug, hostname, requestPath, status),
+    objects.registration(workspaceId)?.projectId, hostname, requestPath, status),
 }
 // Restore what the previous pod left: its observed state, and any token
 // rotation the server has not picked up yet.
@@ -892,8 +892,8 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
 
 /** Key blobs the workspace's project may use, read live per message. */
 function allowedKeysFor(workspaceId: string): Set<string> {
-  const slug = objects.registration(workspaceId)?.projectSlug
-  return (slug ? sshKeyBlobsByProject(objects.credentials.ssh).get(slug) : undefined) ?? new Set()
+  const projectId = objects.registration(workspaceId)?.projectId
+  return (projectId ? sshKeyBlobsByProject(objects.credentials.ssh).get(projectId) : undefined) ?? new Set()
 }
 const sshAgentServer = createSshAgentServer({
   agentSock: AGENT_SOCK,

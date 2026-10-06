@@ -43,7 +43,7 @@ const tmuxCalls = (): string[][] =>
 
 function spec(overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
   return {
-    projectSlug: 'demo',
+    projectId: 'demo',
     workspaceId: UUID,
     tool: 'claude',
     mode: 'tui',

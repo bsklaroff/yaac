@@ -27,17 +27,17 @@ import { _resetWorkspaceListChangedForTests } from '#notify'
 import { serverLog } from '#log'
 
 // The config reader the reconcile step is given in production.
-const mockResolveConfig = vi.fn<(slug: string) => Promise<YaacConfig | undefined>>()
+const mockResolveConfig = vi.fn<(projectId: string) => Promise<YaacConfig | undefined>>()
 const mockResolveChain = vi.mocked(resolveImageChain)
 const mockEnsureImage = vi.mocked(ensureImage)
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-const P = { slug: 'p', id: '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f' }
-const PLAIN = { slug: 'plain', id: '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e' }
-const NESTED = { slug: 'nested', id: 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5' }
-const PROJ_A = { slug: 'proj-a', id: '7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d' }
-const PROJ_B = { slug: 'proj-b', id: 'e9f8a7b6-c5d4-4e3f-9a2b-1c0d9e8f7a6b' }
+const P = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+const PLAIN = '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e'
+const NESTED = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
+const PROJ_A = '7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d'
+const PROJ_B = 'e9f8a7b6-c5d4-4e3f-9a2b-1c0d9e8f7a6b'
 
 
 
@@ -75,11 +75,11 @@ describe('reconcileImagePrewarm', () => {
   })
 
   it('ensures every project, threading nestedContainers from config', async () => {
-    mockResolveConfig.mockImplementation((slug) =>
-      Promise.resolve(slug === 'nested' ? { nestedContainers: true } : undefined))
-    mockResolveChain.mockImplementation((project) =>
-      Promise.resolve({ layers: [], finalTag: `final-${project.slug}:x` }))
-    mockEnsureImage.mockImplementation((project) => Promise.resolve(`final-${project.slug}:x`))
+    mockResolveConfig.mockImplementation((projectId) =>
+      Promise.resolve(projectId === NESTED ? { nestedContainers: true } : undefined))
+    mockResolveChain.mockImplementation((projectId) =>
+      Promise.resolve({ layers: [], finalTag: `final-${projectId}:x` }))
+    mockEnsureImage.mockImplementation((projectId) => Promise.resolve(`final-${projectId}:x`))
 
     reconcileImagePrewarm([PLAIN, NESTED], mockResolveConfig)
     await flush()
@@ -118,7 +118,7 @@ describe('reconcileImagePrewarm', () => {
 
     expect(mockEnsureImage).not.toHaveBeenCalled()
     expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
-      expect.stringContaining('[image-prewarm] p:'))
+      expect.stringContaining(`[image-prewarm] ${P}:`))
   })
 
   it('logs a failed prewarm and retries it on a later sweep', async () => {
@@ -127,7 +127,7 @@ describe('reconcileImagePrewarm', () => {
     reconcileImagePrewarm([P], mockResolveConfig)
     await flush()
     expect(vi.mocked(serverLog)).toHaveBeenCalledWith(
-      expect.stringContaining('[image-prewarm] p:'))
+      expect.stringContaining(`[image-prewarm] ${P}:`))
 
     reconcileImagePrewarm([P], mockResolveConfig)
     await flush()
@@ -143,7 +143,7 @@ describe('reconcileImagePrewarm', () => {
     })
     // A recent failed build of one of the chain's tags blocks the sweep.
     const id = registerImageBuild({
-      tag: 'yaac-base:b', layer: 'base', project: P, reason: 'prewarm',
+      tag: 'yaac-base:b', layer: 'base', projectId: P, reason: 'prewarm',
     })
     failImageBuild(id, 'boom')
 
@@ -178,7 +178,7 @@ describe('retryImageBuild', () => {
 
   it('forgets a failed project build and re-triggers its chain', () => {
     const id = registerImageBuild({
-      tag: 'yaac-tools:abc', layer: 'tools', project: PROJ_A, reason: 'prewarm',
+      tag: 'yaac-tools:abc', layer: 'tools', projectId: PROJ_A, reason: 'prewarm',
     })
     failImageBuild(id, 'boom')
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(true)
@@ -187,20 +187,20 @@ describe('retryImageBuild', () => {
     // The entry is forgotten, so it no longer blocks the prewarm sweep.
     expect(getImageBuild(id)).toBeUndefined()
     expect(hasBlockingFailure(['yaac-tools:abc'], 10 * 60_000)).toBe(false)
-    expect(mockResolveConfig).toHaveBeenCalledWith('proj-a')
+    expect(mockResolveConfig).toHaveBeenCalledWith(PROJ_A)
   })
 
   it('re-triggers every owning project of a shared layer', async () => {
     const id = registerImageBuild({
-      tag: 'yaac-base:abc', layer: 'base', project: PROJ_A, reason: 'prewarm',
+      tag: 'yaac-base:abc', layer: 'base', projectId: PROJ_A, reason: 'prewarm',
     })
     attachImageBuildProject(id, PROJ_B)
     failImageBuild(id, 'boom')
 
     expect(retryImageBuild(id, mockResolveConfig)).toBe(true)
-    expect(mockResolveConfig).toHaveBeenCalledWith('proj-a')
-    expect(mockResolveConfig).toHaveBeenCalledWith('proj-b')
-    // Each rebuild resolves its chain by the project's id, not its slug.
+    expect(mockResolveConfig).toHaveBeenCalledWith(PROJ_A)
+    expect(mockResolveConfig).toHaveBeenCalledWith(PROJ_B)
+    // Each rebuild resolves its chain by the project's id.
     await flush()
     expect(mockResolveChain).toHaveBeenCalledWith(PROJ_A, expect.any(String), false)
     expect(mockResolveChain).toHaveBeenCalledWith(PROJ_B, expect.any(String), false)
@@ -210,7 +210,7 @@ describe('retryImageBuild', () => {
     expect(retryImageBuild('missing', mockResolveConfig)).toBe(false)
 
     const running = registerImageBuild({
-      tag: 'x:1', layer: 'base', project: P, reason: 'session',
+      tag: 'x:1', layer: 'base', projectId: P, reason: 'session',
     })
     expect(retryImageBuild(running, mockResolveConfig)).toBe(false)
     expect(getImageBuild(running)?.status).toBe('running') // still tracked

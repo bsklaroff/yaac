@@ -284,7 +284,7 @@ class TuiConnection implements AgentConnection {
    */
   private async onModel(paneId: string, tool: AgentTool, value: string): Promise<void> {
     this.modelPushes.set(paneId, value)
-    const model = await resolveAgentModel(tool, this.session.slug, value)
+    const model = await resolveAgentModel(tool, this.session.projectId, value)
     if (this.modelPushes.get(paneId) !== value) return
     if (this.done || model === undefined || !this.subscribed.has(paneId)) return
     if (this.models.get(paneId) === model) return

@@ -12,9 +12,9 @@ import { observeWorkspaces, type WorkspaceRuntimeReport } from '#runtime/status'
 import type { AgentLiveness } from '#drivers/contract'
 import type { ActiveWorkspacesResult, AgentStatus, WorkspaceListEntry } from '@yaac/shared/types'
 
-export async function ensureProjectExists(slug: string): Promise<void> {
-  if (!await getProjectRow(slug)) {
-    throw new ServerError('NOT_FOUND', `project ${slug} not found`)
+export async function ensureProjectExists(projectId: string): Promise<void> {
+  if (!await getProjectRow(projectId)) {
+    throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   }
 }
 
@@ -51,25 +51,25 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
   const report = await observeWorkspaces(projectFilter)
 
   // Rows and conversations are read with one query per project each.
-  const rowSlugs = [...new Set(report.workspaces.map((w) => w.projectSlug).filter((v) => !!v))]
-  const rowsBySlug = new Map(await Promise.all(
-    rowSlugs.map(async (slug) => [slug, await getProjectWorkspaceRows(slug)] as const),
+  const rowProjectIds = [...new Set(report.workspaces.map((w) => w.projectId).filter((v) => !!v))]
+  const rowsByProject = new Map(await Promise.all(
+    rowProjectIds.map(async (projectId) => [projectId, await getProjectWorkspaceRows(projectId)] as const),
   ))
   const rowFor = (w: WorkspaceRuntimeReport): WorkspaceRow | undefined =>
-    w.projectSlug && w.workspaceId ? rowsBySlug.get(w.projectSlug)?.get(w.workspaceId) : undefined
+    w.projectId && w.workspaceId ? rowsByProject.get(w.projectId)?.get(w.workspaceId) : undefined
 
-  const idsBySlug = new Map<string, string[]>()
+  const idsByProject = new Map<string, string[]>()
   for (const w of report.workspaces) {
-    if (!w.projectSlug || !w.workspaceId) continue
-    idsBySlug.set(w.projectSlug, [...(idsBySlug.get(w.projectSlug) ?? []), w.workspaceId])
+    if (!w.projectId || !w.workspaceId) continue
+    idsByProject.set(w.projectId, [...(idsByProject.get(w.projectId) ?? []), w.workspaceId])
   }
-  const agentsBySlug = new Map(await Promise.all(
-    rowSlugs.map(async (slug) =>
-      [slug, await getProjectAgentSessions(slug, idsBySlug.get(slug) ?? [])] as const),
+  const agentsByProject = new Map(await Promise.all(
+    rowProjectIds.map(async (projectId) =>
+      [projectId, await getProjectAgentSessions(projectId, idsByProject.get(projectId) ?? [])] as const),
   ))
   const agentsFor = (w: WorkspaceRuntimeReport): AgentSessionLinkRow[] =>
-    (w.projectSlug && w.workspaceId
-      ? agentsBySlug.get(w.projectSlug)?.get(w.workspaceId)
+    (w.projectId && w.workspaceId
+      ? agentsByProject.get(w.projectId)?.get(w.workspaceId)
       : undefined) ?? []
 
   const workspaces = report.workspaces.map((w): WorkspaceListEntry => {
@@ -77,7 +77,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
     const links = agentsFor(w)
     const base = {
       workspaceId: w.workspaceId,
-      projectSlug: w.projectSlug,
+      projectId: w.projectId,
       tool: w.tool,
       // The recorded time survives a runtime restart; fall back if no row yet.
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),

@@ -24,10 +24,12 @@ const h = vi.hoisted(() => ({
   userPut: vi.fn(),
 }))
 
+// The project the user named resolves to its id once, up front.
 vi.mock('#commands/api', () => ({
+  resolveProjectId: (project: string) => Promise.resolve(`id-${project}`),
   api: {
     project: {
-      ':slug': {
+      ':projectId': {
         config: { raw: { $get: h.rawGet }, $put: h.configPut, $delete: h.configDelete },
         dockerfile: { $get: h.dockerGet, $put: h.dockerPut },
       },
@@ -65,11 +67,11 @@ describe('configEditProject', () => {
 
     await configEditProject('demo')
 
-    expect(rawGet).toHaveBeenCalledWith({ param: { slug: 'demo' } })
+    expect(rawGet).toHaveBeenCalledWith({ param: { projectId: 'id-demo' } })
     const editedPath = vi.mocked(editFile).mock.calls[0][0]
     expect(editedPath).toMatch(/yaac-config\.json$/)
     expect(configPut).toHaveBeenCalledWith({
-      param: { slug: 'demo' },
+      param: { projectId: 'id-demo' },
       json: { config: { env: { FOO: '1' } } },
     })
     expect(logSpy).toHaveBeenCalledWith('Saved project config.')
@@ -88,7 +90,7 @@ describe('configEditProject', () => {
     editorWrites('\n')
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     await configEditProject('demo')
-    expect(configDelete).toHaveBeenCalledWith({ param: { slug: 'demo' } })
+    expect(configDelete).toHaveBeenCalledWith({ param: { projectId: 'id-demo' } })
     expect(configPut).not.toHaveBeenCalled()
     logSpy.mockRestore()
   })
@@ -150,8 +152,8 @@ describe('configEditDockerfile', () => {
 
     await configEditDockerfile('demo')
 
-    expect(get).toHaveBeenCalledWith({ param: { slug: 'demo' } })
-    expect(put).toHaveBeenCalledWith({ param: { slug: 'demo' }, json: { content: 'RUN true\n' } })
+    expect(get).toHaveBeenCalledWith({ param: { projectId: 'id-demo' } })
+    expect(put).toHaveBeenCalledWith({ param: { projectId: 'id-demo' }, json: { content: 'RUN true\n' } })
     expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/next workspace created/))
     logSpy.mockRestore()
   })

@@ -58,7 +58,7 @@ export function GroupSection({
     handleKeyDown,
     handleBlur,
   } = useInlineEdit(group.name, (next) => {
-    api.workspace.group.rename.$post({ json: { projectSlug: group.projectSlug, groupId: group.groupId, name: next } })
+    api.workspace.group.rename.$post({ json: { projectId: group.projectId, groupId: group.groupId, name: next } })
       .catch((e: unknown) => console.error('group rename failed', e))
   })
 
@@ -75,12 +75,12 @@ export function GroupSection({
   }
   const togglePinned = (): void => {
     api.workspace.group['set-pinned'].$post({
-      json: { projectSlug: group.projectSlug, groupId: group.groupId, pinned: !group.pinned },
+      json: { projectId: group.projectId, groupId: group.groupId, pinned: !group.pinned },
     })
       .catch((e: unknown) => console.error('group pin failed', e))
   }
   const remove = (): void => {
-    api.workspace.group.delete.$post({ json: { projectSlug: group.projectSlug, groupId: group.groupId } })
+    api.workspace.group.delete.$post({ json: { projectId: group.projectId, groupId: group.groupId } })
       .catch((e: unknown) => console.error('group delete failed', e))
   }
 

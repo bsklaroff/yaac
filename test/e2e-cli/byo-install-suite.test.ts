@@ -44,7 +44,8 @@ const BYO_INSTALL = ['--byo', '--rwx-storage-class', 'kind-byo-nfs', '--rwo-stor
  * which a public fetch never presents: nothing challenges it.
  */
 const REPO_URL = 'https://github.com/octocat/Hello-World.git'
-const SLUG = 'hello-world'
+/** The name `project add` gives REPO_URL's project. */
+const NAME = 'hello-world'
 
 const layout = kindByoLayout()
 let origin: string
@@ -53,6 +54,7 @@ let userEnv: NodeJS.ProcessEnv
 let forward: KubectlForward
 let scratch: string
 let workspaceId = ''
+let projectId = ''
 const children: ChildProcess[] = []
 
 /** The install namespace, `yaac`. */
@@ -187,10 +189,13 @@ describe('yaac cluster install --byo, on kind-byo', () => {
 
   it('creates a workspace through the installed server, with a terminal and a forward that work', async () => {
     expect((await runYaac(userEnv, 'remote', 'set', forward.origin)).exitCode).toBe(0)
-    // The install's volumes are Retain, so a project from an earlier run
-    // may still exist.
-    const gone = await api(`/project/${SLUG}`, { method: 'DELETE' })
-    expect([204, 404]).toContain(gone.status)
+    // The install's volumes are Retain, so projects from earlier runs may
+    // still exist, and would make the name ambiguous.
+    const earlier = await (await api('/project/list')).json() as Array<{ id: string; name: string }>
+    for (const p of earlier.filter((e) => e.name === NAME)) {
+      expect((await api(`/project/${p.id}`, { method: 'DELETE' })).status).toBe(204)
+    }
+    let added = ''
     for (const args of [
       ['config', 'git-identity', '--name', 'Yaac Test', '--email', 'test@example.com'],
       ['auth', 'fake', 'claude-oauth', 'github'],
@@ -198,14 +203,13 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     ]) {
       const res = await runYaac(userEnv, ...args)
       expect(res.exitCode, `${args.join(' ')}: ${res.stderr}`).toBe(0)
+      added = res.stdout
     }
-    // With a loopback origin, `workspace create` checks for the project on
-    // this machine's disk, as it would for a kind install. A byo user comes
-    // in over https and never hits that check, so fake the directory.
-    await fs.mkdir(path.join(scratch, 'user', 'global', 'projects', SLUG), { recursive: true })
-    const created = await runYaac(userEnv, 'workspace', 'create', SLUG, '--tool', 'claude', '--mode', 'tui')
+    projectId = /Project "hello-world" \(([0-9a-f-]{36})\) added successfully/.exec(added)?.[1] ?? ''
+    expect(projectId, added).not.toBe('')
+    const created = await runYaac(userEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--mode', 'tui')
     expect(created.exitCode, created.stderr).toBe(0)
-    workspaceId = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.project=${SLUG}`,
+    workspaceId = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.project-id=${projectId}`,
       '-o', 'jsonpath={.items[0].metadata.labels.yaac\\.workspace-id}')).trim()
     expect(workspaceId).not.toBe('')
     const pod = (await kubectl('get', 'pods', '-n', 'yaac', '-l', `yaac.workspace-id=${workspaceId}`,
@@ -330,7 +334,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
 
     // The database came back with the volume: the project is still there.
     await waitForHealth(120_000)
-    const projects = await (await api('/project/list')).json() as Array<{ slug: string }>
-    expect(projects.map((p) => p.slug)).toContain(SLUG)
+    const projects = await (await api('/project/list')).json() as Array<{ id: string }>
+    expect(projects.map((p) => p.id)).toContain(projectId)
   }, INSTALL_TIMEOUT)
 })

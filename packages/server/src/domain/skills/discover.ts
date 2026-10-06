@@ -59,8 +59,8 @@ const MAX_SKILL_MD_BYTES = 256 * 1024
  */
 type HostRoot = ConfinedRoot | null
 
-function toolHome(slug: string, dir: string): Promise<HostRoot> {
-  return openSandboxDir(slug, dir).catch(() => null)
+function toolHome(projectId: string, dir: string): Promise<HostRoot> {
+  return openSandboxDir(projectId, dir).catch(() => null)
 }
 
 function hostDir(dir: string): Promise<HostRoot> {
@@ -177,8 +177,8 @@ function parseEnabledPlugins(raw: string | null): Record<string, unknown> {
  *  user, project and local settings (local wins, as in Claude). The user tier
  *  is the host `settings.json`; project and local are read from `ref` like
  *  project skills. */
-async function claudeEnabledPluginIds(slug: string, claude: HostRoot, ref: string | null): Promise<Set<string>> {
-  const repo = repoDir(slug)
+async function claudeEnabledPluginIds(projectId: string, claude: HostRoot, ref: string | null): Promise<Set<string>> {
+  const repo = repoDir(projectId)
   const [user, project, local] = await Promise.all([
     readText(claude, 'settings.json', MAX_SETTINGS_BYTES),
     readRepoFile(repo, ref, '.claude/settings.json'),
@@ -243,35 +243,35 @@ async function codexPluginReaders(codex: HostRoot, enabledNames: Set<string>): P
   return out
 }
 
-async function claudeReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
-  const dir = claudeDir(slug)
-  const claude = await toolHome(slug, dir)
+async function claudeReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+  const dir = claudeDir(projectId)
+  const claude = await toolHome(projectId, dir)
   return [
     personalReader(claude, dir, 'skills'),
-    ...(await claudePluginReaders(claude, await claudeEnabledPluginIds(slug, claude, ref))),
-    repoReader(repoDir(slug), ref, '.claude/skills', 'project'),
+    ...(await claudePluginReaders(claude, await claudeEnabledPluginIds(projectId, claude, ref))),
+    repoReader(repoDir(projectId), ref, '.claude/skills', 'project'),
   ]
 }
 
-async function codexReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
-  const dir = codexDir(slug)
-  const codex = await toolHome(slug, dir)
+async function codexReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+  const dir = codexDir(projectId)
+  const codex = await toolHome(projectId, dir)
   // readSkills skips dot-dirs, so `skills/.system/` isn't listed as
   // personal; a separate `system` reader is rooted at it.
   return [
     personalReader(codex, dir, 'skills'),
     fsReader(codex, 'skills/.system', 'system'),
     ...(await codexPluginReaders(codex, await codexEnabledPluginNames(codex))),
-    repoReader(repoDir(slug), ref, '.agents/skills', 'project'),
+    repoReader(repoDir(projectId), ref, '.agents/skills', 'project'),
   ]
 }
 
-async function opencodeReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
-  const cfgDir = opencodeConfigDir(slug)
-  const cfg = await toolHome(slug, cfgDir)
-  const claudeHome = claudeDir(slug)
-  const claude = await toolHome(slug, claudeHome)
-  const repo = repoDir(slug)
+async function opencodeReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+  const cfgDir = opencodeConfigDir(projectId)
+  const cfg = await toolHome(projectId, cfgDir)
+  const claudeHome = claudeDir(projectId)
+  const claude = await toolHome(projectId, claudeHome)
+  const repo = repoDir(projectId)
   // No plugin tier (opencode plugins are JS modules). It reads `skill/` and
   // `skills/` plus the Claude- and agents-compatible locations, listed in
   // precedence order for the dedupe.
@@ -286,24 +286,24 @@ async function opencodeReaders(slug: string, ref: string | null): Promise<SkillR
   ]
 }
 
-async function piReaders(slug: string, ref: string | null): Promise<SkillReader[]> {
-  const repo = repoDir(slug)
-  const dir = piDir(slug)
+async function piReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
+  const repo = repoDir(projectId)
+  const dir = piDir(projectId)
   // pi's `~/.pi` is per project (piDir), so `agent/skills` is readable;
   // `~/.agents/skills` is not mounted. No plugin tier.
   return [
-    personalReader(await toolHome(slug, dir), dir, 'agent/skills'),
+    personalReader(await toolHome(projectId, dir), dir, 'agent/skills'),
     repoReader(repo, ref, '.pi/skills', 'project'),
     repoReader(repo, ref, '.agents/skills', 'project'),
   ]
 }
 
-async function readersFor(tool: AgentTool, slug: string, ref: string | null): Promise<SkillReader[]> {
+async function readersFor(tool: AgentTool, projectId: string, ref: string | null): Promise<SkillReader[]> {
   switch (tool) {
-    case 'claude': return claudeReaders(slug, ref)
-    case 'codex': return codexReaders(slug, ref)
-    case 'opencode': return opencodeReaders(slug, ref)
-    case 'pi': return piReaders(slug, ref)
+    case 'claude': return claudeReaders(projectId, ref)
+    case 'codex': return codexReaders(projectId, ref)
+    case 'opencode': return opencodeReaders(projectId, ref)
+    case 'pi': return piReaders(projectId, ref)
   }
 }
 
@@ -398,9 +398,9 @@ function claudeBundledDiscovered(): DiscoveredSkill[] {
   }))
 }
 
-async function discover(tool: AgentTool, slug: string, branch?: string): Promise<DiscoveredSkill[]> {
-  const ref = await resolveRepoRef(repoDir(slug), branch)
-  const readers = await readersFor(tool, slug, ref)
+async function discover(tool: AgentTool, projectId: string, branch?: string): Promise<DiscoveredSkill[]> {
+  const ref = await resolveRepoRef(repoDir(projectId), branch)
+  const readers = await readersFor(tool, projectId, ref)
   // yaac's built-ins (builtin.ts), read from the install dir since in-pod
   // mounts aren't visible here.
   readers.push(fsReader(await hostDir(builtinSkillsDir()), '', 'system', 'yaac'))
@@ -415,8 +415,8 @@ async function discover(tool: AgentTool, slug: string, branch?: string): Promise
 
 /** Every skill available to a project's agent. `branch` picks the origin
  *  branch for project tiers (default: the remote's default branch). */
-export async function getProjectSkills(tool: AgentTool, slug: string, branch?: string): Promise<ProjectSkills> {
-  const discovered = await discover(tool, slug, branch)
+export async function getProjectSkills(tool: AgentTool, projectId: string, branch?: string): Promise<ProjectSkills> {
+  const discovered = await discover(tool, projectId, branch)
   const skills: SkillSummary[] = discovered.map(({ raw: _raw, ...summary }) => summary)
   return { skills }
 }
@@ -424,8 +424,8 @@ export async function getProjectSkills(tool: AgentTool, slug: string, branch?: s
 /** The full `SKILL.md` for one skill, found by re-running discovery and
  *  matching the id, so the client never supplies a path. `branch` must match
  *  the listing's. */
-export async function getSkillDetail(tool: AgentTool, slug: string, id: string, branch?: string): Promise<SkillDetail> {
-  const match = (await discover(tool, slug, branch)).find((s) => s.id === id)
+export async function getSkillDetail(tool: AgentTool, projectId: string, id: string, branch?: string): Promise<SkillDetail> {
+  const match = (await discover(tool, projectId, branch)).find((s) => s.id === id)
   if (!match) throw new ServerError('NOT_FOUND', `skill "${id}" not found`)
   const { frontmatter, body } = parseSkillMd(match.raw)
   return {

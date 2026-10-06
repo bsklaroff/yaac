@@ -339,7 +339,7 @@ class AcpConnection implements AgentConnection {
     // Without the recorded sessions that cannot be told, so nothing is
     // dropped.
     if (sessions !== undefined) {
-      dropAcpQueues(this.session.slug, this.session.workspaceId, new Set(
+      dropAcpQueues(this.session.projectId, this.session.workspaceId, new Set(
         windows.flatMap((w) => {
           const id = recorded.get(w.handle)
           return id === undefined ? [] : [id]
@@ -406,7 +406,7 @@ class AcpConnection implements AgentConnection {
     // Messages the previous connection to this conversation still had queued.
     const queue = resumeSessionId === undefined
       ? []
-      : takeAcpQueue(this.session.slug, this.session.workspaceId, resumeSessionId)
+      : takeAcpQueue(this.session.projectId, this.session.workspaceId, resumeSessionId)
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
       queue,
@@ -438,7 +438,7 @@ class AcpConnection implements AgentConnection {
         // acpd opened the record before the id existed; rename it.
         void adoptLog(this.session, resumeSessionId, agentSessionId, this.log)
         if (entry.conversation) {
-          registerAcpConversation(this.session.slug, this.session.workspaceId, { handle, agentSessionId }, entry.conversation)
+          registerAcpConversation(this.session.projectId, this.session.workspaceId, { handle, agentSessionId }, entry.conversation)
         }
         // The registry reconciler turns this into the conversation's row.
         this.publishAgents()
@@ -467,7 +467,7 @@ class AcpConnection implements AgentConnection {
     // A synchronous failure above already detached; do not re-publish it.
     if (!this.attached.has(handle)) return
     entry.agentSessionId = resumeSessionId
-    registerAcpConversation(this.session.slug, this.session.workspaceId, {
+    registerAcpConversation(this.session.projectId, this.session.workspaceId, {
       handle,
       ...(resumeSessionId !== undefined ? { agentSessionId: resumeSessionId } : {}),
     }, entry.conversation)
@@ -475,7 +475,7 @@ class AcpConnection implements AgentConnection {
 
   /** The record acpd keeps for one of this workspace's conversations. */
   private record(agentSessionId: string): AcpRecordRef {
-    return { slug: this.session.slug, workspaceId: this.session.workspaceId, agentSessionId }
+    return { projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId }
   }
 
   /**
@@ -488,12 +488,12 @@ class AcpConnection implements AgentConnection {
   private detach(entry: Attached, reason: string, { keepQueue = false } = {}): void {
     if (!this.attached.has(entry.handle)) return
     this.attached.delete(entry.handle)
-    unregisterAcpConversation(this.session.slug, this.session.workspaceId, {
+    unregisterAcpConversation(this.session.projectId, this.session.workspaceId, {
       handle: entry.handle,
       ...(entry.agentSessionId !== undefined ? { agentSessionId: entry.agentSessionId } : {}),
     })
     if (keepQueue && entry.conversation !== undefined && entry.agentSessionId !== undefined) {
-      parkAcpQueue(this.session.slug, this.session.workspaceId, entry.agentSessionId, entry.conversation.takeQueue())
+      parkAcpQueue(this.session.projectId, this.session.workspaceId, entry.agentSessionId, entry.conversation.takeQueue())
     }
     entry.conversation?.close()
     this.log(`[server] acp-driver ${this.session.workspaceId}/${entry.handle}: detached (${reason})`)
@@ -565,7 +565,7 @@ async function adoptLog(
 ): Promise<void> {
   const provisional = launchedAs ?? session.workspaceId
   if (provisional === agentSessionId) return
-  const dir = acpLogDir(session.slug, session.workspaceId)
+  const dir = acpLogDir(session.projectId, session.workspaceId)
   try {
     await fs.rename(path.join(dir, `${provisional}.jsonl`), path.join(dir, `${agentSessionId}.jsonl`))
   } catch (err) {
@@ -578,9 +578,9 @@ async function adoptLog(
  * Follow a workspace's recorded posture change (`permission-mode-changed`)
  * in its open connections, which decide from it who answers an ask.
  */
-export function setAcpPermissionMode(slug: string, workspaceId: string, permissionMode: PermissionMode): void {
+export function setAcpPermissionMode(projectId: string, workspaceId: string, permissionMode: PermissionMode): void {
   for (const c of openConnections) {
-    if (c.session.slug === slug && c.session.workspaceId === workspaceId) c.permissionMode = permissionMode
+    if (c.session.projectId === projectId && c.session.workspaceId === workspaceId) c.permissionMode = permissionMode
   }
 }
 
@@ -644,7 +644,7 @@ export const acpDriver: AgentDriver = {
    */
   async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
     const conversation = await whenAcpConversation(
-      session.slug, session.workspaceId, handle, PROMPT_ATTACH_TIMEOUT_MS,
+      session.projectId, session.workspaceId, handle, PROMPT_ATTACH_TIMEOUT_MS,
     )
     if (conversation === undefined) {
       throw new Error(`no ACP conversation attached on ${handle} after ${String(PROMPT_ATTACH_TIMEOUT_MS)}ms`)

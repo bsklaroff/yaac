@@ -31,20 +31,20 @@
  * workspaces (e.g. `yaac project add https://github.com/octocat/Hello-World.git
  * <credential>`).
  * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/sidebar-stopped-flash-test.js
- * (PROJECT defaults to yaac, OTHER to hello-world)
+ * (PROJECT defaults to yaac, OTHER to hello-world; each a project name or id)
  */
 import { execSync } from 'node:child_process'
 import path from 'node:path'
-import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspace, createWorkspaces } from './lib.js'
+import { requirePlaywright, origin, api, check, finish, SHOTS, createWorkspace, createWorkspaces, resolveProject } from './lib.js'
 
-const PROJECT = process.env.PROJECT ?? 'yaac'
-const OTHER = process.env.OTHER ?? 'hello-world'
+const PROJECT = await resolveProject(process.env.PROJECT ?? 'yaac')
+const OTHER = await resolveProject(process.env.OTHER ?? 'hello-world')
 const GROUP = 'PW'
 // Per-run suffix so titles never collide with ghosts from an earlier run.
 const RUN = Date.now().toString(36).slice(-4)
 const T = (name) => `PW ${name} ${RUN}`
 /** A pi ACP workspace in GROUP. */
-const spec = (title) => ({ project: PROJECT, tool: 'pi', mode: 'acp', group: GROUP, title })
+const spec = (title) => ({ project: PROJECT.id, tool: 'pi', mode: 'acp', group: GROUP, title })
 const DELAY_MS = 2500
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -66,7 +66,7 @@ const made = []
 try {
   // A live anchor keeps the group on screen; B and C are its ghost rows.
   console.log('setting up workspaces…')
-  let death = (await stoppedList(PROJECT)).find((e) => e.deathReason && !e.seen)
+  let death = (await stoppedList(PROJECT.id)).find((e) => e.deathReason && !e.seen)
   const [anchor, B, C, D] = await createWorkspaces(
     ['anchor', 'ghost B', 'ghost C', ...(death ? [] : ['death'])].map((n) => spec(T(n))))
   made.push(anchor, B, C, ...(D ? [D] : []))
@@ -78,11 +78,11 @@ try {
     if (!tmux) throw new Error(`no tmux server found for ${D}`)
     execSync(`tmux -S ${tmux} kill-server`)
     await waitFor('the reaper to record the death', async () =>
-      (await stoppedList(PROJECT)).some((e) => e.workspaceId === D && e.deathReason), 300_000)
-    death = (await stoppedList(PROJECT)).find((e) => e.workspaceId === D)
+      (await stoppedList(PROJECT.id)).some((e) => e.workspaceId === D && e.deathReason), 300_000)
+    death = (await stoppedList(PROJECT.id)).find((e) => e.workspaceId === D)
   }
   const deathLabel = death.title || death.prompt || 'New workspace'
-  check(`${OTHER} has no stopped workspaces (precondition)`, (await stoppedList(OTHER)).length === 0)
+  check(`${OTHER.name} has no stopped workspaces (precondition)`, (await stoppedList(OTHER.id)).length === 0)
 
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
@@ -106,7 +106,7 @@ try {
     await sleep(300)
   }
 
-  await page.goto(`${origin}/?project=${PROJECT}`)
+  await page.goto(`${origin}/?project=${PROJECT.id}`)
   const aside = page.locator('aside')
   const entry = aside.getByRole('button', { name: /^Stopped workspaces/ })
   const ghost = (label) => aside.locator('button[title="Read this workspace\'s conversation"]', { hasText: label })
@@ -251,20 +251,20 @@ try {
   // (4) Switch projects and back.
   const ownCount = (await phase('p3-dismiss')).at(-1)?.entry
   await mark('p4')
-  await page.locator(`[title="${OTHER}"]`).first().click()
+  await page.locator(`[title="${OTHER.name}"]`).first().click()
   await sleep(DELAY_MS * 2 + 500)
   await mark('p4-back')
-  await page.locator(`[title="${PROJECT}"]`).first().click()
+  await page.locator(`[title="${PROJECT.name}"]`).first().click()
   await entry.waitFor({ timeout: 10_000 })
   await openGhosts()
   await settle()
   await mark('p4-end')
   const away = await phase('p4')
-  check(`(4) ${PROJECT}'s list never shows under ${OTHER}`,
+  check(`(4) ${PROJECT.name}'s list never shows under ${OTHER.name}`,
     away.length > 0 && away.every((s) => s.entry === null && s.ghosts.length === 0),
     `${away.length} samples, entry counts ${[...new Set(away.map((s) => s.entry))]}`)
   const back = await phase('p4-back')
-  check(`(4) switching back shows ${PROJECT}'s own list`,
+  check(`(4) switching back shows ${PROJECT.name}'s own list`,
     back.at(-1)?.entry === ownCount && back.at(-1)?.ghosts.includes(T('ghost B')))
 
   // (5) Open an unseen death while a refetch fetched before the ack is held.
@@ -292,7 +292,7 @@ try {
   check('(5) the dot clears and stays cleared through the refetch',
     p5.every((s) => !s.dot), `dot per sample from 300ms after the click: ${p5.map((s) => s.dot)}`)
   check('(5) the server records it seen',
-    (await stoppedList(PROJECT)).find((e) => e.workspaceId === death.workspaceId)?.seen === true)
+    (await stoppedList(PROJECT.id)).find((e) => e.workspaceId === death.workspaceId)?.seen === true)
 } finally {
   await browser.close()
   for (const id of made) {
