@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeAll, beforeEach, onTestFinished, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import type { AcpClientMessage, AcpEvent, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
 
@@ -52,6 +52,11 @@ function box(): HTMLTextAreaElement {
 function type(text: string): void {
   fireEvent.change(box(), { target: { value: text } })
 }
+
+/* Most cases assert on every step, so they start from the full view. */
+beforeEach(() => {
+  useUiStore.setState({ chatCondensed: false })
+})
 
 function show(workspaceId = 'w1', agentSessionId = 'acp-1'): ReturnType<typeof render> {
   return render(<WorkspaceChat workspaceId={workspaceId} agentSessionId={agentSessionId} />)
@@ -275,18 +280,13 @@ describe('WorkspaceChat condensed view', () => {
       tool(10, 'run tests', 'in_progress'),
     ]
     stream.busy = true
-    useUiStore.setState({ chatDrafts: {} })
+    useUiStore.setState({ chatDrafts: {}, chatCondensed: true })
   })
 
-  afterEach(() => {
-    cleanup()
-    useUiStore.getState().setChatCondensed(false)
-  })
+  afterEach(cleanup)
 
   it('folds all but the prompts, each turn’s last message and the live activity, and remembers the choice', () => {
     show()
-    fireEvent.click(screen.getByRole('button', { name: 'Show key messages only' }))
-    expect(localStorage.getItem('yaac.chatcondensed.v1')).toBe('1')
     for (const shown of ['first ask', 'first answer', 'second ask', 'now editing', 'edit c', 'run tests']) {
       expect(screen.getByText(shown)).toBeTruthy()
     }
@@ -306,8 +306,13 @@ describe('WorkspaceChat condensed view', () => {
     expect(screen.getByRole('button', { name: '2 tool calls' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Show every step' }))
+    expect(localStorage.getItem('yaac.chatcondensed.v1')).toBe('0')
     expect(screen.getByText('grep b')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /tool call/ })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show key messages only' }))
+    expect(localStorage.getItem('yaac.chatcondensed.v1')).toBe('1')
+    expect(screen.getByRole('button', { name: '2 tool calls' })).toBeTruthy()
   })
 
   it('ends a turn where the agent starts one itself, spans a steer, and never folds what needs the user', () => {
@@ -335,7 +340,6 @@ describe('WorkspaceChat condensed view', () => {
       { type: 'user', seq: 16, content: [{ type: 'text', text: 'also do X' }], steered: true },
       tool(17, 't3'),
     ]
-    useUiStore.getState().setChatCondensed(true)
     show()
     for (const shown of [
       'answer A', 'message B', 'Permission needed', 'adapter crashed', 'turn ended: cancelled',
@@ -1282,8 +1286,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
       // A monitor's wake is known only once its run ends.
       { type: 'woken', seq: 13, causes: [{ kind: 'monitor' }] },
     ]
-    useUiStore.getState().setChatCondensed(true)
-    onTestFinished(() => useUiStore.getState().setChatCondensed(false))
+    useUiStore.setState({ chatCondensed: true })
     show()
     const [first, late] = screen.getAllByText('Woken by').map((el) => el.parentElement)
     expect(first?.textContent).toBe('Woken bybackground task npm run dev,subagent Explore')

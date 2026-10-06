@@ -655,7 +655,7 @@ export const useUiStore = create<UiState>((set) => ({
   soundEnabled: true,
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   chatFullWidth: false,
-  chatCondensed: false,
+  chatCondensed: true,
   viewMode: defaultViewMode(),
   pinnedUsageMetric: null,
   chatDrafts: {},
