@@ -22,7 +22,7 @@ and on phones, the filter (quick-open) is the way to find a file.
 `fs` on `workspaceDir(slug, id)`. Under k8s the server pod mounts that path;
 under containerless it is the host checkout. So there is no driver verb, and
 both drivers behave the same. The cost: node-local checkouts
-(docs/plans/cloud-k8s.md, "Node-local checkouts") would need an in-pod path.
+(docs/plans/node-local-checkouts.md) would need an in-pod path.
 
 Every file route resolves the workspace's record (`resolveWorkspaceRecord`),
 so a stopped workspace's files open and save like a running one's

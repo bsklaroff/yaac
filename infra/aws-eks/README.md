@@ -187,7 +187,7 @@ when only the system node exists. A later rollout (an upgrade, or a
 node. The autoscaler may then evict it to drain that node, which briefly
 takes the server down. Keeping it on the system node for good needs yaac
 to support a dedicated workspace pool, where only workspace pods tolerate
-the pool's taint (docs/plans/cloud-k8s.md, step 2).
+the pool's taint (docs/plans/workspace-node-pool.md).
 
 ## When install refuses
 

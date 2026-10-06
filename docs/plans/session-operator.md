@@ -16,9 +16,9 @@ This plan would move cluster convergence into a `Session` custom resource
 controller-runtime. The motivation is architectural, not CPU. Triggers that
 would justify it:
 
-- **Multi-node and cloud** (docs/plans/cloud-k8s.md): scheduling and
-  healing across disposable nodes suit a controller with per-object
-  workqueues better than one reconcile pass.
+- **Multi-node and cloud** (docs/cluster-setup.md "Bring your own
+  cluster"): scheduling and healing across disposable nodes suit a
+  controller with per-object workqueues better than one reconcile pass.
 - **Convergence while the server is down**: reaping, prewarm and
   image upkeep stop whenever the server pod does (`yaac server stop`
   scales it to zero; upgrades roll it; it can crash).

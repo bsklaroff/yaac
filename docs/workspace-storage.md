@@ -502,6 +502,24 @@ holds (unless a live pod still mounts it) and any opencode working copy whose
 workspace is gone. If the project list cannot be read, the sweep does nothing
 rather than treating the list as empty.
 
+## The shared tier on a network filesystem
+
+On a byo install `global/` is an NFS mount shared by every node
+(docs/server-in-cluster.md "Claims on byo"), and gVisor's file locks never
+reach the NFS server. So anything on the shared tier follows these rules,
+on every backend:
+
+- **One writer per file.** A file may have many readers and one appending
+  writer. Cross-workspace aggregation goes through per-workspace files the
+  server merges; nothing relies on a cross-pod lock.
+- **No filesystem watchers.** Freshness comes from reading on reconcile,
+  which works the same over NFS.
+- **Every path stored in a row is relative** to the data dir or a directory
+  under it (see "Transcript paths"), so the data dir can move.
+- **The node-local tier is disposable.** It holds re-derivable caches and
+  working copies of a shared checkpoint, as opencode's database is. Checkouts
+  stay on the shared tier (docs/plans/node-local-checkouts.md).
+
 ## Package installs
 
 A workspace's installed packages (its `ephemeralModulesPaths`, `node_modules`

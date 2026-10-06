@@ -269,8 +269,11 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    fails the release's sha512, and containerd restarts only when a config
    changed. Passes take a node-local lock, so installs sharing a node (an
    e2e run's) must pin the same gVisor version. The installer image is
-   digest-pinned upstream `curlimages/curl`. docs/plans/cloud-k8s.md covers
-   why the privilege is accepted.
+   digest-pinned upstream `curlimages/curl`. Editing a managed node's
+   containerd is unsupported by cloud vendors, but it works on mutable-OS
+   pools, and it is the only way to run the same runtime on every backend;
+   install refuses the pools where it cannot work (see "Bring your own
+   cluster").
 
    Every pod running untrusted code names a RuntimeClass: plain workspaces
    use `gvisor`, and nested-containers workspaces run their rootful in-pod
@@ -364,6 +367,22 @@ and is re-runnable like every other mode. What differs:
   (docs/server-in-cluster.md "The uid everything runs as").
 - **The server is published** through the Tailscale operator's TLS Ingress.
   `--byo` implies `--tailnet`, since a cloud cluster has no host loopback.
+
+Every one of those differences is a manifest install renders, never a
+branch in the driver: above install, nothing knows which backend it is on.
+A byo install also follows four rules:
+
+- **Nodes are disposable.** Nothing a workspace needs to resume lives only
+  on the node it last ran on, and no workspace pod is pinned to a node. The
+  node-local tier holds only re-derivable caches and working copies of a
+  checkpoint on the shared tier (docs/workspace-storage.md "The shared tier
+  on a network filesystem").
+- **The tailnet is the only way in.** No public LoadBalancer or Ingress, no
+  cert-manager, no DNS.
+- **One architecture per install**, the CLI machine's. Mixed pools would
+  need per-architecture images published each release.
+- **Backups are the operator's.** Snapshot the two `Retain` volumes with
+  the provider's tools.
 
 **Gates.** These run in order before anything is built or applied, and
 before the podman setup, so a refusal changes nothing:
@@ -756,7 +775,8 @@ it. The one-shot node-write pods are the exception: pinned to each node by
 check lists each node and the taint that excluded it, and suggests adding
 the toleration to the RuntimeClass rather than removing the taint.
 
-There is no config setting for the toleration yet. Install re-applies the
+There is no config setting for the toleration yet
+(docs/plans/workspace-node-pool.md). Install re-applies the
 RuntimeClasses without one, and server-side apply removes only fields yaac
 itself set, so a toleration added by hand (`kubectl apply`, `edit` or
 `patch`) survives a re-install.
