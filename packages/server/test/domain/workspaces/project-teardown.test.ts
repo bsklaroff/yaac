@@ -11,6 +11,10 @@ import { closeDb } from '#db/client'
 import { projectDir } from '@yaac/shared/project-paths'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
+import { BUILT_IN_USER_ID } from '#db'
+
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 const KEEPER = '6cc61f49-c2ae-433a-8d09-1f22d7868752'
 const NOPE = '4101bef8-794f-4d98-8e95-dfb54850c68b'
@@ -52,7 +56,7 @@ describe('removeProject', () => {
     await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'MINE', value: 'x', secret: false })
     await upsertProjectEnvVar(KEEPER, { name: 'THEIRS', value: 'y', secret: false })
 
-    await removeProject(DEMO_PROJECT_ID)
+    await removeProject(local, DEMO_PROJECT_ID)
 
     expect(purged).toEqual([DEMO_PROJECT_ID])
     await expect(fs.access(projectDir(DEMO_PROJECT_ID))).rejects.toThrow()
@@ -69,7 +73,7 @@ describe('removeProject', () => {
   })
 
   it('throws NOT_FOUND for an unknown project, touching nothing', async () => {
-    await expect(removeProject(NOPE)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(removeProject(local, NOPE)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(purged).toEqual([])
   })
 
@@ -80,7 +84,7 @@ describe('removeProject', () => {
     // The project tree cannot be removed from a read-only parent.
     await fs.chmod(getProjectsDir(), 0o555)
 
-    await expect(removeProject(DEMO_PROJECT_ID)).rejects.toThrow(/EACCES/)
+    await expect(removeProject(local, DEMO_PROJECT_ID)).rejects.toThrow(/EACCES/)
 
     expect((await listWorkspaceRows()).map((r) => r.workspaceId)).toEqual(['a'])
     expect((await listProjectRows()).map((p) => p.id)).toEqual([DEMO_PROJECT_ID])
@@ -88,8 +92,8 @@ describe('removeProject', () => {
 
   it('is idempotent once the rows are gone', async () => {
     await recordTestProject(DEMO_PROJECT_ID)
-    await removeProject(DEMO_PROJECT_ID)
-    await expect(removeProject(DEMO_PROJECT_ID)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await removeProject(local, DEMO_PROJECT_ID)
+    await expect(removeProject(local, DEMO_PROJECT_ID)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(purged).toEqual([DEMO_PROJECT_ID])
   })
 })

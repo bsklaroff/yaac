@@ -13,6 +13,7 @@ import {
   updateDraftWorkspace,
   type DraftWorkspaceRow,
 } from '#db'
+import { authorizeProject, type Actor } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { normalizeTitle } from '@yaac/shared/titles'
@@ -21,11 +22,13 @@ import type { DraftWorkspaceEntry, DraftWorkspaceSettings } from '@yaac/shared/t
 /** Save a new draft, or replace draft `id`'s settings. A blank title leaves
  *  the draft to be auto-titled. */
 export async function saveDraftWorkspace(
+  principal: Actor,
   projectId: string,
   { title, ...rest }: DraftWorkspaceSettings,
   id?: string,
 ): Promise<DraftWorkspaceEntry> {
   if (!await getProjectRow(projectId)) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  await authorizeProject(principal, projectId)
   const named = normalizeTitle(title ?? '')
   const settings = { ...rest, ...(named !== '' ? { title: named } : {}) }
   const row = id === undefined
@@ -57,9 +60,11 @@ const NO_DRAFT: DraftClaim = { generatedTitle: () => undefined, run: (fn) => fn(
  * Claim draft `id` (none if undefined) for one create or queue. A draft
  * already claimed is a `CONFLICT` and one that is gone is `NOT_FOUND`, so
  * a second tab, a retry or a double click cannot make two workspaces from
- * one draft.
+ * one draft. A caller who does not own the project is refused even with no
+ * draft, since the create and queue routes claim before anything else.
  */
-export async function claimDraft(projectId: string, id: string | undefined): Promise<DraftClaim> {
+export async function claimDraft(principal: Actor, projectId: string, id: string | undefined): Promise<DraftClaim> {
+  await authorizeProject(principal, projectId)
   if (id === undefined) return NO_DRAFT
   if (launching.has(id)) throw new ServerError('CONFLICT', `draft workspace ${id} is already being created from`)
   launching.add(id)
@@ -90,7 +95,9 @@ export async function claimDraft(projectId: string, id: string | undefined): Pro
   }
 }
 
-export async function discardDraftWorkspace(id: string): Promise<void> {
+export async function discardDraftWorkspace(principal: Actor, id: string): Promise<void> {
+  const draft = (await listDraftWorkspaceRows()).find((d) => d.id === id)
+  if (draft) await authorizeProject(principal, draft.projectId)
   if (!await deleteDraftWorkspace(id)) throw new ServerError('NOT_FOUND', `draft workspace ${id} not found`)
 }
 

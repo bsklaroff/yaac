@@ -9,6 +9,7 @@ import {
   updateProvisioningMessage,
 } from './provisioning'
 import { clearWorkspaceStopped, findWorkspaceRow } from '#db'
+import { authorizeProject, type Actor } from '#domain/access'
 import { serverLog } from '#log'
 import {
   firstAgentSession,
@@ -30,8 +31,16 @@ export interface RestartResolution {
 /**
  * Find the project and tool for a workspace id or prefix: from the running
  * unit if any, else from the row, so stopped workspaces can be restarted.
+ * Refuses a caller who does not own it, so the restart route can refuse
+ * before it opens its stream.
  */
-export async function resolveRestartTarget(idOrPrefix: string): Promise<RestartResolution> {
+export async function resolveRestartTarget(principal: Actor, idOrPrefix: string): Promise<RestartResolution> {
+  const target = await findRestartTarget(idOrPrefix)
+  await authorizeProject(principal, target.projectId)
+  return target
+}
+
+async function findRestartTarget(idOrPrefix: string): Promise<RestartResolution> {
   const id = await resolveWorkspaceId(idOrPrefix)
   try {
     const match = await workspaceDriver().find(id)
@@ -81,10 +90,11 @@ export interface RestartWorkspaceOptions {
  * project.
  */
 export async function restartWorkspace(
+  principal: Actor,
   idOrPrefix: string,
   opts: RestartWorkspaceOptions = {},
 ): Promise<WorkspaceCreateResult> {
-  const { projectId, workspaceId, tool, jobName, groupId } = await resolveRestartTarget(idOrPrefix)
+  const { projectId, workspaceId, tool, jobName, groupId } = await resolveRestartTarget(principal, idOrPrefix)
 
   // Register before teardown, whoever the caller is: `inFlightWorkspaceIds`
   // is what keeps the stale reaper from deleting the dirs the new launch is

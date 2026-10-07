@@ -23,6 +23,7 @@ import { resolveWorkspace } from './resolve'
 import { startWorkspace } from './start'
 import { agentPermissionMode } from './spawn-policy'
 import { modelDisplayName } from '#domain/auth'
+import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
 import {
   claimQueuedLaunch,
@@ -102,11 +103,13 @@ const launching = new Set<string>()
 
 /** Queue a create request under a workspace or another entry. */
 export async function queueWorkspace(
+  principal: Actor,
   projectId: string,
   request: QueueRequest,
   source: QueueSource,
   generatedTitle?: string,
 ): Promise<QueuedWorkspaceEntry> {
+  await authorizeProject(principal, projectId)
   checkPrompt(request.prompt)
   const parent = await resolveParent(projectId, request.parent)
   const settings = await resolveSettings(projectId, parent, request, source)
@@ -121,11 +124,12 @@ export async function queueWorkspace(
  * permission mode as requested.
  */
 export async function updateQueuedWorkspace(
+  principal: Actor,
   id: string,
   patch: Partial<QueueRequest>,
   source: QueueSource,
 ): Promise<QueuedWorkspaceEntry> {
-  const row = await editableRow(id)
+  const row = await editableRow(principal, id)
   if (patch.prompt !== undefined) checkPrompt(patch.prompt)
   const parent = patch.parent !== undefined
     ? await resolveParent(row.projectId, patch.parent)
@@ -152,8 +156,8 @@ export async function updateQueuedWorkspace(
 }
 
 /** Discard an entry. Its children splice up to its own parent. */
-export async function discardQueuedWorkspace(id: string): Promise<void> {
-  await editableRow(id)
+export async function discardQueuedWorkspace(principal: Actor, id: string): Promise<void> {
+  await editableRow(principal, id)
   if (!await deleteQueuedWorkspace(id)) throw launchingConflict()
 }
 
@@ -161,8 +165,8 @@ export async function discardQueuedWorkspace(id: string): Promise<void> {
  * Run an entry now. Returns the new workspace id once the launch is claimed;
  * the launch continues detached as a provisioning row.
  */
-export async function runQueuedWorkspace(id: string): Promise<{ workspaceId: string }> {
-  await editableRow(id)
+export async function runQueuedWorkspace(principal: Actor, id: string): Promise<{ workspaceId: string }> {
+  await editableRow(principal, id)
   const released = await releaseQueuedWorkspace(id)
   if (!released) throw launchingConflict()
   const workspaceId = await launch(released)
@@ -272,7 +276,9 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
   const title = row.title ?? row.generatedTitle
   void (async () => {
     try {
-      await runProvisioned(workspaceId, (onProgress) => startWorkspace({
+      // The server launches it: whoever queued or ran the entry was
+      // authorized then.
+      await runProvisioned(workspaceId, (onProgress) => startWorkspace(systemPrincipal, {
         projectId: row.projectId,
         workspaceId,
         tool: row.tool,
@@ -304,9 +310,10 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
 }
 
 /** An entry that exists and is not mid-launch — what every edit needs. */
-async function editableRow(id: string): Promise<QueuedWorkspaceRow> {
+async function editableRow(principal: Actor, id: string): Promise<QueuedWorkspaceRow> {
   const row = await getQueuedWorkspaceRow(id)
   if (!row) throw new ServerError('NOT_FOUND', `no queued workspace ${id}`)
+  await authorizeProject(principal, row.projectId)
   if (row.launchWorkspaceId !== undefined || launching.has(id)) throw launchingConflict()
   return row
 }

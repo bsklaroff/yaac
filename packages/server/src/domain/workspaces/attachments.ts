@@ -6,6 +6,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { workspaceAttachmentsDir } from '@yaac/shared/project-paths'
 import { workspaceDriver } from '#drivers/driver'
 import { resolveWorkspaceContainer } from './resolve'
+import { authorizeProject, type Actor } from '#domain/access'
 
 /**
  * Save an image pasted into a terminal pane where the workspace's agent can
@@ -16,10 +17,12 @@ import { resolveWorkspaceContainer } from './resolve'
  * be running; its launch created the directory along with its mount.
  */
 export async function saveWorkspaceAttachment(
+  principal: Actor,
   idOrName: string,
   bytes: Uint8Array,
 ): Promise<{ path: string }> {
   const wt = await resolveWorkspaceContainer(idOrName, { requireRunning: true })
+  await authorizeProject(principal, wt.projectId)
   const kind = sniffImage(bytes)
   if (!kind) throw new ServerError('VALIDATION', 'not a PNG, JPEG, GIF or WebP image')
   const name = `${createHash('sha256').update(bytes).digest('hex').slice(0, 32)}.${kind.ext}`

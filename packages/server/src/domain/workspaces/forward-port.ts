@@ -3,6 +3,7 @@ import { addPortForwardToProjectConfig } from '#domain/projects'
 import { resolveWorkspaceContainer } from './resolve'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
+import { authorizeProject, type Actor } from '#domain/access'
 
 /**
  * Forward a port a workspace is listening on but that is not yet forwarded
@@ -14,19 +15,21 @@ import type { PortMapping } from '@yaac/shared/types'
  * leaves nothing persisted. `forwardPort` checks again authoritatively.
  */
 export async function forwardWorkspacePort(
+  principal: Actor,
   idOrName: string,
   containerPort: number,
   opts: { persist: boolean },
 ): Promise<PortMapping> {
   const runtime = workspaceDriver()
   const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true })
+  await authorizeProject(principal, target.projectId)
   if (!(await runtime.unforwardedPorts(target.workspaceId)).includes(containerPort)) {
     throw new ServerError(
       'CONFLICT',
       `port ${containerPort} is not an unforwarded listener in session ${target.workspaceId.slice(0, 8)}`,
     )
   }
-  if (opts.persist) await addPortForwardToProjectConfig(target.projectId, containerPort)
+  if (opts.persist) await addPortForwardToProjectConfig(principal, target.projectId, containerPort)
   return runtime.forwardPort(
     { workspaceId: target.workspaceId, projectId: target.projectId, jobName: target.jobName },
     containerPort,
@@ -40,10 +43,12 @@ export async function forwardWorkspacePort(
  * `forwardWorkspacePort`. In memory only.
  */
 export async function dismissWorkspacePort(
+  principal: Actor,
   idOrName: string,
   containerPort: number,
 ): Promise<void> {
   const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true })
+  await authorizeProject(principal, target.projectId)
   if (!workspaceDriver().dismissPort(target.workspaceId, containerPort)) {
     throw new ServerError(
       'CONFLICT',

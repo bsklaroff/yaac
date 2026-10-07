@@ -141,9 +141,9 @@ admits.
 ### Authorization
 
 Domain verbs take the principal as an explicit argument; routes pass the
-one `identify()` resolved. Internal callers (the reconcile loop, prewarm,
-queued-workspace starts, the stale reaper, the title sweep) pass a `system`
-principal that `identify()` never returns.
+one `identify()` resolved. An internal caller that reaches a gated verb
+with no request behind it passes a `system` principal that `identify()`
+never returns; today that is only a queued workspace's launch.
 
 A sealed `domain/access` folder owns `authorize(principal, level,
 resource)`, with two access levels:
@@ -161,6 +161,40 @@ resource)`, with two access levels:
 The owner of a workspace, queued workspace, draft, group, agent session or
 tool default is its project's owner; only `projects` and the user-scoped
 tables carry an owner directly.
+
+How the pieces fit:
+
+- A verb's caller is an `Actor`: a request's `Principal`,
+  `systemPrincipal`, or `{ kind: 'workspace', workspaceId, userId }` for a
+  yaac-mama call, built by `workspacePrincipal` with the calling
+  workspace's project owner as `userId`. A mama call therefore acts as its
+  project's owner. `Actor` lives in `#domain/access`, so the shared
+  `Principal` stays the wire type `identify()` returns.
+- `authorizeProject(actor, projectId)` is the one check verbs make; every
+  workspace-scoped verb resolves its workspace's project and asks it. It
+  reads `projects.owner` and compares it with the actor's `userId`; a
+  project that does not exist is `NOT_FOUND`, never open, since some verbs
+  authorize before they check existence.
+- The verbs that authorize `owner` are the writes behind the workspace and
+  project routes (start, restart, stop, queue edits, drafts, the file
+  editor, attachments, allow-host, port forwards, project removal,
+  credentials, config, env and Dockerfile), the scratch-terminal create
+  and close routes, and the three attaches. An attach is checked against
+  the workspace's row before the upgrade (a real 403) and again against
+  the unit it resolves to when the socket opens, so an id with no row yet
+  is not let through. Create and queue are checked by `claimDraft`, the
+  first thing those routes do, before any provisioning row or group. A
+  verb's internal sub-steps pass the principal along rather than
+  authorizing again; a queued launch runs as `systemPrincipal`, since
+  whoever queued or ran it was authorized then.
+- Not gated yet, for step 7's route classification: the routes that write
+  rows directly through `#db` (titles, groups, set-group, death-seen
+  marks, provisioning dismissal), build files and `/config/user-dockerfile`,
+  `/image/*`, and `/auth/*` with the `/api/agent/auth` WebSocket (step 5).
+  `/project/add` and `/project/register` create a project the caller then
+  owns, so they need no check. Step 7's non-owner check must also drive
+  the three attaches, which are registered in `server-run` and so are not
+  among the routes the matrix reads from `buildApp`.
 
 ### Database
 
@@ -266,9 +300,9 @@ stays per workspace.
    `--tailnet`/`--owner` on `yaac server start|restart` and `yaac cluster
    install`, the refusals, the containerless mama loopback exception, the
    built-in `local` user.
-3. **Principal plumbing**: `domain/access`, the `system` principal, domain
-   verbs taking the principal, `owner` on the three attach upgrades. Every
-   principal still resolves to the one owner, so behavior is unchanged.
+3. **Principal plumbing** — shipped: `domain/access`, the `system`
+   principal, domain verbs taking the principal and authorizing `owner`
+   against `projects.owner`, and `owner` on the three attach upgrades.
 4. **Users and owners** — shipped with step 2: the `users` table,
    `projects.owner`, per-user preferences, shortcuts and git credentials,
    with backfill to the built-in user.

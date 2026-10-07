@@ -61,7 +61,8 @@ import {
   setWorkspaceTitle,
 } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
-import { requireDriverFeature } from '#http'
+import { requireDriverFeature, type IdentityEnv } from '#http'
+import { authorizeProject, workspacePrincipal } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
@@ -122,6 +123,7 @@ function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => st
       const outcome = await runMamaCommand(
         {
           workspaceId: caller.workspaceId,
+          principal: await workspacePrincipal(caller.workspaceId, caller.projectId),
           projectId: caller.projectId,
           ...(handle?.declaredTool !== undefined ? { tool: handle.declaredTool } : {}),
         },
@@ -167,7 +169,7 @@ export function mamaRelayApp(authenticate: (bearer: string) => Promise<boolean>)
     await authenticate(bearer) ? findWorkspaceRow(header('x-yaac-workspace-id') ?? '') : undefined)
 }
 
-export const workspaceApp = new Hono()
+export const workspaceApp = new Hono<IdentityEnv>()
   .get(
     '/list',
     zv('query', z.object({ project: optionalProjectRef })),
@@ -214,7 +216,7 @@ export const workspaceApp = new Hono()
       }
       // Claimed before the row is reserved, so a second run of one draft is
       // refused outright instead of leaving a failed row.
-      const draft = await claimDraft(body.project, body.draftId)
+      const draft = await claimDraft(c.get('principal'), body.project, body.draftId)
       // Without a title, keep the one its draft was shown under.
       const title = normalizeTitle(body.title ?? '') || draft.generatedTitle(body.prompt)
       // Reserve the id before streaming, so a second create on an id still
@@ -239,7 +241,7 @@ export const workspaceApp = new Hono()
         const groupId = body.group === undefined
           ? undefined
           : (await resolveGroup(body.project, body.group, { create: true })).groupId
-        return await startWorkspace({
+        return await startWorkspace(c.get('principal'), {
           projectId: body.project,
           workspaceId,
           ...(body.tool !== undefined ? { tool: body.tool } : {}),
@@ -271,7 +273,7 @@ export const workspaceApp = new Hono()
       const body = c.req.valid('json')
       // Resolve the prefix first so the row, stream and restart all use the
       // exact id.
-      const target = await resolveRestartTarget(body.workspaceId)
+      const target = await resolveRestartTarget(c.get('principal'), body.workspaceId)
       // Registered here rather than by restartWorkspace's own `ensure`, so a
       // restart of a workspace already provisioning is a plain 409, and the
       // row is filed under the workspace's group instead of the sidebar top.
@@ -283,7 +285,7 @@ export const workspaceApp = new Hono()
         ...(target.groupId !== undefined ? { groupId: target.groupId } : {}),
       })
       return streamProvisioned(c, target.workspaceId, (onProgress) =>
-        restartWorkspace(target.workspaceId, { onProgress }))
+        restartWorkspace(c.get('principal'), target.workspaceId, { onProgress }))
     },
   )
   .post(
@@ -291,7 +293,7 @@ export const workspaceApp = new Hono()
     zv('json', z.object({ workspaceId: z.string().min(1) })),
     async (c) => {
       const { workspaceId } = c.req.valid('json')
-      const info = await stopWorkspace(workspaceId)
+      const info = await stopWorkspace(c.get('principal'), workspaceId)
       return c.json(info)
     },
   )
@@ -336,8 +338,9 @@ export const workspaceApp = new Hono()
     })),
     async (c) => {
       const { project, draftId: fromDraft, ...request } = c.req.valid('json')
-      const draft = await claimDraft(project, fromDraft)
-      return c.json(await draft.run(() => queueWorkspace(project, request, 'user', draft.generatedTitle(request.prompt))))
+      const principal = c.get('principal')
+      const draft = await claimDraft(principal, project, fromDraft)
+      return c.json(await draft.run(() => queueWorkspace(principal, project, request, 'user', draft.generatedTitle(request.prompt))))
     },
   )
   .post(
@@ -351,21 +354,21 @@ export const workspaceApp = new Hono()
     })),
     async (c) => {
       const { id, ...patch } = c.req.valid('json')
-      return c.json(await updateQueuedWorkspace(id, patch, 'user'))
+      return c.json(await updateQueuedWorkspace(c.get('principal'), id, patch, 'user'))
     },
   )
   .post(
     '/queue/discard',
     zv('json', z.object({ id: z.string().min(1) })),
     async (c) => {
-      await discardQueuedWorkspace(c.req.valid('json').id)
+      await discardQueuedWorkspace(c.get('principal'), c.req.valid('json').id)
       return c.body(null, 204)
     },
   )
   .post(
     '/queue/run',
     zv('json', z.object({ id: z.string().min(1) })),
-    async (c) => c.json(await runQueuedWorkspace(c.req.valid('json').id)),
+    async (c) => c.json(await runQueuedWorkspace(c.get('principal'), c.req.valid('json').id)),
   )
   // Draft workspaces (docs/draft-workspaces.md): saved create-dialog contents.
   // A save without an id creates a draft; with one it replaces all fields.
@@ -377,14 +380,14 @@ export const workspaceApp = new Hono()
     })),
     async (c) => {
       const { id, project, ...settings } = c.req.valid('json')
-      return c.json(await saveDraftWorkspace(project, settings, id))
+      return c.json(await saveDraftWorkspace(c.get('principal'), project, settings, id))
     },
   )
   .post(
     '/draft/discard',
     zv('json', z.object({ id: z.string().min(1) })),
     async (c) => {
-      await discardDraftWorkspace(c.req.valid('json').id)
+      await discardDraftWorkspace(c.get('principal'), c.req.valid('json').id)
       return c.body(null, 204)
     },
   )
@@ -587,7 +590,7 @@ export const workspaceApp = new Hono()
     })),
     async (c) => {
       const { path, content, baseVersion } = c.req.valid('json')
-      const result = await writeWorkspaceFile(c.req.param('id'), path, content, baseVersion)
+      const result = await writeWorkspaceFile(c.get('principal'), c.req.param('id'), path, content, baseVersion)
       if ('conflict' in result) {
         const message = result.conflict === null
           ? `${path} no longer exists`
@@ -606,42 +609,45 @@ export const workspaceApp = new Hono()
       onError: () => { throw new ServerError('TOO_LARGE', 'the image is over the 5 MB limit') },
     }),
     async (c) => c.json(
-      await saveWorkspaceAttachment(c.req.param('id'), new Uint8Array(await c.req.arrayBuffer())),
+      await saveWorkspaceAttachment(c.get('principal'), c.req.param('id'), new Uint8Array(await c.req.arrayBuffer())),
     ),
   )
   .delete(
     '/:id/file',
     zv('query', z.object({ path: z.string().min(1) })),
     async (c) => {
-      await deleteWorkspaceEntry(c.req.param('id'), c.req.valid('query').path)
+      await deleteWorkspaceEntry(c.get('principal'), c.req.param('id'), c.req.valid('query').path)
       return c.body(null, 204)
     },
   )
   .post(
     '/:id/folder',
     zv('json', z.object({ path: z.string().min(1) })),
-    async (c) => c.json(await createWorkspaceFolder(c.req.param('id'), c.req.valid('json').path)),
+    async (c) => c.json(await createWorkspaceFolder(c.get('principal'), c.req.param('id'), c.req.valid('json').path)),
   )
   .post(
     '/:id/rename',
     zv('json', z.object({ from: z.string().min(1), to: z.string().min(1) })),
     async (c) => {
       const { from, to } = c.req.valid('json')
-      return c.json(await renameWorkspaceEntry(c.req.param('id'), from, to))
+      return c.json(await renameWorkspaceEntry(c.get('principal'), c.req.param('id'), from, to))
     },
   )
   // Create a scratch-shell window in the session's `yaac` tmux session,
   // returning its entry so the client can focus the pane the snapshot
-  // brings.
+  // brings. Both terminal routes act inside the workspace, so only its owner
+  // may call them.
   .post('/:id/terminals', async (c) => {
-    const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
+    const { jobName, projectId } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
+    await authorizeProject(c.get('principal'), projectId)
     return c.json(await createShellWindow(jobName))
   })
   .post(
     '/:id/terminals/close',
     zv('json', z.object({ target: z.string().min(1) })),
     async (c) => {
-      const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
+      const { jobName, projectId } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
+      await authorizeProject(c.get('principal'), projectId)
       const { target } = c.req.valid('json')
       try {
         await killWindowTerminal(jobName, target)
@@ -671,7 +677,7 @@ export const workspaceApp = new Hono()
     async (c) => {
       requireDriverFeature('egress')
       const { host, persist } = c.req.valid('json')
-      await allowWorkspaceHost(c.req.param('id'), host, { persist: persist ?? false })
+      await allowWorkspaceHost(c.get('principal'), c.req.param('id'), host, { persist: persist ?? false })
       return c.body(null, 204)
     },
   )
@@ -688,7 +694,7 @@ export const workspaceApp = new Hono()
       requireDriverFeature('portRelay')
       const { containerPort, persist } = c.req.valid('json')
       const mapping = await forwardWorkspacePort(
-        c.req.param('id'), containerPort, { persist: persist ?? false },
+        c.get('principal'), c.req.param('id'), containerPort, { persist: persist ?? false },
       )
       return c.json(mapping)
     },
@@ -700,7 +706,7 @@ export const workspaceApp = new Hono()
     zv('json', z.object({ containerPort: z.number().int().min(1).max(65535) })),
     async (c) => {
       requireDriverFeature('portRelay')
-      await dismissWorkspacePort(c.req.param('id'), c.req.valid('json').containerPort)
+      await dismissWorkspacePort(c.get('principal'), c.req.param('id'), c.req.valid('json').containerPort)
       return c.body(null, 204)
     },
   )

@@ -9,6 +9,11 @@ import { addPortForwardToProjectConfig } from '#domain/projects/local-config'
 import { dismissWorkspacePort, forwardWorkspacePort } from '#domain/workspaces/forward-port'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
+import { BUILT_IN_USER_ID, recordProject } from '#db'
+import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
+
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 const mockPersist = vi.mocked(addPortForwardToProjectConfig)
 const mockUnforwarded = vi.fn<(workspaceId: string) => Promise<number[]>>()
@@ -21,11 +26,12 @@ const mockForwardPort = vi.fn<
 >()
 
 const HANDLE = handleFixture({
-  workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1', state: 'running',
+  workspaceId: 'sid-1', projectId: PROJ, jobName: 'yaac-proj-sid-1', state: 'running',
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
   mockPersist.mockResolvedValue({})
   mockUnforwarded.mockResolvedValue([8090])
   mockForwardPort.mockResolvedValue({ containerPort: 8090, hostPort: 8090 })
@@ -38,12 +44,12 @@ beforeEach(() => {
 
 describe('forwardWorkspacePort', () => {
   it('forwards live only, writing no config, when persist is false', async () => {
-    const mapping = await forwardWorkspacePort('sid-1', 8090, { persist: false })
+    const mapping = await forwardWorkspacePort(local, 'sid-1', 8090, { persist: false })
 
     expect(mapping).toEqual({ containerPort: 8090, hostPort: 8090 })
     expect(mockPersist).not.toHaveBeenCalled()
     expect(mockForwardPort).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1' },
+      { workspaceId: 'sid-1', projectId: PROJ, jobName: 'yaac-proj-sid-1' },
       8090,
       { fanOutToProject: false },
     )
@@ -60,12 +66,12 @@ describe('forwardWorkspacePort', () => {
       return Promise.resolve({ containerPort: 8090, hostPort: 8090 })
     })
 
-    await forwardWorkspacePort('sid-1', 8090, { persist: true })
+    await forwardWorkspacePort(local, 'sid-1', 8090, { persist: true })
 
     expect(order).toEqual(['config', 'runtime'])
-    expect(mockPersist).toHaveBeenCalledExactlyOnceWith('proj', 8090)
+    expect(mockPersist).toHaveBeenCalledExactlyOnceWith(local, PROJ, 8090)
     expect(mockForwardPort).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1' },
+      { workspaceId: 'sid-1', projectId: PROJ, jobName: 'yaac-proj-sid-1' },
       8090,
       { fanOutToProject: true },
     )
@@ -76,7 +82,7 @@ describe('forwardWorkspacePort', () => {
     // every future workspace would inherit it.
     mockUnforwarded.mockResolvedValue([3000])
 
-    await expect(forwardWorkspacePort('sid-1', 8090, { persist: true }))
+    await expect(forwardWorkspacePort(local, 'sid-1', 8090, { persist: true }))
       .rejects.toMatchObject({ code: 'CONFLICT' })
     expect(mockPersist).not.toHaveBeenCalled()
     expect(mockForwardPort).not.toHaveBeenCalled()
@@ -85,7 +91,7 @@ describe('forwardWorkspacePort', () => {
   it('refuses an ineligible port with persist off too', async () => {
     mockUnforwarded.mockResolvedValue([])
 
-    await expect(forwardWorkspacePort('sid-1', 8090, { persist: false }))
+    await expect(forwardWorkspacePort(local, 'sid-1', 8090, { persist: false }))
       .rejects.toThrow(/not an unforwarded listener/)
     expect(mockForwardPort).not.toHaveBeenCalled()
   })
@@ -93,7 +99,7 @@ describe('forwardWorkspacePort', () => {
   it('forwards nothing when the config write fails', async () => {
     mockPersist.mockRejectedValue(new ServerError('VALIDATION', 'bad config'))
 
-    await expect(forwardWorkspacePort('sid-1', 8090, { persist: true })).rejects.toThrow('bad config')
+    await expect(forwardWorkspacePort(local, 'sid-1', 8090, { persist: true })).rejects.toThrow('bad config')
     expect(mockForwardPort).not.toHaveBeenCalled()
   })
 
@@ -101,7 +107,7 @@ describe('forwardWorkspacePort', () => {
     // The eligibility check is not a reservation; the runtime re-checks.
     mockForwardPort.mockRejectedValue(new ServerError('CONFLICT', 'not an unforwarded listener'))
 
-    await expect(forwardWorkspacePort('sid-1', 8090, { persist: false }))
+    await expect(forwardWorkspacePort(local, 'sid-1', 8090, { persist: false }))
       .rejects.toThrow(/not an unforwarded listener/)
   })
 })
@@ -118,7 +124,7 @@ describe('dismissWorkspacePort', () => {
   })
 
   it('dismisses the resolved workspace’s port', async () => {
-    await dismissWorkspacePort('sid-1', 8090)
+    await dismissWorkspacePort(local, 'sid-1', 8090)
 
     expect(mockDismiss).toHaveBeenCalledExactlyOnceWith('sid-1', 8090)
   })
@@ -128,9 +134,9 @@ describe('dismissWorkspacePort', () => {
   it('refuses a port the runtime is not offering', async () => {
     mockDismiss.mockReturnValue(false)
 
-    await expect(dismissWorkspacePort('sid-1', 8090))
+    await expect(dismissWorkspacePort(local, 'sid-1', 8090))
       .rejects.toMatchObject({ code: 'CONFLICT' })
-    await expect(dismissWorkspacePort('sid-1', 8090))
+    await expect(dismissWorkspacePort(local, 'sid-1', 8090))
       .rejects.toThrow(/not an unforwarded listener/)
   })
 
@@ -140,12 +146,12 @@ describe('dismissWorkspacePort', () => {
       dismissPort: mockDismiss,
     })
 
-    await expect(dismissWorkspacePort('gone', 8090)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(dismissWorkspacePort(local, 'gone', 8090)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(mockDismiss).not.toHaveBeenCalled()
   })
 
   it('writes no project config — dismissal is in-memory only', async () => {
-    await dismissWorkspacePort('sid-1', 8090)
+    await dismissWorkspacePort(local, 'sid-1', 8090)
 
     expect(mockPersist).not.toHaveBeenCalled()
   })

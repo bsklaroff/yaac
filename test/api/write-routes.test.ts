@@ -94,6 +94,9 @@ import {
   startToolInstall,
 } from '@yaac/auth-daemon/tool-install'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 /**
  * Wire an in-process auth agent into the hub: ops go to the real local
  * login/install managers and their views are pushed back, so the routes are
@@ -226,7 +229,7 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.project[':projectId'].$delete({ param: { projectId: DEMO } })
       expect(res.status).toBe(204)
-      expect(mockRemoveProject).toHaveBeenCalledWith(DEMO)
+      expect(mockRemoveProject).toHaveBeenCalledWith(local, DEMO)
     })
   })
 
@@ -868,7 +871,7 @@ describe('write routes', () => {
 
     it('streams progress and a result event from restartWorkspace, by the resolved id', async () => {
       await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-x' })
-      mockRestartSession.mockImplementation((_id, opts) => {
+      mockRestartSession.mockImplementation((_principal, _id, opts) => {
         opts?.onProgress?.('Stopping session job yaac-demo-sess-x...')
         opts?.onProgress?.('Reusing existing workspace at /wt/sess-x')
         return Promise.resolve({
@@ -905,7 +908,7 @@ describe('write routes', () => {
           },
         },
       ])
-      expect(mockRestartSession).toHaveBeenCalledWith('sess-x', expect.objectContaining({
+      expect(mockRestartSession).toHaveBeenCalledWith(local, 'sess-x', expect.objectContaining({
       }))
     })
 
@@ -951,7 +954,7 @@ describe('write routes', () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.stop.$post({ json: { workspaceId: 'sess-x' } })
       expect(res.status).toBe(200)
-      expect(mockDeleteSession).toHaveBeenCalledWith('sess-x')
+      expect(mockDeleteSession).toHaveBeenCalledWith(local, 'sess-x')
     })
   })
 
@@ -1370,7 +1373,7 @@ describe('write routes', () => {
     it('deletes a credential in use and takes it from the runtime at once', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const a = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'a', token: 'ghp_a' })
-      await assignProjectCredential(WEB, a.id)
+      await assignProjectCredential(local, WEB, a.id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1412,7 +1415,7 @@ describe('write routes', () => {
     it('replaces the secret under the same name and projects, and pushes it', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
       const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_leaked' })
-      await assignProjectCredential(WEB, id)
+      await assignProjectCredential(local, WEB, id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))

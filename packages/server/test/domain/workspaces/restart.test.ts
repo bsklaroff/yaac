@@ -20,6 +20,10 @@ import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
+import { BUILT_IN_USER_ID } from '#db'
+
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 /**
  * A restart resolves its target, tears down the old unit, creates under the
@@ -91,7 +95,7 @@ describe('restartWorkspace', () => {
     const progress: string[] = []
 
     // Addressed by prefix, as the CLI usually does.
-    const result = await restartWorkspace('wt', { onProgress: (m) => progress.push(m) })
+    const result = await restartWorkspace(local, 'wt', { onProgress: (m) => progress.push(m) })
 
     expect(result).toMatchObject({ workspaceId: 'wt-1', tool: 'codex' })
     // `inFlightWorkspaceIds` is all that keeps the stale reaper from
@@ -116,7 +120,7 @@ describe('restartWorkspace', () => {
   it('succeeds when clearing the stop record fails', async () => {
     await stoppedWorkspace('wt-clear')
     vi.mocked(clearWorkspaceStopped).mockRejectedValueOnce(new Error('db write failed'))
-    expect(await restartWorkspace('wt-clear')).toMatchObject({ workspaceId: 'wt-clear' })
+    expect(await restartWorkspace(local, 'wt-clear')).toMatchObject({ workspaceId: 'wt-clear' })
     expect(listProvisioning()).toEqual([])
   })
 
@@ -125,7 +129,7 @@ describe('restartWorkspace', () => {
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2' })
     calls = []
 
-    await restartWorkspace('wt-2')
+    await restartWorkspace(local, 'wt-2')
 
     expect(calls.some((c) => c.startsWith('destroy'))).toBe(false)
     expect(calls.find((c) => c.includes('respawn-window'))).toContain('--permission-mode plan')
@@ -136,7 +140,7 @@ describe('restartWorkspace', () => {
     await stoppedWorkspace('wt-3')
     installDriver({ awaitReady: () => Promise.reject(new Error('image pull failed')) })
 
-    await expect(restartWorkspace('wt-3')).rejects.toThrow('image pull failed')
+    await expect(restartWorkspace(local, 'wt-3')).rejects.toThrow('image pull failed')
 
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-3'))?.stoppedAt).toBeInstanceOf(Date)
     expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'wt-3', error: 'image pull failed' })])
@@ -154,7 +158,7 @@ describe('restartWorkspace', () => {
     let rows: ReturnType<typeof listProvisioning> = []
     installDriver({ prepareSubstrate: () => { rows = listProvisioning(); return Promise.reject(new Error('stop here')) } })
 
-    await expect(restartWorkspace('wt-4')).rejects.toThrow('stop here')
+    await expect(restartWorkspace(local, 'wt-4')).rejects.toThrow('stop here')
 
     expect(rows).toEqual([expect.objectContaining({
       workspaceId: 'wt-4', projectId: DEMO_PROJECT_ID, tool: 'claude', kind: 'restart', groupId: group.groupId,
@@ -172,13 +176,13 @@ describe('restartWorkspace', () => {
       prepareSubstrate: () => { order = listProvisioning().map((r) => r.workspaceId); return Promise.reject(new Error('stop')) },
     })
 
-    await expect(restartWorkspace('wt-5')).rejects.toThrow('stop')
+    await expect(restartWorkspace(local, 'wt-5')).rejects.toThrow('stop')
 
     expect(order).toEqual(['wt-5', 'younger'])
   })
 
   it('refuses an unknown workspace without touching anything', async () => {
-    await expect(restartWorkspace('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(restartWorkspace(local, 'nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(calls).toEqual([])
     expect(listProvisioning()).toEqual([])
   })
@@ -192,19 +196,19 @@ describe('resolveRestartTarget', () => {
     // A live unit names the tool it runs, whatever the row's first
     // conversation was; the group lives only on the row.
     live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'sid-1', jobName: 'yaac-sid-1', tool: 'opencode' })
-    expect(await resolveRestartTarget('sid')).toEqual({
+    expect(await resolveRestartTarget(local, 'sid')).toEqual({
       projectId: DEMO_PROJECT_ID, workspaceId: 'sid-1', tool: 'opencode', jobName: 'yaac-sid-1', groupId: group.groupId,
     })
 
     await stoppedWorkspace('sid-2')
-    await expect(resolveRestartTarget('sid')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(resolveRestartTarget(local, 'sid')).rejects.toMatchObject({ code: 'VALIDATION' })
   })
 
   it('answers a stopped workspace from its row: the first conversation\'s tool, and its group', async () => {
     // opencode leaves no transcript to read the tool back from.
     await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', workspaceId: 'oc-1', tool: 'opencode' })
     const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', 'oc-1')
-    expect(await resolveRestartTarget('oc-1')).toEqual({
+    expect(await resolveRestartTarget(local, 'oc-1')).toEqual({
       projectId: DEMO_PROJECT_ID, workspaceId: 'oc-1', tool: 'opencode', jobName: null, groupId: group.groupId,
     })
   })
@@ -212,6 +216,6 @@ describe('resolveRestartTarget', () => {
   it('falls through to the row when the runtime is unreachable', async () => {
     await stoppedWorkspace('wt-x')
     installDriver({ find: () => Promise.reject(new Error('connection refused')) })
-    expect(await resolveRestartTarget('wt-x')).toMatchObject({ workspaceId: 'wt-x', jobName: null })
+    expect(await resolveRestartTarget(local, 'wt-x')).toMatchObject({ workspaceId: 'wt-x', jobName: null })
   })
 })

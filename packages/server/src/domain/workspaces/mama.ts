@@ -62,11 +62,14 @@ import {
   withFiles,
   type HistoryConversation,
 } from './history-export'
+import type { Actor } from '#domain/access'
 
 /** Who is asking — resolved by the transport, never taken from the request. */
 export interface MamaCaller {
   /** The calling workspace. */
   workspaceId: string
+  /** Who its writes act for (`workspacePrincipal`). */
+  principal: Actor
   /** Its project. Every command is scoped to this and nothing else. */
   projectId: string
   /** The tool it runs, if known; used in the spawned workspace's tool
@@ -323,6 +326,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
 
   const decision = await decideSpawn({
     requestId: `mama:${caller.workspaceId}`,
+    principal: caller.principal,
     callerWorkspaceId: caller.workspaceId,
     callerProjectId: caller.projectId,
     ...(caller.tool !== undefined ? { callerTool: caller.tool } : {}),
@@ -349,7 +353,7 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
   if (parent === '') return { ok: false, error: 'queue needs --parent-workspace' }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
-  const entry = await queueWorkspace(caller.projectId, {
+  const entry = await queueWorkspace(caller.principal, caller.projectId, {
     parent,
     prompt: request.body,
     ...queueFields(settings.settings),
@@ -382,7 +386,7 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   if (Object.keys(patch).length === 0) {
     return { ok: false, error: 'edit-queued needs a new prompt or an option to change' }
   }
-  const entry = await updateQueuedWorkspace(picked.entry.id, patch, { ceiling: callerRow.permissionMode })
+  const entry = await updateQueuedWorkspace(caller.principal, picked.entry.id, patch, { ceiling: callerRow.permissionMode })
   return {
     ok: true,
     output: `Updated queued workspace ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `
@@ -608,7 +612,7 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
 
   let stopped: { provisioning?: true }
   try {
-    stopped = await stopWorkspace(target.workspaceId)
+    stopped = await stopWorkspace(caller.principal, target.workspaceId)
   } catch (err) {
     // The id resolved against rows, so NOT_FOUND here means not running.
     if (err instanceof ServerError && err.code === 'NOT_FOUND') {

@@ -1,6 +1,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import { addAllowedHostToProjectConfig } from '#domain/projects'
 import { resolveWorkspaceContainer } from './resolve'
+import { authorizeProject, type Actor } from '#domain/access'
 
 /**
  * Let a workspace reach a host its egress denied (the webapp's click-to-allow
@@ -12,12 +13,14 @@ import { resolveWorkspaceContainer } from './resolve'
  * config write goes first, so a failure there widens nothing.
  */
 export async function allowWorkspaceHost(
+  principal: Actor,
   idOrName: string,
   host: string,
   opts: { persist: boolean },
 ): Promise<void> {
   const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true })
-  if (opts.persist) await addAllowedHostToProjectConfig(target.projectId, host)
+  await authorizeProject(principal, target.projectId)
+  if (opts.persist) await addAllowedHostToProjectConfig(principal, target.projectId, host)
   await workspaceDriver().allowHost(
     { workspaceId: target.workspaceId, projectId: target.projectId },
     host,

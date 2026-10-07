@@ -8,6 +8,7 @@ import {
   userBuildDir,
 } from '#lib/build-dirs'
 import { ServerError } from '@yaac/shared/errors'
+import { authorizeProject, type Actor } from '#domain/access'
 
 /** Per-project layered/standalone Dockerfile (config/build/Dockerfile.yaac). */
 function projectDockerfilePath(projectId: string): string {
@@ -40,7 +41,8 @@ export async function readProjectDockerfile(projectId: string): Promise<string> 
  * (reverting to the bundled base). The next workspace create rebuilds, since
  * the layer's content hash changes.
  */
-export async function writeProjectDockerfile(projectId: string, content: string): Promise<void> {
+export async function writeProjectDockerfile(principal: Actor, projectId: string, content: string): Promise<void> {
+  await authorizeProject(principal, projectId)
   const filePath = projectDockerfilePath(projectId)
   if (content.trim().length === 0) {
     await fs.rm(filePath, { force: true })

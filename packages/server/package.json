@@ -5,6 +5,7 @@
   "type": "module",
   "imports": {
     "#db": "./src/db/index.js",
+    "#domain/access": "./src/domain/access/index.js",
     "#domain/agent-history": "./src/domain/agent-history/index.js",
     "#domain/auth": "./src/domain/auth/index.js",
     "#domain/git": "./src/domain/git/index.js",

@@ -11,6 +11,7 @@ import {
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { dropProjectClaudeKeychainItem } from '@yaac/shared/tool-auth'
+import { authorizeProject, type Actor } from '#domain/access'
 
 /**
  * Remove a project: its workspaces and bytes (`purgeProjectBytes`), then its
@@ -19,8 +20,9 @@ import { dropProjectClaudeKeychainItem } from '@yaac/shared/tool-auth'
  * again. Lives here rather than in #domain/projects to avoid an import
  * cycle.
  */
-export async function removeProject(projectId: string): Promise<void> {
+export async function removeProject(principal: Actor, projectId: string): Promise<void> {
   if (!await getProjectRow(projectId)) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  await authorizeProject(principal, projectId)
 
   await purgeProjectBytes(projectId)
   // The macOS Keychain item containerless claude keys on the tool home path.

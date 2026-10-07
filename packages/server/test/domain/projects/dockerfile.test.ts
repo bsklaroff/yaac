@@ -9,6 +9,9 @@ import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import type { ProjectMeta } from '@yaac/shared/types'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const LAYERED = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
 const projectId = DEMO_PROJECT_ID
 
@@ -44,25 +47,25 @@ describe('readProjectDockerfile', () => {
   })
 
   it('returns the stored Dockerfile content', async () => {
-    await writeProjectDockerfile(projectId, LAYERED)
+    await writeProjectDockerfile(local, projectId, LAYERED)
     expect(await readProjectDockerfile(projectId)).toBe(LAYERED)
   })
 })
 
 describe('writeProjectDockerfile', () => {
   it('writes the content to config/build/Dockerfile.yaac', async () => {
-    await writeProjectDockerfile(projectId, LAYERED)
+    await writeProjectDockerfile(local, projectId, LAYERED)
     expect(await fs.readFile(projectDockerfilePath(), 'utf8')).toBe(LAYERED)
   })
 
   it('accepts a standalone (non-layered) Dockerfile', async () => {
-    await writeProjectDockerfile(projectId, 'FROM ubuntu:24.04\n')
+    await writeProjectDockerfile(local, projectId, 'FROM ubuntu:24.04\n')
     expect(await readProjectDockerfile(projectId)).toBe('FROM ubuntu:24.04\n')
   })
 
   it('removes the file when given whitespace-only content', async () => {
-    await writeProjectDockerfile(projectId, LAYERED)
-    await writeProjectDockerfile(projectId, '   \n')
+    await writeProjectDockerfile(local, projectId, LAYERED)
+    await writeProjectDockerfile(local, projectId, '   \n')
     expect(await readProjectDockerfile(projectId)).toBe('')
     await expect(fs.access(projectDockerfilePath())).rejects.toThrow()
   })

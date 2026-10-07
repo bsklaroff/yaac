@@ -8,6 +8,11 @@ import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake
 import { addAllowedHostToProjectConfig } from '#domain/projects/local-config'
 import { allowWorkspaceHost } from '#domain/workspaces/allow-host'
 import { ServerError } from '@yaac/shared/errors'
+import { BUILT_IN_USER_ID, recordProject } from '#db'
+import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
+
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 const mockPersist = vi.mocked(addAllowedHostToProjectConfig)
 const mockAllowHost = vi.fn<
@@ -15,11 +20,12 @@ const mockAllowHost = vi.fn<
 >()
 
 const HANDLE = handleFixture({
-  workspaceId: 'sid-1', projectId: 'proj', jobName: 'yaac-proj-sid-1', state: 'running',
+  workspaceId: 'sid-1', projectId: PROJ, jobName: 'yaac-proj-sid-1', state: 'running',
 })
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
   mockPersist.mockResolvedValue({})
   mockAllowHost.mockResolvedValue()
   installFakeWorkspaceDriver({
@@ -30,11 +36,11 @@ beforeEach(() => {
 
 describe('allowWorkspaceHost', () => {
   it('widens live only, writing no config, when persist is false', async () => {
-    await allowWorkspaceHost('sid-1', 'h.com', { persist: false })
+    await allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: false })
 
     expect(mockPersist).not.toHaveBeenCalled()
     expect(mockAllowHost).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectId: 'proj' }, 'h.com', { fanOutToProject: false },
+      { workspaceId: 'sid-1', projectId: PROJ }, 'h.com', { fanOutToProject: false },
     )
   })
 
@@ -49,21 +55,21 @@ describe('allowWorkspaceHost', () => {
       return Promise.resolve()
     })
 
-    await allowWorkspaceHost('sid-1', 'h.com', { persist: true })
+    await allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: true })
 
     // The config write comes first, so a failure there leaves the live
     // allowlist unchanged too.
     expect(order).toEqual(['config', 'runtime'])
-    expect(mockPersist).toHaveBeenCalledExactlyOnceWith('proj', 'h.com')
+    expect(mockPersist).toHaveBeenCalledExactlyOnceWith(local, PROJ, 'h.com')
     expect(mockAllowHost).toHaveBeenCalledExactlyOnceWith(
-      { workspaceId: 'sid-1', projectId: 'proj' }, 'h.com', { fanOutToProject: true },
+      { workspaceId: 'sid-1', projectId: PROJ }, 'h.com', { fanOutToProject: true },
     )
   })
 
   it('widens nothing when the config write fails', async () => {
     mockPersist.mockRejectedValue(new ServerError('VALIDATION', 'bad config'))
 
-    await expect(allowWorkspaceHost('sid-1', 'h.com', { persist: true })).rejects.toThrow('bad config')
+    await expect(allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: true })).rejects.toThrow('bad config')
     expect(mockAllowHost).not.toHaveBeenCalled()
   })
 
@@ -73,7 +79,7 @@ describe('allowWorkspaceHost', () => {
       allowHost: mockAllowHost,
     })
 
-    await expect(allowWorkspaceHost('sid-1', 'h.com', { persist: true }))
+    await expect(allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: true }))
       .rejects.toMatchObject({ code: 'CONFLICT' })
     expect(mockPersist).not.toHaveBeenCalled()
     expect(mockAllowHost).not.toHaveBeenCalled()

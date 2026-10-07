@@ -20,6 +20,10 @@ import {
   writeWorkspaceFile,
 } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
+import { BUILT_IN_USER_ID, recordProject } from '#db'
+
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 /**
  * Real checkouts made by `createCheckout` from a local main clone. Only the
@@ -57,6 +61,7 @@ async function write(dir: string, rel: string, content: string | Buffer = ''): P
 beforeAll(async () => {
   tmp = await fs.mkdtemp(path.join(testTmpBase(), 'yaac-files-'))
   setDataDir(path.join(tmp, 'data'))
+  await recordProject({ id: PROJECT, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
   outside = path.join(tmp, 'outside')
   await write(outside, 'secret.txt', 'secret\n')
 
@@ -376,22 +381,22 @@ describe('writeWorkspaceFile', () => {
 
   it('saves against the version it read, and refuses a stale one with the current', async () => {
     const { version } = await readWorkspaceFile('write', 'a.txt')
-    const saved = await writeWorkspaceFile('write', 'a.txt', 'one\n', version)
+    const saved = await writeWorkspaceFile(local, 'write', 'a.txt', 'one\n', version)
     if (!('saved' in saved)) throw new Error('the save was refused')
     expect(saved.saved).toMatchObject({ path: 'a.txt', size: 4 })
     expect(saved.saved.version).not.toBe(version)
     expect(await read('a.txt')).toBe('one\n')
-    expect(await writeWorkspaceFile('write', 'a.txt', 'two\n', version))
+    expect(await writeWorkspaceFile(local, 'write', 'a.txt', 'two\n', version))
       .toEqual({ conflict: saved.saved.version })
     expect(await read('a.txt')).toBe('one\n')
   })
 
   it('creates a file and its folders, and a create conflicts with what is there', async () => {
-    expect(await writeWorkspaceFile('write', 'x/y/new.txt', 'n', null))
+    expect(await writeWorkspaceFile(local, 'write', 'x/y/new.txt', 'n', null))
       .toMatchObject({ saved: { path: 'x/y/new.txt', size: 1 } })
     expect(await read('x/y/new.txt')).toBe('n')
     const { version } = await readWorkspaceFile('write', 'b.txt')
-    expect(await writeWorkspaceFile('write', 'b.txt', 'clobber', null)).toEqual({ conflict: version })
+    expect(await writeWorkspaceFile(local, 'write', 'b.txt', 'clobber', null)).toEqual({ conflict: version })
     expect(await read('b.txt')).toBe('bravo\n')
   })
 
@@ -399,7 +404,7 @@ describe('writeWorkspaceFile', () => {
     await write(dir, 'doomed.txt', 'd')
     const { version } = await readWorkspaceFile('write', 'doomed.txt')
     await fs.rm(path.join(dir, 'doomed.txt'))
-    expect(await writeWorkspaceFile('write', 'doomed.txt', 'back', version)).toEqual({ conflict: null })
+    expect(await writeWorkspaceFile(local, 'write', 'doomed.txt', 'back', version)).toEqual({ conflict: null })
     await expect(fs.stat(path.join(dir, 'doomed.txt'))).rejects.toThrow()
   })
 
@@ -408,7 +413,7 @@ describe('writeWorkspaceFile', () => {
     await fs.chmod(path.join(dir, 'run.sh'), 0o755)
     const before = await fs.stat(path.join(dir, 'run.sh'))
     const { version } = await readWorkspaceFile('write', 'run.sh')
-    await writeWorkspaceFile('write', 'run.sh', '#!/bin/sh\necho hi\n', version)
+    await writeWorkspaceFile(local, 'write', 'run.sh', '#!/bin/sh\necho hi\n', version)
     const after = await fs.stat(path.join(dir, 'run.sh'))
     expect(after.ino).toBe(before.ino)
     expect(after.mode).toBe(before.mode)
@@ -417,26 +422,26 @@ describe('writeWorkspaceFile', () => {
 
   it('saves through a link to the file it points to, leaving the link', async () => {
     const { version } = await readWorkspaceFile('write', 'link.txt')
-    await writeWorkspaceFile('write', 'link.txt', 'via link\n', version)
+    await writeWorkspaceFile(local, 'write', 'link.txt', 'via link\n', version)
     expect(await read('sub/t.txt')).toBe('via link\n')
     expect((await fs.lstat(path.join(dir, 'link.txt'))).isSymbolicLink()).toBe(true)
   })
 
   it('refuses a save through a link that leads outside, touching nothing', async () => {
-    expect((await refusal(writeWorkspaceFile('write', 'up', 'pwned', 'x'))).code).toBe('VALIDATION')
+    expect((await refusal(writeWorkspaceFile(local, 'write', 'up', 'pwned', 'x'))).code).toBe('VALIDATION')
     expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret\n')
   })
 
   it('creates under a linked folder in its target, and refuses one that leads out', async () => {
-    await writeWorkspaceFile('write', 'lnk/made.txt', 'm', null)
+    await writeWorkspaceFile(local, 'write', 'lnk/made.txt', 'm', null)
     expect(await read('sub/made.txt')).toBe('m')
-    expect((await refusal(writeWorkspaceFile('write', 'away/planted.txt', 'p', null))).code)
+    expect((await refusal(writeWorkspaceFile(local, 'write', 'away/planted.txt', 'p', null))).code)
       .toBe('VALIDATION')
     expect(await fs.readdir(outside)).toEqual(['secret.txt'])
   })
 
   it('refuses to create through a dangling link', async () => {
-    expect((await refusal(writeWorkspaceFile('write', 'dangle', 'x', null))).code).toBe('VALIDATION')
+    expect((await refusal(writeWorkspaceFile(local, 'write', 'dangle', 'x', null))).code).toBe('VALIDATION')
     expect(await fs.readlink(path.join(dir, 'dangle'))).toBe('nowhere')
   })
 })
@@ -451,16 +456,16 @@ describe('createWorkspaceFolder', () => {
   })
 
   it('creates nested folders, and conflicts with an existing entry', async () => {
-    expect(await createWorkspaceFolder('folder', 'p/q/r')).toEqual({ path: 'p/q/r' })
+    expect(await createWorkspaceFolder(local, 'folder', 'p/q/r')).toEqual({ path: 'p/q/r' })
     expect((await fs.stat(path.join(dir, 'p/q/r'))).isDirectory()).toBe(true)
-    expect((await refusal(createWorkspaceFolder('folder', 'p/q'))).code).toBe('CONFLICT')
-    expect((await refusal(createWorkspaceFolder('folder', 'a.txt'))).code).toBe('CONFLICT')
+    expect((await refusal(createWorkspaceFolder(local, 'folder', 'p/q'))).code).toBe('CONFLICT')
+    expect((await refusal(createWorkspaceFolder(local, 'folder', 'a.txt'))).code).toBe('CONFLICT')
   })
 
   it('creates under a linked folder in its target, and refuses one that leads out', async () => {
-    await createWorkspaceFolder('folder', 'lnk/made')
+    await createWorkspaceFolder(local, 'folder', 'lnk/made')
     expect((await fs.stat(path.join(dir, 'real/made'))).isDirectory()).toBe(true)
-    expect((await refusal(createWorkspaceFolder('folder', 'away/planted'))).code).toBe('VALIDATION')
+    expect((await refusal(createWorkspaceFolder(local, 'folder', 'away/planted'))).code).toBe('VALIDATION')
     expect(await fs.readdir(outside)).toEqual(['secret.txt'])
   })
 })
@@ -475,27 +480,27 @@ describe('renameWorkspaceEntry', () => {
   })
 
   it('moves files and folders, within and across folders', async () => {
-    expect(await renameWorkspaceEntry('rename', 'b.txt', 'c.txt')).toEqual({ from: 'b.txt', to: 'c.txt' })
+    expect(await renameWorkspaceEntry(local, 'rename', 'b.txt', 'c.txt')).toEqual({ from: 'b.txt', to: 'c.txt' })
     expect(await fs.readFile(path.join(dir, 'c.txt'), 'utf8')).toBe('bravo\n')
-    await renameWorkspaceEntry('rename', 'folder', 'moved')
+    await renameWorkspaceEntry(local, 'rename', 'folder', 'moved')
     expect(await fs.readFile(path.join(dir, 'moved/inside.txt'), 'utf8')).toBe('i')
-    await renameWorkspaceEntry('rename', 'c.txt', 'moved/deeper/c.txt')
+    await renameWorkspaceEntry(local, 'rename', 'c.txt', 'moved/deeper/c.txt')
     expect(await fs.readFile(path.join(dir, 'moved/deeper/c.txt'), 'utf8')).toBe('bravo\n')
   })
 
   it('renames a link as the link', async () => {
-    await renameWorkspaceEntry('rename', 'link', 'relinked')
+    await renameWorkspaceEntry(local, 'rename', 'link', 'relinked')
     expect(await fs.readlink(path.join(dir, 'relinked'))).toBe('a.txt')
     expect(await fs.readFile(path.join(dir, 'a.txt'), 'utf8')).toBe('alpha\n')
   })
 
   it('refuses a taken destination, a move into itself, .git, and a way out', async () => {
-    expect((await refusal(renameWorkspaceEntry('rename', 'a.txt', 'd.txt'))).code).toBe('CONFLICT')
-    expect((await refusal(renameWorkspaceEntry('rename', 'moved', 'moved/sub'))).code).toBe('VALIDATION')
-    expect((await refusal(renameWorkspaceEntry('rename', 'a.txt', '.git/hooks/x'))).code).toBe('VALIDATION')
-    expect((await refusal(renameWorkspaceEntry('rename', '.git', 'g'))).code).toBe('VALIDATION')
-    expect((await refusal(renameWorkspaceEntry('rename', 'a.txt', 'away/a.txt'))).code).toBe('VALIDATION')
-    expect((await refusal(renameWorkspaceEntry('rename', 'missing', 'x'))).code).toBe('NOT_FOUND')
+    expect((await refusal(renameWorkspaceEntry(local, 'rename', 'a.txt', 'd.txt'))).code).toBe('CONFLICT')
+    expect((await refusal(renameWorkspaceEntry(local, 'rename', 'moved', 'moved/sub'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry(local, 'rename', 'a.txt', '.git/hooks/x'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry(local, 'rename', '.git', 'g'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry(local, 'rename', 'a.txt', 'away/a.txt'))).code).toBe('VALIDATION')
+    expect((await refusal(renameWorkspaceEntry(local, 'rename', 'missing', 'x'))).code).toBe('NOT_FOUND')
     expect(await fs.readdir(outside)).toEqual(['secret.txt'])
     expect(await fs.readFile(path.join(dir, 'a.txt'), 'utf8')).toBe('alpha\n')
   })
@@ -515,24 +520,24 @@ describe('deleteWorkspaceEntry', () => {
   })
 
   it('deletes a file, and a link without what it points to', async () => {
-    await deleteWorkspaceEntry('delete', 'a.txt')
+    await deleteWorkspaceEntry(local, 'delete', 'a.txt')
     await expect(fs.stat(path.join(dir, 'a.txt'))).rejects.toThrow()
-    await deleteWorkspaceEntry('delete', 'link')
+    await deleteWorkspaceEntry(local, 'delete', 'link')
     await expect(fs.lstat(path.join(dir, 'link'))).rejects.toThrow()
     expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret\n')
   })
 
   it('deletes a folder recursively, never following a link inside it', async () => {
-    await deleteWorkspaceEntry('delete', 'tree')
+    await deleteWorkspaceEntry(local, 'delete', 'tree')
     await expect(fs.stat(path.join(dir, 'tree'))).rejects.toThrow()
-    await deleteWorkspaceEntry('delete', 'holder')
+    await deleteWorkspaceEntry(local, 'delete', 'holder')
     await expect(fs.lstat(path.join(dir, 'holder'))).rejects.toThrow()
     expect(await fs.readFile(path.join(outside, 'deep/keep.txt'), 'utf8')).toBe('keep')
   })
 
   it('refuses a path through a link that leads out, and a missing one', async () => {
-    expect((await refusal(deleteWorkspaceEntry('delete', 'away/secret.txt'))).code).toBe('VALIDATION')
+    expect((await refusal(deleteWorkspaceEntry(local, 'delete', 'away/secret.txt'))).code).toBe('VALIDATION')
     expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret\n')
-    expect((await refusal(deleteWorkspaceEntry('delete', 'missing'))).code).toBe('NOT_FOUND')
+    expect((await refusal(deleteWorkspaceEntry(local, 'delete', 'missing'))).code).toBe('NOT_FOUND')
   })
 })

@@ -11,6 +11,7 @@ describe('shared errors', () => {
         RUNTIME_UNAVAILABLE: 503,
         AUTH_AGENT_DISCONNECTED: 503,
         UNAUTHENTICATED: 401,
+        FORBIDDEN: 403,
         BAD_HOST: 403,
         NOT_SUPPORTED: 501,
         MISSING_TOOL: 400,
