@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { reconnectingSocket, type ReconnectingSocket } from '#lib/reconnect'
 import type { AcpClientMessage, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpServerMessage } from '@yaac/shared/acp'
+import type { PermissionMode } from '@yaac/shared/types'
 
 export interface AcpStream {
   events: AcpEvent[]
@@ -31,6 +32,8 @@ export interface AcpStream {
   taskOutputs: Record<string, TaskOutput>
   /** The answer to each `subagent-transcript` request, by subagent id. */
   subagentTranscripts: Record<string, SubagentTranscript>
+  /** The conversation's posture and the ones it can be switched to. */
+  permissionModes: { current?: PermissionMode; available: PermissionMode[] }
 }
 
 /** The end of a background task's output, or why it could not be read. */
@@ -67,6 +70,7 @@ export function useAcpStream(
   const [connected, setConnected] = useState(false)
   const [taskOutputs, setTaskOutputs] = useState<Record<string, TaskOutput>>({})
   const [subagentTranscripts, setSubagentTranscripts] = useState<Record<string, SubagentTranscript>>({})
+  const [permissionModes, setPermissionModes] = useState<AcpStream['permissionModes']>({ available: [] })
   const socketRef = useRef<ReconnectingSocket | null>(null)
 
   useEffect(() => {
@@ -105,6 +109,11 @@ export function useAcpStream(
           setQueued(msg.queued)
           return false
         }
+        if (msg.type === 'permission-mode') {
+          const { type: _, ...modes } = msg
+          setPermissionModes(modes)
+          return false
+        }
         if (msg.type === 'health') setConnected(msg.connected)
         if (msg.type === 'task-output') {
           const { taskId, ...output } = msg
@@ -132,6 +141,7 @@ export function useAcpStream(
     connected,
     taskOutputs,
     subagentTranscripts,
+    permissionModes,
     send: (msg) => socketRef.current?.send(JSON.stringify(msg)) ?? false,
   }
 }

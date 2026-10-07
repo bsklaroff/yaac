@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, RenameIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
+import { PERMISSION_MODE_HELP } from '#components/PermissionModeMenu'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { Modal } from '#components/ui/Modal'
 import { Typeahead } from '#components/ui/Typeahead'
@@ -32,19 +33,6 @@ import type {
   ToolCreateDefaults,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
-
-/** Hover copy for the posture the dropdown is currently showing. */
-const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
-  bypass: 'The agent acts without ever asking.',
-  auto: 'The agent acts without asking, but a reviewer model judges each action'
-    + ' and blocks the dangerous ones. Claude gates this by subscription plan.',
-  'accept-edits': 'The agent edits files in the workspace without asking, and still'
-    + ' asks before running commands or reaching outside it.',
-  manual: 'The agent asks before every action.',
-  plan: 'The agent explores and plans read-only; it cannot edit until you approve a plan.',
-  'read-only': 'The agent reads and explores freely inside a read-only sandbox, and asks before'
-    + ' every edit and anything that reaches the network.',
-}
 
 const MODE_COPY: Record<AgentMode, string> = { tui: 'Terminal', acp: 'Chat' }
 const MODE_HELP: Record<AgentMode, string> = {

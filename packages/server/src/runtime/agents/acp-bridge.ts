@@ -6,8 +6,9 @@
  *  - Frames are JSON text (`AcpServerMessage` / `AcpClientMessage`).
  *  - Attaching replays: `hello` carries the conversation record so far, and
  *    the same record tail feeds all later content. The live subscription
- *    adds only turn boundaries, errors and the queue of messages waiting
- *    for the turn to end, none of which the record carries.
+ *    adds only turn boundaries, errors, the queue of messages waiting for
+ *    the turn to end and the permission posture, none of which the record
+ *    carries in a form a pane can use.
  *  - Detaching only unsubscribes; the driver's connection owns the
  *    conversation (which is why acpd exists).
  *
@@ -145,6 +146,7 @@ export function attachAcp(
         for (const notice of conversation.standingNotices) {
           send({ type: 'event', event: { ...notice, seq: seq++ } })
         }
+        send({ type: 'permission-mode', ...conversation.permissionModes })
         return
       }
       for (const event of events) send({ type: 'event', event: { ...event, seq: seq++ } })
@@ -172,6 +174,9 @@ export function attachAcp(
       .then(() => {
         if (!detached) send({ type: 'queue', queued })
       })
+  })
+  const unsubscribePermissionModes = conversation.onPermissionModes((modes) => {
+    if (!detached) send({ type: 'permission-mode', ...modes })
   })
   // The pane is bound to this conversation object. When it closes, close
   // the socket too: a replacement under the same `acp:<id>` is a different
@@ -211,6 +216,10 @@ export function attachAcp(
       // The reply is recorded, so the pane learns the new model as a
       // `models` event from the tail.
       void conversation.switchModel(msg.modelId)
+      return
+    }
+    if (msg.type === 'permission-mode' && conversation.permissionModes.available.includes(msg.mode)) {
+      void conversation.switchPermissionMode(msg.mode)
       return
     }
     if (msg.type === 'stop-task' && typeof msg.taskId === 'string' && tasks.get(msg.taskId)?.canStop === true) {
@@ -275,6 +284,7 @@ export function attachAcp(
     tail.close()
     unsubscribe()
     unsubscribeQueue()
+    unsubscribePermissionModes()
     unsubscribeClose()
   })
 }

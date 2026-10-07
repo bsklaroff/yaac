@@ -6,6 +6,7 @@ import {
   ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
+import { PermissionModeMenu } from '#components/PermissionModeMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import {
@@ -52,7 +53,7 @@ export function WorkspaceChat({
   agentSessionId: string
   visible?: boolean
 }): JSX.Element {
-  const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts } = useAcpStream(workspaceId, agentSessionId)
+  const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts, permissionModes } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const fullWidth = useUiStore((s) => s.chatFullWidth)
@@ -475,10 +476,20 @@ export function WorkspaceChat({
                     aria-label={condensed ? 'Show every step' : 'Show key messages only'}
                     title={condensed ? 'Show every step' : 'Show key messages only'}
                     onClick={() => setCondensed(!condensed)}
-                    className="mr-auto rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text"
+                    className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text"
                   >
                     {condensed ? <UncondenseIcon size={16} /> : <CondenseIcon size={16} />}
                   </button>
+                  <div className="mr-auto">
+                    {permissionModes.current !== undefined && (
+                      <PermissionModeMenu
+                        current={permissionModes.current}
+                        available={permissionModes.available}
+                        disabled={!connected}
+                        onSelect={(mode) => send({ type: 'permission-mode', mode })}
+                      />
+                    )}
+                  </div>
                   <input
                     ref={fileInputRef}
                     type="file"
