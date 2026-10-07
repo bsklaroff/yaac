@@ -84,9 +84,10 @@ locals {
     k3s_version     = var.k3s_version
     k3s_install_url = local.k3s_install_url
     k3s_config = yamlencode(merge(local.k3s_node_config, {
-      server     = "https://${local.control_ip}:6443"
-      token      = random_password.agent_token.result
-      node-taint = ["${local.gvisor_pending_taint}=true:NoSchedule"]
+      kubelet-arg = concat(local.k3s_node_config.kubelet-arg, ["system-reserved=${var.worker_system_reserved}"])
+      server      = "https://${local.control_ip}:6443"
+      token       = random_password.agent_token.result
+      node-taint  = ["${local.gvisor_pending_taint}=true:NoSchedule"]
     }))
     nfs_device = ""
     nfs_export = ""

@@ -40,6 +40,12 @@ variable "control_system_reserved" {
   default     = "cpu=1,memory=2Gi"
 }
 
+variable "worker_system_reserved" {
+  description = "kubelet system-reserved on every worker, manual or autoscaled: the cpu and memory kept for the k3s agent and containerd, so workspaces using memory past their requests are evicted before those run short. The autoscaler plans a new node from its full size, so it may count one workspace more than fits."
+  type        = string
+  default     = "cpu=500m,memory=1Gi"
+}
+
 variable "manual_workers" {
   description = "Always-on workers you manage through this file, by name, with their server type. Add an entry to add a node; drain a node (kubectl drain) before removing its entry."
   type        = map(string)
