@@ -114,7 +114,6 @@ export function WorkspaceView({
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
   const setWorkspaceLayout = useUiStore((s) => s.setWorkspaceLayout)
-  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const activeProjectId = useUiStore((s) => s.activeProjectId)
   const viewMode = useUiStore((s) => s.viewMode)
@@ -380,35 +379,8 @@ export function WorkspaceView({
     )
   }
 
-  /** The header's leading button: back to the workspace list on mobile, or
-   *  the show-sidebar toggle on desktop while the sidebar is hidden. */
-  const leading: ReactNode = isMobile ? (
-    <button
-      onClick={goBackScreen}
-      title="Back to workspaces"
-      aria-label="Back to workspaces"
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
-        transition active:bg-surface-2"
-    >
-      <NavBackIcon size={18} />
-    </button>
-  ) : !sidebarOpen ? (
-    <button
-      onClick={toggleSidebar}
-      title="Show sidebar"
-      aria-label="Show sidebar"
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-        hover:bg-surface-2 hover:text-text-dim"
-    >
-      <SidebarIcon size={14} />
-    </button>
-  ) : null
-
-  // On mobile the warning badges (git auth, blocked hosts, unforwarded ports)
-  // stay in the bar and other controls move to an overflow menu.
-  const headerClass = isMobile
-    ? 'flex h-12 shrink-0 items-center gap-1 border-b border-hairline pl-1 pr-1.5 text-xs'
-    : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
+  const leading: ReactNode = isMobile || !sidebarOpen ? <PaneBarLeading /> : null
+  const headerClass = paneBarClass(isMobile)
 
   // The mobile key bar, only over a terminal pane.
   const keyBarTarget = isMobile && workspace && activeTab && !isSpecialPane(activeTab) ? activeTab : null
@@ -745,6 +717,50 @@ export function WorkspaceView({
       />
     </main>
   )
+}
+
+/**
+ * The workspace bar's leading button: back to the workspace list on mobile,
+ * or the show-sidebar toggle on desktop while the sidebar is hidden.
+ */
+export function PaneBarLeading(): JSX.Element | null {
+  const isMobile = useIsMobile()
+  const sidebarOpen = useUiStore((s) => s.sidebarOpen)
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+  if (isMobile) {
+    return (
+      <button
+        onClick={goBackScreen}
+        title="Back to workspaces"
+        aria-label="Back to workspaces"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
+          transition active:bg-surface-2"
+      >
+        <NavBackIcon size={18} />
+      </button>
+    )
+  }
+  if (sidebarOpen) return null
+  return (
+    <button
+      onClick={toggleSidebar}
+      title="Show sidebar"
+      aria-label="Show sidebar"
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
+        hover:bg-surface-2 hover:text-text-dim"
+    >
+      <SidebarIcon size={14} />
+    </button>
+  )
+}
+
+/** The workspace bar's classes. On mobile the warning badges (git auth,
+ *  blocked hosts, unforwarded ports) stay in the bar and other controls move
+ *  to an overflow menu. */
+export function paneBarClass(isMobile: boolean): string {
+  return isMobile
+    ? 'flex h-12 shrink-0 items-center gap-1 border-b border-hairline pl-1 pr-1.5 text-xs'
+    : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
 }
 
 /**

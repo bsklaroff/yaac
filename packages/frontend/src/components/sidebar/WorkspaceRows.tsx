@@ -23,6 +23,7 @@ import { useUiStore, isUnreadWaiting } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
+import { useReadOnly } from '#lib/viewer'
 import { patchStopped } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
@@ -60,6 +61,7 @@ export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
+  const readOnly = useReadOnly()
 
   const dismiss = (): void => {
     void dismissProvisioning(entry.workspaceId).catch(() => { /* best-effort */ })
@@ -95,7 +97,7 @@ export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }
         </span>
       </button>
 
-      {!entry.stopping && (
+      {!entry.stopping && !readOnly && (
         <button
           onClick={entry.error ? dismiss : () => stopProvisioning(entry.workspaceId)}
           title={entry.error ? 'Dismiss' : 'Stop'}
@@ -486,6 +488,7 @@ export function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
   const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
   const openStoppedOverlay = useUiStore((s) => s.openStoppedOverlay)
   const [confirmRestart, setConfirmRestart] = useState(false)
+  const readOnly = useReadOnly()
 
   const onConfirmRestart = (): void => {
     setConfirmRestart(false)
@@ -538,7 +541,7 @@ export function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
       </button>
 
       {/* Overlay buttons as on live rows: remove from group, then restart. */}
-      {entry.groupId !== undefined && <button
+      {entry.groupId !== undefined && !readOnly && <button
         onClick={ungroup}
         title="Remove from group"
         aria-label="Remove from group"
@@ -549,7 +552,7 @@ export function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
       >
         <GroupRemoveIcon size={13} />
       </button>}
-      <button
+      {!readOnly && <button
         onClick={() => setConfirmRestart(true)}
         title="Restart workspace"
         aria-label="Restart workspace"
@@ -559,7 +562,7 @@ export function DeletedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
           max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
       >
         <RestartIcon size={13} />
-      </button>
+      </button>}
 
       <ConfirmDialog
         open={confirmRestart}

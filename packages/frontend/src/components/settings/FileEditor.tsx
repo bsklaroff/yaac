@@ -9,8 +9,8 @@ import { useUiStore } from '#lib/store'
 /**
  * A syntax-highlighted file editor that loads text via `load` (cached under
  * `queryKey`, and refetched each time the editor mounts), tracks dirty
- * state, and saves via `save`. A caller switches files by changing
- * `queryKey`.
+ * state, and saves via `save`; without `save` it is a read-only viewer. A
+ * caller switches files by changing `queryKey`.
  *
  * An expand button opens the same buffer in a near-fullscreen dialog titled
  * `title`; edits carry over in both directions. Text size follows the file
@@ -28,7 +28,7 @@ export function FileEditor({
   language: HighlightLanguage | null
   queryKey: readonly unknown[]
   load: () => Promise<string>
-  save: (text: string) => Promise<void>
+  save?: (text: string) => Promise<void>
   hint?: string
 }): JSX.Element {
   const queryClient = useQueryClient()
@@ -38,7 +38,7 @@ export function FileEditor({
   const [expanded, setExpanded] = useState(false)
   const fontSize = useUiStore((s) => s.editorFontSize)
   const saving = useMutation({
-    mutationFn: save,
+    mutationFn: (text: string) => save?.(text) ?? Promise.resolve(),
     onSuccess: (_, text) => {
       queryClient.setQueryData(queryKey, text)
       setEdit(null)
@@ -60,7 +60,7 @@ export function FileEditor({
     <>
       {hint && <p className="text-[11px] leading-relaxed text-text-faint">{hint}</p>}
       {error && <p className="whitespace-pre-wrap text-xs text-red-400">{error.message}</p>}
-      <div className="flex items-center gap-2">
+      {save && <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={onSave}
@@ -71,14 +71,14 @@ export function FileEditor({
           {saving.isPending ? 'Saving…' : 'Save'}
         </button>
         {saving.isSuccess && !dirty && <span className="text-xs text-emerald-400">Saved</span>}
-      </div>
+      </div>}
     </>
   )
 
   return (
     <div className="flex flex-col gap-2">
       <div className="relative">
-        <CodeEditor value={text} onChange={onEdit} language={language} fontSize={fontSize} />
+        <CodeEditor value={text} onChange={onEdit} language={language} fontSize={fontSize} readOnly={!save} />
         <button
           type="button"
           onClick={() => setExpanded(true)}
@@ -105,6 +105,7 @@ export function FileEditor({
           onChange={onEdit}
           language={language}
           fontSize={fontSize}
+          readOnly={!save}
           height="100%"
           className="min-h-0 flex-1"
         />

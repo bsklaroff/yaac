@@ -6,6 +6,7 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 
 import { listProjects } from '#domain/projects'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
+import { BUILT_IN_USER_ID } from '#db'
 
 const FOO = 'acbd18db-4cc2-485c-8def-654fccc4a4d8'
 const BAR = '37b51d19-4a75-43e4-8b56-f6524f2d51f2'
@@ -47,6 +48,7 @@ describe('listProjects', () => {
       name: 'demo',
       remoteUrl: 'https://example/foo',
       addedAt: '2026-01-01T00:00:00.000Z',
+      owner: BUILT_IN_USER_ID,
     })
     // A project the substrate said nothing about counts 0, not undefined.
     expect(typeof foo?.workspaceCount).toBe('number')

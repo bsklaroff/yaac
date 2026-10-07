@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { act, render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type {
   AuthListResult, DraftWorkspaceEntry, QueuedWorkspaceEntry, WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -400,7 +400,7 @@ describe('CreateWorkspaceDialog', () => {
   })
 
   it('renders a labeled trigger in the cta variant', () => {
-    render(<NewWorkspaceButton projectId="proj" variant="cta" />)
+    renderWithClient(<NewWorkspaceButton projectId="proj" variant="cta" />)
     // The icon variant's trigger is icon-only; the CTA carries a visible label.
     expect(screen.getByRole('button', { name: /New workspace/ }).textContent).toContain('New workspace')
   })

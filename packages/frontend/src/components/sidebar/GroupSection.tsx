@@ -127,7 +127,7 @@ export function GroupSection({
                   { label: 'Rename', onSelect: startRename },
                   { label: group.pinned ? 'Unpin' : 'Pin', onSelect: togglePinned },
                   ...(ghosts.length > 0
-                    ? [{ label: showStopped ? 'Hide stopped workspaces' : 'Show stopped workspaces', onSelect: toggleStopped }]
+                    ? [{ label: showStopped ? 'Hide stopped workspaces' : 'Show stopped workspaces', onSelect: toggleStopped, view: true as const }]
                     : []),
                   'separator',
                   { label: 'Delete group', onSelect: remove },

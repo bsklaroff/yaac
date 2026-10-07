@@ -10,6 +10,7 @@ import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshot } from '#lib/useSnapshot'
+import { projectsOf, useWhoami } from '#lib/viewer'
 import { useProjectName } from '#lib/projectIdentity'
 import { useUiStore } from '#lib/store'
 import type { GitCredentialSummary, ProjectSummary } from '@yaac/shared/types'
@@ -25,7 +26,9 @@ import type { GitCredentialSummary, ProjectSummary } from '@yaac/shared/types'
  */
 export function GitCredentials(): JSX.Element {
   const auth = useAuthList()
-  const projects = useSnapshot()?.projects ?? []
+  // Credentials are the caller's own, so only their projects can use one.
+  const me = useWhoami()?.userId
+  const projects = projectsOf(useSnapshot()?.projects ?? [], me)
   // Read once: after an assignment the picker must not reopen under the
   // project's new credential.
   const [focus, setFocus] = useState(useUiStore.getState().settingsFocusProject)

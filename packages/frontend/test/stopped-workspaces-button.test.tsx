@@ -50,7 +50,7 @@ const MARK_ALL = 'POST /api/workspace/mark-all-deaths-seen'
 
 let server: FetchMock
 beforeEach(() => {
-  useUiStore.setState({ stoppedOverlayOpen: false, optimisticStopped: [] })
+  useUiStore.setState({ stoppedOverlayOpen: false, optimisticStopped: [], viewedUserId: null })
   vi.clearAllMocks()
   server = mockFetch({ [LIST]: TWO, [MARK]: undefined, [MARK_ALL]: undefined })
 })
@@ -198,6 +198,17 @@ describe('StoppedWorkspacesButton', () => {
     // the dot clears without a refetch.
     await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectId: 'proj', workspaceId: 's3' }]))
     await waitFor(() => expect(screen.queryByTitle(/died unexpectedly/)).toBeNull())
+  })
+
+  it('reads a teammate\'s deaths without marking them seen or offering a restart', async () => {
+    useUiStore.setState({ viewedUserId: 'u-ada' })
+    listing([entry({ workspaceId: 's3', title: 'OOMed run', deathReason: 'oom' })])
+    await open()
+    fireEvent.click(screen.getAllByText('OOMed run')[0])
+    await waitFor(() => expect(screen.getByText('Cause')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: 'Mark all as read' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+    expect(server.called(MARK)).toEqual([])
   })
 
   it('does not acknowledge deaths the search box walks the stand-in through', async () => {

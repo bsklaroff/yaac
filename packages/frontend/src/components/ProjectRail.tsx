@@ -2,14 +2,16 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { SettingsButton } from '#components/SettingsButton'
+import { UserSwitcher } from '#components/UserSwitcher'
 import { WindowControls } from '#components/WindowControls'
 import { isElectron } from '#lib/platform'
 import { projectColor, projectInitial } from '#lib/projectIdentity'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
- * Left rail of project chips. The active project scopes the sidebar; a
- * project with unviewed workspaces waiting for input shows a dot.
+ * Left rail: the user switcher, then the viewed user's project chips. The
+ * active project scopes the sidebar; a project with unviewed workspaces
+ * waiting for input shows a dot.
  */
 export function ProjectRail({
   projects,
@@ -30,6 +32,7 @@ export function ProjectRail({
       isElectron() ? 'pt-2' : 'pt-3',
     )}>
       {isElectron() && <WindowControls className="h-5" />}
+      <UserSwitcher />
       {projects.map((p) => {
         const active = p.id === activeProjectId
         const color = projectColor(p.id)

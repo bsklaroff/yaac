@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
+import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient as render, serverError, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
@@ -22,6 +23,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  useUiStore.setState({ viewedUserId: null })
 })
 
 const ALLOW = 'POST /api/workspace/sess-1/allow-host'
@@ -99,5 +101,14 @@ describe('BlockedHostsBadge', () => {
 
     await waitFor(() => expect(screen.getByText('host is not valid')).toBeTruthy())
     expect(screen.getByText('Allow for this workspace')).toBeTruthy()
+  })
+
+  it('lists a teammate\'s blocked hosts with no actions', () => {
+    useUiStore.setState({ viewedUserId: 'u-ada' })
+    render(<BlockedHostsBadge hosts={HOSTS} workspaceId="sess-1" iconSize={12} />)
+    openPopover()
+    fireEvent.click(screen.getByText('registry.npmjs.org'))
+    expect(screen.queryByText('Allow for this workspace')).toBeNull()
+    expect(server.called(ALLOW)).toEqual([])
   })
 })

@@ -9,6 +9,9 @@ import { ServerError } from '@yaac/shared/errors'
 import { getSessionTranscript, TRANSCRIPT_UNAVAILABLE } from '#lib/transcriptApi'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
+/** How often a `live` transcript is refetched. */
+const LIVE_REFRESH_MS = 5000
+
 /**
  * A stopped workspace's conversations, rendered with the same `AcpTranscript`
  * as the live chat pane. They survive the container: an `acp` one as acpd's
@@ -16,18 +19,26 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
  * as tabs in restore order. Fetched once and cached forever, since a stopped
- * conversation cannot change. A subagent's card opens its own transcript and
- * a task's card what the record kept of it, as in the live pane.
+ * conversation cannot change, unless `live`: a running workspace a teammate
+ * reads this way (ReadOnlyWorkspace) is refetched every few seconds, under
+ * its own cache key, so a poll taken before the workspace stopped is never
+ * served as its final record.
+ *
+ * A subagent's card opens its own transcript and a task's card what the
+ * record kept of it, as in the live pane; both read the same query, so they
+ * refresh with it.
  */
 export function StoppedTranscript({
   workspaceId,
   sessions,
   prompt,
+  live = false,
 }: {
   workspaceId: string
   sessions: AgentSessionEntry[]
   /** The starting prompt, shown when there is no readable transcript. */
   prompt?: string
+  live?: boolean
 }): JSX.Element | null {
   const viewable = useMemo(
     () => [...sessions].sort((a, b) => a.ordinal - b.ordinal),
@@ -41,10 +52,11 @@ export function StoppedTranscript({
     ?? viewable[0]
 
   const { data, isPending, isError, error } = useQuery({
-    queryKey: ['transcript', workspaceId, selected?.agentSessionId],
+    queryKey: ['transcript', workspaceId, selected?.agentSessionId, live],
     queryFn: () => getSessionTranscript(workspaceId, selected?.agentSessionId ?? ''),
     enabled: selected !== undefined,
     staleTime: Infinity,
+    refetchInterval: live ? LIVE_REFRESH_MS : false,
   })
 
   /** The subagent or task being read instead of the conversation, if any. */

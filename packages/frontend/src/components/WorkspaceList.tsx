@@ -8,6 +8,7 @@ import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
 import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
+import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
 import { useUiStore } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
@@ -230,6 +231,9 @@ export function WorkspaceList({
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   // For the empty-state text: there's no project rail on a phone.
   const isMobile = useIsMobile()
+  const readOnly = useReadOnly()
+  const viewedUserId = useViewedUserId()
+  const viewedName = useWhoami()?.users.find((u) => u.id === viewedUserId)?.name ?? 'A teammate'
   const stopped = useStoppedWorkspaces(projectId, workspaces, provisioning)
 
   const layout = sidebarLayout(workspaces, groups, stopped, provisioning, queued, held)
@@ -311,7 +315,7 @@ export function WorkspaceList({
   // workspaces.
   const rowDrag: SidebarDrag = {
     start: (e, workspace, onSelect) => {
-      if (e.pointerType !== 'mouse') return
+      if (e.pointerType !== 'mouse' || readOnly) return
       start(e, {
         workspaceId: workspace.workspaceId,
         projectId: workspace.projectId,
@@ -330,6 +334,11 @@ export function WorkspaceList({
   return (
     <QueueContext.Provider value={queueContext}>
       <div className="flex-1 overflow-y-auto py-1">
+        {readOnly && (
+          <p className="mx-3 mb-1 rounded-md bg-surface-2 px-2.5 py-1.5 text-[11px] text-text-dim">
+            {viewedName}&apos;s workspaces, read-only
+          </p>
+        )}
         {!projectId && (
           <EmptyState
             compact
@@ -346,7 +355,7 @@ export function WorkspaceList({
             compact
             className="py-10"
             title="No workspaces yet"
-            description="Start one with the + above."
+            description={readOnly ? undefined : 'Start one with the + above.'}
           />
         )}
         {drafts.length > 0 && <DraftsSection drafts={drafts} />}

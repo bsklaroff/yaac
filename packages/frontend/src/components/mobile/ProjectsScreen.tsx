@@ -3,6 +3,7 @@ import { ChevronIcon } from '#lib/icons'
 import { MobileHeader } from '#components/mobile/MobileHeader'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { SettingsButton } from '#components/SettingsButton'
+import { UserSwitcher } from '#components/UserSwitcher'
 import { EmptyState } from '#components/ui/EmptyState'
 import { projectColor, projectInitial } from '#lib/projectIdentity'
 import type { ProjectSummary } from '@yaac/shared/types'
@@ -83,6 +84,7 @@ export function ProjectsScreen({
         })}
 
         <div className="mt-2 border-t border-hairline pt-2">
+          <UserSwitcher variant="row" />
           <NewProjectButton variant="row" />
           <SettingsButton variant="row" />
         </div>

@@ -1097,6 +1097,9 @@ export interface ProjectSummary {
   name: string
   remoteUrl: string
   addedAt: string
+  /** The owning user's id (`User.id`). Every other snapshot row belongs to
+   *  its project's owner. */
+  owner: string
   workspaceCount: number
   /** The agent last created with; the create form opens on it. Absent
    *  before the first create (claude is assumed). */

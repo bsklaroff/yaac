@@ -3,8 +3,11 @@ import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { MoreIcon } from '#lib/icons'
 import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { useReadOnly } from '#lib/viewer'
 
-export type RowMenuItem = { label: string; onSelect: () => void } | 'separator'
+/** A menu item, or a separator. `view` marks an item that changes only what
+ *  this client shows, so it stays in a read-only view (#lib/viewer). */
+export type RowMenuItem = { label: string; onSelect: () => void; view?: true } | 'separator'
 
 /**
  * A row's `…` actions menu at its top right, shown on hover (always on
@@ -21,13 +24,16 @@ export function RowMenu({ label, items, position = 'right-2 top-2' }: {
   items: RowMenuItem[]
   /** The trigger's position; a group header is shorter than a row. */
   position?: string
-}): JSX.Element {
+}): JSX.Element | null {
   const trigger = useRef<HTMLButtonElement>(null)
   // Kept until the next open, since `finalFocus` reads it after the item runs.
   const picked = useRef<(() => void) | null>(null)
   // Whether the last input in the popup was a key. The click's `detail` can't
   // tell, since a press-drag-release pick clicks programmatically.
   const byKey = useRef(false)
+  const readOnly = useReadOnly()
+  const shown = readOnly ? items.filter((item) => item !== 'separator' && item.view) : items
+  if (shown.length === 0) return null
   return (
     <Menu.Root
       onOpenChange={(open) => { if (open) picked.current = null }}
@@ -59,7 +65,7 @@ export function RowMenu({ label, items, position = 'right-2 top-2' }: {
             onPointerUp={() => { byKey.current = false }}
             className={clsx('min-w-[180px]', POPUP)}
           >
-            {items.map((item, i) => item === 'separator'
+            {shown.map((item, i) => item === 'separator'
               ? <Menu.Separator key={`sep-${i}`} className="my-1 h-px bg-border" />
               : (
                 <Menu.Item key={item.label} className={MENU_ITEM} onClick={() => { picked.current = item.onSelect }}>
