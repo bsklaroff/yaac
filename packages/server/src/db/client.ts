@@ -6,6 +6,7 @@ import type { PGlite } from '@electric-sql/pglite'
 import { env, testEnv } from '@yaac/shared/env'
 import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
 import { forgetSecretConfig } from './secret-key'
+import { BUILT_IN_USER_ID, forgetSeenUsers } from './user-store'
 
 /**
  * The server's on-disk PGlite database (embedded Postgres). `getDb` stays off
@@ -46,10 +47,11 @@ async function openSharedDb(): Promise<Db> {
 
 /**
  * Empty every table in the `public` schema, so the next data dir starts as
- * clean as a freshly migrated one. Tables come from the catalog, so ones
- * added by later migrations are covered. `RESTART IDENTITY` resets
- * sequences; `CASCADE` is needed for referenced tables. drizzle's migration
- * bookkeeping lives in the `drizzle` schema and is kept.
+ * clean as a freshly migrated one: empty, bar the built-in user the
+ * migration inserts. Tables come from the catalog, so ones added by later
+ * migrations are covered. `RESTART IDENTITY` resets sequences; `CASCADE` is
+ * needed for referenced tables. drizzle's migration bookkeeping lives in the
+ * `drizzle` schema and is kept.
  */
 async function wipeSharedDb(db: Db): Promise<void> {
   const { rows } = await db.$client.query<{ tablename: string }>(
@@ -58,6 +60,7 @@ async function wipeSharedDb(db: Db): Promise<void> {
   if (rows.length === 0) return
   const list = rows.map((r) => `"${r.tablename}"`).join(', ')
   await db.$client.exec(`TRUNCATE ${list} RESTART IDENTITY CASCADE`)
+  await db.$client.query('INSERT INTO users (id, name) VALUES ($1, $2)', [BUILT_IN_USER_ID, 'local'])
 }
 
 function getSharedDb(dir: string): Promise<Db> {
@@ -109,6 +112,7 @@ export async function openDb(): Promise<void> {
  */
 export function getDb(): Promise<Db> {
   const dir = dbDir()
+  if (cached?.dir !== dir) forgetSeenUsers()
   if (testEnv.sharedTestDb) return getSharedDb(dir)
   if (cached?.dir !== dir) {
     const promise = openHandle(dir, cached?.promise ?? null)
@@ -125,8 +129,10 @@ export function getDb(): Promise<Db> {
 export async function closeDb(): Promise<void> {
   const prev = cached
   cached = null
-  // The encryption key is cached per data dir too, so drop both together.
+  // The encryption key and seen users are cached per data dir too, so drop
+  // them together.
   forgetSecretConfig()
+  forgetSeenUsers()
   // The shared test instance must stay open for the next test; dropping the
   // cache is enough.
   if (testEnv.sharedTestDb) return

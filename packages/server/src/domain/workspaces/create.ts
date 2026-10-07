@@ -650,7 +650,11 @@ export async function createWorkspace(
 
   await runtime.ensureRuntimeReachable()
 
-  const gitUser = await getGitIdentity()
+  const projectRow = await getProjectRow(projectId)
+  if (!projectRow) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  const { remoteUrl, owner } = projectRow
+
+  const gitUser = await getGitIdentity(owner)
   if (!gitUser) {
     throw new ServerError(
       'VALIDATION',
@@ -668,10 +672,6 @@ export async function createWorkspace(
   // since a remote client cannot set the server's own environment
   // (docs/remote-hosting.md).
   const projectEnv = await resolveProjectEnv(projectId)
-
-  const projectRow = await getProjectRow(projectId)
-  if (!projectRow) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  const { remoteUrl } = projectRow
 
   // Without a git credential the agent could neither fetch nor push.
   const parsedRemote = parseGitRemote(remoteUrl)
@@ -752,7 +752,7 @@ export async function createWorkspace(
   // The user's zone, as clients report it; a pod otherwise runs in UTC, and
   // a containerless server's host need not be where the user is. Recorded so
   // a spare warmed in another zone is never claimed.
-  const { timeZone } = await getTimeZone()
+  const { timeZone } = await getTimeZone(owner)
   throwIfProvisionStopped(workspaceId)
   await applyWorkspaceEvent({
     type: 'workspace-created',

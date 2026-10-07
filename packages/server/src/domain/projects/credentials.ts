@@ -79,11 +79,14 @@ function validName(raw: string): string {
   return name
 }
 
-/** Store an HTTPS token under a name. */
-export async function addHttpsCredential(params: { name: string; token: string }): Promise<{ id: string }> {
+/** Store an HTTPS token under a name, owned by `owner`. */
+export async function addHttpsCredential(
+  owner: string,
+  params: { name: string; token: string },
+): Promise<{ id: string }> {
   const token = params.token.trim()
   if (!token) throw new ServerError('VALIDATION', 'Token cannot be empty.')
-  const row = await insertGitCredential({ name: validName(params.name), kind: 'https', secret: token })
+  const row = await insertGitCredential({ owner, name: validName(params.name), kind: 'https', secret: token })
   return { id: row.id }
 }
 
@@ -92,11 +95,14 @@ export async function addHttpsCredential(params: { name: string; token: string }
  * Returns the public key for the user to register with their git host. No
  * host is contacted until the key is assigned to a project.
  */
-export async function generateSshCredential(params: { name: string }): Promise<{ id: string; publicKey: string }> {
+export async function generateSshCredential(
+  owner: string,
+  params: { name: string },
+): Promise<{ id: string; publicKey: string }> {
   const name = validName(params.name)
   const key = generateSshKey(name)
   const row = await insertGitCredential({
-    name, kind: 'ssh', secret: key.seed.toString('base64'), publicKey: key.publicKey,
+    owner, name, kind: 'ssh', secret: key.seed.toString('base64'), publicKey: key.publicKey,
   })
   return { id: row.id, publicKey: key.publicKey }
 }
@@ -265,12 +271,12 @@ export async function sshKeyMaterial(credentialId: string): Promise<string> {
 }
 
 /**
- * Every credential with a masked preview and the projects using it. An ssh
- * key's preview is its public key. Each secret is decrypted here so one that
- * no longer decrypts is marked for replacement.
+ * Every credential of `owner`'s with a masked preview and the projects using
+ * it. An ssh key's preview is its public key. Each secret is decrypted here
+ * so one that no longer decrypts is marked for replacement.
  */
-export async function listCredentialSummaries(): Promise<GitCredentialSummary[]> {
-  const [creds, rows] = await Promise.all([listGitCredentials(), listProjectRows()])
+export async function listCredentialSummaries(owner: string): Promise<GitCredentialSummary[]> {
+  const [creds, rows] = await Promise.all([listGitCredentials(owner), listProjectRows()])
   const out: GitCredentialSummary[] = []
   for (const c of creds) {
     const secret = await c.openSecret()

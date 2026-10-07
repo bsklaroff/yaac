@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
+import type { IdentityEnv } from '#http'
 import { z } from 'zod'
 import { clearShortcutOverrides, getShortcutOverrides, setShortcutOverride } from '#db'
 
@@ -14,18 +15,18 @@ const chordSchema = z.object({
   shift: z.boolean(),
 })
 
-export const shortcutsApp = new Hono()
-  .get('/get', async (c) => c.json({ overrides: await getShortcutOverrides() }))
+export const shortcutsApp = new Hono<IdentityEnv>()
+  .get('/get', async (c) => c.json({ overrides: await getShortcutOverrides(c.get('principal').userId) }))
   .post(
     '/set',
     zv('json', z.object({ id: z.string().min(1), chord: chordSchema })),
     async (c) => {
       const { id, chord } = c.req.valid('json')
-      await setShortcutOverride(id, chord)
+      await setShortcutOverride(c.get('principal').userId, id, chord)
       return c.json({ ok: true })
     },
   )
   .post('/reset', async (c) => {
-    await clearShortcutOverrides()
+    await clearShortcutOverrides(c.get('principal').userId)
     return c.json({ ok: true })
   })

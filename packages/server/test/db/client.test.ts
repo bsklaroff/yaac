@@ -15,6 +15,7 @@ import { migrate } from 'drizzle-orm/pglite/migrator'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
 import { openDb, getDb, closeDb } from '#db/client'
 import { preferences } from '#db/schema'
+import { BUILT_IN_USER_ID } from '#db/user-store'
 
 // Other unit tests share one in-memory PGlite (YAAC_TEST_SHARED_DB) for
 // speed. This file opts out because the on-disk per-dir handle is what it
@@ -45,8 +46,8 @@ describe('openDb', () => {
     expect(stat.isDirectory()).toBe(true)
     expect(stat.mode & 0o777).toBe(0o700)
     const db = await getDb()
-    await db.insert(preferences).values({ key: 'k', value: 'v' })
-    expect(await db.select().from(preferences)).toEqual([{ key: 'k', value: 'v' }])
+    await db.insert(preferences).values({ owner: BUILT_IN_USER_ID, key: 'k', value: 'v' })
+    expect(await db.select({ key: preferences.key, value: preferences.value }).from(preferences)).toEqual([{ key: 'k', value: 'v' }])
   })
 
   it('caches the handle while the data dir is stable', async () => {
@@ -178,12 +179,12 @@ describe('openDb', () => {
     await freshDataDir()
     await openDb()
     const first = await getDb()
-    await first.insert(preferences).values({ key: 'k', value: 'v' })
+    await first.insert(preferences).values({ owner: BUILT_IN_USER_ID, key: 'k', value: 'v' })
     await freshDataDir() // createTempDataDir calls setDataDir
     await openDb()
     const second = await getDb()
     expect(second).not.toBe(first)
-    expect(await second.select().from(preferences)).toEqual([])
+    expect(await second.select({ key: preferences.key, value: preferences.value }).from(preferences)).toEqual([])
   })
 })
 
@@ -192,12 +193,12 @@ describe('closeDb', () => {
     await freshDataDir()
     await openDb()
     const db = await getDb()
-    await db.insert(preferences).values({ key: 'k', value: 'v' })
+    await db.insert(preferences).values({ owner: BUILT_IN_USER_ID, key: 'k', value: 'v' })
     await closeDb()
     await openDb()
     const reopened = await getDb()
     expect(reopened).not.toBe(db)
-    expect(await reopened.select().from(preferences)).toEqual([{ key: 'k', value: 'v' }])
+    expect(await reopened.select({ key: preferences.key, value: preferences.value }).from(preferences)).toEqual([{ key: 'k', value: 'v' }])
   })
 
   it('is idempotent and safe with nothing open', async () => {

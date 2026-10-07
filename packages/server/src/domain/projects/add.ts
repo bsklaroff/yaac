@@ -40,11 +40,15 @@ export interface AddProjectResult {
 }
 
 /**
- * Clone a git repo into the data dir as a yaac project, assigning it the
- * credential used for the clone (docs/git-credentials.md). User-facing
+ * Clone a git repo into the data dir as a yaac project owned by `owner`,
+ * assigning it the credential used for the clone (docs/git-credentials.md). User-facing
  * failures throw `ServerError`.
  */
-export async function addProject(remoteUrl: string, gitCredentialId: string): Promise<AddProjectResult> {
+export async function addProject(
+  remoteUrl: string,
+  gitCredentialId: string,
+  owner: string,
+): Promise<AddProjectResult> {
   const parsed = validateGitRemoteUrl(remoteUrl)
   const name = projectNameFor(parsed.path)
   if (!name) throw new ServerError('VALIDATION', `no project name can be derived from "${parsed.path}"`)
@@ -91,7 +95,7 @@ export async function addProject(remoteUrl: string, gitCredentialId: string): Pr
       await writeProjectCodexPlaceholder(projectId, codexCreds.codexOauth)
     }
 
-    await recordProject(meta, { id: gitCredentialId, knownHostsEntry })
+    await recordProject(meta, owner, { id: gitCredentialId, knownHostsEntry })
   } catch (err) {
     // A directory without a row couldn't be listed, removed or re-added, so
     // clean it up.
@@ -108,7 +112,12 @@ export async function addProject(remoteUrl: string, gitCredentialId: string): Pr
  * remote `project add` would reject, a missing staged checkout, and an id
  * already recorded.
  */
-export async function registerStagedProject(id: string, name: string, remoteUrl: string): Promise<ProjectMeta> {
+export async function registerStagedProject(
+  id: string,
+  name: string,
+  remoteUrl: string,
+  owner: string,
+): Promise<ProjectMeta> {
   // The remote decides every later fetch's transport, so validate it as
   // `addProject` does.
   validateGitRemoteUrl(remoteUrl)
@@ -121,6 +130,6 @@ export async function registerStagedProject(id: string, name: string, remoteUrl:
     throw new ServerError('CONFLICT', `Project ${id} already exists`)
   }
   const meta: ProjectMeta = { id, name, remoteUrl, addedAt: new Date().toISOString() }
-  await recordProject(meta)
+  await recordProject(meta, owner)
   return meta
 }

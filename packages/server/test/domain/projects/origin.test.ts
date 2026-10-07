@@ -6,7 +6,7 @@ import { handleFixture, installFakeWorkspaceDriver, snapshotFixture, workspacePa
 import { git } from '@yaac/test-utils/git'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
-import { recordProject } from '#db'
+import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { cloneRepo, createCheckout } from '#domain/git'
 import { fetchProjectOrigin, refreshProjectOrigins } from '#domain/projects'
 import { execFileAsync } from '#lib/shell'
@@ -46,7 +46,7 @@ beforeAll(async () => {
   await fs.mkdir(source)
   await git(source, ['init', '-q', '-b', 'main'])
   await commit('initial')
-  await recordProject({ id: PROJECT_ID, name: 'proj', remoteUrl: source, addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: PROJECT_ID, name: 'proj', remoteUrl: source, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
   await cloneRepo(source, repoDir(PROJECT_ID), null)
   await createCheckout(repoDir(PROJECT_ID), workspaceDir(PROJECT_ID, WT), { branch: `agent/${WT}`, baseBranch: 'main', remoteUrl: source })
 })

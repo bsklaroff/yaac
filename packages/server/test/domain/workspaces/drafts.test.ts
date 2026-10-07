@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { claimDraft, discardDraftWorkspace, listDraftWorkspaces, saveDraftWorkspace } from '#domain/workspaces'
-import { setDraftWorkspaceTitle } from '#db'
+import { BUILT_IN_USER_ID, setDraftWorkspaceTitle } from '#db'
 import { recordProject } from '#db/project-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
@@ -13,7 +13,7 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
 })
 
 afterEach(async () => {
@@ -40,7 +40,7 @@ describe('saveDraftWorkspace', () => {
     await expect(saveDraftWorkspace('00000000-0000-4000-8000-000000000000', SETTINGS)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await expect(saveDraftWorkspace(PROJ, SETTINGS, 'gone')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     // An update is scoped to the project it names.
-    await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
     await expect(saveDraftWorkspace(OTHER, SETTINGS, saved.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

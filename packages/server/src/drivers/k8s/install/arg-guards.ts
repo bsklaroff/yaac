@@ -26,6 +26,7 @@ export interface ClusterInstallArgs {
   rwxStorageClass?: string
   rwoStorageClass?: string
   tailnet?: boolean
+  owner?: string
   nodes?: number | string
 }
 
@@ -57,12 +58,18 @@ function checkByoFlags(opts: ClusterInstallArgs): void {
 }
 
 /**
- * Validate `--nodes` (and the `--byo` flags) and return the node count to
+ * Validate `--nodes` (and the `--byo` and `--owner` flags) and return the node count to
  * build. The count applies only to a cluster this run creates; install
  * never recreates one, so an existing cluster ignores it with a note.
  */
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
+  if (opts.owner !== undefined && !opts.tailnet && !opts.byo) {
+    throw new ClusterInstallError(
+      '--owner names the tailnet login that claims this install as it switches to tailnet '
+      + 'mode, so it needs --tailnet (docs/remote-hosting.md "Access modes").',
+    )
+  }
   if (opts.nodes === undefined) return 1
   if (opts.byo) {
     throw new ClusterInstallError(

@@ -5,7 +5,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDataDir, getProjectsDir, projectConfigDir } from '@yaac/shared/project-paths'
 import { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from '#domain/projects'
 import { PROJECT_DOCKERFILE, USER_DOCKERFILE } from '#lib/build-dirs'
-import { recordProject } from '#db'
+import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import type { ProjectMeta } from '@yaac/shared/types'
 
@@ -31,7 +31,7 @@ beforeEach(async () => {
     remoteUrl: 'https://example.com/foo',
     addedAt: '2026-01-01T00:00:00.000Z',
   }
-  await recordProject(meta)
+  await recordProject(meta, BUILT_IN_USER_ID)
 })
 
 afterEach(async () => { await cleanupTempDir(tmpDir) })

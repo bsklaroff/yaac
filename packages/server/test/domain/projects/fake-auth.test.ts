@@ -3,7 +3,7 @@ import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { assignProjectCredential, listCredentialSummaries, resolveProjectCredential, seedFakeAuth } from '#domain/projects'
-import { closeDb, recordProject } from '#db'
+import { BUILT_IN_USER_ID, closeDb, recordProject } from '#db'
 import { buildFakeClaudeOAuthBundle } from '#domain/projects/fake-auth'
 import {
   saveClaudeOAuthBundle,
@@ -38,7 +38,7 @@ describe('seedFakeAuth', () => {
   it('seeds claude as an OAuth bundle of proxy placeholders, expiring far out', async () => {
     // OAuth, not api-key: only an OAuth token can chain through a parent
     // yaac's MITM proxy, which swaps the sentinels for the real credential.
-    await seedFakeAuth(['claude-oauth'])
+    await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
 
     const creds = await loadClaudeCredentialsFile()
     expect(creds?.kind).toBe('oauth')
@@ -55,7 +55,7 @@ describe('seedFakeAuth', () => {
     await fs.mkdir(claudeDir(DEMO_PROJECT_ID), { recursive: true })
     await fs.mkdir(projectDir(DEMO_PROJECT_ID), { recursive: true })
 
-    await seedFakeAuth(['claude-oauth'])
+    await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
 
     const parsed = JSON.parse(
       await fs.readFile(projectClaudeCredentialsFile(DEMO_PROJECT_ID), 'utf8'),
@@ -66,7 +66,7 @@ describe('seedFakeAuth', () => {
   it('seeds opencode and pi as OpenRouter api-keys holding their own placeholders, over an older fake', async () => {
     // A fake from before each tool had its own placeholder is still a fake.
     await savePiCredentialsFile({ kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: PLACEHOLDER_API_KEY })
-    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'])
+    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'], BUILT_IN_USER_ID)
 
     for (const [creds, placeholder] of [
       [await loadOpencodeCredentialsFile(), PLACEHOLDER_OPENCODE_API_KEY],
@@ -80,10 +80,10 @@ describe('seedFakeAuth', () => {
   })
 
   it('seeds github as the fake-github token credential, once', async () => {
-    await seedFakeAuth(['github'])
-    await seedFakeAuth(['github'])
+    await seedFakeAuth(['github'], BUILT_IN_USER_ID)
+    await seedFakeAuth(['github'], BUILT_IN_USER_ID)
 
-    const listing = await listCredentialSummaries()
+    const listing = await listCredentialSummaries(BUILT_IN_USER_ID)
     expect(listing).toEqual([{
       id: expect.any(String) as string,
       name: 'fake-github',
@@ -92,26 +92,26 @@ describe('seedFakeAuth', () => {
       projects: [],
     }])
     // A project added with it clones with the placeholder a parent proxy swaps.
-    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
+    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' }, BUILT_IN_USER_ID)
     await assignProjectCredential(WEB, listing[0].id)
     expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
   })
 
   it('refuses, seeding nothing, over a real credential — and re-seeds over a fake', async () => {
-    await seedFakeAuth(['claude-oauth'])
-    await seedFakeAuth(['claude-oauth'])
+    await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
+    await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
 
     await saveOpencodeCredentialsFile({
       kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-real',
     })
-    await expect(seedFakeAuth(['pi-openrouter', 'opencode-openrouter']))
+    await expect(seedFakeAuth(['pi-openrouter', 'opencode-openrouter'], BUILT_IN_USER_ID))
       .rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('opencode-openrouter') as string })
     // All or nothing: pi was not seeded alongside the refusal.
     expect(await loadPiCredentialsFile()).toBeNull()
     expect((await loadOpencodeCredentialsFile())?.apiKey).toBe('sk-or-real')
 
     await saveClaudeOAuthBundle({ ...buildFakeClaudeOAuthBundle(), accessToken: 'sk-ant-oat-real' })
-    await expect(seedFakeAuth(['claude-oauth'])).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'CONFLICT' })
     const creds = await loadClaudeCredentialsFile()
     expect(creds?.kind === 'oauth' && creds.claudeAiOauth.accessToken).toBe('sk-ant-oat-real')
   })

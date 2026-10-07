@@ -1,4 +1,4 @@
-import type { AgentTool, DriverKind } from '#types'
+import type { AccessMode, AgentTool, DriverKind } from '#types'
 
 /**
  * The one place under `src/` that reads yaac's own environment variables
@@ -261,10 +261,32 @@ export const env = {
   },
 
   /**
+   * `YAAC_ACCESS_MODE` — the access mode the server is asked to run in
+   * (`local` unless `tailnet`). Plumbing only: `yaac server start` sets it
+   * from `--tailnet`, and `yaac cluster install` on the Deployment. The
+   * server checks it against the mode its database records.
+   */
+  get accessMode(): AccessMode {
+    return process.env.YAAC_ACCESS_MODE === 'tailnet' ? 'tailnet' : 'local'
+  },
+
+  /**
+   * `YAAC_ACCESS_OWNER` — the tailnet login that claims a `local` install's
+   * data when it is switched to `tailnet` (`--owner`). Plumbing like
+   * `YAAC_ACCESS_MODE`.
+   */
+  get accessOwner(): string | undefined {
+    const raw = process.env.YAAC_ACCESS_OWNER?.trim()
+    return raw === undefined || raw === '' ? undefined : raw
+  },
+
+  /**
    * `YAAC_ALLOWED_HOSTS` — comma-separated extra hostnames the server's
    * Host-header check admits (e.g. the server's `srv.<tailnet>.ts.net`
    * MagicDNS name behind `tailscale serve`). Loopback is always allowed
-   * regardless. Entries are trimmed and lowercased; empties dropped.
+   * regardless. Entries are trimmed and lowercased; empties dropped. Set by
+   * `yaac server start --tailnet` and on the k8s Deployment; a user sets it
+   * by hand only for a nested server reached through a forward.
    */
   get allowedHosts(): string[] {
     const raw = process.env.YAAC_ALLOWED_HOSTS

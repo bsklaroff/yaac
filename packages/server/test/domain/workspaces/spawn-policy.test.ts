@@ -24,6 +24,7 @@ import {
 import { recordProject } from '#db/project-store'
 import type { PermissionMode } from '@yaac/shared/types'
 import { closeDb } from '#db/client'
+import { BUILT_IN_USER_ID } from '#db/user-store'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
@@ -70,7 +71,7 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   installFakeWorkspaceDriver({ list: listSpares })
   listSpares.mockClear()
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
   clearAllProvisioningForTests()
   stubCreate()
 })

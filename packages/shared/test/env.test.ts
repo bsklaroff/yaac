@@ -229,6 +229,26 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('accessMode', () => {
+    it('is local unless tailnet is asked for', () => {
+      vi.stubEnv('YAAC_ACCESS_MODE', undefined)
+      expect(env.accessMode).toBe('local')
+      vi.stubEnv('YAAC_ACCESS_MODE', 'bogus')
+      expect(env.accessMode).toBe('local')
+      vi.stubEnv('YAAC_ACCESS_MODE', 'tailnet')
+      expect(env.accessMode).toBe('tailnet')
+    })
+  })
+
+  describe('accessOwner', () => {
+    it('is the trimmed login, or undefined when blank', () => {
+      vi.stubEnv('YAAC_ACCESS_OWNER', ' ')
+      expect(env.accessOwner).toBeUndefined()
+      vi.stubEnv('YAAC_ACCESS_OWNER', ' alice@example.com ')
+      expect(env.accessOwner).toBe('alice@example.com')
+    })
+  })
+
   describe('secrets', () => {
     it('parses a versioned key set, newest first', () => {
       vi.stubEnv('YAAC_SECRETS', ' 2:newer , 1:older ')

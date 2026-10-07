@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { getDb } from './client'
 import { gitCredentials, projects } from './schema'
 import { secretConfig } from './secret-key'
@@ -19,6 +19,8 @@ export type GitCredentialKind = 'https' | 'ssh'
 
 export interface GitCredentialRow {
   id: string
+  /** The user it belongs to; names are unique per owner. */
+  owner: string
   name: string
   kind: GitCredentialKind
   /** ssh only: the public half, one OpenSSH line. */
@@ -31,6 +33,7 @@ export interface GitCredentialRow {
 function toRow(r: typeof gitCredentials.$inferSelect): GitCredentialRow {
   return {
     id: r.id,
+    owner: r.owner,
     name: r.name,
     kind: r.kind === 'ssh' ? 'ssh' : 'https',
     publicKey: r.publicKey,
@@ -52,10 +55,12 @@ function nameTaken(name: string): ServerError {
   return new ServerError('CONFLICT', `A git credential named "${name}" already exists.`)
 }
 
-/** Every stored credential, oldest first. */
-export async function listGitCredentials(): Promise<GitCredentialRow[]> {
+/** Every stored credential, or only one owner's, oldest first. */
+export async function listGitCredentials(owner?: string): Promise<GitCredentialRow[]> {
   const db = await getDb()
-  const rows = await db.select().from(gitCredentials).orderBy(gitCredentials.createdAt)
+  const rows = await db.select().from(gitCredentials)
+    .where(owner === undefined ? undefined : eq(gitCredentials.owner, owner))
+    .orderBy(gitCredentials.createdAt)
   return rows.map(toRow)
 }
 
@@ -65,14 +70,19 @@ export async function getGitCredential(id: string): Promise<GitCredentialRow | u
   return rows[0] && toRow(rows[0])
 }
 
-export async function getGitCredentialByName(name: string): Promise<GitCredentialRow | undefined> {
+export async function getGitCredentialByName(owner: string, name: string): Promise<GitCredentialRow | undefined> {
   const db = await getDb()
-  const rows = await db.select().from(gitCredentials).where(eq(gitCredentials.name, name))
+  const rows = await db.select().from(gitCredentials).where(byName(owner, name))
   return rows[0] && toRow(rows[0])
 }
 
-/** Store a new credential. A name already in use is a CONFLICT. */
+function byName(owner: string, name: string) {
+  return and(eq(gitCredentials.owner, owner), eq(gitCredentials.name, name))
+}
+
+/** Store a new credential. A name the owner already uses is a CONFLICT. */
 export async function insertGitCredential(entry: {
+  owner: string
   name: string
   kind: GitCredentialKind
   secret: string
@@ -81,8 +91,10 @@ export async function insertGitCredential(entry: {
   const db = await getDb()
   const sealedSecret = await symmetricEncrypt({ key: await secretConfig(), data: entry.secret })
   const rows = await db.insert(gitCredentials)
-    .values({ name: entry.name, kind: entry.kind, sealedSecret, publicKey: entry.publicKey ?? null })
-    .onConflictDoNothing({ target: gitCredentials.name })
+    .values({
+      owner: entry.owner, name: entry.name, kind: entry.kind, sealedSecret, publicKey: entry.publicKey ?? null,
+    })
+    .onConflictDoNothing({ target: [gitCredentials.owner, gitCredentials.name] })
     .returning()
   if (!rows[0]) throw nameTaken(entry.name)
   return toRow(rows[0])
@@ -96,8 +108,11 @@ export async function renameGitCredential(
   publicKey: string | null,
 ): Promise<boolean> {
   const db = await getDb()
+  const [row] = await db.select({ owner: gitCredentials.owner }).from(gitCredentials)
+    .where(eq(gitCredentials.id, id))
+  if (!row) return false
   const clash = await db.select({ id: gitCredentials.id }).from(gitCredentials)
-    .where(eq(gitCredentials.name, name))
+    .where(byName(row.owner, name))
   if (clash[0] && clash[0].id !== id) throw nameTaken(name)
   const rows = await db.update(gitCredentials).set({ name, publicKey })
     .where(eq(gitCredentials.id, id)).returning({ id: gitCredentials.id })
@@ -141,6 +156,7 @@ export async function replaceGitCredential(
     const [old] = await tx.select().from(gitCredentials).where(eq(gitCredentials.id, id))
     if (!old) return undefined
     const [fresh] = await tx.insert(gitCredentials).values({
+      owner: old.owner,
       name: `${old.name} (replacing ${old.id})`,
       kind: old.kind,
       sealedSecret,

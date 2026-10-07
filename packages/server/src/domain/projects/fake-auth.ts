@@ -70,9 +70,9 @@ async function seedFakeClaudeOAuth(): Promise<void> {
  * (`yaac-ph-gh-token`), which an outer yaac's proxy swaps for the real
  * GitHub token.
  */
-async function seedFakeGithubCredential(): Promise<void> {
-  if (await getGitCredentialByName(FAKE_GITHUB_CREDENTIAL_NAME)) return
-  await insertGitCredential({ name: FAKE_GITHUB_CREDENTIAL_NAME, kind: 'https', secret: PLACEHOLDER_GH_TOKEN })
+async function seedFakeGithubCredential(owner: string): Promise<void> {
+  if (await getGitCredentialByName(owner, FAKE_GITHUB_CREDENTIAL_NAME)) return
+  await insertGitCredential({ owner, name: FAKE_GITHUB_CREDENTIAL_NAME, kind: 'https', secret: PLACEHOLDER_GH_TOKEN })
 }
 
 /**
@@ -132,8 +132,9 @@ async function holdsRealCredential(kind: FakeAuthKind): Promise<boolean> {
  * Seed fake credentials for the given `yaac auth fake` kinds. Refuses
  * (`CONFLICT`, seeding nothing) if any kind already has a real credential,
  * which placeholders would replace everywhere; `yaac auth clear` it first.
+ * The fake GitHub credential is `owner`'s.
  */
-export async function seedFakeAuth(kinds: readonly FakeAuthKind[]): Promise<void> {
+export async function seedFakeAuth(kinds: readonly FakeAuthKind[], owner: string): Promise<void> {
   const unique = [...new Set(kinds)]
   const real: FakeAuthKind[] = []
   for (const kind of unique) {
@@ -158,7 +159,7 @@ export async function seedFakeAuth(kinds: readonly FakeAuthKind[]): Promise<void
         await seedFakePiOpenrouter()
         break
       case 'github':
-        await seedFakeGithubCredential()
+        await seedFakeGithubCredential(owner)
         break
     }
   }

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { clearAuth } from '#domain/auth'
-import { closeDb } from '#db'
+import { BUILT_IN_USER_ID, closeDb } from '#db'
 import { addHttpsCredential, listCredentialSummaries } from '#domain/projects'
 import {
   loadClaudeCredentialsFile,
@@ -43,7 +43,7 @@ const SAMPLE_CODEX: CodexOAuthBundle = {
  *  per-project placeholder files) plus a git credential it must not. Each
  *  test seeds all of it so assertions cover what survived too. */
 async function seedEverything(): Promise<void> {
-  await addHttpsCredential({ name: 'gh', token: 'ghp_x' })
+  await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_x' })
   await saveClaudeOAuthBundle(SAMPLE_CLAUDE)
   await saveCodexCredentialsFile({
     kind: 'oauth',
@@ -77,7 +77,7 @@ describe('clearAuth', () => {
     // it goes only when deleted on its own, once none does.
     await clearAuth('all')
 
-    expect((await listCredentialSummaries()).map((c) => c.name)).toEqual(['gh'])
+    expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => c.name)).toEqual(['gh'])
     expect(await loadClaudeCredentialsFile()).toBeNull()
     expect(await loadCodexCredentialsFile()).toBeNull()
     expect(await loadToolAuthEntry('opencode')).toBeNull()

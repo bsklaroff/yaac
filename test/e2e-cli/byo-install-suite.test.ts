@@ -310,8 +310,10 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     expect(plain.exitCode).toBe(1)
     expect(plain.stderr).toMatch(/This data dir is a --byo install/)
 
+    // --owner reaches the server, which ignores it: the install has been
+    // tailnet since its first start, so there is nothing left to claim.
     const before = await claimVolumes()
-    const install = await runYaac(operatorEnv, 'cluster', 'install', ...BYO_INSTALL)
+    const install = await runYaac(operatorEnv, 'cluster', 'install', ...BYO_INSTALL, '--owner', 'operator@example.com')
     expect(install.exitCode, `${install.stdout.slice(-1500)}\n${install.stderr}`).toBe(0)
     expect(await claimVolumes()).toEqual(before)
     expect((await readServerJson()).url).toBe(origin)

@@ -3,11 +3,13 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#db/client'
 import { preferences, shortcutOverrides } from '#db/schema'
 import {
+  BUILT_IN_USER_ID,
   clearShortcutOverrides,
   getGitIdentity,
   getShortcutOverrides,
   getTimeZone,
   isSerializedChord,
+  seeTailnetUser,
   setGitIdentity,
   setShortcutOverride,
   setTimeZone,
@@ -54,45 +56,47 @@ describe('isSerializedChord', () => {
 
 describe('getShortcutOverrides', () => {
   it('returns {} when none are set', async () => {
-    expect(await getShortcutOverrides()).toEqual({})
+    expect(await getShortcutOverrides(BUILT_IN_USER_ID)).toEqual({})
   })
 
   it('returns every stored rebind keyed by command id', async () => {
-    await setShortcutOverride('new-session', chord('KeyG'))
-    await setShortcutOverride('kill-terminal', chord('KeyX', { ctrl: true, shift: true }))
-    expect(await getShortcutOverrides()).toEqual({
+    await setShortcutOverride(BUILT_IN_USER_ID, 'new-session', chord('KeyG'))
+    await setShortcutOverride(BUILT_IN_USER_ID, 'kill-terminal', chord('KeyX', { ctrl: true, shift: true }))
+    expect(await getShortcutOverrides(BUILT_IN_USER_ID)).toEqual({
       'new-session': chord('KeyG'),
       'kill-terminal': chord('KeyX', { ctrl: true, shift: true }),
     })
+    // Rebinds are per user.
+    expect(await getShortcutOverrides(await seeTailnetUser('bob@example.com', 'Bob'))).toEqual({})
   })
 })
 
 describe('setShortcutOverride', () => {
   it('accumulates overrides, overwrites one in place, and leaves other prefs alone', async () => {
-    await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
-    await setShortcutOverride('new-session', chord('KeyG'))
-    await setShortcutOverride('kill-terminal', chord('KeyX'))
-    await setShortcutOverride('new-session', chord('KeyH'))
-    expect(await getShortcutOverrides()).toEqual({
+    await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada', email: 'ada@example.com' })
+    await setShortcutOverride(BUILT_IN_USER_ID, 'new-session', chord('KeyG'))
+    await setShortcutOverride(BUILT_IN_USER_ID, 'kill-terminal', chord('KeyX'))
+    await setShortcutOverride(BUILT_IN_USER_ID, 'new-session', chord('KeyH'))
+    expect(await getShortcutOverrides(BUILT_IN_USER_ID)).toEqual({
       'new-session': chord('KeyH'),
       'kill-terminal': chord('KeyX'),
     })
-    expect(await getGitIdentity()).toEqual({ name: 'Ada', email: 'ada@example.com' })
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toEqual({ name: 'Ada', email: 'ada@example.com' })
   })
 })
 
 describe('clearShortcutOverrides', () => {
   it('drops the shortcuts but keeps other prefs', async () => {
-    await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
-    await setShortcutOverride('new-session', chord('KeyG'))
-    await clearShortcutOverrides()
-    expect(await getShortcutOverrides()).toEqual({})
-    expect(await getGitIdentity()).toEqual({ name: 'Ada', email: 'ada@example.com' })
+    await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada', email: 'ada@example.com' })
+    await setShortcutOverride(BUILT_IN_USER_ID, 'new-session', chord('KeyG'))
+    await clearShortcutOverrides(BUILT_IN_USER_ID)
+    expect(await getShortcutOverrides(BUILT_IN_USER_ID)).toEqual({})
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toEqual({ name: 'Ada', email: 'ada@example.com' })
   })
 
   it('is a no-op when none are set', async () => {
-    await clearShortcutOverrides()
-    expect(await getShortcutOverrides()).toEqual({})
+    await clearShortcutOverrides(BUILT_IN_USER_ID)
+    expect(await getShortcutOverrides(BUILT_IN_USER_ID)).toEqual({})
   })
 })
 
@@ -100,48 +104,54 @@ describe('getGitIdentity', () => {
   it('is null until both halves are set', async () => {
     // Committing as a name with no email is not a lesser identity — git
     // refuses it — so a half-written pair must read as none at all.
-    expect(await getGitIdentity()).toBeNull()
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toBeNull()
 
     const db = await getDb()
-    await db.insert(preferences).values({ key: 'git_user_name', value: 'Ada' })
-    expect(await getGitIdentity()).toBeNull()
+    await db.insert(preferences).values({ owner: BUILT_IN_USER_ID, key: 'git_user_name', value: 'Ada' })
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toBeNull()
   })
 
   it('trims, and treats whitespace as unset', async () => {
     const db = await getDb()
     await db.insert(preferences).values([
-      { key: 'git_user_name', value: '  Ada Lovelace  ' },
-      { key: 'git_user_email', value: '  ada@example.com  ' },
+      { owner: BUILT_IN_USER_ID, key: 'git_user_name', value: '  Ada Lovelace  ' },
+      { owner: BUILT_IN_USER_ID, key: 'git_user_email', value: '  ada@example.com  ' },
     ])
-    expect(await getGitIdentity()).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toEqual({ name: 'Ada Lovelace', email: 'ada@example.com' })
 
     await db.update(preferences).set({ value: '   ' })
-    expect(await getGitIdentity()).toBeNull()
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toBeNull()
   })
 })
 
 describe('setGitIdentity', () => {
   it('round-trips, and replaces rather than accumulating', async () => {
-    await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
-    expect(await getGitIdentity()).toEqual({ name: 'Ada', email: 'ada@example.com' })
+    await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada', email: 'ada@example.com' })
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toEqual({ name: 'Ada', email: 'ada@example.com' })
 
-    await setGitIdentity({ name: 'Grace', email: 'grace@example.com' })
-    expect(await getGitIdentity()).toEqual({ name: 'Grace', email: 'grace@example.com' })
+    await setGitIdentity(BUILT_IN_USER_ID, { name: 'Grace', email: 'grace@example.com' })
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toEqual({ name: 'Grace', email: 'grace@example.com' })
+
+    // Each user has their own identity.
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    expect(await getGitIdentity(bob)).toBeNull()
+    await setGitIdentity(bob, { name: 'Bob', email: 'bob@example.com' })
+    expect(await getGitIdentity(BUILT_IN_USER_ID)).toEqual({ name: 'Grace', email: 'grace@example.com' })
   })
 })
 
 describe('getTimeZone', () => {
   it('is unset and unpinned until a zone is stored', async () => {
-    expect(await getTimeZone()).toEqual({ timeZone: null, pinned: false })
+    expect(await getTimeZone(BUILT_IN_USER_ID)).toEqual({ timeZone: null, pinned: false })
   })
 })
 
 describe('setTimeZone', () => {
   it('round-trips the zone and the pin, replacing both', async () => {
-    await setTimeZone('Europe/Paris', true)
-    expect(await getTimeZone()).toEqual({ timeZone: 'Europe/Paris', pinned: true })
+    await setTimeZone(BUILT_IN_USER_ID, 'Europe/Paris', true)
+    expect(await getTimeZone(BUILT_IN_USER_ID)).toEqual({ timeZone: 'Europe/Paris', pinned: true })
 
-    await setTimeZone('Asia/Tokyo', false)
-    expect(await getTimeZone()).toEqual({ timeZone: 'Asia/Tokyo', pinned: false })
+    await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
+    expect(await getTimeZone(BUILT_IN_USER_ID)).toEqual({ timeZone: 'Asia/Tokyo', pinned: false })
   })
 })

@@ -91,9 +91,10 @@ async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const spares = pods.filter((p) => p.prewarmed && p.projectId && !claiming.has(p.jobName))
   if (spares.length === 0) return new Set()
   const projects = await listProjectRows()
-  const timeZone = (await getTimeZone()).timeZone ?? undefined
-  const wanted = new Map(projects.map((p) =>
-    [p.id, p.createDefaults[p.lastTool ?? 'claude']?.mode ?? DEFAULT_AGENT_MODE]))
+  const wanted = new Map(await Promise.all(projects.map(async (p) => [p.id, {
+    mode: p.createDefaults[p.lastTool ?? 'claude']?.mode ?? DEFAULT_AGENT_MODE,
+    timeZone: (await getTimeZone(p.owner)).timeZone ?? undefined,
+  }] as const)))
   const stale = new Set<string>()
   await Promise.all(spares.map(async (p) => {
     const row = await getWorkspaceRow(p.projectId, p.workspaceId).catch((err: unknown) => {
@@ -101,7 +102,7 @@ async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
       return null
     })
     const want = wanted.get(p.projectId)
-    if (row && want !== undefined && (row.mode !== want || row.timeZone !== timeZone)) stale.add(p.jobName)
+    if (row && want !== undefined && (row.mode !== want.mode || row.timeZone !== want.timeZone)) stale.add(p.jobName)
   }))
   return stale
 }

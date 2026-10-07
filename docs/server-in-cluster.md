@@ -36,8 +36,11 @@ one mounts two (see "Storage is two claims").
 6. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
    priority, plain runc, `runAsUser` set to the install uid (see "The uid
    everything runs as"), three mounts (the two claims and the node's
-   node-local directory), and `YAAC_ALLOWED_HOSTS` set to the fronting's
-   hostname plus whatever the install shell had.
+   node-local directory), and the fronting's access mode
+   (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet`, with `--owner` as
+   `YAAC_ACCESS_OWNER`) and hostname (`YAAC_ALLOWED_HOSTS`), which the server
+   checks against the mode it recorded (docs/remote-hosting.md "Access
+   modes").
 
 Install then waits for the published origin to report ready and registers
 the server: `server.json` gets that origin and the driver `k8s`. This is the
@@ -128,7 +131,8 @@ tailnet-only MagicDNS name with a certificate, and nothing else: no public
 LoadBalancer, no NodePort, no DNS to manage.
 
 Install waits for the operator to publish the name in the Ingress status,
-passes it to the Deployment as `YAAC_ALLOWED_HOSTS`, and registers
+passes it to the Deployment as `YAAC_ALLOWED_HOSTS` beside `tailnet` mode,
+and registers
 `https://<name>.<tailnet>.ts.net`. Every request to that name must carry the
 identity the Ingress proxy adds; the tailnet, not this machine's loopback,
 is the trust boundary. The device name is `yaac`; a second install on the

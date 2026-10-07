@@ -1,11 +1,15 @@
 import type { MiddlewareHandler } from 'hono'
 import { env } from '@yaac/shared/env'
-import type { Principal } from '@yaac/shared/types'
+import type { AccessMode, Principal } from '@yaac/shared/types'
+import { BUILT_IN_USER_ID, seeTailnetUser } from '#db'
 
 /** What `identify()` stores on the context for the routes after it. */
 export interface IdentityEnv {
   Variables: { principal: Principal }
 }
+
+/** Who sent a request, before it is matched to a user. */
+type Caller = { kind: 'local' } | { kind: 'tailnet'; login: string; name: string }
 
 /**
  * Routes reachable without an identity: the health probe, and the SPA shell
@@ -85,14 +89,15 @@ function decodeIdentityHeader(value: string): string {
  *   workspace (`YAAC_WORKSPACE_ID`) is reached this way through the outer
  *   install's forward, so there it is local.
  *
- * A local process can forge these headers but gains nothing, as it is
- * already the owner. Everything else is kept out by the loopback bind, or
- * in-cluster by the server pod's ingress policy.
+ * A local process can forge these headers, and in tailnet mode claim any
+ * login, but gains nothing: it already owns the data dir. Everything else
+ * is kept out by the loopback bind, or in-cluster by the server pod's
+ * ingress policy.
  */
 function identifyRequest(
   header: (name: string) => string | undefined,
   url: string,
-): Principal | { refused: string } {
+): Caller | { refused: string } {
   const login = header('tailscale-user-login')
   const proxied = header('x-forwarded-for') !== undefined
     || login !== undefined
@@ -122,19 +127,56 @@ function identifyRequest(
 }
 
 /**
- * The identity gate: every non-public request gets a `principal`, or a 401
- * explaining why not (`identifyRequest`). Runs after the Host, CORS, Origin
- * and Sec-Fetch-Site guards, including on WebSocket upgrades. The
- * environment is read per request so tests see the current values.
+ * Why the install's access mode refuses a caller, or null if it admits it
+ * (docs/remote-hosting.md "Access modes"). `local` admits only callers that
+ * did not come through serve; `tailnet` only those that did.
  */
-export function identify(): MiddlewareHandler<IdentityEnv> {
+function modeRefusal(mode: AccessMode, who: Caller): string | null {
+  if (mode === 'local' && who.kind === 'tailnet') {
+    return 'this server runs in local mode and admits only its own machine. To serve '
+      + 'tailnet users, start it with `yaac server start --tailnet <host>` (or '
+      + '`yaac cluster install --tailnet`) (docs/remote-hosting.md).'
+  }
+  if (mode === 'tailnet' && who.kind === 'local') {
+    return 'this server runs in tailnet mode and admits only requests through tailscale '
+      + 'serve, so reach it at its tailnet name, from this machine too (docs/remote-hosting.md).'
+  }
+  return null
+}
+
+/**
+ * The identity gate: every non-public request gets a `principal`, or a 401
+ * explaining why not (`identifyRequest`, then the access `mode`). Runs after
+ * the Host, CORS, Origin and Sec-Fetch-Site guards, including on WebSocket
+ * upgrades. Until startup has settled the mode it answers 503, and a refused
+ * start answers 503 with its reason for as long as it runs.
+ *
+ * One exception to `tailnet` mode's "no loopback": a containerless
+ * workspace's `yaac-mama` posts to `/workspace/mama` over loopback, and that
+ * route authenticates the workspace's bearer token itself.
+ */
+export function identify(
+  access: () => AccessMode | { refused: string } | undefined,
+): MiddlewareHandler<IdentityEnv> {
   return async (c, next) => {
     if (isPublicPath(c.req.path)) return next()
-    const who = identifyRequest((name) => c.req.header(name), c.req.url)
-    if ('refused' in who) {
-      return c.json({ error: { code: 'UNAUTHENTICATED', message: who.refused } }, 401)
+    const current = access()
+    if (typeof current !== 'string') {
+      const message = current === undefined
+        ? 'the server is still starting'
+        : `the server refused to start: ${current.refused}`
+      return c.json({ error: { code: 'RUNTIME_UNAVAILABLE', message } }, 503)
     }
-    c.set('principal', who)
+    const who = identifyRequest((name) => c.req.header(name), c.req.url)
+    if ('refused' in who) return c.json({ error: { code: 'UNAUTHENTICATED', message: who.refused } }, 401)
+    const refused = modeRefusal(current, who)
+    if (refused !== null) {
+      if (who.kind === 'local' && c.req.method === 'POST' && c.req.path === '/api/workspace/mama') return next()
+      return c.json({ error: { code: 'UNAUTHENTICATED', message: refused } }, 401)
+    }
+    c.set('principal', who.kind === 'local'
+      ? { kind: 'local', userId: BUILT_IN_USER_ID }
+      : { ...who, userId: await seeTailnetUser(who.login, who.name) })
     return next()
   }
 }

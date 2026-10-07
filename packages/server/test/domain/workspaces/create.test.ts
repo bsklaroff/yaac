@@ -33,6 +33,7 @@ import {
 } from '@yaac/shared/tool-auth'
 import { closeDb } from '#db/client'
 import {
+  BUILT_IN_USER_ID,
   applyWorkspaceEvent,
   getWorkspaceRow,
   insertGitCredential,
@@ -64,7 +65,7 @@ describe('resolveCreate', () => {
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
     installFakeWorkspaceDriver()
-    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' })
+    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@h:o/r.git', addedAt: 'now' }, BUILT_IN_USER_ID)
   })
   afterEach(async () => {
     resetWorkspaceDriver()
@@ -313,7 +314,7 @@ describe('createWorkspace', () => {
   })
 
   it('lets a project override TZ and OPENCODE_CONFIG, takes a variable matching yaac\'s, and refuses one that conflicts', async () => {
-    await setTimeZone('Asia/Tokyo', false)
+    await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
     await saveToolAuth('opencode', 'sk-or', 'api-key', 'openrouter')
     await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'TZ', value: 'Europe/Paris' })
     await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'OPENCODE_CONFIG', value: '/workspace/opencode.json' })
@@ -338,7 +339,7 @@ describe('createWorkspace', () => {
     { name: 'a project GH_TOKEN', plain: 'GH_TOKEN', want: 'ghp_user' },
     { name: 'a proxied GITHUB_TOKEN secret', secret: 'GITHUB_TOKEN', want: undefined },
   ])('seeds GH_TOKEN as it should for $name', async ({ remote, plain, secret, want }) => {
-    if (remote !== undefined) await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: remote, addedAt: '2026-01-01T00:00:00.000Z' })
+    if (remote !== undefined) await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: remote, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
     if (plain !== undefined) await setProjectEnvVar(DEMO_PROJECT_ID, { name: plain, value: 'ghp_user' })
     if (secret !== undefined) {
       await setProjectEnvVar(DEMO_PROJECT_ID, { name: secret, value: 'sekrit', secret: true, rule: { hosts: ['api.github.com'] } })
@@ -353,7 +354,7 @@ describe('createWorkspace', () => {
   // server host's `git config --global`: only someone with a shell there
   // could change it, and under k8s the server pod's `$HOME` is ephemeral.
   it('refuses without a git identity, naming where a client can set one', async () => {
-    await setGitIdentity({ name: ' ', email: ' ' })
+    await setGitIdentity(BUILT_IN_USER_ID, { name: ' ', email: ' ' })
     await expect(createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })).rejects.toThrow(/No git identity is set on this server.*Settings/)
     expect(specs).toEqual([])
   })
@@ -533,7 +534,7 @@ describe('createWorkspace', () => {
 
   it('hands an SSH remote the host key it was assigned with, and no GH_TOKEN', async () => {
     await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'git@github.com:o/r.git' })
-    const key = await insertGitCredential({ name: 'key', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac' })
+    const key = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'key', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac' })
     await setProjectGitCredential(DEMO_PROJECT_ID, key.id, 'github.com ssh-ed25519 AAAAC3')
 
     await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })
@@ -695,7 +696,7 @@ describe('createWorkspace', () => {
     expect(env().filter((e) => e.startsWith('TZ='))).toEqual([])
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, before.workspaceId))?.timeZone).toBeUndefined()
 
-    await setTimeZone('Asia/Tokyo', false)
+    await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
     const after = await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })
     expect(env()).toContain('TZ=Asia/Tokyo')
     // Recorded, so a spare claim can tell which zone it launched in.

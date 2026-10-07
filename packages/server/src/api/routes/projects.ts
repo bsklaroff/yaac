@@ -26,7 +26,7 @@ import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
-import { requireDriverFeature } from '#http'
+import { requireDriverFeature, type IdentityEnv } from '#http'
 import { workspaceDriver } from '#drivers/driver'
 
 /**
@@ -55,7 +55,7 @@ async function syncRunningWorkspaces(projectId: string, applied: string): Promis
   }
 }
 
-export const projectApp = new Hono()
+export const projectApp = new Hono<IdentityEnv>()
   .get('/list', async (c) => c.json(await listProjects()))
   .post(
     '/add',
@@ -66,7 +66,7 @@ export const projectApp = new Hono()
     })),
     async (c) => {
       const { remoteUrl, gitCredentialId } = c.req.valid('json')
-      const result = await addProject(remoteUrl, gitCredentialId)
+      const result = await addProject(remoteUrl, gitCredentialId, c.get('principal').userId)
       await pushCredentialsToRuntime()
       return c.json(result)
     },
@@ -78,7 +78,7 @@ export const projectApp = new Hono()
     zv('json', z.object({ id: z.uuid(), name: z.string().min(1), remoteUrl: z.string().min(1) })),
     async (c) => {
       const { id, name, remoteUrl } = c.req.valid('json')
-      return c.json(await registerStagedProject(id, name, remoteUrl))
+      return c.json(await registerStagedProject(id, name, remoteUrl, c.get('principal').userId))
     },
   )
   .get('/:projectId', async (c) => c.json(await getProjectDetail(await resolveProjectId(c.req.param('projectId')))))

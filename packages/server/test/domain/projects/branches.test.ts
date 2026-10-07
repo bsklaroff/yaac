@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { setDataDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectBranches } from '#domain/projects'
 import { cloneRepo } from '#domain/git'
-import { recordProject } from '#db'
+import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { git } from '@yaac/test-utils/git'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 
@@ -24,7 +24,7 @@ describe('getProjectBranches', () => {
     sourceRepo = path.join(tmp, 'source')
     // A refresh fetches from the row's remote, a local path here.
     await fs.mkdir(projectDir(projectId), { recursive: true })
-    await recordProject({ id: projectId, name: 'demo', remoteUrl: sourceRepo, addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordProject({ id: projectId, name: 'demo', remoteUrl: sourceRepo, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
 
     await fs.mkdir(sourceRepo, { recursive: true })
     await git(sourceRepo, ['init', '-b', 'main'])
@@ -84,7 +84,7 @@ describe('getProjectBranches', () => {
     await fs.writeFile(stub, '#!/bin/sh\necho "fatal: Authentication failed for xyz" >&2\nexit 128\n')
     await fs.chmod(stub, 0o755)
     // The fetch takes its URL, and so its transport, from the row.
-    await recordProject({ id: projectId, name: 'demo', remoteUrl: `ext::${stub}`, addedAt: '2026-01-01T00:00:00.000Z' })
+    await recordProject({ id: projectId, name: 'demo', remoteUrl: `ext::${stub}`, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
 
     await expect(getProjectBranches(projectId, { refresh: true })).rejects.toMatchObject({
       code: 'VALIDATION',

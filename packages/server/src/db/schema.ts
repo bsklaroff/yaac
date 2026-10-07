@@ -1,4 +1,5 @@
 import type {
+  AccessMode,
   AgentMode,
   AgentTool,
   PermissionMode,
@@ -20,22 +21,57 @@ import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp,
  * are read back unchecked, so only validated values may be written.
  */
 
-/** Single-value user preferences, keyed by name (the git identity workspaces
- *  commit under, the user's time zone). */
-export const preferences = snakeCase.table('preferences', {
-  key: text().primaryKey(),
-  value: text().notNull(),
+/**
+ * Everyone who uses the install (docs/remote-hosting.md "Access modes").
+ * One built-in user (`BUILT_IN_USER_ID`, inserted by the migration) is the
+ * caller of a `local` install and owns what it creates; switching the
+ * install to `tailnet` gives it the owner's login. Every other user is a
+ * tailnet login, created the first time it reaches the server.
+ */
+export const users = snakeCase.table('users', {
+  id: uuid().primaryKey().defaultRandom(),
+  /** The `Tailscale-User-Login`; null only for the built-in user of a
+   *  `local` install. */
+  login: text().unique(),
+  /** The display name serve last sent. */
+  name: text().notNull(),
+  firstSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** Refreshed at most hourly, so identifying a caller is not a write per
+   *  request. */
+  lastSeenAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
 })
 
-/** Keyboard-shortcut rebinds, one row per command id. */
+/**
+ * The install's access mode, one row once the server has first started (or
+ * an upgraded install had data). No row means a fresh install, which takes
+ * whatever mode its first start asks for.
+ */
+export const accessModes = snakeCase.table('access_modes', {
+  id: uuid().primaryKey().defaultRandom(),
+  mode: text().$type<AccessMode>().notNull(),
+  recordedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+})
+
+/** Single-value preferences per user, keyed by name (the git identity
+ *  workspaces commit under, the user's time zone). */
+export const preferences = snakeCase.table('preferences', {
+  id: uuid().primaryKey().defaultRandom(),
+  owner: uuid().notNull().references(() => users.id),
+  key: text().notNull(),
+  value: text().notNull(),
+}, (t) => [uniqueIndex().on(t.owner, t.key)])
+
+/** Keyboard-shortcut rebinds, one row per user and command id. */
 export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
-  commandId: text().primaryKey(),
+  id: uuid().primaryKey().defaultRandom(),
+  owner: uuid().notNull().references(() => users.id),
+  commandId: text().notNull(),
   code: text().notNull(),
   alt: boolean().notNull(),
   ctrl: boolean().notNull(),
   meta: boolean().notNull(),
   shift: boolean().notNull(),
-})
+}, (t) => [uniqueIndex().on(t.owner, t.commandId)])
 
 /**
  * Every project yaac has cloned, keyed by an immutable id that is never
@@ -50,6 +86,8 @@ export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
  */
 export const projects = snakeCase.table('projects', {
   id: uuid().primaryKey().defaultRandom(),
+  /** The user who added it; only they create workspaces in it. */
+  owner: uuid().notNull().references(() => users.id),
   /** Display name derived from the repo path (`projectNameFor`). Not
    *  unique: the same remote can be added twice. */
   name: text().notNull(),
@@ -316,6 +354,8 @@ export const projectEnvVars = snakeCase.table('project_env_vars', {
  */
 export const gitCredentials = snakeCase.table('git_credentials', {
   id: uuid().primaryKey().defaultRandom(),
+  owner: uuid().notNull().references(() => users.id),
+  /** Unique per owner. */
   name: text().notNull(),
   kind: text().$type<'https' | 'ssh'>().notNull(),
   /** The token, or the ssh key's 32-byte ed25519 seed as base64; encrypted. */
@@ -324,7 +364,7 @@ export const gitCredentials = snakeCase.table('git_credentials', {
    *  can show it. Its comment is the credential's name. */
   publicKey: text(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-}, (t) => [uniqueIndex().on(t.name)])
+}, (t) => [uniqueIndex().on(t.owner, t.name)])
 
 /**
  * A workspace create request that runs when its parent stops naturally

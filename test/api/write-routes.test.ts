@@ -19,6 +19,7 @@ import { setDraftWorkspaceTitle } from '@yaac/server/db/draft-workspace-store'
 import { listDraftWorkspaces } from '@yaac/server/domain/workspaces/drafts'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { closeDb } from '@yaac/server/db/client'
+import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import type * as sessionCreateModule from '@yaac/server/domain/workspaces/create'
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
@@ -170,7 +171,7 @@ async function writeProject(id: string, remoteUrl = 'https://example.com/foo', n
     remoteUrl,
     addedAt: '2026-01-01T00:00:00.000Z',
   }
-  await recordProject(meta)
+  await recordProject(meta, BUILT_IN_USER_ID)
 }
 
 describe('write routes', () => {
@@ -215,7 +216,7 @@ describe('write routes', () => {
       const id = '00000000-0000-4000-8000-000000000001'
       const res = await client.project.add.$post({ json: { remoteUrl: 'x/foo', gitCredentialId: id } })
       expect(res.status).toBe(200)
-      expect(mockAddProject).toHaveBeenCalledWith('x/foo', id)
+      expect(mockAddProject).toHaveBeenCalledWith('x/foo', id, BUILT_IN_USER_ID)
     })
   })
 
@@ -1312,7 +1313,7 @@ describe('write routes', () => {
         const res = await client.auth.git.credentials.$post({ json: { name: 'gh', token: 'ghp_new' } })
         expect(res.status).toBe(200)
         const { id } = await res.json()
-        expect(await listCredentialSummaries()).toEqual([
+        expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
           { id, name: 'gh', kind: 'https', preview: '***_new', projects: [] },
         ])
         expect(synced).not.toHaveBeenCalled()
@@ -1335,7 +1336,7 @@ describe('write routes', () => {
         id: expect.any(String) as string,
         publicKey: expect.stringMatching(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ deploy$/) as string,
       })
-      expect((await listCredentialSummaries())[0]).toMatchObject({ name: 'deploy', kind: 'ssh', publicKey: body.publicKey })
+      expect((await listCredentialSummaries(BUILT_IN_USER_ID))[0]).toMatchObject({ name: 'deploy', kind: 'ssh', publicKey: body.publicKey })
       // Nothing under the data dir's credentials holds anything about it.
       const credDir = path.join(tmpDir, 'server-local', '.credentials')
       for (const name of await fs.readdir(credDir).catch(() => [] as string[])) {
@@ -1352,11 +1353,11 @@ describe('write routes', () => {
 
   describe('PATCH /auth/git/credentials/:id', () => {
     it('renames a credential, and 404s an unknown id', async () => {
-      const { id } = await addHttpsCredential({ name: 'old', token: 'ghp_x' })
+      const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'old', token: 'ghp_x' })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth.git.credentials[':id'].$patch({ param: { id }, json: { name: 'new' } })
       expect(res.status).toBe(204)
-      expect((await listCredentialSummaries()).map((c) => c.name)).toEqual(['new'])
+      expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => c.name)).toEqual(['new'])
 
       const missing = await client.auth.git.credentials[':id'].$patch({
         param: { id: '00000000-0000-4000-8000-000000000000' }, json: { name: 'x' },
@@ -1368,14 +1369,14 @@ describe('write routes', () => {
   describe('DELETE /auth/git/credentials/:id', () => {
     it('deletes a credential in use and takes it from the runtime at once', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
-      const a = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
+      const a = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'a', token: 'ghp_a' })
       await assignProjectCredential(WEB, a.id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id: a.id } })
         expect(res.status).toBe(204)
-        expect(await listCredentialSummaries()).toEqual([])
+        expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([])
         expect(synced.mock.calls.at(-1)?.[0].git).toEqual([])
       } finally {
         synced.mockRestore()
@@ -1385,14 +1386,14 @@ describe('write routes', () => {
     it('deletes, but answers RUNTIME_UNAVAILABLE when the runtime could not be told', async () => {
       // Deleting is how a leaked credential is revoked, so success must not
       // be reported while the proxy still holds it.
-      const { id } = await addHttpsCredential({ name: 'a', token: 'ghp_a' })
+      const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'a', token: 'ghp_a' })
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockRejectedValue(new Error('apiserver down'))
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id } })
         expect(res.status).toBe(503)
         expect(await res.text()).toMatch(/deleted, but the egress proxy could not be updated.*apiserver down/)
-        expect(await listCredentialSummaries()).toEqual([])
+        expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([])
       } finally {
         synced.mockRestore()
       }
@@ -1410,7 +1411,7 @@ describe('write routes', () => {
   describe('POST /auth/git/credentials/:id/replace', () => {
     it('replaces the secret under the same name and projects, and pushes it', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
-      const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_leaked' })
+      const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_leaked' })
       await assignProjectCredential(WEB, id)
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
@@ -1418,7 +1419,7 @@ describe('write routes', () => {
         const res = await client.auth.git.credentials[':id'].replace.$post({ param: { id }, json: { token: 'ghp_fresh' } })
         expect(res.status).toBe(200)
         const body = await res.json()
-        expect(await listCredentialSummaries()).toEqual([
+        expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
           { id: body.id, name: 'gh', kind: 'https', preview: '***resh', projects: [WEB] },
         ])
         expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_fresh', projects: [WEB] }])
@@ -1431,7 +1432,7 @@ describe('write routes', () => {
   describe('PUT /project/:projectId/git-credential', () => {
     it('assigns the credential and hands the runtime what the project may now use', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
-      const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
+      const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_web' })
       const synced = vi.spyOn(workspaceDriver(), 'syncCredentials').mockResolvedValue(undefined)
       try {
         const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -1449,7 +1450,7 @@ describe('write routes', () => {
 
     it('404s an unknown project or credential', async () => {
       await writeProject(WEB, 'https://github.com/acme/web', 'web')
-      const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_web' })
+      const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_web' })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       expect((await client.project[':projectId']['git-credential'].$put({
         param: { projectId: 'nope' }, json: { credentialId: id },

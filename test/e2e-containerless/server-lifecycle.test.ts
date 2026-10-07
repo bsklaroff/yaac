@@ -12,6 +12,9 @@ import {
 import { readLock, serverLockPath } from '@yaac/shared/lock'
 import { MAX_PORT_PROBES } from '@yaac/shared/server-port'
 import { serverLogPath } from '@yaac/shared/paths'
+import { readServerConfig } from '@yaac/shared/server-config'
+import { asTailnet } from '@yaac/test-utils/api'
+import http from 'node:http'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 
@@ -182,6 +185,92 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     expect(res.status).toBe(200)
   })
 
+})
+
+describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
+  // One data dir walked through the whole one-way sequence: fresh tailnet
+  // needs no --owner, a mode the running server is not in is refused, and
+  // tailnet never goes back to local. A second data dir covers the switch
+  // from local, which does need --owner.
+  const HOST = 'srv.tailnet.ts.net'
+  let testEnv: YaacTestEnv
+
+  beforeEach(async () => {
+    testEnv = await createYaacTestEnv()
+  })
+
+  afterEach(async () => {
+    await killServerByLock()
+    await testEnv.cleanup()
+  })
+
+  /** GET /whoami at the running server, as `headers` says the caller is. */
+  async function whoami(headers: Record<string, string>): Promise<{ status: number; body: Record<string, unknown> }> {
+    const lock = await readLock()
+    return new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: lock!.port, path: '/api/whoami', headers }, (res) => {
+        let raw = ''
+        res.on('data', (c: Buffer) => { raw += c.toString() })
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: JSON.parse(raw) as Record<string, unknown> }))
+      })
+      req.on('error', reject)
+      req.end()
+    })
+  }
+
+  it('records a fresh install\'s mode, registers its tailnet origin, and never switches back', async () => {
+    const started = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST.toUpperCase())
+    expect(started.exitCode).toBe(0)
+    expect(await readServerConfig()).toMatchObject({ url: `https://${HOST}`, driver: 'containerless' })
+    expect((await whoami(asTailnet('alice@example.com', HOST))).body).toMatchObject({ kind: 'tailnet', login: 'alice@example.com' })
+    expect((await whoami({ host: '127.0.0.1' })).status).toBe(401)
+
+    // The running server is in another mode than asked for.
+    const mismatch = await runYaac(testEnv.env, 'server', 'start')
+    expect(mismatch.exitCode).toBe(1)
+    expect(mismatch.stderr).toMatch(/running in tailnet mode, which cannot switch back to local[\s\S]*yaac server start --tailnet <host>/)
+
+    // Back to local is refused, and the refusing server is not left running.
+    const back = await runYaac(testEnv.env, 'server', 'restart')
+    expect(back.exitCode).toBe(1)
+    expect(back.stderr).toMatch(/refused to start: this install runs in tailnet mode[\s\S]*--tailnet <host>/)
+    expect(await readLock()).toBeNull()
+
+    const again = await runYaac(testEnv.env, 'server', 'restart', '--tailnet', HOST)
+    expect(again.exitCode).toBe(0)
+    expect((await whoami(asTailnet('alice@example.com', HOST))).status).toBe(200)
+  })
+
+  it('switches a local install to tailnet only with --owner, who then owns its data', async () => {
+    expect((await runYaac(testEnv.env, 'server', 'start')).exitCode).toBe(0)
+    expect(await whoami({ host: '127.0.0.1' })).toMatchObject({ status: 200, body: { kind: 'local' } })
+    const builtIn = (await whoami({ host: '127.0.0.1' })).body.userId
+
+    const unowned = await runYaac(testEnv.env, 'server', 'restart', '--tailnet', HOST)
+    expect(unowned.exitCode).toBe(1)
+    expect(unowned.stderr).toMatch(/runs in local mode[\s\S]*--owner <login>/)
+    expect(await readLock()).toBeNull()
+
+    const owned = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST, '--owner', 'alice@example.com')
+    expect(owned.exitCode).toBe(0)
+    expect((await whoami(asTailnet('alice@example.com', HOST))).body).toMatchObject({ userId: builtIn })
+  })
+
+  it('refuses bad flags before starting anything, and --tailnet inside a workspace', async () => {
+    for (const [args, message] of [
+      [['--owner', 'alice@example.com'], /--owner .* needs --tailnet <host>/],
+      [['--tailnet', 'https://srv.tailnet.ts.net'], /--tailnet takes the bare MagicDNS name/],
+    ] as const) {
+      const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'start', ...args)
+      expect(exitCode).toBe(1)
+      expect(stderr).toMatch(message)
+      expect(await readLock()).toBeNull()
+    }
+    const nested = await runYaac({ ...testEnv.env, YAAC_WORKSPACE_ID: 'abcd1234' }, 'server', 'start', '--tailnet', HOST)
+    expect(nested.exitCode).toBe(1)
+    expect(nested.stderr).toMatch(/inside a workspace is always local/)
+    expect(await readLock()).toBeNull()
+  })
 })
 
 describe('yaac server start on a k8s install', () => {

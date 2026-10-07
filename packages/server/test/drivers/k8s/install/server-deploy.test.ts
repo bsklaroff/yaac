@@ -375,9 +375,11 @@ describe('deployServerWorkload', () => {
     })
   })
 
-  it('carries the remote-hosting posture the install shell was given', async () => {
-    // These are set on the Deployment; `yaac server restart` only rolls
-    // existing pods, so re-running install is how they change.
+  it('carries the forward bind the install shell was given, but not its allowed hosts', async () => {
+    // Set on the Deployment; `yaac server restart` only rolls existing
+    // pods, so re-running install is how it changes. Which names the server
+    // answers to follows the fronting alone: a shell-set YAAC_ALLOWED_HOSTS
+    // must not open a local install to anything.
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     vi.stubEnv('YAAC_FORWARD_BIND', '100.64.0.7')
 
@@ -386,7 +388,8 @@ describe('deployServerWorkload', () => {
     const env = Object.fromEntries(
       deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]),
     )
-    expect(env.YAAC_ALLOWED_HOSTS).toBe('srv.tailnet.ts.net')
+    expect(env.YAAC_ALLOWED_HOSTS).toBeUndefined()
+    expect(env.YAAC_ACCESS_MODE).toBe('local')
     // The pod builds the snapshot that forwarded-port links come from, so
     // it needs the tailnet bind address.
     expect(env.YAAC_FORWARD_BIND).toBe('100.64.0.7')
@@ -505,20 +508,22 @@ describe('deployServerWorkload', () => {
     expect(origin).toBe('https://yaac.tail1234.ts.net')
     const env = Object.fromEntries(deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]))
     expect(env.YAAC_ALLOWED_HOSTS).toBe('yaac.tail1234.ts.net')
+    expect(env.YAAC_ACCESS_MODE).toBe('tailnet')
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([u]) => (u as string).startsWith(origin))).toBe(true)
     expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true, driver: 'k8s' })
   })
 
-  it('unions the fronting\'s hosts with the install shell\'s', async () => {
-    // A host-side `tailscale serve` still works (docs/remote-hosting.md),
-    // so shell-set hosts are added to the fronting's.
-    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+  it('hands --owner to the server, and fails on the reason a server refusing its access mode gives', async () => {
     publishIngress('yaac.tail1234.ts.net')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      ok: true, ready: false, access: null, refused: 'this install runs in local mode',
+    })))))
 
-    await deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), log: vi.fn() })
+    await expect(deploy({ fronting: tailnetFronting({ hostname: 'yaac' }), owner: 'alice@example.com', log: vi.fn() }))
+      .rejects.toThrow('the server refused to start: this install runs in local mode')
 
     const env = Object.fromEntries(deployedPodSpec().containers[0].env.map((e) => [e.name, e.value]))
-    expect(env.YAAC_ALLOWED_HOSTS.split(',').sort()).toEqual(['srv.tailnet.ts.net', 'yaac.tail1234.ts.net'])
+    expect(env.YAAC_ACCESS_OWNER).toBe('alice@example.com')
   })
 
   it('refuses when the operator never publishes a hostname, before the Deployment', async () => {

@@ -14,6 +14,7 @@ vi.mock('#db', async (importOriginal) => ({
   setWorkspaceTitle: vi.fn(),
   getGitIdentity: mockGitIdentity,
   getTimeZone: vi.fn(),
+  getProjectRow: vi.fn(),
 }))
 
 vi.mock('#domain/workspaces/spare-pool', () => ({
@@ -68,13 +69,16 @@ import { resolveProjectEnv } from '#domain/projects/env'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorkspaceEvent } from '#db'
 import {
+  BUILT_IN_USER_ID,
   applyWorkspaceEvent,
   claimSpareWorkspace,
+  getProjectRow,
   getTimeZone,
   getWorkspaceRow,
   restoreSpareWorkspace,
   setWorkspaceGroup,
   setWorkspaceTitle,
+  type ProjectRow,
   type WorkspaceRow,
 } from '#db'
 import type { CreateSetup } from '#domain/workspaces/create'
@@ -187,6 +191,7 @@ describe('tryClaimPrewarmed', () => {
     mockFetchOrigin.mockResolvedValue(undefined)
     mockGitIdentity.mockResolvedValue({ name: 'A B', email: 'a@b.co' })
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
+    vi.mocked(getProjectRow).mockResolvedValue({ owner: BUILT_IN_USER_ID } as ProjectRow)
     launched()
   })
 

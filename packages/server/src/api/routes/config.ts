@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { readUserDockerfile, writeUserDockerfile } from '#domain/projects'
 import { userBuildDir } from '#lib/build-dirs'
 import { buildFilesApp } from '#routes/build-files'
-import { requireDriverFeature } from '#http'
+import { requireDriverFeature, type IdentityEnv } from '#http'
 import { getGitIdentity, getTimeZone, setGitIdentity, setTimeZone } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -23,14 +23,14 @@ function isTimeZone(timeZone: string): boolean {
 }
 
 /**
- * Global (not project-scoped) editable config: the git identity workspaces
- * commit under, the time zone they run in, the user Dockerfile (`~/.yaac/build/Dockerfile.user`) layered
+ * Global (not project-scoped) editable config: the caller's git identity
+ * their workspaces commit under, the time zone they run in, the user Dockerfile (`~/.yaac/build/Dockerfile.user`) layered
  * on every project image, and the other files in its build context.
  */
-export const configApp = new Hono()
+export const configApp = new Hono<IdentityEnv>()
   // Not gated on a driver feature: every substrate makes commits. Stored in
   // the server so a client on another machine can set it.
-  .get('/git-identity', async (c) => c.json({ identity: await getGitIdentity() }))
+  .get('/git-identity', async (c) => c.json({ identity: await getGitIdentity(c.get('principal').userId) }))
   .put(
     '/git-identity',
     // Capped and free of control characters, since both values land in a
@@ -48,11 +48,11 @@ export const configApp = new Hono()
       if (!identity.email.includes('@')) {
         throw new ServerError('VALIDATION', `"${identity.email}" is not an email address.`)
       }
-      await setGitIdentity(identity)
+      await setGitIdentity(c.get('principal').userId, identity)
       return c.json({ identity })
     },
   )
-  .get('/time-zone', async (c) => c.json(await getTimeZone()))
+  .get('/time-zone', async (c) => c.json(await getTimeZone(c.get('principal').userId)))
   // `pinned` absent is a device report, which a zone the user chose in
   // settings outranks; present, it is that choice (`false` returns the zone
   // to following devices).
@@ -64,10 +64,11 @@ export const configApp = new Hono()
     })),
     async (c) => {
       const { timeZone, pinned } = c.req.valid('json')
-      if (pinned !== undefined || !(await getTimeZone()).pinned) {
-        await setTimeZone(timeZone, pinned ?? false)
+      const owner = c.get('principal').userId
+      if (pinned !== undefined || !(await getTimeZone(owner)).pinned) {
+        await setTimeZone(owner, timeZone, pinned ?? false)
       }
-      return c.json(await getTimeZone())
+      return c.json(await getTimeZone(owner))
     },
   )
   // Both refuse on a runtime that builds no images.

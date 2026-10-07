@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectConfigDir, getProjectsDir } from '@yaac/shared/project-paths'
 import { addAllowedHostToProjectConfig, addPortForwardToProjectConfig, readProjectConfigRaw, removeProjectConfig, writeProjectConfig } from '#domain/projects'
-import { recordProject } from '#db'
+import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 
@@ -23,7 +23,7 @@ beforeEach(async () => {
     remoteUrl: 'https://example.com/foo',
     addedAt: '2026-01-01T00:00:00.000Z',
   }
-  await recordProject(meta)
+  await recordProject(meta, BUILT_IN_USER_ID)
 })
 
 afterEach(async () => {

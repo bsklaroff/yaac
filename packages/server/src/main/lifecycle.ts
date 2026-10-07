@@ -5,7 +5,6 @@ import { readBuildId } from '@yaac/shared/build-id'
 import { readLock, removeLock } from '@yaac/shared/lock'
 import {
   isLockLive,
-  isLockReady,
   isSameHostLock,
   type ServerLock,
 } from '@yaac/shared/server-lock-file'
@@ -16,17 +15,34 @@ import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
 import { assertHostServerAllowed } from '#main/driver-choice'
 import { registerServer } from '@yaac/shared/server-config'
+import type { AccessMode } from '@yaac/shared/types'
+
+/**
+ * The access flags of `yaac server start|restart` (docs/remote-hosting.md
+ * "Access modes"): `tailnet` is the MagicDNS name `tailscale serve` fronts
+ * the server at, and `owner` the login a switch from local gives the
+ * install to.
+ */
+export interface ServerAccessOptions {
+  tailnet?: string
+  owner?: string
+}
 
 /**
  * Entry point for `yaac server start`.
  *
- * - If a server is already running with the matching buildId, no-op.
- * - If running with a different buildId, throw — the user should
+ * - If a server is already running with the matching buildId and access
+ *   mode, no-op.
+ * - If running with a different buildId or mode, throw — the user should
  *   `yaac server restart`.
- * - Otherwise clean any stale lock, spawn `yaac server run` detached,
- *   and wait up to 5s for the new lock to appear.
+ * - Otherwise clean any stale lock, spawn `yaac server run` detached, and
+ *   wait for it to be ready, or to report that it refused the access mode
+ *   (then stop it and throw the reason).
  */
-export async function startServer(): Promise<void> {
+export async function startServer(opts: ServerAccessOptions = {}): Promise<void> {
+  const tailnet = tailnetHost(opts)
+  const mode: AccessMode = tailnet === undefined ? 'local' : 'tailnet'
+  const origin = (port: number): string => tailnet === undefined ? `http://127.0.0.1:${port}` : `https://${tailnet}`
   await preflightHostTor()
   await ensureDataDir()
   // Check before spawning: a detached child that refuses dies before its
@@ -36,11 +52,24 @@ export async function startServer(): Promise<void> {
 
   const existing = await readLock()
   if (existing && await isLockLive(existing)) {
+    const running = (await health(existing.port))?.access
+    if (existing.buildId === cliBuildId && running === 'tailnet' && mode === 'local') {
+      throw new Error(
+        'yaac server is running in tailnet mode, which cannot switch back to local. '
+        + 'Start it with: yaac server start --tailnet <host>',
+      )
+    }
+    if (existing.buildId === cliBuildId && running === 'local' && mode === 'tailnet') {
+      throw new Error(
+        `yaac server is running in local mode. Switch it with: yaac server restart --tailnet ${tailnet} `
+        + '--owner <login> (the tailnet login that will own its projects and settings)',
+      )
+    }
     if (existing.buildId === cliBuildId) {
       console.error(`[yaac] server already running pid=${existing.pid} port=${existing.port}`)
       // Register anyway: the running server may be a foreground
       // `yaac server run`, which registers nothing.
-      await registerLocalServer(existing.port)
+      await registerLocalServer(origin(existing.port))
       return
     }
     throw new Error(
@@ -54,7 +83,14 @@ export async function startServer(): Promise<void> {
   // wait-for-new-lock poll simple.
   if (existing) await removeLock()
 
-  await spawnServerDetached()
+  await spawnServerDetached({
+    YAAC_ACCESS_MODE: mode,
+    YAAC_ACCESS_OWNER: opts.owner,
+    // A local server keeps whatever the shell sets: a nested server needs
+    // the outer forward's name, and a local install refuses serve anyway.
+    // eslint-disable-next-line no-process-env -- the child's env, not a setting read here
+    YAAC_ALLOWED_HOSTS: tailnet ?? process.env.YAAC_ALLOWED_HOSTS,
+  })
   // Wait for readiness, not just liveness: /health answers before the DB
   // opens and first-boot migrations block the event loop for seconds. 30s
   // covers a cold-start migration with headroom.
@@ -64,7 +100,7 @@ export async function startServer(): Promise<void> {
       `server buildId ${fresh.buildId} does not match CLI buildId ${cliBuildId}`,
     )
   }
-  await registerLocalServer(fresh.port)
+  await registerLocalServer(origin(fresh.port))
   const torPrefix = env.useTor ? '(using tor) ' : ''
   console.error(`[yaac] ${torPrefix}server started pid=${fresh.pid} port=${fresh.port}`)
   // A host server is always containerless (`#main/driver-choice`). Repeat
@@ -79,9 +115,9 @@ export async function startServer(): Promise<void> {
  * failure the server keeps running but clients cannot find it; rerunning
  * the command fixes that.
  */
-async function registerLocalServer(port: number): Promise<void> {
+async function registerLocalServer(origin: string): Promise<void> {
   try {
-    await registerServer(`http://127.0.0.1:${port}`, 'containerless')
+    await registerServer(origin, 'containerless')
   } catch (err) {
     console.error(
       `[yaac] WARNING: the server is up, but this machine could not be pointed at it: ${
@@ -153,9 +189,29 @@ export async function stopServer(): Promise<void> {
  * Entry point for `yaac server restart`. Stops any running server, then
  * starts a fresh one.
  */
-export async function restartServer(): Promise<void> {
+export async function restartServer(opts: ServerAccessOptions = {}): Promise<void> {
+  tailnetHost(opts)
   await stopServer()
-  await startServer()
+  await startServer(opts)
+}
+
+/** Check the access flags; returns the lowercased tailnet name. */
+function tailnetHost(opts: ServerAccessOptions): string | undefined {
+  if (opts.owner !== undefined && opts.tailnet === undefined) {
+    throw new Error(
+      '--owner names the tailnet login that claims this install as it switches to tailnet '
+      + 'mode, so it needs --tailnet <host> (docs/remote-hosting.md "Access modes").',
+    )
+  }
+  if (opts.tailnet === undefined) return undefined
+  const host = opts.tailnet.trim().toLowerCase()
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host)) {
+    throw new Error(
+      '--tailnet takes the bare MagicDNS name tailscale serve fronts this machine at, '
+      + `e.g. srv.<tailnet>.ts.net (got "${opts.tailnet}").`,
+    )
+  }
+  return host
 }
 
 /**
@@ -163,14 +219,19 @@ export async function restartServer(): Promise<void> {
  * entry is the `.ts` source, so the child goes through tsx's CLI to set up
  * the loader again.
  */
-async function spawnServerDetached(): Promise<void> {
+async function spawnServerDetached(overrides: Record<string, string | undefined>): Promise<void> {
   const entry = process.argv[1] ?? ''
   const loader = entry.endsWith('.ts') ? [createRequire(import.meta.url).resolve('tsx/cli')] : []
+  // eslint-disable-next-line no-process-env -- forward the full host env to the detached server subprocess
+  const childEnv = { ...process.env }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete childEnv[key]
+    else childEnv[key] = value
+  }
   const child = spawn(process.execPath, [...loader, entry, 'server', 'run'], {
     detached: true,
     stdio: 'ignore',
-    // eslint-disable-next-line no-process-env -- forward the full host env to the detached server subprocess
-    env: process.env,
+    env: childEnv,
   })
   child.unref()
   // If the spawn itself fails immediately (e.g. ENOENT), surface it.
@@ -183,12 +244,32 @@ async function spawnServerDetached(): Promise<void> {
 }
 
 async function waitForReadyLock(timeoutMs: number): Promise<ServerLock> {
+  let refused: string | undefined
   const lock = await waitFor(async () => {
     const cur = await readLock()
-    return cur && await isLockReady(cur) ? cur : undefined
+    if (!cur || !await isLockLive(cur)) return undefined
+    const body = await health(cur.port)
+    refused = body?.refused
+    return body?.ready === true || refused !== undefined ? cur : undefined
   }, { timeoutMs, intervalMs: 100 })
+  if (refused !== undefined) {
+    await stopServer()
+    throw new Error(`the server refused to start: ${refused}`)
+  }
   if (lock) return lock
   throw new Error(`server did not become ready within ${Math.round(timeoutMs / 1000)}s`)
+}
+
+interface Health { ready?: boolean; access?: AccessMode | null; refused?: string }
+
+/** The host server's `/health`, or undefined when it does not answer. */
+async function health(port: number): Promise<Health | undefined> {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(500) })
+    return res.ok ? await res.json() as Health : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export interface ServerLogsOptions {

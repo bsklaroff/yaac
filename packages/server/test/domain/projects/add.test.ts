@@ -22,7 +22,7 @@ import {
   registerStagedProject,
   resolveProjectCredential,
 } from '#domain/projects'
-import { closeDb, getProjectRow, listProjectRows } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows } from '#db'
 import {
   claudeDir,
   getProjectsDir,
@@ -51,7 +51,7 @@ let token: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  token = (await addHttpsCredential({ name: 'default', token: 'ghp_default' })).id
+  token = (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'default', token: 'ghp_default' })).id
   mockClone.mockReset()
   // Leave a repo behind, as a real clone does, for rollback to remove.
   mockClone.mockImplementation(async (_url, dest) => {
@@ -66,9 +66,9 @@ afterEach(async () => {
 
 describe('addProject', () => {
   it('clones with the credential it is given and records the project with it', async () => {
-    const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_secret' })
+    const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_secret' })
 
-    const { project, knownHostsEntry } = await addProject('https://github.com/acme/Widgets.git', id)
+    const { project, knownHostsEntry } = await addProject('https://github.com/acme/Widgets.git', id, BUILT_IN_USER_ID)
 
     expect(project.id).toMatch(UUID)
     expect(project.name).toBe('widgets')
@@ -86,10 +86,10 @@ describe('addProject', () => {
   })
 
   it('clones an SCP-style remote with an ssh key, trusting the host key it fetched', async () => {
-    const key = await generateSshCredential({ name: 'deploy' })
+    const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
 
     const { project, knownHostsEntry } = await addProject(
-      'git@git.example.com:group/sub/Repo.git', key.id,
+      'git@git.example.com:group/sub/Repo.git', key.id, BUILT_IN_USER_ID,
     )
 
     expect(project.name).toBe('repo')
@@ -112,7 +112,7 @@ describe('addProject', () => {
       ['https://github.com/acme/c++lib!.git', 'c--lib'],
     ]
     for (const [url, name] of cases) {
-      expect((await addProject(url, token)).project.name).toBe(name)
+      expect((await addProject(url, token, BUILT_IN_USER_ID)).project.name).toBe(name)
     }
     const rows = (await listProjectRows()).filter((r) => r.name === 'c--lib')
     expect(rows.map((r) => r.remoteUrl).sort())
@@ -121,9 +121,9 @@ describe('addProject', () => {
   })
 
   it('refuses a credential of the wrong kind, or none that exists, before cloning', async () => {
-    await expect(addProject('git@github.com:acme/repo.git', token))
+    await expect(addProject('git@github.com:acme/repo.git', token, BUILT_IN_USER_ID))
       .rejects.toThrow(/needs an SSH key, not a token/)
-    await expect(addProject('https://github.com/acme/repo.git', '00000000-0000-4000-8000-000000000000'))
+    await expect(addProject('https://github.com/acme/repo.git', '00000000-0000-4000-8000-000000000000', BUILT_IN_USER_ID))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(mockClone).not.toHaveBeenCalled()
     expect(await projectDirs()).toEqual([])
@@ -145,7 +145,7 @@ describe('addProject', () => {
       lastRefresh: '2026-01-01T00:00:00.000Z',
     })
 
-    const { project } = await addProject('https://github.com/acme/repo.git', token)
+    const { project } = await addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)
 
     // Placeholders, not real tokens; the proxy swaps them per request.
     const claude = JSON.parse(
@@ -160,7 +160,7 @@ describe('addProject', () => {
   })
 
   it('leaves the tool credential dirs empty when the user has no oauth login', async () => {
-    const { project } = await addProject('https://github.com/acme/repo.git', token)
+    const { project } = await addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)
 
     await expect(fs.access(projectClaudeCredentialsFile(project.id))).rejects.toThrow()
     await expect(fs.access(projectCodexAuthFile(project.id))).rejects.toThrow()
@@ -175,16 +175,16 @@ describe('addProject', () => {
       'acme/foo',
       'not a url',
     ]) {
-      await expect(addProject(bad, token)).rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(addProject(bad, token, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
     }
     expect(mockClone).not.toHaveBeenCalled()
   })
 
   it('maps a rejected credential to VALIDATION and rolls the project dir back', async () => {
-    const { id } = await addHttpsCredential({ name: 'gh', token: 'ghp_stale' })
+    const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_stale' })
     mockClone.mockRejectedValue(new Error('fatal: Authentication failed for https://github.com/'))
 
-    const attempt = addProject('https://github.com/acme/repo.git', id)
+    const attempt = addProject('https://github.com/acme/repo.git', id, BUILT_IN_USER_ID)
     await expect(attempt).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(attempt).rejects.toThrow(/git authentication failed for github\.com/)
     expect(await projectDirs()).toEqual([])
@@ -193,7 +193,7 @@ describe('addProject', () => {
   it('maps any other clone failure to INTERNAL and rolls the project dir back', async () => {
     mockClone.mockRejectedValue(new Error('fatal: repository not found'))
 
-    const attempt = addProject('https://github.com/acme/repo.git', token)
+    const attempt = addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)
     await expect(attempt).rejects.toMatchObject({ code: 'INTERNAL' })
     await expect(attempt).rejects.toThrow(/Failed to clone: fatal: repository not found/)
     expect(await projectDirs()).toEqual([])
@@ -207,7 +207,7 @@ describe('addProject', () => {
       await fs.writeFile(claudeDir(path.basename(path.dirname(dest))), 'in the way')
     })
 
-    await expect(addProject('https://github.com/acme/repo.git', token)).rejects.toThrow()
+    await expect(addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)).rejects.toThrow()
     expect(await projectDirs()).toEqual([])
     expect(await listProjectRows()).toEqual([])
   })
@@ -219,22 +219,22 @@ const LOCAL = '5c4b3a29-1807-4f6e-9d8c-7b6a5f4e3d2d'
 describe('registerStagedProject', () => {
   it('records a staged checkout without cloning, and refuses what it cannot record', async () => {
     // Nothing staged yet.
-    await expect(registerStagedProject(STAGED, 'staged', 'https://github.com/acme/staged.git'))
+    await expect(registerStagedProject(STAGED, 'staged', 'https://github.com/acme/staged.git', BUILT_IN_USER_ID))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
 
     await fs.mkdir(path.join(repoDir(STAGED), '.git'), { recursive: true })
-    const meta = await registerStagedProject(STAGED, 'staged', 'https://github.com/acme/staged.git')
+    const meta = await registerStagedProject(STAGED, 'staged', 'https://github.com/acme/staged.git', BUILT_IN_USER_ID)
     expect(meta).toMatchObject({ id: STAGED, name: 'staged', remoteUrl: 'https://github.com/acme/staged.git' })
     expect(await getProjectRow(STAGED)).toMatchObject({ ...meta, gitCredentialId: null })
     expect(mockClone).not.toHaveBeenCalled()
 
-    await expect(registerStagedProject(STAGED, 'staged', 'https://github.com/other/staged.git'))
+    await expect(registerStagedProject(STAGED, 'staged', 'https://github.com/other/staged.git', BUILT_IN_USER_ID))
       .rejects.toMatchObject({ code: 'CONFLICT' })
     // The remote is validated as `addProject` does, since it picks the
     // transport every later fetch uses.
     await fs.mkdir(path.join(repoDir(LOCAL), '.git'), { recursive: true })
     for (const remote of ['/some/local/path', 'file:///srv/repo.git', 'ext::sh -c evil']) {
-      await expect(registerStagedProject(LOCAL, 'local', remote)).rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(registerStagedProject(LOCAL, 'local', remote, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
     }
     expect(await getProjectRow(LOCAL)).toBeUndefined()
   })

@@ -1367,10 +1367,13 @@ describe('runClusterInstall', () => {
   // --tailnet: fronting the server on the tailnet through the operator
   // -------------------------------------------------------------------
 
-  it('--tailnet hands the tailnet fronting to the server deploy', async () => {
+  it('--tailnet hands the tailnet fronting and --owner to the server deploy', async () => {
     const deps = makeDeps({ run: tailnetRun('present') })
-    await expect(runClusterInstall({ tailnet: true }, deps)).resolves.toBeUndefined()
+    await expect(runClusterInstall({ tailnet: true, owner: 'alice@example.com' }, deps)).resolves.toBeUndefined()
     expect(appliedOf('Ingress')).toHaveLength(1)
+    const env = serverPod().containers[0].env
+    expect(env).toContainEqual({ name: 'YAAC_ACCESS_MODE', value: 'tailnet' })
+    expect(env).toContainEqual({ name: 'YAAC_ACCESS_OWNER', value: 'alice@example.com' })
     expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net' })
     expect(logged(deps)).toContain('Tailscale operator present')
   })
@@ -1469,6 +1472,8 @@ describe('runClusterInstall', () => {
       [{ byo: true }, /--byo needs --rwx-storage-class/],
       [{ rwxStorageClass: 'byo-nfs' }, /--rwx-storage-class is for --byo only/],
       [{ rwoStorageClass: 'fast' }, /--rwo-storage-class is for --byo only/],
+      // --owner only means anything on the switch to tailnet.
+      [{ owner: 'alice@example.com' }, /--owner .* needs --tailnet/],
     ] as const) {
       const d = makeDeps({ run: adoptRun() })
       const err = await runClusterInstall(opts, d).catch((e: unknown) => e)

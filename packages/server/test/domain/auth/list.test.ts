@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { addHttpsCredential } from '#domain/projects'
-import { closeDb } from '#db'
+import { BUILT_IN_USER_ID, closeDb } from '#db'
 import { saveClaudeCredentialsFile, saveToolAuth } from '@yaac/shared/tool-auth'
 import { listAuth } from '#domain/auth'
 
@@ -18,14 +18,14 @@ describe('listAuth', () => {
   })
 
   it('returns empty lists when nothing is configured', async () => {
-    const result = await listAuth()
+    const result = await listAuth(BUILT_IN_USER_ID)
     expect(result).toEqual({ gitCredentials: [], toolAuth: [] })
   })
 
   it('lists git credentials with masked previews', async () => {
-    const acme = await addHttpsCredential({ name: 'acme', token: 'ghp_abcdef123456' })
-    const other = await addHttpsCredential({ name: 'other', token: 'ghp_fallback_xxyz' })
-    const result = await listAuth()
+    const acme = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'acme', token: 'ghp_abcdef123456' })
+    const other = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'other', token: 'ghp_fallback_xxyz' })
+    const result = await listAuth(BUILT_IN_USER_ID)
     expect(result.gitCredentials).toEqual([
       { id: acme.id, name: 'acme', kind: 'https', preview: '***3456', projects: [] },
       { id: other.id, name: 'other', kind: 'https', preview: '***xxyz', projects: [] },
@@ -43,7 +43,7 @@ describe('listAuth', () => {
     await saveToolAuth('opencode', 'nw-secret-key', 'api-key', 'neuralwatt')
     await saveToolAuth('pi', 'pi-secret-key', 'api-key', 'openrouter')
 
-    const result = await listAuth()
+    const result = await listAuth(BUILT_IN_USER_ID)
     expect(result.toolAuth).toEqual([
       {
         tool: 'claude',
@@ -80,7 +80,7 @@ describe('listAuth', () => {
         scopes: [],
       },
     })
-    const result = await listAuth()
+    const result = await listAuth(BUILT_IN_USER_ID)
     const serialized = JSON.stringify(result)
     expect(serialized).not.toContain('SECRET-VALUE')
     expect(serialized).not.toContain('refresh-SECRET')
