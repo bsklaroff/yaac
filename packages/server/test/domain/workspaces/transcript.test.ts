@@ -107,6 +107,45 @@ describe('getAgentSessionTranscript', () => {
     expect(events[1].type === 'agent' && events[1].content).toEqual([{ type: 'text', text: 'the router' }])
   })
 
+  it('fills in a subagent\'s thread that the conversation left out from claude\'s transcript of it', async () => {
+    // A transcript's companion dir holds each subagent's own conversation.
+    const withSubagent = async (agentSessionId: string, toolUseId: string): Promise<void> => {
+      const dir = path.join(claudeDir(PROJECT), 'projects', '-workspace', agentSessionId, 'subagents')
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, 'agent-x1.meta.json'), JSON.stringify({ toolUseId }))
+      const entry = (uuid: string, parentUuid: string | null, role: string, content: unknown): unknown => ({
+        type: role, uuid, parentUuid, isSidechain: true, agentId: 'x1', sessionId: agentSessionId, cwd: '/workspace',
+        timestamp: '2026-01-01T00:00:00Z', message: { role, content, ...(role === 'assistant' ? { model: 'claude-fable-5' } : {}) },
+      })
+      await fs.writeFile(path.join(dir, 'agent-x1.jsonl'), [
+        entry('s1', null, 'user', 'Look around'),
+        entry('s2', 's1', 'assistant', [{ type: 'text', text: 'All clear.' }]),
+      ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+    }
+    // An acp conversation a `session/load` replayed: the Agent call, none of
+    // its thread.
+    await seedSession(ACP_SESSION, { mode: 'acp' })
+    await writeAcpRecord(ACP_SESSION, [{ jsonrpc: '2.0', id: 1, method: 'session/load', params: { sessionId: ACP_SESSION } }, {
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId: ACP_SESSION,
+        update: {
+          sessionUpdate: 'tool_call', toolCallId: 'toolu_look', title: 'look around', kind: 'think', status: 'pending',
+          rawInput: { prompt: 'Look around' }, _meta: { claudeCode: { toolName: 'Agent' } },
+        },
+      },
+    }])
+    await writeClaudeTranscript(ACP_SESSION)
+    await withSubagent(ACP_SESSION, 'toolu_look')
+
+    const events = await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)
+
+    expect(events.map((e) => [e.type, 'thread' in e ? e.thread : undefined])).toEqual([
+      ['tool', undefined], ['subagent', undefined], ['agent', 'toolu_look'],
+    ])
+    expect(events.at(-1)).toMatchObject({ seq: 2, content: [{ type: 'text', text: 'All clear.' }] })
+  })
+
   it('finds a conversation with no recorded path in the workspace\'s own history', async () => {
     // Finding it needs both the conversation id and the workspace id.
     await seedSession(TUI_SESSION)

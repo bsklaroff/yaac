@@ -52,7 +52,7 @@ export function WorkspaceChat({
   agentSessionId: string
   visible?: boolean
 }): JSX.Element {
-  const { events, busy, queued, connected, send, taskOutputs } = useAcpStream(workspaceId, agentSessionId)
+  const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const fullWidth = useUiStore((s) => s.chatFullWidth)
@@ -100,10 +100,20 @@ export function WorkspaceChat({
   const subagent = opened?.kind === 'subagent' ? activity.subagents.get(opened.id) : undefined
   const task = opened?.kind === 'task' ? activity.tasks.get(opened.id) : undefined
   const view = subagent !== undefined || task !== undefined ? opened : undefined
-  const threadGroups = useMemo(
-    () => (subagent !== undefined ? groupEvents(events, subagent.id) : []),
-    [events, subagent?.id],
-  )
+  /** A finished subagent the record shows without its thread (a
+   *  `session/load` replay leaves it out) is read from its own transcript. */
+  const ownThread = subagent !== undefined && events.some((e) => 'thread' in e && e.thread === subagent.id)
+  const wantsTranscript = subagent !== undefined && !ownThread && !active(subagent)
+  const transcript = wantsTranscript ? subagentTranscripts[subagent.id] : undefined
+  useEffect(() => {
+    if (wantsTranscript && connected && transcript === undefined) send({ type: 'subagent-transcript', subagentId: subagent.id })
+  }, [wantsTranscript, connected, transcript, subagent?.id])
+  const threadGroups = useMemo(() => {
+    if (subagent === undefined) return []
+    const after = (events[events.length - 1]?.seq ?? -1) + 1
+    const read = (transcript?.events ?? []).map((e, i) => ({ ...e, seq: after + i }))
+    return groupEvents([...events, ...read], subagent.id)
+  }, [events, subagent?.id, transcript])
   /** The call that started the task, and what it streamed. */
   const taskCall = useMemo(
     () => (task?.toolCallId === undefined ? { output: '' } : callOf(events, task.toolCallId)),

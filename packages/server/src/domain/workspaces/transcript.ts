@@ -2,6 +2,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { ConfinedPathError } from '#lib/confined-fs'
 import {
   acpRecord,
+  claudeSubagentThreads,
   claudeTranscriptAsAcp,
   codexTranscriptAsAcp,
   conversationFiles,
@@ -13,6 +14,7 @@ import {
   type SandboxFile,
 } from '#runtime/agents'
 import { listWorkspaceAgentSessions } from '#db'
+import { serverLog } from '#log'
 import { recordedTranscript } from './agent-session-paths'
 import type { AcpEvent } from '@yaac/shared/acp'
 
@@ -39,18 +41,19 @@ export async function getAgentSessionTranscript(
     throw new ServerError('NOT_FOUND', `conversation ${agentSessionId} not found`)
   }
 
+  // Fall back to the conventional path, as `stoppedPrompt` does.
+  const claudeFile = session.tool !== 'claude' ? undefined
+    : recordedTranscript(session) ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, agentSessionId)
+
   if (session.mode === 'acp') {
     const raw = await readTranscript(acpRecord({ projectId, workspaceId, agentSessionId }))
-    return raw === null ? [] : replayAcpLog(raw)
+    return raw === null ? [] : withSubagentThreads(replayAcpLog(raw), claudeFile, raw)
   }
 
   switch (session.tool) {
     case 'claude': {
-      // Fall back to the conventional path, as `stoppedPrompt` does.
-      const file = recordedTranscript(session)
-        ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, agentSessionId)
-      const raw = await readTranscript(file)
-      return raw === null ? [] : claudeTranscriptAsAcp(raw, agentSessionId)
+      const raw = await readTranscript(claudeFile)
+      return raw === null ? [] : withSubagentThreads(await claudeTranscriptAsAcp(raw, agentSessionId), claudeFile, raw)
     }
     case 'codex': {
       const files = (await conversationFiles(projectId, workspaceId, [session])).get(agentSessionId) ?? []
@@ -64,6 +67,28 @@ export async function getAgentSessionTranscript(
     case 'opencode':
       return opencodeTranscriptAsAcp(projectId, workspaceId, agentSessionId)
   }
+}
+
+/**
+ * Fill in each subagent the events show without its thread (a `session/load`
+ * replay and a tui transcript both leave it out) from claude's own
+ * transcript of it, beside the conversation's `session`. They are read in
+ * order under what is left of the transcript cap after `main`, the
+ * conversation already read; one that cannot be read, or does not fit,
+ * keeps the view it has.
+ */
+async function withSubagentThreads(events: AcpEvent[], session: SandboxFile | undefined, main: string): Promise<AcpEvent[]> {
+  if (session === undefined) return events
+  const threaded = new Set(events.flatMap((e) => ('thread' in e && e.thread !== undefined ? [e.thread] : [])))
+  const missing = new Set(events.flatMap((e) => (e.type === 'subagent' && !threaded.has(e.subagent.id) ? [e.subagent.id] : [])))
+  if (missing.size === 0) return events
+  const read = await claudeSubagentThreads(session, [...missing], MAX_TRANSCRIPT_BYTES - Buffer.byteLength(main))
+    .catch((err: unknown) => {
+      serverLog(`[server] subagent transcripts unreadable: ${String(err)}`)
+      return []
+    })
+  let seq = (events[events.length - 1]?.seq ?? -1) + 1
+  return [...events, ...read.map((e) => ({ ...e, seq: seq++ }))]
 }
 
 /**

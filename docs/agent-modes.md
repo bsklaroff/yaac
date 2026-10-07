@@ -339,6 +339,40 @@ notification that arrives mid-run joins that run and wakes nothing. The
 notification text the agent itself received is not available: the CLI
 replays it only when it joins a running turn.
 
+A new agent life empties the record, and `session/load` replays the history
+with none of these signals: no state reports, no task messages, and each
+notification a user message of `<task-notification>` markup. (The adapter
+replays subagents itself only to an AIR client.) So between the
+`session/load` request and its reply, the projection rebuilds what it can
+from the launching calls. An `Agent` call is its subagent, with its prompt
+as the task and, in the foreground, its hand-back report as the summary. A
+background `Bash` or `Monitor` result names its task id. A notification
+moves the subagent or task it names and is shown as the run it began,
+woken by that work. It must be one whole block naming something the replay
+rebuilt (a monitor's event names only its task id); anything else, such as
+a user quoting the markup, stays an ordinary message. Consecutive
+notifications wake one run. At the reply, what the replay rebuilt and left
+running is settled as stopped, since it died with the agent life before;
+nothing else is touched. A mid-run notification replays the same way, so
+after a reload it gets a caption too.
+
+A tui claude transcript is rendered through the same replay: its synthesized
+record opens with a `session/load` request but has no reply, because the
+conversation may still be live. What it leaves running stays running, and a
+stopped conversation's pane shows it as unfinished.
+
+A replayed subagent's own messages are not in the record: claude keeps
+them in a transcript of their own, `<session>/subagents/agent-<id>.jsonl`
+beside the conversation's, with a `.meta.json` naming the Agent call.
+`claudeSubagentThreads` maps the metas in one pass (capped in number,
+skipping any it cannot read), then reads the transcripts asked for in order
+under one byte budget, through the adapter's converter, the same way a tui
+transcript is rendered. Each event is tagged with its subagent's thread.
+The live pane asks for one subagent's over its socket
+(`subagent-transcript`) when it opens a finished subagent that has no thread
+in the record. A stopped conversation's transcript has those threads filled
+in before it is served, under what is left of the transcript cap.
+
 **Background work is its own status.** Between turns, a claude conversation
 whose background shells, monitors or background subagents are still live
 reports `background` rather than `waiting`: that work will usually wake the

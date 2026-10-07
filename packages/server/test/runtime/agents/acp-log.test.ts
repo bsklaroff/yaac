@@ -448,6 +448,92 @@ describe('replayAcpLog', () => {
     expect(events[credited - 1]).toMatchObject({ type: 'agent', content: [{ text: 'The subagent reported.' }] })
   })
 
+  it('rebuilds subagents and tasks from a session/load replay, and what each woke', () => {
+    // As claude-agent-acp 0.84.0 replays history: no state reports or task
+    // messages, only the launching calls, and each notification a user
+    // message of markup. A monitor's event names no call.
+    const call = (id: string, toolName: string, title: string, rawInput: Record<string, unknown>): string => update({
+      sessionUpdate: 'tool_call', toolCallId: id, title, kind: 'other', status: 'pending', rawInput, _meta: { claudeCode: { toolName } },
+    })
+    const result = (id: string, rawOutput: string | Array<{ type: 'text'; text: string }>): string => update({
+      sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput,
+      content: (typeof rawOutput === 'string' ? [{ type: 'text', text: rawOutput }] : rawOutput).map((c) => ({ type: 'content', content: c })),
+    })
+    const user = (t: string): string => update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: t } })
+    const markup = (fields: Record<string, string>): string =>
+      `<task-notification>\n${Object.entries(fields).map(([k, v]) => `<${k}>${v}</${k}>`).join('\n')}\n</task-notification>`
+    const notified = (fields: Record<string, string>): string => user(markup(fields))
+    // What a user may write that only looks like a notification: the bare
+    // tag, a whole block with a question after it, and one for a task this
+    // replay never launched.
+    const quoted = [
+      '<task-notification> showed up in my terminal, what is it?',
+      `${markup({ 'task-id': 'b1', 'tool-use-id': 'toolu_bash', status: 'failed', summary: 'pasted' })}\nwhy did this happen?`,
+      markup({ 'task-id': 'zzz', status: 'completed', summary: 'unknown' }),
+    ]
+    const text = (t: string): string => update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
+    const events = replayAcpLog([
+      line({ jsonrpc: '2.0', id: 'l-1', method: 'session/load', params: { sessionId: 'acp-1' } }),
+      user('start the work'),
+      call('toolu_fg', 'Agent', 'quick look', { prompt: 'look around' }),
+      result('toolu_fg', [{ type: 'text', text: '[Subagent hand-back] The report follows:\n  all clear\n  twice\nagentId: a0 (…)' }]),
+      call('toolu_agent', 'Agent', 'count files', { prompt: 'count them', run_in_background: true }),
+      result('toolu_agent', [{ type: 'text', text: 'Async agent launched successfully.' }]),
+      call('toolu_bash', 'Bash', 'npm test', { command: 'npm test', run_in_background: true }),
+      result('toolu_bash', 'Command running in background with ID: b1. Output is being written to: /t/tasks/b1.output. You will be notified when it completes.'),
+      call('toolu_mon', 'Monitor', 'tail deploy.log', { command: 'tail deploy.log', description: 'deploy events' }),
+      result('toolu_mon', 'Monitor started (task m1, expires in 30s)'),
+      call('toolu_sleep', 'Bash', 'sleep 300', { command: 'sleep 300', run_in_background: true }),
+      result('toolu_sleep', 'Command running in background with ID: b2. Output is being written to: /t/tasks/b2.output. You will be notified when it completes.'),
+      text('Launched.'),
+      notified({ 'task-id': 'b1', 'tool-use-id': 'toolu_bash', status: 'completed', summary: 'tests passed' }),
+      notified({ 'task-id': 'a1', 'tool-use-id': 'toolu_agent', status: 'completed', result: '12 files' }),
+      text('Both finished.'),
+      notified({ 'task-id': 'm1', summary: 'Monitor event', event: 'deployed' }),
+      text('The deploy logged.'),
+      ...quoted.map(user),
+      // The load's reply ends the replay; what is still running died with
+      // the agent life before.
+      line({ jsonrpc: '2.0', id: 'l-1', result: {} }),
+    ].join('\n') + '\n')
+    expect(events.filter((e) => e.type === 'agent-turn' || e.type === 'woken').map((e) => (e.type === 'woken' ? e.causes : e.type)))
+      .toEqual([
+        'agent-turn',
+        [{ kind: 'task', id: 'b1', name: 'npm test' }],
+        [{ kind: 'task', id: 'b1', name: 'npm test' }, { kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
+        'agent-turn',
+        [{ kind: 'monitor', id: 'm1', name: 'deploy events' }],
+      ])
+    // Those stay the user's messages, whole, and move nothing.
+    expect(events.flatMap((e) => (e.type === 'user' ? [e.content.map((c) => (c.type === 'text' ? c.text : '')).join('')] : [])))
+      .toEqual(['start the work', ...quoted])
+    const latest = <T extends { id: string }>(items: T[]): Map<string, T> => new Map(items.map((x) => [x.id, x]))
+    const subagents = latest(events.flatMap((e) => (e.type === 'subagent' ? [e.subagent] : [])))
+    const tasks = latest(events.flatMap((e) => (e.type === 'task' ? [e.task] : [])))
+    expect([...subagents.values()]).toEqual([
+      { id: 'toolu_fg', name: 'quick look', task: 'look around', state: 'completed', summary: 'all clear\ntwice' },
+      { id: 'toolu_agent', name: 'count files', task: 'count them', state: 'completed', summary: '12 files' },
+    ])
+    expect([...tasks.values()]).toEqual([
+      expect.objectContaining({ id: 'b1', kind: 'shell', state: 'completed', toolCallId: 'toolu_bash', outputFile: '/t/tasks/b1.output' }),
+      expect.objectContaining({ id: 'm1', name: 'deploy events', kind: 'monitor', state: 'stopped', toolCallId: 'toolu_mon' }),
+      expect.objectContaining({ id: 'b2', name: 'sleep 300', kind: 'shell', state: 'stopped' }),
+    ])
+  })
+
+  it('rebuilds nothing outside a replay, so a live notification-shaped message stays a message', () => {
+    const block = '<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_bash</tool-use-id>\n<status>completed</status>\n</task-notification>'
+    const events = replayAcpLog([
+      update({
+        sessionUpdate: 'tool_call', toolCallId: 'toolu_bash', title: 'npm test', kind: 'execute', status: 'completed',
+        rawInput: { command: 'npm test', run_in_background: true }, rawOutput: 'Command running in background with ID: b1.',
+        _meta: { claudeCode: { toolName: 'Bash' } },
+      }),
+      update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: block } }),
+    ].join('\n') + '\n')
+    expect(events.map((e) => e.type)).toEqual(['tool', 'user'])
+  })
+
   it('replays a message\'s images with its words', () => {
     // User turns exist only as `session/prompt` lines, images included.
     const raw = (line({
@@ -552,6 +638,10 @@ describe('replayAcpLog', () => {
     const events = replayAcpLog([
       child({ type: 'status', status: 'created' }),
       child({ type: 'status', status: 'running' }),
+      // An appended record's next life loads the session; only what a claude
+      // replay rebuilt is settled at the reply.
+      line({ jsonrpc: '2.0', id: 'l-1', method: 'session/load', params: { sessionId: 'ses_root' } }),
+      line({ jsonrpc: '2.0', id: 'l-1', result: {} }),
       child({
         type: 'update',
         update: { sessionUpdate: 'tool_call', toolCallId: 'ses_kid:call_2', title: 'list files: shell', kind: 'execute', status: 'pending' },

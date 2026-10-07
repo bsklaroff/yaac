@@ -32,7 +32,7 @@ export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-regis
 export { acpRecord, readAcpFirstPrompt, replayAcpLog } from './acp-log'
 // A tui conversation rendered as acp events, one translator per tool (see
 // each module's header).
-export { claudeTranscriptAsAcp } from './claude-acp-replay'
+export { claudeSubagentThreads, claudeTranscriptAsAcp } from './claude-acp-replay'
 export { codexTranscriptAsAcp } from './codex-acp-replay'
 export { opencodeTranscriptAsAcp } from './opencode-acp-replay'
 export { piTranscriptAsAcp } from './pi-acp-replay'

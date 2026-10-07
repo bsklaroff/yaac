@@ -305,7 +305,9 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     const g = at === undefined ? undefined : groups[at]
     if (at !== undefined && g?.kind === 'tool') groups[at] = { ...g, background: true }
   }
-  if (self?.summary !== undefined && !active(self)) {
+  // A final report the thread already ends with is not shown twice.
+  const last = groups[groups.length - 1]
+  if (self?.summary !== undefined && !active(self) && !(last?.kind === 'agent' && last.text.trim() === self.summary.trim())) {
     groups.push({ kind: 'agent', seq: (events[events.length - 1]?.seq ?? 0) + 1, text: self.summary, images: [] })
   }
   return groups
@@ -1066,7 +1068,8 @@ export function AcpTranscript({
 const WAKE_NOUNS: Record<AcpWake['kind'], string> = { task: 'background task', monitor: 'monitor', subagent: 'subagent' }
 
 /** What woke the agent into a run it started itself, each cause opening
- *  the task's or subagent's own view. */
+ *  the task's or subagent's own view. Kept to one line: a cause too long to
+ *  fit is cut short with an ellipsis, its full name in its tooltip. */
 function WokenCaption({
   causes,
   onOpenSubagent,
@@ -1077,20 +1080,23 @@ function WokenCaption({
   onOpenTask?: (id: string) => void
 }): JSX.Element {
   return (
-    <div className="mb-1 flex flex-wrap items-center gap-x-1 text-[11px] text-text-faint">
-      <span>Woken by</span>
+    <div className="mb-1 flex min-w-0 items-center gap-x-1 whitespace-nowrap text-[11px] text-text-faint">
+      <span className="shrink-0">Woken by</span>
       {causes.map((c, i) => {
         const { id } = c
         const open = c.kind === 'subagent' ? onOpenSubagent : onOpenTask
         const label = c.name === undefined ? `a ${WAKE_NOUNS[c.kind]}` : `${WAKE_NOUNS[c.kind]} ${c.name}`
-        const sep = i < causes.length - 1 ? ',' : ''
-        return open === undefined || id === undefined ? (
-          <span key={i}>{label}{sep}</span>
-        ) : (
-          <span key={i}>
-            <button type="button" className="hover:text-text-dim hover:underline" onClick={() => open(id)}>
-              {label}
-            </button>{sep}
+        const sep = i < causes.length - 1 ? <span className="shrink-0">,</span> : null
+        return (
+          <span key={i} className="flex min-w-0 items-center">
+            {open === undefined || id === undefined ? (
+              <span className="truncate" title={label}>{label}</span>
+            ) : (
+              <button type="button" className="truncate hover:text-text-dim hover:underline" title={label} onClick={() => open(id)}>
+                {label}
+              </button>
+            )}
+            {sep}
           </span>
         )
       })}

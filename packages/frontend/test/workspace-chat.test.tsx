@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
-import type { AcpClientMessage, AcpEvent, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
 
 /**
  * jsdom has no ResizeObserver; the pane uses one to follow the tail when it
@@ -35,6 +35,7 @@ const stream = {
   connected: true,
   send: vi.fn((_msg: AcpClientMessage) => true),
   taskOutputs: {} as Record<string, { text?: string; error?: string }>,
+  subagentTranscripts: {} as Record<string, { events?: AcpEventInit[]; error?: string }>,
 }
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
@@ -1318,6 +1319,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
     stream.busy = true
     stream.connected = true
     stream.taskOutputs = {}
+    stream.subagentTranscripts = {}
     stream.send.mockClear()
     useUiStore.setState({ chatDrafts: {} })
   })
@@ -1354,6 +1356,8 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.queryByTitle('Explore')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Explore/ }))
     expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
+    // Its thread is in the record, so its transcript is not read.
+    expect(stream.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'subagent-transcript' }))
     fireEvent.click(screen.getByRole('button', { name: /Back/ }))
     expect(screen.getByText('Delegating.')).toBeTruthy()
   })
@@ -1387,6 +1391,37 @@ describe('WorkspaceChat subagents and background tasks', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'subagent Explore' }))
     expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
+  })
+
+  it('reads a replayed subagent\'s thread from its own transcript, ending on its report once', () => {
+    // A `session/load` replay shows the subagent, finished, with none of its
+    // thread.
+    stream.busy = false
+    stream.events = [
+      agent(0, 'Delegating.'),
+      { type: 'subagent', seq: 1, subagent: { id: 'sub-2', name: 'Survey', task: 'survey the routes', state: 'completed', summary: 'Three routes.' } },
+    ]
+    show()
+    fireEvent.click(screen.getByRole('button', { name: /Survey/ }))
+    expect(stream.send).toHaveBeenCalledWith({ type: 'subagent-transcript', subagentId: 'sub-2' })
+    expect(screen.getByText('Three routes.')).toBeTruthy()
+
+    cleanup()
+    stream.send.mockClear()
+    stream.subagentTranscripts = {
+      'sub-2': {
+        events: [
+          { type: 'tool', thread: 'sub-2', call: { toolCallId: 'g1', title: 'grep -r route src', kind: 'search', status: 'completed' } },
+          { type: 'agent', thread: 'sub-2', content: [{ type: 'text', text: 'Three routes.' }] },
+        ],
+      },
+    }
+    show()
+    fireEvent.click(screen.getByRole('button', { name: /Survey/ }))
+    expect(screen.getByText('grep -r route src')).toBeTruthy()
+    expect(screen.getAllByText('Three routes.')).toHaveLength(1)
+    // Answered already, so not asked again.
+    expect(stream.send).not.toHaveBeenCalledWith({ type: 'subagent-transcript', subagentId: 'sub-2' })
   })
 
   it('reads a background shell\'s output, with the command that started it, and stops it', () => {
