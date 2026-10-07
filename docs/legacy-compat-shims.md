@@ -186,10 +186,10 @@ install holding any of those rows (docs/remote-hosting.md "Access modes").
   the `local` record lets an upgraded install start as `--tailnet` without
   `--owner`, leaving its data with a built-in user no tailnet login can
   reach; one that drops the owner backfill fails the migration outright.
-  The test cannot see tool sign-ins, which live in `.credentials/<tool>.json`
+  The test cannot see tool sign-ins, which lived in `.credentials/<tool>.json`
   outside the DB: an install holding only those counts as fresh, may go
-  `tailnet` without `--owner`, and keeps a login-less built-in user, so an
-  importer of those bundles must not assume that user has a login.
+  `tailnet` without `--owner`, and keeps a login-less built-in user, which
+  the importer below hands them to all the same.
 - **When it is safe to remove.** When the migrations are squashed and every
   install has started once since this release, so has an `access_modes`
   row. The built-in user insert must stay in any squash: a fresh database
@@ -303,14 +303,67 @@ codex refresh token is single-use, so losing it signs codex out.
   `packages/server/src/drivers/k8s/substrate/proxy-objects.ts` reports the
   bare keys under the owner `''`, and `adoptRefreshedToolCredentials` in
   `packages/server/src/domain/auth/runtime-push.ts` adopts them into the
-  install's store, under the same newest-wins rule as its own owner's. The
+  built-in user's store (`ownerOfCredentialKey` in
+  `packages/server/src/domain/auth/store.ts`), which owned everything
+  before credentials were per user, under the same newest-wins rule as any
+  owner's captures. The
   proxy never deletes the bare keys, so later passes compare against the
   same stale bundle and adopt nothing.
 - **What breaks silently if it goes too early.** A rotation captured by the
-  old proxy during the upgrade is never adopted: the host store keeps the
-  spent refresh token, and the next refresh signs that tool out.
+  old proxy during the upgrade is never adopted: the built-in user's store
+  keeps the spent refresh token, and the next refresh signs that tool out.
 - **When it is safe to remove.** Once every install has started a server
   with the change at least once (its first adoption pass takes whatever the
   bare keys hold).
-- **Order.** When credentials become per user, `''` belongs to the built-in
-  user that owned everything before; adopt it there or remove this first.
+- **Order.** None.
+
+## Importing tool sign-ins from `.credentials/`
+
+Tool sign-ins were one install-wide set of files,
+`server-local/.credentials/<tool>.json`; they are rows of `tool_credentials`,
+per user. `importToolCredentialFiles` in
+`packages/server/src/domain/auth/import-files.ts` runs on every server start,
+after the access mode settles and before anything reads the store. It hands
+each readable file to the built-in user (who owned everything then, whether
+or not it has since been given a login), unless that user already has a row
+for the tool, and deletes the file once its row reads back. A file that
+fails its schema is moved to `server-local/.credentials-unreadable/` for a
+hand repair. The directory is removed once empty.
+
+- **What it reads.** The four `<tool>.json` files under `credentialsDir()`
+  (`packages/shared/src/project-paths.ts`), each against its tool's schema.
+- **What breaks silently if it goes too early.** An install upgraded past
+  its removal loses its tool sign-ins: every agent's sentinel goes unswapped
+  (k8s) or its project home is no longer refreshed (containerless), plan
+  usage disappears, and `yaac-mama create` refuses every tool, until the
+  user signs in again. The files stay on disk, unread.
+- **When it is safe to remove.** Once every install has started a server
+  with the change: no data dir has a `<tool>.json` left in
+  `server-local/.credentials/`. Remove `credentialsDir()` with it.
+  `.credentials-unreadable/` is the user's to delete; nothing reads it.
+- **Order.** None.
+
+## The built-in user's credentials keep the `install` key
+
+Before credentials were per user, the server pushed its one set to the
+egress proxy under the owner key `install`, and every workspace's
+registration named it. A registration is rewritten only on create, claim
+and allow-host, so a workspace running across the upgrade still names
+`install`. `credentialOwnerKey` in
+`packages/server/src/domain/auth/store.ts` therefore files the built-in
+user's credentials under `install` rather than its user id, and
+`ownerOfCredentialKey` maps the key back for adopting refresh captures.
+
+- **What it reads.** Nothing; it is the key the server writes for the
+  built-in user, and the key `yaac-proxy-reg-*` registrations of workspaces
+  launched before the change name.
+- **What breaks silently if it goes too early.** Keying the built-in user by
+  its id strands every such workspace: its registration names a key the
+  credentials Secret lacks, so the proxy swaps nothing and its tool and git
+  requests get 401s until it is recreated.
+- **When it is safe to remove.** Never on its own: every built-in-user
+  workspace launched since also names `install`. Switching the key to the
+  user id needs the same release to re-register each running workspace
+  under it.
+- **Order.** None.
+

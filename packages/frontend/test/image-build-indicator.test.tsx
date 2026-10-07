@@ -46,8 +46,8 @@ function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
     driver: 'k8s',
     workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], gitAuthFailures: {},
     imageBuilds,
-    planUsage: null,
-    codexPlanUsage: null,
+    planUsage: {},
+    codexPlanUsage: {},
     forwardBindHost: '127.0.0.1',
   })
 }

@@ -5,6 +5,7 @@ import { startQueuedChildren } from './queued-workspaces'
 import { listProvisioning, stopProvisioning } from './provisioning'
 import { authorizeProject, type Actor } from '#domain/access'
 import { harvestToolCredentials } from '#domain/auth'
+import { getProjectRow } from '#db'
 import { serverLog } from '#log'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -53,7 +54,8 @@ async function stopRunning(principal: Actor, workspaceId: string, idOrPrefix: st
 
   // Adopt any token the agent refreshed (without a proxy it exists only in
   // the project's tool home). Best-effort.
-  await harvestToolCredentials({ projectId: target.projectId })
+  await getProjectRow(target.projectId)
+    .then((row) => row && harvestToolCredentials(row.owner, { projectId: target.projectId }))
     .catch((err: unknown) => serverLog(`[server] credential harvest on stop failed: ${String(err)}`))
 
   await cleanupWorkspaceDetached({

@@ -2,19 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
-  codexCredentialsPath,
-  codexDir,
   projectCodexAuthFile,
   projectDir,
 } from '#project-paths'
 import {
   buildCodexPlaceholderBundle,
   writeProjectCodexPlaceholder,
-  fanOutCodexPlaceholders,
-  saveCodexOAuthBundle,
-  saveCodexCredentialsFile,
-  loadCodexCredentialsFile,
-  loadToolAuthEntry,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '#tool-auth'
@@ -195,55 +188,6 @@ describe('codex oauth helpers', () => {
     })
   })
 
-  describe('saveCodexOAuthBundle / loadCodexCredentialsFile', () => {
-    it('round-trips the full bundle', async () => {
-      await saveCodexOAuthBundle(SAMPLE_BUNDLE)
-      const file = await loadCodexCredentialsFile()
-      expect(file?.kind).toBe('oauth')
-      if (file?.kind !== 'oauth') throw new Error('expected oauth')
-      expect(file.codexOauth).toEqual(SAMPLE_BUNDLE)
-      expect(file.savedAt).toBeTruthy()
-    })
-
-    it('writes with 0600 permissions', async () => {
-      await saveCodexOAuthBundle(SAMPLE_BUNDLE)
-      const stats = await fs.stat(codexCredentialsPath())
-      expect(stats.mode & 0o777).toBe(0o600)
-    })
-
-    it('saveCodexCredentialsFile can write an api-key entry', async () => {
-      await saveCodexCredentialsFile({
-        kind: 'api-key',
-        savedAt: new Date().toISOString(),
-        apiKey: 'sk-proj-xyz',
-      })
-      const file = await loadCodexCredentialsFile()
-      expect(file).toMatchObject({ kind: 'api-key', apiKey: 'sk-proj-xyz' })
-    })
-
-    it('returns null when oauth bundle is missing required fields', async () => {
-      await saveCodexCredentialsFile({
-        kind: 'oauth',
-        savedAt: new Date().toISOString(),
-        // @ts-expect-error intentionally invalid
-        codexOauth: { accessToken: 'x' },
-      })
-      expect(await loadCodexCredentialsFile()).toBeNull()
-    })
-  })
-
-  describe('loadToolAuthEntry for codex oauth', () => {
-    it('returns an OAuth entry with the bundle access token', async () => {
-      await saveCodexOAuthBundle(SAMPLE_BUNDLE)
-      const entry = await loadToolAuthEntry('codex')
-      expect(entry).toMatchObject({
-        tool: 'codex',
-        kind: 'oauth',
-        apiKey: SAMPLE_BUNDLE.accessToken,
-      })
-    })
-  })
-
   describe('buildCodexPlaceholderBundle', () => {
     it('sentinels only the bearer tokens', () => {
       const ph = buildCodexPlaceholderBundle(SAMPLE_BUNDLE)
@@ -298,24 +242,6 @@ describe('codex oauth helpers', () => {
       const parsed = JSON.parse(raw) as Record<string, unknown>
       const tokens = parsed.tokens as Record<string, unknown>
       expect(tokens.account_id).toBeNull()
-    })
-  })
-
-  describe('fanOutCodexPlaceholders', () => {
-    it('seeds every existing project', async () => {
-      await fs.mkdir(codexDir('alpha'), { recursive: true })
-      await fs.mkdir(codexDir('beta'), { recursive: true })
-      await fanOutCodexPlaceholders(SAMPLE_BUNDLE)
-      for (const projectId of ['alpha', 'beta']) {
-        const raw = await fs.readFile(projectCodexAuthFile(projectId), 'utf8')
-        const parsed = JSON.parse(raw) as Record<string, unknown>
-        const tokens = parsed.tokens as Record<string, unknown>
-        expect(tokens.access_token).toBe(PLACEHOLDER_ACCESS_TOKEN)
-      }
-    })
-
-    it('is a no-op when no projects exist', async () => {
-      await fanOutCodexPlaceholders(SAMPLE_BUNDLE)
     })
   })
 })

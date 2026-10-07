@@ -367,6 +367,21 @@ export const gitCredentials = snakeCase.table('git_credentials', {
 }, (t) => [uniqueIndex().on(t.owner, t.name)])
 
 /**
+ * Each user's agent-tool sign-ins, one row per tool: an OAuth bundle or an
+ * api key, in the shape of that tool's `*CredentialsFile`
+ * (`@yaac/shared/types`), stored as encrypted JSON. Only
+ * tool-credential-store.ts reads it.
+ */
+export const toolCredentials = snakeCase.table('tool_credentials', {
+  id: uuid().primaryKey().defaultRandom(),
+  owner: uuid().notNull().references(() => users.id),
+  tool: text().$type<AgentTool>().notNull(),
+  /** The credential as JSON; encrypted. */
+  sealedCredential: text().notNull(),
+  updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.owner, t.tool)])
+
+/**
  * A workspace create request that runs when its parent stops naturally
  * (docs/queued-workspaces.md). No workspace row, checkout or runtime exists
  * until launch. A successful launch keeps the entry as a record pointing at

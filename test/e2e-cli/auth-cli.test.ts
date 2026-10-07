@@ -1,7 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import {
   createYaacTestEnv,
   spawnYaacServer,
@@ -9,16 +7,19 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
+import { makeServerApiClient, signInTestTool } from '@yaac/test-utils/api'
+import type { AgentTool, ToolAuthSummary } from '@yaac/shared/types'
 
 /**
  * The auth and tool CLI commands, sharing one test env and one server for
  * the whole file.
  *
  * Tests run in declaration order. The "clean data dir" describe must stay
- * first, and every test that depends on the exact credential set resets
- * `.credentials` to the state it seeds. The server writes each tool
- * credential file whole, so a test that only reads the file its own command
- * just wrote needs no reset.
+ * first, and every test that depends on the exact credential set resets the
+ * caller's sign-ins to the state it seeds. A sign-in is stored whole, so a
+ * test that only reads back what its own command just stored needs no
+ * reset. What is stored is read back through `GET /auth/list`, masked to a
+ * key's last four characters.
  *
  * The YAAC_E2E_*_LOGIN / YAAC_E2E_OPENCODE_PROVIDER hooks are read by the
  * CLI process (runToolLogin in packages/shared/src/tool-auth-interactive.ts),
@@ -38,33 +39,28 @@ describe('yaac auth (real CLI + shared server)', () => {
     await testEnv.cleanup()
   })
 
-  function credPath(file: string): string {
-    return path.join(testEnv.dataDir, 'server-local', '.credentials', file)
+  /** The server's masked summary of the caller's sign-in for a tool. */
+  async function stored(tool: AgentTool): Promise<ToolAuthSummary | undefined> {
+    const res = await makeServerApiClient(server).auth.list.$get()
+    return (await res.json()).toolAuth.find((t) => t.tool === tool)
   }
 
-  /**
-   * Empty the shared `.credentials` dir, so earlier tests' files can't
-   * change list output or shift `auth clear` menu indexes.
-   */
-  async function resetCreds(): Promise<string> {
-    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
-    await fs.rm(credsDir, { recursive: true, force: true })
-    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    return credsDir
+  /** Sign the caller out of every tool, so earlier tests' sign-ins can't
+   *  change list output or shift `auth clear` menu indexes. */
+  async function resetCreds(): Promise<void> {
+    const res = await makeServerApiClient(server).auth.clear.$post({ json: { service: 'all' } })
+    if (!res.ok) throw new Error(`auth clear failed: ${res.status}`)
   }
 
   /** Seed the claude and codex api-key credentials and nothing else, so
    *  the `auth clear` menu lists exactly those two, in that order. */
   async function seedToolCreds(): Promise<void> {
-    const credsDir = await resetCreds()
-    for (const [file, apiKey] of [['claude.json', 'sk-ant-api03-clear-me'], ['codex.json', 'sk-codex-clear-me']]) {
-      await fs.writeFile(path.join(credsDir, file), JSON.stringify({
-        kind: 'api-key', savedAt: '2026-01-15T00:00:00.000Z', apiKey,
-      }) + '\n')
-    }
+    await resetCreds()
+    await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: 'sk-ant-api03-clear-me' })
+    await signInTestTool(server, 'codex', { kind: 'api-key', apiKey: 'sk-codex-clear-me' })
   }
 
-  // Must run before anything writes a credential file.
+  // Must run before anything stores a credential.
   describe('clean data dir', () => {
     it('auth list on a clean data dir reports no credentials configured', async () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
@@ -85,29 +81,15 @@ describe('yaac auth (real CLI + shared server)', () => {
 
   describe('auth list', () => {
     it('auth list renders masked previews for every tool credential', async () => {
-      const credsDir = await resetCreds()
-      await fs.writeFile(
-        path.join(credsDir, 'claude.json'),
-        JSON.stringify({
-          kind: 'api-key',
-          savedAt: '2026-01-15T00:00:00.000Z',
-          apiKey: 'sk-ant-api03-fake-claude-key',
-        }) + '\n',
-      )
-      await fs.writeFile(
-        path.join(credsDir, 'codex.json'),
-        JSON.stringify({
-          kind: 'api-key',
-          savedAt: '2026-02-20T00:00:00.000Z',
-          apiKey: 'sk-fake-codex-key',
-        }) + '\n',
-      )
+      await resetCreds()
+      await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: 'sk-ant-api03-fake-claude-key' })
+      await signInTestTool(server, 'codex', { kind: 'api-key', apiKey: 'sk-fake-codex-key' })
 
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'list')
       expect(exitCode).toBe(0)
 
-      expect(stdout).toMatch(/claude\s+\*\*\*-key.*api-key.*2026-01-15/)
-      expect(stdout).toMatch(/codex\s+\*\*\*-key.*api-key.*2026-02-20/)
+      expect(stdout).toMatch(/claude\s+\*\*\*-key.*api-key/)
+      expect(stdout).toMatch(/codex\s+\*\*\*-key.*api-key/)
       expect(stdout).not.toContain('sk-ant-api03-fake-claude-key')
       expect(stdout).not.toContain('sk-fake-codex-key')
     })
@@ -117,32 +99,25 @@ describe('yaac auth (real CLI + shared server)', () => {
     it('refuses to replace a real credential, and seeds once it is cleared', async () => {
       // `auth list` above left a real claude api-key behind, which a fake
       // must never replace.
-      const credsDir = await resetCreds()
-      await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
-        kind: 'api-key', savedAt: '2026-01-15T00:00:00.000Z', apiKey: 'sk-ant-api03-real',
-      }) + '\n')
+      await resetCreds()
+      await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: 'sk-ant-api03-real' })
       const refused = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
       expect(refused.exitCode).not.toBe(0)
       expect(refused.stderr).toMatch(/real credential is already stored for claude-oauth/)
-      expect(await fs.readFile(credPath('claude.json'), 'utf8')).toContain('sk-ant-api03-real')
+      expect(await stored('claude')).toMatchObject({ kind: 'api-key', keyPreview: '***real' })
 
       await resetCreds()
       const seeded = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
       expect(seeded.exitCode, seeded.stderr).toBe(0)
     })
 
-    it('auth fake claude-oauth seeds an OAuth bundle in the data dir', async () => {
+    it('auth fake claude-oauth seeds an OAuth bundle of placeholders', async () => {
       // Re-seeding over the previous case's fake is allowed.
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
       expect(exitCode, stderr).toBe(0)
 
-      const parsed = JSON.parse(await fs.readFile(credPath('claude.json'), 'utf8')) as {
-        kind: string
-        claudeAiOauth: { accessToken: string; refreshToken: string }
-      }
-      expect(parsed.kind).toBe('oauth')
-      expect(parsed.claudeAiOauth.accessToken).toBe('yaac-ph-access')
-      expect(parsed.claudeAiOauth.refreshToken).toBe('yaac-ph-refresh')
+      // `yaac-ph-access`, masked.
+      expect(await stored('claude')).toMatchObject({ kind: 'oauth', keyPreview: '***cess' })
     })
 
     it('auth fake github seeds the fake-github git credential, once', async () => {
@@ -159,28 +134,14 @@ describe('yaac auth (real CLI + shared server)', () => {
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'opencode-openrouter')
       expect(exitCode, stderr).toBe(0)
 
-      const parsed = JSON.parse(await fs.readFile(credPath('opencode.json'), 'utf8')) as {
-        kind: string
-        provider: string
-        apiKey: string
-      }
-      expect(parsed.kind).toBe('api-key')
-      expect(parsed.provider).toBe('openrouter')
-      expect(parsed.apiKey).toBe('yaac-ph-opencode-api-key')
+      expect(await stored('opencode')).toMatchObject({ kind: 'api-key', opencodeProvider: 'openrouter', keyPreview: '***-key' })
     })
 
     it('auth fake pi-openrouter seeds a placeholder openrouter api-key', async () => {
       const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'pi-openrouter')
       expect(exitCode, stderr).toBe(0)
 
-      const parsed = JSON.parse(await fs.readFile(credPath('pi.json'), 'utf8')) as {
-        kind: string
-        provider: string
-        apiKey: string
-      }
-      expect(parsed.kind).toBe('api-key')
-      expect(parsed.provider).toBe('openrouter')
-      expect(parsed.apiKey).toBe('yaac-ph-pi-api-key')
+      expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'openrouter', keyPreview: '***-key' })
     })
 
     it('seeds several kinds passed in one invocation (variadic)', async () => {
@@ -191,16 +152,8 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(stdout).toContain('Claude OAuth')
       expect(stdout).toContain('OpenCode OpenRouter')
 
-      const claude = JSON.parse(await fs.readFile(credPath('claude.json'), 'utf8')) as {
-        claudeAiOauth: { accessToken: string }
-      }
-      const opencode = JSON.parse(await fs.readFile(credPath('opencode.json'), 'utf8')) as {
-        provider: string
-        apiKey: string
-      }
-      expect(claude.claudeAiOauth.accessToken).toBe('yaac-ph-access')
-      expect(opencode.provider).toBe('openrouter')
-      expect(opencode.apiKey).toBe('yaac-ph-opencode-api-key')
+      expect(await stored('claude')).toMatchObject({ kind: 'oauth', keyPreview: '***cess' })
+      expect(await stored('opencode')).toMatchObject({ opencodeProvider: 'openrouter' })
     })
 
     it('rejects an unknown kind', async () => {
@@ -224,8 +177,8 @@ describe('yaac auth (real CLI + shared server)', () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'clear', { stdin: '1\n' })
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Removed Claude Code credentials.')
-      await expect(fs.access(credPath('claude.json'))).rejects.toThrow()
-      await fs.access(credPath('codex.json'))
+      expect(await stored('claude')).toBeUndefined()
+      expect(await stored('codex')).toBeDefined()
     })
 
     it('removes every credential when the user answers "all"', async () => {
@@ -234,8 +187,8 @@ describe('yaac auth (real CLI + shared server)', () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'clear', { stdin: 'all\n' })
       expect(exitCode).toBe(0)
       expect(stdout).toContain('All credentials removed.')
-      await expect(fs.access(credPath('claude.json'))).rejects.toThrow()
-      await expect(fs.access(credPath('codex.json'))).rejects.toThrow()
+      expect(await stored('claude')).toBeUndefined()
+      expect(await stored('codex')).toBeUndefined()
     })
 
     it('prints "Cancelled." on an out-of-range menu choice', async () => {
@@ -244,8 +197,8 @@ describe('yaac auth (real CLI + shared server)', () => {
       const { stdout, exitCode } = await runYaac(testEnv.env, 'auth', 'clear', { stdin: '99\n' })
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Cancelled.')
-      await fs.access(credPath('claude.json'))
-      await fs.access(credPath('codex.json'))
+      expect(await stored('claude')).toBeDefined()
+      expect(await stored('codex')).toBeDefined()
     })
   })
 
@@ -337,11 +290,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Claude Code credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json')
-      const raw = await fs.readFile(credsPath, 'utf8')
-      const parsed = JSON.parse(raw) as { kind: string; claudeAiOauth?: typeof bundle }
-      expect(parsed.kind).toBe('oauth')
-      expect(parsed.claudeAiOauth).toEqual(bundle)
+      expect(await stored('claude')).toMatchObject({ kind: 'oauth', keyPreview: '***cess' })
     })
 
     it('persists an OpenCode (OpenRouter) api key via the test-only login hook', async () => {
@@ -352,15 +301,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('OpenCode credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'opencode.json')
-      const raw = await fs.readFile(credsPath, 'utf8')
-      const parsed = JSON.parse(raw) as {
-        kind: string; apiKey?: string; savedAt?: string; provider?: string
-      }
-      expect(parsed.kind).toBe('api-key')
-      expect(parsed.apiKey).toBe('sk-or-v1-test-key')
-      expect(parsed.provider).toBe('openrouter')
-      expect(typeof parsed.savedAt).toBe('string')
+      expect(await stored('opencode')).toMatchObject({ kind: 'api-key', opencodeProvider: 'openrouter', keyPreview: '***-key' })
     })
 
     it('persists an OpenCode NeuralWatt api key when the provider hook is set', async () => {
@@ -373,12 +314,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('OpenCode credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'opencode.json')
-      const raw = await fs.readFile(credsPath, 'utf8')
-      const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; provider?: string }
-      expect(parsed.kind).toBe('api-key')
-      expect(parsed.apiKey).toBe('nw-test-key')
-      expect(parsed.provider).toBe('neuralwatt')
+      expect(await stored('opencode')).toMatchObject({ kind: 'api-key', opencodeProvider: 'neuralwatt', keyPreview: '***-key' })
     })
 
     it('persists a Pi (OpenRouter) api key via the test-only login hook', async () => {
@@ -389,15 +325,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Pi credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'pi.json')
-      const raw = await fs.readFile(credsPath, 'utf8')
-      const parsed = JSON.parse(raw) as {
-        kind: string; apiKey?: string; savedAt?: string; provider?: string
-      }
-      expect(parsed.kind).toBe('api-key')
-      expect(parsed.apiKey).toBe('sk-or-v1-pi-test-key')
-      expect(parsed.provider).toBe('openrouter')
-      expect(typeof parsed.savedAt).toBe('string')
+      expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'openrouter', keyPreview: '***-key' })
     })
 
     it('persists a Pi Anthropic api key when the provider hook is set', async () => {
@@ -410,12 +338,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(exitCode).toBe(0)
       expect(stdout).toContain('Pi credentials saved.')
 
-      const credsPath = path.join(testEnv.dataDir, 'server-local', '.credentials', 'pi.json')
-      const raw = await fs.readFile(credsPath, 'utf8')
-      const parsed = JSON.parse(raw) as { kind: string; apiKey?: string; provider?: string }
-      expect(parsed.kind).toBe('api-key')
-      expect(parsed.apiKey).toBe('sk-ant-pi-test-key')
-      expect(parsed.provider).toBe('anthropic')
+      expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'anthropic', keyPreview: '***-key' })
     })
   })
 })

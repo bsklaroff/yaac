@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import type * as createModule from '#domain/workspaces/create'
-import type * as toolAuthModule from '@yaac/shared/tool-auth'
+import type * as generatedModule from '@yaac/shared/tool-providers.generated'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
@@ -13,14 +13,14 @@ vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   ...(await importOriginal<typeof createModule>()),
   createWorkspace: vi.fn(),
 }))
-// The host's tool credentials: real unless a case overrides them.
-vi.mock('@yaac/shared/tool-auth', async (importOriginal) => {
-  const actual = await importOriginal<typeof toolAuthModule>()
-  return { ...actual, loadToolAuthEntry: vi.fn(actual.loadToolAuthEntry) }
+// The baked model catalog, with one provider's models gone, as when a
+// catalog update drops a provider a user is still signed in with.
+vi.mock('@yaac/shared/tool-providers.generated', async (importOriginal) => {
+  const actual = await importOriginal<typeof generatedModule>()
+  return { ...actual, MODELS_BY_PROVIDER: { ...actual.MODELS_BY_PROVIDER, neuralwatt: [] } }
 })
 
 import { createWorkspace } from '#domain/workspaces/create'
-import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import {
   discardQueuedWorkspace,
   listHeldWorkspaces,
@@ -37,7 +37,7 @@ import {
   ProvisionStoppedError,
   registerProvisioning,
 } from '#domain/workspaces/provisioning'
-import { BUILT_IN_USER_ID, applyWorkspaceEvent, createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db'
+import { BUILT_IN_USER_ID, setToolCredential, applyWorkspaceEvent, createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db'
 import {
   claimQueuedLaunch,
   failQueuedLaunch,
@@ -229,13 +229,12 @@ describe('queueWorkspace', () => {
   it('refuses rather than stores an empty model when the catalog has none for the tool', async () => {
     await workspace(P)
     // Signed in with a provider the model catalog has no models for.
-    vi.mocked(loadToolAuthEntry).mockResolvedValueOnce({ tool: 'opencode', opencodeProvider: 'nowhere' } as never)
+    await setToolCredential(BUILT_IN_USER_ID, 'opencode', { kind: 'api-key', provider: 'neuralwatt', savedAt: 'x', apiKey: 'k' })
     await expect(queueWorkspace(local, PROJ, { parent: P, prompt: 'x', tool: 'opencode' }, 'user'))
       .rejects.toThrow(/no model is known for opencode; pick one/)
     // Naming a model fixes it.
-    vi.mocked(loadToolAuthEntry).mockResolvedValueOnce({ tool: 'opencode', opencodeProvider: 'nowhere' } as never)
-    expect((await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', tool: 'opencode', model: 'nowhere/m' }, 'user')).model)
-      .toBe('nowhere/m')
+    expect((await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', tool: 'opencode', model: 'neuralwatt/m' }, 'user')).model)
+      .toBe('neuralwatt/m')
   })
 
   it('holds an agent to its own posture as the ceiling', async () => {

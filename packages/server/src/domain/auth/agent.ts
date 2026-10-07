@@ -5,18 +5,22 @@ import type { AgentKind, AgentOp, AgentTool2 } from '@yaac/shared/auth-agent-pro
 import type { ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
 /**
- * Relay between the sign-in routes and the auth server on the user's
- * machine, where vendor login/install flows run (the browser and vendors'
- * localhost OAuth callbacks are there, not necessarily on the server host).
- * The hub forwards ops over one WebSocket and caches the views the auth
+ * Relay between the sign-in routes and the auth server on a user's machine,
+ * where vendor login/install flows run (the browser and vendors' localhost
+ * OAuth callbacks are there, not necessarily on the server host). The hub
+ * forwards ops over each user's WebSocket and caches the views their auth
  * server pushes back, which the polled routes serve.
+ *
+ * Every user has their own socket and flows. A connection replaces only its
+ * own user's socket, and a flow answers only the user who started it, so no
+ * user can take over another's sign-in or receive a code they paste.
  *
  * Protocol, with no request/response correlation:
  *  - down (server → agent):  {op:'start'|'input'|'cancel', id, ...}
  *  - up   (agent → server):  {op:'view', kind, view} on every change
  * Flow ids are minted here so a start can return a 'running' view
  * immediately. Credentials never pass through the hub: on success the auth
- * server PUTs the bundle to /auth/:tool itself.
+ * server PUTs the bundle to /auth/:tool itself, as its user.
  */
 
 interface AgentViewMsg {
@@ -55,6 +59,8 @@ interface AgentSocketLike {
 }
 
 interface FlowEntry {
+  /** The user who started it. */
+  owner: string
   kind: AgentKind
   view: ToolLoginView | ToolInstallView
   linger: ReturnType<typeof setTimeout> | null
@@ -65,24 +71,24 @@ const DISCONNECTED_MESSAGE =
   + 'Run `yaac auth update` (or `yaac auth server start`) there.'
 
 function createAuthAgentHub(): {
-  setSocket(sock: AgentSocketLike): void
-  handleDisconnect(sock: AgentSocketLike): void
-  ingest(raw: string): void
-  connected(): boolean
-  startLogin(tool: AgentTool2): ToolLoginView
-  getLogin(id: string): ToolLoginView
-  sendLoginInput(id: string, text: string): ToolLoginView
-  cancelLogin(id: string): void
-  startInstall(tool: AgentTool2): ToolInstallView
-  getInstall(id: string): ToolInstallView
-  cancelInstall(id: string): void
+  setSocket(owner: string, sock: AgentSocketLike): void
+  handleDisconnect(owner: string, sock: AgentSocketLike): void
+  ingest(owner: string, raw: string): void
+  connected(owner: string): boolean
+  startLogin(owner: string, tool: AgentTool2): ToolLoginView
+  getLogin(owner: string, id: string): ToolLoginView
+  sendLoginInput(owner: string, id: string, text: string): ToolLoginView
+  cancelLogin(owner: string, id: string): void
+  startInstall(owner: string, tool: AgentTool2): ToolInstallView
+  getInstall(owner: string, id: string): ToolInstallView
+  cancelInstall(owner: string, id: string): void
   clearForTests(): void
 } {
-  let socket: AgentSocketLike | null = null
+  const sockets = new Map<string, AgentSocketLike>()
   const flows = new Map<string, FlowEntry>()
 
-  const send = (op: AgentOp): void => {
-    socket?.send(JSON.stringify(op))
+  const send = (owner: string, op: AgentOp): void => {
+    sockets.get(owner)?.send(JSON.stringify(op))
   }
 
   const armLinger = (entry: FlowEntry): void => {
@@ -91,54 +97,59 @@ function createAuthAgentHub(): {
     entry.linger.unref?.()
   }
 
-  const requireAgent = (): void => {
-    if (!socket) throw new ServerError('AUTH_AGENT_DISCONNECTED', DISCONNECTED_MESSAGE)
+  const requireAgent = (owner: string): void => {
+    if (!sockets.has(owner)) throw new ServerError('AUTH_AGENT_DISCONNECTED', DISCONNECTED_MESSAGE)
   }
 
-  const start = (kind: AgentKind, tool: AgentTool2): FlowEntry => {
-    requireAgent()
+  const start = (owner: string, kind: AgentKind, tool: AgentTool2): FlowEntry => {
+    requireAgent(owner)
     const view: ToolLoginView = { id: crypto.randomUUID(), tool, status: 'running', output: '' }
-    const entry: FlowEntry = { kind, view, linger: null }
+    const entry: FlowEntry = { owner, kind, view, linger: null }
     flows.set(view.id, entry)
-    send({ op: 'start', id: view.id, kind, tool })
+    send(owner, { op: 'start', id: view.id, kind, tool })
     return entry
   }
 
-  const get = (kind: AgentKind, id: string, noun: string): FlowEntry => {
+  /** The caller's flow; another user's reads as missing. */
+  const find = (owner: string, kind: AgentKind, id: string): FlowEntry | undefined => {
     const entry = flows.get(id)
-    if (!entry || entry.kind !== kind) {
-      throw new ServerError('NOT_FOUND', `No ${noun} "${id}".`)
-    }
+    return entry?.owner === owner && entry.kind === kind ? entry : undefined
+  }
+
+  const get = (owner: string, kind: AgentKind, id: string, noun: string): FlowEntry => {
+    const entry = find(owner, kind, id)
+    if (!entry) throw new ServerError('NOT_FOUND', `No ${noun} "${id}".`)
     return entry
   }
 
-  const cancel = (kind: AgentKind, id: string): void => {
-    const entry = flows.get(id)
-    if (!entry || entry.kind !== kind) return
+  const cancel = (owner: string, kind: AgentKind, id: string): void => {
+    const entry = find(owner, kind, id)
+    if (!entry) return
     if (entry.linger) clearTimeout(entry.linger)
     flows.delete(id)
-    send({ op: 'cancel', id, kind })
+    send(owner, { op: 'cancel', id, kind })
   }
 
   return {
-    setSocket: (sock) => {
-      if (socket && socket !== sock) {
+    setSocket: (owner, sock) => {
+      const previous = sockets.get(owner)
+      if (previous && previous !== sock) {
         try {
-          socket.close(1000, 'replaced by a newer auth server connection')
+          previous.close(1000, 'replaced by a newer auth server connection')
         } catch { /* already gone */ }
       }
-      socket = sock
-      serverLog('[server] auth agent connected')
+      sockets.set(owner, sock)
+      serverLog(`[server] auth agent connected for user ${owner}`)
     },
 
-    handleDisconnect: (sock) => {
-      if (socket !== sock) return // an old, already-replaced connection
-      socket = null
-      serverLog('[server] auth agent disconnected')
+    handleDisconnect: (owner, sock) => {
+      if (sockets.get(owner) !== sock) return // an old, already-replaced connection
+      sockets.delete(owner)
+      serverLog(`[server] auth agent disconnected for user ${owner}`)
       // The auth server kills its flows on disconnect; mark them failed so
       // pollers stop waiting.
       for (const entry of flows.values()) {
-        if (entry.view.status === 'running') {
+        if (entry.owner === owner && entry.view.status === 'running') {
           entry.view.status = 'error'
           entry.view.error = 'The auth server disconnected mid-flow. Start it again and retry.'
           armLinger(entry)
@@ -146,27 +157,28 @@ function createAuthAgentHub(): {
       }
     },
 
-    ingest: (raw) => {
+    ingest: (owner, raw) => {
       const msg = parseAgentViewMsg(raw)
       if (!msg) return
-      const entry = flows.get(msg.view.id)
-      // Accept only ids minted here, so the auth server can't create state.
-      if (!entry || entry.kind !== msg.kind) return
+      // Accept only ids minted here for this user, so an auth server can
+      // neither create state nor touch another user's flows.
+      const entry = find(owner, msg.kind, msg.view.id)
+      if (!entry) return
       entry.view = msg.view
       armLinger(entry)
     },
 
-    connected: () => socket !== null,
+    connected: (owner) => sockets.has(owner),
 
-    startLogin: (tool) => start('login', tool).view,
-    getLogin: (id) => get('login', id, 'sign-in session').view,
+    startLogin: (owner, tool) => start(owner, 'login', tool).view,
+    getLogin: (owner, id) => get(owner, 'login', id, 'sign-in session').view,
 
-    sendLoginInput: (id, text) => {
-      const entry = get('login', id, 'sign-in session')
+    sendLoginInput: (owner, id, text) => {
+      const entry = get(owner, 'login', id, 'sign-in session')
       if (entry.view.status !== 'running') {
         throw new ServerError('CONFLICT', 'This sign-in is not accepting input.')
       }
-      requireAgent()
+      requireAgent(owner)
       const cleaned = text.trim()
       if (!LOGIN_INPUT_RE.test(cleaned)) {
         throw new ServerError(
@@ -174,22 +186,22 @@ function createAuthAgentHub(): {
           'Expected the code from the authorize page (letters, digits, "#", "-", "_" only).',
         )
       }
-      send({ op: 'input', id, text: cleaned })
+      send(owner, { op: 'input', id, text: cleaned })
       return entry.view
     },
 
-    cancelLogin: (id) => cancel('login', id),
+    cancelLogin: (owner, id) => cancel(owner, 'login', id),
 
-    startInstall: (tool) => start('install', tool).view,
-    getInstall: (id) => get('install', id, 'install session').view,
-    cancelInstall: (id) => cancel('install', id),
+    startInstall: (owner, tool) => start(owner, 'install', tool).view,
+    getInstall: (owner, id) => get(owner, 'install', id, 'install session').view,
+    cancelInstall: (owner, id) => cancel(owner, 'install', id),
 
     clearForTests: () => {
       for (const entry of flows.values()) {
         if (entry.linger) clearTimeout(entry.linger)
       }
       flows.clear()
-      socket = null
+      sockets.clear()
     },
   }
 }

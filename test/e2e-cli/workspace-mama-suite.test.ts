@@ -14,7 +14,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential, registerTestProject } from '@yaac/test-utils/api'
+import { assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -59,13 +59,6 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     await requireCluster()
 
     testEnv = await createYaacTestEnv()
-    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
-    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
-      kind: 'api-key',
-      savedAt: new Date().toISOString(),
-      apiKey: 'sk-ant-fake-real-key',
-    }) + '\n')
 
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
@@ -90,6 +83,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: 'sk-ant-fake-real-key' })
     await setTestGitIdentity(serverEnv)
 
     // Stage the project as `yaac project add` would: a local bare repo with

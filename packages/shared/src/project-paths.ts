@@ -67,38 +67,17 @@ export function calicoManifestCachePath(version: string): string {
 }
 
 /**
- * SERVER-LOCAL. Directory of real credential files, one per service. Only
- * the server reads or writes them; runtimes are handed the contents
- * (`syncCredentials`) and nothing mounts the directory.
+ * SERVER-LOCAL. Where tool sign-ins were kept, one `<tool>.json` each,
+ * before they were stored per user in the database. Read only by the
+ * one-shot importer (docs/legacy-compat-shims.md).
  */
 export function credentialsDir(): string {
   return serverLocalPath('.credentials')
 }
 
-/** SERVER-LOCAL — see {@link credentialsDir}. */
-export function claudeCredentialsPath(): string {
-  return path.join(credentialsDir(), 'claude.json')
-}
-
-/** SERVER-LOCAL — see {@link credentialsDir}. */
-export function codexCredentialsPath(): string {
-  return path.join(credentialsDir(), 'codex.json')
-}
-
-/** SERVER-LOCAL — see {@link credentialsDir}. */
-export function opencodeCredentialsPath(): string {
-  return path.join(credentialsDir(), 'opencode.json')
-}
-
-/** SERVER-LOCAL — see {@link credentialsDir}. */
-export function piCredentialsPath(): string {
-  return path.join(credentialsDir(), 'pi.json')
-}
-
 /**
  * SERVER-LOCAL. The key the server encrypts stored secrets with, generated
- * on first use when neither `YAAC_SECRETS` nor `YAAC_SECRET` is set. Kept
- * out of {@link credentialsDir}, whose contents are handed to runtimes.
+ * on first use when neither `YAAC_SECRETS` nor `YAAC_SECRET` is set.
  * Losing it makes every encrypted row unreadable, so back it up with the
  * data dir (README, "Secrets at rest").
  */

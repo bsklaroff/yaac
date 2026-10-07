@@ -29,7 +29,7 @@ import {
 } from '@yaac/shared/project-paths'
 import { CONTAINER_TMUX_DIR, projectConfigDir } from '@yaac/shared/paths'
 import {
-  PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY, saveCodexOAuthBundle, saveToolAuth,
+  PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { closeDb } from '#db/client'
 import {
@@ -41,6 +41,8 @@ import {
   setGitIdentity,
   setProjectGitCredential,
   setTimeZone,
+  seeTailnetUser,
+  setToolCredential,
   type WorkspaceRow,
 } from '#db'
 import {
@@ -54,6 +56,16 @@ import type { AgentTool, PermissionMode, YaacConfig } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
+/** Store the built-in user's api key for a tool, with its provider where
+ *  the tool needs one. */
+async function saveToolAuth(tool: AgentTool, apiKey: string, _kind: 'api-key', provider?: string): Promise<void> {
+  if (tool === 'opencode' || tool === 'pi') {
+    await setToolCredential(BUILT_IN_USER_ID, tool, { kind: 'api-key', provider: provider as never, savedAt: 'x', apiKey })
+  } else {
+    await setToolCredential(BUILT_IN_USER_ID, tool, { kind: 'api-key', savedAt: 'x', apiKey })
+  }
+}
 
 const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
 
@@ -262,6 +274,18 @@ describe('createWorkspace', () => {
     expect(claudeJson.hasCompletedOnboarding).toBe(true)
   })
 
+  it('spends the project owner\'s credentials: its egress registration names the owner, and no other user\'s key is seeded', async () => {
+    const owners: string[] = []
+    installDriver({ prepareSubstrate: (i) => { owners.push(i.owner); return Promise.resolve(substrateFixture()) } })
+    await setToolCredential(await seeTailnetUser('bob@example.com', 'Bob'), 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'sk-bob' })
+
+    await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', tool: 'claude' })
+
+    // The built-in user's credentials are filed under `install`.
+    expect(owners).toEqual(['install'])
+    expect(env().map((e) => e.split('=')[0])).not.toContain('ANTHROPIC_API_KEY')
+  })
+
   // Every credentialed tool's key is seeded on any workspace (a spare may be
   // retooled at claim), as a placeholder the proxy swaps. opencode and pi
   // each read theirs from a variable of their own, so neither collides with
@@ -276,11 +300,11 @@ describe('createWorkspace', () => {
     { name: 'codex OAuth', tool: 'codex', key: 'access', kind: 'oauth', want: {}, not: ['OPENAI_API_KEY'] },
   ])('seeds the env a $name credential needs, on a workspace of any tool', async ({ tool, key, kind, provider, want, not }) => {
     if (kind === 'oauth') {
-      await saveCodexOAuthBundle({
+      await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'oauth', savedAt: 'x', codexOauth: {
         accessToken: key, refreshToken: 'r', idTokenRawJwt: 'h.p.s', expiresAt: 0, lastRefresh: '2026-01-01T00:00:00.000Z',
-      })
+      } })
     } else {
-      await saveToolAuth(tool, key, kind, provider)
+      await saveToolAuth(tool, key, 'api-key', provider)
     }
     await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', tool: 'claude' })
 

@@ -14,12 +14,6 @@ import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
 import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
 import {
-  fanOutClaudePlaceholders,
-  fanOutCodexPlaceholders,
-  loadClaudeCredentialsFile,
-  loadCodexCredentialsFile,
-} from '@yaac/shared/tool-auth'
-import {
   MEDIATOR_TRIGGERS,
   type DriverSinks,
 } from '#drivers/contract'
@@ -58,29 +52,8 @@ export function triggerFor(source: WorkspaceDeltaSource): K8sTrigger {
 let clusterCache: ClusterCache | null = null
 let portDetector: PortDetectorManager | null = null
 
-/**
- * Rewrite the per-project credential files with placeholders.
- *
- * A containerless server writes real OAuth tokens into
- * `projects/<id>/{claude,codex}`, and those are the files a workspace pod
- * hostPath-mounts. If a data dir once run containerless is served by k8s,
- * sandboxed pods would see real tokens. Re-seeding at every k8s start
- * closes that window. On an install that never ran containerless this
- * rewrites the same placeholders.
- */
-async function reseedPlaceholderCredentials(): Promise<void> {
-  const claude = await loadClaudeCredentialsFile()
-  if (claude?.kind === 'oauth') await fanOutClaudePlaceholders(claude.claudeAiOauth)
-  const codex = await loadCodexCredentialsFile()
-  if (codex?.kind === 'oauth') await fanOutCodexPlaceholders(codex.codexOauth)
-}
-
 /** See `WorkspaceDriver.start`. */
 export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
-  // Before any pod can launch and mount the files.
-  await reseedPlaceholderCredentials()
-    .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${String(err)}`))
-
   // Best-effort cluster bootstrap. Failures are logged, not fatal: the
   // server can serve project/auth RPCs without a cluster, and workspace
   // creation reports RUNTIME_UNAVAILABLE on its own. The namespace and the

@@ -7,6 +7,7 @@ import type { IdentityEnv } from '#http'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
   authAgentHub,
+  importToolCredentialFiles,
   pushCredentialsToRuntime,
   refreshPlanUsage,
   runtimeMediatesEgress,
@@ -281,43 +282,48 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     }
   }))
 
-  // Auth-daemon relay: the login broker on the user's machine keeps one
-  // outbound socket here; sign-in routes forward ops over it.
-  app.get('/api/agent/auth', upgradeWebSocket(() => ({
-    onOpen: (_evt, ws) => {
-      const raw = rawOf(ws)
-      const sock = {
-        send: (data: string) => raw.send(data),
-        close: (code?: number, reason?: string) => raw.close(code, reason),
-      }
-      authAgentHub.setSocket(sock)
-      raw.on('message', (data) => {
-        const text = Array.isArray(data)
-          ? Buffer.concat(data).toString('utf8')
-          : Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
-        authAgentHub.ingest(text)
-      })
-      // Terminate if the previous ping got no pong. Starts true so a new
-      // socket survives the first tick; terminate() leads to handleDisconnect.
-      let alive = true
-      raw.on('pong', () => { alive = true })
-      const heartbeat = setInterval(() => {
-        if (!alive) {
-          raw.terminate()
-          return
+  // Auth-daemon relay: the login broker on each user's machine keeps one
+  // outbound socket here, as that user; their sign-in routes forward ops
+  // over it.
+  app.get('/api/agent/auth', upgradeWebSocket((c) => {
+    const owner = (c as Context<IdentityEnv>).get('principal').userId
+    return {
+      onOpen: (_evt, ws) => {
+        const raw = rawOf(ws)
+        const sock = {
+          send: (data: string) => raw.send(data),
+          close: (code?: number, reason?: string) => raw.close(code, reason),
         }
-        alive = false
-        try {
-          raw.ping()
-        } catch { /* socket tore down between tick and ping */ }
-      }, AGENT_HEARTBEAT_MS)
-      heartbeat.unref?.()
-      raw.on('close', () => {
-        clearInterval(heartbeat)
-        authAgentHub.handleDisconnect(sock)
-      })
-    },
-  })))
+        authAgentHub.setSocket(owner, sock)
+        raw.on('message', (data) => {
+          const text = Array.isArray(data)
+            ? Buffer.concat(data).toString('utf8')
+            : Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
+          authAgentHub.ingest(owner, text)
+        })
+        // Terminate if the previous ping got no pong. Starts true so a new
+        // socket survives the first tick; terminate() leads to
+        // handleDisconnect.
+        let alive = true
+        raw.on('pong', () => { alive = true })
+        const heartbeat = setInterval(() => {
+          if (!alive) {
+            raw.terminate()
+            return
+          }
+          alive = false
+          try {
+            raw.ping()
+          } catch { /* socket tore down between tick and ping */ }
+        }, AGENT_HEARTBEAT_MS)
+        heartbeat.unref?.()
+        raw.on('close', () => {
+          clearInterval(heartbeat)
+          authAgentHub.handleDisconnect(owner, sock)
+        })
+      },
+    }
+  }))
 
   // Attaches name a workspace by exact id, so a missing id is refused
   // before any lookup. The conversation id is validated because it is
@@ -499,6 +505,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     return
   }
   serverLog(`[server] access mode: ${access}`)
+  // Before anything reads or pushes the tool credential store.
+  await importToolCredentialFiles()
+    .catch((err: unknown) => serverLog(`[server] importing .credentials/ failed: ${String(err)}`))
   // The ssh agent the server's git signs with (docs/git-credentials.md);
   // needs the DB.
   await startGitSshAgent()

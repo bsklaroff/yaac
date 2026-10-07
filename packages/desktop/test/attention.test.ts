@@ -29,9 +29,9 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   provisioning: [],
   gitAuthFailures: {},
   imageBuilds: [],
-  planUsage: null,
+  planUsage: {},
   forwardBindHost: '127.0.0.1',
-  codexPlanUsage: null,
+  codexPlanUsage: {},
 })
 
 describe('badgeText', () => {

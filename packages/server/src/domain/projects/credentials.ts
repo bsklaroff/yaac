@@ -108,30 +108,37 @@ export async function generateSshCredential(
   return { id: row.id, publicKey: key.publicKey }
 }
 
-/**
- * Rename a credential. For a key this also changes the public key's comment,
- * which doesn't affect authentication, so copies registered with a host keep
- * working.
- */
-export async function renameCredential(id: string, rawName: string): Promise<void> {
-  const name = validName(rawName)
+/** One of `owner`'s credentials; another user's reads as missing. */
+async function ownCredential(owner: string, id: string): Promise<GitCredentialRow> {
   const cred = await getGitCredential(id)
-  if (!cred) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  if (cred?.owner !== owner) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  return cred
+}
+
+/**
+ * Rename one of `owner`'s credentials. For a key this also changes the
+ * public key's comment, which doesn't affect authentication, so copies
+ * registered with a host keep working.
+ */
+export async function renameCredential(owner: string, id: string, rawName: string): Promise<void> {
+  const name = validName(rawName)
+  const cred = await ownCredential(owner, id)
   const publicKey = cred.publicKey === null ? null : withKeyComment(cred.publicKey, name)
   await renameGitCredential(id, name, publicKey)
 }
 
 /**
- * Replace a credential's secret (a pasted token, or a newly generated key),
- * keeping its name and project assignments. For a key, returns the new
- * public key, which the user must register with the git host.
+ * Replace the secret of one of `owner`'s credentials (a pasted token, or a
+ * newly generated key), keeping its name and project assignments. For a
+ * key, returns the new public key, which the user must register with the
+ * git host.
  */
 export async function replaceCredential(
+  owner: string,
   id: string,
   params: { token?: string },
 ): Promise<{ id: string; publicKey?: string }> {
-  const cred = await getGitCredential(id)
-  if (!cred) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  const cred = await ownCredential(owner, id)
   if (cred.kind === 'https') {
     const token = params.token?.trim()
     if (!token) throw new ServerError('VALIDATION', 'Token cannot be empty.')
@@ -145,23 +152,26 @@ export async function replaceCredential(
   return { id: row.id, publicKey: key.publicKey }
 }
 
-/** Delete a credential; the projects that used it are left with none. */
-export async function removeCredential(id: string): Promise<void> {
+/** Delete one of `owner`'s credentials; the projects that used it are left
+ *  with none. */
+export async function removeCredential(owner: string, id: string): Promise<void> {
+  await ownCredential(owner, id)
   if (!await deleteGitCredential(id)) throw new ServerError('NOT_FOUND', 'No such git credential.')
 }
 
 /**
- * Check a credential fits `remoteUrl` and resolve it for git: its kind must
+ * Check one of `owner`'s credentials fits `remoteUrl` and resolve it for
+ * git (another user's reads as missing): its kind must
  * match the remote's scheme and its secret must decrypt. For an ssh key, the
  * remote's host key is fetched (trust on first use) and returned so the
  * caller can store and show it.
  */
 export async function resolveCredentialForRemote(
+  owner: string,
   credentialId: string,
   remoteUrl: string,
 ): Promise<{ credential: ResolvedGitCredential; knownHostsEntry: string | null }> {
-  const cred = await getGitCredential(credentialId)
-  if (!cred) throw new ServerError('NOT_FOUND', 'No such git credential.')
+  const cred = await ownCredential(owner, credentialId)
   const { scheme, host } = parseGitRemote(remoteUrl)
   if (cred.kind !== scheme) {
     throw new ServerError(
@@ -201,7 +211,7 @@ export async function assignProjectCredential(
   const row = await getProjectRow(projectId)
   if (!row) throw new ServerError('NOT_FOUND', `Project "${projectId}" not found`)
   await authorizeProject(principal, projectId)
-  const { knownHostsEntry } = await resolveCredentialForRemote(credentialId, row.remoteUrl)
+  const { knownHostsEntry } = await resolveCredentialForRemote(row.owner, credentialId, row.remoteUrl)
   await setProjectGitCredential(projectId, credentialId, knownHostsEntry)
   return { knownHostsEntry }
 }
@@ -212,7 +222,7 @@ export async function assignProjectCredential(
  * a changed remote) counts as no credential, so the user is asked for one.
  */
 function usableAssignment(row: ProjectRow, cred: GitCredentialRow | undefined): cred is GitCredentialRow {
-  if (!cred) return false
+  if (cred?.owner !== row.owner) return false
   let scheme: 'https' | 'ssh'
   try {
     scheme = parseGitRemote(row.remoteUrl).scheme
@@ -297,33 +307,43 @@ export async function listCredentialSummaries(owner: string): Promise<GitCredent
   return out
 }
 
+/** One user's git credentials as the runtime takes them. */
+export interface RuntimeGitCredentials {
+  git: HttpsCredentialEntry[]
+  ssh: SshCredentialEntry[]
+}
+
 /**
- * The git credentials handed to the runtime, each with the projects allowed
- * to use it, so egress gives it only to those projects' workspaces. Rows
- * that don't decrypt or that no project can use are left out.
+ * The git credentials handed to the runtime, keyed by the user whose
+ * projects use them, each with the projects allowed to use it, so egress
+ * gives it only to those projects' workspaces. Rows that don't decrypt or
+ * that no project can use are left out.
  */
-export async function runtimeGitCredentials(): Promise<{ git: HttpsCredentialEntry[]; ssh: SshCredentialEntry[] }> {
+export async function runtimeGitCredentials(): Promise<Record<string, RuntimeGitCredentials>> {
   const [creds, rows] = await Promise.all([listGitCredentials(), listProjectRows()])
-  const git: HttpsCredentialEntry[] = []
-  const ssh: SshCredentialEntry[] = []
+  const out: Record<string, RuntimeGitCredentials> = {}
   for (const c of creds) {
     const users = rows.filter((r) => r.gitCredentialId === c.id && usableAssignment(r, c))
     if (users.length === 0) continue
     const secret = await c.openSecret()
     if (secret === undefined) continue
-    if (c.kind === 'https') {
-      git.push({ token: secret, projects: users.map((r) => r.id) })
-      continue
+    for (const owner of new Set(users.map((r) => r.owner))) {
+      const mine = users.filter((r) => r.owner === owner)
+      const entry = out[owner] ??= { git: [], ssh: [] }
+      if (c.kind === 'https') {
+        entry.git.push({ token: secret, projects: mine.map((r) => r.id) })
+        continue
+      }
+      entry.ssh.push({
+        privateKey: encodeOpenSshPrivateKey(Buffer.from(secret, 'base64'), c.name),
+        publicKey: c.publicKey ?? '',
+        projects: mine.map((r) => ({
+          projectId: r.id,
+          host: parseGitRemote(r.remoteUrl).host,
+          knownHostsEntry: r.knownHostsEntry ?? '',
+        })),
+      })
     }
-    ssh.push({
-      privateKey: encodeOpenSshPrivateKey(Buffer.from(secret, 'base64'), c.name),
-      publicKey: c.publicKey ?? '',
-      projects: users.map((r) => ({
-        projectId: r.id,
-        host: parseGitRemote(r.remoteUrl).host,
-        knownHostsEntry: r.knownHostsEntry ?? '',
-      })),
-    })
   }
-  return { git, ssh }
+  return out
 }

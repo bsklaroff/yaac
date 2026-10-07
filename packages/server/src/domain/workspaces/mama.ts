@@ -18,6 +18,7 @@ import { decideSpawn, type SpawnRequest } from './spawn-policy'
 import { listActiveWorkspaces } from './list'
 import { listWorkspaceGroups, resolveGroup } from './groups'
 import {
+  getProjectRow,
   getProjectWorkspaceRows,
   getWorkspaceRow,
   listActiveAgentSessions,
@@ -32,7 +33,6 @@ import { stopWorkspace } from './stop'
 import { queueWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
 import { ServerError } from '@yaac/shared/errors'
 import { stripControlChars } from '@yaac/shared/ansi'
-import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
   AGENT_MODES,
@@ -48,7 +48,7 @@ import {
   type MamaCommand,
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
-import { modelsForTool } from '#domain/auth'
+import { loadToolAuthEntry, modelsForTool } from '#domain/auth'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
 import { bundleCheckout } from '#domain/git'
@@ -798,16 +798,17 @@ function renderHistory(workspaceId: string, conversations: HistoryConversation[]
 }
 
 /**
- * Which agent tools the server has credentials for, and each one's models.
- * A workspace cannot tell this itself.
+ * Which agent tools the project's owner has signed in to, and each one's
+ * models. A workspace cannot tell this itself.
  */
 async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
+  const owner = (await getProjectRow(caller.projectId))?.owner
   const entries = await Promise.all(AGENT_TOOLS.map(async (tool) => ({
     tool,
-    auth: await loadToolAuthEntry(tool),
+    auth: owner === undefined ? null : await loadToolAuthEntry(owner, tool),
   })))
 
-  const lines = [`Agent tools on this host (this workspace runs: ${caller.tool ?? 'unknown'})`, '']
+  const lines = [`Agent tools signed in for this project (this workspace runs: ${caller.tool ?? 'unknown'})`, '']
   for (const { tool, auth } of entries) {
     if (!auth) {
       lines.push(`${tool.padEnd(9)} not configured — its agent cannot authenticate`)

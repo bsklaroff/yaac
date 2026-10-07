@@ -190,7 +190,10 @@ How the pieces fit:
 - Not gated yet, for step 7's route classification: the routes that write
   rows directly through `#db` (titles, groups, set-group, death-seen
   marks, provisioning dismissal), build files and `/config/user-dockerfile`,
-  `/image/*`, and `/auth/*` with the `/api/agent/auth` WebSocket (step 5).
+  `/image/*`. `/auth/*` and the `/api/agent/auth` WebSocket need no gate:
+  they act only on the caller's own credentials and flows (step 5), so a
+  second user gets their own answer (an empty list, a 404 for another's
+  flow or git credential), never a 403.
   `/project/add` and `/project/register` create a project the caller then
   owns, so they need no check. Step 7's non-owner check must also drive
   the three attaches, which are registered in `server-run` and so are not
@@ -229,9 +232,16 @@ How the pieces fit:
   replace only its own user's socket. Login and install flows carry an
   owner and 404 for anyone else. This closes the OAuth-code takeover, where
   any user could evict the broker and receive a code another user pastes.
-- Plan usage is looked up per user. The auth daemon seeds the connecting
-  user's git identity, and a create is refused until the project owner has
-  one.
+- Plan usage is looked up per user. The snapshot's `planUsage` and
+  `codexPlanUsage` are maps from user id to that user's readout (a user
+  with no tool sign-in is absent), and the SPA's usage badge shows the
+  viewer's own entry, whoever it is viewing. The auth daemon seeds the
+  connecting user's git identity, and a create is refused until the
+  project owner has one.
+- Tool sign-ins are `tool_credentials` rows in `#db`, encrypted, one per
+  user and tool. A git credential can only be assigned to its owner's
+  projects, and renaming, replacing or deleting another user's reads as
+  missing.
 - Host-side git fetches on a project's clone use the owner's credential,
   which they already do once projects are private.
 
@@ -249,27 +259,16 @@ Under ownership:
 - The proxy serves no tool roster (its control API is only `/healthz`), so
   there is nothing per owner to filter there.
 
-The proxy side of this is shipped (docs/workspace-egress.md "Owners"). The
-owner key is opaque to the driver: `syncCredentials` takes a map from owner
-key to `CredentialBundle`, `refreshedCredentials` answers one keyed the same
-way, and `SubstrateIntent` and `WorkspaceRegistration` carry the `owner`
-domain decided. Until per-user tool credentials (step 5) every workspace
-names `INSTALL_CREDENTIAL_OWNER` (`#domain/auth`), the key the install's one
-credential set is pushed under. Step 5 then:
-
-- pushes one bundle per user, keyed by user id (a uuid fits the key
-  format), and stamps each workspace with its project owner's id. Until
-  then every user's assigned git tokens and ssh keys (`runtimeGitCredentials`)
-  are pooled under `INSTALL_CREDENTIAL_OWNER` too; project assignment, not
-  owner, is what keeps them apart, so they need to move per user in the same
-  step. The stamp must stay `INSTALL_CREDENTIAL_OWNER` until then, never the
-  project owner's id, or every workspace fails closed;
-- re-registers running workspaces whose registration still names
-  `INSTALL_CREDENTIAL_OWNER`, or keeps that key for the built-in user, since
-  a registration naming a key the Secret lacks gets nothing swapped;
-- adopts each owner's refreshed captures into that user's store, and the
-  `''` (pre-owner proxy) captures into the built-in user's
-  (docs/legacy-compat-shims.md).
+Shipped (docs/workspace-egress.md "Owners"). The owner key is opaque to the
+driver: `syncCredentials` takes a map from owner key to `CredentialBundle`,
+`refreshedCredentials` answers one keyed the same way, and `SubstrateIntent`
+and `WorkspaceRegistration` carry the `owner` domain decided, the project
+owner's key (`credentialOwnerKey`). A user's key is their id, except the
+built-in user's, which stays `install` so registrations written before
+credentials were per user keep resolving (docs/legacy-compat-shims.md). The
+server pushes one bundle per user, each with that user's tool sign-ins and
+the git credentials of their projects, and adopts each key's refresh
+captures into its user's store.
 
 `gitAuthFailures`, per-project registries, the build cache and the
 user-layer repo are already keyed by project, hence by owner. Registry
@@ -277,8 +276,9 @@ repositories stay one per project and layer: builder-pod write grants are
 scoped per repository (docs/trust-split-builds.md "The write gate"), so a
 shared repository would let any builder overwrite any user's tags.
 
-Under containerless, `#domain/auth`'s credential-sync works per project,
-hence per owner, without change. That is bookkeeping, not separation.
+Under containerless, `#domain/auth`'s credential-sync seeds and harvests
+each project's tool home from its owner's store. That is bookkeeping, not
+separation.
 
 ### Spawning (`yaac-mama`)
 
@@ -353,12 +353,14 @@ How the SPA does it (`packages/frontend/src/lib/viewer.ts`):
 4. **Users and owners** — shipped with step 2: the `users` table,
    `projects.owner`, per-user preferences, shortcuts and git credentials,
    with backfill to the built-in user.
-5. **Per-user tool credentials**: the `tool_credentials` table and importer,
-   caller-scoped `/auth/*`, the per-user auth daemon socket and flows, plan
-   usage per user. The importer hands the bundles to the built-in user, which
-   may have no login: an upgraded install whose only data was tool sign-ins
-   counts as fresh, so it can go `tailnet` without `--owner`
-   (docs/legacy-compat-shims.md "Backfilling owners and the access mode").
+5. **Per-user tool credentials** — shipped: the `tool_credentials` table
+   and importer, caller-scoped `/auth/*`, the per-user auth daemon socket
+   and flows, plan usage per user, owner-keyed proxy staging and spawns
+   refused without the owner's sign-in. The importer hands the bundles to
+   the built-in user, which may have no login: an upgraded install whose
+   only data was tool sign-ins counts as fresh, so it can go `tailnet`
+   without `--owner` (docs/legacy-compat-shims.md "Backfilling owners and
+   the access mode").
 6. **Proxy keying**: the owner-keyed credentials Secret, owner on
    registrations, and every credential path resolving through it.
 7. **Route authorization**: every route classified and gated, and per-user

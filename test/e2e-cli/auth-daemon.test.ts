@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
-import path from 'node:path'
 import WebSocket from 'ws'
 import {
   createYaacTestEnv,
@@ -10,6 +9,7 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import { CLAUDE_STUB } from '@yaac/test-utils/fixtures'
+import { makeServerApiClient } from '@yaac/test-utils/api'
 
 /**
  * The auth-daemon relay end to end with real processes: a spawned main
@@ -53,11 +53,9 @@ describe('yaac auth server (real CLI + real servers)', () => {
     // The relayed output surfaced the vendor CLI's sign-in URL.
     expect(res.stdout).toMatch(/claude\.com\/cai\/oauth/)
 
-    const creds = JSON.parse(await fs.readFile(
-      path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json'), 'utf8',
-    )) as { kind: string; claudeAiOauth: { accessToken: string } }
-    expect(creds.kind).toBe('oauth')
-    expect(creds.claudeAiOauth.accessToken).toBe('sk-ant-oat01-fake-web-login')
+    // Stored for the caller: `sk-ant-oat01-fake-web-login`, masked.
+    const listed = await (await makeServerApiClient(server).auth.list.$get()).json()
+    expect(listed.toolAuth.find((t) => t.tool === 'claude')).toMatchObject({ kind: 'oauth', keyPreview: '***ogin' })
   })
 
   it('start / status / stop drive the broker lifecycle', async () => {

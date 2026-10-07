@@ -205,9 +205,11 @@ the hosts it lets them sign for. A
 workspace never spends another owner's credential, even one assigned to a
 project of the same id, and a registration naming an owner the Secret lacks
 gets nothing swapped. The server decides the owner and hands it to the
-driver on the launch intent and the claim's registration; today every
-workspace names the install's one owner (`INSTALL_CREDENTIAL_OWNER`), since
-the host store holds one credential set.
+driver on the launch intent and the claim's registration: a workspace
+spends its project owner's credentials. A user's key is their user id,
+except the built-in user's, which is `install`
+(`credentialOwnerKey` in `#domain/auth`). The server pushes one bundle per
+user who has a tool sign-in or a git credential some project uses.
 
 Inputs carry the label `yaac.proxy-input=<kind>` and outputs
 `yaac.proxy-output=<kind>`. Both sides select by label, since `list` and
@@ -215,7 +217,7 @@ Inputs carry the label `yaac.proxy-input=<kind>` and outputs
 
 **When the server writes:**
 
-- The credentials Secret is rewritten whole whenever a host-store change
+- The credentials Secret is rewritten whole whenever a credential store change
   alters its contents (a login, a clear, a git credential assigned to a
   project or a project added with one, a refresh the plan-usage poller saved),
   and once per server start, so the objects always converge on the store.
@@ -249,8 +251,8 @@ credential, and is captured in memory, for that owner only, before the
 response is forwarded. It is then written to that owner's keys in the
 refreshed Secret by one writer that carries the newest capture and retries
 until it lands (a codex rotation is single-use, and the Secret is what a
-replacement pod boots from). The server's `credential-adopt` step takes the
-install owner's captures into the host store under the same newest-wins
+replacement pod boots from). The server's `credential-adopt` step takes
+each owner's captures into that user's store under the same newest-wins
 comparison every writer uses, then pushes the credentials Secret again, so
 the proxy sees its own capture echoed back and stops preferring it.
 

@@ -4,6 +4,7 @@ import { POPUP } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { PinIcon, UsageIcon, TOOL_LABEL } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
+import { useWhoami } from '#lib/viewer'
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
 import type { AgentTool, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
@@ -135,17 +136,20 @@ function usageSections(
  * Sidebar-header pill showing plan-limit usage for signed-in Claude/Codex
  * subscriptions: the tightest limit, or the one the user pinned by clicking
  * a popover row. The popover breaks usage down per tool. Data comes from the
- * snapshot; the server queries upstream (domain/auth/usage.ts). Hidden when
- * no tool's usage is available.
+ * viewer's entry in the snapshot; the server queries upstream
+ * (domain/auth/usage.ts). Hidden when no tool's usage is available.
  */
 export function UsageBadge(): JSX.Element | null {
   const snapshot = useSnapshot()
   const pinnedKey = useUiStore((s) => s.pinnedUsageMetric)
   const setPinnedUsageMetric = useUiStore((s) => s.setPinnedUsageMetric)
 
+  // The snapshot carries every user's readout. Show the caller's own, also
+  // while viewing a teammate: plan usage is a personal setting.
+  const me = useWhoami()?.userId ?? ''
   const sections = usageSections({
-    claude: snapshot?.planUsage,
-    codex: snapshot?.codexPlanUsage,
+    claude: snapshot?.planUsage[me],
+    codex: snapshot?.codexPlanUsage[me],
   })
   if (sections.length === 0) return null
 

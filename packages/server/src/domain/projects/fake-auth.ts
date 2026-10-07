@@ -1,12 +1,6 @@
 import {
   isPlaceholderClaudeBundle,
-  loadClaudeCredentialsFile,
-  loadOpencodeCredentialsFile,
-  loadPiCredentialsFile,
-  saveClaudeOAuthBundle,
-  saveOpencodeCredentialsFile,
-  savePiCredentialsFile,
-  fanOutClaudePlaceholders,
+  writeProjectClaudePlaceholder,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
   PLACEHOLDER_API_KEY,
@@ -14,7 +8,7 @@ import {
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { getGitCredentialByName, insertGitCredential } from '#db'
+import { getGitCredentialByName, getToolCredential, insertGitCredential, listProjectRows, setToolCredential } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import type { ClaudeOAuthBundle, FakeAuthKind } from '@yaac/shared/types'
 
@@ -51,13 +45,15 @@ export function buildFakeClaudeOAuthBundle(): ClaudeOAuthBundle {
 }
 
 /**
- * Store a fake Claude OAuth credential and write the placeholder bundle into
- * every existing project, as a real OAuth login would.
+ * Store a fake Claude OAuth credential for `owner` and write the placeholder
+ * bundle into each of their projects, as a real OAuth login would.
  */
-async function seedFakeClaudeOAuth(): Promise<void> {
+async function seedFakeClaudeOAuth(owner: string): Promise<void> {
   const bundle = buildFakeClaudeOAuthBundle()
-  await saveClaudeOAuthBundle(bundle)
-  await fanOutClaudePlaceholders(bundle)
+  await setToolCredential(owner, 'claude', { kind: 'oauth', savedAt: new Date().toISOString(), claudeAiOauth: bundle })
+  for (const project of await listProjectRows()) {
+    if (project.owner === owner) await writeProjectClaudePlaceholder(project.id, bundle)
+  }
 }
 
 // There is no `codex-oauth` fake: codex sends a `ChatGPT-Account-Id` header
@@ -81,8 +77,8 @@ async function seedFakeGithubCredential(owner: string): Promise<void> {
  * leaves it unchanged, and the outer proxy swaps in the real key on
  * `openrouter.ai`.
  */
-async function seedFakeOpencodeOpenrouter(): Promise<void> {
-  await saveOpencodeCredentialsFile({
+async function seedFakeOpencodeOpenrouter(owner: string): Promise<void> {
+  await setToolCredential(owner, 'opencode', {
     kind: 'api-key',
     provider: 'openrouter',
     savedAt: new Date().toISOString(),
@@ -91,8 +87,8 @@ async function seedFakeOpencodeOpenrouter(): Promise<void> {
 }
 
 /** Store a fake Pi OpenRouter api-key credential, as for opencode. */
-async function seedFakePiOpenrouter(): Promise<void> {
-  await savePiCredentialsFile({
+async function seedFakePiOpenrouter(owner: string): Promise<void> {
+  await setToolCredential(owner, 'pi', {
     kind: 'api-key',
     provider: 'openrouter',
     savedAt: new Date().toISOString(),
@@ -104,10 +100,10 @@ async function seedFakePiOpenrouter(): Promise<void> {
  * Whether this kind's store holds a real (non-placeholder) credential.
  * GitHub never counts: its seed touches no other credential.
  */
-async function holdsRealCredential(kind: FakeAuthKind): Promise<boolean> {
+async function holdsRealCredential(owner: string, kind: FakeAuthKind): Promise<boolean> {
   switch (kind) {
     case 'claude-oauth': {
-      const creds = await loadClaudeCredentialsFile()
+      const creds = await getToolCredential(owner, 'claude')
       if (creds === null) return false
       return creds.kind === 'oauth'
         ? !isPlaceholderClaudeBundle(creds.claudeAiOauth)
@@ -116,11 +112,11 @@ async function holdsRealCredential(kind: FakeAuthKind): Promise<boolean> {
     // The shared placeholder is what these fakes stored before each tool
     // had its own (docs/legacy-compat-shims.md).
     case 'opencode-openrouter': {
-      const creds = await loadOpencodeCredentialsFile()
+      const creds = await getToolCredential(owner, 'opencode')
       return creds !== null && ![PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_API_KEY].includes(creds.apiKey)
     }
     case 'pi-openrouter': {
-      const creds = await loadPiCredentialsFile()
+      const creds = await getToolCredential(owner, 'pi')
       return creds !== null && ![PLACEHOLDER_PI_API_KEY, PLACEHOLDER_API_KEY].includes(creds.apiKey)
     }
     case 'github':
@@ -129,16 +125,16 @@ async function holdsRealCredential(kind: FakeAuthKind): Promise<boolean> {
 }
 
 /**
- * Seed fake credentials for the given `yaac auth fake` kinds. Refuses
- * (`CONFLICT`, seeding nothing) if any kind already has a real credential,
- * which placeholders would replace everywhere; `yaac auth clear` it first.
- * The fake GitHub credential is `owner`'s.
+ * Seed `owner`'s fake credentials for the given `yaac auth fake` kinds.
+ * Refuses (`CONFLICT`, seeding nothing) if any kind already has a real
+ * credential of theirs, which placeholders would replace; `yaac auth clear`
+ * it first.
  */
 export async function seedFakeAuth(kinds: readonly FakeAuthKind[], owner: string): Promise<void> {
   const unique = [...new Set(kinds)]
   const real: FakeAuthKind[] = []
   for (const kind of unique) {
-    if (await holdsRealCredential(kind)) real.push(kind)
+    if (await holdsRealCredential(owner, kind)) real.push(kind)
   }
   if (real.length > 0) {
     throw new ServerError(
@@ -150,13 +146,13 @@ export async function seedFakeAuth(kinds: readonly FakeAuthKind[], owner: string
   for (const kind of unique) {
     switch (kind) {
       case 'claude-oauth':
-        await seedFakeClaudeOAuth()
+        await seedFakeClaudeOAuth(owner)
         break
       case 'opencode-openrouter':
-        await seedFakeOpencodeOpenrouter()
+        await seedFakeOpencodeOpenrouter(owner)
         break
       case 'pi-openrouter':
-        await seedFakePiOpenrouter()
+        await seedFakePiOpenrouter(owner)
         break
       case 'github':
         await seedFakeGithubCredential(owner)

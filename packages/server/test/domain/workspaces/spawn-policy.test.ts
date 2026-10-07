@@ -25,6 +25,7 @@ import { recordProject } from '#db/project-store'
 import type { PermissionMode } from '@yaac/shared/types'
 import { closeDb } from '#db/client'
 import { BUILT_IN_USER_ID } from '#db/user-store'
+import { deleteToolCredential, setToolCredential } from '#db'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
@@ -73,6 +74,11 @@ beforeEach(async () => {
   installFakeWorkspaceDriver({ list: listSpares })
   listSpares.mockClear()
   await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  // The project's owner is signed in to every tool unless a case says not.
+  await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
+  await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
+  await setToolCredential(BUILT_IN_USER_ID, 'opencode', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
+  await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
   clearAllProvisioningForTests()
   stubCreate()
 })
@@ -274,6 +280,19 @@ describe('decideSpawn', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
+  it('refuses a tool the project owner has not signed in to, starting nothing', async () => {
+    const create = stubCreate()
+    await deleteToolCredential(BUILT_IN_USER_ID, 'codex')
+    expect(await decideSpawn(makeRequest())).toEqual({
+      ok: false, error: expect.stringMatching(/^codex is not signed in for this project's owner/) as string,
+    })
+    expect(listProvisioning()).toEqual([])
+    await settle()
+    expect(create).not.toHaveBeenCalled()
+    // Another tool the owner has is fine.
+    expect((await decideSpawn(makeRequest({ tool: 'claude' }))).ok).toBe(true)
+  })
+
   it('rejects empty and oversize prompts', async () => {
     const create = stubCreate()
     expect((await decideSpawn(makeRequest({ prompt: '  ' }))).ok).toBe(false)
@@ -305,6 +324,20 @@ describe('decideSpawn', () => {
     await vi.waitFor(async () => {
       expect((await decideSpawn(makeRequest({ callerWorkspaceId, requestId: 'r-after' }))).ok).toBe(true)
     })
+  })
+
+  it('holds the cap against concurrent requests, and a refused one gives its slot back', async () => {
+    // Creates that never settle keep every admitted slot taken.
+    stubCreate(() => new Promise<WorkspaceCreateResult>(() => {}))
+    const callerWorkspaceId = 'concurrent-caller'
+    // A refusal after the cap check (no sign-in for opencode) must not keep
+    // the slot it reserved.
+    await deleteToolCredential(BUILT_IN_USER_ID, 'opencode')
+    expect((await decideSpawn(makeRequest({ callerWorkspaceId, tool: 'opencode' }))).ok).toBe(false)
+
+    const decisions = await Promise.all(Array.from({ length: 3 * SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE }, (_, i) =>
+      decideSpawn(makeRequest({ callerWorkspaceId, requestId: `c${i}` }))))
+    expect(decisions.filter((d) => d.ok)).toHaveLength(SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE)
   })
 
   it('releases the guard and stays ok when the detached create rejects', async () => {

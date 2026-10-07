@@ -11,9 +11,9 @@
 // change. User intent (a title, a group, a preference) is written through the
 // plain functions below.
 //
-// Secrets (project env-var values, git credentials) are encrypted on write
-// and decrypted on read here (better-auth's `symmetricEncrypt`, keyed by
-// `secret-key.ts`), so no path can store one unencrypted.
+// Secrets (project env-var values, git and tool credentials) are encrypted
+// on write and decrypted on read here (better-auth's `symmetricEncrypt`,
+// keyed by `secret-key.ts`), so no path can store one unencrypted.
 //
 // Adding a name here widens the interface and requires a unit test in
 // packages/server/test/db/.
@@ -105,6 +105,13 @@ export {
   setProjectGitCredential,
   type ProjectRow,
 } from './project-store'
+export {
+  deleteToolCredential,
+  getToolCredential,
+  listToolCredentials,
+  setToolCredential,
+  type ToolCredential,
+} from './tool-credential-store'
 export {
   BUILT_IN_USER_ID,
   listUsers,

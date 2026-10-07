@@ -20,7 +20,7 @@ import {
   runtimeGitCredentials,
   sshKeyMaterial,
 } from '#domain/projects'
-import { BUILT_IN_USER_ID, closeDb, recordProject } from '#db'
+import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 
@@ -101,7 +101,7 @@ describe('generateSshCredential', () => {
 describe('renameCredential', () => {
   it('renames, re-commenting a key without changing it', async () => {
     const { id, publicKey } = await generateSshCredential(BUILT_IN_USER_ID, { name: 'old' })
-    await renameCredential(id, 'new')
+    await renameCredential(BUILT_IN_USER_ID, id, 'new')
     const [summary] = await listCredentialSummaries(BUILT_IN_USER_ID)
     expect(summary.name).toBe('new')
     expect(summary.publicKey?.split(' ').slice(0, 2)).toEqual(publicKey.split(' ').slice(0, 2))
@@ -112,8 +112,14 @@ describe('renameCredential', () => {
     const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
     expect(stdout.trim().split(' ').slice(0, 2)).toEqual(publicKey.split(' ').slice(0, 2))
 
-    await expect(renameCredential('00000000-0000-4000-8000-000000000000', 'x'))
+    await expect(renameCredential(BUILT_IN_USER_ID, '00000000-0000-4000-8000-000000000000', 'x'))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
+    // Another user's credential reads as missing to every write.
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    await expect(renameCredential(bob, id, 'x')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(replaceCredential(bob, id, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(removeCredential(bob, id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => c.name)).toEqual(['new'])
   })
 })
 
@@ -132,6 +138,10 @@ describe('assignProjectCredential', () => {
     await expect(assignProjectCredential(local, WEB, key.id)).rejects.toThrow(/needs a token, not an SSH key/)
     await expect(assignProjectCredential(local, SVC, token.id)).rejects.toThrow(/needs an SSH key, not a token/)
     await expect(assignProjectCredential(local, NOPE, token.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    // Another user's credential is never theirs to assign, so a project
+    // cannot spend it.
+    const bobs = await addHttpsCredential(await seeTailnetUser('bob@example.com', 'Bob'), { name: 'b', token: 'ghp_b' })
+    await expect(assignProjectCredential(local, WEB, bobs.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => [c.name, c.projects]))
       .toEqual([['gh', [WEB]], ['deploy', [SVC]]])
   })
@@ -183,11 +193,11 @@ describe('removeCredential', () => {
     const a = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'a', token: 'ghp_aaaa' })
     await assignProjectCredential(local, WEB, a.id)
 
-    await removeCredential(a.id)
+    await removeCredential(BUILT_IN_USER_ID, a.id)
     expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([])
     expect(await resolveProjectCredential(WEB)).toBeNull()
-    expect((await runtimeGitCredentials()).git).toEqual([])
-    await expect(removeCredential(a.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(await runtimeGitCredentials()).toEqual({})
+    await expect(removeCredential(BUILT_IN_USER_ID, a.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 
@@ -201,11 +211,11 @@ describe('replaceCredential', () => {
     await assignProjectCredential(local, SVC, key.id)
     sshRuns.length = 0
 
-    await expect(replaceCredential(token.id, {})).rejects.toMatchObject({ code: 'VALIDATION' })
-    await replaceCredential(token.id, { token: 'ghp_fresh' })
+    await expect(replaceCredential(BUILT_IN_USER_ID, token.id, {})).rejects.toMatchObject({ code: 'VALIDATION' })
+    await replaceCredential(BUILT_IN_USER_ID, token.id, { token: 'ghp_fresh' })
     expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: 'ghp_fresh' })
 
-    const replaced = await replaceCredential(key.id, {})
+    const replaced = await replaceCredential(BUILT_IN_USER_ID, key.id, {})
     expect(replaced.publicKey).toMatch(PUBLIC_KEY_RE)
     expect(replaced.publicKey).not.toBe(key.publicKey)
     // Same host, so the trusted host key carries over without a fetch.
@@ -214,7 +224,7 @@ describe('replaceCredential', () => {
     })
     expect(sshRuns).toEqual([])
     expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => [c.name, c.projects])).toEqual([['gh', [WEB]], ['deploy', [SVC]]])
-    await expect(replaceCredential(key.id, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(replaceCredential(BUILT_IN_USER_ID, key.id, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 
@@ -230,7 +240,7 @@ describe('runtimeGitCredentials', () => {
     await assignProjectCredential(local, API, token.id)
     await assignProjectCredential(local, SVC, key.id)
 
-    const { git, ssh } = await runtimeGitCredentials()
+    const { git, ssh } = (await runtimeGitCredentials())[BUILT_IN_USER_ID]
     expect(git).toEqual([{ token: 'ghp_abcd1234', projects: [WEB, API] }])
     expect(ssh).toEqual([{
       privateKey: expect.stringContaining('BEGIN OPENSSH PRIVATE KEY') as string,

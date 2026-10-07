@@ -23,7 +23,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential, registerTestProject } from '@yaac/test-utils/api'
+import { assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -137,43 +137,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     testEnv = await createYaacTestEnv()
 
-    // Fake credentials for every tool. The proxy swaps the workspace's
-    // placeholders for these, which is what the tests assert.
-    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
-    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
-      kind: 'api-key',
-      savedAt: new Date().toISOString(),
-      apiKey: 'sk-ant-fake-real-key',
-    }) + '\n')
     const futureExpSeconds = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
-    await fs.writeFile(path.join(credsDir, 'codex.json'), JSON.stringify({
-      kind: 'oauth',
-      savedAt: new Date().toISOString(),
-      codexOauth: {
-        accessToken: CODEX_REAL_ACCESS_TOKEN,
-        refreshToken: 'codex-real-refresh-token',
-        idTokenRawJwt: makeJwt({
-          sub: 'user-mock',
-          email: 'test@example.com',
-          'https://api.openai.com/auth': {
-            chatgpt_account_id: 'acct-mock',
-            chatgpt_user_id: 'user-mock',
-          },
-        }),
-        expiresAt: futureExpSeconds * 1000,
-        lastRefresh: new Date().toISOString(),
-        accountId: 'acct-mock',
-      },
-    }) + '\n')
-    // `provider` is required, or the credential is dropped at load.
-    await fs.writeFile(path.join(credsDir, 'opencode.json'), JSON.stringify({
-      kind: 'api-key',
-      provider: 'openrouter',
-      savedAt: new Date().toISOString(),
-      apiKey: 'sk-or-v1-fake-test-key',
-    }) + '\n')
-
 
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
@@ -210,6 +174,28 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }
     server = await spawnYaacServer(serverEnv)
     await setTestGitIdentity(serverEnv)
+    // Fake credentials for every tool. The proxy swaps the workspace's
+    // placeholders for these, which is what the tests assert.
+    await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: 'sk-ant-fake-real-key' })
+    await signInTestTool(server, 'codex', {
+      kind: 'oauth',
+      bundle: {
+        accessToken: CODEX_REAL_ACCESS_TOKEN,
+        refreshToken: 'codex-real-refresh-token',
+        idTokenRawJwt: makeJwt({
+          sub: 'user-mock',
+          email: 'test@example.com',
+          'https://api.openai.com/auth': {
+            chatgpt_account_id: 'acct-mock',
+            chatgpt_user_id: 'user-mock',
+          },
+        }),
+        expiresAt: futureExpSeconds * 1000,
+        lastRefresh: new Date().toISOString(),
+        accountId: 'acct-mock',
+      },
+    })
+    await signInTestTool(server, 'opencode', { kind: 'api-key', provider: 'openrouter', apiKey: 'sk-or-v1-fake-test-key' })
     base = `http://127.0.0.1:${server.lock.port}`
   })
 

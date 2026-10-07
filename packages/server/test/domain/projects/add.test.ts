@@ -22,7 +22,7 @@ import {
   registerStagedProject,
   resolveProjectCredential,
 } from '#domain/projects'
-import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows, setToolCredential } from '#db'
 import {
   claudeDir,
   getProjectsDir,
@@ -30,11 +30,7 @@ import {
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
 } from '@yaac/shared/project-paths'
-import {
-  saveClaudeOAuthBundle,
-  saveCodexOAuthBundle,
-  PLACEHOLDER_ACCESS_TOKEN,
-} from '@yaac/shared/tool-auth'
+import { PLACEHOLDER_ACCESS_TOKEN } from '@yaac/shared/tool-auth'
 
 const mockClone = vi.mocked(cloneRepo)
 
@@ -130,20 +126,20 @@ describe('addProject', () => {
   })
 
   it('seeds the project with placeholder tool credentials when the user has them', async () => {
-    await saveClaudeOAuthBundle({
+    await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'oauth', savedAt: 'x', claudeAiOauth: {
       accessToken: 'real-access',
       refreshToken: 'real-refresh',
       expiresAt: Date.now() + 86_400_000,
       scopes: ['user:inference'],
       subscriptionType: 'max',
-    })
-    await saveCodexOAuthBundle({
+    } })
+    await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'oauth', savedAt: 'x', codexOauth: {
       accessToken: 'real-access',
       refreshToken: 'real-refresh',
       idTokenRawJwt: 'header.payload.sig',
       expiresAt: Date.now() + 86_400_000,
       lastRefresh: '2026-01-01T00:00:00.000Z',
-    })
+    } })
 
     const { project } = await addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)
 

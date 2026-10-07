@@ -14,7 +14,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential, registerTestProject } from '@yaac/test-utils/api'
+import { assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -82,13 +82,6 @@ describe('yaac prewarmed sessions', () => {
 
     await cloneRepo(path.join(mockGit!.reposDir, 'repo-demo.git'), repoDir, null)
     await git(repoDir, ['remote', 'set-url', 'origin', FAKE_REMOTE])
-
-    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
-    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(
-      path.join(credsDir, 'claude.json'),
-      JSON.stringify({ kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-fake-real-key' }) + '\n',
-    )
   }
 
 /**
@@ -126,6 +119,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: 'sk-ant-fake-real-key' })
     await setTestGitIdentity(serverEnv)
     await registerTestProject(server, PROJECT_ID, 'repo-demo', FAKE_REMOTE)
     await assignTestGitCredential(server, 'repo-demo', 'fake-ghp-token')

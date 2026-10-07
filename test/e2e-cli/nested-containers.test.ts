@@ -30,7 +30,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential, makeServerApiClient, registerTestProject } from '@yaac/test-utils/api'
+import { assignTestGitCredential, makeServerApiClient, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -152,16 +152,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
   /** Project ids a registry was created for, swept in afterAll. */
   const createdRegistries: string[] = []
 
-  async function seedCredentials(): Promise<void> {
-    const credsDir = path.join(testEnv.dataDir, 'server-local', '.credentials')
-    await fs.mkdir(credsDir, { recursive: true, mode: 0o700 })
-    await fs.writeFile(path.join(credsDir, 'claude.json'), JSON.stringify({
-      kind: 'api-key',
-      savedAt: new Date().toISOString(),
-      apiKey: 'sk-ant-fake-real-key',
-    }) + '\n')
-  }
-
   /**
    * Stage and register a project named `name`; returns its id. `seeded`:
    * the mock remote already holds the repo (a re-add).
@@ -232,7 +222,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     await requireCluster()
 
     testEnv = await createYaacTestEnv()
-    await seedCredentials()
     mockLLM = await startMockLLM()
     mockGit = await startMockGit()
     mockRegistry = await startMockUpstreamRegistry()
@@ -252,6 +241,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       YAAC_E2E_NO_ATTACH: '1',
     }
     server = await spawnYaacServer(serverEnv)
+    await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: 'sk-ant-fake-real-key' })
     await setTestGitIdentity(serverEnv)
 
     sharedProjectId = await setupProject('nested-shared')

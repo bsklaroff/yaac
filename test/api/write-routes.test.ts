@@ -6,12 +6,12 @@ import { buildApp, buildMamaRelayApp } from '@yaac/server/main/server'
 import { git } from '@yaac/test-utils/git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { INSTALL_CREDENTIAL_OWNER } from '@yaac/server/domain/auth'
+import { credentialOwnerKey } from '@yaac/server/domain/auth'
 import { addHttpsCredential, assignProjectCredential, listCredentialSummaries } from '@yaac/server/domain/projects/credentials'
-import {
-  loadClaudeCredentialsFile,
-  saveClaudeOAuthBundle,
-} from '@yaac/shared/tool-auth'
+import { getToolCredential, setToolCredential } from '@yaac/server/db/tool-credential-store'
+import { seeTailnetUser } from '@yaac/server/db/user-store'
+import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
+import { asTailnet } from '@yaac/test-utils/api'
 import { getProjectWorkspaceRows, recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
 import { listWorkspaceGroups } from '@yaac/server/domain/workspaces/groups'
@@ -87,6 +87,7 @@ import {
   getToolLogin,
   sendToolLoginInput,
   startToolLogin,
+  setToolLoginPersistence,
 } from '@yaac/auth-daemon/tool-login'
 import {
   cancelToolInstall,
@@ -105,7 +106,14 @@ const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
  */
 function installLoopbackAgent(): () => void {
   const tracked = new Map<string, 'login' | 'install'>()
-  authAgentHub.setSocket({
+  // A finished login is PUT back as its user, as the real auth server does.
+  setToolLoginPersistence(async (tool, result) => {
+    const res = await makeTestApiClient(buildApp({ buildId: 'test' })).auth[':tool'].$put({
+      param: { tool }, json: buildAuthPayload(tool, result),
+    })
+    if (!res.ok) throw new Error(`PUT /auth/${tool} failed: ${res.status}`)
+  })
+  authAgentHub.setSocket(BUILT_IN_USER_ID, {
     send: (data: string) => {
       const op = JSON.parse(data) as AgentOp
       if (op.op === 'start') {
@@ -128,7 +136,7 @@ function installLoopbackAgent(): () => void {
     for (const [id, kind] of tracked) {
       try {
         const view = kind === 'login' ? getToolLogin(id) : getToolInstall(id)
-        authAgentHub.ingest(JSON.stringify({ op: 'view', kind, view }))
+        authAgentHub.ingest(BUILT_IN_USER_ID, JSON.stringify({ op: 'view', kind, view }))
         if (view.status !== 'running') tracked.delete(id)
       } catch {
         tracked.delete(id)
@@ -1291,11 +1299,11 @@ describe('write routes', () => {
     })
 
     it('clears claude credentials when service=claude', async () => {
-      await saveClaudeOAuthBundle(SAMPLE_BUNDLE)
+      await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'oauth', savedAt: 'x', claudeAiOauth: SAMPLE_BUNDLE })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.auth.clear.$post({ json: { service: 'claude' } })
       expect(res.status).toBe(204)
-      expect(await loadClaudeCredentialsFile()).toBeNull()
+      expect(await getToolCredential(BUILT_IN_USER_ID, 'claude')).toBeNull()
     })
   })
 
@@ -1341,11 +1349,6 @@ describe('write routes', () => {
         publicKey: expect.stringMatching(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5\S+ deploy$/) as string,
       })
       expect((await listCredentialSummaries(BUILT_IN_USER_ID))[0]).toMatchObject({ name: 'deploy', kind: 'ssh', publicKey: body.publicKey })
-      // Nothing under the data dir's credentials holds anything about it.
-      const credDir = path.join(tmpDir, 'server-local', '.credentials')
-      for (const name of await fs.readdir(credDir).catch(() => [] as string[])) {
-        expect(await fs.readFile(path.join(credDir, name), 'utf8')).not.toContain('ssh-ed25519')
-      }
     })
 
     it('rejects a blank name', async () => {
@@ -1381,7 +1384,8 @@ describe('write routes', () => {
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id: a.id } })
         expect(res.status).toBe(204)
         expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([])
-        expect(synced.mock.calls.at(-1)?.[0][INSTALL_CREDENTIAL_OWNER].git).toEqual([])
+        // With nothing left, the user has no bundle at all.
+        expect(synced.mock.calls.at(-1)?.[0]).toEqual({})
       } finally {
         synced.mockRestore()
       }
@@ -1426,7 +1430,7 @@ describe('write routes', () => {
         expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
           { id: body.id, name: 'gh', kind: 'https', preview: '***resh', projects: [WEB] },
         ])
-        expect(synced.mock.calls.at(-1)?.[0][INSTALL_CREDENTIAL_OWNER].git).toEqual([{ token: 'ghp_fresh', projects: [WEB] }])
+        expect(synced.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toEqual([{ token: 'ghp_fresh', projects: [WEB] }])
       } finally {
         synced.mockRestore()
       }
@@ -1446,7 +1450,7 @@ describe('write routes', () => {
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ knownHostsEntry: null })
         // The runtime injects from what it was last told, never from the store.
-        expect(synced.mock.calls.at(-1)?.[0][INSTALL_CREDENTIAL_OWNER].git).toEqual([{ token: 'ghp_web', projects: [WEB] }])
+        expect(synced.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toEqual([{ token: 'ghp_web', projects: [WEB] }])
       } finally {
         synced.mockRestore()
       }
@@ -1473,7 +1477,7 @@ describe('write routes', () => {
         json: { kind: 'api-key', apiKey: 'sk-ant-api03-new' },
       })
       expect(res.status).toBe(204)
-      const entry = await loadClaudeCredentialsFile()
+      const entry = await getToolCredential(BUILT_IN_USER_ID, 'claude')
       expect(entry?.kind).toBe('api-key')
     })
 
@@ -1493,6 +1497,55 @@ describe('write routes', () => {
         json: { kind: 'api-key', apiKey: '' },
       })
       expect(res.status).toBe(400)
+    })
+  })
+
+  describe('/auth/* for two tailnet users', () => {
+    const HOST = 'srv.tailnet.ts.net'
+    const ALICE = asTailnet('alice@example.com', HOST)
+    const BOB = asTailnet('bob@example.com', HOST)
+
+    beforeEach(() => {
+      vi.stubEnv('YAAC_ALLOWED_HOSTS', HOST)
+    })
+
+    afterEach(() => {
+      vi.unstubAllEnvs()
+      authAgentHub.clearForTests()
+    })
+
+    it('acts only on the caller\'s own sign-ins, git credentials and auth server', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test', access: () => 'tailnet' }))
+      const as = (headers: Record<string, string>) => ({ headers })
+      expect((await client.auth[':tool'].$put({
+        param: { tool: 'claude' }, json: { kind: 'api-key', apiKey: 'sk-ant-alice' },
+      }, as(ALICE))).status).toBe(204)
+      const gh = await (await client.auth.git.credentials.$post({ json: { name: 'gh', token: 'ghp_alice' } }, as(ALICE))).json()
+      const alice = await seeTailnetUser('alice@example.com', 'alice')
+      const bob = await seeTailnetUser('bob@example.com', 'bob')
+
+      // Bob sees none of it, and his clear and credential writes reach none
+      // of it either.
+      expect(await (await client.auth.list.$get({}, as(BOB))).json()).toEqual({ gitCredentials: [], toolAuth: [] })
+      expect((await client.auth.clear.$post({ json: { service: 'all' } }, as(BOB))).status).toBe(204)
+      expect(await getToolCredential(alice, 'claude')).toMatchObject({ apiKey: 'sk-ant-alice' })
+      expect((await client.auth.git.credentials[':id'].$patch({ param: { id: gh.id }, json: { name: 'x' } }, as(BOB))).status).toBe(404)
+      expect((await client.auth.git.credentials[':id'].replace.$post({ param: { id: gh.id }, json: { token: 't' } }, as(BOB))).status).toBe(404)
+      expect((await client.auth.git.credentials[':id'].$delete({ param: { id: gh.id } }, as(BOB))).status).toBe(404)
+      expect((await listCredentialSummaries(alice)).map((c) => c.name)).toEqual(['gh'])
+
+      // Alice's auth server is hers alone: Bob is told none is connected,
+      // and her sign-in flow is missing to him.
+      const sent: string[] = []
+      authAgentHub.setSocket(alice, { send: (d) => sent.push(d), close: () => {} })
+      expect(await (await client.auth.agent.$get({}, as(ALICE))).json()).toEqual({ connected: true })
+      expect(await (await client.auth.agent.$get({}, as(BOB))).json()).toEqual({ connected: false })
+      const flow = await (await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } }, as(ALICE))).json()
+      expect((await client.auth.login[':id'].$get({ param: { id: flow.id } }, as(BOB))).status).toBe(404)
+      expect((await client.auth.login[':id'].input.$post({ param: { id: flow.id }, json: { text: 'code' } }, as(BOB))).status).toBe(404)
+      expect(sent).toHaveLength(1)
+      expect((await client.auth[':tool'].login.start.$post({ param: { tool: 'claude' } }, as(BOB))).status).toBe(503)
+      expect(bob).not.toBe(alice)
     })
   })
 
