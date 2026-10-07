@@ -70,7 +70,11 @@ export type SshProjectGrant = { projectId: string; host: string; knownHostsEntry
  *  the blob) and the projects it is assigned to. */
 export type SshCredentialEntry = { privateKey: string; publicKey: string; projects: SshProjectGrant[] }
 
-/** Everything the credentials Secret carries, decoded. */
+/** An owner key. No `.`, since a Secret key's owner ends at its first one.
+ *  Must match PROXY_OWNER_KEY_PATTERN in the server's proxy-constants.ts. */
+const OWNER_KEY = /^[\w-]+$/
+
+/** One owner's credentials, decoded. */
 export type ProxyCredentials = {
   claude: ClaudeCreds | null
   codex: CodexCreds | null
@@ -83,6 +87,13 @@ export type ProxyCredentials = {
 export const EMPTY_CREDENTIALS: ProxyCredentials = {
   claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [],
 }
+
+/**
+ * The credentials Secret, decoded: owner key -> that owner's credentials.
+ * An owner key is opaque to the proxy; a registration names one, and its
+ * workspace is served only from that owner's set.
+ */
+export type OwnerCredentials = Map<string, ProxyCredentials>
 
 // ── Registration shapes ────────────────────────────────────────────────
 
@@ -121,6 +132,9 @@ export type ProxyRegistration = {
   repoUrl?: string
   tool: string
   projectId: string
+  /** The owner key whose credentials this workspace spends. Absent only on
+   *  a registration written before owner keys (docs/legacy-compat-shims.md). */
+  owner?: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -141,6 +155,9 @@ export type ProxyState = {
 }
 
 export type RefreshedBundles = { claude?: ClaudeOAuthBundle; codex?: CodexOAuthBundle }
+
+/** The refreshed Secret, decoded: owner key -> that owner's captures. */
+export type OwnerRefreshedBundles = Map<string, RefreshedBundles>
 
 export type CaMaterial = { keyPem: string; certPem: string }
 
@@ -290,37 +307,81 @@ function decodeSsh(entries: unknown[]): SshCredentialEntry[] {
   return out
 }
 
-/** project id → the key blobs (publicKeyBlob) assigned to it. */
-export function sshKeyBlobsByProject(ssh: SshCredentialEntry[]): Map<string, Set<string>> {
+/**
+ * The canonical base64 host keys of known_hosts lines (`hosts type key
+ * [comment]`). A line with a marker is skipped: `@revoked` must never grant,
+ * and a `@cert-authority` key is a CA's, never the host key a client binds.
+ */
+function knownHostKeyBlobs(knownHosts: string): string[] {
+  const out: string[] = []
+  for (const line of knownHosts.split('\n')) {
+    const fields = line.trim().split(/\s+/)
+    if (fields[0]?.startsWith('@')) continue
+    const blob = publicKeyBlob(fields.slice(1).join(' '))
+    if (blob !== null) out.push(blob)
+  }
+  return out
+}
+
+/**
+ * What a workspace of `projectId` may sign with: each assigned key's blob
+ * (publicKeyBlob) → the host keys of the hosts it is granted for there.
+ * The agent's own `-h` constraint is the union over every grant of a key,
+ * so the relay checks the bound host against this narrower set.
+ */
+export function sshGrantsForProject(ssh: SshCredentialEntry[], projectId: string): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>()
   for (const entry of ssh) {
     const blob = publicKeyBlob(entry.publicKey)
     if (blob === null) continue
-    for (const { projectId } of entry.projects) {
-      let blobs = out.get(projectId)
-      if (!blobs) out.set(projectId, blobs = new Set())
-      blobs.add(blob)
+    for (const grant of entry.projects) {
+      if (grant.projectId !== projectId) continue
+      let hostKeys = out.get(blob)
+      if (!hostKeys) out.set(blob, hostKeys = new Set())
+      for (const hostKey of knownHostKeyBlobs(grant.knownHostsEntry)) hostKeys.add(hostKey)
     }
   }
   return out
 }
 
 /**
- * The credentials Secret: one key per tool's credentials file (`claude.json`,
- * `codex.json`, `opencode.json`, `pi.json`), plus `git-tokens.json` and
- * `ssh-keys.json`, JSON arrays of project-scoped entries. A missing or
- * malformed key means no credential of that kind; a malformed entry is
- * dropped on its own.
+ * Split a Secret's keys `<owner>.<file>.json` into each owner's files. Owner
+ * keys hold no `.`, so the first one ends the owner. A bare file name (no
+ * owner) is skipped.
  */
-export function decodeCredentials(secret: RawObject): ProxyCredentials {
-  return {
-    claude: decodeClaude(parseJson(secretString(secret, 'claude.json'))),
-    codex: decodeCodex(parseJson(secretString(secret, 'codex.json'))),
-    opencode: decodeApiKeyTool(parseJson(secretString(secret, 'opencode.json'))),
-    pi: decodeApiKeyTool(parseJson(secretString(secret, 'pi.json'))),
-    git: decodeGit(parseJsonArray(secretString(secret, 'git-tokens.json'))),
-    ssh: decodeSsh(parseJsonArray(secretString(secret, 'ssh-keys.json'))),
+function filesByOwner(secret: RawObject): Map<string, Map<string, string>> {
+  const out = new Map<string, Map<string, string>>()
+  for (const key of Object.keys(secret.data ?? {})) {
+    const dot = key.indexOf('.')
+    if (dot <= 0 || !key.slice(dot + 1).includes('.') || !OWNER_KEY.test(key.slice(0, dot))) continue
+    const owner = key.slice(0, dot)
+    let files = out.get(owner)
+    if (!files) out.set(owner, files = new Map<string, string>())
+    files.set(key.slice(dot + 1), secretString(secret, key)!)
   }
+  return out
+}
+
+/**
+ * The credentials Secret: per owner, one key per tool's credentials file
+ * (`<owner>.claude.json`, `.codex.json`, `.opencode.json`, `.pi.json`), plus
+ * `<owner>.git-tokens.json` and `<owner>.ssh-keys.json`, JSON arrays of
+ * project-scoped entries. A missing or malformed key means no credential of
+ * that kind; a malformed entry is dropped on its own.
+ */
+export function decodeCredentials(secret: RawObject): OwnerCredentials {
+  const out: OwnerCredentials = new Map()
+  for (const [owner, files] of filesByOwner(secret)) {
+    out.set(owner, {
+      claude: decodeClaude(parseJson(files.get('claude.json'))),
+      codex: decodeCodex(parseJson(files.get('codex.json'))),
+      opencode: decodeApiKeyTool(parseJson(files.get('opencode.json'))),
+      pi: decodeApiKeyTool(parseJson(files.get('pi.json'))),
+      git: decodeGit(parseJsonArray(files.get('git-tokens.json'))),
+      ssh: decodeSsh(parseJsonArray(files.get('ssh-keys.json'))),
+    })
+  }
+  return out
 }
 
 /** A project's secrets Secret: `values.json` is `{ "<projectId>/<NAME>": value }`.
@@ -350,8 +411,8 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 
 /**
  * A registration ConfigMap: the workspace id from its label and the payload
- * from `registration.json`. A registration missing `tool` or `projectId` is
- * dropped, so that workspace fails closed.
+ * from `registration.json`. A registration missing `tool` or `projectId`, or
+ * with a malformed `owner`, is dropped, so that workspace fails closed.
  */
 export function decodeRegistration(
   cm: RawObject,
@@ -363,6 +424,9 @@ export function decodeRegistration(
   if (!Array.isArray(o.rules) || !Array.isArray(o.allowedHosts)) return null
   if (typeof o.tool !== 'string' || !o.tool) return null
   if (typeof o.projectId !== 'string' || !o.projectId) return null
+  // Absent only on a registration from before owner keys; present, it must
+  // be a key the credentials Secret could hold.
+  if (o.owner !== undefined && (typeof o.owner !== 'string' || !OWNER_KEY.test(o.owner))) return null
   return {
     workspaceId,
     registration: {
@@ -371,19 +435,27 @@ export function decodeRegistration(
       repoUrl: typeof o.repoUrl === 'string' && o.repoUrl ? o.repoUrl : undefined,
       tool: o.tool,
       projectId: o.projectId,
+      owner: o.owner,
       upstreamRedirects: decodeRedirects(o.upstreamRedirects),
     },
   }
 }
 
-/** The refreshed-bundles Secret, in the credentials-file shape per key. */
-export function decodeRefreshed(secret: RawObject): RefreshedBundles {
-  const claude = decodeClaude(parseJson(secretString(secret, 'claude.json')))
-  const codex = decodeCodex(parseJson(secretString(secret, 'codex.json')))
+function decodeRefreshedFiles(files: Map<string, string>): RefreshedBundles {
+  const claude = decodeClaude(parseJson(files.get('claude.json')))
+  const codex = decodeCodex(parseJson(files.get('codex.json')))
   return {
     ...(claude?.kind === 'oauth' ? { claude: claude.bundle } : {}),
     ...(codex?.kind === 'oauth' ? { codex: codex.bundle } : {}),
   }
+}
+
+/** The refreshed-bundles Secret: `<owner>.claude.json` and
+ *  `<owner>.codex.json`, each in the credentials-file shape. */
+export function decodeRefreshed(secret: RawObject): OwnerRefreshedBundles {
+  const out: OwnerRefreshedBundles = new Map()
+  for (const [owner, files] of filesByOwner(secret)) out.set(owner, decodeRefreshedFiles(files))
+  return out
 }
 
 /** The CA Secret's key and cert, or null when either is absent. */
@@ -430,20 +502,22 @@ function secretData(entries: Record<string, string>): Record<string, string> {
 }
 
 /**
- * The refreshed-bundles Secret's `data`, one credentials file per key in the
- * shape the server's loaders read. Only the given keys are encoded, so a
- * merge patch leaves the other untouched.
+ * The refreshed-bundles Secret's `data`, one credentials file per owner and
+ * tool, in the shape the server's loaders read. Only the given slots are
+ * encoded, so a merge patch leaves every other owner and tool untouched.
  */
-export function encodeRefreshed(bundles: RefreshedBundles): Record<string, string> {
+export function encodeRefreshed(bundles: OwnerRefreshedBundles): Record<string, string> {
   const savedAt = new Date().toISOString()
   const entries: Record<string, string> = {}
-  if (bundles.claude) {
-    entries['claude.json'] = JSON.stringify(
-      { kind: 'oauth', savedAt, claudeAiOauth: bundles.claude }, null, 2) + '\n'
-  }
-  if (bundles.codex) {
-    entries['codex.json'] = JSON.stringify(
-      { kind: 'oauth', savedAt, codexOauth: bundles.codex }, null, 2) + '\n'
+  for (const [owner, { claude, codex }] of bundles) {
+    if (claude) {
+      entries[`${owner}.claude.json`] = JSON.stringify(
+        { kind: 'oauth', savedAt, claudeAiOauth: claude }, null, 2) + '\n'
+    }
+    if (codex) {
+      entries[`${owner}.codex.json`] = JSON.stringify(
+        { kind: 'oauth', savedAt, codexOauth: codex }, null, 2) + '\n'
+    }
   }
   return secretData(entries)
 }

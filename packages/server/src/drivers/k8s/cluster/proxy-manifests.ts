@@ -13,6 +13,7 @@ import {
   PROXY_AUTH_SECRET_NAME,
   PROXY_CA_SECRET_NAME,
   PROXY_CREDENTIALS_SECRET_NAME,
+  PROXY_OWNER_KEY_PATTERN,
   PROXY_PORT,
   PROXY_PROJECT_SECRETS_PREFIX,
   PROXY_REFRESHED_SECRET_NAME,
@@ -277,28 +278,39 @@ function secretData(files: Record<string, string>): Record<string, string> {
   )
 }
 
-/**
- * The credentials Secret: each signed-in tool's credential file, plus
- * `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
- * (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`).
- * The opencode and pi files also carry `apiHost`, the provider's host the
- * proxy swaps the key in on; a provider with no known host gets no file, so
- * the key goes nowhere. Replaced whole on every push, so a removed key
- * disappears.
- */
-export function buildProxyCredentialsSecretManifest(bundle: CredentialBundle): Record<string, unknown> {
-  const files: Record<string, string> = {}
-  if (bundle.claude) files['claude.json'] = JSON.stringify(bundle.claude)
-  if (bundle.codex) files['codex.json'] = JSON.stringify(bundle.codex)
-  for (const [tool, providers] of [['opencode', OPENCODE_PROVIDERS], ['pi', PI_PROVIDERS]] as const) {
-    const file = bundle[tool]
-    // No fallback: a guessed host would send the key to a vendor the user
-    // never chose.
-    const apiHost = (providers as readonly ToolProviderInfo[]).find((p) => p.id === file?.provider)?.apiHost
-    if (file && apiHost) files[`${tool}.json`] = JSON.stringify({ ...file, apiHost })
+/** Refuse an owner key the proxy would read differently
+ *  (`PROXY_OWNER_KEY_PATTERN`). */
+function assertProxyOwnerKey(owner: string): void {
+  if (!new RegExp(`^${PROXY_OWNER_KEY_PATTERN}$`).test(owner)) {
+    throw new Error(`invalid credential owner key: ${JSON.stringify(owner)}`)
   }
-  files['git-tokens.json'] = JSON.stringify(bundle.git)
-  files['ssh-keys.json'] = JSON.stringify(bundle.ssh)
+}
+
+/**
+ * The credentials Secret: per owner, each signed-in tool's credential file,
+ * plus `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json`
+ * (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`),
+ * each key prefixed `<owner>.`. The opencode and pi files also carry
+ * `apiHost`, the provider's host the proxy swaps the key in on; a provider
+ * with no known host gets no file, so the key goes nowhere. Replaced whole
+ * on every push, so a removed key disappears.
+ */
+export function buildProxyCredentialsSecretManifest(bundles: Record<string, CredentialBundle>): Record<string, unknown> {
+  const files: Record<string, string> = {}
+  for (const [owner, bundle] of Object.entries(bundles)) {
+    assertProxyOwnerKey(owner)
+    if (bundle.claude) files[`${owner}.claude.json`] = JSON.stringify(bundle.claude)
+    if (bundle.codex) files[`${owner}.codex.json`] = JSON.stringify(bundle.codex)
+    for (const [tool, providers] of [['opencode', OPENCODE_PROVIDERS], ['pi', PI_PROVIDERS]] as const) {
+      const file = bundle[tool]
+      // No fallback: a guessed host would send the key to a vendor the user
+      // never chose.
+      const apiHost = (providers as readonly ToolProviderInfo[]).find((p) => p.id === file?.provider)?.apiHost
+      if (file && apiHost) files[`${owner}.${tool}.json`] = JSON.stringify({ ...file, apiHost })
+    }
+    files[`${owner}.git-tokens.json`] = JSON.stringify(bundle.git)
+    files[`${owner}.ssh-keys.json`] = JSON.stringify(bundle.ssh)
+  }
   return {
     apiVersion: 'v1',
     kind: 'Secret',
@@ -348,14 +360,17 @@ export function proxyRegistrationName(workspaceId: string): string {
 
 /**
  * One workspace's registration (rules with `secretRef`s but no values,
- * allowed hosts, repo URL, tool, project, test redirects). A ConfigMap,
- * since it holds no secrets. Labelled by workspace and project.
+ * allowed hosts, repo URL, tool, project, owner, test redirects). A
+ * ConfigMap, since it holds no secrets. Labelled by workspace and project.
+ * Refuses a malformed owner, which the proxy would treat as unknown or, if
+ * empty, as a registration from before owner keys.
  */
 export function buildRegistrationConfigMapManifest(
   workspaceId: string,
   projectId: string,
-  registration: object,
+  registration: { owner: string },
 ): Record<string, unknown> {
+  assertProxyOwnerKey(registration.owner)
   return {
     apiVersion: 'v1',
     kind: 'ConfigMap',

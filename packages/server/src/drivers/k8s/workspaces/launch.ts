@@ -150,6 +150,7 @@ export async function prepareWorkspaceSubstrate(
     remoteUrl: intent.remoteUrl,
     tool: intent.tool,
     projectId,
+    owner: intent.owner,
     secretRules: intent.proxySecretRules,
   })
 

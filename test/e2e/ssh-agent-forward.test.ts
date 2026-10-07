@@ -38,13 +38,17 @@ import { kubectl } from '@yaac/test-utils/kubectl'
  * k8s/proxy/test/proxy-ssh-agent-relay.test.ts.
  *
  * The refusal cases: a workspace with an HTTPS remote gets nothing, a pod
- * with no workspace identity cannot connect, and a workspace of a project
- * the key is not assigned to sees no key.
+ * with no workspace identity cannot connect, a workspace of a project the
+ * key is not assigned to sees no key, and a workspace signs only once bound
+ * to a host its own grant names, even though the agent would sign for any
+ * host some grant of the key names.
  */
 
 const execFileAsync = promisify(execFile)
 
 const SSH_HOST = 'git.agent-forward.example'
+/** A host the same key is granted for only in another project. */
+const OTHER_HOST = 'git.other-forward.example'
 const suffix = crypto.randomBytes(4).toString('hex')
 const sshPod = `yaac-agentfwd-ssh-${suffix}`
 const httpsPod = `yaac-agentfwd-https-${suffix}`
@@ -59,24 +63,120 @@ let tempDataDir: string | null = null
 let keyDir: string | null = null
 let proxyHost = ''
 let fingerprint = ''
+let testKey: Awaited<ReturnType<typeof makeTestKey>>
 
-/** A client keypair plus the host key that becomes SSH_HOST's known_hosts. */
+/** A wire `string`: uint32 length, then the bytes. */
+function sshString(value: string | Buffer): Buffer {
+  const bytes = Buffer.from(value)
+  const len = Buffer.alloc(4)
+  len.writeUInt32BE(bytes.length, 0)
+  return Buffer.concat([len, bytes])
+}
+
+/** One agent-protocol message: `uint32 length`, the type byte, the body. */
+function agentMessage(type: number, body: Buffer): Buffer {
+  const head = Buffer.alloc(5)
+  head.writeUInt32BE(1 + body.length, 0)
+  head.writeUInt8(type, 4)
+  return Buffer.concat([head, body])
+}
+
+/**
+ * A host key the test holds the private half of, standing in for an sshd's
+ * (the images ship no sshd). The agent only checks that a session bind is
+ * signed by the host key it names, so the test can bind as that host.
+ */
+interface TestHostKey {
+  /** The SSH wire blob, as known_hosts carries it in base64. */
+  blob: Buffer
+  knownHostsEntry: string
+  /** An SSH signature over `data`, as a server signs its session id. */
+  sign: (data: Buffer) => Buffer
+}
+
+function makeHostKey(host: string): TestHostKey {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
+  const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x!, 'base64url')
+  const blob = Buffer.concat([sshString('ssh-ed25519'), sshString(raw)])
+  return {
+    blob,
+    knownHostsEntry: `${host} ssh-ed25519 ${blob.toString('base64')}`,
+    sign: (data) => Buffer.concat([sshString('ssh-ed25519'), sshString(crypto.sign(null, data, privateKey))]),
+  }
+}
+
+/** A client keypair, plus the host keys of SSH_HOST and OTHER_HOST. */
 async function makeTestKey(dir: string): Promise<{
-  privateKey: string; publicKey: string; fingerprint: string; knownHostsEntry: string
+  privateKey: string; publicKey: string; fingerprint: string; host: TestHostKey; otherHost: TestHostKey
 }> {
   const keyPath = path.join(dir, 'id')
-  const hostKeyPath = path.join(dir, 'hostkey')
   await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-N', '', '-q'])
-  await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', hostKeyPath, '-N', '', '-q'])
   const { stdout } = await execFileAsync('ssh-keygen', ['-lf', `${keyPath}.pub`])
-  const hostPub = await fs.readFile(`${hostKeyPath}.pub`, 'utf8')
-  const [keyType, keyBlob] = hostPub.trim().split(/\s+/)
   return {
     privateKey: await fs.readFile(keyPath, 'utf8'),
     publicKey: (await fs.readFile(`${keyPath}.pub`, 'utf8')).trim(),
     fingerprint: stdout.trim().split(/\s+/)[1],
-    knownHostsEntry: `${SSH_HOST} ${keyType} ${keyBlob}`,
+    host: makeHostKey(SSH_HOST),
+    otherHost: makeHostKey(OTHER_HOST),
   }
+}
+
+/**
+ * The client side of an ssh login, as ssh speaks it to its agent: a
+ * `session-bind@openssh.com` naming the server's host key and session id,
+ * then a sign request whose data is the hostbound userauth request ssh-agent
+ * parses to check the binding.
+ */
+function bindMessage(host: TestHostKey, sessionId: Buffer): Buffer {
+  return agentMessage(27, Buffer.concat([
+    sshString('session-bind@openssh.com'), sshString(host.blob), sshString(sessionId),
+    sshString(host.sign(sessionId)), Buffer.from([0]),
+  ]))
+}
+
+function userauthSignMessage(clientBlob: Buffer, host: TestHostKey, sessionId: Buffer): Buffer {
+  const data = Buffer.concat([
+    sshString(sessionId), Buffer.from([50]), sshString('git'), sshString('ssh-connection'),
+    sshString('publickey-hostbound-v00@openssh.com'), Buffer.from([1]), sshString('ssh-ed25519'),
+    sshString(clientBlob), sshString(host.blob),
+  ])
+  return agentMessage(13, Buffer.concat([sshString(clientBlob), sshString(data), Buffer.alloc(4)]))
+}
+
+/**
+ * Speak raw agent protocol over the pod's SSH_AUTH_SOCK: each conversation
+ * is one connection sending its messages in turn. Answers one line per
+ * conversation with the reply type of each message (5 failure, 6 success,
+ * 14 signature).
+ */
+const AGENT_CLIENT = `
+import os, socket, struct, sys
+def reply(s):
+    def take(n):
+        b = b''
+        while len(b) < n:
+            c = s.recv(n - len(b))
+            if not c: raise SystemExit('agent closed the connection')
+            b += c
+        return b
+    return take(struct.unpack('>I', take(4))[0])[0]
+for conversation in sys.argv[1:]:
+    s = socket.socket(socket.AF_UNIX)
+    s.connect(os.environ['SSH_AUTH_SOCK'])
+    types = []
+    for m in conversation.split(','):
+        s.sendall(bytes.fromhex(m))
+        types.append(str(reply(s)))
+    print(' '.join(types))
+    s.close()
+`
+
+async function agentConversations(pod: string, conversations: Buffer[][]): Promise<string[]> {
+  const script = Buffer.from(AGENT_CLIENT).toString('base64')
+  const args = conversations.map((c) => c.map((m) => m.toString('hex')).join(',')).join(' ')
+  const r = await shInPod(pod, `echo ${script} | base64 -d > /tmp/agent-client.py && timeout 30 python3 /tmp/agent-client.py ${args}`)
+  expect(r.exit, `agent client failed: ${r.out}`).toBe(0)
+  return r.out.trim().split('\n')
 }
 
 /** A pod with no workspace identity, which should reach nothing. */
@@ -164,25 +264,30 @@ beforeAll(async () => {
   await client.ensureRunning()
   proxyHost = await proxyServiceClusterIp()
 
-  const key = await makeTestKey(keyDir)
+  const key = testKey = await makeTestKey(keyDir)
   fingerprint = key.fingerprint
-  // The key reaches the proxy's agent through the credentials Secret.
-  await syncProxyCredentials({
+  // The key reaches the proxy's agent through the credentials Secret. Its
+  // grant on a second project puts OTHER_HOST in the agent's own `-h` set,
+  // so only the relay keeps this workspace from signing for it.
+  await syncProxyCredentials({ e2e: {
     claude: null, codex: null, opencode: null, pi: null, git: [],
     ssh: [{
       privateKey: key.privateKey,
       publicKey: key.publicKey,
-      projects: [{ projectId: 'agentfwd', host: SSH_HOST, knownHostsEntry: key.knownHostsEntry }],
+      projects: [
+        { projectId: 'agentfwd', host: SSH_HOST, knownHostsEntry: key.host.knownHostsEntry },
+        { projectId: 'agentfwd-b', host: OTHER_HOST, knownHostsEntry: key.otherHost.knownHostsEntry },
+      ],
     }],
-  })
+  } })
 
   // The proxy only serves the agent to workspaces with an SSH remote.
   await applyProxyRegistration(sshSession, {
-    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd',
+    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd', owner: 'e2e',
     repoUrl: `git@${SSH_HOST}:acme/app.git`,
   })
   await applyProxyRegistration(httpsSession, {
-    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd',
+    rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd', owner: 'e2e',
     repoUrl: 'https://github.com/acme/app.git',
   })
 
@@ -258,11 +363,30 @@ describe('ssh-agent forwarding over the proxy', () => {
     expect(dial.exit, `a non-session pod reached the agent port: ${dial.out}`).not.toBe(0)
   }, 300_000)
 
+  it('signs a login bound to a host its grant names, and none bound elsewhere or unbound', async () => {
+    await startForwarder(sshPod)
+    const clientBlob = Buffer.from(testKey.publicKey.split(/\s+/)[1], 'base64')
+    const sid = (): Buffer => crypto.randomBytes(32)
+    const [granted, other] = [sid(), sid()]
+    const replies = await agentConversations(sshPod, [
+      // Unbound: the relay refuses before the agent sees it.
+      [userauthSignMessage(clientBlob, testKey.host, granted)],
+      // Bound to SSH_HOST, which this project's grant names: the agent binds
+      // and signs.
+      [bindMessage(testKey.host, granted), userauthSignMessage(clientBlob, testKey.host, granted)],
+      // Bound to OTHER_HOST: the agent accepts the bind and would sign (the
+      // key's other grant names that host), but the relay refuses.
+      [bindMessage(testKey.otherHost, other), userauthSignMessage(clientBlob, testKey.otherHost, other)],
+    ])
+    expect(replies, await diagnose(sshPod)).toEqual(['5', '6 14', '6 5'])
+    expect(await proxyAgentLog()).toContain('not granted')
+  }, 300_000)
+
   // Last: it moves the SSH workspace to another project.
   it('shows a session only the keys assigned to its own project', async () => {
     // Re-registered under a project the key is not assigned to.
     await applyProxyRegistration(sshSession, {
-      rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd-other',
+      rules: [], allowedHosts: [SSH_HOST], tool: 'claude', projectId: 'agentfwd-other', owner: 'e2e',
       repoUrl: `git@${SSH_HOST}:acme/app.git`,
     })
     let listed = { exit: 0, out: '' }

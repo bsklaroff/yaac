@@ -270,3 +270,47 @@ key any more.
   with the change and written its state since: the `gitAuthFailures` keys
   in `kubectl get configmap yaac-proxy-state -n <namespace> -o json` are
   all uuids.
+
+## The proxy serves an owner-less registration from the only owner
+
+A workspace's egress registration names the owner whose credentials it
+spends. A workspace launched before owner keys keeps a registration
+without one until it is recreated, since a registration is rewritten only
+on create, claim and allow-host.
+
+- **What it reads.** `ProxyObjects.ownerOf` in `k8s/proxy/object-watch.ts`:
+  a registration with no `owner` resolves to the one owner the credentials
+  Secret names, and to none when it names several.
+- **What breaks silently if it goes too early.** Every workspace launched
+  before the change loses its tool and git credentials at the proxy: its
+  placeholders travel unswapped and get 401s, and its ssh-agent lists no
+  keys, until the workspace is recreated.
+- **When it is safe to remove.** Once no workspace pod is older than the
+  change: every `yaac-proxy-reg-*` ConfigMap's `registration.json` carries
+  an `owner`.
+- **Order.** None. Once the credentials Secret holds more than one owner
+  the shim stops matching on its own, which is the safe direction.
+
+## Adopting refreshed bundles a pre-owner proxy wrote
+
+The proxy writes OAuth rotations it captures to `yaac-proxy-refreshed`
+under `<owner>.claude.json` and `<owner>.codex.json`. A proxy from before
+owner keys wrote bare `claude.json` and `codex.json`, and a rotation it
+captured while the server was down for the upgrade is in nothing else; a
+codex refresh token is single-use, so losing it signs codex out.
+
+- **What it reads.** `mapProxyRefreshedObject` in
+  `packages/server/src/drivers/k8s/substrate/proxy-objects.ts` reports the
+  bare keys under the owner `''`, and `adoptRefreshedToolCredentials` in
+  `packages/server/src/domain/auth/runtime-push.ts` adopts them into the
+  install's store, under the same newest-wins rule as its own owner's. The
+  proxy never deletes the bare keys, so later passes compare against the
+  same stale bundle and adopt nothing.
+- **What breaks silently if it goes too early.** A rotation captured by the
+  old proxy during the upgrade is never adopted: the host store keeps the
+  spent refresh token, and the next refresh signs that tool out.
+- **When it is safe to remove.** Once every install has started a server
+  with the change at least once (its first adoption pass takes whatever the
+  bare keys hold).
+- **Order.** When credentials become per user, `''` belongs to the built-in
+  user that owned everything before; adopt it there or remove this first.

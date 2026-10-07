@@ -24,8 +24,11 @@ import {
   decodeCredentials,
   decodeProjectSecrets,
   decodeRegistration,
+  sshGrantsForProject,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
+  type OwnerCredentials,
+  type OwnerRefreshedBundles,
   type ProxyCredentials,
   type RawObject,
   type RefreshedBundles,
@@ -54,8 +57,12 @@ function codexIsNewer(candidate: CodexOAuthBundle, current: CodexOAuthBundle): b
   return candidate.expiresAt > current.expiresAt
 }
 
+function pushedOAuth<B>(creds: { kind: 'oauth'; bundle: B } | { kind: 'api-key' } | null): B | null {
+  return creds?.kind === 'oauth' ? creds.bundle : null
+}
+
 export class ProxyObjects {
-  private creds: ProxyCredentials = EMPTY_CREDENTIALS
+  private creds: OwnerCredentials = new Map()
   /** `<projectId>/<NAME>` -> value, across every project's Secret. */
   private readonly secrets = new Map<string, string>()
   /** The refs each secrets object contributed, so an update or delete
@@ -67,10 +74,11 @@ export class ProxyObjects {
   private readonly workspaceByObject = new Map<string, string>()
   /**
    * OAuth bundles captured from a workspace's refresh that the credentials
-   * Secret does not reflect yet. Served while newer than the pushed bundle,
-   * because a codex refresh token is single-use and the pushed one is spent.
+   * Secret does not reflect yet, per owner. Served while newer than the
+   * owner's pushed bundle, because a codex refresh token is single-use and
+   * the pushed one is spent.
    */
-  private captured: RefreshedBundles = {}
+  private readonly captured: OwnerRefreshedBundles = new Map()
   /** The identities last loaded into the agent, so unrelated credential
    *  changes don't reload it under an in-flight ssh operation. */
   private loadedSsh: string | null = null
@@ -87,26 +95,44 @@ export class ProxyObjects {
 
   // ── Reads ──────────────────────────────────────────────────────────
 
-  get credentials(): ProxyCredentials {
-    return this.creds
+  /**
+   * The owner key whose credentials a workspace spends, from its
+   * registration. A registration from before owner keys falls back to the
+   * only owner there is, which is what every such install had
+   * (docs/legacy-compat-shims.md).
+   */
+  ownerOf(workspaceId: string): string | undefined {
+    const registration = this.registrations.get(workspaceId)
+    if (!registration) return undefined
+    if (registration.owner !== undefined) return registration.owner
+    return this.creds.size === 1 ? [...this.creds.keys()][0] : undefined
   }
 
-  /** The Claude OAuth bundle to inject: a newer captured one, else the
-   *  pushed one. */
-  claudeOAuthBundle(): ClaudeOAuthBundle | null {
-    const pushed = this.creds.claude?.kind === 'oauth' ? this.creds.claude.bundle : null
-    if (this.captured.claude && (!pushed || claudeIsNewer(this.captured.claude, pushed))) {
-      return this.captured.claude
-    }
-    return pushed
+  /** One owner's credentials; none for an unknown owner. */
+  credentials(owner: string | undefined): ProxyCredentials {
+    return (owner !== undefined ? this.creds.get(owner) : undefined) ?? EMPTY_CREDENTIALS
   }
 
-  codexOAuthBundle(): CodexOAuthBundle | null {
-    const pushed = this.creds.codex?.kind === 'oauth' ? this.creds.codex.bundle : null
-    if (this.captured.codex && (!pushed || codexIsNewer(this.captured.codex, pushed))) {
-      return this.captured.codex
-    }
-    return pushed
+  /** The Claude OAuth bundle to inject for `owner`: a newer captured one,
+   *  else the pushed one. */
+  claudeOAuthBundle(owner: string | undefined): ClaudeOAuthBundle | null {
+    const pushed = pushedOAuth(this.credentials(owner).claude)
+    const captured = owner !== undefined ? this.captured.get(owner)?.claude : undefined
+    return captured && (!pushed || claudeIsNewer(captured, pushed)) ? captured : pushed
+  }
+
+  codexOAuthBundle(owner: string | undefined): CodexOAuthBundle | null {
+    const pushed = pushedOAuth(this.credentials(owner).codex)
+    const captured = owner !== undefined ? this.captured.get(owner)?.codex : undefined
+    return captured && (!pushed || codexIsNewer(captured, pushed)) ? captured : pushed
+  }
+
+  /** The ssh keys a workspace may list and sign with, and for which host
+   *  keys: its owner's grants to its project (`sshGrantsForProject`). */
+  sshGrants(workspaceId: string): Map<string, Set<string>> {
+    const projectId = this.registrations.get(workspaceId)?.projectId
+    if (projectId === undefined) return new Map<string, Set<string>>()
+    return sshGrantsForProject(this.credentials(this.ownerOf(workspaceId)).ssh, projectId)
   }
 
   secret(ref: string): string | undefined {
@@ -133,29 +159,29 @@ export class ProxyObjects {
   }
 
   /**
-   * The credentials Secret changed (or was deleted, if `gone`): replace the
-   * whole set, and reload the ssh-agent if its identities changed. Objects
-   * with the label but the wrong name are ignored.
+   * The credentials Secret changed (or was deleted, if `gone`): replace
+   * every owner's set, and reload the ssh-agent if its identities changed.
+   * Objects with the label but the wrong name are ignored.
    */
   applyCredentials(secret: RawObject, gone = false): Promise<void> {
     if (secret.metadata?.name !== CREDENTIALS_SECRET_NAME) {
       this.log(`[proxy] ignoring a credentials-labelled object that is not ${CREDENTIALS_SECRET_NAME}: ${secret.metadata?.name ?? '?'}`)
       return Promise.resolve()
     }
-    this.creds = gone ? EMPTY_CREDENTIALS : decodeCredentials(secret)
+    this.creds = gone ? new Map<string, ProxyCredentials>() : decodeCredentials(secret)
     // Drop captured bundles the pushed ones have caught up with.
-    const claude = this.creds.claude?.kind === 'oauth' ? this.creds.claude.bundle : null
-    if (this.captured.claude && (!claude || !claudeIsNewer(this.captured.claude, claude))) {
-      delete this.captured.claude
+    for (const [owner, captured] of this.captured) {
+      const claude = pushedOAuth(this.credentials(owner).claude)
+      if (captured.claude && (!claude || !claudeIsNewer(captured.claude, claude))) delete captured.claude
+      const codex = pushedOAuth(this.credentials(owner).codex)
+      if (captured.codex && (!codex || !codexIsNewer(captured.codex, codex))) delete captured.codex
     }
-    const codex = this.creds.codex?.kind === 'oauth' ? this.creds.codex.bundle : null
-    if (this.captured.codex && (!codex || !codexIsNewer(this.captured.codex, codex))) {
-      delete this.captured.codex
+    for (const [owner, creds] of this.creds) {
+      const authed = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => creds[t] !== null)
+      this.log(`[proxy] credentials of ${owner}: ${authed.length ? authed.join(', ') : 'no tools'} signed in, `
+        + `${creds.git.length} git token(s), ${creds.ssh.length} ssh key(s)`)
     }
-    const authed = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => this.creds[t] !== null)
-    this.log(`[proxy] credentials: ${authed.length ? authed.join(', ') : 'no tools'} signed in, `
-      + `${this.creds.git.length} git token(s), ${this.creds.ssh.length} ssh key(s)`)
-    const identities = agentIdentities(this.creds.ssh)
+    const identities = agentIdentities([...this.creds.values()].flatMap((c) => c.ssh))
     const ssh = JSON.stringify(identities)
     if (ssh === this.loadedSsh) return Promise.resolve()
     this.loadedSsh = ssh
@@ -208,9 +234,9 @@ export class ProxyObjects {
     }
   }
 
-  /** A rotation this proxy just captured from a workspace's refresh. */
-  capture(bundles: RefreshedBundles): void {
-    this.captured = { ...this.captured, ...bundles }
+  /** A rotation this proxy just captured from a workspace of `owner`. */
+  capture(owner: string, bundles: RefreshedBundles): void {
+    this.captured.set(owner, { ...this.captured.get(owner), ...bundles })
   }
 }
 

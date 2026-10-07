@@ -225,6 +225,7 @@ describe('tryClaimPrewarmed', () => {
     expect(mockRegister).toHaveBeenCalledWith({
       workspaceId: 'spare1',
       projectId: 'p',
+      owner: 'install',
       tool: 'claude',
       config: { setAllowedUrls: ['*'] },
       remoteUrl: 'https://example.com/p.git',

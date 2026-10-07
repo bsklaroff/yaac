@@ -120,6 +120,12 @@ export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
 export const PROXY_CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
 /** Secret the proxy writes captured OAuth rotations into. */
 export const PROXY_REFRESHED_SECRET_NAME = 'yaac-proxy-refreshed'
+/**
+ * A credential owner key, as the pattern source. The proxy reads a
+ * credentials or refreshed Secret key up to its first `.` as the owner, so a
+ * key may not contain one; must match k8s/proxy/objects.ts.
+ */
+export const PROXY_OWNER_KEY_PATTERN = '[\\w-]+'
 /** Secret the proxy keeps its CA (and the combined trust bundle) in. */
 export const PROXY_CA_SECRET_NAME = 'yaac-proxy-ca'
 /** ConfigMap the proxy writes its blocked-host and git-auth records to. */

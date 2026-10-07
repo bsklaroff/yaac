@@ -6,6 +6,7 @@ import { buildApp, buildMamaRelayApp } from '@yaac/server/main/server'
 import { git } from '@yaac/test-utils/git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
+import { INSTALL_CREDENTIAL_OWNER } from '@yaac/server/domain/auth'
 import { addHttpsCredential, assignProjectCredential, listCredentialSummaries } from '@yaac/server/domain/projects/credentials'
 import {
   loadClaudeCredentialsFile,
@@ -1380,7 +1381,7 @@ describe('write routes', () => {
         const res = await client.auth.git.credentials[':id'].$delete({ param: { id: a.id } })
         expect(res.status).toBe(204)
         expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([])
-        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([])
+        expect(synced.mock.calls.at(-1)?.[0][INSTALL_CREDENTIAL_OWNER].git).toEqual([])
       } finally {
         synced.mockRestore()
       }
@@ -1425,7 +1426,7 @@ describe('write routes', () => {
         expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
           { id: body.id, name: 'gh', kind: 'https', preview: '***resh', projects: [WEB] },
         ])
-        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_fresh', projects: [WEB] }])
+        expect(synced.mock.calls.at(-1)?.[0][INSTALL_CREDENTIAL_OWNER].git).toEqual([{ token: 'ghp_fresh', projects: [WEB] }])
       } finally {
         synced.mockRestore()
       }
@@ -1445,7 +1446,7 @@ describe('write routes', () => {
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ knownHostsEntry: null })
         // The runtime injects from what it was last told, never from the store.
-        expect(synced.mock.calls.at(-1)?.[0].git).toEqual([{ token: 'ghp_web', projects: [WEB] }])
+        expect(synced.mock.calls.at(-1)?.[0][INSTALL_CREDENTIAL_OWNER].git).toEqual([{ token: 'ghp_web', projects: [WEB] }])
       } finally {
         synced.mockRestore()
       }

@@ -63,7 +63,9 @@ export interface UpstreamRedirect {
  * The registration ConfigMap's payload. `tool` and `projectId` are
  * required (the proxy drops a registration without them): all
  * agent-credential injection is gated on the registered tool, and
- * git-auth-failure records are keyed by the owning project.
+ * git-auth-failure records are keyed by the owning project. `owner` names
+ * the credentials Secret entry every swap, refresh and ssh key resolves
+ * through.
  */
 export interface ProxyRegistration {
   rules: InjectionRule[]
@@ -71,6 +73,7 @@ export interface ProxyRegistration {
   repoUrl?: string
   tool: AgentTool
   projectId: string
+  owner: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -153,6 +156,7 @@ export function buildProxyRegistration(input: {
   remoteUrl: string
   tool: AgentTool
   projectId: string
+  owner: string
   secretRules: Record<string, SecretProxyRule>
   env?: NodeJS.ProcessEnv
 }): ProxyRegistration {
@@ -171,6 +175,7 @@ export function buildProxyRegistration(input: {
     repoUrl: input.remoteUrl,
     tool: input.tool,
     projectId: input.projectId,
+    owner: input.owner,
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),
   }
 }
@@ -199,6 +204,7 @@ export async function registerWorkspaceEgress(
     remoteUrl: reg.remoteUrl,
     tool: reg.tool,
     projectId: reg.projectId,
+    owner: reg.owner,
     secretRules: reg.proxySecretRules,
   })
   await applyProxyRegistration(reg.workspaceId, registration)

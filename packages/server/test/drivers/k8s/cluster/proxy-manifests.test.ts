@@ -99,7 +99,8 @@ describe('proxyRegistrationName', () => {
 
 describe('buildRegistrationConfigMapManifest', () => {
   it('labels the object for the proxy’s informer, its workspace and its project', () => {
-    const cm = buildRegistrationConfigMapManifest('w1', 'demo', { rules: [], allowedHosts: ['h'] }) as {
+    const registration = { rules: [], allowedHosts: ['h'], owner: 'o' }
+    const cm = buildRegistrationConfigMapManifest('w1', 'demo', registration) as {
       kind: string
       metadata: { name: string; namespace: string; labels: Record<string, string> }
       data: Record<string, string>
@@ -115,6 +116,12 @@ describe('buildRegistrationConfigMapManifest', () => {
         'yaac.project-id': 'demo',
       },
     })
-    expect(JSON.parse(cm.data['registration.json'])).toEqual({ rules: [], allowedHosts: ['h'] })
+    expect(JSON.parse(cm.data['registration.json'])).toEqual(registration)
+
+    // An owner the proxy would read as another key, or as a registration
+    // from before owner keys, is never written.
+    for (const owner of ['', 'a.b']) {
+      expect(() => buildRegistrationConfigMapManifest('w1', 'demo', { owner })).toThrow(/owner key/)
+    }
   })
 })

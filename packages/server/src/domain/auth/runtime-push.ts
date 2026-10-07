@@ -27,6 +27,13 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  * then pushes so the runtime sees its capture echoed back.
  */
 
+/**
+ * The owner key the runtime files the install's one credential set under,
+ * and every workspace's registration names. Every user spends this set
+ * until credentials are per user (docs/plans/multi-user-deployment.md).
+ */
+export const INSTALL_CREDENTIAL_OWNER = 'install'
+
 /** One push. Logs and returns any failure. */
 async function pushOnce(): Promise<Error | undefined> {
   try {
@@ -34,7 +41,7 @@ async function pushOnce(): Promise<Error | undefined> {
       loadToolCredentialBundle(),
       runtimeGitCredentials(),
     ])
-    await workspaceDriver().syncCredentials({ ...tools, ...git })
+    await workspaceDriver().syncCredentials({ [INSTALL_CREDENTIAL_OWNER]: { ...tools, ...git } })
     return undefined
   } catch (err) {
     serverLog(`[server] credential push to the runtime failed: ${String(err)}`)
@@ -75,31 +82,35 @@ export function pushCredentialsToRuntime(): Promise<Error | undefined> {
  * Store credentials the runtime captured, where newer. A placeholder is
  * never adopted; an api-key or signed-out store is not overwritten; and a
  * compare-and-set skips the write if the store changed meanwhile (that
- * writer stored something at least as fresh).
+ * writer stored something at least as fresh). The store takes the install
+ * owner's captures, and those a proxy older than owner keys left under
+ * `''` (docs/legacy-compat-shims.md).
  */
 export async function adoptRefreshedToolCredentials(
-  refreshed: RefreshedToolCredentials,
+  refreshed: Record<string, RefreshedToolCredentials>,
 ): Promise<void> {
   let adopted = false
-  if (refreshed.claude && !isPlaceholderClaudeBundle(refreshed.claude)) {
-    const stored = await loadClaudeCredentialsFile()
-    if (stored?.kind === 'oauth' && claudeBundleIsNewer(refreshed.claude, stored.claudeAiOauth)) {
-      const now = await loadClaudeCredentialsFile()
-      if (now?.kind === 'oauth' && now.claudeAiOauth.accessToken === stored.claudeAiOauth.accessToken) {
-        await saveClaudeOAuthBundle(refreshed.claude)
-        serverLog('[server] adopted a Claude OAuth rotation the egress proxy captured')
-        adopted = true
+  for (const { claude, codex } of [refreshed[INSTALL_CREDENTIAL_OWNER] ?? {}, refreshed[''] ?? {}]) {
+    if (claude && !isPlaceholderClaudeBundle(claude)) {
+      const stored = await loadClaudeCredentialsFile()
+      if (stored?.kind === 'oauth' && claudeBundleIsNewer(claude, stored.claudeAiOauth)) {
+        const now = await loadClaudeCredentialsFile()
+        if (now?.kind === 'oauth' && now.claudeAiOauth.accessToken === stored.claudeAiOauth.accessToken) {
+          await saveClaudeOAuthBundle(claude)
+          serverLog('[server] adopted a Claude OAuth rotation the egress proxy captured')
+          adopted = true
+        }
       }
     }
-  }
-  if (refreshed.codex && !isPlaceholderCodexBundle(refreshed.codex)) {
-    const stored = await loadCodexCredentialsFile()
-    if (stored?.kind === 'oauth' && codexBundleIsNewer(refreshed.codex, stored.codexOauth)) {
-      const now = await loadCodexCredentialsFile()
-      if (now?.kind === 'oauth' && now.codexOauth.accessToken === stored.codexOauth.accessToken) {
-        await saveCodexOAuthBundle(refreshed.codex)
-        serverLog('[server] adopted a Codex OAuth rotation the egress proxy captured')
-        adopted = true
+    if (codex && !isPlaceholderCodexBundle(codex)) {
+      const stored = await loadCodexCredentialsFile()
+      if (stored?.kind === 'oauth' && codexBundleIsNewer(codex, stored.codexOauth)) {
+        const now = await loadCodexCredentialsFile()
+        if (now?.kind === 'oauth' && now.codexOauth.accessToken === stored.codexOauth.accessToken) {
+          await saveCodexOAuthBundle(codex)
+          serverLog('[server] adopted a Codex OAuth rotation the egress proxy captured')
+          adopted = true
+        }
       }
     }
   }

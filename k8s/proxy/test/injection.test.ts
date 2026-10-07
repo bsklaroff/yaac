@@ -24,20 +24,24 @@ import {
 
 const b64 = (v: unknown): string => Buffer.from(JSON.stringify(v)).toString('base64')
 
+/** `files` are owner `o`'s, `others` any further owners'; a registration
+ *  names owner `o` unless it says otherwise. */
 async function load(
   files: Record<string, unknown>,
   registrations: Record<string, Partial<ProxyRegistration>> = {},
+  others: Record<string, Record<string, unknown>> = {},
 ): Promise<ProxyObjects> {
   const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
   await objects.applyCredentials({
     metadata: { name: 'yaac-proxy-credentials' },
-    data: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, b64(v)])),
+    data: Object.fromEntries(Object.entries({ o: files, ...others }).flatMap(([owner, f]) =>
+      Object.entries(f).map(([k, v]) => [`${owner}.${k}`, b64(v)]))),
   })
   for (const [workspaceId, reg] of Object.entries(registrations)) {
     objects.applyRegistration({
       metadata: { name: `yaac-proxy-reg-${workspaceId}`, labels: { [LABEL_WORKSPACE_ID]: workspaceId } },
       data: { 'registration.json': JSON.stringify({
-        rules: [], allowedHosts: ['*'], tool: 'claude', projectId: 'demo', ...reg,
+        rules: [], allowedHosts: ['*'], tool: 'claude', projectId: 'demo', owner: 'o', ...reg,
       }) },
     })
   }
@@ -80,7 +84,7 @@ describe('buildDynamicRules', () => {
     expect(send(oauth, 'api.anthropic.com', { 'x-api-key': PH_KEY })['x-api-key']).toBe(PH_KEY)
 
     // A rotation the proxy captured is served until the pushed file catches up.
-    oauth.capture({ claude: { accessToken: 'rotated', refreshToken: 'r2', expiresAt: 2, scopes: [] } })
+    oauth.capture('o', { claude: { accessToken: 'rotated', refreshToken: 'r2', expiresAt: 2, scopes: [] } })
     expect(send(oauth, 'api.anthropic.com', { authorization: `Bearer ${PH_ACCESS}` }).authorization)
       .toBe('Bearer rotated')
   })
@@ -161,6 +165,50 @@ describe('buildDynamicRules', () => {
     )
     expect(send(objects, 'api.anthropic.com', { 'x-api-key': PH_KEY }, 'pi')['x-api-key']).toBe('sk-ant-claude')
     expect(send(objects, 'api.anthropic.com', { 'x-api-key': PH_PI }, 'pi')['x-api-key']).toBe('sk-ant-pi')
+  })
+
+  it('swaps in only the credentials of the owner the workspace names', async () => {
+    const objects = await load(
+      {
+        'claude.json': claudeOauth('alice-access'),
+        'git-tokens.json': [{ token: 'ghp_alice', projects: ['demo'] }],
+      },
+      {
+        alice: { repoUrl: 'https://github.com/acme/repo.git' },
+        bob: { owner: 'bob', projectId: 'bobs', repoUrl: 'https://github.com/acme/repo.git' },
+        // Naming another owner's project does not reach into that owner's pool.
+        intruder: { owner: 'bob', projectId: 'demo', repoUrl: 'https://github.com/acme/repo.git' },
+        nobody: { owner: 'carol', tool: 'opencode' },
+      },
+      { bob: {
+        'claude.json': claudeOauth('bob-access'),
+        'opencode.json': { kind: 'api-key', apiKey: 'sk-bob', apiHost: 'openrouter.ai' },
+        'git-tokens.json': [{ token: 'ghp_bob', projects: ['bobs'] }],
+      } },
+    )
+    const bearer = { authorization: `Bearer ${PH_ACCESS}` }
+    expect(send(objects, 'api.anthropic.com', bearer, 'alice').authorization).toBe('Bearer alice-access')
+    expect(send(objects, 'api.anthropic.com', bearer, 'bob').authorization).toBe('Bearer bob-access')
+    expect(send(objects, 'api.anthropic.com', bearer, 'nobody').authorization).toBe(bearer.authorization)
+
+    // A rotation captured for one owner never reaches the other.
+    objects.capture('bob', { claude: { accessToken: 'bob-rotated', refreshToken: 'r2', expiresAt: 2, scopes: [] } })
+    expect(send(objects, 'api.anthropic.com', bearer, 'bob').authorization).toBe('Bearer bob-rotated')
+    expect(send(objects, 'api.anthropic.com', bearer, 'alice').authorization).toBe('Bearer alice-access')
+
+    const basic = (t: string): string => `Basic ${Buffer.from(`x-access-token:${t}`).toString('base64')}`
+    expect(send(objects, 'github.com', {}, 'alice').authorization).toBe(basic('ghp_alice'))
+    expect(send(objects, 'github.com', {}, 'bob').authorization).toBe(basic('ghp_bob'))
+    expect(send(objects, 'github.com', {}, 'intruder').authorization).toBeUndefined()
+    expect(send(objects, 'api.github.com', { authorization: `token ${PH_GH}` }, 'intruder').authorization)
+      .toBe(`token ${PH_GH}`)
+
+    // A provider key opens MITM, and is swapped, for its owner's workspaces only.
+    expect(hostNeedsDynamicMitm(objects, 'nobody', 'openrouter.ai', 443)).toBe(false)
+    expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_OC}` }, 'alice').authorization)
+      .toBe(`Bearer ${PH_OC}`)
+    expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_OC}` }, 'bob').authorization)
+      .toBe('Bearer sk-bob')
   })
 
   it('swaps nothing for a tool with no credential configured', async () => {

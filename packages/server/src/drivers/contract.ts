@@ -125,6 +125,9 @@ export interface RuntimeSnapshot {
 export interface WorkspaceRegistration {
   workspaceId: string
   projectId: string
+  /** The credential owner whose bundle the workspace spends (see
+   *  `syncCredentials`). */
+  owner: string
   tool: AgentTool
   config: YaacConfig
   /** The project's `origin` remote, as the workspace will see it. */
@@ -212,6 +215,9 @@ export interface WorkspaceResources {
 export interface SubstrateIntent {
   projectId: string
   workspaceId: string
+  /** The credential owner whose bundle the workspace spends (see
+   *  `syncCredentials`). */
+  owner: string
   tool: AgentTool
   config: YaacConfig
   /** The project's `origin` remote, as the workspace will see it. */
@@ -673,17 +679,23 @@ export interface WorkspaceDriver {
    */
   prepareSubstrate(intent: SubstrateIntent): Promise<WorkspaceSubstrate>
   /**
-   * Replace the whole credential set the egress path injects from. Whole,
-   * so a sign-out reaches running workspaces as surely as a sign-in. A no-op
-   * without mediated egress.
+   * Replace the whole credential set the egress path injects from, keyed by
+   * owner: an opaque key (letters, digits, `-`, `_`) that a workspace's
+   * registration names, so it is served from that owner's bundle and no
+   * other. Whole, so a sign-out reaches running workspaces as surely as a
+   * sign-in. A no-op without mediated egress.
    */
-  syncCredentials(bundle: CredentialBundle): Promise<void>
+  syncCredentials(bundles: Record<string, CredentialBundle>): Promise<void>
   /** Replace one project's proxied secret values. A no-op without mediated
    *  egress, where values go into the workspace at launch. */
   syncProjectSecrets(projectId: string, values: Record<string, string>): Promise<void>
-  /** OAuth tokens the egress path captured from a workspace's refresh,
-   *  which the host store may not have yet. Empty if none. */
-  refreshedCredentials(): RefreshedToolCredentials
+  /**
+   * OAuth tokens the egress path captured from a workspace's refresh, which
+   * the host store may not have yet, keyed by the owner whose credential
+   * rotated. Captures from a proxy older than owner keys are under `''`.
+   * Empty if none.
+   */
+  refreshedCredentials(): Record<string, RefreshedToolCredentials>
   /** Start the workspace. A caller may relaunch after tearing down a
    *  failed attempt. */
   launch(spec: WorkspaceSpec): Promise<RuntimeHandle>

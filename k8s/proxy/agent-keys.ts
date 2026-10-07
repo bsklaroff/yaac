@@ -28,16 +28,19 @@ const distinct = (values: string[]): string[] => [...new Set(values)].sort()
 /**
  * The part of the ssh credential entries the agent is loaded from. A reload
  * is needed only when this changes (keys, hosts, or host keys), not when a
- * key's projects change. Keys with no project are skipped. Sorted so order
- * changes compare equal.
+ * key's projects change. Keys with no project are skipped, and a key listed
+ * more than once (two owners holding it) is loaded once with every host.
+ * Sorted so order changes compare equal.
  */
 export function agentIdentities(entries: SshCredentialEntry[]): AgentIdentity[] {
-  return entries
-    .filter((e) => e.projects.length > 0)
-    .map((e) => ({
-      privateKey: e.privateKey,
-      hosts: distinct(e.projects.map((p) => p.host)),
-      knownHosts: distinct(e.projects.map((p) => p.knownHostsEntry.trim()).filter(Boolean)),
+  const grants = new Map<string, SshCredentialEntry['projects']>()
+  for (const e of entries) grants.set(e.privateKey, [...grants.get(e.privateKey) ?? [], ...e.projects])
+  return [...grants]
+    .filter(([, projects]) => projects.length > 0)
+    .map(([privateKey, projects]) => ({
+      privateKey,
+      hosts: distinct(projects.map((p) => p.host)),
+      knownHosts: distinct(projects.map((p) => p.knownHostsEntry.trim()).filter(Boolean)),
     }))
     .sort((a, b) => a.privateKey.localeCompare(b.privateKey))
 }

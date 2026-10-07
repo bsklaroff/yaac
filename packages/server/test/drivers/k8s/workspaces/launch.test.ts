@@ -67,6 +67,7 @@ const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const INTENT = {
   projectId: PROJECT_ID,
   workspaceId: 's1',
+  owner: 'o',
   tool: 'claude' as const,
   config: {},
   remoteUrl: 'https://github.com/example/repo.git',

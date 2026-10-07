@@ -632,17 +632,21 @@ describe('ensureCaConfigMap', () => {
 })
 
 describe('syncProxyCredentials', () => {
-  it('renders every host-store file and the ssh keys into one Secret, and logs no value', async () => {
+  it('renders every owner\'s host-store files and ssh keys into one Secret, and logs no value', async () => {
+    const empty = { claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [] }
     await syncProxyCredentials({
-      claude: { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' },
-      codex: null,
-      opencode: { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-secret' },
-      pi: null,
-      git: [{ token: 'ghp-secret', projects: ['acme'] }],
-      ssh: [{
-        privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
-        projects: [{ projectId: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
-      }],
+      alice: {
+        claude: { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' },
+        codex: null,
+        opencode: { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-secret' },
+        pi: null,
+        git: [{ token: 'ghp-secret', projects: ['acme'] }],
+        ssh: [{
+          privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
+          projects: [{ projectId: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
+        }],
+      },
+      bob: { ...empty, git: [{ token: 'ghp-bob-secret', projects: ['bobs'] }] },
     })
     const secret = applied()[0]
     expect(secret.kind).toBe('Secret')
@@ -650,17 +654,25 @@ describe('syncProxyCredentials', () => {
       name: 'yaac-proxy-credentials', namespace: 'test-ns',
       labels: { app: 'yaac-proxy', 'yaac.proxy-input': 'credentials' },
     })
-    // A signed-out tool has no key; the Secret is replaced whole.
-    expect(Object.keys(secret.data!).sort()).toEqual(['claude.json', 'git-tokens.json', 'opencode.json', 'ssh-keys.json'])
-    expect(JSON.parse(b64d(secret.data!['claude.json']))).toEqual({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' })
+    // Every key names its owner. A signed-out tool has no key; the Secret
+    // is replaced whole.
+    expect(Object.keys(secret.data!).sort()).toEqual([
+      'alice.claude.json', 'alice.git-tokens.json', 'alice.opencode.json', 'alice.ssh-keys.json',
+      'bob.git-tokens.json', 'bob.ssh-keys.json',
+    ])
+    expect(JSON.parse(b64d(secret.data!['alice.claude.json']))).toEqual({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-secret' })
     // The proxy sends an api key only to the provider host named here.
-    expect(JSON.parse(b64d(secret.data!['opencode.json']))).toMatchObject({ apiKey: 'sk-or-secret', apiHost: 'openrouter.ai' })
-    expect(JSON.parse(b64d(secret.data!['git-tokens.json']))).toEqual([{ token: 'ghp-secret', projects: ['acme'] }])
-    expect(JSON.parse(b64d(secret.data!['ssh-keys.json']))).toEqual([{
+    expect(JSON.parse(b64d(secret.data!['alice.opencode.json']))).toMatchObject({ apiKey: 'sk-or-secret', apiHost: 'openrouter.ai' })
+    expect(JSON.parse(b64d(secret.data!['alice.git-tokens.json']))).toEqual([{ token: 'ghp-secret', projects: ['acme'] }])
+    expect(JSON.parse(b64d(secret.data!['bob.git-tokens.json']))).toEqual([{ token: 'ghp-bob-secret', projects: ['bobs'] }])
+    expect(JSON.parse(b64d(secret.data!['alice.ssh-keys.json']))).toEqual([{
       privateKey: 'KEY-secret', publicKey: 'ssh-ed25519 AAAA yaac',
       projects: [{ projectId: 'acme', host: 'g.example', knownHostsEntry: 'g.example ssh-ed25519 A' }],
     }])
     for (const [msg] of vi.mocked(serverLog).mock.calls) expect(msg).not.toContain('secret')
+
+    // An owner key the proxy would split differently is refused.
+    await expect(syncProxyCredentials({ 'a.b': empty })).rejects.toThrow(/owner key/)
   })
 })
 

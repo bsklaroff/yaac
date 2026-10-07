@@ -57,7 +57,7 @@ function seedRegistration(
 }
 
 const REG: ProxyRegistration = {
-  rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo',
+  rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo', owner: 'o',
 }
 
 beforeEach(() => {
@@ -77,6 +77,7 @@ describe('buildProxyRegistration', () => {
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'claude',
       projectId: 'acme-repo',
+      owner: 'o',
       secretRules: {
         MY_KEY: { hosts: ['api.example.com'], header: 'x-api-key' },
         BODY: { hosts: ['*.example.org'], bodyParam: 'api_key', path: '/v1/*' },
@@ -135,6 +136,7 @@ describe('buildProxyRegistration', () => {
       remoteUrl: 'https://github.com/acme/repo',
       tool: 'codex',
       projectId: 'acme-repo',
+      owner: 'o',
       secretRules: {},
       env: {},
     })
@@ -145,18 +147,18 @@ describe('buildProxyRegistration', () => {
   it('honors setAllowedUrls and addAllowedUrls from config', () => {
     expect(buildProxyRegistration({
       config: { setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toEqual(['only.example.com'])
     expect(buildProxyRegistration({
       config: { addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     }).allowedHosts).toContain('extra.example.com')
   })
 
   it('auto-appends the registry/CDN pull hosts for nestedContainers sessions', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     for (const host of NESTED_PULL_HOSTS) {
       expect(reg.allowedHosts).toContain(host)
@@ -172,7 +174,7 @@ describe('buildProxyRegistration', () => {
   it('still appends the pull hosts on top of addAllowedUrls', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true, addAllowedUrls: ['extra.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toContain('extra.example.com')
     expect(reg.allowedHosts).toContain('registry-1.docker.io')
@@ -181,7 +183,7 @@ describe('buildProxyRegistration', () => {
   it('does NOT append the pull hosts under setAllowedUrls (full override)', () => {
     const reg = buildProxyRegistration({
       config: { nestedContainers: true, setAllowedUrls: ['only.example.com'] },
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual(['only.example.com'])
   })
@@ -189,7 +191,7 @@ describe('buildProxyRegistration', () => {
   it('leaves the allowlist untouched when nestedContainers is off', () => {
     const reg = buildProxyRegistration({
       config: {},
-      remoteUrl: 'u', tool: 'claude', projectId: 'p', secretRules: {}, env: {},
+      remoteUrl: 'u', tool: 'claude', projectId: 'p', owner: 'o', secretRules: {}, env: {},
     })
     expect(reg.allowedHosts).toEqual([...DEFAULT_ALLOWED_HOSTS])
     expect(reg.allowedHosts).not.toContain('cdn01.quay.io')
@@ -202,6 +204,7 @@ describe('buildProxyRegistration', () => {
       remoteUrl: 'u',
       tool: 'opencode',
       projectId: 'p',
+      owner: 'o',
       secretRules: {},
       env: {
         YAAC_E2E_UPSTREAM_REDIRECTS:
@@ -235,6 +238,7 @@ describe('registerWorkspaceEgress', () => {
     const written = await registerWorkspaceEgress({
       workspaceId: 'w1',
       projectId: 'demo',
+      owner: 'o',
       tool: 'codex',
       config: { addAllowedUrls: ['api.example.com'] },
       remoteUrl: 'https://github.com/example/repo.git',
@@ -247,6 +251,7 @@ describe('registerWorkspaceEgress', () => {
     const state = payloadOf(cm)
     expect(state.tool).toBe('codex')
     expect(state.projectId).toBe('demo')
+    expect(state.owner).toBe('o')
     expect(state.repoUrl).toBe('https://github.com/example/repo.git')
     expect(state.allowedHosts).toContain('api.example.com')
     // A registration is the whole allowlist, not a patch, so it must
@@ -262,6 +267,7 @@ describe('registerWorkspaceEgress', () => {
     await expect(registerWorkspaceEgress({
       workspaceId: 'w1',
       projectId: 'demo',
+      owner: 'o',
       tool: 'claude',
       config: {},
       remoteUrl: '',

@@ -1,17 +1,17 @@
 /**
  * Runs at most one OAuth refresh at a time per credential, shared by every
- * workspace that asks.
+ * workspace that asks. A credential is one owner's bundle for one tool.
  *
- * All workspaces hold the same placeholder refresh token and spend the one
- * real credential through the proxy, so only the proxy can serialize
- * refreshes. If two refreshes spend the same real token, one gets
+ * All workspaces hold the same placeholder refresh token and spend their
+ * owner's real credential through the proxy, so only the proxy can
+ * serialize refreshes. If two refreshes spend the same real token, one gets
  * invalid_grant, and claude reacts by clearing its stored credential, which
  * lives in the project's shared tool home and so signs out every workspace
  * of the project. A refresh therefore joins one in flight, or reuses a
  * rotation made moments ago.
  *
- * Sharing a reply is safe because an install holds one credential per tool,
- * so every workspace would get the same upstream fields back.
+ * Sharing a reply is safe because an owner holds one credential per tool,
+ * so every workspace of that owner would get the same upstream fields back.
  */
 
 /**

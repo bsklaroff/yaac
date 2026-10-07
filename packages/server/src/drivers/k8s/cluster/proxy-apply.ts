@@ -194,15 +194,17 @@ export async function ensureCaConfigMap(): Promise<void> {
 }
 
 /**
- * Replace the proxy's credentials Secret with the whole credential set.
+ * Replace the proxy's credentials Secret with every owner's credential set.
  * Applied even before the proxy exists, since it boots from it. Never logs
  * values.
  */
-export async function syncProxyCredentials(bundle: CredentialBundle): Promise<void> {
-  await applyObject(buildProxyCredentialsSecretManifest(bundle))
-  const signedIn = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => bundle[t] !== null)
-  serverLog(`[server] proxy credentials: ${signedIn.length ? signedIn.join(', ') : 'no tools'} signed in, `
-    + `${String(bundle.git.length)} git token(s), ${String(bundle.ssh.length)} ssh key(s)`)
+export async function syncProxyCredentials(bundles: Record<string, CredentialBundle>): Promise<void> {
+  await applyObject(buildProxyCredentialsSecretManifest(bundles))
+  for (const [owner, bundle] of Object.entries(bundles)) {
+    const signedIn = (['claude', 'codex', 'opencode', 'pi'] as const).filter((t) => bundle[t] !== null)
+    serverLog(`[server] proxy credentials of ${owner}: ${signedIn.length ? signedIn.join(', ') : 'no tools'} signed in, `
+      + `${String(bundle.git.length)} git token(s), ${String(bundle.ssh.length)} ssh key(s)`)
+  }
 }
 
 /** Replace one project's secret values for the proxy (an empty set is

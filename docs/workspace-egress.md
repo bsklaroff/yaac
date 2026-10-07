@@ -124,17 +124,22 @@ through the node's listener range:
 
 How the agent is scoped:
 
-- Each key is loaded once, with one `ssh-add -h <host>` per host among the
-  projects it is assigned to, so it signs only for those destinations.
-- The agent holds every project's keys, so the relay parses both directions
-  and shows a workspace only its own project's keys. An identities answer is
-  rewritten to list just those keys, and a sign request naming any other key
-  gets `SSH_AGENT_FAILURE` without reaching the agent. The assignment is read
-  per message, so a reassignment applies to an open connection's next request.
-- Besides list and sign, the relay allows only the `session-bind@openssh.com`
-  extension, without which an agent will not sign with a host-constrained key.
-  Add, remove, lock and every other extension are refused, so one workspace
-  cannot lock or empty the agent every other workspace shares.
+- Each key is loaded once, with one `ssh-add -h <host>` per host any of its
+  grants names. That is the union over every owner and project holding the
+  key, so the agent's own constraint is only an outer bound.
+- The relay parses both directions and narrows that bound to the workspace's
+  grants: the keys its owner assigned to its project, each for the hosts that
+  assignment names. An identities answer is rewritten to list just those
+  keys. The relay records the host key of every `session-bind@openssh.com`
+  the connection sends, and a sign request gets `SSH_AGENT_FAILURE` without
+  reaching the agent unless its key is one of those, the connection has bound,
+  and every bound host key is in that key's grant (matched against the
+  grant's `knownHostsEntry`). Grants are read per message, so a reassignment
+  applies to an open connection's next request.
+- Besides list and sign, the relay allows only the session bind, which every
+  OpenSSH client since 8.9 sends before asking for a signature. Add, remove,
+  lock and every other extension are refused, so one workspace cannot lock or
+  empty the agent every other workspace shares.
 - The proxy checks each connection's source pod IP against its pod watch and
   refuses one it cannot place, or one whose workspace registered a non-SSH
   remote (the same condition under which the server sets `SSH_AUTH_SOCK`).
@@ -184,12 +189,25 @@ objects the server watches. All live in the install namespace, are labelled
 
 | object | kind | writer | reader | content |
 |---|---|---|---|---|
-| `yaac-proxy-credentials` | Secret | server | proxy informer | `claude.json`, `codex.json`, `opencode.json`, `pi.json` (each tool's host-store file verbatim, plus `apiHost` for opencode and pi: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` lists the ids of the projects a credential is assigned to: a token goes only to its project's https remote host (and, for github.com, `api.github.com`), and a workspace's agent connection sees only its project's keys |
+| `yaac-proxy-credentials` | Secret | server | proxy informer | per owner, keys prefixed `<owner>.`: `claude.json`, `codex.json`, `opencode.json`, `pi.json` (each tool's host-store file verbatim, plus `apiHost` for opencode and pi: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, projects}]`) and `ssh-keys.json` (`[{privateKey, publicKey, projects: [{projectId, host, knownHostsEntry}]}]`, the private key OpenSSH-encoded from the sealed seed). `projects` lists the ids of the projects a credential is assigned to: a token goes only to its project's https remote host (and, for github.com, `api.github.com`), and a workspace's agent connection sees only its project's keys |
 | `yaac-proxy-secrets-<project id>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<project id>/<NAME>": value }`, the secret values behind that project's `secretRef` rules |
-| `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, test redirects |
-| `yaac-proxy-refreshed` | Secret | proxy | server informer | `claude.json`, `codex.json`: OAuth bundles the proxy captured from a workspace's token refresh, in the credentials-file shape |
+| `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, repo URL, tool, project, owner, test redirects |
+| `yaac-proxy-refreshed` | Secret | proxy | server informer | `<owner>.claude.json`, `<owner>.codex.json`: OAuth bundles the proxy captured from a workspace's token refresh, in the credentials-file shape |
 | `yaac-proxy-ca` | Secret | proxy | server (one get) | `ca.key`, `ca.pem`, `ca-bundle.pem` |
 | `yaac-proxy-state` | ConfigMap | proxy | server informer | `blocked-hosts.json`, `git-auth-failures.json` |
+
+**Owners.** Credentials belong to an owner, an opaque key (letters,
+digits, `-`, `_`; the proxy reads a Secret key up to its first `.` as the
+owner) that each registration names. Every credential path resolves through
+the registration's owner: the sentinel swaps, the OAuth refresh and its
+write-back, the git token pool, and the ssh keys the agent relay shows and
+the hosts it lets them sign for. A
+workspace never spends another owner's credential, even one assigned to a
+project of the same id, and a registration naming an owner the Secret lacks
+gets nothing swapped. The server decides the owner and hands it to the
+driver on the launch intent and the claim's registration; today every
+workspace names the install's one owner (`INSTALL_CREDENTIAL_OWNER`), since
+the host store holds one credential set.
 
 Inputs carry the label `yaac.proxy-input=<kind>` and outputs
 `yaac.proxy-output=<kind>`. Both sides select by label, since `list` and
@@ -226,16 +244,19 @@ have loaded, so a replacement never serves a workspace it has not been told
 about. A blocked host or a rejected git credential is written to the state
 ConfigMap (debounced), which the server's cache turns into the snapshot.
 
-**Token refreshes.** A refresh a workspace drives is captured in memory before
-the response is forwarded, then written to the refreshed Secret by one writer
-that carries the newest capture and retries until it lands (a codex rotation is
-single-use, and the Secret is what a replacement pod boots from). The server's `credential-adopt` step takes it into the host store under the same
-newest-wins comparison every writer uses, then pushes the credentials Secret
-again, so the proxy sees its own capture echoed back and stops preferring it.
+**Token refreshes.** A refresh a workspace drives spends its owner's
+credential, and is captured in memory, for that owner only, before the
+response is forwarded. It is then written to that owner's keys in the
+refreshed Secret by one writer that carries the newest capture and retries
+until it lands (a codex rotation is single-use, and the Secret is what a
+replacement pod boots from). The server's `credential-adopt` step takes the
+install owner's captures into the host store under the same newest-wins
+comparison every writer uses, then pushes the credentials Secret again, so
+the proxy sees its own capture echoed back and stops preferring it.
 
 Every workspace presents the same placeholder refresh token, and claude's own
 refresh lock covers only one config dir, so the proxy serializes refreshes: one
-per credential at a time.
+per credential (an owner's bundle for one tool) at a time.
 
 - A refresh arriving while one is in flight joins it.
 - One arriving within seconds of a rotation, while that rotation is still the

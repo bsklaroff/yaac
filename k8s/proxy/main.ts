@@ -41,7 +41,7 @@ import {
   encodeCa,
   encodeRefreshed,
   encodeState,
-  sshKeyBlobsByProject,
+  type OwnerRefreshedBundles,
   type RefreshedBundles,
   type UpstreamRedirect,
 } from './objects'
@@ -225,16 +225,18 @@ function admissionFor(workspaceId: string, hostname: string): string | null {
 }
 
 /**
- * Record a token rotation from a workspace's refresh. It is served from
- * memory at once and written to the refreshed Secret, retrying until it
- * lands. A single writer always sends the newest capture, so the Secret can
- * never end up holding an already-spent refresh token.
+ * Record a token rotation from a refresh in one of `owner`'s workspaces. It
+ * is served from memory at once and written to that owner's slots in the
+ * refreshed Secret, retrying until it lands. A single writer always sends
+ * the newest capture, so the Secret can never end up holding an
+ * already-spent refresh token.
  */
-let unwrittenRefreshed: RefreshedBundles | null = null
+let unwrittenRefreshed: OwnerRefreshedBundles | null = null
 let refreshedWriter: Promise<void> | null = null
-function captureRefreshed(bundles: RefreshedBundles): void {
-  objects.capture(bundles)
-  unwrittenRefreshed = { ...unwrittenRefreshed, ...bundles }
+function captureRefreshed(owner: string, bundles: RefreshedBundles): void {
+  objects.capture(owner, bundles)
+  unwrittenRefreshed = new Map(unwrittenRefreshed)
+  unwrittenRefreshed.set(owner, { ...unwrittenRefreshed.get(owner), ...bundles })
   refreshedWriter ??= writeRefreshedUntilLanded().finally(() => { refreshedWriter = null })
 }
 
@@ -400,7 +402,9 @@ const mitmContext: MitmContext = {
 // Restore what the previous pod left: its observed state, and any token
 // rotation the server has not picked up yet.
 observed.seed(decodeState(await readOutputObject('configmap', STATE_CONFIGMAP_NAME)))
-objects.capture(decodeRefreshed(await readOutputObject('secret', REFRESHED_SECRET_NAME)))
+for (const [owner, bundles] of decodeRefreshed(await readOutputObject('secret', REFRESHED_SECRET_NAME))) {
+  objects.capture(owner, bundles)
+}
 
 // ── Plain-HTTP Forward ────────────────────────────────────────────────
 
@@ -890,16 +894,12 @@ relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
 // which relays to the agent, exposing only the project's keys. See
 // ssh-agent-relay.ts for the checks.
 
-/** Key blobs the workspace's project may use, read live per message. */
-function allowedKeysFor(workspaceId: string): Set<string> {
-  const projectId = objects.registration(workspaceId)?.projectId
-  return (projectId ? sshKeyBlobsByProject(objects.credentials.ssh).get(projectId) : undefined) ?? new Set()
-}
 const sshAgentServer = createSshAgentServer({
   agentSock: AGENT_SOCK,
   resolveWorkspace,
   repoUrlFor: (workspaceId) => objects.registration(workspaceId)?.repoUrl,
-  allowedKeysFor,
+  // Read live per message.
+  grantsFor: (workspaceId) => objects.sshGrants(workspaceId),
 })
 sshAgentServer.on('error', (err: Error) => {
   console.error('[proxy] ssh-agent server error:', err)
