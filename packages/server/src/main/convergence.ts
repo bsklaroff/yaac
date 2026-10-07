@@ -1,7 +1,9 @@
 import { workspaceDriver } from '#drivers/driver'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
+import { acpLaunchModel } from '#runtime/agents'
+import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#runtime/ports'
-import { findWorkspaceRow, recordedConversationHandles } from '#db'
+import { getProjectRow, getWorkspaceRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { reseedPlaceholderToolHomes } from '#domain/auth'
 import { moveProjectDirsToIds } from '#domain/workspaces'
@@ -47,9 +49,20 @@ export async function attachConvergence(opts: {
     // For `acp` the permission mode is sent over the protocol, so the
     // connection needs it. A missing row yields `undefined`, not a default:
     // assuming an unrestricted mode could auto-answer asks the user should
-    // have seen.
+    // have seen. Spare rows count: an `acp` spare handshakes while it warms,
+    // and only its first handshake sets the session's mode.
     permissionMode: async (session) =>
-      (await findWorkspaceRow(session.workspaceId))?.permissionMode,
+      (await getWorkspaceRow(session.projectId, session.workspaceId))?.permissionMode,
+    launchModel: async (session, tool) => {
+      const model = (await getWorkspaceRow(session.projectId, session.workspaceId))?.model
+      const owner = tool === 'pi' ? (await getProjectRow(session.projectId))?.owner : undefined
+      const piProvider = owner !== undefined ? (await loadToolAuthEntry(owner, 'pi'))?.piProvider : undefined
+      return acpLaunchModel({
+        tool,
+        ...(model !== undefined ? { model } : {}),
+        ...(piProvider !== undefined ? { piProvider } : {}),
+      })
+    },
   })
   statusWatchers = manager
 

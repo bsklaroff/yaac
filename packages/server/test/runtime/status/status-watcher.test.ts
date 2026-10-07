@@ -8,7 +8,7 @@ import {
 } from '#runtime/status/status-watcher'
 import type { RuntimeHandle, StreamChild } from '#drivers/contract'
 import { handleFixture } from '@yaac/test-utils/fake-driver'
-import type { AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import {
   readWorkspaceStatus,
   readWorkspaceTerminals,
@@ -356,6 +356,7 @@ function workspace(opts: {
   running?: boolean
   prewarmed?: boolean
   tool?: AgentTool
+  mode?: AgentMode
 }): RuntimeHandle {
   const projectId = opts.projectId ?? 'demo'
   return handleFixture({
@@ -366,6 +367,7 @@ function workspace(opts: {
     running: opts.running !== false,
     state: opts.running === false ? 'pending' : 'running',
     prewarmed: opts.prewarmed ?? false,
+    ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
   })
 }
 
@@ -384,16 +386,18 @@ describe('StatusWatcherManager', () => {
     return { manager, children }
   }
 
-  it('starts a watcher per running non-prewarmed session pod', () => {
+  // An acp spare is watched so its handshake runs before a claim needs it.
+  it('starts a watcher per running workspace, and per acp spare', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([
         workspace({ workspaceId: 's1' }),
         workspace({ workspaceId: 's2', running: false }),
         workspace({ workspaceId: 's3', prewarmed: true }),
+        workspace({ workspaceId: 's4', prewarmed: true, mode: 'acp' }),
       ])
-      expect(manager.size).toBe(1)
-      expect(children).toHaveLength(1)
+      expect(manager.size).toBe(2)
+      expect(children).toHaveLength(2)
     } finally {
       manager.stopAll()
     }
@@ -434,6 +438,20 @@ describe('StatusWatcherManager', () => {
       expect(manager.size).toBe(0)
       manager.sync([workspace({ workspaceId: 's1' })])
       expect(manager.size).toBe(1)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  // Its conversation is the one the claim hands over, so it stays connected.
+  it("keeps an acp spare's watcher across its claim", () => {
+    const { manager, children } = makeManager()
+    try {
+      manager.sync([workspace({ workspaceId: 's1', prewarmed: true, mode: 'acp' })])
+      manager.sync([workspace({ workspaceId: 's1', mode: 'acp', tool: 'codex' })])
+      expect(manager.size).toBe(1)
+      expect(children).toHaveLength(1)
+      expect(children[0].killed).toBe(false)
     } finally {
       manager.stopAll()
     }

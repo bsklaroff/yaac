@@ -113,10 +113,11 @@ downloads only what the main clone lacks.
 - **Never against a checkout's git dir after that.** Anything that needs a
   checkout's state runs inside the workspace, so only while it runs: the
   changes diff, the file explorer, the git status bar's ahead/behind
-  count (docs/file-editor.md), a spare's HEAD and re-branch at claim, and the
-  refresh above. A workspace's base branch comes from its row, never from the
-  checkout's config, which the agent can rewrite. The one read that works on
-  a stopped workspace parses its git dir without running git (below).
+  count (docs/file-editor.md), a spare's HEAD and its move to a new base
+  tip, and the refresh above. A workspace's base branch comes from its row,
+  never from the checkout's config, which the agent can rewrite. The one read
+  that works on a stopped workspace parses its git dir without running git
+  (below).
 
 ## Reading another workspace's git
 

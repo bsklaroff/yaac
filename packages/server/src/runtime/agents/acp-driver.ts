@@ -107,6 +107,14 @@ const PROMPT_ATTACH_TIMEOUT_MS = 60_000
 /** For a placeholder pane, until acpd is respawned into it. */
 const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
 
+/**
+ * Pane option holding `<pane pid>:<session id>` once a fresh conversation's
+ * `session/new` answers. A reattach needs the id, and a prewarmed spare's
+ * conversation has no row to recover it from after a server restart; the
+ * pane outlives the server.
+ */
+const SESSION_PANE_OPTION = '@yaac-acp-session'
+
 /** Every open connection, so a recorded posture change reaches the ones
  *  driving that workspace. */
 const openConnections = new Set<AcpConnection>()
@@ -176,6 +184,7 @@ class AcpConnection implements AgentConnection {
   private readonly dial: (session: DrivenWorkspace, argv: string[]) => StreamChild
   private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
+  private readonly readLaunchModel: (tool: AgentTool) => Promise<string | undefined>
   /**
    * The posture, read at connect (and on each heartbeat until a read
    * succeeds) and then followed through `setAcpPermissionMode`. Cached
@@ -197,6 +206,7 @@ class AcpConnection implements AgentConnection {
     this.dial = deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv))
     this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
     this.readPermissionMode = deps.permissionMode ?? (() => Promise.resolve('bypass'))
+    this.readLaunchModel = deps.launchModel ?? (() => Promise.resolve(undefined))
     openConnections.add(this)
 
     let child: StreamChild
@@ -300,14 +310,19 @@ class AcpConnection implements AgentConnection {
   }
 
   private async syncOnce(): Promise<void> {
-    const listed = await this.send(
-      `list-windows -t yaac -F '#{window_name}\t#{pane_id}\t${PLACEHOLDER_FORMAT}'`)
+    const listed = await this.send(`list-windows -t yaac -F '#{window_name}\t#{pane_id}\t${PLACEHOLDER_FORMAT}`
+      + `\t#{pane_pid}\t#{${SESSION_PANE_OPTION}}'`)
     if (this.done) return
     const windows = listed.split('\n').flatMap((line) => {
-      const [handle = '', paneId = '', placeholder] = line.split('\t')
+      const [handle = '', paneId = '', placeholder, pid = '', session = ''] = line.split('\t')
       const tool = agentWindowTool(handle)
       // Only agent windows run acpd; init windows and scratch shells do not.
-      return tool === undefined ? [] : [{ handle, tool, paneId, placeholder: placeholder === '1' }]
+      if (tool === undefined) return []
+      // Only a session minted by the pane's current process; a respawn keeps
+      // the option but replaces the process.
+      const sessionPid = session.slice(0, session.indexOf(':'))
+      const liveSession = sessionPid !== '' && sessionPid === pid ? session.slice(sessionPid.length + 1) : undefined
+      return [{ handle, tool, paneId, pid, placeholder: placeholder === '1', liveSession }]
     })
 
     // Still attached at a re-list means the attach held, not a dial that
@@ -348,7 +363,7 @@ class AcpConnection implements AgentConnection {
     }
     for (const w of windows) {
       if (w.placeholder || this.attached.has(w.handle) || this.retries.has(w.handle)) continue
-      this.attach(w.handle, w.tool, recorded.get(w.handle))
+      this.attach(w.handle, w.tool, recorded.get(w.handle) ?? w.liveSession, { paneId: w.paneId, pid: w.pid })
     }
     // As in the TUI driver: never publish an empty set, which would read as
     // "every agent exited" before the agent has even started.
@@ -367,7 +382,12 @@ class AcpConnection implements AgentConnection {
     }, ATTACH_RETRY_MS))
   }
 
-  private attach(handle: string, tool: AgentTool, resumeSessionId: string | undefined): void {
+  private attach(
+    handle: string,
+    tool: AgentTool,
+    resumeSessionId: string | undefined,
+    pane: { paneId: string; pid: string },
+  ): void {
     let child: StreamChild
     try {
       // socat over `ctrl` gives a raw duplex to the socket. The endpoint is a
@@ -386,6 +406,7 @@ class AcpConnection implements AgentConnection {
     // failing during construction calls `onDown` synchronously, and `detach`
     // must find the entry.
     const entry: Attached = { handle, tool, child }
+    const panePid = pane.pid !== '' ? { panePid: pane.pid } : {}
     this.attached.set(handle, entry)
     // The launch-time model was parked under the launch id: the recorded id
     // on a resume, the workspace id on a fresh create.
@@ -396,13 +417,14 @@ class AcpConnection implements AgentConnection {
     const launchModel = acpModelIsProtocol(profile)
       ? takeAcpLaunchModel(launchId)
       : undefined
-    if (acpModelIsProtocol(profile) && launchModel === undefined && resumeSessionId === undefined) {
-      // The server restarted between launch and attach, so the adapter runs
-      // its own default (for pi, possibly a provider whose key the proxy
-      // does not swap). Log it, since nothing else will.
-      this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: no launch model`
-        + ' was parked for this conversation — the agent runs its own default')
-    }
+    // Nothing parked on a fresh conversation means the server restarted
+    // between launch and attach (a spare warming, say). Without a model the
+    // adapter runs its own default, for pi possibly a provider whose key the
+    // proxy does not swap, so take the workspace's recorded one instead.
+    const recoverLaunchModel = acpModelIsProtocol(profile) && launchModel === undefined
+      && resumeSessionId === undefined
+      ? () => this.readLaunchModel(tool)
+      : undefined
     // Messages the previous connection to this conversation still had queued.
     const queue = resumeSessionId === undefined
       ? []
@@ -419,6 +441,7 @@ class AcpConnection implements AgentConnection {
       permissionMode: () => this.permissionMode,
       profile,
       ...(launchModel !== undefined ? { launchModel } : {}),
+      ...(recoverLaunchModel !== undefined ? { recoverLaunchModel } : {}),
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
         // Only a recorded conversation can be mid-turn on attach, and only
@@ -437,8 +460,12 @@ class AcpConnection implements AgentConnection {
         entry.agentSessionId = agentSessionId
         // acpd opened the record before the id existed; rename it.
         void adoptLog(this.session, resumeSessionId, agentSessionId, this.log)
+        void this.send(`set-option -p -t ${pane.paneId} ${SESSION_PANE_OPTION} '${pane.pid}:${agentSessionId}'`)
+          .catch((err: unknown) => {
+            this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: could not note the session on its pane: ${String(err)}`)
+          })
         if (entry.conversation) {
-          registerAcpConversation(this.session.projectId, this.session.workspaceId, { handle, agentSessionId }, entry.conversation)
+          registerAcpConversation(this.session.projectId, this.session.workspaceId, { handle, agentSessionId, ...panePid }, entry.conversation)
         }
         // The registry reconciler turns this into the conversation's row.
         this.publishAgents()
@@ -470,6 +497,7 @@ class AcpConnection implements AgentConnection {
     registerAcpConversation(this.session.projectId, this.session.workspaceId, {
       handle,
       ...(resumeSessionId !== undefined ? { agentSessionId: resumeSessionId } : {}),
+      ...panePid,
     }, entry.conversation)
   }
 
@@ -587,12 +615,8 @@ export function setAcpPermissionMode(projectId: string, workspaceId: string, per
 /**
  * Park the model to send once the adapter handshakes, for adapters told
  * over the protocol (opencode, pi); a no-op for others.
- *
- * Parking is in-memory, and a spare can wait across server restarts, so a
- * spare claim parks it again; otherwise the adapter would run its default
- * (for pi, a provider whose key the proxy does not swap).
  */
-export function parkAcpLaunchModel(tool: AgentTool, launchId: string, model: string | undefined): void {
+function parkAcpLaunchModel(tool: AgentTool, launchId: string, model: string | undefined): void {
   if (model !== undefined && acpModelIsProtocol(acpAdapterFor(tool))) stashAcpLaunchModel(launchId, model)
 }
 
