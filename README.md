@@ -156,23 +156,23 @@ To use yaac from other devices, run the server on an always-on machine and put
 both on a private [Tailscale](https://tailscale.com) tailnet. Remote access is
 off until you set it up. Never expose the server with `tailscale funnel`.
 
-Containerless: put a `tailscale serve` proxy in front of the server and allow
-its tailnet hostname.
+Containerless: put a `tailscale serve` proxy in front of the server and start
+it with its tailnet hostname.
 
 ```sh
 tailscale up
 tailscale serve --bg https / http://127.0.0.1:8787
-export YAAC_ALLOWED_HOSTS=<host>.<tailnet>.ts.net
-yaac server restart
+yaac server restart --tailnet <host>.<tailnet>.ts.net --owner <your tailnet login>
 ```
 
-Put `YAAC_ALLOWED_HOSTS` in the server's permanent environment (a systemd unit
-or shell profile); a background restart doesn't inherit an interactive
-`export`.
+The install records that it serves the tailnet (its access mode), so every
+later `yaac server start` or `restart` must pass the same `--tailnet`. The
+switch is one-way, and `--owner` hands the projects and settings the install
+already has to that login; a fresh install needs no `--owner`.
 
-k8s: install with `--tailnet`. The Tailscale Kubernetes operator (installed
-beforehand) publishes the server at `https://yaac.<tailnet>.ts.net`, and
-install sets the allowed host on the server itself.
+k8s: install with `--tailnet` (plus `--owner <login>` when switching an
+existing install). The Tailscale Kubernetes operator (installed beforehand)
+publishes the server at `https://yaac.<tailnet>.ts.net`.
 
 ```sh
 yaac cluster install --tailnet
@@ -190,9 +190,9 @@ but bound on a client, by `yaac forward` or the desktop app
 ([docs/port-forward-tunnel.md](docs/port-forward-tunnel.md)). To reach them
 from other tailnet devices, run `yaac forward --bind <tailnet IP>` on the
 server machine (the IP from `tailscale ip -4`), and set `YAAC_FORWARD_BIND` to
-the same address so the web app links to it. Set that variable the same way as
-`YAAC_ALLOWED_HOSTS`: restart a containerless server, or re-run
-`yaac cluster install` from a shell that exports it. These ports are plain HTTP
+the same address so the web app links to it. Set it in the server's permanent
+environment (a systemd unit or shell profile) and restart a containerless
+server, or re-run `yaac cluster install` from a shell that exports it. These ports are plain HTTP
 and reachable by any device on the tailnet, so only do this on a personal
 tailnet.
 
@@ -501,7 +501,6 @@ set:
 | `YAAC_DATA_DIR` | `~/.yaac` | Data directory. Client state goes in the sibling `<dir>-client`. |
 | `YAAC_SERVER_PORT` | `8787` | Port the server listens on at `127.0.0.1` (the next free one if taken; `0` for any). Under k8s it is fixed when kind creates the cluster. |
 | `YAAC_SERVER_URL` | _(unset)_ | Server to use, overriding the selection in `server.json`. |
-| `YAAC_ALLOWED_HOSTS` | _(unset)_ | Comma-separated hostnames the server accepts besides loopback, such as its tailnet name. Requests to them must come through `tailscale serve`. |
 | `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the web app says forwarded ports are at. Match it with `yaac forward --bind`. |
 | `YAAC_SECRET` / `YAAC_SECRETS` | _(unset)_ | Encryption key(s) for stored secrets; see "Secrets at rest". `YAAC_SECRETS` is `"<version>:<secret>,…"`, newest first. |
 | `YAAC_USE_TOR` | `false` | Route the server's git and ssh through Tor, and under k8s every workspace's egress too. Off when unset, empty, `0` or `false`. |

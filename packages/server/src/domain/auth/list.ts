@@ -33,13 +33,13 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
 }
 
 /**
- * Masked summary of git credentials and per-tool credentials, for the
+ * Masked summary of `owner`'s git credentials and the per-tool credentials, for the
  * settings page, `yaac auth list` and the create form's model lists. Never
  * returns raw tokens or keys.
  */
-export async function listAuth(): Promise<AuthListResult> {
+export async function listAuth(owner: string): Promise<AuthListResult> {
   const [gitCredentials, claude, codex, opencode, pi] = await Promise.all([
-    listCredentialSummaries(),
+    listCredentialSummaries(owner),
     toolAuthSummary('claude'),
     toolAuthSummary('codex'),
     toolAuthSummary('opencode'),

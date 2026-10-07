@@ -113,11 +113,27 @@ admits.
   `--owner` is refused. A fresh `tailnet` install has nothing to claim and
   needs no `--owner`.
 - **`tailnet` → `local`** is refused.
+- **How a start asks for a mode.** The server process reads the requested
+  mode from `YAAC_ACCESS_MODE` and the owner from `YAAC_ACCESS_OWNER`
+  (plumbing only: `yaac server start|restart --tailnet <host> --owner
+  <login>` sets them on the detached child, `yaac cluster install` on the
+  Deployment from its fronting). `settleAccessMode` (`src/main/access-mode.ts`)
+  checks them against the `access_modes` row once the DB is open. A fresh
+  install is one with no row; the migration records `local` for an upgraded
+  install with data. `--owner` applies only on the switch to `tailnet` (or a
+  fresh `tailnet` start) and is ignored after. A refused start keeps serving
+  `/health` with `refused: <reason>` and nothing else; `yaac server start`
+  prints it and stops the server, and `yaac cluster install` fails with it.
+  `/health` also reports the settled `access` mode, which `yaac server
+  start` compares with an already-running server's.
 - **Exceptions to "no loopback in `tailnet` mode"**:
   - Under containerless, `POST /workspace/mama` still arrives over loopback
-    with the workspace's bearer token. That route accepts it, and the
-    principal is the workspace's project owner. Under k8s, mama already
-    arrives on its own relay listener.
+    with the workspace's bearer token. `identify()` lets that one route
+    through without setting a principal, and the route authenticates the
+    bearer. Its principal is the caller workspace's project owner
+    (`projects.owner`), which the step threading principals into domain
+    verbs resolves there. Under k8s, mama already arrives on its own relay
+    listener.
   - A yaac server nested inside a workspace is its own install, always
     `local`, reached through the outer workspace's forward, which only that
     workspace's owner can open.
@@ -149,16 +165,27 @@ tables carry an owner directly.
 ### Database
 
 - A `users` table: uuid PK, unique `login` (null for the built-in `local`
-  user), display name, first/last seen. `identify()` upserts it (cached, not
-  a write per request) and `Principal` gains `userId`.
+  user), display name, first/last seen. The built-in user has the fixed id
+  `BUILT_IN_USER_ID` (the nil uuid, exported by `#db`), so a `local`
+  principal needs no lookup and internal callers can name it. `identify()`
+  upserts a tailnet user through `seeTailnetUser`, cached per process and
+  rewritten only for a new name or hourly, and `Principal` gains `userId`.
+  `GET /whoami` answers `Whoami` (`Principal & { users: User[] }`); a
+  `tailnet` install leaves a login-less built-in user out of `users`.
 - `projects.owner` references `users.id`.
 - User-scoped rows gain `owner`: `preferences` (git identity, time zone),
-  `shortcut_overrides`, `git_credentials`, and a new sealed
+  `shortcut_overrides`, `git_credentials` (names unique per owner), and a new sealed
   `tool_credentials` table holding the tool bundles that live in
   `.credentials/<tool>.json` today. That move is a one-shot importer with a
   docs/legacy-compat-shims.md entry.
 - Project env vars and secrets stay project-level; the project's owner is
   their owner.
+- The stores take the owner's user id as their first argument (or a field,
+  for `insertGitCredential`), with no authorization: routes pass
+  `c.get('principal').userId`, and domain code that acts for a project (the
+  create path, prewarm claims and staleness) passes `projects.owner`.
+  `listGitCredentials()` with no owner lists every user's, for the
+  install-wide runtime push and the git ssh agent.
 
 ### Credentials and the auth daemon
 
@@ -235,27 +262,31 @@ stays per workspace.
 ## Work, in landing order
 
 1. **Key projects by uuid** — shipped.
-2. **Access modes**: the recorded mode, `--tailnet`/`--owner` on `yaac
-   server start` and `yaac cluster install`, the refusals, the containerless
-   mama loopback exception, the built-in `local` user.
+2. **Access modes** — shipped together with step 4: the recorded mode,
+   `--tailnet`/`--owner` on `yaac server start|restart` and `yaac cluster
+   install`, the refusals, the containerless mama loopback exception, the
+   built-in `local` user.
 3. **Principal plumbing**: `domain/access`, the `system` principal, domain
    verbs taking the principal, `owner` on the three attach upgrades. Every
    principal still resolves to the one owner, so behavior is unchanged.
-4. **Users and owners**: the `users` table, `projects.owner`, per-user
-   preferences, shortcuts and git credentials, with backfill to the built-in
-   user.
+4. **Users and owners** — shipped with step 2: the `users` table,
+   `projects.owner`, per-user preferences, shortcuts and git credentials,
+   with backfill to the built-in user.
 5. **Per-user tool credentials**: the `tool_credentials` table and importer,
    caller-scoped `/auth/*`, the per-user auth daemon socket and flows, plan
-   usage per user.
+   usage per user. The importer hands the bundles to the built-in user, which
+   may have no login: an upgraded install whose only data was tool sign-ins
+   counts as fresh, so it can go `tailnet` without `--owner`
+   (docs/legacy-compat-shims.md "Backfilling owners and the access mode").
 6. **Proxy keying**: the owner-keyed credentials Secret, owner on
    registrations, and every credential path resolving through it.
 7. **Route authorization**: every route classified and gated, and per-user
    user Dockerfiles and build files.
 8. **SPA**: owner on snapshot rows, the user switcher, read-only views,
    settings split, the containerless "does not separate users" notice.
-9. **Docs**: a `docs/multi-user.md` reference, remote-hosting.md's security
-   model and setup sections updated for access modes, and this plan
-   deleted.
+9. **Docs**: a `docs/multi-user.md` reference and this plan deleted
+   (remote-hosting.md's access modes, setup and security model sections are
+   current).
 
 ## Testing
 

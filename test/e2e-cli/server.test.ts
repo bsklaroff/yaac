@@ -128,6 +128,16 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(await replicas()).toBe(1)
   })
 
+  it('`server start|restart --tailnet/--owner` defer to `cluster install`, leaving the pod alone', async () => {
+    const before = await serverPods()
+    for (const args of [['start', '--tailnet', 'srv.tailnet.ts.net'], ['restart', '--tailnet', 'srv.tailnet.ts.net', '--owner', 'a@b.c']]) {
+      const res = await runYaac(testEnv.env, 'server', ...args)
+      expect(res.exitCode).toBe(1)
+      expect(res.stderr).toMatch(/access mode `yaac cluster install` sets: use `yaac cluster install --tailnet \[--owner <login>\]`/)
+    }
+    expect(await serverPods()).toEqual(before)
+  })
+
   it('`server restart` rolls the pod, and the new one takes the lease', async () => {
     const [before] = await serverPods()
     const beforeLock = await readLock()

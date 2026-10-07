@@ -37,7 +37,7 @@ import {
   ProvisionStoppedError,
   registerProvisioning,
 } from '#domain/workspaces/provisioning'
-import { applyWorkspaceEvent, createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db'
+import { BUILT_IN_USER_ID, applyWorkspaceEvent, createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db'
 import {
   claimQueuedLaunch,
   failQueuedLaunch,
@@ -64,7 +64,7 @@ beforeEach(async () => {
   clearQueuedLaunchesForTests()
   await fs.mkdir(projectDir(PROJ), { recursive: true })
   await createTestRepo(repoDir(PROJ))
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
   // Record the row as the real create does; a launched entry has a foreign
   // key to it.
   mockCreate.mockReset().mockImplementation(async (projectId, opts) => {

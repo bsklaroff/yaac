@@ -18,10 +18,46 @@ PHONE: browser only. Full webapp, but no tool sign-in (that needs the CLI).
 ```
 
 No client holds a credential. The server works out who is calling from the
-request (see "Security model"): a request to the machine's own loopback is
-**local**, and a request through `tailscale serve` is from the **tailnet
-user** serve names. Nothing in the CLI or webapp assumes the server is on the
-same machine.
+request (see "Security model"): in a `tailnet` install every request comes
+through `tailscale serve`, from the **tailnet user** serve names. Nothing in
+the CLI or webapp assumes the server is on the same machine.
+
+## Access modes
+
+An install runs in exactly one access mode. The mode is recorded in the
+install's database and checked on every start, so a forgotten flag or env
+var cannot change who the server admits.
+
+| Mode | Admits | Users |
+|---|---|---|
+| `local` | loopback only; anything through `serve` is refused | one built-in user with no login, owning everything |
+| `tailnet` | only `serve` with a tailnet identity; plain loopback is refused | a user per tailnet login, created on first sight |
+
+- **A fresh install** takes the mode of the command that first starts it:
+  `yaac server start` and `yaac cluster install` give `local`; `yaac server
+  start --tailnet <host>` and `yaac cluster install --tailnet` (or `--byo`)
+  give `tailnet`. An install upgraded from before access modes counts as
+  `local` if it holds any data.
+- **Every later start must ask for the recorded mode.** `yaac server start`
+  and `restart` take the same `--tailnet <host>` each time. A start asking
+  for another mode is refused with the command that fixes it, and a refusing
+  server stops (host) or keeps answering `/health` with the reason, which
+  `yaac cluster install` prints (k8s).
+- **`local` → `tailnet` is one-way and needs `--owner <login>`** on that
+  start. It gives the built-in user that tailnet login, so the owner keeps
+  every project, credential and setting the install had. A fresh `tailnet`
+  install has nothing to claim and needs no `--owner`; once an install is
+  `tailnet`, `--owner` is ignored.
+- **`tailnet` → `local` is refused.**
+- **A yaac server nested in a workspace is always `local`**: it is reached
+  through its outer workspace's forward, which only that workspace's owner
+  can open. `--tailnet` there is refused.
+- **One loopback exception in `tailnet` mode**: a containerless workspace's
+  `yaac-mama` posts `/workspace/mama` over loopback with the workspace's
+  bearer token, which that route checks. (Under k8s it arrives on the egress
+  proxy's own relay listener.)
+
+`GET /whoami` returns the caller, with its user id, and the install's users.
 
 ## Server setup
 
@@ -29,17 +65,18 @@ A **containerless** server is a host process behind the machine's own
 `tailscale serve`:
 
 ```sh
-yaac server start
 tailscale up
-tailscale serve --bg https / http://127.0.0.1:8787   # `serve`, never `funnel`
-export YAAC_ALLOWED_HOSTS=srv.<tailnet>.ts.net       # admit the tailnet name
-yaac server restart
+tailscale serve --bg https / http://127.0.0.1:8787     # `serve`, never `funnel`
+yaac server start --tailnet srv.<tailnet>.ts.net       # a fresh install
+yaac server restart --tailnet srv.<tailnet>.ts.net \
+  --owner you@example.com                              # a local install with data
 ```
 
-`YAAC_ALLOWED_HOSTS` must be in the server process's environment, so put it
-in a systemd unit or shell profile (a detached restart does not inherit an
-interactive `export`). Setting it turns on remote access, and every request
-to that name must then come through `serve`.
+`--tailnet` names the MagicDNS name serve fronts the machine at. The server
+admits that name, and `yaac server start` registers its `https://` origin as
+this machine's server, so the CLI here goes through `serve` too and must run
+as a tailnet user. Give every later `yaac server start` and
+`restart` the same `--tailnet` (in a systemd unit, say).
 
 A **k8s** server is published by the Tailscale Kubernetes operator, and
 install sets the allowed host itself:
@@ -51,9 +88,9 @@ yaac cluster install --byo --rwx-storage-class <nfs-class> \
 ```
 
 `--tailnet` publishes the server through a `tailscale`-class Ingress
-(docs/server-in-cluster.md "Reachability"), sets `YAAC_ALLOWED_HOSTS` on the
-Deployment, and registers `https://yaac.<tailnet>.ts.net` as the server's
-origin. On kind this replaces `127.0.0.1`, so every client, including this
+(docs/server-in-cluster.md "Reachability"), runs it in `tailnet` mode, and
+registers `https://yaac.<tailnet>.ts.net` as the server's origin. Switching
+an existing `local` install needs `--owner <login>` as above. On kind this replaces `127.0.0.1`, so every client, including this
 machine's CLI, uses the tailnet name and must be logged in as a tailnet
 user (install warns when it is not). `--byo` (docs/cluster-setup.md "Bring
 your own cluster") always uses this fronting, since a cloud cluster has no
@@ -71,10 +108,11 @@ helm upgrade --install tailscale-operator tailscale/tailscale-operator \
 ```
 
 **Decide who on the tailnet may use it.** Anyone whose device can reach the
-server's device (or the operator's Ingress device) has full access. On a
-tailnet that is yours alone, there is nothing to do. On a shared one, add an
-ACL grant that lets only the intended users reach that device (or its tag)
-on port 443. That grant is the whole access list.
+server's device (or the operator's Ingress device) becomes a user of the
+install on their first request. On a tailnet that is yours alone, there is
+nothing to do. On a shared one, add an ACL grant that lets only the intended
+users reach that device (or its tag) on port 443. That grant is the whole
+access list.
 
 **Optional: reach forwarded dev-server ports from other tailnet devices.**
 The server offers port mappings but binds no ports itself
@@ -83,7 +121,7 @@ tell the webapp which address it binds:
 
 ```sh
 export YAAC_FORWARD_BIND=<the server's tailnet IP>   # from `tailscale ip -4`
-yaac server restart                                  # containerless
+yaac server restart --tailnet srv.<tailnet>.ts.net   # containerless
 yaac cluster install                                 # k8s: install copies it into the Deployment
 yaac forward --bind <the server's tailnet IP>        # holds the listeners
 ```
@@ -175,14 +213,17 @@ Things to keep in mind:
   server, and everyone who can has full access.
 - **The caller's identity comes from the request** (`identify()` in
   `api/http/web-auth.ts`), checked after the Host, Origin and Sec-Fetch-Site
-  guards:
+  guards, and then held against the access mode:
 
   | The request | Is treated as |
   |---|---|
-  | came through serve (has `X-Forwarded-For` or a `Tailscale-User-Login`/`-Name` header) and has `Tailscale-User-Login` | that tailnet user |
+  | came through serve (has `X-Forwarded-For` or a `Tailscale-User-Login`/`-Name` header) and has `Tailscale-User-Login` | that tailnet user in `tailnet` mode; refused in `local` mode |
   | came through serve, but has no `Tailscale-User-Login` | refused (a tagged device, or Funnel) |
-  | did not come through serve, and has a loopback `Host` | local |
+  | did not come through serve, and has a loopback `Host` | the built-in user in `local` mode; refused in `tailnet` mode, bar `yaac-mama` (see "Access modes") |
   | did not come through serve, and has any other `Host` | refused, or local inside a workspace (below) |
+
+  A tailnet user's row is written on first sight and at most hourly after,
+  not on every request.
 
   Every route a client calls, HTTP and WebSocket, is under `/api` (docs
   name routes relative to it: `GET /whoami` means `/api/whoami`); the rest
@@ -190,13 +231,14 @@ Things to keep in mind:
   unidentified browser can still load the app and be told why it was
   refused. `GET /whoami` returns what the server decided, and the request
   log names the tailnet user on every line.
-- **There is no "this server is fronted" switch to forget.** A non-loopback
-  name is admitted only if listed in `YAAC_ALLOWED_HOSTS`, and every request
-  to such a name must carry serve's identity headers. Any other front (an
-  nginx that sets no identity, a plain TCP exposure, Funnel) is refused.
-- **The only ways to reach the server are loopback and `serve`.** A request
-  that did not come through serve and names a loopback Host is treated as
-  the owner, so no other path may exist. A host server refuses to start with
+- **There is no "this server is fronted" switch to forget.** The access mode
+  is recorded, not configured per start. A non-loopback name is admitted
+  only if it is the install's tailnet name, and every request to such a name
+  must carry serve's identity headers. Any other front (an nginx that sets
+  no identity, a plain TCP exposure, Funnel) is refused.
+- **The only ways to reach the server are loopback and `serve`.** In a
+  `local` install a request that did not come through serve and names a
+  loopback Host is treated as the owner, so no other path may exist. A host server refuses to start with
   a non-loopback `YAAC_BIND_ADDR`. For the in-cluster server, the ingress
   NetworkPolicies do this job, which makes them part of authentication
   (docs/server-in-cluster.md "The ingress policy is the wall").
@@ -222,10 +264,10 @@ Things to keep in mind:
   `X-Forwarded-Proto`, since that needs a CORS preflight.
 - **A yaac server inside a workspace (`YAAC_WORKSPACE_ID` set) treats any
   request that did not come through serve as local, whatever its Host.** It
-  inherits the outer install's `YAAC_ALLOWED_HOSTS` and is reached as
-  `srv.<tailnet>.ts.net:<port>` through the outer install's port forward, a
-  path the strict rule would refuse. Requests through serve are still
-  identified, and still refused without a user.
+  is always `local`, and may be reached as `srv.<tailnet>.ts.net:<port>`
+  through the outer install's port forward (with that name in its
+  `YAAC_ALLOWED_HOSTS`), a path the strict rule would refuse. Requests
+  through serve are refused.
 - Tool credentials travel only over the identified API (`PUT /auth/:tool`),
   never through the stream relay or the browser.
 
@@ -254,9 +296,9 @@ non-ASCII display name takes in a header.
 ## Not yet covered
 
 - **Surviving a reboot** (a systemd unit for the server, restarting the
-  cluster on boot). For now, after a reboot run `yaac server start`
-  (containerless) or `yaac cluster install` (k8s).
-- **Per-user access**: every identified user has full access
-  (docs/plans/multi-user-deployment.md).
+  cluster on boot). For now, after a reboot run `yaac server start` with the
+  install's flags (containerless) or `yaac cluster install` (k8s).
+- **Per-user access**: every identified user has full access to every other
+  user's data (docs/plans/multi-user-deployment.md).
 - **Tagged devices as callers**: resolving a tagged device's address through
   the tailscaled socket (`whois`) would let the server admit it.

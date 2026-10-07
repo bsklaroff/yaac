@@ -46,6 +46,7 @@ import { queueWorkspace } from '#domain/workspaces/queued-workspaces'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, workspaceDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
+import { BUILT_IN_USER_ID } from '#db/user-store'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -66,8 +67,8 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   installRealWorkspaceDriver()
   // The caller's project always exists, since the caller runs in it.
-  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' })
-  await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' })
+  await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
   clearAllProvisioningForTests()
   _clearListActiveInflightForTests()
   vi.mocked(listWorkspacePods).mockResolvedValue([])

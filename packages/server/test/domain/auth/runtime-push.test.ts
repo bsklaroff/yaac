@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
 import { addHttpsCredential, assignProjectCredential } from '#domain/projects'
-import { closeDb, openDb, recordProject } from '#db'
+import { BUILT_IN_USER_ID, closeDb, openDb, recordProject } from '#db'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { setDataDir } from '@yaac/shared/project-paths'
 import {
@@ -73,9 +73,9 @@ describe('pushCredentialsToRuntime', () => {
     await saveOpencodeCredentialsFile({ kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or' })
     // Only credentials a project uses are sent, each with its projects.
     // runtimeGitCredentials' tests cover ssh keys.
-    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' })
-    await assignProjectCredential(WEB, (await addHttpsCredential({ name: 'gh', token: 'ghp' })).id)
-    await addHttpsCredential({ name: 'unused', token: 'ghp_unused' })
+    await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' }, BUILT_IN_USER_ID)
+    await assignProjectCredential(WEB, (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp' })).id)
+    await addHttpsCredential(BUILT_IN_USER_ID, { name: 'unused', token: 'ghp_unused' })
 
     await pushCredentialsToRuntime()
 

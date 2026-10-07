@@ -170,6 +170,31 @@ re-keys them by `projects.id`.
   `slug`). Nothing else depends on it, except that the project dir move
   below reads the `name` it wrote.
 
+## Backfilling owners and the access mode
+
+Projects, preferences, shortcut overrides and git credentials had no owner,
+and an install had no access mode. The `add_users_and_owners` migration
+(`packages/server/drizzle/*_add_users_and_owners/migration.sql`) inserts the
+built-in user, owns every existing row by it, and records `local` for an
+install holding any of those rows (docs/remote-hosting.md "Access modes").
+
+- **What it reads.** Whether `projects`, `git_credentials`, `preferences` or
+  `shortcut_overrides` has any row, to decide whether to record `local`; the
+  `owner` columns are filled from a default that is dropped again.
+- **What breaks silently if it goes too early.** It is a migration, so it
+  can only go with a squash of the migration history. A squash that drops
+  the `local` record lets an upgraded install start as `--tailnet` without
+  `--owner`, leaving its data with a built-in user no tailnet login can
+  reach; one that drops the owner backfill fails the migration outright.
+  The test cannot see tool sign-ins, which live in `.credentials/<tool>.json`
+  outside the DB: an install holding only those counts as fresh, may go
+  `tailnet` without `--owner`, and keeps a login-less built-in user, so an
+  importer of those bundles must not assume that user has a login.
+- **When it is safe to remove.** When the migrations are squashed and every
+  install has started once since this release, so has an `access_modes`
+  row. The built-in user insert must stay in any squash: a fresh database
+  needs it.
+
 ## Moving slug-named project dirs to their ids
 
 Each project's data dir was `projects/<slug>/`; it is `projects/<id>/`.

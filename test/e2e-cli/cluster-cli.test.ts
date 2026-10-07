@@ -9,7 +9,7 @@ import { TAILSCALE_OPERATOR_NAMESPACE } from '@yaac/server/drivers/k8s/substrate
 
 /**
  * The `yaac cluster` commands: `check`, `install` (with `--nodes`, `--byo`,
- * `--rwx-storage-class`, `--rwo-storage-class`, `--tailnet`) and `delete`
+ * `--rwx-storage-class`, `--rwo-storage-class`, `--tailnet`, `--owner`) and `delete`
  * (with `-y/--yes`). They are host-side commands that never talk to the
  * server, so no server is spawned and no cluster is needed: each case breaks
  * the environment (PATH stripping, a bogus KUBECONFIG, a kubectl shim) and
@@ -110,13 +110,14 @@ describe('yaac cluster install (real CLI)', () => {
   }, 60_000)
 
   // These option checks also run before the binary preflight.
-  it('rejects --byo with --nodes, --byo without an RWX class, and either class flag without --byo', async () => {
+  it('rejects --byo with --nodes, --byo without an RWX class, either class flag without --byo, and --owner without --tailnet', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
     const cases: Array<[string[], RegExp]> = [
       [['--byo', '--rwx-storage-class', 'nfs', '--nodes', '3'], /--nodes cannot be combined with --byo/],
       [['--byo'], /--byo needs --rwx-storage-class/],
       [['--rwx-storage-class', 'nfs'], /--rwx-storage-class is for --byo only/],
       [['--rwo-storage-class', 'ssd'], /--rwo-storage-class is for --byo only/],
+      [['--owner', 'alice@example.com'], /--owner .* needs --tailnet/],
     ]
     for (const [args, message] of cases) {
       const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'install', ...args)

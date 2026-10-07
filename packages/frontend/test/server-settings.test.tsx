@@ -7,13 +7,13 @@ import type { DesktopServerTargets, Principal } from '@yaac/shared/types'
 
 /** What GET /whoami answers — the only request the section makes itself. */
 function stubWhoami(principal: Principal): void {
-  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify(principal), {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(JSON.stringify({ ...principal, users: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   }))))
 }
 
-beforeEach(() => stubWhoami({ kind: 'local' }))
+beforeEach(() => stubWhoami({ kind: 'local', userId: 'u1' }))
 
 afterEach(() => {
   cleanup()
@@ -58,7 +58,7 @@ describe('ServerSettings', () => {
   })
 
   it('says which tailnet user the server takes this device to be', async () => {
-    stubWhoami({ kind: 'tailnet', login: 'alice@example.com', name: 'Alice' })
+    stubWhoami({ kind: 'tailnet', userId: 'u1', login: 'alice@example.com', name: 'Alice' })
     installBridge({ current: 'https://a.ts.net', saved: ['https://a.ts.net'] })
     render(<ServerSettings />)
     await waitFor(() => expect(screen.getByText('Signed in as alice@example.com')).toBeTruthy())

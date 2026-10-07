@@ -4,6 +4,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDb, closeDb } from '#db/client'
 import { gitCredentials, projects } from '#db/schema'
 import {
+  BUILT_IN_USER_ID,
   deleteGitCredential,
   getGitCredential,
   getGitCredentialByName,
@@ -13,6 +14,7 @@ import {
   recordProject,
   renameGitCredential,
   replaceGitCredential,
+  seeTailnetUser,
   setProjectGitCredential,
 } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
@@ -52,7 +54,7 @@ beforeEach(async () => {
 describe('insertGitCredential', () => {
   it('seals the secret, keeps the public key in the clear, and refuses a taken name', async () => {
     const row = await insertGitCredential({
-      name: 'deploy', kind: 'ssh', secret: KEY.seed.toString('base64'), publicKey: KEY.publicKey,
+      owner: BUILT_IN_USER_ID, name: 'deploy', kind: 'ssh', secret: KEY.seed.toString('base64'), publicKey: KEY.publicKey,
     })
 
     const db = await getDb()
@@ -62,16 +64,20 @@ describe('insertGitCredential', () => {
     expect(raw.publicKey).toBe(KEY.publicKey)
     expect(await row.openSecret()).toBe(KEY.seed.toString('base64'))
 
-    await expect(insertGitCredential({ name: 'deploy', kind: 'https', secret: 'ghp_x' }))
+    await expect(insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'deploy', kind: 'https', secret: 'ghp_x' }))
       .rejects.toMatchObject({ code: 'CONFLICT' })
+    // Names are unique per owner, so another user may take the same one.
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    expect(await insertGitCredential({ owner: bob, name: 'deploy', kind: 'https', secret: 'ghp_x' }))
+      .toMatchObject({ owner: bob, name: 'deploy' })
   })
 })
 
 describe('listGitCredentials', () => {
   it('lists oldest first, and reports a secret it cannot open rather than throwing', async () => {
     expect(await listGitCredentials()).toEqual([])
-    await insertGitCredential({ name: 'a', kind: 'https', secret: 'ghp_aaaa' })
-    await insertGitCredential({ name: 'b', kind: 'ssh', secret: 'c2VlZA==', publicKey: KEY.publicKey })
+    await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'https', secret: 'ghp_aaaa' })
+    await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'b', kind: 'ssh', secret: 'c2VlZA==', publicKey: KEY.publicKey })
     expect((await listGitCredentials()).map((c) => [c.name, c.kind])).toEqual([['a', 'https'], ['b', 'ssh']])
 
     // The listing is the only place a user can see that a credential needs
@@ -86,7 +92,7 @@ describe('listGitCredentials', () => {
 
 describe('getGitCredential', () => {
   it('finds by id, and answers undefined for an unknown one', async () => {
-    const row = await insertGitCredential({ name: 'a', kind: 'https', secret: 'ghp_aaaa' })
+    const row = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'https', secret: 'ghp_aaaa' })
     expect((await getGitCredential(row.id))?.name).toBe('a')
     expect(await getGitCredential('00000000-0000-4000-8000-000000000000')).toBeUndefined()
   })
@@ -94,16 +100,16 @@ describe('getGitCredential', () => {
 
 describe('getGitCredentialByName', () => {
   it('finds by name', async () => {
-    const row = await insertGitCredential({ name: 'a', kind: 'https', secret: 'ghp_aaaa' })
-    expect((await getGitCredentialByName('a'))?.id).toBe(row.id)
-    expect(await getGitCredentialByName('b')).toBeUndefined()
+    const row = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'https', secret: 'ghp_aaaa' })
+    expect((await getGitCredentialByName(BUILT_IN_USER_ID, 'a'))?.id).toBe(row.id)
+    expect(await getGitCredentialByName(BUILT_IN_USER_ID, 'b')).toBeUndefined()
   })
 })
 
 describe('renameGitCredential', () => {
   it('renames, refuses a name another credential holds, and reports a missing id', async () => {
-    const a = await insertGitCredential({ name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: KEY.publicKey })
-    await insertGitCredential({ name: 'b', kind: 'https', secret: 'ghp_bbbb' })
+    const a = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: KEY.publicKey })
+    await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'b', kind: 'https', secret: 'ghp_bbbb' })
 
     expect(await renameGitCredential(a.id, 'a2', 'ssh-ed25519 AAAA yaac a2')).toBe(true)
     expect(await getGitCredential(a.id)).toMatchObject({ name: 'a2', publicKey: 'ssh-ed25519 AAAA yaac a2' })
@@ -116,8 +122,8 @@ describe('renameGitCredential', () => {
 
 describe('deleteGitCredential', () => {
   it('deletes even while a project uses it, leaving the project with no credential or host key', async () => {
-    const row = await insertGitCredential({ name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac a' })
-    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' })
+    const row = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac a' })
+    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' }, BUILT_IN_USER_ID)
     await setProjectGitCredential(P, row.id, 'x ssh-ed25519 HOST')
 
     expect(await deleteGitCredential(row.id)).toBe(true)
@@ -129,8 +135,8 @@ describe('deleteGitCredential', () => {
 
 describe('replaceGitCredential', () => {
   it('moves the name and every project onto a new row, keeping their host keys, and drops the old one', async () => {
-    const old = await insertGitCredential({ name: 'deploy', kind: 'ssh', secret: 'b2xk', publicKey: 'ssh-ed25519 OLD yaac deploy' })
-    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' })
+    const old = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'deploy', kind: 'ssh', secret: 'b2xk', publicKey: 'ssh-ed25519 OLD yaac deploy' })
+    await recordProject({ id: P, name: 'demo', remoteUrl: 'git@x:acme/p.git', addedAt: 'now' }, BUILT_IN_USER_ID)
     await setProjectGitCredential(P, old.id, 'x ssh-ed25519 HOST')
 
     const fresh = await replaceGitCredential(old.id, { secret: 'bmV3', publicKey: 'ssh-ed25519 NEW yaac deploy' })

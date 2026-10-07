@@ -1300,14 +1300,34 @@ export interface CheckResult {
 export type DriverKind = 'k8s' | 'containerless'
 
 /**
+ * Which callers an install admits (docs/remote-hosting.md "Access modes"):
+ * `local` admits only loopback, as the one built-in user; `tailnet` admits
+ * only requests through `tailscale serve`, each as its tailnet user. Recorded
+ * in the install's database and checked on every start.
+ */
+export type AccessMode = 'local' | 'tailnet'
+
+/**
  * Who a request came from (`GET /whoami`, docs/remote-hosting.md). `local`
- * reached the server directly (loopback, or a nested server's direct path).
- * `tailnet` came through `tailscale serve`, which stamped the tailnet user's
- * login and display name on it.
+ * reached the server directly (loopback, or a nested server's direct path)
+ * and is the install's built-in user. `tailnet` came through `tailscale
+ * serve`, which stamped the tailnet user's login and display name on it.
+ * `userId` is the caller's `users` row.
  */
 export type Principal =
-  | { kind: 'local' }
-  | { kind: 'tailnet'; login: string; name: string }
+  | { kind: 'local'; userId: string }
+  | { kind: 'tailnet'; userId: string; login: string; name: string }
+
+/** A user of the install. `login` is null only for the built-in user of a
+ *  `local` install. */
+export interface User {
+  id: string
+  login: string | null
+  name: string
+}
+
+/** `GET /whoami`: the caller, and every user of the install. */
+export type Whoami = Principal & { users: User[] }
 
 /**
  * All server-owned state the webapp renders, sent as a `snapshot` event on

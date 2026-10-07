@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest'
 import { Hono } from 'hono'
 import {
   fetchSiteCheck,
@@ -7,20 +7,25 @@ import {
   originHeaderCheck,
   type IdentityEnv,
 } from '#http'
+import { BUILT_IN_USER_ID, closeDb } from '#db'
 import { asTailnet } from '@yaac/test-utils/api'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import type { AccessMode } from '@yaac/shared/types'
 
 /**
  * The identity gate over the paths that split public from identified (SPA
  * shell and assets, health probe, an ordinary API route), with a
- * `/api/whoami` reporting the gate's decision.
+ * `/api/whoami` reporting the gate's decision, in the given access mode
+ * (null: not settled yet).
  */
-function appWithIdentity(): Hono<IdentityEnv> {
+function appWithIdentity(mode: AccessMode | null = 'local'): Hono<IdentityEnv> {
   const app = new Hono<IdentityEnv>()
-  app.use('*', identify())
+  app.use('*', identify(() => mode ?? undefined))
   app.get('/api/health', (c) => c.text('ok'))
   app.get('/', (c) => c.text('shell'))
   app.get('/assets/*', (c) => c.text('asset'))
   app.get('/api/whoami', (c) => c.json(c.get('principal')))
+  app.post('/api/workspace/mama', (c) => c.text('mama'))
   return app
 }
 
@@ -31,41 +36,53 @@ async function refusal(res: Response): Promise<string> {
   return body.error.message
 }
 
+const LOCAL = { kind: 'local', userId: BUILT_IN_USER_ID }
+
 describe('identify', () => {
+  // Tailnet callers are upserted as users.
+  let tmpDir: string
+  beforeAll(async () => { tmpDir = await createTempDataDir() })
+  afterAll(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
   afterEach(() => vi.unstubAllEnvs())
 
   it('lets the shell, its assets and health through with no identity at all', async () => {
-    // Public so an unidentified browser can load the app and be told why.
-    const app = appWithIdentity()
-    const bare = { host: 'srv.tailnet.ts.net' }
-    for (const path of ['/api/health', '/', '/assets/index-abc.js']) {
-      expect((await app.request(path, { headers: bare })).status).toBe(200)
+    // Public so an unidentified browser can load the app and be told why,
+    // even before startup has settled the access mode.
+    for (const mode of ['local', 'tailnet', null] as const) {
+      const app = appWithIdentity(mode)
+      const bare = { host: 'srv.tailnet.ts.net' }
+      for (const path of ['/api/health', '/', '/assets/index-abc.js']) {
+        expect((await app.request(path, { headers: bare })).status).toBe(200)
+      }
+      expect((await app.request('/api/whoami', { headers: bare })).status).toBe(mode === null ? 503 : 401)
     }
-    expect((await app.request('/api/whoami', { headers: bare })).status).toBe(401)
   })
 
-  // Every row of the identity rule, under a top-level server and then under
-  // one inside a workspace — which differ in exactly one row.
+  // Every row of the identity rule in local mode, under a top-level server
+  // and then under one inside a workspace — which differ in exactly one row.
   for (const workspace of [false, true]) {
-    describe(workspace ? 'inside a workspace' : 'top-level', () => {
+    describe(workspace ? 'local mode, inside a workspace' : 'local mode, top-level', () => {
       const setup = (): Hono<IdentityEnv> => {
         if (workspace) vi.stubEnv('YAAC_WORKSPACE_ID', 'abcd1234')
-        return appWithIdentity()
+        return appWithIdentity('local')
       }
 
-      it('an unproxied request to loopback is local', async () => {
+      it('an unproxied request to loopback is the built-in user', async () => {
         const app = setup()
         for (const host of ['127.0.0.1:8787', 'localhost']) {
           const res = await app.request('/api/whoami', { headers: { host } })
-          expect(await res.json()).toEqual({ kind: 'local' })
+          expect(await res.json()).toEqual(LOCAL)
         }
       })
 
-      it('a request serve stamped with a user is that tailnet user', async () => {
+      it('a request through serve is refused, even with a user', async () => {
         const res = await setup().request('/api/whoami', {
           headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net'),
         })
-        expect(await res.json()).toEqual({ kind: 'tailnet', login: 'alice@example.com', name: 'alice' })
+        expect(await refusal(res)).toMatch(/runs in local mode.*--tailnet/s)
       })
 
       it('a proxied request with no user is refused, naming tagged devices and Funnel', async () => {
@@ -73,25 +90,11 @@ describe('identify', () => {
         expect(await refusal(res)).toMatch(/no user identity.*tagged device.*Funnel/s)
       })
 
-      it('proxying is recognized by any identity header, and forged loopback Hosts do not matter', async () => {
-        // A local process sending only a user header, or a proxied request
-        // naming loopback: either way the request is judged as proxied.
-        const app = setup()
-        const named = await app.request('/api/whoami', {
-          headers: { host: '127.0.0.1', 'tailscale-user-login': 'bob@x' },
-        })
-        expect(await named.json()).toMatchObject({ kind: 'tailnet', login: 'bob@x' })
-        const nameless = await app.request('/api/whoami', {
-          headers: { host: '127.0.0.1', 'tailscale-user-name': 'Bob' },
-        })
-        expect(nameless.status).toBe(401)
-      })
-
       it(workspace
         ? 'an unproxied request to another name is local — the outer install\'s forward'
         : 'an unproxied request to another name is refused, failing closed', async () => {
         const res = await setup().request('/api/whoami', { headers: { host: 'srv.tailnet.ts.net:9787' } })
-        if (workspace) expect(await res.json()).toEqual({ kind: 'local' })
+        if (workspace) expect(await res.json()).toEqual(LOCAL)
         else expect(await refusal(res)).toMatch(/reached as srv\.tailnet\.ts\.net without tailscale serve/)
       })
     })
@@ -103,30 +106,80 @@ describe('identify', () => {
     expect(res.status).toBe(401)
   })
 
-  it('decodes a non-ASCII identity serve sent as an RFC 2047 encoded word', async () => {
-    const res = await appWithIdentity().request('/api/whoami', {
-      headers: {
-        ...asTailnet('jose@example.com', 'srv.tailnet.ts.net'),
-        'tailscale-user-name': '=?utf-8?q?Jos=C3=A9_Garc=C3=ADa?=',
-      },
-    })
-    expect(await res.json()).toMatchObject({ name: 'José García' })
-  })
+  describe('tailnet mode', () => {
+    const app = (): Hono<IdentityEnv> => appWithIdentity('tailnet')
 
-  it('decodes a value split across several encoded words, and drops control characters', async () => {
-    // Long values are split into several space-separated encoded words, and
-    // the decoded text goes into log lines, so CR/LF or ESC must not
-    // survive.
-    const res = await appWithIdentity().request('/api/whoami', {
-      headers: {
-        host: 'srv.tailnet.ts.net',
-        'x-forwarded-for': '100.64.0.7',
-        'tailscale-user-login': '=?utf-8?q?mallory=0D=0A=1B[31m@example.com?=',
-        'tailscale-user-name': '=?utf-8?q?Zo=C3=AB_=C3=85ngstr=C3=B6m-?= =?utf-8?q?=C3=98resund_=C5=81ukasiewicz?=',
-      },
+    it('a request serve stamped with a user is that tailnet user, the same user every time', async () => {
+      const first = await (await app().request('/api/whoami', {
+        headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net'),
+      })).json() as { userId: string }
+      expect(first).toEqual({ kind: 'tailnet', login: 'alice@example.com', name: 'alice', userId: expect.any(String) as unknown })
+      expect(first.userId).not.toBe(BUILT_IN_USER_ID)
+      const again = await (await app().request('/api/whoami', {
+        headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net'),
+      })).json() as { userId: string }
+      expect(again.userId).toBe(first.userId)
+      const bob = await (await app().request('/api/whoami', {
+        headers: asTailnet('bob@example.com', 'srv.tailnet.ts.net'),
+      })).json() as { userId: string }
+      expect(bob.userId).not.toBe(first.userId)
     })
-    expect(await res.json()).toEqual({
-      kind: 'tailnet', login: 'mallory[31m@example.com', name: 'Zoë Ångström-Øresund Łukasiewicz',
+
+    it('refuses loopback, naming the mode', async () => {
+      const res = await app().request('/api/whoami', { headers: { host: '127.0.0.1' } })
+      expect(await refusal(res)).toMatch(/runs in tailnet mode.*tailscale serve/s)
+    })
+
+    it('still refuses serve with no user', async () => {
+      const res = await app().request('/api/whoami', { headers: asTailnet(null, 'srv.tailnet.ts.net') })
+      expect(await refusal(res)).toMatch(/tagged device/)
+    })
+
+    it('lets a containerless yaac-mama post through over loopback, for its route to authenticate', async () => {
+      const res = await app().request('/api/workspace/mama', { method: 'POST', headers: { host: '127.0.0.1' } })
+      expect(await res.text()).toBe('mama')
+      // Only that route, and only the POST it serves.
+      expect((await app().request('/api/workspace/mama', { headers: { host: '127.0.0.1' } })).status).toBe(401)
+    })
+
+    it('proxying is recognized by any identity header, and forged loopback Hosts do not matter', async () => {
+      // A local process sending only a user header, or a proxied request
+      // naming loopback: either way the request is judged as proxied.
+      const named = await app().request('/api/whoami', {
+        headers: { host: '127.0.0.1', 'tailscale-user-login': 'bob@x' },
+      })
+      expect(await named.json()).toMatchObject({ kind: 'tailnet', login: 'bob@x' })
+      const nameless = await app().request('/api/whoami', {
+        headers: { host: '127.0.0.1', 'tailscale-user-name': 'Bob' },
+      })
+      expect(nameless.status).toBe(401)
+    })
+
+    it('decodes a non-ASCII identity serve sent as an RFC 2047 encoded word', async () => {
+      const res = await app().request('/api/whoami', {
+        headers: {
+          ...asTailnet('jose@example.com', 'srv.tailnet.ts.net'),
+          'tailscale-user-name': '=?utf-8?q?Jos=C3=A9_Garc=C3=ADa?=',
+        },
+      })
+      expect(await res.json()).toMatchObject({ name: 'José García' })
+    })
+
+    it('decodes a value split across several encoded words, and drops control characters', async () => {
+      // Long values are split into several space-separated encoded words, and
+      // the decoded text goes into log lines, so CR/LF or ESC must not
+      // survive.
+      const res = await app().request('/api/whoami', {
+        headers: {
+          host: 'srv.tailnet.ts.net',
+          'x-forwarded-for': '100.64.0.7',
+          'tailscale-user-login': '=?utf-8?q?mallory=0D=0A=1B[31m@example.com?=',
+          'tailscale-user-name': '=?utf-8?q?Zo=C3=AB_=C3=85ngstr=C3=B6m-?= =?utf-8?q?=C3=98resund_=C5=81ukasiewicz?=',
+        },
+      })
+      expect(await res.json()).toMatchObject({
+        kind: 'tailnet', login: 'mallory[31m@example.com', name: 'Zoë Ångström-Øresund Łukasiewicz',
+      })
     })
   })
 })

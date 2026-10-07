@@ -32,6 +32,7 @@ describe('buildApp', () => {
       ok: true,
       buildId: 'abc123',
       ready: true,
+      access: 'local',
       driver: workspaceDriver().kind,
     })
   })

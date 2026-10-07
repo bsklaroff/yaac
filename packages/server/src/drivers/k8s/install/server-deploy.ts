@@ -229,11 +229,11 @@ interface ServerEnvOptions {
    * Absent leaves the configured Tor URL unchanged.
    */
   torHostAddr?: string
-  /**
-   * Allowed hosts the fronting requires (the tailnet name), merged with
-   * those set in the install shell.
-   */
+  /** The access mode and allowed hosts the fronting requires. */
   remoteHosting?: RemoteHosting
+  /** `--owner`: the tailnet login that claims a `local` install's data when
+   *  it switches to `tailnet` (docs/remote-hosting.md "Access modes"). */
+  owner?: string
 }
 
 /**
@@ -247,7 +247,7 @@ interface ServerEnvOptions {
  * `yaac cluster install`, since a pod has no shell to set them in later.
  */
 function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; value: string }> {
-  const hosting = effectiveRemoteHosting(opts.remoteHosting)
+  const hosting = opts.remoteHosting ?? { accessMode: 'local', allowedHosts: [] }
   const vars: Array<{ name: string; value: string }> = [
     { name: 'YAAC_IN_CLUSTER', value: '1' },
     // The ingress NetworkPolicy restricts access instead of a loopback bind.
@@ -262,7 +262,10 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
     ['YAAC_IMAGE_PREFIX', testEnv.imagePrefix],
-    ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.length > 0 ? hosting.allowedHosts.join(',') : undefined],
+    // The access mode the server checks against the one it recorded.
+    ['YAAC_ACCESS_MODE', hosting.accessMode],
+    ['YAAC_ACCESS_OWNER', opts.owner],
+    ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.join(',')],
     // Display address for forwarded ports; a remote-hosting install sets
     // it (e.g. a tailnet IP matching `yaac forward --bind`).
     ['YAAC_FORWARD_BIND', env.forwardBind === '127.0.0.1' ? undefined : env.forwardBind],
@@ -283,15 +286,6 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     if (value !== undefined && value !== '') vars.push({ name, value })
   }
   return vars
-}
-
-/**
- * Allowed hosts: the fronting's plus the install shell's (the latter covers
- * a kind install behind a host-side `tailscale serve`; see
- * docs/remote-hosting.md).
- */
-function effectiveRemoteHosting(fromFronting: RemoteHosting = { allowedHosts: [] }): RemoteHosting {
-  return { allowedHosts: [...new Set([...fromFronting.allowedHosts, ...env.allowedHosts])] }
 }
 
 /**
@@ -569,18 +563,22 @@ async function waitForPublishedServer(origin: string, fronting: ServerFronting):
   let last = 'no attempt made'
   let reached = false
   while (Date.now() < deadline) {
+    let refused: unknown
     try {
       const res = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(2000) })
       reached = true
       if (res.ok) {
-        const body = await res.json() as { ready?: unknown }
+        const body = await res.json() as { ready?: unknown; refused?: unknown }
         if (body.ready === true) return
+        refused = body.refused
         last = 'answered /api/health but is still initializing'
       } else last = `answered HTTP ${String(res.status)}`
     } catch (err) {
       reached = false
       last = err instanceof Error ? err.message : String(err)
     }
+    // The server refused to start in this access mode; the reason names the fix.
+    if (typeof refused === 'string') throw new Error(`the server refused to start: ${refused}`)
     await new Promise((r) => setTimeout(r, 500))
   }
   throw new Error(reached

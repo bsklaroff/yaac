@@ -60,7 +60,7 @@ import {
 } from '@yaac/shared/project-paths'
 import type { WorkspaceEvent } from '#db'
 import type { NodeLocalLiveSet, RuntimeSnapshot } from '#drivers/contract'
-import { applyWorkspaceEvent, closeDb, listProjectRows, listProjectWorkspaceIds } from '#db'
+import { BUILT_IN_USER_ID, applyWorkspaceEvent, closeDb, listProjectRows, listProjectWorkspaceIds } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
@@ -677,8 +677,8 @@ describe('reapOrphanNodeLocal', () => {
   // This layer only hands over the live set: recorded project ids,
   // workspaces, stray units and in-flight creates.
   it('hands the runtime the live project ids and workspaces, and removes no node-local dir itself', async () => {
-    await recordProject({ id: PROJ_A, name: 'demo', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' })
-    await recordProject({ id: PROJ_B, name: 'demo', remoteUrl: 'https://x/proj-b', addedAt: '2026-01-01' })
+    await recordProject({ id: PROJ_A, name: 'demo', remoteUrl: 'https://x/proj-a', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    await recordProject({ id: PROJ_B, name: 'demo', remoteUrl: 'https://x/proj-b', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     const ids = (await listProjectRows()).map((r) => r.id)
     const live = await seedModulesDir(ids[0], 'live-1')
     const dead = await seedModulesDir(ids[0], 'dead-1')

@@ -11,13 +11,17 @@ import type { AgentTool, ProjectMeta, ToolCreateDefaults } from '@yaac/shared/ty
  * without reading a filesystem it may not share (docs/layered-server.md).
  */
 
+/** Record a project, owned by `owner` if new; a known id keeps its
+ *  owner. */
 export async function recordProject(
   meta: ProjectMeta,
+  owner: string,
   gitCredential?: { id: string; knownHostsEntry: string | null },
 ): Promise<void> {
   const db = await getDb()
   await db.insert(projects).values({
     ...meta,
+    owner,
     gitCredentialId: gitCredential?.id ?? null,
     knownHostsEntry: gitCredential?.knownHostsEntry ?? null,
   }).onConflictDoUpdate({
@@ -54,6 +58,8 @@ export async function setProjectGitCredential(
  * create-form defaults and the git credential).
  */
 export interface ProjectRow extends ProjectMeta {
+  /** The owning user's id. */
+  owner: string
   lastTool?: AgentTool
   lastBranch?: string
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>

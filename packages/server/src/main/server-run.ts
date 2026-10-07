@@ -37,9 +37,10 @@ import { resolveProjectEnv } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
+import { AccessModeRefusal, settleAccessMode } from '#main/access-mode'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
-import { agentSessionIdSchema, type DriverKind } from '@yaac/shared/types'
+import { agentSessionIdSchema, type AccessMode, type DriverKind } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface ServerRunOptions {
@@ -238,6 +239,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Set once DB init finishes; `/health` reports it as `ready` so
   // `yaac server start` waits for real readiness.
   let ready = false
+  // The settled access mode, or why this start was refused.
+  let access: AccessMode | { refused: string } | undefined
   // Rebuild, diff and push the snapshot on every store notification
   // (see #notify). Bursts coalesce into one trailing rebuild.
   onWorkspaceListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
@@ -249,7 +252,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       (err: unknown) => serverLog(`[server] plan-usage refresh failed: ${String(err)}`),
     )
   }, 5 * 60_000)
-  const app = buildApp({ buildId, isReady: () => ready })
+  const app = buildApp({ buildId, isReady: () => ready, access: () => access })
 
   // WebSocket routes are registered here, not in buildApp, so buildApp's
   // return type stays the plain Hono app the CLI's RPC client infers from.
@@ -462,6 +465,21 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(lease.instance)
     process.exit(1)
   }
+  // A refused start stays up answering `/health` with the reason, which
+  // `yaac server start` and `yaac cluster install` print, and serves
+  // nothing else.
+  try {
+    access = await settleAccessMode()
+  } catch (err) {
+    if (!(err instanceof AccessModeRefusal)) throw err
+    access = { refused: err.message }
+    serverLog(`[server] start refused: ${err.message}`)
+    const quit = (): void => { void removeLock(lease.instance).finally(() => process.exit(1)) }
+    process.once('SIGTERM', quit)
+    process.once('SIGINT', quit)
+    return
+  }
+  serverLog(`[server] access mode: ${access}`)
   // The ssh agent the server's git signs with (docs/git-credentials.md);
   // needs the DB.
   await startGitSshAgent()

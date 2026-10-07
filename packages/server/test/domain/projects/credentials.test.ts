@@ -20,7 +20,7 @@ import {
   runtimeGitCredentials,
   sshKeyMaterial,
 } from '#domain/projects'
-import { closeDb, recordProject } from '#db'
+import { BUILT_IN_USER_ID, closeDb, recordProject } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 
@@ -67,29 +67,29 @@ afterEach(async () => {
 })
 
 function project(id: string, remoteUrl: string): Promise<void> {
-  return recordProject({ id, name: 'demo', remoteUrl, addedAt: '2026-01-01' })
+  return recordProject({ id, name: 'demo', remoteUrl, addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
 }
 
 describe('addHttpsCredential', () => {
   it('stores a token under a trimmed name, and refuses a blank name or token', async () => {
-    const { id } = await addHttpsCredential({ name: '  gh  ', token: 'ghp_abcd1234' })
-    expect(await listCredentialSummaries()).toEqual([
+    const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: '  gh  ', token: 'ghp_abcd1234' })
+    expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
       { id, name: 'gh', kind: 'https', preview: '***1234', projects: [] },
     ])
-    await expect(addHttpsCredential({ name: ' ', token: 'x' })).rejects.toMatchObject({ code: 'VALIDATION' })
-    await expect(addHttpsCredential({ name: 'x', token: '  ' })).rejects.toMatchObject({ code: 'VALIDATION' })
-    await expect(addHttpsCredential({ name: 'a\nb', token: 'x' })).rejects.toMatchObject({ code: 'VALIDATION' })
-    await expect(addHttpsCredential({ name: 'gh', token: 'x' })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(addHttpsCredential(BUILT_IN_USER_ID, { name: ' ', token: 'x' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(addHttpsCredential(BUILT_IN_USER_ID, { name: 'x', token: '  ' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(addHttpsCredential(BUILT_IN_USER_ID, { name: 'a\nb', token: 'x' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'x' })).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 })
 
 describe('generateSshCredential', () => {
   it('answers the public key at once, commented with the name, touching no host', async () => {
-    const { id, publicKey } = await generateSshCredential({ name: 'deploy' })
+    const { id, publicKey } = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
     expect(publicKey).toMatch(PUBLIC_KEY_RE)
     expect(publicKey.endsWith(' deploy')).toBe(true)
     expect(sshRuns).toEqual([])
-    expect(await listCredentialSummaries()).toEqual([
+    expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([
       { id, name: 'deploy', kind: 'ssh', preview: publicKey, publicKey, projects: [] },
     ])
   })
@@ -97,9 +97,9 @@ describe('generateSshCredential', () => {
 
 describe('renameCredential', () => {
   it('renames, re-commenting a key without changing it', async () => {
-    const { id, publicKey } = await generateSshCredential({ name: 'old' })
+    const { id, publicKey } = await generateSshCredential(BUILT_IN_USER_ID, { name: 'old' })
     await renameCredential(id, 'new')
-    const [summary] = await listCredentialSummaries()
+    const [summary] = await listCredentialSummaries(BUILT_IN_USER_ID)
     expect(summary.name).toBe('new')
     expect(summary.publicKey?.split(' ').slice(0, 2)).toEqual(publicKey.split(' ').slice(0, 2))
     expect(summary.publicKey?.endsWith(' new')).toBe(true)
@@ -118,8 +118,8 @@ describe('assignProjectCredential', () => {
   it('assigns a matching credential — fetching an ssh remote\'s host key — and refuses a mismatched kind', async () => {
     await project(WEB, 'https://github.com/acme/web.git')
     await project(SVC, 'git@git.example.com:acme/svc.git')
-    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
-    const key = await generateSshCredential({ name: 'deploy' })
+    const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_abcd1234' })
+    const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
 
     expect(await assignProjectCredential(WEB, token.id)).toEqual({ knownHostsEntry: null })
     expect(sshRuns).toEqual([])
@@ -129,7 +129,7 @@ describe('assignProjectCredential', () => {
     await expect(assignProjectCredential(WEB, key.id)).rejects.toThrow(/needs a token, not an SSH key/)
     await expect(assignProjectCredential(SVC, token.id)).rejects.toThrow(/needs an SSH key, not a token/)
     await expect(assignProjectCredential(NOPE, token.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect((await listCredentialSummaries()).map((c) => [c.name, c.projects]))
+    expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => [c.name, c.projects]))
       .toEqual([['gh', [WEB]], ['deploy', [SVC]]])
   })
 })
@@ -139,8 +139,8 @@ describe('resolveProjectCredential', () => {
     await project(WEB, 'https://github.com/acme/web.git')
     await project(SVC, 'git@git.example.com:acme/svc.git')
     await project(BARE, 'https://github.com/acme/bare.git')
-    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
-    const key = await generateSshCredential({ name: 'deploy' })
+    const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_abcd1234' })
+    const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
     await assignProjectCredential(WEB, token.id)
     await assignProjectCredential(SVC, key.id)
 
@@ -160,7 +160,7 @@ describe('resolveProjectCredential', () => {
     await fs.writeFile(secretKeyPath(), 'a-completely-different-key\n', { mode: 0o600 })
     forgetSecretConfig()
     expect(await resolveProjectCredential(WEB)).toBeNull()
-    expect((await listCredentialSummaries())[0].preview).toMatch(/unreadable/)
+    expect((await listCredentialSummaries(BUILT_IN_USER_ID))[0].preview).toMatch(/unreadable/)
   })
 })
 
@@ -177,11 +177,11 @@ describe('removeCredential', () => {
   it('deletes a credential in use, stranding its projects with none', async () => {
     // A leaked credential has to be removable at once.
     await project(WEB, 'https://github.com/acme/web.git')
-    const a = await addHttpsCredential({ name: 'a', token: 'ghp_aaaa' })
+    const a = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'a', token: 'ghp_aaaa' })
     await assignProjectCredential(WEB, a.id)
 
     await removeCredential(a.id)
-    expect(await listCredentialSummaries()).toEqual([])
+    expect(await listCredentialSummaries(BUILT_IN_USER_ID)).toEqual([])
     expect(await resolveProjectCredential(WEB)).toBeNull()
     expect((await runtimeGitCredentials()).git).toEqual([])
     await expect(removeCredential(a.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
@@ -192,8 +192,8 @@ describe('replaceCredential', () => {
   it('replaces a token or a key in place for every project that used it', async () => {
     await project(WEB, 'https://github.com/acme/web.git')
     await project(SVC, 'git@git.example.com:acme/svc.git')
-    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_leaked' })
-    const key = await generateSshCredential({ name: 'deploy' })
+    const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_leaked' })
+    const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
     await assignProjectCredential(WEB, token.id)
     await assignProjectCredential(SVC, key.id)
     sshRuns.length = 0
@@ -210,7 +210,7 @@ describe('replaceCredential', () => {
       kind: 'ssh', id: replaced.id, publicKey: replaced.publicKey, knownHostsEntry: HOST_KEY,
     })
     expect(sshRuns).toEqual([])
-    expect((await listCredentialSummaries()).map((c) => [c.name, c.projects])).toEqual([['gh', [WEB]], ['deploy', [SVC]]])
+    expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => [c.name, c.projects])).toEqual([['gh', [WEB]], ['deploy', [SVC]]])
     await expect(replaceCredential(key.id, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
@@ -220,9 +220,9 @@ describe('runtimeGitCredentials', () => {
     await project(WEB, 'https://github.com/acme/web.git')
     await project(API, 'https://github.com/acme/api.git')
     await project(SVC, 'git@git.example.com:acme/svc.git')
-    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_abcd1234' })
-    await addHttpsCredential({ name: 'unused', token: 'ghp_zzzz' })
-    const key = await generateSshCredential({ name: 'deploy' })
+    const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_abcd1234' })
+    await addHttpsCredential(BUILT_IN_USER_ID, { name: 'unused', token: 'ghp_zzzz' })
+    const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
     await assignProjectCredential(WEB, token.id)
     await assignProjectCredential(API, token.id)
     await assignProjectCredential(SVC, key.id)
@@ -239,7 +239,7 @@ describe('runtimeGitCredentials', () => {
 
 describe('sshKeyMaterial', () => {
   it('opens a key in the form ssh-add reads, and refuses anything else', async () => {
-    const { id, publicKey } = await generateSshCredential({ name: 'deploy' })
+    const { id, publicKey } = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
     const keyPath = path.join(getDataDir(), 'probe')
     await fs.writeFile(keyPath, await sshKeyMaterial(id), { mode: 0o600 })
     const { stdout } = await execFileAsync('ssh-keygen', ['-y', '-f', keyPath])
@@ -252,9 +252,9 @@ describe('sshKeyMaterial', () => {
 describe('listCredentialSummaries', () => {
   it('never carries a secret, and lists each credential with its projects', async () => {
     await project(WEB, 'https://github.com/acme/web.git')
-    const token = await addHttpsCredential({ name: 'gh', token: 'ghp_secret_abcd' })
+    const token = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_secret_abcd' })
     await assignProjectCredential(WEB, token.id)
-    const listing = await listCredentialSummaries()
+    const listing = await listCredentialSummaries(BUILT_IN_USER_ID)
     expect(JSON.stringify(listing)).not.toContain('ghp_secret')
     expect(listing).toEqual([{ id: token.id, name: 'gh', kind: 'https', preview: '***abcd', projects: [WEB] }])
   })

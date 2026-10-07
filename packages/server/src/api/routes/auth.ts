@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
+import type { IdentityEnv } from '#http'
 import { z } from 'zod'
 import { ServerError } from '@yaac/shared/errors'
 import {
@@ -39,8 +40,8 @@ async function requireRuntimeTold(applied: string): Promise<void> {
   )
 }
 
-export const authApp = new Hono()
-  .get('/list', async (c) => c.json(await listAuth()))
+export const authApp = new Hono<IdentityEnv>()
+  .get('/list', async (c) => c.json(await listAuth(c.get('principal').userId)))
   // Request a plan-usage refresh when the webapp's usage popover opens.
   // Throttled in domain/auth/plan-usage.ts; the data arrives via the
   // snapshot, not this response.
@@ -63,7 +64,7 @@ export const authApp = new Hono()
     '/fake',
     zv('json', z.object({ kinds: z.array(z.enum(FAKE_AUTH_KINDS)).min(1) })),
     async (c) => {
-      await seedFakeAuth(c.req.valid('json').kinds)
+      await seedFakeAuth(c.req.valid('json').kinds, c.get('principal').userId)
       await pushCredentialsToRuntime()
       return c.body(null, 204)
     },
@@ -75,14 +76,14 @@ export const authApp = new Hono()
   .post(
     '/git/credentials',
     zv('json', z.object({ name: z.string(), token: z.string().min(1) })),
-    async (c) => c.json(await addHttpsCredential(c.req.valid('json'))),
+    async (c) => c.json(await addHttpsCredential(c.get('principal').userId, c.req.valid('json'))),
   )
   // Generate an SSH key and return its public half for the user to register
   // with their git host.
   .post(
     '/git/ssh-keys',
     zv('json', z.object({ name: z.string() })),
-    async (c) => c.json(await generateSshCredential(c.req.valid('json'))),
+    async (c) => c.json(await generateSshCredential(c.get('principal').userId, c.req.valid('json'))),
   )
   .patch(
     '/git/credentials/:id',

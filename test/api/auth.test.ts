@@ -2,7 +2,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { Hono } from 'hono'
 import { denyBrowserCors, requestLogger } from '@yaac/server/http/auth'
 import { identify, type IdentityEnv } from '@yaac/server/http'
+import { closeDb } from '@yaac/server/db'
 import { asTailnet } from '@yaac/test-utils/api'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import type { AccessMode } from '@yaac/shared/types'
 
 function buildTestApp(): Hono {
   const app = new Hono()
@@ -47,16 +50,23 @@ describe('requestLogger', () => {
 
   it('names the tailnet user a request came from, and nobody for a local one', async () => {
     // The log line is the audit trail of which person did what.
-    const app = new Hono<IdentityEnv>()
-    app.use('*', requestLogger())
-    app.use('*', identify())
-    app.get('/x', (c) => c.text('ok'))
+    const app = (mode: AccessMode): Hono<IdentityEnv> => {
+      const a = new Hono<IdentityEnv>()
+      a.use('*', requestLogger())
+      a.use('*', identify(() => mode))
+      a.get('/x', (c) => c.text('ok'))
+      return a
+    }
+    // A tailnet caller is recorded as a user.
+    const tmpDir = await createTempDataDir()
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
     try {
-      await app.request('/x', { headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net') })
-      await app.request('/x')
+      await app('tailnet').request('/x', { headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net') })
+      await app('local').request('/x')
     } finally {
       vi.unstubAllEnvs()
+      await closeDb()
+      await cleanupTempDir(tmpDir)
     }
     const [tailnet, local] = consoleErrorSpy.mock.calls.map((c) => String(c[0]))
     expect(tailnet).toMatch(/GET \/x 200 \d+ms alice@example\.com$/)

@@ -1,6 +1,12 @@
 import fs from 'node:fs/promises'
 import { vi } from 'vitest'
-import { insertGitCredential, recordProject, setGitIdentity, setProjectGitCredential } from '@yaac/server/db'
+import {
+  BUILT_IN_USER_ID,
+  insertGitCredential,
+  recordProject,
+  setGitIdentity,
+  setProjectGitCredential,
+} from '@yaac/server/db'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import type { ProjectMeta } from '@yaac/shared/types'
 import { git } from './git.js'
@@ -18,7 +24,7 @@ export async function recordTestProject(projectId: string, meta: Partial<Project
     remoteUrl: `https://example.com/${projectId}`,
     addedAt: '2026-01-01T00:00:00.000Z',
     ...meta,
-  })
+  }, BUILT_IN_USER_ID)
 }
 
 /**
@@ -38,7 +44,7 @@ export async function seedProject(projectId = DEMO_PROJECT_ID): Promise<void> {
   }
   await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
   await recordTestProject(projectId, { remoteUrl: 'https://github.com/o/r.git' })
-  await setGitIdentity({ name: 'Ada', email: 'ada@example.com' })
-  const cred = await insertGitCredential({ name: 'gh', kind: 'https', secret: 'ghp_x' })
+  await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada', email: 'ada@example.com' })
+  const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
   await setProjectGitCredential(projectId, cred.id, null)
 }

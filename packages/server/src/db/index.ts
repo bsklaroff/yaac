@@ -106,6 +106,13 @@ export {
   type ProjectRow,
 } from './project-store'
 export {
+  BUILT_IN_USER_ID,
+  listUsers,
+  readAccessMode,
+  recordAccessMode,
+  seeTailnetUser,
+} from './user-store'
+export {
   claimSpareWorkspace,
   clearWorkspaceStopped,
   deleteProjectWorkspaces,

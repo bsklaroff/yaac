@@ -24,6 +24,7 @@ import {
   claimSpareWorkspace,
   getGitIdentity,
   getTimeZone,
+  getProjectRow,
   getWorkspaceRow,
   restoreSpareWorkspace,
   setWorkspaceGroup,
@@ -266,7 +267,9 @@ export async function tryClaimPrewarmed(
     // a reservation never spans an unneeded await.
     const launched = new Map(await Promise.all(spares.map(async (p) =>
       [p.jobName, await getWorkspaceRow(projectId, p.workspaceId).catch(() => undefined)] as const)))
-    const timeZone = (await getTimeZone()).timeZone ?? undefined
+    const owner = (await getProjectRow(projectId))?.owner
+    if (owner === undefined) return undefined
+    const timeZone = (await getTimeZone(owner)).timeZone ?? undefined
     const matches = (p: RuntimeHandle): boolean => {
       const row = launched.get(p.jobName)
       return row !== undefined && p.tool === tool && row.model === setup.model
@@ -415,7 +418,7 @@ export async function tryClaimPrewarmed(
 
     // Re-apply the current git identity, which may have changed since the
     // spare was warmed. Non-fatal: the workspace is already usable.
-    const claimIdentity = await getGitIdentity()
+    const claimIdentity = await getGitIdentity(owner)
     if (claimIdentity) {
       await runtime.exec(
         chosen.jobName,

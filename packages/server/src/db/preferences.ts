@@ -1,6 +1,10 @@
-import { inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { getDb } from './client'
 import { preferences, shortcutOverrides } from './schema'
+
+/*
+ * Per-user settings: every function takes the owning user's id.
+ */
 
 /** A persisted keyboard-shortcut chord: a physical key `code` plus the four
  *  modifier states. Mirrors the frontend `Chord`, which the server can't
@@ -28,10 +32,10 @@ export function isSerializedChord(value: unknown): value is SerializedChord {
 export const GIT_USER_NAME_KEY = 'git_user_name'
 export const GIT_USER_EMAIL_KEY = 'git_user_email'
 
-/** All saved shortcut overrides (empty when none are set). */
-export async function getShortcutOverrides(): Promise<Record<string, SerializedChord>> {
+/** A user's saved shortcut overrides (empty when none are set). */
+export async function getShortcutOverrides(owner: string): Promise<Record<string, SerializedChord>> {
   const db = await getDb()
-  const rows = await db.select().from(shortcutOverrides)
+  const rows = await db.select().from(shortcutOverrides).where(eq(shortcutOverrides.owner, owner))
   const out: Record<string, SerializedChord> = {}
   for (const row of rows) {
     out[row.commandId] = {
@@ -46,17 +50,17 @@ export async function getShortcutOverrides(): Promise<Record<string, SerializedC
 }
 
 /** Persist a single command's rebind, leaving the other overrides intact. */
-export async function setShortcutOverride(id: string, chord: SerializedChord): Promise<void> {
+export async function setShortcutOverride(owner: string, id: string, chord: SerializedChord): Promise<void> {
   const db = await getDb()
   await db.insert(shortcutOverrides)
-    .values({ commandId: id, ...chord })
-    .onConflictDoUpdate({ target: shortcutOverrides.commandId, set: { ...chord } })
+    .values({ owner, commandId: id, ...chord })
+    .onConflictDoUpdate({ target: [shortcutOverrides.owner, shortcutOverrides.commandId], set: { ...chord } })
 }
 
-/** Drop every shortcut override, restoring the factory defaults. */
-export async function clearShortcutOverrides(): Promise<void> {
+/** Drop every override of a user's, restoring the factory defaults. */
+export async function clearShortcutOverrides(owner: string): Promise<void> {
   const db = await getDb()
-  await db.delete(shortcutOverrides)
+  await db.delete(shortcutOverrides).where(eq(shortcutOverrides.owner, owner))
 }
 
 /**
@@ -69,10 +73,10 @@ export async function clearShortcutOverrides(): Promise<void> {
  * server seeds it from the user's shell (`seedGitIdentityFromShell`); the
  * webapp and `yaac config git-identity` edit it.
  */
-export async function getGitIdentity(): Promise<{ name: string; email: string } | null> {
+export async function getGitIdentity(owner: string): Promise<{ name: string; email: string } | null> {
   const db = await getDb()
   const rows = await db.select().from(preferences)
-    .where(inArray(preferences.key, [GIT_USER_NAME_KEY, GIT_USER_EMAIL_KEY]))
+    .where(and(eq(preferences.owner, owner), inArray(preferences.key, [GIT_USER_NAME_KEY, GIT_USER_EMAIL_KEY])))
   const byKey = new Map(rows.map((r) => [r.key, r.value]))
   const name = byKey.get(GIT_USER_NAME_KEY)?.trim()
   const email = byKey.get(GIT_USER_EMAIL_KEY)?.trim()
@@ -81,15 +85,16 @@ export async function getGitIdentity(): Promise<{ name: string; email: string } 
 }
 
 /** Set both halves. Validation (non-empty, email-shaped) is the caller's. */
-export async function setGitIdentity(identity: { name: string; email: string }): Promise<void> {
+export async function setGitIdentity(owner: string, identity: { name: string; email: string }): Promise<void> {
+  await setPreferences(owner, [[GIT_USER_NAME_KEY, identity.name], [GIT_USER_EMAIL_KEY, identity.email]])
+}
+
+async function setPreferences(owner: string, entries: Array<[string, string]>): Promise<void> {
   const db = await getDb()
-  for (const [key, value] of [
-    [GIT_USER_NAME_KEY, identity.name],
-    [GIT_USER_EMAIL_KEY, identity.email],
-  ] as const) {
+  for (const [key, value] of entries) {
     await db.insert(preferences)
-      .values({ key, value })
-      .onConflictDoUpdate({ target: preferences.key, set: { value } })
+      .values({ owner, key, value })
+      .onConflictDoUpdate({ target: [preferences.owner, preferences.key], set: { value } })
   }
 }
 
@@ -102,20 +107,15 @@ const TIME_ZONE_PINNED_KEY = 'time_zone_pinned'
  * zone; `pinned` means the user chose one in settings, which device reports
  * then leave alone.
  */
-export async function getTimeZone(): Promise<{ timeZone: string | null; pinned: boolean }> {
+export async function getTimeZone(owner: string): Promise<{ timeZone: string | null; pinned: boolean }> {
   const db = await getDb()
   const rows = await db.select().from(preferences)
-    .where(inArray(preferences.key, [TIME_ZONE_KEY, TIME_ZONE_PINNED_KEY]))
+    .where(and(eq(preferences.owner, owner), inArray(preferences.key, [TIME_ZONE_KEY, TIME_ZONE_PINNED_KEY])))
   const byKey = new Map(rows.map((r) => [r.key, r.value]))
   return { timeZone: byKey.get(TIME_ZONE_KEY) ?? null, pinned: byKey.get(TIME_ZONE_PINNED_KEY) === '1' }
 }
 
 /** Store the zone. Validation is the caller's. */
-export async function setTimeZone(timeZone: string, pinned: boolean): Promise<void> {
-  const db = await getDb()
-  for (const [key, value] of [[TIME_ZONE_KEY, timeZone], [TIME_ZONE_PINNED_KEY, pinned ? '1' : '0']]) {
-    await db.insert(preferences)
-      .values({ key, value })
-      .onConflictDoUpdate({ target: preferences.key, set: { value } })
-  }
+export async function setTimeZone(owner: string, timeZone: string, pinned: boolean): Promise<void> {
+  await setPreferences(owner, [[TIME_ZONE_KEY, timeZone], [TIME_ZONE_PINNED_KEY, pinned ? '1' : '0']])
 }

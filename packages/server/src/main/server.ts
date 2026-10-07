@@ -21,6 +21,8 @@ import { configApp } from '#routes/config'
 import { imageApp } from '#routes/images'
 import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
+import type { AccessMode, Whoami } from '@yaac/shared/types'
+import { listUsers } from '#db'
 
 export interface ServerAppDeps {
   buildId: string
@@ -31,6 +33,12 @@ export interface ServerAppDeps {
    * Defaults to always-ready for tests that never open the DB.
    */
   isReady?: () => boolean
+  /**
+   * The access mode startup settled, or why it refused the start (reported
+   * on `/health` as `refused`); undefined until then. Defaults to `local`
+   * for tests that never open the DB.
+   */
+  access?: () => AccessMode | { refused: string } | undefined
 }
 
 /**
@@ -39,6 +47,7 @@ export interface ServerAppDeps {
  */
 export function buildApp(deps: ServerAppDeps) {
   const isReady = deps.isReady ?? (() => true)
+  const access = deps.access ?? (() => 'local')
   const app = new Hono<IdentityEnv>()
 
   app.use('*', requestLogger())
@@ -54,7 +63,7 @@ export function buildApp(deps: ServerAppDeps) {
   // and Sec-Fetch-Site. Both are browser-set and apply to WS upgrades too.
   app.use('*', originHeaderCheck())
   app.use('*', fetchSiteCheck())
-  app.use('*', identify())
+  app.use('*', identify(access))
 
   app.onError(errorResponse)
 
@@ -69,7 +78,7 @@ export function buildApp(deps: ServerAppDeps) {
     registerStaticRoutes(app, frontendDir)
   }
 
-  app.route('/api', apiRoutes(isReady, deps.buildId))
+  app.route('/api', apiRoutes(isReady, access, deps.buildId))
   return app
 }
 
@@ -96,20 +105,35 @@ export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<bool
  * routes) so none collide with SPA paths. `AppType` is this sub-app;
  * `createApiClient` adds the prefix.
  */
-function apiRoutes(isReady: () => boolean, buildId: string) {
+function apiRoutes(
+  isReady: () => boolean,
+  access: () => AccessMode | { refused: string } | undefined,
+  buildId: string,
+) {
   return new Hono<IdentityEnv>()
-    .get('/health', (c) => c.json({
-      ok: true,
-      buildId,
-      ready: isReady(),
-      // The driver, or null before one is registered. On /health because
-      // `yaac cluster …` needs it before identifying, to know what THIS
-      // server runs.
-      driver: hasWorkspaceDriver() ? workspaceDriver().kind : null,
-    }))
+    .get('/health', (c) => {
+      const a = access()
+      return c.json({
+        ok: true,
+        buildId,
+        ready: isReady(),
+        // `yaac server start` compares a running server's mode with the one
+        // it was asked for, and prints a refused start's reason.
+        access: typeof a === 'string' ? a : null,
+        refused: typeof a === 'object' ? a.refused : undefined,
+        // The driver, or null before one is registered. On /health because
+        // `yaac cluster …` needs it before identifying, to know what THIS
+        // server runs.
+        driver: hasWorkspaceDriver() ? workspaceDriver().kind : null,
+      })
+    })
     // The SPA's bootstrap and the clients' "will this server accept me"
-    // probe.
-    .get('/whoami', (c) => c.json(c.get('principal')))
+    // probe. A tailnet install lists only tailnet users: its built-in user
+    // has no login until a switch from local gives it one.
+    .get('/whoami', async (c) => {
+      const users = (await listUsers()).filter((u) => access() === 'local' || u.login !== null)
+      return c.json({ ...c.get('principal'), users } satisfies Whoami)
+    })
     .route('/project', projectApp)
     .route('/workspace', workspaceApp)
     .route('/auth', authApp)

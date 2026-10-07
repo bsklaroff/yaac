@@ -3,6 +3,7 @@ import { Command, Argument, Option, type Help } from 'commander'
 import pkg from '../../../package.json' with { type: 'json' }
 import { exitOnApiError } from '@yaac/shared/server-api'
 import { AGENT_MODES, PERMISSION_MODES } from '@yaac/shared/types'
+import type { ServerAccessOptions } from '@yaac/server/main/lifecycle'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { groupCreate, groupDelete, groupList, groupMove } from '#commands/group'
@@ -83,7 +84,7 @@ async function runningServerDriver(): Promise<string | undefined> {
  */
 async function runDeployedServerVerb(
   verb: 'start' | 'stop' | 'restart' | 'logs',
-  logsOpts: { follow?: boolean; lines?: number } = {},
+  opts: { follow?: boolean; lines?: number; tailnet?: string; owner?: string } = {},
 ): Promise<boolean> {
   const { recordedDriver } = await import('@yaac/shared/install-driver')
   if (await recordedDriver() !== 'k8s') return false
@@ -107,8 +108,14 @@ async function runDeployedServerVerb(
     )
   }
   if (!deployed) return false
+  if (opts.tailnet !== undefined || opts.owner !== undefined) {
+    throw new Error(
+      'this install\'s server runs in the cluster, whose access mode `yaac cluster install` '
+      + 'sets: use `yaac cluster install --tailnet [--owner <login>]`.',
+    )
+  }
   if (verb === 'logs') {
-    await install.clusterServerLogs(logsOpts)
+    await install.clusterServerLogs(opts)
     return true
   }
   if (verb === 'stop') {
@@ -202,6 +209,9 @@ const program = new Command()
   .version(pkg.version)
   .configureHelp({ formatHelp: nestedHelp })
 
+const TAILNET_HELP = 'Serve tailnet users through `tailscale serve` at this MagicDNS name (e.g. srv.<tailnet>.ts.net) instead of only this machine. The install records the mode, and every later start must name it again'
+const OWNER_HELP = 'With --tailnet: switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install'
+
 const server = program
   .command('server')
   .description('Manage the yaac server (HTTP server the CLI talks to)')
@@ -218,10 +228,12 @@ server
 server
   .command('start')
   .description('Start the server in the background')
-  .action(async () => {
-    if (await runDeployedServerVerb('start')) return
+  .option('--tailnet <host>', TAILNET_HELP)
+  .option('--owner <login>', OWNER_HELP)
+  .action(async (options: ServerAccessOptions) => {
+    if (await runDeployedServerVerb('start', options)) return
     const { startServer } = await import('@yaac/server/main/lifecycle')
-    await startServer()
+    await startServer(options)
   })
 
 server
@@ -236,10 +248,12 @@ server
 server
   .command('restart')
   .description('Restart the server (stop, then start)')
-  .action(async () => {
-    if (await runDeployedServerVerb('restart')) return
+  .option('--tailnet <host>', TAILNET_HELP)
+  .option('--owner <login>', OWNER_HELP)
+  .action(async (options: ServerAccessOptions) => {
+    if (await runDeployedServerVerb('restart', options)) return
     const { restartServer } = await import('@yaac/server/main/lifecycle')
-    await restartServer()
+    await restartServer(options)
   })
 
 server
@@ -281,6 +295,7 @@ cluster
   .option('--rwx-storage-class <name>', 'With --byo (required): the NFS-family StorageClass the shared yaac-global claim is provisioned from')
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
   .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user')
+  .option('--owner <login>', 'With --tailnet (or --byo): switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install')
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
   .action(async (options: ClusterInstallArgs) => {

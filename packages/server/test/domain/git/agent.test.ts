@@ -7,7 +7,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
-import { deleteGitCredential, insertGitCredential } from '#db'
+import { BUILT_IN_USER_ID, deleteGitCredential, insertGitCredential } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { gitSshAgentSock } from '#domain/git/agent'
 import { generateSshKey } from '#lib/ssh-key'
@@ -43,10 +43,10 @@ describe('startGitSshAgent', () => {
   it('lists the stored keys, signs with them, and forgets a deleted one live', async () => {
     const a = generateSshKey('yaac a')
     const b = generateSshKey('yaac b')
-    const aRow = await insertGitCredential({ name: 'a', kind: 'ssh', secret: a.seed.toString('base64'), publicKey: a.publicKey })
-    await insertGitCredential({ name: 'b', kind: 'ssh', secret: b.seed.toString('base64'), publicKey: b.publicKey })
+    const aRow = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'a', kind: 'ssh', secret: a.seed.toString('base64'), publicKey: a.publicKey })
+    await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'b', kind: 'ssh', secret: b.seed.toString('base64'), publicKey: b.publicKey })
     // An https token is not listed as an identity.
-    await insertGitCredential({ name: 'gh', kind: 'https', secret: 'ghp_x' })
+    await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
 
     await startGitSshAgent()
     await startGitSshAgent() // idempotent

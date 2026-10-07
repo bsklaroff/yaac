@@ -26,10 +26,13 @@ import {
 import { ENVOY_MIRROR_TAG } from '#drivers/k8s/cluster'
 import { execFileAsync, registryRef } from '#drivers/k8s/container'
 import { env } from '@yaac/shared/env'
+import type { AccessMode } from '@yaac/shared/types'
 import { ClusterInstallError } from './arg-guards'
 
-/** What the Deployment's environment must state for a published origin. */
+/** What the Deployment's environment must state for a published origin:
+ *  the access mode it serves in, and the names it is reached at. */
 export interface RemoteHosting {
+  accessMode: AccessMode
   allowedHosts: string[]
 }
 
@@ -103,7 +106,7 @@ export function kindFronting(): ServerFronting {
     retired: () => [{ apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', name: SERVER_APP_NAME }],
     ingressPeers: () => [],
     resolveOrigin: async () => `http://127.0.0.1:${String(await kindPublishedPort())}`,
-    remoteHosting: () => ({ allowedHosts: [] }),
+    remoteHosting: () => ({ accessMode: 'local', allowedHosts: [] }),
     publishTimeoutMs: 60_000,
     unreachableDiagnosis: () =>
       'This is what a cluster created before the server was published looks '
@@ -238,7 +241,7 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
       }
     },
     // A non-loopback host, so every request goes through the identity check.
-    remoteHosting: (origin) => ({ allowedHosts: [new URL(origin).hostname] }),
+    remoteHosting: (origin) => ({ accessMode: 'tailnet', allowedHosts: [new URL(origin).hostname] }),
     // The first HTTPS request to a new name triggers a slow certificate fetch.
     publishTimeoutMs: 180_000,
     unreachableDiagnosis: (origin) =>

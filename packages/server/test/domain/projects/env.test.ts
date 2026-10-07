@@ -3,7 +3,7 @@ import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectDir } from '@yaac/shared/project-paths'
-import { closeDb, recordProject, upsertProjectEnvVar } from '#db'
+import { BUILT_IN_USER_ID, closeDb, recordProject, upsertProjectEnvVar } from '#db'
 import {
   listProjectEnv,
   parseSecretProxyRule,
@@ -27,7 +27,7 @@ const RULE = { hosts: ['api.example.com'], header: 'x-api-key' }
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   await fs.mkdir(projectDir(DEMO_PROJECT_ID), { recursive: true })
-  await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: 'now' })
+  await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: 'https://github.com/o/r.git', addedAt: 'now' }, BUILT_IN_USER_ID)
 })
 
 afterEach(async () => {
