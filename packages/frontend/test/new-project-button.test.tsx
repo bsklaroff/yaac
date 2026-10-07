@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import type { QueryClient } from '@tanstack/react-query'
+import type { JSX } from 'react'
 import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type { AuthListResult, GitCredentialSummary } from '@yaac/shared/types'
-import { NewProjectButton } from '#components/NewProjectButton'
+import { AddProjectDialog, NewProjectButton } from '#components/NewProjectButton'
+import { ProjectOpPane } from '#components/ProjectOpPane'
 import { useUiStore } from '#lib/store'
-import { SNAPSHOT_KEY } from '#lib/useEvents'
-import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
 
 const TOKEN: GitCredentialSummary = {
   id: 'c-token', name: 'repo-token', kind: 'https', preview: '***abcd', projects: ['alpha'],
@@ -21,7 +21,7 @@ const NEW_KEY = 'POST /api/auth/git/ssh-keys'
 let server: FetchMock
 
 beforeEach(() => {
-  useUiStore.setState({ activeProjectId: null })
+  useUiStore.setState({ activeProjectId: null, projectOps: [], addProjectForm: null, trustedHostKeys: [] })
   server = mockFetch({ [AUTH_LIST]: list(TOKEN) })
 })
 
@@ -30,23 +30,27 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-let client: QueryClient
+/** The button and dialog, plus the main area's progress pane for the
+ *  selected op, as the shell shows it. */
+function Harness(): JSX.Element {
+  const op = useUiStore((s) => s.projectOps.find((o) => o.id === s.activeProjectId))
+  return (
+    <>
+      <NewProjectButton />
+      <AddProjectDialog />
+      {op && <ProjectOpPane op={op} />}
+    </>
+  )
+}
 
-/**
- * Push a snapshot frame listing these projects, as `useEvents` would, and let
- * React Query's batched notify (a zero timeout) reach the component.
- */
-async function snapshotLists(...projectIds: string[]): Promise<void> {
-  await act(async () => {
-    client.setQueryData(SNAPSHOT_KEY, { projects: projectIds.map((id) => ({ id })) })
-    await new Promise((r) => setTimeout(r, 0))
-  })
+/** The snapshot lists these projects, as the shell reports each frame. */
+function snapshotLists(...projectIds: string[]): void {
+  act(() => useUiStore.getState().settleProjectOps(projectIds))
 }
 
 /** Render, open the dialog, type the remote, and wait for credentials. */
 async function openWith(url: string): Promise<void> {
-  client = testQueryClient()
-  renderWithClient(<NewProjectButton />, client)
+  renderWithClient(<Harness />)
   fireEvent.click(screen.getByRole('button', { name: 'New project' }))
   fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: url } })
   await waitFor(() => expect(server.called(AUTH_LIST).length).toBeGreaterThan(0))
@@ -57,7 +61,10 @@ const addButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('
 describe('NewProjectButton', () => {
   it('generates a new SSH key and shows its public half before the clone that needs it', async () => {
     server.route(NEW_KEY, { id: 'c-key', publicKey: 'ssh-ed25519 AAAAkey yaac repo-key' })
-    server.route(ADD, { project: { id: 'id-repo', name: 'repo' }, knownHostsEntry: 'github.com ssh-ed25519 HOSTKEY' })
+    let finishClone = (): void => {}
+    server.route(ADD, () => new Promise((resolve) => {
+      finishClone = () => resolve({ project: { id: 'id-repo', name: 'repo' }, knownHostsEntry: 'github.com ssh-ed25519 HOSTKEY' })
+    }))
     await openWith('git@github.com:o/repo.git')
 
     // No SSH key exists (the token is the wrong kind), so the picker offers
@@ -75,17 +82,34 @@ describe('NewProjectButton', () => {
     await waitFor(() => expect(server.called(ADD).map((c) => c.body)).toEqual([
       { remoteUrl: 'git@github.com:o/repo.git', gitCredentialId: 'c-key' },
     ]))
-    // The trusted host key is shown before the dialog closes.
+    // The dialog closes while the clone runs, and its pending entry is
+    // selected, showing progress.
+    expect(screen.queryByLabelText('Repository URL')).toBeNull()
+    expect(screen.getByText('Adding repo')).toBeTruthy()
+    const pending = useUiStore.getState().activeProjectId
+    expect(useUiStore.getState().projectOps.map((o) => o.id)).toEqual([pending])
+
+    // The user starts a second add before the first finishes. Its host key
+    // waits for the form to close rather than replacing it.
+    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'git@github.com:o/two.git' } })
+    act(() => finishClone())
+    await waitFor(() => expect(useUiStore.getState().trustedHostKeys).toHaveLength(1))
+    expect(screen.getByLabelText<HTMLInputElement>('Repository URL').value).toBe('git@github.com:o/two.git')
+    expect(screen.queryByText('github.com ssh-ed25519 HOSTKEY')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(await screen.findByText('github.com ssh-ed25519 HOSTKEY')).toBeTruthy()
-    // Selected only once the snapshot lists it, or the shell's fallback for
-    // an unknown project would switch straight back.
-    await snapshotLists('alpha')
-    expect(useUiStore.getState().activeProjectId).toBeNull()
-    await snapshotLists('alpha', 'id-repo')
+    expect(screen.getByText('Added repo.')).toBeTruthy()
+    // The pending entry stays selected until the snapshot lists the
+    // project, so the shell never shows an unknown one.
+    snapshotLists('alpha')
+    expect(useUiStore.getState().activeProjectId).toBe(pending)
+    snapshotLists('alpha', 'id-repo')
     expect(useUiStore.getState().activeProjectId).toBe('id-repo')
+    expect(useUiStore.getState().projectOps).toEqual([])
   })
 
-  it('stores a new HTTPS token first, and a failed clone retries with it rather than another', async () => {
+  it('stores a new HTTPS token first, and a failed clone retries from the progress pane', async () => {
     server.route(NEW_TOKEN, { id: 'c-new' })
     let adds = 0
     server.route(ADD, () => (adds++ === 0
@@ -107,17 +131,24 @@ describe('NewProjectButton', () => {
     }))
     fireEvent.click(addButton())
     expect(await screen.findByText('git authentication failed for github.com')).toBeTruthy()
+    expect(screen.getByText("Couldn't add repo")).toBeTruthy()
     expect(server.called(NEW_TOKEN).map((c) => c.body)).toEqual([{ name: 'repo-token-2', token: 'ghp_x' }])
-    expect(screen.getByLabelText<HTMLSelectElement>('Git credential').value).toBe('c-new')
 
+    // Try again reopens the dialog on the same remote, where the stored
+    // token is now an existing credential.
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(screen.getByLabelText<HTMLInputElement>('Repository URL').value).toBe('https://github.com/o/Repo.git/')
+    expect(useUiStore.getState().projectOps).toEqual([])
+    fireEvent.change(await screen.findByLabelText('Git credential'), { target: { value: 'c-new' } })
     fireEvent.click(addButton())
     await waitFor(() => expect(server.called(ADD)).toHaveLength(2))
-    await snapshotLists('id-repo')
+    await waitFor(() => expect(useUiStore.getState().projectOps[0]?.doneId).toBe('id-repo'))
+    snapshotLists('id-repo')
     expect(useUiStore.getState().activeProjectId).toBe('id-repo')
     expect(server.called(NEW_TOKEN)).toHaveLength(1)
     const retried = { remoteUrl: 'https://github.com/o/Repo.git/', gitCredentialId: 'c-new' }
     expect(server.called(ADD).map((c) => c.body)).toEqual([retried, retried])
-    // No host key to show: the dialog just closes.
-    await waitFor(() => expect(screen.queryByLabelText('Repository URL')).toBeNull())
+    // No host key to show: the dialog stays closed.
+    expect(screen.queryByLabelText('Repository URL')).toBeNull()
   })
 })

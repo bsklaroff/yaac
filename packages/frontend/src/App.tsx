@@ -25,6 +25,10 @@ import { newlyWaiting, waitingKeys } from '@yaac/shared/waiting'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
+import { AddProjectDialog } from './components/NewProjectButton'
+import { ProjectOpPane } from './components/ProjectOpPane'
+import { WelcomePane } from './components/WelcomePane'
+import { MobileHeader } from './components/mobile/MobileHeader'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 
@@ -120,6 +124,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const markWaitingRead = useUiStore((s) => s.markWaitingRead)
   const syncWaitingRead = useUiStore((s) => s.syncWaitingRead)
   const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
+  const projectOps = useUiStore((s) => s.projectOps)
+  const settleProjectOps = useUiStore((s) => s.settleProjectOps)
 
   // Phone-sized: the three columns become three screens (docs/mobile-layout.md).
   const isMobile = useIsMobile()
@@ -139,26 +145,37 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     persistSelection(s.activeProjectId, s.selectedWorkspaceId)
   }, [])
 
+  // A layout effect, so a finished add never paints as both its pending chip
+  // and the listed project. Settled against every user's projects, since a
+  // teammate may be in view. Ops are the caller's own, so a teammate's view
+  // shows none.
+  useLayoutEffect(() => {
+    if (all) settleProjectOps(all.projects.map((p) => p.id))
+  }, [all, projectOps, settleProjectOps])
+  const ops = readOnly ? [] : projectOps
+  const projectOp = ops.find((o) => o.id === activeProjectId)
+
   // An active project of another user's (a link, or a reload) switches to
   // viewing that user. An active project that is no id here may be a link
   // naming the project instead; else the selected workspace says which
   // project it is in. Failing all, fall back to the first project, with
   // restoreActiveProject because the user did not choose it, so on mobile it
-  // must not navigate into the project.
+  // must not navigate into the project. A pending add is selectable before
+  // it is listed.
   useEffect(() => {
     const owner = all?.projects.find((p) => p.id === activeProjectId)?.owner
     if (owner !== undefined && owner !== viewedUserId) {
       useUiStore.setState({ viewedUserId: owner })
       return
     }
-    if (projects.length === 0) return
+    if (projects.length === 0 || projectOp) return
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return
     const { selectedWorkspaceId } = useUiStore.getState()
     const found = projects.find((p) => p.name === activeProjectId)?.id
       ?? workspaces.find((w) => w.workspaceId === selectedWorkspaceId)?.projectId
     if (found !== undefined) useUiStore.setState({ activeProjectId: found })
     else restoreActiveProject(projects[0].id)
-  }, [all, viewedUserId, activeProjectId, projects, workspaces, restoreActiveProject])
+  }, [all, viewedUserId, activeProjectId, projectOp, projects, workspaces, restoreActiveProject])
 
   const scoped = workspaces.filter((s) => s.projectId === activeProjectId)
   const scopedProvisioning = provisioning.filter((p) => p.projectId === activeProjectId)
@@ -279,12 +296,18 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
 
   const projectRemoteUrl = projects.find((p) => p.id === activeProjectId)?.remoteUrl ?? ''
   const scopedGitAuthFailures = (activeProjectId && snapshot?.gitAuthFailures?.[activeProjectId]) || []
+  // What replaces the sidebar and pane when there is no project to show.
+  const placeholder = projectOp
+    ? <ProjectOpPane op={projectOp} />
+    : snapshot && projects.length === 0 && !readOnly ? <WelcomePane /> : null
 
   return (
     // Desktop: rail and sidebar beside an inset workspace card. Mobile: three
     // stacked full-screen layers, one visible at a time. The pane wrapper
     // stays the same <div> in both, so WorkspaceView and its terminals stay
-    // mounted when a phone rotates across the breakpoint.
+    // mounted when a phone rotates across the breakpoint. On desktop a
+    // placeholder (welcome, or a project being added or removed) takes the
+    // place of both sidebar and pane.
     <div className={clsx('bg-shell', isMobile
       ? 'safe-area-inset relative h-full overflow-hidden'
       : 'flex h-full')}
@@ -293,6 +316,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         <MobileScreenLayer active={mobileScreen === 'projects'}>
           <ProjectsScreen
             projects={projects}
+            ops={ops}
             activeProjectId={activeProjectId}
             attentionByProject={attention}
             connected={connected}
@@ -302,6 +326,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       ) : (
         <ProjectRail
           projects={projects}
+          ops={ops}
           activeProjectId={activeProjectId}
           attentionByProject={attention}
           onSelect={setActiveProject}
@@ -310,20 +335,31 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
 
       {isMobile ? (
         <MobileScreenLayer active={mobileScreen === 'workspaces'}>
-          <WorkspacesScreen
-            projectId={activeProjectId}
-            projectRemoteUrl={projectRemoteUrl}
-            workspaces={scoped}
-            groups={scopedGroups}
-            provisioning={scopedProvisioning}
-            queued={scopedQueued}
-            held={scopedHeld}
-            drafts={scopedDrafts}
-            connected={connected}
-            gitAuthFailures={scopedGitAuthFailures}
-            onBack={goBackScreen}
-          />
+          {projectOp ? (
+            <>
+              <MobileHeader onBack={goBackScreen} backLabel="Back to projects" title={projectOp.name} />
+              <ProjectOpPane op={projectOp} />
+            </>
+          ) : (
+            <WorkspacesScreen
+              projectId={activeProjectId}
+              projectRemoteUrl={projectRemoteUrl}
+              workspaces={scoped}
+              groups={scopedGroups}
+              provisioning={scopedProvisioning}
+              queued={scopedQueued}
+              held={scopedHeld}
+              drafts={scopedDrafts}
+              connected={connected}
+              gitAuthFailures={scopedGitAuthFailures}
+              onBack={goBackScreen}
+            />
+          )}
         </MobileScreenLayer>
+      ) : placeholder ? (
+        <div className="m-2 flex min-w-0 flex-1 flex-col rounded-lg border border-hairline bg-surface">
+          {placeholder}
+        </div>
       ) : sidebarOpen && (
         <Sidebar
           projectId={activeProjectId}
@@ -339,7 +375,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         />
       )}
 
-      <div
+      {(isMobile || !placeholder) && <div
         inert={isMobile && mobileScreen !== 'pane'}
         className={clsx(isMobile
           ? ['absolute inset-0', mobileScreen !== 'pane' && 'invisible pointer-events-none']
@@ -348,7 +384,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         {readOnly
           ? <ReadOnlyWorkspace workspace={workspaces.find((w) => w.workspaceId === selectedWorkspaceId)} />
           : <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />}
-      </div>
+      </div>}
 
       {/* Confirm for the delete-workspace shortcut. */}
       <StopWorkspaceDialog
@@ -360,6 +396,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         }}
       />
       <CreateWorkspaceDialog />
+      <AddProjectDialog />
     </div>
   )
 }

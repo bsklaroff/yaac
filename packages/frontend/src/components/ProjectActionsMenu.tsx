@@ -1,30 +1,24 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { useMutation } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
 import { DeleteIcon } from '#lib/icons'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MENU_ITEM, POPUP } from '#components/ui/menu'
-import { api } from '#lib/api'
-import { useUiStore } from '#lib/store'
+import { removeProjectInBackground } from '#lib/projectOps'
 import { useReadOnly } from '#lib/viewer'
 import { useProjectName } from '#lib/projectIdentity'
 
 /** The project name as a menu trigger. The only action is Remove, which
- *  asks for confirmation. A teammate's project shows its plain name. */
+ *  asks for confirmation and then runs in the background (#lib/projectOps).
+ *  A teammate's project shows its plain name. */
 export function ProjectActionsMenu({ projectId, remoteUrl }: {
   projectId: string
   /** The project's git remote, typed back to confirm removal. */
   remoteUrl: string
 }): JSX.Element {
-  const setActiveProject = useUiStore((s) => s.setActiveProject)
   const [confirm, setConfirm] = useState(false)
   const name = useProjectName()(projectId)
   const readOnly = useReadOnly()
-  const remove = useMutation({
-    mutationFn: () => api.project[':projectId'].$delete({ param: { projectId } }),
-    onSuccess: () => { setActiveProject(null); setConfirm(false) },
-  })
   if (readOnly) return <span className="truncate font-semibold tracking-tight">{name}</span>
 
   return (
@@ -51,14 +45,12 @@ export function ProjectActionsMenu({ projectId, remoteUrl }: {
 
       <ConfirmDialog
         open={confirm}
-        onOpenChange={(next) => { setConfirm(next); remove.reset() }}
-        busy={remove.isPending}
-        error={remove.error?.message}
+        onOpenChange={setConfirm}
         title="Remove project?"
         description={`Removes "${name}" and all its workspaces. This can't be undone.`}
         confirmText={remoteUrl}
         confirmLabel="Remove"
-        onConfirm={() => remove.mutate()}
+        onConfirm={() => { setConfirm(false); removeProjectInBackground(projectId, name, remoteUrl) }}
       />
     </>
   )
