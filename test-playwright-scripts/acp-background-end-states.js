@@ -45,8 +45,12 @@ try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
   await page.goto(`${origin}/?project=${workspace.projectId}&workspace=${workspace.workspaceId}`)
-  const composer = page.getByPlaceholder('Message the agent…')
+  // Other acp workspaces' panes stay mounted but hidden, so every lookup
+  // keeps to the visible one.
+  const composer = page.getByPlaceholder('Message the agent…').filter({ visible: true })
   await composer.waitFor({ state: 'visible', timeout: 60_000 })
+  // The condensed view folds the cards into a summary once the turn replies.
+  await page.getByRole('button', { name: 'Show every step' }).filter({ visible: true }).click()
 
   // Records each change in what the strip and the two cards show, with the
   // time since the observer started.
@@ -57,7 +61,8 @@ try {
     const markOf = (el) => el.querySelector('svg[aria-label]')?.getAttribute('aria-label')
       ?? /(cancelled|stopped|paused|unfinished)$/.exec(el.textContent ?? '')?.[1] ?? '?'
     const read = () => {
-      const strip = document.querySelector('[role="group"][aria-label="Running in the background"]')
+      const strip = [...document.querySelectorAll('[role="group"][aria-label="Running in the background"]')]
+        .find((el) => el.checkVisibility())
       const chips = strip ? [...strip.querySelectorAll('button')].map((b) => b.getAttribute('aria-label')).sort() : []
       const cards = names.map((name) => {
         const card = [...document.querySelectorAll('button:not([aria-label])')]
@@ -80,7 +85,7 @@ try {
   await composer.press('Enter')
 
   const states = () => page.evaluate(() => window.__states)
-  const strip = page.getByRole('group', { name: 'Running in the background' })
+  const strip = page.getByRole('group', { name: 'Running in the background' }).filter({ visible: true })
   await strip.getByRole('button', { name: `Agent: ${AGENT}` }).waitFor({ timeout: 180_000 })
   await strip.getByRole('button', { name: new RegExp(`: ${SHELL}$`) }).waitFor({ timeout: 180_000 })
   check('both show in the strip while running', true)
