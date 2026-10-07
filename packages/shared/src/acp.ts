@@ -12,6 +12,8 @@
  * live events, so a pane replaces its list on `hello` instead of merging.
  */
 
+import type { PermissionMode } from './types'
+
 /** A piece of renderable content: ACP's content blocks, minus the kinds the
  *  agent never produces here (such as embedded resources). */
 export type AcpContent =
@@ -270,6 +272,14 @@ export type AcpServerMessage =
   /** The answer to a `subagent-transcript` request: the subagent's thread as
    *  its own transcript has it, or why it could not be read. */
   | { type: 'subagent-transcript'; subagentId: string; events?: AcpEventInit[]; error?: string }
+  /**
+   * The conversation's permission posture, sent after `hello` and whenever
+   * it changes. Current state like `queue`, so it replaces what the pane
+   * held. `available` lists the postures a pane may switch to, `current`
+   * among them; it is empty when this conversation cannot be moved between
+   * postures (opencode and pi carry theirs in launch config, or have none).
+   */
+  | { type: 'permission-mode'; current?: PermissionMode; available: PermissionMode[] }
 
 /** Pane → server. */
 export type AcpClientMessage =
@@ -290,6 +300,9 @@ export type AcpClientMessage =
   /** Switch the session's model to one a `models` event offered. A refusal
    *  comes back as an `error` event. */
   | { type: 'model'; modelId: string }
+  /** Switch the session's posture to one the last `permission-mode` frame
+   *  offered. A refusal comes back as an `error` event. */
+  | { type: 'permission-mode'; mode: PermissionMode }
   /** Stop a background task the record announced with `canStop`. Its
    *  `stopped` state comes back as a `task` event. */
   | { type: 'stop-task'; taskId: string }

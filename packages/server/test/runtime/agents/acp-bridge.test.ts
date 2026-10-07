@@ -757,6 +757,98 @@ describe('attachAcp', () => {
     expect(errors[0]).toContain('Invalid value')
   })
 
+  it('shows a pane the posture, switches it to one on offer and reports a refusal', async () => {
+    const reported: string[] = []
+    reattach(acpAdapterFor('claude'), {
+      permissionMode: () => 'accept-edits',
+      onModeId: (modeId) => reported.push(modeId),
+    })
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    const postures = (): AcpServerMessage[] => sock.sent.filter((m) => m.type === 'permission-mode')
+    await waitFor(() => postures().length > 0)
+    // A reattach has no handshake to say what is offered, so every posture
+    // claude has a mode for is listed.
+    expect(postures().at(-1)).toEqual({
+      type: 'permission-mode',
+      current: 'accept-edits',
+      available: ['bypass', 'auto', 'accept-edits', 'manual', 'plan'],
+    })
+
+    // claude has no read-only mode, so nothing reaches the agent.
+    sock.clientSend({ type: 'permission-mode', mode: 'read-only' })
+    sock.clientSend({ type: 'permission-mode', mode: 'plan' })
+    await waitFor(() => requests('session/set_mode').length === 1)
+    expect(requests('session/set_mode')[0].params).toEqual({ sessionId: 'acp-1', modeId: 'plan' })
+    reply(requests('session/set_mode')[0].id, {})
+    await waitFor(() => postures().at(-1)?.type === 'permission-mode'
+      && (postures().at(-1) as { current?: string }).current === 'plan')
+    // Reported upward, so the workspace row follows.
+    expect(reported).toEqual(['plan'])
+
+    sock.clientSend({ type: 'permission-mode', mode: 'bypass' })
+    await waitFor(() => requests('session/set_mode').length === 2)
+    transport.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: requests('session/set_mode')[1].id, error: { code: -32602, message: 'not as root' },
+    })}\n`)
+    await waitFor(() => sock.sent.some((m) => m.type === 'event' && m.event.type === 'error'))
+    const errors = sock.sent.flatMap((m) => (m.type === 'event' && m.event.type === 'error' ? [m.event.message] : []))
+    expect(errors[0]).toContain('bypass')
+    expect(errors[0]).toContain('not as root')
+    // The session kept its mode, so neither the pane's label nor the row moves.
+    expect(postures().at(-1)).toMatchObject({ current: 'plan' })
+    expect(reported).toEqual(['plan'])
+
+    // opencode maps only `plan` to a mode, so a pane could leave its posture
+    // but never come back: nothing is offered.
+    reattach(acpAdapterFor('opencode'), { permissionMode: () => 'accept-edits' })
+    const opencode = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', opencode)
+    await waitForHello(opencode)
+    await waitFor(() => opencode.sent.some((m) => m.type === 'permission-mode'))
+    expect(opencode.sent.find((m) => m.type === 'permission-mode'))
+      .toEqual({ type: 'permission-mode', current: 'accept-edits', available: [] })
+    opencode.clientSend({ type: 'permission-mode', mode: 'plan' })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(requests('session/set_mode')).toHaveLength(0)
+  })
+
+  it('offers only the postures the handshake announced, and refuses crafted frames', async () => {
+    conversation.close()
+    transport = new FakeTransport()
+    conversation = new AcpConversation({
+      transport, cwd: '/workspace', profile: acpAdapterFor('claude'),
+      permissionMode: () => 'accept-edits',
+      onSessionId: () => {}, onStatus: () => {}, onDown: () => {}, log: () => {},
+    })
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+    transport.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: true } })}\n`)
+    await waitFor(() => requests('initialize').length > 0)
+    reply(requests('initialize')[0].id, { protocolVersion: 1, agentCapabilities: {} })
+    await waitFor(() => requests('session/new').length > 0)
+    // claude-agent-acp withholds bypassPermissions as root outside a sandbox.
+    reply(requests('session/new')[0].id, { sessionId: 'acp-1', modes: {
+      currentModeId: 'acceptEdits', availableModes: [{ id: 'default' }, { id: 'acceptEdits' }, { id: 'plan' }],
+    } })
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    await waitFor(() => sock.sent.some((m) => m.type === 'permission-mode'))
+    expect(sock.sent.filter((m) => m.type === 'permission-mode').at(-1))
+      .toEqual({ type: 'permission-mode', current: 'accept-edits', available: ['accept-edits', 'manual', 'plan'] })
+
+    for (const mode of ['bypass', 'auto', 'read-only', 'bypassPermissions', '', null, 42, ['bypass'], { toString: 'bypass' }]) {
+      sock.clientSend({ type: 'permission-mode', mode })
+    }
+    sock.clientSend({ type: 'permission-mode' })
+    await new Promise((r) => setTimeout(r, 50))
+    expect(requests('session/set_mode')).toHaveLength(0)
+    sock.clientSend({ type: 'permission-mode', mode: 'plan' })
+    await waitFor(() => requests('session/set_mode').length === 1)
+    expect(requests('session/set_mode')[0].params).toEqual({ sessionId: 'acp-1', modeId: 'plan' })
+  })
+
   it('tells a pane the conversation is not live rather than hanging it open', async () => {
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'no-such-conversation', sock)

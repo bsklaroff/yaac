@@ -290,8 +290,9 @@ mode would undo that. The row follows the move instead.
 ## Following the agent
 
 The agent can leave its launch posture: Shift+Tab in claude's TUI,
-`/permissions` in codex's, a plan-exit answer like "yes, and auto-accept
-edits", or the agent entering plan mode on its own.
+`/permissions` in codex's, the chat pane's posture menu, a plan-exit answer
+like "yes, and auto-accept edits", or the agent entering plan mode on its
+own.
 `workspaces.permissionMode` follows, up or down, because both its readers
 want the current posture: a restart relaunches in it, and `yaac-mama create`
 caps siblings at it.
@@ -331,6 +332,18 @@ each recorded `permission-mode-changed` (`setAcpPermissionMode`). A reattach rea
 an ask arriving meanwhile waits. If the record names no posture, every ask is
 forwarded. A `bypass` conversation that enters plan mode shows its plan-exit
 ask in the pane, as the TUI would.
+
+The chat pane shows the conversation's posture beside its composer and,
+where it can, offers to switch it (`permission-mode` on `/acp/attach`). It
+offers the postures the adapter has a mode for, sent as `session/set_mode`
+and reported like any other move. Nothing is offered unless the current
+posture is among them, so opencode, which maps only `plan` to a mode, shows
+its posture without a menu: leaving it could not be undone from the pane.
+Under containerless the menu still offers `bypass`, marked as having no
+sandbox: it is the user's own grant, after which the agent acts as the user
+on this machine. Like a Shift+Tab, a switch moves the row, so raising the
+posture also raises the ceiling `yaac-mama` holds this workspace's spawns
+and messages to.
 
 ### Under `tui`
 

@@ -2,6 +2,7 @@
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import type { AcpClientMessage, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
+import type { PermissionMode } from '@yaac/shared/types'
 
 /**
  * jsdom has no ResizeObserver; the pane uses one to follow the tail when it
@@ -36,9 +37,12 @@ const stream = {
   send: vi.fn((_msg: AcpClientMessage) => true),
   taskOutputs: {} as Record<string, { text?: string; error?: string }>,
   subagentTranscripts: {} as Record<string, { events?: AcpEventInit[]; error?: string }>,
+  permissionModes: { available: [] } as { current?: PermissionMode; available: PermissionMode[] },
 }
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
+const snapshot = vi.fn((): { driver: string } | undefined => undefined)
+vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import { chatDraftKey, flushChatDrafts, useUiStore } from '#lib/store'
@@ -257,6 +261,34 @@ describe('WorkspaceChat width', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Center chat' }))
     expect(column().className).toContain('max-w-5xl')
+  })
+})
+
+describe('WorkspaceChat permission mode', () => {
+  afterEach(() => {
+    cleanup()
+    stream.permissionModes = { available: [] }
+    snapshot.mockReturnValue(undefined)
+  })
+
+  it('shows the posture, switches it from the menu, and warns that containerless bypass acts as you', async () => {
+    snapshot.mockReturnValue({ driver: 'containerless' })
+    stream.send.mockClear()
+    stream.permissionModes = { current: 'accept-edits', available: ['bypass', 'accept-edits', 'plan'] }
+    show()
+    fireEvent.click(screen.getByRole('button', { name: 'Permission mode' }))
+    const items = await screen.findAllByRole('menuitemradio')
+    expect(items.map((i) => i.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false'])
+    expect(within(items[0]).getByText('No sandbox — acts as you.')).toBeTruthy()
+    fireEvent.click(items[2])
+    expect(stream.send).toHaveBeenCalledWith({ type: 'permission-mode', mode: 'plan' })
+  })
+
+  it('shows a posture with nothing to switch to as plain text', () => {
+    stream.permissionModes = { current: 'accept-edits', available: [] }
+    show()
+    expect(screen.getByText('Accept edits')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Permission mode' })).toBeNull()
   })
 })
 

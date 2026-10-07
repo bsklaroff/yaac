@@ -68,8 +68,8 @@ import {
 import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
 import type { AcpInFlight } from './acp-log'
 import { serverLog } from '#log'
-import type { AcpEventInit, AcpImage, AcpQueuedPrompt, AcpStopReason } from '@yaac/shared/acp'
-import type { AgentStatus, PermissionMode } from '@yaac/shared/types'
+import type { AcpEventInit, AcpImage, AcpQueuedPrompt, AcpServerMessage, AcpStopReason } from '@yaac/shared/acp'
+import { PERMISSION_MODES, type AgentStatus, type PermissionMode } from '@yaac/shared/types'
 
 /**
  * How long the end of background work waits before the status drops to
@@ -163,6 +163,9 @@ export interface AcpConversationDeps {
   log?: (msg: string) => void
 }
 
+/** The posture state a `permission-mode` frame carries. */
+export type AcpPermissionModes = Omit<Extract<AcpServerMessage, { type: 'permission-mode' }>, 'type'>
+
 /** A queued message with what is needed to send it and settle its caller. */
 export interface QueuedTurn extends AcpQueuedPrompt {
   blocks: Array<Record<string, string>>
@@ -210,6 +213,7 @@ export class AcpConversation {
    */
   private readonly queue: QueuedTurn[] = []
   private readonly queueSubscribers = new Set<(queued: AcpQueuedPrompt[]) => void>()
+  private readonly permissionModeSubscribers = new Set<(modes: AcpPermissionModes) => void>()
   /** Whether `drain` is running, which is also when a new message must wait. */
   private draining = false
   /** Tail of message routing; see `prompt`. */
@@ -350,6 +354,43 @@ export class AcpConversation {
     if (queued.length === 0 && !this.queueShown) return
     this.queueShown = queued.length > 0
     for (const fn of this.queueSubscribers) fn(queued)
+  }
+
+  /**
+   * The posture this conversation is in and the ones a pane may switch it
+   * to: those with a session mode the adapter offers. When the offer is not
+   * known, every mapped posture is listed and the adapter's refusal reports
+   * the rest. A reattach runs no handshake, and every connection after a
+   * server restart is a reattach, so the unfiltered list is the usual case.
+   * The list is empty unless it holds the current posture and another, since
+   * a pane could otherwise leave a posture it can never return to (opencode
+   * maps only `plan` to a mode).
+   */
+  get permissionModes(): AcpPermissionModes {
+    const current = this.posture() ?? this.permissionMode()
+    const state = this.sessionState()
+    const known = state.modes?.availableModes !== undefined
+      || state.configOptions?.some((o) => o.id === 'mode') === true
+    const modeIds = this.deps.profile?.modeIds ?? {}
+    const available = PERMISSION_MODES.filter((m) => {
+      const modeId = modeIds[m]
+      return modeId !== undefined && (!known || acpModeOffered(state, modeId))
+    })
+    return {
+      ...(current !== undefined ? { current } : {}),
+      available: current !== undefined && available.includes(current) && available.length > 1 ? available : [],
+    }
+  }
+
+  /** Watch `permissionModes`; returns the unsubscribe. */
+  onPermissionModes(fn: (modes: AcpPermissionModes) => void): () => void {
+    this.permissionModeSubscribers.add(fn)
+    return () => this.permissionModeSubscribers.delete(fn)
+  }
+
+  private publishPermissionModes(): void {
+    const modes = this.permissionModes
+    for (const fn of this.permissionModeSubscribers) fn(modes)
   }
 
   /** Watch for the conversation closing, so an attached pane can show it.
@@ -592,6 +633,7 @@ export class AcpConversation {
     if (modeId === undefined || modeId === this.currentModeId()) return
     this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
     this.deps.onModeId?.(modeId)
+    this.publishPermissionModes()
   }
 
   /**
@@ -612,6 +654,14 @@ export class AcpConversation {
     if (model === undefined || model.id === this.currentModel) return
     this.currentModel = model.id
     this.deps.onModel?.(model.id, model.name)
+  }
+
+  /** The session's modes as the handshake announced them, in both shapes. */
+  private sessionState(): { modes?: AcpSessionModes; configOptions?: AcpConfigOption[] } {
+    return {
+      ...(this.sessionModes !== undefined ? { modes: this.sessionModes } : {}),
+      ...(this.sessionConfig !== undefined ? { configOptions: this.sessionConfig } : {}),
+    }
   }
 
   /** The session's current mode, from whichever shape the adapter uses. */
@@ -827,10 +877,7 @@ export class AcpConversation {
       return
     }
     if (this.currentModeId() === modeId) return
-    if (!acpModeOffered({
-      ...(this.sessionModes !== undefined ? { modes: this.sessionModes } : {}),
-      ...(this.sessionConfig !== undefined ? { configOptions: this.sessionConfig } : {}),
-    }, modeId)) {
+    if (!acpModeOffered(this.sessionState(), modeId)) {
       this.reportModeNotSet(mode, modeId, 'offers no such mode')
       return
     }
@@ -912,6 +959,28 @@ export class AcpConversation {
     }
   }
 
+  /**
+   * Switch the posture as the user asked from the pane. The new mode is
+   * reported upward like one the adapter chose (`onModeId`), so the row
+   * follows it. A refusal is shown in the pane, and the session keeps the
+   * mode it had.
+   */
+  async switchPermissionMode(mode: PermissionMode): Promise<void> {
+    const modeId = this.deps.profile?.modeIds[mode]
+    try {
+      if (modeId === undefined) throw new Error('no session mode for it')
+      await this.whenReady(120_000)
+      if (this.sessionId === undefined) throw new Error('no ACP session')
+      await this.peer.request(ACP.sessionSetMode, { sessionId: this.sessionId, modeId })
+      this.notices.delete('mode')
+      this.setModeId(modeId)
+      this.log(`[server] acp: session mode set to ${modeId} for "${mode}" from the pane`)
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      this.emit({ type: 'error', message: `The agent would not switch to the ${mode} posture (${detail}).` })
+    }
+  }
+
   /** Set the `model` config option (see `AcpAdapterProfile.modelVia`). The
    *  reply holds the resolved model; no update follows. */
   private async requestModel(model: string): Promise<void> {
@@ -977,6 +1046,8 @@ export class AcpConversation {
     this.ready = true
     for (const w of this.readyWaiters) w()
     this.readyWaiters = []
+    // The handshake has settled the mode and what the session offers.
+    this.publishPermissionModes()
   }
 
   /** Fail everything waiting for readiness, so callers can fail over to the
