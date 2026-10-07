@@ -14,14 +14,6 @@ import { isFilesTarget, isFileTarget } from './files'
 import { addColumn, paneTargets, removeTarget, renameTargets, type PaneLayout } from './layout'
 import { isPreviewTarget } from './preview'
 
-/** The one layout target a workspace's Changes (review) pane uses. */
-export const CHANGES_TARGET = 'changes'
-
-/** Whether a layout target is the Changes pane. */
-export function isChangesTarget(target: string): boolean {
-  return target === CHANGES_TARGET
-}
-
 /**
  * Non-terminal panes: left out of the tmux-window sync and closed without a
  * kill confirmation (a file pane saves first, and asks only if that fails).
@@ -29,8 +21,7 @@ export function isChangesTarget(target: string): boolean {
  * conversation, and they are addressed by conversation id.
  */
 export function isSpecialPane(target: string): boolean {
-  return isPreviewTarget(target) || isChangesTarget(target) || isFilesTarget(target)
-    || isFileTarget(target) || isAcpTarget(target)
+  return isPreviewTarget(target) || isFilesTarget(target) || isFileTarget(target) || isAcpTarget(target)
 }
 
 /** The workspace's live conversations, as pane targets. */

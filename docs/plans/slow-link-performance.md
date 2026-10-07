@@ -46,7 +46,8 @@ On a saturated link, redundant background bytes delay the foreground.
   on every status change. Add `?fromSeq=` to `/acp/attach` so a reattach
   resumes instead of downloading the whole transcript again. Every event
   already has a `seq`, but the client cannot ask for a starting point.
-- **Fix the polls.** `WorkspaceChanges.tsx` fetches the full diff every 3 s.
+- **Fix the polls.** `useWorkspaceChanges` polls the changes route every 3 s
+  while a workspace is open, with the full diff while the explorer shows it.
   Add an ETag / 304 path, or push invalidation over `/events`.
   `ImageBuildsOverlay.tsx` refetches the whole build log every 1.5 s; read
   from a byte offset instead.

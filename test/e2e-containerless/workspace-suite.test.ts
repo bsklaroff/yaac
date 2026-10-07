@@ -29,7 +29,9 @@ import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
 import { ACP_ADAPTERS, AGENT_TOOLS } from '@yaac/shared/types'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
-import type { AgentSessionEntry, AgentTool, ServerSnapshot, WorkspaceTerminalEntry } from '@yaac/shared/types'
+import type {
+  AgentSessionEntry, AgentTool, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
+} from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
 
@@ -501,14 +503,26 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       .toBe(`${path.join(testEnv.dataDir, 'global', 'projects', projectId, 'repo', '.git', 'objects')}\n`)
   })
 
-  it('runs the review diff with host git in that checkout', async () => {
+  it('runs the review diff with host git in that checkout, and reads a file at its base', async () => {
     const dir = path.join(
       testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId,
     )
     await fs.writeFile(path.join(dir, 'NEW.md'), '# added by the test\n')
-    const res = await fetch(`${origin()}/api/workspace/${workspaceId}/changes`)
-    const changes = await res.json() as { files: Array<{ path: string }> }
-    expect(changes.files.map((f) => f.path)).toContain('NEW.md')
+    const readme = await fs.readFile(path.join(dir, 'README.md'), 'utf8')
+    await fs.appendFile(path.join(dir, 'README.md'), 'appended\n')
+    try {
+      const res = await fetch(`${origin()}/api/workspace/${workspaceId}/changes?diff=0`)
+      const changes = await res.json() as WorkspaceChanges
+      const byPath = Object.fromEntries(changes.files.map((f) => [f.path, f]))
+      expect(byPath['NEW.md'].stages).toEqual({ untracked: { additions: 1, deletions: 0 } })
+      expect(byPath['README.md'].stages).toEqual({ modified: { additions: 1, deletions: 0 } })
+      expect(changes.diff).toBe('')
+
+      const at = await fetch(`${origin()}/api/workspace/${workspaceId}/file-at?path=README.md&rev=${changes.base}`)
+      expect(await at.json()).toEqual({ exists: true, content: readme })
+    } finally {
+      await fs.writeFile(path.join(dir, 'README.md'), readme)
+    }
   })
 
   it('edits the checkout over HTTP: create, list, read, a stale save refused, then saved', async () => {
@@ -528,11 +542,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await fs.writeFile(path.join(checkout, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
 
     const files = await (await api('/files')).json() as {
-      paths: string[]; ignored: string[]; status: Record<string, string>
+      paths: string[]; ignored: string[]; conflicted: string[]
     }
     expect(files.paths).toEqual(expect.arrayContaining(['README.md', 'notes/todo.md']))
     expect(files.ignored).toContain('node_modules/')
-    expect(files.status['notes/todo.md']).toBe('untracked')
+    expect(files.conflicted).toEqual([])
 
     const read = await (await api('/file?path=notes/todo.md')).json() as { version: string; content: string }
     expect(read).toMatchObject({ version, content: 'one\n' })

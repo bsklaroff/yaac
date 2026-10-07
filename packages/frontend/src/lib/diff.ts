@@ -1,7 +1,8 @@
 /**
  * Diff lines for the panes, from two sources: a combined `git diff` (the
- * changes pane) and a before/after text pair (an ACP edit tool call in the
- * chat pane). Both produce `DiffLine[]`, so one renderer draws both.
+ * explorer's changes view) and a before/after text pair (an ACP edit tool
+ * call in the chat pane). Both produce `DiffLine[]`, so one renderer draws
+ * both.
  */
 
 export type DiffLineKind = 'add' | 'del' | 'context' | 'hunk'

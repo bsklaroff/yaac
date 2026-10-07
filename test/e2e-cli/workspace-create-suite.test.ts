@@ -769,10 +769,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     // although in-pod git wrote the index through a different mount.
     it('edits the checkout from the server, visibly to the pod and back', async () => {
       const files = await (await fetch(`${base}/api/workspace/${workspaceId}/files`)).json() as {
-        paths: string[]; status: Record<string, string>
+        paths: string[]
       }
       expect(files.paths).toContain('README.md')
-      expect(files.status['README.md']).toBeUndefined()
+      const { stdout: clean } = await execInJob(jobName, ['git', '-C', '/workspace', 'status', '--porcelain', '--', 'README.md'])
+      expect(clean).toBe('')
 
       const read = await (await fetch(`${base}/api/workspace/${workspaceId}/file?path=README.md`))
         .json() as { version: string; content: string }

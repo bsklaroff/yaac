@@ -1,18 +1,26 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { MENU_ITEM, POPUP } from '#components/ui/menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ServerError } from '@yaac/shared/errors'
 import { ContextMenu } from '@base-ui/react/context-menu'
 import { Menu } from '@base-ui/react/menu'
+import { Popover } from '@base-ui/react/popover'
 import { Tooltip } from '@base-ui/react/tooltip'
-import type { FileStatus, SymlinkTarget } from '@yaac/shared/types'
+import type { SymlinkTarget, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
 import { layoutOf, paneViewKey, useUiStore } from '#lib/store'
+import { BranchPicker } from '#components/BranchPicker'
+import { DiffView } from '#components/DiffView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { LineCountsLabel } from '#components/ui/LineCountsLabel'
+import { PathLabel } from '#components/ui/PathLabel'
 import { Tip, WithTip } from '#components/ui/Tooltip'
-import { FILE_STATUS } from '#lib/gitStatus'
+import { changeMatchesQuery, indexDiffsByPath, type ParsedFileDiff } from '#lib/diff'
+import { CHANGE_STAGES, ROW_STATUS, lineTotals, pathStatuses, stageTotals, type RowStatus } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
-import { formatChord } from '#lib/shortcuts'
+import { chordMatches, findChord, formatChord } from '#lib/shortcuts'
+import { useProjectBranches } from '#lib/useProjectBranches'
+import { CHANGES_POLL_MS, useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
 import {
@@ -35,9 +43,9 @@ import {
   type TreeNode,
 } from '#lib/files'
 import {
-  ChevronIcon, CollapseAllIcon, FileCodeIcon, FileConfigIcon, FileIcon, FileImageIcon, FileJsonIcon,
-  FileShellIcon, FileTextIcon, FolderIcon, FolderOpenIcon, HideIcon, LoadingIcon, MoreIcon, NewFileIcon,
-  NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, WarningIcon,
+  BranchIcon, ChangesIcon, ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
+  FileImageIcon, FileJsonIcon, FileShellIcon, FileTextIcon, FlatListIcon, FolderIcon, FolderOpenIcon, HideIcon,
+  LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon, WarningIcon,
 } from '#lib/icons'
 
 /** The most matches the filter lists. */
@@ -70,7 +78,8 @@ function fileIcon(path: string): { Icon: typeof FileIcon; className: string } {
 
 /**
  * One row of the tree. `path` is the displayed path, which may run through a
- * folder symlink; the server follows the link when it is opened.
+ * folder symlink; the server follows the link when it is opened. A flat
+ * row's `name` is its whole path.
  */
 interface Row {
   path: string
@@ -78,14 +87,18 @@ interface Row {
   dir: boolean
   node?: TreeNode
   ignored: boolean
-  status?: FileStatus
+  /** How it differs from the diff base (a folder: the strongest among its
+   *  files), or a merge conflict. */
+  status?: RowStatus
   symlink?: SymlinkTarget
+  /** How the file differs from the diff base, if it does. */
+  change?: WorkspaceChange
 }
 
 function rowOf(node: TreeNode, path: string, ignored: boolean): Row {
   return {
     path, name: node.name, dir: node.dir, node,
-    ignored: ignored || node.ignored === true, status: node.status, symlink: node.symlink,
+    ignored: ignored || node.ignored === true, symlink: node.symlink,
   }
 }
 
@@ -105,10 +118,17 @@ function isStopped(err: unknown): boolean {
 /**
  * The file explorer (docs/file-editor.md): a tree from one gitignore-aware
  * listing, a filter that doubles as quick-open, a "show ignored" toggle, git
- * status colors, and create / rename / delete. Unmounted off-screen; view
- * state lives in the store.
+ * status colors, line counts against the diff base, and create / rename /
+ * delete. Its changes view lists only the changed files, as a tree or flat,
+ * optionally with each one's diff. Unmounted off-screen; view state lives in
+ * the store.
  */
-export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.Element {
+export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
+  workspaceId: string
+  projectId: string
+  /** The branch the workspace forked from: the diff base picker's default. */
+  baseBranch?: string
+}): JSX.Element {
   const queryClient = useQueryClient()
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['files', workspaceId],
@@ -123,21 +143,57 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
   const openFile = useUiStore((s) => s.openFile)
   const bindings = useUiStore((s) => s.bindings)
   const expanded = useMemo(() => new Set(view?.expanded ?? []), [view?.expanded])
-  const showIgnored = view?.showIgnored === true
-  const find = view?.find ?? ''
-  const setExpanded = (paths: Set<string>): void => setPaneView(viewKey, { expanded: [...paths] })
-  const toggle = (path: string): void => {
-    const next = new Set(expanded)
+  const collapsed = useMemo(() => new Set(view?.collapsed ?? []), [view?.collapsed])
+  const foldedDiffs = useMemo(() => new Set(view?.foldedDiffs ?? []), [view?.foldedDiffs])
+  const toggleDiff = (path: string): void => {
+    const next = new Set(foldedDiffs)
     if (next.has(path)) next.delete(path)
     else next.add(path)
-    setExpanded(next)
+    setPaneView(viewKey, { foldedDiffs: [...next] })
+  }
+  const showIgnored = view?.showIgnored === true
+  const changedOnly = view?.changedOnly === true
+  const flat = changedOnly && view?.flat !== false
+  const find = view?.find ?? ''
+  const setExpanded = (paths: Set<string>): void => setPaneView(viewKey, { expanded: [...paths] })
+  // The changes view's folders start open, so it records the closed ones.
+  const isOpen = (path: string): boolean => (changedOnly ? !collapsed.has(path) : expanded.has(path))
+  const toggle = (path: string): void => {
+    const next = new Set(changedOnly ? collapsed : expanded)
+    if (next.has(path)) next.delete(path)
+    else next.add(path)
+    setPaneView(viewKey, changedOnly ? { collapsed: [...next] } : { expanded: [...next] })
   }
 
-  const tree = useMemo(() => (data ? buildTree(data, showIgnored) : null), [data, showIgnored])
+  // Every row shows its line counts, so the changes are fetched in both
+  // views; their diff lines only in the changes view, which shows them.
+  const changes = useWorkspaceChanges(workspaceId, { diff: changedOnly, poll: CHANGES_POLL_MS })
+  const changed = useMemo(() => changes.data?.files ?? [], [changes.data?.files])
+  const changeByPath = useMemo(() => new Map(changed.map((c) => [c.path, c])), [changed])
+  const statuses = useMemo(() => pathStatuses(changed, data?.conflicted ?? []), [changed, data?.conflicted])
+  const diffMap = useMemo(
+    () => (changedOnly ? indexDiffsByPath(changes.data?.diff ?? '') : new Map<string, ParsedFileDiff>()),
+    [changedOnly, changes.data?.diff],
+  )
+  // In the changes view the filter matches a path or a line of its diff.
+  const visibleChanged = useMemo(
+    () => changed.filter((c) => changeMatchesQuery(c, diffMap.get(c.path), find)),
+    [changed, diffMap, find],
+  )
+
+  const tree = useMemo(() => {
+    if (!data) return null
+    if (!changedOnly) return buildTree(data, showIgnored)
+    const paths = visibleChanged.map((c) => c.path)
+    return buildTree({ ...data, paths, symlinks: {}, ignored: [], emptyDirs: [] })
+  }, [data, showIgnored, changedOnly, visibleChanged])
   const searchable = useMemo(() => (data
     ? [...data.paths, ...(showIgnored ? data.ignored.filter((p) => !p.endsWith('/')) : [])]
     : []), [data, showIgnored])
-  const matches = useMemo(() => (find ? filterPaths(searchable, find, MAX_MATCHES) : []), [searchable, find])
+  const matches = useMemo(
+    () => (find && !changedOnly ? filterPaths(searchable, find, MAX_MATCHES) : []),
+    [searchable, find, changedOnly],
+  )
   const ignoredFiles = useMemo(() => new Set(data?.ignored ?? []), [data?.ignored])
 
   // The open-files shortcut (Alt-E) sets filesFindPending; the pane focuses
@@ -161,6 +217,12 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
     findRef.current.focus()
     findRef.current.select()
   }, [findPending, isLoading, setFindPending])
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (!chordMatches(findChord(), e.nativeEvent) || !findRef.current) return
+    e.preventDefault()
+    findRef.current.focus()
+    findRef.current.select()
+  }
 
   const listRef = useRef<HTMLDivElement | null>(null)
   const restoredScroll = useRef(false)
@@ -357,35 +419,61 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
   const renderRows = (rows: Row[], depth: number, parent: string): JSX.Element => (
     <>
       {editing && editing.kind !== 'rename' && editing.parent === parent && input('', depth)}
-      {rows.map((row) => (
-        <TreeRowView
-          key={row.path}
-          row={row}
-          depth={depth}
-          open={expanded.has(row.path)}
-          selected={selected?.path === row.path}
-          renaming={editing?.kind === 'rename' && editing.path === row.path}
-          renameInput={input(row.name, depth)}
-          onClick={() => {
-            setSelected(row)
-            if (row.dir) toggle(row.path)
-            else if (!row.symlink || row.symlink.target !== null) openFile(workspaceId, row.path)
-          }}
-          onContextMenu={() => setContextRow(row)}
-          onMore={(anchor) => setMenu({ row, anchor })}
-        >
-          {row.dir && expanded.has(row.path) && ((): JSX.Element => {
-            const children = childRows(row)
-            return children === 'lazy'
-              ? <LazyRows workspaceId={workspaceId} parent={row} render={(rs) => renderRows(rs, depth + 1, row.path)} />
-              : renderRows(children, depth + 1, row.path)
-          })()}
-        </TreeRowView>
-      ))}
+      {rows.map((listed) => {
+        const row = {
+          ...listed,
+          status: listed.ignored ? undefined : statuses.get(listed.path),
+          change: listed.dir ? undefined : changeByPath.get(listed.path),
+        }
+        const opens = row.change?.status !== 'deleted' && (!row.symlink || row.symlink.target !== null)
+        return (
+          <TreeRowView
+            key={row.path}
+            row={row}
+            depth={depth}
+            open={isOpen(row.path)}
+            selected={selected?.path === row.path}
+            renaming={editing?.kind === 'rename' && editing.path === row.path}
+            renameInput={input(row.name, depth)}
+            onClick={() => {
+              setSelected(row)
+              if (row.dir) toggle(row.path)
+              else if (opens) openFile(workspaceId, row.path)
+            }}
+            onContextMenu={() => setContextRow(row)}
+            onMore={(anchor) => setMenu({ row, anchor })}
+            diff={changedOnly && row.change ? {
+              open: !foldedDiffs.has(row.path),
+              toggle: () => toggleDiff(row.path),
+              body: <ChangeDiff change={row.change} diff={diffMap.get(row.path)} />,
+            } : undefined}
+          >
+            {row.dir && isOpen(row.path) && ((): JSX.Element => {
+              const children = childRows(row)
+              return children === 'lazy'
+                ? <LazyRows workspaceId={workspaceId} parent={row} render={(rs) => renderRows(rs, depth + 1, row.path)} />
+                : renderRows(children, depth + 1, row.path)
+            })()}
+          </TreeRowView>
+        )
+      })}
     </>
   )
 
+  const openable = visibleChanged.filter((c) => c.status !== 'deleted')
+  const shown = changedOnly ? openable.map((c) => c.path) : matches
+
+  const anyDiffOpen = visibleChanged.some((c) => !foldedDiffs.has(c.path))
+  const anyFolderOpen = [...expanded].some((p) => tree.index.get(p)?.dir)
+  // Expanding all leaves out the folders listed on demand (ignored ones and
+  // links), which would each cost a request.
+  const expandable = [...tree.index.values()]
+    .filter((n) => n.dir && n.path && !n.lazy && !n.symlink && !n.ignored)
+    .map((n) => n.path)
   const count = data.paths.length.toLocaleString()
+  const countLabel = changedOnly
+    ? find ? `${visibleChanged.length} of ${changed.length} changed` : `${changed.length} changed`
+    : find ? `${matches.length}${matches.length === MAX_MATCHES ? '+' : ''} of ${count}` : `${count} files`
   const header = (
     <Tooltip.Provider>
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-hairline px-1.5 text-[11px] text-text-dim">
@@ -402,12 +490,12 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
               if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault()
                 const step = e.key === 'ArrowDown' ? 1 : -1
-                setActive((i) => Math.min(Math.max(i + step, 0), Math.max(matches.length - 1, 0)))
+                setActive((i) => Math.min(Math.max(i + step, 0), Math.max(shown.length - 1, 0)))
                 return
               }
-              if (e.key === 'Enter' && matches[active]) {
+              if (e.key === 'Enter' && shown[active]) {
                 e.preventDefault()
-                openFile(workspaceId, matches[active])
+                openFile(workspaceId, shown[active])
                 return
               }
               if (e.key !== 'Escape') return
@@ -415,7 +503,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
               if (find !== '') setFind('')
               else e.currentTarget.blur()
             }}
-            placeholder={`Go to file… (${formatChord(bindings['open-files'], IS_MAC)})`}
+            placeholder={changedOnly ? 'Filter changes…' : `Go to file… (${formatChord(bindings['open-files'], IS_MAC)})`}
             aria-label="Filter files"
             spellCheck={false}
             className="min-w-0 flex-1 bg-transparent py-0.5 text-[11px] text-text outline-none placeholder:text-text-faint"
@@ -424,43 +512,134 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
             className="shrink-0 tabular-nums text-text-faint"
             title={data.truncated ? 'Only the first 50,000 paths are listed.' : undefined}
           >
-            {find ? `${matches.length}${matches.length === MAX_MATCHES ? '+' : ''} of ${count}` : `${count} files`}
-            {data.truncated && '+'}
+            {countLabel}
+            {data.truncated && !changedOnly && '+'}
           </span>
         </label>
         <HeaderButton
-          label={showIgnored ? 'Hide ignored files' : 'Show ignored files'}
-          pressed={showIgnored}
-          onClick={() => setPaneView(viewKey, { showIgnored: !showIgnored })}
+          label={changedOnly ? 'Show all files' : 'Show only changed files'}
+          pressed={changedOnly}
+          // The changes view opens as a flat list with every diff open, each time.
+          onClick={() => setPaneView(viewKey, changedOnly
+            ? { changedOnly: false }
+            : { changedOnly: true, flat: true, foldedDiffs: [] })}
         >
-          {showIgnored ? <ShowIcon size={13} /> : <HideIcon size={13} />}
+          <ChangesIcon size={13} />
         </HeaderButton>
-        <HeaderButton label="New file" onClick={() => startEdit({ kind: 'file', parent: createParent() })}>
-          <NewFileIcon size={13} />
-        </HeaderButton>
-        <HeaderButton label="New folder" onClick={() => startEdit({ kind: 'folder', parent: createParent() })}>
-          <NewFolderIcon size={13} />
-        </HeaderButton>
-        <HeaderButton label="Collapse all folders" onClick={() => setExpanded(new Set())}>
-          <CollapseAllIcon size={13} />
-        </HeaderButton>
+        {changedOnly ? (
+          <>
+            <HeaderButton
+              label={flat ? 'Show as a tree' : 'Show as a flat list'}
+              pressed={flat}
+              onClick={() => setPaneView(viewKey, { flat: !flat })}
+            >
+              {flat ? <FlatListIcon size={13} /> : <TreeListIcon size={13} />}
+            </HeaderButton>
+            <HeaderButton
+              label={anyDiffOpen ? 'Collapse all changes' : 'Show all changes'}
+              onClick={() => setPaneView(viewKey, { foldedDiffs: anyDiffOpen ? changed.map((c) => c.path) : [] })}
+            >
+              {anyDiffOpen ? <CollapseAllIcon size={13} /> : <ExpandAllIcon size={13} />}
+            </HeaderButton>
+          </>
+        ) : (
+          <>
+            <HeaderButton
+              label={showIgnored ? 'Hide ignored files' : 'Show ignored files'}
+              pressed={showIgnored}
+              onClick={() => setPaneView(viewKey, { showIgnored: !showIgnored })}
+            >
+              {showIgnored ? <ShowIcon size={13} /> : <HideIcon size={13} />}
+            </HeaderButton>
+            <HeaderButton label="New file" onClick={() => startEdit({ kind: 'file', parent: createParent() })}>
+              <NewFileIcon size={13} />
+            </HeaderButton>
+            <HeaderButton label="New folder" onClick={() => startEdit({ kind: 'folder', parent: createParent() })}>
+              <NewFolderIcon size={13} />
+            </HeaderButton>
+            <HeaderButton
+              label={anyFolderOpen ? 'Collapse all folders' : 'Expand all folders'}
+              onClick={() => setExpanded(anyFolderOpen ? new Set() : new Set(expandable))}
+            >
+              {anyFolderOpen ? <CollapseAllIcon size={13} /> : <ExpandAllIcon size={13} />}
+            </HeaderButton>
+          </>
+        )}
       </div>
     </Tooltip.Provider>
   )
 
+  const changesNotice = ((): JSX.Element | null => {
+    if (!changedOnly) return null
+    const center = 'flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center'
+    if (!changes.data) {
+      return changes.isError ? (
+        <div className={clsx(center, 'gap-2 text-xs text-text-dim')}>
+          <WarningIcon size={18} className="text-text-faint" />
+          <span>Couldn’t load changes.</span>
+          <button
+            onClick={() => void changes.refetch()}
+            className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        <div className={clsx(center, 'text-text-dim')}><LoadingIcon size={18} className="animate-spin" /></div>
+      )
+    }
+    if (changed.length === 0) {
+      // An unresolved base means the diff ran against HEAD and misses
+      // committed work, so say that rather than "no changes".
+      return changes.data.baseResolved ? (
+        <div className={center}>
+          <p className="text-xs text-text-dim">No changes yet</p>
+          <p className="text-[11px] text-text-faint">Edits the agent makes in its workspace show up here.</p>
+        </div>
+      ) : (
+        <div className={center}>
+          <p className="text-xs text-text-dim">Nothing uncommitted</p>
+          <p className="text-[11px] text-text-faint">
+            Couldn’t find the fork point for the diff base, so committed work isn’t shown.
+            Push that branch, or pick another base above.
+          </p>
+        </div>
+      )
+    }
+    if (visibleChanged.length === 0) {
+      return <div className={center}><p className="text-xs text-text-dim">No changes match “{find}”</p></div>
+    }
+    return null
+  })()
+
+  const flatRows = (): Row[] => visibleChanged.map((c) => ({
+    path: c.path, name: c.path, dir: false, ignored: false,
+  }))
+
   return (
-    <div className="flex h-full flex-col bg-surface">
+    // Focusable so Cmd/Ctrl-F reaches the filter after a click in the list.
+    <div tabIndex={-1} onKeyDown={onKeyDown} className="flex h-full flex-col bg-surface outline-none">
       {header}
+      {changedOnly && (
+        <ChangesStrip
+          workspaceId={workspaceId}
+          projectId={projectId}
+          baseBranch={baseBranch}
+          data={changes.data}
+          files={visibleChanged}
+        />
+      )}
       {actionError && (
         <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-error">
           {actionError}
         </div>
       )}
-      {find ? (
+      {changesNotice ?? (find && !changedOnly ? (
         <div ref={matchesRef} role="listbox" aria-label="Matching files" className="min-h-0 flex-1 overflow-y-auto py-0.5">
           {matches.length === 0 && <p className="px-3 py-2 text-xs text-text-dim">No files match “{find}”</p>}
           {matches.map((path, i) => {
-            const status = data.status[path]
+            const status = statuses.get(path)
+            const change = changeByPath.get(path)
             const slash = path.lastIndexOf('/')
             const { Icon, className } = fileIcon(path)
             return (
@@ -476,11 +655,12 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
                   i === active && 'bg-surface-2', ignoredFiles.has(path) && 'opacity-50')}
               >
                 <Icon size={13} className={clsx('shrink-0', className)} />
-                <span className={clsx('shrink-0', status ? FILE_STATUS[status].className : 'text-text')}>
+                <span className={clsx('shrink-0', status ? ROW_STATUS[status] : 'text-text')}>
                   {path.slice(slash + 1)}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">{path.slice(0, Math.max(slash, 0))}</span>
-                {status && <StatusBadge status={status} />}
+                {change && !change.binary && <LineCountsLabel counts={change} className="text-[10px]" />}
+                <StageBadges change={change} conflicted={status === 'conflicted'} />
               </button>
             )
           })}
@@ -496,7 +676,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
             onScroll={(e) => setPaneView(viewKey, { scroll: e.currentTarget.scrollTop })}
             className="min-h-0 flex-1 overflow-y-auto py-0.5"
           >
-            {renderRows(tree.root.children.map((c) => rowOf(c, c.name, false)), 0, '')}
+            {renderRows(flat ? flatRows() : tree.root.children.map((c) => rowOf(c, c.name, false)), 0, '')}
           </ContextMenu.Trigger>
           <ContextMenu.Portal>
             <ContextMenu.Positioner>
@@ -504,7 +684,7 @@ export function WorkspaceFiles({ workspaceId }: { workspaceId: string }): JSX.El
             </ContextMenu.Positioner>
           </ContextMenu.Portal>
         </ContextMenu.Root>
-      )}
+      ))}
 
       <Menu.Root open={menu !== null} onOpenChange={(open) => { if (!open) setMenu(null) }}>
         <Menu.Portal>
@@ -545,20 +725,24 @@ function HeaderButton({ label, pressed, onClick, children }: {
   )
 }
 
-function StatusBadge({ status }: { status: FileStatus }): JSX.Element {
-  const meta = FILE_STATUS[status]
+/** A file's badge: a letter per stage its changes sit in, after a `!` for a
+ *  merge conflict. */
+function StageBadges({ change, conflicted }: { change?: WorkspaceChange; conflicted: boolean }): JSX.Element | null {
+  const stages = change ? CHANGE_STAGES.filter(({ stage }) => change.stages[stage]) : []
+  if (!conflicted && stages.length === 0) return null
+  const badge = 'w-2.5 text-center'
   return (
-    <span
-      title={status[0].toUpperCase() + status.slice(1)}
-      className={clsx('w-3 shrink-0 text-center font-mono text-[10px] font-semibold', meta.className)}
-    >
-      {meta.letter}
+    <span className="flex shrink-0 font-mono text-[10px] font-semibold">
+      {conflicted && <span title="Conflicted" className={clsx(badge, ROW_STATUS.conflicted)}>!</span>}
+      {stages.map(({ stage, label, letter, className }) => (
+        <span key={stage} title={label[0].toUpperCase() + label.slice(1)} className={clsx(badge, className)}>{letter}</span>
+      ))}
     </span>
   )
 }
 
 function TreeRowView({
-  row, depth, open, selected, renaming, renameInput, onClick, onContextMenu, onMore, children,
+  row, depth, open, selected, renaming, renameInput, onClick, onContextMenu, onMore, diff, children,
 }: {
   row: Row
   depth: number
@@ -569,13 +753,21 @@ function TreeRowView({
   onClick: () => void
   onContextMenu: () => void
   onMore: (anchor: Element) => void
+  /** A changed file's diff, shown under its row at full width while
+   *  `open`. Clicking the row folds it; only the name opens the file. */
+  diff?: { open: boolean; toggle: () => void; body: ReactNode }
   children?: ReactNode
 }): JSX.Element {
   const broken = row.symlink !== undefined && row.symlink.target === null
-  const meta = row.status && !row.ignored ? FILE_STATUS[row.status] : undefined
+  const deleted = row.change?.status === 'deleted'
+  const tint = row.status && ROW_STATUS[row.status]
+  const renamedFrom = row.change?.oldPath && row.change.oldPath !== row.path ? row.change.oldPath : undefined
   const { Icon, className: iconClass } = row.dir
     ? { Icon: open ? FolderOpenIcon : FolderIcon, className: 'text-accent/80' }
     : fileIcon(row.name)
+  const name = row.name.includes('/') ? <PathLabel path={row.name} baseClassName={tint} /> : row.name
+  // A diff row holds the name's own button, which a button cannot contain.
+  const Main = diff ? 'div' : 'button'
   return (
     <>
       {renaming ? renameInput : (
@@ -583,22 +775,47 @@ function TreeRowView({
           className={clsx('group/row relative flex items-center', selected && 'bg-surface-2')}
           onContextMenu={onContextMenu}
         >
-          <button
-            onClick={onClick}
-            title={broken ? `${row.path} — broken link, or points outside the workspace` : row.path}
+          <Main
+            onClick={diff ? diff.toggle : onClick}
+            title={broken
+              ? `${row.path} — broken link, or points outside the workspace`
+              : renamedFrom ? `${renamedFrom} → ${row.path}` : row.path}
             aria-expanded={row.dir ? open : undefined}
             style={{ paddingLeft: indent(depth) }}
             className={clsx('flex min-w-0 flex-1 items-center gap-1 py-0.5 pr-7 text-left text-xs hover:bg-surface-2',
-              (row.ignored || broken) && 'opacity-50', broken && 'cursor-default')}
+              (row.ignored || broken) && 'opacity-50', (broken || (deleted && !diff)) && 'cursor-default',
+              diff && 'cursor-pointer')}
           >
-            <ChevronIcon
-              size={11}
-              className={clsx('shrink-0 text-text-faint transition-transform', !row.dir && 'invisible', open && 'rotate-90')}
-            />
+            {diff ? (
+              // Its click reaches the row, which folds the diff; a button so
+              // the keyboard can do the same.
+              <button
+                aria-label={`${diff.open ? 'Hide' : 'Show'} the diff of ${row.path}`}
+                aria-expanded={diff.open}
+                className="flex shrink-0 text-text-faint hover:text-text"
+              >
+                <ChevronIcon size={11} className={clsx('transition-transform', diff.open && 'rotate-90')} />
+              </button>
+            ) : (
+              <ChevronIcon
+                size={11}
+                className={clsx('shrink-0 text-text-faint transition-transform', !row.dir && 'invisible', open && 'rotate-90')}
+              />
+            )}
             <Icon size={13} className={clsx('shrink-0', iconClass)} />
-            <span className={clsx('min-w-0 truncate', meta?.className ?? 'text-text')}>
-              {row.name}
-            </span>
+            {diff && !deleted ? (
+              <button
+                onClick={(e) => { e.stopPropagation(); onClick() }}
+                title={`Open ${row.path}`}
+                className={clsx('min-w-0 truncate text-left hover:underline', tint ?? 'text-text')}
+              >
+                {name}
+              </button>
+            ) : (
+              <span className={clsx('min-w-0 truncate', tint ?? 'text-text', deleted && 'line-through')}>
+                {name}
+              </span>
+            )}
             {row.symlink && (
               <span
                 title={row.symlink.target === null ? 'Broken symlink, or points outside the workspace' : `Symlink to ${row.symlink.target}`}
@@ -608,14 +825,15 @@ function TreeRowView({
               </span>
             )}
             <span className="ml-auto" />
-            {meta && (row.dir
-              ? (
-                <span title={`Contains ${row.status} files`} aria-label={row.status} className={clsx('shrink-0 text-[9px]', meta.className)}>
+            {row.change && !row.change.binary && <LineCountsLabel counts={row.change} className="text-[10px]" />}
+            {row.dir
+              ? tint && (
+                <span title={`Contains ${row.status} files`} aria-label={row.status} className={clsx('shrink-0 text-[9px]', tint)}>
                   ●
                 </span>
               )
-              : <StatusBadge status={row.status!} />)}
-          </button>
+              : <StageBadges change={row.change} conflicted={row.status === 'conflicted'} />}
+          </Main>
           <button
             onClick={(e) => onMore(e.currentTarget)}
             title="More actions"
@@ -627,6 +845,7 @@ function TreeRowView({
           </button>
         </div>
       )}
+      {diff?.open && diff.body}
       {children && (
         <div className="relative">
           {/* Guide line down the open folder's children. */}
@@ -639,6 +858,158 @@ function TreeRowView({
         </div>
       )}
     </>
+  )
+}
+
+/** Diff lines per chunk that mounts on its own. */
+const DIFF_CHUNK_LINES = 200
+/** A diff row's height: `DiffView`'s 11px text at a 1.5 line height. */
+const DIFF_LINE_PX = 16.5
+
+/**
+ * One changed file's diff, read-only, under its row in the changes view.
+ * It mounts in chunks as they come near the screen, so opening a view of
+ * hundreds of changed files renders only the diffs in sight.
+ */
+function ChangeDiff({ change, diff }: { change: WorkspaceChange; diff: ParsedFileDiff | undefined }): JSX.Element {
+  const chunks = useMemo(() => {
+    const lines = diff && !diff.binary ? diff.lines : []
+    const out: ParsedFileDiff['lines'][] = []
+    for (let i = 0; i < lines.length; i += DIFF_CHUNK_LINES) out.push(lines.slice(i, i + DIFF_CHUNK_LINES))
+    return out
+  }, [diff])
+  const language = languageForPath(change.path)
+  return (
+    <div className="overflow-x-auto border-y border-hairline bg-bg">
+      {chunks.length > 0 ? chunks.map((lines, i) => (
+        <NearScreen key={i} height={lines.length * DIFF_LINE_PX}>
+          <DiffView lines={lines} language={language} />
+        </NearScreen>
+      )) : (
+        <div className="px-3 py-1.5 text-[11px] text-text-faint">
+          {change.binary ? 'Binary file, no preview' : 'No textual diff'}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The one observer behind every `NearScreen`, and who to tell per element. */
+let nearObserver: IntersectionObserver | null = null
+const nearListeners = new Map<Element, (near: boolean) => void>()
+
+function observeNear(el: Element, onChange: (near: boolean) => void): () => void {
+  nearObserver ??= new IntersectionObserver((entries) => {
+    for (const e of entries) nearListeners.get(e.target)?.(e.isIntersecting)
+  }, { rootMargin: '800px 0px' })
+  nearListeners.set(el, onChange)
+  nearObserver.observe(el)
+  return () => {
+    nearListeners.delete(el)
+    nearObserver?.unobserve(el)
+  }
+}
+
+/**
+ * Renders its children only while within a screen or so of the viewport,
+ * holding `height` (theirs, known in advance) in the meantime, so the
+ * scrollbar stays true. Without IntersectionObserver it always renders.
+ */
+function NearScreen({ height, children }: { height: number; children: ReactNode }): JSX.Element {
+  const ref = useRef<HTMLDivElement | null>(null)
+  const [near, setNear] = useState(typeof IntersectionObserver === 'undefined')
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    return observeNear(el, setNear)
+  }, [])
+  return <div ref={ref} style={near ? undefined : { height }}>{near && children}</div>
+}
+
+/**
+ * The changes view's strip under the header: the diff base (and a picker
+ * for it), the shown files' line totals, overall and per stage, and what
+ * the diff leaves out.
+ */
+function ChangesStrip({ workspaceId, projectId, baseBranch, data, files }: {
+  workspaceId: string
+  projectId: string
+  baseBranch?: string
+  data: WorkspaceChanges | undefined
+  /** The changed files shown, whose lines are totalled. */
+  files: WorkspaceChange[]
+}): JSX.Element {
+  const base = useUiStore((s) => s.changesBase[workspaceId])
+  const setChangesBase = useUiStore((s) => s.setChangesBase)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerQuery, setPickerQuery] = useState('')
+  const { data: branchData } = useProjectBranches(projectId, pickerOpen)
+  // Always send an explicit base, even the workspace's own fork branch. The
+  // server default reads the workspace's git config, which `git push -u`
+  // repoints at the agent's own branch, making the diff empty.
+  const pickBase = (branch: string): void => {
+    setChangesBase(workspaceId, branch)
+    setPickerOpen(false)
+    setPickerQuery('')
+  }
+  const baseLabel = base ?? baseBranch ?? (data?.base ? data.base.slice(0, 7) : 'base')
+  const byStage = stageTotals(files)
+  return (
+    <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline px-1.5 text-[11px] text-text-dim">
+      <Popover.Root open={pickerOpen} onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}>
+        <Popover.Trigger
+          title="Choose the branch changes are compared against"
+          className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 outline-none transition
+            hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
+        >
+          <BranchIcon size={11} className="shrink-0 text-text-faint" />
+          <span className="max-w-[180px] truncate font-mono text-text-dim">{baseLabel}</span>
+          <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
+        </Popover.Trigger>
+        <Popover.Portal>
+          <Popover.Positioner side="bottom" align="start" sideOffset={6}>
+            <Popover.Popup className={clsx('w-[240px]', POPUP)}>
+              <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Diff base</div>
+              <BranchPicker
+                branches={branchData?.branches ?? []}
+                defaultBranch={baseBranch}
+                query={pickerQuery}
+                onQueryChange={setPickerQuery}
+                onSelect={pickBase}
+                showList
+                placeholder={branchData ? 'filter branches…' : 'loading branches…'}
+                ariaLabel="Base branch"
+                className="px-1 pb-1"
+              />
+            </Popover.Popup>
+          </Popover.Positioner>
+        </Popover.Portal>
+      </Popover.Root>
+      {files.length > 0 && (
+        // Baseline-aligned: the counts are monospace, the labels are not.
+        <span className="flex shrink-0 items-baseline gap-1 text-text-faint">
+          {[
+            { key: 'total', label: 'total', counts: lineTotals(files) },
+            ...CHANGE_STAGES.filter(({ stage }) => byStage[stage])
+              .map(({ stage, label }) => ({ key: stage, label, counts: byStage[stage]! })),
+          ].map(({ key, label, counts }, i) => (
+            <Fragment key={key}>
+              {i > 0 && <span aria-hidden className="px-0.5">·</span>}
+              {label}
+              <LineCountsLabel counts={counts} />
+            </Fragment>
+          ))}
+        </span>
+      )}
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        {data && !data.baseResolved && files.length > 0 && (
+          <span title="No fork point for the base branch, so only uncommitted work is shown." className="text-warning">
+            uncommitted only
+          </span>
+        )}
+        {data?.truncated && <span className="text-text-faint">diff truncated (large changeset)</span>}
+      </div>
+    </div>
   )
 }
 

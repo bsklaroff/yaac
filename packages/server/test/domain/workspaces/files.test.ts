@@ -16,6 +16,7 @@ import {
   listWorkspaceDir,
   listWorkspaceFiles,
   readWorkspaceFile,
+  readWorkspaceFileAtRev,
   renameWorkspaceEntry,
   writeWorkspaceFile,
 } from '#domain/workspaces'
@@ -157,7 +158,7 @@ describe('listWorkspaceFiles', () => {
     expect(emptyDirs.some((d) => d.startsWith('node_modules') || d.startsWith('pkg'))).toBe(false)
   })
 
-  it('reports git status against HEAD without writing the index', async () => {
+  it('reports merge conflicts without writing the index', async () => {
     await makeCheckout('status')
     const inWt = wtGit('status')
     const wt = workspaceDir(PROJECT, 'status')
@@ -186,15 +187,10 @@ describe('listWorkspaceFiles', () => {
     await fs.utimes(path.join(wt, 'src/lib/util.ts'), future, future)
     const before = await fs.stat(index)
 
-    const { status, paths } = await listWorkspaceFiles('status')
-    expect(status).toEqual({
-      'a.txt': 'modified',
-      'staged.txt': 'added',
-      'newdir/deep/x.txt': 'untracked',
-      'renamed.txt': 'added',
-      'conflict.txt': 'conflicted',
-    })
+    const { conflicted, paths } = await listWorkspaceFiles('status')
+    expect(conflicted).toEqual(['conflict.txt'])
     expect(paths).not.toContain('d.txt')
+    expect(paths).toEqual(expect.arrayContaining(['renamed.txt', 'staged.txt', 'newdir/deep/x.txt']))
 
     const after = await fs.stat(index)
     expect(after.ino).toBe(before.ino)
@@ -211,8 +207,6 @@ describe('listWorkspaceFiles', () => {
     const files = await listWorkspaceFiles('big')
     expect(files.paths).toHaveLength(50_000)
     expect(files.truncated).toBe(true)
-    // All files are untracked, so the status map hits the same cap.
-    expect(Object.keys(files.status)).toHaveLength(50_000)
   }, 120_000)
 })
 
@@ -252,6 +246,40 @@ describe('getWorkspaceGitStatus', () => {
     installFakeWorkspaceDriver({ find: () => Promise.resolve(undefined) })
     expect((await refusal(getWorkspaceGitStatus('gs'))).code).toBe('CONFLICT')
     expect((await refusal(getWorkspaceGitStatus('nope'))).code).toBe('NOT_FOUND')
+  })
+})
+
+describe('readWorkspaceFileAtRev', () => {
+  let base: string
+  beforeAll(async () => {
+    const dir = await makeCheckout('at')
+    base = (await wtGit('at')(['rev-parse', 'HEAD'])).trim()
+    await write(dir, 'a.txt', 'edited\n')
+    await write(dir, 'bin.dat', Buffer.from([0x00, 0x01]))
+    await write(dir, 'big.txt', 'x'.repeat(1024 * 1024 + 1))
+    await write(dir, 'odd name\'s.txt', 'quoted\n')
+    const run = wtGit('at')
+    await run(['add', '-A'])
+    await run(['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-qm', 'more'])
+  })
+
+  // The base's text, not the working copy's, and every way it can be
+  // missing: no such file then, a binary or oversized one, a folder.
+  it('reads a file as it was at a commit', async () => {
+    await expect(readWorkspaceFileAtRev('at', 'a.txt', base)).resolves.toEqual({ exists: true, content: 'alpha\n' })
+    await expect(readWorkspaceFileAtRev('at', 'bin.dat', base)).resolves.toEqual({ exists: false, content: null })
+    await expect(readWorkspaceFileAtRev('at', 'src/lib', base)).resolves.toEqual({ exists: false, content: null })
+    const head = (await wtGit('at')(['rev-parse', 'HEAD'])).trim()
+    await expect(readWorkspaceFileAtRev('at', 'bin.dat', head)).resolves.toEqual({ exists: true, content: null })
+    await expect(readWorkspaceFileAtRev('at', 'big.txt', head)).resolves.toEqual({ exists: true, content: null })
+    await expect(readWorkspaceFileAtRev('at', 'odd name\'s.txt', head)).resolves.toEqual({ exists: true, content: 'quoted\n' })
+  })
+
+  it('refuses anything but a commit id, a path outside, and a stopped workspace', async () => {
+    expect((await refusal(readWorkspaceFileAtRev('at', 'a.txt', 'HEAD'))).code).toBe('VALIDATION')
+    expect((await refusal(readWorkspaceFileAtRev('at', 'a.txt', `--output=/tmp/x${'0'.repeat(31)}`))).code).toBe('VALIDATION')
+    expect((await refusal(readWorkspaceFileAtRev('at', '../x', base))).code).toBe('VALIDATION')
+    expect((await refusal(readWorkspaceFileAtRev('stopped', 'a.txt', base))).code).toBe('CONFLICT')
   })
 })
 

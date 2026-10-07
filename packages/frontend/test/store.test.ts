@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { FILES_TARGET } from '#lib/files'
 import {
   isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingByProject, useUiStore,
 } from '#lib/store'
 import type { ListedAgentStatus, ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { PREVIEW_TARGET } from '#lib/preview'
-import { CHANGES_TARGET } from '#lib/panes'
 
 const initial = useUiStore.getState()
 
@@ -410,12 +410,12 @@ describe('view mode (tiles vs tabs)', () => {
   })
 
   it('setPaneView merges into one pane’s view state and no-ops on the same values', () => {
-    const key = paneViewKey('s1', 'changes')
+    const key = paneViewKey('s1', 'files')
     useUiStore.getState().setPaneView(key, { expanded: ['a.ts', 'b.ts'] })
     useUiStore.getState().setPaneView(key, { scroll: 120 })
     useUiStore.getState().setPaneView(paneViewKey('s2', 'files'), { showIgnored: true })
     expect(useUiStore.getState().paneView).toEqual({
-      's1|changes': { expanded: ['a.ts', 'b.ts'], scroll: 120 },
+      's1|files': { expanded: ['a.ts', 'b.ts'], scroll: 120 },
       's2|files': { showIgnored: true },
     })
     // Re-recording the same values keeps state identity (no needless render).
@@ -445,6 +445,7 @@ describe('view mode (tiles vs tabs)', () => {
   })
 
   it('openPreview and openChanges add their pane once, as a focused column', () => {
+    useUiStore.getState().setPaneView(paneViewKey('s1', FILES_TARGET), { find: 'x', flat: false, expanded: ['src'] })
     useUiStore.getState().openPreview('s1', 3000)
     useUiStore.getState().openChanges('s1')
     useUiStore.getState().openPreview('s1', 4000)
@@ -452,11 +453,16 @@ describe('view mode (tiles vs tabs)', () => {
     expect(state.layouts.s1).toEqual([
       { tabs: ['agent'], active: 'agent' },
       { tabs: [PREVIEW_TARGET], active: PREVIEW_TARGET },
-      { tabs: [CHANGES_TARGET], active: CHANGES_TARGET },
+      { tabs: [FILES_TARGET], active: FILES_TARGET },
     ])
     expect(state.activeTabs.s1).toBe(PREVIEW_TARGET)
     // The first port opened sticks; reopening only refocuses.
     expect(state.previewPort.s1).toBe(3000)
+    // Changes open as the explorer's changes view, a flat list with every
+    // diff open, keeping the rest of its view state.
+    expect(state.paneView[paneViewKey('s1', FILES_TARGET)]).toEqual({
+      find: '', flat: true, changedOnly: true, foldedDiffs: [], expanded: ['src'],
+    })
   })
 
   it('openFile places a file beside the explorer, then as a tab of the file column, and focuses it', () => {

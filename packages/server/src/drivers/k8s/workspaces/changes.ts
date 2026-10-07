@@ -40,19 +40,24 @@ const inFlight = new Map<string, Promise<WorkspaceChanges>>()
  *  user-picked branch whose fork point the diff is taken against;
  *  `defaultBase` is the workspace's recorded fork branch (e.g. `main`), used
  *  otherwise so committed work stays visible after the agent renames and
- *  pushes its branch.
+ *  pushes its branch. `diff: false` leaves the diff body empty.
  *
  *  A nonzero exit becomes a `WorkspaceExecError` with the exit code, so the
  *  caller can tell a bad base (`CHANGES_BASE_UNRESOLVED`, a 400) from other
  *  failures (500). Transport errors pass through unchanged. */
-export async function getWorkspaceChanges(jobName: string, base?: string, defaultBase?: string): Promise<WorkspaceChanges> {
-  const key = [jobName, base ?? '', defaultBase ?? ''].join('\0')
+export async function getWorkspaceChanges(
+  jobName: string,
+  base?: string,
+  defaultBase?: string,
+  diff = true,
+): Promise<WorkspaceChanges> {
+  const key = [jobName, base ?? '', defaultBase ?? '', diff].join('\0')
   const shared = inFlight.get(key)
   if (shared) return shared
 
   const run = changesMutex(jobName, async () => {
     const { stdout } = await podExec(
-      jobName, buildChangesScript(podLocation(), base, defaultBase),
+      jobName, buildChangesScript(podLocation(), base, defaultBase, diff),
       { timeout: 20_000, maxAttempts: 2 },
     )
     return parseChangesOutput(stdout)

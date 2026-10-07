@@ -40,6 +40,7 @@ export {
   listWorkspaceDir,
   listWorkspaceFiles,
   readWorkspaceFile,
+  readWorkspaceFileAtRev,
   renameWorkspaceEntry,
   writeWorkspaceFile,
 } from './files'

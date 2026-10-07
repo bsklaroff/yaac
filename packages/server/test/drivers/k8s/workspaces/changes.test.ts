@@ -31,7 +31,7 @@ describe('getWorkspaceChanges', () => {
     expect(out.base).toBe('cafe1234')
     expect(out.baseResolved).toBe(true)
     expect(out.files).toEqual([
-      { path: 'src/x.ts', status: 'modified', additions: 2, deletions: 1, binary: false },
+      { path: 'src/x.ts', status: 'modified', additions: 2, deletions: 1, binary: false, stages: {} },
     ])
   })
 
@@ -49,6 +49,8 @@ describe('getWorkspaceChanges', () => {
     const [, cmd] = mockExec.mock.calls.at(-1) ?? []
     expect(cmd).toContain('"origin/$2"')
     expect(cmd).toContain("yaac-changes '' 'main'")
+    await getWorkspaceChanges('yaac-proj-abc', undefined, 'main', false)
+    expect(mockExec.mock.calls.at(-1)?.[1]).toContain("yaac-changes '' 'main' nodiff")
   })
 
   // Every open tab polls, so identical concurrent requests share one exec.

@@ -853,12 +853,28 @@ export interface WorkspaceGroupSummary {
 /** How a file changed, mapped from git's name-status letters. */
 export type ChangeStatus = 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'typechange'
 
+/**
+ * Where a change sits in git: in commits since the fork base, in the index,
+ * in the working tree of a tracked file (`modified`, git's unstaged
+ * changes), or in a file git does not track.
+ */
+export type ChangeStage = 'committed' | 'staged' | 'modified' | 'untracked'
+
+export interface LineCounts {
+  additions: number
+  deletions: number
+}
+
 /** One changed file in a workspace, relative to the fork base. */
 export interface WorkspaceChange {
   path: string
   status: ChangeStatus
   additions: number
   deletions: number
+  /** The file's line counts per stage it has changes in. Each is that
+   *  stage's own diff (base→HEAD, HEAD→index, index→working tree), so they
+   *  need not sum to the totals; an untracked file carries its totals. */
+  stages: Partial<Record<ChangeStage, LineCounts>>
   /** Git reported the file as binary (no line counts / textual diff). */
   binary: boolean
   /** The pre-rename path, set only for `renamed`/`copied` files (git's "from"
@@ -880,7 +896,8 @@ export interface WorkspaceChanges {
   baseResolved: boolean
   files: WorkspaceChange[]
   /** The combined unified diff; the client splits it into per-file hunks.
-   *  Capped for size — see `truncated`. */
+   *  Capped for size — see `truncated`. Empty when the caller asked for no
+   *  diff body. */
   diff: string
   /** True when the diff body was capped for size; `files` stays complete. */
   truncated: boolean
@@ -903,12 +920,6 @@ export interface WorkspaceGitStatus {
   } | null
 }
 
-/**
- * A file's git status in the file explorer — what differs from HEAD, staged
- * and unstaged alike. Deletions are absent: a deleted file is not in the tree.
- */
-export type FileStatus = 'modified' | 'added' | 'untracked' | 'conflicted'
-
 /** Where a symlink in a workspace leads: its resolved path relative to the
  *  workspace, or null when it is broken or leads outside the workspace. */
 export interface SymlinkTarget {
@@ -926,9 +937,18 @@ export interface WorkspaceFiles {
   ignored: string[]
   /** Folders holding no path of `paths`, which the list alone cannot show. */
   emptyDirs: string[]
-  status: Record<string, FileStatus>
+  /** Files with an unresolved merge conflict. */
+  conflicted: string[]
   /** True when `paths` was capped. */
   truncated: boolean
+}
+
+/** A file's text at a commit: what the editor diffs the working copy
+ *  against. `exists` is false when the commit has no such file; `content`
+ *  is null when it does but is binary or over the editable size. */
+export interface WorkspaceFileAtRev {
+  exists: boolean
+  content: string | null
 }
 
 /** One file of a workspace, as the editor reads it. */

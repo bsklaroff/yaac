@@ -137,6 +137,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // unknown.
   { method: 'GET', path: '/api/workspace/:id/git-status', request: '/api/workspace/nope/git-status', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/files', request: '/api/workspace/nope/files', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/file-at', request: `/api/workspace/nope/file-at?path=a&rev=${'0'.repeat(40)}`, k8s: MISSING, containerless: MISSING },
   // The rest of the file editor reads the checkout on the server's disk, so
   // it needs no running workspace.
   { method: 'GET', path: '/api/workspace/:id/dir', request: '/api/workspace/nope/dir?path=a', k8s: MISSING, containerless: MISSING },
