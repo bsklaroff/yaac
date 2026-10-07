@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import CodeMirror, { EditorView, ExternalChange, type ReactCodeMirrorRef } from '@uiw/react-codemirror'
 import { syntaxHighlighting } from '@codemirror/language'
+import type { Extension } from '@codemirror/state'
 import { classHighlighter } from '@lezer/highlight'
 import { editorLanguage, type HighlightLanguage } from '#lib/highlight'
 import { findPanel } from '#components/ui/FindPanel'
@@ -66,6 +67,7 @@ export function CodeEditor({
   bare = false,
   fontSize,
   readOnly = false,
+  extensions: extra,
   onCreateEditor,
 }: {
   value: string
@@ -79,6 +81,9 @@ export function CodeEditor({
   /** Text size in px; unset inherits the page's. */
   fontSize?: number
   readOnly?: boolean
+  /** More extensions, e.g. a diff mode's. Keep the array stable between
+   *  renders: a new one reconfigures the editor. */
+  extensions?: Extension[]
   onCreateEditor?: (view: EditorView) => void
 }): JSX.Element {
   const ref = useRef<ReactCodeMirrorRef>(null)
@@ -86,7 +91,8 @@ export function CodeEditor({
   const extensions = useMemo(() => [
     ...(language ? [editorLanguage(language)] : []),
     ...(fontSize ? [EditorView.theme({ '&': { fontSize: `${fontSize}px` } })] : []),
-  ], [language, fontSize])
+    ...(extra ?? []),
+  ], [language, fontSize, extra])
   useEffect(() => {
     const view = ref.current?.view
     if (!view) return

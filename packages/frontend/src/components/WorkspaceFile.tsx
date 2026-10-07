@@ -1,14 +1,22 @@
-import { useEffect, useReducer, useRef, useState, type JSX, type KeyboardEvent } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
 import { POPUP } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
+import { useQuery } from '@tanstack/react-query'
 import type { EditorView } from '@uiw/react-codemirror'
 import { openSearchPanel } from '@codemirror/search'
 import { ServerError } from '@yaac/shared/errors'
-import type { WorkspaceFile as WorkspaceFileRead } from '@yaac/shared/types'
-import { DEFAULT_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE, MIN_EDITOR_FONT_SIZE, useUiStore } from '#lib/store'
+import type { WorkspaceChange, WorkspaceFile as WorkspaceFileRead } from '@yaac/shared/types'
+import {
+  DEFAULT_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE, MIN_EDITOR_FONT_SIZE, useUiStore, type FileDiffMode,
+} from '#lib/store'
 import { CodeEditor } from '#components/ui/CodeEditor'
+import { LineCountsLabel } from '#components/ui/LineCountsLabel'
+import { api } from '#lib/api'
+import { diffExtensions, setOriginal } from '#lib/diffEditor'
+import { CHANGE_STAGES } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
+import { CHANGES_POLL_MS, useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { chordMatches, findChord, formatChord, saveChord, textSizeStep } from '#lib/shortcuts'
 import { IS_MAC } from '#lib/platform'
 import {
@@ -20,7 +28,7 @@ import {
   registerFileSaver,
   saveWorkspaceFile,
 } from '#lib/files'
-import { AddIcon, LoadingIcon, MinusIcon, SaveIcon, SearchIcon, TextSizeIcon, WarningIcon } from '#lib/icons'
+import { AddIcon, CheckIcon, DiffIcon, LoadingIcon, MinusIcon, SaveIcon, SearchIcon, TextSizeIcon, WarningIcon } from '#lib/icons'
 
 /** Idle time after the last edit before autosave. */
 export const AUTOSAVE_MS = 1000
@@ -222,6 +230,27 @@ class Saver {
   }
 }
 
+/**
+ * The text a diff mode compares the working copy against: the file at the
+ * diff base (under its old name, if renamed), empty for a file the base
+ * lacks, and null while loading or when there is nothing to compare (no
+ * change, or a binary or oversized original).
+ */
+function useOriginal(workspaceId: string, change: WorkspaceChange | undefined, rev: string | undefined, on: boolean): string | null {
+  const path = change?.oldPath ?? change?.path ?? ''
+  const fetches = on && change !== undefined && change.status !== 'added' && rev !== undefined
+  const { data } = useQuery({
+    queryKey: ['file-at', workspaceId, path, rev],
+    queryFn: () => api.workspace[':id']['file-at'].$get({ param: { id: workspaceId }, query: { path, rev: rev! } }),
+    enabled: fetches,
+    // A file at a commit never changes.
+    staleTime: Infinity,
+  })
+  if (!on || !change) return null
+  if (change.status === 'added' || data?.exists === false) return ''
+  return data?.content ?? null
+}
+
 function formatSize(bytes: number): string {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
 }
@@ -249,6 +278,19 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const setFontSize = useUiStore((s) => s.setEditorFontSize)
   const viewRef = useRef<EditorView | null>(null)
   const openFind = (): void => { if (viewRef.current) openSearchPanel(viewRef.current) }
+
+  // The file's changes since the diff base, and the diff mode showing them.
+  // A hidden pane keeps its last answer without polling.
+  const { data: changes } = useWorkspaceChanges(workspaceId, { poll: visible && CHANGES_POLL_MS })
+  const change = changes?.files.find((f) => f.path === path)
+  const diffMode = useUiStore((s) => s.fileDiffMode)
+  const setDiffMode = useUiStore((s) => s.setFileDiffMode)
+  const original = useOriginal(workspaceId, change, changes?.base, diffMode !== 'plain')
+  const diffing = original !== null
+  const extensions = useMemo(() => (original === null ? [] : diffExtensions(diffMode, original)), [diffMode, original])
+  useEffect(() => {
+    if (viewRef.current && original !== null) setOriginal(viewRef.current, original)
+  }, [original, extensions])
 
   useEffect(() => {
     saver.alive = true
@@ -365,6 +407,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
             className="min-h-0 flex-1"
             bare
             fontSize={fontSize}
+            extensions={extensions}
             onCreateEditor={(view) => { viewRef.current = view }}
           />
         )
@@ -390,6 +433,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
           <span className="shrink-0 text-text">{path.slice(slash + 1)}</span>
           {dirty && <span aria-label="Unsaved changes" className="ml-1.5 shrink-0 text-text-dim">●</span>}
         </span>
+        {change && <ChangeSummary change={change} />}
         {statusLabel && (
           <span className={clsx('shrink-0', status === 'retrying' || conflict ? 'text-warning' : 'text-text-faint')}>
             {statusLabel}
@@ -409,6 +453,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         )}
         {phase.kind === 'ready' && !conflict && (
           <div className="flex shrink-0 items-center">
+            <DiffModeMenu mode={diffMode} active={diffing} onChange={setDiffMode} />
             <TextSizeMenu size={fontSize} onChange={setFontSize} />
             <button
               onClick={openFind}
@@ -437,6 +482,73 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
       )}
       {body}
     </div>
+  )
+}
+
+/** The header's note of how the file differs from the diff base: its line
+ *  counts and the stages its changes sit in, each stage's counts on hover. */
+function ChangeSummary({ change }: { change: WorkspaceChange }): JSX.Element {
+  const stages = CHANGE_STAGES.filter(({ stage }) => change.stages[stage])
+  const title = stages
+    .map(({ stage, label }) => `${label}: +${change.stages[stage]!.additions} −${change.stages[stage]!.deletions}`)
+    .join('\n')
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 text-[10px]" title={title || undefined}>
+      {change.binary ? <span className="text-text-faint">binary</span> : <LineCountsLabel counts={change} />}
+      {change.status === 'deleted' && <span className="text-error">deleted</span>}
+      {stages.map(({ stage, label }) => (
+        <span key={stage} className="rounded bg-surface-2 px-1 text-text-dim">{label}</span>
+      ))}
+    </span>
+  )
+}
+
+const DIFF_MODES: { mode: FileDiffMode; label: string }[] = [
+  { mode: 'plain', label: 'File only' },
+  { mode: 'added', label: 'Added lines' },
+  { mode: 'inline', label: 'Added and removed lines' },
+  { mode: 'changes', label: 'Changed parts only' },
+]
+
+/** The header's diff mode picker. `active` says whether the current mode
+ *  has anything to compare against in this file. */
+function DiffModeMenu({ mode, active, onChange }: {
+  mode: FileDiffMode
+  active: boolean
+  onChange: (mode: FileDiffMode) => void
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger
+        title="Show changes against the diff base"
+        aria-label="Diff mode"
+        className={clsx('flex h-5 w-5 shrink-0 items-center justify-center rounded outline-none transition',
+          'hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text',
+          active ? 'text-text' : 'text-text-faint')}
+      >
+        <DiffIcon size={12} />
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner side="bottom" align="end" sideOffset={6}>
+          <Popover.Popup className={clsx('min-w-[200px] text-xs', POPUP)}>
+            <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Show changes</div>
+            {DIFF_MODES.map((m) => (
+              <button
+                key={m.mode}
+                onClick={() => { onChange(m.mode); setOpen(false) }}
+                aria-pressed={m.mode === mode}
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-text-dim transition
+                  hover:bg-surface-3 hover:text-text"
+              >
+                <CheckIcon size={12} className={clsx('shrink-0', m.mode !== mode && 'invisible')} />
+                {m.label}
+              </button>
+            ))}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
   )
 }
 

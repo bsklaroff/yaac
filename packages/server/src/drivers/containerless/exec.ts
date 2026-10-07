@@ -38,6 +38,7 @@ export function getWorkspaceChanges(
   jobName: string,
   base?: string,
   defaultBase?: string,
+  diff = true,
 ): Promise<WorkspaceChanges> {
   const paths = containerlessWorkspacePaths(jobName)
   return changesMutex(jobName, async () => {
@@ -47,7 +48,7 @@ export function getWorkspaceChanges(
         workspaceDir: paths.workspaceDir,
         indexFile: `${paths.scratchDir}/yaac-changes.idx`,
         baseUnresolvedCode: CHANGES_BASE_UNRESOLVED,
-      }, base, defaultBase),
+      }, base, defaultBase, diff),
     ], { cwd: paths.workspaceDir, env: workspaceRunEnvironment(jobName), timeoutMs: 20_000 })
     return parseChangesOutput(stdout)
   })

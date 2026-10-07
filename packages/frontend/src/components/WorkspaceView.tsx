@@ -5,12 +5,10 @@ import { Menu } from '@base-ui/react/menu'
 import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { WorkspacePreview } from '#components/WorkspacePreview'
-import { WorkspaceChanges } from '#components/WorkspaceChanges'
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
-import { isChangesTarget } from '#lib/panes'
 import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isFileTarget, isFilesTarget,
 } from '#lib/files'
@@ -88,7 +86,6 @@ function paneName(
   fileLabels?: Record<string, string>,
 ): string {
   if (isPreviewTarget(target)) return previewLabel(previewPort)
-  if (isChangesTarget(target)) return 'Changes'
   if (isFilesTarget(target)) return 'Files'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
   if (target === 'agent' || isAcpTarget(target)) {
@@ -426,16 +423,6 @@ export function WorkspaceView({
                 <span className="max-lg:sr-only">New Shell</span>
               </button>
               <button
-                onClick={() => openChanges(workspace.workspaceId)}
-                title="Review changes"
-                aria-label="Review changes"
-                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
-                  text-text-dim transition hover:bg-surface-2 hover:text-text"
-              >
-                <ChangesIcon size={13} />
-                Changes
-              </button>
-              <button
                 onClick={() => openFiles(workspace.workspaceId)}
                 title="Browse files"
                 aria-label="Browse files"
@@ -561,7 +548,6 @@ export function WorkspaceView({
           const id = key.slice(0, sep)
           const target = key.slice(sep + 1)
           const preview = isPreviewTarget(target)
-          const changes = isChangesTarget(target)
           const explorer = isFilesTarget(target)
           const file = isFileTarget(target)
           const chat = acpTargetSession(target)
@@ -569,7 +555,7 @@ export function WorkspaceView({
           // Chat panes stay mounted (re-attaching replays the conversation),
           // and so do file panes (unmounting loses undo history, cursor and
           // unsaved text).
-          const ephemeral = preview || changes || explorer
+          const ephemeral = preview || explorer
           // In tiles mode, a column's active tab is on-screen in its body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
           // Hidden panes never change size, since a resize round-trips to
@@ -632,20 +618,9 @@ export function WorkspaceView({
                 </div>
               ) : explorer ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  <WorkspaceFiles workspaceId={id} />
-                </div>
-              ) : changes ? (
-                <div className="h-full w-full overflow-hidden rounded-md">
                   {(() => {
-                    const cs = workspaces.find((s) => s.workspaceId === id)
-                    return (
-                      <WorkspaceChanges
-                        workspaceId={id}
-                        projectId={cs?.projectId ?? ''}
-                        baseBranch={cs?.baseBranch}
-                        focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
-                      />
-                    )
+                    const ws = workspaces.find((s) => s.workspaceId === id)
+                    return <WorkspaceFiles workspaceId={id} projectId={ws?.projectId ?? ''} baseBranch={ws?.baseBranch} />
                   })()}
                 </div>
               ) : (

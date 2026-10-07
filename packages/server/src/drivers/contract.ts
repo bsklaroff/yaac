@@ -536,10 +536,10 @@ export interface WorkspaceDriver {
   list(projectId?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
   /** Live counts per project, spares excluded. Empty when unreachable. */
   count(): Promise<Record<string, number>>
-  /** A running workspace's diff, read inside it. Rejects with
-   *  `WorkspaceExecError` on failure (`CHANGES_BASE_UNRESOLVED` when the
-   *  base has no fork point). */
-  changes(jobName: string, base?: string, defaultBase?: string): Promise<WorkspaceChanges>
+  /** A running workspace's diff, read inside it; `diff: false` leaves out
+   *  the diff body. Rejects with `WorkspaceExecError` on failure
+   *  (`CHANGES_BASE_UNRESOLVED` when the base has no fork point). */
+  changes(jobName: string, base?: string, defaultBase?: string, diff?: boolean): Promise<WorkspaceChanges>
   /** A fresh view for one reconcile pass (or a direct caller outside one). */
   snapshot(resync?: boolean): RuntimeSnapshot
   /** The driver's own upkeep steps for the reconcile pass. */

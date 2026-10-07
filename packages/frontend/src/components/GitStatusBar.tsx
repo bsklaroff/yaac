@@ -4,12 +4,16 @@ import { useUiStore } from '#lib/store'
 import { api } from '#lib/api'
 import { BranchIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
+import { lineTotals } from '#lib/gitStatus'
+import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
+import { LineCountsLabel } from '#components/ui/LineCountsLabel'
 import type { WorkspaceGitStatus } from '@yaac/shared/types'
 
 /**
  * Strip above a workspace's panes saying how far HEAD is ahead of and behind
- * its base branch. The base is the Changes pane's pick, else the branch the
- * workspace forked from.
+ * its base branch, and how many lines differ from it in all. The base is the
+ * explorer's pick, else the branch the workspace forked from. The line
+ * counts open the explorer's changes view, which breaks them down.
  *
  * The strip always takes its height, even when empty: a row appearing later
  * would resize the panes below and send a SIGWINCH to the agent's TUI.
@@ -29,15 +33,29 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
     // A new pick keeps the old line until its answer lands.
     placeholderData: keepPreviousData,
   })
+  // Slow, like the ahead/behind count: the bar is always up, and each poll
+  // walks the working tree.
+  const { data: changes } = useWorkspaceChanges(workspaceId, { poll: 10_000 })
+  const openChanges = useUiStore((s) => s.openChanges)
+  const files = changes?.files ?? []
   return (
-    <div className="flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 text-text-dim md:-mt-1.5">
+    <div className="flex h-5 shrink-0 items-start gap-2 px-2 text-[11px] leading-4 text-text-dim md:-mt-1.5">
       {data?.base && (
-        <span className="truncate">
+        <span className="min-w-0 truncate">
           {describe(data.base, data.comparison)}
           {data.comparison?.fetchedAt && (
             <span className="text-text-faint"> · fetched {relativeAge(data.comparison.fetchedAt)}</span>
           )}
         </span>
+      )}
+      {files.length > 0 && (
+        <button
+          onClick={() => openChanges(workspaceId)}
+          title="Review changes"
+          className="shrink-0 rounded px-1 transition hover:bg-surface-2"
+        >
+          <LineCountsLabel counts={lineTotals(files)} />
+        </button>
       )}
     </div>
   )

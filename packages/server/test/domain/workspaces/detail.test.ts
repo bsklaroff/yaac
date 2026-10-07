@@ -75,7 +75,7 @@ describe('getWorkspaceChanges', () => {
     base: 'main', baseResolved: true, files: [], diff: '', truncated: false,
   }
   const mockChanges = vi.fn<
-    (jobName: string, base?: string, defaultBase?: string) => Promise<WorkspaceChanges>
+    (jobName: string, base?: string, defaultBase?: string, diff?: boolean) => Promise<WorkspaceChanges>
   >()
   let tmpDir: string
   let seq = 0
@@ -113,17 +113,17 @@ describe('getWorkspaceChanges', () => {
     await getWorkspaceChanges(workspaceId)
 
     expect(mockChanges).toHaveBeenCalledExactlyOnceWith(
-      `yaac-demo-${workspaceId}`, undefined, 'main',
+      `yaac-demo-${workspaceId}`, undefined, 'main', true,
     )
   })
 
   it('lets an explicit base win, still offering the fork branch as the default', async () => {
     const workspaceId = await installRunning()
 
-    await getWorkspaceChanges(workspaceId, 'origin/release')
+    await getWorkspaceChanges(workspaceId, 'origin/release', false)
 
     expect(mockChanges).toHaveBeenCalledExactlyOnceWith(
-      `yaac-demo-${workspaceId}`, 'origin/release', 'main',
+      `yaac-demo-${workspaceId}`, 'origin/release', 'main', false,
     )
   })
 
@@ -133,7 +133,7 @@ describe('getWorkspaceChanges', () => {
     await getWorkspaceChanges(workspaceId)
 
     expect(mockChanges).toHaveBeenCalledExactlyOnceWith(
-      `yaac-demo-${workspaceId}`, undefined, undefined,
+      `yaac-demo-${workspaceId}`, undefined, undefined, true,
     )
   })
 

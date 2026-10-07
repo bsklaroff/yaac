@@ -9,6 +9,7 @@ import type {
   SymlinkTarget,
   WorkspaceDir,
   WorkspaceFile,
+  WorkspaceFileAtRev,
   WorkspaceFiles,
   WorkspaceFileSaved,
   WorkspaceGitStatus,
@@ -21,7 +22,7 @@ import {
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { workspaceForkBranch } from './fork-branch'
-import { checkoutAheadBehind, listCheckoutFiles } from './checkout-git'
+import { checkoutAheadBehind, checkoutBlobAt, listCheckoutFiles } from './checkout-git'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
 
 /**
@@ -234,7 +235,8 @@ async function findEmptyDirs(
 /**
  * Every path in the checkout, for the explorer's tree: gitignore-aware from
  * git, plus the ignored entries (collapsed per wholly ignored folder), the
- * folders holding no file, what each symlink leads to, and git status.
+ * folders holding no file, what each symlink leads to, and which files have
+ * a merge conflict.
  */
 export async function listWorkspaceFiles(idOrName: string): Promise<WorkspaceFiles> {
   const { jobName } = await runningWorkspace(idOrName)
@@ -244,9 +246,6 @@ export async function listWorkspaceFiles(idOrName: string): Promise<WorkspaceFil
   const truncated = listing.paths.length > MAX_LISTED_PATHS || listing.ignored.length > MAX_LISTED_PATHS
   const paths = listing.paths.slice(0, MAX_LISTED_PATHS)
   const ignored = listing.ignored.slice(0, MAX_LISTED_PATHS)
-  const status = truncated
-    ? Object.fromEntries(paths.filter((p) => p in listing.status).map((p) => [p, listing.status[p]]))
-    : listing.status
   const symlinks: Record<string, SymlinkTarget> = {}
   // git reports a symlink as one entry and never lists what is behind one.
   for (let i = 0; i < paths.length; i += 256) {
@@ -261,15 +260,15 @@ export async function listWorkspaceFiles(idOrName: string): Promise<WorkspaceFil
     symlinks,
     ignored,
     emptyDirs: await findEmptyDirs(co, listing.untrackedDirs, paths, ignored),
-    status,
+    conflicted: listing.conflicted,
     truncated,
   }
 }
 
 /**
  * How far the checkout's HEAD is ahead of and behind its reference branch:
- * `base` when the caller names one (the Changes pane's pick), else the branch
- * the workspace forked from — the same default the Changes diff takes.
+ * `base` when the caller names one (the explorer's pick), else the branch
+ * the workspace forked from — the same default the changes diff takes.
  */
 export async function getWorkspaceGitStatus(idOrName: string, base?: string): Promise<WorkspaceGitStatus> {
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
@@ -346,6 +345,26 @@ export async function readWorkspaceFile(
   } finally {
     await fh.close()
   }
+}
+
+/**
+ * One file's text at commit `rev` (the fork base the changes diff reports),
+ * which the editor's diff modes compare the working copy against. Read with
+ * the workspace's git, so it must be running.
+ */
+export async function readWorkspaceFileAtRev(
+  idOrName: string,
+  relPath: string,
+  rev: string,
+): Promise<WorkspaceFileAtRev> {
+  // A full object id, so it can be neither an option nor a revision range.
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(rev)) throw new ServerError('VALIDATION', `${rev} is not a commit id`)
+  const { jobName } = await runningWorkspace(idOrName)
+  const rel = checkPath(await openCheckout(idOrName), relPath)
+  const blob = await checkoutBlobAt(jobName, rev, rel, MAX_TEXT_FILE_BYTES)
+  if (blob === 'absent') return { exists: false, content: null }
+  if (blob === 'large' || isBinaryContent(blob)) return { exists: true, content: null }
+  return { exists: true, content: blob.toString('utf8') }
 }
 
 /** A save either lands, or is refused naming the version the file has now

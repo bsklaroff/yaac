@@ -16,7 +16,7 @@ import {
 import { singleColumn, type PaneLayout } from '#lib/layout'
 
 const listing = (over: Partial<WorkspaceFiles> = {}): WorkspaceFiles => ({
-  paths: [], symlinks: {}, ignored: [], emptyDirs: [], status: {}, truncated: false, ...over,
+  paths: [], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false, ...over,
 })
 
 /** A tree as nested names — folders as `name/` with their children. */
@@ -46,18 +46,6 @@ describe('buildTree', () => {
       'README.md',
       'z.txt',
     ])
-  })
-
-  it('rolls a folder’s status up from its files, strongest first', () => {
-    const { index } = buildTree(listing({
-      paths: ['a/x.ts', 'a/y.ts', 'a/b/z.ts', 'c/new.ts', 'd/clean.ts'],
-      status: { 'a/x.ts': 'untracked', 'a/y.ts': 'modified', 'a/b/z.ts': 'conflicted', 'c/new.ts': 'untracked' },
-    }))
-    expect(index.get('a')?.status).toBe('conflicted')
-    expect(index.get('a/b')?.status).toBe('conflicted')
-    expect(index.get('c')?.status).toBe('untracked')
-    expect(index.get('d')?.status).toBeUndefined()
-    expect(index.get('a/y.ts')?.status).toBe('modified')
   })
 
   it('merges ignored entries only when asked, flagged, with wholly ignored folders lazy', () => {

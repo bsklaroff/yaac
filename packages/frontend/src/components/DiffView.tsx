@@ -5,7 +5,7 @@ import type { DiffLine } from '#lib/diff'
 
 /**
  * Diff lines with +/− markers, tinted rows and syntax highlighting. Used by
- * the changes pane (git diffs) and the chat pane (agent edits). Line numbers
+ * the explorer's changes view (git diffs) and the chat pane (agent edits). Line numbers
  * are optional because an agent's edit fragment has no file line numbers.
  */
 export function DiffView({

@@ -59,12 +59,16 @@ export async function getWorkspaceDetail(idOrPrefix: string): Promise<WorkspaceD
  * show no changes once the agent pushes its branch, since the upstream then
  * points at HEAD.
  *
+ * `diff: false` leaves the diff body out, for callers that show only the
+ * file list and line counts.
+ *
  * Only an unresolvable explicit `base` becomes a VALIDATION error. Other
  * failures, including an unresolvable recorded fork branch, stay faults.
  */
 export async function getWorkspaceChanges(
   idOrPrefix: string,
   base?: string,
+  diff = true,
 ): Promise<WorkspaceChanges> {
   const { jobName, workspaceId, projectId } = await resolveWorkspaceContainer(
     idOrPrefix, { requireRunning: true },
@@ -73,7 +77,7 @@ export async function getWorkspaceChanges(
   // The runtime treats a blank `base` as unset.
   const named = base?.trim()
   try {
-    return await workspaceDriver().changes(jobName, base, forkBranch ?? undefined)
+    return await workspaceDriver().changes(jobName, base, forkBranch ?? undefined, diff)
   } catch (err) {
     if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
       // The ref may exist but share no history with the workspace.

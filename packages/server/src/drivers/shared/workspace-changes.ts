@@ -8,7 +8,16 @@
  * diffs the base tree against that index. This captures the whole working
  * tree without touching the agent's real index.
  *
- * The pane polls, so:
+ * Which stages each file's changes sit in comes from trees, so the working
+ * tree is walked once (by `add -A`) however many stages are read: HEAD; the
+ * agent's index, written as a tree from a scratch copy so the real one is
+ * never written; and the private index's tree. `staged` is HEAD → the
+ * agent's tree, `modified` and `untracked` are the agent's tree → the
+ * working tree's (a file the agent's index lacks is untracked), and
+ * `committed`, base → HEAD, is cached by that pair, since it changes only
+ * when HEAD or the base moves.
+ *
+ * The webapp polls it, so:
  *  - The private index lives at a stable path and is reused, keeping git's
  *    stat cache so each poll does not re-hash every file.
  *  - A failed run must not look like an empty one: the script prints a
@@ -16,7 +25,7 @@
  *    succeeds, so a partial run is an error, not "No changes".
  */
 
-import type { ChangeStatus, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
+import type { ChangeStage, ChangeStatus, LineCounts, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
 
 /** Where one workspace's diff is computed, as paths inside the workspace. */
 export interface ChangesLocation {
@@ -42,6 +51,10 @@ const MAX_DIFF_BYTES = 1_000_000
  *  first and decides `truncated`. */
 const WORKSPACE_DIFF_CAP_BYTES = MAX_DIFF_BYTES * 2
 
+const M_COMMITTED = '@@COMMITTED@@'
+const M_STAGED = '@@STAGED@@'
+const M_MODIFIED = '@@MODIFIED@@'
+const M_UNTRACKED = '@@UNTRACKED@@'
 const M_NUMSTAT = '@@NUMSTAT@@'
 const M_NAMESTATUS = '@@NAMESTATUS@@'
 /** Printed only after every git command feeding the file list succeeded;
@@ -50,9 +63,19 @@ const M_OK = '@@OK@@'
 const M_DIFF = '@@DIFF@@'
 
 /**
+ * Force-adds its arguments that still exist (a link counts, even broken),
+ * in one `git add`, and nothing when none do. The names come from the
+ * agent's index, so they are literal: `--` alone still lets a name like
+ * `:(glob)**` or `*` match every ignored file, credentials included.
+ */
+const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$@" "$p"; done; '
+  + '[ $# -eq 0 ] || exec git --literal-pathspecs add -f -- "$@"'
+
+/**
  * The script body. Resolves the diff base, stages the working tree into the
- * private index, and prints numstat, name-status and the unified diff, each
- * after a marker.
+ * private index, and prints a numstat per stage, the untracked files, then
+ * numstat, name-status and the unified diff, each after a marker (see the
+ * module comment for how the stages are read).
  *
  * Optional args (see buildChangesScript):
  *  - `$1`: a base branch the user picked. Tries `origin/<$1>`, then local
@@ -66,6 +89,9 @@ const M_DIFF = '@@DIFF@@'
  * `@{upstream}` is that branch's own remote, so the merge base collapses to
  * HEAD and all commits disappear. Local `<$2>` covers a fork branch that
  * was never pushed.
+ *
+ * `$3`, when `nodiff`, skips the diff body: a caller that wants only the
+ * file list and counts does not pay to ship every line.
  *
  * `FORK 0` means no fork point was found and the diff is against HEAD, so
  * only uncommitted work appears; callers must not present that as "nothing
@@ -87,6 +113,18 @@ function changesScript(loc: ChangesLocation): string {
   + 'base=$(git merge-base @{upstream} HEAD 2>/dev/null) '
   + `|| { base=$(git rev-parse HEAD 2>/dev/null) || exit ${loc.baseUnresolvedCode}; fork=0; }; `
   + 'fi; '
+  + 'printf "BASE %s\\n" "$base"; '
+  + 'printf "FORK %s\\n" "$fork"; '
+  + `c=${loc.indexFile}.committed; key="$base $(git rev-parse HEAD)"; `
+  + 'if [ "$(head -n 1 "$c" 2>/dev/null)" != "$key" ]; then '
+  + '{ echo "$key"; git diff --numstat "$base" HEAD; } > "$c.tmp" || exit 6; mv "$c.tmp" "$c"; fi; '
+  + `printf "${M_COMMITTED}\\n"; tail -n +2 "$c"; `
+  // The agent's index, copied (git swaps it in by rename, so a copy is
+  // never half-written) and written as a tree. With a merge conflict it has
+  // no tree, and its changes count as modified.
+  + `cp "$(git rev-parse --git-path index)" ${loc.indexFile}.agent 2>/dev/null `
+  + `&& agent=$(GIT_INDEX_FILE=${loc.indexFile}.agent git write-tree 2>/dev/null) `
+  + '|| agent=$(git rev-parse "HEAD^{tree}") || exit 6; '
   // The stable private index lets git's stat cache make `add -A`
   // incremental across polls.
   + `export GIT_INDEX_FILE=${loc.indexFile}; `
@@ -94,12 +132,19 @@ function changesScript(loc: ChangesLocation): string {
   // would fail every later poll. Clear both and retry once; the server runs
   // one of these at a time per workspace, so any lock here is orphaned.
   + `git add -A || { rm -f ${loc.indexFile} ${loc.indexFile}.lock; git add -A || exit 5; }; `
-  + 'printf "BASE %s\\n" "$base"; '
-  + 'printf "FORK %s\\n" "$fork"; '
+  // `add -A` skips a tracked file that matches .gitignore (one added with
+  // `add -f`), which would then read as deleted. Force-add those the agent's
+  // index tracks that are still on disk.
+  + `{ [ ! -f ${loc.indexFile}.agent ] || GIT_INDEX_FILE=${loc.indexFile}.agent git ls-files -z -c -i --exclude-standard `
+  + `| xargs -0 sh -c ${shSingleQuote(FORCE_ADD)} yaac-force-add; } || exit 5; `
+  + 'work=$(git write-tree) || exit 5; '
+  + `printf "${M_STAGED}\\n"; git diff --numstat HEAD "$agent" || exit 6; `
+  + `printf "${M_MODIFIED}\\n"; git diff --numstat --no-renames --diff-filter=a "$agent" "$work" || exit 6; `
+  + `printf "${M_UNTRACKED}\\n"; git diff --name-only --no-renames --diff-filter=A "$agent" "$work" || exit 6; `
   + `printf "${M_NUMSTAT}\\n"; git diff --cached --numstat "$base" || exit 6; `
   + `printf "${M_NAMESTATUS}\\n"; git diff --cached --name-status "$base" || exit 6; `
   + `printf "${M_OK}\\n"; `
-  + `printf "${M_DIFF}\\n"; git diff --cached "$base" 2>/dev/null | head -c ${WORKSPACE_DIFF_CAP_BYTES}; `
+  + `[ "$3" = nodiff ] || { printf "${M_DIFF}\\n"; git diff --cached "$base" 2>/dev/null | head -c ${WORKSPACE_DIFF_CAP_BYTES}; }; `
   + 'exit 0'
 }
 
@@ -111,19 +156,21 @@ function shSingleQuote(s: string): string {
 
 /**
  * Build the `exec` command tail:
- * `sh -c <script> yaac-changes <base> <defaultBase>`. Both branch names are
- * passed as positionals `$1`/`$2`, never interpolated into the script, so
- * any value reaches git as one literal ref (and a bogus one simply fails to
- * resolve). Both empty selects the `@{upstream}`-else-HEAD default.
+ * `sh -c <script> yaac-changes <base> <defaultBase> [nodiff]`. Both branch
+ * names are passed as positionals `$1`/`$2`, never interpolated into the
+ * script, so any value reaches git as one literal ref (and a bogus one
+ * simply fails to resolve). Both empty selects the `@{upstream}`-else-HEAD
+ * default. `diff: false` adds `nodiff`, leaving the diff body out.
  */
 export function buildChangesScript(
   loc: ChangesLocation,
   base?: string,
   defaultBase?: string,
+  diff = true,
 ): string {
   const baseArg = shSingleQuote((base ?? '').trim())
   const defaultArg = shSingleQuote((defaultBase ?? '').trim())
-  return `sh -c ${shSingleQuote(changesScript(loc))} yaac-changes ${baseArg} ${defaultArg}`
+  return `sh -c ${shSingleQuote(changesScript(loc))} yaac-changes ${baseArg} ${defaultArg}${diff ? '' : ' nodiff'}`
 }
 
 /** Map a git name-status letter to our ChangeStatus. */
@@ -217,13 +264,25 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
   // FORK 0: no fork point, diffed against HEAD, so commits are missing.
   const baseResolved = /^FORK 0$/m.exec(raw) === null
 
+  const byStage: [ChangeStage, Map<string, LineCounts>][] = [
+    ['committed', parseNumstat(section(raw, `${M_COMMITTED}\n`, M_STAGED))],
+    ['staged', parseNumstat(section(raw, `${M_STAGED}\n`, M_MODIFIED))],
+    ['modified', parseNumstat(section(raw, `${M_MODIFIED}\n`, M_UNTRACKED))],
+  ]
+  const untracked = new Set(section(raw, `${M_UNTRACKED}\n`, M_NUMSTAT).split('\n').filter(Boolean))
   const numstat = parseNumstat(section(raw, `${M_NUMSTAT}\n`, M_NAMESTATUS))
   const nameStatus = parseNameStatus(section(raw, `${M_NAMESTATUS}\n`, M_OK))
   const rawDiff = section(raw, `${M_DIFF}\n`).replace(/^\n/, '')
 
   const files: WorkspaceChange[] = nameStatus.map(({ path, status, oldPath }) => {
-    const counts = numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
-    const change: WorkspaceChange = { path, status, additions: counts.additions, deletions: counts.deletions, binary: counts.binary }
+    const { additions, deletions, binary } = numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
+    const stages: WorkspaceChange['stages'] = {}
+    for (const [stage, counts] of byStage) {
+      const c = counts.get(path)
+      if (c) stages[stage] = { additions: c.additions, deletions: c.deletions }
+    }
+    if (untracked.has(path)) stages.untracked = { additions, deletions }
+    const change: WorkspaceChange = { path, status, additions, deletions, binary, stages }
     if (oldPath) change.oldPath = oldPath
     return change
   })

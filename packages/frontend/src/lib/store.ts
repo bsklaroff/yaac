@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
-import { CHANGES_TARGET } from '#lib/panes'
 import { FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
@@ -195,6 +194,14 @@ function isChatDraft(v: unknown): v is ChatDraft {
     && (text !== '' || sent !== undefined)
 }
 
+/**
+ * How a file pane shows its changes since the diff base: not at all, its
+ * added lines tinted, removed lines too (read-only, between the editable
+ * ones), or only the changed stretches with the rest folded away.
+ */
+export const FILE_DIFF_MODES = ['plain', 'added', 'inline', 'changes'] as const
+export type FileDiffMode = typeof FILE_DIFF_MODES[number]
+
 /** The store fields saved across reloads. */
 const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   // A restart keeps the workspace id, so its layout survives it.
@@ -211,6 +218,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
   editorFontSize: number('yaac.editorfontsize.v1', clampEditorFontSize),
+  fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
   chatCondensed: flag('yaac.chatcondensed.v1'),
   // index.html reads this key before first paint, to avoid a theme flash.
@@ -273,16 +281,25 @@ export function mergeProvisioning(
 }
 
 /**
- * View state of a pane that unmounts when off-screen (Changes, the
- * explorer), kept here so it survives: expanded entries, scroll position,
- * filter, and whether ignored files show. In memory only.
+ * View state of a pane that unmounts when off-screen (the explorer), kept
+ * here so it survives: expanded folders, scroll position, filter, and its
+ * toggles. In memory only.
  */
 export interface PaneView {
-  /** Missing means the pane has not loaded yet (Changes seeds it then). */
   expanded?: string[]
   scroll?: number
   find?: string
   showIgnored?: boolean
+  /** List only the files changed since the diff base (the changes view). */
+  changedOnly?: boolean
+  /** In the changes view: one row per file with its full path, not a
+   *  tree. Unset counts as flat, and opening the view sets it. */
+  flat?: boolean
+  /** In the changes view, whose folders start open: the ones closed. */
+  collapsed?: string[]
+  /** In the changes view, where each file's diff starts open under its row:
+   *  the files whose diff is folded. Opening the view clears it. */
+  foldedDiffs?: string[]
 }
 
 /** Which pane of which workspace a `paneView` entry belongs to. */
@@ -419,7 +436,9 @@ interface UiState {
   setPreviewPort: (workspaceId: string, containerPort: number) => void
   /** Open or focus the preview pane, setting its port if unset. */
   openPreview: (workspaceId: string, containerPort?: number) => void
-  /** Open or focus a workspace's Changes pane. */
+  /** Open or focus a workspace's file explorer in its changes view:
+   *  changed files only, as a flat list, each with its diff, its filter
+   *  focused. */
   openChanges: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
@@ -454,6 +473,9 @@ interface UiState {
   /** Editor font size in px for all file panes. Saved and clamped. */
   editorFontSize: number
   setEditorFontSize: (px: number) => void
+  /** How file panes show their changes. Saved. */
+  fileDiffMode: FileDiffMode
+  setFileDiffMode: (mode: FileDiffMode) => void
   /** Whether chat panes span the full pane width instead of a centered
    *  column. Saved; off by default. */
   chatFullWidth: boolean
@@ -471,10 +493,10 @@ interface UiState {
   /** Per-workspace active pane: the visible tab in tabs mode, the
    *  last-focused pane in tiles mode. Cycle shortcuts start from it. */
   activeTabs: Record<string, string>
-  /** Per-workspace branch the Changes pane diffs against; absent means the
+  /** Per-workspace branch changes are diffed against; absent means the
    *  workspace's fork base. In memory only. */
   changesBase: Record<string, string>
-  /** Set a workspace's Changes base branch; undefined resets it. */
+  /** Set a workspace's diff base branch; undefined resets it. */
   setChangesBase: (workspaceId: string, branch: string | undefined) => void
   /** View state of panes that unmount off-screen, by `paneViewKey`. */
   paneView: Record<string, PaneView>
@@ -665,6 +687,7 @@ export const useUiStore = create<UiState>((set) => ({
   themePref: 'system',
   soundEnabled: true,
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+  fileDiffMode: 'plain',
   chatFullWidth: false,
   chatCondensed: true,
   viewMode: defaultViewMode(),
@@ -813,7 +836,16 @@ export const useUiStore = create<UiState>((set) => ({
       ? { previewPort: { ...s.previewPort, [workspaceId]: containerPort } }
       : {}),
   })),
-  openChanges: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, CHANGES_TARGET)),
+  openChanges: (workspaceId) => set((s) => {
+    const key = paneViewKey(workspaceId, FILES_TARGET)
+    return {
+      ...openSpecialPane(s, workspaceId, FILES_TARGET),
+      paneView: { ...s.paneView, [key]: { ...s.paneView[key], changedOnly: true, flat: true, foldedDiffs: [], find: '' } },
+      // Focus its filter, as the open-files shortcut does, so Cmd/Ctrl-F
+      // and typing work without a click.
+      filesFindPending: true,
+    }
+  }),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
   openFile: (workspaceId, path) => set((s) => {
     const target = fileTarget(path)
@@ -837,6 +869,7 @@ export const useUiStore = create<UiState>((set) => ({
   setChatFullWidth: (full) => set({ chatFullWidth: full }),
   setChatCondensed: (condensed) => set({ chatCondensed: condensed }),
   setEditorFontSize: (px) => set({ editorFontSize: clampEditorFontSize(px) }),
+  setFileDiffMode: (mode) => set({ fileDiffMode: mode }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setPinnedUsageMetric: (key) => set({ pinnedUsageMetric: key }),
   setActiveTab: (workspaceId, target) => set((s) => (

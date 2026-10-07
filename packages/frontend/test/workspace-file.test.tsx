@@ -4,15 +4,29 @@ import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 
 // CodeMirror's contenteditable doesn't work under jsdom, and these tests cover
 // the save lifecycle, so the editor is replaced with a textarea.
+// It reports how many extensions it was handed, which is how a diff mode
+// shows here.
 vi.mock('#components/ui/CodeEditor', () => ({
-  CodeEditor: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
-    <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
+  CodeEditor: ({ value, onChange, extensions }: {
+    value: string
+    onChange: (v: string) => void
+    extensions?: unknown[]
+  }) => (
+    <textarea
+      aria-label="editor"
+      data-extensions={extensions?.length ?? 0}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
   ),
 }))
 
 import { AUTOSAVE_MS, POLL_MS, RETRY_MS, WorkspaceFile } from '#components/WorkspaceFile'
 import { discardFileSavers, fileKey, fileSaver, flushFileSavers } from '#lib/files'
 import { useUiStore } from '#lib/store'
+import { testQueryClient } from './harness'
+import { QueryClientProvider } from '@tanstack/react-query'
+import type { WorkspaceChanges } from '@yaac/shared/types'
 
 /**
  * Fake server behind `fetch`: one file whose version is a counter. A test can
@@ -27,6 +41,10 @@ let failPuts: number
 let workspaceGone: boolean
 let holdPut: ((release: () => void) => void) | null
 let holdGet: ((release: () => void) => void) | null
+/** The changes route's answer; null answers as a stopped workspace. */
+let changes: WorkspaceChanges | null
+/** The `file-at` requests, as path and rev. */
+let fileAt: { path: string | null; rev: string | null }[]
 
 function respond(status: number, body: unknown): Response {
   const res = {
@@ -55,9 +73,18 @@ beforeEach(() => {
   workspaceGone = false
   holdPut = null
   holdGet = null
+  changes = null
+  fileAt = []
   // hono hands the client's fetch a relative URL string.
   globalThis.fetch = vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, 'http://localhost')
+    if (url.pathname.endsWith('/changes')) {
+      return changes ? respond(200, changes) : respond(409, { error: { code: 'CONFLICT', message: 'not running' } })
+    }
+    if (url.pathname.endsWith('/file-at')) {
+      fileAt.push({ path: url.searchParams.get('path'), rev: url.searchParams.get('rev') })
+      return respond(200, { exists: true, content: 'zero\n' })
+    }
     if (init?.method === 'PUT') {
       const body = JSON.parse(init.body as string) as Put
       puts.push(body)
@@ -91,7 +118,7 @@ afterEach(() => {
   cleanup()
   discardFileSavers([fileKey('w1', 'a.ts')])
   vi.useRealTimers()
-  useUiStore.setState({ dirtyFiles: {} })
+  useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain' })
 })
 
 const tick = (ms: number): Promise<void> => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
@@ -101,7 +128,10 @@ const ctrlS = (el: Element, over: Partial<KeyboardEventInit> = {}): boolean =>
   fireEvent.keyDown(el, { key: 's', code: 'KeyS', ctrlKey: true, ...over })
 
 async function mount(): Promise<ReturnType<typeof render>> {
-  const view = render(<WorkspaceFile workspaceId="w1" path="a.ts" visible onClose={() => {}} />)
+  const client = testQueryClient()
+  const view = render(<WorkspaceFile workspaceId="w1" path="a.ts" visible onClose={() => {}} />, {
+    wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+  })
   await tick(0)
   return view
 }
@@ -370,5 +400,37 @@ describe('WorkspaceFile', () => {
     type('again')
     expect(await act(() => flushFileSavers([fileKey('w1', 'a.ts')]))).toBe(false)
     expect(screen.getByRole('alert')).toBeTruthy()
+  })
+  // The header names how the file differs from the diff base, and a diff
+  // mode compares the editor against the file at that base, under its old
+  // name when renamed.
+  it('shows the file’s changes and diffs it against its text at the base', async () => {
+    changes = {
+      base: 'b'.repeat(40),
+      baseResolved: true,
+      files: [{
+        path: 'a.ts', oldPath: 'old.ts', status: 'renamed', additions: 3, deletions: 1, binary: false,
+        stages: { committed: { additions: 2, deletions: 1 }, untracked: { additions: 1, deletions: 0 } },
+      }],
+      diff: '',
+      truncated: false,
+    }
+    await mount()
+    await tick(0)
+    expect(screen.getByText('+3')).toBeTruthy()
+    expect(screen.getByText('−1')).toBeTruthy()
+    expect(screen.getByText('committed')).toBeTruthy()
+    expect(screen.getByText('untracked')).toBeTruthy()
+    expect(screen.queryByText('staged')).toBeNull()
+    // The plain mode fetches nothing and adds nothing.
+    expect(fileAt).toEqual([])
+    expect(editor().dataset.extensions).toBe('0')
+
+    fireEvent.click(screen.getByLabelText('Diff mode'))
+    fireEvent.click(screen.getByText('Added and removed lines'))
+    await tick(0)
+    expect(useUiStore.getState().fileDiffMode).toBe('inline')
+    expect(fileAt).toEqual([{ path: 'old.ts', rev: 'b'.repeat(40) }])
+    expect(Number(editor().dataset.extensions)).toBeGreaterThan(0)
   })
 })

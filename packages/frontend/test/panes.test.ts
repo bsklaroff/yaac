@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
+import { FILES_TARGET } from '#lib/files'
 import { acpPaneTargets, defaultPaneTarget, paneStillLive, syncPaneLayout } from '#lib/panes'
 import { addColumn, addTab, paneTargets, singleColumn } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
-import { CHANGES_TARGET } from '#lib/panes'
 import type { AgentSessionEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
 /**
@@ -100,7 +100,7 @@ describe('paneStillLive', () => {
       expect(paneStillLive({ ...wt, terminals: [shell] }, 'window:@3')).toBe(true)
       expect(paneStillLive({ ...wt, terminals: [] }, 'window:@3')).toBe(false)
       expect(paneStillLive({ ...wt, terminals: [] }, PREVIEW_TARGET)).toBe(true)
-      expect(paneStillLive({ ...wt, terminals: [] }, CHANGES_TARGET)).toBe(true)
+      expect(paneStillLive({ ...wt, terminals: [] }, FILES_TARGET)).toBe(true)
     }
   })
 })

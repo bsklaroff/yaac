@@ -8,6 +8,7 @@ import {
   buildChangesScript as buildScript,
   type ChangesLocation,
 } from '#drivers/shared/workspace-changes'
+import type { WorkspaceChange } from '@yaac/shared/types'
 import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
 
 // The in-pod paths the k8s driver passes; a host driver passes its own.
@@ -44,8 +45,8 @@ describe('parseChangesOutput', () => {
     expect(out.base).toBe('abc123def')
     expect(out.baseResolved).toBe(true)
     expect(out.files).toEqual([
-      { path: 'src/app.ts', status: 'modified', additions: 10, deletions: 2, binary: false },
-      { path: 'src/new.ts', status: 'added', additions: 5, deletions: 0, binary: false },
+      { path: 'src/app.ts', status: 'modified', additions: 10, deletions: 2, binary: false, stages: {} },
+      { path: 'src/new.ts', status: 'added', additions: 5, deletions: 0, binary: false, stages: {} },
     ])
     expect(out.diff).toContain('diff --git a/src/app.ts')
     expect(out.diff).toContain('+added line')
@@ -65,14 +66,14 @@ describe('parseChangesOutput', () => {
       '@@OK@@', '@@DIFF@@',
     ].join('\n'))
     expect(out.files).toEqual([
-      { path: 'src/a.ts', status: 'added', additions: 12, deletions: 3, binary: false },
-      { path: 'src/gone.ts', status: 'deleted', additions: 0, deletions: 9, binary: false },
-      { path: 'img/logo.png', status: 'modified', additions: 0, deletions: 0, binary: true },
-      { path: 'renamed.ts', status: 'renamed', additions: 2, deletions: 2, binary: false, oldPath: 'old.ts' },
-      { path: 'lib/b.ts', status: 'copied', additions: 1, deletions: 0, binary: false, oldPath: 'lib/a.ts' },
-      { path: 'link', status: 'typechange', additions: 0, deletions: 0, binary: false },
+      { path: 'src/a.ts', status: 'added', additions: 12, deletions: 3, binary: false, stages: {} },
+      { path: 'src/gone.ts', status: 'deleted', additions: 0, deletions: 9, binary: false, stages: {} },
+      { path: 'img/logo.png', status: 'modified', additions: 0, deletions: 0, binary: true, stages: {} },
+      { path: 'renamed.ts', status: 'renamed', additions: 2, deletions: 2, binary: false, stages: {}, oldPath: 'old.ts' },
+      { path: 'lib/b.ts', status: 'copied', additions: 1, deletions: 0, binary: false, stages: {}, oldPath: 'lib/a.ts' },
+      { path: 'link', status: 'typechange', additions: 0, deletions: 0, binary: false, stages: {} },
       // An unknown letter reads as modified.
-      { path: 'odd.ts', status: 'modified', additions: 4, deletions: 4, binary: false },
+      { path: 'odd.ts', status: 'modified', additions: 4, deletions: 4, binary: false, stages: {} },
     ])
   })
 
@@ -101,6 +102,30 @@ describe('parseChangesOutput', () => {
     expect(small.diff).toBe('交'.repeat(300))
   })
 
+  // Each stage section is its own numstat; an untracked file carries its
+  // totals, since git has no diff for it outside the private index.
+  it('attaches each file\'s per-stage counts', () => {
+    const out = parseChangesOutput([
+      'BASE abc', 'FORK 1',
+      '@@COMMITTED@@', '4\t1\tsrc/a.ts', '2\t0\t{old => src}/moved.ts',
+      '@@STAGED@@', '1\t1\tsrc/a.ts',
+      '@@MODIFIED@@', '0\t3\tsrc/a.ts',
+      '@@UNTRACKED@@', 'notes.md',
+      '@@NUMSTAT@@', '5\t2\tsrc/a.ts', '7\t0\tnotes.md', '2\t0\tsrc/moved.ts',
+      '@@NAMESTATUS@@', 'M\tsrc/a.ts', 'A\tnotes.md', 'R090\told/moved.ts\tsrc/moved.ts',
+      '@@OK@@', '@@DIFF@@',
+    ].join('\n'))
+    expect(out.files.map((f) => [f.path, f.stages])).toEqual([
+      ['src/a.ts', {
+        committed: { additions: 4, deletions: 1 },
+        staged: { additions: 1, deletions: 1 },
+        modified: { additions: 0, deletions: 3 },
+      }],
+      ['notes.md', { untracked: { additions: 7, deletions: 0 } }],
+      ['src/moved.ts', { committed: { additions: 2, deletions: 0 } }],
+    ])
+  })
+
   it('carries a rename through with its old path and counts', () => {
     const renamed = [
       'BASE abc123def',
@@ -114,7 +139,7 @@ describe('parseChangesOutput', () => {
     ].join('\n')
     const out = parseChangesOutput(renamed)
     expect(out.files).toEqual([
-      { path: 'src/new/x.ts', status: 'renamed', additions: 3, deletions: 1, binary: false, oldPath: 'src/old/x.ts' },
+      { path: 'src/new/x.ts', status: 'renamed', additions: 3, deletions: 1, binary: false, stages: {}, oldPath: 'src/old/x.ts' },
     ])
   })
 
@@ -168,7 +193,7 @@ describe('parseChangesOutput', () => {
     ].join('\n')
     const out = parseChangesOutput(selfReferential)
     expect(out.files).toEqual([
-      { path: 'changes.ts', status: 'modified', additions: 1, deletions: 0, binary: false },
+      { path: 'changes.ts', status: 'modified', additions: 1, deletions: 0, binary: false, stages: {} },
     ])
     expect(out.diff).toContain("+const M_OK = '@@OK@@'")
   })
@@ -231,6 +256,12 @@ describe('buildChangesScript', () => {
     expect(s).not.toContain('origin/main')   // the branch name is never spliced into the script body
   })
 
+  it('leaves the diff body out when asked, keeping the file list', () => {
+    const s = buildScript(LOC, 'dev', 'main', false)
+    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff")).toBe(true)
+    expect(s).toContain('[ "$3" = nodiff ] || {')
+  })
+
   it('carries both an explicit base ($1) and a fork-branch default ($2)', () => {
     const s = buildChangesScript('dev', 'main')
     expect(s.endsWith("yaac-changes 'dev' 'main'")).toBe(true)
@@ -291,9 +322,9 @@ describe('buildChangesScript', () => {
   }
 
   function runPodScript(
-    repo: string, idx: string, base?: string, defaultBase?: string,
+    repo: string, idx: string, base?: string, defaultBase?: string, diff = true,
   ): { stdout: string; code: number } {
-    const cmd = buildChangesScript(base, defaultBase)
+    const cmd = buildScript(LOC, base, defaultBase, diff)
       .replace('cd /workspace ', `cd ${repo} `)
       .replaceAll('/tmp/yaac-changes.idx', idx)
     try {
@@ -329,6 +360,136 @@ describe('buildChangesScript', () => {
 
     // The agent's own index and HEAD are untouched.
     expect(git(repo, 'status', '--porcelain')).toBe('?? untracked.txt\n')
+  })
+
+  // Read from the agent's real index without writing it, so a file staged
+  // and then edited again shows in both stages.
+  it('splits each file\'s changes into committed, staged, modified and untracked', () => {
+    const { repo, idx } = scratchRepo()
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'tracked')
+    git(repo, 'branch', '-q', 'fork')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\ntwo\n')
+    git(repo, 'commit', '-qam', 'two')
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\ntwo\nthree\n')
+    git(repo, 'add', 'tracked.txt')
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\nTWO\nthree\n')
+    fs.writeFileSync(path.join(repo, 'new.txt'), 'a\nb\n')
+    const before = git(repo, 'status', '--porcelain')
+
+    const { stdout, code } = runPodScript(repo, idx, 'fork')
+    expect(code).toBe(0)
+    const byPath = Object.fromEntries(parseChangesOutput(stdout).files.map((f) => [f.path, f]))
+    expect(byPath['tracked.txt']).toMatchObject({
+      additions: 2,
+      deletions: 0,
+      stages: {
+        committed: { additions: 1, deletions: 0 },
+        staged: { additions: 1, deletions: 0 },
+        modified: { additions: 1, deletions: 1 },
+      },
+    })
+    expect(byPath['new.txt'].stages).toEqual({ untracked: { additions: 2, deletions: 0 } })
+    expect(git(repo, 'status', '--porcelain')).toBe(before)
+
+    const bare = runPodScript(repo, idx, 'fork', undefined, false)
+    expect(bare.code).toBe(0)
+    const listed = parseChangesOutput(bare.stdout)
+    expect(listed.diff).toBe('')
+    expect(listed.files.map((f) => f.path).sort()).toEqual(['new.txt', 'tracked.txt'])
+  })
+
+  // The committed numstat is cached by base and HEAD; a new commit moves
+  // HEAD and refreshes it. The agent's index is only ever copied, so even
+  // a held lock is left alone.
+  it('caches the committed stage until HEAD moves, never writing the agent\'s index', () => {
+    const { repo, idx } = scratchRepo()
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(repo, 'one.txt'), 'one\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'one')
+    const stagesOf = (): Record<string, unknown> => Object.fromEntries(
+      parseChangesOutput(runPodScript(repo, idx, 'main').stdout).files.map((f) => [f.path, f.stages]))
+
+    expect(stagesOf()).toEqual({ 'one.txt': { committed: { additions: 1, deletions: 0 } } })
+    const cached = fs.readFileSync(`${idx}.committed`, 'utf8')
+    expect(cached.split('\n')[0]).toBe(`${git(repo, 'merge-base', 'main', 'HEAD').trim()} ${git(repo, 'rev-parse', 'HEAD').trim()}`)
+
+    fs.writeFileSync(path.join(repo, 'one.txt'), 'one\ntwo\n')
+    git(repo, 'commit', '-qam', 'two')
+    const agentIndex = path.join(repo, '.git', 'index')
+    fs.writeFileSync(`${agentIndex}.lock`, '')
+    const before = fs.statSync(agentIndex)
+    expect(stagesOf()).toEqual({ 'one.txt': { committed: { additions: 2, deletions: 0 } } })
+    const after = fs.statSync(agentIndex)
+    expect([after.ino, after.mtimeMs, after.size]).toEqual([before.ino, before.mtimeMs, before.size])
+    expect(fs.existsSync(`${agentIndex}.lock`)).toBe(true)
+  })
+
+  // `add -A` skips a tracked file that matches .gitignore, so without the
+  // force-add it would read as deleted while it sits untouched on disk.
+  it('keeps a force-added ignored file, reporting only its real changes', () => {
+    const { repo, idx } = scratchRepo()
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'build/\n')
+    fs.mkdirSync(path.join(repo, 'build'))
+    fs.writeFileSync(path.join(repo, 'build', 'kept.txt'), 'kept\n')
+    git(repo, 'add', '.gitignore')
+    git(repo, 'add', '-f', 'build/kept.txt')
+    git(repo, 'commit', '-qm', 'vendored')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    const kept = (): WorkspaceChange | undefined => parseChangesOutput(runPodScript(repo, idx, 'agent/x').stdout)
+      .files.find((f) => f.path === 'build/kept.txt')
+
+    expect(kept()).toBeUndefined()
+    fs.writeFileSync(path.join(repo, 'build', 'kept.txt'), 'kept\nedited\n')
+    expect(kept()).toMatchObject({ status: 'modified', stages: { modified: { additions: 1, deletions: 0 } } })
+    fs.rmSync(path.join(repo, 'build', 'kept.txt'))
+    expect(kept()).toMatchObject({ status: 'deleted', stages: { modified: { additions: 0, deletions: 1 } } })
+  })
+
+  // The force-added names come from the agent's index. Read as pathspecs,
+  // a file named `:(glob)**` or `*` would force-add every ignored file,
+  // credentials included.
+  it('force-adds tracked ignored files by their literal names only', () => {
+    const { repo, idx } = scratchRepo()
+    fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\nnode_modules/\n:(glob)**\n\\*\n')
+    for (const name of [':(glob)**', '*']) fs.writeFileSync(path.join(repo, name), 'decoy\n')
+    git(repo, 'add', '.gitignore')
+    git(repo, 'add', '-f', '--', ':(literal):(glob)**', ':(literal)*')
+    git(repo, 'commit', '-qm', 'decoys')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(repo, 'secret.log'), 'token\n')
+    fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true })
+    fs.writeFileSync(path.join(repo, 'node_modules', 'pkg', 'i.js'), 'x\n')
+    const paths = (): string[] => parseChangesOutput(runPodScript(repo, idx, 'agent/x').stdout).files.map((f) => f.path)
+
+    expect(paths()).toEqual([])
+    fs.writeFileSync(path.join(repo, ':(glob)**'), 'decoy\nedited\n')
+    // A second run, too: the private index keeps what it was given.
+    expect(paths()).toEqual([':(glob)**'])
+    expect(paths()).toEqual([':(glob)**'])
+  })
+
+  // A conflicted index has no tree; the run still answers, counting the
+  // uncommitted work as modified.
+  it('answers through a merge conflict in the agent\'s index', () => {
+    const { repo, idx } = scratchRepo()
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'ours\n')
+    git(repo, 'commit', '-qam', 'ours')
+    git(repo, 'checkout', '-q', 'main')
+    fs.writeFileSync(path.join(repo, 'base.txt'), 'theirs\n')
+    git(repo, 'commit', '-qam', 'theirs')
+    git(repo, 'checkout', '-q', 'agent/x')
+    try { git(repo, 'merge', '-q', 'main') } catch { /* conflicts, as intended */ }
+
+    const { stdout, code } = runPodScript(repo, idx, 'main')
+    expect(code).toBe(0)
+    const file = parseChangesOutput(stdout).files.find((f) => f.path === 'base.txt')
+    expect(file?.stages.modified).toBeDefined()
+    expect(file?.stages.staged).toBeUndefined()
   })
 
   it('reports FORK 0 and only uncommitted work when no fork point resolves', () => {

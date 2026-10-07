@@ -5,7 +5,6 @@
  */
 import { ServerError } from '@yaac/shared/errors'
 import type {
-  FileStatus,
   SymlinkTarget,
   WorkspaceDir,
   WorkspaceFile,
@@ -13,7 +12,6 @@ import type {
   WorkspaceFileSaved,
 } from '@yaac/shared/types'
 import { api, rawApi } from './api'
-import { FILE_STATUS_RANK } from './gitStatus'
 import { addColumn, addTab, groupIndexOf, moveTargetToColumn, paneTargets, type PaneLayout } from './layout'
 
 /** The one layout target a workspace's explorer uses. */
@@ -155,8 +153,6 @@ export interface TreeNode {
   dir: boolean
   /** Folders only, folders first then by name. */
   children: TreeNode[]
-  /** A file's own status, or the strongest among a folder's files. */
-  status?: FileStatus
   ignored?: boolean
   /** An ignored folder listed as one entry; its children are fetched from
    *  the folder route when it is expanded. */
@@ -172,8 +168,7 @@ export interface FileTree {
 
 /**
  * Turn the flat listing into a tree of files, empty folders and, with
- * `showIgnored`, flagged ignored entries. A folder takes the strongest
- * status among its files.
+ * `showIgnored`, flagged ignored entries.
  */
 export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree {
   const root: TreeNode = { name: '', path: '', dir: true, children: [] }
@@ -203,7 +198,6 @@ export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree 
     const link = files.symlinks[path]
     file(path, {
       dir: link?.dir === true && link.target !== null,
-      status: files.status[path],
       ...(link ? { symlink: link } : {}),
     })
   }
@@ -223,13 +217,7 @@ export function buildTree(files: WorkspaceFiles, showIgnored = false): FileTree 
   }
   const settle = (node: TreeNode): void => {
     node.children.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name) : a.dir ? -1 : 1))
-    if (!node.dir || node.symlink) return
-    let rank = FILE_STATUS_RANK.length
-    for (const child of node.children) {
-      settle(child)
-      if (child.status && !child.ignored) rank = Math.min(rank, FILE_STATUS_RANK.indexOf(child.status))
-    }
-    if (node !== root && rank < FILE_STATUS_RANK.length) node.status = FILE_STATUS_RANK[rank]
+    for (const child of node.children) settle(child)
   }
   settle(root)
   return { root, index }

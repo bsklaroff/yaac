@@ -78,7 +78,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'kill-terminal', label: 'Kill terminal',
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
   { id: 'open-changes', label: 'Open changes',
-    description: 'Open the Changes (review-diff) pane.', defaultChord: alt('KeyG') },
+    description: 'Open the file explorer showing only changed files and their diffs.', defaultChord: alt('KeyG') },
   { id: 'open-files', label: 'Open file tree',
     description: 'Open the file tree and focus its filter.', defaultChord: alt('KeyE') },
   { id: 'open-preview', label: 'Open preview',
@@ -263,7 +263,7 @@ function platformChord(code: string, isMac: boolean): Chord {
 
 /**
  * Fixed chords the panes handle themselves: Cmd/Ctrl-S saves a file,
- * Cmd/Ctrl-F opens find in the file or Changes pane, and Cmd/Ctrl =/−/0
+ * Cmd/Ctrl-F opens find in a file pane, and Cmd/Ctrl =/−/0
  * resize text (textSizeStep). They can't be rebound and are reserved, since
  * the shortcut listener runs before the panes and would swallow them.
  */

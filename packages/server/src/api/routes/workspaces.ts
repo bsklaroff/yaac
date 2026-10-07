@@ -21,6 +21,7 @@ import {
   listWorkspaceFiles,
   listWorkspaceGroups,
   readWorkspaceFile,
+  readWorkspaceFileAtRev,
   registerProvisioning,
   removeProvisioning,
   renameWorkspaceEntry,
@@ -546,11 +547,15 @@ export const workspaceApp = new Hono<IdentityEnv>()
   })
   // The review diff: everything changed since the workspace forked from its
   // base branch (committed, working and untracked). `base` overrides the
-  // branch it is diffed against.
+  // branch it is diffed against; `diff=0` returns the files without the
+  // diff body.
   .get(
     '/:id/changes',
-    zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
-    async (c) => c.json(await getWorkspaceChanges(c.req.param('id'), c.req.valid('query').base)),
+    zv('query', z.object({ base: z.string().min(1).max(255).optional(), diff: z.enum(['0', '1']).optional() })),
+    async (c) => {
+      const { base, diff } = c.req.valid('query')
+      return c.json(await getWorkspaceChanges(c.req.param('id'), base, diff !== '0'))
+    },
   )
   // Ahead/behind for the status bar, read from the server's own refs so a
   // stopped workspace answers too.
@@ -573,6 +578,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
     async (c) => {
       const { path, known } = c.req.valid('query')
       return c.json(await readWorkspaceFile(c.req.param('id'), path, known))
+    },
+  )
+  // A file as it was at a commit, for the editor's diff against the fork
+  // base. Runs git inside the workspace, so it needs it running.
+  .get(
+    '/:id/file-at',
+    zv('query', z.object({ path: z.string().min(1), rev: z.string().min(1) })),
+    async (c) => {
+      const { path, rev } = c.req.valid('query')
+      return c.json(await readWorkspaceFileAtRev(c.req.param('id'), path, rev))
     },
   )
   // A null `baseVersion` creates the file. A save against a stale version is
