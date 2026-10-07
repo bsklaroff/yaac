@@ -246,7 +246,30 @@ Under ownership:
 - Sentinel swaps, the OAuth refresh hold and write-back, the GitHub token
   pool and the ssh-agent's identities all resolve through that owner. A
   refresh in one user's workspace updates only that user's bundle.
-- The `/tools` roster is filtered to the caller's owner.
+- The proxy serves no tool roster (its control API is only `/healthz`), so
+  there is nothing per owner to filter there.
+
+The proxy side of this is shipped (docs/workspace-egress.md "Owners"). The
+owner key is opaque to the driver: `syncCredentials` takes a map from owner
+key to `CredentialBundle`, `refreshedCredentials` answers one keyed the same
+way, and `SubstrateIntent` and `WorkspaceRegistration` carry the `owner`
+domain decided. Until per-user tool credentials (step 5) every workspace
+names `INSTALL_CREDENTIAL_OWNER` (`#domain/auth`), the key the install's one
+credential set is pushed under. Step 5 then:
+
+- pushes one bundle per user, keyed by user id (a uuid fits the key
+  format), and stamps each workspace with its project owner's id. Until
+  then every user's assigned git tokens and ssh keys (`runtimeGitCredentials`)
+  are pooled under `INSTALL_CREDENTIAL_OWNER` too; project assignment, not
+  owner, is what keeps them apart, so they need to move per user in the same
+  step. The stamp must stay `INSTALL_CREDENTIAL_OWNER` until then, never the
+  project owner's id, or every workspace fails closed;
+- re-registers running workspaces whose registration still names
+  `INSTALL_CREDENTIAL_OWNER`, or keeps that key for the built-in user, since
+  a registration naming a key the Secret lacks gets nothing swapped;
+- adopts each owner's refreshed captures into that user's store, and the
+  `''` (pre-owner proxy) captures into the built-in user's
+  (docs/legacy-compat-shims.md).
 
 `gitAuthFailures`, per-project registries, the build cache and the
 user-layer repo are already keyed by project, hence by owner. Registry

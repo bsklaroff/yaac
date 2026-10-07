@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import net from 'node:net'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -15,8 +15,8 @@ import {
  * The ssh-agent relay, driven for real: a stand-in agent on a UNIX socket
  * and a client on TCP. The tests check what crosses the relay each way: an
  * admitted request reaches the agent intact, a refused one never does, a
- * refused connection gets nothing, and a workspace only sees and signs with
- * its own project's keys.
+ * refused connection gets nothing, and a workspace only sees its own
+ * project's keys and signs with them only for the hosts they are granted for.
  */
 
 const cleanups: Array<() => void | Promise<void>> = []
@@ -70,9 +70,22 @@ const KEY_B = Buffer.from('key-blob-b')
 const b64 = (blob: Buffer): string => blob.toString('base64')
 
 /** An extension frame as ssh sends it: the name, then its payload. */
-function extension(name: string, payload = Buffer.from('hostkey+session+sig')): Buffer {
+function extension(name: string, payload: Buffer): Buffer {
   return agentMessage(EXTENSION, Buffer.concat([sshString(name), payload]))
 }
+
+const HOST_GH = Buffer.from('hostkey-github')
+const HOST_GL = Buffer.from('hostkey-gitlab')
+
+/** The session bind ssh sends once connected to a server with `hostKey`:
+ *  host key, session id, the server's signature, is-forwarding. */
+function bind(hostKey: Buffer): Buffer {
+  return extension('session-bind@openssh.com',
+    Buffer.concat([sshString(hostKey), sshString('session-id'), sshString('signature'), Buffer.from([0])]))
+}
+
+/** Grants: key A for github.com's host key. */
+const GRANT_A = (): Map<string, Set<string>> => new Map([[b64(KEY_A), new Set([b64(HOST_GH)])]])
 
 interface FakeAgent {
   sock: string
@@ -117,8 +130,8 @@ async function startListener(opts: {
   agentSock: string
   workspace?: string
   repoUrl?: string
-  /** The workspace's project's keys, asked per message. */
-  allowedKeys?: () => Set<string>
+  /** The workspace's grants, asked per message. */
+  grants?: () => Map<string, Set<string>>
   maxConnections?: number
   idleTimeoutMs?: number
 }): Promise<Harness> {
@@ -127,7 +140,7 @@ async function startListener(opts: {
     agentSock: opts.agentSock,
     resolveWorkspace: () => Promise.resolve(opts.workspace),
     repoUrlFor: () => opts.repoUrl,
-    allowedKeysFor: opts.allowedKeys ?? (() => new Set()),
+    grantsFor: opts.grants ?? (() => new Map<string, Set<string>>()),
     log: (m) => { logs.push(m) },
     maxConnections: opts.maxConnections,
     idleTimeoutMs: opts.idleTimeoutMs,
@@ -234,7 +247,7 @@ describe('createAgentRequestFilter', () => {
     const refused: number[] = []
     const failures: string[] = []
     const feed = createAgentRequestFilter({
-      allowKey: (blob) => blob.equals(KEY_A),
+      allowSign: (blob, bound) => blob.equals(KEY_A) && bound.length > 0 && bound.every((h) => h.equals(HOST_GH)),
       forward: (m) => { forwarded.push(m[4]) },
       refuse: (t) => { refused.push(t) },
       fail: (r) => { failures.push(r) },
@@ -243,36 +256,48 @@ describe('createAgentRequestFilter', () => {
     return { forwarded, refused, failures }
   }
 
-  it('admits identity listing, signing with a project key and the session bind, and nothing else', () => {
-    // Only list, sign and session-bind pass; the bind is required before
-    // an agent signs with a `-h <host>` key. Anything else could mutate the
+  it('admits identity listing, a bound sign with a granted key and the session bind, and nothing else', () => {
+    // Only list, sign and session-bind pass. Anything else could mutate the
     // shared agent.
     const res = run([
       agentMessage(REQUEST_IDENTITIES),
-      extension('session-bind@openssh.com'),
+      // Unbound, so the host it would sign for is unknown.
+      signRequest(KEY_A),
+      bind(HOST_GH),
       signRequest(KEY_A),
       signRequest(KEY_B),
       // A sign request whose key blob overruns the frame names no key.
       agentMessage(SIGN_REQUEST, Buffer.from('blob')),
       agentMessage(REMOVE_ALL_IDENTITIES),
       agentMessage(LOCK, Buffer.from('pw')),
-      extension('query'),
-      extension('session-bind@openssh.com.evil'),
-      // A bare name with no wire length, as an ad-hoc client might send it.
+      extension('query', Buffer.alloc(0)),
+      extension('session-bind@openssh.com.evil', Buffer.alloc(0)),
+      // A bind carrying no host key, and a bare name with no wire length.
+      extension('session-bind@openssh.com', Buffer.alloc(0)),
       agentMessage(EXTENSION, Buffer.from('session-bind@openssh.com')),
     ])
     expect(res.forwarded).toEqual([REQUEST_IDENTITIES, EXTENSION, SIGN_REQUEST])
-    expect(res.refused).toEqual([SIGN_REQUEST, SIGN_REQUEST, REMOVE_ALL_IDENTITIES, LOCK, EXTENSION, EXTENSION, EXTENSION])
+    expect(res.refused).toEqual([
+      SIGN_REQUEST, SIGN_REQUEST, SIGN_REQUEST, REMOVE_ALL_IDENTITIES, LOCK, EXTENSION, EXTENSION, EXTENSION, EXTENSION,
+    ])
     expect(res.failures).toEqual([])
+  })
+
+  it('hands the sign check every host the connection bound', () => {
+    // The agent's own constraint is every host any grant of the key names,
+    // so a bind to a host this workspace's grant lacks must stop the sign.
+    const res = run([bind(HOST_GH), bind(HOST_GL), signRequest(KEY_A)])
+    expect(res.forwarded).toEqual([EXTENSION, EXTENSION])
+    expect(res.refused).toEqual([SIGN_REQUEST])
   })
 
   it('reassembles a message split across chunks, and holds a partial one back', () => {
     const msg = signRequest(KEY_A)
-    const res = run([msg.subarray(0, 3), msg.subarray(3, 9), msg.subarray(9)])
-    expect(res.forwarded).toEqual([SIGN_REQUEST])
+    const res = run([bind(HOST_GH), msg.subarray(0, 3), msg.subarray(3, 9), msg.subarray(9)])
+    expect(res.forwarded).toEqual([EXTENSION, SIGN_REQUEST])
 
     // A frame whose body has not all arrived must not be forwarded early.
-    expect(run([msg.subarray(0, msg.length - 1)]).forwarded).toEqual([])
+    expect(run([bind(HOST_GH), msg.subarray(0, msg.length - 1)]).forwarded).toEqual([EXTENSION])
   })
 
   it('fails a frame that cannot be the agent protocol instead of buffering it', () => {
@@ -325,35 +350,47 @@ describe('createSshAgentServer', () => {
     const agent = await startFakeAgent()
     const { port } = await startListener({
       agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
-      allowedKeys: () => new Set([b64(KEY_A)]),
+      grants: GRANT_A,
     })
-    // The request is written immediately after connect, i.e. while the gate
-    // is still resolving: those bytes must be buffered, not dropped.
-    const request = signRequest(KEY_A)
+    // The requests are written immediately after connect, i.e. while the
+    // gate is still resolving: those bytes must be buffered, not dropped.
+    const request = Buffer.concat([bind(HOST_GH), signRequest(KEY_A)])
     const reply = await ask(port, request)
-    expect(reply).toEqual(agentMessage(SIGN_REQUEST))
-    expect(agent.received()).toEqual(request)
+    expect(reply.subarray(0, 5)).toEqual(agentMessage(EXTENSION))
+    await vi.waitFor(() => expect(agent.received()).toEqual(request))
   })
 
-  it('shows and signs with only the keys of the workspace\'s project, re-read per message', async () => {
-    // The agent holds every project's keys; the relay filters them.
+  it('shows only the workspace\'s keys and signs only for their granted hosts, re-read per message', async () => {
+    // The agent holds every owner's keys for every project, constrained to
+    // the union of their hosts; the relay narrows both.
     const agent = await startFakeAgent([KEY_A, KEY_B])
-    let allowed = new Set([b64(KEY_A)])
+    let grants = GRANT_A()
     const { port, logs } = await startListener({
       agentSock: agent.sock, workspace: SESSION, repoUrl: 'git@github.com:acme/app.git',
-      allowedKeys: () => allowed,
+      grants: () => grants,
     })
     const conn = await openConnection(port)
     expect(await conn.request(agentMessage(REQUEST_IDENTITIES))).toEqual(identitiesAnswer([KEY_A]))
+    expect(await conn.request(bind(HOST_GH))).toEqual(agentMessage(EXTENSION))
     expect(await conn.request(signRequest(KEY_B))).toEqual(agentMessage(AGENT_FAILURE))
-    expect(agent.received()).toEqual(agentMessage(REQUEST_IDENTITIES))
-    expect(logs.join('\n')).toContain('not assigned to its project')
+    expect(logs.join('\n')).toContain('not granted')
 
     // A reassignment applies to an open connection's next request.
-    allowed = new Set([b64(KEY_B)])
+    grants = new Map([[b64(KEY_B), new Set([b64(HOST_GH)])]])
     expect(await conn.request(agentMessage(REQUEST_IDENTITIES))).toEqual(identitiesAnswer([KEY_B]))
     expect(await conn.request(signRequest(KEY_A))).toEqual(agentMessage(AGENT_FAILURE))
     expect(await conn.request(signRequest(KEY_B))).toEqual(agentMessage(SIGN_REQUEST))
+
+    // Key B granted here only for gitlab.com: bound to github.com, the
+    // connection may list it but not sign with it, although the agent would.
+    grants = new Map([[b64(KEY_B), new Set([b64(HOST_GL)])]])
+    expect(await conn.request(agentMessage(REQUEST_IDENTITIES))).toEqual(identitiesAnswer([KEY_B]))
+    expect(await conn.request(signRequest(KEY_B))).toEqual(agentMessage(AGENT_FAILURE))
+    // Only the one admitted sign ever reached the agent.
+    const reached = agent.received()
+    const first = reached.indexOf(signRequest(KEY_B))
+    expect(first).toBeGreaterThan(-1)
+    expect(reached.indexOf(signRequest(KEY_B), first + 1)).toBe(-1)
   })
 
   it('answers a mutating request itself and never lets it reach the agent', async () => {

@@ -7,7 +7,7 @@
 
 import type http from 'node:http'
 import type { ProxyObjects } from './object-watch'
-import type { HostInjectionRule } from './objects'
+import type { HostInjectionRule, ProxyCredentials } from './objects'
 
 export const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 export const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
@@ -87,14 +87,20 @@ function httpsRemoteHost(remoteUrl: string | undefined): string | null {
   }
 }
 
+/** The credentials of the owner a workspace's registration names. */
+function workspaceCredentials(objects: ProxyObjects, workspaceId: string): ProxyCredentials {
+  return objects.credentials(objects.ownerOf(workspaceId))
+}
+
 /**
- * The HTTPS credential assigned to a workspace's project, with the host of
+ * The HTTPS credential assigned to a workspace's project, from its owner's
+ * token pool, with the host of
  * its https remote. Callers send the token only to that host.
  */
 function resolveHttpsCredentialForWorkspace(objects: ProxyObjects, workspaceId: string): { token: string; host: string } | null {
   const registration = objects.registration(workspaceId)
   if (!registration) return null
-  const entry = objects.credentials.git.find((e) => e.projects.includes(registration.projectId))
+  const entry = workspaceCredentials(objects, workspaceId).git.find((e) => e.projects.includes(registration.projectId))
   if (!entry) return null
   const host = httpsRemoteHost(registration.repoUrl)
   return host ? { token: entry.token, host } : null
@@ -264,12 +270,8 @@ export function hostNeedsDynamicMitm(
   // opencode / pi: only the provider host the credential points at, and
   // only for a workspace running that tool.
   const tool = objects.registration(workspaceId)?.tool
-  if (tool === 'opencode') {
-    const creds = objects.credentials.opencode
-    if (creds && hostname === creds.apiHost) return true
-  }
-  if (tool === 'pi') {
-    const creds = objects.credentials.pi
+  if (tool === 'opencode' || tool === 'pi') {
+    const creds = workspaceCredentials(objects, workspaceId)[tool]
     if (creds && hostname === creds.apiHost) return true
   }
   if (workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)) return true
@@ -341,8 +343,9 @@ function swapApiKeyHeader(
 }
 
 /**
- * Injection rules for `hostname` derived from the credentials Secret, built
- * per request so `yaac auth update` applies without restarts.
+ * Injection rules for `hostname` derived from the credentials of the
+ * workspace's owner, built per request so `yaac auth update` applies without
+ * restarts. Another owner's credentials are never consulted.
  *
  * Each tool credential swap fires only when the request carries the matching
  * placeholder, so a user's own key passes through unchanged. The rules here
@@ -357,6 +360,8 @@ export function buildDynamicRules(
   reqHeaders: http.IncomingHttpHeaders,
 ): InjectionRule[] {
   const rules: InjectionRule[] = []
+  const owner = objects.ownerOf(workspaceId)
+  const creds = objects.credentials(owner)
 
   // Git token, only to the workspace's https remote host.
   const httpsCred = resolveHttpsCredentialForWorkspace(objects, workspaceId)
@@ -392,31 +397,25 @@ export function buildDynamicRules(
   // accepted for workspaces launched before the per-tool ones
   // (docs/legacy-compat-shims.md). Ahead of the claude and codex swaps, so
   // where a provider host is theirs, their swap of that placeholder lands.
-  {
-    const creds = objects.credentials.opencode
-    if (creds && hostname === creds.apiHost) {
-      swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_API_KEY], creds.apiKey)
-    }
+  if (creds.opencode && hostname === creds.opencode.apiHost) {
+    swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_API_KEY], creds.opencode.apiKey)
   }
-  {
-    const creds = objects.credentials.pi
-    if (creds && hostname === creds.apiHost) {
-      swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_PI_API_KEY, PLACEHOLDER_API_KEY], creds.apiKey)
-    }
+  if (creds.pi && hostname === creds.pi.apiHost) {
+    swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_PI_API_KEY, PLACEHOLDER_API_KEY], creds.pi.apiKey)
   }
 
   if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) {
-    const creds = objects.credentials.claude
+    const claude = creds.claude
     const incomingApiKey = headerValue(reqHeaders, 'x-api-key')
     const incomingAuth = headerValue(reqHeaders, 'authorization')
     // The connectors' host takes only the claude.ai bearer, never a key.
-    if (creds && creds.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY
+    if (claude && claude.kind === 'api-key' && incomingApiKey === PLACEHOLDER_API_KEY
       && hostname === ANTHROPIC_API_HOST) {
       rules.push({
         pathPattern: '*',
-        injections: [{ action: 'set_header', name: 'x-api-key', value: creds.apiKey }],
+        injections: [{ action: 'set_header', name: 'x-api-key', value: claude.apiKey }],
       })
-    } else if (creds && creds.kind === 'oauth'
+    } else if (claude && claude.kind === 'oauth'
       && incomingAuth === 'Bearer ' + PLACEHOLDER_ACCESS_TOKEN) {
       rules.push({
         pathPattern: '*',
@@ -424,7 +423,7 @@ export function buildDynamicRules(
           action: 'replace_header',
           name: 'Authorization',
           // The captured rotation while it is newer than the pushed bundle.
-          value: 'Bearer ' + (objects.claudeOAuthBundle() ?? creds.bundle).accessToken,
+          value: 'Bearer ' + (objects.claudeOAuthBundle(owner) ?? claude.bundle).accessToken,
         }],
       })
     }
@@ -433,26 +432,26 @@ export function buildDynamicRules(
   // Codex sends either the API-key or the OAuth access-token placeholder as
   // a bearer. `ChatGPT-Account-Id` is already real and passes through.
   if (hostname === OPENAI_API_HOST || hostname === CHATGPT_HOST) {
-    const creds = objects.credentials.codex
+    const codex = creds.codex
     const incomingAuth = headerValue(reqHeaders, 'authorization')
-    if (creds && creds.kind === 'api-key'
+    if (codex && codex.kind === 'api-key'
       && incomingAuth === 'Bearer ' + PLACEHOLDER_API_KEY) {
       rules.push({
         pathPattern: '*',
         injections: [{
           action: 'set_header',
           name: 'Authorization',
-          value: 'Bearer ' + creds.apiKey,
+          value: 'Bearer ' + codex.apiKey,
         }],
       })
-    } else if (creds && creds.kind === 'oauth'
+    } else if (codex && codex.kind === 'oauth'
       && incomingAuth === 'Bearer ' + PLACEHOLDER_ACCESS_TOKEN) {
       rules.push({
         pathPattern: '*',
         injections: [{
           action: 'replace_header',
           name: 'Authorization',
-          value: 'Bearer ' + (objects.codexOAuthBundle() ?? creds.bundle).accessToken,
+          value: 'Bearer ' + (objects.codexOAuthBundle(owner) ?? codex.bundle).accessToken,
         }],
       })
     }

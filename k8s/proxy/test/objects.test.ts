@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   LABEL_WORKSPACE_ID,
   decodeCa,
+  EMPTY_CREDENTIALS,
   decodeCredentials,
   decodeProjectSecrets,
   decodeRefreshed,
@@ -10,9 +11,10 @@ import {
   encodeCa,
   encodeRefreshed,
   encodeState,
-  sshKeyBlobsByProject,
+  sshGrantsForProject,
   type ClaudeOAuthBundle,
   type CodexOAuthBundle,
+  type ProxyCredentials,
 } from 'yaac-proxy-sidecar/objects'
 
 /**
@@ -26,6 +28,12 @@ const secretOf = (files: Record<string, unknown>): { data: Record<string, string
   data: Object.fromEntries(Object.entries(files).map(([k, v]) =>
     [k, b64(typeof v === 'string' ? v : JSON.stringify(v))])),
 })
+/** The credentials Secret holding `files` for one owner. */
+const ownerSecret = (files: Record<string, unknown>, owner = 'o'): { data: Record<string, string> } =>
+  secretOf(Object.fromEntries(Object.entries(files).map(([k, v]) => [`${owner}.${k}`, v])))
+/** Owner `o`'s decoded credentials. */
+const decodeOwn = (secret: { data?: Record<string, string> }): ProxyCredentials =>
+  decodeCredentials(secret).get('o') ?? EMPTY_CREDENTIALS
 
 const CLAUDE_BUNDLE: ClaudeOAuthBundle = {
   accessToken: 'claude-access', refreshToken: 'claude-refresh',
@@ -43,7 +51,7 @@ const CODEX_BUNDLE: CodexOAuthBundle = {
 
 describe('decodeCredentials', () => {
   it('reads every file shape the host store writes', () => {
-    const creds = decodeCredentials(secretOf({
+    const creds = decodeOwn(ownerSecret({
       'claude.json': { kind: 'oauth', savedAt: 'x', claudeAiOauth: CLAUDE_BUNDLE },
       'codex.json': { kind: 'oauth', savedAt: 'x', codexOauth: CODEX_BUNDLE },
       'opencode.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-or', provider: 'openrouter', apiHost: 'openrouter.ai' },
@@ -60,7 +68,7 @@ describe('decodeCredentials', () => {
   })
 
   it('reads api-key claude and codex, and an absent key as signed out', () => {
-    const creds = decodeCredentials(secretOf({
+    const creds = decodeOwn(ownerSecret({
       'claude.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant-api' },
       'codex.json': { kind: 'api-key', savedAt: 'x', apiKey: 'sk-oai' },
     }))
@@ -69,13 +77,11 @@ describe('decodeCredentials', () => {
     expect(creds.opencode).toBeNull()
     expect(creds.git).toEqual([])
     expect(creds.ssh).toEqual([])
-    expect(decodeCredentials({})).toEqual({
-      claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [],
-    })
+    expect(decodeCredentials({})).toEqual(new Map())
   })
 
   it('rejects what the file readers rejected', () => {
-    const creds = decodeCredentials(secretOf({
+    const creds = decodeOwn(ownerSecret({
       // A codex bundle missing a field is not a bundle.
       'codex.json': { kind: 'oauth', codexOauth: { ...CODEX_BUNDLE, idTokenRawJwt: '' } },
       // An empty api key is no key.
@@ -111,30 +117,59 @@ describe('decodeCredentials', () => {
   })
 
   it('reads a malformed file as absent rather than throwing', () => {
-    const creds = decodeCredentials({ data: {
-      'claude.json': b64('{not json'), 'git-tokens.json': b64('{"tokens":[]}'), 'ssh-keys.json': b64('[oops'),
+    const creds = decodeOwn({ data: {
+      'o.claude.json': b64('{not json'), 'o.git-tokens.json': b64('{"tokens":[]}'), 'o.ssh-keys.json': b64('[oops'),
     } })
     expect(creds.claude).toBeNull()
     expect(creds.git).toEqual([])
     expect(creds.ssh).toEqual([])
   })
+
+  it('keeps each owner\'s files apart and skips keys naming no owner', () => {
+    const owners = decodeCredentials({ data: {
+      ...ownerSecret({ 'claude.json': { kind: 'api-key', apiKey: 'sk-a' } }, 'alice').data,
+      ...ownerSecret({ 'git-tokens.json': [{ token: 'ghp-b', projects: ['p'] }] }, 'bob').data,
+      // The layout from before owner keys, and an owner no key may name.
+      'claude.json': b64(JSON.stringify({ kind: 'api-key', apiKey: 'sk-legacy' })),
+      ...ownerSecret({ 'claude.json': { kind: 'api-key', apiKey: 'sk-bad' } }, 'b@d').data,
+    } })
+    expect([...owners.keys()].sort()).toEqual(['alice', 'bob'])
+    expect(owners.get('alice')).toEqual({ ...EMPTY_CREDENTIALS, claude: { kind: 'api-key', apiKey: 'sk-a' } })
+    expect(owners.get('bob')).toEqual({ ...EMPTY_CREDENTIALS, git: [{ token: 'ghp-b', projects: ['p'] }] })
+  })
 })
 
-describe('sshKeyBlobsByProject', () => {
-  it('indexes each key\'s canonical blob under every project it is assigned to', () => {
-    const blobA = Buffer.from('key-a').toString('base64')
-    const blobB = Buffer.from('key-b').toString('base64')
-    const grant = (projectId: string) => ({ projectId, host: 'github.com', knownHostsEntry: 'github.com ssh-ed25519 H' })
-    const index = sshKeyBlobsByProject([
-      { privateKey: 'A', publicKey: `ssh-ed25519 ${blobA} yaac a`, projects: [grant('one'), grant('two')] },
-      { privateKey: 'B', publicKey: `ssh-ed25519 ${blobB}`, projects: [grant('two')] },
+describe('sshGrantsForProject', () => {
+  it('maps each key a project is granted to the host keys of its grants there', () => {
+    const blob = (s: string): string => Buffer.from(s).toString('base64')
+    const grant = (projectId: string, host: string, knownHostsEntry = `${host} ssh-ed25519 ${blob(`hk-${host}`)}`) =>
+      ({ projectId, host, knownHostsEntry })
+    const ssh = [
+      { privateKey: 'A', publicKey: `ssh-ed25519 ${blob('key-a')} yaac a`, projects: [
+        grant('one', 'github.com'),
+        // Several host keys for one host, a hashed host name, and a comment.
+        grant('one', 'gitlab.com', `gitlab.com ssh-ed25519 ${blob('hk-1')}\n|1|salt|hash ecdsa-sha2-nistp256 ${blob('hk-2')} c`),
+        grant('two', 'example.com'),
+        // A host name that looks like a key type, and marker lines.
+        grant('three', 'ssh-git.example.com'),
+        grant('three', 'x.example.com', `@revoked x.example.com ssh-ed25519 ${blob('hk-revoked')}\n`
+          + `@cert-authority *.example.com ssh-ed25519 ${blob('hk-ca')}`),
+      ] },
+      { privateKey: 'B', publicKey: `ssh-ed25519 ${blob('key-b')}`, projects: [grant('two', 'example.com')] },
       // Unassigned: in no project's set.
-      { privateKey: 'C', publicKey: `ssh-ed25519 ${Buffer.from('key-c').toString('base64')}`, projects: [] },
-    ])
-    expect(index).toEqual(new Map([
-      ['one', new Set([blobA])],
-      ['two', new Set([blobA, blobB])],
+      { privateKey: 'C', publicKey: `ssh-ed25519 ${blob('key-c')}`, projects: [] },
+    ]
+    expect(sshGrantsForProject(ssh, 'one')).toEqual(new Map([
+      [blob('key-a'), new Set([blob('hk-github.com'), blob('hk-1'), blob('hk-2')])],
     ]))
+    expect(sshGrantsForProject(ssh, 'two')).toEqual(new Map([
+      [blob('key-a'), new Set([blob('hk-example.com')])],
+      [blob('key-b'), new Set([blob('hk-example.com')])],
+    ]))
+    expect(sshGrantsForProject(ssh, 'three')).toEqual(new Map([
+      [blob('key-a'), new Set([blob('hk-ssh-git.example.com')])],
+    ]))
+    expect(sshGrantsForProject(ssh, 'none')).toEqual(new Map())
   })
 })
 
@@ -162,6 +197,7 @@ describe('decodeRegistration', () => {
       repoUrl: 'https://github.com/acme/repo',
       tool: 'claude',
       projectId: 'demo',
+      owner: 'alice',
       upstreamRedirects: {
         'api.anthropic.com': { host: 'mock', port: 8080, tls: false },
         'bad': { host: 'mock' },
@@ -176,6 +212,7 @@ describe('decodeRegistration', () => {
       repoUrl: 'https://github.com/acme/repo',
       tool: 'claude',
       projectId: 'demo',
+      owner: 'alice',
       upstreamRedirects: { 'api.anthropic.com': { host: 'mock', port: 8080, tls: false } },
     })
   })
@@ -190,23 +227,28 @@ describe('decodeRegistration', () => {
     expect(decodeRegistration({ metadata: { labels: { [LABEL_WORKSPACE_ID]: 'w1' } }, data: {} })).toBeNull()
     // An empty repoUrl reads as none (an https credential needs a remote).
     expect(decodeRegistration(cm({ ...base, repoUrl: '' }))?.registration.repoUrl).toBeUndefined()
+    // One written before owner keys is kept, owner unset; a malformed owner
+    // (empty, dotted, or not a string) is not a legacy one and is dropped.
+    expect(decodeRegistration(cm(base))?.registration.owner).toBeUndefined()
+    for (const owner of ['', 'a.b', 7]) expect(decodeRegistration(cm({ ...base, owner }))).toBeNull()
   })
 })
 
 describe('encodeRefreshed', () => {
   it('round-trips through decodeRefreshed in the credentials-file shape', () => {
-    const data = encodeRefreshed({ claude: CLAUDE_BUNDLE, codex: CODEX_BUNDLE })
-    expect(Object.keys(data).sort()).toEqual(['claude.json', 'codex.json'])
+    const data = encodeRefreshed(new Map([['o', { claude: CLAUDE_BUNDLE, codex: CODEX_BUNDLE }]]))
+    expect(Object.keys(data).sort()).toEqual(['o.claude.json', 'o.codex.json'])
     // The shape the server's loader reads.
-    const claudeFile = JSON.parse(Buffer.from(data['claude.json'], 'base64').toString('utf8')) as Record<string, unknown>
+    const claudeFile = JSON.parse(Buffer.from(data['o.claude.json'], 'base64').toString('utf8')) as Record<string, unknown>
     expect(claudeFile.kind).toBe('oauth')
     expect(claudeFile.claudeAiOauth).toEqual(CLAUDE_BUNDLE)
-    expect(decodeRefreshed({ data })).toEqual({ claude: CLAUDE_BUNDLE, codex: CODEX_BUNDLE })
+    expect(decodeRefreshed({ data })).toEqual(new Map([['o', { claude: CLAUDE_BUNDLE, codex: CODEX_BUNDLE }]]))
   })
 
-  it('encodes only the slot given, so a merge patch leaves the other alone', () => {
-    expect(Object.keys(encodeRefreshed({ codex: CODEX_BUNDLE }))).toEqual(['codex.json'])
-    expect(decodeRefreshed({})).toEqual({})
+  it('encodes only the slots given, so a merge patch leaves every other owner and tool alone', () => {
+    const data = encodeRefreshed(new Map([['alice', { codex: CODEX_BUNDLE }], ['bob', { claude: CLAUDE_BUNDLE }]]))
+    expect(Object.keys(data).sort()).toEqual(['alice.codex.json', 'bob.claude.json'])
+    expect(decodeRefreshed({})).toEqual(new Map())
   })
 })
 

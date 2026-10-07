@@ -12,17 +12,19 @@
  *     trustworthy because Calico drops packets whose source address is not
  *     the sending pod's own.
  *  3. That workspace's registered remote must be an SSH one.
- *  4. Both directions are parsed so a connection sees only its project's
- *     keys: identity lists are filtered, and sign requests for other keys
- *     are refused. The key set is looked up per message, so reassignments
- *     apply to open connections.
+ *  4. Both directions are parsed so a connection sees only the keys its
+ *     owner granted its project: identity lists are filtered, and a sign
+ *     request is refused for any other key, and unless every host key the
+ *     connection bound (`session-bind@openssh.com`) is one that key is
+ *     granted for in this project. The grants are looked up per message, so
+ *     reassignments apply to open connections.
  *
- * Each key is added with `ssh-add -h <host>` per allowed host, so the agent
- * signs only for those hosts. Clients may send only list, sign, and the
- * `session-bind@openssh.com` extension (required before the agent will sign
- * with a host-constrained key). Everything else (add, remove, lock, other
- * extensions) is refused, so one workspace can't lock or empty the shared
- * agent.
+ * Each key is added with `ssh-add -h <host>` per host any grant names, so the
+ * agent signs only for those hosts. That set is the union over every owner
+ * and project holding the key, which is why the relay checks the bound host
+ * itself. Clients may send only list, sign, and the session bind. Everything
+ * else (add, remove, lock, other extensions) is refused, so one workspace
+ * can't lock or empty the shared agent.
  */
 
 import net from 'node:net'
@@ -87,8 +89,9 @@ export interface SshAgentServerDeps {
   resolveWorkspace: (ip: string) => Promise<string | undefined>
   /** The repo URL a workspace is registered with, if any. */
   repoUrlFor: (workspaceId: string) => string | undefined
-  /** The key blobs a workspace's project may list and sign with. */
-  allowedKeysFor: (workspaceId: string) => Set<string>
+  /** The key blobs (base64) a workspace may list and sign with, each with
+   *  the host keys (base64) it may sign for. */
+  grantsFor: (workspaceId: string) => Map<string, Set<string>>
   log?: (message: string) => void
   /** Overridable for tests; defaults above. */
   maxConnections?: number
@@ -132,26 +135,36 @@ function readString(message: Buffer, offset: number): { value: Buffer; next: num
 
 /**
  * Returns a consumer for client bytes. Whole admitted messages go to
- * `forward`; a disallowed type, or a sign request for a key `allowKey`
- * rejects, gets SSH_AGENT_FAILURE via `refuse`.
+ * `forward`; a disallowed type, a malformed bind, or a sign request
+ * `allowSign` rejects gets SSH_AGENT_FAILURE via `refuse`. `allowSign` is
+ * handed every host key this connection has bound so far.
  *
  * A refusal is sent immediately, so a client that pipelines requests could
  * see replies out of order. Real clients keep one request outstanding.
  */
 export function createAgentRequestFilter(handlers: {
-  allowKey: (blob: Buffer) => boolean
+  allowSign: (keyBlob: Buffer, boundHostKeys: Buffer[]) => boolean
   forward: (message: Buffer) => void
   refuse: (type: number, reason: string) => void
   fail: (reason: string) => void
 }): (chunk: Buffer) => void {
+  const bound: Buffer[] = []
   return agentFrames((message) => {
     const type = message[4]
     if (type === SSH_AGENTC_SIGN_REQUEST) {
       const blob = readString(message, 5)?.value
-      if (blob && handlers.allowKey(blob)) handlers.forward(message)
-      else handlers.refuse(type, 'sign request for a key not assigned to its project')
-    } else if (type === SSH_AGENTC_REQUEST_IDENTITIES
-      || (type === SSH_AGENTC_EXTENSION && isSessionBind(message))) {
+      if (blob && handlers.allowSign(blob, bound)) handlers.forward(message)
+      else handlers.refuse(type, 'sign request for a key or host its project is not granted')
+    } else if (type === SSH_AGENTC_REQUEST_IDENTITIES) {
+      handlers.forward(message)
+    } else if (type === SSH_AGENTC_EXTENSION && isSessionBind(message)) {
+      // After the name: the server's host key, then session id and signature.
+      const hostKey = readString(message, 5 + 4 + SESSION_BIND.length)?.value
+      if (!hostKey) {
+        handlers.refuse(type, 'session bind without a host key')
+        return
+      }
+      bound.push(hostKey)
       handlers.forward(message)
     } else {
       handlers.refuse(type, 'message type not admitted')
@@ -248,14 +261,21 @@ export function createSshAgentServer(deps: SshAgentServerDeps): net.Server {
       agent.setTimeout(idleTimeoutMs, () => agent.destroy())
       let connected = false
       const allowKey = (blob: Buffer): boolean =>
-        deps.allowedKeysFor(verdict.workspaceId).has(blob.toString('base64'))
+        deps.grantsFor(verdict.workspaceId).has(blob.toString('base64'))
+      // A key signs only once the connection is bound, and only for hosts
+      // this workspace's grant of it names.
+      const allowSign = (blob: Buffer, boundHostKeys: Buffer[]): boolean => {
+        const hostKeys = deps.grantsFor(verdict.workspaceId).get(blob.toString('base64'))
+        return hostKeys !== undefined && boundHostKeys.length > 0
+          && boundHostKeys.every((h) => hostKeys.has(h.toString('base64')))
+      }
       const fail = (reason: string): void => {
         log(`[proxy] ssh-agent: dropping workspace ${workspace}... — ${reason}`)
         socket.destroy()
       }
       // Filtered, not piped; a full write pauses the other side until drain.
       const feedRequest = createAgentRequestFilter({
-        allowKey,
+        allowSign,
         forward: (message) => {
           if (!agent.write(message)) socket.pause()
         },

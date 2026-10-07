@@ -93,12 +93,13 @@ export type HeldBundle =
   | { tool: 'claude'; bundle: ClaudeOAuthBundle }
   | { tool: 'codex'; bundle: CodexOAuthBundle }
 
-export function heldBundle(objects: ProxyObjects, tool: RefreshTool): HeldBundle | null {
+/** The bundle a refresh by a workspace of `owner` would spend. */
+export function heldBundle(objects: ProxyObjects, owner: string, tool: RefreshTool): HeldBundle | null {
   if (tool === 'claude') {
-    const bundle = objects.claudeOAuthBundle()
+    const bundle = objects.claudeOAuthBundle(owner)
     return bundle ? { tool, bundle } : null
   }
-  const bundle = objects.codexOAuthBundle()
+  const bundle = objects.codexOAuthBundle(owner)
   return bundle ? { tool, bundle } : null
 }
 

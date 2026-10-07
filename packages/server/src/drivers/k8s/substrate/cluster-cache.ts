@@ -49,7 +49,7 @@ export class ClusterCache {
   private readonly pods: InformerCache<PodInfo>
   private readonly jobs: InformerCache<JobInfo>
   private readonly proxyState: InformerCache<ProxyState>
-  private readonly proxyRefreshed: InformerCache<RefreshedToolCredentials>
+  private readonly proxyRefreshed: InformerCache<Record<string, RefreshedToolCredentials>>
   private readonly listeners = new Set<(source: DeltaSource) => void>()
   private readonly deps: ClusterCacheDeps
 
@@ -125,8 +125,9 @@ export class ClusterCache {
     return this.proxyState.items()[0] ?? EMPTY_PROXY_STATE
   }
 
-  /** The rotations the proxy captured and the host store may not hold yet. */
-  refreshedCredentials(): RefreshedToolCredentials {
+  /** The rotations the proxy captured and the host store may not hold
+   *  yet, by owner. */
+  refreshedCredentials(): Record<string, RefreshedToolCredentials> {
     return this.proxyRefreshed.items()[0] ?? {}
   }
 

@@ -35,6 +35,7 @@ import { handOverAgent, type CreateSetup, type WorkspaceCreateResult } from './c
 import { parkAcpLaunchModel } from '#runtime/agents'
 import { isTmuxSessionAlive } from '#runtime/status'
 import { getDefaultBranch, remoteBranchExists, resolveRemoteRef } from '#domain/git'
+import { INSTALL_CREDENTIAL_OWNER } from '#domain/auth'
 import {
   fetchProjectOrigin,
   projectRemoteUrl,
@@ -384,6 +385,7 @@ export async function tryClaimPrewarmed(
     const registration = {
       workspaceId: claimedId,
       projectId,
+      owner: INSTALL_CREDENTIAL_OWNER,
       tool,
       config: await resolveProjectConfig(projectId) ?? {},
       remoteUrl: await projectRemoteUrl(projectId),

@@ -15,10 +15,16 @@ import path from 'node:path'
 
 const b64 = (v: unknown): string => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64')
 
-function credentialsSecret(files: Record<string, unknown>): { metadata: { name: string }; data: Record<string, string> } {
+/** The credentials Secret holding each owner's files (owner `o` unless
+ *  given). */
+function credentialsSecret(
+  files: Record<string, unknown>,
+  ...more: Array<[string, Record<string, unknown>]>
+): { metadata: { name: string }; data: Record<string, string> } {
   return {
     metadata: { name: 'yaac-proxy-credentials' },
-    data: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, b64(v)])),
+    data: Object.fromEntries([['o', files] as const, ...more].flatMap(([owner, f]) =>
+      Object.entries(f).map(([k, v]) => [`${owner}.${k}`, b64(v)]))),
   }
 }
 
@@ -30,14 +36,16 @@ function registrationObject(workspaceId: string, reg: Partial<ProxyRegistration>
   return {
     metadata: { name: `yaac-proxy-reg-${workspaceId}`, labels: { [LABEL_WORKSPACE_ID]: workspaceId } },
     data: { 'registration.json': JSON.stringify({
-      rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo', ...reg,
+      rules: [], allowedHosts: ['api.example.com'], tool: 'claude', projectId: 'demo', owner: 'o', ...reg,
     }) },
   }
 }
 
 const PUBLIC_KEY = `ssh-ed25519 ${Buffer.from('blob').toString('base64')} yaac`
+/** A host's (stand-in) host key blob. */
+const hostKey = (host: string): string => Buffer.from(`hostkey-${host}`).toString('base64')
 const grant = (projectId: string, host = 'github.com') =>
-  ({ projectId, host, knownHostsEntry: `${host} ssh-ed25519 H` })
+  ({ projectId, host, knownHostsEntry: `${host} ssh-ed25519 ${hostKey(host)}` })
 const sshKey = (...projects: SshCredentialEntry['projects']): SshCredentialEntry =>
   ({ privateKey: 'K', publicKey: PUBLIC_KEY, projects })
 
@@ -74,21 +82,21 @@ describe('ProxyObjects', () => {
   it('replaces the whole credential set on each update and reloads the agent', async () => {
     const loads: AgentIdentity[][] = []
     const objects = new ProxyObjects({ loadSshKeys: (e) => { loads.push(e); return Promise.resolve() }, log: () => {} })
-    expect(objects.credentials.claude).toBeNull()
+    expect(objects.credentials('o').claude).toBeNull()
 
     await objects.applyCredentials(credentialsSecret({
       'claude.json': { kind: 'api-key', apiKey: 'sk-ant' },
       'ssh-keys.json': [sshKey(grant('demo'))],
     }))
-    expect(objects.credentials.claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant' })
-    expect(loads).toEqual([[{ privateKey: 'K', hosts: ['github.com'], knownHosts: ['github.com ssh-ed25519 H'] }]])
+    expect(objects.credentials('o').claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant' })
+    expect(loads).toEqual([[{ privateKey: 'K', hosts: ['github.com'], knownHosts: [`github.com ssh-ed25519 ${hostKey('github.com')}`] }]])
 
     // A token-only change doesn't reload the agent.
     await objects.applyCredentials(credentialsSecret({
       'claude.json': { kind: 'api-key', apiKey: 'sk-ant-rotated' },
       'ssh-keys.json': [sshKey(grant('demo'))],
     }))
-    expect(objects.credentials.claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant-rotated' })
+    expect(objects.credentials('o').claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant-rotated' })
     expect(loads).toHaveLength(1)
 
     // Nor does reassigning the key to another project on a host it already
@@ -97,7 +105,7 @@ describe('ProxyObjects', () => {
       'ssh-keys.json': [sshKey(grant('other'), grant('demo'))],
     }))
     expect(loads).toHaveLength(1)
-    expect(objects.credentials.ssh[0].projects.map((p) => p.projectId)).toEqual(['other', 'demo'])
+    expect(objects.credentials('o').ssh[0].projects.map((p) => p.projectId)).toEqual(['other', 'demo'])
 
     // A new host is a new constraint, which needs a reload…
     await objects.applyCredentials(credentialsSecret({
@@ -106,7 +114,7 @@ describe('ProxyObjects', () => {
     expect(loads[1]).toEqual([{
       privateKey: 'K',
       hosts: ['github.com', 'gitlab.com'],
-      knownHosts: ['github.com ssh-ed25519 H', 'gitlab.com ssh-ed25519 H'],
+      knownHosts: [`github.com ssh-ed25519 ${hostKey('github.com')}`, `gitlab.com ssh-ed25519 ${hostKey('gitlab.com')}`],
     }])
     // …and a key unassigned from every project leaves the agent.
     await objects.applyCredentials(credentialsSecret({ 'ssh-keys.json': [sshKey()] }))
@@ -115,12 +123,12 @@ describe('ProxyObjects', () => {
     // Replace semantics: a Secret rewritten without claude.json signs
     // claude out.
     await objects.applyCredentials(credentialsSecret({ 'codex.json': { kind: 'api-key', apiKey: 'sk-oai' } }))
-    expect(objects.credentials.claude).toBeNull()
-    expect(objects.credentials.codex).toEqual({ kind: 'api-key', apiKey: 'sk-oai' })
+    expect(objects.credentials('o').claude).toBeNull()
+    expect(objects.credentials('o').codex).toEqual({ kind: 'api-key', apiKey: 'sk-oai' })
 
     // The object going away is the same as an empty one.
     await objects.applyCredentials(credentialsSecret({}), true)
-    expect(objects.credentials.codex).toBeNull()
+    expect(objects.credentials('o').codex).toBeNull()
     expect(loads).toHaveLength(3)
   })
 
@@ -132,42 +140,103 @@ describe('ProxyObjects', () => {
       data: credentialsSecret({ 'claude.json': { kind: 'api-key', apiKey: 'sk-ant-stray' } }).data,
     }
     await objects.applyCredentials(stray)
-    expect(objects.credentials.claude).toBeNull()
+    expect(objects.credentials('o').claude).toBeNull()
 
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'api-key', apiKey: 'sk-ant' } }))
-    objects.capture({ claude: claudeBundle('captured', 9) })
+    objects.capture('o', { claude: claudeBundle('captured', 9) })
     await objects.applyCredentials(stray, true)
-    expect(objects.credentials.claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant' })
-    expect(objects.claudeOAuthBundle()).toEqual(claudeBundle('captured', 9))
+    expect(objects.credentials('o').claude).toEqual({ kind: 'api-key', apiKey: 'sk-ant' })
+    expect(objects.claudeOAuthBundle('o')).toEqual(claudeBundle('captured', 9))
   })
 
   it('serves a captured rotation until the pushed bundle catches up', async () => {
     const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
     const pushed = claudeBundle('a1', 1_000)
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'oauth', claudeAiOauth: pushed } }))
-    expect(objects.claudeOAuthBundle()).toEqual(pushed)
+    expect(objects.claudeOAuthBundle('o')).toEqual(pushed)
 
     // A workspace refreshed: the capture is newer, so it is what gets served.
     const rotated = claudeBundle('a2', 2_000)
-    objects.capture({ claude: rotated })
-    expect(objects.claudeOAuthBundle()).toEqual(rotated)
+    objects.capture('o', { claude: rotated })
+    expect(objects.claudeOAuthBundle('o')).toEqual(rotated)
 
     // The server pushes something older still (a stale write in flight):
     // the capture stays.
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'oauth', claudeAiOauth: pushed } }))
-    expect(objects.claudeOAuthBundle()).toEqual(rotated)
+    expect(objects.claudeOAuthBundle('o')).toEqual(rotated)
 
     // Once the server echoes it back, the capture is dropped.
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'oauth', claudeAiOauth: rotated } }))
-    expect(objects.claudeOAuthBundle()).toEqual(rotated)
+    expect(objects.claudeOAuthBundle('o')).toEqual(rotated)
     const newer = claudeBundle('a3', 3_000)
     await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'oauth', claudeAiOauth: newer } }))
-    expect(objects.claudeOAuthBundle()).toEqual(newer)
+    expect(objects.claudeOAuthBundle('o')).toEqual(newer)
 
     // A sign-out drops the capture too: nothing must sign the user back in.
-    objects.capture({ claude: claudeBundle('a4', 4_000) })
+    objects.capture('o', { claude: claudeBundle('a4', 4_000) })
     await objects.applyCredentials(credentialsSecret({}), true)
-    expect(objects.claudeOAuthBundle()).toBeNull()
+    expect(objects.claudeOAuthBundle('o')).toBeNull()
+  })
+
+  it('keeps two owners apart: credentials, captured rotations and the owner a workspace spends', async () => {
+    const loads: AgentIdentity[][] = []
+    const objects = new ProxyObjects({ loadSshKeys: (e) => { loads.push(e); return Promise.resolve() }, log: () => {} })
+    const alice = claudeBundle('alice', 1_000)
+    const bob = claudeBundle('bob', 1_000)
+    const secret = (aliceClaude: ReturnType<typeof claudeBundle>) => credentialsSecret(
+      { 'claude.json': { kind: 'oauth', claudeAiOauth: aliceClaude }, 'ssh-keys.json': [sshKey(grant('a'))] },
+      ['bob', { 'claude.json': { kind: 'oauth', claudeAiOauth: bob }, 'ssh-keys.json': [sshKey(grant('b', 'gitlab.com'))] }],
+    )
+    await objects.applyCredentials(secret(alice))
+    objects.applyRegistration(registrationObject('wa', { owner: 'o' }))
+    objects.applyRegistration(registrationObject('wb', { owner: 'bob' }))
+    expect(objects.ownerOf('wa')).toBe('o')
+    expect(objects.ownerOf('wb')).toBe('bob')
+    expect(objects.ownerOf('unregistered')).toBeUndefined()
+    // An owner the Secret does not name has nothing to spend.
+    expect(objects.credentials('carol')).toEqual(objects.credentials(undefined))
+    expect(objects.credentials('carol').claude).toBeNull()
+
+    // A rotation captured in one owner's workspace is served to that owner
+    // only, and dropped once that owner's push echoes it back.
+    const rotated = claudeBundle('alice-2', 2_000)
+    objects.capture('o', { claude: rotated })
+    expect(objects.claudeOAuthBundle('o')).toEqual(rotated)
+    expect(objects.claudeOAuthBundle('bob')).toEqual(bob)
+    await objects.applyCredentials(secret(rotated))
+    expect(objects.claudeOAuthBundle('o')).toEqual(rotated)
+    objects.capture('bob', { claude: claudeBundle('bob-2', 2_000) })
+    await objects.applyCredentials(secret(rotated))
+    expect(objects.claudeOAuthBundle('bob')).toEqual(claudeBundle('bob-2', 2_000))
+
+    // The agent relay lets each workspace sign only with its owner's keys
+    // for its project, and only for the hosts that grant names: alice's
+    // workspace may not sign for gitlab.com with the key bob granted there,
+    // and bob's workspace naming alice's project sees none of hers.
+    const blob = Buffer.from('blob').toString('base64')
+    objects.applyRegistration(registrationObject('wa', { owner: 'o', projectId: 'a' }))
+    objects.applyRegistration(registrationObject('wb', { owner: 'bob', projectId: 'b' }))
+    objects.applyRegistration(registrationObject('intruder', { owner: 'bob', projectId: 'a' }))
+    expect(objects.sshGrants('wa')).toEqual(new Map([[blob, new Set([hostKey('github.com')])]]))
+    expect(objects.sshGrants('wb')).toEqual(new Map([[blob, new Set([hostKey('gitlab.com')])]]))
+    expect(objects.sshGrants('intruder')).toEqual(new Map())
+
+    // One key held by both owners is loaded once, for every host either
+    // assigned it to; the relay narrows that union per workspace.
+    expect(loads.at(-1)).toEqual([{
+      privateKey: 'K',
+      hosts: ['github.com', 'gitlab.com'],
+      knownHosts: [`github.com ssh-ed25519 ${hostKey('github.com')}`, `gitlab.com ssh-ed25519 ${hostKey('gitlab.com')}`],
+    }])
+  })
+
+  it('serves a registration from before owner keys from the only owner, and none once there are two', async () => {
+    const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
+    objects.applyRegistration(registrationObject('legacy', { owner: undefined }))
+    await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'api-key', apiKey: 'sk' } }))
+    expect(objects.ownerOf('legacy')).toBe('o')
+    await objects.applyCredentials(credentialsSecret({ 'git-tokens.json': [] }, ['bob', { 'git-tokens.json': [] }]))
+    expect(objects.ownerOf('legacy')).toBeUndefined()
   })
 
   it('keeps each project’s secret values under its own object', () => {

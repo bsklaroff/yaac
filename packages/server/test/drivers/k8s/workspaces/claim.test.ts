@@ -167,6 +167,7 @@ describe('registerWorkspace', () => {
   const reg = (o: Partial<WorkspaceRegistration> = {}): WorkspaceRegistration => ({
     workspaceId: 's1',
     projectId: 'proj',
+    owner: 'o',
     tool: 'codex',
     config: {},
     remoteUrl: 'https://github.com/example/repo.git',

@@ -49,7 +49,7 @@ import {
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { defaultModelFor, seedProjectToolHome } from '#domain/auth'
+import { INSTALL_CREDENTIAL_OWNER, defaultModelFor, seedProjectToolHome } from '#domain/auth'
 import {
   createCheckout,
   getDefaultBranch,
@@ -873,6 +873,7 @@ export async function createWorkspace(
   const substrateTask = runtime.prepareSubstrate({
     projectId,
     workspaceId: workspaceId,
+    owner: INSTALL_CREDENTIAL_OWNER,
     tool,
     config,
     remoteUrl,

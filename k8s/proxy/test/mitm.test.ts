@@ -19,8 +19,9 @@ import { generateCA, handleMitm, type MitmContext } from 'yaac-proxy-sidecar/mit
 const b64 = (v: unknown): string => Buffer.from(JSON.stringify(v)).toString('base64')
 
 let upstreamBodies: Array<Record<string, unknown>>
-let captured: RefreshedBundles[]
-let mitmPort: number
+let captured: Array<{ owner: string; bundles: RefreshedBundles }>
+/** One MITM listener per workspace: `wa` is alice's, `wb` bob's. */
+const mitmPorts: Record<string, number> = {}
 let ctx: MitmContext
 const servers: net.Server[] = []
 
@@ -40,42 +41,46 @@ beforeAll(async () => {
   const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
   await objects.applyCredentials({
     metadata: { name: 'yaac-proxy-credentials' },
-    data: { 'claude.json': b64({
+    data: Object.fromEntries(['alice', 'bob'].map((owner) => [`${owner}.claude.json`, b64({
       kind: 'oauth',
-      claudeAiOauth: { accessToken: 'real-access', refreshToken: 'real-refresh', expiresAt: 1, scopes: [] },
-    }) },
+      claudeAiOauth: { accessToken: `${owner}-access`, refreshToken: `${owner}-refresh`, expiresAt: 1, scopes: [] },
+    })])),
   })
-  objects.applyRegistration({
-    metadata: { name: 'yaac-proxy-reg-ws', labels: { [LABEL_WORKSPACE_ID]: 'ws' } },
-    data: { 'registration.json': JSON.stringify({ rules: [], allowedHosts: ['*'], tool: 'claude', projectId: 'demo' }) },
-  })
+  for (const [ws, owner] of [['wa', 'alice'], ['wb', 'bob']]) {
+    objects.applyRegistration({
+      metadata: { name: `yaac-proxy-reg-${ws}`, labels: { [LABEL_WORKSPACE_ID]: ws } },
+      data: { 'registration.json': JSON.stringify({ rules: [], allowedHosts: ['*'], tool: 'claude', projectId: 'demo', owner }) },
+    })
+  }
   ctx = {
     ca: generateCA(),
     objects,
     torAgent: null,
     refreshFlights: new RefreshFlights<TokenReply>((r) => r.rotatedTo, () => errorReply(504, 'slow')),
-    captureRefreshed: (b) => { captured.push(b); objects.capture(b) },
+    captureRefreshed: (owner, bundles) => { captured.push({ owner, bundles }); objects.capture(owner, bundles) },
     noteGitUpstreamStatus: () => {},
   }
   const redirect = { host: '127.0.0.1', port: (upstream.address() as AddressInfo).port }
-  const mitm = net.createServer((socket) => {
-    handleMitm(ctx, socket, 'platform.claude.com', '443', 'ws', [], redirect)
-  })
-  await new Promise<void>((r) => mitm.listen(0, '127.0.0.1', r))
-  servers.push(mitm)
-  mitmPort = (mitm.address() as AddressInfo).port
+  for (const ws of ['wa', 'wb']) {
+    const mitm = net.createServer((socket) => {
+      handleMitm(ctx, socket, 'platform.claude.com', '443', ws, [], redirect)
+    })
+    await new Promise<void>((r) => mitm.listen(0, '127.0.0.1', r))
+    servers.push(mitm)
+    mitmPorts[ws] = (mitm.address() as AddressInfo).port
+  }
 }, 60_000)
 
 afterAll(() => { for (const s of servers) s.close() })
 
 /** POST a refresh grant through the MITM, as claude would. */
-function refresh(refreshToken: string): Promise<Record<string, unknown>> {
+function refresh(refreshToken: string, workspaceId = 'wa'): Promise<Record<string, unknown>> {
   upstreamBodies = []
   captured = []
   return new Promise((resolve, reject) => {
     const req = https.request({
       host: '127.0.0.1',
-      port: mitmPort,
+      port: mitmPorts[workspaceId],
       servername: 'platform.claude.com',
       ca: ctx.ca.pem,
       method: 'POST',
@@ -101,8 +106,20 @@ describe('handleMitm', () => {
     expect(foreign.refresh_token).toBe('new-refresh')
 
     const ours = await refresh(PLACEHOLDER_REFRESH_TOKEN)
-    expect(upstreamBodies[0].refresh_token).toBe('real-refresh')
-    expect(captured[0].claude).toMatchObject({ accessToken: 'new-access', refreshToken: 'new-refresh' })
+    expect(upstreamBodies[0].refresh_token).toBe('alice-refresh')
+    expect(captured).toHaveLength(1)
+    expect(captured[0].owner).toBe('alice')
+    expect(captured[0].bundles.claude).toMatchObject({ accessToken: 'new-access', refreshToken: 'new-refresh' })
     expect(ours).toMatchObject({ access_token: PLACEHOLDER_ACCESS_TOKEN, refresh_token: PLACEHOLDER_REFRESH_TOKEN })
+  }, 60_000)
+
+  it('spends and writes back the refreshing workspace owner\'s credential only', async () => {
+    // Alice's rotation moments ago is no answer for bob: his refresh is its
+    // own flight, spending his own token.
+    await refresh(PLACEHOLDER_REFRESH_TOKEN, 'wb')
+    expect(upstreamBodies[0].refresh_token).toBe('bob-refresh')
+    expect(captured.map((c) => c.owner)).toEqual(['bob'])
+    expect(ctx.objects.claudeOAuthBundle('bob')).toMatchObject({ accessToken: 'new-access' })
+    expect(ctx.objects.claudeOAuthBundle('alice')).toMatchObject({ refreshToken: 'new-refresh' })
   }, 60_000)
 })

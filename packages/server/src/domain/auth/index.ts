@@ -8,8 +8,9 @@
 //    attach and workspace stop) runs the periodic sweep;
 //  - the model catalog, for the create path and `yaac-mama models`;
 //  - the runtime link: every writer of the host store pushes the full set to
-//    the runtime, and the reconcile pass adopts tokens a mediating runtime
-//    captured from a workspace's refresh.
+//    the runtime under the install's owner key (which workspace creates
+//    stamp on their egress registration), and the reconcile pass adopts
+//    tokens a mediating runtime captured from a workspace's refresh.
 // Usage/profile endpoints, OAuth refresh grants and masking are internal.
 
 export { authAgentHub } from './agent'
@@ -23,7 +24,11 @@ export {
 } from './credential-sync'
 export { listAuth } from './list'
 export { catalogModel, defaultModelFor, modelDisplayName, modelsForTool } from './models'
-export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'
+export {
+  INSTALL_CREDENTIAL_OWNER,
+  adoptRefreshedToolCredentials,
+  pushCredentialsToRuntime,
+} from './runtime-push'
 export {
   codexPlanUsageForSnapshot,
   planUsageForSnapshot,

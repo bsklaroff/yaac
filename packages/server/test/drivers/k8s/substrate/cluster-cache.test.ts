@@ -261,16 +261,18 @@ describe('ClusterCache', () => {
     refreshed!.informer.emit('add', {
       metadata: { name: 'yaac-proxy-refreshed', labels: { 'yaac.proxy-output': 'refreshed' } },
       data: {
-        'claude.json': Buffer.from(JSON.stringify(file)).toString('base64'),
+        'alice.claude.json': Buffer.from(JSON.stringify(file)).toString('base64'),
         // A malformed entry is dropped.
-        'codex.json': Buffer.from('{"kind":"oauth","codexOauth":{}}').toString('base64'),
+        'bob.codex.json': Buffer.from('{"kind":"oauth","codexOauth":{}}').toString('base64'),
+        // A proxy from before owner keys wrote them bare.
+        'claude.json': Buffer.from(JSON.stringify(file)).toString('base64'),
       },
     })
-    expect(cache.refreshedCredentials()).toEqual({ claude })
+    expect(cache.refreshedCredentials()).toEqual({ 'alice': { claude }, '': { claude } })
     expect(deltas).toContain('proxy-refreshed')
     // An object without the label is ignored.
     refreshed!.informer.emit('add', { metadata: { name: 'yaac-proxy-auth' }, data: {} })
-    expect(cache.refreshedCredentials()).toEqual({ claude })
+    expect(cache.refreshedCredentials()).toEqual({ 'alice': { claude }, '': { claude } })
     cache.stop()
   })
 

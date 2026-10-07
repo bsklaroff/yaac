@@ -68,6 +68,11 @@ const PLACEHOLDER_ACCESS_TOKEN = 'yaac-ph-access'
 const PLACEHOLDER_REFRESH_TOKEN = 'yaac-ph-refresh'
 
 const EMPTY: CredentialBundle = { claude: null, codex: null, opencode: null, pi: null, git: [], ssh: [] }
+/** The owner the suite's workspace registers under. */
+const OWNER = 'suite-owner'
+/** Replace the credentials Secret with `bundle` as OWNER's, plus `others`. */
+const syncCredentials = (bundle: CredentialBundle, others: Record<string, CredentialBundle> = {}): Promise<void> =>
+  syncProxyCredentials({ [OWNER]: bundle, ...others })
 /** The git token, assigned to the suite workspace's project. */
 const GIT_TOKENS: CredentialBundle['git'] = [{ token: 'ghp-real-token', projects: ['creds-suite'] }]
 
@@ -269,7 +274,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     // Write credentials before the proxy starts, with claude signed out
     // (the first case relies on that).
     await ensureNamespace()
-    await syncProxyCredentials({
+    await syncCredentials({
       ...EMPTY,
       git: GIT_TOKENS,
     })
@@ -284,6 +289,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       repoUrl: `https://${GIT_HOST}/acme/app.git`,
       tool: 'claude',
       projectId: 'creds-suite',
+      owner: OWNER,
       upstreamRedirects: {
         [MITM_HOST]: redirect, [MCP_PROXY_HOST]: redirect, [TOKEN_HOST]: redirect, [GIT_HOST]: redirect,
       },
@@ -318,7 +324,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       .toBe('Basic ' + Buffer.from('x-access-token:ghp-real-token').toString('base64'))
 
     // Sign in by rewriting the Secret; the same pod then gets the real key.
-    await syncProxyCredentials({
+    await syncCredentials({
       ...EMPTY,
       claude: { kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-real-key' },
       git: GIT_TOKENS,
@@ -343,7 +349,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   }, 60_000)
 
   it('signs a running workspace out when the Secret is rewritten without the tool', async () => {
-    await syncProxyCredentials({
+    await syncCredentials({
       ...EMPTY,
       git: GIT_TOKENS,
     })
@@ -365,21 +371,21 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     })
     // Two hosts, so known_hosts has several entries. ssh-add must be given
     // the file with -H or it never finds the host key.
-    await syncProxyCredentials(withKeys([keyA, keyB]))
+    await syncCredentials(withKeys([keyA, keyB]))
     const agentHolds = (expected: unknown): Promise<void> =>
       vi.waitFor(async () => expect(await agentFingerprints()).toEqual(expected), { timeout: 30_000, interval: 500 })
     await agentHolds(expect.arrayContaining([keyA.fingerprint, keyB.fingerprint]))
 
     // An empty list empties the agent...
-    await syncProxyCredentials(EMPTY)
+    await syncCredentials(EMPTY)
     await agentHolds([])
     // ...and a cleared agent accepts keys again.
-    await syncProxyCredentials(withKeys([keyA]))
+    await syncCredentials(withKeys([keyA]))
     await agentHolds([keyA.fingerprint])
   }, 180_000)
 
   it('captures a rotation a workspace drives, spending the credential once for a burst', async () => {
-    await syncProxyCredentials({
+    await syncCredentials({
       ...EMPTY,
       claude: {
         kind: 'oauth',
@@ -416,7 +422,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
 
     // Captured in the host store's shape.
     const captured = await vi.waitFor(async () => {
-      const v = await readSecretKey(PROXY_REFRESHED_SECRET_NAME, 'claude.json')
+      const v = await readSecretKey(PROXY_REFRESHED_SECRET_NAME, `${OWNER}.claude.json`)
       expect(v).toContain(rotated)
       return v!
     }, { timeout: 30_000, interval: 500 })
@@ -457,7 +463,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
   }, 180_000)
 
   it('injects a git token only into workspaces of the projects it is assigned to', async () => {
-    await syncProxyCredentials({ ...EMPTY, git: GIT_TOKENS })
+    await syncCredentials({ ...EMPTY, git: GIT_TOKENS })
     await curlUntil(podName, gitProbe, (r) => r.exit === 0 && echoedOf(r.out).headers.authorization !== undefined)
     // Re-registered under a project the token is not assigned to.
     await applyProxyRegistration(workspaceId, { ...registration, projectId: 'creds-other' })
@@ -471,11 +477,35 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     }
   }, 180_000)
 
+  it('serves a workspace only its own owner\'s credentials', async () => {
+    const otherKey = { ...EMPTY, claude: { kind: 'api-key' as const, savedAt: new Date().toISOString(), apiKey: 'sk-ant-other' } }
+    // Another owner signed in, this one signed out: the placeholder travels
+    // untouched, and the git token stays this owner's.
+    await syncCredentials({ ...EMPTY, git: GIT_TOKENS }, { other: { ...otherKey, git: [{ token: 'ghp-other', projects: ['creds-suite'] }] } })
+    await curlUntil(podName, gitProbe, (r) => r.exit === 0
+      && echoedOf(r.out).headers.authorization === 'Basic ' + Buffer.from('x-access-token:ghp-real-token').toString('base64'))
+    const mine = await curlInPod(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`))
+    expect(echoedOf(mine.out).headers['x-api-key']).toBe(PLACEHOLDER_API_KEY)
+
+    // Re-registered under the other owner, the same pod gets that owner's.
+    await applyProxyRegistration(workspaceId, { ...registration, owner: 'other' })
+    try {
+      const theirs = await curlUntil(podName, probeArgs(`-H 'x-api-key: ${PLACEHOLDER_API_KEY}'`),
+        (r) => r.exit === 0 && echoedOf(r.out).headers['x-api-key'] === 'sk-ant-other')
+      expect(echoedOf(theirs.out).headers['x-api-key']).toBe('sk-ant-other')
+      const git = await curlInPod(podName, gitProbe)
+      expect(echoedOf(git.out).headers.authorization)
+        .toBe('Basic ' + Buffer.from('x-access-token:ghp-other').toString('base64'))
+    } finally {
+      await applyProxyRegistration(workspaceId, registration)
+    }
+  }, 180_000)
+
   // These run last: they replace the shared proxy pod.
   it('is replaceable: a fresh pod serves the same CA, registration and credentials with no server action', async () => {
     const caBefore = await readSecretKey(PROXY_CA_SECRET_NAME, 'ca.pem')
     expect(caBefore).toContain('BEGIN CERTIFICATE')
-    await syncProxyCredentials({
+    await syncCredentials({
       ...EMPTY,
       claude: { kind: 'api-key', savedAt: new Date().toISOString(), apiKey: 'sk-ant-survives' },
     })

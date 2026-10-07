@@ -49,7 +49,8 @@ export interface MitmContext {
   torAgent: http.Agent | null
   /** Refreshes serialized per credential (see refresh-flight.ts). */
   refreshFlights: RefreshFlights<TokenReply>
-  captureRefreshed: (bundles: RefreshedBundles) => void
+  /** Record a rotation captured from a workspace of `owner`. */
+  captureRefreshed: (owner: string, bundles: RefreshedBundles) => void
   noteGitUpstreamStatus: (workspaceId: string, hostname: string, requestPath: string, status: number) => void
 }
 
@@ -220,7 +221,10 @@ export function handleMitm(
       hostname === CLAUDE_TOKEN_URL_HOST && reqPath === CLAUDE_TOKEN_URL_PATH ? 'claude'
         : hostname === OPENAI_TOKEN_URL_HOST && reqPath === OPENAI_TOKEN_URL_PATH ? 'codex'
           : null
-    const heldAtArrival = tokenTool ? heldBundle(objects, tokenTool) : null
+    // The credential a refresh spends is the workspace owner's, and its
+    // rotation is captured back to that owner only.
+    const owner = objects.ownerOf(workspaceId)
+    const heldAtArrival = tokenTool && owner !== undefined ? heldBundle(objects, owner, tokenTool) : null
 
     // Same condition under which buildDynamicRules injects the git token.
     const gitCredInjected = workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)
@@ -229,7 +233,7 @@ export function handleMitm(
      *  its response is collected for `done` instead of streamed to `res`. */
     function sendUpstream(
       body: Buffer | null,
-      refresh: { held: HeldBundle; done: (reply: TokenReply) => void } | null,
+      refresh: { owner: string; held: HeldBundle; done: (reply: TokenReply) => void } | null,
     ): void {
       if (body !== null) {
         headers['content-length'] = String(body.length)
@@ -248,7 +252,7 @@ export function handleMitm(
           ctx.noteGitUpstreamStatus(workspaceId, hostname, reqPath, upstreamRes.statusCode ?? 0)
         }
         if (refresh) {
-          collectTokenReply(upstreamRes, refresh.held, ctx.captureRefreshed, refresh.done)
+          collectTokenReply(upstreamRes, refresh.held, (b) => { ctx.captureRefreshed(refresh.owner, b) }, refresh.done)
         } else {
           res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
           upstreamRes.pipe(res)
@@ -293,12 +297,14 @@ export function handleMitm(
       // refreshes. Anything else passes through untouched in both
       // directions, so we never spend the real token for an unknown sender
       // or store tokens from an unrelated exchange.
-      if (tokenTool && heldAtArrival && bodyHasPlaceholderRefreshToken(inboundBody, contentType)) {
+      if (tokenTool && owner !== undefined && heldAtArrival
+        && bodyHasPlaceholderRefreshToken(inboundBody, contentType)) {
         // A flight may have rotated the credential while the body was read.
-        const held = heldBundle(objects, tokenTool) ?? heldAtArrival
-        ctx.refreshFlights.run(tokenTool, held.bundle.refreshToken, () => new Promise<TokenReply>((done) => {
+        const held = heldBundle(objects, owner, tokenTool) ?? heldAtArrival
+        const flight = `${owner}/${tokenTool}`
+        ctx.refreshFlights.run(flight, held.bundle.refreshToken, () => new Promise<TokenReply>((done) => {
           const swap: BodyParamSwap = { name: 'refresh_token', value: held.bundle.refreshToken }
-          sendUpstream(applyBodyInjections(inboundBody, contentType, [...bodyInjections, swap]), { held, done })
+          sendUpstream(applyBodyInjections(inboundBody, contentType, [...bodyInjections, swap]), { owner, held, done })
         })).then(
           (reply) => { writeTokenReply(res, reply) },
           (err: unknown) => { writeTokenReply(res, errorReply(502, String(err))) },

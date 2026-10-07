@@ -20,7 +20,8 @@ export function readAllGitAuthFailures(): Record<string, GitAuthFailure[]> {
   return getActiveClusterCache()?.proxyRecords().gitAuthFailures ?? {}
 }
 
-/** The rotations the proxy captured that the host store may not hold yet. */
-export function refreshedCredentials(): RefreshedToolCredentials {
+/** The rotations the proxy captured that the host store may not hold yet,
+ *  by owner. */
+export function refreshedCredentials(): Record<string, RefreshedToolCredentials> {
   return getActiveClusterCache()?.refreshedCredentials() ?? {}
 }

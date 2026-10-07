@@ -13,7 +13,7 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  * The cache is stubbed; its mapping from raw objects is tested with it.
  */
 
-function cacheOf(state: ProxyState, refreshed: RefreshedToolCredentials = {}): ClusterCache {
+function cacheOf(state: ProxyState, refreshed: Record<string, RefreshedToolCredentials> = {}): ClusterCache {
   return {
     proxyRecords: () => state,
     refreshedCredentials: () => refreshed,
@@ -41,10 +41,10 @@ describe('readAllGitAuthFailures', () => {
 })
 
 describe('refreshedCredentials', () => {
-  it('answers the captured rotations, and none outside a server', () => {
+  it('answers the captured rotations by owner, and none outside a server', () => {
     expect(refreshedCredentials()).toEqual({})
     const claude = { accessToken: 'a', refreshToken: 'r', expiresAt: 1, scopes: [] }
-    setActiveClusterCache(cacheOf({ blockedHosts: {}, gitAuthFailures: {} }, { claude }))
-    expect(refreshedCredentials()).toEqual({ claude })
+    setActiveClusterCache(cacheOf({ blockedHosts: {}, gitAuthFailures: {} }, { o: { claude } }))
+    expect(refreshedCredentials()).toEqual({ o: { claude } })
   })
 })

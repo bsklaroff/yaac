@@ -1,6 +1,7 @@
 import {
   LABEL_PROXY_OUTPUT,
   PROXY_APP_NAME,
+  PROXY_OWNER_KEY_PATTERN,
 } from './proxy-constants'
 import type { GitAuthFailure, RefreshedToolCredentials } from '@yaac/shared/types'
 import { claudeOAuthBundleSchema, codexOAuthBundleSchema } from '@yaac/shared/types'
@@ -77,21 +78,28 @@ function secretJson(raw: RawObject, key: string): Record<string, unknown> | null
   return parseJson(Buffer.from(encoded, 'base64').toString('utf8'))
 }
 
-/** The refreshed-bundles Secret, or null when the object is not it. Each
- *  key is a credentials file in the host store's own shape. */
-export function mapProxyRefreshedObject(obj: unknown): RefreshedToolCredentials | null {
+const REFRESHED_KEY = new RegExp(`^(?:(${PROXY_OWNER_KEY_PATTERN})\\.)?(claude|codex)\\.json$`)
+
+/**
+ * The refreshed-bundles Secret, or null when the object is not it: per
+ * owner, `<owner>.claude.json` and `<owner>.codex.json`, each a credentials
+ * file in the host store's own shape. The unprefixed keys a proxy older than
+ * owner keys wrote are reported under `''` (docs/legacy-compat-shims.md).
+ */
+export function mapProxyRefreshedObject(obj: unknown): Record<string, RefreshedToolCredentials> | null {
   const raw = obj as RawObject
   if (raw.metadata?.labels?.[LABEL_PROXY_OUTPUT] !== 'refreshed') return null
-  const out: RefreshedToolCredentials = {}
-  const claude = secretJson(raw, 'claude.json')
-  if (claude?.kind === 'oauth') {
-    const parsed = claudeOAuthBundleSchema.safeParse(claude.claudeAiOauth)
-    if (parsed.success) out.claude = parsed.data
-  }
-  const codex = secretJson(raw, 'codex.json')
-  if (codex?.kind === 'oauth') {
-    const parsed = codexOAuthBundleSchema.safeParse(codex.codexOauth)
-    if (parsed.success) out.codex = parsed.data
+  const out: Record<string, RefreshedToolCredentials> = {}
+  for (const key of Object.keys(raw.data ?? {})) {
+    const m = REFRESHED_KEY.exec(key)
+    if (!m) continue
+    const owner = m[1] ?? ''
+    const file = secretJson(raw, key)
+    if (file?.kind !== 'oauth') continue
+    const parsed = m[2] === 'claude'
+      ? claudeOAuthBundleSchema.safeParse(file.claudeAiOauth)
+      : codexOAuthBundleSchema.safeParse(file.codexOauth)
+    if (parsed.success) out[owner] = { ...out[owner], [m[2]]: parsed.data }
   }
   return out
 }

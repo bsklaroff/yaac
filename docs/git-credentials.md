@@ -100,11 +100,11 @@ Ed25519.
   the proxy's in-memory agent, each limited (`ssh-add -h`) to its projects'
   hosts. A workspace reaches that agent through its `SSH_AUTH_SOCK` forwarder
   (`k8s/proxy/ssh-agent-relay.ts`). The relay lists only the workspace's own
-  project's key and refuses to sign with any other, so the assignment is
-  enforced, not just recorded. It allows three requests: list, sign, and the
-  `session-bind@openssh.com` extension, which tells the agent which host the
-  client is talking to (an agent will not sign with a host-limited key without
-  it).
+  project's key, and signs with it only for the hosts that assignment names,
+  checked against the host key the client binds with the
+  `session-bind@openssh.com` extension. So the assignment is enforced, not
+  just recorded, even where another project holds the same key for other
+  hosts. It allows three requests: list, sign, and the session bind.
 - **A containerless workspace** is given its project's credential directly: the
   token, or the key, fed from the server over a stdin pipe through `ssh-add -`
   into the workspace's own `ssh-agent`, with only the public half in its home

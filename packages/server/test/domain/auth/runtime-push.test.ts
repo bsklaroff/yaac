@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
-import { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
+import { INSTALL_CREDENTIAL_OWNER, adoptRefreshedToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
 import { addHttpsCredential, assignProjectCredential } from '#domain/projects'
 import { BUILT_IN_USER_ID, closeDb, openDb, recordProject } from '#db'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
@@ -52,6 +52,7 @@ function codexBundle(overrides: Partial<CodexOAuthBundle> = {}): CodexOAuthBundl
 
 let dataDir: string
 let synced: CredentialBundle[]
+const OWNER = INSTALL_CREDENTIAL_OWNER
 
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-runtime-push-'))
@@ -59,7 +60,7 @@ beforeEach(async () => {
   await openDb()
   synced = []
   installFakeWorkspaceDriver({
-    syncCredentials: (bundle) => { synced.push(bundle); return Promise.resolve() },
+    syncCredentials: (bundles) => { synced.push(bundles[OWNER]); return Promise.resolve() },
   })
 })
 
@@ -99,8 +100,8 @@ describe('pushCredentialsToRuntime', () => {
     // follow-up push, which reads the store after their writes.
     const gate: Array<() => void> = []
     installFakeWorkspaceDriver({
-      syncCredentials: (bundle) => new Promise<void>((resolve) => {
-        synced.push(bundle)
+      syncCredentials: (bundles) => new Promise<void>((resolve) => {
+        synced.push(bundles[OWNER])
         gate.push(resolve)
       }),
     })
@@ -134,7 +135,7 @@ describe('adoptRefreshedToolCredentials', () => {
     const rotatedClaude = claudeBundle({ accessToken: 'claude-rotated', expiresAt: BASE_EXPIRY + 1 })
     const rotatedCodex = codexBundle({ accessToken: 'codex-rotated', lastRefresh: '2026-07-10T00:00:00.000Z' })
 
-    await adoptRefreshedToolCredentials({ claude: rotatedClaude, codex: rotatedCodex })
+    await adoptRefreshedToolCredentials({ [OWNER]: { claude: rotatedClaude, codex: rotatedCodex } })
 
     expect(await loadClaudeCredentialsFile()).toMatchObject({ kind: 'oauth', claudeAiOauth: rotatedClaude })
     expect(await loadCodexCredentialsFile()).toMatchObject({ kind: 'oauth', codexOauth: rotatedCodex })
@@ -145,25 +146,37 @@ describe('adoptRefreshedToolCredentials', () => {
 
   it('refuses an older bundle, the same one, a sentinel, and an api-key or signed-out store', async () => {
     await saveClaudeOAuthBundle(claudeBundle())
-    await adoptRefreshedToolCredentials({
+    await adoptRefreshedToolCredentials({ [OWNER]: {
       claude: claudeBundle({ accessToken: 'older', expiresAt: BASE_EXPIRY - 1 }),
-    })
-    await adoptRefreshedToolCredentials({ claude: claudeBundle() })
-    await adoptRefreshedToolCredentials({
+    } })
+    await adoptRefreshedToolCredentials({ [OWNER]: { claude: claudeBundle() } })
+    await adoptRefreshedToolCredentials({ [OWNER]: {
       claude: claudeBundle({
         accessToken: PLACEHOLDER_ACCESS_TOKEN, refreshToken: PLACEHOLDER_REFRESH_TOKEN, expiresAt: BASE_EXPIRY + 5,
       }),
-    })
+    } })
     expect((await loadClaudeCredentialsFile())).toMatchObject({ claudeAiOauth: claudeBundle() })
 
     // An api-key store has no bundle to rotate, and a signed-out store must
     // not be signed back in by a stale capture.
     await saveClaudeCredentialsFile({ kind: 'api-key', savedAt: 'x', apiKey: 'sk-ant' })
-    await adoptRefreshedToolCredentials({ claude: claudeBundle({ accessToken: 'new', expiresAt: BASE_EXPIRY + 9 }) })
+    await adoptRefreshedToolCredentials({ [OWNER]: { claude: claudeBundle({ accessToken: 'new', expiresAt: BASE_EXPIRY + 9 }) } })
     expect(await loadClaudeCredentialsFile()).toMatchObject({ kind: 'api-key' })
-    await adoptRefreshedToolCredentials({ codex: codexBundle() })
+    await adoptRefreshedToolCredentials({ [OWNER]: { codex: codexBundle() } })
     expect(await loadCodexCredentialsFile()).toBeNull()
 
     expect(synced).toEqual([])
+  })
+
+  it('takes only the install owner\'s captures, and those of a proxy older than owner keys', async () => {
+    await saveClaudeOAuthBundle(claudeBundle())
+    await adoptRefreshedToolCredentials({
+      someone: { claude: claudeBundle({ accessToken: 'theirs', expiresAt: BASE_EXPIRY + 1 }) },
+    })
+    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: claudeBundle() })
+
+    const legacy = claudeBundle({ accessToken: 'legacy', expiresAt: BASE_EXPIRY + 2 })
+    await adoptRefreshedToolCredentials({ '': { claude: legacy } })
+    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: legacy })
   })
 })
