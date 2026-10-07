@@ -407,6 +407,31 @@ export interface CreateWorkspaceDialogOpts {
   focus?: 'prompt'
 }
 
+/**
+ * A project add or remove this tab started, shown in the rail and in place
+ * of the sidebar and pane while its request runs. It lasts until the
+ * snapshot agrees (`settleProjectOps`), so the rail never flickers between
+ * the request finishing and the snapshot listing the change.
+ */
+export interface ProjectOp {
+  /** For a remove, the project's id. For an add, a client key, since the
+   *  server assigns the id. Selectable as `activeProjectId`. */
+  id: string
+  kind: 'add' | 'remove'
+  name: string
+  remoteUrl: string
+  /** The project's id, once the request has succeeded. */
+  doneId?: string
+  error?: string
+}
+
+/** The host key an SSH add trusted, kept for the user to compare against
+ *  what the host publishes. */
+export interface TrustedHostKey {
+  projectName: string
+  entry: string
+}
+
 /** Client-side UI state. Server state lives in the snapshot. */
 interface UiState {
   /** The user whose projects the rail and sidebar show, picked in the user
@@ -577,6 +602,24 @@ interface UiState {
   createWorkspaceDialog: CreateWorkspaceDialogOpts | null
   openCreateWorkspace: (opts: CreateWorkspaceDialogOpts) => void
   closeCreateWorkspace: () => void
+  /** The add-project dialog's clone form when open, with the remote to
+   *  prefill. Mounted once in App like the create dialog. */
+  addProjectForm: { remoteUrl: string } | null
+  setAddProjectForm: (form: { remoteUrl: string } | null) => void
+  /** Host keys from finished SSH adds. The dialog shows them once no form is
+   *  open, so a key never replaces a form being filled in. */
+  trustedHostKeys: TrustedHostKey[]
+  pushTrustedHostKey: (key: TrustedHostKey) => void
+  clearTrustedHostKeys: () => void
+  projectOps: ProjectOp[]
+  /** Add an op, or replace the one with its id. */
+  putProjectOp: (op: ProjectOp) => void
+  patchProjectOp: (id: string, patch: Partial<ProjectOp>) => void
+  dropProjectOp: (id: string) => void
+  /** Drop the ops the snapshot's project list now reflects. A finished add
+   *  being viewed hands the selection to the new project; a finished remove
+   *  being viewed clears it. */
+  settleProjectOps: (projectIds: string[]) => void
   /** A queued entry just created or moved from the create dialog, and its
    *  new parent. The sidebar expands its set once the snapshot shows it
    *  there, then clears this. */
@@ -725,6 +768,28 @@ export const useUiStore = create<UiState>((set) => ({
   createWorkspaceDialog: null,
   openCreateWorkspace: (opts) => set({ createWorkspaceDialog: opts }),
   closeCreateWorkspace: () => set({ createWorkspaceDialog: null }),
+  addProjectForm: null,
+  setAddProjectForm: (addProjectForm) => set({ addProjectForm }),
+  trustedHostKeys: [],
+  pushTrustedHostKey: (key) => set((s) => ({ trustedHostKeys: [...s.trustedHostKeys, key] })),
+  clearTrustedHostKeys: () => set({ trustedHostKeys: [] }),
+  projectOps: [],
+  putProjectOp: (op) => set((s) => ({ projectOps: [...s.projectOps.filter((o) => o.id !== op.id), op] })),
+  patchProjectOp: (id, patch) => set((s) => ({
+    projectOps: s.projectOps.map((o) => (o.id === id ? { ...o, ...patch } : o)),
+  })),
+  dropProjectOp: (id) => set((s) => ({ projectOps: s.projectOps.filter((o) => o.id !== id) })),
+  settleProjectOps: (projectIds) => set((s) => {
+    const settled = s.projectOps.filter((o) => o.doneId !== undefined
+      && projectIds.includes(o.doneId) === (o.kind === 'add'))
+    if (settled.length === 0) return s
+    const viewed = settled.find((o) => o.id === s.activeProjectId)
+    return {
+      projectOps: s.projectOps.filter((o) => !settled.includes(o)),
+      ...(viewed?.kind === 'add' && { activeProjectId: viewed.doneId, selectedWorkspaceId: null }),
+      ...(viewed?.kind === 'remove' && { activeProjectId: null, selectedWorkspaceId: null, mobileScreen: 'projects' }),
+    }
+  }),
   revealQueued: null,
   setRevealQueued: (reveal) => set({ revealQueued: reveal }),
   stoppedOverlayOpen: false,

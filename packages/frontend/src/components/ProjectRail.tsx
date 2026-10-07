@@ -4,22 +4,27 @@ import { NewProjectButton } from '#components/NewProjectButton'
 import { SettingsButton } from '#components/SettingsButton'
 import { UserSwitcher } from '#components/UserSwitcher'
 import { WindowControls } from '#components/WindowControls'
+import { LoadingIcon, WarningIcon } from '#lib/icons'
 import { isElectron } from '#lib/platform'
 import { projectColor, projectInitial } from '#lib/projectIdentity'
+import type { ProjectOp } from '#lib/store'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
  * Left rail: the user switcher, then the viewed user's project chips. The
  * active project scopes the sidebar; a project with unviewed workspaces
- * waiting for input shows a dot.
+ * waiting for input shows a dot. A project being added or removed (`ops`)
+ * shows a spinner, or a warning once its request failed.
  */
 export function ProjectRail({
   projects,
+  ops,
   activeProjectId,
   attentionByProject,
   onSelect,
 }: {
   projects: ProjectSummary[]
+  ops: ProjectOp[]
   activeProjectId: string | null
   attentionByProject: Record<string, number>
   onSelect: (projectId: string) => void
@@ -33,7 +38,8 @@ export function ProjectRail({
     )}>
       {isElectron() && <WindowControls className="h-5" />}
       <UserSwitcher />
-      {projects.map((p) => {
+      {[...projects, ...ops.filter((o) => o.kind === 'add')].map((p) => {
+        const op = ops.find((o) => o.id === p.id)
         const active = p.id === activeProjectId
         const color = projectColor(p.id)
         const waiting = attentionByProject[p.id] ?? 0
@@ -66,9 +72,13 @@ export function ProjectRail({
                   : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
               }}
             >
-              {projectInitial(p.name)}
+              {op === undefined
+                ? projectInitial(p.name)
+                : op.error === undefined
+                  ? <LoadingIcon size={18} className="animate-spin" aria-label={`${op.kind === 'add' ? 'Adding' : 'Removing'} project`} />
+                  : <WarningIcon size={18} className="text-danger" aria-label="Failed" />}
             </span>
-            {waiting > 0 && (
+            {waiting > 0 && op === undefined && (
               <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-base" />
             )}
           </button>
