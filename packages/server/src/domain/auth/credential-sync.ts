@@ -36,7 +36,7 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
  *
  * With mediated egress nothing is harvested: the proxy is the only refresh
  * writer (docs/workspace-egress.md), and a sandboxed pod could otherwise plant
- * a bundle that switches the account for the whole install.
+ * a bundle that switches the account for every project of its owner.
  */
 
 /**

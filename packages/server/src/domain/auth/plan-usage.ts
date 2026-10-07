@@ -163,7 +163,7 @@ async function refreshAndPersistClaudeBundle(
  * Adopt any token a running workspace refreshed, then return the stored
  * credential to use this cycle. Only needed without a proxy: with one, the
  * workspace holds a sentinel and its refreshes are already captured to the
- * host store, so `fallback` is current. Without one, this avoids querying
+ * owner's store, so `fallback` is current. Without one, this avoids querying
  * with (or refreshing) a superseded token. Never throws; returns `fallback`
  * on failure.
  */

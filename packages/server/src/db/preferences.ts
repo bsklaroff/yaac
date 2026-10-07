@@ -64,10 +64,10 @@ export async function clearShortcutOverrides(owner: string): Promise<void> {
 }
 
 /**
- * The git identity workspaces commit under, or null when either half is
- * unset.
+ * The git identity `owner`'s workspaces commit under, or null when either
+ * half is unset.
  *
- * Stored as a server setting rather than read from the host: under `k8s` the
+ * Stored per user on the server rather than read from the host: under `k8s` the
  * server pod has no git config, and under `containerless` the host's config
  * belongs to whoever runs the server, not necessarily the user. The auth
  * server seeds it from the user's shell (`seedGitIdentityFromShell`); the

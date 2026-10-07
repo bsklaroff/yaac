@@ -156,14 +156,22 @@ async function requirePrebuiltServerImage(): Promise<string> {
 /**
  * The production Deployment (from `buildServerDeploymentManifest`, so it
  * can't drift) with three changes: the file's env, an extra mount of the
- * scratch tree, and a smaller resource request.
+ * scratch tree, and a smaller resource request. The access mode is the
+ * builder's own option, since its answer wins over a passed-through one: a
+ * file asks for `tailnet` with `YAAC_ACCESS_MODE`, `YAAC_ALLOWED_HOSTS` and
+ * `YAAC_ACCESS_OWNER`, as `yaac cluster install --tailnet --owner` would.
  */
 function testServerDeploymentManifest(
   imageRef: string,
   env: NodeJS.ProcessEnv,
 ): Record<string, unknown> {
+  const remoteHosting = env.YAAC_ACCESS_MODE === 'tailnet'
+    ? { accessMode: 'tailnet' as const, allowedHosts: (env.YAAC_ALLOWED_HOSTS ?? '').split(',').filter(Boolean) }
+    : undefined
   // This machine's uid, as on a kind install.
-  const manifest = buildServerDeploymentManifest(imageRef, processIdentity()) as {
+  const manifest = buildServerDeploymentManifest(imageRef, processIdentity(), {
+    remoteHosting, owner: env.YAAC_ACCESS_OWNER,
+  }) as {
     spec: { template: { spec: {
       containers: Array<{
         env: Array<{ name: string; value: string }>

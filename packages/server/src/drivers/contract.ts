@@ -696,7 +696,7 @@ export interface WorkspaceDriver {
   syncProjectSecrets(projectId: string, values: Record<string, string>): Promise<void>
   /**
    * OAuth tokens the egress path captured from a workspace's refresh, which
-   * the host store may not have yet, keyed by the owner whose credential
+   * the owner's store may not have yet, keyed by the owner whose credential
    * rotated. Captures from a proxy older than owner keys are under `''`.
    * Empty if none.
    */

@@ -83,8 +83,8 @@ const REFRESHED_KEY = new RegExp(`^(?:(${PROXY_OWNER_KEY_PATTERN})\\.)?(claude|c
 /**
  * The refreshed-bundles Secret, or null when the object is not it: per
  * owner, `<owner>.claude.json` and `<owner>.codex.json`, each a credentials
- * file in the host store's own shape. The unprefixed keys a proxy older than
- * owner keys wrote are reported under `''` (docs/legacy-compat-shims.md).
+ * file in the shape the server stores. The unprefixed keys a proxy older
+ * than owner keys wrote are reported under `''` (docs/legacy-compat-shims.md).
  */
 export function mapProxyRefreshedObject(obj: unknown): Record<string, RefreshedToolCredentials> | null {
   const raw = obj as RawObject

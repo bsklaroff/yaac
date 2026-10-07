@@ -64,7 +64,9 @@ the window hides it), and forwards workspace ports to this machine
 5. **New workspace:** pick a tool, write a prompt, and start it.
 
 To use the server from other devices over Tailscale, see
-[docs/remote-hosting.md](docs/remote-hosting.md).
+[docs/remote-hosting.md](docs/remote-hosting.md); to share it with
+teammates, each as their own user, see
+[docs/multi-user.md](docs/multi-user.md).
 
 ## Credentials
 

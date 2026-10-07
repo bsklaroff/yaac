@@ -574,19 +574,20 @@ object (newest wins).
   and serves the server end of each connection; `yaac forward` or the
   desktop app holds the listener (docs/port-forward-tunnel.md). With neither
   running, the webapp's `127.0.0.1:<port>` links refuse to connect.
-- **The git identity is a server setting.** Workspaces commit under an
-  identity stored in the database, not one copied from whichever machine ran
-  install. The auth server seeds it from your machine's git config when it
-  starts (under the desktop app, `yaac auth server start`, or a Claude/Codex
-  browser sign-in; `yaac cluster install` does not start it). Edit it in
-  Settings → General or with `yaac config git-identity`; no re-install
-  needed. A server without one refuses to create workspaces and says where
-  to set it. A prewarmed spare has its identity baked in when warmed, so
-  claiming it re-applies the current identity.
-- **The time zone is a server setting.** A pod runs in UTC, so every
-  workspace launches with `TZ` set to a zone the clients report: the web app
-  on load, the auth server on start, and `yaac workspace create`. Picking a
-  zone in Settings → General pins it, and reports then leave it alone. A
+- **The git identity is a per-user setting on the server.** Workspaces
+  commit under an identity stored in the database, not one copied from
+  whichever machine ran install. The auth server seeds it from your
+  machine's git config when it starts (under the desktop app, `yaac auth
+  server start`, or a Claude/Codex browser sign-in; `yaac cluster install`
+  does not start it). Edit it in Settings → General or with `yaac config
+  git-identity`; no re-install needed. A create for an owner without one is
+  refused, with where to set it. A prewarmed spare has its identity baked
+  in when warmed, so claiming it re-applies the current identity.
+- **The time zone is a per-user setting on the server.** A pod runs in
+  UTC, so every workspace launches with `TZ` set to a zone the clients
+  report: the web app on load, the auth server on start, and `yaac
+  workspace create`. Picking a zone in Settings → General pins it, and
+  reports then leave it alone. A
   project's own `TZ` wins, and a workspace keeps the zone it launched with.
   A prewarmed spare records its zone, and one warmed in another zone than
   the current one is never claimed but re-warmed.

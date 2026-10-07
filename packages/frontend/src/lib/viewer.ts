@@ -5,7 +5,7 @@ import type { ProjectSummary, ServerSnapshot, Whoami } from '@yaac/shared/types'
 
 /**
  * Who is looking, and at whose data. The snapshot carries every user's rows
- * (docs/plans/multi-user-deployment.md "Snapshot and SPA"); the SPA shows
+ * (docs/multi-user.md "Snapshot and webapp"); the SPA shows
  * one user's at a time: the caller's own, or a teammate's picked in the
  * user switcher, read-only.
  */

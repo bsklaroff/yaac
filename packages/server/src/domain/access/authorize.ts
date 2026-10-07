@@ -3,8 +3,8 @@ import { ServerError } from '@yaac/shared/errors'
 import type { Principal } from '@yaac/shared/types'
 
 /**
- * How much of a resource a caller asks for (docs/plans/multi-user-deployment.md
- * "Authorization"). `reader` is any user; `owner` is the resource's owner
+ * How much of a resource a caller asks for (docs/multi-user.md
+ * "Authorization"): `reader` is any user; `owner` is the resource's owner
  * only, and covers every write plus the attaches that grant execution.
  */
 export type AccessLevel = 'reader' | 'owner'
@@ -20,25 +20,11 @@ export type Actor =
   | { kind: 'workspace'; workspaceId: string; userId: string }
 
 /**
- * Something a caller may own, by its owner's user id. A workspace, queued
- * workspace, draft or group is owned by its project's owner.
- */
-export interface Owned {
-  ownerId: string
-}
-
-/**
  * The server acting on its own, for a gated verb it calls with no request
  * behind it (a queued workspace's launch). `identify()` never returns it,
  * so no request can claim it.
  */
 export const systemPrincipal: Actor = { kind: 'system' }
-
-/** Refuse with FORBIDDEN unless `principal` may act on `resource` at `level`. */
-export function authorize(principal: Actor, level: AccessLevel, resource: Owned): void {
-  if (level === 'reader' || principal.kind === 'system' || principal.userId === resource.ownerId) return
-  throw new ServerError('FORBIDDEN', 'only the owner of this project may do that')
-}
 
 /** A project's owner. A project that does not exist is `NOT_FOUND`, since
  *  some verbs authorize before they check the project exists. */
@@ -49,12 +35,16 @@ async function projectOwner(projectId: string): Promise<string> {
 }
 
 /**
- * `authorize` at `owner` on a project, and so on anything in it: the check
- * every user-caused write makes before its first side effect.
+ * Refuse with FORBIDDEN unless `principal` owns the project, and so
+ * everything in it (docs/multi-user.md "Authorization"): the check every
+ * user-caused write, and every attach, makes before its first side effect.
+ * Reads need no check, since every user may read every resource.
  */
 export async function authorizeProject(principal: Actor, projectId: string): Promise<void> {
   if (principal.kind === 'system') return
-  authorize(principal, 'owner', { ownerId: await projectOwner(projectId) })
+  if (principal.userId !== await projectOwner(projectId)) {
+    throw new ServerError('FORBIDDEN', 'only the owner of this project may do that')
+  }
 }
 
 /**

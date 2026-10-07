@@ -1,7 +1,7 @@
 /*
  * Verifies the ownership-aware SPA with two tailnet principals against a
  * real containerless server in `tailnet` mode
- * (docs/plans/multi-user-deployment.md "Snapshot and SPA"):
+ * (docs/multi-user.md "Snapshot and webapp"):
  *
  *  1. Ada, the project's owner, sees her workspace with its controls and no
  *     read-only banner.

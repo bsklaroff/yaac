@@ -382,7 +382,7 @@ describe('createWorkspace', () => {
   // could change it, and under k8s the server pod's `$HOME` is ephemeral.
   it('refuses without a git identity, naming where a client can set one', async () => {
     await setGitIdentity(BUILT_IN_USER_ID, { name: ' ', email: ' ' })
-    await expect(createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })).rejects.toThrow(/No git identity is set on this server.*Settings/)
+    await expect(createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })).rejects.toThrow(/owner has no git identity set.*Settings/)
     expect(specs).toEqual([])
   })
 

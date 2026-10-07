@@ -9,8 +9,7 @@ import { resolveProjectConfig } from './config'
 /**
  * The user's controls on the image build feed. A build of a project's own
  * layers is its owner's to retry or dismiss; the shared images every chain
- * starts from are anyone's (docs/plans/multi-user-deployment.md "Image
- * builds").
+ * starts from are anyone's (docs/multi-user.md "Image builds").
  */
 
 /** The layers built per project, from its owner's files. */
