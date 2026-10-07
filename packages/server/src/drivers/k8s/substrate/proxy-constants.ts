@@ -91,7 +91,7 @@ export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
 export const WORKSPACE_EGRESS_NP_NAME = 'yaac-workspace-egress'
 /** NetworkPolicy locking the proxy's ingress (transparent ports = node only). */
 export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
-/** NetworkPolicy blocking the proxy from dialing the kind fronting's node port. */
+/** NetworkPolicy keeping the proxy off the kind fronting's node port, node NFS and metadata. */
 export const PROXY_EGRESS_NP_NAME = 'yaac-proxy-egress'
 /** NetworkPolicy locking workspace-pod ingress to the proxy's relay dials. */
 export const WORKSPACE_INGRESS_LOCK_NP_NAME = 'yaac-workspace-ingress-lock'
@@ -180,6 +180,13 @@ export const SERVER_FRONT_APP_NAME = 'yaac-server-front'
  * recreated.
  */
 export const SERVER_FRONT_PORT = 30787
+
+/**
+ * The NFS port. A shared-tier NFS server trusts whatever uid a client
+ * claims, so no yaac pod may dial it; when it runs on a node, the
+ * policies that admit node addresses leave this port out.
+ */
+export const NFS_PORT = 2049
 
 /**
  * The Tailscale operator's namespace (its chart default) and the labels it

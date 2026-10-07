@@ -67,12 +67,35 @@ In the Tailscale admin console:
    SecureString that only the host's role can read, not in its user data.
    Without a key, you log the host in yourself (below).
 
+## Remote state
+
+tofu keeps its state in an S3 bucket, so any machine with credentials for
+the account can update or destroy the cluster, not only the one that
+created it. Create the bucket once, before the first `tofu init` (new
+buckets block public access and encrypt at rest by default; versioning
+keeps every earlier state):
+
+```sh
+bucket=yaac-tofu-state-$(aws sts get-caller-identity --query Account --output text)
+aws s3api create-bucket --bucket "$bucket" --region us-west-2 \
+  --create-bucket-configuration LocationConstraint=us-west-2
+aws s3api put-bucket-versioning --bucket "$bucket" --versioning-configuration Status=Enabled
+```
+
+Then copy `backend.hcl.example` to `backend.hcl` (gitignored) with that
+bucket and region. Another machine needs `terraform.tfvars`, `backend.hcl`
+and AWS credentials to take over. `terraform.tfvars` holds the Tailscale
+secrets; keep it in a password manager, not in git. Your address must also
+be in `api_public_access_cidrs`, since tofu's helm and kubernetes providers
+call the EKS API from there.
+
 ## Bring it up
 
 ```sh
 cd infra/aws-eks
 cp terraform.tfvars.example terraform.tfvars   # fill in the Tailscale values
-tofu init
+cp backend.hcl.example backend.hcl             # see "Remote state"
+tofu init -backend-config=backend.hcl
 tofu apply                                     # about 20 minutes
 ```
 

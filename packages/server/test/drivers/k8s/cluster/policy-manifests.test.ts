@@ -10,7 +10,7 @@ import {
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
-  egressAllButServerFront,
+  wideEgress,
 } from '#drivers/k8s/cluster'
 import {
   EGRESS_WORLD_DENY_NAME,
@@ -162,30 +162,35 @@ describe('buildServerFrontIngressNpManifest', () => {
   })
 })
 
-describe('egressAllButServerFront', () => {
+describe('wideEgress', () => {
   // A builder RUN step or proxy upstream reaching the kind fronting's node
-  // port would reach the server as if it were the node. So node addresses
-  // are allowed on every port except that one.
-  const rules = egressAllButServerFront(['10.89.0.2/32', '192.168.1.1/32']) as Array<{
+  // port would reach the server as if it were the node, and one reaching a
+  // node-hosted NFS export or the metadata service could read what only
+  // nodes may. Everything else stays open.
+  const rules = wideEgress(['10.89.0.2/32', '192.168.1.1/32']) as Array<{
     to: Array<{ ipBlock: { cidr: string; except?: string[] } }>
     ports?: Array<{ protocol: string; port: number; endPort: number }>
   }>
 
-  it('reaches everything off the nodes, on every port', () => {
+  it('reaches everything off the nodes but the metadata service, on every port', () => {
     const [world] = rules
     expect(world.ports).toBeUndefined()
-    expect(world.to).toContainEqual({ ipBlock: { cidr: '0.0.0.0/0', except: ['10.89.0.2/32', '192.168.1.1/32'] } })
+    expect(world.to).toContainEqual({
+      ipBlock: { cidr: '0.0.0.0/0', except: ['10.89.0.2/32', '192.168.1.1/32', '169.254.169.254/32'] },
+    })
   })
 
-  it('reaches the nodes on every port but the fronting\'s', () => {
+  it('reaches the nodes on every port but the fronting\'s and NFS', () => {
     const [, nodes] = rules
     expect(nodes.to.map((p) => p.ipBlock.cidr)).toEqual(['10.89.0.2/32', '192.168.1.1/32'])
-    const tcp = (nodes.ports ?? []).filter((p) => p.protocol === 'TCP')
-    const covers = (port: number): boolean => tcp.some((p) => p.port <= port && port <= p.endPort)
-    expect(covers(SERVER_FRONT_PORT)).toBe(false)
-    for (const port of [1, 22, 10250, SERVER_FRONT_PORT - 1, SERVER_FRONT_PORT + 1, 65535]) {
-      expect(covers(port), String(port)).toBe(true)
+    const covers = (protocol: string, port: number): boolean => (nodes.ports ?? [])
+      .some((p) => p.protocol === protocol && p.port <= port && port <= p.endPort)
+    for (const [protocol, port] of [['TCP', SERVER_FRONT_PORT], ['TCP', 2049], ['UDP', 2049]] as const) {
+      expect(covers(protocol, port), `${protocol} ${port}`).toBe(false)
     }
-    expect(nodes.ports).toContainEqual({ protocol: 'UDP', port: 1, endPort: 65535 })
+    for (const port of [1, 22, 2048, 2050, 10250, SERVER_FRONT_PORT - 1, SERVER_FRONT_PORT + 1, 65535]) {
+      expect(covers('TCP', port), String(port)).toBe(true)
+    }
+    for (const port of [1, 53, 2048, 2050, 65535]) expect(covers('UDP', port), String(port)).toBe(true)
   })
 })

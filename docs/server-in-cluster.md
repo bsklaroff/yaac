@@ -214,8 +214,8 @@ comes from the node. A pod that reached `<node>:<that port>` would therefore
 reach the server as the node and, with a loopback `Host`, be its owner.
 Workspace pods cannot: their egress reaches node addresses only on the netd
 listener range. The two kinds of pod that may dial node addresses carry
-egress policies that allow every node port except that one
-(`egressAllButServerFront`):
+egress policies that allow every node port except that one and NFS, and
+every address but the metadata service (`wideEgress`):
 
 - builder pods, which run `RUN` steps from agent-editable Dockerfiles, get
   it with each build;

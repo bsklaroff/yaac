@@ -1,0 +1,5 @@
+# Copy to backend.hcl (gitignored), fill in, and run
+# `tofu init -backend-config=backend.hcl`.
+
+bucket = "yaac-tofu-state-<account id>"
+region = "us-west-2"

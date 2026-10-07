@@ -1,0 +1,27 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+
+hcloud_token = "..."
+
+# Encrypts the state before it goes to the bucket (README.md "Remote state").
+# At least 16 characters; without it the state cannot be read.
+state_passphrase = "..."
+
+# tofu configures the control node over ssh, through your ssh-agent.
+ssh_public_key   = "ssh-ed25519 AAAA... you@laptop"
+ssh_source_cidrs = ["203.0.113.7/32"]
+
+tailscale_oauth_client_id     = "k..."
+tailscale_oauth_client_secret = "tskey-client-..."
+
+# Optional: a one-off, user-owned (untagged) auth key that joins the control
+# node to your tailnet. Leave it out to run `tailscale up` yourself.
+# tailscale_auth_key = "tskey-auth-..."
+
+# location            = "fsn1"
+# control_server_type = "cx43"
+
+# Always-on workers, by name.
+# manual_workers = { w1 = "cx43", w2 = "cx43" }
+
+# Autoscaled pools. [] turns the autoscaler off.
+# autoscale_pools = [{ name = "workspaces", server_type = "cx43", max = 3 }]

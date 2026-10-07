@@ -5,6 +5,7 @@ import {
   LABEL_WORKSPACE_ID,
   NETD_LISTENER_PORT_BASE,
   NETD_LISTENER_PORT_END,
+  NFS_PORT,
   POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_EGRESS_NP_NAME,
@@ -159,33 +160,59 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
 }
 
 /**
- * Egress for pods that may dial anything except the kind fronting's node
- * port: builder pods (running agent-editable Dockerfiles) and the proxy.
- * That forwarder's dial into the server comes from the node, which the
- * server's ingress admits, and a loopback-`Host` request arriving there is
- * treated as the owner (docs/remote-hosting.md). So pods must be stopped on
- * the way out.
+ * The cloud metadata service, at the same link-local address on every
+ * major provider. On Hetzner it serves a node's user data, which holds the
+ * cluster join token, to any pod that asks, with no hop limit. Only this
+ * address: NodeLocal DNSCache listens elsewhere in 169.254/16.
  */
-export function egressAllButServerFront(nodeCidrs: string[]): Array<Record<string, unknown>> {
+const METADATA_CIDR = '169.254.169.254/32'
+
+/** Every port in 1..65535 but `excluded`, as NetworkPolicy port ranges. */
+function portsExcept(protocol: 'TCP' | 'UDP', excluded: number[]): Array<Record<string, unknown>> {
+  const ranges: Array<Record<string, unknown>> = []
+  let start = 1
+  for (const port of [...excluded].sort((a, b) => a - b)) {
+    if (port > start) ranges.push({ protocol, port: start, endPort: port - 1 })
+    start = port + 1
+  }
+  ranges.push({ protocol, port: start, endPort: 65535 })
+  return ranges
+}
+
+/**
+ * Egress for pods that may dial almost anything: builder pods (running
+ * agent-editable Dockerfiles) and the proxy. Three things are cut out:
+ *  - the kind fronting's node port. That forwarder's dial into the server
+ *    comes from the node, which the server's ingress admits, and a
+ *    loopback-`Host` request arriving there is treated as the owner
+ *    (docs/remote-hosting.md);
+ *  - NFS on node addresses, for a shared tier served from a node
+ *    (infra/hetzner-k3s). Traffic to another node is SNATed to the sending
+ *    node's address, so the server's export list cannot tell such a pod
+ *    from a node's kernel mount;
+ *  - the metadata service.
+ */
+export function wideEgress(nodeCidrs: string[]): Array<Record<string, unknown>> {
   return [
-    { to: [{ ipBlock: { cidr: '0.0.0.0/0', except: nodeCidrs } }, { ipBlock: { cidr: '::/0' } }] },
+    {
+      to: [
+        { ipBlock: { cidr: '0.0.0.0/0', except: [...nodeCidrs, METADATA_CIDR] } },
+        { ipBlock: { cidr: '::/0' } },
+      ],
+    },
     {
       to: ipBlocks(nodeCidrs),
-      ports: [
-        { protocol: 'TCP', port: 1, endPort: SERVER_FRONT_PORT - 1 },
-        { protocol: 'TCP', port: SERVER_FRONT_PORT + 1, endPort: 65535 },
-        { protocol: 'UDP', port: 1, endPort: 65535 },
-      ],
+      ports: [...portsExcept('TCP', [NFS_PORT, SERVER_FRONT_PORT]), ...portsExcept('UDP', [NFS_PORT])],
     },
   ]
 }
 
-/** Proxy EGRESS: its upstream dials, anywhere but the fronting's node port. */
+/** Proxy EGRESS: its upstream dials, anywhere `wideEgress` allows. */
 export function buildProxyEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
   return np(PROXY_EGRESS_NP_NAME, k8sNamespace(), {
     podSelector: { matchLabels: { app: PROXY_APP_NAME } },
     policyTypes: ['Egress'],
-    egress: egressAllButServerFront(nodeCidrs),
+    egress: wideEgress(nodeCidrs),
   })
 }
 
@@ -196,7 +223,7 @@ export function buildProxyEgressNpManifest(nodeCidrs: string[]): Record<string, 
  *
  * Essential for security: the server binds `0.0.0.0` and treats a
  * loopback-Host request as its owner (docs/remote-hosting.md), so these
- * policies, with the workspace egress policy and `egressAllButServerFront`,
+ * policies, with the workspace egress policy and `wideEgress`,
  * keep untrusted pods out. `yaac cluster check` verifies this. The proxy is
  * admitted only to SERVER_MAMA_PORT, never to the API: it forwards workspace
  * traffic, so a workspace could otherwise reach the API through it.
