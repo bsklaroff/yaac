@@ -53,10 +53,10 @@ export { claimDraft, discardDraftWorkspace, listDraftWorkspaces, saveDraftWorksp
 export { removeProject } from './project-teardown'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export {
+  dismissProvisioning,
   inFlightWorkspaceIds,
   listProvisioning,
   registerProvisioning,
-  removeProvisioning,
   runProvisioned,
 } from './provisioning'
 export {

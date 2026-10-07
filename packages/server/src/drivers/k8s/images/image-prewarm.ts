@@ -11,7 +11,7 @@
 import { ensureImage } from './build-coordinator'
 import { serverLog } from '#log'
 import { env, testEnv } from '@yaac/shared/env'
-import type { YaacConfig } from '@yaac/shared/types'
+import type { ProjectReaders } from '#drivers/contract'
 import {
   forgetImageBuild,
   getImageBuild,
@@ -33,20 +33,22 @@ const prewarming = new Set<string>()
  * warm this is a few registry HEADs, so a pruned image is rebuilt on the
  * next sweep (or, for a yaac-shipped layer, reports `yaac cluster install`).
  *
- * `config` has no default: a missing one would silently build the default
- * chain, dropping the nestable layer for a `nestedContainers` project.
+ * An unreadable config rejects rather than defaulting: a default would
+ * silently build the default chain, dropping the nestable layer for a
+ * `nestedContainers` project.
  */
 export async function prewarmProjectImage(
   projectId: string,
-  config: YaacConfig,
+  projects: ProjectReaders,
 ): Promise<void> {
-  const nestedContainers = config.nestedContainers === true
+  const nestedContainers = (await projects.projectConfig(projectId))?.nestedContainers === true
+  const owner = await projects.projectOwner(projectId)
   const prefix = testEnv.imagePrefix ?? 'yaac'
 
-  const { layers } = await resolveImageChain(projectId, prefix, nestedContainers)
+  const { layers } = await resolveImageChain(projectId, owner, prefix, nestedContainers)
   if (hasBlockingFailure(layers.map((l) => l.tag), FAILED_RETRY_MS)) return
 
-  await ensureImage(projectId, testEnv.imagePrefix, false, nestedContainers, {
+  await ensureImage(projectId, owner, testEnv.imagePrefix, false, nestedContainers, {
     reason: 'prewarm',
   })
 }
@@ -57,7 +59,7 @@ export async function prewarmProjectImage(
  */
 export function reconcileImagePrewarm(
   projectIds: string[],
-  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
+  projects: ProjectReaders,
 ): void {
   if (!env.imagePrewarm) return
   if (testEnv.requirePrebuiltImages) return
@@ -65,8 +67,7 @@ export function reconcileImagePrewarm(
   for (const projectId of projectIds) {
     if (prewarming.has(projectId)) continue
     prewarming.add(projectId)
-    void projectConfig(projectId)
-      .then((config) => prewarmProjectImage(projectId, config ?? {}))
+    void prewarmProjectImage(projectId, projects)
       .catch((err: unknown) => {
         serverLog(`[image-prewarm] ${projectId}: ${String(err)}`)
       })
@@ -87,15 +88,14 @@ export function _resetImagePrewarmForTests(): void {
  */
 export function retryImageBuild(
   id: string,
-  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
+  projects: ProjectReaders,
 ): boolean {
   const entry = getImageBuild(id)
   if (!entry || entry.status === 'running') return false
   const projectIds = imageBuildProjectIds(id)
   forgetImageBuild(id)
   for (const projectId of projectIds) {
-    void projectConfig(projectId)
-      .then((config) => prewarmProjectImage(projectId, config ?? {}))
+    void prewarmProjectImage(projectId, projects)
       .catch((err: unknown) => serverLog(`[image-retry] ${projectId}: ${String(err)}`))
   }
   return true

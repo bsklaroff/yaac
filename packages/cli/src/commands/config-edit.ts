@@ -102,7 +102,7 @@ export async function configEditDockerfile(project: string): Promise<void> {
     : 'Saved Dockerfile.yaac — it applies to the next workspace created.')
 }
 
-/** `yaac config edit-user-dockerfile`: the global Dockerfile.user. */
+/** `yaac config edit-user-dockerfile`: the caller's own Dockerfile.user. */
 export async function configEditUserDockerfile(): Promise<void> {
   const { content } = await api.config['user-dockerfile'].$get()
   const edit = await editInScratch('Dockerfile.user', content)

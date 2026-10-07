@@ -58,6 +58,8 @@ import {
  */
 
 const PROJECT_ID = crypto.randomUUID()
+/** The project's owner, whose Dockerfile.user tops its chain. */
+const OWNER = crypto.randomUUID()
 
 // Per-run nonce in every RUN step. The registry persists across runs, so
 // without it the tags would already exist and the builds would be skipped.
@@ -349,12 +351,12 @@ describe('trust-split builds', () => {
   it('builds untrusted layers in builder pods with cross-pod step cache', async () => {
     // First build: a new project layer.
     await writeProjectDockerfile(DOCKERFILE_V1)
-    const chain1 = await resolveImageChain(PROJECT_ID, TEST_IMAGE_PREFIX)
+    const chain1 = await resolveImageChain(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX)
     const projectTag1 = chain1.layers.find((l) => l.name === 'project')?.tag
     expect(projectTag1).toBeTruthy()
 
     // As the server's SA, the only identity the guard admits.
-    const final1 = await asServerIdentity(() => ensureImage(PROJECT_ID, TEST_IMAGE_PREFIX))
+    const final1 = await asServerIdentity(() => ensureImage(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX))
     expect(final1).toBe(projectTag1)
     // The image is in the registry only, not the host store.
     expect(await registryHasTag(projectTag1!)).toBe(true)
@@ -365,18 +367,18 @@ describe('trust-split builds', () => {
     // builder pod must reuse the unchanged steps from the registry cache,
     // then build the user layer.
     await writeProjectDockerfile(DOCKERFILE_V2)
-    await fs.mkdir(userBuildDir(), { recursive: true })
-    await fs.writeFile(path.join(userBuildDir(), 'Dockerfile.user'), DOCKERFILE_USER)
+    await fs.mkdir(userBuildDir(OWNER), { recursive: true })
+    await fs.writeFile(path.join(userBuildDir(OWNER), 'Dockerfile.user'), DOCKERFILE_USER)
     // The COPY source for Dockerfile.user.
-    await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`copied-${NONCE}\n`))
-    const chain2 = await resolveImageChain(PROJECT_ID, TEST_IMAGE_PREFIX)
+    await writeBuildFile(userBuildDir(OWNER), 'nvim/note.txt', Buffer.from(`copied-${NONCE}\n`))
+    const chain2 = await resolveImageChain(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX)
     const projectTag2 = chain2.layers.find((l) => l.name === 'project')?.tag
     const userTag = chain2.layers.find((l) => l.name === 'user')?.tag
     expect(projectTag2).toBeTruthy()
     expect(projectTag2).not.toBe(projectTag1)
     expect(userTag).toBeTruthy()
 
-    const final2 = await asServerIdentity(() => ensureImage(PROJECT_ID, TEST_IMAGE_PREFIX))
+    const final2 = await asServerIdentity(() => ensureImage(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX))
     expect(final2).toBe(userTag)
     expect(await registryHasTag(projectTag2!)).toBe(true)
     expect(await registryHasTag(userTag!)).toBe(true)
@@ -411,8 +413,8 @@ describe('trust-split builds', () => {
 
     // Support files are part of the content hash, so an edit re-tags the
     // user layer (checked by resolution alone).
-    await writeBuildFile(userBuildDir(), 'nvim/note.txt', Buffer.from(`edited-${NONCE}\n`))
-    const chain3 = await resolveImageChain(PROJECT_ID, TEST_IMAGE_PREFIX)
+    await writeBuildFile(userBuildDir(OWNER), 'nvim/note.txt', Buffer.from(`edited-${NONCE}\n`))
+    const chain3 = await resolveImageChain(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX)
     const userTag3 = chain3.layers.find((l) => l.name === 'user')?.tag
     expect(userTag3).toBeTruthy()
     expect(userTag3).not.toBe(userTag)

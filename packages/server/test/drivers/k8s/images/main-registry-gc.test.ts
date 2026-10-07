@@ -55,6 +55,8 @@ import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const DAY_MS = 24 * 60 * 60_000
 const DEMO = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+/** The projects' owner, whose Dockerfile.user tops each chain. */
+const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
 const USER = `yaac-user-${DEMO}`
 const CACHE = `yaac-buildcache-${DEMO}`
 const hex = (c: string): string => c.repeat(16)
@@ -163,7 +165,7 @@ function stage(f: Fixture = {}): void {
 
 /** Drive one reconcile and wait out the detached pass it starts. */
 async function runPass(): Promise<void> {
-  await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
+  await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER) })
   await _mainRegistryGcSettledForTests()
 }
 
@@ -193,7 +195,7 @@ afterEach(async () => {
 
 describe('reconcileMainRegistryGc', () => {
   it('retires what nothing live names, keeps every live and recent tag, then collects', async () => {
-    const { layers } = await resolveImageChain(DEMO, 'yaac')
+    const { layers } = await resolveImageChain(DEMO, OWNER, 'yaac')
     const [wantedBase, wantedTools] = layers.map((l) => l.tag)
     for (const [tag, age] of [
       // A project image: one generation a running pod names, two newest kept.
@@ -283,8 +285,8 @@ describe('reconcileMainRegistryGc', () => {
     ] as const) await pushTag(tag, age)
     // A Dockerfile.user mid-edit makes every project's chain fail to
     // resolve, so no generation is known to be live.
-    await fs.mkdir(userBuildDir(), { recursive: true })
-    await fs.writeFile(path.join(userBuildDir(), USER_DOCKERFILE), 'FROM ubuntu\n')
+    await fs.mkdir(userBuildDir(OWNER), { recursive: true })
+    await fs.writeFile(path.join(userBuildDir(OWNER), USER_DOCKERFILE), 'FROM ubuntu\n')
     stage()
 
     await runPass()
@@ -412,10 +414,10 @@ describe('reconcileMainRegistryGc', () => {
 
     // Reconcile steps run in sequence, so this returns while the collect
     // runs, and a tick meanwhile does not start a second pass.
-    await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
+    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER) })
     await reachedCollect
     const before = execs.length
-    await reconcileMainRegistryGc([DEMO], () => Promise.resolve({}))
+    await reconcileMainRegistryGc([DEMO], { projectConfig: () => Promise.resolve({}), projectOwner: () => Promise.resolve(OWNER) })
     expect(execs).toHaveLength(before)
 
     release()

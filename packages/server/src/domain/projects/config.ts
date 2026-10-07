@@ -3,7 +3,6 @@ import path from 'node:path'
 import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
-import { workspaceDriver } from '#drivers/driver'
 import { isInfraPort } from '#lib/port-policy'
 
 const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
@@ -253,17 +252,4 @@ export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | 
 
 export async function resolveProjectConfig(projectId: string): Promise<YaacConfig | null> {
   return loadProjectConfig(projectConfigDir(projectId))
-}
-
-/**
- * Forget a finished image build and rerun it. `false` when the id is unknown
- * or still running. Lives in domain because a rebuild needs each owning
- * project's config, which the runtime may not read itself. (`null` from the
- * store and `undefined` for the contract both mean "no config".)
- */
-export function retryImageBuild(id: string): boolean {
-  return workspaceDriver().retryImageBuild(
-    id,
-    (projectId) => resolveProjectConfig(projectId).then((cfg) => cfg ?? undefined),
-  )
 }

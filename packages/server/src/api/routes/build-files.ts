@@ -2,12 +2,14 @@ import { Hono, type Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#domain/projects'
-import { requireDriverFeature } from '#http'
+import { requireDriverFeature, type IdentityEnv } from '#http'
+import type { AccessLevel } from '#domain/access'
 
 /**
  * Routes over one build dir's support files, mounted under
- * `/project/:projectId/build-files` and `/config/user-build-files`; `resolveRoot`
- * gives the build dir per request.
+ * `/project/:projectId/build-files` and `/config/user-build-files`.
+ * `resolveRoot` gives the build dir per request, and refuses a caller who
+ * may not act on it at `level`: reads are `reader`, writes `owner`.
  *
  * Writes take JSON (`content` for text, `contentBase64` for uploads) rather
  * than multipart, so uploads use the same typed RPC client, validator and
@@ -17,18 +19,20 @@ import { requireDriverFeature } from '#http'
  * The sub-app refuses on a runtime that builds no images, since nothing
  * would read these files.
  */
-export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
-  return new Hono()
+export function buildFilesApp(
+  resolveRoot: (c: Context<IdentityEnv>, level: AccessLevel) => Promise<string>,
+) {
+  return new Hono<IdentityEnv>()
     .use('*', async (_c, next) => {
       requireDriverFeature('images')
       await next()
     })
-    .get('/', async (c) => c.json({ files: await listBuildFiles(await resolveRoot(c)) }))
+    .get('/', async (c) => c.json({ files: await listBuildFiles(await resolveRoot(c, 'reader')) }))
     .get(
       '/file',
       zv('query', z.object({ path: z.string().min(1) })),
       async (c) =>
-        c.json(await readBuildFile(await resolveRoot(c), c.req.valid('query').path)),
+        c.json(await readBuildFile(await resolveRoot(c, 'reader'), c.req.valid('query').path)),
     )
     .put(
       '/file',
@@ -45,7 +49,7 @@ export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
         const data = content !== undefined
           ? Buffer.from(content, 'utf8')
           : Buffer.from(contentBase64!, 'base64')
-        return c.json(await writeBuildFile(await resolveRoot(c), rel, data))
+        return c.json(await writeBuildFile(await resolveRoot(c, 'owner'), rel, data))
       },
     )
     .post(
@@ -53,14 +57,14 @@ export function buildFilesApp(resolveRoot: (c: Context) => Promise<string>) {
       zv('json', z.object({ from: z.string().min(1), to: z.string().min(1) })),
       async (c) => {
         const { from, to } = c.req.valid('json')
-        return c.json(await renameBuildFile(await resolveRoot(c), from, to))
+        return c.json(await renameBuildFile(await resolveRoot(c, 'owner'), from, to))
       },
     )
     .delete(
       '/file',
       zv('query', z.object({ path: z.string().min(1) })),
       async (c) => {
-        await deleteBuildFile(await resolveRoot(c), c.req.valid('query').path)
+        await deleteBuildFile(await resolveRoot(c, 'owner'), c.req.valid('query').path)
         return c.body(null, 204)
       },
     )

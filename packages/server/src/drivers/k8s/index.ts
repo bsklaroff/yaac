@@ -96,7 +96,7 @@ export function createK8sDriver(): WorkspaceDriver {
     listImageBuilds: () => listImageBuilds(),
     imageBuildLog: (id) => getImageBuildLog(id),
     dismissImageBuild: (id) => dismissImageBuild(id),
-    retryImageBuild: (id, projectConfig) => retryImageBuild(id, projectConfig),
+    retryImageBuild: (id, projects) => retryImageBuild(id, projects),
 
     exec: podExec,
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),

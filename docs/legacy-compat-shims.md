@@ -367,3 +367,26 @@ user's credentials under `install` rather than its user id, and
   under it.
 - **Order.** None.
 
+## Moving the user build dir to the built-in user
+
+`Dockerfile.user` and its build files lived in one install-wide dir,
+`server-local/build/`; each user now has `server-local/users/<user id>/build/`.
+`moveLegacyUserBuildDir` in `packages/server/src/domain/projects/dockerfile.ts`
+runs on every server start, before the access mode is settled (the server
+admits no request until then), and renames the old dir to the built-in
+user's, since that user owned every project the old file built for. When
+the built-in user already has a dir, which only a downgrade and re-upgrade
+produces, the old dir is stale: it is left in place, logged on each start,
+and must be deleted by hand.
+
+- **What it reads.** Whether `server-local/build/` and the built-in user's
+  `server-local/users/00000000-0000-0000-0000-000000000000/build/` exist.
+- **What breaks silently if it goes too early.** An older install's
+  `Dockerfile.user` and its support files stop applying: the next image
+  build drops the user layer without an error, and the settings page shows
+  an empty `Dockerfile.user` while the old file sits where nothing reads it.
+- **When it is safe to remove.** Once every install has started a server
+  with this change: no data dir's server-local tier has a `build/` entry
+  (`ls ~/.yaac/server-local`, or the server-local claim under the
+  in-cluster server), other than a stale one beside the built-in user's
+  dir, which the start log names and which can be deleted.

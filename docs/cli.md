@@ -76,7 +76,7 @@ yaac forward [workspace-id]     Bind a workspace's forwarded ports here (all
 yaac config
   edit <project>                Edit the project's yaac-config.json in $EDITOR
   edit-dockerfile <project>     Edit the project's Dockerfile.yaac
-  edit-user-dockerfile          Edit the global Dockerfile.user
+  edit-user-dockerfile          Edit your Dockerfile.user
   git-identity                  Show the git identity workspaces commit as
     --name <name> --email <email>  Set it
 

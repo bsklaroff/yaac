@@ -22,7 +22,7 @@ import { buildRegistryRetentionScript, mainRegistryExec } from '#drivers/k8s/clu
 import { listObjects } from '#drivers/k8s/substrate'
 import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { testEnv } from '@yaac/shared/env'
-import type { YaacConfig } from '@yaac/shared/types'
+import type { ProjectReaders } from '#drivers/contract'
 import { serverLog } from '#log'
 import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
@@ -232,15 +232,15 @@ async function readInUse(): Promise<Set<string>> {
  */
 async function readLiveImages(
   projectIds: string[],
-  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
+  projects: ProjectReaders,
 ): Promise<LiveImages> {
   const inUse = await readInUse()
   let wanted: Set<string> | null = new Set<string>()
   const prefix = testEnv.imagePrefix ?? 'yaac'
   for (const projectId of projectIds) {
     try {
-      const nested = (await projectConfig(projectId))?.nestedContainers === true
-      const { layers } = await resolveImageChain(projectId, prefix, nested)
+      const nested = (await projects.projectConfig(projectId))?.nestedContainers === true
+      const { layers } = await resolveImageChain(projectId, await projects.projectOwner(projectId), prefix, nested)
       for (const { tag } of layers) wanted.add(tag)
     } catch (err) {
       serverLog(`[main-registry-gc] ${projectId}: cannot resolve its image chain, `
@@ -318,11 +318,11 @@ export function _mainRegistryGcSettledForTests(): Promise<void> {
  */
 export function reconcileMainRegistryGc(
   projectIds: string[],
-  projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
+  projects: ProjectReaders,
 ): Promise<void> {
   if (testEnv.k8sNamespace !== 'yaac' || inFlightPass) return Promise.resolve()
   inFlightPass = (async () => {
-    const live = await readLiveImages(projectIds, projectConfig)
+    const live = await readLiveImages(projectIds, projects)
     const { retired, busy, collected } = await gcMainRegistry(live)
     if (busy) {
       serverLog('[main-registry-gc] registry has pushes in flight, leaving the collect for later')

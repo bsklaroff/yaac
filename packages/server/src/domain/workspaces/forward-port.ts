@@ -3,7 +3,7 @@ import { addPortForwardToProjectConfig } from '#domain/projects'
 import { resolveWorkspaceContainer } from './resolve'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
-import { authorizeProject, type Actor } from '#domain/access'
+import type { Actor } from '#domain/access'
 
 /**
  * Forward a port a workspace is listening on but that is not yet forwarded
@@ -21,8 +21,7 @@ export async function forwardWorkspacePort(
   opts: { persist: boolean },
 ): Promise<PortMapping> {
   const runtime = workspaceDriver()
-  const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true })
-  await authorizeProject(principal, target.projectId)
+  const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true, owner: principal })
   if (!(await runtime.unforwardedPorts(target.workspaceId)).includes(containerPort)) {
     throw new ServerError(
       'CONFLICT',
@@ -47,8 +46,7 @@ export async function dismissWorkspacePort(
   idOrName: string,
   containerPort: number,
 ): Promise<void> {
-  const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true })
-  await authorizeProject(principal, target.projectId)
+  const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true, owner: principal })
   if (!workspaceDriver().dismissPort(target.workspaceId, containerPort)) {
     throw new ServerError(
       'CONFLICT',

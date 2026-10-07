@@ -33,7 +33,7 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // prewarm pool so a spare's create joins the builds already running.
       // Every resync: a warm sweep is a registry HEAD per layer per project.
       { name: 'image-prewarm', triggers: [], run: async (ctx) => {
-        reconcileImagePrewarm(await ctx.projectIds(), ctx.projectConfig)
+        reconcileImagePrewarm(await ctx.projectIds(), ctx)
       } },
     ],
     maintenance: [
@@ -60,7 +60,7 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // generations, collect their blobs, then drop the nodes' copies of
       // what the registry no longer holds. Skips while anything is pushing.
       { name: 'main-registry-gc', triggers: [], every: 6 * 60 * 60_000, run: async (ctx) =>
-        reconcileMainRegistryGc(await ctx.projectIds(), ctx.projectConfig) },
+        reconcileMainRegistryGc(await ctx.projectIds(), ctx) },
     ],
   }
 }

@@ -12,6 +12,7 @@
  * rather than shown failed.
  */
 import { notifyWorkspaceListChanged } from '#notify'
+import { authorizeProject, type Actor } from '#domain/access'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProvisioningWorkspaceEntry } from '@yaac/shared/types'
@@ -256,6 +257,17 @@ export function throwIfProvisionStopped(workspaceId: string): void {
 /** Drop an entry (resolved or dismissed); notifies only if one was removed. */
 export function removeProvisioning(workspaceId: string): void {
   if (entries.delete(workspaceId)) notifyWorkspaceListChanged()
+}
+
+/**
+ * The user's "dismiss" on a failed entry; only its project's owner may.
+ * Idempotent for an id with no entry.
+ */
+export async function dismissProvisioning(principal: Actor, workspaceId: string): Promise<void> {
+  const e = entries.get(workspaceId)
+  if (!e) return
+  await authorizeProject(principal, e.projectId)
+  removeProvisioning(workspaceId)
 }
 
 /**

@@ -85,9 +85,9 @@ agent CLIs. Two files customize it:
   - **Standalone:** any other `FROM` replaces the default image entirely. You
     must then install the agent CLIs yourself and set up the user as
     [arbitrary-uid-images.md](arbitrary-uid-images.md) describes.
-- **`Dockerfile.user`** (global, Settings → User Dockerfile or
-  `yaac config edit-user-dockerfile`): applied last, on top of every
-  project's image, for things like editor or shell config. It must use the
+- **`Dockerfile.user`** (yours, Settings → User Dockerfile or
+  `yaac config edit-user-dockerfile`): applied last, on top of the image of
+  every project you own, for things like editor or shell config. It must use the
   same `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}` header.
 
 Build order: default, then the agent CLI layer (`Dockerfile.tools`), then

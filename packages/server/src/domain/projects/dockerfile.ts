@@ -7,17 +7,20 @@ import {
   projectBuildDir,
   userBuildDir,
 } from '#lib/build-dirs'
+import { serverLocalPath } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { authorizeProject, type Actor } from '#domain/access'
+import { BUILT_IN_USER_ID } from '#db'
+import { serverLog } from '#log'
 
 /** Per-project layered/standalone Dockerfile (config/build/Dockerfile.yaac). */
 function projectDockerfilePath(projectId: string): string {
   return path.join(projectBuildDir(projectId), PROJECT_DOCKERFILE)
 }
 
-/** Global user Dockerfile applied as the top layer of every project image. */
-function userDockerfilePath(): string {
-  return path.join(userBuildDir(), USER_DOCKERFILE)
+/** A user's Dockerfile, the top layer of every project image they own. */
+function userDockerfilePath(userId: string): string {
+  return path.join(userBuildDir(userId), USER_DOCKERFILE)
 }
 
 async function readFileOrEmpty(filePath: string): Promise<string> {
@@ -52,18 +55,18 @@ export async function writeProjectDockerfile(principal: Actor, projectId: string
   await fs.writeFile(filePath, content)
 }
 
-/** Read the global user Dockerfile. Returns '' when unset. */
-export async function readUserDockerfile(): Promise<string> {
-  return readFileOrEmpty(userDockerfilePath())
+/** Read a user's Dockerfile.user. Returns '' when unset. */
+export async function readUserDockerfile(userId: string): Promise<string> {
+  return readFileOrEmpty(userDockerfilePath(userId))
 }
 
 /**
- * Write the global user Dockerfile; whitespace-only content removes it. It
+ * Write a user's Dockerfile.user; whitespace-only content removes it. It
  * always builds on top of the project image, so it must be layered (`ARG
  * BASE_IMAGE` + `FROM ${BASE_IMAGE}`), as the image builder also checks.
  */
-export async function writeUserDockerfile(content: string): Promise<void> {
-  const filePath = userDockerfilePath()
+export async function writeUserDockerfile(userId: string, content: string): Promise<void> {
+  const filePath = userDockerfilePath(userId)
   if (content.trim().length === 0) {
     await fs.rm(filePath, { force: true })
     return
@@ -77,4 +80,27 @@ export async function writeUserDockerfile(content: string): Promise<void> {
   }
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await fs.writeFile(filePath, content)
+}
+
+/**
+ * Give the install-wide `server-local/build/` of a single-user install to
+ * the built-in user, whose projects it built (docs/legacy-compat-shims.md
+ * "Moving the user build dir to the built-in user"). Run on every start,
+ * before the server admits requests; a no-op once moved.
+ */
+export async function moveLegacyUserBuildDir(): Promise<void> {
+  const legacy = serverLocalPath('build')
+  const target = userBuildDir(BUILT_IN_USER_ID)
+  if (!await exists(legacy)) return
+  if (await exists(target)) {
+    serverLog(`[server] both ${legacy} and ${target} exist; ${target} is used, `
+      + `and ${legacy} is stale and can be deleted`)
+    return
+  }
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await fs.rename(legacy, target)
+}
+
+async function exists(p: string): Promise<boolean> {
+  return fs.access(p).then(() => true, () => false)
 }

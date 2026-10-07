@@ -9,7 +9,7 @@ import { projectConfigDir, serverLocalPath } from '@yaac/shared/project-paths'
 
 /** Basename of the per-project Dockerfile inside its build dir. */
 export const PROJECT_DOCKERFILE = 'Dockerfile.yaac'
-/** Basename of the global user Dockerfile inside its build dir. */
+/** Basename of a user's Dockerfile inside their build dir. */
 export const USER_DOCKERFILE = 'Dockerfile.user'
 
 /**
@@ -23,10 +23,10 @@ export function projectBuildDir(projectId: string): string {
 }
 
 /**
- * Global user image build dir: the build context for Dockerfile.user, with
- * the same containment rule as `projectBuildDir`. Server-local; no pod
- * mounts it.
+ * One user's image build dir: the build context for their Dockerfile.user,
+ * which tops the image of every project they own. Same containment rule as
+ * `projectBuildDir`. Server-local; no pod mounts it.
  */
-export function userBuildDir(): string {
-  return serverLocalPath('build')
+export function userBuildDir(userId: string): string {
+  return serverLocalPath('users', userId, 'build')
 }

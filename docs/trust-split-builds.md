@@ -9,7 +9,9 @@ Dockerfile `RUN` steps execute arbitrary code, and two Dockerfiles in the
 image chain can be edited by a user or an agent:
 
 - `Dockerfile.yaac`, the per-project Dockerfile (layered or standalone);
-- `Dockerfile.user`, the per-user Dockerfile (`~/.yaac/Dockerfile.user`).
+- `Dockerfile.user`, each user's own Dockerfile
+  (`server-local/users/<user id>/build/`), which tops the image of every
+  project that user owns.
 
 A hostile step in either would get root-level code execution wherever it
 ran. The rest of the chain (`Dockerfile.default`, `Dockerfile.tools`,
@@ -36,7 +38,9 @@ the untrusted end of the chain.
 
 Untrusted layers go into repos named by the project's immutable id,
 `yaac-proj-<id>` and `yaac-user-<id>`, never next to the trusted chain or
-another project's repos. Ids are never reused, so a project added again
+another project's repos. A project has one owner, so `yaac-user-<id>` is
+always built from that owner's `Dockerfile.user`; two users' files never
+meet in one repo. Ids are never reused, so a project added again
 sees none of the old project's tags. The main registry's GC removes project
 repos whose id no live project holds (docs/image-gc.md).
 

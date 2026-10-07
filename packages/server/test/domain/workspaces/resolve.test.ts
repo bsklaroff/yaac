@@ -3,6 +3,8 @@ import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
+import { BUILT_IN_USER_ID } from '#db'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import {
   resolveWorkspace,
   resolveWorkspaceContainer,
@@ -93,6 +95,25 @@ describe('resolveWorkspaceContainer', () => {
       resolveWorkspaceContainer('abc123', { requireRunning: true }),
     ).rejects.toMatchObject({ code: 'CONFLICT' })
     expect(await resolveWorkspaceContainer('abc123')).toMatchObject({ state: 'pending' })
+  })
+
+  // A non-owner is refused alike whether or not the workspace runs, so the
+  // row answers before the substrate is asked.
+  it('refuses an actor who does not own the workspace\'s project', async () => {
+    await recordTestProject(PROJ)
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'abc123def456' })
+    const owner = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+    const teammate = { kind: 'tailnet', login: 'bob@example.com', name: 'bob', userId: OTHER } as const
+    find.mockRejectedValue(new ServerError('RUNTIME_UNAVAILABLE', 'connection refused'))
+    await expect(resolveWorkspaceContainer('abc123', { requireRunning: true, owner: teammate }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(find).not.toHaveBeenCalled()
+
+    // A unit with no row is checked once found.
+    find.mockResolvedValue(handle({ workspaceId: 'unrecorded' }))
+    await expect(resolveWorkspaceContainer('unrecorded', { exact: true, owner: teammate }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(await resolveWorkspaceContainer('unrecorded', { exact: true, owner })).toMatchObject({ projectId: PROJ })
   })
 
   // "Could not ask" must not become a NOT_FOUND the client would act on.

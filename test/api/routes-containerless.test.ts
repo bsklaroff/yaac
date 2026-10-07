@@ -4,8 +4,10 @@ import { buildApp } from '@yaac/server/main/server'
 import {
   ROUTE_MATRIX,
   assertMatrixCoversEveryRoute,
+  describeNonOwner,
   expectedFor,
   label,
+  requestRoute,
   type RouteCase,
 } from './route-matrix'
 
@@ -22,15 +24,7 @@ import {
 
 const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'matrix' })
 
-async function request(route: RouteCase): Promise<Response> {
-  const path = route.request ?? route.path
-  const init: RequestInit = { method: route.method }
-  if (route.body !== undefined) {
-    init.body = JSON.stringify(route.body)
-    init.headers = { 'Content-Type': 'application/json' }
-  }
-  return await app().request(path, init)
-}
+const request = (route: RouteCase): Promise<Response> => requestRoute(app(), route)
 
 describe('every route, containerless', () => {
   it('the matrix names every route the server registers', () => {
@@ -60,3 +54,5 @@ describe('every route, containerless', () => {
     })
   }
 })
+
+describeNonOwner('containerless')

@@ -12,6 +12,8 @@ import path from 'node:path'
 import { HASH_RE, setupStackingHarness } from '#test/drivers/k8s/image-engine/stacking-harness'
 
 const PROJECT = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+/** The projects' owner, whose Dockerfile.user tops each chain. */
+const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
 
 /** The layers `yaac cluster install` produces, by name. */
 const PREBUILT = new Set(['base', 'tools', 'nestable'])
@@ -21,26 +23,26 @@ describe('ensureImage', () => {
 
   /** Put every yaac-shipped layer of this project's chain in the registry. */
   async function stagePrebuilt(
-    resolveImageChain: (projectId: string, prefix: string, nested?: boolean) => Promise<{
+    resolveImageChain: (projectId: string, owner: string, prefix: string, nested?: boolean) => Promise<{
       layers: Array<{ name: string; tag: string }>
     }>,
     nested = false,
   ): Promise<void> {
-    const { layers } = await resolveImageChain(PROJECT, 'yaac', nested)
+    const { layers } = await resolveImageChain(PROJECT, OWNER, 'yaac', nested)
     h.stageRegistry(layers.filter((l) => PREBUILT.has(l.name)).map((l) => l.tag))
   }
 
   it('takes the yaac-shipped layers from the registry and builds only the rest', async () => {
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
-    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'users', OWNER, 'build'), { recursive: true })
     await fs.writeFile(
-      path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),
+      path.join(h.dataDir, 'server-local', 'users', OWNER, 'build', 'Dockerfile.user'),
       'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n',
     )
 
     const { ensureImage, resolveImageChain } = await h.load()
     await stagePrebuilt(resolveImageChain)
-    const result = await ensureImage(PROJECT)
+    const result = await ensureImage(PROJECT, OWNER)
 
     // base and tools are only looked up; the user layer builds in a
     // builder pod.
@@ -57,7 +59,7 @@ describe('ensureImage', () => {
 
     const { ensureImage, resolveImageChain } = await h.load()
     await stagePrebuilt(resolveImageChain)
-    const result = await ensureImage(PROJECT)
+    const result = await ensureImage(PROJECT, OWNER)
 
     expect(h.operations).toEqual([])
     expect(result).toMatch(new RegExp(`^yaac-tools:${HASH_RE}$`))
@@ -69,7 +71,7 @@ describe('ensureImage', () => {
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
 
     const { ensureImage } = await h.load()
-    await expect(ensureImage(PROJECT)).rejects.toThrow(/yaac cluster install/)
+    await expect(ensureImage(PROJECT, OWNER)).rejects.toThrow(/yaac cluster install/)
     expect(h.operations).toEqual([])
   })
 
@@ -84,7 +86,7 @@ describe('ensureImage', () => {
 
     const { ensureImage, resolveImageChain } = await h.load()
     await stagePrebuilt(resolveImageChain, true)
-    await ensureImage(PROJECT, undefined, false, true)
+    await ensureImage(PROJECT, OWNER, undefined, false, true)
 
     // The project layer builds on nestable, not tools, so the workspace
     // image carries the in-pod container engine.
@@ -107,7 +109,7 @@ describe('ensureImage', () => {
     )
 
     const { ensureImage } = await h.load()
-    const result = await ensureImage(PROJECT)
+    const result = await ensureImage(PROJECT, OWNER)
 
     expect(h.operations).toEqual([
       expect.stringMatching(new RegExp(`^build yaac-proj-${PROJECT}:${HASH_RE}$`)),
@@ -117,14 +119,14 @@ describe('ensureImage', () => {
 
   it('rejects Dockerfile.user without ARG BASE_IMAGE', async () => {
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
-    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'users', OWNER, 'build'), { recursive: true })
     await fs.writeFile(
-      path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),
+      path.join(h.dataDir, 'server-local', 'users', OWNER, 'build', 'Dockerfile.user'),
       'FROM yaac-current\nRUN echo user\n',
     )
 
     const { ensureImage } = await h.load()
-    await expect(ensureImage(PROJECT))
+    await expect(ensureImage(PROJECT, OWNER))
       .rejects.toThrow('must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}`')
   })
 })

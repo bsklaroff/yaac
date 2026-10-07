@@ -39,6 +39,7 @@ const CONTAINERLESS_API = [
   'test/api/server.test.ts',
   'test/api/shortcuts.test.ts',
   'test/api/identity-flow.test.ts',
+  'test/api/transcript-route.test.ts',
   // Driver-neutral: guards WebSocket compression pass-through, which a
   // dependency bump could break for every install, so it also runs where
   // there is no cluster.

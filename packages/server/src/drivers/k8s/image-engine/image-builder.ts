@@ -190,7 +190,7 @@ export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLaye
  * Resolve a project's ordered image layer chain without building anything.
  *
  * The chain is base, tools, optionally nestable (for `nestedContainers`),
- * then the project's Dockerfile.yaac and the user's Dockerfile.user if
+ * then the project's Dockerfile.yaac and its owner's Dockerfile.user if
  * present. A standalone (non-layered) Dockerfile.yaac replaces base, tools
  * and nestable, and owns its own uid setup (docs/arbitrary-uid-images.md).
  * Each layer's build dir is its whole context, so support files count
@@ -203,6 +203,7 @@ export async function resolveTrustedLayers(prefix = 'yaac'): Promise<TrustedLaye
  */
 export async function resolveImageChain(
   projectId: string,
+  owner: string,
   prefix: string,
   nestedContainers = false,
 ): Promise<{ layers: ImageLayer[]; finalTag: string }> {
@@ -265,7 +266,7 @@ export async function resolveImageChain(
   let effectiveTag = baseTag
   const effectiveHash = baseHash
 
-  const userBuild = userBuildDir()
+  const userBuild = userBuildDir(owner)
   const userDockerfile = path.join(userBuild, USER_DOCKERFILE)
   if (await fileExists(userDockerfile)) {
     const userContent = await fs.readFile(userDockerfile, 'utf8')

@@ -26,6 +26,7 @@ import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
+import { authorizeProject } from '#domain/access'
 import { requireDriverFeature, type IdentityEnv } from '#http'
 import { workspaceDriver } from '#drivers/driver'
 
@@ -188,10 +189,12 @@ export const projectApp = new Hono<IdentityEnv>()
   )
   // Support files next to Dockerfile.yaac in the project's build dir: its
   // build context, which feeds the image tag.
-  .route('/:projectId/build-files', buildFilesApp(async (c) => {
+  .route('/:projectId/build-files', buildFilesApp(async (c, level) => {
     // The generic Context can't see the mount path's :projectId, so param()
     // is string | undefined here; the mount guarantees it exists.
-    return projectBuildDir(await resolveProjectId(c.req.param('projectId') ?? ''))
+    const projectId = await resolveProjectId(c.req.param('projectId') ?? '')
+    if (level === 'owner') await authorizeProject(c.get('principal'), projectId)
+    return projectBuildDir(projectId)
   }))
   // The project's image layer. Both check the driver feature before the
   // project (see `requireDriverFeature`).

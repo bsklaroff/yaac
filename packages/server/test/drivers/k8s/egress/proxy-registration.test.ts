@@ -348,6 +348,7 @@ describe('reconcileRegistrationGc', () => {
       }) as unknown as ReturnType<PassContext['snapshot']>,
       projectIds: () => Promise.resolve([]),
       projectConfig: () => Promise.resolve(undefined),
+      projectOwner: () => Promise.resolve('owner'),
       terminating: (id) => terminating.includes(id),
     }
   }

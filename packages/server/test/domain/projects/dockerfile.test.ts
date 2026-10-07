@@ -3,7 +3,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDataDir, getProjectsDir, projectConfigDir } from '@yaac/shared/project-paths'
-import { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from '#domain/projects'
+import {
+  moveLegacyUserBuildDir,
+  readProjectDockerfile,
+  readUserDockerfile,
+  writeProjectDockerfile,
+  writeUserDockerfile,
+} from '#domain/projects'
 import { PROJECT_DOCKERFILE, USER_DOCKERFILE } from '#lib/build-dirs'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
@@ -19,8 +25,9 @@ const projectId = DEMO_PROJECT_ID
  *  image builder reads these exact paths as its build context. */
 const projectDockerfilePath = (): string =>
   path.join(projectConfigDir(projectId), 'build', PROJECT_DOCKERFILE)
-const userDockerfilePath = (): string =>
-  path.join(getDataDir(), 'server-local', 'build', USER_DOCKERFILE)
+const userDockerfilePath = (userId = BUILT_IN_USER_ID): string =>
+  path.join(getDataDir(), 'server-local', 'users', userId, 'build', USER_DOCKERFILE)
+const OTHER_USER = 'b0b0b0b0-0000-4000-8000-000000000000'
 
 let tmpDir: string
 
@@ -73,30 +80,58 @@ describe('writeProjectDockerfile', () => {
 
 describe('readUserDockerfile', () => {
   it('returns empty string when unset', async () => {
-    expect(await readUserDockerfile()).toBe('')
+    expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe('')
   })
 
-  it('returns the stored content', async () => {
-    await writeUserDockerfile(LAYERED)
-    expect(await readUserDockerfile()).toBe(LAYERED)
+  it('returns the content that user stored, and only theirs', async () => {
+    await writeUserDockerfile(BUILT_IN_USER_ID, LAYERED)
+    expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe(LAYERED)
+    expect(await readUserDockerfile(OTHER_USER)).toBe('')
   })
 })
 
 describe('writeUserDockerfile', () => {
-  it('writes the content to ~/.yaac/build/Dockerfile.user', async () => {
-    await writeUserDockerfile(LAYERED)
-    expect(await fs.readFile(userDockerfilePath(), 'utf8')).toBe(LAYERED)
+  it('writes the content to the user\'s own build dir', async () => {
+    await writeUserDockerfile(OTHER_USER, LAYERED)
+    expect(await fs.readFile(userDockerfilePath(OTHER_USER), 'utf8')).toBe(LAYERED)
   })
 
   it('rejects a standalone user Dockerfile — it must layer on the project image', async () => {
-    await expect(writeUserDockerfile('FROM ubuntu:24.04\n')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(writeUserDockerfile(BUILT_IN_USER_ID, 'FROM ubuntu:24.04\n')).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(fs.access(userDockerfilePath())).rejects.toThrow()
   })
 
   it('removes the file when given whitespace-only content', async () => {
-    await writeUserDockerfile(LAYERED)
-    await writeUserDockerfile('')
-    expect(await readUserDockerfile()).toBe('')
+    await writeUserDockerfile(BUILT_IN_USER_ID, LAYERED)
+    await writeUserDockerfile(BUILT_IN_USER_ID, '')
+    expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe('')
     await expect(fs.access(userDockerfilePath())).rejects.toThrow()
+  })
+})
+
+describe('moveLegacyUserBuildDir', () => {
+  const legacyDir = (): string => path.join(getDataDir(), 'server-local', 'build')
+
+  it('gives a single-user install\'s build dir to the built-in user, once', async () => {
+    await fs.mkdir(path.join(legacyDir(), 'nvim'), { recursive: true })
+    await fs.writeFile(path.join(legacyDir(), USER_DOCKERFILE), LAYERED)
+    await fs.writeFile(path.join(legacyDir(), 'nvim', 'init.lua'), '-- x\n')
+
+    await moveLegacyUserBuildDir()
+    await moveLegacyUserBuildDir()
+
+    expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe(LAYERED)
+    expect(await fs.readFile(path.join(path.dirname(userDockerfilePath()), 'nvim', 'init.lua'), 'utf8')).toBe('-- x\n')
+    await expect(fs.access(legacyDir())).rejects.toThrow()
+  })
+
+  it('leaves a built-in user\'s existing build dir alone', async () => {
+    await writeUserDockerfile(BUILT_IN_USER_ID, LAYERED)
+    await fs.mkdir(legacyDir(), { recursive: true })
+    await fs.writeFile(path.join(legacyDir(), USER_DOCKERFILE), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n')
+
+    await moveLegacyUserBuildDir()
+
+    expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe(LAYERED)
   })
 })

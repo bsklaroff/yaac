@@ -2,6 +2,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { findWorkspaceRow, listWorkspaceRows } from '#db'
 import { listProvisioning } from './provisioning'
 import type { RuntimeHandle } from '#drivers/contract'
+import { authorizeProject, type Actor } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool } from '@yaac/shared/types'
 
@@ -16,16 +17,24 @@ export interface ResolvedWorkspace {
  * Resolve a workspace id or unique prefix to its running unit. Throws
  * `VALIDATION` for empty or ambiguous input, `NOT_FOUND` if absent. Uses the
  * driver's cache, since several callers are polled.
+ *
+ * `owner` refuses (`FORBIDDEN`) an actor who does not own the workspace's
+ * project. It is checked against the row before the runtime is asked, so a
+ * non-owner is refused the same way whether or not the workspace runs; a
+ * unit with no row is checked once found.
  */
 export async function resolveWorkspaceContainer(
   idOrPrefix: string,
-  opts: { requireRunning?: boolean; exact?: boolean } = {},
+  opts: { requireRunning?: boolean; exact?: boolean; owner?: Actor } = {},
 ): Promise<ResolvedWorkspace> {
   // `exact`: callers holding full ids (WebSocket attaches) accept no prefix.
   const id = opts.exact === true ? idOrPrefix : await resolveWorkspaceId(idOrPrefix)
+  const row = opts.owner && await findWorkspaceRow(id)
+  if (opts.owner && row) await authorizeProject(opts.owner, row.projectId)
   const match: RuntimeHandle | undefined =
     await workspaceDriver().find(id, { preferCache: true })
   if (!match) throw new ServerError('NOT_FOUND', `session ${idOrPrefix} not found`)
+  if (opts.owner && !row) await authorizeProject(opts.owner, match.projectId)
 
   if (opts.requireRunning && match.state !== 'running') {
     throw new ServerError('CONFLICT', `job "${match.jobName}" is not running (phase: ${match.state})`)

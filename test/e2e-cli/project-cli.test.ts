@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv, type SpawnedServer } from '@yaac/test-utils/cli'
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { makeServerApiClient } from '@yaac/test-utils/api'
+import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 
 /**
  * e2e coverage for `yaac project` (list/add) and `yaac config`, sharing one
@@ -192,7 +193,8 @@ describe('yaac config (real CLI + real server)', () => {
     )
     expect(exitCode, stderr).toBe(0)
 
-    const target = path.join(testEnv.dataDir, 'server-local', 'build', 'Dockerfile.user')
+    // The caller is local, so the file is the built-in user's.
+    const target = path.join(testEnv.dataDir, 'server-local', 'users', BUILT_IN_USER_ID, 'build', 'Dockerfile.user')
     expect(await fs.readFile(target, 'utf8')).toBe(layered)
   })
 

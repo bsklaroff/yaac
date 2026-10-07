@@ -21,8 +21,8 @@ export {
 export {
   resolveEphemeralModulesPaths,
   resolveProjectConfig,
-  retryImageBuild,
 } from './config'
+export { dismissImageBuild, retryImageBuild } from './images'
 export {
   listProjectEnv,
   parseSecretProxyRule,
@@ -51,7 +51,13 @@ export {
   resolveProjectId,
   resolveProjectConfigWithSource,
 } from './detail'
-export { readProjectDockerfile, readUserDockerfile, writeProjectDockerfile, writeUserDockerfile } from './dockerfile'
+export {
+  moveLegacyUserBuildDir,
+  readProjectDockerfile,
+  readUserDockerfile,
+  writeProjectDockerfile,
+  writeUserDockerfile,
+} from './dockerfile'
 export { seedFakeAuth } from './fake-auth'
 export { listProjects } from './list'
 export {

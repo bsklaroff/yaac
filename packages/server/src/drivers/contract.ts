@@ -408,6 +408,9 @@ export interface PassContext {
    * `undefined` means no config (all defaults), not a failure.
    */
   projectConfig: (projectId: string) => Promise<YaacConfig | undefined>
+  /** One project's owner, whose `Dockerfile.user` tops its image chain.
+   *  Rejects for a project that no longer exists. */
+  projectOwner: (projectId: string) => Promise<string>
   /**
    * Whether a teardown was issued for this workspace but is not yet visible
    * in the substrate. The marks live in `#runtime`, which drivers cannot
@@ -415,6 +418,9 @@ export interface PassContext {
    */
   terminating: (workspaceId: string) => boolean
 }
+
+/** What an image build reads about each project it builds for. */
+export type ProjectReaders = Pick<PassContext, 'projectConfig' | 'projectOwner'>
 
 /**
  * A driver's only channel to the layers above it, which it cannot import.
@@ -573,13 +579,10 @@ export interface WorkspaceDriver {
   dismissImageBuild(id: string): boolean
   /**
    * Rerun a finished build now; returns false for an unknown or running id.
-   * Fire-and-forget: progress shows in the feed. `projectConfig` is passed
-   * in for the same reason as on `PassContext`.
+   * Fire-and-forget: progress shows in the feed. `projects` is passed in
+   * for the same reason as on `PassContext`.
    */
-  retryImageBuild(
-    id: string,
-    projectConfig: (projectId: string) => Promise<YaacConfig | undefined>,
-  ): boolean
+  retryImageBuild(id: string, projects: ProjectReaders): boolean
   /**
    * Let one running workspace reach `host`, until it stops. The caller
    * persists the host for future workspaces itself. `fanOutToProject` also
@@ -665,9 +668,11 @@ export interface WorkspaceDriver {
   /** Check the substrate (e.g. the cluster) is reachable, before a create
    *  records or provisions anything. */
   ensureRuntimeReachable(): Promise<void>
-  /** Build or reuse the project's workspace image and return its ref. */
+  /** Build or reuse the project's workspace image and return its ref.
+   *  `owner` is the project's, whose Dockerfile.user tops the chain. */
   prepareImage(opts: {
     projectId: string
+    owner: string
     nestedContainers: boolean
     onProgress?: (message: string) => void
   }): Promise<string>
