@@ -22,6 +22,7 @@ import {
   LABEL_NPM_CACHE,
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
+  NFS_PORT,
   NPM_CACHE_APP_NAME,
   NPM_CACHE_PORT,
   PROXY_APP_NAME,
@@ -1346,7 +1347,6 @@ async function runPerNodeProbe(
 }
 
 const NETPOL_PROBE_POD_NAME = 'yaac-cluster-check-egress'
-const NFS_PORT = 2049
 
 /** One address the egress probe must fail to dial, and how it reports. */
 interface EgressTarget {

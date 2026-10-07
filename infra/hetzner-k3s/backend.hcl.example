@@ -1,0 +1,10 @@
+# Copy to backend.hcl (gitignored), fill in, and run
+# `tofu init -backend-config=backend.hcl`.
+
+bucket    = "yaac-tofu-state-<something unique>"
+endpoints = { s3 = "https://fsn1.your-objectstorage.com" } # the bucket's location
+
+# The bucket's S3 credentials. Or leave these out and export
+# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY instead.
+access_key = "..."
+secret_key = "..."

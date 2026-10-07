@@ -455,8 +455,8 @@ describe('ensureProxyResources', () => {
     expect(JSON.stringify(agentIngress[0].from)).toContain(LABEL_WORKSPACE_ID)
     expect(JSON.stringify(agentIngress[0].from)).not.toContain(NODE_IP)
 
-    // Proxy egress reaches nodes on every port except the kind fronting's,
-    // where a CONNECT would reach the server as if it were the node.
+    // Proxy egress never reaches the kind fronting's node port, where a
+    // CONNECT would reach the server as if it were the node.
     const proxyEgress = specOf(byName(PROXY_EGRESS_NP_NAME)) as { egress: Rule[] }
     const toNodes = proxyEgress.egress.find((r) => r.ports && JSON.stringify(r.to).includes(NODE_IP))
     expect(toNodes?.ports?.length).toBeGreaterThan(0)

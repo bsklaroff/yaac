@@ -59,7 +59,11 @@ const IMMUTABLE_OS = /bottlerocket|container-optimized os|talos|flatcar/i
 /**
  * Nodes the gVisor installer cannot handle. It supports only stock
  * containerd with its config at `/etc/containerd/config.toml`, restarted
- * via the node's systemd. Anything else is refused by name.
+ * via the node's systemd. Anything else is refused by name. k3s and RKE2
+ * pass only when run against the host's containerd
+ * (`--container-runtime-endpoint`, as infra/hetzner-k3s does): their
+ * embedded one, which reports a `-k3s` version, regenerates its config
+ * from a template on every start.
  */
 export function nodeOsProblems(nodes: PlatformNode[]): string[] {
   const problems: string[] = []
@@ -74,9 +78,10 @@ export function nodeOsProblems(nodes: PlatformNode[]): string[] {
       problems.push(`${name} is an EKS Fargate node: there is no node to install the gVisor runtime on.`)
     } else if (name.startsWith('gk3-') || labels['cloud.google.com/gke-autopilot'] !== undefined) {
       problems.push(`${name} is a GKE Autopilot node, which admits no privileged node installer.`)
-    } else if (/\+k3s/.test(kubelet) || /\+rke2/.test(kubelet)) {
-      problems.push(`${name} runs ${/\+rke2/.test(kubelet) ? 'RKE2' : 'k3s'} (kubelet ${kubelet}), whose `
-        + 'embedded containerd keeps its config in a template the gVisor installer does not write yet.')
+    } else if (/^containerd:\/\/.*-k3s/.test(runtime)) {
+      problems.push(`${name} runs ${/\+rke2/.test(kubelet) ? 'RKE2' : 'k3s'}'s embedded containerd (${runtime}), `
+        + 'which rewrites its config from a template on every start, dropping the gVisor installer\'s '
+        + 'runtime entries. Run it against the host\'s containerd (`--container-runtime-endpoint`).')
     } else if (!runtime.startsWith('containerd://')) {
       problems.push(`${name} runs ${runtime || 'an unreported runtime'}, not containerd — the gVisor `
         + 'installer registers its runtime in containerd\'s config.')

@@ -49,7 +49,7 @@ import {
   readObject,
 } from '#drivers/k8s/substrate'
 import {
-  egressAllButServerFront,
+  wideEgress,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
@@ -407,9 +407,10 @@ async function streamContextToPod(
   }
 }
 
-/** Builder egress: anywhere except the kind fronting's node port, which
- *  would give a `RUN` step access to the server. The world-deny policy
- *  excludes builders, so this is the policy that applies to them. */
+/** Builder egress: anywhere but what `wideEgress` cuts out, each of which
+ *  would give a `RUN` step the server's or a node's authority. The
+ *  world-deny policy excludes builders, so this is the policy that applies
+ *  to them. */
 function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
@@ -421,7 +422,7 @@ function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<st
     spec: {
       podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
       policyTypes: ['Egress'],
-      egress: egressAllButServerFront(nodeCidrs),
+      egress: wideEgress(nodeCidrs),
     },
   }
 }

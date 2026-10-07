@@ -188,7 +188,7 @@ import {
   BUILDER_MEMORY_REQUEST_BYTES,
 } from '#drivers/k8s/images/builder-pod'
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
-import { egressAllButServerFront } from '#drivers/k8s/cluster/policy-manifests'
+import { wideEgress } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
 import { dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
@@ -573,9 +573,9 @@ describe('ensureImage', () => {
     }>('NetworkPolicy')
     expect(np.spec.podSelector.matchLabels).toEqual({ 'yaac.role': 'builder' })
     expect(np.spec.policyTypes).toEqual(['Egress'])
-    // Anywhere except the kind fronting's node port: a RUN step comes from
-    // an agent-editable Dockerfile, and the server would see it as the node.
-    expect(np.spec.egress).toEqual(egressAllButServerFront(['10.89.0.7/32']))
+    // A RUN step comes from an agent-editable Dockerfile, so it gets the
+    // shared reach-almost-anything egress (policy-manifests.test.ts).
+    expect(np.spec.egress).toEqual(wideEgress(['10.89.0.7/32']))
 
     // storage.conf bootstrap, parent pull, extract, grant, build, push — in order.
     const remote = remoteCommands()

@@ -1495,7 +1495,10 @@ describe('runClusterInstall', () => {
       ],
       [{ nodeInfo: { containerRuntimeVersion: 'cri-o://1.30.0' } }, /runs cri-o:\/\/1\.30\.0, not containerd/],
       [{ nodeInfo: { osImage: 'Bottlerocket OS 1.20.0 (aws-k8s-1.30)' } }, /Bottlerocket .* an immutable OS/],
-      [{ nodeInfo: { kubeletVersion: 'v1.30.4+k3s1' } }, /runs k3s/],
+      [
+        { nodeInfo: { kubeletVersion: 'v1.36.4+k3s1', containerRuntimeVersion: 'containerd://2.1.5-k3s1' } },
+        /runs k3s's embedded containerd .*--container-runtime-endpoint/,
+      ],
     ]
     for (const [facts, message] of cases) {
       const deps = makeDeps({ run: adoptRun(facts) })
@@ -1812,9 +1815,12 @@ describe('runClusterInstall', () => {
     expect(k3sRefusal).toMatch(/YAAC_KUBE_PROXY_EXTERNAL=1/)
     expect(k3sRefusal).toMatch(/k3s runs it in-process/)
 
+    // With that, a k3s node on the host's containerd installs.
     vi.stubEnv('YAAC_KUBE_PROXY_EXTERNAL', '1')
     stageAdoptCidrs()
-    const k3s = makeDeps({ run: adoptRun({ kubeProxyPods: [] }) })
+    const k3s = makeDeps({
+      run: adoptRun({ kubeProxyPods: [], nodeInfo: { kubeletVersion: 'v1.36.4+k3s1' } }),
+    })
     await expect(runClusterInstall(BYO, k3s)).resolves.toBeUndefined()
     expect(logged(k3s)).toMatch(/declared external/)
   })

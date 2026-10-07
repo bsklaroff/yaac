@@ -343,10 +343,15 @@ new key or gate also triggers a roll.
 
 - **Builder egress.** Builder pods are excluded from the world-deny
   NetworkPolicy and get their own egress policy, `yaac-builder-egress`,
-  which allows everything except the kind fronting's node port. From there
-  a `RUN` step could reach the server with its owner's authority
-  (docs/server-in-cluster.md "The ingress policy is the wall"). That is
-  still stricter than a local build's unfiltered host network. Builds
+  which allows everything except three destinations. The kind fronting's
+  node port, from which a `RUN` step could reach the server with its
+  owner's authority (docs/server-in-cluster.md "The ingress policy is the
+  wall"). NFS on node addresses, because a shared tier served from a node
+  sees another node's pods arrive SNATed to that node's address and
+  cannot tell them from its kernel mounts. And the metadata service
+  (`169.254.169.254`), which on some clouds hands out a node's join
+  credentials. That
+  is still stricter than a local build's unfiltered host network. Builds
   could later be routed through the workspace proxy using the combined CA
   bundle (docs/nested-containers.md), as nested builds already are.
 - **The `yaac.role=builder` label** exempts a pod from the world-deny

@@ -370,10 +370,13 @@ yaac cluster install --byo --rwx-storage-class <nfs-class> [--rwo-storage-class 
 ```
 
 Installs into the cluster the current kubeconfig points at: a self-managed
-pool, or a managed one on a mutable node OS. It applies the same in-cluster
-layers and server Deployment as a kind install. It creates no cluster,
-needs no `kind`, installs no CNI (it uses the cluster's existing Calico),
-and is re-runnable like every other mode. What differs:
+pool, or a managed one on a mutable node OS. It applies the same
+in-cluster layers and server Deployment as a kind install. It creates no
+cluster, needs no `kind`, installs no CNI (it uses the cluster's existing
+Calico), and is re-runnable like every other mode. `infra/` has OpenTofu
+for two such clusters, EKS (`infra/aws-eks`) and k3s on Hetzner Cloud
+(`infra/hetzner-k3s`), each with a README that walks through the install.
+What differs:
 
 - **Storage** comes from storage classes instead of static volumes.
   `yaac-global` uses `--rwx-storage-class`, which must be NFS-family
@@ -412,7 +415,7 @@ before the podman setup, so a refusal changes nothing:
 | Gate | Refuses |
 |---|---|
 | Architecture | a node pool that mixes architectures, or whose architecture is not this machine's (install builds every image here, with no cross-build) |
-| Node OS and containerd | a runtime other than containerd; an immutable OS (Bottlerocket, Container-Optimized OS, Talos, Flatcar); EKS Fargate and GKE Autopilot; k3s and RKE2, whose embedded containerd keeps its config in a template the gVisor installer does not write yet |
+| Node OS and containerd | a runtime other than containerd; an immutable OS (Bottlerocket, Container-Optimized OS, Talos, Flatcar); EKS Fargate and GKE Autopilot; k3s or RKE2 on its embedded containerd, which regenerates its config from a template on every start. Either passes when run against the host's containerd (`--container-runtime-endpoint`), as `infra/hetzner-k3s` does |
 | CNI | everything in "The CNI gate" below |
 | Operator | no Tailscale operator or no `tailscale` IngressClass (an unanswered query is reported separately from "absent") |
 | Storage | an RWX class that is missing or not NFS-family, a missing RWO class, or no default class (the registry and npm cache use it) |
@@ -499,7 +502,8 @@ fit the pending pod, and from scaling up again. Every workspace pod carries
 `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, so scale-down
 removes only nodes with no running workspace. A pool that scales from zero
 also has to tell the autoscaler about the label and the node's ephemeral
-storage in its node template. `infra/aws-eks` does all of this.
+storage in its node template. `infra/aws-eks` and `infra/hetzner-k3s`
+do all of this.
 
 ### The CNI gate
 

@@ -55,7 +55,8 @@ set -x
 %{ endif ~}
 
 # Node comes from nvm, not apt: Ubuntu's build lacks the TypeScript type
-# stripping the frontend build needs (README.md "Linux").
+# stripping the frontend build needs (docs/install-from-source.md
+# "Linux (Debian/Ubuntu)").
 sudo -iu ubuntu bash -exo pipefail <<'EOS'
 curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.6/install.sh | bash
 export NVM_DIR="$HOME/.nvm"

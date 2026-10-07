@@ -19,7 +19,7 @@ export {
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
-  egressAllButServerFront,
+  wideEgress,
 } from './policy-manifests'
 export {
   nodeIpBlocks,
