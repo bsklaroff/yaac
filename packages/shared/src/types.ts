@@ -423,7 +423,7 @@ export type ToolAuthPayload = z.infer<typeof toolAuthPayloadSchema>
 
 /**
  * The four tool credential files as one value, handed to a runtime whose
- * proxy injects credentials whenever the host store changes. `null` means
+ * proxy injects credentials whenever a user's store changes. `null` means
  * signed out.
  */
 export interface ToolCredentialBundle {
@@ -435,7 +435,7 @@ export interface ToolCredentialBundle {
 
 /**
  * OAuth bundles a runtime's egress proxy captured from a workspace's token
- * refresh that the host store has not adopted yet. Each slot is the newest
+ * refresh that the owner's store has not adopted yet. Each slot is the newest
  * capture, if any.
  */
 export interface RefreshedToolCredentials {

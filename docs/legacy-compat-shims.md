@@ -227,9 +227,7 @@ several projects share goes to the oldest of them.
   anything but a uuid (`ls ~/.yaac/global/projects`, or the global claim
   under the in-cluster server).
 - **Order.** It reads `name` as the old dir name, so it must go before
-  project names become editable, and before the planned per-owner dir move
-  (docs/plans/multi-user-deployment.md), which must start from id-named
-  dirs.
+  project names become editable.
 
 ## Deleting slug-named proxy secrets Secrets
 

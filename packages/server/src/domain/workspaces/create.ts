@@ -670,8 +670,8 @@ export async function createWorkspace(
   if (!gitUser) {
     throw new ServerError(
       'VALIDATION',
-      'No git identity is set on this server, so a workspace would commit as nobody. '
-      + 'Set one in Settings \u2192 General, or with '
+      'This project\u2019s owner has no git identity set, so a workspace would commit as nobody. '
+      + 'Set yours in Settings \u2192 General, or with '
       + '`yaac config git-identity --name <name> --email <email>`.',
     )
   }

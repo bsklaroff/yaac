@@ -23,11 +23,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
   const runtime = driver.reconcileSteps()
   // Credential upkeep, one step per driver kind:
   //  - containerless: `credential-sync` copies OAuth tokens a workspace
-  //    refreshed into the host store (and back out to other projects). It is
-  //    the only path that runs while the install is idle; create, attach,
-  //    stop and usage cycles cover their own moments. At most every five
-  //    minutes: on macOS each Claude read spawns `security`, and tokens
-  //    have hours of slack.
+  //    refreshed into its owner's store (and back out to the owner's other
+  //    projects). It is the only path that runs while the install is idle;
+  //    create, attach, stop and usage cycles cover their own moments. At
+  //    most every five minutes: on macOS each Claude read spawns
+  //    `security`, and tokens have hours of slack.
   //  - mediated (k8s): the proxy captures each refresh into an object the
   //    runtime watches, and `credential-adopt` stores it. Triggered by that
   //    object's changes.

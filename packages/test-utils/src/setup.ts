@@ -235,19 +235,20 @@ export async function requireCluster(): Promise<void> {
  *
  * `remoteUrl` is what the project row records. It defaults to a
  * GitHub-shaped URL for the name, which nothing dials under
- * YAAC_E2E_SKIP_FETCH.
+ * YAAC_E2E_SKIP_FETCH. `headers` name the caller who owns it
+ * (`asTailnet`), the built-in user by default.
  */
 export async function addTestProject(
   server: SpawnedServer,
   localRepoPath: string,
-  opts: { remoteUrl?: string } = {},
+  opts: { remoteUrl?: string; headers?: Record<string, string> } = {},
 ): Promise<string> {
   const name = path.basename(localRepoPath)
   const projectId = crypto.randomUUID()
   await fs.mkdir(projectDir(projectId), { recursive: true })
   await cloneRepo(localRepoPath, repoDir(projectId), null)
   await fs.mkdir(claudeDir(projectId), { recursive: true })
-  await registerTestProject(server, projectId, name, opts.remoteUrl ?? `https://github.com/test-org/${name}.git`)
+  await registerTestProject(server, projectId, name, opts.remoteUrl ?? `https://github.com/test-org/${name}.git`, opts.headers)
   return projectId
 }
 

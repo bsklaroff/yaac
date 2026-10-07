@@ -14,7 +14,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential, makeServerApiClient } from '@yaac/test-utils/api'
+import { asTailnet, assignTestGitCredential, makeServerApiClient, signInTestTool } from '@yaac/test-utils/api'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
@@ -448,7 +448,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // Create refuses without an identity, so this runs before the first one.
     const unset = await runYaac(serverEnv, 'config', 'git-identity')
     expect(unset.exitCode).toBe(0)
-    expect(unset.stdout).toContain('No git identity is set')
+    expect(unset.stdout).toContain('You have no git identity set')
 
     // Both parts are required.
     const half = await runYaac(serverEnv, 'config', 'git-identity', '--name', 'Test')
@@ -2117,5 +2117,137 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
     } finally {
       watch.ws.close()
     }
+  }, 60_000)
+})
+
+/**
+ * Two teammates on one install (docs/multi-user.md). Runs last: it restarts
+ * the file's server in tailnet mode, which refuses every loopback CLI call
+ * the cases above make. The built-in user, owner of everything above,
+ * becomes alice; bob arrives through serve with nothing of his own.
+ * Containerless separates no credentials from the other workspaces, so what
+ * is checked is ownership: who may read, attach and write, and that each
+ * project's tool home is seeded from its own owner's sign-in.
+ */
+describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
+  const HOST = 'srv.tailnet.ts.net'
+  const ALICE = asTailnet('alice@example.com', HOST)
+  const BOB = asTailnet('bob@example.com', HOST)
+  const BOB_PROJECT = 'bob-demo'
+  const BOB_TOKEN = 'sk-ant-oat01-bob-b0b5'
+  let bobProjectId = ''
+  let bobWorkspace = ''
+
+  const as = (who: Record<string, string>, route: string, init: RequestInit = {}): Promise<Response> =>
+    fetch(`${origin()}/api${route}`, {
+      ...init,
+      headers: { ...who, 'content-type': 'application/json', ...init.headers as Record<string, string> },
+    })
+
+  /** The claude bundle seeded into a project's shared tool home. */
+  const projectClaudeToken = async (id: string): Promise<unknown> =>
+    (JSON.parse(await fs.readFile(
+      path.join(testEnv.dataDir, 'global', 'projects', id, 'claude', '.credentials.json'), 'utf8',
+    )) as { claudeAiOauth: { accessToken: string } }).claudeAiOauth.accessToken
+
+  beforeAll(async () => {
+    await server.stop()
+    server = await spawnYaacServer({
+      ...serverEnv,
+      YAAC_ACCESS_MODE: 'tailnet',
+      YAAC_ACCESS_OWNER: 'alice@example.com',
+      YAAC_ALLOWED_HOSTS: HOST,
+    })
+
+    // Bob's own project, credentials and identity, all set as bob.
+    const repo = await createTestRepo(path.join(testEnv.scratchDir, BOB_PROJECT))
+    bobProjectId = await addTestProject(server, repo, {
+      remoteUrl: `https://github.com/bob/${BOB_PROJECT}.git`, headers: BOB,
+    })
+    await assignTestGitCredential(server, bobProjectId, 'ghp_bob', 'bob token', BOB)
+    await signInTestTool(server, 'claude', {
+      kind: 'oauth',
+      bundle: {
+        accessToken: BOB_TOKEN, refreshToken: 'sk-ant-ort01-bob',
+        expiresAt: Date.now() + 3_600_000, scopes: ['user:inference'], subscriptionType: 'pro',
+      },
+    }, BOB)
+    expect((await as(BOB, '/config/git-identity', {
+      method: 'PUT', body: JSON.stringify({ name: 'Bob', email: 'bob@example.com' }),
+    })).status).toBe(200)
+    const res = await as(BOB, '/workspace/create', {
+      method: 'POST', body: JSON.stringify({ project: bobProjectId, tool: 'claude', mode: 'tui' }),
+    })
+    expect(res.status).toBe(200)
+    bobWorkspace = (await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})).workspaceId
+  }, 180_000)
+
+  it('makes the built-in user alice, and bob a user of his own', async () => {
+    const alice = await (await as(ALICE, '/whoami')).json() as { userId: string; users: Array<{ login: string }> }
+    const bob = await (await as(BOB, '/whoami')).json() as { userId: string }
+    expect(alice.userId).toBe('00000000-0000-0000-0000-000000000000')
+    expect(bob.userId).not.toBe(alice.userId)
+    expect(alice.users.map((u) => u.login).sort()).toEqual(['alice@example.com', 'bob@example.com'])
+    // Loopback is refused now, bar a workspace's own yaac-mama, which acts
+    // as its project's owner.
+    expect((await fetch(`${origin()}/api/whoami`)).status).toBe(401)
+    const mama = await execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), ['list'], {
+      cwd: path.join(testEnv.dataDir, 'global', 'projects', bobProjectId, 'workspaces', bobWorkspace),
+      env: {
+        ...process.env,
+        YAAC_MAMA_URL: await workspaceEnvVar(bobWorkspace, 'YAAC_MAMA_URL'),
+        YAAC_MAMA_TOKEN: await workspaceEnvVar(bobWorkspace, 'YAAC_MAMA_TOKEN'),
+      },
+    })
+    expect(mama.stdout).toContain(bobWorkspace.slice(0, 8))
+  })
+
+  it('seeds each project\'s tool home from its own owner\'s sign-in', async () => {
+    expect(await projectClaudeToken(bobProjectId)).toBe(BOB_TOKEN)
+    expect(await projectClaudeToken(projectId)).not.toBe(BOB_TOKEN)
+    const listed = async (who: Record<string, string>): Promise<unknown> =>
+      ((await (await as(who, '/auth/list')).json()) as { toolAuth: Array<{ tool: string; keyPreview: string }> })
+        .toolAuth.find((t) => t.tool === 'claude')?.keyPreview
+    expect(await listed(BOB)).toBe('***b0b5')
+    expect(await listed(ALICE)).toBe('***shed')
+  })
+
+  it('lets bob read alice\'s transcript, but not attach to or write her workspace', async () => {
+    // The founding claude conversation runs under the workspace id.
+    const conversation = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'history', workspaceId,
+      'claude', '-workspace', `${workspaceId}.jsonl`)
+    await fs.mkdir(path.dirname(conversation), { recursive: true })
+    await fs.appendFile(conversation, JSON.stringify({
+      type: 'user', uuid: 'u-two-users', parentUuid: null, sessionId: workspaceId, cwd: '/workspace',
+      timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'for bob to read' },
+    }) + '\n')
+    const sessions = await as(BOB, `/workspace/${workspaceId}/agent-sessions`)
+    expect(sessions.status).toBe(200)
+    expect((await sessions.json() as Array<{ agentSessionId: string }>).map((s) => s.agentSessionId))
+      .toContain(workspaceId)
+    const transcript = await as(BOB, `/workspace/${workspaceId}/agent-sessions/${workspaceId}/transcript`)
+    expect(transcript.status).toBe(200)
+    expect(JSON.stringify(await transcript.json())).toContain('for bob to read')
+
+    const upgrade = (who: Record<string, string>, id: string): Promise<number> => new Promise((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${String(server.lock.port)}/api/pty/attach?id=${id}`, { headers: who })
+      ws.once('open', () => { ws.close(); resolve(101) })
+      ws.once('unexpected-response', (_req, res) => { ws.terminate(); resolve(res.statusCode ?? 0) })
+      ws.once('error', reject)
+    })
+    expect(await upgrade(BOB, workspaceId)).toBe(403)
+    expect(await upgrade(ALICE, workspaceId)).toBe(101)
+    expect(await upgrade(BOB, bobWorkspace)).toBe(101)
+
+    const save = await as(BOB, `/workspace/${workspaceId}/file`, {
+      method: 'PUT', body: JSON.stringify({ path: 'from-bob.txt', content: 'hi', baseVersion: null }),
+    })
+    expect(save.status).toBe(403)
+    const checkout = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'workspaces', workspaceId)
+    await expect(fs.stat(path.join(checkout, 'from-bob.txt'))).rejects.toThrow()
+    // Nor may he start one in her project.
+    expect((await as(BOB, '/workspace/create', {
+      method: 'POST', body: JSON.stringify({ project: projectId, tool: 'claude', mode: 'tui' }),
+    })).status).toBe(403)
   }, 60_000)
 })

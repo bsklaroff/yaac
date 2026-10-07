@@ -23,7 +23,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
+import { asTailnet, assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
 import {
   requirePodman,
   requireCluster,
@@ -224,7 +224,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
    * Stage a project named `name` as `yaac project add` would for
    * github.com/test-org/<name>.git: clone the local bare repo, then set the
    * remote to the github URL so the proxy treats it as github. Returns its
-   * directory; `idOf(name)` gives its id.
+   * directory; `idOf(name)` gives its id. `headers` name its owner
+   * (`asTailnet`), the built-in user by default.
    */
   async function setupProject(
     name: string,
@@ -232,6 +233,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       yaacConfig?: Record<string, unknown>
       files?: Record<string, string>
       extraBranches?: Record<string, Record<string, string>>
+      headers?: Record<string, string>
     } = {},
   ): Promise<string> {
     const files: Record<string, string> = {
@@ -248,8 +250,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     await cloneRepo(path.join(mockGit!.reposDir, `${name}.git`), repoPath, null)
     const fakeRemote = `https://github.com/test-org/${name}.git`
     await git(repoPath, ['remote', 'set-url', 'origin', fakeRemote])
-    await registerTestProject(server!, projectId, name, fakeRemote)
-    await assignTestGitCredential(server!, projectId, 'fake-ghp-token')
+    await registerTestProject(server!, projectId, name, fakeRemote, opts.headers)
+    await assignTestGitCredential(server!, projectId, 'fake-ghp-token', undefined, opts.headers)
 
     if (opts.yaacConfig) {
       const configDir = path.join(projectPath, 'config')
@@ -2016,5 +2018,119 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(bad.exitCode).not.toBe(0)
       expect(bad.stdout + bad.stderr).toMatch(/Allowed choices are bypass, auto, accept-edits/)
     }, 60_000)
+  })
+
+  /**
+   * Two teammates on one install (docs/multi-user.md). Runs last: it
+   * redeploys the file's server in tailnet mode, which refuses the loopback
+   * CLI every case above uses. The built-in user, owner of everything
+   * above, becomes alice; bob arrives through serve, signs in to claude with
+   * his own key and starts a workspace in a project of his own.
+   */
+  describe('two users on a tailnet install', () => {
+    const HOST = 'srv.tailnet.ts.net'
+    const ALICE = asTailnet('alice@example.com', HOST)
+    const BOB = asTailnet('bob@example.com', HOST)
+    const BOB_KEY = 'sk-ant-fake-bob-key'
+    const BOB_PROJECT = 'bobs'
+    /** alice's acp workspace from the describe above, and its conversation. */
+    let aliceWorkspace = ''
+    let aliceSession = ''
+    let aliceJob = ''
+    let bobJob = ''
+
+    const as = (who: Record<string, string>, route: string, init: RequestInit = {}): Promise<Response> =>
+      fetch(`${base}/api${route}`, {
+        ...init,
+        headers: { ...who, 'content-type': 'application/json', ...init.headers as Record<string, string> },
+      })
+
+    beforeAll(async () => {
+      await server!.stop()
+      server = await spawnYaacServer({
+        ...serverEnv,
+        YAAC_ACCESS_MODE: 'tailnet',
+        YAAC_ACCESS_OWNER: 'alice@example.com',
+        YAAC_ALLOWED_HOSTS: HOST,
+      })
+      base = `http://127.0.0.1:${server.lock.port}`
+
+      // The new server lists the workspaces once it has re-adopted them.
+      const acp = await vi.waitFor(async () => {
+        const listed = await (await as(ALICE, `/workspace/list?project=${idOf('acped')}`)).json() as {
+          workspaces: Array<{ workspaceId: string; tool: string; agentSessions: Array<{ agentSessionId: string; mode?: string }> }>
+        }
+        const found = listed.workspaces.find((w) => w.tool === 'claude' && w.agentSessions.some((a) => a.mode === 'acp'))
+        if (!found) throw new Error(`no running claude acp workspace: ${JSON.stringify(listed)}`)
+        return found
+      }, { timeout: 60_000, interval: 1000 })
+      aliceWorkspace = acp.workspaceId
+      aliceSession = acp.agentSessions.find((a) => a.mode === 'acp')!.agentSessionId
+      aliceJob = (await listWorkspacePods(idOf('acped'))).find((p) => p.workspaceId === aliceWorkspace)!.jobName
+
+      const projectPath = await setupProject(BOB_PROJECT, { headers: BOB })
+      // Skip claude's onboarding, as in the kitchen-sink workspace.
+      await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
+        hasCompletedOnboarding: true,
+        lastOnboardingVersion: AGENT_CLIS.claude.version,
+        customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
+        projects: { '/workspace': { hasTrustDialogAccepted: true } },
+      }) + '\n')
+      await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: BOB_KEY }, BOB)
+      expect((await as(BOB, '/config/git-identity', {
+        method: 'PUT', body: JSON.stringify({ name: 'Bob', email: 'bob@example.com' }),
+      })).status).toBe(200)
+      const res = await as(BOB, '/workspace/create', {
+        method: 'POST', body: JSON.stringify({ project: idOf(BOB_PROJECT), tool: 'claude', mode: 'tui' }),
+      })
+      expect(res.status).toBe(200)
+      const ndjson = await res.text()
+      if (ndjson.includes('"type":"error"')) throw new Error(`bob's create failed:\n${ndjson}`)
+      bobJob = (await findWorkspacePod(BOB_PROJECT)).jobName
+    }, 360_000)
+
+    it('serves each workspace only its own owner\'s credentials', async () => {
+      /** The key the mock LLM saw for a placeholder request from `job`. */
+      const keySeenFrom = async (job: string): Promise<string | undefined> => {
+        const marker = `owner-probe-${randomUUID().slice(0, 8)}`
+        await execInJob(job, [
+          'curl', '-sS', '-k', '--max-time', '10', '-X', 'POST',
+          '-H', 'x-api-key: yaac-ph-api-key', '-H', 'content-type: application/json',
+          '-d', `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"${marker}"}]}`,
+          'https://api.anthropic.com/v1/messages',
+        ], { timeout: 20_000 })
+        const key = (await mockLLM!.transcript()).find((e) => e.body.includes(marker))?.headers['x-api-key']
+        return Array.isArray(key) ? key[0] : key
+      }
+      await vi.waitFor(async () => expect(await keySeenFrom(bobJob)).toBe(BOB_KEY), { timeout: 30_000, interval: 1000 })
+      expect(await keySeenFrom(aliceJob)).toBe('sk-ant-fake-real-key')
+    }, 120_000)
+
+    it('lets bob read alice\'s transcript, but not attach to or write her workspace', async () => {
+      const sessions = await as(BOB, `/workspace/${aliceWorkspace}/agent-sessions`)
+      expect(sessions.status).toBe(200)
+      expect((await sessions.json() as Array<{ agentSessionId: string }>).map((s) => s.agentSessionId))
+        .toContain(aliceSession)
+      const transcript = await as(BOB, `/workspace/${aliceWorkspace}/agent-sessions/${aliceSession}/transcript`)
+      expect(transcript.status).toBe(200)
+      expect((await transcript.json() as { events: unknown[] }).events.length).toBeGreaterThan(0)
+
+      const attach = (who: Record<string, string>): Promise<number> => new Promise((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
+          + `?id=${aliceWorkspace}&session=${encodeURIComponent(aliceSession)}`, { headers: who })
+        ws.once('open', () => { ws.close(); resolve(101) })
+        ws.once('unexpected-response', (_req, res) => { ws.terminate(); resolve(res.statusCode ?? 0) })
+        ws.once('error', reject)
+      })
+      expect(await attach(BOB)).toBe(403)
+      expect(await attach(ALICE)).toBe(101)
+
+      const save = await as(BOB, `/workspace/${aliceWorkspace}/file`, {
+        method: 'PUT', body: JSON.stringify({ path: 'from-bob.txt', content: 'hi', baseVersion: null }),
+      })
+      expect(save.status).toBe(403)
+      const { stdout } = await execInJob(aliceJob, ['sh', '-c', 'ls /workspace/from-bob.txt 2>&1 || true'])
+      expect(stdout).toContain('No such file')
+    }, 120_000)
   })
 })

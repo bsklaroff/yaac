@@ -19,10 +19,12 @@ export function makeTestApiClient(app: ServerApp) {
 }
 
 /**
- * Like `makeTestApiClient`, but over HTTP to a spawned server.
+ * Like `makeTestApiClient`, but over HTTP to a spawned server, sending
+ * `headers` (such as `asTailnet`'s) with every request.
  */
-export function makeServerApiClient(server: SpawnedServer) {
-  return createRawApiClient(`http://127.0.0.1:${server.lock.port}`)
+export function makeServerApiClient(server: SpawnedServer, headers: Record<string, string> = {}) {
+  return createRawApiClient(`http://127.0.0.1:${server.lock.port}`, (input, init) =>
+    fetch(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), ...headers } }))
 }
 
 /**
@@ -40,15 +42,17 @@ export function asTailnet(login: string | null, host: string): Record<string, st
 
 /**
  * Register a project whose checkout the test staged at
- * `<projects>/<id>/repo`: `project add` without the clone.
+ * `<projects>/<id>/repo`: `project add` without the clone. The helpers
+ * below act as the caller `headers` name, the built-in user by default.
  */
 export async function registerTestProject(
   server: SpawnedServer,
   id: string,
   name: string,
   remoteUrl: string,
+  headers: Record<string, string> = {},
 ): Promise<void> {
-  const res = await makeServerApiClient(server).project.register.$post({ json: { id, name, remoteUrl } })
+  const res = await makeServerApiClient(server, headers).project.register.$post({ json: { id, name, remoteUrl } })
   if (!res.ok) throw new Error(`registering project ${name} (${id}) failed: ${await res.text()}`)
 }
 
@@ -64,8 +68,9 @@ export async function assignTestGitCredential(
   project: string,
   token: string,
   name = `${project} token`,
+  headers: Record<string, string> = {},
 ): Promise<void> {
-  const client = makeServerApiClient(server)
+  const client = makeServerApiClient(server, headers)
   const created = await client.auth.git.credentials.$post({ json: { name, token } })
   if (!created.ok) throw new Error(`creating the git credential failed: ${await created.text()}`)
   const { id } = await created.json()
@@ -76,14 +81,15 @@ export async function assignTestGitCredential(
 }
 
 /**
- * Sign the server's caller (the built-in user, over loopback) in to a tool
- * as `yaac auth update` does. Throws on any non-2xx.
+ * Sign the caller in to a tool as `yaac auth update` does. Throws on any
+ * non-2xx.
  */
 export async function signInTestTool(
   server: SpawnedServer,
   tool: AgentTool,
   payload: ToolAuthPayload,
+  headers: Record<string, string> = {},
 ): Promise<void> {
-  const res = await makeServerApiClient(server).auth[':tool'].$put({ param: { tool }, json: payload })
+  const res = await makeServerApiClient(server, headers).auth[':tool'].$put({ param: { tool }, json: payload })
   if (!res.ok) throw new Error(`signing in to ${tool} failed: ${await res.text()}`)
 }

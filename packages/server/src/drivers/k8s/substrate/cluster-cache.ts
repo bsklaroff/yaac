@@ -34,7 +34,7 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
 /** Informers over workspace pods and the Jobs that own them. */
 export type WorkspaceDeltaSource = 'workspace-pods' | 'workspace-jobs'
 /** The proxy's outputs: its record ConfigMap (a snapshot input) and the
- *  rotations it captured (which the host store has to adopt). */
+ *  rotations it captured (which the owners' stores have to adopt). */
 type ProxyDeltaSource = 'proxy-state' | 'proxy-refreshed'
 export type DeltaSource = WorkspaceDeltaSource | ProxyDeltaSource
 
@@ -125,7 +125,7 @@ export class ClusterCache {
     return this.proxyState.items()[0] ?? EMPTY_PROXY_STATE
   }
 
-  /** The rotations the proxy captured and the host store may not hold
+  /** The rotations the proxy captured and the owner's store may not hold
    *  yet, by owner. */
   refreshedCredentials(): Record<string, RefreshedToolCredentials> {
     return this.proxyRefreshed.items()[0] ?? {}

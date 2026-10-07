@@ -1,8 +1,9 @@
 # Remote hosting: yaac on an always-on server
 
-One developer, one always-on machine running the whole stack, and thin
-clients that reach it over a private [Tailscale](https://tailscale.com)
-tailnet. Workspaces keep running when every client disconnects.
+One always-on machine running the whole stack, and thin clients that
+reach it over a private [Tailscale](https://tailscale.com) tailnet.
+Workspaces keep running when every client disconnects. Several teammates
+can share the machine, each as their own user (docs/multi-user.md).
 
 ```
 SERVER MACHINE (on the tailnet)
@@ -185,11 +186,12 @@ Things to keep in mind:
 - **Nothing you configure names a path on the server.** Nothing mounts a
   host directory into a workspace; use `cacheVolumes` for a directory that
   should persist across workspaces.
-- **The git identity workspaces commit under is a server setting.** The auth
-  server seeds it from your machine's git config when it starts and the
-  server has none. The auth server starts with the desktop app, `yaac auth
-  server start`, and the browser sign-in of `yaac auth update`, but not with
-  `yaac server start`, `yaac cluster install` or an API-key login. A
+- **The git identity workspaces commit under is a per-user setting on the
+  server.** The auth server seeds yours from your machine's git config when
+  it starts and you have none. The auth server starts with the desktop app,
+  `yaac auth server start`, and the browser sign-in of `yaac auth update`,
+  but not with `yaac server start`, `yaac cluster install` or an API-key
+  login. A
   CLI-only user sets it with `yaac config git-identity --name <name> --email
   <email>` (or Settings → General). Until then, workspace create is refused
   with that instruction.
@@ -210,7 +212,8 @@ Things to keep in mind:
 - **The tailnet is the trust boundary.** Only enrolled devices can reach the
   `*.ts.net` name. WireGuard encrypts the traffic and `serve` adds TLS.
   Never use `tailscale funnel`. The tailnet's ACLs decide who may reach the
-  server, and everyone who can has full access.
+  server, and everyone who can is a user, who may read every other user's
+  data and change only their own (docs/multi-user.md).
 - **The caller's identity comes from the request** (`identify()` in
   `api/http/web-auth.ts`), checked after the Host, Origin and Sec-Fetch-Site
   guards, and then held against the access mode:
@@ -298,7 +301,5 @@ non-ASCII display name takes in a header.
 - **Surviving a reboot** (a systemd unit for the server, restarting the
   cluster on boot). For now, after a reboot run `yaac server start` with the
   install's flags (containerless) or `yaac cluster install` (k8s).
-- **Per-user access**: every identified user has full access to every other
-  user's data (docs/plans/multi-user-deployment.md).
 - **Tagged devices as callers**: resolving a tagged device's address through
   the tailscaled socket (`whois`) would let the server admit it.

@@ -11,7 +11,7 @@ import type { WorkspaceListEntry } from '@yaac/shared/types'
  * workspace's conversations in the transcript view, refetched while it runs.
  * Their stopped workspaces are read in the stopped-workspaces overlay.
  * Terminals, chat and files are left out, since attaching to them grants
- * control (docs/plans/multi-user-deployment.md "Authorization").
+ * control (docs/multi-user.md "Authorization").
  */
 export function ReadOnlyWorkspace({ workspace }: { workspace: WorkspaceListEntry | undefined }): JSX.Element {
   const isMobile = useIsMobile()

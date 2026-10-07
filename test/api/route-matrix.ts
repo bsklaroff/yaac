@@ -33,10 +33,9 @@ import type { DriverKind } from '@yaac/shared/types'
 export type Expected = number | number[]
 
 /**
- * Who may call a route (docs/plans/multi-user-deployment.md
- * "Authorization"). `public` never consults the caller; `reader` is any
- * user; `owner` is the owner of what the route names, refused to anyone
- * else with 403.
+ * Who may call a route (docs/multi-user.md "Authorization"). `public`
+ * never consults the caller; `reader` is any user; `owner` is the owner of
+ * what the route names, refused to anyone else with 403.
  */
 export type Access = 'public' | 'reader' | 'owner'
 

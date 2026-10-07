@@ -15,7 +15,7 @@ import type { RefreshedToolCredentials } from '@yaac/shared/types'
  * Two-way sync between the users' credential stores and the runtime that
  * injects from them.
  *
- * Down: every writer of the host store (login, clear, git credential
+ * Down: every writer of a user's store (login, clear, git credential
  * changes, a plan-usage refresh that rotated a token) calls
  * `pushCredentialsToRuntime`, which sends every user's set. The store is the
  * authority; nothing re-reads it on a schedule.
