@@ -61,11 +61,13 @@ function ruleFromDraft(draft: Draft): SecretProxyRule {
  * A project's environment variables and proxied secrets. They are stored on
  * the server (secrets encrypted) rather than in `yaac-config.json`, so a
  * client on another machine can set them. A secret's value is write-only:
- * leaving it blank in an edit keeps the stored value.
+ * leaving it blank in an edit keeps the stored value. `readOnly` (a
+ * teammate's project) only lists them.
  */
-export function ProjectEnv({ projectId, mediatedEgress }: {
+export function ProjectEnv({ projectId, mediatedEgress, readOnly = false }: {
   projectId: string
   mediatedEgress: boolean
+  readOnly?: boolean
 }): JSX.Element {
   const [draft, setDraft] = useState<Draft>(EMPTY)
   const [editing, setEditing] = useState<string | null>(null)
@@ -142,14 +144,14 @@ export function ProjectEnv({ projectId, mediatedEgress }: {
                 </div>
                 <div className="truncate font-mono text-[11px] text-text-faint">
                   {v.secret
-                    ? (v.hasValue ? '••••••••' : 'no value stored — enter one below')
+                    ? (v.hasValue ? '••••••••' : 'no value stored')
                     : v.value}
                 </div>
                 {v.secret && (
                   <div className="truncate text-[11px] text-text-faint">{ruleSummary(v.rule)}</div>
                 )}
               </div>
-              <div className="flex shrink-0 items-center gap-1">
+              {!readOnly && <div className="flex shrink-0 items-center gap-1">
                 <button
                   onClick={() => { setEditing(v.id); setDraft(draftFrom(v)) }}
                   disabled={busy}
@@ -166,13 +168,15 @@ export function ProjectEnv({ projectId, mediatedEgress }: {
                 >
                   <DeleteIcon size={12} />
                 </button>
-              </div>
+              </div>}
             </div>
           ))}
         </div>
       )}
 
-      <form onSubmit={submit} className="mt-3 space-y-2">
+      {readOnly && vars?.length === 0 && <p className="mt-3 text-[11px] text-text-faint">None set.</p>}
+
+      {!readOnly && <form onSubmit={submit} className="mt-3 space-y-2">
         <div className="flex gap-2">
           <input
             value={draft.name}
@@ -267,7 +271,7 @@ export function ProjectEnv({ projectId, mediatedEgress }: {
             </button>
           )}
         </div>
-      </form>
+      </form>}
 
       {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
     </div>

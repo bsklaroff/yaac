@@ -2,6 +2,8 @@ import { createElement, type ReactElement } from 'react'
 import { vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, type RenderResult } from '@testing-library/react'
+import { whoamiQuery } from '#lib/viewer'
+import type { Whoami } from '@yaac/shared/types'
 
 /**
  * A stub of the global `fetch`, which is where the SPA meets the server:
@@ -66,12 +68,23 @@ export function mockFetch(routes: Record<string, Reply> = {}): FetchMock {
   }
 }
 
+/** The caller a test's components see: a `local` install's one user, who
+ *  owns every fixture project (`owner: TEST_USER_ID`). */
+export const TEST_USER_ID = 'u-me'
+export const TEST_WHOAMI: Whoami = {
+  kind: 'local', userId: TEST_USER_ID, users: [{ id: TEST_USER_ID, login: null, name: 'Me' }],
+}
+
 /** A query client configured like the app's (main.tsx): no retries, and no
- *  refetches the test did not cause. */
-export function testQueryClient(): QueryClient {
-  return new QueryClient({
+ *  refetches the test did not cause. It already holds `whoami`, as the app's
+ *  does by the time anything below the bootstrap renders; pass null to
+ *  leave it for the test to answer. */
+export function testQueryClient(whoami: Whoami | null = TEST_WHOAMI): QueryClient {
+  const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchOnWindowFocus: false } },
   })
+  if (whoami) client.setQueryData(whoamiQuery.queryKey, whoami)
+  return client
 }
 
 /** Render inside a fresh query client. */

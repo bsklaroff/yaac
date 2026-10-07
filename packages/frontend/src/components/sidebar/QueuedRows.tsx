@@ -10,6 +10,7 @@ import { queuedTitle, clip } from '#lib/queued'
 import { useUiStore } from '#lib/store'
 import { useCreateWorkspace } from '#lib/useCreateDefaults'
 import { relativeAge } from '#lib/time'
+import { useReadOnly } from '#lib/viewer'
 import type { DraftWorkspaceEntry, QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /** The row a discarded entry's children would move under, as its discard
@@ -117,12 +118,14 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
   const edit = (): void => openCreateWorkspace({ projectId: entry.projectId, editId: entry.id })
   const report = (e: unknown): void => setError(e instanceof Error ? e.message : String(e))
   const failure = error ?? entry.launchError
+  const readOnly = useReadOnly()
 
   return (
     <div className="group relative mx-2" style={{ paddingLeft: depth * 12 }}>
       <button
         type="button"
         onClick={edit}
+        disabled={readOnly}
         title={entry.prompt}
         className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition
           hover:bg-surface-2/60"
@@ -206,6 +209,7 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
   const createWorkspace = useCreateWorkspace()
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const name = queuedTitle(draft)
+  const readOnly = useReadOnly()
   const open = (): void => openCreateWorkspace({ projectId: draft.projectId, draftId: draft.id, focus: 'prompt' })
   const run = (): void => createWorkspace(draft.projectId, draft.tool, {
     model: draft.model ?? '',
@@ -223,6 +227,7 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
       <button
         type="button"
         onClick={open}
+        disabled={readOnly}
         title={draft.prompt}
         className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition
           hover:bg-surface-2/60"

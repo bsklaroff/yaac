@@ -392,6 +392,13 @@ export interface CreateWorkspaceDialogOpts {
 
 /** Client-side UI state. Server state lives in the snapshot. */
 interface UiState {
+  /** The user whose projects the rail and sidebar show, picked in the user
+   *  switcher or by opening a link into their project; null is the caller
+   *  (see #lib/viewer). */
+  viewedUserId: string | null
+  /** Switch to another user's projects (null: the caller's), opening
+   *  `projectId`, their first. */
+  viewUser: (userId: string | null, projectId: string | null) => void
   /** Project whose workspaces the sidebar is scoped to (rail selection). */
   activeProjectId: string | null
   /** Workspace shown in the main pane. */
@@ -643,6 +650,8 @@ export function shortcutsSuspended(state: Pick<UiState, 'recordingShortcut' | 'c
 }
 
 export const useUiStore = create<UiState>((set) => ({
+  viewedUserId: null,
+  viewUser: (userId, projectId) => set({ viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null }),
   activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
   focusNonce: 0,

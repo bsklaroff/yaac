@@ -65,6 +65,7 @@ export function CodeEditor({
   className,
   bare = false,
   fontSize,
+  readOnly = false,
   onCreateEditor,
 }: {
   value: string
@@ -77,6 +78,7 @@ export function CodeEditor({
   bare?: boolean
   /** Text size in px; unset inherits the page's. */
   fontSize?: number
+  readOnly?: boolean
   onCreateEditor?: (view: EditorView) => void
 }): JSX.Element {
   const ref = useRef<ReactCodeMirrorRef>(null)
@@ -106,6 +108,7 @@ export function CodeEditor({
         height={height}
         className="h-full"
         extensions={extensions}
+        readOnly={readOnly}
         onCreateEditor={onCreateEditor}
         basicSetup={{ foldGutter: false, highlightActiveLine: false }}
       />

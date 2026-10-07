@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
+import type { JSX } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { screen, fireEvent, cleanup } from '@testing-library/react'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 import { StoppedTranscript } from '#components/StoppedTranscript'
-import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 /**
  * The stopped-workspace pane's conversation view. The server is answered at
@@ -192,5 +194,18 @@ describe('StoppedTranscript', () => {
 
     expect(await screen.findByText(/Allow Once/)).toBeTruthy()
     expect(screen.queryByText(/never answered/i)).toBeNull()
+  })
+
+  it('never serves a live poll as the stopped record', async () => {
+    // A teammate's running workspace is polled; once it stops, the stopped
+    // view must fetch its final record rather than reuse the last poll.
+    const client = testQueryClient()
+    const pane = (live: boolean): JSX.Element => <StoppedTranscript workspaceId="w1" sessions={[session()]} live={live} />
+    const view = renderWithClient(pane(true), client)
+    expect(await screen.findByText('the router')).toBeTruthy()
+    transcript([asked(0, 'what changed?'), said(1, 'the router'), said(2, 'and the final turn')])
+    view.rerender(<QueryClientProvider client={client}>{pane(false)}</QueryClientProvider>)
+    expect(await screen.findByText(/and the final turn/)).toBeTruthy()
+    expect(server.called(TRANSCRIPT)).toHaveLength(2)
   })
 })

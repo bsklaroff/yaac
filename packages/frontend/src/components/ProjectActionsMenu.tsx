@@ -7,10 +7,11 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MENU_ITEM, POPUP } from '#components/ui/menu'
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
+import { useReadOnly } from '#lib/viewer'
 import { useProjectName } from '#lib/projectIdentity'
 
 /** The project name as a menu trigger. The only action is Remove, which
- *  asks for confirmation. */
+ *  asks for confirmation. A teammate's project shows its plain name. */
 export function ProjectActionsMenu({ projectId, remoteUrl }: {
   projectId: string
   /** The project's git remote, typed back to confirm removal. */
@@ -19,10 +20,12 @@ export function ProjectActionsMenu({ projectId, remoteUrl }: {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const [confirm, setConfirm] = useState(false)
   const name = useProjectName()(projectId)
+  const readOnly = useReadOnly()
   const remove = useMutation({
     mutationFn: () => api.project[':projectId'].$delete({ param: { projectId } }),
     onSuccess: () => { setActiveProject(null); setConfirm(false) },
   })
+  if (readOnly) return <span className="truncate font-semibold tracking-tight">{name}</span>
 
   return (
     <>

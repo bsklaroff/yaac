@@ -19,6 +19,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     name: meta.name,
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
+    owner: meta.owner,
     workspaceCount: workspaceCounts[meta.id] ?? 0,
     // Remembered create defaults, so the create form opens on what an
     // untouched create would run (see `resolveToolCreateDefaults`).

@@ -11,7 +11,8 @@ export interface BadgeAction {
 }
 
 /**
- * A count badge whose popover lists items, each expanding to its actions.
+ * A count badge whose popover lists items, each expanding to its actions
+ * (an item with none is a plain row).
  * An action's error shows under its item; success collapses the item, and
  * the next snapshot drops it. The badge renders its own <button>, so inside
  * a clickable row mount it as an overlaid sibling, not nested in the row's
@@ -58,13 +59,14 @@ export function ActionsBadge<T extends string | number>({
             {header}
             <ul className="max-h-64 overflow-y-auto">
               {items.map((item) => {
-                const isOpen = expanded === item
+                const itemActions = actions(item)
+                const isOpen = expanded === item && itemActions.length > 0
                 const isPending = pending === item
                 return (
                   <li key={item}>
                     <button
                       type="button"
-                      disabled={isPending}
+                      disabled={isPending || itemActions.length === 0}
                       onClick={() => {
                         setExpanded(isOpen ? null : item)
                         // Clears a stale error; a running action keeps its spinner.
@@ -76,7 +78,7 @@ export function ActionsBadge<T extends string | number>({
                       <span className="flex-1 truncate font-mono text-xs text-text-dim">{itemLabel(item)}</span>
                       {isPending
                         ? <LoadingIcon size={12} className="shrink-0 animate-spin text-text-faint" />
-                        : (
+                        : itemActions.length > 0 && (
                           <ChevronIcon
                             size={12}
                             className={clsx('shrink-0 text-text-faint transition-transform', isOpen && 'rotate-90')}
@@ -85,7 +87,7 @@ export function ActionsBadge<T extends string | number>({
                     </button>
                     {isOpen && (
                       <div className="flex flex-col pb-1 pl-2">
-                        {actions(item).map(({ label: actionLabel, run }) => (
+                        {itemActions.map(({ label: actionLabel, run }) => (
                           <button
                             key={actionLabel}
                             type="button"

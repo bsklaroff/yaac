@@ -8,6 +8,7 @@ import { Modal } from '#components/ui/Modal'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useUiStore } from '#lib/store'
 import { useSnapshot } from '#lib/useSnapshot'
+import { useReadOnly } from '#lib/viewer'
 
 /**
  * Add-project button and dialog: clone a git repo with a credential chosen in
@@ -19,8 +20,9 @@ import { useSnapshot } from '#lib/useSnapshot'
 export function NewProjectButton(
   /** 'rail': the desktop rail chip. 'row': the mobile projects-screen row. */
   { variant = 'rail' }: { variant?: 'rail' | 'row' } = {},
-): JSX.Element {
+): JSX.Element | null {
   const setActiveProject = useUiStore((s) => s.setActiveProject)
+  const readOnly = useReadOnly()
   const queryClient = useQueryClient()
   const projects = useSnapshot()?.projects
   const [added, setAdded] = useState<string | null>(null)
@@ -54,6 +56,7 @@ export function NewProjectButton(
     setAdded(null)
   }, [added, projects, setActiveProject])
 
+  if (readOnly) return null
   return (
     <>
       <button

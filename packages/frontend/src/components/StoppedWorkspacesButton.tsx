@@ -13,6 +13,7 @@ import { api } from '#lib/api'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { patchStopped } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
+import { useReadOnly } from '#lib/viewer'
 import { isUnseenDeath, useUiStore } from '#lib/store'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
@@ -44,6 +45,7 @@ export function StoppedWorkspacesButton({
   const provision = useProvisionWorkspace()
   const queryClient = useQueryClient()
   const isMobile = useIsMobile()
+  const readOnly = useReadOnly()
 
   const [queryText, setQueryText] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -76,6 +78,7 @@ export function StoppedWorkspacesButton({
   // seen that nobody read.
   //
   // A failed write shows in the header, and a refetch puts the dot back.
+  // A teammate's list is never marked: the deaths are theirs to see.
   const markSeen = useMutation({
     mutationFn: (workspaceId: string | null) => (workspaceId === null
       ? api.workspace['mark-all-deaths-seen'].$post({ json: { projectId } })
@@ -89,10 +92,10 @@ export function StoppedWorkspacesButton({
   const { mutate: markOneSeen } = markSeen
   const marked = useRef(new Set<string>())
   useEffect(() => {
-    if (!open || !picked?.deathReason || picked.seen || marked.current.has(picked.workspaceId)) return
+    if (readOnly || !open || !picked?.deathReason || picked.seen || marked.current.has(picked.workspaceId)) return
     marked.current.add(picked.workspaceId)
     markOneSeen(picked.workspaceId)
-  }, [open, picked, markOneSeen])
+  }, [readOnly, open, picked, markOneSeen])
 
   const onConfirmRestart = (entry: StoppedWorkspaceEntry): void => {
     setConfirm(null)
@@ -140,7 +143,7 @@ export function StoppedWorkspacesButton({
         actions={(
           <>
             {markSeen.error && <span className="text-xs text-danger">{markSeen.error.message}</span>}
-            {unseenDeaths > 0 && (
+            {unseenDeaths > 0 && !readOnly && (
               <button
                 type="button"
                 onClick={() => markSeen.mutate(null)}
@@ -243,7 +246,7 @@ export function StoppedWorkspacesButton({
                       sessions={selected.agentSessions}
                       prompt={selected.prompt}
                     />
-                    <button
+                    {!readOnly && <button
                       type="button"
                       onClick={() => setConfirm(selected)}
                       className="mt-4 flex w-fit items-center gap-1.5 self-end rounded-md bg-surface-3 px-3 py-1.5
@@ -252,7 +255,7 @@ export function StoppedWorkspacesButton({
                     >
                       <RestartIcon size={13} />
                       Restart
-                    </button>
+                    </button>}
                   </>
                 )}
               </div>

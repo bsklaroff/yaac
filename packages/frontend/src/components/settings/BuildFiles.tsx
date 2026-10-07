@@ -16,11 +16,13 @@ function formatSize(bytes: number): string {
  * Manages one build dir's support files (the Dockerfile's build context):
  * list, delete, edit, create, and upload files or folders. `filesApi` picks
  * the scope (one project or the global user layer). `title` prefixes the
- * expanded editor's title.
+ * expanded editor's title. `readOnly` (a teammate's project) only lists and
+ * shows them.
  */
-export function BuildFiles({ filesApi, title }: {
+export function BuildFiles({ filesApi, title, readOnly = false }: {
   filesApi: BuildFilesApi
   title: string
+  readOnly?: boolean
 }): JSX.Element {
   const queryClient = useQueryClient()
   const { data: files, error: loadError } = useQuery({
@@ -115,7 +117,7 @@ export function BuildFiles({ filesApi, title }: {
                 type="button"
                 disabled={f.binary}
                 onClick={() => setSelected(f.path === selected ? null : f.path)}
-                title={f.binary ? 'Binary files can be replaced by re-uploading' : `Edit ${f.path}`}
+                title={f.binary ? 'Binary files can be replaced by re-uploading' : `Open ${f.path}`}
                 className={clsx(
                   'min-w-0 flex-1 truncate text-left font-mono',
                   f.binary ? 'cursor-default text-text-faint' : 'text-text-dim hover:text-text',
@@ -126,7 +128,7 @@ export function BuildFiles({ filesApi, title }: {
               <span className="shrink-0 font-mono text-[10px] text-text-faint">
                 {f.binary && 'binary · '}{formatSize(f.size)}
               </span>
-              <button
+              {!readOnly && <><button
                 type="button"
                 onClick={() => renameFile(f.path)}
                 title={`Rename ${f.path}`}
@@ -143,7 +145,7 @@ export function BuildFiles({ filesApi, title }: {
                 className="shrink-0 rounded p-0.5 text-text-faint transition hover:text-red-400"
               >
                 <DeleteIcon size={12} />
-              </button>
+              </button></>}
             </div>
           ))}
         </div>
@@ -152,7 +154,7 @@ export function BuildFiles({ filesApi, title }: {
         <p className="text-text-faint">No files yet.</p>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
+      {!readOnly && <><div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
@@ -215,7 +217,7 @@ export function BuildFiles({ filesApi, title }: {
         >
           New file
         </button>
-      </form>
+      </form></>}
 
       {error && <p className="whitespace-pre-wrap text-red-400">{error.message}</p>}
 
@@ -226,10 +228,12 @@ export function BuildFiles({ filesApi, title }: {
           language={languageForPath(selected)}
           queryKey={[...filesApi.key, selected]}
           load={() => load(selected)}
-          save={async (text) => {
-            await filesApi.saveText(selected, text)
-            void queryClient.invalidateQueries({ queryKey: filesApi.key, exact: true }) // sizes changed
-          }}
+          {...(readOnly ? {} : {
+            save: async (text: string) => {
+              await filesApi.saveText(selected, text)
+              void queryClient.invalidateQueries({ queryKey: filesApi.key, exact: true }) // sizes changed
+            },
+          })}
         />
       )}
     </div>

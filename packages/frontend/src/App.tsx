@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './lib/api'
@@ -7,6 +7,7 @@ import { claimChord, cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTa
 import { deviceTimeZone } from './lib/time'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
+import { ownedBy, useReadOnly, useViewedUserId, whoamiQuery } from './lib/viewer'
 import {
   mergeProvisioning, persistSelection, resolveVacantSelection,
   shortcutsSuspended, unreadWaitingByProject, useUiStore,
@@ -14,6 +15,7 @@ import {
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
 import { WorkspaceView } from './components/WorkspaceView'
+import { ReadOnlyWorkspace } from './components/ReadOnlyWorkspace'
 import { MobileScreenLayer } from './components/mobile/MobileScreenLayer'
 import { ProjectsScreen } from './components/mobile/ProjectsScreen'
 import { WorkspacesScreen } from './components/mobile/WorkspacesScreen'
@@ -29,17 +31,14 @@ import type { WorkspaceListEntry } from '@yaac/shared/types'
 function App(): JSX.Element {
   // The server identifies the caller from the request (loopback, or
   // tailscale serve's identity headers); a refusal carries its reason.
-  const whoami = useQuery({
-    queryKey: ['whoami'],
-    queryFn: async () => {
-      const me = await api.whoami.$get()
-      // Workspaces launch in the zone of the device last used.
-      api.config['time-zone'].$put({ json: { timeZone: deviceTimeZone() } })
-        .catch((e: unknown) => console.error('reporting the time zone failed', e))
-      return me
-    },
-  })
+  const whoami = useQuery(whoamiQuery)
   const authed = whoami.isSuccess
+  // Workspaces launch in the zone of the device last used.
+  useEffect(() => {
+    if (!authed) return
+    api.config['time-zone'].$put({ json: { timeZone: deviceTimeZone() } })
+      .catch((e: unknown) => console.error('reporting the time zone failed', e))
+  }, [authed])
 
   // Hooks must run unconditionally; the WS only connects once authed.
   const { connected } = useEvents(authed)
@@ -47,19 +46,22 @@ function App(): JSX.Element {
 
   // Chime when a workspace starts waiting for input. The first snapshot only
   // seeds the set, so workspaces already waiting on load stay silent. The
-  // workspace the user is looking at (selected, window focused) never chimes.
+  // workspace the user is looking at (selected, window focused) never chimes,
+  // and neither does a teammate's.
   const soundEnabled = useUiStore((s) => s.soundEnabled)
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
+  const me = whoami.data?.userId
   const waitingSpells = useRef<Set<string> | null>(null)
   useEffect(() => {
-    if (!snapshot) return
-    const current = waitingKeys(snapshot.workspaces)
+    if (!snapshot || me === undefined) return
+    const { workspaces } = ownedBy(snapshot, me)
+    const current = waitingKeys(workspaces)
     if (waitingSpells.current === null) { waitingSpells.current = current; return }
-    const fresh = newlyWaiting(waitingSpells.current, snapshot.workspaces)
+    const fresh = newlyWaiting(waitingSpells.current, workspaces)
     waitingSpells.current = current
     const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedWorkspaceId : null
     if (soundEnabled && fresh.some((w) => w.workspaceId !== watching)) playChime()
-  }, [snapshot, soundEnabled, selectedWorkspaceId])
+  }, [snapshot, me, soundEnabled, selectedWorkspaceId])
 
   let content: JSX.Element
   if (whoami.isPending) content = <FullScreen>Loading…</FullScreen>
@@ -90,9 +92,18 @@ function App(): JSX.Element {
  * a prop: a component that selects a project the moment the cache lists it
  * (NewProjectButton) can re-render Shell before App has, and the fallback
  * below would then miss the project in a stale prop and switch back.
+ *
+ * Everything below the rail sees `snapshot`, the viewed user's part of the
+ * server's (#lib/viewer); bookkeeping over every workspace reads `all`.
  */
 function Shell({ connected }: { connected: boolean }): JSX.Element {
-  const snapshot = useSnapshot()
+  const all = useSnapshot()
+  const viewedUserId = useViewedUserId()
+  const readOnly = useReadOnly()
+  const snapshot = useMemo(
+    () => (all && viewedUserId !== undefined ? ownedBy(all, viewedUserId) : all),
+    [all, viewedUserId],
+  )
   const activeProjectId = useUiStore((s) => s.activeProjectId)
   const setActiveProject = useUiStore((s) => s.setActiveProject)
   const restoreActiveProject = useUiStore((s) => s.restoreActiveProject)
@@ -128,11 +139,18 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     persistSelection(s.activeProjectId, s.selectedWorkspaceId)
   }, [])
 
-  // An active project that is no id here may be a link naming the project
-  // instead; else the selected workspace says which project it is in. Failing both, fall back to the
-  // first project, with restoreActiveProject because the user did not
-  // choose it, so on mobile it must not navigate into the project.
+  // An active project of another user's (a link, or a reload) switches to
+  // viewing that user. An active project that is no id here may be a link
+  // naming the project instead; else the selected workspace says which
+  // project it is in. Failing all, fall back to the first project, with
+  // restoreActiveProject because the user did not choose it, so on mobile it
+  // must not navigate into the project.
   useEffect(() => {
+    const owner = all?.projects.find((p) => p.id === activeProjectId)?.owner
+    if (owner !== undefined && owner !== viewedUserId) {
+      useUiStore.setState({ viewedUserId: owner })
+      return
+    }
     if (projects.length === 0) return
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return
     const { selectedWorkspaceId } = useUiStore.getState()
@@ -140,7 +158,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       ?? workspaces.find((w) => w.workspaceId === selectedWorkspaceId)?.projectId
     if (found !== undefined) useUiStore.setState({ activeProjectId: found })
     else restoreActiveProject(projects[0].id)
-  }, [activeProjectId, projects, workspaces, restoreActiveProject])
+  }, [all, viewedUserId, activeProjectId, projects, workspaces, restoreActiveProject])
 
   const scoped = workspaces.filter((s) => s.projectId === activeProjectId)
   const scopedProvisioning = provisioning.filter((p) => p.projectId === activeProjectId)
@@ -158,10 +176,10 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const newWorkspace = (): void => {
-    if (activeProjectId) openCreateWorkspace({ projectId: activeProjectId, focus: 'prompt' })
+    if (activeProjectId && !readOnly) openCreateWorkspace({ projectId: activeProjectId, focus: 'prompt' })
   }
   const [confirmDelete, setConfirmDelete] = useState<WorkspaceListEntry | null>(null)
-  const selectedWorkspace = selectedWorkspaceId && !pendingDeleteIds.includes(selectedWorkspaceId)
+  const selectedWorkspace = selectedWorkspaceId && !readOnly && !pendingDeleteIds.includes(selectedWorkspaceId)
     ? workspaces.find((s) => s.workspaceId === selectedWorkspaceId && !s.stopping) ?? null
     : null
   const shortcutCtx = useRef({ rowIds, selectedWorkspaceId, selectedWorkspace, newWorkspace })
@@ -240,22 +258,22 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // snapshot, since syncing against the empty fallback would wipe every
   // restored mark on reload.
   useEffect(() => {
-    if (!snapshot) return
-    syncWaitingRead(workspaces
+    if (!all) return
+    syncWaitingRead(all.workspaces
       .filter((s) => s.status === 'waiting')
       .map((s) => ({ workspaceId: s.workspaceId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
-  }, [snapshot, workspaces, syncWaitingRead])
+  }, [all, syncWaitingRead])
 
   // Drop chat drafts for workspaces that no longer exist (same first-snapshot
   // guard as above). Provisioning ids count as live because a restarting
   // workspace leaves the workspace list and returns with the same id.
   useEffect(() => {
-    if (!snapshot) return
+    if (!all) return
     syncChatDrafts([
-      ...workspaces.map((s) => s.workspaceId),
-      ...provisioning.map((p) => p.workspaceId),
+      ...all.workspaces.map((s) => s.workspaceId),
+      ...mergeProvisioning(all.provisioning, optimisticProvisioning).map((p) => p.workspaceId),
     ])
-  }, [snapshot, workspaces, provisioning, syncChatDrafts])
+  }, [all, optimisticProvisioning, syncChatDrafts])
 
   const attention = unreadWaitingByProject(workspaces, readWaiting, pendingDeleteIds)
 
@@ -327,7 +345,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           ? ['absolute inset-0', mobileScreen !== 'pane' && 'invisible pointer-events-none']
           : 'min-w-0 flex-1 p-2')}
       >
-        <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />
+        {readOnly
+          ? <ReadOnlyWorkspace workspace={workspaces.find((w) => w.workspaceId === selectedWorkspaceId)} />
+          : <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />}
       </div>
 
       {/* Confirm for the delete-workspace shortcut. */}

@@ -308,6 +308,30 @@ stays per workspace.
 - The live read-only chat view is deferred (issue #326); a teammate's
   running workspace opens in the transcript view, refreshed periodically.
 
+How the SPA does it (`packages/frontend/src/lib/viewer.ts`):
+
+- `ProjectSummary.owner` is the only owner field in the snapshot. Every
+  other row belongs to its project's owner, so `ownedBy(snapshot, userId)`
+  cuts the snapshot by project id. Install-wide fields (image builds, plan
+  usage, driver) pass through. The waiting chime counts only the caller's
+  workspaces.
+- The viewed user is client state (`viewedUserId`, null for the caller),
+  not a URL parameter: an active project owned by someone else, from a link
+  or a reload, switches the view to its owner.
+- Read-only hides the controls that write (row menus keep only `view`
+  items such as "Show stopped workspaces"; the blocked-hosts badge lists
+  hosts with no allow actions), disables queued and draft rows, and
+  attaches nothing: no terminal, chat or file pane, since every attach is
+  `owner` level. The transcript refetches every 5 seconds, under its own
+  cache key, so the stopped view never serves a poll as the final record.
+- Image-build retry and dismiss follow the build, not the view: a project
+  or user layer's build is offered to its projects' owners, a shared
+  image's to everyone.
+- Env var values show to a teammate as to the owner: plain values in full,
+  secrets never leaving the server.
+- Personal settings use the caller's own routes. Git credentials offer only
+  the caller's projects; Project Config lists the viewed user's.
+
 ### Image builds
 
 - `/config/user-dockerfile` and `/config/user-build-files/*` become per user
@@ -339,7 +363,7 @@ stays per workspace.
    registrations, and every credential path resolving through it.
 7. **Route authorization**: every route classified and gated, and per-user
    user Dockerfiles and build files.
-8. **SPA**: owner on snapshot rows, the user switcher, read-only views,
+8. **SPA** — shipped: owner on snapshot rows, the user switcher, read-only views,
    settings split, the containerless "does not separate users" notice.
 9. **Docs**: a `docs/multi-user.md` reference and this plan deleted
    (remote-hosting.md's access modes, setup and security model sections are

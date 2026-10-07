@@ -7,6 +7,8 @@ import { Modal } from '#components/ui/Modal'
 import { api } from '#lib/api'
 import { useIsMobile } from '#lib/viewport'
 import { useProjectName } from '#lib/projectIdentity'
+import { useSnapshot } from '#lib/useSnapshot'
+import { projectsOf, useWhoami } from '#lib/viewer'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 import { relativeAge } from '#lib/time'
 
@@ -40,6 +42,12 @@ export function ImageBuildsOverlay({
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const isMobile = useIsMobile()
   const projectName = useProjectName()
+  // A project chain's build is its owner's to retry or dismiss; a shared
+  // image's (base, tools, nestable) is anyone's.
+  const me = useWhoami()?.userId
+  const mine = new Set(projectsOf(useSnapshot()?.projects ?? [], me).map((p) => p.id))
+  const canAct = (b: ImageBuildEntry): boolean =>
+    (b.layer !== 'project' && b.layer !== 'user') || b.projectIds.some((id) => mine.has(id))
 
   // The user's pick, else (desktop only) the newest running build, else the
   // newest. On mobile the list and log are separate screens, so nothing is
@@ -121,7 +129,7 @@ export function ImageBuildsOverlay({
                       <span className="truncate text-[10px] text-danger">{b.error}</span>
                     )}
                   </button>
-                  {b.status !== 'running' && (
+                  {b.status !== 'running' && canAct(b) && (
                     <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5">
                       {b.status === 'failed' && (
                         <button

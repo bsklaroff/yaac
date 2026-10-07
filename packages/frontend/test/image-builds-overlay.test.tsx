@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { SNAPSHOT_KEY } from '#lib/useEvents'
-import { mockFetch, renderWithClient as render, serverError, testQueryClient, type FetchMock } from './harness'
+import { mockFetch, renderWithClient as render, serverError, testQueryClient, TEST_USER_ID, type FetchMock } from './harness'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
@@ -74,7 +74,7 @@ describe('ImageBuildsOverlay', () => {
       build({ id: 'build-2', tag: 'yaac-user-p:def', layer: 'user', status: 'failed', error: 'registry down' }),
     ]
     const client = testQueryClient()
-    client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: 'proj', name: 'widgets' }] })
+    client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: 'proj', name: 'widgets', owner: TEST_USER_ID }] })
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />, client)
 
     expect(screen.getByText('Image builds')).toBeTruthy()
@@ -167,5 +167,21 @@ describe('ImageBuildsOverlay', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss build entry' }))
     expect(await screen.findByText('dismiss exploded')).toBeTruthy()
     expect(screen.queryByText('no such build to retry')).toBeNull()
+  })
+
+  it('offers retry and dismiss on shared images and the caller\'s own chains, not on a teammate\'s', () => {
+    const client = testQueryClient()
+    client.setQueryData(SNAPSHOT_KEY, { projects: [
+      { id: 'proj', name: 'widgets', owner: TEST_USER_ID }, { id: 'hers', name: 'gadgets', owner: 'u-ada' },
+    ] })
+    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[
+      build({ id: 'build-1', status: 'failed', projectIds: ['hers'] }),
+      build({ id: 'build-2', tag: 'yaac-user-p:def', layer: 'user', status: 'failed', projectIds: ['proj'] }),
+      build({ id: 'old-failed', tag: 'yaac-project-h:abc', layer: 'project', status: 'failed', projectIds: ['hers'] }),
+    ]} />, client)
+    // The base build (shared, requested by her project) and the caller's user
+    // layer keep their actions; her project layer does not.
+    expect(screen.getAllByRole('button', { name: 'Retry build' })).toHaveLength(2)
+    expect(screen.getAllByRole('button', { name: 'Dismiss build entry' })).toHaveLength(2)
   })
 })

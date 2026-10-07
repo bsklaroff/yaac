@@ -7,6 +7,7 @@ import { api } from '#lib/api'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
+import { projectsOf, useReadOnly, useViewedUserId } from '#lib/viewer'
 
 const project = api.project[':projectId']
 
@@ -28,10 +29,12 @@ async function saveConfig(projectId: string, text: string): Promise<void> {
 /**
  * Settings section for a project's overlay files: `yaac-config.json` and
  * `Dockerfile.yaac`. A picker chooses the project, defaulting to the active
- * one.
+ * one, among the viewed user's (#lib/viewer); a teammate's show read-only.
  */
 export function ProjectSettings(): JSX.Element {
-  const projects = useSnapshot()?.projects ?? []
+  const viewedUserId = useViewedUserId()
+  const readOnly = useReadOnly()
+  const projects = projectsOf(useSnapshot()?.projects ?? [], viewedUserId)
   const activeProjectId = useUiStore((s) => s.activeProjectId)
   // The dialog unmounts on close, so this re-defaults to the active project
   // each time settings open.
@@ -81,7 +84,12 @@ export function ProjectSettings(): JSX.Element {
           </div>
 
           <div className="mt-6">
-            <ProjectEnv key={`env:${projectId}`} projectId={projectId} mediatedEgress={mediatedEgress} />
+            <ProjectEnv
+              key={`env:${projectId}`}
+              projectId={projectId}
+              mediatedEgress={mediatedEgress}
+              readOnly={readOnly}
+            />
           </div>
 
           <div className="mt-6">
@@ -96,7 +104,7 @@ export function ProjectSettings(): JSX.Element {
                 language="json"
                 queryKey={['project-config', projectId]}
                 load={() => loadConfig(projectId)}
-                save={(text) => saveConfig(projectId, text)}
+                {...(readOnly ? {} : { save: (text: string) => saveConfig(projectId, text) })}
               />
             </div>
           </div>
@@ -116,7 +124,11 @@ export function ProjectSettings(): JSX.Element {
                 language="dockerfile"
                 queryKey={['project-dockerfile', projectId]}
                 load={async () => (await project.dockerfile.$get({ param: { projectId } })).content}
-                save={async (content) => { await project.dockerfile.$put({ param: { projectId }, json: { content } }) }}
+                {...(readOnly ? {} : {
+                  save: async (content: string) => {
+                    await project.dockerfile.$put({ param: { projectId }, json: { content } })
+                  },
+                })}
               />
             </div>
           </div>
@@ -129,7 +141,7 @@ export function ProjectSettings(): JSX.Element {
               workspace create.
             </p>
             <div className="mt-2">
-              {filesApi && <BuildFiles key={`files:${projectId}`} filesApi={filesApi} title={selected.name} />}
+              {filesApi && <BuildFiles key={`files:${projectId}`} filesApi={filesApi} title={selected.name} readOnly={readOnly} />}
             </div>
           </div></>}
         </>

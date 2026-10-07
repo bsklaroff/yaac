@@ -11,6 +11,7 @@ export type { LucideIcon as Icon } from 'lucide-react'
 export {
   Terminal as TerminalIcon,
   Folders as ProjectsIcon,
+  Users as UsersIcon,
   Plus as AddIcon,
   Settings as SettingsIcon,
   Ellipsis as MoreIcon,

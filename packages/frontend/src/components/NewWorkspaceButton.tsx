@@ -1,6 +1,7 @@
 import type { JSX, MouseEvent } from 'react'
 import { AddIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
+import { useReadOnly } from '#lib/viewer'
 
 /**
  * Opens `CreateWorkspaceDialog` with the prompt focused. `cta` is a larger,
@@ -10,12 +11,14 @@ import { useUiStore } from '#lib/store'
  */
 export function NewWorkspaceButton(
   { projectId, variant = 'icon' }: { projectId: string; variant?: 'icon' | 'cta' },
-): JSX.Element {
+): JSX.Element | null {
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const readOnly = useReadOnly()
   const open = (e: MouseEvent<HTMLButtonElement>): void => {
     e.currentTarget.blur()
     openCreateWorkspace({ projectId, focus: 'prompt' })
   }
+  if (readOnly) return null
   return variant === 'cta' ? (
     <button
       type="button"

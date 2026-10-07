@@ -876,4 +876,42 @@ describe('WorkspaceList', () => {
       expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
     })
   })
+
+  it('lays out a teammate\'s list as theirs, with every control off and rows still opening', async () => {
+    // Viewing another user (#lib/viewer): the caller is TEST_USER_ID.
+    useUiStore.setState({ viewedUserId: 'u-ada' })
+    stoppedRows.push({
+      workspaceId: 'ghost', projectId: 'proj', tool: 'claude', createdAt: '2026-08-09 00:00:00',
+      stoppedAt: '2026-08-09 01:00:00', title: 'Old run', seen: true, agentSessions: [], groupId: 'g1',
+    })
+    renderList([entry({ workspaceId: 'a', title: 'Their run' }), entry({ workspaceId: 'b', title: 'Filed', groupId: 'g1' })], {
+      groups: [group()],
+      provisioning: [provisioning({ kind: 'create', title: 'Booting' })],
+      queued: [queuedEntry('q1')],
+      drafts: [{
+        id: 'd1', projectId: 'proj', prompt: 'An idea', tool: 'codex', mode: 'tui',
+        permissionMode: 'manual', createdAt: '2026-08-10 00:00:00', updatedAt: '2026-08-10 00:00:00',
+      }],
+    })
+
+    expect(screen.getByText(/workspaces, read-only/)).toBeTruthy()
+    for (const menu of ['Workspace actions', 'Queued workspace actions', 'Draft actions']) {
+      expect(screen.queryByRole('button', { name: menu })).toBeNull()
+    }
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+    // Queued entries and drafts open the create form, which writes.
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: /An idea/ }).disabled).toBe(true)
+
+    // The group menu keeps only what changes this client's view, once the
+    // stopped list gives it one.
+    await screen.findByRole('button', { name: 'Group actions' })
+    await pickAction('Show stopped workspaces', 'Group actions')
+    await screen.findByText('Old run')
+    expect(screen.queryByRole('button', { name: 'Restart workspace' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Remove from group' })).toBeNull()
+
+    fireEvent.click(screen.getByText('Their run'))
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
+    expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
 })
