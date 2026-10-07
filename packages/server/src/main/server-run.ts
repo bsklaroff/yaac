@@ -1,15 +1,17 @@
 import net from 'node:net'
 import { serve, upgradeWebSocket, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
-import type { MiddlewareHandler } from 'hono'
+import type { Context, MiddlewareHandler } from 'hono'
 import { buildApp, buildMamaRelayApp } from '#main/server'
+import type { IdentityEnv } from '#http'
+import { authorizeProject, type Actor } from '#domain/access'
 import {
   authAgentHub,
   pushCredentialsToRuntime,
   refreshPlanUsage,
   runtimeMediatesEgress,
 } from '#domain/auth'
-import { closeDb, listProjectRows, openDb } from '#db'
+import { closeDb, findWorkspaceRow, listProjectRows, openDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorkspaceContainer } from '#domain/workspaces'
@@ -319,18 +321,33 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   // Attaches name a workspace by exact id, so a missing id is refused
   // before any lookup. The conversation id is validated because it is
-  // joined into a path downstream.
-  const attachQuery = (opts: { session?: boolean } = {}): MiddlewareHandler => async (c, next) => {
-    if (!c.req.query('id')) throw new ServerError('VALIDATION', 'a workspace id is required')
+  // joined into a path downstream. Each grants execution in or a tunnel
+  // into the workspace, so only its owner may open one: checked against
+  // the workspace's row here, so a refusal is a 403 before the upgrade,
+  // and again by `ownedAttachTarget` once the socket opens.
+  const attachQuery = (opts: { session?: boolean } = {}): MiddlewareHandler<IdentityEnv> => async (c, next) => {
+    const id = c.req.query('id')
+    if (!id) throw new ServerError('VALIDATION', 'a workspace id is required')
     if (opts.session && !agentSessionIdSchema.safeParse(c.req.query('session')).success) {
       throw new ServerError('VALIDATION', 'a valid conversation id is required')
     }
+    const row = await findWorkspaceRow(id)
+    if (row) await authorizeProject(c.get('principal'), row.projectId)
     await next()
+  }
+
+  // The running workspace an attach opens, checked again against the unit
+  // it resolves to, so an id with no row at upgrade time is not let through.
+  const ownedAttachTarget = async (principal: Actor, id: string) => {
+    const target = await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })
+    await authorizeProject(principal, target.projectId)
+    return target
   }
 
   // PTY bridge: one terminal per connection, attached to the workspace's
   // tmux. Not under /workspace/ to avoid colliding with GET /workspace/:id.
   app.get('/api/pty/attach', attachQuery(), upgradeWebSocket((c) => {
+    const principal = (c as Context<IdentityEnv>).get('principal')
     const id = c.req.query('id') ?? ''
     // attachPty validates these and spawns the PTY at the browser's size, so
     // tmux and the client grid match from the first frame.
@@ -344,7 +361,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         void (async () => {
           let jobName: string
           try {
-            const resolved = await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })
+            const resolved = await ownedAttachTarget(principal, id)
             jobName = resolved.jobName
           } catch {
             try {
@@ -365,6 +382,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // desktop app listens on the user's machine and opens one of these per
   // connection (docs/port-forward-tunnel.md).
   app.get('/api/forward/attach', attachQuery(), upgradeWebSocket((c) => {
+    const principal = (c as Context<IdentityEnv>).get('principal')
     const id = c.req.query('id') ?? ''
     const port = Number(c.req.query('port'))
     return {
@@ -379,7 +397,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           }
           let workspaceId: string
           try {
-            workspaceId = (await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })).workspaceId
+            workspaceId = (await ownedAttachTarget(principal, id)).workspaceId
           } catch (err) {
             serverLog(`[server] forward tunnel to ${id.slice(0, 8)}:${String(port)} refused: `
               + (err instanceof Error ? err.message : String(err)))
@@ -396,6 +414,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // `AcpConversation` held by the status watcher's driver. Frames are JSON
   // events.
   app.get('/api/acp/attach', attachQuery({ session: true }), upgradeWebSocket((c) => {
+    const principal = (c as Context<IdentityEnv>).get('principal')
     const id = c.req.query('id') ?? ''
     const agentSessionId = c.req.query('session') ?? ''
     return {
@@ -410,7 +429,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
           }
           let projectId: string
           try {
-            projectId = (await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })).projectId
+            projectId = (await ownedAttachTarget(principal, id)).projectId
           } catch {
             fail('session not found or not running')
             return

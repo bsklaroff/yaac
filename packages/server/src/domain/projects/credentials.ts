@@ -17,6 +17,7 @@ import type { ResolvedGitCredential } from '#domain/git'
 import { encodeOpenSshPrivateKey, generateSshKey, withKeyComment } from '#lib/ssh-key'
 import type { GitCredentialSummary } from '@yaac/shared/types'
 import type { HttpsCredentialEntry, SshCredentialEntry } from '#drivers/contract'
+import { authorizeProject, type Actor } from '#domain/access'
 
 export interface ParsedGitRemote {
   scheme: 'https' | 'ssh'
@@ -193,11 +194,13 @@ function sshCredential(cred: GitCredentialRow, knownHostsEntry: string): Resolve
 
 /** Assign a project its git credential; returns the trusted host key. */
 export async function assignProjectCredential(
+  principal: Actor,
   projectId: string,
   credentialId: string,
 ): Promise<{ knownHostsEntry: string | null }> {
   const row = await getProjectRow(projectId)
   if (!row) throw new ServerError('NOT_FOUND', `Project "${projectId}" not found`)
+  await authorizeProject(principal, projectId)
   const { knownHostsEntry } = await resolveCredentialForRemote(credentialId, row.remoteUrl)
   await setProjectGitCredential(projectId, credentialId, knownHostsEntry)
   return { knownHostsEntry }

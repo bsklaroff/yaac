@@ -12,6 +12,9 @@ import {
   setProjectEnvVar,
 } from '#domain/projects'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const NOPE = '4101bef8-794f-4d98-8e95-dfb54850c68b'
 
 /**
@@ -74,22 +77,22 @@ describe('parseSecretProxyRule', () => {
 
 describe('setProjectEnvVar', () => {
   it('stores a plain variable and hands it straight back', async () => {
-    expect(await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'NODE_ENV', value: 'development' }))
+    expect(await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'NODE_ENV', value: 'development' }))
       .toMatchObject({ name: 'NODE_ENV', value: 'development', secret: false, hasValue: true })
   })
 
   it('refuses a name no shell would take', async () => {
-    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: '9LIVES', value: 'x' }))
+    await expect(setProjectEnvVar(local, DEMO_PROJECT_ID, { name: '9LIVES', value: 'x' }))
       .rejects.toThrow(/not a valid environment variable name/)
-    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'has space', value: 'x' }))
+    await expect(setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'has space', value: 'x' }))
       .rejects.toThrow(/not a valid environment variable name/)
   })
 
   it('requires a value for a new secret, and a rule for any secret', async () => {
     // A valueless secret would show as saved but be skipped at create.
-    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'K', secret: true, rule: RULE }))
+    await expect(setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'K', secret: true, rule: RULE }))
       .rejects.toThrow(/value is required for a new secret/)
-    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'K', value: 'v', secret: true }))
+    await expect(setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'K', value: 'v', secret: true }))
       .rejects.toThrow(/needs a rule/)
   })
 
@@ -98,13 +101,13 @@ describe('setProjectEnvVar', () => {
     // `resolveProjectEnv` drops, so a rule-only edit must not succeed.
     await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'IMPORTED', value: '', secret: true, rule: RULE })
 
-    await expect(setProjectEnvVar(DEMO_PROJECT_ID, { name: 'IMPORTED', secret: true, rule: RULE }))
+    await expect(setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'IMPORTED', secret: true, rule: RULE }))
       .rejects.toThrow(/value is required for a new secret/)
   })
 
   it('lets a rule be edited without the secret travelling again', async () => {
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'K', value: 'sekrit', secret: true, rule: RULE })
-    const saved = await setProjectEnvVar(DEMO_PROJECT_ID, {
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'K', value: 'sekrit', secret: true, rule: RULE })
+    const saved = await setProjectEnvVar(local, DEMO_PROJECT_ID, {
       name: 'K',
       secret: true,
       rule: { hosts: ['other.example.com'], bodyParam: 'client_secret' },
@@ -118,15 +121,15 @@ describe('setProjectEnvVar', () => {
   })
 
   it('404s for a project that does not exist', async () => {
-    await expect(setProjectEnvVar(NOPE, { name: 'A', value: '1' }))
+    await expect(setProjectEnvVar(local, NOPE, { name: 'A', value: '1' }))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 
 describe('listProjectEnv', () => {
   it('gives a plain value back and a secret’s never', async () => {
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'PLAIN', value: 'visible' })
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'PLAIN', value: 'visible' })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
 
     const vars = await listProjectEnv(DEMO_PROJECT_ID)
     expect(vars).toEqual([
@@ -146,20 +149,20 @@ describe('listProjectEnv', () => {
 
 describe('removeProjectEnvVar', () => {
   it('removes by id and 404s for one this project does not have', async () => {
-    const saved = await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'A', value: '1' })
+    const saved = await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'A', value: '1' })
 
-    await expect(removeProjectEnvVar(DEMO_PROJECT_ID, '00000000-0000-4000-8000-000000000000'))
+    await expect(removeProjectEnvVar(local, DEMO_PROJECT_ID, '00000000-0000-4000-8000-000000000000'))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
 
-    await removeProjectEnvVar(DEMO_PROJECT_ID, saved.id)
+    await removeProjectEnvVar(local, DEMO_PROJECT_ID, saved.id)
     expect(await listProjectEnv(DEMO_PROJECT_ID)).toEqual([])
   })
 })
 
 describe('resolveProjectEnv', () => {
   it('splits what a workspace gets from what the proxy injects', async () => {
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'PLAIN', value: 'v' })
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'PLAIN', value: 'v' })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
 
     expect(await resolveProjectEnv(DEMO_PROJECT_ID)).toEqual({
       plain: { PLAIN: 'v' },

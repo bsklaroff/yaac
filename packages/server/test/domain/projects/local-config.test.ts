@@ -8,6 +8,9 @@ import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const MISSING = 'ea21841d-a70e-4405-8f19-fabc4ff8bdd9'
 
 const projectId = DEMO_PROJECT_ID
@@ -44,17 +47,17 @@ async function seedOverlay(raw: string): Promise<void> {
 
 describe('writeProjectConfig', () => {
   it('writes the parsed config to disk and returns it', async () => {
-    const saved = await writeProjectConfig(projectId, { initCommands: ['pnpm install'] })
+    const saved = await writeProjectConfig(local, projectId, { initCommands: ['pnpm install'] })
     expect(saved).toEqual({ initCommands: ['pnpm install'] })
     expect(await readOverlay()).toEqual({ initCommands: ['pnpm install'] })
   })
 
   it('throws NOT_FOUND when the project does not exist', async () => {
-    await expect(writeProjectConfig(MISSING, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(writeProjectConfig(local, MISSING, {})).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('throws VALIDATION for malformed config', async () => {
-    await expect(writeProjectConfig(projectId, { initCommands: 'not-array' }))
+    await expect(writeProjectConfig(local, projectId, { initCommands: 'not-array' }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
   })
 })
@@ -76,66 +79,66 @@ describe('readProjectConfigRaw', () => {
 
 describe('removeProjectConfig', () => {
   it('throws NOT_FOUND when the project does not exist', async () => {
-    await expect(removeProjectConfig(MISSING)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(removeProjectConfig(local, MISSING)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('removes only yaac-config.json, keeping the rest of the config dir', async () => {
-    await writeProjectConfig(projectId, { initCommands: ['pnpm build'] })
+    await writeProjectConfig(local, projectId, { initCommands: ['pnpm build'] })
     const dockerfile = path.join(projectConfigDir(projectId), 'build', 'Dockerfile.yaac')
     await fs.mkdir(path.dirname(dockerfile), { recursive: true })
     await fs.writeFile(dockerfile, 'FROM ubuntu\n')
 
-    await removeProjectConfig(projectId)
+    await removeProjectConfig(local, projectId)
 
     await expect(fs.access(overlayPath())).rejects.toThrow()
     expect(await fs.readFile(dockerfile, 'utf8')).toBe('FROM ubuntu\n')
   })
 
   it('is a no-op when no config dir exists', async () => {
-    await removeProjectConfig(projectId)
+    await removeProjectConfig(local, projectId)
   })
 })
 
 describe('addAllowedHostToProjectConfig', () => {
   it('persists a new host, is idempotent, and appends further hosts', async () => {
-    await addAllowedHostToProjectConfig(projectId, 'new.example.com')
+    await addAllowedHostToProjectConfig(local, projectId, 'new.example.com')
     expect(await readOverlay()).toEqual({ addAllowedUrls: ['new.example.com'] })
 
-    await addAllowedHostToProjectConfig(projectId, 'new.example.com') // dedup no-op
-    await addAllowedHostToProjectConfig(projectId, 'other.example.com')
+    await addAllowedHostToProjectConfig(local, projectId, 'new.example.com') // dedup no-op
+    await addAllowedHostToProjectConfig(local, projectId, 'other.example.com')
     expect((await readOverlay()).addAllowedUrls)
       .toEqual(['new.example.com', 'other.example.com'])
   })
 
   it('appends to setAllowedUrls when the stored overlay pins an exact list', async () => {
     await seedOverlay(JSON.stringify({ setAllowedUrls: ['pinned.com'] }))
-    await addAllowedHostToProjectConfig(projectId, 'extra.com')
+    await addAllowedHostToProjectConfig(local, projectId, 'extra.com')
     expect(await readOverlay()).toEqual({ setAllowedUrls: ['pinned.com', 'extra.com'] })
 
-    await addAllowedHostToProjectConfig(projectId, 'pinned.com') // dedup no-op
+    await addAllowedHostToProjectConfig(local, projectId, 'pinned.com') // dedup no-op
     expect((await readOverlay()).setAllowedUrls).toEqual(['pinned.com', 'extra.com'])
   })
 
   it('preserves unrelated fields of the stored overlay', async () => {
     await seedOverlay(JSON.stringify({ nestedContainers: true }))
-    await addAllowedHostToProjectConfig(projectId, 'a.com')
+    await addAllowedHostToProjectConfig(local, projectId, 'a.com')
     expect(await readOverlay()).toEqual({ nestedContainers: true, addAllowedUrls: ['a.com'] })
   })
 
   it('rejects a malformed stored overlay as VALIDATION', async () => {
     await seedOverlay('{"addAllowedUrls": "not-an-array"}')
-    await expect(addAllowedHostToProjectConfig(projectId, 'x.com'))
+    await expect(addAllowedHostToProjectConfig(local, projectId, 'x.com'))
       .rejects.toThrow('addAllowedUrls must be a string array')
   })
 })
 
 describe('addPortForwardToProjectConfig', () => {
   it('persists a new forward with hostPortStart at the container port, and dedups', async () => {
-    await addPortForwardToProjectConfig(projectId, 8090)
+    await addPortForwardToProjectConfig(local, projectId, 8090)
     expect(await readOverlay()).toEqual({ portForward: [{ containerPort: 8090, hostPortStart: 8090 }] })
 
-    await addPortForwardToProjectConfig(projectId, 8090) // dedup no-op
-    await addPortForwardToProjectConfig(projectId, 3000)
+    await addPortForwardToProjectConfig(local, projectId, 8090) // dedup no-op
+    await addPortForwardToProjectConfig(local, projectId, 3000)
     expect((await readOverlay()).portForward).toEqual([
       { containerPort: 8090, hostPortStart: 8090 },
       { containerPort: 3000, hostPortStart: 3000 },
@@ -147,7 +150,7 @@ describe('addPortForwardToProjectConfig', () => {
       hideInitPane: true,
       portForward: [{ containerPort: 3000, hostPortStart: 20000 }],
     }))
-    await addPortForwardToProjectConfig(projectId, 8090)
+    await addPortForwardToProjectConfig(local, projectId, 8090)
     expect(await readOverlay()).toEqual({
       hideInitPane: true,
       portForward: [
@@ -159,7 +162,7 @@ describe('addPortForwardToProjectConfig', () => {
 
   it('rejects a malformed stored overlay as VALIDATION', async () => {
     await seedOverlay('{"portForward": "not-an-array"}')
-    await expect(addPortForwardToProjectConfig(projectId, 8090))
+    await expect(addPortForwardToProjectConfig(local, projectId, 8090))
       .rejects.toThrow('portForward must be an array')
   })
 })

@@ -55,8 +55,12 @@ import { setPeerReaderEntry } from '#domain/git/peer-bundle'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const CALLER: MamaCaller = {
   workspaceId: 'caller-workspace',
+  principal: { kind: 'workspace', workspaceId: 'caller-workspace', userId: BUILT_IN_USER_ID },
   projectId: PROJ,
   tool: 'codex',
 }
@@ -339,7 +343,7 @@ describe('runMamaCommand', () => {
     await recordWorkspaceCreated({
       projectId: PROJ, workspaceId: 'loose-sibling', permissionMode: 'bypass', baseBranch: 'main',
     })
-    const entry = await queueWorkspace(PROJ, {
+    const entry = await queueWorkspace(local, PROJ, {
       parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
     }, 'user')
     const refused: Array<[string, Record<string, string>]> = [
@@ -466,7 +470,7 @@ describe('runMamaCommand', () => {
     it('holds an entry the user queued above the caller to its ceiling', async () => {
       // The user queued this at `bypass`; an agent in `accept-edits` may not
       // rewrite its prompt, and the mode is not silently lowered.
-      const entry = await queueWorkspace(PROJ, {
+      const entry = await queueWorkspace(local, PROJ, {
         parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
       }, 'user')
       const refused = await run('edit-queued', 'agent wrote this', { queued: entry.id })
@@ -480,7 +484,7 @@ describe('runMamaCommand', () => {
     })
 
     it('refuses what it cannot find, a no-op, a cycle, and another project\u2019s entry', async () => {
-      const foreign = await queueWorkspace(OTHER, {
+      const foreign = await queueWorkspace(local, OTHER, {
         parent: 'foreign-workspace', prompt: 'theirs', tool: 'claude',
       }, 'user')
       const id = await output('queue', 'mine', { ...ME, tool: 'claude' })

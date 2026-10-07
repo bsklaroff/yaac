@@ -7,6 +7,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { assertProjectExists } from './detail'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
+import { authorizeProject, type Actor } from '#domain/access'
 
 /**
  * A project's environment: variables its workspaces launch with, and secrets
@@ -87,13 +88,14 @@ export async function listProjectEnv(projectId: string): Promise<ProjectEnvVar[]
  * already stored (to edit just the rule); otherwise the row would look saved
  * but be skipped at create.
  */
-export async function setProjectEnvVar(projectId: string, input: {
+export async function setProjectEnvVar(principal: Actor, projectId: string, input: {
   name: string
   value?: string
   secret?: boolean
   rule?: unknown
 }): Promise<ProjectEnvVar> {
   await assertProjectExists(projectId)
+  await authorizeProject(principal, projectId)
   const name = input.name.trim()
   if (!ENV_NAME_PATTERN.test(name)) {
     throw new ServerError(
@@ -129,8 +131,9 @@ export async function setProjectEnvVar(projectId: string, input: {
 }
 
 /** Remove one variable by id. */
-export async function removeProjectEnvVar(projectId: string, id: string): Promise<void> {
+export async function removeProjectEnvVar(principal: Actor, projectId: string, id: string): Promise<void> {
   await assertProjectExists(projectId)
+  await authorizeProject(principal, projectId)
   if (!await deleteProjectEnvVar(projectId, id)) {
     throw new ServerError('NOT_FOUND', `no environment variable ${id} in project ${projectId}`)
   }

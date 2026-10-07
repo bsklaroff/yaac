@@ -145,7 +145,9 @@ happens a layer up, in `recordedTranscript`.
   layers, git credentials, Dockerfiles and build files), `git/` (domain's
   one process boundary onto git; docs/server-git.md), `agent-history/`
   (each workspace's conversations on disk), `titles/`, `auth/`, `skills/`,
-  and `reconcile.ts` (the ordered step list of one pass).
+  `access/` (who may act on what: the verbs that make a user-caused write
+  take the caller and `authorize` it), and `reconcile.ts` (the ordered
+  step list of one pass).
 
   Config and credentials live in domain because writing them is policy: a
   saved allowed host or port forward applies to every future workspace of

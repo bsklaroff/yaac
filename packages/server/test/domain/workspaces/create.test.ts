@@ -52,6 +52,9 @@ import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { WorkspaceExecError, type WorkspaceDriver, type WorkspaceSpec } from '#drivers/contract'
 import type { AgentTool, PermissionMode, YaacConfig } from '@yaac/shared/types'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
 
 /**
@@ -316,14 +319,14 @@ describe('createWorkspace', () => {
   it('lets a project override TZ and OPENCODE_CONFIG, takes a variable matching yaac\'s, and refuses one that conflicts', async () => {
     await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
     await saveToolAuth('opencode', 'sk-or', 'api-key', 'openrouter')
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'TZ', value: 'Europe/Paris' })
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'OPENCODE_CONFIG', value: '/workspace/opencode.json' })
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'TZ', value: 'Europe/Paris' })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'OPENCODE_CONFIG', value: '/workspace/opencode.json' })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
     await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })
     expect(env().filter((e) => e.startsWith('TZ='))).toEqual(['TZ=Europe/Paris'])
     expect(env().filter((e) => e.startsWith('OPENCODE_CONFIG='))).toEqual(['OPENCODE_CONFIG=/workspace/opencode.json'])
 
-    await setProjectEnvVar(DEMO_PROJECT_ID, { name: 'PI_SKIP_VERSION_CHECK', value: '0' })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'PI_SKIP_VERSION_CHECK', value: '0' })
     await expect(createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })).rejects.toThrow(
       "the project's environment variable PI_SKIP_VERSION_CHECK conflicts with the value yaac sets for it",
     )
@@ -340,9 +343,9 @@ describe('createWorkspace', () => {
     { name: 'a proxied GITHUB_TOKEN secret', secret: 'GITHUB_TOKEN', want: undefined },
   ])('seeds GH_TOKEN as it should for $name', async ({ remote, plain, secret, want }) => {
     if (remote !== undefined) await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: remote, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
-    if (plain !== undefined) await setProjectEnvVar(DEMO_PROJECT_ID, { name: plain, value: 'ghp_user' })
+    if (plain !== undefined) await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: plain, value: 'ghp_user' })
     if (secret !== undefined) {
-      await setProjectEnvVar(DEMO_PROJECT_ID, { name: secret, value: 'sekrit', secret: true, rule: { hosts: ['api.github.com'] } })
+      await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: secret, value: 'sekrit', secret: true, rule: { hosts: ['api.github.com'] } })
     }
 
     await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })

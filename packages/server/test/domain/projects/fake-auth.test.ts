@@ -21,6 +21,9 @@ import {
 } from '@yaac/shared/tool-auth'
 import { projectDir, claudeDir, projectClaudeCredentialsFile } from '@yaac/shared/project-paths'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const WEB = '2567a5ec-9705-4b7a-82c9-84033e06189d'
 
 let tmpDir: string
@@ -93,7 +96,7 @@ describe('seedFakeAuth', () => {
     }])
     // A project added with it clones with the placeholder a parent proxy swaps.
     await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' }, BUILT_IN_USER_ID)
-    await assignProjectCredential(WEB, listing[0].id)
+    await assignProjectCredential(local, WEB, listing[0].id)
     expect(await resolveProjectCredential(WEB)).toEqual({ kind: 'https', token: PLACEHOLDER_GH_TOKEN })
   })
 

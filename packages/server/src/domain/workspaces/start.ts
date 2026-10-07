@@ -3,6 +3,7 @@ import { saveDraftWorkspace } from './drafts'
 import { ensureProvisioning, ProvisionStoppedError, throwIfProvisionStopped } from './provisioning'
 import { tryClaimPrewarmed } from './prewarm'
 import { modelDisplayName } from '#domain/auth'
+import { authorizeProject, type Actor } from '#domain/access'
 import { recordProjectCreate } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
@@ -45,10 +46,12 @@ export interface StartWorkspaceRequest {
  * it becomes a draft (docs/draft-workspaces.md).
  */
 export async function startWorkspace(
+  principal: Actor,
   request: StartWorkspaceRequest,
   onProgress: (message: string) => void,
 ): Promise<WorkspaceCreateResult> {
   const { projectId, workspaceId, groupId, prompt, title, branch } = request
+  await authorizeProject(principal, projectId)
   const setup = await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -121,9 +124,9 @@ export async function startWorkspace(
     }
     // The draft may have been discarded meanwhile; then save a new one.
     await (draftOnStop.id === undefined
-      ? saveDraftWorkspace(projectId, settings)
-      : saveDraftWorkspace(projectId, settings, draftOnStop.id)
-        .catch(() => saveDraftWorkspace(projectId, settings)))
+      ? saveDraftWorkspace(principal, projectId, settings)
+      : saveDraftWorkspace(principal, projectId, settings, draftOnStop.id)
+        .catch(() => saveDraftWorkspace(principal, projectId, settings)))
     throw new ServerError('CONFLICT', 'stopped before its agent started; its prompt is kept as a draft')
   }
 }

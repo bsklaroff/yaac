@@ -19,6 +19,10 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import { WorkspaceExecError } from '#drivers/contract'
+import { BUILT_IN_USER_ID } from '#db'
+
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 
@@ -77,18 +81,18 @@ describe('stopWorkspace', () => {
           : undefined)
       },
     })
-    await expect(stopWorkspace('spare1')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(stopWorkspace(local, 'spare1')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(asked).toEqual([undefined])
     expect(deregistered).toEqual([])
   })
 
   it('tears the workspace down, then starts what was queued after it — only the top of a chain', async () => {
-    const child = await queueWorkspace(PROJ, { parent: 'parent', prompt: 'child', tool: 'claude' }, 'user')
-    const sibling = await queueWorkspace(PROJ, { parent: 'parent', prompt: 'sibling', tool: 'claude' }, 'user')
-    const grandchild = await queueWorkspace(PROJ, { parent: child.id, prompt: 'grandchild' }, 'user')
+    const child = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'child', tool: 'claude' }, 'user')
+    const sibling = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'sibling', tool: 'claude' }, 'user')
+    const grandchild = await queueWorkspace(local, PROJ, { parent: child.id, prompt: 'grandchild' }, 'user')
 
     // Addressed by a prefix, which the rows expand.
-    expect(await stopWorkspace('par')).toMatchObject({ workspaceId: 'parent', projectId: PROJ })
+    expect(await stopWorkspace(local, 'par')).toMatchObject({ workspaceId: 'parent', projectId: PROJ })
     expect(deregistered).toEqual(['parent'])
 
     // Both direct children start from their stored settings: the parent's
@@ -147,8 +151,8 @@ describe('stopWorkspace', () => {
       })
       registerProvisioning({ workspaceId: id, projectId: PROJ, tool: 'claude', kind })
       const create = kind === 'restart'
-        ? runProvisioned(id, (onProgress) => restartWorkspace(id, { onProgress }))
-        : runProvisioned(id, (onProgress) => startWorkspace({
+        ? runProvisioned(id, (onProgress) => restartWorkspace(local, id, { onProgress }))
+        : runProvisioned(id, (onProgress) => startWorkspace(local, {
           projectId: PROJ,
           workspaceId: 'new',
           tool: 'claude',
@@ -176,7 +180,7 @@ describe('stopWorkspace', () => {
       })
       await vi.waitFor(() => expect(launched).toEqual(['new']), { timeout: 30_000 })
 
-      expect(await stopWorkspace('new')).toEqual({ workspaceId: 'new', projectId: PROJ, provisioning: true })
+      expect(await stopWorkspace(local, 'new')).toEqual({ workspaceId: 'new', projectId: PROJ, provisioning: true })
       expect(listProvisioning()).toEqual([
         expect.objectContaining({ workspaceId: 'new', stopping: true, message: 'Stopping…' }),
       ])
@@ -204,7 +208,7 @@ describe('stopWorkspace', () => {
       await checking
       expect(await getWorkspaceRow(PROJ, 'new')).toBeUndefined()
 
-      expect(await stopWorkspace('ne')).toEqual({ workspaceId: 'new', projectId: PROJ, provisioning: true })
+      expect(await stopWorkspace(local, 'ne')).toEqual({ workspaceId: 'new', projectId: PROJ, provisioning: true })
       allow()
 
       await expect(create).rejects.toThrow('kept as a draft')
@@ -224,7 +228,7 @@ describe('stopWorkspace', () => {
       })
       await started
 
-      expect(await stopWorkspace('new')).toMatchObject({ provisioning: true })
+      expect(await stopWorkspace(local, 'new')).toMatchObject({ provisioning: true })
       fail(new Error('image build failed'))
 
       await expect(create).rejects.toThrow('image build failed')
@@ -262,8 +266,8 @@ describe('stopWorkspace', () => {
       }, kind)
       await starting
 
-      expect(await stopWorkspace(id)).toMatchObject({ provisioning: true })
-      expect(await stopWorkspace(id)).toMatchObject({ provisioning: true })
+      expect(await stopWorkspace(local, id)).toMatchObject({ provisioning: true })
+      expect(await stopWorkspace(local, id)).toMatchObject({ provisioning: true })
       release()
 
       await expect(create).resolves.toMatchObject({ workspaceId: id })
@@ -278,6 +282,6 @@ describe('stopWorkspace', () => {
   })
 
   it('refuses a workspace with nothing running', async () => {
-    await expect(stopWorkspace('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(stopWorkspace(local, 'nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

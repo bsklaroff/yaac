@@ -88,13 +88,13 @@ export const projectApp = new Hono<IdentityEnv>()
     '/:projectId/git-credential',
     zv('json', z.object({ credentialId: z.uuid() })),
     async (c) => {
-      const result = await assignProjectCredential(await resolveProjectId(c.req.param('projectId')), c.req.valid('json').credentialId)
+      const result = await assignProjectCredential(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').credentialId)
       await pushCredentialsToRuntime()
       return c.json(result)
     },
   )
   .delete('/:projectId', async (c) => {
-    await removeProject(await resolveProjectId(c.req.param('projectId')))
+    await removeProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
   .get('/:projectId/config', async (c) => c.json(await resolveProjectConfigWithSource(await resolveProjectId(c.req.param('projectId')))))
@@ -110,12 +110,12 @@ export const projectApp = new Hono<IdentityEnv>()
     )),
     async (c) => {
       const { config } = c.req.valid('json')
-      const saved = await writeProjectConfig(await resolveProjectId(c.req.param('projectId')), config)
+      const saved = await writeProjectConfig(c.get('principal'), await resolveProjectId(c.req.param('projectId')), config)
       return c.json({ config: saved })
     },
   )
   .delete('/:projectId/config', async (c) => {
-    await removeProjectConfig(await resolveProjectId(c.req.param('projectId')))
+    await removeProjectConfig(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)
   })
   // The project's environment: variables its workspaces launch with, and
@@ -134,14 +134,14 @@ export const projectApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      const saved = await setProjectEnvVar(projectId, c.req.valid('json'))
+      const saved = await setProjectEnvVar(c.get('principal'), projectId, c.req.valid('json'))
       await syncRunningWorkspaces(projectId, `${saved.name} was saved`)
       return c.json({ var: saved })
     },
   )
   .delete('/:projectId/env/:id', async (c) => {
     const projectId = await resolveProjectId(c.req.param('projectId'))
-    await removeProjectEnvVar(projectId, c.req.param('id'))
+    await removeProjectEnvVar(c.get('principal'), projectId, c.req.param('id'))
     await syncRunningWorkspaces(projectId, 'the variable was removed')
     return c.body(null, 204)
   })
@@ -206,7 +206,7 @@ export const projectApp = new Hono<IdentityEnv>()
       requireDriverFeature('images')
       const projectId = await resolveProjectId(c.req.param('projectId'))
       const { content } = c.req.valid('json')
-      await writeProjectDockerfile(projectId, content)
+      await writeProjectDockerfile(c.get('principal'), projectId, content)
       return c.json({ content })
     },
   )

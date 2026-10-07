@@ -3,6 +3,7 @@ import { registerProvisioning, runProvisioned } from './provisioning'
 import { resolveGroup } from './groups'
 import { startWorkspace } from './start'
 import { getProjectRow } from '#db'
+import type { Actor } from '#domain/access'
 import {
   PERMISSION_MODES,
   isRankedPermissionMode,
@@ -19,6 +20,8 @@ import { serverLog } from '#log'
 export interface SpawnRequest {
   /** Identifies the request in logs and answers. */
   requestId: string
+  /** Who the new workspace is started for: the calling workspace. */
+  principal: Actor
   /** The workspace that called. */
   callerWorkspaceId: string
   /** The caller's project, where the new workspace is created. */
@@ -117,7 +120,7 @@ export async function decideSpawn(
     ...(groupId !== undefined ? { groupId } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
   })
-  void runProvisioned(workspaceId, (onProgress) => startWorkspace({
+  void runProvisioned(workspaceId, (onProgress) => startWorkspace(request.principal, {
     projectId,
     workspaceId: workspaceId,
     tool,

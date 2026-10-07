@@ -27,7 +27,7 @@ const UNTIERED_DATA_DIR = [
 // This is a `regex`, not a `group` glob: groups use gitignore semantics,
 // where a leading `#` starts a comment and the pattern matches nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(agent-history|auth|git|projects|skills|titles|workspaces)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|install|substrate|workspaces))|http)/.',
+  regex: '^#(domain/(access|agent-history|auth|git|projects|skills|titles|workspaces)|db|runtime/(agents|ports|status|terminals)|drivers/(shared|k8s/(cluster|container|egress|forwarders|image-engine|images|install|substrate|workspaces))|http)/.',
   message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 

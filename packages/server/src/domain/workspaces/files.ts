@@ -14,6 +14,7 @@ import type {
   WorkspaceGitStatus,
 } from '@yaac/shared/types'
 import { lastFetchedAtMs } from '#domain/git'
+import { authorizeProject, type Actor } from '#domain/access'
 import {
   ConfinedPathError, openExactDir, openRoot, type ConfinedRoot, type PinnedDir,
 } from '#lib/confined-fs'
@@ -54,8 +55,11 @@ interface Checkout {
   root: ConfinedRoot
 }
 
-async function openCheckout(idOrName: string): Promise<Checkout> {
+/** Open a workspace's checkout. A write passes its caller, who must own
+ *  the workspace. */
+async function openCheckout(idOrName: string, writer?: Actor): Promise<Checkout> {
   const { projectId, workspaceId } = await resolveWorkspaceRecord(idOrName)
+  if (writer !== undefined) await authorizeProject(writer, projectId)
   const dir = workspaceDir(projectId, workspaceId)
   try {
     return { workspaceId, projectId, dir, root: await openRoot(dir, 'inside', { exclude: ['.git'] }) }
@@ -360,12 +364,13 @@ export type WorkspaceFileWrite = { saved: WorkspaceFileSaved } | { conflict: str
  * there.
  */
 export async function writeWorkspaceFile(
+  principal: Actor,
   idOrName: string,
   relPath: string,
   content: string,
   baseVersion: string | null,
 ): Promise<WorkspaceFileWrite> {
-  const co = await openCheckout(idOrName)
+  const co = await openCheckout(idOrName, principal)
   const rel = checkPath(co, relPath)
   const data = Buffer.from(content, 'utf8')
   if (data.length > MAX_TEXT_FILE_BYTES) {
@@ -426,8 +431,12 @@ async function existingVersion(co: Checkout, rel: string): Promise<string> {
 
 /** Create a folder and any missing parents; a conflict if anything is
  *  already there. */
-export async function createWorkspaceFolder(idOrName: string, relPath: string): Promise<{ path: string }> {
-  const co = await openCheckout(idOrName)
+export async function createWorkspaceFolder(
+  principal: Actor,
+  idOrName: string,
+  relPath: string,
+): Promise<{ path: string }> {
+  const co = await openCheckout(idOrName, principal)
   const rel = checkPath(co, relPath)
   return mutate(co.workspaceId, async () => {
     const { dir, name } = await openParent(co, rel, true)
@@ -448,11 +457,12 @@ export async function createWorkspaceFolder(idOrName: string, relPath: string): 
  * rename, so a narrow race remains).
  */
 export async function renameWorkspaceEntry(
+  principal: Actor,
   idOrName: string,
   fromPath: string,
   toPath: string,
 ): Promise<{ from: string; to: string }> {
-  const co = await openCheckout(idOrName)
+  const co = await openCheckout(idOrName, principal)
   const from = checkPath(co, fromPath)
   const to = checkPath(co, toPath)
   if (to.startsWith(`${from}/`)) throw new ServerError('VALIDATION', `can't move ${from} into itself`)
@@ -481,8 +491,8 @@ export async function renameWorkspaceEntry(
  * Delete a file, a symlink (the link, never what it points to) or a folder
  * with everything in it.
  */
-export async function deleteWorkspaceEntry(idOrName: string, relPath: string): Promise<void> {
-  const co = await openCheckout(idOrName)
+export async function deleteWorkspaceEntry(principal: Actor, idOrName: string, relPath: string): Promise<void> {
+  const co = await openCheckout(idOrName, principal)
   const rel = checkPath(co, relPath)
   await mutate(co.workspaceId, async () => {
     try {

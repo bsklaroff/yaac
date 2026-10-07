@@ -22,6 +22,9 @@ import {
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 import type { CredentialBundle } from '#drivers/contract'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const WEB = '2567a5ec-9705-4b7a-82c9-84033e06189d'
 
 /**
@@ -74,7 +77,7 @@ describe('pushCredentialsToRuntime', () => {
     // Only credentials a project uses are sent, each with its projects.
     // runtimeGitCredentials' tests cover ssh keys.
     await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' }, BUILT_IN_USER_ID)
-    await assignProjectCredential(WEB, (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp' })).id)
+    await assignProjectCredential(local, WEB, (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp' })).id)
     await addHttpsCredential(BUILT_IN_USER_ID, { name: 'unused', token: 'ghp_unused' })
 
     await pushCredentialsToRuntime()

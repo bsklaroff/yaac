@@ -54,6 +54,9 @@ import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
 const mockCreate = vi.mocked(createWorkspace)
 let tmpDir: string
 
@@ -129,7 +132,7 @@ async function settled(id: string, gone: boolean): Promise<void> {
 describe('queueWorkspace', () => {
   it('stores every setting concrete, defaulted from the parent workspace', async () => {
     await workspace('parent-1', { tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits' })
-    const entry = await queueWorkspace(PROJ, { parent: 'parent-1', prompt: 'follow up' }, 'user')
+    const entry = await queueWorkspace(local, PROJ, { parent: 'parent-1', prompt: 'follow up' }, 'user')
     // The parent's current model, permission mode, and base branch (not
     // its agent branch).
     expect(entry).toMatchObject({
@@ -144,7 +147,7 @@ describe('queueWorkspace', () => {
 
     // A different tool takes the create defaults for that tool instead,
     // bar the UI mode, which is not tool-specific.
-    const other = await queueWorkspace(PROJ, { parent: 'parent', prompt: 'x', tool: 'claude' }, 'user')
+    const other = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'x', tool: 'claude' }, 'user')
     expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, mode: 'tui', branch: 'develop' })
     // A prefix names the parent like an id does.
     expect(other.parentWorkspaceId).toBe('parent-1')
@@ -155,20 +158,20 @@ describe('queueWorkspace', () => {
     // supplies the tool.
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'booting', permissionMode: 'bypass', baseBranch: 'main' })
     registerProvisioning({ workspaceId: 'booting', projectId: PROJ, tool: 'opencode', kind: 'create' })
-    const early = await queueWorkspace(PROJ, { parent: 'booting', prompt: 'x' }, 'user')
+    const early = await queueWorkspace(local, PROJ, { parent: 'booting', prompt: 'x' }, 'user')
     expect(early).toMatchObject({ tool: 'opencode', permissionMode: 'bypass', branch: 'main' })
     expect(early.model).not.toBe('')
 
     // No recorded base: origin's default branch is stored.
     await workspace('old', { baseBranch: null })
-    const fromOld = await queueWorkspace(PROJ, { parent: 'old', prompt: 'x' }, 'user')
+    const fromOld = await queueWorkspace(local, PROJ, { parent: 'old', prompt: 'x' }, 'user')
     expect(fromOld.branch).toMatch(/^(main|master)$/)
   })
 
   it('chains under an entry, defaulting from its stored settings', async () => {
     await workspace('top')
-    const b = await queueWorkspace(PROJ, { parent: 'top', prompt: 'b', tool: 'codex', branch: 'feature' }, 'user')
-    const c = await queueWorkspace(PROJ, { parent: b.id.slice(0, 8), prompt: 'c' }, 'user')
+    const b = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'b', tool: 'codex', branch: 'feature' }, 'user')
+    const c = await queueWorkspace(local, PROJ, { parent: b.id.slice(0, 8), prompt: 'c' }, 'user')
     expect(c).toMatchObject({ parentQueuedId: b.id, tool: 'codex', model: b.model, branch: 'feature' })
     expect(c.parentWorkspaceId).toBeUndefined()
   })
@@ -178,18 +181,18 @@ describe('queueWorkspace', () => {
     await createWorkspaceGroup(PROJ, OTHER, null)
     await workspace('top')
     await setWorkspaceGroup(PROJ, 'top', review.groupId)
-    const b = await queueWorkspace(PROJ, { parent: 'top', prompt: 'b', title: '  My   title ' }, 'user')
+    const b = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'b', title: '  My   title ' }, 'user')
     expect(b).toMatchObject({ groupId: review.groupId, title: 'My title' })
     // Chained under an entry: that entry's group.
-    const c = await queueWorkspace(PROJ, { parent: b.id, prompt: 'c', title: ' ' }, 'user')
+    const c = await queueWorkspace(local, PROJ, { parent: b.id, prompt: 'c', title: ' ' }, 'user')
     expect(c.groupId).toBe(review.groupId)
     expect(c.title).toBeUndefined()
     // A group given by name, or none; an unknown name creates the group.
-    expect((await queueWorkspace(PROJ, { parent: 'top', prompt: 'd', group: OTHER }, 'user')).groupId)
+    expect((await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'd', group: OTHER }, 'user')).groupId)
       .not.toBe(review.groupId)
-    expect((await queueWorkspace(PROJ, { parent: 'top', prompt: 'e', group: null }, 'user')).groupId)
+    expect((await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'e', group: null }, 'user')).groupId)
       .toBeUndefined()
-    const fresh = await queueWorkspace(PROJ, { parent: 'top', prompt: 'f', group: 'Brand new' }, 'user')
+    const fresh = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'f', group: 'Brand new' }, 'user')
     expect((await listWorkspaceGroupRows(PROJ)).find((g) => g.groupId === fresh.groupId)?.name).toBe('Brand new')
   })
 
@@ -197,29 +200,29 @@ describe('queueWorkspace', () => {
     // `id=$(yaac-mama create …); yaac-mama queue --parent-workspace "$id"`:
     // the id comes back before the create has recorded anything.
     registerProvisioning({ workspaceId: 'spawned', projectId: PROJ, tool: 'codex', kind: 'create', branch: 'feature' })
-    const entry = await queueWorkspace(PROJ, { parent: 'spawned', prompt: 'x' }, 'user')
+    const entry = await queueWorkspace(local, PROJ, { parent: 'spawned', prompt: 'x' }, 'user')
     expect(entry).toMatchObject({ parentWorkspaceId: 'spawned', tool: 'codex', branch: 'feature' })
     expect((await listQueuedWorkspaces())[0].orphaned).toBeUndefined()
     // Another project's create is not a parent here.
     registerProvisioning({ workspaceId: 'theirs', projectId: OTHER, tool: 'codex', kind: 'create' })
-    await expect(queueWorkspace(PROJ, { parent: 'theirs', prompt: 'x' }, 'user'))
+    await expect(queueWorkspace(local, PROJ, { parent: 'theirs', prompt: 'x' }, 'user'))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 
   it('queues under a launching entry as a child of the workspace it is becoming', async () => {
     await workspace('top')
-    const b = await queueWorkspace(PROJ, { parent: 'top', prompt: 'b' }, 'user')
+    const b = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'b' }, 'user')
     await claimQueuedLaunch(b.id, 'becoming')
-    const c = await queueWorkspace(PROJ, { parent: b.id, prompt: 'c' }, 'user')
+    const c = await queueWorkspace(local, PROJ, { parent: b.id, prompt: 'c' }, 'user')
     expect(c).toMatchObject({ parentWorkspaceId: 'becoming', tool: b.tool })
   })
 
   it('refuses no prompt, an unknown parent, and a posture the tool lacks', async () => {
     await workspace(P)
-    await expect(queueWorkspace(PROJ, { parent: P, prompt: '  ' }, 'user')).rejects.toThrow(/needs a prompt/)
-    await expect(queueWorkspace(PROJ, { parent: 'nope', prompt: 'x' }, 'user'))
+    await expect(queueWorkspace(local, PROJ, { parent: P, prompt: '  ' }, 'user')).rejects.toThrow(/needs a prompt/)
+    await expect(queueWorkspace(local, PROJ, { parent: 'nope', prompt: 'x' }, 'user'))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
-    await expect(queueWorkspace(PROJ, { parent: P, prompt: 'x', tool: 'pi', permissionMode: 'plan' }, 'user'))
+    await expect(queueWorkspace(local, PROJ, { parent: P, prompt: 'x', tool: 'pi', permissionMode: 'plan' }, 'user'))
       .rejects.toMatchObject({ code: 'VALIDATION' })
   })
 
@@ -227,11 +230,11 @@ describe('queueWorkspace', () => {
     await workspace(P)
     // Signed in with a provider the model catalog has no models for.
     vi.mocked(loadToolAuthEntry).mockResolvedValueOnce({ tool: 'opencode', opencodeProvider: 'nowhere' } as never)
-    await expect(queueWorkspace(PROJ, { parent: P, prompt: 'x', tool: 'opencode' }, 'user'))
+    await expect(queueWorkspace(local, PROJ, { parent: P, prompt: 'x', tool: 'opencode' }, 'user'))
       .rejects.toThrow(/no model is known for opencode; pick one/)
     // Naming a model fixes it.
     vi.mocked(loadToolAuthEntry).mockResolvedValueOnce({ tool: 'opencode', opencodeProvider: 'nowhere' } as never)
-    expect((await queueWorkspace(PROJ, { parent: P, prompt: 'x', tool: 'opencode', model: 'nowhere/m' }, 'user')).model)
+    expect((await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', tool: 'opencode', model: 'nowhere/m' }, 'user')).model)
       .toBe('nowhere/m')
   })
 
@@ -239,13 +242,13 @@ describe('queueWorkspace', () => {
     await workspace('sibling', { permissionMode: 'bypass' })
     const ceiling = { ceiling: 'accept-edits' as const }
     // Inherited from a more permissive parent: capped at the caller's mode.
-    expect((await queueWorkspace(PROJ, { parent: 'sibling', prompt: 'x' }, ceiling)).permissionMode)
+    expect((await queueWorkspace(local, PROJ, { parent: 'sibling', prompt: 'x' }, ceiling)).permissionMode)
       .toBe('accept-edits')
     // Asking for more is refused.
-    await expect(queueWorkspace(PROJ, { parent: 'sibling', prompt: 'x', permissionMode: 'bypass' }, ceiling))
+    await expect(queueWorkspace(local, PROJ, { parent: 'sibling', prompt: 'x', permissionMode: 'bypass' }, ceiling))
       .rejects.toThrow(/more permissive than this workspace's own/)
     // A tool with no mode at or below it is refused.
-    await expect(queueWorkspace(PROJ, { parent: 'sibling', prompt: 'x', tool: 'pi' }, ceiling))
+    await expect(queueWorkspace(local, PROJ, { parent: 'sibling', prompt: 'x', tool: 'pi' }, ceiling))
       .rejects.toThrow(/pi has no permission mode/)
   })
 })
@@ -253,54 +256,54 @@ describe('queueWorkspace', () => {
 describe('updateQueuedWorkspace', () => {
   it('replaces what it names, re-resolving a new tool\'s model and posture', async () => {
     await workspace(P, { tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan' })
-    const entry = await queueWorkspace(PROJ, { parent: P, prompt: 'x' }, 'user')
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x' }, 'user')
     expect(entry.permissionMode).toBe('plan')
 
-    const edited = await updateQueuedWorkspace(entry.id, { prompt: 'edited', branch: OTHER }, 'user')
+    const edited = await updateQueuedWorkspace(local, entry.id, { prompt: 'edited', branch: OTHER }, 'user')
     expect(edited).toMatchObject({ prompt: 'edited', branch: OTHER, model: 'claude-sonnet-5', permissionMode: 'plan' })
 
-    const retooled = await updateQueuedWorkspace(entry.id, { tool: 'codex' }, 'user')
+    const retooled = await updateQueuedWorkspace(local, entry.id, { tool: 'codex' }, 'user')
     expect(retooled).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex, prompt: 'edited' })
     expect(retooled.permissionMode).not.toBe('plan')
 
     // A title and a group are kept until named, and a blank or null clears them.
     const group = await createWorkspaceGroup(PROJ, 'review', null)
-    expect(await updateQueuedWorkspace(entry.id, { title: 'Named', group: 'review' }, 'user'))
+    expect(await updateQueuedWorkspace(local, entry.id, { title: 'Named', group: 'review' }, 'user'))
       .toMatchObject({ title: 'Named', groupId: group.groupId })
-    expect(await updateQueuedWorkspace(entry.id, { prompt: 'again' }, 'user'))
+    expect(await updateQueuedWorkspace(local, entry.id, { prompt: 'again' }, 'user'))
       .toMatchObject({ title: 'Named', groupId: group.groupId })
-    const cleared = await updateQueuedWorkspace(entry.id, { title: '', group: null }, 'user')
+    const cleared = await updateQueuedWorkspace(local, entry.id, { title: '', group: null }, 'user')
     expect(cleared.title).toBeUndefined()
     expect(cleared.groupId).toBeUndefined()
   })
 
   it('refuses a cycle, including one hidden behind a launching entry', async () => {
     await workspace('top')
-    const q = await queueWorkspace(PROJ, { parent: 'top', prompt: 'q' }, 'user')
-    const e = await queueWorkspace(PROJ, { parent: q.id, prompt: 'e' }, 'user')
-    const c = await queueWorkspace(PROJ, { parent: e.id, prompt: 'c' }, 'user')
-    await expect(updateQueuedWorkspace(q.id, { parent: c.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
-    await expect(updateQueuedWorkspace(q.id, { parent: q.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+    const q = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'q' }, 'user')
+    const e = await queueWorkspace(local, PROJ, { parent: q.id, prompt: 'e' }, 'user')
+    const c = await queueWorkspace(local, PROJ, { parent: e.id, prompt: 'c' }, 'user')
+    await expect(updateQueuedWorkspace(local, q.id, { parent: c.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(updateQueuedWorkspace(local, q.id, { parent: q.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
 
     // E launches as W: C now waits on W, and W is E, which waits on Q.
     await claimQueuedLaunch(e.id, 'w')
-    await expect(updateQueuedWorkspace(q.id, { parent: c.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(updateQueuedWorkspace(local, q.id, { parent: c.id }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
     // Mid-launch, E itself cannot be edited.
-    await expect(updateQueuedWorkspace(e.id, { prompt: 'x' }, 'user')).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(updateQueuedWorkspace(local, e.id, { prompt: 'x' }, 'user')).rejects.toMatchObject({ code: 'CONFLICT' })
 
     // Of two edits that together would close a cycle, one loses.
     await failQueuedLaunch(e.id, 'w', 'x')
-    const x = await queueWorkspace(PROJ, { parent: 'top', prompt: 'x' }, 'user')
-    const y = await queueWorkspace(PROJ, { parent: 'top', prompt: 'y' }, 'user')
+    const x = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'x' }, 'user')
+    const y = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'y' }, 'user')
     const raced = await Promise.allSettled([
-      updateQueuedWorkspace(x.id, { parent: y.id }, 'user'),
-      updateQueuedWorkspace(y.id, { parent: x.id }, 'user'),
+      updateQueuedWorkspace(local, x.id, { parent: y.id }, 'user'),
+      updateQueuedWorkspace(local, y.id, { parent: x.id }, 'user'),
     ])
     expect(raced.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected'])
 
     // A legal move takes the children along.
     await workspace('elsewhere')
-    const moved = await updateQueuedWorkspace(e.id, { parent: 'elsewhere' }, 'user')
+    const moved = await updateQueuedWorkspace(local, e.id, { parent: 'elsewhere' }, 'user')
     expect(moved.parentWorkspaceId).toBe('elsewhere')
     expect((await getQueuedWorkspaceRow(c.id))?.parentQueuedId).toBe(e.id)
   })
@@ -309,14 +312,14 @@ describe('updateQueuedWorkspace', () => {
 describe('discardQueuedWorkspace', () => {
   it('splices its children up to its own parent', async () => {
     await workspace('top')
-    const a = await queueWorkspace(PROJ, { parent: 'top', prompt: 'a' }, 'user')
-    const b = await queueWorkspace(PROJ, { parent: a.id, prompt: 'b' }, 'user')
-    const c = await queueWorkspace(PROJ, { parent: b.id, prompt: 'c' }, 'user')
-    await discardQueuedWorkspace(b.id)
+    const a = await queueWorkspace(local, PROJ, { parent: 'top', prompt: 'a' }, 'user')
+    const b = await queueWorkspace(local, PROJ, { parent: a.id, prompt: 'b' }, 'user')
+    const c = await queueWorkspace(local, PROJ, { parent: b.id, prompt: 'c' }, 'user')
+    await discardQueuedWorkspace(local, b.id)
     expect((await getQueuedWorkspaceRow(c.id))?.parentQueuedId).toBe(a.id)
-    await expect(discardQueuedWorkspace(b.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(discardQueuedWorkspace(local, b.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await claimQueuedLaunch(a.id, 'w')
-    await expect(discardQueuedWorkspace(a.id)).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(discardQueuedWorkspace(local, a.id)).rejects.toMatchObject({ code: 'CONFLICT' })
   })
 })
 
@@ -325,14 +328,14 @@ describe('runQueuedWorkspace', () => {
     await workspace(P, { tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits' })
     const group = await createWorkspaceGroup(PROJ, 'review', null)
     await setWorkspaceGroup(PROJ, P, group.groupId)
-    const entry = await queueWorkspace(PROJ, { parent: P, prompt: 'go', title: 'Named' }, 'user')
-    const child = await queueWorkspace(PROJ, { parent: entry.id, prompt: 'after' }, 'user')
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'go', title: 'Named' }, 'user')
+    const child = await queueWorkspace(local, PROJ, { parent: entry.id, prompt: 'after' }, 'user')
     // Moving the parent after queueing leaves the entry where it was filed.
     await setWorkspaceGroup(PROJ, P, null)
 
-    const { workspaceId } = await runQueuedWorkspace(entry.id)
+    const { workspaceId } = await runQueuedWorkspace(local, entry.id)
     // A second press loses the claim.
-    await expect(runQueuedWorkspace(entry.id)).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(runQueuedWorkspace(local, entry.id)).rejects.toMatchObject({ code: 'CONFLICT' })
     await launched(1)
     expect(mockCreate.mock.calls[0]).toEqual([PROJ, expect.objectContaining({
       workspaceId,
@@ -358,7 +361,7 @@ describe('runQueuedWorkspace', () => {
       rows = listProvisioning()
       return create(projectId, opts)
     })
-    await runQueuedWorkspace(child.id)
+    await runQueuedWorkspace(local, child.id)
     await launched(2)
     expect(mockCreate.mock.calls[1][1]).toMatchObject({ initialPrompt: 'after', title: 'Generated' })
     expect(rows).toEqual([expect.objectContaining({ title: 'Generated' })])
@@ -366,11 +369,11 @@ describe('runQueuedWorkspace', () => {
 
   it('keeps the prompt when the launch fails, and shows the error once, on the entry', async () => {
     await workspace(P)
-    const entry = await queueWorkspace(PROJ, { parent: P, prompt: 'go' }, 'user')
-    const child = await queueWorkspace(PROJ, { parent: entry.id, prompt: 'after' }, 'user')
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'go' }, 'user')
+    const child = await queueWorkspace(local, PROJ, { parent: entry.id, prompt: 'after' }, 'user')
     mockCreate.mockRejectedValue(new Error('image build exploded'))
 
-    await runQueuedWorkspace(entry.id)
+    await runQueuedWorkspace(local, entry.id)
     await settled(entry.id, false)
     expect(await getQueuedWorkspaceRow(entry.id)).toMatchObject({ prompt: 'go', launchError: 'image build exploded' })
     expect((await getQueuedWorkspaceRow(child.id))?.parentQueuedId).toBe(entry.id)
@@ -380,7 +383,7 @@ describe('runQueuedWorkspace', () => {
     // A stop takes the same path but is no failure: the entry waits again
     // with no error to show.
     mockCreate.mockRejectedValue(new ProvisionStoppedError())
-    await runQueuedWorkspace(entry.id)
+    await runQueuedWorkspace(local, entry.id)
     await settled(entry.id, false)
     expect((await getQueuedWorkspaceRow(entry.id))?.launchError).toBeUndefined()
     expect((await getQueuedWorkspaceRow(child.id))?.parentQueuedId).toBe(entry.id)
@@ -390,8 +393,8 @@ describe('runQueuedWorkspace', () => {
 describe('listQueuedWorkspaces', () => {
   it('hides a launching entry and flags one whose parent workspace is gone', async () => {
     await workspace(P)
-    const a = await queueWorkspace(PROJ, { parent: P, prompt: 'a' }, 'user')
-    const b = await queueWorkspace(PROJ, { parent: a.id, prompt: 'b' }, 'user')
+    const a = await queueWorkspace(local, PROJ, { parent: P, prompt: 'a' }, 'user')
+    const b = await queueWorkspace(local, PROJ, { parent: a.id, prompt: 'b' }, 'user')
     await claimQueuedLaunch(a.id, 'provisioning')
     // Its provisioning row stands in for it, and b nests under that.
     registerProvisioning({ workspaceId: 'provisioning', projectId: PROJ, tool: 'claude', kind: 'create' })
@@ -415,13 +418,13 @@ describe('listHeldWorkspaces', () => {
     await workspace('dead')
     await workspace('alive')
     await recordWorkspaceStopped(PROJ, 'dead', { reason: 'oom' })
-    const entry = await queueWorkspace(PROJ, { parent: 'dead', prompt: 'x' }, 'user')
-    await queueWorkspace(PROJ, { parent: 'alive', prompt: 'y' }, 'user')
+    const entry = await queueWorkspace(local, PROJ, { parent: 'dead', prompt: 'x' }, 'user')
+    await queueWorkspace(local, PROJ, { parent: 'alive', prompt: 'y' }, 'user')
 
     expect(await listHeldWorkspaces()).toEqual([expect.objectContaining({
       workspaceId: 'dead', tool: 'claude', prompt: 'founding ask of dead', deathReason: 'oom',
     })])
-    await discardQueuedWorkspace(entry.id)
+    await discardQueuedWorkspace(local, entry.id)
     expect(await listHeldWorkspaces()).toEqual([])
   })
 })
@@ -429,8 +432,8 @@ describe('listHeldWorkspaces', () => {
 describe('reconcileQueuedWorkspaces', () => {
   it('puts an interrupted launch back with the error, whether or not its workspace came up', async () => {
     await workspace(P)
-    const up = await queueWorkspace(PROJ, { parent: P, prompt: 'up' }, 'user')
-    const upChild = await queueWorkspace(PROJ, { parent: up.id, prompt: 'after up' }, 'user')
+    const up = await queueWorkspace(local, PROJ, { parent: P, prompt: 'up' }, 'user')
+    const upChild = await queueWorkspace(local, PROJ, { parent: up.id, prompt: 'after up' }, 'user')
     // A server restart mid-launch leaves a stale claim. A live workspace does
     // not prove the agent started or got its prompt, so it is not done.
     await claimQueuedLaunch(up.id, 'came-up')
@@ -452,7 +455,7 @@ describe('reconcileQueuedWorkspaces', () => {
   it('puts back only the claims a previous server left', async () => {
     await workspace(P)
     await reconcileQueuedWorkspaces()
-    const mine = await queueWorkspace(PROJ, { parent: P, prompt: 'mine' }, 'user')
+    const mine = await queueWorkspace(local, PROJ, { parent: P, prompt: 'mine' }, 'user')
     await claimQueuedLaunch(mine.id, 'launching-here')
 
     await reconcileQueuedWorkspaces()
@@ -463,8 +466,8 @@ describe('reconcileQueuedWorkspaces', () => {
 
   it('launches a release a restart lost, and leaves a stop-released chain\'s lower links waiting', async () => {
     await workspace(P)
-    const a = await queueWorkspace(PROJ, { parent: P, prompt: 'a' }, 'user')
-    const b = await queueWorkspace(PROJ, { parent: a.id, prompt: 'b' }, 'user')
+    const a = await queueWorkspace(local, PROJ, { parent: P, prompt: 'a' }, 'user')
+    const b = await queueWorkspace(local, PROJ, { parent: a.id, prompt: 'b' }, 'user')
     await releaseQueuedWorkspace(a.id)
 
     await reconcileQueuedWorkspaces()

@@ -9,6 +9,7 @@ export type ErrorCode =
   | 'RUNTIME_UNAVAILABLE'
   | 'AUTH_AGENT_DISCONNECTED'
   | 'UNAUTHENTICATED'
+  | 'FORBIDDEN'
   | 'BAD_HOST'
   | 'NOT_SUPPORTED'
   | 'MISSING_TOOL'
@@ -41,6 +42,8 @@ export function defaultStatus(code: ErrorCode): number {
     case 'RUNTIME_UNAVAILABLE': return 503
     case 'AUTH_AGENT_DISCONNECTED': return 503
     case 'UNAUTHENTICATED': return 401
+    // The caller is known but does not own the resource.
+    case 'FORBIDDEN': return 403
     case 'BAD_HOST': return 403
     // This server's driver lacks the feature (e.g. image builds under
     // containerless).

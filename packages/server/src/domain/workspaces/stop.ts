@@ -2,7 +2,8 @@ import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspaceDetached } from './cleanup'
 import { resolveWorkspaceId } from './resolve'
 import { startQueuedChildren } from './queued-workspaces'
-import { stopProvisioning } from './provisioning'
+import { listProvisioning, stopProvisioning } from './provisioning'
+import { authorizeProject, type Actor } from '#domain/access'
 import { harvestToolCredentials } from '#domain/auth'
 import { serverLog } from '#log'
 import { ServerError } from '@yaac/shared/errors'
@@ -26,19 +27,21 @@ export interface StoppedWorkspaceInfo {
  * (`stopProvisioning`); one that gets its agent running first is stopped
  * here once it does.
  */
-export async function stopWorkspace(idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
+export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
   const workspaceId = await resolveWorkspaceId(idOrPrefix, { provisioning: true })
+  const pending = listProvisioning().find((p) => p.workspaceId === workspaceId)
+  if (pending !== undefined) await authorizeProject(principal, pending.projectId)
   const provisioning = stopProvisioning(workspaceId)
   if (provisioning !== undefined) {
     void provisioning.ranAs
-      .then((ranAs) => (ranAs === undefined ? undefined : stopRunning(ranAs, ranAs)))
+      .then((ranAs) => (ranAs === undefined ? undefined : stopRunning(principal, ranAs, ranAs)))
       .catch((err: unknown) => serverLog(`[server] stopping ${workspaceId} once provisioned failed: ${String(err)}`))
     return { workspaceId, projectId: provisioning.projectId, provisioning: true }
   }
-  return await stopRunning(workspaceId, idOrPrefix)
+  return await stopRunning(principal, workspaceId, idOrPrefix)
 }
 
-async function stopRunning(workspaceId: string, idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
+async function stopRunning(principal: Actor, workspaceId: string, idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
   const target = await workspaceDriver().findForTeardown(workspaceId)
   if (!target) {
     throw new ServerError(
@@ -46,6 +49,7 @@ async function stopRunning(workspaceId: string, idOrPrefix: string): Promise<Sto
       `No workspace found matching "${idOrPrefix}". Run "yaac workspace list" to see running workspaces.`,
     )
   }
+  await authorizeProject(principal, target.projectId)
 
   // Adopt any token the agent refreshed (without a proxy it exists only in
   // the project's tool home). Best-effort.

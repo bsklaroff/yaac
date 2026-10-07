@@ -34,6 +34,7 @@ type CreateFn = (projectId: string, opts: WorkspaceCreateOptions) => Promise<Wor
 function makeRequest(over: Partial<SpawnRequest> = {}): SpawnRequest {
   return {
     requestId: 'req-1',
+    principal: { kind: 'workspace', workspaceId: 'caller-session', userId: BUILT_IN_USER_ID },
     callerWorkspaceId: 'caller-session',
     callerProjectId: PROJ,
     callerTool: 'codex',

@@ -7,6 +7,10 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import type { WorkspaceDriver } from '#drivers/contract'
+import { BUILT_IN_USER_ID } from '#db'
+
+/** The caller of every user-caused write here. */
+const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 
@@ -50,7 +54,7 @@ describe('startWorkspace', () => {
       },
     })
 
-    const result = await startWorkspace({
+    const result = await startWorkspace(local, {
       projectId: PROJ,
       workspaceId: 'wt-1',
       tool: 'claude',
@@ -83,7 +87,7 @@ describe('startWorkspace', () => {
     const list = vi.fn(() => Promise.resolve([]))
     installDriver({ list })
 
-    await startWorkspace({
+    await startWorkspace(local, {
       projectId: PROJ,
       workspaceId: 'wt-2',
       tool: 'codex',
