@@ -2,8 +2,10 @@
 
 All of a project's git traffic (the server's clones and fetches, and every fetch
 and push its workspaces make) authenticates with **one credential assigned to
-that project**. Credentials are named, and one credential can serve many
-projects. There are two kinds, and the kind must match the project's remote:
+that project**. Credentials are named and belong to a user, the owner of the
+projects they serve: one credential can serve many of its owner's projects,
+and no other user's. There are two kinds, and the kind must match the
+project's remote:
 
 - an **HTTPS token** the user pastes, for an `https://` remote;
 - an **SSH key** yaac generates, for an SCP-style `git@host:path` remote. The
@@ -22,8 +24,11 @@ yaac's proxy swaps for its real one (for yaac running inside a yaac workspace).
 
 ## The model
 
-A `git_credentials` row holds a name, a kind, the sealed secret (the token, or
-the ed25519 seed) and, for a key, its public line. A project points at its
+A `git_credentials` row holds its owner, a name (unique per owner), a kind,
+the sealed secret (the token, or the ed25519 seed) and, for a key, its public
+line. Every route that lists, adds, renames, replaces or deletes one acts on
+the caller's own; another user's credential reads as missing, and a project
+can only be assigned one of its owner's. A project points at its
 credential with `projects.gitCredentialId`, next to the `knownHostsEntry`
 trusted when an SSH credential was assigned. Credentials are assigned rather
 than matched by URL pattern so that the choice is made once, visibly, and does
@@ -94,7 +99,8 @@ Ed25519.
   `IdentitiesOnly`, so ssh offers only the assigned key.
 - **A k8s workspace** holds neither kind. The server gives the egress proxy
   every credential some project uses, each with the projects allowed to use
-  it, in the `yaac-proxy-credentials` Secret (docs/workspace-egress.md). The
+  it, in the `yaac-proxy-credentials` Secret under its owner's key
+  (docs/workspace-egress.md "Owners"). The
   proxy injects a token only into requests from a workspace of one of its
   projects, and only toward that project's remote host. Keys are loaded into
   the proxy's in-memory agent, each limited (`ssh-add -h`) to its projects'

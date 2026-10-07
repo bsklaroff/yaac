@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { addHttpsCredential } from '#domain/projects'
-import { BUILT_IN_USER_ID, closeDb } from '#db'
-import { saveClaudeCredentialsFile, saveToolAuth } from '@yaac/shared/tool-auth'
+import { BUILT_IN_USER_ID, closeDb, seeTailnetUser, setToolCredential } from '#db'
 import { listAuth } from '#domain/auth'
 
 describe('listAuth', () => {
@@ -33,15 +32,20 @@ describe('listAuth', () => {
   })
 
   it('summarizes every signed-in tool in a fixed order, carrying its provider', async () => {
-    await saveClaudeCredentialsFile({
+    await setToolCredential(BUILT_IN_USER_ID, 'claude', {
       kind: 'api-key',
       savedAt: '2026-04-20T00:00:00.000Z',
       apiKey: 'sk-ant-api03-longkey-ABCDEFGH',
     })
     // A key too short to keep a tail is masked whole rather than half-shown.
-    await saveToolAuth('codex', 'shrt', 'api-key')
-    await saveToolAuth('opencode', 'nw-secret-key', 'api-key', 'neuralwatt')
-    await saveToolAuth('pi', 'pi-secret-key', 'api-key', 'openrouter')
+    await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'shrt' })
+    await setToolCredential(BUILT_IN_USER_ID, 'opencode', { kind: 'api-key', provider: 'neuralwatt', savedAt: 'x', apiKey: 'nw-secret-key' })
+    await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'pi-secret-key' })
+    // Another user's sign-ins are not the caller's.
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    await setToolCredential(bob, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'sk-bob' })
+    await addHttpsCredential(bob, { name: 'bobs', token: 'ghp_bob' })
+    expect(await listAuth(bob)).toMatchObject({ gitCredentials: [{ name: 'bobs' }], toolAuth: [{ tool: 'claude' }] })
 
     const result = await listAuth(BUILT_IN_USER_ID)
     expect(result.toolAuth).toEqual([
@@ -70,7 +74,7 @@ describe('listAuth', () => {
   })
 
   it('never leaks the raw access token', async () => {
-    await saveClaudeCredentialsFile({
+    await setToolCredential(BUILT_IN_USER_ID, 'claude', {
       kind: 'oauth',
       savedAt: '2026-04-20T00:00:00.000Z',
       claudeAiOauth: {

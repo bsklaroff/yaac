@@ -14,7 +14,7 @@ import {
   type YaacTestEnv,
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
-import { assignTestGitCredential } from '@yaac/test-utils/api'
+import { assignTestGitCredential, makeServerApiClient } from '@yaac/test-utils/api'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
@@ -1165,7 +1165,6 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   it('signs in with a real bundle, then lets a running workspace\'s refresh win', async () => {
     // The credential cycle with no proxy, in the order it happens.
-    const hostCreds = path.join(testEnv.dataDir, 'server-local', '.credentials', 'claude.json')
     const projectCreds = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'claude', '.credentials.json')
     const readBundle = async (p: string): Promise<Record<string, unknown>> => {
       const parsed = JSON.parse(await fs.readFile(p, 'utf8')) as { claudeAiOauth: Record<string, unknown> }
@@ -1188,8 +1187,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(authExit).toBe(0)
     expect(await readBundle(projectCreds)).toEqual(signedIn)
 
-    // 2. The agent refreshes its own token in the project home; the host
-    //    store still has the old one.
+    // 2. The agent refreshes its own token in the project home; the
+    //    owner's store still has the old one.
     const refreshed = {
       ...signedIn,
       accessToken: 'sk-ant-oat01-refreshed',
@@ -1198,7 +1197,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     await fs.writeFile(projectCreds, JSON.stringify({ claudeAiOauth: refreshed }, null, 2))
 
-    // 3. Another create must not overwrite it with the stale host copy,
+    // 3. Another create must not overwrite it with the stale stored copy,
     //    which would log the running agent out.
     const second = await createWorkspace()
     try {
@@ -1206,11 +1205,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
         accessToken: 'sk-ant-oat01-refreshed',
         refreshToken: 'sk-ant-ort01-refreshed',
       })
-      // The host store picks up the refreshed token.
-      expect(await readBundle(hostCreds)).toMatchObject({
-        accessToken: 'sk-ant-oat01-refreshed',
-        refreshToken: 'sk-ant-ort01-refreshed',
-      })
+      // The owner's store picks up the refreshed token (`…shed`).
+      const listed = await (await makeServerApiClient(server).auth.list.$get()).json()
+      expect(listed.toolAuth.find((t) => t.tool === 'claude')).toMatchObject({ kind: 'oauth', keyPreview: '***shed' })
     } finally {
       await runYaac(serverEnv, 'workspace', 'stop', second)
     }

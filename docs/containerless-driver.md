@@ -250,15 +250,16 @@ from. A project that cannot accept that should use the k8s driver.
 ### Keeping refreshed credentials in sync
 
 An agent holding the real bundle also refreshes it. Refresh tokens rotate,
-so afterwards the project's tool home holds the live credential and the host
-store a spent one. Using a spent token fails, and for Codex (single-use
+so afterwards the project's tool home holds the live credential and its
+owner's store a spent one. Using a spent token fails, and for Codex (single-use
 tokens) it can break the chain. Under k8s every refresh passes through the
-proxy, which updates the host store. Here `#domain/auth`'s credential-sync
-closes the loop.
+proxy, which updates the owner's store. Here `#domain/auth`'s
+credential-sync closes the loop, per user: a project's tool home only ever
+holds its owner's credential.
 
 The rule: **the newest credential wins, and both sides converge on it.**
-Harvest copies a project's refreshed bundle to the host store; push copies
-the host store's bundle to projects that are behind. Seeding a create runs
+Harvest copies a project's refreshed bundle to its owner's store; push
+copies the owner's bundle to their projects that are behind. Seeding a create runs
 harvest then push, so it can only move a project forward rather than undo a
 running workspace's rotation.
 

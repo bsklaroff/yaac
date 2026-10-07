@@ -23,9 +23,10 @@ vi.mock('@yaac/shared/tool-auth-interactive', async (importOriginal) => {
 import {
   killAllToolLogins,
   getToolLogin,
+  setToolLoginPersistence,
   startToolLogin,
 } from '#tool-login'
-import { loadClaudeCredentialsFile } from '@yaac/shared/tool-auth'
+import type { ToolLoginResult } from '@yaac/shared/tool-auth-interactive'
 import { CLAUDE_STUB } from '@yaac/test-utils/fixtures'
 
 const KEYCHAIN_BUNDLE = JSON.stringify({
@@ -44,11 +45,16 @@ async function waitForStatus(id: string, status: string): Promise<void> {
   }, { timeout: 10_000, interval: 25 })
 }
 
+/** What each login handed the server, by tool. */
+const persisted = new Map<string, ToolLoginResult>()
+setToolLoginPersistence((tool, result) => { persisted.set(tool, result); return Promise.resolve() })
+
 describe('claude web login detected via the macOS keychain', () => {
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    persisted.clear()
     process.env.YAAC_E2E_CLAUDE_LOGIN_CLI = JSON.stringify([process.execPath, CLAUDE_STUB])
     process.env.FAKE_LOGIN_MODE = 'no-creds' // macOS CLI: nothing lands in $CLAUDE_CONFIG_DIR
     keychain.read.mockReset()
@@ -70,10 +76,10 @@ describe('claude web login detected via the macOS keychain', () => {
     const started = await startToolLogin('claude')
     await waitForStatus(started.id, 'success')
 
-    const saved = await loadClaudeCredentialsFile()
+    const saved = persisted.get('claude')
     expect(saved?.kind).toBe('oauth')
     if (saved?.kind !== 'oauth') return
-    expect(saved.claudeAiOauth.accessToken).toBe('sk-ant-oat01-from-keychain')
+    expect(saved.claudeBundle?.accessToken).toBe('sk-ant-oat01-from-keychain')
 
     // Reads and the post-login cleanup both target the scoped item.
     const services = keychain.read.mock.calls.map((c) => c[0])
@@ -88,7 +94,7 @@ describe('claude web login detected via the macOS keychain', () => {
     const started = await startToolLogin('claude')
     await waitForStatus(started.id, 'error')
     expect(getToolLogin(started.id).error).toContain('Login successful.')
-    expect(await loadClaudeCredentialsFile()).toBeNull()
+    expect(persisted.get('claude')).toBeUndefined()
     // The scratch keychain sweep still runs on failure.
     expect(keychain.del).toHaveBeenCalled()
   })

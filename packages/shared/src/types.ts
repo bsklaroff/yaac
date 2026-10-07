@@ -361,8 +361,8 @@ const apiKeyCredentialSchema = z.object({
 const savedAt = z.string()
 
 /**
- * Shape of the server's `.credentials/claude.json`: OAuth with a full bundle,
- * or a single sk-ant-api03-… API key.
+ * Shape of a user's stored claude sign-in (the server's `tool_credentials`):
+ * OAuth with a full bundle, or a single sk-ant-api03-… API key.
  */
 export const claudeCredentialsFileSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('oauth'), savedAt, claudeAiOauth: claudeOAuthBundleSchema }),
@@ -371,8 +371,8 @@ export const claudeCredentialsFileSchema = z.discriminatedUnion('kind', [
 export type ClaudeCredentialsFile = z.infer<typeof claudeCredentialsFileSchema>
 
 /**
- * Shape of the server's `.credentials/codex.json`: OAuth with a full bundle,
- * or an API key.
+ * Shape of a user's stored codex sign-in (the server's `tool_credentials`):
+ * OAuth with a full bundle, or an API key.
  */
 export const codexCredentialsFileSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('oauth'), savedAt, codexOauth: codexOAuthBundleSchema }),
@@ -381,9 +381,10 @@ export const codexCredentialsFileSchema = z.discriminatedUnion('kind', [
 export type CodexCredentialsFile = z.infer<typeof codexCredentialsFileSchema>
 
 /**
- * Shape of the server's `.credentials/opencode.json`: an api key for one
- * provider in the generated registry (`tool-providers.ts`). `provider` picks
- * the env var and the host the proxy swaps the key on; a file whose provider
+ * Shape of a user's stored opencode sign-in (the server's
+ * `tool_credentials`): an api key for one provider in the generated registry
+ * (`tool-providers.ts`). `provider` picks
+ * the env var and the host the proxy swaps the key on; a sign-in whose provider
  * is missing or unknown fails to parse rather than defaulting, which could
  * send the key to the wrong vendor.
  */
@@ -396,7 +397,7 @@ export const opencodeCredentialsFileSchema = apiKeyCredentialSchema.extend({
 })
 export type OpencodeCredentialsFile = z.infer<typeof opencodeCredentialsFileSchema>
 
-/** Shape of the server's `.credentials/pi.json`; like opencode's. */
+/** Shape of a user's stored pi sign-in; like opencode's. */
 export const piCredentialsFileSchema = apiKeyCredentialSchema.extend({
   savedAt,
   provider: z.custom<PiProvider>(
@@ -1376,12 +1377,13 @@ export interface ServerSnapshot {
   /** See `ActiveWorkspacesResult.gitAuthFailures`. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]
-  /** Claude subscription plan usage (domain/auth/plan-usage.ts). Null
-   *  until the first refresh after a webapp client connects. */
-  planUsage: PlanUsageResult | null
-  /** Codex (ChatGPT) plan usage. Null until the first refresh, or without
-   *  a ChatGPT (OAuth) sign-in. */
-  codexPlanUsage: PlanUsageResult | null
+  /** Each user's Claude subscription plan usage, by user id
+   *  (domain/auth/plan-usage.ts); a user with no tool sign-in is absent.
+   *  Null until the first refresh after a webapp client connects. */
+  planUsage: Record<string, PlanUsageResult | null>
+  /** Each user's Codex (ChatGPT) plan usage, by user id. Null until the
+   *  first refresh, or without a ChatGPT (OAuth) sign-in. */
+  codexPlanUsage: Record<string, PlanUsageResult | null>
   /** The host port-forward listeners bind (`YAAC_FORWARD_BIND`), so the UI
    *  can state it; it may differ from the page origin. */
   forwardBindHost: string

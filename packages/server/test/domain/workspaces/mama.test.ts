@@ -47,6 +47,7 @@ import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, workspaceDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
+import { setToolCredential } from '#db'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -73,6 +74,9 @@ beforeEach(async () => {
   // The caller's project always exists, since the caller runs in it.
   await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
   await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+  // Spawns run on the project owner's sign-ins.
+  await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
+  await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
   clearAllProvisioningForTests()
   _clearListActiveInflightForTests()
   vi.mocked(listWorkspacePods).mockResolvedValue([])
@@ -977,9 +981,11 @@ describe('runMamaCommand', () => {
   })
 
   describe('models', () => {
-    it('reports every tool, and which the host can actually authenticate', async () => {
-      // No credentials are seeded, so every tool reads as unconfigured.
+    it('reports every tool, and which the project owner has signed in to', async () => {
+      // Only claude and codex are seeded.
       const text = await output('models')
+      expect(text).toMatch(/^codex\s+api-key$/m)
+      expect(text).toMatch(/^pi\s+not configured/m)
       expect(text).toContain('claude')
       expect(text).toContain('codex')
       expect(text).toContain('opencode')

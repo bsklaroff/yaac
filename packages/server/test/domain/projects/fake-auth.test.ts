@@ -3,15 +3,9 @@ import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { assignProjectCredential, listCredentialSummaries, resolveProjectCredential, seedFakeAuth } from '#domain/projects'
-import { BUILT_IN_USER_ID, closeDb, recordProject } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, setToolCredential } from '#db'
 import { buildFakeClaudeOAuthBundle } from '#domain/projects/fake-auth'
 import {
-  saveClaudeOAuthBundle,
-  saveOpencodeCredentialsFile,
-  savePiCredentialsFile,
-  loadClaudeCredentialsFile,
-  loadOpencodeCredentialsFile,
-  loadPiCredentialsFile,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
@@ -19,12 +13,13 @@ import {
   PLACEHOLDER_PI_API_KEY,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@yaac/shared/tool-auth'
-import { projectDir, claudeDir, projectClaudeCredentialsFile } from '@yaac/shared/project-paths'
+import { projectClaudeCredentialsFile } from '@yaac/shared/project-paths'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 const WEB = '2567a5ec-9705-4b7a-82c9-84033e06189d'
+const ME = BUILT_IN_USER_ID
 
 let tmpDir: string
 
@@ -43,7 +38,7 @@ describe('seedFakeAuth', () => {
     // yaac's MITM proxy, which swaps the sentinels for the real credential.
     await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
 
-    const creds = await loadClaudeCredentialsFile()
+    const creds = await getToolCredential(ME, 'claude')
     expect(creds?.kind).toBe('oauth')
     if (creds?.kind !== 'oauth') throw new Error('unreachable')
     expect(creds.claudeAiOauth.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
@@ -54,9 +49,8 @@ describe('seedFakeAuth', () => {
     expect(creds.claudeAiOauth.subscriptionType).toBe('max')
   })
 
-  it('fans the claude bundle out to projects added before the seed', async () => {
-    await fs.mkdir(claudeDir(DEMO_PROJECT_ID), { recursive: true })
-    await fs.mkdir(projectDir(DEMO_PROJECT_ID), { recursive: true })
+  it('fans the claude bundle out to the user\'s projects added before the seed', async () => {
+    await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: 'https://github.com/acme/demo', addedAt: 'x' }, ME)
 
     await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
 
@@ -68,12 +62,12 @@ describe('seedFakeAuth', () => {
 
   it('seeds opencode and pi as OpenRouter api-keys holding their own placeholders, over an older fake', async () => {
     // A fake from before each tool had its own placeholder is still a fake.
-    await savePiCredentialsFile({ kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: PLACEHOLDER_API_KEY })
+    await setToolCredential(ME, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: PLACEHOLDER_API_KEY })
     await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'], BUILT_IN_USER_ID)
 
     for (const [creds, placeholder] of [
-      [await loadOpencodeCredentialsFile(), PLACEHOLDER_OPENCODE_API_KEY],
-      [await loadPiCredentialsFile(), PLACEHOLDER_PI_API_KEY],
+      [await getToolCredential(ME, 'opencode'), PLACEHOLDER_OPENCODE_API_KEY],
+      [await getToolCredential(ME, 'pi'), PLACEHOLDER_PI_API_KEY],
     ] as const) {
       expect(creds?.kind).toBe('api-key')
       expect(creds?.provider).toBe('openrouter')
@@ -104,18 +98,20 @@ describe('seedFakeAuth', () => {
     await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
     await seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)
 
-    await saveOpencodeCredentialsFile({
+    await setToolCredential(ME, 'opencode', {
       kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or-real',
     })
     await expect(seedFakeAuth(['pi-openrouter', 'opencode-openrouter'], BUILT_IN_USER_ID))
       .rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('opencode-openrouter') as string })
     // All or nothing: pi was not seeded alongside the refusal.
-    expect(await loadPiCredentialsFile()).toBeNull()
-    expect((await loadOpencodeCredentialsFile())?.apiKey).toBe('sk-or-real')
+    expect(await getToolCredential(ME, 'pi')).toBeNull()
+    expect((await getToolCredential(ME, 'opencode'))?.apiKey).toBe('sk-or-real')
 
-    await saveClaudeOAuthBundle({ ...buildFakeClaudeOAuthBundle(), accessToken: 'sk-ant-oat-real' })
+    await setToolCredential(ME, 'claude', {
+      kind: 'oauth', savedAt: 'x', claudeAiOauth: { ...buildFakeClaudeOAuthBundle(), accessToken: 'sk-ant-oat-real' },
+    })
     await expect(seedFakeAuth(['claude-oauth'], BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'CONFLICT' })
-    const creds = await loadClaudeCredentialsFile()
+    const creds = await getToolCredential(ME, 'claude')
     expect(creds?.kind === 'oauth' && creds.claudeAiOauth.accessToken).toBe('sk-ant-oat-real')
   })
 })

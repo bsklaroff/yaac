@@ -5,19 +5,19 @@ import crypto from 'node:crypto'
 import { spawn } from 'node:child_process'
 import * as pty from '@lydell/node-pty'
 import { clientLocalRoot, ensureClientLocalRoot } from '@yaac/shared/project-paths'
-import { persistToolLogin } from '@yaac/shared/tool-auth'
 import {
   claudeKeychainService,
   deleteScopedClaudeKeychainItem,
   extractClaudeOAuthBundle,
   extractCodexOAuthBundle,
   readClaudeKeychainPayload,
+  type ToolLoginResult,
 } from '@yaac/shared/tool-auth-interactive'
 import { resolveToolCliPath } from '#cli-resolve'
 import { createCliSessionRegistry, outputTail, type CliSession } from '#cli-session'
 import { ServerError } from '@yaac/shared/errors'
 import { testEnv } from '@yaac/shared/env'
-import type { ToolLoginView } from '@yaac/shared/types'
+import type { AgentTool, ToolLoginView } from '@yaac/shared/types'
 
 /**
  * Web-driven tool sign-in: runs the vendor's own browser login in a
@@ -39,14 +39,12 @@ import type { ToolLoginView } from '@yaac/shared/types'
 const CLAUDE_POLL_MS = 500
 
 /**
- * Where a completed login's credentials go. The default writes the local
- * data-dir credential files only. `runAuthDaemon` always replaces it with a
- * `PUT /auth/:tool` to the server, because only the server knows how to seed
- * each project's tool home (a proxy-swapped sentinel under k8s, the real
- * credential under containerless).
+ * Where a completed login's credentials go: `runAuthDaemon` sets a
+ * `PUT /auth/:tool` to the server, which stores them for the signed-in user
+ * and seeds that user's project tool homes.
  */
-type PersistToolLogin = typeof persistToolLogin
-let persistResult: PersistToolLogin = persistToolLogin
+type PersistToolLogin = (tool: AgentTool, result: ToolLoginResult) => Promise<void>
+let persistResult: PersistToolLogin = () => Promise.reject(new Error('no login persistence is set'))
 
 export function setToolLoginPersistence(fn: PersistToolLogin): void {
   persistResult = fn

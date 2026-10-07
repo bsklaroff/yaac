@@ -9,11 +9,10 @@ vi.mock('#domain/projects/list', () => ({
   listProjects: vi.fn().mockResolvedValue([]),
 }))
 
-// The real slice reads the credentials file and triggers upstream
+// The real slices read the credential store and trigger upstream
 // refreshes; keep snapshot builds inert.
 vi.mock('#domain/auth/plan-usage', () => ({
-  planUsageForSnapshot: vi.fn().mockResolvedValue(null),
-  codexPlanUsageForSnapshot: vi.fn().mockResolvedValue(null),
+  planUsageForSnapshot: vi.fn().mockResolvedValue({ planUsage: {}, codexPlanUsage: {} }),
 }))
 
 vi.mock('#domain/workspaces/queued-workspaces', async (importOriginal) => ({
@@ -38,8 +37,8 @@ function emptySnapshot(): ServerSnapshot {
     workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
     queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [],
     imageBuilds: [],
-    planUsage: null,
-    codexPlanUsage: null,
+    planUsage: {},
+    codexPlanUsage: {},
     forwardBindHost: '127.0.0.1',
   }
 }
@@ -196,8 +195,8 @@ describe('buildSnapshot', () => {
     expect(Array.isArray(snap.provisioning)).toBe(true)
     expect(snap.gitAuthFailures).toEqual({})
     expect(Array.isArray(snap.imageBuilds)).toBe(true)
-    expect(snap.planUsage).toBeNull()
-    expect(snap.codexPlanUsage).toBeNull()
+    expect(snap.planUsage).toEqual({})
+    expect(snap.codexPlanUsage).toEqual({})
   })
 })
 

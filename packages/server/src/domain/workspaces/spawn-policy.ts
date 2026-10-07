@@ -4,6 +4,7 @@ import { resolveGroup } from './groups'
 import { startWorkspace } from './start'
 import { getProjectRow } from '#db'
 import type { Actor } from '#domain/access'
+import { loadToolAuthEntry } from '#domain/auth'
 import {
   PERMISSION_MODES,
   isRankedPermissionMode,
@@ -88,28 +89,34 @@ export async function decideSpawn(
     return fail(`prompt exceeds ${SPAWN_MAX_PROMPT_CHARS} characters`)
   }
 
-  const inFlight = inFlightByCaller.get(request.callerWorkspaceId) ?? 0
+  const caller = request.callerWorkspaceId
+  const inFlight = inFlightByCaller.get(caller) ?? 0
   if (inFlight >= SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE) {
     return fail(`too many concurrent spawns (max ${SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE} provisioning at once)`)
   }
-
-  // Tool precedence: explicit request > the caller's own tool > the agent
-  // the project was last created with > claude.
-  const tool = request.tool
-    ?? request.callerTool
-    ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectId)
-    ?? 'claude'
-  const uiMode = request.uiMode ?? request.callerMode
-  const posture = agentPermissionMode(tool, request.callerPermissionMode, request.permissionMode)
-  if (!posture.ok) return posture
-  // Last, so a refused spawn creates no group.
-  const groupId = request.group === undefined
-    ? undefined
-    : (await resolveGroup(request.callerProjectId, request.group, { create: true })).groupId
+  // Reserved before any await, so concurrent requests cannot all pass the
+  // check. A refusal below gives the slot back; a launch, once it settles.
+  inFlightByCaller.set(caller, inFlight + 1)
+  const release = (): void => {
+    const n = (inFlightByCaller.get(caller) ?? 1) - 1
+    if (n <= 0) inFlightByCaller.delete(caller)
+    else inFlightByCaller.set(caller, n)
+  }
+  let admitted: Admission
+  try {
+    admitted = await admit(request, deps)
+  } catch (err) {
+    release()
+    throw err
+  }
+  if (!admitted.ok) {
+    release()
+    return admitted
+  }
+  const { tool, uiMode, permissionMode, groupId } = admitted
 
   const workspaceId = (deps.mintIdFn ?? (() => crypto.randomUUID()))()
   const projectId = request.callerProjectId
-  inFlightByCaller.set(request.callerWorkspaceId, inFlight + 1)
   // Register the provisioning row before detaching: it shows progress and
   // failures, and makes the id usable as a queue parent right away.
   registerProvisioning({
@@ -127,7 +134,7 @@ export async function decideSpawn(
     ...(uiMode !== undefined ? { mode: uiMode } : {}),
     // Not the project's remembered mode, which could strand the agent at a
     // prompt nobody answers.
-    permissionMode: posture.permissionMode,
+    permissionMode,
     prompt: request.prompt,
     ...(request.model !== undefined ? { model: request.model } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
@@ -140,13 +147,46 @@ export async function decideSpawn(
   }, onProgress)).then(
     (created) => serverLog(`[spawn] ${request.callerWorkspaceId.slice(0, 8)}... spawned workspace ${created.workspaceId.slice(0, 8)}... in ${projectId}`),
     (err: unknown) => serverLog(`[spawn] workspace create for ${request.callerWorkspaceId.slice(0, 8)}... failed: ${String(err)}`),
-  ).finally(() => {
-    const n = (inFlightByCaller.get(request.callerWorkspaceId) ?? 1) - 1
-    if (n <= 0) inFlightByCaller.delete(request.callerWorkspaceId)
-    else inFlightByCaller.set(request.callerWorkspaceId, n)
-  })
+  ).finally(release)
 
   return { ok: true, workspaceId }
+}
+
+/** What `admit` decided: the spawn's settings, or why it is refused. */
+type Admission =
+  | { ok: true; tool: AgentTool; uiMode?: AgentMode; permissionMode: PermissionMode; groupId?: string }
+  | { ok: false; error: string }
+
+/**
+ * The checks a spawn passes once its in-flight slot is reserved: pick its
+ * tool, refuse one the project owner has not signed in to (the spawn runs on
+ * their credentials, so its agent could not authenticate), settle its
+ * posture, and resolve its group, last so a refused spawn creates none.
+ */
+async function admit(request: SpawnRequest, deps: SpawnPolicyDeps): Promise<Admission> {
+  // Tool precedence: explicit request > the caller's own tool > the agent
+  // the project was last created with > claude.
+  const tool = request.tool
+    ?? request.callerTool
+    ?? await (deps.lastToolFn ?? lastTool)(request.callerProjectId)
+    ?? 'claude'
+  const owner = (await getProjectRow(request.callerProjectId))?.owner
+  if (owner === undefined || !await loadToolAuthEntry(owner, tool)) {
+    return { ok: false, error: `${tool} is not signed in for this project's owner (see \`yaac-mama models\`)` }
+  }
+  const posture = agentPermissionMode(tool, request.callerPermissionMode, request.permissionMode)
+  if (!posture.ok) return posture
+  const groupId = request.group === undefined
+    ? undefined
+    : (await resolveGroup(request.callerProjectId, request.group, { create: true })).groupId
+  const uiMode = request.uiMode ?? request.callerMode
+  return {
+    ok: true,
+    tool,
+    permissionMode: posture.permissionMode,
+    ...(uiMode !== undefined ? { uiMode } : {}),
+    ...(groupId !== undefined ? { groupId } : {}),
+  }
 }
 
 /**

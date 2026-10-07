@@ -8,7 +8,7 @@ import {
 } from '#domain/workspaces'
 import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
-import { planUsageForSnapshot, codexPlanUsageForSnapshot } from '#domain/auth'
+import { planUsageForSnapshot } from '#domain/auth'
 import { serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
@@ -24,13 +24,12 @@ export interface WsLike {
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
   const [
-    active, workspaceGroups, projects, planUsage, codexPlanUsage, queuedWorkspaces, heldWorkspaces, draftWorkspaces,
+    active, workspaceGroups, projects, usage, queuedWorkspaces, heldWorkspaces, draftWorkspaces,
   ] = await Promise.all([
     listActiveWorkspaces(),
     listWorkspaceGroups(),
     listProjects(),
     planUsageForSnapshot(),
-    codexPlanUsageForSnapshot(),
     listQueuedWorkspaces(),
     listHeldWorkspaces(),
     listDraftWorkspaces(),
@@ -57,8 +56,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     draftWorkspaces,
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
-    planUsage,
-    codexPlanUsage,
+    ...usage,
     forwardBindHost: env.forwardBind,
   }
 }

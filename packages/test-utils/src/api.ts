@@ -1,6 +1,7 @@
 import { createRawApiClient } from '@yaac/shared/api-core'
 import type { buildApp } from '@yaac/server/main/server'
 import type { SpawnedServer } from '#cli'
+import type { AgentTool, ToolAuthPayload } from '@yaac/shared/types'
 
 type ServerApp = ReturnType<typeof buildApp>
 
@@ -72,4 +73,17 @@ export async function assignTestGitCredential(
     param: { projectId: project }, json: { credentialId: id },
   })
   if (!assigned.ok) throw new Error(`assigning the git credential failed: ${await assigned.text()}`)
+}
+
+/**
+ * Sign the server's caller (the built-in user, over loopback) in to a tool
+ * as `yaac auth update` does. Throws on any non-2xx.
+ */
+export async function signInTestTool(
+  server: SpawnedServer,
+  tool: AgentTool,
+  payload: ToolAuthPayload,
+): Promise<void> {
+  const res = await makeServerApiClient(server).auth[':tool'].$put({ param: { tool }, json: payload })
+  if (!res.ok) throw new Error(`signing in to ${tool} failed: ${await res.text()}`)
 }

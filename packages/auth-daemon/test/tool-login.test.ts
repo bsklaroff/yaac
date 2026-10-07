@@ -6,9 +6,10 @@ import {
   cancelToolLogin,
   getToolLogin,
   sendToolLoginInput,
+  setToolLoginPersistence,
   startToolLogin,
 } from '#tool-login'
-import { loadClaudeCredentialsFile, loadCodexCredentialsFile } from '@yaac/shared/tool-auth'
+import type { ToolLoginResult } from '@yaac/shared/tool-auth-interactive'
 import { CLAUDE_STUB, CODEX_STUB } from '@yaac/test-utils/fixtures'
 
 // Consulted only when the YAAC_E2E_*_LOGIN_CLI hook is unset. Mocked to "not
@@ -24,11 +25,16 @@ async function waitForStatus(id: string, status: string): Promise<void> {
   }, { timeout: 10_000, interval: 25 })
 }
 
+/** What each login handed the server, by tool. */
+const persisted = new Map<string, ToolLoginResult>()
+setToolLoginPersistence((tool, result) => { persisted.set(tool, result); return Promise.resolve() })
+
 describe('tool login sessions', () => {
   let tmpDir: string
 
   beforeEach(async () => {
     tmpDir = await createTempDataDir()
+    persisted.clear()
     process.env.YAAC_E2E_CLAUDE_LOGIN_CLI = JSON.stringify([process.execPath, CLAUDE_STUB])
     process.env.YAAC_E2E_CODEX_LOGIN_CLI = JSON.stringify([process.execPath, CODEX_STUB])
   })
@@ -47,13 +53,13 @@ describe('tool login sessions', () => {
     expect(started.status).toBe('running')
 
     await waitForStatus(started.id, 'success')
-    const saved = await loadClaudeCredentialsFile()
+    const saved = persisted.get('claude')
     expect(saved?.kind).toBe('oauth')
     if (saved?.kind !== 'oauth') return
-    expect(saved.claudeAiOauth.accessToken).toBe('sk-ant-oat01-fake-web-login')
+    expect(saved.claudeBundle?.accessToken).toBe('sk-ant-oat01-fake-web-login')
     // The browser login yields a real refreshable bundle, unlike a pasted key.
-    expect(saved.claudeAiOauth.refreshToken).toBe('sk-ant-ort01-fake-refresh')
-    expect(saved.claudeAiOauth.subscriptionType).toBe('max')
+    expect(saved.claudeBundle?.refreshToken).toBe('sk-ant-ort01-fake-refresh')
+    expect(saved.claudeBundle?.subscriptionType).toBe('max')
   })
 
   it('claude: the polled view carries the CLI output with the printed URL', async () => {
@@ -77,7 +83,7 @@ describe('tool login sessions', () => {
 
     sendToolLoginInput(started.id, ' code-from-page ')
     await waitForStatus(started.id, 'success')
-    expect((await loadClaudeCredentialsFile())?.kind).toBe('oauth')
+    expect(persisted.get('claude')?.kind).toBe('oauth')
     // The prompt the stub printed never reaches the presented output.
     expect(getToolLogin(started.id).output).not.toContain('Paste code here')
   })
@@ -109,7 +115,7 @@ describe('tool login sessions', () => {
     expect(getToolLogin(started.id).status).toBe('running')
     sendToolLoginInput(started.id, 'code-123#state_ABC')
     await waitForStatus(started.id, 'success')
-    expect((await loadClaudeCredentialsFile())?.kind).toBe('oauth')
+    expect(persisted.get('claude')?.kind).toBe('oauth')
   })
 
   it('rejects input on codex flows (no stdin) and unknown sessions', async () => {
@@ -140,7 +146,7 @@ describe('tool login sessions', () => {
 
     await waitForStatus(started.id, 'error')
     expect(getToolLogin(started.id).error).toContain('access denied')
-    expect(await loadClaudeCredentialsFile()).toBeNull()
+    expect(persisted.get('claude')).toBeUndefined()
   })
 
   it('codex: browser login lands, auth.json is persisted as a bundle', async () => {
@@ -148,11 +154,11 @@ describe('tool login sessions', () => {
     expect(started.status).toBe('running')
 
     await waitForStatus(started.id, 'success')
-    const saved = await loadCodexCredentialsFile()
+    const saved = persisted.get('codex')
     expect(saved?.kind).toBe('oauth')
     if (saved?.kind !== 'oauth') return
-    expect(saved.codexOauth.accessToken).toBe('codex-access-fake')
-    expect(saved.codexOauth.accountId).toBe('acct_fake')
+    expect(saved.codexBundle?.accessToken).toBe('codex-access-fake')
+    expect(saved.codexBundle?.accountId).toBe('acct_fake')
   })
 
   it('codex: a failed login surfaces the CLI output as the error', async () => {
@@ -161,7 +167,7 @@ describe('tool login sessions', () => {
 
     await waitForStatus(started.id, 'error')
     expect(getToolLogin(started.id).error).toContain('Login was not completed')
-    expect(await loadCodexCredentialsFile()).toBeNull()
+    expect(persisted.get('codex')).toBeUndefined()
   })
 
   it('unknown ids 404; cancel forgets the session and is idempotent', async () => {

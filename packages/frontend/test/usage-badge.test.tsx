@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { screen, fireEvent, cleanup } from '@testing-library/react'
 
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: vi.fn() }))
 
 import { useSnapshot } from '#lib/useSnapshot'
-import { mockFetch, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
 import {
   limitLabel,
   metricKey,
@@ -32,7 +32,10 @@ let server: FetchMock
 beforeEach(() => {
   vi.clearAllMocks()
   useUiStore.setState({ pinnedUsageMetric: null })
-  server = mockFetch({ 'POST /api/auth/claude/usage/refresh': undefined })
+  server = mockFetch({
+    'POST /api/auth/claude/usage/refresh': undefined,
+    'GET /api/whoami': { kind: 'local', userId: ME, users: [] },
+  })
 })
 afterEach(() => {
   cleanup()
@@ -91,10 +94,21 @@ function stubSnapshot(
     driver: 'k8s',
     workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], gitAuthFailures: {},
     imageBuilds: [],
-    planUsage,
-    codexPlanUsage,
+    // Another user's readout, which the badge must not show.
+    planUsage: { [ME]: planUsage, [OTHER]: { available: false, reason: 'api-key' } },
+    codexPlanUsage: { [ME]: codexPlanUsage },
     forwardBindHost: '127.0.0.1',
   })
+}
+
+const ME = '6f1c1c55-7a53-4bd5-9a0f-0b3a3d1b1a01'
+const OTHER = '6f1c1c55-7a53-4bd5-9a0f-0b3a3d1b1a02'
+
+/** Render the badge as `ME`, whose `whoami` App has already loaded. */
+function renderBadge(): void {
+  const client = testQueryClient()
+  client.setQueryData(['whoami'], { kind: 'local', userId: ME, users: [] })
+  renderWithClient(<UsageBadge />, client)
 }
 
 function pill(): HTMLElement {
@@ -197,17 +211,17 @@ describe('usageTone', () => {
 describe('UsageBadge', () => {
   it('renders nothing before the snapshot or any usage arrives', () => {
     vi.mocked(useSnapshot).mockReturnValue(undefined)
-    render(<UsageBadge />)
+    renderBadge()
     expect(screen.queryByRole('button')).toBeNull()
 
     stubSnapshot(null, null)
-    render(<UsageBadge />)
+    renderBadge()
     expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('renders nothing when every tool is unavailable or has no limits', () => {
     stubSnapshot({ available: false, reason: 'api-key' }, null)
-    render(<UsageBadge />)
+    renderBadge()
     expect(screen.queryByRole('button')).toBeNull()
     cleanup()
 
@@ -215,20 +229,33 @@ describe('UsageBadge', () => {
       { available: true, subscriptionType: 'max', rateLimitTier: null, limits: [] },
       null,
     )
-    render(<UsageBadge />)
+    renderBadge()
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('shows the caller\'s own usage, also while viewing a teammate', () => {
+    // The other user's slot holds an api-key readout, which would hide the
+    // badge if it were shown.
+    stubSnapshot(CLAUDE_USAGE)
+    useUiStore.setState({ viewedUserId: OTHER })
+    try {
+      renderBadge()
+      expect(pill().textContent).toBe('19%')
+    } finally {
+      useUiStore.setState({ viewedUserId: null })
+    }
   })
 
   it('shows the tightest limit across all tools on the trigger pill', () => {
     // Claude's tightest is 19% and Codex's is 42%, so the pill shows 42%.
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
-    render(<UsageBadge />)
+    renderBadge()
     expect(pill().textContent).toBe('42%')
   })
 
   it('renders a Codex-only readout when Claude is unavailable', () => {
     stubSnapshot({ available: false, reason: 'api-key' }, CODEX_USAGE)
-    render(<UsageBadge />)
+    renderBadge()
     expect(pill().textContent).toBe('42%')
     fireEvent.click(pill())
     expect(screen.getByText('Codex')).toBeTruthy()
@@ -237,7 +264,7 @@ describe('UsageBadge', () => {
 
   it('opens a popover with a section per tool, its plan, and one row per limit', () => {
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
-    render(<UsageBadge />)
+    renderBadge()
     fireEvent.click(pill())
 
     expect(screen.getByText('Plan usage')).toBeTruthy()
@@ -256,7 +283,7 @@ describe('UsageBadge', () => {
 
   it('nudges a background usage refresh when opened', () => {
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
-    render(<UsageBadge />)
+    renderBadge()
     expect(server.called('POST /api/auth/claude/usage/refresh')).toHaveLength(0)
     fireEvent.click(pill())
     expect(server.called('POST /api/auth/claude/usage/refresh')).toHaveLength(1)
@@ -264,7 +291,7 @@ describe('UsageBadge', () => {
 
   it('pins metrics across tools, switches pins, and unpins', () => {
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
-    render(<UsageBadge />)
+    renderBadge()
     fireEvent.click(pill())
 
     // Pin the Claude weekly Fable limit: the pill carries its tag + percent.
@@ -285,7 +312,7 @@ describe('UsageBadge', () => {
   it('falls back to the tightest limit when the pinned metric is absent', () => {
     useUiStore.setState({ pinnedUsageMetric: 'claude:weekly_scoped:Opus' })
     stubSnapshot(CLAUDE_USAGE, CODEX_USAGE)
-    render(<UsageBadge />)
+    renderBadge()
     expect(pill().textContent).toBe('42%')
     // The pin is kept because the limit may come back.
     expect(useUiStore.getState().pinnedUsageMetric).toBe('claude:weekly_scoped:Opus')

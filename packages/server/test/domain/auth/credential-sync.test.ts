@@ -1,43 +1,47 @@
 import fs from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 
 import {
-  fanOutToolCredentials,
   harvestToolCredentials,
+  reseedPlaceholderToolHomes,
   runtimeMediatesEgress,
   seedProjectToolHome,
   syncToolCredentials,
 } from '#domain/auth'
+import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, seeTailnetUser, setToolCredential } from '#db'
+import { getDb } from '#db/client'
+import { projects, toolCredentials } from '#db/schema'
 import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-import { setDataDir } from '@yaac/shared/project-paths'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { getProjectsDir, projectClaudeCredentialsFile, projectCodexAuthFile } from '@yaac/shared/project-paths'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
-  loadClaudeCredentialsFile,
-  loadCodexCredentialsFile,
   readProjectClaudeBundle,
   readProjectCodexBundle,
-  saveClaudeCredentialsFile,
-  saveClaudeOAuthBundle,
-  saveCodexOAuthBundle,
   writeProjectClaudeCredentials,
   writeProjectClaudePlaceholder,
   writeProjectCodexAuth,
-  writeProjectCodexPlaceholder,
 } from '@yaac/shared/tool-auth'
-import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
+import type { ClaudeCredentialsFile, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 /**
- * Runs against a temp data dir: the host store and project tool homes are
- * real files, read and written through `@yaac/shared/tool-auth`. Only the
- * runtime is faked, since convergence depends only on whether it mediates
- * egress.
+ * Runs against a temp data dir: each user's store is the real database and
+ * project tool homes are real files. Only the runtime is faked, since
+ * convergence depends only on whether it mediates egress. Every project
+ * below is the built-in user's unless a test says otherwise.
  *
  * The macOS Keychain is not stubbed. Off darwin its scoped read and delete
  * are no-ops; on darwin they target a per-project service these fixtures
  * never create, so reads fall through to the same file.
  */
+
+const OWNER = BUILT_IN_USER_ID
+
+/** The projects the tests use, by name; each is recorded for `OWNER`. */
+const P = Object.fromEntries([
+  'alpha', 'beta', 'winner', 'loser', 'sentinel-project', 'stale-project',
+  'broken-project', 'fresh-project', 'flipped', 'chained',
+].map((name, i) => [name, `00000000-0000-4000-8000-${String(i + 1).padStart(12, '0')}`]))
 
 const HOUR = 60 * 60 * 1000
 const BASE_EXPIRY = 4102444800000 // 2100-01-01
@@ -67,15 +71,32 @@ function codexBundle(overrides: Partial<CodexOAuthBundle> = {}): CodexOAuthBundl
 
 let dataDir: string
 
-beforeEach(async () => {
-  dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-credsync-'))
-  setDataDir(dataDir)
-  installFakeWorkspaceDriver({ kind: 'containerless' })
+beforeAll(async () => {
+  dataDir = await createTempDataDir()
 })
 
-afterEach(async () => {
-  await fs.rm(dataDir, { recursive: true, force: true })
+afterAll(async () => {
+  await closeDb()
+  await cleanupTempDir(dataDir)
 })
+
+beforeEach(async () => {
+  installFakeWorkspaceDriver({ kind: 'containerless' })
+  const db = await getDb()
+  await db.delete(toolCredentials)
+  await db.delete(projects)
+  await fs.rm(getProjectsDir(), { recursive: true, force: true })
+  for (const [name, id] of Object.entries(P)) {
+    await recordProject({ id, name, remoteUrl: `https://github.com/acme/${name}`, addedAt: 'x' }, OWNER)
+  }
+})
+
+const storeClaude = (bundle: ClaudeOAuthBundle, owner = OWNER): Promise<void> =>
+  setToolCredential(owner, 'claude', { kind: 'oauth', savedAt: 'x', claudeAiOauth: bundle })
+const storeCodex = (bundle: CodexOAuthBundle): Promise<void> =>
+  setToolCredential(OWNER, 'codex', { kind: 'oauth', savedAt: 'x', codexOauth: bundle })
+const storedClaude = (owner = OWNER): Promise<ClaudeCredentialsFile | null> => getToolCredential(owner, 'claude')
+const storedCodex = () => getToolCredential(OWNER, 'codex')
 
 /** Put a project on disk by giving it a claude tool home. */
 async function seedProject(projectId: string, bundle: ClaudeOAuthBundle): Promise<void> {
@@ -93,133 +114,133 @@ describe('runtimeMediatesEgress', () => {
 
 describe('harvestToolCredentials', () => {
   it('adopts a workspace-refreshed bundle for both tools, and leaves the store alone when nothing is newer', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
-    await saveCodexOAuthBundle(codexBundle())
+    await storeClaude(claudeBundle())
+    await storeCodex(codexBundle())
 
     // An agent that refreshed in its workspace leaves a rotated pair with a
     // later expiry (claude) or timestamp (codex).
-    await writeProjectClaudeCredentials('alpha', claudeBundle({
+    await writeProjectClaudeCredentials(P.alpha, claudeBundle({
       accessToken: 'claude-access-fresh',
       refreshToken: 'claude-refresh-fresh',
       expiresAt: BASE_EXPIRY + HOUR,
     }))
-    await writeProjectCodexAuth('alpha', codexBundle({
+    await writeProjectCodexAuth(P.alpha, codexBundle({
       accessToken: 'codex-access-fresh',
       refreshToken: 'codex-refresh-fresh',
       lastRefresh: '2026-07-10T00:00:00.000Z',
     }))
 
-    await harvestToolCredentials()
+    await harvestToolCredentials(OWNER)
 
-    const claude = await loadClaudeCredentialsFile()
+    const claude = await storedClaude()
     expect(claude).toMatchObject({
       kind: 'oauth',
       claudeAiOauth: { accessToken: 'claude-access-fresh', refreshToken: 'claude-refresh-fresh' },
     })
-    const codex = await loadCodexCredentialsFile()
+    const codex = await storedCodex()
     expect(codex).toMatchObject({
       kind: 'oauth',
       codexOauth: { accessToken: 'codex-access-fresh', refreshToken: 'codex-refresh-fresh' },
     })
 
     // Re-harvesting is idempotent.
-    await harvestToolCredentials()
-    expect((await loadClaudeCredentialsFile())).toMatchObject({
+    await harvestToolCredentials(OWNER)
+    expect((await storedClaude())).toMatchObject({
       claudeAiOauth: { accessToken: 'claude-access-fresh' },
     })
   })
 
   it('adopts nothing a sandbox wrote where egress is mediated', async () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
-    await saveClaudeOAuthBundle(claudeBundle())
-    await saveCodexOAuthBundle(codexBundle())
+    await storeClaude(claudeBundle())
+    await storeCodex(codexBundle())
     // A newer bundle in a pod's tool home can only have been planted, since
     // the proxy is the only refresh writer there.
-    await writeProjectClaudeCredentials('alpha', claudeBundle({
+    await writeProjectClaudeCredentials(P.alpha, claudeBundle({
       accessToken: 'claude-access-planted', expiresAt: BASE_EXPIRY + HOUR,
     }))
-    await writeProjectCodexAuth('alpha', codexBundle({
+    await writeProjectCodexAuth(P.alpha, codexBundle({
       accessToken: 'codex-access-planted', lastRefresh: '2026-07-10T00:00:00.000Z',
     }))
 
-    await harvestToolCredentials()
+    await harvestToolCredentials(OWNER)
     await syncToolCredentials()
 
-    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'claude-access-host' } })
-    expect(await loadCodexCredentialsFile()).toMatchObject({ codexOauth: { accessToken: 'codex-access-host' } })
+    expect(await storedClaude()).toMatchObject({ claudeAiOauth: { accessToken: 'claude-access-host' } })
+    expect(await storedCodex()).toMatchObject({ codexOauth: { accessToken: 'codex-access-host' } })
   })
 
   it('refuses sentinels, older bundles, and a project whose file is unreadable', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
+    await storeClaude(claudeBundle())
 
     // A placeholder (from a mediated project, a data dir switched from k8s,
     // or yaac-in-yaac). Adopting it would break every workspace.
-    await writeProjectClaudePlaceholder('sentinel-project', claudeBundle({ expiresAt: BASE_EXPIRY + HOUR }))
+    await writeProjectClaudePlaceholder(P['sentinel-project'], claudeBundle({ expiresAt: BASE_EXPIRY + HOUR }))
     // Older than the host's copy.
-    await writeProjectClaudeCredentials('stale-project', claudeBundle({
+    await writeProjectClaudeCredentials(P['stale-project'], claudeBundle({
       accessToken: 'claude-access-old',
       expiresAt: BASE_EXPIRY - HOUR,
     }))
     // Garbage is skipped rather than failing the sweep.
-    await writeProjectClaudeCredentials('broken-project', claudeBundle())
-    await fs.writeFile(path.join(dataDir, 'global', 'projects', 'broken-project', 'claude', '.credentials.json'), '{ not json')
+    await writeProjectClaudeCredentials(P['broken-project'], claudeBundle())
+    await fs.writeFile(projectClaudeCredentialsFile(P['broken-project']), '{ not json')
 
-    await harvestToolCredentials()
+    await harvestToolCredentials(OWNER)
 
-    expect(await loadClaudeCredentialsFile()).toMatchObject({
+    expect(await storedClaude()).toMatchObject({
       claudeAiOauth: { accessToken: 'claude-access-host' },
     })
   })
 
   it('does not sign a signed-out or api-key install back in from a leftover project file', async () => {
-    await writeProjectClaudeCredentials('alpha', claudeBundle({ accessToken: 'claude-access-leftover' }))
+    await writeProjectClaudeCredentials(P.alpha, claudeBundle({ accessToken: 'claude-access-leftover' }))
 
     // Signed out: no host store.
-    await harvestToolCredentials()
-    expect(await loadClaudeCredentialsFile()).toBeNull()
+    await harvestToolCredentials(OWNER)
+    expect(await storedClaude()).toBeNull()
 
     // Signed in with an api key, which has no refresh to harvest.
-    await saveClaudeCredentialsFile({ kind: 'api-key', savedAt: '2026-07-09T00:00:00.000Z', apiKey: 'sk-ant-key' })
-    await harvestToolCredentials()
-    expect(await loadClaudeCredentialsFile()).toMatchObject({ kind: 'api-key', apiKey: 'sk-ant-key' })
+    await setToolCredential(OWNER, 'claude', { kind: 'api-key', savedAt: '2026-07-09T00:00:00.000Z', apiKey: 'sk-ant-key' })
+    await harvestToolCredentials(OWNER)
+    expect(await storedClaude()).toMatchObject({ kind: 'api-key', apiKey: 'sk-ant-key' })
   })
 
   it('sweeps one project when given a projectId, and every project otherwise', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
-    await seedProject('alpha', claudeBundle({ accessToken: 'a-fresh', expiresAt: BASE_EXPIRY + HOUR }))
-    await seedProject('beta', claudeBundle({ accessToken: 'b-fresher', expiresAt: BASE_EXPIRY + 2 * HOUR }))
+    await storeClaude(claudeBundle())
+    await seedProject(P.alpha, claudeBundle({ accessToken: 'a-fresh', expiresAt: BASE_EXPIRY + HOUR }))
+    await seedProject(P.beta, claudeBundle({ accessToken: 'b-fresher', expiresAt: BASE_EXPIRY + 2 * HOUR }))
 
-    await harvestToolCredentials({ projectId: 'alpha' })
-    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'a-fresh' } })
+    await harvestToolCredentials(OWNER, { projectId: P.alpha })
+    expect(await storedClaude()).toMatchObject({ claudeAiOauth: { accessToken: 'a-fresh' } })
 
     // The sweep takes the newest bundle, not the first it sees.
-    await harvestToolCredentials()
-    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'b-fresher' } })
+    await harvestToolCredentials(OWNER)
+    expect(await storedClaude()).toMatchObject({ claudeAiOauth: { accessToken: 'b-fresher' } })
   })
 
   it('sweeps only the tool it is given, so a usage cycle does not read every project twice', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
-    await saveCodexOAuthBundle(codexBundle())
-    await writeProjectClaudeCredentials('alpha', claudeBundle({
+    await storeClaude(claudeBundle())
+    await storeCodex(codexBundle())
+    await writeProjectClaudeCredentials(P.alpha, claudeBundle({
       accessToken: 'claude-fresh', expiresAt: BASE_EXPIRY + HOUR,
     }))
-    await writeProjectCodexAuth('alpha', codexBundle({
+    await writeProjectCodexAuth(P.alpha, codexBundle({
       accessToken: 'codex-fresh', lastRefresh: '2026-07-10T00:00:00.000Z',
     }))
 
-    await harvestToolCredentials({ tool: 'claude' })
-    expect(await loadClaudeCredentialsFile()).toMatchObject({ claudeAiOauth: { accessToken: 'claude-fresh' } })
-    expect(await loadCodexCredentialsFile()).toMatchObject({ codexOauth: { accessToken: 'codex-access-host' } })
+    await harvestToolCredentials(OWNER, { tool: 'claude' })
+    expect(await storedClaude()).toMatchObject({ claudeAiOauth: { accessToken: 'claude-fresh' } })
+    expect(await storedCodex()).toMatchObject({ codexOauth: { accessToken: 'codex-access-host' } })
 
-    await harvestToolCredentials({ tool: 'codex' })
-    expect(await loadCodexCredentialsFile()).toMatchObject({ codexOauth: { accessToken: 'codex-fresh' } })
+    await harvestToolCredentials(OWNER, { tool: 'codex' })
+    expect(await storedCodex()).toMatchObject({ codexOauth: { accessToken: 'codex-fresh' } })
   })
 
   it('refuses a Codex file carrying no refresh stamp, however new its synthesized one looks', async () => {
     // A file with no timestamp must rank oldest, not default to "now" and
     // outrank the live credential. Neither codex nor yaac writes this shape;
     // the test guards the comparator.
-    await saveCodexOAuthBundle(codexBundle())
+    await storeCodex(codexBundle())
     const stampless = {
       OPENAI_API_KEY: null,
       auth_mode: 'chatgpt',
@@ -230,15 +251,15 @@ describe('harvestToolCredentials', () => {
         account_id: 'acct-1',
       },
     }
-    await writeProjectCodexAuth('alpha', codexBundle())
+    await writeProjectCodexAuth(P.alpha, codexBundle())
     await fs.writeFile(
-      path.join(dataDir, 'global', 'projects', 'alpha', 'codex', 'auth.json'),
+      projectCodexAuthFile(P.alpha),
       JSON.stringify(stampless, null, 2),
     )
 
-    await harvestToolCredentials({ tool: 'codex' })
+    await harvestToolCredentials(OWNER, { tool: 'codex' })
 
-    expect(await loadCodexCredentialsFile()).toMatchObject({
+    expect(await storedCodex()).toMatchObject({
       codexOauth: { accessToken: 'codex-access-host' },
     })
   })
@@ -247,78 +268,78 @@ describe('harvestToolCredentials', () => {
 describe('seedProjectToolHome', () => {
   it('writes sentinels unconditionally where egress is mediated', async () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
-    await saveClaudeOAuthBundle(claudeBundle())
-    await saveCodexOAuthBundle(codexBundle())
+    await storeClaude(claudeBundle())
+    await storeCodex(codexBundle())
     // Even over a real bundle left by an earlier containerless run.
-    await writeProjectClaudeCredentials('alpha', claudeBundle({
+    await writeProjectClaudeCredentials(P.alpha, claudeBundle({
       accessToken: 'claude-access-real',
       expiresAt: BASE_EXPIRY + HOUR,
     }))
 
-    await seedProjectToolHome('alpha', { mediatedEgress: true })
+    await seedProjectToolHome(P.alpha, OWNER, { mediatedEgress: true })
 
-    const claude = await readProjectClaudeBundle('alpha')
+    const claude = await readProjectClaudeBundle(P.alpha)
     expect(claude?.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
-    const codex = await readProjectCodexBundle('alpha')
+    const codex = await readProjectCodexBundle(P.alpha)
     expect(codex?.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
   })
 
   it('never overwrites a credential a running workspace refreshed, and harvests it instead', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
-    await saveCodexOAuthBundle(codexBundle())
+    await storeClaude(claudeBundle())
+    await storeCodex(codexBundle())
     const refreshedClaude = claudeBundle({
       accessToken: 'claude-access-fresh',
       refreshToken: 'claude-refresh-fresh',
       expiresAt: BASE_EXPIRY + HOUR,
     })
-    await writeProjectClaudeCredentials('alpha', refreshedClaude)
-    await writeProjectCodexAuth('alpha', codexBundle({
+    await writeProjectClaudeCredentials(P.alpha, refreshedClaude)
+    await writeProjectCodexAuth(P.alpha, codexBundle({
       accessToken: 'codex-access-fresh',
       lastRefresh: '2026-07-10T00:00:00.000Z',
     }))
 
     // On create, a stale host copy must not overwrite the project's newer
     // credential.
-    await seedProjectToolHome('alpha', { mediatedEgress: false })
+    await seedProjectToolHome(P.alpha, OWNER, { mediatedEgress: false })
 
-    expect(await readProjectClaudeBundle('alpha')).toMatchObject({ accessToken: 'claude-access-fresh' })
-    expect(await readProjectCodexBundle('alpha')).toMatchObject({ accessToken: 'codex-access-fresh' })
+    expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({ accessToken: 'claude-access-fresh' })
+    expect(await readProjectCodexBundle(P.alpha)).toMatchObject({ accessToken: 'codex-access-fresh' })
     // The host store catches up too.
-    expect(await loadClaudeCredentialsFile()).toMatchObject({
+    expect(await storedClaude()).toMatchObject({
       claudeAiOauth: { accessToken: 'claude-access-fresh' },
     })
-    expect(await loadCodexCredentialsFile()).toMatchObject({
+    expect(await storedCodex()).toMatchObject({
       codexOauth: { accessToken: 'codex-access-fresh' },
     })
   })
 
   it('seeds a project that has nothing, and one holding only a sentinel', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
+    await storeClaude(claudeBundle())
 
-    await seedProjectToolHome('fresh-project', { mediatedEgress: false })
-    expect(await readProjectClaudeBundle('fresh-project')).toMatchObject({
+    await seedProjectToolHome(P['fresh-project'], OWNER, { mediatedEgress: false })
+    expect(await readProjectClaudeBundle(P['fresh-project'])).toMatchObject({
       accessToken: 'claude-access-host',
       refreshToken: 'claude-refresh-host',
     })
 
     // A data dir switched from k8s to containerless: the placeholder must be
     // replaced, or the agent authenticates with `yaac-ph-access`.
-    await writeProjectClaudePlaceholder('flipped', claudeBundle())
-    await seedProjectToolHome('flipped', { mediatedEgress: false })
-    expect(await readProjectClaudeBundle('flipped')).toMatchObject({ accessToken: 'claude-access-host' })
+    await writeProjectClaudePlaceholder(P.flipped, claudeBundle())
+    await seedProjectToolHome(P.flipped, OWNER, { mediatedEgress: false })
+    expect(await readProjectClaudeBundle(P.flipped)).toMatchObject({ accessToken: 'claude-access-host' })
   })
 
   it('keeps a chained install seeded with the sentinel its outer proxy swaps', async () => {
     // In yaac-in-yaac, the inner install's credential is the outer proxy's
     // placeholder, and a workspace still needs it on disk.
-    await saveClaudeOAuthBundle(claudeBundle({
+    await storeClaude(claudeBundle({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
       refreshToken: 'yaac-ph-refresh',
     }))
 
-    await seedProjectToolHome('chained', { mediatedEgress: false })
+    await seedProjectToolHome(P.chained, OWNER, { mediatedEgress: false })
 
-    expect(await readProjectClaudeBundle('chained')).toMatchObject({
+    expect(await readProjectClaudeBundle(P.chained)).toMatchObject({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
     })
   })
@@ -326,87 +347,77 @@ describe('seedProjectToolHome', () => {
 
 describe('syncToolCredentials', () => {
   it('heals a project left behind by another project rotating the shared credential', async () => {
-    await saveClaudeOAuthBundle(claudeBundle())
+    await storeClaude(claudeBundle())
     // `winner` refreshed; `loser` holds the old pair, whose next refresh
     // would fail because the token was already rotated.
-    await seedProject('winner', claudeBundle({
+    await seedProject(P.winner, claudeBundle({
       accessToken: 'claude-access-fresh',
       refreshToken: 'claude-refresh-fresh',
       expiresAt: BASE_EXPIRY + HOUR,
     }))
-    await seedProject('loser', claudeBundle())
+    await seedProject(P.loser, claudeBundle())
 
     await syncToolCredentials()
 
-    expect(await loadClaudeCredentialsFile()).toMatchObject({
+    expect(await storedClaude()).toMatchObject({
       claudeAiOauth: { accessToken: 'claude-access-fresh' },
     })
-    expect(await readProjectClaudeBundle('loser')).toMatchObject({
+    expect(await readProjectClaudeBundle(P.loser)).toMatchObject({
       accessToken: 'claude-access-fresh',
       refreshToken: 'claude-refresh-fresh',
     })
-    expect(await readProjectClaudeBundle('winner')).toMatchObject({ accessToken: 'claude-access-fresh' })
+    expect(await readProjectClaudeBundle(P.winner)).toMatchObject({ accessToken: 'claude-access-fresh' })
+  })
+
+  it('converges each owner\'s projects on that owner\'s credential only', async () => {
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    const BOB_PROJECT = '00000000-0000-4000-8000-0000000000b0'
+    await recordProject({ id: BOB_PROJECT, name: 'bob', remoteUrl: 'https://github.com/bob/x', addedAt: 'x' }, bob)
+    await storeClaude(claudeBundle())
+    await storeClaude(claudeBundle({ accessToken: 'bob-access' }), bob)
+    // Bob's workspace refreshed his own token, later than the built-in
+    // user's; it must not become theirs, nor theirs reach his project.
+    await seedProject(BOB_PROJECT, claudeBundle({ accessToken: 'bob-fresh', expiresAt: BASE_EXPIRY + HOUR }))
+    await seedProject(P.alpha, claudeBundle())
+
+    await syncToolCredentials()
+
+    expect(await storedClaude()).toMatchObject({ claudeAiOauth: { accessToken: 'claude-access-host' } })
+    expect(await storedClaude(bob)).toMatchObject({ claudeAiOauth: { accessToken: 'bob-fresh' } })
+    expect(await readProjectClaudeBundle(BOB_PROJECT)).toMatchObject({ accessToken: 'bob-fresh' })
+    expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({ accessToken: 'claude-access-host' })
   })
 
   it('leaves every project home alone where egress is mediated', async () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
-    await saveClaudeOAuthBundle(claudeBundle())
-    await writeProjectClaudePlaceholder('alpha', claudeBundle())
+    await storeClaude(claudeBundle())
+    await writeProjectClaudePlaceholder(P.alpha, claudeBundle())
 
     await syncToolCredentials()
 
     // Still the placeholder: mediated egress exists to keep the real bundle
     // out of pod-mounted files.
-    expect(await readProjectClaudeBundle('alpha')).toMatchObject({
+    expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
     })
   })
 })
 
-describe('fanOutToolCredentials', () => {
-  it('pushes the real bundle to every project, overriding a newer one, where egress is unmediated', async () => {
-    await saveClaudeOAuthBundle(claudeBundle({ accessToken: 'claude-access-new-account' }))
-    // The old account's bundle expires later, but newest-wins must not
-    // block the user switching accounts.
-    await seedProject('alpha', claudeBundle({
-      accessToken: 'claude-access-old-account',
-      expiresAt: BASE_EXPIRY + 10 * HOUR,
-    }))
-    await seedProject('beta', claudeBundle({ accessToken: 'claude-access-old-account' }))
+describe('reseedPlaceholderToolHomes', () => {
+  it('replaces real bundles with each owner\'s sentinels where egress is mediated, and is a no-op otherwise', async () => {
+    await storeClaude(claudeBundle())
+    // A data dir once served containerless holds real tokens in the files a
+    // pod would mount.
+    await seedProject(P.alpha, claudeBundle())
 
-    await fanOutToolCredentials('claude', { mediatedEgress: false })
+    await reseedPlaceholderToolHomes()
+    expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({ accessToken: 'claude-access-host' })
 
-    for (const projectId of ['alpha', 'beta']) {
-      expect(await readProjectClaudeBundle(projectId)).toMatchObject({
-        accessToken: 'claude-access-new-account',
-      })
-    }
-  })
-
-  it('writes sentinels where egress is mediated, and does nothing for tools with no bundle on disk', async () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
-    await saveClaudeOAuthBundle(claudeBundle())
-    await saveCodexOAuthBundle(codexBundle())
-    await seedProject('alpha', claudeBundle())
-
-    await fanOutToolCredentials('claude', { mediatedEgress: true })
-    expect(await readProjectClaudeBundle('alpha')).toMatchObject({ accessToken: PLACEHOLDER_ACCESS_TOKEN })
-
-    // opencode and pi authenticate by env var, so no project file is written.
-    await fanOutToolCredentials('opencode', { mediatedEgress: true })
-    await fanOutToolCredentials('pi', { mediatedEgress: false })
-    expect(await readProjectCodexBundle('alpha')).toBeNull()
-  })
-
-  it('fans a Codex login out to every project independently of Claude', async () => {
-    await saveCodexOAuthBundle(codexBundle({ accessToken: 'codex-access-new' }))
-    await writeProjectCodexPlaceholder('alpha', codexBundle())
-
-    await fanOutToolCredentials('codex', { mediatedEgress: false })
-
-    expect(await readProjectCodexBundle('alpha')).toMatchObject({
-      accessToken: 'codex-access-new',
-      accountId: 'acct-1',
+    await reseedPlaceholderToolHomes()
+    expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({
+      accessToken: PLACEHOLDER_ACCESS_TOKEN,
+      expiresAt: BASE_EXPIRY,
     })
   })
 })

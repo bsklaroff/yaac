@@ -1,6 +1,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import { resolveProjectConfig, resolveEphemeralModulesPaths } from '#domain/projects'
-import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
+import { loadToolAuthEntry } from '#domain/auth'
+import { getProjectRow } from '#db'
 import { shellEscape } from '#lib/shell'
 import {
   agentDriver,
@@ -46,9 +47,12 @@ function respawnAgentExec(
   })}'`
 }
 
-/** The stored pi provider for a pi launch; undefined for other tools. */
-async function piProviderFor(tool: AgentTool): Promise<PiProvider | undefined> {
-  return tool === 'pi' ? (await loadToolAuthEntry('pi'))?.piProvider : undefined
+/** The project owner's stored pi provider for a pi launch; undefined for
+ *  other tools. */
+async function piProviderFor(projectId: string, tool: AgentTool): Promise<PiProvider | undefined> {
+  if (tool !== 'pi') return undefined
+  const owner = (await getProjectRow(projectId))?.owner
+  return owner === undefined ? undefined : (await loadToolAuthEntry(owner, 'pi'))?.piProvider
 }
 
 /**
@@ -60,7 +64,7 @@ async function piProviderFor(tool: AgentTool): Promise<PiProvider | undefined> {
  * `awaitAgentTransport`.
  */
 export async function retoolSpare(
-  spare: { jobName: string; workspaceId: string; tool: string },
+  spare: { jobName: string; workspaceId: string; projectId: string; tool: string },
   agent: SpareAgent,
 ): Promise<void> {
   const { tool } = agent
@@ -76,7 +80,7 @@ export async function retoolSpare(
   )
   await runtime.exec(
     spare.jobName,
-    respawnAgentExec(spare.workspaceId, agent, await piProviderFor(tool), paths),
+    respawnAgentExec(spare.workspaceId, agent, await piProviderFor(spare.projectId, tool), paths),
   )
   await verifyAgentWindowAlive(spare.jobName, [tool])
 }
@@ -167,7 +171,7 @@ export async function rebranchSpare(
     config,
     workspaceId: spare.workspaceId,
     respawn,
-    piProvider: respawn !== null ? await piProviderFor(respawn.tool) : undefined,
+    piProvider: respawn !== null ? await piProviderFor(spare.projectId, respawn.tool) : undefined,
     paths: workspaceDriver().workspacePaths(spare.jobName),
   })
   // reset+clean walks the whole checkout, so allow longer than the default.

@@ -253,7 +253,6 @@ describe('ensureProxyResources', () => {
 
     // The proxy mounts nothing from the host.
     await expect(fs.readdir(globalRoot()).catch(() => [])).resolves.not.toContain('run')
-    await expect(fs.readdir(tmpDir)).resolves.not.toContain('.credentials')
 
     expect(kinds()).toEqual([
       // The proxy's three outputs, created empty before the Deployment so

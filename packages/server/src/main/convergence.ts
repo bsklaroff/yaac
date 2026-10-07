@@ -3,6 +3,7 @@ import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#
 import { restoreAllWorkspaceForwarders } from '#runtime/ports'
 import { findWorkspaceRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
+import { reseedPlaceholderToolHomes } from '#domain/auth'
 import { moveProjectDirsToIds } from '#domain/workspaces'
 import { serverLog } from '#log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
@@ -67,8 +68,11 @@ export async function attachConvergence(opts: {
     // A restart loses the in-memory forwarder registry while running
     // workspaces still advertise their ports in tmux `status-right`.
     // Rebuild forwarders before anything watches. Slug-named project dirs
-    // are moved first, since that stops every workspace.
+    // are moved first, since that stops every workspace. Tool homes are
+    // re-seeded with sentinels before any new workspace mounts them.
     recover: async () => {
+      await reseedPlaceholderToolHomes()
+        .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${String(err)}`))
       try {
         await moveProjectDirsToIds()
       } catch (err) {

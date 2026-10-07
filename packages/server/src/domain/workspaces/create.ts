@@ -43,13 +43,12 @@ import { fetchProjectOrigin, missingCredentialError, parseGitRemote, resolveEphe
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
-  loadToolAuthEntry,
   PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { INSTALL_CREDENTIAL_OWNER, defaultModelFor, seedProjectToolHome } from '#domain/auth'
+import { credentialOwnerKey, defaultModelFor, loadToolAuthEntry, seedProjectToolHome } from '#domain/auth'
 import {
   createCheckout,
   getDefaultBranch,
@@ -602,7 +601,7 @@ export async function resolveCreate(
   const remembered = row?.createDefaults[tool]
   const mode = request.mode ?? remembered?.mode ?? DEFAULT_AGENT_MODE
   const driver = workspaceDriver().kind
-  const auth = await loadToolAuthEntry(tool)
+  const auth = row && await loadToolAuthEntry(row.owner, tool)
   const provider = auth?.tool === 'opencode' ? auth.opencodeProvider
     : auth?.tool === 'pi' ? auth.piProvider
     : undefined
@@ -873,7 +872,7 @@ export async function createWorkspace(
   const substrateTask = runtime.prepareSubstrate({
     projectId,
     workspaceId: workspaceId,
-    owner: INSTALL_CREDENTIAL_OWNER,
+    owner: credentialOwnerKey(owner),
     tool,
     config,
     remoteUrl,
@@ -889,10 +888,10 @@ export async function createWorkspace(
     // Every tool's credential, not just the active one's: a prewarmed spare
     // can be switched to any tool when claimed.
     const [claudeAuth, codexAuth, opencodeAuth, piAuth] = await Promise.all([
-      loadToolAuthEntry('claude'),
-      loadToolAuthEntry('codex'),
-      loadToolAuthEntry('opencode'),
-      loadToolAuthEntry('pi'),
+      loadToolAuthEntry(owner, 'claude'),
+      loadToolAuthEntry(owner, 'codex'),
+      loadToolAuthEntry(owner, 'opencode'),
+      loadToolAuthEntry(owner, 'pi'),
     ])
     const toolAuthByTool = {
       claude: claudeAuth, codex: codexAuth, opencode: opencodeAuth, pi: piAuth,
@@ -947,7 +946,7 @@ export async function createWorkspace(
     // they hold placeholders the proxy swaps; without it, the real
     // credentials (docs/containerless-driver.md), merged so a token a running
     // workspace refreshed is not overwritten (#domain/auth).
-    await seedProjectToolHome(projectId, { mediatedEgress })
+    await seedProjectToolHome(projectId, owner, { mediatedEgress })
 
     // Seed every tool's config (a retooled spare needs it too). Claude gets
     // onboarding state so it skips the first-run wizard and login, and its

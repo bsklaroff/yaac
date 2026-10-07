@@ -71,7 +71,7 @@ export async function moveProjectDirsToIds(): Promise<void> {
   for (const row of legacy) {
     if (stuck.has(row.id)) continue
     try {
-      await moveProjectDir(row.name, row.id)
+      await moveProjectDir(row.name, row.id, row.owner)
       serverLog(`[server] moved project dir ${row.name} to ${row.id}`)
     } catch (err) {
       serverLog(`[server] moving project dir ${row.name} to ${row.id} failed: ${String(err)}`)
@@ -79,10 +79,10 @@ export async function moveProjectDirsToIds(): Promise<void> {
   }
 }
 
-async function moveProjectDir(name: string, id: string): Promise<void> {
+async function moveProjectDir(name: string, id: string, owner: string): Promise<void> {
   // Adopt a token an agent refreshed in the old tool home (a no-op with a
   // proxy), and drop the macOS Keychain item claude keyed on its path.
-  await harvestToolCredentials({ projectId: name })
+  await harvestToolCredentials(owner, { projectId: name })
     .catch((err: unknown) => serverLog(`[server] credential harvest for ${name} failed: ${String(err)}`))
   dropProjectClaudeKeychainItem(name)
 

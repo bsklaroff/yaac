@@ -6,11 +6,10 @@ import { ServerError } from '@yaac/shared/errors'
 import {
   authAgentHub,
   clearAuth,
-  fanOutToolCredentials,
   listAuth,
   pushCredentialsToRuntime,
   requestPlanUsageRefresh,
-  runtimeMediatesEgress,
+  signInTool,
 } from '#domain/auth'
 import {
   addHttpsCredential,
@@ -20,7 +19,6 @@ import {
   replaceCredential,
   seedFakeAuth,
 } from '#domain/projects'
-import { persistToolAuthPayload } from '@yaac/shared/tool-auth'
 import { AGENT_TOOLS, FAKE_AUTH_KINDS, toolAuthPayloadSchema } from '@yaac/shared/types'
 
 /**
@@ -40,13 +38,16 @@ async function requireRuntimeTold(applied: string): Promise<void> {
   )
 }
 
+/*
+ * Every route acts on the caller's own credentials and sign-in flows.
+ */
 export const authApp = new Hono<IdentityEnv>()
   .get('/list', async (c) => c.json(await listAuth(c.get('principal').userId)))
   // Request a plan-usage refresh when the webapp's usage popover opens.
   // Throttled in domain/auth/plan-usage.ts; the data arrives via the
   // snapshot, not this response.
   .post('/claude/usage/refresh', async (c) => {
-    await requestPlanUsageRefresh()
+    await requestPlanUsageRefresh(c.get('principal').userId)
     return c.body(null, 204)
   })
   .post(
@@ -54,7 +55,7 @@ export const authApp = new Hono<IdentityEnv>()
     zv('json', z.object({ service: z.enum(['all', ...AGENT_TOOLS]) })),
     async (c) => {
       const { service } = c.req.valid('json')
-      await clearAuth(service)
+      await clearAuth(c.get('principal').userId, service)
       // Running workspaces lose the credential too.
       await pushCredentialsToRuntime()
       return c.body(null, 204)
@@ -90,7 +91,7 @@ export const authApp = new Hono<IdentityEnv>()
     zv('param', z.object({ id: z.uuid() })),
     zv('json', z.object({ name: z.string() })),
     async (c) => {
-      await renameCredential(c.req.valid('param').id, c.req.valid('json').name)
+      await renameCredential(c.get('principal').userId, c.req.valid('param').id, c.req.valid('json').name)
       return c.body(null, 204)
     },
   )
@@ -101,7 +102,7 @@ export const authApp = new Hono<IdentityEnv>()
     zv('param', z.object({ id: z.uuid() })),
     zv('json', z.object({ token: z.string().optional() })),
     async (c) => {
-      const replaced = await replaceCredential(c.req.valid('param').id, c.req.valid('json'))
+      const replaced = await replaceCredential(c.get('principal').userId, c.req.valid('param').id, c.req.valid('json'))
       await requireRuntimeTold('The credential is replaced')
       return c.json(replaced)
     },
@@ -110,7 +111,7 @@ export const authApp = new Hono<IdentityEnv>()
     '/git/credentials/:id',
     zv('param', z.object({ id: z.uuid() })),
     async (c) => {
-      await removeCredential(c.req.valid('param').id)
+      await removeCredential(c.get('principal').userId, c.req.valid('param').id)
       // The projects that used it lose it now, not at their next restart.
       await requireRuntimeTold('The credential is deleted')
       return c.body(null, 204)
@@ -118,24 +119,24 @@ export const authApp = new Hono<IdentityEnv>()
   )
   // Whether an auth server (the login broker on the user's machine) is
   // connected.
-  .get('/agent', (c) => c.json({ connected: authAgentHub.connected() }))
+  .get('/agent', (c) => c.json({ connected: authAgentHub.connected(c.get('principal').userId) }))
   // Web-driven sign-in, relayed to the auth server on the user's machine
   // (where the browser and the vendors' localhost callbacks are). Clients
   // poll these routes for the state the auth server pushes.
   .post(
     '/:tool/login/start',
     zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
-    (c) => c.json(authAgentHub.startLogin(c.req.valid('param').tool)),
+    (c) => c.json(authAgentHub.startLogin(c.get('principal').userId, c.req.valid('param').tool)),
   )
-  .get('/login/:id', (c) => c.json(authAgentHub.getLogin(c.req.param('id'))))
+  .get('/login/:id', (c) => c.json(authAgentHub.getLogin(c.get('principal').userId, c.req.param('id'))))
   .post(
     '/login/:id/input',
     // Cap generously pre-trim; the hub enforces the real alphabet/length.
     zv('json', z.object({ text: z.string().min(1).max(1024) })),
-    (c) => c.json(authAgentHub.sendLoginInput(c.req.param('id'), c.req.valid('json').text)),
+    (c) => c.json(authAgentHub.sendLoginInput(c.get('principal').userId, c.req.param('id'), c.req.valid('json').text)),
   )
   .post('/login/:id/cancel', (c) => {
-    authAgentHub.cancelLogin(c.req.param('id'))
+    authAgentHub.cancelLogin(c.get('principal').userId, c.req.param('id'))
     return c.body(null, 204)
   })
   // Web-driven CLI install: offered when a sign-in fails with cliMissing.
@@ -143,11 +144,11 @@ export const authApp = new Hono<IdentityEnv>()
   .post(
     '/:tool/install/start',
     zv('param', z.object({ tool: z.enum(['claude', 'codex']) })),
-    (c) => c.json(authAgentHub.startInstall(c.req.valid('param').tool)),
+    (c) => c.json(authAgentHub.startInstall(c.get('principal').userId, c.req.valid('param').tool)),
   )
-  .get('/install/:id', (c) => c.json(authAgentHub.getInstall(c.req.param('id'))))
+  .get('/install/:id', (c) => c.json(authAgentHub.getInstall(c.get('principal').userId, c.req.param('id'))))
   .post('/install/:id/cancel', (c) => {
-    authAgentHub.cancelInstall(c.req.param('id'))
+    authAgentHub.cancelInstall(c.get('principal').userId, c.req.param('id'))
     return c.body(null, 204)
   })
   .put(
@@ -155,15 +156,7 @@ export const authApp = new Hono<IdentityEnv>()
     zv('param', z.object({ tool: z.enum(AGENT_TOOLS) })),
     zv('json', toolAuthPayloadSchema),
     async (c) => {
-      const { tool } = c.req.valid('param')
-      const body = c.req.valid('json')
-      await persistToolAuthPayload(tool, body)
-      // Each project's tool home holds its own copy, which is what the agent
-      // reads. Its content depends on the runtime (a sentinel the proxy swaps,
-      // or the real bundle), so the fan-out happens here rather than in the
-      // shared persistence call.
-      await fanOutToolCredentials(tool, { mediatedEgress: runtimeMediatesEgress() })
-      await pushCredentialsToRuntime()
+      await signInTool(c.get('principal').userId, c.req.valid('param').tool, c.req.valid('json'))
       return c.body(null, 204)
     },
   )

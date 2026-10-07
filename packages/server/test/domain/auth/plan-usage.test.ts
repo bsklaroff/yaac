@@ -1,7 +1,5 @@
 import fs from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
 
 vi.mock('#notify', () => ({ notifyWorkspaceListChanged: vi.fn() }))
 // Only whether a persisted rotation is pushed matters here; the push itself
@@ -14,21 +12,21 @@ vi.mock('#domain/auth/runtime-push', () => ({
 import { notifyWorkspaceListChanged } from '#notify'
 import { pushCredentialsToRuntime } from '#domain/auth/runtime-push'
 import {
-  planUsageForSnapshot,
-  codexPlanUsageForSnapshot,
+  planUsageForSnapshot as usageSlices,
   refreshPlanUsage,
-  requestPlanUsageRefresh,
+  requestPlanUsageRefresh as requestRefresh,
 } from '#domain/auth'
+import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, seeTailnetUser, setToolCredential } from '#db'
+import { getDb } from '#db/client'
+import { projects, toolCredentials } from '#db/schema'
+import { sql } from 'drizzle-orm'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { _resetPlanUsageForTests } from '#domain/auth/plan-usage'
 import { CLAUDE_PROFILE_URL, CLAUDE_USAGE_URL, CODEX_USAGE_URL } from '#domain/auth/usage'
 import { CLAUDE_OAUTH_CLIENT_ID, CLAUDE_TOKEN_URL } from '#domain/auth/claude-oauth'
 import { CODEX_OAUTH_CLIENT_ID, CODEX_TOKEN_URL } from '#domain/auth/codex-oauth'
-import { credentialsDir, setDataDir } from '@yaac/shared/project-paths'
+import { getProjectsDir } from '@yaac/shared/project-paths'
 import {
-  loadClaudeCredentialsFile,
-  saveClaudeCredentialsFile,
-  loadCodexCredentialsFile,
-  saveCodexCredentialsFile,
   writeProjectClaudeCredentials,
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
@@ -162,8 +160,16 @@ const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 const upstream = fakeUpstream()
 
-async function seedClaude(overrides: Partial<ClaudeOAuthBundle> = {}): Promise<void> {
-  await saveClaudeCredentialsFile({
+/** The user whose readouts most tests watch. */
+const ME = BUILT_IN_USER_ID
+
+/** A user's two slices, as the snapshot carries them for that user. */
+const planUsageForSnapshot = async (owner = ME) => (await usageSlices()).planUsage[owner] ?? null
+const codexPlanUsageForSnapshot = async (owner = ME) => (await usageSlices()).codexPlanUsage[owner] ?? null
+const requestPlanUsageRefresh = (owner = ME) => requestRefresh(owner)
+
+async function seedClaude(overrides: Partial<ClaudeOAuthBundle> = {}, owner = ME): Promise<void> {
+  await setToolCredential(owner, 'claude', {
     kind: 'oauth',
     savedAt: '2026-07-09T00:00:00.000Z',
     claudeAiOauth: {
@@ -178,7 +184,7 @@ async function seedClaude(overrides: Partial<ClaudeOAuthBundle> = {}): Promise<v
 }
 
 async function seedClaudeApiKey(): Promise<void> {
-  await saveClaudeCredentialsFile({
+  await setToolCredential(ME, 'claude', {
     kind: 'api-key',
     savedAt: '2026-07-09T00:00:00.000Z',
     apiKey: 'sk-ant-api03-xyz',
@@ -186,7 +192,7 @@ async function seedClaudeApiKey(): Promise<void> {
 }
 
 async function seedCodex(overrides: Partial<CodexOAuthBundle> = {}): Promise<void> {
-  await saveCodexCredentialsFile({
+  await setToolCredential(ME, 'codex', {
     kind: 'oauth',
     savedAt: '2026-07-09T00:00:00.000Z',
     codexOauth: {
@@ -202,20 +208,42 @@ async function seedCodex(overrides: Partial<CodexOAuthBundle> = {}): Promise<voi
 }
 
 async function seedCodexApiKey(): Promise<void> {
-  await saveCodexCredentialsFile({
+  await setToolCredential(ME, 'codex', {
     kind: 'api-key',
     savedAt: '2026-07-09T00:00:00.000Z',
     apiKey: 'sk-openai-xyz',
   })
 }
 
-/** A fresh data dir, engine state and upstream per test. Only Date is faked,
+let tmpDir = ''
+
+beforeAll(async () => {
+  tmpDir = await createTempDataDir()
+})
+
+afterAll(async () => {
+  await closeDb()
+  await cleanupTempDir(tmpDir)
+})
+
+/** Make every write to the credential store fail, as a full disk would.
+ *  Reads still work. Dropped after each test. */
+async function failCredentialWrites(): Promise<void> {
+  const db = await getDb()
+  await db.execute(sql`CREATE OR REPLACE FUNCTION refuse_write() RETURNS trigger AS $$
+    BEGIN RAISE EXCEPTION 'disk full'; END $$ LANGUAGE plpgsql`)
+  await db.execute(sql`CREATE TRIGGER refuse_write BEFORE INSERT OR UPDATE ON tool_credentials
+    FOR EACH ROW EXECUTE FUNCTION refuse_write()`)
+}
+
+/** Empty stores, engine state and upstream per test. Only Date is faked,
  *  so tests can move time while flush() still works. */
-function useAuthFixture(prefix: string): () => string {
-  let tmpDir = ''
+function useAuthFixture(): void {
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix))
-    setDataDir(tmpDir)
+    const db = await getDb()
+    await db.delete(toolCredentials)
+    await db.delete(projects)
+    await fs.rm(getProjectsDir(), { recursive: true, force: true })
     _resetPlanUsageForTests()
     upstream.reset()
     upstream.install()
@@ -230,27 +258,29 @@ function useAuthFixture(prefix: string): () => string {
     vi.useRealTimers()
     vi.unstubAllEnvs()
     vi.unstubAllGlobals()
-    await fs.chmod(credentialsDir(), 0o700).catch(() => { /* dir may be gone */ })
-    await fs.rm(tmpDir, { recursive: true, force: true })
+    await (await getDb()).execute(sql`DROP TRIGGER IF EXISTS refuse_write ON tool_credentials`)
   })
-  return () => tmpDir
 }
 
 /** Read back what the engine actually persisted. */
-async function storedClaude(): Promise<ClaudeOAuthBundle | null> {
-  const f = await loadClaudeCredentialsFile()
+async function storedClaude(owner = ME): Promise<ClaudeOAuthBundle | null> {
+  const f = await getToolCredential(owner, 'claude')
   return f?.kind === 'oauth' ? f.claudeAiOauth : null
 }
 
 async function storedCodex(): Promise<CodexOAuthBundle | null> {
-  const f = await loadCodexCredentialsFile()
+  const f = await getToolCredential(ME, 'codex')
   return f?.kind === 'oauth' ? f.codexOauth : null
 }
 
 describe('planUsageForSnapshot', () => {
-  useAuthFixture('yaac-plan-usage-')
+  useAuthFixture()
 
   it('reports the credential kind without touching upstream when it is not OAuth', async () => {
+    // A user with no sign-in at all has no readout; one signed in to
+    // another tool only is told claude has none.
+    expect(await planUsageForSnapshot()).toBeNull()
+    await seedCodexApiKey()
     expect(await planUsageForSnapshot()).toEqual({ available: false, reason: 'no-credentials' })
     await seedClaudeApiKey()
     expect(await planUsageForSnapshot()).toEqual({ available: false, reason: 'api-key' })
@@ -468,7 +498,9 @@ describe('planUsageForSnapshot', () => {
       snapshot: () => snapshotFixture([handleFixture({ running: true, terminating: false })]),
     })
     await seedClaude({ expiresAt: Date.now() - 1000 })
-    await writeProjectClaudeCredentials('demo', {
+    const DEMO = '00000000-0000-4000-8000-00000000de30'
+    await recordProject({ id: DEMO, name: 'demo', remoteUrl: 'https://github.com/acme/demo', addedAt: 'x' }, ME)
+    await writeProjectClaudeCredentials(DEMO, {
       accessToken: 'tok-from-workspace',
       refreshToken: 'ref-from-workspace',
       expiresAt: FAR_FUTURE_MS,
@@ -559,7 +591,7 @@ describe('planUsageForSnapshot', () => {
     upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
     upstream.reply(CLAUDE_TOKEN_URL, async () => {
       // Another writer saves an older credential mid-grant.
-      await saveClaudeCredentialsFile({
+      await setToolCredential(ME, 'claude', {
         kind: 'oauth',
         savedAt: '2026-07-09T00:00:00.000Z',
         claudeAiOauth: {
@@ -586,7 +618,7 @@ describe('planUsageForSnapshot', () => {
     upstream.always(CLAUDE_PROFILE_URL, json({}))
     upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
     upstream.reply(CLAUDE_TOKEN_URL, async () => {
-      await saveClaudeCredentialsFile({
+      await setToolCredential(ME, 'claude', {
         kind: 'oauth',
         savedAt: '2026-07-09T00:00:00.000Z',
         claudeAiOauth: {
@@ -726,9 +758,9 @@ describe('planUsageForSnapshot', () => {
     upstream.always(CLAUDE_PROFILE_URL, json({}))
     upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
     upstream.reply(CLAUDE_TOKEN_URL, json({ access_token: 'tok-fresh' }))
-    // A read-only credentials dir: reads work, the atomic write fails. That
-    // must not wedge the refresh loop.
-    await fs.chmod(credentialsDir(), 0o500)
+    // The store's write fails while reads work. That must not wedge the
+    // refresh loop.
+    await failCredentialWrites()
 
     await planUsageForSnapshot()
     await vi.waitFor(async () => expect(await planUsageForSnapshot()).toMatchObject({ available: true }))
@@ -757,6 +789,29 @@ describe('planUsageForSnapshot', () => {
     expect(await planUsageForSnapshot()).toBeNull()
     await flush()
     expect(await planUsageForSnapshot()).toMatchObject({ available: true, limits: CLAUDE_LIMITS })
+  })
+
+  it('reads each user\'s own subscription and keys the readout by user', async () => {
+    const bob = await seeTailnetUser('bob@example.com', 'Bob')
+    await seedClaude()
+    await seedClaude({ accessToken: 'bob-tok' }, bob)
+    upstream.always(CLAUDE_PROFILE_URL, json({}))
+    upstream.always(CLAUDE_USAGE_URL, json(CLAUDE_BODY))
+
+    await usageSlices()
+    await vi.waitFor(async () => {
+      expect(await planUsageForSnapshot()).toMatchObject({ available: true })
+      expect(await planUsageForSnapshot(bob)).toMatchObject({ available: true })
+    })
+    expect(upstream.requestsTo(CLAUDE_USAGE_URL).map((r) => (r.headers as Record<string, string>).Authorization).sort())
+      .toEqual(['Bearer bob-tok', 'Bearer tok-123'])
+
+    // A nudge refreshes only the caller's readout.
+    vi.setSystemTime(Date.now() + 2 * 60_000)
+    await requestPlanUsageRefresh(bob)
+    await flush()
+    expect(upstream.requestsTo(CLAUDE_USAGE_URL).at(-1)?.headers).toMatchObject({ Authorization: 'Bearer bob-tok' })
+    expect(upstream.countTo(CLAUDE_USAGE_URL)).toBe(3)
   })
 })
 
@@ -802,8 +857,8 @@ const CODEX_LIMITS = [
   },
 ]
 
-describe('codexPlanUsageForSnapshot', () => {
-  useAuthFixture('yaac-codex-usage-')
+describe('planUsageForSnapshot: codex', () => {
+  useAuthFixture()
 
   it('omits Codex entirely without ChatGPT credentials, never touching upstream', async () => {
     expect(await codexPlanUsageForSnapshot()).toBeNull()
@@ -1044,7 +1099,7 @@ describe('codexPlanUsageForSnapshot', () => {
     await seedCodex()
     upstream.reply(CODEX_USAGE_URL, httpStatus(401), json(CODEX_BODY))
     upstream.reply(CODEX_TOKEN_URL, json({ access_token: 'ctok-fresh' }))
-    await fs.chmod(credentialsDir(), 0o500)
+    await failCredentialWrites()
 
     await codexPlanUsageForSnapshot()
     await vi.waitFor(async () => expect(await codexPlanUsageForSnapshot()).toMatchObject({ available: true }))
@@ -1056,7 +1111,7 @@ describe('codexPlanUsageForSnapshot', () => {
 })
 
 describe('requestPlanUsageRefresh', () => {
-  useAuthFixture('yaac-usage-nudge-')
+  useAuthFixture()
 
   it('is a no-op for every tool that is not signed in with OAuth', async () => {
     await requestPlanUsageRefresh()
@@ -1111,7 +1166,7 @@ describe('requestPlanUsageRefresh', () => {
 })
 
 describe('refreshPlanUsage', () => {
-  useAuthFixture('yaac-usage-cycle-')
+  useAuthFixture()
 
   it('is a no-op for every tool that is not signed in with OAuth', async () => {
     await refreshPlanUsage()

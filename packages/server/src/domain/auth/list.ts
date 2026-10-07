@@ -1,6 +1,6 @@
 import { listCredentialSummaries } from '#domain/projects'
-import { loadToolAuthEntry } from '@yaac/shared/tool-auth'
 import { defaultModelFor, modelsForTool } from './models'
+import { loadToolAuthEntry } from './store'
 import type {
   AgentTool,
   AuthListResult,
@@ -11,8 +11,8 @@ function maskKey(key: string): string {
   return key.length > 4 ? '***' + key.slice(-4) : '****'
 }
 
-async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null> {
-  const entry = await loadToolAuthEntry(tool)
+async function toolAuthSummary(owner: string, tool: AgentTool): Promise<ToolAuthSummary | null> {
+  const entry = await loadToolAuthEntry(owner, tool)
   if (!entry) return null
   const provider = entry.tool === 'opencode' ? entry.opencodeProvider
     : entry.tool === 'pi' ? entry.piProvider
@@ -33,17 +33,17 @@ async function toolAuthSummary(tool: AgentTool): Promise<ToolAuthSummary | null>
 }
 
 /**
- * Masked summary of `owner`'s git credentials and the per-tool credentials, for the
- * settings page, `yaac auth list` and the create form's model lists. Never
+ * Masked summary of `owner`'s git and tool credentials, for the settings
+ * page, `yaac auth list` and the create form's model lists. Never
  * returns raw tokens or keys.
  */
 export async function listAuth(owner: string): Promise<AuthListResult> {
   const [gitCredentials, claude, codex, opencode, pi] = await Promise.all([
     listCredentialSummaries(owner),
-    toolAuthSummary('claude'),
-    toolAuthSummary('codex'),
-    toolAuthSummary('opencode'),
-    toolAuthSummary('pi'),
+    toolAuthSummary(owner, 'claude'),
+    toolAuthSummary(owner, 'codex'),
+    toolAuthSummary(owner, 'opencode'),
+    toolAuthSummary(owner, 'pi'),
   ])
   const toolAuth: ToolAuthSummary[] = []
   if (claude) toolAuth.push(claude)

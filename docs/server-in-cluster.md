@@ -517,7 +517,7 @@ the probe proves it on the cluster at hand.
 
 The proxy mounts no storage. It is given what it needs as Kubernetes
 objects (docs/workspace-egress.md "What the proxy is told, and how"), so
-`.credentials/` is readable only by the server.
+the stored credentials, in the database, are readable only by the server.
 
 ## Client state lives beside the data dir
 
@@ -550,7 +550,7 @@ guards.
 ## The credential sweep does not run here
 
 Credential convergence (docs/containerless-driver.md) copies a token a
-workspace's agent refreshed back to the host store. It exists for workspaces
+workspace's agent refreshed back to its owner's store. It exists for workspaces
 that hold the real credential. Under this driver the proxy always holds it,
 so the sweep is not used:
 

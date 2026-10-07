@@ -3,10 +3,8 @@ import crypto from 'node:crypto'
 import { ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo, isGitAuthError } from '#domain/git'
 import { parseGitRemote, resolveCredentialForRemote } from './credentials'
-import { getProjectRow, recordProject } from '#db'
+import { getProjectRow, getToolCredential, recordProject } from '#db'
 import {
-  loadClaudeCredentialsFile,
-  loadCodexCredentialsFile,
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
 } from '@yaac/shared/tool-auth'
@@ -57,7 +55,7 @@ export async function addProject(
 
   await ensureDataDir()
 
-  const { credential, knownHostsEntry } = await resolveCredentialForRemote(gitCredentialId, remoteUrl)
+  const { credential, knownHostsEntry } = await resolveCredentialForRemote(owner, gitCredentialId, remoteUrl)
 
   await fs.mkdir(dir, { recursive: true })
 
@@ -85,12 +83,12 @@ export async function addProject(
   try {
     await fs.mkdir(claudeDir(projectId), { recursive: true })
 
-    const claudeCreds = await loadClaudeCredentialsFile()
+    const claudeCreds = await getToolCredential(owner, 'claude')
     if (claudeCreds?.kind === 'oauth') {
       await writeProjectClaudePlaceholder(projectId, claudeCreds.claudeAiOauth)
     }
 
-    const codexCreds = await loadCodexCredentialsFile()
+    const codexCreds = await getToolCredential(owner, 'codex')
     if (codexCreds?.kind === 'oauth') {
       await writeProjectCodexPlaceholder(projectId, codexCreds.codexOauth)
     }
