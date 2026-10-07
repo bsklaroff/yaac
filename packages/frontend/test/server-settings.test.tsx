@@ -21,14 +21,17 @@ afterEach(() => {
   delete (window as unknown as { yaacServer?: unknown }).yaacServer
 })
 
-function installBridge(targets: DesktopServerTargets): Omit<YaacServerBridge, 'switchTo' | 'addRemote'> & {
+function installBridge(targets: DesktopServerTargets): Omit<YaacServerBridge, 'targets' | 'switchTo' | 'addRemote' | 'remove'> & {
+  targets: ReturnType<typeof vi.fn>
   switchTo: ReturnType<typeof vi.fn>
   addRemote: ReturnType<typeof vi.fn>
+  remove: ReturnType<typeof vi.fn>
 } {
   const bridge = {
     targets: vi.fn().mockResolvedValue(targets),
     switchTo: vi.fn().mockResolvedValue({ ok: true }),
     addRemote: vi.fn().mockResolvedValue({ ok: true }),
+    remove: vi.fn().mockResolvedValue({ ok: true }),
   }
   ;(window as unknown as { yaacServer?: unknown }).yaacServer = bridge
   return bridge
@@ -128,5 +131,26 @@ describe('ServerSettings', () => {
     fireEvent.change(url, { target: { value: 'https://new.ts.net' } })
     fireEvent.submit(url.closest('form')!)
     await waitFor(() => expect(screen.getByText(refusal)).toBeTruthy())
+  })
+
+  it('removes a saved server in place and offers no Remove on the connected one', async () => {
+    const bridge = installBridge({ current: 'https://a.ts.net', saved: ['https://a.ts.net', 'https://b.ts.net'] })
+    render(<ServerSettings />)
+    await waitFor(() => expect(screen.getByText('https://b.ts.net')).toBeTruthy())
+    expect(screen.queryByLabelText('Remove https://a.ts.net')).toBeNull()
+    bridge.targets.mockResolvedValue({ current: 'https://a.ts.net', saved: ['https://a.ts.net'] })
+    fireEvent.click(screen.getByLabelText('Remove https://b.ts.net'))
+    await waitFor(() => expect(screen.queryByText('https://b.ts.net')).toBeNull())
+    expect(bridge.remove).toHaveBeenCalledWith({ url: 'https://b.ts.net' })
+    expect(screen.queryByText('Reconnecting…')).toBeNull()
+  })
+
+  it('surfaces a refused remove inline', async () => {
+    const bridge = installBridge({ current: null, saved: ['https://a.ts.net'] })
+    bridge.remove.mockResolvedValue({ ok: false, error: 'unknown server: https://a.ts.net' })
+    render(<ServerSettings />)
+    await waitFor(() => expect(screen.getByText('https://a.ts.net')).toBeTruthy())
+    fireEvent.click(screen.getByLabelText('Remove https://a.ts.net'))
+    await waitFor(() => expect(screen.getByText('unknown server: https://a.ts.net')).toBeTruthy())
   })
 })

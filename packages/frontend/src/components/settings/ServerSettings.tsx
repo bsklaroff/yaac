@@ -1,19 +1,20 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
-import { CheckIcon } from '#lib/icons'
+import { CheckIcon, DeleteIcon } from '#lib/icons'
 import { serverBridge } from '#lib/desktopServer'
 import { api } from '#lib/api'
 import type { DesktopServerSelection, DesktopServerTargets, Principal } from '@yaac/shared/types'
 
 /**
- * Desktop-only server picker. Lists the servers this machine has configured
- * and adds one by origin. Switching rewrites `~/.yaac-client/server.json`
- * (the same selection `yaac remote set/on` writes, so the CLI follows), then
- * the shell reloads the window on the new origin, unloading this page.
+ * Desktop-only server picker. Lists the servers this machine has
+ * configured, adds one by origin, and forgets any but the connected one.
+ * Switching rewrites `~/.yaac-client/server.json` (the same selection
+ * `yaac remote set/on` writes, so the CLI follows), then the shell reloads
+ * the window on the new origin, unloading this page.
  */
 export function ServerSettings(): JSX.Element {
   const bridge = serverBridge()
   const [targets, setTargets] = useState<DesktopServerTargets | null>(null)
-  const [busy, setBusy] = useState<string | null>(null) // a server origin, or 'add'
+  const [busy, setBusy] = useState<string | null>(null) // a server origin, `remove:<origin>`, or 'add'
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [principal, setPrincipal] = useState<Principal | null>(null)
@@ -38,6 +39,20 @@ export function ServerSettings(): JSX.Element {
       else setSwitching(true) // the shell reloads the window
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to switch server')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const remove = async (url: string): Promise<void> => {
+    setBusy(`remove:${url}`)
+    setError(null)
+    try {
+      const outcome = await bridge.remove({ url })
+      if (!outcome.ok) setError(outcome.error)
+      else setTargets(await bridge.targets())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed to remove server')
     } finally {
       setBusy(null)
     }
@@ -96,14 +111,26 @@ export function ServerSettings(): JSX.Element {
                 <CheckIcon size={12} /> Connected
               </span>
             ) : (
-              <button
-                onClick={() => void switchTo({ url })}
-                disabled={busy !== null || switching}
-                className="ml-2 shrink-0 rounded-md bg-surface-3 px-2.5 py-0.5 text-[11px] font-medium
-                  text-text transition hover:bg-border-strong disabled:opacity-50"
-              >
-                {busy === url ? 'Connecting…' : 'Connect'}
-              </button>
+              <div className="ml-2 flex shrink-0 items-center gap-1">
+                <button
+                  onClick={() => void switchTo({ url })}
+                  disabled={busy !== null || switching}
+                  className="rounded-md bg-surface-3 px-2.5 py-0.5 text-[11px] font-medium
+                    text-text transition hover:bg-border-strong disabled:opacity-50"
+                >
+                  {busy === url ? 'Connecting…' : 'Connect'}
+                </button>
+                <button
+                  onClick={() => void remove(url)}
+                  disabled={busy !== null || switching}
+                  title="Remove"
+                  aria-label={`Remove ${url}`}
+                  className="rounded-md p-1 text-text-faint transition hover:bg-surface-3 hover:text-danger
+                    disabled:opacity-50"
+                >
+                  <DeleteIcon size={12} />
+                </button>
+              </div>
             )}
           </div>
         ))}

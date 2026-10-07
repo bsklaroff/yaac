@@ -7,11 +7,12 @@ import type { DriverKind, Principal } from '#types'
  * install this data dir is (`~/.yaac-client/server.json`, 0600).
  *
  * `url` is the selected server; `enabled` deselects it without forgetting
- * it; `saved` lists every server ever configured so clients can switch
- * back. Both `yaac server start` and `yaac cluster install` register their
- * server here (`registerServer`), so clients always reach a server by its
- * origin. The file holds no credential: the server identifies the caller
- * from the request (docs/remote-hosting.md, docs/server-selection.md).
+ * it; `saved` lists every server configured and not since removed, so
+ * clients can switch back. Both `yaac server start` and `yaac cluster
+ * install` register their server here (`registerServer`), so clients
+ * always reach a server by its origin. The file holds no credential: the
+ * server identifies the caller from the request (docs/remote-hosting.md,
+ * docs/server-selection.md).
  */
 export interface SavedServer {
   url: string

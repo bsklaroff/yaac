@@ -52,8 +52,8 @@ also registers when a server is already running, so a server started with
 
 - `url`: the selected server. `enabled: false` deselects it without
   forgetting it.
-- `saved`: every server ever configured, so a client can switch back. There
-  is one selection at a time.
+- `saved`: every server configured and not since removed, so a client can
+  switch back. There is one selection at a time.
 - `driver`: the driver **this install** runs, not the selected server's. A
   k8s install also records `installId`, `clusterUid`, `kubeContext` and
   `byo` (see the `ServerConfig` type).
@@ -117,3 +117,7 @@ main-process handlers, which re-validate input.
 
 Connect on the already-selected origin is a real retry, not a no-op. That is
 how the picker reaches a server that has come back up.
+
+Settings → Server can also remove a saved origin. The connected one is
+refused, since dropping it would leave the window on a server the machine no
+longer names; switch away first.

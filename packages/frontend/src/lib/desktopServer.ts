@@ -14,6 +14,8 @@ export interface YaacServerBridge {
   targets(): Promise<DesktopServerTargets>
   switchTo(selection: DesktopServerSelection): Promise<DesktopServerOutcome>
   addRemote(url: string): Promise<DesktopServerOutcome>
+  /** Forget a saved server other than the connected one. */
+  remove(selection: DesktopServerSelection): Promise<DesktopServerOutcome>
   /** Re-run the boot flow. Used by the shell's own disconnected page. */
   retry?(): Promise<DesktopServerOutcome>
 }

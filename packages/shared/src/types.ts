@@ -1401,11 +1401,17 @@ export interface DesktopServerSelection {
 export interface DesktopServerTargets {
   /** The selected origin, or null when this machine has none. */
   current: string | null
-  /** Origins of every server ever configured (`server.json`'s `saved`). */
+  /**
+   * Origins of every server configured and not since removed
+   * (`server.json`'s `saved`).
+   */
   saved: string[]
 }
 
-/** Success means the shell is about to reland the window on that server. */
+/**
+ * After a switch or add, success means the shell is about to reland the
+ * window on that server; after a remove, the window stays where it is.
+ */
 export type DesktopServerOutcome =
   | { ok: true }
   | { ok: false; error: string }
