@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { createRequire } from 'node:module'
-import { claudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
+import { claudeSubagentThreads, claudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
 
 /**
  * A tui claude conversation replayed as ACP events. The translation is done
@@ -188,6 +188,76 @@ describe('claudeTranscriptAsAcp', () => {
     ])
     expect((await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), 'not-a-uuid')).map((e) => e.type))
       .toEqual(['user', 'agent'])
+  })
+})
+
+describe('claudeSubagentThreads', () => {
+  it('reads the subagents Agent calls launched from the transcripts claude keeps beside the session', async () => {
+    const dir = path.dirname(await transcript([user('count the files')]))
+    const subagents = path.join(dir, SESSION, 'subagents')
+    await fs.mkdir(subagents, { recursive: true })
+    // As claude writes them: a meta file naming the call, and the subagent's
+    // own conversation, every entry a sidechain.
+    const subagent = async (agentId: string, toolUseId: string, entries: (extra: Record<string, unknown>) => unknown[]): Promise<void> => {
+      parent = null
+      await fs.writeFile(path.join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: 'general-purpose', toolUseId }))
+      const lines = entries({ isSidechain: true, agentId }).map((e) => JSON.stringify(e))
+      await fs.writeFile(path.join(subagents, `agent-${agentId}.jsonl`), lines.join('\n') + '\n')
+    }
+    await subagent('a1', 'toolu_count', (extra) => [
+      user('Count the files in src', extra),
+      assistant([{ type: 'tool_use', id: 'tu_ls', name: 'Bash', input: { command: 'ls src | wc -l' } }], extra),
+      user([{ type: 'tool_result', tool_use_id: 'tu_ls', content: '12' }], extra),
+      assistant([{ type: 'text', text: 'There are 12 files.' }], extra),
+    ])
+    await subagent('a2', 'toolu_other', (extra) => [user('Something else', extra), assistant([{ type: 'text', text: 'Done.' }], extra)])
+    // Parallel calls, as claude writes them: one entry per call sharing the
+    // message id, with the chain going on from the first call's result, so a
+    // parent walk back from the leaf alone would skip the second call.
+    await subagent('a3', 'toolu_parallel', (extra) => {
+      const at = (uuid: string, parentUuid: string | null, type: 'user' | 'assistant', message: Record<string, unknown>): unknown => ({
+        type, uuid, parentUuid, sessionId: SESSION, cwd: '/workspace', timestamp: '2026-01-01T00:00:00Z', ...extra,
+        message: type === 'assistant' ? { role: type, model: 'claude-fable-5', ...message } : { role: type, ...message },
+      })
+      return [
+        at('p1', null, 'user', { content: 'List the root and count hostname lines' }),
+        at('p2', 'p1', 'assistant', { id: 'msg_1', content: [{ type: 'tool_use', id: 'tu_a', name: 'Bash', input: { command: 'ls /' } }] }),
+        at('p3', 'p2', 'assistant', { id: 'msg_1', content: [{ type: 'tool_use', id: 'tu_b', name: 'Bash', input: { command: 'wc -l /etc/hostname' } }] }),
+        at('p4', 'p3', 'user', { content: [{ type: 'tool_result', tool_use_id: 'tu_b', content: '1 /etc/hostname' }] }),
+        at('p5', 'p2', 'user', { content: [{ type: 'tool_result', tool_use_id: 'tu_a', content: 'bin etc' }] }),
+        at('p6', 'p5', 'assistant', { id: 'msg_2', content: [{ type: 'text', text: 'Two calls done.' }] }),
+      ]
+    })
+    // A meta too large to read, sorted first, is skipped rather than failing
+    // the rest.
+    await fs.writeFile(path.join(subagents, 'agent-0big.meta.json'), 'x'.repeat(65 * 1024))
+    const session = { projectId: 'demo', dir, rel: `${SESSION}.jsonl` }
+    const threads = (events: Awaited<ReturnType<typeof claudeSubagentThreads>>): unknown[] =>
+      events.map((e) => [e.type, 'thread' in e ? e.thread : undefined])
+
+    // Each thread in the order asked, without the prompt that opens it: the
+    // view shows that as the subagent's task. Nothing for a call that
+    // launched no subagent.
+    const events = await claudeSubagentThreads(session, ['toolu_other', 'toolu_none', 'toolu_count'])
+    expect(threads(events)).toEqual([
+      ['agent', 'toolu_other'], ['tool', 'toolu_count'], ['tool', 'toolu_count'], ['agent', 'toolu_count'],
+    ])
+    expect(events.at(-1)).toMatchObject({ content: [{ type: 'text', text: 'There are 12 files.' }] })
+    expect(events.some((e) => 'seq' in e)).toBe(false)
+
+    // Read under one budget: a transcript that would go past it is left out.
+    const first = (await fs.stat(path.join(subagents, 'agent-a2.jsonl'))).size
+    expect(threads(await claudeSubagentThreads(session, ['toolu_other', 'toolu_count'], first + 10)))
+      .toEqual([['agent', 'toolu_other']])
+
+    // A subagent's parallel calls all come through.
+    const parallel = await claudeSubagentThreads(session, ['toolu_parallel'])
+    const calls = new Set(parallel.flatMap((e) => (e.type === 'tool' ? [e.call.toolCallId] : [])))
+    expect([...calls].sort()).toEqual(['tu_a', 'tu_b'])
+    expect(parallel.at(-1)).toMatchObject({ type: 'agent', content: [{ type: 'text', text: 'Two calls done.' }] })
+
+    // Nothing for a session with no subagents.
+    expect(await claudeSubagentThreads({ ...session, rel: 'other.jsonl' }, ['toolu_count'])).toEqual([])
   })
 })
 

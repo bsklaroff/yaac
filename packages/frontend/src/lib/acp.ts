@@ -13,7 +13,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { reconnectingSocket, type ReconnectingSocket } from '#lib/reconnect'
-import type { AcpClientMessage, AcpEvent, AcpQueuedPrompt, AcpServerMessage } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpServerMessage } from '@yaac/shared/acp'
 
 export interface AcpStream {
   events: AcpEvent[]
@@ -29,10 +29,16 @@ export interface AcpStream {
   send: (msg: AcpClientMessage) => boolean
   /** The latest answer to each `task-output` request, by task id. */
   taskOutputs: Record<string, TaskOutput>
+  /** The answer to each `subagent-transcript` request, by subagent id. */
+  subagentTranscripts: Record<string, SubagentTranscript>
 }
 
 /** The end of a background task's output, or why it could not be read. */
 export interface TaskOutput { text?: string; error?: string }
+
+/** A subagent's thread from its own transcript, or why it could not be
+ *  read. */
+export interface SubagentTranscript { events?: AcpEventInit[]; error?: string }
 
 /** Merge a batch of events into the list, keyed by `seq`, so a replayed
  *  event replaces its earlier copy instead of duplicating it. */
@@ -60,6 +66,7 @@ export function useAcpStream(
   const [queued, setQueued] = useState<AcpQueuedPrompt[]>([])
   const [connected, setConnected] = useState(false)
   const [taskOutputs, setTaskOutputs] = useState<Record<string, TaskOutput>>({})
+  const [subagentTranscripts, setSubagentTranscripts] = useState<Record<string, SubagentTranscript>>({})
   const socketRef = useRef<ReconnectingSocket | null>(null)
 
   useEffect(() => {
@@ -103,6 +110,10 @@ export function useAcpStream(
           const { taskId, ...output } = msg
           setTaskOutputs((prev) => ({ ...prev, [taskId]: output }))
         }
+        if (msg.type === 'subagent-transcript') {
+          const { subagentId, ...transcript } = msg
+          setSubagentTranscripts((prev) => ({ ...prev, [subagentId]: transcript }))
+        }
         return false
       },
       close: () => setConnected(false),
@@ -120,6 +131,7 @@ export function useAcpStream(
     queued,
     connected,
     taskOutputs,
+    subagentTranscripts,
     send: (msg) => socketRef.current?.send(JSON.stringify(msg)) ?? false,
   }
 }

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { setDataDir } from '@yaac/shared/paths'
-import { acpLogDir } from '@yaac/shared/project-paths'
+import { acpLogDir, agentHistoryDir } from '@yaac/shared/project-paths'
 import { attachAcp } from '#runtime/agents/acp-bridge'
 import { AcpConversation, type AcpConversationDeps } from '#runtime/agents/acp-client'
 import { acpAdapterFor, type AcpAdapterProfile } from '#runtime/agents/acp-adapters'
@@ -487,7 +487,9 @@ describe('attachAcp', () => {
     expect(endedFirst).toBe(true)
     expect(requests('session/prompt')[1].params.prompt).toEqual([{ type: 'text', text: 'then commit' }])
     await waitFor(() => lastQueue(sock)?.length === 0)
-    expect(paneBusy(sock.sent)).toBe(true)
+    // The queue frame and the next turn's start each wait on their own
+    // record flush, so either may reach the pane first.
+    await waitFor(() => paneBusy(sock.sent))
     late.clientClose()
   })
 
@@ -590,6 +592,46 @@ describe('attachAcp', () => {
       .map((l) => JSON.parse(l.trim()) as Record<string, unknown>)
       .filter((m) => m.method === '_session/async_task/stop')
     expect(stops.map((m) => m.params)).toEqual([{ sessionId: 'acp-1', asyncTaskId: 'b1' }])
+  })
+
+  it('reads a replayed subagent\'s thread from claude\'s transcript of it, only for a subagent the record announced', async () => {
+    // A `session/load` replay shows the Agent call but none of its thread.
+    await record([
+      { jsonrpc: '2.0', id: 'l-1', method: 'session/load', params: { sessionId: 'acp-1' } },
+      updateLine({
+        sessionUpdate: 'tool_call', toolCallId: 'toolu_count', title: 'count files', kind: 'think', status: 'pending',
+        rawInput: { prompt: 'Count the files' }, _meta: { claudeCode: { toolName: 'Agent' } },
+      }),
+    ])
+    const claude = path.join(agentHistoryDir('demo', 'wt-1', 'claude'), '-workspace')
+    await fs.mkdir(path.join(claude, 'acp-1', 'subagents'), { recursive: true })
+    await fs.writeFile(path.join(claude, 'acp-1.jsonl'), '')
+    await fs.writeFile(path.join(claude, 'acp-1', 'subagents', 'agent-a1.meta.json'), JSON.stringify({ toolUseId: 'toolu_count' }))
+    const entry = (uuid: string, parentUuid: string | null, type: string, content: unknown): string => JSON.stringify({
+      type, uuid, parentUuid, isSidechain: true, agentId: 'a1', sessionId: 'acp-1', cwd: '/workspace',
+      timestamp: '2026-01-01T00:00:00Z', message: { role: type, content, ...(type === 'assistant' ? { model: 'claude-fable-5' } : {}) },
+    })
+    await fs.writeFile(path.join(claude, 'acp-1', 'subagents', 'agent-a1.jsonl'), [
+      entry('u1', null, 'user', 'Count the files'),
+      entry('u2', 'u1', 'assistant', [{ type: 'text', text: 'There are 12.' }]),
+    ].join('\n') + '\n')
+    reattach()
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+
+    sock.clientSend({ type: 'subagent-transcript', subagentId: 'toolu_count' })
+    // An id the record never announced is refused before it reaches a path.
+    const hostile = ['never-announced', '../../../etc/passwd', '/etc/passwd', 'toolu_count/../x']
+    for (const subagentId of hostile) sock.clientSend({ type: 'subagent-transcript', subagentId })
+    await waitFor(() => sock.sent.filter((m) => m.type === 'subagent-transcript').length === 1 + hostile.length)
+    expect(sock.sent.filter((m) => m.type === 'subagent-transcript')).toEqual(expect.arrayContaining([
+      {
+        type: 'subagent-transcript', subagentId: 'toolu_count',
+        events: [{ type: 'agent', thread: 'toolu_count', content: [{ type: 'text', text: 'There are 12.' }] }],
+      },
+      ...hostile.map((subagentId) => ({ type: 'subagent-transcript', subagentId, error: 'no such subagent' })),
+    ]))
   })
 
   it('lands a pane idle when the turn it is greeting ends underneath it', async () => {

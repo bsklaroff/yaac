@@ -162,7 +162,7 @@ const SUBAGENT_STATES: readonly AcpSubagentState[] = [
 const TASK_STATES: readonly AcpTaskState[] = ['running', 'paused', 'completed', 'failed', 'stopped']
 /** claude's task types, as the kinds a pane names. Its Monitor tool's
  *  command watch is a `local_bash` task, told apart by the call that started
- *  it (`AcpProjection.monitorCalls`). */
+ *  it (`AcpProjection.claudeTools`). */
 const CLAUDE_TASK_KINDS: Record<string, string> = {
   local_bash: 'shell',
   local_workflow: 'workflow',
@@ -197,6 +197,15 @@ function outputFileOf(call: AcpToolCall, taskId: string): string | undefined {
   const text = (call.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('')
   const path = /Output is being written to: (\S+)\. You will be notified/.exec(text)?.[1]
   return path?.endsWith(`/tasks/${taskId}.output`) === true ? path : undefined
+}
+
+/** One whole task notification as claude replays it, and nothing else. */
+const NOTIFICATION_BLOCK = /^<task-notification>\n(?:(?!<\/?task-notification>)[\s\S])*\n<\/task-notification>\s*$/
+
+/** A tool result's text, sent as a string or as content blocks. */
+function rawText(value: unknown): string {
+  if (typeof value === 'string') return value
+  return Array.isArray(value) ? value.map((b) => asString(asRecord(b)?.text) ?? '').join('') : ''
 }
 
 /** opencode's child session statuses, as subagent states. */
@@ -472,9 +481,9 @@ export class AcpProjection {
   /** Task ids of the subagents claude runs in the background. Only these
    *  appear in its live set, so only these may be ended for leaving it. */
   private readonly backgroundSubagents = new Set<string>()
-  /** claude's Monitor calls. The task one starts reports itself only as a
-   *  shell, and its call always arrives first. */
-  private readonly monitorCalls = new Set<string>()
+  /** The claude tool each call ran, by call id. A Monitor's task reports
+   *  itself only as a shell, and its call always arrives first. */
+  private readonly claudeTools = new Map<string, string>()
   /**
    * Permission asks not yet answered. A reply line is just `{id, result}`,
    * so only a seen request identifies it as settling a permission ask.
@@ -501,6 +510,21 @@ export class AcpProjection {
   /** What may have woken the current run, taken when it started: the
    *  notifications before it, and failing those the monitors running. */
   private runCauses: AcpWake[] = []
+  /** What woke the run the last replayed notifications began, until any
+   *  other update follows them (`replayedWake`). */
+  private replayedCauses: AcpWake[] | undefined
+  /** Background Agent calls a replay showed: their result is the launch,
+   *  not the subagent's end. */
+  private readonly replayedBackground = new Set<string>()
+  /** A replayed command's or monitor's input, held until its result
+   *  says whether it launched a task. */
+  private readonly replayedInputs = new Map<string, Record<string, unknown>>()
+  /** The id of the `session/load` request whose reply ends its replay;
+   *  set while one runs. */
+  private loadRequest: string | undefined
+  /** The subagents and tasks a replay rebuilt, which only it may settle. */
+  private readonly replayedSubagents = new Set<string>()
+  private readonly replayedTasks = new Set<string>()
   /** claude tasks a subagent started. Their notifications go to it. */
   private readonly subagentOwned = new Set<string>()
   /**
@@ -612,7 +636,8 @@ export class AcpProjection {
     const claudeCode = asRecord(asRecord(update?._meta)?.claudeCode)
     const parentToolUseId = asString(claudeCode?.parentToolUseId)
     const toolCallId = asString(update?.toolCallId)
-    if (claudeCode?.toolName === 'Monitor' && toolCallId !== undefined) this.monitorCalls.add(toolCallId)
+    const toolName = asString(claudeCode?.toolName)
+    if (toolName !== undefined && toolCallId !== undefined) this.claudeTools.set(toolCallId, toolName)
     const out: AcpEventInit[] = []
     // claude's subagents run in the main session; their updates name the
     // Agent call that spawned them instead.
@@ -627,6 +652,8 @@ export class AcpProjection {
     }
     const thread = this.threadOf(params) ?? parentToolUseId
     if (update !== undefined) {
+      const replayed = this.replayedWake(update, thread)
+      if (replayed !== undefined) return [...out, ...replayed]
       // Only a notification starts a run inside a held prompt; output after
       // any other result (a steer aborting the cycle it interrupts) goes on.
       const held = this.runEnded && this.agentRunning && this.wakes.length > 0
@@ -653,6 +680,7 @@ export class AcpProjection {
       if (known === undefined && thread !== undefined) this.toolThreads.set(call.toolCallId, thread)
       out.push({ type: 'tool', ...tag, call })
       out.push(...this.claimOutputFile(call))
+      if (update !== undefined && this.loadRequest !== undefined && thread === undefined) out.push(...this.replayedLaunch(update, call))
     }
     if (output !== undefined && output !== '') {
       out.push({ type: 'tool-output', ...tag, toolCallId: patch.toolCallId, data: output })
@@ -706,7 +734,7 @@ export class AcpProjection {
           state: 'running',
         })]
       }
-      const monitor = toolUseId !== undefined && this.monitorCalls.has(toolUseId)
+      const monitor = toolUseId !== undefined && this.claudeTools.get(toolUseId) === 'Monitor'
       const started: AcpTask = {
         id: taskId,
         name: asString(m.workflow_name) ?? asString(m.description) ?? 'Background task',
@@ -783,6 +811,131 @@ export class AcpProjection {
     }
     const task = this.claudeTasks.get(taskId)
     return { kind: task?.kind === 'monitor' ? 'monitor' : 'task', id: taskId, ...(task !== undefined ? { name: task.name } : {}) }
+  }
+
+  /**
+   * claude's `session/load` replays history without the task messages that
+   * report subagents and background tasks live (`applyClaudeSdk`), so they
+   * are rebuilt from the calls that launched them: an Agent call is its
+   * subagent, and a background command's or monitor's result names its
+   * task. Only inside a replay (`openLoad`): live, the task messages report
+   * them. A subagent's own messages are in a transcript of their own
+   * (`claudeSubagentThreads`).
+   */
+  private replayedLaunch(update: Record<string, unknown>, call: AcpToolCall): AcpEventInit[] {
+    const id = call.toolCallId
+    const tool = this.claudeTools.get(id)
+    const raw = asRecord(update.rawInput)
+    const output = rawText(update.rawOutput)
+    const ended = call.status === 'completed' || call.status === 'failed'
+    if (tool === 'Agent') {
+      if (raw?.run_in_background === true) this.replayedBackground.add(id)
+      const known = this.subagents.get(id)
+      const ends = ended && !this.replayedBackground.has(id)
+      if (known !== undefined && !ends) return []
+      this.replayedSubagents.add(id)
+      const report = /The report follows:\n([\s\S]*?)\nagentId: /.exec(output)?.[1]?.replace(/^ {2}/gm, '')
+      return [this.setSubagent({
+        ...(known ?? { id, name: call.title, task: asString(raw?.prompt) ?? '' }),
+        state: ends ? call.status as 'completed' | 'failed' : 'running',
+        ...(report !== undefined ? { summary: report } : {}),
+      })]
+    }
+    if (tool !== 'Bash' && tool !== 'Monitor') return []
+    if (raw !== undefined && Object.keys(raw).length > 0) this.replayedInputs.set(id, raw)
+    if (!ended) return []
+    const input = this.replayedInputs.get(id)
+    this.replayedInputs.delete(id)
+    const taskId = tool === 'Bash' ? /^Command running in background with ID: (\S+)\./.exec(output)?.[1]
+      : /^Monitor started \(task (\S+?),/.exec(output)?.[1]
+    if (taskId === undefined || this.tasks.has(taskId)) return []
+    this.replayedTasks.add(taskId)
+    const outputFile = outputFileOf(call, taskId)
+    return [this.setTask({
+      id: taskId,
+      name: asString(input?.description) ?? call.title,
+      kind: tool === 'Monitor' ? 'monitor' : 'shell',
+      description: asString(input?.description) ?? '',
+      state: 'running',
+      toolCallId: id,
+      ...(outputFile !== undefined ? { outputFile } : {}),
+    })]
+  }
+
+  /**
+   * A replay's task notifications come back as user messages of
+   * `<task-notification>` markup. One that is a single whole block naming a
+   * subagent or task the replay rebuilt (`replayedLaunch`) moves it and is
+   * shown as the run it began, woken by that work; several in a row woke one
+   * run. Anything else, such as a user quoting the markup, stays a message.
+   */
+  private replayedWake(update: Record<string, unknown>, thread: string | undefined): AcpEventInit[] | undefined {
+    const text = update.sessionUpdate === 'user_message_chunk' ? asString(asRecord(update.content)?.text) : undefined
+    const block = this.loadRequest !== undefined && thread === undefined && text !== undefined
+      && NOTIFICATION_BLOCK.test(text)
+    const field = (tag: string): string | undefined =>
+      block ? new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text)?.[1] : undefined
+    const toolUseId = field('tool-use-id') ?? ''
+    const taskId = field('task-id') ?? ''
+    const subagent = this.replayedSubagents.has(toolUseId) ? this.subagents.get(toolUseId) : undefined
+    const task = this.replayedTasks.has(taskId) ? this.tasks.get(taskId) : undefined
+    const status = field('status') ?? ''
+    let moved: AcpEventInit
+    let cause: AcpWake
+    if (subagent !== undefined) {
+      const result = field('result')
+      moved = this.setSubagent({
+        ...subagent,
+        state: CLAUDE_SUBAGENT_STATES[status] ?? subagent.state,
+        ...(result !== undefined ? { summary: result } : {}),
+      })
+      cause = { kind: 'subagent', id: subagent.id, name: subagent.name }
+    } else if (task !== undefined) {
+      const summary = field('summary')
+      const outputFile = field('output-file')
+      moved = this.setTask({
+        ...task,
+        state: CLAUDE_TASK_STATES[status] ?? task.state,
+        ...(summary !== undefined ? { summary } : {}),
+        ...(outputFile !== undefined ? { outputFile } : {}),
+      })
+      cause = { kind: task.kind === 'monitor' ? 'monitor' : 'task', id: task.id, name: task.name }
+    } else {
+      this.replayedCauses = undefined
+      return undefined
+    }
+    const first = this.replayedCauses === undefined
+    this.replayedCauses = [...(this.replayedCauses ?? []), cause]
+    return [...(first ? [{ type: 'agent-turn' as const }] : []), moved, { type: 'woken', causes: this.replayedCauses }]
+  }
+
+  /** Note the `session/load` request a record holds; see `closeLoad`. */
+  openLoad(requestId: string): void {
+    this.loadRequest = requestId
+  }
+
+  /**
+   * End a `session/load` replay at its reply, or undefined for any other
+   * reply. What the replay rebuilt and left running died with the agent life
+   * before it. A replay with no reply (a tui transcript's, see
+   * `claudeTranscriptAsAcp`) settles nothing: its conversation may still be
+   * live, and a stopped one's pane shows what is left as unfinished.
+   */
+  closeLoad(requestId: string): AcpEventInit[] | undefined {
+    if (requestId !== this.loadRequest) return undefined
+    this.loadRequest = undefined
+    const subagents = [...this.replayedSubagents].flatMap((id) => {
+      const s = this.subagents.get(id)
+      return s?.state === 'running' ? [s] : []
+    })
+    const tasks = [...this.replayedTasks].flatMap((id) => {
+      const t = this.tasks.get(id)
+      return t?.state === 'running' ? [t] : []
+    })
+    return [
+      ...subagents.map((s) => this.setSubagent({ ...s, state: 'cancelled' })),
+      ...tasks.map((t) => this.setTask({ ...t, state: 'stopped' })),
+    ]
   }
 
   /**

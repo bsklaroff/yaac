@@ -267,6 +267,9 @@ export type AcpServerMessage =
   /** The answer to a `task-output` request: the end of the task's output
    *  file, or why it could not be read. */
   | { type: 'task-output'; taskId: string; text?: string; error?: string }
+  /** The answer to a `subagent-transcript` request: the subagent's thread as
+   *  its own transcript has it, or why it could not be read. */
+  | { type: 'subagent-transcript'; subagentId: string; events?: AcpEventInit[]; error?: string }
 
 /** Pane → server. */
 export type AcpClientMessage =
@@ -292,6 +295,9 @@ export type AcpClientMessage =
   | { type: 'stop-task'; taskId: string }
   /** Read the end of a background task's output file. */
   | { type: 'task-output'; taskId: string }
+  /** Read a subagent's thread from its own transcript, for one the record
+   *  shows without it (a `session/load` replay leaves it out). */
+  | { type: 'subagent-transcript'; subagentId: string }
 
 /** The `/pty/attach`-style pane target that addresses one ACP conversation. */
 export const ACP_TARGET_PREFIX = 'acp:'

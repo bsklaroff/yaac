@@ -332,6 +332,11 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     if (id !== undefined) projection.openSteer(id, msg.params)
     return []
   }
+  if (msg.method === ACP.sessionLoad) {
+    const id = lineId(msg)
+    if (id !== undefined) projection.openLoad(id)
+    return []
+  }
   if (msg.method === ACP.sessionUpdate) return projection.apply(msg.params)
   if (msg.method === ACP.opencodeChildUpdate) return projection.applyChildUpdate(msg.params)
   if (msg.method === CLAUDE_SDK_MESSAGE) return projection.applyClaudeSdk(msg.params)
@@ -351,7 +356,8 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
     const event = projection.closePermission(id, msg.result) ?? projection.closeSteer(id, msg.result)
     if (event !== undefined) return [event]
     const models = sessionModels(msg.result)
-    return models === undefined ? [] : [{ type: 'models', ...models }]
+    const settled = projection.closeLoad(id) ?? []
+    return models === undefined ? settled : [...settled, { type: 'models', ...models }]
   }
   // Requests and acpd's control lines carry no conversation content.
   return []

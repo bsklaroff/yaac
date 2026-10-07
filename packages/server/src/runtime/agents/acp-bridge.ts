@@ -16,9 +16,11 @@
 
 import { acpConversation } from './acp-registry'
 import { tailAcpLog } from './acp-log'
+import { claudeSubagentThreads } from './claude-acp-replay'
+import { sessionTranscriptPath } from './transcripts'
 import { serverLog } from '#log'
 import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
-import type { AcpClientMessage, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
+import type { AcpClientMessage, AcpEventInit, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
 
 /** The socket this bridge needs; same shape as the PTY bridge's, kept
  *  separate so the features stay decoupled. */
@@ -108,6 +110,9 @@ export function attachAcp(
    *  pane may stop (when the adapter can) or read only these, and an output
    *  path is never taken from the browser. */
   let tasks = new Map<string, AcpTask>()
+  /** The subagents the record announced; a pane may read only these
+   *  transcripts. */
+  let subagents = new Set<string>()
   const tail = tailAcpLog(
     { projectId, workspaceId, agentSessionId },
     (events, reset) => {
@@ -116,10 +121,12 @@ export function attachAcp(
       if (reset) {
         offeredModels = new Set()
         tasks = new Map()
+        subagents = new Set()
       }
       for (const event of events) {
         if (event.type === 'models') offeredModels = new Set(event.models.map((m) => m.id))
         if (event.type === 'task') tasks.set(event.task.id, event.task)
+        if (event.type === 'subagent') subagents.add(event.subagent.id)
       }
       if (reset) {
         // The first read, or a new agent life that truncated the record:
@@ -226,6 +233,25 @@ export function attachAcp(
         (text) => reply({ text }),
         (err: unknown) => reply({ error: err instanceof Error ? err.message : String(err) }),
       )
+      return
+    }
+    if (msg.type === 'subagent-transcript' && typeof msg.subagentId === 'string') {
+      const subagentId = msg.subagentId
+      const reply = (r: { events: AcpEventInit[] } | { error: string }): void => {
+        if (!detached) send({ type: 'subagent-transcript', subagentId, ...r })
+      }
+      if (!subagents.has(subagentId)) {
+        reply({ error: 'no such subagent' })
+        return
+      }
+      // Only claude keeps a subagent's transcript apart; for another tool
+      // the search finds nothing and the thread stays as the record has it.
+      sessionTranscriptPath(projectId, workspaceId, 'claude', agentSessionId)
+        .then((session) => (session === undefined ? [] : claudeSubagentThreads(session, [subagentId])))
+        .then(
+          (events) => reply({ events }),
+          (err: unknown) => reply({ error: err instanceof Error ? err.message : String(err) }),
+        )
       return
     }
     if (msg.type === 'prompt' && typeof msg.text === 'string') {
