@@ -76,7 +76,7 @@ export interface AcpAdapterProfile {
  *  which api-key env var the egress proxy swaps, so with no override it
  *  still names that provider's default model rather than whatever pi's
  *  settings hold. Other tools send only what the create asked for. */
-export function acpLaunchModel(spec: AgentLaunchSpec): string | undefined {
+export function acpLaunchModel(spec: Pick<AgentLaunchSpec, 'tool' | 'model' | 'piProvider'>): string | undefined {
   if (spec.tool !== 'pi') return spec.model
   return spec.model ?? piProviderInfo(spec.piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
 }

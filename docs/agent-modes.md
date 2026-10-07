@@ -453,8 +453,19 @@ chat pane, only the raw agent window (acpd's log). So a fresh ACP create waits
 for the handshake to name the conversation (`whenAcpConversation`, resolved
 when the connection registers the id) and runs that workspace's sweep itself,
 and the webapp swaps its provisioning placeholder straight for the chat pane.
-A claimed spare waits the same way, and the placeholder hides the spare so it
-is never listed twice.
+A prewarmed `acp` spare is watched like a running workspace, so its handshake
+runs while it warms and a claim usually finds the conversation already named.
+A respawn (a claim switching tool, model or posture, or a spare moved to a
+new base tip) replaces the agent, and its old conversation stays registered
+until its stream is seen closing. So the hand-over reads the window's pane
+pid and waits only for a conversation attached to that process. Either way
+the placeholder hides the spare so it is never listed twice. A spare's
+conversation has no row until it is claimed, so a reattach after a server
+restart takes its id from the pane option `@yaac-acp-session`, which the
+connection sets to `<pane pid>:<id>` when `session/new` answers; the pid
+check discards the value once a respawn replaces the process. A restart
+before the handshake loses the launch model parked in memory, so a fresh
+conversation with none parked takes the workspace row's model instead.
 
 The connection finds conversations through a tmux control-mode client of its
 own, as the `tui` driver does: tmux pushes a window add or close, and a

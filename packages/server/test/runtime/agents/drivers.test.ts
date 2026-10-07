@@ -18,6 +18,7 @@ import {
   _resetAcpRegistryForTests,
   acpConversation,
   acpConversationByHandle,
+  takeAcpLaunchModel,
 } from '#runtime/agents/acp-registry'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
 import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
@@ -86,6 +87,11 @@ let tmuxWindows = ''
 const placeholders = new Set<string>()
 /** The last tmux client an acp connection dialed. */
 let lastTmux: FakeTmux | undefined
+/** Each listed window's pane pid; a respawn changes it. Default `100`. */
+const panePids = new Map<string, string>()
+/** Pane options set through `set-option -p`, by pane id. They survive a
+ *  respawn, as in tmux. */
+const paneOptions = new Map<string, string>()
 
 /**
  * The workspace's tmux server as an acp connection's control-mode client
@@ -97,9 +103,12 @@ class FakeTmux extends FakeStream {
   override stdin = {
     write: (data: string): void => {
       this.writes.push(data)
+      const set = /^set-option -p -t (%\d+) @yaac-acp-session '(.*)'/.exec(data)
+      if (set) paneOptions.set(set[1], set[2])
       const body = data.startsWith('list-windows')
         ? tmuxWindows.split('\n').filter((w) => w !== '')
-          .map((w, i) => `${w}\t%${String(i)}\t${placeholders.has(w) ? '1' : '0'}\n`).join('')
+          .map((w, i) => `${w}\t%${String(i)}\t${placeholders.has(w) ? '1' : '0'}`
+            + `\t${panePids.get(w) ?? '100'}\t${paneOptions.get(`%${String(i)}`) ?? ''}\n`).join('')
         : ''
       const banner = this.bannerSent ? '' : '%begin 0 0 0\n%end 0 0 0\n'
       this.bannerSent = true
@@ -216,6 +225,8 @@ beforeEach(async () => {
   podExec.mockResolvedValue({ stdout: '', stderr: '' })
   tmuxWindows = ''
   placeholders.clear()
+  panePids.clear()
+  paneOptions.clear()
   installFakeWorkspaceDriver({ exec: podExec })
 })
 
@@ -317,6 +328,16 @@ describe('agentDriver', () => {
 
     // All are embedded in a single-quoted respawn-window.
     for (const cmd of [codex, opencode, pi]) expect(cmd).not.toContain("'")
+
+    // A model told over the protocol is parked for the handshake to take,
+    // once, so a reattach never overrides one the user switched to. One
+    // taken at launch is not parked, or it would leak.
+    _resetAcpRegistryForTests()
+    spec('codex', { model: 'gpt-5.2-codex' })
+    expect(takeAcpLaunchModel('conv-1')).toBeUndefined()
+    spec('pi', { model: 'openrouter/moonshotai/kimi-k2.6' })
+    expect(takeAcpLaunchModel('conv-1')).toBe('openrouter/moonshotai/kimi-k2.6')
+    expect(takeAcpLaunchModel('conv-1')).toBeUndefined()
   })
 
   it('observes a tui conversation through tmux control mode', async () => {
@@ -1632,6 +1653,37 @@ describe('agentDriver', () => {
       .toContain(PI_DEFAULT_MODEL)
   })
 
+  // The park is in memory: a server restart between a spare's launch and its
+  // warm handshake loses it, and pi's own default may use a provider whose
+  // key the proxy does not swap.
+  it("names the workspace's recorded model when a restart lost the launch's park", async () => {
+    const stream = new FakeStream()
+    tmuxWindows = 'pi\n'
+    const asked: string[] = []
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: acpDial(() => stream),
+      permissionMode: () => Promise.resolve('bypass'),
+      launchModel: (tool) => {
+        asked.push(tool)
+        return Promise.resolve('openrouter/moonshotai/kimi-k2.6')
+      },
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'pi-1' } })}\n`)
+
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
+    expect(stream.sent().find((m) => m.method === 'session/set_config_option')!.params)
+      .toEqual({ sessionId: 'pi-1', configId: 'model', value: 'openrouter/moonshotai/kimi-k2.6' })
+    expect(asked).toEqual(['pi'])
+  })
+
   it('forwards an adapter question under bypass when the adapter has no permissions to waive', async () => {
     // pi has no permission system; its permission requests are extension
     // questions the user must answer.
@@ -1773,6 +1825,51 @@ describe('agentDriver', () => {
     await vi.waitFor(() => {
       expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeUndefined()
     })
+  })
+
+  // A prewarmed spare's conversation has no row, so after a server restart
+  // only its pane can name it.
+  it('reattaches by the session its pane notes, but not one a respawn replaced', async () => {
+    const connectFresh = (stream: FakeStream): void => {
+      connections.push(agentDriver('acp').connect(session, () => {}, { dial: acpDial(() => stream), log: () => {} }))
+    }
+    tmuxWindows = 'claude\n'
+    const first = new FakeStream()
+    connectFresh(first)
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    first.feed(helloLine(true))
+    await vi.waitFor(() => expect(first.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = first.sent().find((m) => m.method === 'initialize')!
+    first.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1 } })}\n`)
+    await vi.waitFor(() => expect(first.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = first.sent().find((m) => m.method === 'session/new')!
+    first.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'acp-warm' } })}\n`)
+    await vi.waitFor(() => expect(paneOptions.get('%0')).toBe('100:acp-warm'))
+
+    // A restarted server: the same agent process, and no row.
+    for (const c of connections.splice(0)) c.close()
+    _resetAcpRegistryForTests()
+    const second = new FakeStream()
+    connectFresh(second)
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    second.feed(helloLine(false))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-warm')).toBeDefined())
+    expect(second.sent().some((m) => m.method === 'initialize')).toBe(false)
+
+    // A respawned agent keeps the option but is a new process with a fresh
+    // conversation, which must not load the old one.
+    for (const c of connections.splice(0)) c.close()
+    _resetAcpRegistryForTests()
+    panePids.set('claude', '101')
+    const third = new FakeStream()
+    connectFresh(third)
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    third.feed(helloLine(true))
+    await vi.waitFor(() => expect(third.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const reinit = third.sent().find((m) => m.method === 'initialize')!
+    third.feed(`${JSON.stringify({ jsonrpc: '2.0', id: reinit.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } })}\n`)
+    await vi.waitFor(() => expect(third.sent().some((m) => m.method === 'session/new')).toBe(true))
+    expect(third.sent().some((m) => m.method === 'session/load')).toBe(false)
   })
 
   it('hands a queued message to the conversation that replaces a dropped one', async () => {

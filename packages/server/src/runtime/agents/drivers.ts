@@ -114,6 +114,12 @@ export interface AgentConnectDeps {
    * needless approval is not. Omitting the accessor gives `bypass`.
    */
   permissionMode?: () => Promise<PermissionMode | undefined>
+  /**
+   * The model the workspace launched `tool` with, as `acp` tells it over the
+   * protocol. Read only when a fresh conversation finds no model parked,
+   * since a server restart between launch and handshake loses the park.
+   */
+  launchModel?: (tool: AgentTool) => Promise<string | undefined>
   /** Test hook replacing the ctrl-stream dial, the process boundary both
    *  drivers are mocked at. */
   dial?: (session: DrivenWorkspace, argv: string[]) => StreamChild

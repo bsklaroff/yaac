@@ -68,6 +68,7 @@ import {
   ensureAgentReporters,
   ensureToolApiKeyConfig,
   openSandboxDir,
+  tmuxCmd,
   validateInitWindows,
   verifyAgentWindowAlive,
   whenAcpConversation,
@@ -470,6 +471,11 @@ export async function handOverAgent(input: {
  * the launch model and mode that follow `session/new`, so the row recorded
  * next shows them; resolves whether it did. Gives up at the deadline or when the agent's window is
  * gone, which the window probe (an exec) checks every two seconds.
+ *
+ * Only a conversation with the window's current process counts. A claimed
+ * spare's agent may have just been respawned (by the claim or a background
+ * refresh), and the conversation that ended stays registered until its
+ * stream is seen closing.
  */
 async function awaitConversation(
   projectId: string,
@@ -477,8 +483,15 @@ async function awaitConversation(
   jobName: string,
   window: string,
 ): Promise<boolean> {
+  const runtime = workspaceDriver()
+  // Unreadable: any conversation on the window will do.
+  const panePid = await runtime.exec(
+    jobName,
+    `${tmuxCmd(runtime.workspacePaths(jobName))} display-message -p -t yaac:${window} '#{pane_pid}'`,
+    { maxAttempts: 1 },
+  ).then(({ stdout }) => stdout.trim() || undefined, () => undefined)
   let settled = false
-  const conversation = whenAcpConversation(projectId, workspaceId, window, ACP_CONVERSATION_WAIT_MS)
+  const conversation = whenAcpConversation(projectId, workspaceId, window, ACP_CONVERSATION_WAIT_MS, panePid)
     .finally(() => { settled = true })
   const windowGone = waitFor(async () => settled || await verifyAgentWindowAlive(jobName, [window])
     .then(() => false, (err: unknown) => err instanceof AgentLaunchDeadError),

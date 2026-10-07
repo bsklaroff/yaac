@@ -67,6 +67,19 @@ describe('whenAcpConversation', () => {
     await expect(whenAcpConversation('demo', 'wt-2', 'claude', 0)).resolves.toBeUndefined()
   })
 
+  // A respawned agent's old conversation stays named until its stream is
+  // seen closing; a hand-over must reach the one on the current process.
+  it('waits for a conversation on the given pane process, past one a respawn replaced', async () => {
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-old', panePid: '10' }, fake('old'))
+    const waited = whenAcpConversation('demo', 'wt-1', 'claude', 60_000, '11')
+    // Named before its old pid is gone, as a late close allows.
+    const next = fake('next')
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', panePid: '11' }, next)
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-new', panePid: '11' }, next)
+    await expect(waited).resolves.toBe(next)
+    await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0, '10')).resolves.toBeUndefined()
+  })
+
   it('gives up after the timeout', async () => {
     vi.useFakeTimers()
     const waited = whenAcpConversation('demo', 'wt-1', 'claude', 5_000)

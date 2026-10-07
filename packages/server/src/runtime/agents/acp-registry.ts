@@ -14,8 +14,12 @@ import type { AcpConversation, QueuedTurn } from './acp-client'
 const byName = new Map<string, AcpConversation>()
 /** Handle keys whose conversation has a session id. */
 const named = new Set<string>()
-/** Callers of `whenAcpConversation` waiting on a handle key. */
-const waiters = new Map<string, Set<(conversation: AcpConversation) => void>>()
+/** Handle keys → the pid of the pane process the conversation attached to,
+ *  where known. */
+const panePids = new Map<string, string>()
+/** Callers of `whenAcpConversation` waiting on a handle key, each for any
+ *  conversation or only one attached to a given pane pid. */
+const waiters = new Map<string, Set<{ panePid?: string; wake: (conversation: AcpConversation) => void }>>()
 
 function sessionKey(projectId: string, workspaceId: string, agentSessionId: string): string {
   return `${projectId}/${workspaceId}/id:${agentSessionId}`
@@ -27,21 +31,25 @@ function handleKey(projectId: string, workspaceId: string, handle: string): stri
 
 /**
  * Publish a conversation. A fresh one is registered by handle alone, then
- * again once `session/new` supplies its id.
+ * again once `session/new` supplies its id. `panePid` is the pane process it
+ * attached to, which tells it apart from a conversation a respawn replaced.
  */
 export function registerAcpConversation(
   projectId: string,
   workspaceId: string,
-  names: { handle: string; agentSessionId?: string },
+  names: { handle: string; agentSessionId?: string; panePid?: string },
   conversation: AcpConversation,
 ): void {
   const handle = handleKey(projectId, workspaceId, names.handle)
   byName.set(handle, conversation)
+  if (names.panePid !== undefined) panePids.set(handle, names.panePid)
+  else panePids.delete(handle)
   if (names.agentSessionId === undefined) return
   byName.set(sessionKey(projectId, workspaceId, names.agentSessionId), conversation)
   named.add(handle)
-  for (const wake of waiters.get(handle) ?? []) wake(conversation)
-  waiters.delete(handle)
+  for (const waiter of [...waiters.get(handle) ?? []]) {
+    if (waiter.panePid === undefined || waiter.panePid === names.panePid) waiter.wake(conversation)
+  }
 }
 
 export function unregisterAcpConversation(
@@ -51,6 +59,7 @@ export function unregisterAcpConversation(
 ): void {
   byName.delete(handleKey(projectId, workspaceId, names.handle))
   named.delete(handleKey(projectId, workspaceId, names.handle))
+  panePids.delete(handleKey(projectId, workspaceId, names.handle))
   if (names.agentSessionId !== undefined) {
     byName.delete(sessionKey(projectId, workspaceId, names.agentSessionId))
   }
@@ -80,27 +89,37 @@ export function acpConversationByHandle(
  * The conversation on `handle` once it has a session id: at once for a
  * resumed one, after `session/new` for a fresh one. Resolves `undefined`
  * if none is registered within `timeoutMs`.
+ *
+ * With `panePid`, only a conversation attached to that pane process counts.
+ * A respawn replaces the process, and the conversation it ended stays
+ * registered until its stream is seen closing.
  */
 export function whenAcpConversation(
   projectId: string,
   workspaceId: string,
   handle: string,
   timeoutMs: number,
+  panePid?: string,
 ): Promise<AcpConversation | undefined> {
   const key = handleKey(projectId, workspaceId, handle)
   const found = byName.get(key)
-  if (found !== undefined && named.has(key)) return Promise.resolve(found)
+  if (found !== undefined && named.has(key) && (panePid === undefined || panePids.get(key) === panePid)) {
+    return Promise.resolve(found)
+  }
   return new Promise((resolve) => {
-    const wake = (conversation: AcpConversation | undefined): void => {
-      clearTimeout(timer)
-      pending.delete(wake)
-      if (pending.size === 0 && waiters.get(key) === pending) waiters.delete(key)
-      resolve(conversation)
+    const waiter = {
+      ...(panePid !== undefined ? { panePid } : {}),
+      wake: (conversation: AcpConversation | undefined): void => {
+        clearTimeout(timer)
+        pending.delete(waiter)
+        if (pending.size === 0 && waiters.get(key) === pending) waiters.delete(key)
+        resolve(conversation)
+      },
     }
     const pending = waiters.get(key) ?? new Set()
     waiters.set(key, pending)
-    pending.add(wake)
-    const timer = setTimeout(() => wake(undefined), timeoutMs)
+    pending.add(waiter)
+    const timer = setTimeout(() => waiter.wake(undefined), timeoutMs)
   })
 }
 
@@ -108,6 +127,7 @@ export function whenAcpConversation(
 export function _resetAcpRegistryForTests(): void {
   byName.clear()
   named.clear()
+  panePids.clear()
   waiters.clear()
   launchModels.clear()
   parkedQueues.clear()

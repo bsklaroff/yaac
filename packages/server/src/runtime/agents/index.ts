@@ -26,7 +26,8 @@ export {
 export { attachAcp } from './acp-bridge'
 // The webapp's terminals hold their own control-mode client.
 export { ControlModeClient, type ControlModeNotification } from './control-mode'
-export { parkAcpLaunchModel, setAcpPermissionMode } from './acp-driver'
+export { setAcpPermissionMode } from './acp-driver'
+export { acpLaunchModel } from './acp-adapters'
 // The status watcher discards a stopped workspace's queued messages.
 export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-registry'
 export { acpRecord, readAcpFirstPrompt, replayAcpLog } from './acp-log'

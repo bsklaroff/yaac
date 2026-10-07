@@ -153,9 +153,10 @@ export function buildRebranchPrep(params: {
 }
 
 /**
- * Move a spare's checkout to another branch, or to a newer tip of its own,
- * at claim time. The caller resolves the SHA and checks the branch first; on
- * a throw it must reap the spare. The caller must have awaited
+ * Move a spare's checkout to another branch, or to a newer tip of its own:
+ * at claim time, or in the background when its base moves
+ * (`./prewarm-reconcile`). The caller resolves the SHA and checks the branch
+ * first; on a throw it must reap the spare. The caller must have awaited
  * `awaitAgentTransport`. Each command is idempotent, so retries are safe.
  */
 export async function rebranchSpare(

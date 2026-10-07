@@ -16,6 +16,11 @@ vi.mock('#domain/workspaces/cleanup', () => ({
   deleteWorkspaceState: vi.fn().mockResolvedValue(true),
   isTmuxSessionAlive: vi.fn(),
 }))
+vi.mock('#domain/git', async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  getDefaultBranch: vi.fn(),
+  resolveRemoteRef: vi.fn(),
+}))
 vi.mock('#db', async (importOriginal) => ({
   ...(await importOriginal<typeof dbModule>()),
   getTimeZone: vi.fn(),
@@ -25,7 +30,9 @@ vi.mock('#db', async (importOriginal) => ({
 
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 // Module state, used to set up mid-claim / mid-spawn cases and assert on.
-import { claiming, inFlight, clearPrewarmStateForTests } from '#domain/workspaces/prewarm'
+import { claiming, inFlight, refreshing, clearPrewarmStateForTests } from '#domain/workspaces/prewarm'
+import { rebranchSpare } from '#domain/workspaces/spare-pool'
+import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import { LABEL_PREWARMED, type PodInfo } from '#drivers/k8s/substrate/pods'
 import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
 import type { RuntimeHandle } from '#drivers/contract'
@@ -392,6 +399,77 @@ describe('reconcilePrewarmPool', () => {
     failProvisioning('r1', 'boom')
     await pass()
     expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
+  })
+
+  describe('keeping spares on their base branch\'s tip', () => {
+    /** The spare's checkout HEAD, as an exec into it reads it. */
+    let head: string
+    const mockRebranch = vi.mocked(rebranchSpare)
+    const exec = vi.fn(() => Promise.resolve({ stdout: `${head}\n`, stderr: '' }))
+    const active = (): RuntimeHandle[] => [
+      pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
+    ]
+
+    beforeEach(() => {
+      head = 'old'
+      exec.mockClear()
+      installFakeWorkspaceDriver({ exec })
+      vi.mocked(getWorkspaceRow).mockResolvedValue({
+        projectId: 'p', workspaceId: 's2', baseBranch: 'dev', permissionMode: 'plan', mode: 'tui', model: 'claude-opus-5-5',
+      } as WorkspaceRow)
+      vi.mocked(getDefaultBranch).mockResolvedValue('main')
+      vi.mocked(resolveRemoteRef).mockResolvedValue('new')
+      mockRebranch.mockResolvedValue(undefined)
+      mockWorkspaces.mockResolvedValue(active())
+    })
+
+    // So a claim finds it current instead of resetting it, rerunning the
+    // init windows and restarting the agent while the user waits.
+    it('moves a spare to its base\'s new tip in the background, as warmed, once per tip', async () => {
+      await pass()
+      await flush()
+      expect(mockRebranch).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: 's2' }), 'dev', 'new',
+        { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui' },
+      )
+      // Already at that tip: no further exec, let alone a move.
+      head = 'new'
+      await pass()
+      await flush()
+      expect(exec).toHaveBeenCalledTimes(1)
+      expect(mockRebranch).toHaveBeenCalledTimes(1)
+
+      // A spare already at the tip is only read.
+      clearPrewarmStateForTests()
+      await pass()
+      await flush()
+      expect(exec).toHaveBeenCalledTimes(2)
+      expect(mockRebranch).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps a spare mid-refresh in the pool without reaping it, and reaps one a refresh broke', async () => {
+      let finish = (): void => {}
+      mockRebranch.mockReturnValue(new Promise((resolve) => { finish = resolve }))
+      await pass()
+      await flush()
+      expect(refreshing.has('yaac-p-spare')).toBe(true)
+      // The project went idle, which would reap its spare.
+      mockWorkspaces.mockResolvedValue(active().slice(1))
+      await pass()
+      expect(mockCleanup).not.toHaveBeenCalled()
+      expect(mockCreate).not.toHaveBeenCalled()
+      finish()
+      await flush()
+      expect(refreshing.size).toBe(0)
+
+      clearPrewarmStateForTests()
+      mockWorkspaces.mockResolvedValue(active())
+      mockRebranch.mockRejectedValue(new Error('reset failed'))
+      await pass()
+      await flush()
+      expect(mockCleanup).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare', workspaceId: 's2' }))
+    })
   })
 
   it('swallows a failed reap — the stale-session reaper retries', async () => {

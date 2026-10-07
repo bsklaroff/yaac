@@ -72,9 +72,12 @@ export async function claimSpareWorkspace(
 
   // Re-decide the npm registry at claim time: the spare's init chose it
   // long ago, and pnpm has no fallback if the cache has since gone down
-  // (`servingNpmCacheUrl`). Best-effort.
+  // (`servingNpmCacheUrl`). Best-effort, and not awaited: the agent's first
+  // install follows at least one model round trip, far longer than this
+  // read and exec. A rebranch's init windows already ran on the old
+  // registry.
   if (pod.labels[LABEL_NPM_CACHE] === 'true') {
-    await servingNpmCacheUrl().then((url) => writeNpmRegistry(podName, url)).catch((err: unknown) => {
+    void servingNpmCacheUrl().then((url) => writeNpmRegistry(podName, url)).catch((err: unknown) => {
       serverLog(`[prewarm] could not re-decide the npm registry of ${podName}: ${String(err)}`)
     })
   }

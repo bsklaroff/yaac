@@ -50,6 +50,7 @@ import {
   claiming,
   inFlight,
   reaping,
+  refreshing,
   clearPrewarmStateForTests,
 } from '#domain/workspaces/prewarm'
 import {
@@ -85,7 +86,6 @@ import type { CreateSetup } from '#domain/workspaces/create'
 import {
   _resetAcpRegistryForTests,
   registerAcpConversation,
-  takeAcpLaunchModel,
 } from '#runtime/agents/acp-registry'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
@@ -150,6 +150,7 @@ describe('tryClaimPrewarmed', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     clearPrewarmStateForTests()
+    _resetAcpRegistryForTests()
     clearAllProvisioningForTests()
     // The create's provisioning row, which the claim points at its spare.
     registerProvisioning({ workspaceId: 'req', projectId: 'p', tool: 'claude', kind: 'create' })
@@ -255,6 +256,8 @@ describe('tryClaimPrewarmed', () => {
     expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     await flush()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
+    // The proxy injects credentials only for the registered tool, so no
+    // respawn starts until the registration has landed.
     expect(mockRetool).not.toHaveBeenCalled()
   })
 
@@ -723,42 +726,114 @@ describe('tryClaimPrewarmed', () => {
     expect((await tryClaimPrewarmed('p', 'req', setup('claude'), emit))?.workspaceId).toBe('spare1')
   })
 
-  // A chat spare's adapter waits for a client; the handshake happens once the
-  // claim unhides it, and the registry records the conversation.
-  it('claims a chat spare and holds for its conversation, recording none itself', async () => {
+  // A chat spare's conversation is booted while it is warmed, so a claim
+  // hands over the one already named; a spare still mid-handshake is waited
+  // for. The registry records the conversation, not the claim.
+  it('hands a chat spare over on its warm conversation, waiting for one still booting', async () => {
     mockList.mockResolvedValue([spare()])
     launched({ mode: 'acp', model: 'claude-opus-5-5' })
+    const want = setup('claude', { mode: 'acp', model: 'claude-opus-5-5' })
     let claimed = false
-    const claim = tryClaimPrewarmed('p', 'req', setup('claude', { mode: 'acp', model: 'claude-opus-5-5' }), emit)
-      .finally(() => { claimed = true })
+    const claim = tryClaimPrewarmed('p', 'req', want, emit).finally(() => { claimed = true })
     await new Promise((r) => setTimeout(r, 50))
     expect(claimed).toBe(false)
 
-    // The handshake names the conversation.
     registerAcpConversation('p', 'spare1', { handle: 'claude', agentSessionId: 'minted' }, { whenReady: () => Promise.resolve() } as unknown as AcpConversation)
     expect(await claim).toMatchObject({ workspaceId: 'spare1', mode: 'acp' })
+    // Already named, so a second claim of it is handed over at once.
+    expect(await tryClaimPrewarmed('p', 'req', want, emit)).toMatchObject({ workspaceId: 'spare1' })
     expect(mockRetool).not.toHaveBeenCalled()
     expect(appliedEvents.some((e) => e.type === 'sessions-launched')).toBe(false)
   })
 
-  // The launch model parked at warm time is in memory, and a spare can
-  // outlive the server that warmed it, so the claim parks it again before the
-  // handshake.
-  it('re-parks a chat spare\'s launch model before handing it over as warmed', async () => {
-    _resetAcpRegistryForTests() // the warming server has restarted
-    mockList.mockResolvedValue([spare({ tool: 'pi', declaredTool: 'pi' })])
-    launched({ mode: 'acp', model: 'openrouter/moonshotai/kimi-k2.6' })
-    mockClaimSpare.mockImplementation(() => {
-      // Parked by the time the claim unhides the spare.
-      expect(takeAcpLaunchModel('spare1')).toBe('openrouter/moonshotai/kimi-k2.6')
-      registerAcpConversation('p', 'spare1', { handle: 'pi', agentSessionId: 'minted' }, { whenReady: () => Promise.resolve() } as unknown as AcpConversation)
+  // A spare mid-refresh is seconds from current, which beats a cold create;
+  // reserving it before the refresh ends would race its reset.
+  it('waits out a spare\'s background refresh, then claims it', async () => {
+    mockList.mockResolvedValue([spare()])
+    let finish = (): void => {}
+    // As `refreshSpares` does, the entry goes when the refresh ends.
+    refreshing.set('yaac-p-spare', new Promise<void>((resolve) => { finish = resolve })
+      .finally(() => { refreshing.delete('yaac-p-spare') }))
+    let claimed = false
+    const claim = tryClaimPrewarmed('p', 'req', setup('claude'), emit).finally(() => { claimed = true })
+    await flush()
+    expect(claimed).toBe(false)
+    expect(claiming.size).toBe(0)
+
+    finish()
+    expect((await claim)?.workspaceId).toBe('spare1')
+  })
+
+  it('never reserves a spare whose refresh began during the wait', async () => {
+    mockList.mockResolvedValue([spare()])
+    let finish = (): void => {}
+    const refresh = new Promise<void>((resolve) => { finish = resolve })
+      .finally(() => { refreshing.delete('yaac-p-spare') })
+    vi.mocked(getTimeZone).mockImplementation(() => {
+      const p = Promise.resolve({ timeZone: null, pinned: false })
+      // Lands after the claim's wait, before its reservation check.
+      void p.then(() => queueMicrotask(() => { refreshing.set('yaac-p-spare', refresh) }))
+      return p
+    })
+    let reservedDuringRefresh = false
+    mockTmuxAlive.mockImplementation(() => {
+      reservedDuringRefresh ||= refreshing.has('yaac-p-spare') && claiming.has('yaac-p-spare')
+      return Promise.resolve(true)
+    })
+    const claim = tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+    await flush()
+    finish()
+    expect((await claim)?.workspaceId).toBe('spare1')
+    expect(reservedDuringRefresh).toBe(false)
+  })
+
+  // A refresh can take minutes (a slow reset, init windows); a cold create
+  // beats waiting that long.
+  it('gives up on a refresh that outlasts the wait', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      mockList.mockResolvedValue([spare()])
+      refreshing.set('yaac-p-spare', new Promise<void>(() => { /* never ends */ }))
+      const claim = tryClaimPrewarmed('p', 'req', setup('claude'), emit)
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(await claim).toBeUndefined()
+      expect(mockClaimSpare).not.toHaveBeenCalled()
+      expect(claiming.size).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // A respawn replaces the warm conversation, which stays registered until
+  // its stream is seen closing; handing it over would send the prompt to a
+  // dead agent.
+  it('hands a respawned chat spare over on its new conversation, not the warm one', async () => {
+    mockList.mockResolvedValue([spare()])
+    launched({ mode: 'acp' })
+    const warmPrompt = vi.fn(() => Promise.resolve())
+    const freshPrompt = vi.fn(() => Promise.resolve())
+    const conversation = (prompt: () => Promise<void>): AcpConversation =>
+      ({ whenReady: () => Promise.resolve(), prompt }) as unknown as AcpConversation
+    registerAcpConversation('p', 'spare1', { handle: 'claude', agentSessionId: 'warm', panePid: '10' }, conversation(warmPrompt))
+    const fresh = conversation(freshPrompt)
+    // The window's process after the respawn.
+    mockExec.mockImplementation((_job, cmd) => Promise.resolve({
+      stdout: cmd.includes('#{pane_pid}') ? '11\n' : '', stderr: '',
+    }))
+    mockRetool.mockImplementation(() => {
+      setTimeout(() => {
+        // The old conversation's close is seen only after the hand-over
+        // begins waiting.
+        registerAcpConversation('p', 'spare1', { handle: 'claude', agentSessionId: 'fresh', panePid: '11' }, fresh)
+      }, 20)
       return Promise.resolve()
     })
 
-    const want = setup('pi', { mode: 'acp', model: 'openrouter/moonshotai/kimi-k2.6' })
-    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.workspaceId).toBe('spare1')
-    expect(mockRetool).not.toHaveBeenCalled()
-    expect(mockClaimSpare).toHaveBeenCalledTimes(1)
+    const want = setup('claude', { mode: 'acp', permissionMode: 'plan' })
+    expect(await tryClaimPrewarmed('p', 'req', want, emit, { prompt: 'go' })).toMatchObject({ workspaceId: 'spare1' })
+    expect(mockRetool).toHaveBeenCalledTimes(1)
+    expect(freshPrompt).toHaveBeenCalledWith('go')
+    expect(warmPrompt).not.toHaveBeenCalled()
   })
 
   // As in a cold create: group and title before the workspace shows, then

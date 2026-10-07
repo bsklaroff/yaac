@@ -141,6 +141,8 @@ describe('claimSpareWorkspace and the npm cache', () => {
   it('re-decides a spare\'s registry against the cache as it is at claim time', async () => {
     stage({ admitted: true, serving: false })
     await claimSpareWorkspace('s1', 'codex')
+    // In the background, off the claim's path.
+    await vi.waitFor(() => expect(execArgv()).toBeDefined())
     const down = execArgv()!
     expect(down).toEqual(expect.arrayContaining(['exec', 'yaac-proj-s1-abcde', '--']))
     // No URL: the script only removes the cache's line.
@@ -149,12 +151,13 @@ describe('claimSpareWorkspace and the npm cache', () => {
 
     stage({ admitted: true, serving: true })
     await claimSpareWorkspace('s1', 'codex')
-    expect(execArgv()!.at(-1)).toMatch(/^http:\/\/yaac-npm-cache\..*:4873\/$/)
+    await vi.waitFor(() => expect(execArgv()!.at(-1)).toMatch(/^http:\/\/yaac-npm-cache\..*:4873\/$/))
   })
 
   it('leaves a spare the cache does not admit alone, and never fails a claim over it', async () => {
     stage({ admitted: false, serving: true })
     await claimSpareWorkspace('s1', 'codex')
+    await new Promise((r) => setTimeout(r, 20))
     expect(execArgv()).toBeUndefined()
 
     stage({ admitted: true, serving: true })

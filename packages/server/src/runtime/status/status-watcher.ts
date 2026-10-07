@@ -16,7 +16,7 @@ import {
   setWorkspaceTerminals,
 } from './status-store'
 import { serverLog } from '#log'
-import type { AgentMode, PermissionMode } from '@yaac/shared/types'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**
  * Per-workspace status watchers: one live agent-driver connection per
@@ -51,6 +51,9 @@ export interface StatusWatcherDeps {
    * the ACP driver tells its adapter which posture to use.
    */
   permissionMode?: (session: WatchedWorkspace) => Promise<PermissionMode | undefined>
+  /** The workspace's launch model for a tool, injected like
+   *  `recordedSessions` (see `AgentConnectDeps.launchModel`). */
+  launchModel?: (session: WatchedWorkspace, tool: AgentTool) => Promise<string | undefined>
   /**
    * Test hook for the stream self-heal (see scheduleRespawn). Default: the
    * driver's `reviveStatusStream`.
@@ -135,6 +138,9 @@ export class WorkspaceStatusWatcher {
         ...(this.deps.permissionMode !== undefined
           ? { permissionMode: () => this.deps.permissionMode!(this.session) }
           : {}),
+        ...(this.deps.launchModel !== undefined
+          ? { launchModel: (tool: AgentTool) => this.deps.launchModel!(this.session, tool) }
+          : {}),
       },
     )
   }
@@ -218,10 +224,15 @@ export class WorkspaceStatusWatcher {
 }
 
 /**
- * Keeps one `WorkspaceStatusWatcher` per running, non-prewarmed workspace.
- * `sync` is driven by the driver's workspace set: a new workspace (or a
- * newly claimed spare) gets a watcher; a vanished one has its watcher
- * stopped and its store entry evicted.
+ * Keeps one `WorkspaceStatusWatcher` per running workspace. `sync` is driven
+ * by the driver's workspace set: a new workspace (or a newly claimed spare)
+ * gets a watcher; a vanished one has its watcher stopped and its store entry
+ * evicted.
+ *
+ * Of the prewarmed spares, only `acp` ones are watched: connecting runs the
+ * ACP handshake, which boots the agent's conversation, so a claim finds it
+ * ready. The watcher is kept across the claim. A `tui` agent boots without
+ * a client, so its spares are left alone.
  */
 export class StatusWatcherManager {
   private readonly watchers = new Map<string, WorkspaceStatusWatcher>()
@@ -235,7 +246,7 @@ export class StatusWatcherManager {
   sync(workspaces: RuntimeHandle[]): void {
     const wanted = new Map<string, RuntimeHandle>()
     for (const p of workspaces) {
-      if (!p.running || !p.workspaceId || !p.projectId || p.prewarmed) continue
+      if (!p.running || !p.workspaceId || !p.projectId || (p.prewarmed && p.mode !== 'acp')) continue
       wanted.set(p.workspaceId, p)
     }
     for (const [workspaceId, watcher] of this.watchers) {

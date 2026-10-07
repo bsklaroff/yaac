@@ -3,10 +3,12 @@
  * with the project's default create settings. The pure `computePrewarmPlan`
  * decides; this lists pods, finds spares in an outdated agent mode or zone, and
  * spawns (`createWorkspace({ prewarm: true })`) or reaps
- * (`cleanupWorkspace`).
+ * (`cleanupWorkspace`). It also keeps each spare on its base branch's
+ * latest tip (`refreshSpares`).
  */
 import crypto from 'node:crypto'
 import type { RuntimeSnapshot } from '#drivers/contract'
+import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { createWorkspace, resolveCreate } from './create'
 import { listProvisioning } from './provisioning'
@@ -15,9 +17,15 @@ import {
   computePrewarmPlan,
   inFlight,
   reaping,
+  refreshing,
+  spareHeads,
+  type PrewarmReapTarget,
 } from './prewarm'
-import { deleteSpareWorkspaceRow, getTimeZone, getWorkspaceRow, listProjectRows } from '#db'
+import { rebranchSpare } from './spare-pool'
+import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
+import { deleteSpareWorkspaceRow, getTimeZone, getWorkspaceRow, listProjectRows, type WorkspaceRow } from '#db'
 import { serverLog } from '#log'
+import { repoDir } from '@yaac/shared/project-paths'
 import { DEFAULT_AGENT_MODE } from '@yaac/shared/types'
 import { env } from '@yaac/shared/env'
 import type { RuntimeHandle } from '#drivers/contract'
@@ -48,29 +56,12 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, {
     inFlight,
     claiming,
+    refreshing: new Set(refreshing.keys()),
     provisioning: new Set(listProvisioning().filter((e) => e.error === undefined).map((e) => e.projectId)),
     stale: await staleSpares(pods),
   })
 
-  for (const target of toReap) {
-    // No workspace sweep collects a spare's state, so delete it here. Uses
-    // the awaited teardown so the checkout is removed only once the pod is
-    // really gone. Each step runs only if the previous succeeded; the
-    // flagged row goes last, so the orphan sweep can still recognize and
-    // retry what is left. Not awaited, so a slow teardown does not stall the
-    // tick.
-    reaping.add(target.workspaceId)
-    void cleanupWorkspace(target)
-      .then((podGone) => podGone && deleteWorkspaceState(target.projectId, target.workspaceId))
-      .then(async (removed) => {
-        if (removed) await deleteSpareWorkspaceRow(target.projectId, target.workspaceId)
-      })
-      .catch((err: unknown) => {
-        // gcOrphanSpares in cleanup.ts retries what is left.
-        serverLog(`[prewarm] reaping spare ${target.workspaceId} failed: ${String(err)}`)
-      })
-      .finally(() => { reaping.delete(target.workspaceId) })
-  }
+  for (const target of toReap) reapSpare(target)
 
   for (const spawn of toSpawn) {
     // Recorded before any await so a concurrent tick sees it.
@@ -78,6 +69,83 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
     inFlight.set(workspaceId, spawn.projectId)
     void spawnSpare(spawn.projectId, workspaceId)
   }
+
+  const reaped = new Set(toReap.map((t) => t.jobName))
+  await refreshSpares(pods.filter((p) => p.prewarmed && p.running && !reaped.has(p.jobName)))
+}
+
+/**
+ * Tear a spare down. No workspace sweep collects a spare's state, so it is
+ * deleted here. Uses the awaited teardown so the checkout is removed only
+ * once the pod is really gone. Each step runs only if the previous
+ * succeeded; the flagged row goes last, so the orphan sweep can still
+ * recognize and retry what is left. Not awaited, so a slow teardown does
+ * not stall the tick.
+ */
+function reapSpare(target: PrewarmReapTarget): void {
+  reaping.add(target.workspaceId)
+  void cleanupWorkspace(target)
+    .then((podGone) => podGone && deleteWorkspaceState(target.projectId, target.workspaceId))
+    .then(async (removed) => {
+      if (removed) await deleteSpareWorkspaceRow(target.projectId, target.workspaceId)
+    })
+    .catch((err: unknown) => {
+      // gcOrphanSpares in cleanup.ts retries what is left.
+      serverLog(`[prewarm] reaping spare ${target.workspaceId} failed: ${String(err)}`)
+    })
+    .finally(() => { reaping.delete(target.workspaceId) })
+}
+
+/**
+ * Move each spare whose base branch has a new tip up to it, in the
+ * background (`rebranchSpare`: reset, init windows, agent restart), so a
+ * claim finds it current instead of doing that work while the user waits.
+ * The tip is read from the server's clone, which `origin-refresh` and every
+ * create keep fetched. A spare left half-moved by a failure is reaped.
+ */
+async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
+  const runtime = workspaceDriver()
+  const listed = new Set(spares.map((p) => p.workspaceId))
+  for (const id of spareHeads.keys()) if (!listed.has(id)) spareHeads.delete(id)
+  const busy = (p: RuntimeHandle): boolean => claiming.has(p.jobName) || refreshing.has(p.jobName)
+    || reaping.has(p.workspaceId) || inFlight.has(p.workspaceId)
+  await Promise.all(spares.map(async (spare) => {
+    if (busy(spare)) return
+    let target: { branch: string; tip: string; row: WorkspaceRow }
+    try {
+      const row = await getWorkspaceRow(spare.projectId, spare.workspaceId)
+      if (!row) return
+      const repo = repoDir(spare.projectId)
+      const branch = row.baseBranch ?? await getDefaultBranch(repo)
+      target = { branch, tip: await resolveRemoteRef(repo, branch), row }
+    } catch (err) {
+      serverLog(`[prewarm] reading spare ${spare.workspaceId}'s base failed: ${String(err)}`)
+      return
+    }
+    // A claim may have taken it during the reads.
+    if (spareHeads.get(spare.workspaceId) === target.tip || busy(spare)) return
+    let changed = false
+    const refresh = (async () => {
+      await runtime.awaitAgentTransport(spare.jobName, { timeoutMs: 10_000 })
+      const { workspaceDir } = runtime.workspacePaths(spare.jobName)
+      const head = (await runtime.exec(spare.jobName, `git -C ${workspaceDir} rev-parse HEAD`)).stdout.trim()
+      if (head !== target.tip) {
+        changed = true
+        const { row } = target
+        await rebranchSpare(spare, target.branch, target.tip, {
+          tool: spare.tool,
+          ...(row.model !== undefined ? { model: row.model } : {}),
+          permissionMode: row.permissionMode,
+          mode: row.mode ?? spare.mode,
+        })
+      }
+      spareHeads.set(spare.workspaceId, target.tip)
+    })().catch((err: unknown) => {
+      serverLog(`[prewarm] refreshing spare ${spare.workspaceId} failed: ${String(err)}`)
+      if (changed) reapSpare(spare)
+    }).finally(() => { refreshing.delete(spare.jobName) })
+    refreshing.set(spare.jobName, refresh)
+  }))
 }
 
 /**

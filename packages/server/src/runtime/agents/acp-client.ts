@@ -133,6 +133,9 @@ export interface AcpConversationDeps {
    * have changed the model since).
    */
   launchModel?: string
+  /** Where `launchModel` comes from when it was not handed over: read once,
+   *  after `session/new`. */
+  recoverLaunchModel?: () => Promise<string | undefined>
   /**
    * The session's model changed or was first learned. Fires on the switch
    * (`config_option_update`), only when the value changes. `name` is the
@@ -933,7 +936,10 @@ export class AcpConversation {
    * `--model` asked for could surprise the user's bill.
    */
   private async applyLaunchModel(): Promise<void> {
-    const model = this.deps.launchModel
+    const model = this.deps.launchModel ?? await this.deps.recoverLaunchModel?.().catch((err: unknown) => {
+      this.log(`[server] acp: could not read the launch model: ${err instanceof Error ? err.message : String(err)}`)
+      return undefined
+    })
     if (model === undefined || this.sessionId === undefined) return
     try {
       await this.requestModel(model)
