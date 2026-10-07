@@ -1,13 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 vi.mock('#notify', () => ({
   notifyWorkspaceListChanged: vi.fn(),
 }))
 
 import {
+  dismissProvisioning,
   ensureProvisioning,
   registerProvisioning,
-  removeProvisioning,
   runProvisioned,
   listProvisioning,
   inFlightWorkspaceIds,
@@ -15,6 +15,9 @@ import {
 } from '#domain/workspaces/provisioning'
 import { notifyWorkspaceListChanged } from '#notify'
 import { ServerError } from '@yaac/shared/errors'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
+import { BUILT_IN_USER_ID, closeDb } from '#db'
 
 const notify = vi.mocked(notifyWorkspaceListChanged)
 
@@ -61,18 +64,32 @@ describe('registerProvisioning', () => {
   })
 })
 
-describe('removeProvisioning', () => {
-  it('removes a tracked id and notifies', () => {
-    register('a')
+describe('dismissProvisioning', () => {
+  let tmpDir: string
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    await recordTestProject(DEMO_PROJECT_ID)
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('lets only the project\'s owner drop an entry, and notifies', async () => {
+    register('a', { projectId: DEMO_PROJECT_ID })
     notify.mockClear()
-    removeProvisioning('a')
+    const teammate = { kind: 'tailnet', login: 'bob@example.com', name: 'bob', userId: 'b0b0b0b0-0000-4000-8000-000000000000' } as const
+    await expect(dismissProvisioning(teammate, 'a')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(listProvisioning()).toHaveLength(1)
+
+    await dismissProvisioning({ kind: 'local', userId: BUILT_IN_USER_ID }, 'a')
     expect(listProvisioning()).toEqual([])
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
-  it('does not notify when nothing was removed', () => {
+  it('is a silent no-op for an id with no entry', async () => {
     notify.mockClear()
-    removeProvisioning('missing')
+    await dismissProvisioning({ kind: 'local', userId: BUILT_IN_USER_ID }, 'missing')
     expect(notify).not.toHaveBeenCalled()
   })
 })

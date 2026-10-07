@@ -54,7 +54,7 @@ describe('saveWorkspaceAttachment', () => {
       .rejects.toMatchObject({ code: 'VALIDATION' })
 
     installFakeWorkspaceDriver({
-      find: () => Promise.resolve(handleFixture({ workspaceId: 'wt-1', state: 'stopped' })),
+      find: () => Promise.resolve(handleFixture({ workspaceId: 'wt-1', projectId: PROJ, state: 'stopped' })),
     })
     await expect(saveWorkspaceAttachment(local, 'wt-1', PNG)).rejects.toMatchObject({ code: 'CONFLICT' })
   })

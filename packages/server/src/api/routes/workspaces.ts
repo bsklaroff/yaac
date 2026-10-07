@@ -22,12 +22,13 @@ import {
   listWorkspaceGroups,
   readWorkspaceFile,
   readWorkspaceFileAtRev,
+  dismissProvisioning,
   registerProvisioning,
-  removeProvisioning,
   renameWorkspaceEntry,
   resolveGroup,
   resolveWorkspace,
   resolveWorkspaceContainer,
+  resolveWorkspaceId,
   resolveWorkspaceRecord,
   resolveRestartTarget,
   restartWorkspace,
@@ -309,6 +310,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, workspaceId } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
       await recordDeathSeen(projectId, workspaceId)
       return c.body(null, 204)
     },
@@ -318,7 +320,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
     '/mark-all-deaths-seen',
     zv('json', z.object({ projectId: projectRef })),
     async (c) => {
-      await recordAllDeathsSeen(c.req.valid('json').projectId)
+      const { projectId } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
+      await recordAllDeathsSeen(projectId)
       return c.body(null, 204)
     },
   )
@@ -394,7 +398,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
   )
   .route('/', mamaApp)
   // Sidebar-group routes. All take an explicit project rather than
-  // resolving a container, since members may be stopped workspaces.
+  // resolving a container, since members may be stopped workspaces. The
+  // writes go straight to `#db`, so each checks the project's owner first,
+  // as the death-seen marks and titles do.
   // The list is for clients without a snapshot (`yaac group list`); the
   // webapp reads the same rows from `/events`.
   .get(
@@ -416,6 +422,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, workspaceId, name } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
       const group = await createWorkspaceGroup(projectId, name, workspaceId ?? null)
       // Return the stored name, which the store normalizes (whitespace
       // collapsed, length capped).
@@ -431,6 +438,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, groupId, name } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
       await renameWorkspaceGroup(projectId, groupId, name)
       return c.body(null, 204)
     },
@@ -444,6 +452,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, groupId, pinned } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
       await setWorkspaceGroupPinned(projectId, groupId, pinned)
       return c.body(null, 204)
     },
@@ -456,6 +465,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, groupId } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
       await deleteWorkspaceGroup(projectId, groupId)
       return c.body(null, 204)
     },
@@ -475,6 +485,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, workspaceId, group, create } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
       // Accept an id or unique prefix (what every surface prints). The
       // membership write matches exactly, so an unresolved prefix would
       // silently file nothing.
@@ -507,23 +518,26 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, workspaceId, groupId } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
       await setWorkspaceGroup(projectId, workspaceId, groupId)
       return c.body(null, 204)
     },
   )
-  .post('/provisioning/:id/dismiss', (c) => {
-    // Drop a failed provisioning entry (successful ones clear themselves).
-    // Idempotent for any id.
-    removeProvisioning(c.req.param('id'))
+  // Drop a failed provisioning entry (successful ones clear themselves).
+  .post('/provisioning/:id/dismiss', async (c) => {
+    await dismissProvisioning(c.get('principal'), c.req.param('id'))
     return c.body(null, 204)
   })
   .post(
     '/:id/title',
     zv('json', z.object({ title: z.string().max(500) })),
     async (c) => {
-      // Resolve the record, not a container, so a stopped or dead workspace
-      // can be renamed too.
-      const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
+      // From the row alone, so a stopped or dead workspace can be renamed
+      // too, and the runtime is never asked before the owner check.
+      const row = await findWorkspaceRow(await resolveWorkspaceId(c.req.param('id')))
+      if (!row) throw new ServerError('NOT_FOUND', `workspace ${c.req.param('id')} not found`)
+      const { projectId, workspaceId } = row
+      await authorizeProject(c.get('principal'), projectId)
       await setWorkspaceTitle(projectId, workspaceId, c.req.valid('json').title)
       return c.body(null, 204)
     },
@@ -653,16 +667,14 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // brings. Both terminal routes act inside the workspace, so only its owner
   // may call them.
   .post('/:id/terminals', async (c) => {
-    const { jobName, projectId } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
-    await authorizeProject(c.get('principal'), projectId)
+    const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true, owner: c.get('principal') })
     return c.json(await createShellWindow(jobName))
   })
   .post(
     '/:id/terminals/close',
     zv('json', z.object({ target: z.string().min(1) })),
     async (c) => {
-      const { jobName, projectId } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true })
-      await authorizeProject(c.get('principal'), projectId)
+      const { jobName } = await resolveWorkspaceContainer(c.req.param('id'), { requireRunning: true, owner: c.get('principal') })
       const { target } = c.req.valid('json')
       try {
         await killWindowTerminal(jobName, target)

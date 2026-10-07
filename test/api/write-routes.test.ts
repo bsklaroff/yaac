@@ -11,7 +11,6 @@ import { addHttpsCredential, assignProjectCredential, listCredentialSummaries } 
 import { getToolCredential, setToolCredential } from '@yaac/server/db/tool-credential-store'
 import { seeTailnetUser } from '@yaac/server/db/user-store'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
-import { asTailnet } from '@yaac/test-utils/api'
 import { getProjectWorkspaceRows, recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
 import { listWorkspaceGroups } from '@yaac/server/domain/workspaces/groups'
@@ -29,7 +28,7 @@ import type * as projectRemoveModule from '@yaac/server/domain/workspaces/projec
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
-import { makeTestApiClient } from '@yaac/test-utils/api'
+import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 
@@ -506,6 +505,22 @@ describe('write routes', () => {
       const res = await client.config['user-dockerfile'].$put({ json: { content } })
       expect(res.status).toBe(200)
       expect(await res.json()).toEqual({ content })
+    })
+
+    it('keeps one per user', async () => {
+      vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+      const app = buildApp({ buildId: 'test', access: () => 'tailnet' })
+      const as = (login: string): Record<string, string> => asTailnet(login, 'srv.tailnet.ts.net')
+      const content = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo alice\n'
+      const put = await app.request('/api/config/user-dockerfile', rawInit({
+        method: 'PUT', headers: as('alice@example.com'), body: JSON.stringify({ content }),
+      }))
+      expect(put.status).toBe(200)
+      const read = async (login: string): Promise<unknown> =>
+        (await app.request('/api/config/user-dockerfile', { headers: as(login) })).json()
+      expect(await read('alice@example.com')).toEqual({ content })
+      expect(await read('bob@example.com')).toEqual({ content: '' })
+      vi.unstubAllEnvs()
     })
 
     it('rejects a non-layered user Dockerfile with 400', async () => {

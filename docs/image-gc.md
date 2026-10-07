@@ -39,7 +39,7 @@ started by one of them could delete a blob another run is pushing. One pass:
    every project: the `yaac-base` repo holds every project's
    `Dockerfile.yaac` layer side by side, so keeping the newest two protects
    none of them in particular. The usual cause, a non-layered
-   `Dockerfile.user` mid-edit, breaks every chain at once.
+   `Dockerfile.user` mid-edit, breaks every chain its user owns at once.
 2. **Stands down** if the registry is taking a push: an upload in progress,
    or any link file written in the last 5 minutes.
 3. **Retires step-cache tags** that no build has written for one

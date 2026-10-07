@@ -134,7 +134,7 @@ interface EnsureImageOpts {
  *   podman and the docker CLI), only when `nestedContainers` is set.
  * Layer 2: yaac-proj-<id> from Dockerfile.yaac, when present: either layered
  *   on the layers above (`FROM ${BASE_IMAGE}`) or standalone.
- * Layer 3 (optional): yaac-user-<id> from ~/.yaac/Dockerfile.user.
+ * Layer 3 (optional): yaac-user-<id> from the project owner's Dockerfile.user.
  *
  * @param imagePrefix - Image name prefix; tests use their own.
  * @param requirePrebuilt - Throw instead of building a missing layer. Used
@@ -143,13 +143,14 @@ interface EnsureImageOpts {
  */
 export async function ensureImage(
   projectId: string,
+  owner: string,
   imagePrefix?: string,
   requirePrebuilt = false,
   nestedContainers = false,
   opts: EnsureImageOpts = {},
 ): Promise<string> {
   const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectId, prefix, nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(projectId, owner, prefix, nestedContainers)
   const reason = opts.reason ?? 'session'
 
   // One builder pod per call, created only if a layer needs building.

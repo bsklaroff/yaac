@@ -4,6 +4,7 @@ import { resolveWorkspaceId } from './resolve'
 import { startQueuedChildren } from './queued-workspaces'
 import { listProvisioning, stopProvisioning } from './provisioning'
 import { authorizeProject, type Actor } from '#domain/access'
+import { findWorkspaceRow } from '#db'
 import { harvestToolCredentials } from '#domain/auth'
 import { getProjectRow } from '#db'
 import { serverLog } from '#log'
@@ -30,8 +31,11 @@ export interface StoppedWorkspaceInfo {
  */
 export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promise<StoppedWorkspaceInfo> {
   const workspaceId = await resolveWorkspaceId(idOrPrefix, { provisioning: true })
-  const pending = listProvisioning().find((p) => p.workspaceId === workspaceId)
-  if (pending !== undefined) await authorizeProject(principal, pending.projectId)
+  // Checked against what the server recorded before the substrate is
+  // asked, so a non-owner is refused whatever state the workspace is in.
+  const recorded = listProvisioning().find((p) => p.workspaceId === workspaceId)
+    ?? await findWorkspaceRow(workspaceId)
+  if (recorded) await authorizeProject(principal, recorded.projectId)
   const provisioning = stopProvisioning(workspaceId)
   if (provisioning !== undefined) {
     void provisioning.ranAs

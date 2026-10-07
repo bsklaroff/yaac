@@ -4,6 +4,8 @@ import path from 'node:path'
 import { HASH_RE, setupStackingHarness } from './stacking-harness'
 
 const PROJECT = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+/** The projects' owner, whose Dockerfile.user tops each chain. */
+const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
 
 describe('resolveImageChain', () => {
   const h = setupStackingHarness()
@@ -14,11 +16,11 @@ describe('resolveImageChain', () => {
     await fs.mkdir(repoPath, { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n')
-    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
-    await fs.writeFile(path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'users', OWNER, 'build'), { recursive: true })
+    await fs.writeFile(path.join(h.dataDir, 'server-local', 'users', OWNER, 'build', 'Dockerfile.user'), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n')
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain(PROJECT, 'yaac', true)
+    const { layers } = await resolveImageChain(PROJECT, OWNER, 'yaac', true)
     expect(layers.map((l) => l.name)).toEqual(['base', 'tools', 'nestable', 'project', 'user'])
   })
 
@@ -28,18 +30,18 @@ describe('resolveImageChain', () => {
     const buildDir = path.join(h.dataDir, 'global', 'projects', PROJECT, 'config', 'build')
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
     await fs.mkdir(buildDir, { recursive: true })
-    await fs.mkdir(path.join(h.dataDir, 'server-local', 'build'), { recursive: true })
+    await fs.mkdir(path.join(h.dataDir, 'server-local', 'users', OWNER, 'build'), { recursive: true })
     await fs.writeFile(
       path.join(buildDir, 'Dockerfile.yaac'),
       'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo custom\n',
     )
     await fs.writeFile(
-      path.join(h.dataDir, 'server-local', 'build', 'Dockerfile.user'),
+      path.join(h.dataDir, 'server-local', 'users', OWNER, 'build', 'Dockerfile.user'),
       'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user\n',
     )
 
     const { resolveImageChain } = await h.load()
-    const { layers, finalTag } = await resolveImageChain(PROJECT, 'yaac', true)
+    const { layers, finalTag } = await resolveImageChain(PROJECT, OWNER, 'yaac', true)
 
     const described = layers.map((l) => {
       const args = Object.entries(l.buildArgs ?? {}).map(([k, v]) => `${k}=${v}`).join(',')
@@ -77,7 +79,7 @@ describe('resolveImageChain', () => {
     )
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain(PROJECT, 'yaac', true)
+    const { layers } = await resolveImageChain(PROJECT, OWNER, 'yaac', true)
     expect(layers.map((l) => l.name)).toEqual(['project'])
     // A standalone Dockerfile.yaac sets up its own user, so it gets no
     // build args, not even a uid.
@@ -91,7 +93,7 @@ describe('resolveImageChain', () => {
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM yaac-base\nRUN echo custom\n')
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain(PROJECT, 'yaac')
+    const { layers } = await resolveImageChain(PROJECT, OWNER, 'yaac')
     expect(layers.map((l) => l.name)).toEqual(['project'])
   })
 
@@ -103,13 +105,13 @@ describe('resolveImageChain', () => {
     await fs.writeFile(path.join(buildDir, 'Dockerfile.yaac'), 'FROM docker.io/ubuntu:24.04\nRUN echo custom\n')
 
     const { resolveImageChain } = await h.load()
-    const { layers } = await resolveImageChain(PROJECT, 'yaac')
+    const { layers } = await resolveImageChain(PROJECT, OWNER, 'yaac')
     expect(layers.map((l) => l.name)).toEqual(['project'])
   })
 
   it('folds build-context support files into the project and user layer tags', async () => {
     const projectBuild = path.join(h.dataDir, 'global', 'projects', PROJECT, 'config', 'build')
-    const userBuild = path.join(h.dataDir, 'server-local', 'build')
+    const userBuild = path.join(h.dataDir, 'server-local', 'users', OWNER, 'build')
     await fs.mkdir(path.join(h.dataDir, 'global', 'projects', PROJECT, 'repo'), { recursive: true })
     await fs.mkdir(projectBuild, { recursive: true })
     await fs.mkdir(userBuild, { recursive: true })
@@ -118,7 +120,7 @@ describe('resolveImageChain', () => {
 
     const { resolveImageChain } = await h.load()
     const tagsByName = async (): Promise<Record<string, string>> => {
-      const { layers } = await resolveImageChain(PROJECT, 'yaac')
+      const { layers } = await resolveImageChain(PROJECT, OWNER, 'yaac')
       return Object.fromEntries(layers.map((l) => [l.name, l.tag]))
     }
 

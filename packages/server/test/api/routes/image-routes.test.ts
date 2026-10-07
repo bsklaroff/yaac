@@ -7,7 +7,8 @@ import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 // assert status codes and what reached the seam.
 import { imageApp } from '#routes/images'
 import { toErrorBody } from '#http'
-import type { ImageBuildEntry, YaacConfig } from '@yaac/shared/types'
+import type { ImageBuildEntry } from '@yaac/shared/types'
+import type { ProjectReaders } from '#drivers/contract'
 
 // Only the root app's onError serializes NOT_FOUND, so wrap the routes with
 // the same handler.
@@ -32,9 +33,7 @@ function buildEntry(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
 }
 
 const mockDismiss = vi.fn<(id: string) => boolean>()
-const mockRetry = vi.fn<
-  (id: string, cfg: (projectId: string) => Promise<YaacConfig | undefined>) => boolean
->()
+const mockRetry = vi.fn<(id: string, projects: ProjectReaders) => boolean>()
 
 describe('image routes', () => {
   beforeEach(() => {
@@ -84,8 +83,11 @@ describe('image routes', () => {
   it('POST /builds/:id/retry relays the retry and returns 202', async () => {
     const res = await app.request('/builds/b1/retry', { method: 'POST' })
     expect(res.status).toBe(202)
-    // The mediator's config reader travels with the id.
-    expect(mockRetry).toHaveBeenCalledWith('b1', expect.any(Function))
+    // The mediator's project readers travel with the id.
+    expect(mockRetry).toHaveBeenCalledWith('b1', {
+      projectConfig: expect.any(Function) as unknown,
+      projectOwner: expect.any(Function) as unknown,
+    })
   })
 
   it('POST /builds/:id/retry 404s when there is nothing to retry', async () => {

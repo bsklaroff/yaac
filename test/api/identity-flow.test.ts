@@ -10,13 +10,17 @@ import {
   type SpawnedServer,
 } from '@yaac/test-utils/cli'
 import { asTailnet } from '@yaac/test-utils/api'
+import { recordTestProject } from '@yaac/test-utils/project-fixture'
+import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
+import { closeDb } from '@yaac/server/db/client'
 
 /**
  * How the server identifies a caller, over real sockets
  * (docs/remote-hosting.md). In tailnet mode a request `tailscale serve`
  * stamped with a user is that tailnet user; serve with no user, the tailnet
  * name without serve, and plain loopback are refused with a message saying
- * which. The same cases are checked on a WebSocket upgrade. In local mode
+ * which. The same cases are checked on a WebSocket upgrade, and the
+ * attaches refuse a user who does not own the workspace. In local mode
  * only loopback is admitted, and switching a local install to tailnet hands
  * its built-in user to the `--owner` login.
  */
@@ -45,14 +49,22 @@ function request(
 
 const local = { host: '127.0.0.1' }
 
+/** A workspace of the built-in user's, which no tailnet login owns. */
+const PROJECT_ID = '5e1f0c2a-7b3d-4e8f-9a6c-0d1e2f3a4b5c'
+const WORKSPACE_ID = '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d'
+
 describe('identity flow in tailnet mode (real server)', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
 
   // One server for the file's reads. It admits the tailnet name, so
   // requests reach the identity gate instead of stopping at the Host guard.
+  // Its data is seeded before it starts, since it then owns the database.
   beforeAll(async () => {
     testEnv = await createYaacTestEnv()
+    await recordTestProject(PROJECT_ID)
+    await recordWorkspaceCreated({ projectId: PROJECT_ID, workspaceId: WORKSPACE_ID })
+    await closeDb()
     server = await spawnYaacServer({ ...testEnv.env, YAAC_ACCESS_MODE: 'tailnet', YAAC_ALLOWED_HOSTS: TAILNET_HOST })
   })
 
@@ -64,10 +76,10 @@ describe('identity flow in tailnet mode (real server)', () => {
   const whoami = (headers: Record<string, string>): Promise<{ status: number; body: unknown }> =>
     request(server.lock.port, headers)
 
-  /** The status a WebSocket upgrade to /events is answered with: 101, or the refusal. */
-  function upgradeStatus(headers: Record<string, string>): Promise<number> {
+  /** The status a WebSocket upgrade is answered with: 101, or the refusal. */
+  function upgradeStatus(headers: Record<string, string>, path = '/api/events'): Promise<number> {
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${String(server.lock.port)}/api/events`, { headers })
+      const ws = new WebSocket(`ws://127.0.0.1:${String(server.lock.port)}${path}`, { headers })
       ws.once('upgrade', () => { ws.terminate(); resolve(101) })
       ws.once('unexpected-response', (_req, res) => { res.resume(); ws.terminate(); resolve(res.statusCode ?? 0) })
       ws.once('error', reject)
@@ -104,6 +116,19 @@ describe('identity flow in tailnet mode (real server)', () => {
   it('applies the same rule to a WebSocket upgrade', async () => {
     for (const [what, headers, status] of cases) {
       expect(await upgradeStatus(headers()), what).toBe(status === 200 ? 101 : status)
+    }
+  })
+
+  // Each grants execution in the workspace or a tunnel into it, so even a
+  // user who may read everything is refused before the upgrade.
+  it('refuses an attach to a workspace the caller does not own', async () => {
+    const alice = asTailnet('alice@example.com', TAILNET_HOST)
+    for (const path of [
+      `/api/pty/attach?id=${WORKSPACE_ID}`,
+      `/api/acp/attach?id=${WORKSPACE_ID}&session=11111111-1111-1111-1111-111111111111`,
+      `/api/forward/attach?id=${WORKSPACE_ID}&port=80`,
+    ]) {
+      expect(await upgradeStatus(alice, path), path).toBe(403)
     }
   })
 

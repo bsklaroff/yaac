@@ -36,7 +36,7 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver } from '#drivers/driver'
-import { resolveProjectEnv } from '#domain/projects'
+import { moveLegacyUserBuildDir, resolveProjectEnv } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -344,11 +344,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   // The running workspace an attach opens, checked again against the unit
   // it resolves to, so an id with no row at upgrade time is not let through.
-  const ownedAttachTarget = async (principal: Actor, id: string) => {
-    const target = await resolveWorkspaceContainer(id, { requireRunning: true, exact: true })
-    await authorizeProject(principal, target.projectId)
-    return target
-  }
+  const ownedAttachTarget = (principal: Actor, id: string) =>
+    resolveWorkspaceContainer(id, { requireRunning: true, exact: true, owner: principal })
 
   // PTY bridge: one terminal per connection, attached to the workspace's
   // tmux. Not under /workspace/ to avoid colliding with GET /workspace/:id.
@@ -490,6 +487,9 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(lease.instance)
     process.exit(1)
   }
+  // Before the mode settles, since a settled mode admits requests.
+  await moveLegacyUserBuildDir().catch((err: unknown) =>
+    serverLog(`[server] moving the user build dir failed: ${String(err)}`))
   // A refused start stays up answering `/health` with the reason, which
   // `yaac server start` and `yaac cluster install` print, and serves
   // nothing else.

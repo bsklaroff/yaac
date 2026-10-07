@@ -10,6 +10,7 @@ import { testEnv } from '@yaac/shared/env'
  */
 export async function prepareWorkspaceImage(opts: {
   projectId: string
+  owner: string
   nestedContainers: boolean
   onProgress?: (message: string) => void
 }): Promise<string> {
@@ -18,6 +19,7 @@ export async function prepareWorkspaceImage(opts: {
   emit('Ensuring container images are built...')
   return registryRef(await ensureImage(
     opts.projectId,
+    opts.owner,
     testEnv.imagePrefix,
     testEnv.requirePrebuiltImages,
     opts.nestedContainers,

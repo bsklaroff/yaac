@@ -471,7 +471,7 @@ config
 
 config
   .command('edit-user-dockerfile')
-  .description('Open the global ~/.yaac/server-local/build/Dockerfile.user in $EDITOR')
+  .description('Open your Dockerfile.user, layered on every project you own, in $EDITOR')
   .action(configEditUserDockerfile)
 
 config

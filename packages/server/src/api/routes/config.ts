@@ -23,9 +23,10 @@ function isTimeZone(timeZone: string): boolean {
 }
 
 /**
- * Global (not project-scoped) editable config: the caller's git identity
- * their workspaces commit under, the time zone they run in, the user Dockerfile (`~/.yaac/build/Dockerfile.user`) layered
- * on every project image, and the other files in its build context.
+ * The caller's own (not project-scoped) editable config: the git identity
+ * their workspaces commit under, the time zone they run in, and their
+ * Dockerfile.user, layered on every project image they own, with the other
+ * files in its build context.
  */
 export const configApp = new Hono<IdentityEnv>()
   // Not gated on a driver feature: every substrate makes commits. Stored in
@@ -74,7 +75,7 @@ export const configApp = new Hono<IdentityEnv>()
   // Both refuse on a runtime that builds no images.
   .get('/user-dockerfile', async (c) => {
     requireDriverFeature('images')
-    return c.json({ content: await readUserDockerfile() })
+    return c.json({ content: await readUserDockerfile(c.get('principal').userId) })
   })
   .put(
     '/user-dockerfile',
@@ -82,8 +83,8 @@ export const configApp = new Hono<IdentityEnv>()
     async (c) => {
       requireDriverFeature('images')
       const { content } = c.req.valid('json')
-      await writeUserDockerfile(content)
+      await writeUserDockerfile(c.get('principal').userId, content)
       return c.json({ content })
     },
   )
-  .route('/user-build-files', buildFilesApp(() => Promise.resolve(userBuildDir())))
+  .route('/user-build-files', buildFilesApp((c) => Promise.resolve(userBuildDir(c.get('principal').userId))))

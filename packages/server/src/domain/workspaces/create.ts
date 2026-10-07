@@ -829,6 +829,7 @@ export async function createWorkspace(
     ? Promise.resolve(undefined)
     : runtime.prepareImage({
       projectId,
+      owner,
       nestedContainers,
       onProgress: (m) => emit(m, options),
     })

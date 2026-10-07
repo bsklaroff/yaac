@@ -18,9 +18,10 @@ describe('projectBuildDir', () => {
 })
 
 describe('userBuildDir', () => {
-  it('is ~/.yaac/build/, and naming it does not create it', async () => {
-    const dir = userBuildDir()
-    expect(dir).toBe(path.join(getDataDir(), 'server-local', 'build'))
+  it('is per user under server-local/, and naming it does not create it', async () => {
+    const dir = userBuildDir('u1')
+    expect(dir).toBe(path.join(getDataDir(), 'server-local', 'users', 'u1', 'build'))
+    expect(userBuildDir('u2')).not.toBe(dir)
     await expect(fs.access(dir)).rejects.toThrow()
   })
 })

@@ -82,7 +82,8 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         [...taken].filter((t): t is ReconcileTrigger => t !== 'resync'),
       )
       let snapshot: RuntimeSnapshot | null = null
-      let projectIds: Promise<string[]> | null = null
+      let projectRows: ReturnType<typeof listProjectRows> | null = null
+      const rows = (): ReturnType<typeof listProjectRows> => (projectRows ??= listProjectRows())
       const projectConfigs = new Map<string, Promise<YaacConfig | undefined>>()
       const ctx: PassContext = {
         triggers,
@@ -92,7 +93,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // Resolved here so runtime steps never read the db. A failed read
         // rejects rather than returning empty, because the orphan
         // collectors would treat an empty list as "collect everything".
-        projectIds: () => (projectIds ??= listProjectRows().then((rows) => rows.map((r) => r.id))),
+        projectIds: () => rows().then((all) => all.map((r) => r.id)),
         // Memoized per project. No catch: a missing config resolves
         // `undefined` (all defaults), but an unreadable one (malformed,
         // invalid, mid-save) must reject. Returning `{}` instead would let
@@ -106,6 +107,11 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
             projectConfigs.set(projectId, pending)
           }
           return pending
+        },
+        projectOwner: async (projectId) => {
+          const row = (await rows()).find((r) => r.id === projectId)
+          if (!row) throw new Error(`project ${projectId} no longer exists`)
+          return row.owner
         },
         // Not memoized: a stop that lands mid-pass must be seen at once.
         terminating: (workspaceId) => isWorkspaceTerminating(workspaceId),

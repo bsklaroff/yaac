@@ -1,14 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { makeTestApiClient } from '@yaac/test-utils/api'
+import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
 import { buildApp } from '@yaac/server/main/server'
 import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { recordAgentSessions } from '@yaac/server/db/agent-session-store'
 import { closeDb } from '@yaac/server/db/client'
 import { acpLogDir, claudeDir } from '@yaac/shared/project-paths'
-import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
+import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /**
@@ -32,6 +32,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
@@ -47,32 +48,53 @@ async function get(sessionId: string): Promise<{ status: number; events?: AcpEve
   return { status: res.status, events: (await res.json()).events }
 }
 
+/** A recorded acp conversation: one prompt and its answer, as acpd logs it. */
+async function recordAcpConversation(): Promise<void> {
+  await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
+    { tool: 'claude', agentSessionId: ACP_SESSION, mode: 'acp' },
+  ])
+  const dir = acpLogDir(DEMO_PROJECT_ID, WORKSPACE)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, `${ACP_SESSION}.jsonl`), [
+    { jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } },
+    {
+      jsonrpc: '2.0', id: 1, method: 'session/prompt',
+      params: { sessionId: ACP_SESSION, prompt: [{ type: 'text', text: 'ship it' }] },
+    },
+    {
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId: ACP_SESSION,
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'shipped' } },
+      },
+    },
+  ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+}
+
 describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
   it('serves an acp conversation from the record acpd wrote', async () => {
-    await recordAgentSessions(DEMO_PROJECT_ID, WORKSPACE, [
-      { tool: 'claude', agentSessionId: ACP_SESSION, mode: 'acp' },
-    ])
-    const dir = acpLogDir(DEMO_PROJECT_ID, WORKSPACE)
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path.join(dir, `${ACP_SESSION}.jsonl`), [
-      { jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-1' } },
-      {
-        jsonrpc: '2.0', id: 1, method: 'session/prompt',
-        params: { sessionId: ACP_SESSION, prompt: [{ type: 'text', text: 'ship it' }] },
-      },
-      {
-        jsonrpc: '2.0', method: 'session/update',
-        params: {
-          sessionId: ACP_SESSION,
-          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'shipped' } },
-        },
-      },
-    ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+    await recordAcpConversation()
 
     const { status, events } = await get(ACP_SESSION)
 
     expect(status).toBe(200)
     expect(events?.map((e) => e.type)).toEqual(['user', 'agent'])
+  })
+
+  // Transcripts are `reader`: any user may read another's.
+  it('serves another user\'s conversation to a teammate', async () => {
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    await recordTestProject(DEMO_PROJECT_ID)
+    await recordAcpConversation()
+
+    const tailnetApp = buildApp({ buildId: 'test', access: () => 'tailnet' })
+    const res = await tailnetApp.request(
+      `/api/workspace/${WORKSPACE}/agent-sessions/${ACP_SESSION}/transcript`,
+      { headers: asTailnet('teammate@example.com', 'srv.tailnet.ts.net') },
+    )
+
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { events: AcpEvent[] }).events.map((e) => e.type)).toEqual(['user', 'agent'])
   })
 
   it('serves a tui claude conversation from claude\'s own transcript', async () => {

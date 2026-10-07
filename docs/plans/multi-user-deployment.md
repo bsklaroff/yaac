@@ -187,17 +187,34 @@ How the pieces fit:
   verb's internal sub-steps pass the principal along rather than
   authorizing again; a queued launch runs as `systemPrincipal`, since
   whoever queued or ran it was authorized then.
-- Not gated yet, for step 7's route classification: the routes that write
-  rows directly through `#db` (titles, groups, set-group, death-seen
-  marks, provisioning dismissal), build files and `/config/user-dockerfile`,
-  `/image/*`. `/auth/*` and the `/api/agent/auth` WebSocket need no gate:
-  they act only on the caller's own credentials and flows (step 5), so a
-  second user gets their own answer (an empty list, a 404 for another's
-  flow or git credential), never a 403.
-  `/project/add` and `/project/register` create a project the caller then
-  owns, so they need no check. Step 7's non-owner check must also drive
-  the three attaches, which are registered in `server-run` and so are not
-  among the routes the matrix reads from `buildApp`.
+- The routes that write rows directly through `#db` (titles, groups,
+  set-group, death-seen marks) call `authorizeProject` on the project they
+  name before the write, and a provisioning entry is dismissed through
+  `dismissProvisioning`, which checks its project. A verb that needs a
+  running workspace passes `owner` to `resolveWorkspaceContainer`, which
+  checks the workspace's row before asking the runtime, so a non-owner gets
+  403 whether or not the workspace runs; stop checks the row (or the
+  provisioning entry) the same way.
+- Project build files are read at `reader` and written at `owner`: the
+  build-files sub-app asks its `resolveRoot` for the dir at the level each
+  route needs. The caller's own settings (`/config/*`, `/shortcuts/*`) act
+  only on the caller's own data, so they need no check. Nor do `/auth/*`
+  and the `/api/agent/auth` WebSocket: they act only on the caller's own
+  credentials and flows (step 5), so a second user gets their own answer
+  (an empty list, a 404 for another's flow or git credential), never a
+  403. A project is assigned, or cloned with, only its owner's git
+  credential (`resolveCredentialForRemote`).
+- `/project/add` and `/project/register` create a project the caller then
+  owns, so they need no check.
+- Every route's row in `test/api/route-matrix.ts` states its `access`
+  (`public`, `reader` or `owner`). An `owner` row that acts only on the
+  caller's own data is marked `callerScoped`. The rest are driven as a
+  second tailnet user against a server holding the built-in user's project,
+  workspace, queued workspace, draft, provisioning entry and build, and
+  must answer 403 (or the substrate's 501 where the feature is missing);
+  every `reader` row must admit them. The three attaches are registered in
+  `server-run`, outside `buildApp`, so `test/api/identity-flow.test.ts`
+  drives them as a non-owner against a real server.
 
 ### Database
 
@@ -334,11 +351,19 @@ How the SPA does it (`packages/frontend/src/lib/viewer.ts`):
 
 ### Image builds
 
-- `/config/user-dockerfile` and `/config/user-build-files/*` become per user
-  (`resolveRoot` in `api/routes/build-files.ts` takes the principal), and
-  `yaac-user-<projectId>` is built from the project owner's file.
-- Build rows for a project's chain are visible to everyone and retried or
-  dismissed only by its owner; shared-image builds are open to every user.
+- `/config/user-dockerfile` and `/config/user-build-files/*` act on the
+  caller's own build dir, `server-local/users/<user id>/build/`
+  (`userBuildDir`). An upgraded install's `server-local/build/` is moved to
+  the built-in user's on start (docs/legacy-compat-shims.md "Moving the user
+  build dir to the built-in user").
+- `yaac-user-<projectId>` is built from the project owner's file. The driver
+  is handed the owner rather than reading it: `prepareImage` takes it from
+  the create, and the prewarm sweep, registry GC and build retry read it
+  through `projectOwner`, beside `projectConfig` (`ProjectReaders`).
+- Build rows for a project's chain (its `project` and `user` layers) are
+  visible to everyone and retried or dismissed only by its owner
+  (`retryImageBuild` and `dismissImageBuild` in `#domain/projects`);
+  shared-image builds are open to every user.
 
 ## Work, in landing order
 
@@ -363,8 +388,8 @@ How the SPA does it (`packages/frontend/src/lib/viewer.ts`):
    the access mode").
 6. **Proxy keying**: the owner-keyed credentials Secret, owner on
    registrations, and every credential path resolving through it.
-7. **Route authorization**: every route classified and gated, and per-user
-   user Dockerfiles and build files.
+7. **Route authorization** — shipped: every route classified and gated,
+   and per-user user Dockerfiles and build files.
 8. **SPA** — shipped: owner on snapshot rows, the user switcher, read-only views,
    settings split, the containerless "does not separate users" notice.
 9. **Docs**: a `docs/multi-user.md` reference and this plan deleted

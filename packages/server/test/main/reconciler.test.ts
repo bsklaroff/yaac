@@ -300,6 +300,7 @@ async function runPass(
     snapshot: () => snapshotFixture(),
     projectIds: () => Promise.resolve([]),
     projectConfig: () => Promise.resolve(undefined),
+    projectOwner: () => Promise.resolve('owner'),
         terminating: () => false,
   }
   for (const step of defaultReconcileSteps()) {

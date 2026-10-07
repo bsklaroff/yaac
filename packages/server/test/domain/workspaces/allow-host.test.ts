@@ -75,7 +75,7 @@ describe('allowWorkspaceHost', () => {
 
   it('refuses a workspace that is not running, before touching config', async () => {
     installFakeWorkspaceDriver({
-      find: () => Promise.resolve(handleFixture({ workspaceId: 'sid-1', state: 'stopped' })),
+      find: () => Promise.resolve(handleFixture({ workspaceId: 'sid-1', projectId: PROJ, state: 'stopped' })),
       allowHost: mockAllowHost,
     })
 
