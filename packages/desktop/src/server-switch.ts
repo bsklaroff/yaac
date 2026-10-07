@@ -1,6 +1,6 @@
 /**
- * The shell's server picker: list, switch between, and add servers. All
- * three edit the shared `~/.yaac-client/server.json`, so a switch here also
+ * The shell's server picker: list, switch between, add and remove servers.
+ * All of them edit the shared `~/.yaac-client/server.json`, so a switch here also
  * moves the CLI, like `yaac remote set/on`. A server on this machine is
  * registered there by `yaac server start` like any other, so every row is
  * an origin.
@@ -78,5 +78,24 @@ export async function addServerRemote(
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
   await deps.writeServerConfig(deps.select(await deps.readServerConfig(), origin))
+  return { ok: true }
+}
+
+/**
+ * Forget a saved server. The selected one is refused: removing it would
+ * leave the window attached to a server the machine no longer names.
+ */
+export async function removeServer(
+  sel: DesktopServerSelection,
+  deps: ServerSwitchDeps,
+): Promise<DesktopServerOutcome> {
+  const cfg = await deps.readServerConfig()
+  if (!cfg?.saved.some((s) => s.url === sel.url)) return { ok: false, error: `unknown server: ${sel.url}` }
+  if (cfg.enabled && cfg.url === sel.url) {
+    return { ok: false, error: 'switch to another server before removing this one' }
+  }
+  const saved = cfg.saved.filter((s) => s.url !== sel.url)
+  // A deselected config's url is still remembered; forgetting it clears it.
+  await deps.writeServerConfig({ ...cfg, saved, ...(cfg.url === sel.url ? { url: '' } : {}) })
   return { ok: true }
 }

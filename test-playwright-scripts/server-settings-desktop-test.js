@@ -9,7 +9,8 @@
  *     the origin's host:port, and opens Settings → Server. The section lists
  *     every saved origin with the current one marked Connected and no
  *     "Local server" row. A failing switch shows its error inline, a good
- *     one shows "Reconnecting…", and the add form calls `addRemote`.
+ *     one shows "Reconnecting…", and the add form calls `addRemote`. Remove
+ *     drops a row in place; the Connected row offers no Remove.
  *  3. A long host fits the chit in a wide sidebar and truncates, without
  *     overflowing its row, in a narrow one.
  *  4. A bridge pasted after load (the devtools recipe for looking at the
@@ -29,11 +30,9 @@ const SIDEBAR_WIDTHS = [[640, true], [180, false]]
 /** The bridge stub; `switchTo` fails for the loopback origin. */
 const BRIDGE = () => {
   window.__bridgeCalls = []
+  let saved = ['https://alpha.ts.net', 'https://beta.ts.net', 'http://127.0.0.1:8787']
   window.yaacServer = {
-    targets: () => Promise.resolve({
-      current: 'https://alpha.ts.net',
-      saved: ['https://alpha.ts.net', 'https://beta.ts.net', 'http://127.0.0.1:8787'],
-    }),
+    targets: () => Promise.resolve({ current: 'https://alpha.ts.net', saved }),
     switchTo: (sel) => {
       window.__bridgeCalls.push(['switchTo', sel])
       return Promise.resolve(sel.url === 'http://127.0.0.1:8787'
@@ -42,6 +41,11 @@ const BRIDGE = () => {
     },
     addRemote: (url) => {
       window.__bridgeCalls.push(['addRemote', url])
+      return Promise.resolve({ ok: true })
+    },
+    remove: (sel) => {
+      window.__bridgeCalls.push(['remove', sel])
+      saved = saved.filter((u) => u !== sel.url)
       return Promise.resolve({ ok: true })
     },
   }
@@ -123,6 +127,23 @@ try {
     const calls = await page.evaluate(() => window.__bridgeCalls)
     check('addRemote received the form value',
       JSON.stringify(calls) === JSON.stringify([['addRemote', 'https://gamma.ts.net']]), JSON.stringify(calls))
+    await page.close()
+  }
+
+  {
+    const page = await openApp({ bridge: true })
+    await page.locator(CHIT).first().click()
+    await page.getByText('Add a server').waitFor({ timeout: 10_000 })
+    check('Connected row offers no Remove',
+      await page.getByRole('button', { name: 'Remove https://alpha.ts.net' }).count() === 0)
+    await page.getByRole('button', { name: 'Remove https://beta.ts.net' }).click()
+    check('removed row disappears', await page.getByText('https://beta.ts.net', { exact: true })
+      .waitFor({ state: 'detached', timeout: 5_000 }).then(() => true, () => false))
+    check('other rows stay', await page.getByText('http://127.0.0.1:8787', { exact: true }).isVisible())
+    const calls = await page.evaluate(() => window.__bridgeCalls)
+    check('remove received the clicked selection',
+      JSON.stringify(calls) === JSON.stringify([['remove', { url: 'https://beta.ts.net' }]]), JSON.stringify(calls))
+    await page.screenshot({ path: path.join(SHOTS, 'server-settings-remove.png') })
     await page.close()
   }
 

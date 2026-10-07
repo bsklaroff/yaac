@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('yaacServer', {
   targets: () => ipcRenderer.invoke('server:targets'),
   switchTo: (selection: unknown) => ipcRenderer.invoke('server:switch', selection),
   addRemote: (url: string) => ipcRenderer.invoke('server:add-remote', url),
+  remove: (selection: unknown) => ipcRenderer.invoke('server:remove', selection),
   // Re-run the boot flow against the current `server.json`, so the static
   // picker page can pick up a server started from a terminal.
   retry: () => ipcRenderer.invoke('server:retry'),

@@ -29,7 +29,8 @@ import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
 import { ensureAuthDaemonRunning, resolveYaacCommand } from '#server-process'
 import {
-  addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, type ServerSwitchDeps,
+  addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, removeServer,
+  type ServerSwitchDeps,
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
@@ -277,6 +278,12 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
   const outcome = await applyServerSwitch(sel, serverSwitchDeps)
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
+})
+// Removal never touches the selected server, so the window stays put.
+ipcMain.handle('server:remove', async (_e, raw: unknown) => {
+  const sel = parseServerSelection(raw)
+  if (!sel) return { ok: false, error: 'invalid selection' }
+  return removeServer(sel, serverSwitchDeps)
 })
 ipcMain.handle('server:add-remote', async (_e, url: unknown) => {
   if (typeof url !== 'string') return { ok: false, error: 'invalid arguments' }

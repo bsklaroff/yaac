@@ -4,6 +4,7 @@ import {
   applyServerSwitch,
   getServerTargets,
   parseServerSelection,
+  removeServer,
   type ServerSwitchDeps,
 } from '#server-switch'
 import type { ServerConfig } from '@yaac/shared/server-config'
@@ -149,6 +150,45 @@ describe('addServerRemote', () => {
     deps.probeServer.mockRejectedValue(new Error('https://c.ts.net refused to identify this device'))
     expect(await addServerRemote('https://c.ts.net', deps))
       .toEqual({ ok: false, error: 'https://c.ts.net refused to identify this device' })
+    expect(deps.writeServerConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe('removeServer', () => {
+  it('forgets a saved server, keeping the selection and install record', async () => {
+    const deps = makeDeps({ ...CFG, driver: 'k8s' })
+    expect(await removeServer({ url: 'https://b.ts.net' }, deps)).toEqual({ ok: true })
+    expect(deps.writeServerConfig).toHaveBeenCalledWith({
+      url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }], driver: 'k8s',
+    })
+  })
+
+  it('refuses the selected server and leaves the config untouched', async () => {
+    const deps = makeDeps(CFG)
+    expect(await removeServer({ url: 'https://a.ts.net' }, deps))
+      .toEqual({ ok: false, error: expect.stringMatching(/switch to another server/) as string })
+    expect(deps.writeServerConfig).not.toHaveBeenCalled()
+  })
+
+  it('clears the remembered url when forgetting a deselected server', async () => {
+    const deps = makeDeps({ ...CFG, enabled: false })
+    expect(await removeServer({ url: 'https://a.ts.net' }, deps)).toEqual({ ok: true })
+    expect(deps.writeServerConfig).toHaveBeenCalledWith({
+      url: '', enabled: false, saved: [{ url: 'https://b.ts.net' }],
+    })
+  })
+
+  it('an absent or malformed config is refused, not overwritten', async () => {
+    const deps = makeDeps(null)
+    expect(await removeServer({ url: 'https://a.ts.net' }, deps))
+      .toEqual({ ok: false, error: 'unknown server: https://a.ts.net' })
+    expect(deps.writeServerConfig).not.toHaveBeenCalled()
+  })
+
+  it('an unknown origin is rejected', async () => {
+    const deps = makeDeps(CFG)
+    expect(await removeServer({ url: 'https://nope.ts.net' }, deps))
+      .toEqual({ ok: false, error: 'unknown server: https://nope.ts.net' })
     expect(deps.writeServerConfig).not.toHaveBeenCalled()
   })
 })
