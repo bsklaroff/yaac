@@ -146,6 +146,28 @@ For access that survives the socket being re-created, add a
 `SocketMode=0660` and `SocketGroup=` set to a group you are in. Install
 prints these steps when the socket is unreachable.
 
+## Linux: swap
+
+If `swapon --show` prints nothing, add swap before `yaac cluster install`.
+gVisor keeps a workspace's memory in shared memory, which the kernel can only
+reclaim by swapping, so without swap a workspace under memory pressure is
+OOM-killed. The kubelet only enables swap (`LimitedSwap` in
+`k8s/kind-config.yaml`) when kind creates the node, so add swap first.
+
+```sh
+# ext4. On btrfs: sudo btrfs filesystem mkswapfile --size 32G /swapfile
+# On ZFS, use a zvol instead of a swapfile.
+sudo fallocate -l 32G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+Each pod gets `memoryRequest / nodeRAM × totalSwap`, so swap about the size of
+RAM gives a workspace roughly its memory request again. If you use swap
+heavily, check that `systemd-oomd` (`SwapUsedLimit=90%` by default) won't kill
+the kind node container first.
+
 ## Linux: VPN and firewall interference
 
 These host settings make a container look up but unresponsive:
