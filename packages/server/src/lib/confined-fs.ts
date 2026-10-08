@@ -22,7 +22,8 @@ import { createKeyedMutex } from './keyed-mutex'
  *
  * Two link policies:
  *
- *  - `inside`: follow a link only if it lands inside the root. Checkouts
+ *  - `inside`: follow a link only while it stays inside the root, resolving
+ *    it in user space so nothing outside is ever looked at. Checkouts
  *    contain links on purpose, and a containerless project dir holds yaac's
  *    per-workspace tool homes.
  *  - `no-links`: refuse any link below the root. Nothing legitimate writes
@@ -83,6 +84,9 @@ export interface ConfinedRoot {
   readFile(rel: string, opts: { maxBytes: number }): Promise<Buffer | null>
   /** A directory's entries, or [] when there is no directory there. */
   readdir(rel: string): Promise<Dirent[]>
+  /** Where `rel` leads through links inside the root, or null when nothing
+   *  reachable is there. Always null under `no-links`. */
+  locate(rel: string): Promise<{ rel: string; dir: boolean } | null>
   /** What is at `rel`, or null when nothing reachable is. */
   stat(rel: string): Promise<Stats | null>
   /** Replace a file through a fresh temp file in its pinned directory and a
@@ -104,6 +108,9 @@ export interface ConfinedRoot {
   /** Delete a file, a link (never its target) or a whole directory. */
   removeTree(rel: string): Promise<void>
 }
+
+/** Where a path resolved to: a handle on what is there, or a directory pinned. */
+type Resolved = { real: string } & ({ fh: FileHandle; dir?: undefined } | { dir: PinnedDir; fh?: undefined })
 
 function errno(code: string, rel: string): NodeJS.ErrnoException {
   return Object.assign(new Error(`${code}: ${rel}`), { code })
@@ -207,42 +214,126 @@ export async function openRoot(
   /** Every segment from the root to `rel`. */
   const segmentsOf = (rel: string): string[] => [...base, ...(rel === '' ? [] : normalize(rel).split('/'))]
 
-  /** Follow links from `abs`, and refuse where it lands unless it is a
-   *  directory inside the root. */
-  const followDir = async (abs: string, rel: string): Promise<PinnedDir> => {
-    if (!PROC_FD) {
-      const to = await fs.realpath(abs)
-      if (contains(to) === null) throw outside(rel)
-      if (!(await fs.stat(to)).isDirectory()) throw errno('ENOTDIR', rel)
-      return pinned(to)
-    }
-    const fh = await fs.open(abs, C.O_RDONLY | C.O_DIRECTORY)
-    const to = await landed(fh)
-    if (contains(to) === null) {
+  /** Pin the root itself. */
+  const openTop = async (): Promise<PinnedDir> => {
+    if (!PROC_FD) return pinned(real)
+    const fh = await fs.open(real, C.O_RDONLY | C.O_DIRECTORY)
+    if (await landed(fh) !== real) {
       await fh.close()
-      throw outside(rel)
+      throw outside('.')
     }
-    return pinned(to, fh)
+    return pinned(real, fh)
   }
 
-  const step = (at: PinnedDir, name: string, rel: string): Promise<PinnedDir> =>
-    policy === 'inside' ? followDir(at.child(name), rel) : exactDir(at, name, rel)
+  /**
+   * Resolve `segments` from the root under the `inside` policy, following
+   * links in user space instead of letting the kernel follow them. Each
+   * entry is opened without following, through a directory pinned inside
+   * the root. A link's target is read and walked the same way, and a `..`
+   * above the root or an absolute target outside it is refused before
+   * anything there is touched. So every errno, answer and timing describes
+   * entries inside the root, and a caller cannot learn whether a path
+   * outside exists. A link that leaves the root and comes back in is
+   * refused for the same reason.
+   *
+   * The last entry opens with `flags`, or comes back pinned if it is a
+   * directory. `create` makes missing entries as directories.
+   */
+  const resolve = async (segments: string[], rel: string, flags: number, create = false): Promise<Resolved> => {
+    const todo = [...segments]
+    const stack = [await openTop()]
+    // Each entry is made at most once, so one deleted again at once fails.
+    const made = new Set<string>()
+    try {
+      for (let hops = 0; todo.length > 0;) {
+        const name = todo.shift() as string
+        if (name === '' || name === '.') continue
+        if (name === '..') {
+          if (stack.length === 1) throw outside(rel)
+          await (stack.pop() as PinnedDir).close()
+          continue
+        }
+        const at = stack[stack.length - 1]
+        const expected = path.join(at.real, name)
+        if (contains(expected) === null) throw outside(rel)
+        let fh: FileHandle
+        try {
+          fh = await fs.open(at.child(name), (todo.length === 0 ? flags : C.O_RDONLY) | C.O_NOFOLLOW | C.O_NONBLOCK | C.O_NOCTTY)
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException).code
+          if (code === 'ENOENT' && create && !made.has(expected)) {
+            made.add(expected)
+            await fs.mkdir(at.child(name)).catch((e: NodeJS.ErrnoException) => {
+              if (e.code !== 'EEXIST') throw e
+            })
+            todo.unshift(name)
+            continue
+          }
+          if (code !== 'ELOOP') throw err
+          // The kernel's own limit on links in one path.
+          if (++hops > 40) throw errno('ELOOP', rel)
+          // Null when the link was swapped since the open: look again.
+          const target = await fs.readlink(at.child(name)).catch(() => null)
+          if (target === null) {
+            todo.unshift(name)
+          } else if (!path.isAbsolute(target)) {
+            todo.unshift(...target.split('/'))
+          } else if (target === real || target.startsWith(`${real}/`)) {
+            // Lexically inside, so it is walked from the root like any other.
+            while (stack.length > 1) await (stack.pop() as PinnedDir).close()
+            todo.unshift(...target.slice(real.length).split('/'))
+          } else {
+            throw outside(rel)
+          }
+          continue
+        }
+        try {
+          if (PROC_FD && await landed(fh) !== expected) throw outside(rel)
+          if ((await fh.stat()).isDirectory()) {
+            if (PROC_FD) {
+              stack.push(pinned(expected, fh))
+            } else {
+              await fh.close()
+              stack.push(pinned(expected))
+            }
+            continue
+          }
+          if (todo.length > 0) throw errno('ENOTDIR', rel)
+        } catch (err) {
+          await fh.close()
+          throw err
+        }
+        return { real: expected, fh }
+      }
+      const dir = stack.pop() as PinnedDir
+      return { real: dir.real, dir }
+    } finally {
+      for (const d of stack) await d.close()
+    }
+  }
 
   const walk = async (segments: string[], create: boolean): Promise<PinnedDir> => {
-    let at = await followDir(real, '.')
+    if (policy === 'inside') {
+      const rel = segments.join('/') || '.'
+      const { fh, dir } = await resolve(segments, rel, C.O_RDONLY, create)
+      if (dir) return dir
+      await fh.close()
+      throw errno('ENOTDIR', rel)
+    }
+    let at = await openTop()
     try {
       for (let i = 0; i < segments.length; i++) {
         const name = segments[i]
         const rel = segments.slice(0, i + 1).join('/')
         let next: PinnedDir
         try {
-          next = await step(at, name, rel)
+          next = await exactDir(at, name, rel)
         } catch (err) {
           if (!create || (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
           await fs.mkdir(at.child(name)).catch((e: NodeJS.ErrnoException) => {
             if (e.code !== 'EEXIST') throw e
           })
-          next = await step(at, name, rel)
+          next = await exactDir(at, name, rel)
         }
         await at.close()
         at = next
@@ -266,18 +357,13 @@ export async function openRoot(
     // Non-blocking so a planted FIFO cannot hang the open before it is checked.
     const safe = flags | C.O_NONBLOCK | C.O_NOCTTY
     if (policy === 'inside') {
-      const abs = path.join(real, ...segmentsOf(rel))
-      if (!PROC_FD) {
-        const to = await fs.realpath(abs)
-        if (contains(to) === null) throw outside(rel)
-        return fs.open(to, safe)
+      const { fh, dir } = await resolve(segmentsOf(rel), rel, safe)
+      if (fh) return fh
+      try {
+        return await fs.open(dir.self, safe)
+      } finally {
+        await dir.close()
       }
-      const fh = await fs.open(abs, safe)
-      if (contains(await landed(fh)) === null) {
-        await fh.close()
-        throw outside(rel)
-      }
-      return fh
     }
     const { dir, name } = await parent(rel)
     try {
@@ -386,6 +472,15 @@ export async function openRoot(
       } finally {
         await at.close()
       }
+    },
+
+    async locate(rel) {
+      if (policy === 'no-links') return null
+      const to = await resolve(segmentsOf(rel), rel, C.O_RDONLY).catch(() => null)
+      if (to === null) return null
+      await (to.fh ?? to.dir).close()
+      const at = contains(to.real)
+      return at === null ? null : { rel: at, dir: to.dir !== undefined }
     },
 
     async stat(rel) {

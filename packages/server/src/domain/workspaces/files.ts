@@ -163,17 +163,10 @@ async function writeAll(fh: FileHandle, data: Buffer): Promise<void> {
   }
 }
 
-/** Where the symlink `name` in a pinned folder leads, as the listing
- *  reports it. */
-async function linkTarget(co: Checkout, dir: PinnedDir, name: string): Promise<SymlinkTarget> {
-  try {
-    const real = await fs.realpath(dir.child(name))
-    const target = co.root.contains(real)
-    if (target === null) return { target: null, dir: false }
-    return { target, dir: (await fs.stat(real)).isDirectory() }
-  } catch {
-    return { target: null, dir: false }
-  }
+/** Where a symlink leads, as the listing reports it. */
+async function linkTarget(co: Checkout, rel: string): Promise<SymlinkTarget> {
+  const to = await co.root.locate(rel)
+  return to === null ? { target: null, dir: false } : { target: to.rel, dir: to.dir }
 }
 
 /**
@@ -307,22 +300,6 @@ function isListable(co: Checkout, rel: string): boolean {
   }
 }
 
-/** Where a listed symlink leads. Its folder is pinned first, so a linked
- *  folder on the way that leaves the checkout is refused, not followed. */
-async function listedLinkTarget(co: Checkout, rel: string): Promise<SymlinkTarget> {
-  let pinned: { dir: PinnedDir; name: string }
-  try {
-    pinned = await co.root.parent(rel)
-  } catch {
-    return { target: null, dir: false }
-  }
-  try {
-    return await linkTarget(co, pinned.dir, pinned.name)
-  } finally {
-    await pinned.dir.close()
-  }
-}
-
 /**
  * The explorer's listing from what the script read: capped, with where each
  * symlink leads and, for a `full` listing, the folders holding no file.
@@ -340,7 +317,7 @@ async function finishListing(co: Checkout, read: NonNullable<ChangesReading['lis
   // git records a link as one entry and never lists what is behind it.
   // Built in path order, so an unchanged listing hashes the same.
   const links = listable(read.links).slice(0, MAX_LISTED_PATHS)
-  const targets = await Promise.all(links.map((p) => listedLinkTarget(co, p)))
+  const targets = await Promise.all(links.map((p) => linkTarget(co, p)))
   const symlinks: Record<string, SymlinkTarget> = Object.fromEntries(links.map((p, i) => [p, targets[i]]))
   const body = {
     paths,
@@ -374,7 +351,7 @@ export async function listWorkspaceDir(idOrName: string, relPath: string): Promi
     const all = await fs.readdir(dir.self, { withFileTypes: true })
     const entries = await Promise.all(all.slice(0, MAX_DIR_ENTRIES).map(async (e) => (
       e.isSymbolicLink()
-        ? { name: e.name, dir: false, symlink: await linkTarget(co, dir, e.name) }
+        ? { name: e.name, dir: false, symlink: await linkTarget(co, `${rel}/${e.name}`) }
         : { name: e.name, dir: e.isDirectory() }
     )))
     return { entries, truncated: all.length > MAX_DIR_ENTRIES }
