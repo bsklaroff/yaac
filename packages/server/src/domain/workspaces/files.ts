@@ -163,10 +163,11 @@ async function writeAll(fh: FileHandle, data: Buffer): Promise<void> {
   }
 }
 
-/** Where a symlink leads, as the listing reports it. */
-async function linkTarget(co: Checkout, abs: string): Promise<SymlinkTarget> {
+/** Where the symlink `name` in a pinned folder leads, as the listing
+ *  reports it. */
+async function linkTarget(co: Checkout, dir: PinnedDir, name: string): Promise<SymlinkTarget> {
   try {
-    const real = await fs.realpath(abs)
+    const real = await fs.realpath(dir.child(name))
     const target = co.root.contains(real)
     if (target === null) return { target: null, dir: false }
     return { target, dir: (await fs.stat(real)).isDirectory() }
@@ -216,7 +217,7 @@ async function findEmptyDirs(
   const root = await co.root.dir('')
   try {
     for (const top of untrackedDirs) {
-      if (ignoredDirs.has(top) || top.split('/')[0] === '.git') continue
+      if (ignoredDirs.has(top)) continue
       // Skip a root that is no longer a real folder all the way down.
       let dir: PinnedDir | null = root
       const opened: PinnedDir[] = []
@@ -297,26 +298,56 @@ export async function getWorkspaceChanges(
   }
 }
 
+/** Whether `rel` is a path the file routes would accept as written. */
+function isListable(co: Checkout, rel: string): boolean {
+  try {
+    return co.root.normalize(rel) === rel
+  } catch {
+    return false
+  }
+}
+
+/** Where a listed symlink leads. Its folder is pinned first, so a linked
+ *  folder on the way that leaves the checkout is refused, not followed. */
+async function listedLinkTarget(co: Checkout, rel: string): Promise<SymlinkTarget> {
+  let pinned: { dir: PinnedDir; name: string }
+  try {
+    pinned = await co.root.parent(rel)
+  } catch {
+    return { target: null, dir: false }
+  }
+  try {
+    return await linkTarget(co, pinned.dir, pinned.name)
+  } finally {
+    await pinned.dir.close()
+  }
+}
+
 /**
  * The explorer's listing from what the script read: capped, with where each
  * symlink leads and, for a `full` listing, the folders holding no file.
  */
 async function finishListing(co: Checkout, read: NonNullable<ChangesReading['listing']>): Promise<WorkspaceFiles> {
+  // The script runs in the workspace, so every list may name anything. Only
+  // paths the file routes accept are kept, before any is opened or resolved.
+  const listable = (list: string[]): string[] => list.filter((p) => isListable(co, p.replace(/\/$/, '')))
+  const listed = listable(read.paths)
+  const listedIgnored = listable(read.ignored ?? [])
   // One cap for every list, so no checkout makes the answer unbounded.
-  const truncated = read.paths.length > MAX_LISTED_PATHS || (read.ignored?.length ?? 0) > MAX_LISTED_PATHS
-  const paths = read.paths.slice(0, MAX_LISTED_PATHS)
-  const ignored = (read.ignored ?? []).slice(0, MAX_LISTED_PATHS)
+  const truncated = listed.length > MAX_LISTED_PATHS || listedIgnored.length > MAX_LISTED_PATHS
+  const paths = listed.slice(0, MAX_LISTED_PATHS)
+  const ignored = listedIgnored.slice(0, MAX_LISTED_PATHS)
   // git records a link as one entry and never lists what is behind it.
   // Built in path order, so an unchanged listing hashes the same.
-  const links = read.links.slice(0, MAX_LISTED_PATHS)
-  const targets = await Promise.all(links.map((p) => linkTarget(co, path.join(co.root.real, p))))
+  const links = listable(read.links).slice(0, MAX_LISTED_PATHS)
+  const targets = await Promise.all(links.map((p) => listedLinkTarget(co, p)))
   const symlinks: Record<string, SymlinkTarget> = Object.fromEntries(links.map((p, i) => [p, targets[i]]))
   const body = {
     paths,
     symlinks,
     ignored,
-    emptyDirs: read.untrackedDirs ? await findEmptyDirs(co, read.untrackedDirs, paths, ignored) : [],
-    conflicted: read.conflicted,
+    emptyDirs: read.untrackedDirs ? await findEmptyDirs(co, listable(read.untrackedDirs), paths, ignored) : [],
+    conflicted: listable(read.conflicted),
     truncated,
   }
   return { version: hash(Buffer.from(JSON.stringify(body))), ...body }
@@ -343,7 +374,7 @@ export async function listWorkspaceDir(idOrName: string, relPath: string): Promi
     const all = await fs.readdir(dir.self, { withFileTypes: true })
     const entries = await Promise.all(all.slice(0, MAX_DIR_ENTRIES).map(async (e) => (
       e.isSymbolicLink()
-        ? { name: e.name, dir: false, symlink: await linkTarget(co, dir.child(e.name)) }
+        ? { name: e.name, dir: false, symlink: await linkTarget(co, dir, e.name) }
         : { name: e.name, dir: e.isDirectory() }
     )))
     return { entries, truncated: all.length > MAX_DIR_ENTRIES }
