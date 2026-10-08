@@ -118,6 +118,7 @@ export function useCreateWorkspace(): (
       groupId,
       {
         ...(label ? { title: label } : {}),
+        ...(prompt ? { prompt } : {}),
         ...(model !== '' ? { model, ...(modelName !== undefined ? { modelName } : {}) } : {}),
       })
   }, [provision])

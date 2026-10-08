@@ -70,6 +70,8 @@ export async function createWorkspace(
     ...(opts.title ? { title: opts.title } : {}),
     ...(opts.group !== undefined ? { group: opts.group } : {}),
     ...(opts.draftId !== undefined ? { draftId: opts.draftId } : {}),
+    // A failed create's prompt lands in the sidebar as a draft to retry from.
+    draftOnFailure: true,
   }
   return await streamWorkspaceOp('/api/workspace/create', body, onProgress) as CreateWorkspaceResult
 }

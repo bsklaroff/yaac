@@ -1965,6 +1965,48 @@ describe.skipIf(!CAN_RUN)('an agent that dies the moment it launches', () => {
 })
 
 /**
+ * A create that fails shows its prompt with the failure. The webapp's
+ * creates keep it as a draft too; the CLI's do not, since a CLI retry could
+ * only add another draft.
+ */
+describe.skipIf(!CAN_RUN)('a create that fails', () => {
+  it('shows its prompt with the failure, and keeps it as a draft only for the webapp', async () => {
+    const watch = collectSnapshots(server.lock.port)
+    await watch.opened
+    try {
+      const cliPrompt = 'a cli prompt'
+      const bad = await runYaac(serverEnv, 'workspace', 'create', NAME, '--branch', 'ghost', '--prompt', cliPrompt)
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin.')
+      await vi.waitFor(() => {
+        expect(watch.latest()?.provisioning.find((p) => p.prompt === cliPrompt)?.error).toBeDefined()
+      }, { timeout: 30_000, interval: 250 })
+      expect(watch.latest()!.draftWorkspaces.some((d) => d.prompt === cliPrompt)).toBe(false)
+
+      const webPrompt = 'a webapp prompt'
+      const res = await fetch(`${origin()}/api/workspace/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project: NAME, tool: 'claude', mode: 'tui', branch: 'ghost', prompt: webPrompt, draftOnFailure: true }),
+      })
+      await expect(consumeNdjsonStream(res, () => {})).rejects.toThrow(
+        'branch "ghost" not found on origin; its prompt is kept as a draft')
+      await vi.waitFor(() => {
+        expect(watch.latest()?.draftWorkspaces.find((d) => d.prompt === webPrompt))
+          .toMatchObject({ projectId, branch: 'ghost' })
+      }, { timeout: 30_000, interval: 250 })
+      const draft = watch.latest()!.draftWorkspaces.find((d) => d.prompt === webPrompt)!
+      const discarded = await fetch(`${origin()}/api/workspace/draft/discard`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: draft.id }),
+      })
+      expect(discarded.ok).toBe(true)
+    } finally {
+      watch.ws.close()
+    }
+  }, 180_000)
+})
+
+/**
  * Queued workspaces (docs/queued-workspaces.md): a queued workspace starts
  * when its parent is stopped, and stays queued if the parent dies instead.
  */

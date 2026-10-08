@@ -8,7 +8,8 @@ import { stopProvisioning } from '#lib/stopWorkspaceFlow'
 import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 /** Main-pane placeholder while the selected workspace provisions. Shows
- *  progress with a Stop button, or the error with a Dismiss button. */
+ *  progress with a Stop button, or the error with a Dismiss button and the
+ *  prompt the create was given, so it can be reused. */
 export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorkspaceEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
@@ -26,6 +27,16 @@ export function CreatingPlaceholder({ creating }: { creating: ProvisioningWorksp
         <>
           <p className="text-sm font-medium text-danger">Couldn&apos;t create workspace</p>
           <p className="max-w-md text-xs text-text-faint">{creating.error}</p>
+          {creating.prompt && (
+            <div className="mt-1 w-full max-w-xl text-left">
+              <p className="mb-1 text-xs font-medium text-text-dim">Prompt</p>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md border
+                border-hairline-soft bg-surface-2/40 p-3 font-sans text-xs text-text select-text"
+              >
+                {creating.prompt}
+              </pre>
+            </div>
+          )}
           <div className="mt-1 flex items-center gap-2">
             <button
               onClick={dismiss}

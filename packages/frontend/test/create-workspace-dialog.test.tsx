@@ -237,7 +237,7 @@ describe('CreateWorkspaceDialog', () => {
     // Every field is sent, so every field becomes the next default.
     expect(sent(CREATE)).toEqual([{
       project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string,
-      branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp',
+      branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp', draftOnFailure: true,
     }])
     // The provisioning row names the model from its first frame.
     expect(provision.mock.calls[0][6]).toEqual({ model: 'gpt-5.5', modelName: 'GPT-5.5' })
@@ -905,7 +905,7 @@ describe('CreateWorkspaceDialog', () => {
       expect(sent(CREATE)).toEqual([{
       project: 'proj', tool: 'codex', workspaceId: expect.any(String) as string,
         branch: 'dev', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'tui', prompt: 'half an idea',
-        title: 'Named', group: 'g-other', draftId: 'd1',
+        title: 'Named', group: 'g-other', draftId: 'd1', draftOnFailure: true,
       }])
       expect(sent(DISCARD_DRAFT)).toHaveLength(0)
     })

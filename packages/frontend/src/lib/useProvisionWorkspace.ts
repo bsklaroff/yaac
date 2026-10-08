@@ -18,8 +18,8 @@ type ProvisionOp = (
  * store).
  *
  * `groupId` places the row in its sidebar group from the start (a restart
- * passes the stopped workspace's group). `named` is the title and model a
- * create launches with, so the row can show them from the start.
+ * passes the stopped workspace's group). `named` is the title, prompt and
+ * model a create launches with, so the row can show them from the start.
  */
 export function useProvisionWorkspace(): (
   projectId: string,
@@ -28,7 +28,7 @@ export function useProvisionWorkspace(): (
   workspaceId: string,
   op: ProvisionOp,
   groupId?: string,
-  named?: Pick<ProvisioningWorkspaceEntry, 'title' | 'model' | 'modelName'>,
+  named?: Pick<ProvisioningWorkspaceEntry, 'title' | 'prompt' | 'model' | 'modelName'>,
 ) => void {
   const addOptimisticProvisioning = useUiStore((s) => s.addOptimisticProvisioning)
   const updateOptimisticProvisioning = useUiStore((s) => s.updateOptimisticProvisioning)

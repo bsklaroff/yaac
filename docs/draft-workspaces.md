@@ -35,12 +35,22 @@ Other exits keep the prompt too:
   before each step that would start something: recording the workspace row,
   launching the runtime, and starting the agents. A failure at a checkpoint
   takes the create's ordinary rollback, which deletes the row and checkout,
-  so the draft is the only thing left. A create that fails on its own
-  before reaching a checkpoint (a broken image build) ends as that failure
-  would, with no draft. A create already past its last
+  so the draft is the only thing left. A create already past its last
   checkpoint has a running agent, so it finishes and is then stopped like
   any running workspace, landing in stopped workspaces. Stopping a restart
   the same way leaves the workspace stopped.
+- A create from the webapp that fails once it is under way (a broken image
+  build, a missing branch, a runtime that never comes up) takes the same
+  rollback and saves its prompt as a draft the same way, so the draft is
+  where a retry starts. The error says so, and the failed provisioning row
+  shows the prompt beside it. Only the webapp asks for this
+  (`draftOnFailure`): a failed `yaac workspace create` or `yaac-mama create`
+  keeps no draft, since retrying it could only add another. Neither does a
+  request refused before the create starts (an unknown group, a permission
+  mode the tool lacks), which the caller still holds, nor an agent that dies
+  after the create has returned, whose workspace exists and is reaped like
+  any other. A queued launch never makes a draft: its entry goes back on
+  the queue, which already holds the prompt.
 
 ## What a draft holds
 

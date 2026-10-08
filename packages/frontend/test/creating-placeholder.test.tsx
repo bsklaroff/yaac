@@ -22,9 +22,10 @@ const failed = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWor
 })
 
 describe('CreatingPlaceholder', () => {
-  it('shows a failure with a way to clear it', () => {
-    renderWithClient(<CreatingPlaceholder creating={failed()} />)
+  it('shows a failure, with the prompt it was given, and a way to clear it', () => {
+    renderWithClient(<CreatingPlaceholder creating={failed({ prompt: 'fix the parser bug' })} />)
     expect(screen.getByText('a tool is missing')).toBeTruthy()
+    expect(screen.getByText('fix the parser bug')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy()
   })
 

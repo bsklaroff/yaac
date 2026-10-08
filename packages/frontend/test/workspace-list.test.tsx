@@ -655,7 +655,8 @@ describe('WorkspaceList', () => {
       })
       await pickAction('Run now', 'Draft actions')
       expect(provision).toHaveBeenCalledWith(
-        'proj', 'codex', 'create', expect.any(String), expect.any(Function), 'g1', { title: 'Idea one' })
+        'proj', 'codex', 'create', expect.any(String), expect.any(Function), 'g1',
+        { title: 'Idea one', prompt: 'Idea d1\nmore detail' })
       const op = provision.mock.calls[0][4] as (id: string, onProgress: () => void) => Promise<unknown>
       await op('w-new', () => {})
       expect(createWorkspace).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), 'w-new', {
