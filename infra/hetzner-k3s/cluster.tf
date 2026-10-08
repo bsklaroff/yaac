@@ -139,7 +139,10 @@ locals {
       cloudInit    = local.worker_user_data
       labels       = { "yaac.gvisor" = "true" }
       serverLabels = { cluster = var.name, role = "worker" }
-      taints       = [{ key = local.gvisor_pending_taint, value = "true", effect = "NoSchedule" }]
+      taints = [
+        { key = "yaac.workspaces", value = "true", effect = "NoSchedule" },
+        { key = local.gvisor_pending_taint, value = "true", effect = "NoSchedule" },
+      ]
     } }
   }
 

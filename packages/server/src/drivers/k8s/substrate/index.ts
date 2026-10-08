@@ -27,6 +27,7 @@ export {
   buildRuntimeClassManifests,
   gvisorInstallScript,
   gvisorInstallerHostMounts,
+  WORKSPACE_POOL_KEY,
   runtimeClassSpec,
 } from './gvisor'
 export { NODE_TASKSMAX_LIVE, NODE_TUNING_SYSCTLS } from './node-tuning'

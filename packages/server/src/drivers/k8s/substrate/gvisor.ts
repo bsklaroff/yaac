@@ -39,8 +39,8 @@ export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
 /**
  * Node labels the installer sets once the runtime works on a node. The
  * RuntimeClasses schedule only on `GVISOR_NODE_LABEL`; the version label
- * shows which nodes still run an older runsc. To confine sandboxed pods to
- * a node pool, change the installer's own `nodeSelector`.
+ * shows which nodes still run an older runsc. A node labelled
+ * `yaac.workspaces=false` never gets them (see WORKSPACE_POOL_KEY).
  */
 export const GVISOR_NODE_LABEL = 'yaac.gvisor'
 export const GVISOR_NODE_VERSION_LABEL = 'yaac.gvisor-version'
@@ -53,6 +53,18 @@ export const GVISOR_NODE_VERSION_LABEL = 'yaac.gvisor-version'
  * again for the pods it cannot yet take (infra/aws-eks, infra/hetzner-k3s).
  */
 export const GVISOR_PENDING_TAINT = 'yaac.gvisor/pending'
+
+/**
+ * The key a node uses to declare its share of the work (docs/cluster-setup.md
+ * "A dedicated workspace node pool"). Every node runs workspaces and yaac's
+ * infrastructure unless it says otherwise:
+ *  - a taint with this key (conventionally `yaac.workspaces=true:NoSchedule`)
+ *    keeps infrastructure off, since only sandboxed pods tolerate it;
+ *  - the label `yaac.workspaces=false` keeps workspaces off, since the
+ *    installer leaves such a node without the gVisor labels.
+ */
+export const WORKSPACE_POOL_KEY = 'yaac.workspaces'
+const WORKSPACE_POOL_TOLERATION: PodToleration = { key: WORKSPACE_POOL_KEY, operator: 'Exists' }
 
 /** The labels the installer patches onto its node after a successful pass. */
 export function gvisorNodeLabels(): Record<string, string> {
@@ -234,15 +246,12 @@ export function gvisorContainerdRuntimesToml(pluginKey: string): string {
  * Kubernetes merges `scheduling` into every pod that names the class. The
  * `nodeSelector` keeps sandboxed pods on nodes where the installer
  * succeeded; otherwise they would fail with "failed to get sandbox runtime"
- * instead of staying Pending with a clear event. `tolerations` lets every
- * such pod (workspaces, builders, check probes) run on a tainted,
- * dedicated workspace pool without each pod knowing about it. Cluster check
- * reads the same field to find usable nodes.
+ * instead of staying Pending with a clear event. The toleration lets every
+ * such pod (workspaces, builders, check probes) run on a workspace pool
+ * tainted with WORKSPACE_POOL_KEY without each pod knowing about it. Cluster
+ * check reads the same field to find usable nodes.
  */
-export function buildRuntimeClassManifests(
-  opts: { tolerations?: PodToleration[] } = {},
-): Array<Record<string, unknown>> {
-  const tolerations = opts.tolerations ?? []
+export function buildRuntimeClassManifests(): Array<Record<string, unknown>> {
   return [
     { name: RUNTIME_CLASS_GVISOR, handler: RUNSC_HANDLER },
     { name: RUNTIME_CLASS_GVISOR_NESTED, handler: RUNSC_NESTED_HANDLER },
@@ -253,7 +262,7 @@ export function buildRuntimeClassManifests(
     handler,
     scheduling: {
       nodeSelector: { [GVISOR_NODE_LABEL]: 'true' },
-      ...(tolerations.length > 0 ? { tolerations } : {}),
+      tolerations: [WORKSPACE_POOL_TOLERATION],
     },
   }))
 }
@@ -281,11 +290,19 @@ export function buildRuntimeClassManifests(
  * an e2e run), and interleaved passes could append duplicate TOML tables
  * that stop containerd from starting. Installs sharing a node must pin the
  * same GVISOR_VERSION, or each would restart containerd on every pass.
+ *
+ * The runtime and registry config go on every node, since infra pods pull
+ * yaac images too, but a node labelled `yaac.workspaces=false` has the
+ * gVisor labels removed instead of set, so no sandboxed pod lands there.
  */
 export function gvisorInstallScript(): string {
   const host = (p: string): string => `${INSTALLER_HOST_PREFIX}${p}`
   const cache = host(NODE_GVISOR_CACHE_DIR)
   const q = shellQuote
+  const labelPatch = (labels: Record<string, string | null>): string =>
+    JSON.stringify({ metadata: { labels } })
+  // The node is read through curl, which the apiserver pretty-prints.
+  const infraOnlyPattern = `"${WORKSPACE_POOL_KEY.replace(/\./g, '\\.')}": *"false"`
   return [
     '#!/bin/sh',
     'set -eu',
@@ -402,10 +419,16 @@ export function gvisorInstallScript(): string {
     '    "https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT/api/v1/nodes/$NODE_NAME"',
     '}',
     '',
-    '# Mark this node as carrying the runtime.',
+    '# Mark this node as carrying the runtime, unless it is labelled',
+    `# ${WORKSPACE_POOL_KEY}=false, which takes the marks away again.`,
     'label_node() {',
-    `  node_api -o /dev/null -X PATCH -H 'Content-Type: application/merge-patch+json' \\`,
-    `    --data ${q(JSON.stringify({ metadata: { labels: gvisorNodeLabels() } }))}`,
+    '  node=$(node_api) || return 1',
+    `  if printf '%s' "$node" | grep -qE ${q(infraOnlyPattern)}; then`,
+    `    labels=${q(labelPatch({ [GVISOR_NODE_LABEL]: null, [GVISOR_NODE_VERSION_LABEL]: null }))}`,
+    '  else',
+    `    labels=${q(labelPatch(gvisorNodeLabels()))}`,
+    '  fi',
+    `  node_api -o /dev/null -X PATCH -H 'Content-Type: application/merge-patch+json' --data "$labels"`,
     '}',
     '',
     '# Drop the pending taint, if the node has it (the apiserver pretty-prints',

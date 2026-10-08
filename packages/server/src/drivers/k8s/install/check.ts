@@ -16,6 +16,7 @@ import path from 'node:path'
 import {
   GLOBAL_CLAIM_NAME,
   GVISOR_NODE_LABEL,
+  WORKSPACE_POOL_KEY,
   LABEL_CLAIM,
   LABEL_DATA_DIR_HASH,
   LABEL_INSTALL_ID,
@@ -177,8 +178,14 @@ export async function runClusterCheck(
     }
   }
   const nodes = (rawNodes ?? []).map((n) => clusterNode(n, gvisorScheduling.tolerations))
+  // Every Ready node infrastructure-only is an autoscaled workspace pool at
+  // zero: nowhere to run a sandboxed pod, so those gates skip rather than
+  // fail, and run once a workspace node is up. A pool node that is up but
+  // unusable (cordoned, an untolerated taint) is not idle and still fails.
+  const readyNodes = nodes.filter((n) => n.ready)
+  const idlePool = readyNodes.length > 0 && readyNodes.every((n) => n.infraOnly)
   if (rawNodes) {
-    add(nodeInventoryResult(nodes))
+    add(nodeInventoryResult(nodes, idlePool))
     // Re-run the `--byo` platform gates, in case a node was added since.
     for (const r of nodePlatformChecks(rawNodes)) add(r)
   }
@@ -235,8 +242,11 @@ export async function runClusterCheck(
     skipFrom('node-fixups', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
+  const idleSkip = (name: string): CheckResult => ({
+    name, status: 'skip', detail: 'skipped — no Ready node takes workspaces to run a sandboxed pod on',
+  })
   add(await runNodeFixupsCheck(nodes.map((n) => n.name)))
-  add(await runGvisorRuntimeCheck(rawNodes))
+  add(idlePool ? idleSkip('gvisor') : await runGvisorRuntimeCheck(rawNodes))
   add(await runInstallerReadinessCheck())
 
   // The probes run on the gvisor RuntimeClass; without it they would sit
@@ -245,33 +255,39 @@ export async function runClusterCheck(
     skipFrom('probe', 'skipped — fix the failures above first')
     return { ok: false, results }
   }
-  // Probe pods run as the workspace uid/gid recorded on the server
-  // Deployment, not this machine's. If it cannot be read, fail here rather
-  // than let a wrong-uid probe fail with a misleading message.
-  let identity: InstallIdentity
-  try {
-    identity = await deployedInstallIdentity((await readServerConfig())?.byo === true)
-  } catch (err) {
-    add({
-      name: 'probe', status: 'fail',
-      detail: `could not read the install identity off the ${SERVER_APP_NAME} Deployment: `
-        + `${k8sErrorSummary(err)}`,
-    })
-    skipFrom('egress', 'skipped — fix the failures above first')
-    return { ok: false, results }
+  let sandboxResults: CheckResult[]
+  if (idlePool) {
+    sandboxResults = ['probe', 'egress', 'npm-cache', 'nested-mount', 'per-node', 'storage-semantics'].map(idleSkip)
+  } else {
+    // Probe pods run as the workspace uid/gid recorded on the server
+    // Deployment, not this machine's. If it cannot be read, fail here rather
+    // than let a wrong-uid probe fail with a misleading message.
+    let identity: InstallIdentity
+    try {
+      identity = await deployedInstallIdentity((await readServerConfig())?.byo === true)
+    } catch (err) {
+      add({
+        name: 'probe', status: 'fail',
+        detail: `could not read the install identity off the ${SERVER_APP_NAME} Deployment: `
+          + `${k8sErrorSummary(err)}`,
+      })
+      skipFrom('egress', 'skipped — fix the failures above first')
+      return { ok: false, results }
+    }
+    // The pod probes run concurrently: each starts its own gVisor sandbox,
+    // which is slow, and they share no pods or files.
+    sandboxResults = await Promise.all([
+      runEndToEndProbe(identity),
+      runNetworkPolicyProbe(),
+      runNpmCacheProbe(),
+      runNestedMountProbe(),
+      runPerNodeProbe(nodes, gvisorScheduling, identity),
+      runStorageSemanticsProbe(identity),
+    ])
   }
-  // The pod probes run concurrently: each starts its own gVisor sandbox,
-  // which is slow, and they share no pods or files.
   const [
     probeResult, egressResult, npmCacheResult, nestedMountResult, perNodeResult, semanticsResult,
-  ] = await Promise.all([
-    runEndToEndProbe(identity),
-    runNetworkPolicyProbe(),
-    runNpmCacheProbe(),
-    runNestedMountProbe(),
-    runPerNodeProbe(nodes, gvisorScheduling, identity),
-    runStorageSemanticsProbe(identity),
-  ])
+  ] = sandboxResults
   add(probeResult)
   add(egressResult)
   add(npmCacheResult)
@@ -292,13 +308,15 @@ export async function runClusterCheck(
 
 /**
  * What the readiness gates need to know about one node. `schedulable` means
- * a workspace pod could land here: the node is not cordoned and every taint
+ * a workspace pod could land here: the node is not cordoned, not labelled
+ * infrastructure-only (`infraOnly`, see WORKSPACE_POOL_KEY), and every taint
  * is tolerated by the gvisor RuntimeClass. `excludedBecause` says why not,
  * so reports can name skipped nodes.
  */
 interface ClusterNode {
   name: string
   ready: boolean
+  infraOnly: boolean
   schedulable: boolean
   excludedBecause: string
   labels: Record<string, string>
@@ -317,6 +335,7 @@ interface RawNodeItem extends PlatformNode {
  */
 function workspaceExclusion(node: RawNodeItem, tolerations: PodToleration[]): string {
   if (node.spec?.unschedulable === true) return 'cordoned'
+  if (node.metadata?.labels?.[WORKSPACE_POOL_KEY] === 'false') return `infrastructure only (${WORKSPACE_POOL_KEY}=false)`
   const blocking = untoleratedTaints(node.spec?.taints, tolerations)
   if (blocking.length === 0) return ''
   return `untolerated taint ${blocking.map(formatTaint).join(', ')}`
@@ -327,6 +346,7 @@ function clusterNode(n: RawNodeItem, tolerations: PodToleration[]): ClusterNode 
   return {
     name: n.metadata?.name ?? '<unnamed>',
     ready: (n.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True'),
+    infraOnly: n.metadata?.labels?.[WORKSPACE_POOL_KEY] === 'false',
     schedulable: excludedBecause === '',
     excludedBecause,
     labels: n.metadata?.labels ?? {},
@@ -346,17 +366,17 @@ const SESSION_SCHEDULING_FIX =
   + 'pod naming the class), so a node whose taints it does not match leaves '
   + 'sessions Pending forever. Uncordon a node (`kubectl uncordon <node>`), '
   + 'wait out a transient pressure taint, or — for a deliberately tainted '
-  + 'sessions pool — declare the pool\'s toleration on the RuntimeClass so '
-  + 'every sandboxed pod inherits it, rather than removing the taint that '
-  + 'keeps other workloads off the pool. Key that toleration to the pool\'s '
-  + 'own taint: a bare `{operator: Exists}` tolerates everything, so every '
-  + 'node reads eligible whatever it is carrying.'
+  + `sessions pool — taint it with the ${WORKSPACE_POOL_KEY} key, which the `
+  + 'RuntimeClass already tolerates, rather than removing the taint that '
+  + 'keeps other workloads off the pool.'
 
 /**
  * The node inventory result. Warns on NotReady nodes or when no node can
  * take a workspace; node count alone is fine (`--nodes N` is supported).
+ * When `idlePool` (every Ready node infrastructure-only), the workspace
+ * pool is idle rather than misconfigured, and the sandboxed-pod gates skip.
  */
-function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
+function nodeInventoryResult(nodes: ClusterNode[], idlePool: boolean): CheckResult {
   if (nodes.length === 0) {
     return { name: 'nodes', status: 'warn', detail: 'the cluster reports no nodes' }
   }
@@ -370,6 +390,16 @@ function nodeInventoryResult(nodes: ClusterNode[]): CheckResult {
     }
   }
   const eligible = nodes.filter((n) => n.schedulable)
+  if (idlePool) {
+    return {
+      name: 'nodes', status: 'warn',
+      detail: `${nodes.length} node(s), none taking workspaces: ${excludedList(nodes)}; `
+        + 'the gates that run a sandboxed pod are skipped',
+      fix: 'An autoscaled workspace pool adds a node when a workspace starts; re-run `yaac cluster '
+        + 'check` while one is up to cover those gates. A cluster with no workspace nodes needs the '
+        + `${WORKSPACE_POOL_KEY}=false label off one of its nodes.`,
+    }
+  }
   if (eligible.length === 0) {
     return {
       name: 'nodes', status: 'warn',

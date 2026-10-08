@@ -25,6 +25,7 @@ yaac cluster install --byo --rwx-storage-class yaac-nfs
 | A volume on the control node, exported over NFSv4, and csi-driver-nfs with a `yaac-nfs` class | `yaac-global`, the RWX claim every workspace mounts. Hetzner has no managed NFS. The volume outlives the server and has deletion protection. |
 | The Tailscale Kubernetes operator | The only way onto a byo server is its tailnet Ingress. |
 | The cluster autoscaler with its Hetzner provider, one node group per `autoscale_pools` entry | Adds workers as workspaces stop fitting and removes those that hold no workspace (see "Autoscaling"). |
+| The `yaac.workspaces=true:NoSchedule` taint on every worker | Keeps yaac's server and registries on the control node (docs/cluster-setup.md "A dedicated workspace node pool"); workspaces run on every node (see "Nodes"). |
 
 Every in-cluster piece is a manifest k3s applies from the control node's
 manifests directory (cluster.tf), so tofu never talks to the Kubernetes
@@ -111,8 +112,8 @@ where the CNI gate cannot see a pod for it (docs/cluster-setup.md "The CNI
 gate"). Install records it on the server Deployment.
 
 Install checks the cluster before changing anything, then builds every
-image on the control node. It ends with `yaac cluster check`, and **every
-gate must pass** before you create a workspace. After that, use it from
+image on the control node. It ends with `yaac cluster check`, and **no gate
+may fail** before you create a workspace. After that, use it from
 your own machine, logged in to the same tailnet:
 
 ```sh
@@ -124,6 +125,20 @@ control node and point its `server` at `https://yaac-control:6443` (its
 tailnet name, which the API certificate covers).
 
 ## Nodes
+
+**Infrastructure stays on the control node.** Every worker, manual or
+autoscaled, joins with the `yaac.workspaces=true:NoSchedule` taint, which
+only sandboxed pods tolerate, so a rollout (an upgrade, `yaac server
+restart`) cannot move yaac's server or a registry onto a worker the
+autoscaler may remove. The control node carries no such mark, so it takes
+workspaces beside the infrastructure, and a cluster with no workers still
+runs them.
+
+k3s applies a node's taints only when it first joins, and tofu never
+re-runs a manual worker's user data, so a worker that joined before this
+taint was added does not get it from an apply. Taint each one by hand:
+`kubectl taint node <worker> yaac.workspaces=true:NoSchedule`. Autoscaled
+workers pick it up as they are replaced.
 
 **Manual workers** are the `manual_workers` map, name to server type. Add an
 entry and apply to add a node. To remove one, `kubectl drain` it first, then
@@ -157,11 +172,6 @@ Workspace pods are marked `safe-to-evict: false`, so a node is removed only
 once it holds no running workspace. Pools scale from zero: the autoscaler
 plans a new node from the labels and taints in its cluster config
 (cluster.tf) and the server type's disk, not from a live node.
-
-**Known gap**, as on EKS: yaac's own infrastructure is scheduled at install
-time, but a later rollout can put the server or a registry on an autoscaled
-worker, which the autoscaler may then evict to remove that worker
-(docs/plans/workspace-node-pool.md).
 
 ## The control node is not disposable
 
@@ -214,7 +224,9 @@ the cloud controller each retry once on ordering, then settle), and
 passing on a control node and a manual worker, and an autoscaled pool
 scaling up from zero (a pending pod to a running one on the new node in
 about three minutes) and back down once the node held nothing (about
-sixteen minutes, the autoscaler's default delays).
+sixteen minutes, the autoscaler's default delays). That was before
+workers carried the `yaac.workspaces` taint, which has not been applied
+there yet.
 
 ## Tear down
 

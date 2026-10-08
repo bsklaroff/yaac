@@ -203,25 +203,33 @@ module "eks" {
   }
 
   eks_managed_node_groups = {
-    # Always on: the add-ons, yaac's server, registries, npm cache and proxy,
-    # and the first few workspaces.
+    # Always on: the add-ons, yaac's server, registries, npm cache and proxy.
+    # The yaac.workspaces=false label keeps workspaces off it
+    # (docs/cluster-setup.md "A dedicated workspace node pool").
     system = merge(local.node_group_defaults, {
       instance_types = [local.system_instance_type]
-      labels         = { pool = "system" }
+      labels         = { pool = "system", "yaac.workspaces" = "false" }
       min_size       = 1
       max_size       = 1
       desired_size   = 1
     })
 
-    # Grows as workspaces stop fitting on the nodes there are, and shrinks
-    # back to zero. A node running a workspace is never scaled down, since
-    # yaac marks workspace pods safe-to-evict=false.
+    # Holds every workspace. Grows as workspaces stop fitting on the nodes
+    # there are, and shrinks back to zero. A node running a workspace is
+    # never scaled down, since yaac marks workspace pods safe-to-evict=false.
+    # Only sandboxed pods tolerate the yaac.workspaces taint, so yaac's
+    # server and registries stay on the system node.
     workspaces = merge(local.node_group_defaults, {
       instance_types = [local.node_instance_type]
       min_size       = 0
       max_size       = var.max_workspace_nodes
       desired_size   = 0
       taints = {
+        workspace_pool = {
+          key    = "yaac.workspaces"
+          value  = "true"
+          effect = "NO_SCHEDULE"
+        }
         gvisor_pending = {
           key    = local.gvisor_pending_taint
           value  = "true"

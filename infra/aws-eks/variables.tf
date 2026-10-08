@@ -28,7 +28,7 @@ variable "architecture" {
 }
 
 variable "system_instance_type" {
-  description = "Instance type of the always-on system node. Defaults to m7i.large (amd64) or m7g.large (arm64): 2 vCPUs and 8 GiB, the add-ons and yaac's infrastructure plus a workspace or two."
+  description = "Instance type of the always-on system node. Defaults to m7i.large (amd64) or m7g.large (arm64): 2 vCPUs and 8 GiB, for the add-ons and yaac's infrastructure."
   type        = string
   default     = null
 }
