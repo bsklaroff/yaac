@@ -10,7 +10,8 @@
  *     every saved origin with the current one marked Connected and no
  *     "Local server" row. A failing switch shows its error inline, a good
  *     one shows "Reconnecting…", and the add form calls `addRemote`. Remove
- *     drops a row in place; the Connected row offers no Remove.
+ *     asks for confirmation, then drops the row in place; the Connected row
+ *     offers no Remove.
  *  3. A long host fits the chit in a wide sidebar and truncates, without
  *     overflowing its row, in a narrow one.
  *  4. A bridge pasted after load (the devtools recipe for looking at the
@@ -137,6 +138,7 @@ try {
     check('Connected row offers no Remove',
       await page.getByRole('button', { name: 'Remove https://alpha.ts.net' }).count() === 0)
     await page.getByRole('button', { name: 'Remove https://beta.ts.net' }).click()
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Remove', exact: true }).click()
     check('removed row disappears', await page.getByText('https://beta.ts.net', { exact: true })
       .waitFor({ state: 'detached', timeout: 5_000 }).then(() => true, () => false))
     check('other rows stay', await page.getByText('http://127.0.0.1:8787', { exact: true }).isVisible())
