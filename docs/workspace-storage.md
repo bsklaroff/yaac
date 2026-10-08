@@ -376,11 +376,12 @@ it can delete the checkout. Under containerless there is no isolation at all.
 `yaac-mama history` (`#domain/workspaces`, `history-export.ts`) hands a
 workspace's conversations to another workspace of the same project, running or
 stopped: a listing, one conversation's JSONL transcripts concatenated, or its
-files one at a time (a workspace cannot unpack an archive under gVisor, which
-lacks the `openat2` call GNU tar extracts with). So the isolation above keeps
-a workspace's files out of its siblings' pods, but not private within the
-project: any workspace can ask the server for any other's conversations, as
-`yaac-mama fetch` hands out its branches.
+files one at a time (a standalone project image may carry a GNU tar, which
+cannot unpack an archive under gVisor: it extracts with `openat2`, which
+gVisor lacks). So the isolation above keeps a workspace's files out of its
+siblings' pods, but not private within the project: any workspace can ask
+the server for any other's conversations, as `yaac-mama fetch` hands out its
+branches.
 
 Which files belong to a conversation is decided by `conversationFiles` in
 `#runtime/agents`, from the same places and rules the readers above use:
