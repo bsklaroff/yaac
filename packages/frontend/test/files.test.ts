@@ -16,7 +16,7 @@ import {
 import { singleColumn, type PaneLayout } from '#lib/layout'
 
 const listing = (over: Partial<WorkspaceFiles> = {}): WorkspaceFiles => ({
-  paths: [], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false, ...over,
+  version: 'v', paths: [], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false, ...over,
 })
 
 /** A tree as nested names — folders as `name/` with their children. */

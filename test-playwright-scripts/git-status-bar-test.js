@@ -3,7 +3,7 @@
  *   1. The bar says, in words, where HEAD stands against the reference branch
  *      ("Up to date with origin/main · fetched 5m ago", "3 commits ahead of
  *      origin/main", ...), with a branch icon before the ref, and agrees with
- *      GET /api/workspace/:id/git-status.
+ *      the `branch` and `comparison` of GET /api/workspace/:id/changes.
  *   2. The pane area never changes height while the bar loads, so no pane
  *      refits and no SIGWINCH reaches the agent's TUI.
  * SCREENSHOT_DIR gets git-status-bar.png.
@@ -22,8 +22,9 @@ if (!wt) {
   console.error('usage: node test-playwright-scripts/git-status-bar-test.js <live-workspace-id>')
   process.exit(1)
 }
-const status = await api(`/workspace/${wt.workspaceId}/git-status`)
-console.log('git-status:', JSON.stringify(status))
+const { branch, comparison } = await api(`/workspace/${wt.workspaceId}/changes?diff=0`)
+const status = { base: branch, comparison }
+console.log('git status:', JSON.stringify(status))
 
 /** The sentence the bar starts with; the fetch age follows. */
 function expectedLine({ base, comparison: c }) {

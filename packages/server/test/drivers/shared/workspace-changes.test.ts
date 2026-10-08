@@ -15,12 +15,16 @@ import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
 const LOC: ChangesLocation = {
   workspaceDir: '/workspace',
   indexFile: '/tmp/yaac-changes.idx',
-  baseUnresolvedCode: CHANGES_BASE_UNRESOLVED,
 }
 
 /** The script as a driver builds it, with `LOC` applied. */
-const buildChangesScript = (base?: string, defaultBase?: string): string =>
-  buildScript(LOC, base, defaultBase)
+const buildChangesScript = (
+  base?: string, defaultBase?: string, diff = true, listing?: 'paths' | 'full',
+): string => buildScript(LOC, { base, defaultBase, diff, listing })
+
+/** The diff part of a parsed run. */
+const parse = (raw: string, maxDiffBytes?: number): ReturnType<typeof parseChangesOutput>['changes'] =>
+  parseChangesOutput(raw, maxDiffBytes).changes
 
 describe('parseChangesOutput', () => {
   const raw = [
@@ -32,7 +36,7 @@ describe('parseChangesOutput', () => {
     '@@NAMESTATUS@@',
     'M\tsrc/app.ts',
     'A\tsrc/new.ts',
-    '@@OK@@',
+    '@@LISTING@@', '@@OK@@',
     '@@DIFF@@',
     'diff --git a/src/app.ts b/src/app.ts',
     '@@ -1 +1,2 @@',
@@ -41,7 +45,7 @@ describe('parseChangesOutput', () => {
   ].join('\n')
 
   it('merges name-status + numstat into files and captures base + diff', () => {
-    const out = parseChangesOutput(raw)
+    const out = parse(raw)
     expect(out.base).toBe('abc123def')
     expect(out.baseResolved).toBe(true)
     expect(out.files).toEqual([
@@ -56,14 +60,14 @@ describe('parseChangesOutput', () => {
   // Every name-status letter, both rename notations numstat uses, a copy,
   // and a binary file (numstat's `-` counts).
   it('reads every status, keys counts by destination path, and flags binaries', () => {
-    const out = parseChangesOutput([
+    const out = parse([
       'BASE abc', 'FORK 1', '@@NUMSTAT@@',
       '12\t3\tsrc/a.ts', '0\t9\tsrc/gone.ts', '-\t-\timg/logo.png', '2\t2\told.ts => renamed.ts',
       '1\t0\tlib/{a.ts => b.ts}', '0\t0\tlink', '4\t4\todd.ts',
       '@@NAMESTATUS@@',
       'A\tsrc/a.ts', 'D\tsrc/gone.ts', 'M\timg/logo.png', 'R100\told.ts\trenamed.ts',
       'C075\tlib/a.ts\tlib/b.ts', 'T\tlink', 'X\todd.ts',
-      '@@OK@@', '@@DIFF@@',
+      '@@LISTING@@', '@@OK@@', '@@DIFF@@',
     ].join('\n'))
     expect(out.files).toEqual([
       { path: 'src/a.ts', status: 'added', additions: 12, deletions: 3, binary: false, stages: {} },
@@ -78,7 +82,7 @@ describe('parseChangesOutput', () => {
   })
 
   it('flags truncation when the diff exceeds the cap', () => {
-    const out = parseChangesOutput(raw, 20)
+    const out = parse(raw, 20)
     expect(out.truncated).toBe(true)
     expect(Buffer.byteLength(out.diff)).toBe(20)
     expect(out.files).toHaveLength(2)
@@ -89,15 +93,15 @@ describe('parseChangesOutput', () => {
   it('measures the diff cap in bytes, not UTF-16 code units', () => {
     // 300 CJK chars = 300 code units but 900 bytes.
     const wide = [
-      'BASE abc', 'FORK 1', '@@NUMSTAT@@', '@@NAMESTATUS@@', '@@OK@@', '@@DIFF@@', '交'.repeat(300),
+      'BASE abc', 'FORK 1', '@@NUMSTAT@@', '@@NAMESTATUS@@', '@@LISTING@@', '@@OK@@', '@@DIFF@@', '交'.repeat(300),
     ].join('\n')
-    const out = parseChangesOutput(wide, 500)
+    const out = parse(wide, 500)
     expect(out.truncated).toBe(true)          // 900 bytes > 500, though 300 units < 500
     expect(Buffer.byteLength(out.diff)).toBeLessThanOrEqual(500)
     // Cut on a code point boundary, never over the cap.
     expect(out.diff).toBe('交'.repeat(166))
     expect(out.diff).not.toContain('�')
-    const small = parseChangesOutput(wide, 5000)
+    const small = parse(wide, 5000)
     expect(small.truncated).toBe(false)
     expect(small.diff).toBe('交'.repeat(300))
   })
@@ -105,7 +109,7 @@ describe('parseChangesOutput', () => {
   // Each stage section is its own numstat; an untracked file carries its
   // totals, since git has no diff for it outside the private index.
   it('attaches each file\'s per-stage counts', () => {
-    const out = parseChangesOutput([
+    const out = parse([
       'BASE abc', 'FORK 1',
       '@@COMMITTED@@', '4\t1\tsrc/a.ts', '2\t0\t{old => src}/moved.ts',
       '@@STAGED@@', '1\t1\tsrc/a.ts',
@@ -113,7 +117,7 @@ describe('parseChangesOutput', () => {
       '@@UNTRACKED@@', 'notes.md',
       '@@NUMSTAT@@', '5\t2\tsrc/a.ts', '7\t0\tnotes.md', '2\t0\tsrc/moved.ts',
       '@@NAMESTATUS@@', 'M\tsrc/a.ts', 'A\tnotes.md', 'R090\told/moved.ts\tsrc/moved.ts',
-      '@@OK@@', '@@DIFF@@',
+      '@@LISTING@@', '@@OK@@', '@@DIFF@@',
     ].join('\n'))
     expect(out.files.map((f) => [f.path, f.stages])).toEqual([
       ['src/a.ts', {
@@ -134,17 +138,17 @@ describe('parseChangesOutput', () => {
       '3\t1\tsrc/{old => new}/x.ts',
       '@@NAMESTATUS@@',
       'R096\tsrc/old/x.ts\tsrc/new/x.ts',
-      '@@OK@@',
+      '@@LISTING@@', '@@OK@@',
       '@@DIFF@@',
     ].join('\n')
-    const out = parseChangesOutput(renamed)
+    const out = parse(renamed)
     expect(out.files).toEqual([
       { path: 'src/new/x.ts', status: 'renamed', additions: 3, deletions: 1, binary: false, stages: {}, oldPath: 'src/old/x.ts' },
     ])
   })
 
   it('is empty-safe when nothing changed', () => {
-    const out = parseChangesOutput('BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@OK@@\n@@DIFF@@\n')
+    const out = parse('BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@LISTING@@\n@@OK@@\n@@DIFF@@\n')
     expect(out.base).toBe('deadbeef')
     expect(out.baseResolved).toBe(true)
     expect(out.files).toEqual([])
@@ -155,21 +159,21 @@ describe('parseChangesOutput', () => {
   // changeset would wrongly say "No changes".
   it('rejects output with no completion marker rather than reporting no changes', () => {
     const partial = 'BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n'
-    expect(() => parseChangesOutput(partial)).toThrow(/completion marker/)
-    expect(() => parseChangesOutput('')).toThrow(/completion marker/)
+    expect(() => parse(partial)).toThrow(/completion marker/)
+    expect(() => parse('')).toThrow(/completion marker/)
     const truncatedRun = [
       'BASE abc123def', 'FORK 1', '@@NUMSTAT@@', '10\t2\tsrc/app.ts', '@@NAMESTATUS@@', 'M\tsrc/app.ts',
     ].join('\n')
-    expect(() => parseChangesOutput(truncatedRun)).toThrow(/completion marker/)
+    expect(() => parse(truncatedRun)).toThrow(/completion marker/)
   })
 
   // FORK 0: the fork point was unresolved and the diff ran against HEAD, so
   // committed work is missing. The UI then says "nothing uncommitted".
   it('reports an unresolved fork point so an empty result is not read as no changes', () => {
     const fellBack = [
-      'BASE headsha', 'FORK 0', '@@NUMSTAT@@', '@@NAMESTATUS@@', '@@OK@@', '@@DIFF@@',
+      'BASE headsha', 'FORK 0', '@@NUMSTAT@@', '@@NAMESTATUS@@', '@@LISTING@@', '@@OK@@', '@@DIFF@@',
     ].join('\n')
-    const out = parseChangesOutput(fellBack)
+    const out = parse(fellBack)
     expect(out.baseResolved).toBe(false)
     expect(out.files).toEqual([])
   })
@@ -184,14 +188,21 @@ describe('parseChangesOutput', () => {
       '1\t0\tchanges.ts',
       '@@NAMESTATUS@@',
       'M\tchanges.ts',
-      '@@OK@@',
+      '@@LISTING@@', '@@OK@@',
       '@@DIFF@@',
       'diff --git a/changes.ts b/changes.ts',
       "+const M_NUMSTAT = '@@NUMSTAT@@'",
       "+const M_OK = '@@OK@@'",
       "+const M_DIFF = '@@DIFF@@'",
+      '@@PATHS@@',
+      '+evil',
+      'REF origin/x 1 2',
     ].join('\n')
-    const out = parseChangesOutput(selfReferential)
+    // Nor is a listing or a ref read out of the body when none was printed.
+    const read = parseChangesOutput(selfReferential)
+    expect(read.listing).toBeUndefined()
+    expect(read.ref).toBeNull()
+    const out = parse(selfReferential)
     expect(out.files).toEqual([
       { path: 'changes.ts', status: 'modified', additions: 1, deletions: 0, binary: false, stages: {} },
     ])
@@ -205,25 +216,25 @@ describe('buildChangesScript', () => {
     expect(s).toContain('@{upstream}')       // last-resort default fork base
     expect(s).toContain('"origin/$1"')       // explicit-base branch present but unused
     expect(s).toContain('"origin/$2"')       // default fork-branch present but unused
-    expect(s).toContain('git add -A')
+    expect(s).toContain('add -A --ignore-errors')
     expect(s).toContain('GIT_INDEX_FILE')
-    expect(s.endsWith("yaac-changes '' ''")).toBe(true)
+    expect(s.endsWith("yaac-changes '' '' diff ''")).toBe(true)
   })
 
   // An unpushed branch has no origin/<b>; falling through to HEAD would
   // hide every committed change.
   it('falls back to the local ref when the branch has no origin/ counterpart', () => {
     const s = buildChangesScript()
-    expect(s).toContain('git merge-base "origin/$1" HEAD 2>/dev/null || git merge-base "$1" HEAD')
-    expect(s).toContain('git merge-base "origin/$2" HEAD 2>/dev/null || git merge-base "$2" HEAD')
+    expect(s).toContain('for r in "origin/$1" "$1"; do')
+    expect(s).toContain('for r in "origin/$2" "$2" "@{upstream}"; do')
   })
 
   it('reuses one stable index across polls so add -A can be incremental', () => {
     const s = buildChangesScript()
     expect(s).toContain('export GIT_INDEX_FILE=/tmp/yaac-changes.idx')
-    expect(s).not.toContain('$$')            // no per-run tempfile: that discards git's stat cache
+    expect(s).not.toMatch(/GIT_INDEX_FILE=\S*\$\$/) // no per-run index: that discards git's stat cache
     // A stale index or orphaned lock must not fail every later poll.
-    expect(s).toContain('rm -f /tmp/yaac-changes.idx /tmp/yaac-changes.idx.lock; git add -A || exit 5')
+    expect(s).toContain('seed; add || { rm -f /tmp/yaac-changes.idx /tmp/yaac-changes.idx.lock; seed; add || exit 5; }')
   })
 
   // The completion marker prints only after every file-list command passed.
@@ -245,38 +256,38 @@ describe('buildChangesScript', () => {
   it('passes an explicit base as the pod sh $1 positional (diffed against origin/$1)', () => {
     const s = buildChangesScript('dev')
     expect(s).toContain('"origin/$1"')       // the ref is derived from $1, never interpolated
-    expect(s.endsWith("yaac-changes 'dev' ''")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' '' diff ''")).toBe(true)
     expect(s).not.toContain('origin/dev')    // the branch name is never spliced into the script body
   })
 
   it('passes the fork branch as the $2 default positional (graceful origin/$2 path)', () => {
     const s = buildChangesScript(undefined, 'main')
     expect(s).toContain('"origin/$2"')       // the default ref is derived from $2, never interpolated
-    expect(s.endsWith("yaac-changes '' 'main'")).toBe(true)
+    expect(s.endsWith("yaac-changes '' 'main' diff ''")).toBe(true)
     expect(s).not.toContain('origin/main')   // the branch name is never spliced into the script body
   })
 
   it('leaves the diff body out when asked, keeping the file list', () => {
-    const s = buildScript(LOC, 'dev', 'main', false)
-    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff")).toBe(true)
+    const s = buildChangesScript('dev', 'main', false)
+    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff ''")).toBe(true)
     expect(s).toContain('[ "$3" = nodiff ] || {')
   })
 
   it('carries both an explicit base ($1) and a fork-branch default ($2)', () => {
     const s = buildChangesScript('dev', 'main')
-    expect(s.endsWith("yaac-changes 'dev' 'main'")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' 'main' diff ''")).toBe(true)
   })
 
   it('single-quotes both branches so shell metacharacters cannot break out of the token', () => {
     for (const evil of ['x; rm -rf /', '$(touch pwn)', '`id`', 'a && b', '| tee x']) {
-      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' ''")).toBe(true)
-      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "'")).toBe(true)
+      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' '' diff ''")).toBe(true)
+      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "' diff ''")).toBe(true)
     }
   })
 
   it('escapes embedded single quotes in either branch', () => {
-    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' ''")).toBe(true)
-    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b'")).toBe(true)
+    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' '' diff ''")).toBe(true)
+    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b' diff ''")).toBe(true)
   })
 
   it('keeps the script body byte-identical regardless of the branches', () => {
@@ -286,7 +297,7 @@ describe('buildChangesScript', () => {
   })
 
   it('trims surrounding whitespace from both branches', () => {
-    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main'")).toBe(true)
+    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main' diff ''")).toBe(true)
   })
 
   // The tests below run the exact script with `sh -c` against scratch repos,
@@ -322,9 +333,9 @@ describe('buildChangesScript', () => {
   }
 
   function runPodScript(
-    repo: string, idx: string, base?: string, defaultBase?: string, diff = true,
+    repo: string, idx: string, base?: string, defaultBase?: string, diff = true, listing?: 'paths' | 'full',
   ): { stdout: string; code: number } {
-    const cmd = buildScript(LOC, base, defaultBase, diff)
+    const cmd = buildChangesScript(base, defaultBase, diff, listing)
       .replace('cd /workspace ', `cd ${repo} `)
       .replaceAll('/tmp/yaac-changes.idx', idx)
     try {
@@ -352,7 +363,7 @@ describe('buildChangesScript', () => {
     // `main` exists locally; `origin/main` does not.
     const { stdout, code } = runPodScript(repo, idx, undefined, 'main')
     expect(code).toBe(0)
-    const out = parseChangesOutput(stdout)
+    const out = parse(stdout)
     expect(out.baseResolved).toBe(true)
     expect(out.files.map((f) => f.path).sort()).toEqual(['committed.txt', 'untracked.txt'])
     expect(out.diff).toContain('+committed')
@@ -381,7 +392,7 @@ describe('buildChangesScript', () => {
 
     const { stdout, code } = runPodScript(repo, idx, 'fork')
     expect(code).toBe(0)
-    const byPath = Object.fromEntries(parseChangesOutput(stdout).files.map((f) => [f.path, f]))
+    const byPath = Object.fromEntries(parse(stdout).files.map((f) => [f.path, f]))
     expect(byPath['tracked.txt']).toMatchObject({
       additions: 2,
       deletions: 0,
@@ -396,7 +407,7 @@ describe('buildChangesScript', () => {
 
     const bare = runPodScript(repo, idx, 'fork', undefined, false)
     expect(bare.code).toBe(0)
-    const listed = parseChangesOutput(bare.stdout)
+    const listed = parse(bare.stdout)
     expect(listed.diff).toBe('')
     expect(listed.files.map((f) => f.path).sort()).toEqual(['new.txt', 'tracked.txt'])
   })
@@ -411,7 +422,7 @@ describe('buildChangesScript', () => {
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', 'one')
     const stagesOf = (): Record<string, unknown> => Object.fromEntries(
-      parseChangesOutput(runPodScript(repo, idx, 'main').stdout).files.map((f) => [f.path, f.stages]))
+      parse(runPodScript(repo, idx, 'main').stdout).files.map((f) => [f.path, f.stages]))
 
     expect(stagesOf()).toEqual({ 'one.txt': { committed: { additions: 1, deletions: 0 } } })
     const cached = fs.readFileSync(`${idx}.committed`, 'utf8')
@@ -439,7 +450,7 @@ describe('buildChangesScript', () => {
     git(repo, 'add', '-f', 'build/kept.txt')
     git(repo, 'commit', '-qm', 'vendored')
     git(repo, 'checkout', '-q', '-b', 'agent/x')
-    const kept = (): WorkspaceChange | undefined => parseChangesOutput(runPodScript(repo, idx, 'agent/x').stdout)
+    const kept = (): WorkspaceChange | undefined => parse(runPodScript(repo, idx, 'agent/x').stdout)
       .files.find((f) => f.path === 'build/kept.txt')
 
     expect(kept()).toBeUndefined()
@@ -463,7 +474,7 @@ describe('buildChangesScript', () => {
     fs.writeFileSync(path.join(repo, 'secret.log'), 'token\n')
     fs.mkdirSync(path.join(repo, 'node_modules', 'pkg'), { recursive: true })
     fs.writeFileSync(path.join(repo, 'node_modules', 'pkg', 'i.js'), 'x\n')
-    const paths = (): string[] => parseChangesOutput(runPodScript(repo, idx, 'agent/x').stdout).files.map((f) => f.path)
+    const paths = (): string[] => parse(runPodScript(repo, idx, 'agent/x').stdout).files.map((f) => f.path)
 
     expect(paths()).toEqual([])
     fs.writeFileSync(path.join(repo, ':(glob)**'), 'decoy\nedited\n')
@@ -487,7 +498,7 @@ describe('buildChangesScript', () => {
 
     const { stdout, code } = runPodScript(repo, idx, 'main')
     expect(code).toBe(0)
-    const file = parseChangesOutput(stdout).files.find((f) => f.path === 'base.txt')
+    const file = parse(stdout).files.find((f) => f.path === 'base.txt')
     expect(file?.stages.modified).toBeDefined()
     expect(file?.stages.staged).toBeUndefined()
   })
@@ -502,10 +513,51 @@ describe('buildChangesScript', () => {
     // No remote, upstream or local branch of that name.
     const { stdout, code } = runPodScript(repo, idx, undefined, 'nowhere')
     expect(code).toBe(0)
-    const out = parseChangesOutput(stdout)
+    const out = parse(stdout)
     expect(out.baseResolved).toBe(false)
     // Committed work is absent, hence `baseResolved: false`.
     expect(out.files.map((f) => f.path)).toEqual(['dirty.txt'])
+  })
+
+  // The status bar's ahead/behind and the explorer's tree ride on the same
+  // run: the ref the base came from, and paths read from the private index.
+  it('reports the base ref with HEAD\'s distance from it, and lists the checkout when asked', () => {
+    const { repo, idx } = scratchRepo()
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(repo, '.gitignore'), 'out/\n*.log\n')
+    fs.writeFileSync(path.join(repo, 'mine.txt'), 'mine\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'agent work')
+    git(repo, 'checkout', '-q', 'main')
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'landed')
+    git(repo, 'update-ref', 'refs/remotes/origin/main', 'main')
+    git(repo, 'checkout', '-q', 'agent/x')
+    fs.rmSync(path.join(repo, 'base.txt'))
+    fs.writeFileSync(path.join(repo, 'new\nline.txt'), 'n\n')
+    fs.writeFileSync(path.join(repo, 'debug.log'), 'ignored\n')
+    fs.mkdirSync(path.join(repo, 'out'))
+    fs.writeFileSync(path.join(repo, 'out/a.js'), 'ignored\n')
+    fs.mkdirSync(path.join(repo, 'empty'))
+    fs.symlinkSync('mine.txt', path.join(repo, 'link'))
+
+    const full = runPodScript(repo, idx, undefined, 'main', false, 'full')
+    expect(full.code).toBe(0)
+    const read = parseChangesOutput(full.stdout)
+    expect(read.ref).toEqual({ name: 'origin/main', ahead: 1, behind: 1 })
+    expect(read.listing).toEqual({
+      paths: ['.gitignore', 'link', 'mine.txt', 'new\nline.txt'],
+      links: ['link'],
+      conflicted: [],
+      ignored: ['debug.log', 'out/'],
+      untrackedDirs: ['empty'],
+    })
+
+    // `paths` skips the walks; no listing at all prints none. A local base
+    // is compared as itself.
+    const paths = parseChangesOutput(runPodScript(repo, idx, 'agent/x', undefined, false, 'paths').stdout)
+    expect(paths.ref).toEqual({ name: 'agent/x', ahead: 0, behind: 0 })
+    expect(paths.listing).toEqual({ paths: read.listing!.paths, links: ['link'], conflicted: [] })
+    expect(parseChangesOutput(runPodScript(repo, idx, undefined, 'main', false).stdout).listing).toBeUndefined()
   })
 
   // Never diffs against the wrong base; the exit code is the contract's, so
@@ -516,24 +568,52 @@ describe('buildChangesScript', () => {
     expect(code).toBe(CHANGES_BASE_UNRESOLVED)
   })
 
+  // A run whose exec timed out keeps going in the workspace. The next one
+  // waits for it rather than clearing a lock it still holds; a lock whose
+  // run is gone, or one too old to trust its pid, is cleared.
+  it('waits for a live earlier run and clears a dead one\'s lock', () => {
+    const { repo, idx } = scratchRepo()
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
+    // Not this process's child, which would linger as a zombie (still
+    // "alive" to `kill -0`) while the synchronous run blocks the loop.
+    const holder = Number(execFileSync('sh', ['-c', 'sleep 1 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }))
+    fs.writeFileSync(`${idx}.run`, `${holder}\n`)
+    const started = Date.now()
+    const waited = runPodScript(repo, idx, undefined, 'main')
+    expect(waited.code).toBe(0)
+    expect(Date.now() - started).toBeGreaterThan(500)
+    expect(fs.existsSync(`${idx}.run`)).toBe(false)
+
+    // The holder has exited, so its pid is dead; and an old lock is not
+    // trusted even with a live pid (this test runner's own).
+    for (const [pid, ageMs] of [[holder, 0], [process.pid, 3 * 60_000]] as const) {
+      fs.writeFileSync(`${idx}.run`, `${pid}\n`)
+      const when = new Date(Date.now() - ageMs)
+      fs.utimesSync(`${idx}.run`, when, when)
+      const quick = Date.now()
+      expect(runPodScript(repo, idx, undefined, 'main').code).toBe(0)
+      expect(Date.now() - quick).toBeLessThan(5_000)
+    }
+  })
+
   it('reuses the index across runs and recovers from a lock a killed run left', () => {
     const { repo, idx } = scratchRepo()
     git(repo, 'checkout', '-q', '-b', 'agent/x')
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
-    expect(parseChangesOutput(runPodScript(repo, idx, undefined, 'main').stdout)
+    expect(parse(runPodScript(repo, idx, undefined, 'main').stdout)
       .files.map((f) => f.path)).toEqual(['a.txt'])
     expect(fs.existsSync(idx)).toBe(true) // the index persists for the next poll
 
     // A second run over the reused index sees an edit and a deletion.
     fs.rmSync(path.join(repo, 'a.txt'))
     fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
-    expect(parseChangesOutput(runPodScript(repo, idx, undefined, 'main').stdout)
+    expect(parse(runPodScript(repo, idx, undefined, 'main').stdout)
       .files.map((f) => f.path)).toEqual(['b.txt'])
 
     fs.writeFileSync(`${idx}.lock`, '')
     const recovered = runPodScript(repo, idx, undefined, 'main')
     expect(recovered.code).toBe(0)
-    expect(parseChangesOutput(recovered.stdout).files.map((f) => f.path)).toEqual(['b.txt'])
+    expect(parse(recovered.stdout).files.map((f) => f.path)).toEqual(['b.txt'])
     expect(fs.existsSync(`${idx}.lock`)).toBe(false)
   })
 })

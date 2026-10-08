@@ -27,7 +27,6 @@ export {
 } from './create'
 export {
   getWorkspaceBlockedHosts,
-  getWorkspaceChanges,
   getWorkspaceDetail,
   getWorkspacePrompt,
 } from './detail'
@@ -36,9 +35,8 @@ export { saveWorkspaceAttachment } from './attachments'
 export {
   createWorkspaceFolder,
   deleteWorkspaceEntry,
-  getWorkspaceGitStatus,
+  getWorkspaceChanges,
   listWorkspaceDir,
-  listWorkspaceFiles,
   readWorkspaceFile,
   readWorkspaceFileAtRev,
   renameWorkspaceEntry,

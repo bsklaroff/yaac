@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
+import { useQueryClient } from '@tanstack/react-query'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -14,7 +15,7 @@ import { patchClickForwarding, patchForcedSelection, patchKeepSelection } from '
 import { patchTouchScroll } from '#lib/touch-scroll'
 import { swallowTerminalQueries } from '#lib/terminal-queries'
 import { installTerminalLinks } from '#lib/terminal-links'
-import { listWorkspaceFiles } from '#lib/files'
+import { filesKey } from '#lib/useWorkspaceChanges'
 import { patchWheelPacing } from '#lib/wheel-pacing'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
@@ -24,6 +25,7 @@ import {
   RTT_PROBE_INTERVAL_MS,
 } from '#lib/link-quality'
 import { createOutputBatcher } from '@yaac/shared/batcher'
+import type { WorkspaceFiles } from '@yaac/shared/types'
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
 import { useUiStore } from '#lib/store'
@@ -61,6 +63,7 @@ export function WorkspaceTerminal({
    *  caller bumps it when the workspace is selected or opened. */
   focusKey?: number
 }): JSX.Element {
+  const queryClient = useQueryClient()
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
   const webglRef = useRef<WebglController | null>(null)
@@ -160,7 +163,8 @@ export function WorkspaceTerminal({
     const disposeQueries = swallowTerminalQueries(term)
     const disposeLinks = installTerminalLinks(term, {
       isMac: IS_MAC,
-      listPaths: async () => (await listWorkspaceFiles(workspaceId)).paths,
+      // The status bar's changes poll keeps the listing current.
+      listPaths: () => Promise.resolve(queryClient.getQueryData<WorkspaceFiles>(filesKey(workspaceId))?.paths ?? []),
       openFile: (path) => useUiStore.getState().openFile(workspaceId, path),
     })
     fit.fit()

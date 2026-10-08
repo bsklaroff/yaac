@@ -187,8 +187,6 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/workspace/:id/changes', request: `${W}/changes`, access: 'reader', k8s: [404, 503], containerless: MISSING },
   // Run git inside the running workspace: 409 when stopped, 404 when
   // unknown.
-  { method: 'GET', path: '/api/workspace/:id/git-status', request: `${W}/git-status`, access: 'reader', k8s: MISSING, containerless: MISSING },
-  { method: 'GET', path: '/api/workspace/:id/files', request: `${W}/files`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/file-at', request: `${W}/file-at?path=a&rev=${'0'.repeat(40)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // The rest of the file editor reads the checkout on the server's disk, so
   // it needs no running workspace.

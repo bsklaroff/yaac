@@ -756,10 +756,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     // in-pod edit is visible to the next read, and git status stays clean
     // although in-pod git wrote the index through a different mount.
     it('edits the checkout from the server, visibly to the pod and back', async () => {
-      const files = await (await fetch(`${base}/api/workspace/${workspaceId}/files`)).json() as {
-        paths: string[]
-      }
-      expect(files.paths).toContain('README.md')
+      const { listing } = await (
+        await fetch(`${base}/api/workspace/${workspaceId}/changes?diff=0&listing=paths`)
+      ).json() as { listing?: { paths: string[] } }
+      expect(listing?.paths).toContain('README.md')
       const { stdout: clean } = await execInJob(jobName, ['git', '-C', '/workspace', 'status', '--porcelain', '--', 'README.md'])
       expect(clean).toBe('')
 

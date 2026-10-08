@@ -27,9 +27,9 @@ both drivers behave the same. The cost: node-local checkouts
 
 Every file route resolves the workspace's record (`resolveWorkspaceRecord`),
 so a stopped workspace's files open and save like a running one's
-(docs/workspace-storage.md). The exceptions are the listing, the changes, a
-file's text at the diff base and the git status bar, which run git inside the
-workspace. For a stopped workspace they return
+(docs/workspace-storage.md). The exceptions are the changes (which carry the
+listing and the status bar's counts) and a file's text at the diff base,
+which run git inside the workspace. For a stopped workspace they return
 `CONFLICT`, shown as "Start the workspace to browse its files".
 
 Ownership needs no handling: the server already runs as the workspace's user
@@ -38,48 +38,20 @@ macOS virtiofs, the same process user under containerless).
 
 | Route | Answer |
 |---|---|
-| `GET /workspace/:id/files` | `WorkspaceFiles`: `paths`, `symlinks`, `ignored`, `emptyDirs`, `conflicted`, `truncated` |
 | `GET /workspace/:id/dir?path=` | the immediate children of one folder (capped at 5,000) |
 | `GET /workspace/:id/file?path=&known=` | `{ path, version, size, binary, content? }` |
 | `PUT /workspace/:id/file` | `{ path, content, baseVersion }` → `{ path, version, size }`, or 409 |
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
 | `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
-| `GET /workspace/:id/git-status?base=` | `WorkspaceGitStatus`: `{ base, comparison: { ref, ahead, behind, fetchedAt? } \| null }` |
-| `GET /workspace/:id/changes?base=&diff=` | `WorkspaceChanges`: `{ base, baseResolved, files, diff, truncated }`; `diff=0` leaves the diff body out |
+| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, baseResolved, files, diff, truncated, branch, comparison, listing? }`; `diff=0` leaves the diff body out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
 | `GET /workspace/:id/file-at?path=&rev=` | `{ exists, content }`: the file at commit `rev` (a full object id), `content` null when binary or over 1 MiB |
-
-### Listing
-
-The server never runs git against a checkout's git dir, which belongs to the
-workspace (docs/server-git.md). So `listCheckoutFiles` (`checkout-git.ts`)
-runs one script inside the running workspace over the driver's `exec`. That
-git reads the workspace's config, and whatever the config runs, runs as the
-workspace. Each command's output is NUL-separated and followed by a section
-marker, so a run that died partway cannot look like an empty checkout.
-
-- `ls-files --cached --others --exclude-standard`, minus `ls-files --deleted`,
-  gives `paths`. Git applies `.gitignore`, so there is no JS reimplementation.
-- `ls-files --others --ignored --exclude-standard --directory` gives
-  `ignored`, with a wholly ignored folder (`node_modules/`) as one entry.
-- `ls-files --others --exclude-standard --directory` lists untracked folders.
-  Git does not track folders, so these are walked (through pinned descriptors,
-  not following links, skipping ignored folders) to find ones with no listed
-  file. Those are `emptyDirs`, which keep a "New folder" visible on the next
-  poll.
-- `ls-files --unmerged` gives `conflicted`, the files with an unresolved
-  merge conflict. Every command is an `ls-files`, which only reads the
-  index, so polling never writes it under the agent's git. How a file
-  differs from the diff base comes from the changes (below), not the
-  listing.
-
-The listing is capped at 50,000 paths (`truncated`). Each path is `lstat`ed
-to find symlinks, which answer `{ target, dir }`: `target` is relative to the
-workspace, or null when broken or outside it.
 
 ### Changes
 
-The changes are everything that differs from the **diff base**: the merge
+The webapp polls one route per workspace, `changes`, for the diff, the
+status bar's counts and the explorer's listing. The changes are everything
+that differs from the **diff base**: the merge
 base of HEAD with the explorer's picked branch, else with the branch the
 workspace forked from (`workspaceForkBranch`, tried as `origin/<base>`, then
 local, then `@{upstream}`). One script (`#drivers/shared`'s
@@ -91,7 +63,18 @@ matches `.gitignore` (one added with `add -f`), so those the agent's index
 tracks are force-added after it, or they would read as deleted. They are
 added by literal name (`--literal-pathspecs`): the names are the agent's,
 and as pathspecs one named `:(glob)**` would pull in every ignored file,
-credentials included. It also reads which **stages** each
+credentials included. `add -A` runs with `--ignore-errors`, so an entry git
+cannot index (a nested repo with no commit) is left out of the diff and the
+listing instead of failing both. A missing private index starts as a copy
+of the agent's, so a workspace's first poll reuses its stat data rather than
+hashing every file, and `add -A` compares only mtime and size, since the
+server writes a new checkout's index and a pod sees other inode numbers.
+
+A run whose exec timed out keeps going inside the workspace, holding the
+private index. So each run takes a lock file of its own holding its pid: a
+later run waits up to 10 seconds for a live holder and then answers
+`RUNTIME_UNAVAILABLE` (503), and clears the lock of a holder that is gone or
+over two minutes old. It also reads which **stages** each
 file's changes sit in: `committed` (base → HEAD), `staged` (HEAD → the
 agent's index), `modified` (the agent's index → the working tree, git's
 unstaged changes) and `untracked` (in the working tree, not the agent's
@@ -103,6 +86,32 @@ merge conflict it has no tree, and its changes count as `modified`.
 only when one moves. Each stage is its own diff, so their counts need not
 sum to the file's totals.
 
+The same run says how far HEAD is from the branch the base was found on
+(`rev-list --left-right --count <ref>...HEAD`), so the status bar follows
+the agent across a branch rename, and, when asked, lists the checkout:
+
+- `paths` is `ls-files -s` on the private index right after `add -A`: every
+  file git does not ignore, deleted ones already gone, with no second walk.
+  Git applies `.gitignore`, so there is no JS reimplementation. A symlink is
+  an entry with mode `120000`; the server resolves where each leads to
+  `{ target, dir }`, `target` relative to the workspace, or null when broken
+  or outside it.
+- `conflicted` is `ls-files --unmerged` on the copy of the agent's index.
+- Only `listing=full` (the explorer, while mounted) walks the tree again:
+  `ls-files --others --ignored --exclude-standard --directory` gives
+  `ignored`, with a wholly ignored folder (`node_modules/`) as one entry, and
+  `ls-files --others --exclude-standard --directory` gives the untracked
+  folders. Git does not track folders, so those are walked on the server
+  (through pinned descriptors, not following links, skipping ignored
+  folders) to find ones with no listed file: `emptyDirs`, which keep a "New
+  folder" visible on the next poll.
+
+The listing's sections are NUL-separated, since a path can hold a newline,
+and print before the completion marker, so a run that died partway cannot
+look like an empty checkout. It is capped at 50,000 paths (`truncated`). Its
+`version` hashes the whole listing; the client sends it back as `known`, and
+an unchanged listing is left out of the answer.
+
 A file's original for the editor's diff modes comes from `file-at`, which
 runs `git cat-file` on `<base>:<path>` inside the workspace (the old path for
 a rename). The commit is the `base` the changes answer named, so the text
@@ -112,11 +121,11 @@ never changes and the client caches it for good.
 
 `GitStatusBar`, above a workspace's panes, shows the reference branch and how
 far HEAD is ahead of and behind it, then the total changed lines
-(`+52 −3`), which open the explorer's changes view. `checkoutAheadBehind` runs
-`rev-list --left-right --count <base>...HEAD` inside the running workspace,
-so it follows the agent across a branch rename. The base is the explorer's
-pick, else the workspace row's fork branch (`workspaceForkBranch`), tried as
-`origin/<base>` and then as a local branch, like the changes diff.
+(`+52 −3`), which open the explorer's changes view. Both come from the
+changes answer (`branch`, `comparison`, `files`), polled every 10 seconds
+while the workspace is on screen. The bar also asks for `listing=paths`, so
+the explorer's tree and the terminal's file links are ready before the
+explorer opens.
 
 It never fetches, so `behind` is only as fresh as the checkout's `origin/*`
 (which the server keeps within minutes of origin, docs/server-git.md). The
@@ -200,17 +209,24 @@ path.
 
 ### Explorer (`WorkspaceFiles`)
 
-It unmounts when off-screen, so a hidden explorer runs no listing; while
-visible it refetches every 5 seconds. Its view state (expanded folders,
-scroll, filter, its toggles) is in the store's `paneView`.
+It unmounts when off-screen. Its view state (expanded folders, scroll,
+filter, its toggles) is in the store's `paneView`.
 
-The changes come from `useWorkspaceChanges`, one query shared by the
-explorer, the status bar and every file pane, so a workspace polls once
-however many show them. Each reader sets its own poll and the query follows
-the fastest: 3 seconds while the explorer or a visible file pane shows
-them, 10 seconds for the status bar alone (like its ahead/behind count),
-none for a hidden file pane. The query carries the diff body, up to 1 MB,
-only while some reader shows it (the changes view).
+The changes and the listing come from `useWorkspaceChanges`, one query
+shared by the explorer, the status bar and every file pane, so a workspace
+polls once however many show them. Each reader sets its own poll: 3
+seconds while the explorer or a visible file pane shows them, 10 seconds for
+the status bar alone. A hidden file pane never fetches; it reads what the
+others fetched. The costly parts go only while some reader wants them: the
+diff body, up to 1 MB, for the changes view, and the full listing's walks
+for the explorer. What a fetch asks for is read when it runs rather than
+kept in the query key, so readers mounting together share one fetch and a
+reader leaving never forks the query. The listing lands in its own cache
+entry (`useWorkspaceFiles`), so the tree, the line counts and the colors
+always come from one snapshot. A failed poll leaves the last answer cached,
+so the status bar shows the error in its place and the explorer marks its
+tree "Not up to date". When a picked base stops resolving (its branch was
+pruned), the explorer offers to compare with the fork branch again.
 
 - **Tree.** Only rows under expanded folders render, so a large repo needs no
   virtualization. Files get an icon and tint from `languageForPath`. A

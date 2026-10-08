@@ -13,31 +13,31 @@ import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 const mockExec = vi.mocked(podExec)
 
 describe('getWorkspaceChanges', () => {
-  const EMPTY = 'BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@OK@@\n@@DIFF@@\n'
+  const EMPTY = 'BASE deadbeef\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@LISTING@@\n@@OK@@\n@@DIFF@@\n'
 
   beforeEach(() => { mockExec.mockReset() })
 
   it('runs the pod-side script via the relay exec and parses its output', async () => {
     mockExec.mockResolvedValue({
-      stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n2\t1\tsrc/x.ts\n@@NAMESTATUS@@\nM\tsrc/x.ts\n@@OK@@\n@@DIFF@@\n',
+      stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n2\t1\tsrc/x.ts\n@@NAMESTATUS@@\nM\tsrc/x.ts\n@@LISTING@@\n@@OK@@\n@@DIFF@@\n',
       stderr: '',
     })
-    const out = await getWorkspaceChanges('yaac-proj-abc')
+    const out = await getWorkspaceChanges('yaac-proj-abc', { diff: true })
     const [jobName, cmd, opts] = mockExec.mock.calls[0] ?? []
     expect(jobName).toBe('yaac-proj-abc')
-    expect(cmd).toContain('git add -A')
+    expect(cmd).toContain('add -A --ignore-errors')
     expect(cmd).toContain('GIT_INDEX_FILE')
     expect(opts).toMatchObject({ timeout: 20_000, maxAttempts: 2 })
-    expect(out.base).toBe('cafe1234')
-    expect(out.baseResolved).toBe(true)
-    expect(out.files).toEqual([
+    expect(out.changes.base).toBe('cafe1234')
+    expect(out.changes.baseResolved).toBe(true)
+    expect(out.changes.files).toEqual([
       { path: 'src/x.ts', status: 'modified', additions: 2, deletions: 1, binary: false, stages: {} },
     ])
   })
 
   it('forwards the chosen base branch into the pod script', async () => {
     mockExec.mockResolvedValue({ stdout: EMPTY, stderr: '' })
-    await getWorkspaceChanges('yaac-proj-abc', 'dev')
+    await getWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true })
     const [, cmd] = mockExec.mock.calls.at(-1) ?? []
     expect(cmd).toContain('"origin/$1"')
     expect(cmd).toContain("yaac-changes 'dev' ''")
@@ -45,11 +45,11 @@ describe('getWorkspaceChanges', () => {
 
   it('forwards the fork-branch default into the pod script when no explicit base', async () => {
     mockExec.mockResolvedValue({ stdout: EMPTY, stderr: '' })
-    await getWorkspaceChanges('yaac-proj-abc', undefined, 'main')
+    await getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true })
     const [, cmd] = mockExec.mock.calls.at(-1) ?? []
     expect(cmd).toContain('"origin/$2"')
     expect(cmd).toContain("yaac-changes '' 'main'")
-    await getWorkspaceChanges('yaac-proj-abc', undefined, 'main', false)
+    await getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: false })
     expect(mockExec.mock.calls.at(-1)?.[1]).toContain("yaac-changes '' 'main' nodiff")
   })
 
@@ -62,9 +62,9 @@ describe('getWorkspaceChanges', () => {
       return { stdout: EMPTY, stderr: '' }
     })
     const all = Promise.all([
-      getWorkspaceChanges('yaac-proj-abc', undefined, 'main'),
-      getWorkspaceChanges('yaac-proj-abc', undefined, 'main'),
-      getWorkspaceChanges('yaac-proj-abc', undefined, 'main'),
+      getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true }),
+      getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true }),
+      getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true }),
     ])
     release()
     const [a, b, c] = await all
@@ -73,7 +73,7 @@ describe('getWorkspaceChanges', () => {
     expect(b).toBe(c)
     // Only in-flight requests are shared.
     mockExec.mockResolvedValue({ stdout: EMPTY, stderr: '' })
-    await getWorkspaceChanges('yaac-proj-abc', undefined, 'main')
+    await getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true })
     expect(mockExec).toHaveBeenCalledTimes(2)
   })
 
@@ -88,9 +88,9 @@ describe('getWorkspaceChanges', () => {
       return { stdout: EMPTY, stderr: '' }
     })
     await Promise.all([
-      getWorkspaceChanges('yaac-proj-abc', 'dev'),
-      getWorkspaceChanges('yaac-proj-abc', 'main'),
-      getWorkspaceChanges('yaac-proj-abc', 'release'),
+      getWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true }),
+      getWorkspaceChanges('yaac-proj-abc', { base: 'main', diff: true }),
+      getWorkspaceChanges('yaac-proj-abc', { base: 'release', diff: true }),
     ])
     expect(mockExec).toHaveBeenCalledTimes(3)
     expect(peak).toBe(1)
@@ -99,7 +99,7 @@ describe('getWorkspaceChanges', () => {
   // A failure must not be shown as "No changes".
   it('throws rather than reporting no changes when the run failed partway', async () => {
     mockExec.mockResolvedValue({ stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n', stderr: '' })
-    await expect(getWorkspaceChanges('yaac-proj-abc')).rejects.toThrow(/completion marker/)
+    await expect(getWorkspaceChanges('yaac-proj-abc', { diff: true })).rejects.toThrow(/completion marker/)
   })
 
   // Callers map the exit code (e.g. a bad base → 400), so it must arrive
@@ -109,7 +109,7 @@ describe('getWorkspaceChanges', () => {
       new WorkspaceExecError('command exited 4 in yaac-proj-abc: ', CHANGES_BASE_UNRESOLVED, '', ''),
     )
 
-    const err = await getWorkspaceChanges('yaac-proj-abc', 'no-such-branch').catch((e: unknown) => e)
+    const err = await getWorkspaceChanges('yaac-proj-abc', { base: 'no-such-branch', diff: true }).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(WorkspaceExecError)
     expect(err).toMatchObject({ code: CHANGES_BASE_UNRESOLVED })
   })
@@ -120,7 +120,7 @@ describe('getWorkspaceChanges', () => {
     const dial = new RelayDialError('stream relay dial (yaac-pro...): connection refused')
     mockExec.mockRejectedValue(dial)
 
-    const err = await getWorkspaceChanges('yaac-proj-abc', 'dev').catch((e: unknown) => e)
+    const err = await getWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true }).catch((e: unknown) => e)
     expect(err).toBe(dial)
     expect(err).not.toBeInstanceOf(WorkspaceExecError)
   })

@@ -43,10 +43,6 @@ export function fileKey(workspaceId: string, path: string): string {
 
 // ── API ────────────────────────────────────────────────────────────────
 
-export function listWorkspaceFiles(workspaceId: string): Promise<WorkspaceFiles> {
-  return api.workspace[':id'].files.$get({ param: { id: workspaceId } })
-}
-
 export function listWorkspaceDir(workspaceId: string, path: string): Promise<WorkspaceDir> {
   return api.workspace[':id'].dir.$get({ param: { id: workspaceId }, query: { path } })
 }

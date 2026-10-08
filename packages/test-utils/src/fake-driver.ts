@@ -134,7 +134,8 @@ function defaultRuntime(): WorkspaceDriver {
     list: () => Promise.resolve([]),
     count: () => Promise.resolve({}),
     changes: () => Promise.resolve({
-      base: 'main', baseResolved: true, files: [], diff: '', truncated: false,
+      changes: { base: 'main', baseResolved: true, files: [], diff: '', truncated: false },
+      ref: null,
     }),
     snapshot: (resync) => snapshotFixture([], [], resync ?? true),
     reconcileSteps: () => ({ prePool: [], maintenance: [] }),

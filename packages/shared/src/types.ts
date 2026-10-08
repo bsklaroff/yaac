@@ -888,7 +888,7 @@ export interface WorkspaceChange {
  * its base branch (committed, staged, unstaged, untracked). Computed with a
  * separate index so the agent's git state is untouched.
  */
-export interface WorkspaceChanges {
+export interface WorkspaceDiff {
   /** The base commit the diff is taken against (merge-base with the fork
    *  point), or HEAD when no upstream is resolvable. */
   base: string
@@ -904,21 +904,31 @@ export interface WorkspaceChanges {
   truncated: boolean
 }
 
-/** Where a workspace's HEAD stands against its reference branch, for the
- *  status bar. `behind` is only as fresh as `fetchedAt`. */
-export interface WorkspaceGitStatus {
-  /** The branch compared against; null when nothing records one. */
-  base: string | null
-  /** Null when `base` resolves to no branch, remote or local. */
-  comparison: {
-    /** `origin/<base>`, or `<base>` for a branch that was never pushed. */
-    ref: string
-    ahead: number
-    behind: number
-    /** When `ref` was last fetched, 'YYYY-MM-DD HH:MM:SS' (UTC); absent for
-     *  a local branch or when no fetch is on record. */
-    fetchedAt?: string
-  } | null
+/**
+ * Everything the webapp polls about a workspace's checkout, in one answer:
+ * the diff, where HEAD stands against the base branch, and the listing.
+ */
+export interface WorkspaceChanges extends WorkspaceDiff {
+  /** The branch compared against (the caller's pick, else the fork branch);
+   *  null when nothing records one. */
+  branch: string | null
+  /** Null when the base fell back to HEAD (`baseResolved: false`). */
+  comparison: BranchComparison | null
+  /** The checkout's listing, when asked for and not already current at the
+   *  caller (its `known` version). */
+  listing?: WorkspaceFiles
+}
+
+/** How far HEAD has diverged from the branch it is compared against.
+ *  `behind` is only as fresh as `fetchedAt`. */
+export interface BranchComparison {
+  /** `origin/<branch>`, or `<branch>` for a branch that was never pushed. */
+  ref: string
+  ahead: number
+  behind: number
+  /** When `ref` was last fetched, 'YYYY-MM-DD HH:MM:SS' (UTC); absent for
+   *  a local branch or when no fetch is on record. */
+  fetchedAt?: string
 }
 
 /** Where a symlink in a workspace leads: its resolved path relative to the
@@ -928,8 +938,15 @@ export interface SymlinkTarget {
   dir: boolean
 }
 
-/** Every path in a workspace's checkout, for the file explorer. */
+/**
+ * Every path in a workspace's checkout, for the file explorer. `ignored`
+ * and `emptyDirs` cost a walk of the working tree, so they are filled only
+ * for a `full` listing and are empty otherwise.
+ */
 export interface WorkspaceFiles {
+  /** Changes whenever anything below does; the caller sends it back as
+   *  `known` so an unchanged listing is not sent again. */
+  version: string
   /** Tracked and untracked files, gitignore-aware, deleted ones removed. */
   paths: string[]
   /** The entries of `paths` that are symlinks. */

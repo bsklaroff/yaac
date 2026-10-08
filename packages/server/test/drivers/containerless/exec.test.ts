@@ -112,10 +112,10 @@ describe('execInWorkspace', () => {
 describe('getWorkspaceChanges', () => {
   it('computes the diff with host git in the checkout, against its own index', async () => {
     mockRunHost.mockResolvedValue({
-      stdout: 'BASE abc123\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@OK@@\n@@DIFF@@\n',
+      stdout: 'BASE abc123\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@LISTING@@\n@@OK@@\n@@DIFF@@\n',
       stderr: '',
     })
-    const changes = await getWorkspaceChanges(JOB)
+    const { changes } = await getWorkspaceChanges(JOB, { diff: true })
     expect(changes.base).toBe('abc123')
     const [argv, opts] = mockRunHost.mock.calls[0] as [string[], { cwd: string }]
     const script = argv[2]

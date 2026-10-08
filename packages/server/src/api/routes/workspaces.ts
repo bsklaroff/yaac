@@ -13,12 +13,10 @@ import {
   getWorkspaceBlockedHosts,
   getWorkspaceChanges,
   getWorkspaceDetail,
-  getWorkspaceGitStatus,
   getWorkspacePrompt,
   listActiveWorkspaces,
   listStoppedWorkspaces,
   listWorkspaceDir,
-  listWorkspaceFiles,
   listWorkspaceGroups,
   readWorkspaceFile,
   readWorkspaceFileAtRev,
@@ -566,28 +564,27 @@ export const workspaceApp = new Hono<IdentityEnv>()
     )
     return c.json({ events })
   })
-  // The review diff: everything changed since the workspace forked from its
-  // base branch (committed, working and untracked). `base` overrides the
-  // branch it is diffed against; `diff=0` returns the files without the
-  // diff body.
+  // Everything the webapp polls about a running workspace's checkout
+  // (docs/file-editor.md): the review diff against its base branch, how far
+  // HEAD is from that branch, and with `listing` the explorer's paths
+  // (`full` adds ignored entries and empty folders). `base` overrides the
+  // branch; `diff=0` leaves out the diff body; `known` omits a listing the
+  // caller already holds.
   .get(
     '/:id/changes',
-    zv('query', z.object({ base: z.string().min(1).max(255).optional(), diff: z.enum(['0', '1']).optional() })),
+    zv('query', z.object({
+      base: z.string().min(1).max(255).optional(),
+      diff: z.enum(['0', '1']).optional(),
+      listing: z.enum(['paths', 'full']).optional(),
+      known: z.string().max(128).optional(),
+    })),
     async (c) => {
-      const { base, diff } = c.req.valid('query')
-      return c.json(await getWorkspaceChanges(c.req.param('id'), base, diff !== '0'))
+      const { base, diff, listing, known } = c.req.valid('query')
+      return c.json(await getWorkspaceChanges(c.req.param('id'), base, { diff: diff !== '0', listing, known }))
     },
-  )
-  // Ahead/behind for the status bar, read from the server's own refs so a
-  // stopped workspace answers too.
-  .get(
-    '/:id/git-status',
-    zv('query', z.object({ base: z.string().min(1).max(255).optional() })),
-    async (c) => c.json(await getWorkspaceGitStatus(c.req.param('id'), c.req.valid('query').base)),
   )
   // The file editor (docs/file-editor.md). Served from the server's view of
   // the checkout, so stopped workspaces work too, under either driver.
-  .get('/:id/files', async (c) => c.json(await listWorkspaceFiles(c.req.param('id'))))
   .get(
     '/:id/dir',
     zv('query', z.object({ path: z.string().min(1) })),

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
@@ -12,16 +12,20 @@ import { execFileAsync } from '#lib/shell'
 import {
   createWorkspaceFolder,
   deleteWorkspaceEntry,
-  getWorkspaceGitStatus,
+  getWorkspaceChanges,
   listWorkspaceDir,
-  listWorkspaceFiles,
   readWorkspaceFile,
   readWorkspaceFileAtRev,
   renameWorkspaceEntry,
   writeWorkspaceFile,
 } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
+import { buildChangesScript, parseChangesOutput } from '#drivers/shared'
+import {
+  CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, WorkspaceExecError, type ChangesReading, type ChangesRequest,
+} from '#drivers/contract'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
+import type { WorkspaceFiles } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -29,8 +33,8 @@ const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 /**
  * Real checkouts made by `createCheckout` from a local main clone. Only the
  * driver is faked: `find` returns a running handle (a stopped one for
- * `stopped`), and commands run in a host shell in the checkout, as they do
- * for a containerless workspace.
+ * `stopped`), and commands, the changes script among them, run in a host
+ * shell in the checkout, as they do for a containerless workspace.
  */
 
 const PROJECT = '7d4e2a1c-5b3f-4e8a-9c6d-1f2e3a4b5c6d'
@@ -93,15 +97,36 @@ beforeEach(() => {
     })),
     workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(PROJECT, jobName) }),
     exec: async (_jobName, cmd) => execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }),
+    changes: hostChanges,
   })
 })
+
+/** The changes script run in a host shell, as the containerless driver does. */
+async function hostChanges(jobName: string, request: ChangesRequest): Promise<ChangesReading> {
+  const script = buildChangesScript({
+    workspaceDir: workspaceDir(PROJECT, jobName),
+    indexFile: path.join(tmp, `${jobName}.idx`),
+  }, request)
+  const { stdout } = await execFileAsync('sh', ['-c', script], { maxBuffer: 64 << 20 }).catch((err: unknown) => {
+    const { code } = err as { code?: number }
+    throw typeof code === 'number' ? new WorkspaceExecError(`exited ${code}`, code, '', '') : err
+  })
+  return parseChangesOutput(stdout)
+}
+
+/** A `full` listing of a workspace, which the explorer asks for. */
+async function listing(id: string): Promise<WorkspaceFiles> {
+  const { listing: out } = await getWorkspaceChanges(id, undefined, { diff: false, listing: 'full' })
+  expect(out).toBeDefined()
+  return out!
+}
 
 afterAll(async () => {
   await closeDb()
   await fs.rm(tmp, { recursive: true, force: true })
 })
 
-describe('listWorkspaceFiles', () => {
+describe('getWorkspaceChanges', () => {
   let dir: string
   beforeAll(async () => {
     dir = await makeCheckout('list')
@@ -123,7 +148,13 @@ describe('listWorkspaceFiles', () => {
   })
 
   it('lists tracked and untracked files, gitignore-aware, without deleted ones', async () => {
-    const files = await listWorkspaceFiles('list')
+    const files = await listing('list')
+    // Sent again only when it changed; the walks run only for `full`.
+    const again = await getWorkspaceChanges('list', undefined, { diff: false, listing: 'full', known: files.version })
+    expect(again.listing).toBeUndefined()
+    const { listing: cheap } = await getWorkspaceChanges('list', undefined, { diff: false, listing: 'paths' })
+    expect(cheap).toMatchObject({ paths: files.paths, symlinks: files.symlinks, ignored: [], emptyDirs: [] })
+    expect(cheap?.version).not.toBe(files.version)
     expect(files.paths).toEqual(expect.arrayContaining([
       '.gitignore', 'a.txt', 'b.txt', 'src/lib/util.ts', 'untracked.txt', 'pkg/keep.ts', 'newpkg/file.ts',
     ]))
@@ -134,7 +165,7 @@ describe('listWorkspaceFiles', () => {
   })
 
   it('reports each symlink with where it leads', async () => {
-    const { symlinks } = await listWorkspaceFiles('list')
+    const { symlinks } = await listing('list')
     expect(symlinks).toEqual({
       'link.txt': { target: 'a.txt', dir: false },
       lib: { target: 'src/lib', dir: true },
@@ -144,13 +175,13 @@ describe('listWorkspaceFiles', () => {
   })
 
   it('collapses wholly ignored folders and keeps individually ignored files', async () => {
-    const { ignored } = await listWorkspaceFiles('list')
+    const { ignored } = await listing('list')
     expect(ignored).toEqual(expect.arrayContaining(['node_modules/', 'pkg/build/', 'debug.log']))
     expect(ignored.some((p) => p.startsWith('node_modules/x'))).toBe(false)
   })
 
   it('finds folders holding no file, at any depth, but not ones that hold one', async () => {
-    const { emptyDirs } = await listWorkspaceFiles('list')
+    const { emptyDirs } = await listing('list')
     expect(emptyDirs).toEqual(expect.arrayContaining([
       'empty', 'nest', 'nest/inner', 'src/lib/fresh', 'newpkg/tests',
     ]))
@@ -187,7 +218,7 @@ describe('listWorkspaceFiles', () => {
     await fs.utimes(path.join(wt, 'src/lib/util.ts'), future, future)
     const before = await fs.stat(index)
 
-    const { conflicted, paths } = await listWorkspaceFiles('status')
+    const { conflicted, paths } = await listing('status')
     expect(conflicted).toEqual(['conflict.txt'])
     expect(paths).not.toContain('d.txt')
     expect(paths).toEqual(expect.arrayContaining(['renamed.txt', 'staged.txt', 'newdir/deep/x.txt']))
@@ -197,6 +228,18 @@ describe('listWorkspaceFiles', () => {
     expect(after.mtimeMs).toBe(before.mtimeMs)
   })
 
+  // An agent's scaffold or test fixture often `git init`s a folder; git
+  // cannot index one with no commit, which must cost only that folder.
+  it('lists and diffs around a nested repo with no commit', async () => {
+    const wt = await makeCheckout('nested')
+    await git(wt, ['init', '-q', 'scaffold'])
+    await write(wt, 'scaffold/inner.txt', 'x\n')
+    await write(wt, 'plain.txt', 'p\n')
+    const changes = await getWorkspaceChanges('nested', undefined, { listing: 'full' })
+    expect(changes.files.map((f) => f.path)).toEqual(['plain.txt'])
+    expect(changes.listing?.paths).toEqual(expect.arrayContaining(['a.txt', 'plain.txt']))
+  })
+
   it('caps the listing and says so', async () => {
     const wt = await makeCheckout('big')
     const names = Array.from({ length: 50_001 }, (_, i) => `many/f${i}`)
@@ -204,16 +247,14 @@ describe('listWorkspaceFiles', () => {
     for (let i = 0; i < names.length; i += 1000) {
       await Promise.all(names.slice(i, i + 1000).map((n) => fs.writeFile(path.join(wt, n), '')))
     }
-    const files = await listWorkspaceFiles('big')
+    const files = await listing('big')
     expect(files.paths).toHaveLength(50_000)
     expect(files.truncated).toBe(true)
   }, 120_000)
-})
 
-describe('getWorkspaceGitStatus', () => {
-  // One commit on the checkout's branch, and one on main after the fork,
-  // fetched into the checkout.
-  beforeAll(async () => {
+  it('says how far HEAD is from the base branch, the fork branch unless one is picked', async () => {
+    // One commit on the checkout's branch, and one on main after the fork,
+    // fetched into the checkout.
     await git(repoDir(PROJECT), ['update-ref', 'refs/remotes/origin/main', 'main'])
     await makeCheckout('gs')
     const run = wtGit('gs')
@@ -222,30 +263,68 @@ describe('getWorkspaceGitStatus', () => {
     await git(repoDir(PROJECT), ['update-ref', 'refs/remotes/origin/main', 'main'])
     await run(['fetch', '-q', path.join(repoDir(PROJECT), '.git'), 'refs/remotes/origin/*:refs/remotes/origin/*'])
     await recordWorkspaceCreated({ projectId: PROJECT, workspaceId: 'gs', baseBranch: 'main' })
-  })
 
-  it('counts against the fork branch by default and an explicit base on request', async () => {
-    const fork = await getWorkspaceGitStatus('gs')
-    expect(fork).toMatchObject({
-      base: 'main', comparison: { ref: 'origin/main', ahead: 1, behind: 1 },
-    })
+    const fork = await getWorkspaceChanges('gs', undefined, { diff: false })
+    expect(fork).toMatchObject({ branch: 'main', comparison: { ref: 'origin/main', ahead: 1, behind: 1 } })
     expect(fork.comparison?.fetchedAt).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/)
+    expect(fork.listing).toBeUndefined()
     // An unpushed branch is compared locally, with no fetch time.
-    await expect(getWorkspaceGitStatus('gs', 'agent/gs')).resolves.toEqual({
-      base: 'agent/gs', comparison: { ref: 'agent/gs', ahead: 0, behind: 0 },
+    await expect(getWorkspaceChanges('gs', 'agent/gs', { diff: false })).resolves.toMatchObject({
+      branch: 'agent/gs', comparison: { ref: 'agent/gs', ahead: 0, behind: 0 },
     })
-    await expect(getWorkspaceGitStatus('gs', 'gone')).resolves.toEqual({ base: 'gone', comparison: null })
-    // A range is not a branch name and is refused.
-    await expect(getWorkspaceGitStatus('gs', 'main..HEAD')).resolves.toEqual({ base: 'main..HEAD', comparison: null })
+    expect((await getWorkspaceChanges('gs', 'agent/gs', { diff: false })).comparison).not.toHaveProperty('fetchedAt')
+    // A picked base that resolves nowhere, or is not a branch, is the
+    // caller's mistake.
+    for (const bad of ['gone', 'main..HEAD']) {
+      const err = await refusal(getWorkspaceChanges('gs', bad))
+      expect(err.code).toBe('VALIDATION')
+      expect(err.message).toContain(bad)
+    }
   })
 
-  it('answers only while the workspace runs, as the listing does', async () => {
-    expect((await refusal(getWorkspaceGitStatus('stopped', 'main'))).code).toBe('CONFLICT')
-    expect((await refusal(listWorkspaceFiles('stopped'))).code).toBe('CONFLICT')
+  it('answers only while the workspace runs', async () => {
+    expect((await refusal(getWorkspaceChanges('stopped', 'main'))).code).toBe('CONFLICT')
     // A stopped workspace with nothing left on the substrate still exists.
     installFakeWorkspaceDriver({ find: () => Promise.resolve(undefined) })
-    expect((await refusal(getWorkspaceGitStatus('gs'))).code).toBe('CONFLICT')
-    expect((await refusal(getWorkspaceGitStatus('nope'))).code).toBe('NOT_FOUND')
+    expect((await refusal(getWorkspaceChanges('gs'))).code).toBe('CONFLICT')
+    expect((await refusal(getWorkspaceChanges('nope'))).code).toBe('NOT_FOUND')
+  })
+
+  // Once the agent pushes its branch, @{upstream} is the branch itself and
+  // the runtime's default base shows an empty diff. Diffing against the fork
+  // branch keeps committed work visible until it merges.
+  it('offers the recorded fork branch as the default base, and lets a picked one win', async () => {
+    const mockChanges = vi.fn(hostChanges)
+    installFakeWorkspaceDriver({
+      find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
+      changes: mockChanges,
+    })
+    await getWorkspaceChanges('gs', undefined, { diff: false, listing: 'paths' })
+    await getWorkspaceChanges('gs', 'agent/gs')
+    await getWorkspaceChanges('list', undefined, { diff: false })
+    expect(mockChanges.mock.calls).toEqual([
+      ['gs', { base: undefined, defaultBase: 'main', diff: false, listing: 'paths' }],
+      ['gs', { base: 'agent/gs', defaultBase: 'main', diff: true, listing: undefined }],
+      // Nothing records a fork branch for this one.
+      ['list', { base: undefined, defaultBase: undefined, diff: false, listing: undefined }],
+    ])
+  })
+
+  // With no explicit base, the recorded fork branch failed to resolve. That
+  // is a server fault, not the caller's; so is any other failed run, since
+  // it says nothing about the ref (exit 3 means "no checkout").
+  it('keeps every failure but a bad picked base or a busy run a server fault', async () => {
+    let failure = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
+    installFakeWorkspaceDriver({
+      find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
+      changes: () => Promise.reject(failure),
+    })
+    await expect(getWorkspaceChanges('gs')).rejects.toBe(failure)
+    failure = new WorkspaceExecError('command exited 3', 3, '', '')
+    await expect(getWorkspaceChanges('gs', 'dev')).rejects.toBe(failure)
+    // An earlier run that outlived its request is worth retrying.
+    failure = new WorkspaceExecError('command exited 7', CHANGES_BUSY, '', '')
+    expect((await refusal(getWorkspaceChanges('gs'))).code).toBe('RUNTIME_UNAVAILABLE')
   })
 })
 

@@ -36,10 +36,13 @@ const snapshot = { workspaces: [workspace] } as unknown as ServerSnapshot
 const initial = useUiStore.getState()
 beforeEach(() => {
   useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {}, filesFindPending: false })
-  // A one-file listing for the explorer.
+  // No changes, and a one-file listing for the explorer.
   mockFetch({
-    'GET /api/workspace/s1/files': {
-      paths: ['a.ts'], symlinks: {}, ignored: [], emptyDirs: [], status: {}, truncated: false,
+    'GET /api/workspace/s1/changes': {
+      base: 'abc', baseResolved: true, files: [], diff: '', truncated: false, branch: 'main', comparison: null,
+      listing: {
+        version: 'v1', paths: ['a.ts'], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false,
+      },
     },
   })
 })

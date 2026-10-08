@@ -11,7 +11,7 @@ import type {
   RefreshedToolCredentials,
   SecretProxyRule,
   ToolCredentialBundle,
-  WorkspaceChanges,
+  WorkspaceDiff,
   WorkspaceDeathCause,
   YaacConfig,
 } from '@yaac/shared/types'
@@ -335,6 +335,47 @@ export class WorkspaceExecError extends Error {
 export const CHANGES_BASE_UNRESOLVED = 4
 
 /**
+ * The `changes` exit code for "an earlier run is still going": one whose
+ * exec timed out keeps running in the workspace and holds the private
+ * index, so the caller should try again shortly.
+ */
+export const CHANGES_BUSY = 7
+
+/**
+ * What `changes` reads besides the diff. `listing` asks for the checkout's
+ * paths too: `paths` comes from the index the diff already built, while
+ * `full` adds the ignored entries and untracked folders, which walk the
+ * working tree again.
+ */
+export interface ChangesRequest {
+  base?: string
+  /** The branch the workspace forked from, used when `base` is unset. */
+  defaultBase?: string
+  /** Include the unified diff body. */
+  diff: boolean
+  listing?: 'paths' | 'full'
+}
+
+/** A `changes` answer, before the domain adds what it reads on the server. */
+export interface ChangesReading {
+  changes: WorkspaceDiff
+  /** The ref the base was found on (`origin/main`, `main`) and HEAD's
+   *  distance from it; null when the base fell back to HEAD. */
+  ref: { name: string; ahead: number; behind: number } | null
+  listing?: {
+    /** Every file in the working tree that git does not ignore. */
+    paths: string[]
+    /** The entries of `paths` that are symlinks. */
+    links: string[]
+    conflicted: string[]
+    /** `full` only: ignored files, and wholly ignored folders as `dir/`. */
+    ignored?: string[]
+    /** `full` only: untracked folders, without the trailing slash. */
+    untrackedDirs?: string[]
+  }
+}
+
+/**
  * A `child_process`-shaped stream into a workspace, used by the agent
  * drivers (tmux control mode for `tui`, acpd's JSON-RPC for `acp`). A real
  * local child satisfies it as-is.
@@ -542,10 +583,10 @@ export interface WorkspaceDriver {
   list(projectId?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
   /** Live counts per project, spares excluded. Empty when unreachable. */
   count(): Promise<Record<string, number>>
-  /** A running workspace's diff, read inside it; `diff: false` leaves out
-   *  the diff body. Rejects with `WorkspaceExecError` on failure
+  /** A running workspace's diff, and its listing when asked, read inside
+   *  it. Rejects with `WorkspaceExecError` on failure
    *  (`CHANGES_BASE_UNRESOLVED` when the base has no fork point). */
-  changes(jobName: string, base?: string, defaultBase?: string, diff?: boolean): Promise<WorkspaceChanges>
+  changes(jobName: string, request: ChangesRequest): Promise<ChangesReading>
   /** A fresh view for one reconcile pass (or a direct caller outside one). */
   snapshot(resync?: boolean): RuntimeSnapshot
   /** The driver's own upkeep steps for the reconcile pass. */
