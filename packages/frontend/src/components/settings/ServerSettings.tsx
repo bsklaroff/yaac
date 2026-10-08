@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import { CheckIcon, DeleteIcon } from '#lib/icons'
 import { serverBridge } from '#lib/desktopServer'
 import { api } from '#lib/api'
+import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import type { DesktopServerSelection, DesktopServerTargets, Principal } from '@yaac/shared/types'
 
 /**
@@ -18,6 +19,7 @@ export function ServerSettings(): JSX.Element {
   const [switching, setSwitching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [principal, setPrincipal] = useState<Principal | null>(null)
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
 
   useEffect(() => {
     if (!bridge) return
@@ -49,8 +51,12 @@ export function ServerSettings(): JSX.Element {
     setError(null)
     try {
       const outcome = await bridge.remove({ url })
-      if (!outcome.ok) setError(outcome.error)
-      else setTargets(await bridge.targets())
+      if (!outcome.ok) {
+        setError(outcome.error)
+        return
+      }
+      setConfirmRemove(null)
+      setTargets(await bridge.targets())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to remove server')
     } finally {
@@ -121,7 +127,7 @@ export function ServerSettings(): JSX.Element {
                   {busy === url ? 'Connecting…' : 'Connect'}
                 </button>
                 <button
-                  onClick={() => void remove(url)}
+                  onClick={() => { setError(null); setConfirmRemove(url) }}
                   disabled={busy !== null || switching}
                   title="Remove"
                   aria-label={`Remove ${url}`}
@@ -161,7 +167,18 @@ export function ServerSettings(): JSX.Element {
         </form>
       </div>
 
-      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+      {error && confirmRemove === null && <p className="mt-2 text-xs text-red-400">{error}</p>}
+
+      <ConfirmDialog
+        open={confirmRemove !== null}
+        onOpenChange={(open) => { if (!open) { setConfirmRemove(null); setError(null) } }}
+        title="Remove server?"
+        description={`Removes ${confirmRemove ?? ''} from this machine's server list, for the app and the yaac CLI alike. The server itself keeps running; add it again to reconnect.`}
+        confirmLabel="Remove"
+        busy={confirmRemove !== null && busy === `remove:${confirmRemove}`}
+        error={error ?? undefined}
+        onConfirm={() => { if (confirmRemove !== null) void remove(confirmRemove) }}
+      />
     </section>
   )
 }
