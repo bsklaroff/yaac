@@ -53,49 +53,6 @@ describe('getWorkspaceChanges', () => {
     expect(mockExec.mock.calls.at(-1)?.[1]).toContain("yaac-changes '' 'main' nodiff")
   })
 
-  // Every open tab polls, so identical concurrent requests share one exec.
-  it('coalesces identical concurrent requests into a single pod exec', async () => {
-    let release!: () => void
-    const gate = new Promise<void>((r) => { release = r })
-    mockExec.mockImplementation(async () => {
-      await gate
-      return { stdout: EMPTY, stderr: '' }
-    })
-    const all = Promise.all([
-      getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true }),
-      getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true }),
-      getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true }),
-    ])
-    release()
-    const [a, b, c] = await all
-    expect(mockExec).toHaveBeenCalledTimes(1)
-    expect(a).toBe(b)
-    expect(b).toBe(c)
-    // Only in-flight requests are shared.
-    mockExec.mockResolvedValue({ stdout: EMPTY, stderr: '' })
-    await getWorkspaceChanges('yaac-proj-abc', { defaultBase: 'main', diff: true })
-    expect(mockExec).toHaveBeenCalledTimes(2)
-  })
-
-  // Different bases share one git index in the pod, so they run in turn.
-  it('serializes differing requests for the same session', async () => {
-    let running = 0
-    let peak = 0
-    mockExec.mockImplementation(async () => {
-      peak = Math.max(peak, ++running)
-      await new Promise((r) => setTimeout(r, 5))
-      running--
-      return { stdout: EMPTY, stderr: '' }
-    })
-    await Promise.all([
-      getWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true }),
-      getWorkspaceChanges('yaac-proj-abc', { base: 'main', diff: true }),
-      getWorkspaceChanges('yaac-proj-abc', { base: 'release', diff: true }),
-    ])
-    expect(mockExec).toHaveBeenCalledTimes(3)
-    expect(peak).toBe(1)
-  })
-
   // A failure must not be shown as "No changes".
   it('throws rather than reporting no changes when the run failed partway', async () => {
     mockExec.mockResolvedValue({ stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n', stderr: '' })

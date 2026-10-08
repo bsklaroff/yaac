@@ -516,7 +516,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       const byPath = Object.fromEntries(changes.files.map((f) => [f.path, f]))
       expect(byPath['NEW.md'].stages).toEqual({ untracked: { additions: 1, deletions: 0 } })
       expect(byPath['README.md'].stages).toEqual({ modified: { additions: 1, deletions: 0 } })
-      expect(changes.diff).toBe('')
+      expect(changes).not.toHaveProperty('diff')
 
       const at = await fetch(`${origin()}/api/workspace/${workspaceId}/file-at?path=README.md&rev=${changes.base}`)
       expect(await at.json()).toEqual({ exists: true, content: readme })

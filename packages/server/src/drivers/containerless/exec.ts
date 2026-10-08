@@ -1,7 +1,6 @@
 import type { ChangesReading, ChangesRequest } from '#drivers/contract'
-import { createKeyedMutex } from '#lib/keyed-mutex'
 import { waitFor } from '#lib/wait-for'
-import { buildChangesScript, parseChangesOutput } from '#drivers/shared'
+import { buildChangesScript, parseChangesOutput, runChangesRead } from '#drivers/shared'
 import { runHost } from './host'
 import { workspaceRunEnvironment } from './launch'
 import { containerlessWorkspacePaths } from './paths'
@@ -29,19 +28,16 @@ export async function execInWorkspace(
   })
 }
 
-/** One run per workspace at a time: runs share one git index file. */
-const changesMutex = createKeyedMutex()
-
 /** See `WorkspaceDriver.changes`. Runs host git in the checkout. */
 export function getWorkspaceChanges(jobName: string, request: ChangesRequest): Promise<ChangesReading> {
   const paths = containerlessWorkspacePaths(jobName)
-  return changesMutex(jobName, async () => {
+  return runChangesRead(jobName, request, async (req) => {
     const { stdout } = await runHost([
       'sh', '-c',
       buildChangesScript({
         workspaceDir: paths.workspaceDir,
         indexFile: `${paths.scratchDir}/yaac-changes.idx`,
-      }, request),
+      }, req),
     ], { cwd: paths.workspaceDir, env: workspaceRunEnvironment(jobName), timeoutMs: 20_000 })
     return parseChangesOutput(stdout)
   })

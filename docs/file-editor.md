@@ -44,7 +44,7 @@ macOS virtiofs, the same process user under containerless).
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
 | `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
-| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, baseResolved, files, diff, truncated, branch, comparison, listing? }`; `diff=0` leaves the diff body out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
+| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, baseResolved, files, diff, truncated, branch, comparison, listing? }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
 | `GET /workspace/:id/file-at?path=&rev=` | `{ exists, content }`: the file at commit `rev` (a full object id), `content` null when binary or over 1 MiB |
 
 ### Changes
@@ -223,7 +223,13 @@ for the explorer. What a fetch asks for is read when it runs rather than
 kept in the query key, so readers mounting together share one fetch and a
 reader leaving never forks the query. The listing lands in its own cache
 entry (`useWorkspaceFiles`), so the tree, the line counts and the colors
-always come from one snapshot. A failed poll leaves the last answer cached,
+always come from one snapshot. An answer without a diff body is one that
+did not ask for it, so the changes view shows its diffs as loading until
+its own fetch lands. On the server, `runChangesRead` (`#drivers/shared`)
+runs one read of a checkout at a time, since each walks the whole working
+tree: a request merges into the read queued behind the running one, never
+into the running one, which could predate an edit the caller just made. A
+failed poll leaves the last answer cached,
 so the status bar shows the error in its place and the explorer marks its
 tree "Not up to date". When a picked base stops resolving (its branch was
 pruned), the explorer offers to compare with the fork branch again.

@@ -13,5 +13,6 @@
 export {
   buildChangesScript,
   parseChangesOutput,
+  runChangesRead,
   type ChangesLocation,
 } from './workspace-changes'

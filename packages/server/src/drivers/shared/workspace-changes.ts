@@ -332,7 +332,6 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
   const untracked = new Set(section(head, `${M_UNTRACKED}\n`, M_NUMSTAT).split('\n').filter(Boolean))
   const numstat = parseNumstat(section(head, `${M_NUMSTAT}\n`, M_NAMESTATUS))
   const nameStatus = parseNameStatus(section(head, `${M_NAMESTATUS}\n`, M_LISTING))
-  const rawDiff = section(raw, `${M_DIFF}\n`).replace(/^\n/, '')
 
   const files: WorkspaceChange[] = nameStatus.map(({ path, status, oldPath }) => {
     const { additions, deletions, binary } = numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
@@ -347,10 +346,12 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
     return change
   })
 
-  // Measure bytes, not UTF-16 code units: the script's `head -c` cap is in
-  // bytes, so comparing `.length` could report a diff the script already
-  // cut as `truncated: false`.
-  const truncated = Buffer.byteLength(rawDiff) > maxDiffBytes
+  // The marker is printed only when the body was asked for. Measure bytes,
+  // not UTF-16 code units: the script's `head -c` cap is in bytes, so
+  // comparing `.length` could report a diff the script already cut as
+  // `truncated: false`.
+  const rawDiff = raw.includes(`${M_DIFF}\n`, ok) ? section(raw.slice(ok), `${M_DIFF}\n`).replace(/^\n/, '') : undefined
+  const truncated = rawDiff !== undefined && Buffer.byteLength(rawDiff) > maxDiffBytes
   const diff = truncated ? sliceUtf8(rawDiff, maxDiffBytes) : rawDiff
 
   // `REF <ref> <behind>\t<ahead>`: rev-list counts the left side first.
@@ -374,7 +375,83 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
     }
   }
 
-  return { changes: { base, baseResolved, files, diff, truncated }, ref, ...(listing ? { listing } : {}) }
+  return {
+    changes: { base, baseResolved, files, ...(diff !== undefined ? { diff } : {}), truncated },
+    ref,
+    ...(listing ? { listing } : {}),
+  }
+}
+
+/** A read of one workspace's changes, queued or running. */
+interface ChangesRun {
+  request: ChangesRequest
+  started: boolean
+  result: Promise<ChangesReading>
+}
+
+/** Per workspace, its running read first, then the ones queued behind it. */
+const changesRuns = new Map<string, ChangesRun[]>()
+
+const LISTING_RANK = { undefined: 0, paths: 1, full: 2 } as const
+const listingRank = (r: ChangesRequest): number => LISTING_RANK[r.listing ?? 'undefined']
+
+/**
+ * Run `read` for a workspace's changes, one read at a time, sharing reads
+ * between requests. The reads share one git index in the workspace, so
+ * they cannot overlap, and each walks the whole working tree, which is
+ * slow on a network filesystem. A request against the same base therefore
+ * joins a read still queued, widening what it asks for, rather than
+ * queuing one of its own. It never joins the running read: that read
+ * started before the request arrived, so it could miss an edit the caller
+ * just made. Every caller gets back only the parts it asked for.
+ */
+export function runChangesRead(
+  jobName: string,
+  request: ChangesRequest,
+  read: (request: ChangesRequest) => Promise<ChangesReading>,
+): Promise<ChangesReading> {
+  const runs = changesRuns.get(jobName) ?? []
+  let run = runs.find((r) => !r.started
+    && (r.request.base ?? '') === (request.base ?? '') && (r.request.defaultBase ?? '') === (request.defaultBase ?? ''))
+  if (run) {
+    run.request = {
+      ...run.request,
+      diff: run.request.diff || request.diff,
+      listing: listingRank(request) > listingRank(run.request) ? request.listing : run.request.listing,
+    }
+  }
+  if (!run) {
+    const before = runs.at(-1)?.result
+    const queued = { request, started: false } as ChangesRun
+    queued.result = (async () => {
+      await before?.catch(() => undefined)
+      queued.started = true
+      try {
+        return await read(queued.request)
+      } finally {
+        runs.splice(runs.indexOf(queued), 1)
+        if (runs.length === 0) changesRuns.delete(jobName)
+      }
+    })()
+    runs.push(queued)
+    changesRuns.set(jobName, runs)
+    run = queued
+  }
+  return run.result.then((reading) => answerFor(reading, request))
+}
+
+/** `reading` cut down to what `request` asked for. */
+function answerFor(reading: ChangesReading, request: ChangesRequest): ChangesReading {
+  const { diff: _diff, ...bare } = reading.changes
+  const { listing, ...rest } = reading
+  const cut = listing && request.listing === 'paths'
+    ? { paths: listing.paths, links: listing.links, conflicted: listing.conflicted }
+    : request.listing && listing
+  return {
+    ...rest,
+    changes: request.diff ? reading.changes : { ...bare, truncated: false },
+    ...(cut ? { listing: cut } : {}),
+  }
 }
 
 /**
@@ -391,4 +468,3 @@ function sliceUtf8(s: string, maxBytes: number): string {
   while (end > 0 && (buf[end] & 0xc0) === 0x80) end--
   return buf.subarray(0, end).toString('utf8')
 }
-
