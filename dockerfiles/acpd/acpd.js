@@ -25,6 +25,15 @@
  * so nothing is buffered for an absent client. Client lines are recorded
  * because the agent echoes user messages only when replaying `session/load`.
  *
+ * The record is closed and reopened (in append mode) after each client line,
+ * after acpd's own lines, and once the agent's output pauses or has run on
+ * for a while. On NFS a file's data reaches the server only when it is closed,
+ * synced or the kernel writes it back (up to 30 s later), and the server reads
+ * the record from another node, so a record held open would show a sent
+ * message only once the agent's next output pushed it out. It is reopened
+ * through its descriptor, not its path, because the server renames a fresh
+ * conversation's record while acpd writes it.
+ *
  * A conversation that cannot be recorded cannot be rendered, even though RPC
  * still works. So a record failure restarts the agent under a fresh record,
  * and the reattaching client's `session/load` replays the conversation into
@@ -54,6 +63,11 @@ import { spawn } from 'node:child_process'
 
 /** Grace between SIGTERM and SIGKILL when acpd is shutting the agent down. */
 const CHILD_KILL_GRACE_MS = 5_000
+
+/** How long the agent's output must pause before the record is settled, and
+ *  the longest a busy record goes unsettled (see "The record"). */
+const SETTLE_QUIET_MS = 50
+const SETTLE_MAX_MS = 200
 
 function controlLine(method, params) {
   return `${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`
@@ -106,6 +120,9 @@ export function createAcpd({
   /** Set while we are tearing the agent down on purpose, so its exit is not
    *  read as the agent dying. */
   let restarting = false
+  /** The pending settle, and when the oldest unsettled bytes were written. */
+  let settleTimer = null
+  let unsettledSince = 0
 
   /**
    * Open (or reopen) the record with a fresh life id, which tells the
@@ -121,6 +138,7 @@ export function createAcpd({
         method: '_acpd/life',
         params: { id: crypto.randomUUID(), startedAt: new Date().toISOString() },
       })}\n`)
+      logFd = reopenRecord(logFd)
       return true
     } catch (err) {
       log(`log unavailable (${err.message})`)
@@ -175,27 +193,79 @@ export function createAcpd({
     return hard
   }
 
-  /** Append relayed bytes to the record; a failure restarts the agent. */
-  function record(buf) {
-    if (logFd === null) return
-    try {
-      fs.writeSync(logFd, buf)
-    } catch (err) {
+  /** Drop the record's fd after a failure and restart the agent under a
+   *  fresh one. */
+  function recordFailed(err) {
+    clearTimeout(settleTimer)
+    settleTimer = null
+    if (logFd !== null) {
       try {
         fs.closeSync(logFd)
       } catch { /* already gone */ }
       logFd = null
-      restartForRecord(err.message)
     }
+    restartForRecord(err.message)
+  }
+
+  /** A fresh append-mode fd on the record `fd` names, wherever it has been
+   *  renamed to; `fd` is closed, which is what sends its bytes over NFS. */
+  function reopenRecord(fd) {
+    const fresh = fs.openSync(`/dev/fd/${fd}`, 'a')
+    try {
+      fs.closeSync(fd)
+    } catch (err) {
+      fs.closeSync(fresh)
+      throw err
+    }
+    return fresh
+  }
+
+  /** Close and reopen the record so what was written reaches the reader. */
+  function settle() {
+    clearTimeout(settleTimer)
+    settleTimer = null
+    if (logFd === null) return
+    try {
+      logFd = reopenRecord(logFd)
+    } catch (err) {
+      recordFailed(err)
+    }
+  }
+
+  /** Settle once the output pauses, or by SETTLE_MAX_MS after the oldest
+   *  unsettled write if it never does. */
+  function settleSoon() {
+    const now = Date.now()
+    if (settleTimer === null) unsettledSince = now
+    clearTimeout(settleTimer)
+    settleTimer = setTimeout(settle, Math.max(0, Math.min(SETTLE_QUIET_MS, unsettledSince + SETTLE_MAX_MS - now)))
+    settleTimer.unref()
+  }
+
+  /**
+   * Append relayed bytes to the record; a failure restarts the agent. `now`
+   * settles at once, for lines a reader is waiting on; the agent's output
+   * settles once it pauses.
+   */
+  function record(buf, now) {
+    if (logFd === null) return
+    try {
+      fs.writeSync(logFd, buf)
+    } catch (err) {
+      recordFailed(err)
+      return
+    }
+    if (now) settle()
+    else settleSoon()
   }
 
   /**
    * A `record` for one direction that writes only whole lines, so a long line
    * arriving in chunks (e.g. a prompt with a base64 image) is never
    * interleaved with the other direction. `abandon` drops an unfinished tail
-   * and returns whether there was one.
+   * and returns whether there was one. `now` is passed on to `record`.
    */
-  function lineRecorder() {
+  function lineRecorder(now) {
     let pending = []
     const recorder = (chunk) => {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, 'utf8')
@@ -204,7 +274,7 @@ export function createAcpd({
         pending.push(buf)
         return
       }
-      record(Buffer.concat([...pending, buf.subarray(0, end)]))
+      record(Buffer.concat([...pending, buf.subarray(0, end)]), now)
       pending = end < buf.length ? [buf.subarray(end)] : []
     }
     recorder.abandon = () => {
@@ -249,13 +319,13 @@ export function createAcpd({
       log(`agent exited (code=${childExit.code} signal=${childExit.signal})`)
       const exit = controlLine('_acpd/exit', childExit)
       // Recorded too, since a notice sent while detached is otherwise lost.
-      record(exit)
+      record(exit, true)
       emit(exit)
       // Give the line a tick to reach an attached client before tearing down.
       setTimeout(() => shutdown(childExit.code, childExit.signal), 50).unref()
     })
 
-    const recordStdout = lineRecorder()
+    const recordStdout = lineRecorder(false)
     child.stdout.on('data', (chunk) => {
       recordStdout(chunk)
       emit(chunk)
@@ -294,7 +364,7 @@ export function createAcpd({
     sock.write(controlLine('_acpd/hello', { firstAttach: !everSpoke }))
     child.stdout.resume()
 
-    const recordClient = lineRecorder()
+    const recordClient = lineRecorder(true)
     sock.on('data', (chunk) => {
       everSpoke = true
       recordClient(chunk)
@@ -322,6 +392,8 @@ export function createAcpd({
     } catch {
       /* already gone */
     }
+    clearTimeout(settleTimer)
+    settleTimer = null
     if (logFd !== null) {
       try {
         fs.closeSync(logFd)

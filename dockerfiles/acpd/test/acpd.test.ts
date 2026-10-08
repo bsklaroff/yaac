@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -135,6 +135,59 @@ describe('createAcpd', () => {
     expect(recorded.split('\n')[0]).toContain('_acpd/life')
     expect(recorded).toContain('while attached')
     expect(recorded).toContain('while detached')
+  })
+
+  it('reopens the record through its fd after a client line, a pause and a long burst, across a rename', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-'))
+    tmpDirs.push(dir)
+    const logPath = path.join(dir, 'launch.jsonl')
+    const adopted = path.join(dir, 'session.jsonl')
+    // Echoes its stdin, and answers a `burst` line with 50 lines of its own,
+    // 10 ms apart, so only SETTLE_MAX_MS can settle them.
+    const agent = `process.stdin.on('data', (d) => {
+      process.stdout.write(d)
+      if (!String(d).includes('burst')) return
+      let n = 0
+      const t = setInterval(() => { process.stdout.write('{"said":"out"}\\n'); if (++n === 50) clearInterval(t) }, 10)
+    })`
+    const opens: string[] = []
+    const realOpen = fs.openSync
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, flags?: fs.OpenMode, mode?: fs.Mode) => {
+      if (p === logPath) opens.push(`path ${String(flags)}`)
+      else if (String(p).startsWith('/dev/fd/')) opens.push(`fd ${String(flags)}`)
+      return realOpen(p, flags, mode)
+    }) as typeof fs.openSync)
+    try {
+      const { sock } = await start(['node', '-e', agent], { logPath })
+      expect(opens).toEqual(['path w', 'fd a'])
+
+      const a = connect(sock)
+      await a.waitFor((l) => l.length >= 1)
+      a.socket.write('{"said":"prompt"}\n')
+      // The client line settles at once; the agent's echo after the pause.
+      await a.waitFor((l) => l.some((line) => line.includes('prompt')))
+      await new Promise((r) => setTimeout(r, 120))
+      expect(opens.length).toBeGreaterThanOrEqual(4)
+
+      // The server adopts the record under the session's name mid-conversation.
+      fs.renameSync(logPath, adopted)
+      a.socket.write('{"said":"burst"}\n')
+      await a.waitFor((l) => l.some((line) => line.includes('burst')))
+      const before = opens.length
+      await new Promise((r) => setTimeout(r, 450))
+      expect(opens.length).toBeGreaterThanOrEqual(before + 2)
+      await a.waitFor((l) => l.filter((line) => line.includes('"out"')).length === 50)
+      await new Promise((r) => setTimeout(r, 120))
+
+      expect(fs.existsSync(logPath)).toBe(false)
+      const lines = fs.readFileSync(adopted, 'utf8').trim().split('\n')
+      expect(lines[0]).toContain('_acpd/life')
+      const said = lines.slice(1).map((l) => (JSON.parse(l) as { said: string }).said)
+      expect(said).toEqual(['prompt', 'prompt', 'burst', 'burst', ...Array<string>(50).fill('out')])
+      expect(opens.slice(1).every((o) => o === 'fd a')).toBe(true)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('records whole lines, so one side speaking mid-line cannot split the other\'s', async () => {
