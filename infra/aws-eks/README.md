@@ -14,7 +14,7 @@ yaac cluster install --byo --rwx-storage-class yaac-efs
 | Piece | Why yaac needs it |
 |---|---|
 | A VPC over two AZs, public subnets only, no NAT gateway | Nodes and the host reach the internet through their own public addresses. Their security groups admit nothing from outside. A NAT gateway would add about $33 a month, plus a fee per GB. |
-| EKS with two AL2023 node groups in one AZ: `system` (always one m7i.large) and `workspaces` (0 to `max_workspace_nodes` m7i.xlarge), with 100 GB disks | AL2023 is a mutable containerd node, which the gVisor installer can write to. Bottlerocket, Fargate and Auto Mode are refused. One AZ, because the EBS volumes behind the server's state and the registries are zonal. |
+| EKS with two AL2023 node groups in one AZ: `system` (always one m7i.large) and `workspaces` (0 to `max_workspace_nodes` m7i.xlarge), with 100 GB disks, and the labels and taints that keep workspaces and yaac's infrastructure apart (see "Autoscaling") | AL2023 is a mutable containerd node, which the gVisor installer can write to. Bottlerocket, Fargate and Auto Mode are refused. One AZ, because the EBS volumes behind the server's state and the registries are zonal. |
 | The Cluster Autoscaler | Adds workspace nodes as workspaces stop fitting, and removes them once they hold no workspace (see "Autoscaling"). |
 | The VPC CNI with its network-policy agent **off**, and policy-only Calico from the Tigera operator | yaac's egress wall is Calico NetworkPolicy plus netd's iptables redirect (docs/workspace-egress.md). |
 | VPC CNI prefix delegation, and `maxPods: 110` on every node | Without it an m7i.large takes 29 pods, fewer than the add-ons and yaac's infrastructure need on the system node. |
@@ -124,6 +124,11 @@ kubectl get nodes -o jsonpath='{.items[*].status.allocatable.pods}'   # 110
 yaac cluster install --byo --rwx-storage-class yaac-efs
 ```
 
+With no workspace node up, the check skips its gates that run a sandboxed
+pod (`gvisor`, `probe`, `egress` and the rest) and says so. To have them
+run, start a workspace and re-run `yaac cluster check` while its node is
+up.
+
 `~/.yaac-eks.env`, sourced from `.bashrc`, sets the two settings the CNI
 gate cannot discover on EKS:
 
@@ -135,7 +140,7 @@ Install records both on the server Deployment.
 
 Install checks the cluster before changing anything, then builds every
 image on the host. The first run takes a while. It ends with `yaac cluster
-check`, and **every gate must pass** before you create a workspace. A
+check`, and **no gate may fail** before you create a workspace. A
 failed `egress` gate means workspace egress is not locked down. After that,
 use it from your own machine, logged in to the same tailnet:
 
@@ -169,10 +174,16 @@ install. If it is lost, write it again from the refusal's install id:
 
 ## Autoscaling
 
-The system node holds the cluster add-ons, yaac's server, registries, npm
-cache and proxy, and the first few workspaces. When a workspace pod cannot
-fit, the autoscaler adds a `workspaces` node. From a pending pod to it
-running there takes about two and a half minutes:
+The system node holds the cluster add-ons and yaac's server, registries,
+npm cache and proxy. Workspaces run only on `workspaces` nodes
+(docs/cluster-setup.md "A dedicated workspace node pool"): the system node
+is labelled `yaac.workspaces=false`, so no workspace lands there, and the
+workspace nodes carry the `yaac.workspaces=true:NoSchedule` taint, which
+only sandboxed pods tolerate, so no rollout can move yaac's infrastructure
+onto a node the autoscaler may drain. When a
+workspace pod cannot fit, the autoscaler adds a `workspaces` node. From a
+pending pod to it running there takes about two and a half minutes, which
+is also how long the first workspace waits when no workspace node is up:
 
 1. The node registers with the `yaac.gvisor/pending` taint, so nothing is
    scheduled on it yet. The autoscaler knows it as a startup taint, so it
@@ -180,8 +191,8 @@ running there takes about two and a half minutes:
 2. The yaac server's node-sync, on its next resync (at most a minute),
    writes the node's registry `hosts.toml` and admits its address in the
    NetworkPolicies, without which the node cannot pull yaac's images.
-3. yaac's gVisor installer, which tolerates the taint, installs runsc,
-   labels the node `yaac.gvisor=true` and removes the taint
+3. yaac's gVisor installer, which tolerates every taint, installs runsc,
+   labels the node `yaac.gvisor=true` and removes the pending taint
    (docs/cluster-setup.md "Bring your own cluster").
 4. The workspace lands there and pulls its image from the in-cluster
    registry. The first workspace on a fresh node waits for that pull, since
@@ -191,8 +202,7 @@ Workspace pods are marked `safe-to-evict: false`, so a node is removed only
 once it holds no running workspace. With none, it goes within about half an
 hour, taking its node-local caches with it. While nodes come and go, `yaac
 cluster install` may refuse with "calico-node is n/m ready"; re-run it once
-the node count settles. Everything else on a
-workspace node, such as CoreDNS or a CSI controller, may be moved off it.
+the node count settles.
 
 The workspace group scales from zero, so the autoscaler plans a new node
 from tags on its Auto Scaling group rather than from a live node: the
@@ -200,17 +210,8 @@ from tags on its Auto Scaling group rather than from a live node: the
 
 **The system node is small.** After kube-reserved memory it has about
 6 GiB allocatable. The add-ons and yaac's infrastructure request a small
-part of that, but the yaac server may grow to 6 GiB, and every workspace
-beyond the first one or two goes to a workspace node. If the system node
+part of that, but the yaac server may grow to 6 GiB. If the system node
 comes under memory pressure, set `system_instance_type` to an xlarge.
-
-**Known gap:** yaac's own infrastructure is scheduled at install time,
-when only the system node exists. A later rollout (an upgrade, or a
-`yaac server restart`) can put the server or a registry on a workspace
-node. The autoscaler may then evict it to drain that node, which briefly
-takes the server down. Keeping it on the system node for good needs yaac
-to support a dedicated workspace pool, where only workspace pods tolerate
-the pool's taint (docs/plans/workspace-node-pool.md).
 
 ## When install refuses
 
@@ -240,6 +241,9 @@ yet exercised:
 
 - **Real workspaces.** No agent workspace has run on this cluster yet, only
   the check's probes and a test pod.
+- **The workspace pool.** The `yaac.workspaces` label and taint have not
+  been applied on EKS yet, so neither has a check run where only the
+  workspace node takes sandboxed pods.
 - **EFS under load.** `cluster check`'s POSIX-semantics and uid probes
   pass on it, but git and package-install performance over EFS with
   `hard,actimeo=1` are unmeasured.

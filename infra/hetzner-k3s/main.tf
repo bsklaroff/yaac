@@ -37,6 +37,12 @@ locals {
   # own cluster"). The autoscaler treats it as a startup taint.
   gvisor_pending_taint = "yaac.gvisor/pending"
 
+  # Every worker, manual or autoscaled, carries this taint, which only
+  # sandboxed pods tolerate, so yaac's server and registries stay on the
+  # control node. The control node is unmarked, so it runs workspaces too
+  # (docs/cluster-setup.md "A dedicated workspace node pool").
+  workspace_pool_taint = "yaac.workspaces=true:NoSchedule"
+
   # Every node runs k3s against the host's containerd (node.sh.tftpl), with
   # the cloud controller (cluster.tf) owning node addresses and provider
   # IDs. At the default 10s housekeeping interval, cAdvisor walks every fd
@@ -87,7 +93,7 @@ locals {
       kubelet-arg = concat(local.k3s_node_config.kubelet-arg, ["system-reserved=${var.worker_system_reserved}"])
       server      = "https://${local.control_ip}:6443"
       token       = random_password.agent_token.result
-      node-taint  = ["${local.gvisor_pending_taint}=true:NoSchedule"]
+      node-taint  = [local.workspace_pool_taint, "${local.gvisor_pending_taint}=true:NoSchedule"]
     }))
     nfs_device = ""
     nfs_export = ""

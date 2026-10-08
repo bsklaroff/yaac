@@ -37,9 +37,9 @@ import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { pushImageToRegistry, registryReachable } from '#drivers/k8s/container/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import {
-  buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL,
+  buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY,
 } from '#drivers/k8s/substrate'
-import type { NodeTaint, PodToleration } from '#drivers/k8s/substrate'
+import type { NodeTaint } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { globalRoot, serverLocalRoot } from '@yaac/shared/paths'
 import { writeServerConfig } from '@yaac/shared/server-config'
@@ -108,12 +108,13 @@ function livePriorityClasses(): LivePriorityClass[] {
  * the class.
  */
 const POOL_TAINTS: NodeTaint[] = [
+  { key: WORKSPACE_POOL_KEY, value: 'true', effect: 'NoSchedule' },
+  { key: WORKSPACE_POOL_KEY, value: 'true', effect: 'NoExecute' },
+]
+/** A pool tainted with a key of its own, which no workspace tolerates. */
+const FOREIGN_POOL_TAINTS: NodeTaint[] = [
   { key: 'yaac.dev/sessions', value: 'true', effect: 'NoSchedule' },
   { key: 'yaac.dev/sessions', value: 'true', effect: 'NoExecute' },
-]
-const POOL_TOLERATIONS: PodToleration[] = [
-  { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
-  { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoExecute' },
 ]
 /** A transient taint kubelet adds and removes on its own. */
 const MEMORY_PRESSURE: NodeTaint = {
@@ -175,11 +176,6 @@ function nodeItem(
 
 /** The cluster's nodes; one control-plane node by default. */
 let clusterNodes: FakeObject[] = []
-/**
- * The gvisor RuntimeClass's `scheduling.tolerations`, which workspace pods
- * inherit. Empty on a local cluster.
- */
-let gvisorTolerations: PodToleration[] = []
 /** The RuntimeClasses installed; a case drops one. */
 let runtimeClassNames: string[] = []
 /** The live PriorityClasses; a case edits. */
@@ -261,7 +257,7 @@ function seedCluster(): void {
   fakeCluster.seed(
     ...clusterNodes,
     ...(priorityClasses as unknown as FakeObject[]),
-    ...(buildRuntimeClassManifests({ tolerations: gvisorTolerations }) as unknown as FakeObject[])
+    ...(buildRuntimeClassManifests() as unknown as FakeObject[])
       .filter((rc) => runtimeClassNames.includes(rc.metadata.name)),
     ...(runtimeClassNames.includes('runc')
       ? [{ apiVersion: 'node.k8s.io/v1', kind: 'RuntimeClass', metadata: { name: 'runc' } }]
@@ -448,7 +444,6 @@ describe('runClusterCheck', () => {
     tmpDir = await createTempDataDir()
     resetClusterCidrCache()
     clusterNodes = [nodeItem('yaac-control-plane')]
-    gvisorTolerations = []
     runtimeClassNames = ['gvisor', 'gvisor-nested', 'runc']
     priorityClasses = livePriorityClasses()
     serverSecurityContext = null
@@ -783,9 +778,8 @@ describe('runClusterCheck', () => {
       .toContain('not swept: yaac-worker (NotReady), yaac-worker2 (cordoned)')
   })
 
-  it('treats a tainted sessions pool as usable when the RuntimeClass tolerates it', async () => {
-    // A tainted workspace pool whose toleration is on the gvisor
-    // RuntimeClass (and so on every probe pod).
+  it('treats a pool tainted with the workspace pool key as usable', async () => {
+    // The gvisor RuntimeClass tolerates the key, and so does every probe pod.
     clusterNodes = [
       nodeItem('yaac-control-plane', { tainted: true }),
       nodeItem('yaac-pool-1', { taints: POOL_TAINTS }),
@@ -793,7 +787,6 @@ describe('runClusterCheck', () => {
       // and stays visible as such.
       nodeItem('yaac-pool-2', { taints: [...POOL_TAINTS, MEMORY_PRESSURE] }),
     ]
-    gvisorTolerations = POOL_TOLERATIONS
     stage()
     const { ok, results } = await check()
 
@@ -813,12 +806,69 @@ describe('runClusterCheck', () => {
     )
   })
 
-  it('points an all-tainted cluster at the RuntimeClass toleration, not at removing the taint', async () => {
-    // A workspace pool whose toleration was never declared: no workspace can
-    // run, but the fix must not be removing the taint.
+  it('leaves infrastructure-only nodes out, and skips the sandboxed gates while no other node is up', async () => {
+    // An EKS-style system node labelled infrastructure-only beside a
+    // tainted worker: only the worker is swept.
     clusterNodes = [
-      nodeItem('yaac-pool-1', { taints: POOL_TAINTS }),
-      nodeItem('yaac-pool-2', { taints: POOL_TAINTS }),
+      nodeItem('system-1', { labels: { [WORKSPACE_POOL_KEY]: 'false' } }),
+      nodeItem('pool-1', { taints: POOL_TAINTS }),
+    ]
+    stage()
+    let { results } = await check()
+    expect(byName(results, 'nodes')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'nodes')?.detail)
+      .toContain(`skipping system-1 (infrastructure only (${WORKSPACE_POOL_KEY}=false))`)
+    const probed = applied()
+      .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
+      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .map((m) => m.spec?.nodeName)
+    expect(probed).toEqual(['pool-1'])
+
+    // The pool scaled to zero: nowhere to run a sandboxed pod. The check
+    // still passes; those gates skip and no probe pod starts, while the
+    // rest still run.
+    clusterNodes = [nodeItem('system-1', { labels: { [WORKSPACE_POOL_KEY]: 'false' } })]
+    stage()
+    const idle = await check()
+    results = idle.results
+    expect(idle.ok).toBe(true)
+    expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'nodes')?.detail).toContain('1 node(s), none taking workspaces')
+    expect(byName(results, 'nodes')?.detail).toContain('the gates that run a sandboxed pod are skipped')
+    for (const gate of ['gvisor', 'probe', 'egress', 'npm-cache', 'nested-mount', 'per-node', 'storage-semantics']) {
+      expect(byName(results, gate)).toMatchObject({ status: 'skip' })
+      expect(byName(results, gate)?.detail).toContain('no Ready node takes workspaces')
+    }
+    for (const gate of ['gvisor-installer', 'datapath', 'veth-source', 'vap']) {
+      expect(byName(results, gate)?.status).not.toBe('skip')
+    }
+    expect(applied().map((c) => (c[0] as { metadata?: { name?: string } }).metadata?.name)
+      .filter((n) => n?.startsWith('yaac-cluster-check'))).toEqual([])
+
+    // A pool node that is up but unusable is not an idle pool: the
+    // sandboxed gates run, and the fix is the scheduling one.
+    for (const pool of [
+      nodeItem('pool-1', { taints: FOREIGN_POOL_TAINTS }),
+      nodeItem('pool-1', { taints: POOL_TAINTS, cordoned: true }),
+    ]) {
+      clusterNodes = [nodeItem('system-1', { labels: { [WORKSPACE_POOL_KEY]: 'false' } }), pool]
+      stage()
+      results = (await check()).results
+      expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
+      expect(byName(results, 'nodes')?.detail).toContain('none able to schedule a session')
+      expect(byName(results, 'nodes')?.fix).toContain(`taint it with the ${WORKSPACE_POOL_KEY} key`)
+      for (const gate of ['gvisor', 'probe']) {
+        expect(byName(results, gate)?.detail ?? '').not.toContain('no Ready node takes workspaces')
+      }
+    }
+  })
+
+  it('points a pool tainted with a key of its own at the pool key, not at removing the taint', async () => {
+    // No workspace tolerates the pool's own key, but the fix must not be
+    // removing the taint that keeps other workloads off it.
+    clusterNodes = [
+      nodeItem('yaac-pool-1', { taints: FOREIGN_POOL_TAINTS }),
+      nodeItem('yaac-pool-2', { taints: FOREIGN_POOL_TAINTS }),
     ]
     stage()
     const { ok, results } = await check()
@@ -831,7 +881,7 @@ describe('runClusterCheck', () => {
       'yaac-pool-1 (untolerated taint yaac.dev/sessions=true:NoSchedule, '
       + 'yaac.dev/sessions=true:NoExecute)',
     )
-    expect(nodes?.fix).toContain('scheduling.tolerations')
+    expect(nodes?.fix).toContain(`taint it with the ${WORKSPACE_POOL_KEY} key`)
     expect(nodes?.fix).toContain('rather than removing the taint')
     // The per-node check names the nodes too, rather than passing over an
     // empty set.

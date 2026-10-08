@@ -505,6 +505,41 @@ also has to tell the autoscaler about the label and the node's ephemeral
 storage in its node template. `infra/aws-eks` and `infra/hetzner-k3s`
 do all of this.
 
+### A dedicated workspace node pool
+
+Every node runs both workspaces and yaac's own infrastructure unless it
+says otherwise, through the `yaac.workspaces` key:
+
+- **A taint with that key** (conventionally `yaac.workspaces=true:NoSchedule`)
+  makes a node workspace-only. Both RuntimeClasses tolerate the key, with
+  any value or effect, and Kubernetes merges that toleration into every pod
+  naming them: workspace pods, builder pods and the check's probes, so
+  builds share the pool with workspaces. The server, registries, npm cache
+  and proxy declare no tolerations, so a rollout (an upgrade, `yaac server
+  restart`) cannot move them onto a node an autoscaler may drain. Only
+  per-node pods tolerate everything: the gVisor installer, netd and the
+  one-shot node-write pods.
+- **The label `yaac.workspaces=false`** makes a node infrastructure-only.
+  The gVisor installer still runs there, since every node needs its
+  containerd registry config to pull yaac's images, but it removes the
+  node's `yaac.gvisor` label instead of setting it, so the RuntimeClasses'
+  `nodeSelector` keeps workspaces off.
+
+A cluster that marks nothing runs everything everywhere. One with a
+tainted pool and an infrastructure-only system node, as `infra/aws-eks`
+has, keeps the two apart; `infra/hetzner-k3s` taints only its workers, so
+its control node runs both. Cluster add-ons a workspace needs on its node
+must tolerate the taint: the CNI, kube-proxy and the CSI node plugin
+behind `yaac-global`. Most node DaemonSets tolerate every taint already;
+the check's `per-node` probe reports a pool node where one is missing.
+
+`yaac cluster check` reports infrastructure-only nodes as skipped. When no
+Ready node takes workspaces and at least one is infrastructure-only, as
+with an autoscaled pool at zero, the `nodes` gate warns and the gates that
+run a sandboxed pod (`gvisor`, `probe`, `egress`, `npm-cache`,
+`nested-mount`, `per-node`, `storage-semantics`) skip rather than fail.
+Re-run the check while a workspace node is up to cover them.
+
 ### The CNI gate
 
 A byo cluster's Calico may be self-managed or provider-managed (GKE
@@ -788,24 +823,14 @@ tolerations are whatever the `gvisor` RuntimeClass declares in
 `scheduling.tolerations`, which Kubernetes merges into every pod naming the
 class.
 
-This is also how a **dedicated workspace node pool** works. Taint the pool,
-add the matching toleration once to the RuntimeClass, and workspace pods,
-builder pods and the check's pinned probes all inherit it. Scope the
-toleration to the pool's own taint key: a bare `{operator: Exists}`
-tolerates every taint, so every node looks eligible whatever its state.
-Builder pods share the class, so untrusted image builds compete with
-workspaces for the pool. Trusted infra names no RuntimeClass and stays off
-it. The one-shot node-write pods are the exception: pinned to each node by
-`nodeName`, they tolerate everything, because a node without its containerd
-`hosts.toml` cannot pull workspace images. When no node qualifies, the
-check lists each node and the taint that excluded it, and suggests adding
-the toleration to the RuntimeClass rather than removing the taint.
-
-There is no config setting for the toleration yet
-(docs/plans/workspace-node-pool.md). Install re-applies the
-RuntimeClasses without one, and server-side apply removes only fields yaac
-itself set, so a toleration added by hand (`kubectl apply`, `edit` or
-`patch`) survives a re-install.
+A node labelled `yaac.workspaces=false` is not eligible either ("A
+dedicated workspace node pool" above). When no node qualifies, the check
+lists each node and what excluded it, and for a tainted pool suggests
+tainting it with the `yaac.workspaces` key, which the RuntimeClasses
+already tolerate, rather than removing the taint. yaac owns the
+RuntimeClasses' tolerations: every install replaces them, so a toleration
+added by hand does not survive, and a pool tainted with a key of its own
+has to switch to `yaac.workspaces`.
 
 On a multi-node cluster the `per-node` gate pins one probe pod to each
 eligible node. Like a workspace pod, it pulls from the registry (with

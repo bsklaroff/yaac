@@ -8,6 +8,7 @@ import {
   GVISOR_NODE_LABEL,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
+  WORKSPACE_POOL_KEY,
   buildRuntimeClassManifests,
   gvisorInstallScript,
   gvisorInstallerHostMounts,
@@ -78,7 +79,7 @@ describe('buildRuntimeClassManifests', () => {
       kind: string
       metadata: { name: string }
       handler: string
-      scheduling: { nodeSelector: Record<string, string> }
+      scheduling: { nodeSelector: Record<string, string>; tolerations: unknown }
     }>
 
     expect(manifests.map((m) => m.metadata.name))
@@ -86,41 +87,17 @@ describe('buildRuntimeClassManifests', () => {
     expect(manifests.map((m) => m.handler)).toEqual(['runsc', 'runsc-nested'])
     expect(manifests.every((m) => m.apiVersion === 'node.k8s.io/v1' && m.kind === 'RuntimeClass'))
       .toBe(true)
-    // Admission adds this to every pod using the class, so a sandboxed pod
-    // only lands on nodes where the installer finished. It keys on the runtime
-    // label, not a node pool, so pools are configured in the installer alone.
+    // Admission adds both to every pod using the class: a sandboxed pod
+    // only lands on nodes where the installer finished, and may land on a
+    // workspace pool tainted with the pool key (any value or effect), which
+    // nothing else tolerates.
     for (const m of manifests) {
       expect(m.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
+      expect(m.scheduling.tolerations).toEqual([{ key: WORKSPACE_POOL_KEY, operator: 'Exists' }])
     }
     // Cluster-scoped and shared by coexisting installs: no namespace, no
     // install labels.
     expect(manifests.every((m) => !('namespace' in m.metadata))).toBe(true)
-    // No tolerations field by default, rather than an empty one, since
-    // cluster check reads it to decide which nodes can take a workspace.
-    expect(manifests.every((m) => !('tolerations' in m.scheduling))).toBe(true)
-  })
-
-  it('carries a sessions-pool toleration onto both classes when one is declared', () => {
-    // The single place a workspace pool is declared: admission adds this to
-    // workspace pods, builder pods and cluster check's probes alike. Both
-    // NoExecute and NoSchedule, as pool taints usually are.
-    const tolerations = [
-      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoSchedule' },
-      { key: 'yaac.dev/sessions', operator: 'Equal', value: 'true', effect: 'NoExecute' },
-    ]
-    const manifests = buildRuntimeClassManifests({ tolerations }) as Array<{
-      metadata: { name: string }
-      scheduling: { nodeSelector: Record<string, string>; tolerations?: unknown }
-    }>
-
-    expect(manifests.map((m) => m.metadata.name))
-      .toEqual([RUNTIME_CLASS_GVISOR, RUNTIME_CLASS_GVISOR_NESTED])
-    for (const m of manifests) {
-      expect(m.scheduling.tolerations).toEqual(tolerations)
-      // The selector is unchanged: it says where the runtime is, not which
-      // pool.
-      expect(m.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
-    }
   })
 })
 
@@ -311,6 +288,44 @@ describe('gvisorInstallScript', () => {
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
     }
+  })
+
+  it('labels every node for the runtime except one labelled infrastructure-only', async () => {
+    const label = async (metadata: { labels?: Record<string, string>; annotations?: Record<string, string> }): Promise<string> => {
+      // Pretty-printed, as the apiserver answers curl; the label patch is
+      // echoed rather than sent.
+      const node = JSON.stringify({ metadata }, null, 2)
+      const program = [
+        'set -eu',
+        'curl() {',
+        '  case "$*" in',
+        '    *"-X PATCH"*) printf %s "$*" | sed -n \'s/.*--data \\([^ ]*\\) .*/\\1/p\' ;;',
+        `    *) printf '%s' '${node}' ;;`,
+        '  esac',
+        '}',
+        'sa=/nonexistent',
+        shellFunction(gvisorInstallScript(), 'node_api') + '\n}',
+        shellFunction(gvisorInstallScript(), 'label_node') + '\n}',
+        'label_node',
+      ].join('\n')
+      const { stdout } = await runSh('sh', ['-c', program], {
+        env: { ...process.env, NODE_NAME: 'n1', KUBERNETES_SERVICE_HOST: '10.96.0.1', KUBERNETES_SERVICE_PORT: '443' },
+      })
+      return stdout
+    }
+    const on = JSON.stringify({ metadata: { labels: { [GVISOR_NODE_LABEL]: 'true', [GVISOR_NODE_VERSION_LABEL]: GVISOR_VERSION } } })
+    const off = JSON.stringify({ metadata: { labels: { [GVISOR_NODE_LABEL]: null, [GVISOR_NODE_VERSION_LABEL]: null } } })
+
+    expect(await label({})).toBe(on)
+    expect(await label({ labels: { [WORKSPACE_POOL_KEY]: 'true' } })).toBe(on)
+    // Only the label's own value counts: not a look-alike key (the dot is
+    // literal), nor the label quoted inside an annotation (k3s records its
+    // node args).
+    expect(await label({ labels: { pool: 'system', [WORKSPACE_POOL_KEY]: 'false' } })).toBe(off)
+    expect(await label({ labels: { 'yaacXworkspaces': 'false' } })).toBe(on)
+    expect(await label({
+      annotations: { 'k3s.io/node-args': JSON.stringify(['--node-label', `${WORKSPACE_POOL_KEY}=false`]) },
+    })).toBe(on)
   })
 
   it('tunes the node before installing the runtime, and never restarts containerd for it', () => {
