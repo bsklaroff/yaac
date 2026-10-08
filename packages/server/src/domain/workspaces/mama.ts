@@ -694,11 +694,11 @@ async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<
  * conversation or all of them, one `<conversation>/<name>` per line; or with
  * `file`, one of those files. Only reads, like `fetch`.
  *
- * Saving files is a file at a time rather than one archive because the
- * workspace may not be able to unpack one: GNU tar extracts through
- * `openat2`, which gVisor does not implement. The server never queries an
- * opencode database, which a sandboxed workspace wrote; the caller's script
- * does, in its own sandbox.
+ * Saving files is a file at a time rather than one archive because a
+ * workspace on a standalone image may not be able to unpack one: GNU tar
+ * extracts through `openat2`, which gVisor does not implement. The server
+ * never queries an opencode database, which a sandboxed workspace wrote; the
+ * caller's script does, in its own sandbox.
  */
 async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''

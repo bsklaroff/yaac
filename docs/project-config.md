@@ -84,7 +84,9 @@ agent CLIs. Two files customize it:
     ```
   - **Standalone:** any other `FROM` replaces the default image entirely. You
     must then install the agent CLIs yourself and set up the user as
-    [arbitrary-uid-images.md](arbitrary-uid-images.md) describes.
+    [arbitrary-uid-images.md](arbitrary-uid-images.md) describes. Its `tar`
+    is its own: a GNU tar that extracts through `openat2` (Ubuntu's from
+    26.04) cannot unpack nested paths in a pod, since gVisor lacks that call.
 - **`Dockerfile.user`** (yours, Settings → User Dockerfile or
   `yaac config edit-user-dockerfile`): applied last, on top of the image of
   every project you own, for things like editor or shell config. It must use the
@@ -113,3 +115,12 @@ yaac fixes that entry from the pod's postStart hook, which may run after the
 entrypoint starts, so `sudo`, `ssh` or `os.userInfo()` there can see the old
 one. See
 [arbitrary-uid-images.md](arbitrary-uid-images.md).
+
+The default image's `tar` is a wrapper (`/usr/local/bin/tar`): an extraction
+using only options bsdtar shares (`-xzf`, `-C`, `--strip-components`, …) runs
+bsdtar, because GNU tar cannot unpack nested paths under gVisor, and any
+other call runs GNU tar (`/usr/bin/tar`). So an extraction with a GNU-only
+option such as `--wildcards` still fails in a pod, and in a `Dockerfile.yaac`
+or `Dockerfile.user` step, which builds in a gVisor pod
+([trust-split-builds.md](trust-split-builds.md)). Drop the option (bsdtar
+globs member names anyway) or call `bsdtar` directly.

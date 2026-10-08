@@ -376,8 +376,8 @@ case "$1" in
       exit 2
     fi
     if [ -n "$out" ]; then
-      # A file per request, not one archive: GNU tar cannot unpack under
-      # gVisor, which lacks the openat2 call it extracts with.
+      # A file per request, not one archive: a standalone image's GNU tar
+      # cannot unpack under gVisor, which lacks the openat2 call it uses.
       # Every opencode conversation of a workspace hands out the same
       # database, so it is downloaded once.
       ask history '' workspace "$workspace" conversation "$conversation" files 1
