@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { drizzle } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { openDb, getDb, closeDb } from '#db/client'
+import { openDb, getDb, closeDb, NewerSchemaRefusal } from '#db/client'
 import { preferences } from '#db/schema'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 
@@ -173,6 +173,20 @@ describe('openDb', () => {
     } finally {
       await db.$client.close()
     }
+  })
+
+  it('refuses a database migrated by a newer server', async () => {
+    await freshDataDir()
+    await openDb()
+    const db = await getDb()
+    await db.$client.query(
+      'INSERT INTO drizzle.__drizzle_migrations (hash, created_at, name) VALUES ($1, $2, $3)',
+      ['x', Date.UTC(2099, 0, 1), '20990101000000_from_the_future'],
+    )
+    await closeDb()
+    const refused = openDb()
+    await expect(refused).rejects.toBeInstanceOf(NewerSchemaRefusal)
+    await expect(refused).rejects.toThrow(/migrated by a newer yaac.*20990101000000_from_the_future/)
   })
 
   it('reopens against the new dir when setDataDir changes it', async () => {
