@@ -172,6 +172,56 @@ describe('getWorkspaceChanges', () => {
       escape: { target: null, dir: false },
       broken: { target: null, dir: false },
     })
+
+    // The workspace runs the script, so its listing may name any path. One
+    // the file routes would refuse is dropped unopened, and a link is
+    // resolved only from a folder inside the checkout.
+    await fs.symlink(outside, path.join(dir, 'outdir'))
+    try {
+      const honest = await listing('list')
+      const crafted = ['../../outside/secret.txt', '/etc/passwd', '.git/config', './a.txt', '..', 'src/../..']
+      installFakeWorkspaceDriver({
+        find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
+        changes: async (jobName, request) => {
+          const reading = await hostChanges(jobName, request)
+          const read = reading.listing!
+          return {
+            ...reading,
+            listing: {
+              paths: [...read.paths, ...crafted],
+              links: [...read.links, ...crafted, 'outdir/secret.txt'],
+              ignored: [...read.ignored!, ...crafted.map((p) => `${p}/`)],
+              untrackedDirs: [...read.untrackedDirs!, ...crafted],
+              conflicted: [...read.conflicted, ...crafted],
+            },
+          }
+        },
+      })
+      // Where each resolved path's folder really is, at the time of the
+      // call, leaving out opening the checkout itself.
+      const realpathOf = fs.realpath.bind(fs)
+      const root = await realpathOf(dir)
+      const resolvedFrom: string[] = []
+      const realpath = vi.spyOn(fs, 'realpath').mockImplementation(async (p, ...rest) => {
+        const from = await realpathOf(path.dirname(String(p)))
+        const real = await realpathOf(p, ...rest)
+        if (real !== root) resolvedFrom.push(from)
+        return real
+      })
+      try {
+        const { version: _, ...out } = await listing('list')
+        const { version: __, ...expected } = honest
+        expect(out).toEqual({
+          ...expected,
+          symlinks: { ...honest.symlinks, 'outdir/secret.txt': { target: null, dir: false } },
+        })
+        expect(resolvedFrom.filter((d) => d !== root && !d.startsWith(`${root}/`))).toEqual([])
+      } finally {
+        realpath.mockRestore()
+      }
+    } finally {
+      await fs.rm(path.join(dir, 'outdir'))
+    }
   })
 
   it('collapses wholly ignored folders and keeps individually ignored files', async () => {
