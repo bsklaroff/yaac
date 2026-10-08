@@ -2,10 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { findExecutable, resolveCommandPath, resolveToolCliPath } from '#cli-resolve'
-
-// A name no machine has, so the $PATH lookup never finds it.
-const MISSING = 'yaac-definitely-missing-cli-xyz'
+import { findExecutable, resolveToolCliPath } from '#cli-resolve'
 
 describe('cli-resolve', () => {
   let tmpDir: string
@@ -49,23 +46,23 @@ describe('cli-resolve', () => {
     })
   })
 
-  describe('resolveCommandPath', () => {
-    it('finds a command through $PATH', async () => {
-      const p = await writeExecutable(tmpDir, MISSING)
-      process.env.PATH = `${tmpDir}${path.delimiter}${realPath ?? ''}`
-      expect(resolveCommandPath(MISSING)).toBe(p)
-    })
-
-    it('is null for a command that exists nowhere', () => {
-      expect(resolveCommandPath(MISSING)).toBeNull()
-    })
-  })
-
   describe('resolveToolCliPath', () => {
-    it('finds a tool CLI through $PATH', async () => {
-      const p = await writeExecutable(tmpDir, 'claude')
-      process.env.PATH = tmpDir
-      expect(resolveToolCliPath('claude')).toBe(p)
+    const realHome = process.env.HOME
+    afterEach(() => { process.env.HOME = realHome })
+
+    it('finds a tool CLI through $PATH, then in ~/.local/bin, else null', async () => {
+      process.env.HOME = tmpDir
+      const localBin = path.join(tmpDir, '.local', 'bin')
+      const onPath = path.join(tmpDir, 'bin')
+      await fs.mkdir(localBin, { recursive: true })
+      await fs.mkdir(onPath)
+      process.env.PATH = onPath
+      expect(resolveToolCliPath('codex')).toBeNull()
+
+      const installed = await writeExecutable(localBin, 'codex')
+      expect(resolveToolCliPath('codex')).toBe(installed)
+      const first = await writeExecutable(onPath, 'codex')
+      expect(resolveToolCliPath('codex')).toBe(first)
     })
   })
 })

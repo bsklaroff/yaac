@@ -108,15 +108,6 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   }
 
   const cleanup = async (): Promise<void> => {
-    // Reap any auth server spawned against this data dir; it would
-    // reconnect forever.
-    try {
-      const raw = await fs.readFile(path.join(dataDir, '.auth-daemon.lock'), 'utf8')
-      const lock = JSON.parse(raw) as { pid?: number }
-      if (typeof lock.pid === 'number') process.kill(lock.pid, 'SIGTERM')
-    } catch {
-      // no auth server ran, or it's already gone
-    }
     // A terminating pod or the detached teardown script may still be
     // writing here; removeScratchTree retries that and returns root-owned
     // leftovers.

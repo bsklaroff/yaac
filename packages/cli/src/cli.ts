@@ -30,7 +30,6 @@ import { configEditProject, configEditDockerfile, configEditUserDockerfile } fro
 import { configGitIdentity } from '#commands/config-git-identity'
 import { authFake } from '#commands/auth-fake'
 import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
-import { runAuthDaemon, startAuthDaemon, stopAuthDaemon, statusAuthDaemon } from '@yaac/auth-daemon/run'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
@@ -551,29 +550,5 @@ auth
     ).choices([...FAKE_AUTH_KINDS]),
   )
   .action(authFake)
-
-const authDaemon = auth
-  .command('server')
-  .description('Run the login broker that executes Claude/Codex sign-ins on this machine')
-
-authDaemon
-  .command('run')
-  .description('Run the auth server in the foreground')
-  .action(runAuthDaemon)
-
-authDaemon
-  .command('start')
-  .description('Start the auth server in the background')
-  .action(startAuthDaemon)
-
-authDaemon
-  .command('stop')
-  .description('Stop the background auth server')
-  .action(stopAuthDaemon)
-
-authDaemon
-  .command('status')
-  .description('Show whether the auth server is running and connected')
-  .action(statusAuthDaemon)
 
 program.parseAsync().catch(exitOnApiError)

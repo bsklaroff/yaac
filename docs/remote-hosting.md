@@ -15,9 +15,10 @@ SERVER MACHINE (on the tailnet)
 LAPTOP (on the tailnet, logged in as a tailnet user)
   yaac CLI          ── RPC + terminal WebSockets ─► server
   browser           ── https://srv.<tailnet>.ts.net
-  yaac auth server  ── outbound WS ─► server  (runs tool sign-ins locally)
+  desktop app       ── the webapp, plus its auth daemon's outbound WS ─► server
+                       (runs the webapp's tool sign-ins locally)
 
-PHONE: browser only. Full webapp, but no tool sign-in (that needs the CLI).
+PHONE: browser only. Full webapp, but no tool sign-in (that needs a laptop).
 ```
 
 No client holds a credential. The server works out who is calling from the
@@ -200,9 +201,12 @@ against a local or remote server:
   from the server, open your local `$EDITOR`, and save back through the
   server's validation.
 - **Tool credentials**: `yaac auth update` runs the Claude/Codex browser
-  sign-in on your machine through the auth server (a local helper that runs
-  the vendors' login CLIs and starts automatically), then sends the result
-  to the server. The webapp's sign-in cards use the same flow.
+  sign-in on your machine, then sends the result to the server. The
+  webapp's sign-in cards relay the same sign-in to the desktop app's auth
+  daemon (a helper inside the app that runs the vendors' login CLIs), so
+  they work only while the desktop app runs on the machine with the
+  browser. In a plain browser without it, sign in with `yaac auth update`
+  or paste a token.
 - **Git credentials**: managed in the webapp and assigned per project. An
   SSH key is generated and stored encrypted by the server; you register its
   public half with the git host (docs/git-credentials.md).
@@ -217,23 +221,20 @@ Things to keep in mind:
   host directory into a workspace; use `cacheVolumes` for a directory that
   should persist across workspaces.
 - **The git identity workspaces commit under is a per-user setting on the
-  server.** The auth server seeds yours from your machine's git config when
-  it starts and you have none. The auth server starts with the desktop app,
-  `yaac auth server start`, and the browser sign-in of `yaac auth update`,
-  but not with `yaac server start`, `yaac cluster install` or an API-key
-  login. A
+  server.** The desktop app and the browser sign-in of `yaac auth update`
+  seed yours from your machine's git config when you have none; `yaac
+  server start`, `yaac cluster install` and an API-key login do not. A
   CLI-only user sets it with `yaac config git-identity --name <name> --email
   <email>` (or Settings → General). Until then, workspace create is refused
   with that instruction.
 - **Workspaces run in your time zone, not the server's.** The web app, the
-  auth server and `yaac workspace create` report the device's zone, and
+  desktop app and `yaac workspace create` report the device's zone, and
   workspaces launch with it as `TZ`. With devices in several zones the last
   report wins, unless a zone is pinned in Settings → General.
 - **Machine-scoped commands** act on the machine they run on and ignore the
-  remote setting: `yaac server *`, `yaac cluster *`, and `yaac auth server
-  *`.
-- **A phone alone cannot sign in to tools**, since that needs the auth
-  server and so the CLI. Set credentials up from a laptop once.
+  remote setting: `yaac server *` and `yaac cluster *`.
+- **A phone alone cannot sign in to tools**, since that needs the desktop
+  app or the CLI. Set credentials up from a laptop once.
 - A client/server version mismatch prints a one-time warning (the server
   reports its build id on every response). Upgrade whichever side is behind.
 

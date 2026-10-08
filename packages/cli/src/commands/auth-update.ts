@@ -1,7 +1,13 @@
 import readline from 'node:readline/promises'
 import { getApiClient } from '@yaac/shared/server-api'
-import { ensureAuthDaemon } from '@yaac/shared/auth-daemon'
-import { runRelayedToolLogin } from '#commands/relayed-login'
+import { seedGitIdentityFromShell } from '@yaac/shared/git-identity-seed'
+import {
+  getToolLogin,
+  killAllToolLogins,
+  sendToolLoginInput,
+  setToolLoginPersistence,
+  startToolLogin,
+} from '@yaac/auth-daemon/tool-login'
 import {
   buildAuthPayload,
   promptForApiKey,
@@ -84,32 +90,91 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
   let result = await runToolLogin(tool)
 
   if (!result && (tool === 'claude' || tool === 'codex')) {
-    // Browser sign-in runs in the auth daemon on this machine, which saves
-    // the result straight to the (possibly remote) server.
-    try {
-      await ensureAuthDaemon()
-      const outcome = await runRelayedToolLogin(tool)
-      if (outcome === 'success') {
-        console.log(`${label} credentials saved.`)
-        return
-      }
-      if (outcome === 'error') {
-        process.exit(1)
-      }
-      // 'cli-missing': fall back to an API key.
-      console.log(`The ${label} CLI is not installed on this machine — enter an API key instead.`)
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err))
-      console.log('Falling back to API-key entry.')
+    const outcome = await runBrowserLogin(tool)
+    if (outcome === 'success') {
+      console.log(`${label} credentials saved.`)
+      return
     }
-    result = await promptForApiKey(tool)
+    if (outcome === 'error') process.exit(1)
+    console.log(`The ${label} CLI is not installed on this machine — enter an API key instead.`)
   }
-  if (!result) {
-    result = await promptForApiKey(tool)
-  }
+  result ??= await promptForApiKey(tool)
 
   const payload = buildAuthPayload(tool, result)
   const client = getApiClient()
   await client.auth[':tool'].$put({ param: { tool }, json: payload })
   console.log(`${label} credentials saved.`)
+}
+
+const POLL_MS = 500
+
+/**
+ * Run the vendor CLI's browser sign-in in this process, where the browser
+ * and its localhost OAuth callback are, and save the result to the (possibly
+ * remote) server. Prints the CLI's output, which carries the sign-in URL when
+ * no browser opened, and forwards a pasted authorize code. A machine with no
+ * git identity on the server gets one from the local git config first.
+ */
+async function runBrowserLogin(tool: 'claude' | 'codex'): Promise<'success' | 'cli-missing' | 'error'> {
+  const client = getApiClient()
+  setToolLoginPersistence(async (t, result) => {
+    await client.auth[':tool'].$put({ param: { tool: t }, json: buildAuthPayload(t, result) })
+  })
+  try {
+    await seedGitIdentityFromShell()
+  } catch (err) {
+    console.error(`Could not set the git identity: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  // However this process ends, the vendor CLI and its scratch config home,
+  // which holds a live refresh token, go with it.
+  process.once('exit', killAllToolLogins)
+  const abort = (): never => process.exit(130)
+  process.once('SIGTERM', abort)
+  process.once('SIGHUP', abort)
+
+  let view = await startToolLogin(tool)
+  if (view.status === 'error' && view.cliMissing) return 'cli-missing'
+  console.log('Complete the sign-in in your browser — vendor CLI output follows.')
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  rl.on('SIGINT', abort)
+  let pasted: string | null = null
+  void rl.question('Paste the authorize code here if the page shows one (Enter to skip): ')
+    .then((answer) => { pasted = answer.trim() })
+    .catch(() => { /* rl closed when the flow ended */ })
+
+  // Print only new lines. The output usually grows by appending; if the
+  // dedupe in presentableOutput shrinks it, resync without reprinting.
+  let seenLines = 0
+  const printNew = (output?: string): void => {
+    if (!output) return
+    const lines = output.split('\n')
+    if (lines.length < seenLines) seenLines = lines.length
+    for (; seenLines < lines.length; seenLines++) console.log(`  ${lines[seenLines]}`)
+  }
+  printNew(view.output)
+
+  try {
+    while (view.status === 'running') {
+      await new Promise((r) => setTimeout(r, POLL_MS))
+      if (pasted) {
+        try {
+          sendToolLoginInput(view.id, pasted)
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err))
+        }
+      }
+      pasted = null
+      view = getToolLogin(view.id)
+      printNew(view.output)
+    }
+  } finally {
+    rl.close()
+  }
+
+  if (view.status === 'success') return 'success'
+  if (view.cliMissing) return 'cli-missing'
+  console.error(view.error ?? 'Sign-in failed.')
+  return 'error'
 }

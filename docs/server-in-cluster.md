@@ -556,9 +556,9 @@ the stored credentials, in the database, are readable only by the server.
 The pod mounts the tiers, so anything inside them is visible to the pod and
 owned by its uid. Some files belong to the user's machine, not the server:
 `server.json` (the origin this machine's clients dial, and the driver),
-the auth daemon's lock and its `login-*` scratch, and the installer's caches
-(the Calico manifest, the podman-pid file). Only processes on the user's
-machine read and write them: the CLI, the auth daemon, the desktop app, and
+the `login-*` scratch of a tool sign-in, and the installer's caches (the
+Calico manifest, the podman-pid file). Only processes on the user's machine
+read and write them: the CLI, the desktop app and its auth daemon, and
 `yaac cluster install`.
 
 These form the CLIENT-LOCAL tier (`clientLocalRoot` in `shared/paths.ts`),
@@ -608,16 +608,15 @@ object (newest wins).
   running, the webapp's `127.0.0.1:<port>` links refuse to connect.
 - **The git identity is a per-user setting on the server.** Workspaces
   commit under an identity stored in the database, not one copied from
-  whichever machine ran install. The auth server seeds it from your
-  machine's git config when it starts (under the desktop app, `yaac auth
-  server start`, or a Claude/Codex browser sign-in; `yaac cluster install`
-  does not start it). Edit it in Settings → General or with `yaac config
-  git-identity`; no re-install needed. A create for an owner without one is
-  refused, with where to set it. A prewarmed spare has its identity baked
+  whichever machine ran install. The desktop app and a Claude/Codex
+  browser sign-in with `yaac auth update` seed it from your machine's git
+  config; `yaac cluster install` does not. Edit it in Settings → General
+  or with `yaac config git-identity`; no re-install needed. A create for an
+  owner without one is refused, with where to set it. A prewarmed spare has its identity baked
   in when warmed, so claiming it re-applies the current identity.
 - **The time zone is a per-user setting on the server.** A pod runs in
   UTC, so every workspace launches with `TZ` set to a zone the clients
-  report: the web app on load, the auth server on start, and `yaac
+  report: the web app on load, the desktop app on start, and `yaac
   workspace create`. Picking a zone in Settings → General pins it, and
   reports then leave it alone. A
   project's own `TZ` wins, and a workspace keeps the zone it launched with.

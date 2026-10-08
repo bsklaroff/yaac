@@ -134,7 +134,7 @@ registered in `server-run`, outside `buildApp`, so
 - **Tool sign-ins** are `tool_credentials` rows, encrypted, one per user
   and tool. `/auth/*` acts on the caller's own: `/auth/list` lists only
   theirs and `/auth/clear` with `service: all` clears only theirs.
-- **The auth daemon** (`yaac auth server`) holds one socket per user in
+- **The desktop app's auth daemon** holds one socket per user in
   `authAgentHub`, and a connection replaces only its own user's socket.
   Login and install flows carry their owner and answer 404 to anyone else,
   so no user can receive an OAuth code another user pastes. The daemon

@@ -131,16 +131,6 @@ async function closeApp(app) {
   }
 }
 
-/** Reap the login broker the shell spawns, so it does not outlive the run. */
-function stopAuthDaemon() {
-  try {
-    const lock = JSON.parse(fs.readFileSync(path.join(CLIENT_DIR, '.auth-daemon.lock'), 'utf8'))
-    if (typeof lock.pid === 'number') process.kill(lock.pid, 'SIGTERM')
-  } catch {
-    // no daemon ran, or it is already gone
-  }
-}
-
 async function shot(win, name) {
   await win.screenshot({ path: path.join(SHOTS, `desktop-${name}.png`) })
   console.log(`    screenshot -> ${SHOTS}/desktop-${name}.png`)
@@ -251,7 +241,6 @@ main()
     process.exitCode = 1
   })
   .finally(() => {
-    stopAuthDaemon()
     yaacQuiet('server', 'stop')
     fs.rmSync(DATA_DIR, { recursive: true, force: true })
     fs.rmSync(CLIENT_DIR, { recursive: true, force: true })

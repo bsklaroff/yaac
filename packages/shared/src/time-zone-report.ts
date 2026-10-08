@@ -7,9 +7,9 @@ import { getApiClient } from './server-api'
  * route decides). Skipped inside a workspace, whose zone is the one the
  * server gave it, or UTC when it had none.
  */
-export async function reportDeviceTimeZone(): Promise<void> {
+export async function reportDeviceTimeZone(client = getApiClient()): Promise<void> {
   if (env.workspaceId !== undefined) return
-  await getApiClient().config['time-zone'].$put({
+  await client.config['time-zone'].$put({
     json: { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
   })
 }

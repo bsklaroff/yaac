@@ -59,16 +59,13 @@ becomes a core formula and the trust step disappears with no other change
 Packaging exists but produces only a local, unsigned build
 (packages/desktop/README.md, "Packaging (macOS)"):
 
-- `pnpm desktop:package` runs `pnpm -w build`, `tsup`,
-  `scripts/stage-server.ts` and `electron-builder`, producing
+- `pnpm desktop:package` runs `tsup` and `electron-builder`, producing
   `packages/desktop/dist-app/`. `pnpm desktop:install` then copies it into
   `/Applications` with `ditto`.
-- `stage-server.ts` stages the publish artifact (`pnpm pack` plus
-  `npm install --omit=dev`) and a copy of the build machine's `node`.
-  `scripts/after-pack.cjs` copies both into `yaac.app/Contents/Resources`.
-  The packaged app uses them only to run the auth daemon
-  (`resolveYaacCommand` in `src/server-process.ts`). A dev run
-  (`pnpm desktop:dev`) runs `yaac` from PATH instead.
+- The app carries no server and no Node of its own. It bundles the auth
+  daemon and runs it in a `utilityProcess` that dies with the app; node-pty
+  ships outside the asar. It is the only auth daemon on a machine:
+  `yaac auth update` signs in in-process.
 - The shell never starts or stops a server. When the selected server on
   this machine cannot be reached, the connect page's hint says to run
   `yaac server start` (`src/flow.ts`).
@@ -86,131 +83,11 @@ The gaps for a distributable app are in
 
 ## Order
 
-The formula split (Phase 3) and the tray (Phase 4) are independent of each
-other and of the daemon phases, and can land in any order. The real
-dependencies are:
+The formula split (Phase 1), the tray (Phase 2) and signing (Phase 3) are
+independent of each other and can land in any order. Phase 4 (the `.dmg`)
+comes after Phase 3, and Phase 5 (the cask) after all the others.
 
-- Phases 1 and 2 land as one change. The app starts its daemon today
-  through `yaac auth server run`, which Phase 1 deletes, and Phase 2's
-  lock-free daemon assumes the CLI no longer runs one.
-- Phase 5 (signing) after Phase 2, which removes the bundled Node it would
-  otherwise have to sign.
-- Phase 6 (the `.dmg`) after Phase 5, and Phase 7 (the cask) after all the
-  others.
-
-## Phase 1: take the auth daemon out of the CLI
-
-The auth daemon is the login broker: it runs the Claude and Codex CLIs'
-browser sign-ins on the user's machine, where the browser and the vendors'
-localhost OAuth callbacks are, and saves the result to the (possibly
-remote) server. The server relays sign-in requests to it over a WebSocket,
-so a browser anywhere can start one.
-
-The CLI runs a daemon for two things:
-
-- **`yaac auth update claude|codex`** calls `ensureAuthDaemon()`, then
-  drives the sign-in through the server's relay routes
-  (`relayed-login.ts`), like the web app's sign-in cards.
-- **`yaac auth server run|start|stop|status`** let a user of the web app in
-  a plain browser start a daemon for its sign-in cards.
-
-The relay only matters when the request starts in a browser. The CLI
-already runs where the login has to happen, so it does not need it. Phase
-2 gives the desktop app a daemon of its own, and this phase makes that the
-only one:
-
-- **`yaac auth update` signs in in-process.** It calls the daemon package's
-  login code (`tool-login.ts`) directly, polls it locally as
-  `relayed-login.ts` polls the server today, and saves the result with
-  `PUT /auth/:tool`. It also seeds the git identity from local git config
-  when the server has none (`seedGitIdentityFromShell`), as starting the
-  daemon does today. `relayed-login.ts` goes.
-- **Delete `yaac auth server *`** and its e2e test
-  (`test/e2e-cli/auth-daemon.test.ts`).
-- **Delete the shared daemon machinery** in `@yaac/shared/auth-daemon`: the
-  lock file, the detached spawn, `ensureAuthDaemon`, and their tests
-  (`packages/shared/test/auth-daemon.test.ts`). What the app still needs to
-  start a daemon moves into `packages/desktop`.
-- **Install Codex without npm.** The daemon's "Install" button runs
-  Claude's standalone installer (`curl … | bash`, into `~/.local/bin`) but
-  installs Codex with `npm install -g`, failing when npm is missing. OpenAI
-  publishes an equivalent installer as an asset of every Codex release:
-  `install.sh` with `--release <version>` and `CODEX_NON_INTERACTIVE=1`
-  installs the native binary into `~/.local/bin` and checks it against the
-  release's SHA-256 sums. `installArgv` in `tool-install.ts` fetches that
-  script from the pinned release
-  (`https://github.com/openai/codex/releases/download/rust-v<version>/install.sh`)
-  and runs it, and the "npm was not found" branch goes away. Neither
-  sign-in then needs Node on the machine, which matters once the app
-  carries the daemon without the CLI.
-
-**What users lose.** The web app's sign-in cards in a plain browser work
-only while the desktop app runs on that machine. Without it (Linux, which
-has no app, or a Mac user in a browser), sign-in is `yaac auth update` in a
-terminal, or pasting a token. The cards and the server's "no auth server
-connected" answer say so instead of naming `yaac auth server start`.
-
-**Docs.** docs/remote-hosting.md (the diagram, "Tool credentials", the git
-identity and time zone notes, "Machine-scoped commands", "A phone alone
-cannot sign in"), docs/server-in-cluster.md (git identity, time zone),
-docs/multi-user.md and docs/server-selection.md describe the daemon as the
-desktop app's. The Settings copy in `SettingsButton.tsx` that names the auth
-server follows.
-
-Browser sign-in without the app is given up deliberately. The app itself
-starts its daemon today by running `yaac auth server run`, which this phase
-deletes, so it lands in the same change as Phase 2.
-
-Exit check: `yaac auth update claude` and `yaac auth update codex` complete
-a browser sign-in against a remote server with no daemon running, and seed
-the git identity when it is unset. `yaac auth server` is gone from
-`yaac --help`. On a machine without npm, the Codex "Install" button
-installs Codex and the sign-in then succeeds.
-
-## Phase 2: the app bundles the auth daemon and runs `yaac` from PATH
-
-The app keeps one part of the CLI: the auth daemon, the login broker that
-runs Claude's and Codex's browser sign-ins on this machine. Everything else
-it gets from `yaac` on PATH. The daemon is small (`packages/auth-daemon`:
-`ws`, `@yaac/shared` and `@lydell/node-pty`), and Electron already contains
-Node, so bundling it adds no Node of our own.
-
-**Delete the bundled server and Node:** `scripts/stage-server.ts`,
-`scripts/after-pack.cjs`, the `afterPack` and `asar: false` entries in
-`electron-builder.yml`, and the `stage-server` step of `app:build`.
-
-**Run the daemon inside the app.** tsup bundles the daemon's entry into the
-app as it bundles the main process. The main process runs it in an Electron
-`utilityProcess`, so it lives exactly as long as the app: Quit stops it.
-It is the only daemon on the machine (Phase 1), so it needs no lock file or
-detached spawn. `resolveYaacCommand` and the packaged/dev split in
-`src/server-process.ts` go away. A dev run (`pnpm desktop:dev`) runs the same
-bundled daemon.
-
-`packages/desktop` may import only `@yaac/shared` today. The boundary table
-in AGENTS.md and the eslint import zones allow it `@yaac/auth-daemon` too, as
-the CLI already has.
-
-- **node-pty.** The Claude login needs a PTY, so node-pty's native module
-  ships in the app, outside the asar (`asarUnpack`), where electron-builder
-  signs it. It must load under Electron's Node: node-pty 1.x targets Node's
-  stable native API (N-API), so no rebuild should be needed. Verify this
-  early, since it decides whether `@electron/rebuild` joins the build.
-- **PATH.** A Finder launch gets the OS's minimal PATH, with no
-  `/opt/homebrew/bin` or `~/.local/bin`. The app already resolves the
-  login-shell PATH for the daemon's children (claude, codex, the
-  installers). It hands the same PATH to the daemon and uses it to find
-  `yaac` for the tray.
-
-Update packages/desktop/README.md ("Prerequisites", "Packaging (macOS)",
-the auth daemon paragraph under "Run") to match: the packaged app carries
-the auth daemon and needs `yaac` on PATH only for a server on this Mac.
-
-Exit check: a packaged build with no `Resources/server` or `Resources/node`,
-launched from Finder, runs the daemon, completes a Claude and a Codex
-browser sign-in against a remote server, and stops the daemon on Quit.
-
-## Phase 3: rename `yaac` to `yaac-server` and split out `yaac-cluster`
+## Phase 1: rename `yaac` to `yaac-server` and split out `yaac-cluster`
 
 - **`yaac.rb` becomes `yaac-server.rb`.** It keeps the npm tarball, `node`,
   `tmux`, `socat`, `fd`, `ripgrep`, and `uses_from_macos` `curl`, `git`,
@@ -253,7 +130,7 @@ Exit check: on a clean Mac, `brew trust bsklaroff/yaac` and
 `yaac cluster install` brings up a kind cluster that `yaac cluster check`
 passes.
 
-## Phase 4: the tray starts and stops this machine's server
+## Phase 2: the tray starts and stops this machine's server
 
 A cask user has the CLI, but the app should not send them to a terminal to
 start a server. Starting and stopping are explicit choices in the tray.
@@ -300,15 +177,14 @@ back. Quitting the app leaves a running server running. After installing a
 newer `yaac`, the tray offers a restart, and the restarted server reports
 the new version.
 
-## Phase 5: signing and notarization
+## Phase 3: signing and notarization
 
 A cask download gets the `com.apple.quarantine` attribute, and Gatekeeper
 refuses an app that is not notarized ("damaged and can't be opened").
 Shipping an unsigned cask that strips quarantine is what Homebrew
 discourages, so notarization is required, not polish.
 
-With the bundled Node gone (Phase 2), the bundle is an Electron app plus
-node-pty's native module, which electron-builder signs and notarizes with
+The bundle is an Electron app plus node-pty's native module, which electron-builder signs and notarizes with
 no custom steps:
 
 1. An Apple Developer ID Application certificate (paid Apple Developer
@@ -326,14 +202,14 @@ real browser download, or `xattr -w com.apple.quarantine …`) opens with no
 Gatekeeper prompt, starts the auth daemon and a server from the tray, and
 drives a workspace end to end.
 
-## Phase 6: a `.dmg` on a GitHub Release
+## Phase 4: a `.dmg` on a GitHub Release
 
 - Add `dmg` to `mac.target`.
 - Upload the `.dmg` as an asset on the `v<version>` GitHub Release. The
   cask's `url` uses `version` and is pinned by `sha256`, the same way
   `yaac-server.rb` pins the npm tarball.
 
-## Phase 7: the cask
+## Phase 5: the cask
 
 Add `homebrew/Casks/yaac-desktop.rb` next to `homebrew/Formula/`, so it is
 reviewed with the code it packages, and mirror it into the tap's `Casks/`
@@ -379,7 +255,7 @@ it opens, but it gets no CLI, and nothing updates the app.
 
 Without the CLI the app still works fully as a client of a remote server:
 the picker, the window, notifications, port forwards and the auth daemon
-are all the app's own (Phase 2). The only thing missing is a server on this
+are all the app's own. The only thing missing is a server on this
 Mac, for which the connect page says to install
 `bsklaroff/yaac/yaac-server`.
 
@@ -447,13 +323,13 @@ steps and check that `yaac cluster install` and `yaac cluster check` pass.
   Revisit once the manual flow has run a few times.
 - **Refusing a database migrated by a newer server.** `getDb()` runs
   `migrate()` with no check that the database is ahead of the code, so a
-  downgrade runs against an unknown schema. With one copy of the server
-  code this is no longer specific to the app; it is worth its own change.
+  downgrade runs against an unknown schema. It concerns every install, not
+  just the app's, so it is worth its own change.
 - **Intel Macs.** The cask is arm64-only, since the app is built on and for
   arm64.
 - **Linux and Windows packages** (AppImage, deb, MSI). Linux installs from
   source.
-- **homebrew-core and homebrew-cask.** After Phase 3, `yaac-server` has no tap
+- **homebrew-core and homebrew-cask.** After Phase 1, `yaac-server` has no tap
   dependencies, and the cask would depend only on it. Moving `yaac-server` to
   homebrew-core removes the trust step, and moving the cask to
   homebrew-cask drops the `bsklaroff/yaac/` prefix. Both repos require

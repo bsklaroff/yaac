@@ -391,8 +391,8 @@ function ShortcutsPane(): JSX.Element {
 /**
  * The git identity this server's workspaces commit under. It is a server
  * setting because the server's host may have no git config (a k8s pod) or
- * someone else's (a remote install). The CLI and auth daemon seed it from
- * your machine's git config on first contact, so it is usually already set.
+ * someone else's (a remote install). `yaac auth update` and the desktop app
+ * seed it from your machine's git config, so it is usually already set.
  */
 function GitIdentityField(): JSX.Element {
   const [name, setName] = useState<string | null>(null)
@@ -427,8 +427,8 @@ function GitIdentityField(): JSX.Element {
     <Field
       label="Git identity"
       hint={identity === null
-        ? 'Not set — workspaces cannot be created until it is. The yaac CLI and '
-          + 'the auth server fill this in from your machine\'s git config.'
+        ? 'Not set — workspaces cannot be created until it is. The yaac desktop '
+          + 'app and `yaac auth update` fill this in from your machine\'s git config.'
         : 'What workspaces on this server commit as.'}
     >
       <form onSubmit={submit}>
@@ -462,7 +462,7 @@ function GitIdentityField(): JSX.Element {
 
 /**
  * The time zone this server's workspaces launch with. Automatic follows the
- * device that last opened the web app, started the auth server or created a
+ * device that last opened the web app or the desktop app, or created a
  * workspace from the CLI; picking a zone here pins it.
  */
 function TimeZoneField(): JSX.Element {

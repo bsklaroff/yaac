@@ -462,9 +462,9 @@ export const testEnv = {
 
   /**
    * `YAAC_E2E_{CLAUDE,CODEX}_INSTALL_CLI` — replaces the installer argv the
-   * server's web install flow spawns (claude's `curl | bash` installer /
-   * `npm install -g @openai/codex`) with a stub, so tests never install
-   * real software. Value is a JSON argv array.
+   * auth daemon's install flow spawns (the vendors' `curl | bash`
+   * installers) with a stub, so tests never install real software. Value is
+   * a JSON argv array.
    */
   toolInstallCliHook(tool: AgentTool): string[] | undefined {
     const raw = tool === 'claude'

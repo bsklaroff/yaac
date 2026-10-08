@@ -388,3 +388,23 @@ and must be deleted by hand.
   (`ls ~/.yaac/server-local`, or the server-local claim under the
   in-cluster server), other than a stale one beside the built-in user's
   dir, which the start log names and which can be deleted.
+
+## Stopping the auth daemon an older CLI left running
+
+Older CLIs ran the auth daemon as a detached process (`yaac auth server
+run`, started by `yaac auth update`, `yaac auth server start` or an older
+desktop app) and recorded it in `~/.yaac-client/.auth-daemon.lock`. It
+survives an upgrade, and nothing in the current tree starts or stops one.
+
+- **What it reads.** `stopLegacyAuthDaemon` in
+  `packages/desktop/src/server-process.ts`, run once at app start before
+  the app's own daemon is forked. It reads the lock, removes it, and sends
+  SIGTERM to its pid if `ps` still shows that pid running `auth server run`.
+- **What breaks silently if it goes too early.** The server keeps the newest
+  auth socket for each user, and both daemons reconnect within a second of
+  losing theirs. So the old daemon and the app's take the socket from each
+  other in a loop, and every handover cancels the sign-ins in flight on the
+  losing side. Web sign-ins fail intermittently until the machine reboots.
+- **When it is safe to remove.** Once no supported upgrade starts from a
+  release that had `yaac auth server`, so no machine can still hold a
+  `.auth-daemon.lock`.
