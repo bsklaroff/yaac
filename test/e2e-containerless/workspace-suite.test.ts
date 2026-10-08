@@ -541,9 +541,8 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await fs.mkdir(path.join(checkout, 'node_modules', 'pkg'), { recursive: true })
     await fs.writeFile(path.join(checkout, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1\n')
 
-    const files = await (await api('/files')).json() as {
-      paths: string[]; ignored: string[]; conflicted: string[]
-    }
+    const { listing: files } = await (await api('/changes?diff=0&listing=full')).json() as WorkspaceChanges
+    if (!files) throw new Error('the changes answer carries no listing')
     expect(files.paths).toEqual(expect.arrayContaining(['README.md', 'notes/todo.md']))
     expect(files.ignored).toContain('node_modules/')
     expect(files.conflicted).toEqual([])
@@ -1400,7 +1399,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ path: 'notes/todo.md', content: 'mine\n' })
     // Listing runs git inside the workspace, so it needs it running.
-    expect((await fetch(`${origin()}/api/workspace/${workspaceId}/files`)).status).toBe(409)
+    expect((await fetch(`${origin()}/api/workspace/${workspaceId}/changes?listing=paths`)).status).toBe(409)
   })
 
   // The launch updates the checkout's `origin/*` from the main clone.
@@ -1445,8 +1444,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       .resolves.toBeDefined()
     expect((await execFileAsync('git', ['-C', checkout, 'rev-parse', base])).stdout.trim())
       .toBe(upstream)
-    const files = await (await fetch(`${origin()}/api/workspace/${workspaceId}/files`)).json() as { paths: string[] }
-    expect(files.paths).toEqual(expect.arrayContaining(['README.md', 'notes/todo.md']))
+    const { listing: files } = await (
+      await fetch(`${origin()}/api/workspace/${workspaceId}/changes?diff=0&listing=paths`)
+    ).json() as WorkspaceChanges
+    expect(files?.paths).toEqual(expect.arrayContaining(['README.md', 'notes/todo.md']))
 
     // The pod's conversations resume here: claude's project folder for this
     // checkout links to the history, and each file-history dir and rollout

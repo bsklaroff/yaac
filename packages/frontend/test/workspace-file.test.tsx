@@ -408,6 +408,8 @@ describe('WorkspaceFile', () => {
     changes = {
       base: 'b'.repeat(40),
       baseResolved: true,
+      branch: 'main',
+      comparison: null,
       files: [{
         path: 'a.ts', oldPath: 'old.ts', status: 'renamed', additions: 3, deletions: 1, binary: false,
         stages: { committed: { additions: 2, deletions: 1 }, untracked: { additions: 1, deletions: 0 } },

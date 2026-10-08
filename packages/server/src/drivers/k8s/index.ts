@@ -81,7 +81,7 @@ export function createK8sDriver(): WorkspaceDriver {
     findForTeardown: (workspaceId, opts) => findWorkspaceForTeardown(workspaceId, opts),
     list: (projectId, opts) => listWorkspaces(projectId, opts),
     count: () => countWorkspaces(),
-    changes: (jobName, base, defaultBase, diff) => getWorkspaceChanges(jobName, base, defaultBase, diff),
+    changes: getWorkspaceChanges,
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => k8sReconcileSteps(),
 

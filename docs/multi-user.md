@@ -76,7 +76,7 @@ There are two access levels:
 
 - **`reader`**: any user, any resource. Workspace lists and details,
   transcripts, diffs, project pages, build files, and the file explorer's
-  reads of a teammate's working tree (`/files`, `/dir`, `/file`,
+  reads of a teammate's working tree (`/changes`, `/dir`, `/file`,
   `/file-at`). `/file-at` runs `git cat-file` in the running workspace,
   but only for a full hex object id and a confined path, under the
   owner's own git config, so a reader gains no execution and, under

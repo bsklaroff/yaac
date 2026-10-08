@@ -1,13 +1,12 @@
 import type { JSX } from 'react'
-import { keepPreviousData, useQuery } from '@tanstack/react-query'
+import { ServerError } from '@yaac/shared/errors'
 import { useUiStore } from '#lib/store'
-import { api } from '#lib/api'
 import { BranchIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
 import { lineTotals } from '#lib/gitStatus'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
-import type { WorkspaceGitStatus } from '@yaac/shared/types'
+import type { BranchComparison } from '@yaac/shared/types'
 
 /**
  * Strip above a workspace's panes saying how far HEAD is ahead of and behind
@@ -19,30 +18,32 @@ import type { WorkspaceGitStatus } from '@yaac/shared/types'
  * would resize the panes below and send a SIGWINCH to the agent's TUI.
  */
 export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Element {
-  const pick = useUiStore((s) => s.changesBase[workspaceId])
+  // Slow, since the bar is always up and each poll walks the working tree.
+  // Asking for the paths keeps the explorer's tree (and the terminal's file
+  // links) ready before the explorer opens; they cost no second walk.
   // Reading `dataUpdatedAt` re-renders on every poll, which keeps
   // "fetched 5m ago" current.
-  const { data, dataUpdatedAt: _polled } = useQuery({
-    queryKey: ['git-status', workspaceId, pick ?? null],
-    queryFn: () => api.workspace[':id']['git-status'].$get({
-      param: { id: workspaceId },
-      query: pick ? { base: pick } : {},
-    }),
-    refetchInterval: 10_000,
-    staleTime: 5_000,
-    // A new pick keeps the old line until its answer lands.
-    placeholderData: keepPreviousData,
-  })
-  // Slow, like the ahead/behind count: the bar is always up, and each poll
-  // walks the working tree.
-  const { data: changes } = useWorkspaceChanges(workspaceId, { poll: 10_000 })
+  const { data, error, isError, dataUpdatedAt: _polled } = useWorkspaceChanges(
+    workspaceId, { listing: 'paths', poll: 10_000 },
+  )
   const openChanges = useUiStore((s) => s.openChanges)
-  const files = changes?.files ?? []
+  const files = data?.files ?? []
+  // A failed poll leaves the last answer in `data`; show why instead of it.
+  // A stopped workspace has nothing to say.
+  if (isError) {
+    return (
+      <div className="flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 text-warning md:-mt-1.5">
+        {!(error instanceof ServerError && error.code === 'CONFLICT') && (
+          <span className="truncate" title={error.message}>Git status unavailable: {error.message}</span>
+        )}
+      </div>
+    )
+  }
   return (
     <div className="flex h-5 shrink-0 items-start gap-2 px-2 text-[11px] leading-4 text-text-dim md:-mt-1.5">
-      {data?.base && (
+      {data?.branch && (
         <span className="min-w-0 truncate">
-          {describe(data.base, data.comparison)}
+          {describe(data.branch, data.comparison)}
           {data.comparison?.fetchedAt && (
             <span className="text-text-faint"> · fetched {relativeAge(data.comparison.fetchedAt)}</span>
           )}
@@ -75,7 +76,7 @@ function refLabel(ref: string): JSX.Element {
   )
 }
 
-function describe(base: string, comparison: WorkspaceGitStatus['comparison']): JSX.Element {
+function describe(base: string, comparison: BranchComparison | null): JSX.Element {
   if (!comparison) return <>No branch named {refLabel(base)} to compare with</>
   const { ref, ahead, behind } = comparison
   const label = refLabel(ref)

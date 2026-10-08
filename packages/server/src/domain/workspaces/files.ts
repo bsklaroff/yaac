@@ -12,8 +12,13 @@ import type {
   WorkspaceFileAtRev,
   WorkspaceFiles,
   WorkspaceFileSaved,
-  WorkspaceGitStatus,
+  BranchComparison,
+  WorkspaceChanges,
 } from '@yaac/shared/types'
+import { workspaceDriver } from '#drivers/driver'
+import {
+  CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, WorkspaceExecError, type ChangesReading,
+} from '#drivers/contract'
 import { lastFetchedAtMs } from '#domain/git'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
@@ -22,15 +27,15 @@ import {
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { workspaceForkBranch } from './fork-branch'
-import { checkoutAheadBehind, checkoutBlobAt, listCheckoutFiles } from './checkout-git'
+import { checkoutBlobAt } from './checkout-git'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
 
 /**
  * The webapp file editor's access to a workspace checkout
  * (docs/file-editor.md). Reads and writes use plain `fs` on the server's view
- * of the checkout, so they work for stopped workspaces too. The listing and
- * ahead/behind count need the checkout's git, which runs inside the
- * workspace, so they require it to be running.
+ * of the checkout, so they work for stopped workspaces too. The changes,
+ * the ahead/behind count and the listing need the checkout's git, which
+ * runs inside the workspace, so they require it to be running.
  *
  * The checkout is agent-controlled, so every access goes through a confined
  * root (`#lib/confined-fs`) that follows symlinks only while they stay
@@ -233,57 +238,88 @@ async function findEmptyDirs(
 }
 
 /**
- * Every path in the checkout, for the explorer's tree: gitignore-aware from
- * git, plus the ignored entries (collapsed per wholly ignored folder), the
- * folders holding no file, what each symlink leads to, and which files have
- * a merge conflict.
+ * Everything the webapp polls about a running workspace's checkout: the
+ * diff against its base, how far HEAD is from the base branch, and, when
+ * `listing` is asked for, every path for the explorer's tree.
+ *
+ * An explicit `base` wins; otherwise the default is the recorded fork
+ * branch (`workspaceForkBranch`). Relying on `@{upstream}` instead would
+ * show no changes once the agent pushes its branch, since the upstream then
+ * points at HEAD. `diff: false` leaves the diff body out.
+ *
+ * The listing is left out when `known` is its current version, so a poll
+ * whose tree has not moved costs no transfer. An unresolvable explicit
+ * `base` becomes a VALIDATION error, and a run still busy from an earlier,
+ * timed-out request RUNTIME_UNAVAILABLE. Other failures, including an
+ * unresolvable recorded fork branch, stay faults.
  */
-export async function listWorkspaceFiles(idOrName: string): Promise<WorkspaceFiles> {
-  const { jobName } = await runningWorkspace(idOrName)
-  const co = await openCheckout(idOrName)
-  const listing = await listCheckoutFiles(jobName)
-  // One cap for every list, so no checkout makes the answer unbounded.
-  const truncated = listing.paths.length > MAX_LISTED_PATHS || listing.ignored.length > MAX_LISTED_PATHS
-  const paths = listing.paths.slice(0, MAX_LISTED_PATHS)
-  const ignored = listing.ignored.slice(0, MAX_LISTED_PATHS)
-  const symlinks: Record<string, SymlinkTarget> = {}
-  // git reports a symlink as one entry and never lists what is behind one.
-  for (let i = 0; i < paths.length; i += 256) {
-    await Promise.all(paths.slice(i, i + 256).map(async (p) => {
-      const abs = path.join(co.root.real, p)
-      const st = await fs.lstat(abs).catch(() => null)
-      if (st?.isSymbolicLink()) symlinks[p] = await linkTarget(co, abs)
-    }))
+export async function getWorkspaceChanges(
+  idOrName: string,
+  base?: string,
+  opts: { diff?: boolean; listing?: 'paths' | 'full'; known?: string } = {},
+): Promise<WorkspaceChanges> {
+  const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
+  const forkBranch = await workspaceForkBranch(projectId, workspaceId)
+  // The runtime treats a blank `base` as unset.
+  const named = base?.trim()
+  let reading: ChangesReading
+  try {
+    reading = await workspaceDriver().changes(jobName, {
+      base, defaultBase: forkBranch ?? undefined, diff: opts.diff ?? true, listing: opts.listing,
+    })
+  } catch (err) {
+    if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
+      // The ref may exist but share no history with the workspace.
+      throw new ServerError('VALIDATION', `base ref "${named}" gives no diff base in this workspace`)
+    }
+    if (err instanceof WorkspaceExecError && err.code === CHANGES_BUSY) {
+      throw new ServerError('RUNTIME_UNAVAILABLE', 'still reading this checkout from an earlier request; try again shortly')
+    }
+    throw err
   }
+  const { ref } = reading
+  let comparison: BranchComparison | null = null
+  if (ref) {
+    comparison = { ref: ref.name, ahead: ref.ahead, behind: ref.behind }
+    const fetchedAtMs = ref.name.startsWith('origin/')
+      ? await lastFetchedAtMs(
+        repoDir(projectId), ref.name.slice('origin/'.length), path.join(workspaceDir(projectId, workspaceId), '.git'),
+      )
+      : null
+    if (fetchedAtMs !== null) comparison.fetchedAt = formatUtcTimestamp(fetchedAtMs)
+  }
+  const listing = reading.listing && await finishListing(await openCheckout(idOrName), reading.listing)
   return {
-    paths,
-    symlinks,
-    ignored,
-    emptyDirs: await findEmptyDirs(co, listing.untrackedDirs, paths, ignored),
-    conflicted: listing.conflicted,
-    truncated,
+    ...reading.changes,
+    branch: named || forkBranch || null,
+    comparison,
+    ...(listing && listing.version !== opts.known ? { listing } : {}),
   }
 }
 
 /**
- * How far the checkout's HEAD is ahead of and behind its reference branch:
- * `base` when the caller names one (the explorer's pick), else the branch
- * the workspace forked from — the same default the changes diff takes.
+ * The explorer's listing from what the script read: capped, with where each
+ * symlink leads and, for a `full` listing, the folders holding no file.
  */
-export async function getWorkspaceGitStatus(idOrName: string, base?: string): Promise<WorkspaceGitStatus> {
-  const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
-  const branch = base?.trim() || await workspaceForkBranch(projectId, workspaceId)
-  if (!branch) return { base: null, comparison: null }
-  const found = await checkoutAheadBehind(jobName, branch)
-  if (!found) return { base: branch, comparison: null }
-  const { remote, ...comparison } = found
-  const fetchedAtMs = remote
-    ? await lastFetchedAtMs(repoDir(projectId), branch, path.join(workspaceDir(projectId, workspaceId), '.git'))
-    : null
-  return {
-    base: branch,
-    comparison: fetchedAtMs === null ? comparison : { ...comparison, fetchedAt: formatUtcTimestamp(fetchedAtMs) },
+async function finishListing(co: Checkout, read: NonNullable<ChangesReading['listing']>): Promise<WorkspaceFiles> {
+  // One cap for every list, so no checkout makes the answer unbounded.
+  const truncated = read.paths.length > MAX_LISTED_PATHS || (read.ignored?.length ?? 0) > MAX_LISTED_PATHS
+  const paths = read.paths.slice(0, MAX_LISTED_PATHS)
+  const ignored = (read.ignored ?? []).slice(0, MAX_LISTED_PATHS)
+  // git records a link as one entry and never lists what is behind it.
+  // Built in path order, so an unchanged listing hashes the same.
+  const links = read.links.slice(0, MAX_LISTED_PATHS)
+  const targets = await Promise.all(links.map((p) => linkTarget(co, path.join(co.root.real, p))))
+  const symlinks: Record<string, SymlinkTarget> = Object.fromEntries(links.map((p, i) => [p, targets[i]]))
+  const body = {
+    paths,
+    symlinks,
+    ignored,
+    emptyDirs: read.untrackedDirs ? await findEmptyDirs(co, read.untrackedDirs, paths, ignored) : [],
+    conflicted: read.conflicted,
+    truncated,
   }
+  return { version: hash(Buffer.from(JSON.stringify(body))), ...body }
 }
 
 /**

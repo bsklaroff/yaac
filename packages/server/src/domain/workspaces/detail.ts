@@ -1,13 +1,11 @@
 import { ServerError } from '@yaac/shared/errors'
 import { firstAgentSession } from '#db'
 import { recordedTranscript } from './agent-session-paths'
-import { workspaceForkBranch } from './fork-branch'
-import { resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord } from './resolve'
+import { resolveWorkspaceId, resolveWorkspaceRecord } from './resolve'
 import { getAgentSessionFirstMessage } from '#runtime/agents'
 import { workspaceDriver } from '#drivers/driver'
-import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
 import type { RuntimeHandle } from '#drivers/contract'
-import type { AgentTool, GitAuthFailure, WorkspaceChanges } from '@yaac/shared/types'
+import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
 
 export interface WorkspaceDetail {
   workspaceId: string
@@ -48,44 +46,6 @@ export async function getWorkspaceDetail(idOrPrefix: string): Promise<WorkspaceD
     blockedHostsCount: blocked.length,
     gitAuthFailures,
     createdAt: new Date(match.createdAtMs).toISOString(),
-  }
-}
-
-/**
- * The working-tree diff of a running workspace.
- *
- * An explicit `base` wins; otherwise the default is the recorded fork
- * branch (`workspaceForkBranch`). Relying on `@{upstream}` instead would
- * show no changes once the agent pushes its branch, since the upstream then
- * points at HEAD.
- *
- * `diff: false` leaves the diff body out, for callers that show only the
- * file list and line counts.
- *
- * Only an unresolvable explicit `base` becomes a VALIDATION error. Other
- * failures, including an unresolvable recorded fork branch, stay faults.
- */
-export async function getWorkspaceChanges(
-  idOrPrefix: string,
-  base?: string,
-  diff = true,
-): Promise<WorkspaceChanges> {
-  const { jobName, workspaceId, projectId } = await resolveWorkspaceContainer(
-    idOrPrefix, { requireRunning: true },
-  )
-  const forkBranch = await workspaceForkBranch(projectId, workspaceId)
-  // The runtime treats a blank `base` as unset.
-  const named = base?.trim()
-  try {
-    return await workspaceDriver().changes(jobName, base, forkBranch ?? undefined, diff)
-  } catch (err) {
-    if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
-      // The ref may exist but share no history with the workspace.
-      throw new ServerError(
-        'VALIDATION', `base ref "${named}" gives no diff base in this workspace`,
-      )
-    }
-    throw err
   }
 }
 

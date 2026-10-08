@@ -1,11 +1,10 @@
-import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
+import type { ChangesReading, ChangesRequest } from '#drivers/contract'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { waitFor } from '#lib/wait-for'
 import { buildChangesScript, parseChangesOutput } from '#drivers/shared'
 import { runHost } from './host'
 import { workspaceRunEnvironment } from './launch'
 import { containerlessWorkspacePaths } from './paths'
-import type { WorkspaceChanges } from '@yaac/shared/types'
 
 /**
  * Running commands "inside" a workspace: on the host, in its checkout, with
@@ -34,12 +33,7 @@ export async function execInWorkspace(
 const changesMutex = createKeyedMutex()
 
 /** See `WorkspaceDriver.changes`. Runs host git in the checkout. */
-export function getWorkspaceChanges(
-  jobName: string,
-  base?: string,
-  defaultBase?: string,
-  diff = true,
-): Promise<WorkspaceChanges> {
+export function getWorkspaceChanges(jobName: string, request: ChangesRequest): Promise<ChangesReading> {
   const paths = containerlessWorkspacePaths(jobName)
   return changesMutex(jobName, async () => {
     const { stdout } = await runHost([
@@ -47,8 +41,7 @@ export function getWorkspaceChanges(
       buildChangesScript({
         workspaceDir: paths.workspaceDir,
         indexFile: `${paths.scratchDir}/yaac-changes.idx`,
-        baseUnresolvedCode: CHANGES_BASE_UNRESOLVED,
-      }, base, defaultBase, diff),
+      }, request),
     ], { cwd: paths.workspaceDir, env: workspaceRunEnvironment(jobName), timeoutMs: 20_000 })
     return parseChangesOutput(stdout)
   })

@@ -9,15 +9,12 @@ import { claudeDir, projectDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setAgentSessionCapture } from '#db/agent-session-store'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
+import { ServerError } from '@yaac/shared/errors'
 import {
   getWorkspaceBlockedHosts,
-  getWorkspaceChanges,
   getWorkspaceDetail,
   getWorkspacePrompt,
 } from '#domain/workspaces/detail'
-import { ServerError } from '@yaac/shared/errors'
-import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
-import type { WorkspaceChanges } from '@yaac/shared/types'
 
 const mockFind = vi.fn()
 const mockBlockedHosts = vi.fn<(workspaceId: string) => Promise<string[]>>()
@@ -67,116 +64,6 @@ describe('session detail helpers', () => {
     mockFind.mockResolvedValue(handleFixture({ workspaceId: 'w1' }))
     mockBlockedHosts.mockResolvedValue(['evil.example'])
     await expect(getWorkspaceBlockedHosts('w1')).resolves.toEqual(['evil.example'])
-  })
-})
-
-describe('getWorkspaceChanges', () => {
-  const EMPTY: WorkspaceChanges = {
-    base: 'main', baseResolved: true, files: [], diff: '', truncated: false,
-  }
-  const mockChanges = vi.fn<
-    (jobName: string, base?: string, defaultBase?: string, diff?: boolean) => Promise<WorkspaceChanges>
-  >()
-  let tmpDir: string
-  let seq = 0
-
-  beforeEach(async () => {
-    mockChanges.mockReset().mockResolvedValue(EMPTY)
-    tmpDir = await createTempDataDir()
-    seq += 1
-  })
-
-  afterEach(async () => {
-    await closeDb()
-    await cleanupTempDir(tmpDir)
-  })
-
-  /** A running workspace whose row records `base` as its fork branch. */
-  async function installRunning(base: string | null = 'main'): Promise<string> {
-    const workspaceId = `chg-${seq}`
-    if (base !== null) await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: workspaceId, baseBranch: base })
-    installFakeWorkspaceDriver({
-      find: () => Promise.resolve(handleFixture({
-        workspaceId, projectId: DEMO_PROJECT_ID, jobName: `yaac-demo-${workspaceId}`, state: 'running',
-      })),
-      changes: mockChanges,
-    })
-    return workspaceId
-  }
-
-  // Once the agent pushes its branch, @{upstream} is the branch itself and
-  // the runtime's default base shows an empty diff. Diffing against the fork
-  // branch keeps committed work visible until it merges.
-  it('passes the fork branch as the default base', async () => {
-    const workspaceId = await installRunning()
-
-    await getWorkspaceChanges(workspaceId)
-
-    expect(mockChanges).toHaveBeenCalledExactlyOnceWith(
-      `yaac-demo-${workspaceId}`, undefined, 'main', true,
-    )
-  })
-
-  it('lets an explicit base win, still offering the fork branch as the default', async () => {
-    const workspaceId = await installRunning()
-
-    await getWorkspaceChanges(workspaceId, 'origin/release', false)
-
-    expect(mockChanges).toHaveBeenCalledExactlyOnceWith(
-      `yaac-demo-${workspaceId}`, 'origin/release', 'main', false,
-    )
-  })
-
-  it('asks with no default when nothing records a fork branch', async () => {
-    const workspaceId = await installRunning(null)
-
-    await getWorkspaceChanges(workspaceId)
-
-    expect(mockChanges).toHaveBeenCalledExactlyOnceWith(
-      `yaac-demo-${workspaceId}`, undefined, undefined, true,
-    )
-  })
-
-  it('refuses a workspace that is not running', async () => {
-    installFakeWorkspaceDriver({ find: () => Promise.resolve(undefined), changes: mockChanges })
-
-    await expect(getWorkspaceChanges('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect(mockChanges).not.toHaveBeenCalled()
-  })
-
-  // Only this layer knows the ref came from the caller; otherwise it would
-  // reach the route as an exec failure and answer 500.
-  it('answers VALIDATION for an explicit base that resolves nowhere', async () => {
-    const workspaceId = await installRunning()
-    mockChanges.mockRejectedValue(
-      new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', ''),
-    )
-
-    const err = await getWorkspaceChanges(workspaceId, 'no-such-branch').catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ServerError)
-    expect(err).toMatchObject({ code: 'VALIDATION', httpStatus: 400 })
-    // The message must name the ref; it is the caller's only clue.
-    expect((err as ServerError).message).toContain('no-such-branch')
-  })
-
-  // With no explicit base, the recorded fork branch failed to resolve. That
-  // is a server fault, not the caller's.
-  it('keeps an unresolvable default base a server fault', async () => {
-    const workspaceId = await installRunning()
-    const failure = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
-    mockChanges.mockRejectedValue(failure)
-
-    await expect(getWorkspaceChanges(workspaceId)).rejects.toBe(failure)
-  })
-
-  // Other nonzero exits say nothing about the ref (exit 3 means "no
-  // /workspace"), and calling them user error would hide real breakage.
-  it('leaves other exec failures alone even with an explicit base', async () => {
-    const workspaceId = await installRunning()
-    const failure = new WorkspaceExecError('command exited 3', 3, '', '')
-    mockChanges.mockRejectedValue(failure)
-
-    await expect(getWorkspaceChanges(workspaceId, 'dev')).rejects.toBe(failure)
   })
 })
 

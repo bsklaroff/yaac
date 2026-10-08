@@ -5,9 +5,11 @@ import type { WorkspaceChanges, WorkspaceFiles as WorkspaceFilesData } from '@ya
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { GitStatusBar } from '#components/GitStatusBar'
 import { FILES_TARGET } from '#lib/files'
+import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { IS_MAC } from '#lib/platform'
 import { paneViewKey, useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 /**
  * The explorer's changes view and the status bar's way into it: the files
@@ -19,6 +21,7 @@ const VIEW = paneViewKey('s1', FILES_TARGET)
 const BASE_TRIGGER = 'Choose the branch changes are compared against'
 
 const LISTING: WorkspaceFilesData = {
+  version: 'v1',
   paths: ['README.md', 'src/app.ts', 'src/new.ts', 'src/same.ts'],
   symlinks: {},
   ignored: [],
@@ -30,6 +33,8 @@ const LISTING: WorkspaceFilesData = {
 const PAYLOAD: WorkspaceChanges = {
   base: 'abc1234def',
   baseResolved: true,
+  branch: 'main',
+  comparison: null,
   files: [
     {
       path: 'src/app.ts', status: 'modified', additions: 2, deletions: 1, binary: false,
@@ -76,10 +81,15 @@ beforeAll(() => {
   }
 })
 
+/** The changes route's answer: `payload`, plus the listing when asked for
+ *  one the caller does not already hold. */
+const reply = (payload: WorkspaceChanges) => ({ query }: { query: URLSearchParams }): WorkspaceChanges => (
+  query.get('listing') && query.get('known') !== LISTING.version ? { ...payload, listing: LISTING } : payload
+)
+
 beforeEach(() => {
   server = mockFetch({
-    'GET /api/workspace/s1/files': LISTING,
-    [CHANGES]: PAYLOAD,
+    [CHANGES]: reply(PAYLOAD),
     'GET /api/project/proj/branches': { branches: ['main', 'dev'], defaultBranch: 'main' },
   })
 })
@@ -202,7 +212,7 @@ describe('WorkspaceFiles changes', () => {
 
   it('picks the diff base, and says what an unresolved base or a cut diff leaves out', async () => {
     useUiStore.getState().setPaneView(VIEW, { changedOnly: true })
-    server.route(CHANGES, { ...PAYLOAD, baseResolved: false, truncated: true })
+    server.route(CHANGES, reply({ ...PAYLOAD, baseResolved: false, truncated: true }))
     renderExplorer()
     await waitFor(() => expect(screen.getByText('uncommitted only')).toBeTruthy())
     expect(screen.getByText('diff truncated (large changeset)')).toBeTruthy()
@@ -214,7 +224,7 @@ describe('WorkspaceFiles changes', () => {
     expect(useUiStore.getState().changesBase.s1).toBe('dev')
     await waitFor(() => expect(basesAsked()).toContain('dev'))
 
-    server.route(CHANGES, { ...PAYLOAD, files: [], diff: '', baseResolved: false })
+    server.route(CHANGES, reply({ ...PAYLOAD, files: [], diff: '', baseResolved: false }))
     useUiStore.getState().setChangesBase('s1', 'main')
     await waitFor(() => expect(screen.getByText('Nothing uncommitted')).toBeTruthy())
     // The picker stays reachable with nothing to list.
@@ -264,8 +274,25 @@ describe('WorkspaceFiles changes, at scale', () => {
     )
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
     const active = client.getQueryCache().findAll({ queryKey: ['changes', 's1'], type: 'active' })
-    expect(active.map((q) => q.queryKey)).toEqual([['changes', 's1', null, true]])
-    expect(server.called(CHANGES).at(-1)?.query.get('diff')).toBe('1')
+    expect(active.map((q) => q.queryKey)).toEqual([['changes', 's1', null]])
+    // Mounted together, they ask for everything any of them wants at once.
+    expect(server.called(CHANGES).map((c) => c.query.toString())).toEqual(['diff=1&listing=full'])
+  })
+
+  // A file pane stays mounted when its workspace is no longer on screen.
+  // It neither polls nor makes the query fetch when the others go away.
+  it('fetches nothing for a hidden reader once the others unmount', async () => {
+    let seen: WorkspaceChanges | undefined
+    function HiddenPane(): null {
+      seen = useWorkspaceChanges('s1', { poll: false }).data
+      return null
+    }
+    const client = testQueryClient()
+    const view = renderWithClient(<><GitStatusBar workspaceId="s1" /><HiddenPane /></>, client)
+    await waitFor(() => expect(seen).toBeDefined())
+    view.rerender(<QueryClientProvider client={client}><HiddenPane /></QueryClientProvider>)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(server.called(CHANGES)).toHaveLength(1)
   })
 
   // Opening the view focuses its filter, so typing filters and Cmd/Ctrl-F
@@ -285,13 +312,57 @@ describe('WorkspaceFiles changes, at scale', () => {
 })
 
 describe('GitStatusBar changes', () => {
-  it('totals the changed lines and opens the changes view', async () => {
-    server.route('GET /api/workspace/s1/git-status', { base: 'main', comparison: { ref: 'origin/main', ahead: 2, behind: 0 } })
+  it('says where HEAD stands, totals the changed lines and opens the changes view', async () => {
+    server.route(CHANGES, reply({ ...PAYLOAD, comparison: { ref: 'origin/main', ahead: 2, behind: 0 } }))
     renderWithClient(<GitStatusBar workspaceId="s1" />)
     const button = await screen.findByTitle('Review changes')
     expect(button.textContent).toBe('+4 −5')
+    expect(screen.getByText(/2 commits ahead of/)).toBeTruthy()
     fireEvent.click(button)
     expect(useUiStore.getState().activeTabs.s1).toBe(FILES_TARGET)
     expect(useUiStore.getState().paneView[VIEW]).toMatchObject({ changedOnly: true, flat: true, foldedDiffs: [] })
+  })
+
+  // A failed poll keeps the last answer in the cache; neither reader may
+  // pass it off as current. A pick whose branch went away offers a way back.
+  it('says when a poll fails instead of showing the last answer', async () => {
+    const gone = serverError('VALIDATION', 'base ref "gone" gives no diff base in this workspace', 400)
+    server.route(CHANGES, (call: { query: URLSearchParams }) => (
+      call.query.get('base') === 'gone' ? gone : reply(PAYLOAD)(call)
+    ))
+    const client = testQueryClient()
+    renderWithClient(
+      <>
+        <GitStatusBar workspaceId="s1" />
+        <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
+      </>,
+      client,
+    )
+    await screen.findByTitle('Review changes')
+    await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
+
+    act(() => useUiStore.getState().setChangesBase('s1', 'gone'))
+    await waitFor(() => expect(screen.getByText(/Git status unavailable/)).toBeTruthy())
+    expect(screen.queryByTitle('Review changes')).toBeNull()
+    expect(screen.getByText(/Not up to date: base ref "gone"/)).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Compare with main'))
+    await waitFor(() => expect(screen.queryByText(/Not up to date/)).toBeNull())
+    expect(useUiStore.getState().changesBase.s1).toBeUndefined()
+    await screen.findByTitle('Review changes')
+  })
+
+  // The bar's one poll also keeps the explorer's paths ready before it
+  // opens, and the server leaves them out while they hold still.
+  it('carries the listing in its own poll, sent again only when it changed', async () => {
+    const client = testQueryClient()
+    renderWithClient(<GitStatusBar workspaceId="s1" />, client)
+    await waitFor(() => expect(client.getQueryData(['files', 's1'])).toEqual(LISTING))
+    expect(server.called(CHANGES)[0].query.get('listing')).toBe('paths')
+
+    await client.refetchQueries({ queryKey: ['changes', 's1'] })
+    expect(server.called(CHANGES).at(-1)?.query.get('known')).toBe('v1')
+    expect(client.getQueryData(['files', 's1'])).toEqual(LISTING)
+    expect(new Set(server.calls.map((c) => c.path))).toEqual(new Set(['/api/workspace/s1/changes']))
   })
 })

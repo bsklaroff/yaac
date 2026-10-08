@@ -1,7 +1,18 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render as rtlRender, cleanup } from '@testing-library/react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import type { ReactElement, ReactNode } from 'react'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
+import { testQueryClient } from './harness'
+
+/** A terminal reads the workspace's listing from the query cache. */
+const render = (ui: ReactElement): ReturnType<typeof rtlRender> => {
+  const client = testQueryClient()
+  return rtlRender(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+  })
+}
 
 /**
  * Where a terminal pane's focus goes when it is the pane to focus. jsdom

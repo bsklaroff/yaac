@@ -20,7 +20,7 @@ import { CHANGE_STAGES, ROW_STATUS, lineTotals, pathStatuses, stageTotals, type 
 import { languageForPath } from '#lib/highlight'
 import { chordMatches, findChord, formatChord } from '#lib/shortcuts'
 import { useProjectBranches } from '#lib/useProjectBranches'
-import { CHANGES_POLL_MS, useWorkspaceChanges } from '#lib/useWorkspaceChanges'
+import { CHANGES_POLL_MS, useWorkspaceChanges, useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
 import {
@@ -37,7 +37,6 @@ import {
   flushFileSavers,
   isFileTarget,
   listWorkspaceDir,
-  listWorkspaceFiles,
   renameWorkspaceEntry,
   saveWorkspaceFile,
   type TreeNode,
@@ -130,12 +129,10 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
   baseBranch?: string
 }): JSX.Element {
   const queryClient = useQueryClient()
-  const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['files', workspaceId],
-    queryFn: () => listWorkspaceFiles(workspaceId),
-    refetchInterval: 5000,
-  })
-  const refresh = (): void => { void queryClient.invalidateQueries({ queryKey: ['files', workspaceId] }) }
+  // The tree rides on the changes poll below, which asks for the full
+  // listing while the explorer is mounted.
+  const data = useWorkspaceFiles(workspaceId)
+  const refresh = (): void => { void queryClient.invalidateQueries({ queryKey: ['changes', workspaceId] }) }
 
   const viewKey = paneViewKey(workspaceId, FILES_TARGET)
   const view = useUiStore((s) => s.paneView[viewKey])
@@ -167,7 +164,18 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
 
   // Every row shows its line counts, so the changes are fetched in both
   // views; their diff lines only in the changes view, which shows them.
-  const changes = useWorkspaceChanges(workspaceId, { diff: changedOnly, poll: CHANGES_POLL_MS })
+  const changes = useWorkspaceChanges(workspaceId, { diff: changedOnly, listing: 'full', poll: CHANGES_POLL_MS })
+  // A picked base whose branch went away fails every poll; this goes back
+  // to the fork branch.
+  const pick = useUiStore((s) => s.changesBase[workspaceId])
+  const resetPick = pick !== undefined && (
+    <button
+      onClick={() => useUiStore.getState().setChangesBase(workspaceId, undefined)}
+      className="shrink-0 rounded bg-surface-2 px-2 py-0.5 text-[11px] text-text-dim transition hover:text-text"
+    >
+      Compare with {baseBranch ?? 'the fork branch'}
+    </button>
+  )
   const changed = useMemo(() => changes.data?.files ?? [], [changes.data?.files])
   const changeByPath = useMemo(() => new Map(changed.map((c) => [c.path, c])), [changed])
   const statuses = useMemo(() => pathStatuses(changed, data?.conflicted ?? []), [changed, data?.conflicted])
@@ -216,7 +224,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
     setFindPending(false)
     findRef.current.focus()
     findRef.current.select()
-  }, [findPending, isLoading, setFindPending])
+  }, [findPending, data, setFindPending])
   const onKeyDown = (e: KeyboardEvent): void => {
     if (!chordMatches(findChord(), e.nativeEvent) || !findRef.current) return
     e.preventDefault()
@@ -361,14 +369,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
   }
 
   // ── rendering ───────────────────────────────────────────────────────
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center bg-surface text-text-dim">
-        <LoadingIcon size={18} className="animate-spin" />
-      </div>
-    )
-  }
-  if (isError && isStopped(error)) {
+  if (changes.isError && isStopped(changes.error)) {
     // Listing needs the workspace running; open tabs still work when stopped.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
@@ -376,17 +377,26 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
       </div>
     )
   }
-  if (isError || !data || !tree) {
+  if (!data || !tree) {
+    if (!changes.isError) {
+      return (
+        <div className="flex h-full items-center justify-center bg-surface text-text-dim">
+          <LoadingIcon size={18} className="animate-spin" />
+        </div>
+      )
+    }
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
         <WarningIcon size={18} className="text-text-faint" />
         <span>Couldn’t load files.</span>
+        <span className="max-w-full truncate px-4 text-[11px] text-text-faint">{errMessage(changes.error)}</span>
         <button
-          onClick={() => void refetch()}
+          onClick={() => void changes.refetch()}
           className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
         >
           Retry
         </button>
+        {resetPick}
       </div>
     )
   }
@@ -632,6 +642,15 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
       {actionError && (
         <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-error">
           {actionError}
+        </div>
+      )}
+      {/* The tree and counts below are the last answer that landed. */}
+      {changes.isError && (
+        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-hairline px-2 py-1 text-[11px] text-warning">
+          <span className="min-w-0 flex-1 truncate" title={errMessage(changes.error)}>
+            Not up to date: {errMessage(changes.error)}
+          </span>
+          {resetPick}
         </div>
       )}
       {changesNotice ?? (find && !changedOnly ? (
