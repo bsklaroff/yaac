@@ -81,11 +81,14 @@ beforeAll(() => {
   }
 })
 
-/** The changes route's answer: `payload`, plus the listing when asked for
- *  one the caller does not already hold. */
-const reply = (payload: WorkspaceChanges) => ({ query }: { query: URLSearchParams }): WorkspaceChanges => (
-  query.get('listing') && query.get('known') !== LISTING.version ? { ...payload, listing: LISTING } : payload
-)
+/** The changes route's answer: `payload`, without its diff body under
+ *  `diff=0`, plus the listing when asked for one the caller does not
+ *  already hold. */
+const reply = (payload: WorkspaceChanges) => ({ query }: { query: URLSearchParams }): WorkspaceChanges => {
+  const { diff, ...bare } = payload
+  const answer = query.get('diff') === '0' ? bare : { ...bare, diff }
+  return query.get('listing') && query.get('known') !== LISTING.version ? { ...answer, listing: LISTING } : answer
+}
 
 beforeEach(() => {
   server = mockFetch({
@@ -145,6 +148,10 @@ describe('WorkspaceFiles changes', () => {
     renderExplorer()
     await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
     fireEvent.click(screen.getByLabelText('Show only changed files'))
+    // The full tree's polls leave the diff body out, so until the view's
+    // own fetch lands its diffs say they are loading, not that none exist.
+    expect(screen.getAllByText('Loading diff…')).toHaveLength(3)
+    expect(screen.queryByText('No textual diff')).toBeNull()
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
     expect(screen.getByTitle('src/app.ts').textContent).toContain('src/app.ts')
     // The strip totals the shown files, then breaks them down by stage.
@@ -350,6 +357,14 @@ describe('GitStatusBar changes', () => {
     await waitFor(() => expect(screen.queryByText(/Not up to date/)).toBeNull())
     expect(useUiStore.getState().changesBase.s1).toBeUndefined()
     await screen.findByTitle('Review changes')
+
+    // The diffs a failed fetch never brought are not shown as loading.
+    server.route(CHANGES, (call: { query: URLSearchParams }) => (
+      call.query.get('diff') === '1' ? serverError('INTERNAL', 'exec failed', 500) : reply(PAYLOAD)(call)
+    ))
+    fireEvent.click(screen.getByLabelText('Show only changed files'))
+    await waitFor(() => expect(screen.getAllByText('Diff not loaded')).toHaveLength(3))
+    expect(screen.queryByText('Loading diff…')).toBeNull()
   })
 
   // The bar's one poll also keeps the explorer's paths ready before it

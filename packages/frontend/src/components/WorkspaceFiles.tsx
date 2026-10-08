@@ -455,7 +455,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
             diff={changedOnly && row.change ? {
               open: !foldedDiffs.has(row.path),
               toggle: () => toggleDiff(row.path),
-              body: <ChangeDiff change={row.change} diff={diffMap.get(row.path)} />,
+              body: <ChangeDiff change={row.change} diff={diffMap.get(row.path)} unfetched={changes.data?.diff !== undefined ? undefined : changes.isError ? 'failed' : 'loading'} />,
             } : undefined}
           >
             {row.dir && isOpen(row.path) && ((): JSX.Element => {
@@ -888,9 +888,16 @@ const DIFF_LINE_PX = 16.5
 /**
  * One changed file's diff, read-only, under its row in the changes view.
  * It mounts in chunks as they come near the screen, so opening a view of
- * hundreds of changed files renders only the diffs in sight.
+ * hundreds of changed files renders only the diffs in sight. `unfetched`
+ * says why the shared changes poll holds no diff body yet: it leaves the
+ * body out while no changes view is open, so one is `loading` until the
+ * view's own fetch lands, unless that fetch `failed`.
  */
-function ChangeDiff({ change, diff }: { change: WorkspaceChange; diff: ParsedFileDiff | undefined }): JSX.Element {
+function ChangeDiff({ change, diff, unfetched }: {
+  change: WorkspaceChange
+  diff: ParsedFileDiff | undefined
+  unfetched?: 'loading' | 'failed'
+}): JSX.Element {
   const chunks = useMemo(() => {
     const lines = diff && !diff.binary ? diff.lines : []
     const out: ParsedFileDiff['lines'][] = []
@@ -906,7 +913,9 @@ function ChangeDiff({ change, diff }: { change: WorkspaceChange; diff: ParsedFil
         </NearScreen>
       )) : (
         <div className="px-3 py-1.5 text-[11px] text-text-faint">
-          {change.binary ? 'Binary file, no preview' : 'No textual diff'}
+          {change.binary ? 'Binary file, no preview'
+            : unfetched === 'loading' ? 'Loading diff…'
+              : unfetched === 'failed' ? 'Diff not loaded' : 'No textual diff'}
         </div>
       )}
     </div>

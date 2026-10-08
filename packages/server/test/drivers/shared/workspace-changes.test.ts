@@ -6,10 +6,11 @@ import path from 'node:path'
 import {
   parseChangesOutput,
   buildChangesScript as buildScript,
+  runChangesRead,
   type ChangesLocation,
 } from '#drivers/shared/workspace-changes'
 import type { WorkspaceChange } from '@yaac/shared/types'
-import { CHANGES_BASE_UNRESOLVED } from '#drivers/contract'
+import { CHANGES_BASE_UNRESOLVED, type ChangesReading, type ChangesRequest } from '#drivers/contract'
 
 // The in-pod paths the k8s driver passes; a host driver passes its own.
 const LOC: ChangesLocation = {
@@ -84,7 +85,7 @@ describe('parseChangesOutput', () => {
   it('flags truncation when the diff exceeds the cap', () => {
     const out = parse(raw, 20)
     expect(out.truncated).toBe(true)
-    expect(Buffer.byteLength(out.diff)).toBe(20)
+    expect(Buffer.byteLength(out.diff ?? '')).toBe(20)
     expect(out.files).toHaveLength(2)
   })
 
@@ -97,7 +98,7 @@ describe('parseChangesOutput', () => {
     ].join('\n')
     const out = parse(wide, 500)
     expect(out.truncated).toBe(true)          // 900 bytes > 500, though 300 units < 500
-    expect(Buffer.byteLength(out.diff)).toBeLessThanOrEqual(500)
+    expect(Buffer.byteLength(out.diff ?? '')).toBeLessThanOrEqual(500)
     // Cut on a code point boundary, never over the cap.
     expect(out.diff).toBe('交'.repeat(166))
     expect(out.diff).not.toContain('�')
@@ -408,7 +409,7 @@ describe('buildChangesScript', () => {
     const bare = runPodScript(repo, idx, 'fork', undefined, false)
     expect(bare.code).toBe(0)
     const listed = parse(bare.stdout)
-    expect(listed.diff).toBe('')
+    expect(listed).not.toHaveProperty('diff')
     expect(listed.files.map((f) => f.path).sort()).toEqual(['new.txt', 'tracked.txt'])
   })
 
@@ -615,5 +616,89 @@ describe('buildChangesScript', () => {
     expect(recovered.code).toBe(0)
     expect(parse(recovered.stdout).files.map((f) => f.path)).toEqual(['b.txt'])
     expect(fs.existsSync(`${idx}.lock`)).toBe(false)
+  })
+})
+
+describe('runChangesRead', () => {
+  /** A read's answer with every part: a diff body and a full listing. */
+  const FULL: ChangesReading = {
+    changes: { base: 'b', baseResolved: true, files: [], diff: 'body', truncated: true },
+    ref: null,
+    listing: { paths: ['a'], links: [], conflicted: [], ignored: ['x/'], untrackedDirs: ['d'] },
+  }
+
+  /** A `read` that holds every call until `release`, logging each request
+   *  and how many ran at once. */
+  function gatedRead(): {
+    read: (r: ChangesRequest) => Promise<ChangesReading>
+    asked: ChangesRequest[]
+    release: () => void
+    peak: () => number
+  } {
+    const asked: ChangesRequest[] = []
+    let open!: () => void
+    let gate = new Promise<void>((r) => { open = r })
+    let running = 0
+    let peak = 0
+    return {
+      asked,
+      peak: () => peak,
+      release: () => { open(); gate = Promise.resolve() },
+      read: async (r) => {
+        asked.push(r)
+        peak = Math.max(peak, ++running)
+        await gate
+        running--
+        if (r.base === 'bad') throw new Error('no such base')
+        return FULL
+      },
+    }
+  }
+
+  // Each read walks the whole checkout, so requests waiting behind the
+  // running read merge into one read asking for everything they want. None
+  // joins the running read, which could predate an edit its caller made.
+  it('merges queued requests into one read, answering each caller only what it asked', async () => {
+    const g = gatedRead()
+    const run = (r: Partial<ChangesRequest>): Promise<ChangesReading> =>
+      runChangesRead('ws', { defaultBase: 'main', diff: false, ...r }, g.read)
+    const first = run({ listing: 'paths' })
+    await Promise.resolve()
+    const again = run({ listing: 'paths' })
+    const wantsDiff = run({ diff: true })
+    const wantsFull = run({ listing: 'full' })
+    const bare = run({})
+    g.release()
+    const [a, b, c, d, e] = await Promise.all([first, again, wantsDiff, wantsFull, bare])
+    expect(g.asked).toEqual([
+      { defaultBase: 'main', diff: false, listing: 'paths' },
+      { defaultBase: 'main', diff: true, listing: 'full' },
+    ])
+    expect(g.peak()).toBe(1)
+    expect(a.changes).not.toHaveProperty('diff')
+    expect(a.listing).toEqual({ paths: ['a'], links: [], conflicted: [] })
+    expect(b).toEqual(a)
+    expect(c.changes.diff).toBe('body')
+    expect(c).not.toHaveProperty('listing')
+    expect(d.listing).toEqual(FULL.listing)
+    expect(d.changes).not.toHaveProperty('diff')
+    expect(e.changes).toEqual({ base: 'b', baseResolved: true, files: [], truncated: false })
+    expect(e).not.toHaveProperty('listing')
+
+    // A read once finished is not reused.
+    await run({})
+    expect(g.asked).toHaveLength(3)
+  })
+
+  // Reads against different bases share the workspace's one index, so they
+  // run in turn; a failed read fails only the callers sharing it.
+  it('runs reads against different bases one at a time, isolating failures', async () => {
+    const g = gatedRead()
+    const reads = ['dev', 'bad', 'main'].map((base) =>
+      runChangesRead('ws', { base, diff: true }, g.read).then(() => 'ok', (e: Error) => e.message))
+    g.release()
+    expect(await Promise.all(reads)).toEqual(['ok', 'no such base', 'ok'])
+    expect(g.asked.map((r) => r.base)).toEqual(['dev', 'bad', 'main'])
+    expect(g.peak()).toBe(1)
   })
 })

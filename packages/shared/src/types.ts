@@ -906,9 +906,9 @@ export interface WorkspaceDiff {
   baseResolved: boolean
   files: WorkspaceChange[]
   /** The combined unified diff; the client splits it into per-file hunks.
-   *  Capped for size — see `truncated`. Empty when the caller asked for no
+   *  Capped for size — see `truncated`. Absent when the caller asked for no
    *  diff body. */
-  diff: string
+  diff?: string
   /** True when the diff body was capped for size; `files` stays complete. */
   truncated: boolean
 }
