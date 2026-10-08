@@ -58,6 +58,12 @@ async function refusal(p: Promise<unknown>): Promise<{ code: string; message: st
   return { code: (err as ServerError).code, message: (err as ServerError).message }
 }
 
+/** A link target that leaves for `via` and comes back to `to`, without
+ *  normalizing away the trip. */
+function roundTrip(linkDir: string, via: string, to: string): string {
+  return `${path.relative(linkDir, via)}/${path.relative(via, to)}`
+}
+
 async function write(dir: string, rel: string, content: string | Buffer = ''): Promise<void> {
   await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true })
   await fs.writeFile(path.join(dir, rel), content)
@@ -421,6 +427,11 @@ describe('listWorkspaceDir', () => {
     await fs.symlink('index.js', path.join(dir, 'node_modules/pkg/main.js'))
     await fs.symlink('node_modules/pkg', path.join(dir, 'vendor'))
     await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+    await fs.mkdir(path.join(dir, 'round'))
+    const round = path.join(dir, 'round')
+    await fs.symlink('../a.txt', path.join(round, 'in'))
+    await fs.symlink(roundTrip(round, outside, path.join(dir, 'a.txt')), path.join(round, 'there'))
+    await fs.symlink(roundTrip(round, path.join(outside, 'nothing'), path.join(dir, 'a.txt')), path.join(round, 'absent'))
   })
 
   it('lists an ignored folder’s children with their kinds', async () => {
@@ -430,6 +441,15 @@ describe('listWorkspaceDir', () => {
       { name: 'index.js', dir: false },
       { name: 'lib', dir: true },
       { name: 'main.js', dir: false, symlink: { target: 'node_modules/pkg/index.js', dir: false } },
+    ])
+  })
+
+  it('reports a link that leaves and comes back as leading nowhere, whether or not the way out exists', async () => {
+    const { entries } = await listWorkspaceDir('dir', 'round')
+    expect(entries.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { name: 'absent', dir: false, symlink: { target: null, dir: false } },
+      { name: 'in', dir: false, symlink: { target: 'a.txt', dir: false } },
+      { name: 'there', dir: false, symlink: { target: null, dir: false } },
     ])
   })
 
@@ -474,6 +494,14 @@ describe('readWorkspaceFile', () => {
     await fs.mkdir(path.join(dir, 'inner'))
     await fs.symlink(path.relative(path.join(dir, 'inner'), outside), path.join(dir, 'inner/out'))
     await fs.symlink('inner', path.join(dir, 'via'))
+    await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+    await fs.symlink(path.join(outside, 'nothing'), path.join(dir, 'absent'))
+    await fs.symlink('nothing', path.join(dir, 'broken'))
+    await fs.symlink(roundTrip(dir, outside, path.join(dir, 'a.txt')), path.join(dir, 'there'))
+    await fs.symlink(roundTrip(dir, path.join(outside, 'nothing'), path.join(dir, 'a.txt')), path.join(dir, 'gone'))
+    await fs.mkdir(path.join(dir, 'xo'))
+    await fs.symlink(path.relative(path.join(dir, 'xo'), path.join(outside, 'secret.txt')), path.join(dir, 'xo/e'))
+    await fs.symlink(path.relative(path.join(dir, 'xo'), path.join(outside, 'nothing')), path.join(dir, 'xo/m'))
   })
 
   it('reads a file with its version, and omits the content while that version holds', async () => {
@@ -515,10 +543,25 @@ describe('readWorkspaceFile', () => {
     expect((await readWorkspaceFile('read', 'hop1')).content).toBe('alpha\n')
   })
 
-  it('refuses links that land outside, or in .git', async () => {
-    for (const bad of ['up', 'abs', 'gitlink', 'via/out/secret.txt']) {
+  it('refuses links that land outside, or in .git, whether or not the target exists', async () => {
+    for (const bad of [
+      'up', 'abs', 'gitlink', 'via/out/secret.txt', 'via/out/nothing', 'away/nothing',
+      'away/nothing/x', 'away/secret.txt/x', 'absent', 'there', 'gone',
+    ]) {
       expect(await refusal(readWorkspaceFile('read', bad)))
         .toEqual({ code: 'VALIDATION', message: `${bad} points outside the workspace` })
+    }
+    expect((await refusal(readWorkspaceFile('read', 'broken'))).code).toBe('NOT_FOUND')
+  })
+
+  it('answers the same through a search-only folder whether or not the outside target exists', async () => {
+    await fs.chmod(path.join(dir, 'xo'), 0o111)
+    try {
+      const existing = await refusal(readWorkspaceFile('read', 'xo/e'))
+      const missing = await refusal(readWorkspaceFile('read', 'xo/m'))
+      expect(missing).toEqual({ ...existing, message: existing.message.replace('xo/e', 'xo/m') })
+    } finally {
+      await fs.chmod(path.join(dir, 'xo'), 0o755)
     }
   })
 })
@@ -534,6 +577,7 @@ describe('writeWorkspaceFile', () => {
     await fs.symlink(path.relative(dir, path.join(outside, 'secret.txt')), path.join(dir, 'up'))
     await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
     await fs.symlink('nowhere', path.join(dir, 'dangle'))
+    await fs.symlink(path.join(outside, 'nothing'), path.join(dir, 'gone'))
   })
 
   it('saves against the version it read, and refuses a stale one with the current', async () => {
@@ -552,6 +596,8 @@ describe('writeWorkspaceFile', () => {
     expect(await writeWorkspaceFile(local, 'write', 'x/y/new.txt', 'n', null))
       .toMatchObject({ saved: { path: 'x/y/new.txt', size: 1 } })
     expect(await read('x/y/new.txt')).toBe('n')
+    const deep = `${Array.from({ length: 45 }, (_, i) => `d${i}`).join('/')}/new.txt`
+    expect(await writeWorkspaceFile(local, 'write', deep, 'd', null)).toMatchObject({ saved: { path: deep } })
     const { version } = await readWorkspaceFile('write', 'b.txt')
     expect(await writeWorkspaceFile(local, 'write', 'b.txt', 'clobber', null)).toEqual({ conflict: version })
     expect(await read('b.txt')).toBe('bravo\n')
@@ -592,8 +638,9 @@ describe('writeWorkspaceFile', () => {
   it('creates under a linked folder in its target, and refuses one that leads out', async () => {
     await writeWorkspaceFile(local, 'write', 'lnk/made.txt', 'm', null)
     expect(await read('sub/made.txt')).toBe('m')
-    expect((await refusal(writeWorkspaceFile(local, 'write', 'away/planted.txt', 'p', null))).code)
-      .toBe('VALIDATION')
+    for (const bad of ['away/planted.txt', 'gone/planted.txt']) {
+      expect((await refusal(writeWorkspaceFile(local, 'write', bad, 'p', null))).code).toBe('VALIDATION')
+    }
     expect(await fs.readdir(outside)).toEqual(['secret.txt'])
   })
 
