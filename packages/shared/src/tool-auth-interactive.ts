@@ -210,10 +210,10 @@ function hookProvider<T extends string>(
 }
 
 /**
- * The logins that need no relayed flow: the e2e login hook (a JSON bundle
- * for claude/codex, a raw api key for opencode/pi) and the opencode/pi
- * api-key prompt. Returns null for claude/codex without a hook; those sign
- * in through the relayed flow (packages/cli/src/commands/relayed-login.ts).
+ * The logins that need no vendor CLI: the e2e login hook (a JSON bundle for
+ * claude/codex, a raw api key for opencode/pi) and the opencode/pi api-key
+ * prompt. Returns null for claude/codex without a hook; those run the
+ * vendor's browser sign-in (packages/cli/src/commands/auth-update.ts).
  */
 export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | null> {
   const hookRaw = testEnv.toolLoginHook(tool)

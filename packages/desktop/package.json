@@ -11,14 +11,16 @@
     "build": "tsup",
     "dev": "tsup && electron .",
     "dev:hot": "bash scripts/dev-hot.sh",
-    "app:build": "pnpm -w build && tsup && tsx scripts/stage-server.ts && electron-builder --config electron-builder.yml",
+    "app:build": "tsup && electron-builder --config electron-builder.yml",
     "app:install": "pnpm app:build && tsx scripts/install-app.ts"
   },
   "dependencies": {
-    "@yaac/shared": "workspace:*"
+    "@lydell/node-pty": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@yaac/auth-daemon": "workspace:*",
+    "@yaac/shared": "workspace:*",
     "electron": "44.4.5",
     "electron-builder": "26.16.1",
     "tsup": "catalog:",

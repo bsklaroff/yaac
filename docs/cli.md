@@ -86,8 +86,6 @@ yaac auth
   clear                         Remove stored tool credentials
   fake <kinds...>               Seed placeholder credentials for yaac-in-yaac:
                                 claude-oauth, opencode-openrouter, pi-openrouter, github
-  server start|stop|status|run  The login broker that runs Claude/Codex
-                                sign-ins on this machine
 
 yaac remote                     Which server this machine's clients use
   set <url>                     Select a server (checks it identifies this device)

@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import crypto from 'node:crypto'
 import type * as cliResolveModule from '#cli-resolve'
 
 // Mocked so the tests don't depend on what is installed locally.
 const cliResolve = vi.hoisted(() => ({
   resolveToolCliPath: vi.fn<(tool: 'claude' | 'codex') => string | null>(() => '/fake/bin/tool'),
-  resolveCommandPath: vi.fn<(name: string) => string | null>(() => null),
 }))
 
 vi.mock('#cli-resolve', async (importOriginal) => {
@@ -12,7 +12,6 @@ vi.mock('#cli-resolve', async (importOriginal) => {
   return {
     ...actual,
     resolveToolCliPath: cliResolve.resolveToolCliPath,
-    resolveCommandPath: cliResolve.resolveCommandPath,
   }
 })
 
@@ -37,8 +36,6 @@ describe('tool install sessions', () => {
     process.env.YAAC_E2E_CODEX_INSTALL_CLI = JSON.stringify([process.execPath, INSTALL_STUB])
     cliResolve.resolveToolCliPath.mockReset()
     cliResolve.resolveToolCliPath.mockReturnValue('/fake/bin/tool')
-    cliResolve.resolveCommandPath.mockReset()
-    cliResolve.resolveCommandPath.mockReturnValue(null)
   })
 
   afterEach(() => {
@@ -73,13 +70,40 @@ describe('tool install sessions', () => {
     expect(getToolInstall(started.id).error).toContain('still cannot be found')
   })
 
-  // The manual command is the pinned one.
-  it('codex without npm errors with the pinned manual install', async () => {
-    delete process.env.YAAC_E2E_CODEX_INSTALL_CLI
-    const started = startToolInstall('codex')
+  describe('codex install.sh', () => {
+    const { version } = AGENT_CLIS.codex
+    const url = `https://github.com/openai/codex/releases/download/rust-v${version}/install.sh`
+    // Stands in for the pinned release asset: it reports how it was run.
+    const script = 'echo "ran $* non-interactive=$CODEX_NON_INTERACTIVE"\n'
 
-    await waitForStatus(started.id, 'error')
-    expect(getToolInstall(started.id).error).toContain(`npm install -g @openai/codex@${AGENT_CLIS.codex.version}`)
+    beforeEach(() => { delete process.env.YAAC_E2E_CODEX_INSTALL_CLI })
+    afterEach(() => { vi.unstubAllGlobals() })
+
+    function serve(body: string) {
+      const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response(body)))
+      vi.stubGlobal('fetch', fetchMock)
+      return fetchMock
+    }
+
+    it('runs the pinned release\'s script non-interactively when its SHA-256 matches', async () => {
+      vi.spyOn(crypto, 'createHash').mockImplementationOnce(() => {
+        const real = crypto.createHash('sha256')
+        return Object.assign(real, { digest: () => AGENT_CLIS.codex.installScriptSha256 })
+      })
+      const fetchMock = serve(script)
+      const started = startToolInstall('codex')
+      await waitForStatus(started.id, 'success')
+      expect(fetchMock.mock.calls[0][0]).toBe(url)
+      expect(getToolInstall(started.id).output).toContain(`ran --release ${version} non-interactive=1`)
+    })
+
+    it('refuses a script that does not match the pinned SHA-256', async () => {
+      serve(script)
+      const started = startToolInstall('codex')
+      await waitForStatus(started.id, 'error')
+      expect(getToolInstall(started.id).error).toContain('does not match its pinned SHA-256')
+      expect(getToolInstall(started.id).output).toBe('')
+    })
   })
 
   it('unknown ids 404; cancel forgets the session and is idempotent', () => {

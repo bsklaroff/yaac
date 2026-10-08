@@ -43,7 +43,7 @@ array target, so `.tsx` would break).
 | Package | Role | May import |
 |---|---|---|
 | `packages/cli` (`@yaac/cli`) | the published `yaac` bin: entry + commands | server, auth-daemon, shared |
-| `packages/desktop` (`@yaac/desktop`) | Electron shell: main-process launcher | shared only |
+| `packages/desktop` (`@yaac/desktop`) | Electron shell: main process + the bundled auth daemon | auth-daemon, shared |
 | `packages/frontend` (`@yaac/frontend`) | React SPA | shared only |
 | `packages/server` (`@yaac/server`) | HTTP/WS daemon + all backend logic | shared only |
 | `packages/auth-daemon` (`@yaac/auth-daemon`) | auth helper daemon | shared only |
@@ -81,9 +81,10 @@ build` — the npm artifact never includes it. It is an Electron shell whose
 main process loads the server origin into the window, so the SPA it displays
 is whatever the target server serves (see packages/desktop/README.md). It lives
 in the tray (close hides; Quit never stops the server) and surfaces waiting
-workspaces via `/events`. `pnpm desktop:package` / `desktop:install` build the
-unsigned macOS .app — the bundled server is staged from the root publish
-artifact (`pnpm pack`, no hand-kept dependency list) plus a standalone Node.
+workspaces via `/events`, and runs the bundled auth daemon in a
+`utilityProcess` that dies with the app. `pnpm desktop:package` /
+`desktop:install` build the unsigned macOS .app; it carries no server or Node
+of its own, so a server on this machine comes from the `yaac` on PATH.
 
 ## Runtime Architecture
 

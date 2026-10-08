@@ -1,6 +1,6 @@
 # How a client finds its server
 
-Every client on a machine (the CLI, the desktop shell, the auth daemon)
+Every client on a machine (the CLI, the desktop shell and its auth daemon)
 reaches its yaac server through an **origin** recorded in
 `~/.yaac-client/server.json`, whatever driver the server uses and wherever it
 runs. Clients never read the server's lock file, hold no credential, and
@@ -14,7 +14,7 @@ yaac cluster install ──(k8s)─────────┘            │
                                                   ▼
                              ~/.yaac-client/server.json
                                                   │
-                    CLI ─ desktop ─ auth daemon ─ test fixtures
+                    CLI ─ desktop + auth daemon ─ test fixtures
 ```
 
 ## Why there is no local shortcut

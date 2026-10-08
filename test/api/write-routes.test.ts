@@ -1588,7 +1588,7 @@ describe('write routes', () => {
       expect(res.status).toBe(503)
       const body = await res.json() as unknown as { error: { code: string; message: string } }
       expect(body.error.code).toBe('AUTH_AGENT_DISCONNECTED')
-      expect(body.error.message).toMatch(/yaac auth (update|server start)/)
+      expect(body.error.message).toMatch(/desktop app.*yaac auth update/)
       teardownAgent = installLoopbackAgent() // restore for afterEach symmetry
     })
 

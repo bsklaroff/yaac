@@ -4,7 +4,7 @@ An Electron shell around the yaac webapp. It has no bundled frontend and no
 renderer code. At launch the main process:
 
 1. resolves the selected server from `~/.yaac-client/server.json`;
-2. starts the machine-local auth daemon (the login broker), best effort;
+2. starts its bundled auth daemon (the login broker), best effort;
 3. checks that the server answers and will identify this device
    (`GET /api/whoami`);
 4. loads the server origin into the window.
@@ -25,8 +25,8 @@ Server section.
 ## Shell behavior
 
 - **Tray.** Closing the window hides it; the shell stays in the tray (Open,
-  a waiting-count line, Quit). Quit exits the shell only; the server keeps
-  running. Reopening (tray click or Dock activate) repeats the connect flow,
+  a waiting-count line, Quit). Quit exits the shell and its auth daemon; the
+  server keeps running. Reopening (tray click or Dock activate) repeats the connect flow,
   so it notices a server that came back. A failed connect does not quit
   either, so the user can go start a server.
 - **Attention signals.** The main process follows the server's `/api/events`
@@ -55,13 +55,12 @@ Server section.
 
 - The repo's usual `pnpm install` (the `electron` dev dependency downloads
   its binary).
-- A registered server: run `yaac server start` or `yaac cluster install`
-  once, or add one in the picker.
-- For dev runs, the `yaac` CLI on PATH, to start the auth daemon. The
-  packaged app runs its bundled Node and CLI instead, and resolves the
-  login-shell PATH at startup, because a Finder launch gets a minimal PATH and
-  the daemon's children (claude, codex, npm, brew) need the real one. Only
-  PATH is taken from the login shell.
+- A registered server: add a remote one in the picker, or, for a server on
+  this machine, put `yaac` on PATH and run `yaac server start` or `yaac
+  cluster install` once. A client of a remote server needs no `yaac` at all.
+- The shell adopts the login-shell PATH at startup, because a Finder launch
+  gets a minimal PATH and the daemon's children (claude, codex, the
+  installers) need the real one. Only PATH is taken from the login shell.
 
 ## Run
 
@@ -72,14 +71,16 @@ pnpm desktop:build   # just the bundle (dist/main.js)
 ```
 
 All three connect to the same server an installed build would: the selected
-entry of `~/.yaac-client/server.json`. A dev run differs from the installed app
-only in running `yaac` from PATH.
+entry of `~/.yaac-client/server.json`, and run the same bundled daemon.
 
-Each time the window opens, the shell calls `ensureAuthDaemonSpawned` for the
-resolved server, sharing `~/.yaac-client/.auth-daemon.lock` with the CLI. So
-there is never a second daemon, and a daemon pointed at a different server is
-restarted. A failed spawn never blocks the window; the SPA's sign-in cards
-still say what to run by hand.
+The auth daemon (`packages/auth-daemon`) is bundled by tsup as
+`dist/auth-daemon.js` and runs in an Electron `utilityProcess`
+(`src/server-process.ts`), so it lives exactly as long as the app. It is the
+only daemon on the machine: `yaac auth update` signs in in-process and runs
+none. Each time the window opens the shell makes sure one runs for the
+resolved server, replacing one pointed at a different server. A failed start
+never blocks the window; the SPA's sign-in cards then say to use `yaac auth
+update`.
 
 `desktop:dev` loads the SPA the server serves, so frontend edits need a
 rebuild. `desktop:hot` (`scripts/dev-hot.sh`) starts the server if needed
@@ -102,20 +103,17 @@ The desktop app is not part of `pnpm build` and is not in the npm package.
 ## Packaging (macOS)
 
 ```sh
-pnpm desktop:package   # root pnpm build, tsup, stage, electron-builder (unsigned .app in dist-app/)
+pnpm desktop:package   # tsup, then electron-builder (unsigned .app in dist-app/)
 pnpm desktop:install   # the above, then copy into /Applications
 ```
 
-`scripts/stage-server.ts` stages the bundled server from the real publish
-artifact: `pnpm pack` at the repo root (which turns `catalog:` pins into
-versions), untarred to `staging/server`, then `npm install --omit=dev`. There
-is no hand-kept dependency list; the root manifest is the contract, checked at
-build time by `scripts/check-cli-externals.ts`. A standalone Node
-(`staging/node/node`, copied from the build machine) ships alongside, so
-`@lydell/node-pty` gets a matching Node ABI without Node on the target.
+The app carries no server and no Node of its own. Everything but
+`@lydell/node-pty` is bundled into `dist/`, so node-pty is the package's only
+runtime dependency. Its N-API binary loads under Electron's Node without a
+rebuild, and it ships outside the asar (`asarUnpack`) because a native module
+and node-pty's `spawn-helper` must be real files. A server on this Mac comes
+from the `yaac` on PATH.
 
-`scripts/after-pack.cjs` copies both into `yaac.app/Contents/Resources`
-(electron-builder's `extraResources` strips `node_modules`).
 `scripts/install-app.ts` installs with `ditto`, because a copy that follows
 symlinks breaks the Electron framework's `Versions/Current` links and
 crashes the GPU process at launch. The app is unsigned and not notarized.
@@ -161,10 +159,12 @@ Electron build.
 
 The auth daemon:
 
-- After launch, `yaac auth server status` shows running and connected, and
-  its `target:` line names the selected server.
-- Quit leaves it running, and a relaunch starts no second one.
-- Switching servers and relaunching restarts it against the new one.
-- For the packaged app, launch from Finder and complete a Claude sign-in from
-  the SPA card. Success shows the daemon found `claude` on the login-shell
-  PATH.
+- After launch, `GET /api/auth/agent` on the server answers
+  `{"connected":true}`, and after Quit `false`.
+- Switching servers in the picker moves it to the new one.
+- For the packaged app, launch from Finder and complete a Claude and a Codex
+  sign-in from the SPA cards. Success shows the daemon found the CLIs on the
+  login-shell PATH.
+
+`test-playwright-scripts/desktop-auth-daemon.js` checks the first point and a
+stubbed sign-in under node-pty, against a dev or a packaged build.

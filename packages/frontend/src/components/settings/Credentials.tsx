@@ -379,7 +379,9 @@ function CliSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void }): J
           {busy ? 'Starting…' : label}
         </button>
         <p className="text-[11px] text-text-faint">
-          Opens a browser window on this machine to authorize.
+          Opens a browser window on this machine to authorize. Needs the yaac
+          desktop app running here; without it, run <code>yaac auth update</code> in
+          a terminal.
         </p>
         {abortError && <p className="text-[11px] text-red-400">Cancel failed: {abortError.message}</p>}
       </div>

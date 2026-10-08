@@ -9,7 +9,8 @@ describe('AGENT_PACKAGES', () => {
     // A missing entry can't be installed, and an unpinned version's
     // postures were never checked.
     for (const tool of AGENT_TOOLS) {
-      expect(AGENT_PACKAGES[tool]).toMatchObject(AGENT_CLIS[tool])
+      const { package: cliPkg, version } = AGENT_CLIS[tool]
+      expect(AGENT_PACKAGES[tool]).toMatchObject({ package: cliPkg, version })
       const { binary, package: pkg, verified } = ACP_ADAPTERS[tool]
       expect(AGENT_PACKAGES[binary], binary).toMatchObject({ package: pkg, version: verified })
     }

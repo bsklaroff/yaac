@@ -44,7 +44,11 @@ const PATCHES: Record<string, AgentPackage['patch']> = {
  */
 export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
   ...AGENT_TOOLS.map((tool): [string, AgentPackage] =>
-    [tool, { ...AGENT_CLIS[tool], runScripts: tool === 'claude' || tool === 'opencode' }]),
+    [tool, {
+      package: AGENT_CLIS[tool].package,
+      version: AGENT_CLIS[tool].version,
+      runScripts: tool === 'claude' || tool === 'opencode',
+    }]),
   ...AGENT_TOOLS
     .filter((tool) => ACP_ADAPTERS[tool].binary !== tool)
     .map((tool): [string, AgentPackage] => {

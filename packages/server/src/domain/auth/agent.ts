@@ -5,9 +5,10 @@ import type { AgentKind, AgentOp, AgentTool2 } from '@yaac/shared/auth-agent-pro
 import type { ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 
 /**
- * Relay between the sign-in routes and the auth server on a user's machine,
- * where vendor login/install flows run (the browser and vendors' localhost
- * OAuth callbacks are there, not necessarily on the server host). The hub
+ * Relay between the sign-in routes and the auth server (the desktop app's
+ * auth daemon) on a user's machine, where vendor login/install flows run
+ * (the browser and vendors' localhost OAuth callbacks are there, not
+ * necessarily on the server host). The hub
  * forwards ops over each user's WebSocket and caches the views their auth
  * server pushes back, which the polled routes serve.
  *
@@ -67,8 +68,9 @@ interface FlowEntry {
 }
 
 const DISCONNECTED_MESSAGE =
-  'No auth server is connected — sign-in flows run on your machine. '
-  + 'Run `yaac auth update` (or `yaac auth server start`) there.'
+  'Browser sign-in runs on your machine and needs the yaac desktop app '
+  + 'running there. Without it, run `yaac auth update` in a terminal, or '
+  + 'paste a token.'
 
 function createAuthAgentHub(): {
   setSocket(owner: string, sock: AgentSocketLike): void
@@ -151,7 +153,7 @@ function createAuthAgentHub(): {
       for (const entry of flows.values()) {
         if (entry.owner === owner && entry.view.status === 'running') {
           entry.view.status = 'error'
-          entry.view.error = 'The auth server disconnected mid-flow. Start it again and retry.'
+          entry.view.error = "The desktop app's auth daemon disconnected mid-flow. Reopen the app and retry."
           armLinger(entry)
         }
       }

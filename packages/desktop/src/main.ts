@@ -4,7 +4,7 @@
  *
  * The shell is a client of whatever server `server.json` names and never
  * starts or stops one. Close hides to the tray; Quit exits the shell and
- * leaves the server and the auth daemon running. With no server reachable
+ * its auth daemon and leaves the server running. With no server reachable
  * the window shows the picker (connect-page.ts). While running it follows
  * `/events` to show waiting workspaces (dock badge, tray, notifications) and
  * to hold the workspaces' port forwards.
@@ -13,6 +13,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray,
+  utilityProcess,
 } from 'electron'
 import { resolveServerTarget } from '@yaac/shared/server-api'
 import {
@@ -27,7 +28,7 @@ import { probeIdentity, runFlow } from '#flow'
 import { connectPageUrl } from '#connect-page'
 import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
-import { ensureAuthDaemonRunning, resolveYaacCommand } from '#server-process'
+import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
 import {
   addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, removeServer,
   type ServerSwitchDeps,
@@ -39,6 +40,11 @@ import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state
 import { createFsTransitionGuard, zoomAction } from '#window-zoom'
 
 app.setName('yaac')
+
+// A second instance would run a second auth daemon, and the two would take
+// each other's socket on the server. It hands its launch to this one.
+if (!app.requestSingleInstanceLock()) app.exit(0)
+app.on('second-instance', () => showWindow())
 /*
  * macOS answers a held letter key with its accent picker instead of key
  * repeat, which breaks holding hjkl in a terminal pane. Registered defaults
@@ -66,6 +72,12 @@ let onConnectPage = false
 
 const resolveTarget = resolveServerTarget
 
+const distDir = path.dirname(fileURLToPath(import.meta.url))
+const authDaemonReady = Promise.all([adoptLoginShellPath(), stopLegacyAuthDaemon()])
+const authDaemon = createAuthDaemonRunner((baseUrl) => utilityProcess.fork(
+  path.join(distDir, 'auth-daemon.js'), [baseUrl], { serviceName: 'yaac auth daemon' },
+))
+
 function windowStateFile(): string {
   return path.join(app.getPath('userData'), 'window-state.json')
 }
@@ -91,7 +103,7 @@ async function createWindow(): Promise<BrowserWindow> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: path.join(path.dirname(fileURLToPath(import.meta.url)), 'preload.cjs'),
+      preload: path.join(distDir, 'preload.cjs'),
       // The attention chime plays on a background event, not a user gesture.
       autoplayPolicy: 'no-user-gesture-required',
       // For the workspace preview. Guests are hardened and pinned to loopback
@@ -139,14 +151,10 @@ async function openWindow(): Promise<boolean> {
   const w = win
   const result = await runFlow({
     resolveTarget,
-    ensureAuthDaemon: (target) => ensureAuthDaemonRunning({
-      target,
-      command: resolveYaacCommand(
-        app.isPackaged ? process.resourcesPath : null,
-        ['auth', 'server', 'run'],
-      ),
-      hydratePath: app.isPackaged,
-    }),
+    ensureAuthDaemon: async (target) => {
+      await authDaemonReady
+      authDaemon.ensure(target)
+    },
     probeIdentity: () => probeIdentity(),
     onStatus: (text) => {
       void w.loadURL(splashUrl(text)).catch(() => { /* superseded by the next load */ })
@@ -358,4 +366,5 @@ app.on('before-quit', () => {
   quitting = true
   events?.stop()
   events = null
+  authDaemon.stop()
 })

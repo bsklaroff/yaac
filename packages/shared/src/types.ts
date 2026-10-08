@@ -82,13 +82,22 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
  * re-checking both against the new binary. Bump the matching
  * `ACP_ADAPTERS` entry with it, since codex-acp and pi-acp depend on their
  * CLI's version.
+ *
+ * `installScriptSha256` is the SHA-256 of the `install.sh` asset of codex's
+ * release, which the auth daemon's Install button runs. Release assets can
+ * be replaced in place, so the daemon refuses a script that does not match.
+ * Bump it with the version (`curl -fsSL <url> | shasum -a 256`).
  */
 export const AGENT_CLIS = {
   claude: { package: '@anthropic-ai/claude-code', version: '2.1.286' },
-  codex: { package: '@openai/codex', version: '0.159.3' },
+  codex: {
+    package: '@openai/codex',
+    version: '0.159.3',
+    installScriptSha256: '150e3cf675682efeaac115aa3747add3f27887896d04ce6d0b56478d8b428bf6',
+  },
   opencode: { package: '@opencode/cli', version: '2.0.21' },
   pi: { package: '@earendil-works/pi-coding-agent', version: '0.99.2' },
-} as const satisfies Record<AgentTool, { package: string; version: string }>
+} as const satisfies Record<AgentTool, { package: string; version: string; installScriptSha256?: string }>
 
 /**
  * The ACP adapter each tool uses in `acp` mode. The image install steps, the
