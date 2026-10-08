@@ -133,7 +133,7 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     for (const args of [['start', '--tailnet', 'srv.tailnet.ts.net'], ['restart', '--tailnet', 'srv.tailnet.ts.net', '--owner', 'a@b.c']]) {
       const res = await runYaac(testEnv.env, 'server', ...args)
       expect(res.exitCode).toBe(1)
-      expect(res.stderr).toMatch(/access mode `yaac cluster install` sets: use `yaac cluster install --tailnet \[--owner <login>\]`/)
+      expect(res.stderr).toMatch(/access mode `yaac cluster install` sets: use `yaac cluster install --tailnet \[<host>\] \[--owner <login>\]`/)
     }
     expect(await serverPods()).toEqual(before)
   })
