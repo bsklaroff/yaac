@@ -43,13 +43,14 @@ Other flags:
 
 - `--byo` installs into a cluster yaac did not create, such as a cloud node
   pool (see "Bring your own cluster").
-- `--tailnet` publishes a kind install's server on the machine's Tailscale
-  tailnet through the Tailscale Kubernetes operator, instead of at
-  `127.0.0.1`. The operator must already be installed; install prints the
-  `helm upgrade --install tailscale-operator …` command when it is missing.
-  The server then identifies every caller by tailnet user
-  (docs/server-in-cluster.md "Reachability", docs/remote-hosting.md).
-  `--byo` implies it.
+- `--tailnet [<host>]` publishes a kind install's server on the machine's
+  Tailscale tailnet instead of at `127.0.0.1`. With `<host>` it goes through
+  this machine's own `tailscale serve` at that MagicDNS name; without, through
+  the Tailscale Kubernetes operator, which install sets up when the cluster
+  lacks it, given an OAuth client in `TS_OAUTH_CLIENT_ID` /
+  `TS_OAUTH_CLIENT_SECRET`. The server then identifies every caller by
+  tailnet user (docs/server-in-cluster.md "Reachability",
+  docs/remote-hosting.md). `--byo` implies the operator form.
 
 ## Images are built here, and only here
 
@@ -671,9 +672,10 @@ stall after a restart), a pinned `Filesystem_Id`, and ganesha's metadata
 caching off, because the host also writes the data dir directly. Only node
 addresses may mount, enforced by the export list and a NetworkPolicy on
 port 2049. The image (from `test/kind-byo/ganesha/`) is side-loaded, since
-it must serve before the registry exists. csi-driver-nfs,
-local-path-provisioner and the operator are pinned like Calico, with
-checksums in `test/kind-byo/pins.sha256`.
+it must serve before the registry exists. csi-driver-nfs and
+local-path-provisioner are pinned like Calico, with checksums in
+`test/kind-byo/pins.sha256`; the operator is the one a kind `--tailnet`
+install applies (`install/tailscale-operator.ts`), from the same pin.
 
 **Its certificate is a staging one**, the one way kind-byo differs from a
 cloud install. Production Let's Encrypt issues at most five certificates a

@@ -25,7 +25,8 @@ export interface ClusterInstallArgs {
   byo?: boolean
   rwxStorageClass?: string
   rwoStorageClass?: string
-  tailnet?: boolean
+  /** `--tailnet`, or `--tailnet <host>` for this machine's `tailscale serve`. */
+  tailnet?: boolean | string
   owner?: string
   nodes?: number | string
 }
@@ -58,12 +59,37 @@ function checkByoFlags(opts: ClusterInstallArgs): void {
 }
 
 /**
- * Validate `--nodes` (and the `--byo` and `--owner` flags) and return the node count to
- * build. The count applies only to a cluster this run creates; install
- * never recreates one, so an existing cluster ignores it with a note.
+ * The MagicDNS name `--tailnet <host>` gives, lowercased, or undefined for
+ * a bare `--tailnet` or none. Only a kind install has the loopback port
+ * `tailscale serve` forwards to, so `--byo` refuses a host.
+ */
+export function tailnetServeHost(opts: ClusterInstallArgs): string | undefined {
+  if (typeof opts.tailnet !== 'string') return undefined
+  if (opts.byo) {
+    throw new ClusterInstallError(
+      '--tailnet <host> publishes a kind install through this machine\'s own `tailscale serve`; '
+      + 'a --byo install is published through the Tailscale operator, so give --tailnet no host.',
+    )
+  }
+  const host = opts.tailnet.trim().toLowerCase()
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host)) {
+    throw new ClusterInstallError(
+      '--tailnet takes the bare MagicDNS name tailscale serve fronts this machine at, '
+      + `e.g. srv.<tailnet>.ts.net (got "${opts.tailnet}").`,
+    )
+  }
+  return host
+}
+
+/**
+ * Validate `--nodes` (and the `--byo`, `--tailnet` and `--owner` flags) and
+ * return the node count to build. The count applies only to a cluster this
+ * run creates; install never recreates one, so an existing cluster ignores
+ * it with a note.
  */
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
+  tailnetServeHost(opts)
   if (opts.owner !== undefined && !opts.tailnet && !opts.byo) {
     throw new ClusterInstallError(
       '--owner names the tailnet login that claims this install as it switches to tailnet '

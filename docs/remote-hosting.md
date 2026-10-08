@@ -8,7 +8,9 @@ can share the machine, each as their own user (docs/multi-user.md).
 ```
 SERVER MACHINE (on the tailnet)
   containerless: host process on 127.0.0.1:8787, fronted by `tailscale serve`
-  k8s:           server pod, fronted by the Tailscale operator's Ingress
+  k8s on kind:   server pod published at 127.0.0.1:8787, fronted by `tailscale serve`,
+                 or by the Tailscale operator's Ingress
+  k8s --byo:     server pod, fronted by the Tailscale operator's Ingress
 
 LAPTOP (on the tailnet, logged in as a tailnet user)
   yaac CLI          ── RPC + terminal WebSockets ─► server
@@ -36,8 +38,8 @@ var cannot change who the server admits.
 
 - **A fresh install** takes the mode of the command that first starts it:
   `yaac server start` and `yaac cluster install` give `local`; `yaac server
-  start --tailnet <host>` and `yaac cluster install --tailnet` (or `--byo`)
-  give `tailnet`. An install upgraded from before access modes counts as
+  start --tailnet <host>` and `yaac cluster install --tailnet [<host>]` (or
+  `--byo`) give `tailnet`. An install upgraded from before access modes counts as
   `local` if it holds any data.
 - **Every later start must ask for the recorded mode.** `yaac server start`
   and `restart` take the same `--tailnet <host>` each time. A start asking
@@ -67,39 +69,67 @@ A **containerless** server is a host process behind the machine's own
 
 ```sh
 tailscale up
-tailscale serve --bg https / http://127.0.0.1:8787     # `serve`, never `funnel`
+tailscale serve --bg http://127.0.0.1:8787            # `serve`, never `funnel`
 yaac server start --tailnet srv.<tailnet>.ts.net       # a fresh install
 yaac server restart --tailnet srv.<tailnet>.ts.net \
   --owner you@example.com                              # a local install with data
 ```
 
-`--tailnet` names the MagicDNS name serve fronts the machine at. The server
-admits that name, and `yaac server start` registers its `https://` origin as
-this machine's server, so the CLI here goes through `serve` too and must run
-as a tailnet user. Give every later `yaac server start` and
+`tailscale serve --bg <target>` serves `https://<this machine's MagicDNS
+name>/` on port 443. Changing serve needs root, or a one-time `sudo
+tailscale set --operator=$USER`. `--tailnet` names that MagicDNS name. The
+server admits that name, and `yaac server start` registers its `https://`
+origin as this machine's server, so the CLI here goes through `serve` too
+and must run as a tailnet user. Give every later `yaac server start` and
 `restart` the same `--tailnet` (in a systemd unit, say).
 
-A **k8s** server is published by the Tailscale Kubernetes operator, and
-install sets the allowed host itself:
+A **kind** server can be published the same way, by the machine's own
+`tailscale serve` in front of the port kind publishes it on:
 
 ```sh
-yaac cluster install --tailnet && yaac cluster check      # this machine's kind cluster
+tailscale serve --bg http://127.0.0.1:8787            # the kind install's port
+yaac cluster install --tailnet srv.<tailnet>.ts.net \
+  --owner you@example.com                              # --owner for a local install with data
+```
+
+Install runs the server in `tailnet` mode admitting that name, waits for
+`https://srv.<tailnet>.ts.net` to answer, and registers it, so every client,
+this machine's CLI included, goes through serve. It does not configure serve
+itself; if the name never answers it prints the `tailscale serve` command
+for the cluster's port. Later `yaac server start|restart` read the name back
+from the server Deployment, so they need no flag; a later `yaac cluster
+install` takes the same `--tailnet <host>`, as every install of a `tailnet`
+server must.
+
+A kind or **byo** server can instead be published by the Tailscale
+Kubernetes operator, at its own tailnet device:
+
+```sh
+TS_OAUTH_CLIENT_ID=… TS_OAUTH_CLIENT_SECRET=… \
+  yaac cluster install --tailnet && yaac cluster check   # this machine's kind cluster
 yaac cluster install --byo --rwx-storage-class <nfs-class> \
-  && yaac cluster check                                   # a cluster you bring
+  && yaac cluster check                                  # a cluster you bring
 ```
 
 `--tailnet` publishes the server through a `tailscale`-class Ingress
 (docs/server-in-cluster.md "Reachability"), runs it in `tailnet` mode, and
 registers `https://yaac.<tailnet>.ts.net` as the server's origin. Switching
-an existing `local` install needs `--owner <login>` as above. On kind this replaces `127.0.0.1`, so every client, including this
-machine's CLI, uses the tailnet name and must be logged in as a tailnet
-user (install warns when it is not). `--byo` (docs/cluster-setup.md "Bring
-your own cluster") always uses this fronting, since a cloud cluster has no
-loopback to publish on.
+an existing `local` install needs `--owner <login>` as above. On kind this
+replaces `127.0.0.1`, so every client, including this machine's CLI, uses
+the tailnet name and must be logged in as a tailnet user (install warns when
+it is not). `--byo` (docs/cluster-setup.md "Bring your own cluster") always
+uses this fronting, since a cloud cluster has no loopback to publish on.
 
 The operator's Ingress proxy is the same code as `tailscale serve`: it
-terminates TLS and stamps the caller's identity the same way. Install the
-operator once, with HTTPS certificates enabled for the tailnet; install
+terminates TLS and stamps the caller's identity the same way. It needs an
+OAuth client with the tags its proxies use
+(https://tailscale.com/kb/1236/kubernetes-operator), and HTTPS certificates
+enabled for the tailnet. On kind, install sets the operator up itself from
+its pinned manifest (`install/tailscale-operator.ts`), given the client in
+`TS_OAUTH_CLIENT_ID` / `TS_OAUTH_CLIENT_SECRET`, and converges it on later
+runs; an operator it did not put there, or its leftover CRDs and
+IngressClass, is left as it is, and install refuses rather than replace it. On a byo cluster
+the operator is the cluster owner's: install only checks for it, and
 refuses, printing this command, until it is present:
 
 ```sh
@@ -123,7 +153,7 @@ tell the webapp which address it binds:
 ```sh
 export YAAC_FORWARD_BIND=<the server's tailnet IP>   # from `tailscale ip -4`
 yaac server restart --tailnet srv.<tailnet>.ts.net   # containerless
-yaac cluster install                                 # k8s: install copies it into the Deployment
+yaac cluster install --tailnet [<host>]              # k8s: install copies it into the Deployment
 yaac forward --bind <the server's tailnet IP>        # holds the listeners
 ```
 

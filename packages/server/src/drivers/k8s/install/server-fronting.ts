@@ -4,9 +4,9 @@
  * (docs/server-in-cluster.md "Reachability"). Each fronting supplies its
  * manifests, ingress peers, published origin and timeouts.
  *
- * The fronting is not stored on disk: `frontingOfIngress` reads it back
- * from the live cluster so `yaac server start|restart` can wait on the
- * right origin.
+ * The fronting is not stored on disk: `liveFronting` reads it back from
+ * the live cluster so `yaac server start|restart` can wait on the right
+ * origin.
  */
 import {
   LABEL_DATA_DIR_HASH,
@@ -40,7 +40,6 @@ export interface RemoteHosting {
 type FrontingObject = Omit<ObjectRef, 'namespace'>
 
 export interface ServerFronting {
-  kind: 'kind' | 'tailnet'
   /**
    * Objects the origin needs, the server's Service first. Applied in order
    * and rolled out before the origin is resolved and probed.
@@ -48,7 +47,7 @@ export interface ServerFronting {
   manifests(): Record<string, unknown>[]
   /**
    * The other fronting's objects, deleted on apply so switching fronting
-   * leaves nothing behind (especially an Ingress `frontingOfIngress` would
+   * leaves nothing behind (especially an Ingress `liveFronting` would
    * misread).
    */
   retired(): FrontingObject[]
@@ -97,7 +96,6 @@ function serverServiceManifest(): Record<string, unknown> {
  */
 export function kindFronting(): ServerFronting {
   return {
-    kind: 'kind',
     manifests: () => [
       serverServiceManifest(),
       buildServerFrontConfigMapManifest(),
@@ -120,6 +118,34 @@ export function kindFronting(): ServerFronting {
 const KIND_RECREATE_ADVICE = 'Recreate it: `yaac cluster delete`, then `yaac cluster '
   + 'install`. Running workspaces are lost (as any cluster delete loses them); '
   + 'nothing under the data dir is touched.'
+
+/**
+ * The serve fronting, for `--tailnet <host>` on kind: the kind forwarder,
+ * with this machine's own `tailscale serve` in front of its loopback port,
+ * the way a containerless server is published (docs/remote-hosting.md).
+ * Serve terminates TLS and stamps each caller's tailnet identity, so the
+ * server runs in `tailnet` mode and admits `hostname`. Install does not
+ * configure serve; an origin that never answers gets the command that does.
+ */
+export function serveFronting(opts: { hostname: string }): ServerFronting {
+  let port = 0
+  return {
+    ...kindFronting(),
+    resolveOrigin: async () => {
+      port = await kindPublishedPort()
+      return `https://${opts.hostname}`
+    },
+    remoteHosting: () => ({ accessMode: 'tailnet', allowedHosts: [opts.hostname] }),
+    // The first HTTPS request to a new name makes serve fetch a certificate.
+    publishTimeoutMs: 120_000,
+    unreachableDiagnosis: (origin) =>
+      `Is \`tailscale serve\` forwarding ${origin} to the server's port on this machine? Set it with:\n`
+      + `      tailscale serve --bg http://127.0.0.1:${String(port)}\n`
+      + '    (as root, or once `sudo tailscale set --operator=$USER` lets you change serve), and '
+      + 'check that the name is this machine\'s (`tailscale status`) and that HTTPS certificates '
+      + 'are enabled for the tailnet.',
+  }
+}
 
 /**
  * The host port kind publishes the server on. `YAAC_SERVER_PORT` wins when
@@ -187,7 +213,6 @@ const TAILNET_PUBLISH_TIMEOUT_MS = 120_000
  */
 export function tailnetFronting(opts: { hostname: string }): ServerFronting {
   return {
-    kind: 'tailnet',
     manifests: () => [serverServiceManifest(), {
       apiVersion: 'networking.k8s.io/v1',
       kind: 'Ingress',
@@ -254,14 +279,21 @@ export function tailnetFronting(opts: { hostname: string }): ServerFronting {
 }
 
 /**
- * The fronting an install uses, from its live server Ingress: tailnet for
- * a `tailscale`-class Ingress, otherwise kind.
+ * The fronting an install uses, from the live cluster: tailnet for a
+ * `tailscale`-class server Ingress; serve for a server without one that
+ * runs in `tailnet` mode, at the host it admits; otherwise kind.
  */
-export function frontingOfIngress(ingress: Record<string, unknown> | null): ServerFronting {
+export function liveFronting(
+  ingress: Record<string, unknown> | null,
+  serverEnv: Array<{ name?: string; value?: string }>,
+): ServerFronting {
   const raw = ingress as RawIngress | null
   if (raw?.spec?.ingressClassName === TAILSCALE_INGRESS_CLASS) {
     return tailnetFronting({ hostname: raw.spec.tls?.[0]?.hosts?.[0] ?? TAILNET_HOSTNAME })
   }
+  const value = (name: string): string | undefined => serverEnv.find((e) => e.name === name)?.value
+  const host = value('YAAC_ALLOWED_HOSTS')?.split(',')[0]
+  if (value('YAAC_ACCESS_MODE') === 'tailnet' && host) return serveFronting({ hostname: host })
   return kindFronting()
 }
 

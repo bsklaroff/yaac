@@ -23,6 +23,14 @@ import { calicoManifestUrl, CALICO_VERSION, calicoImageRefs } from '@yaac/server
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container'
 import { contextHash, stringHash } from '@yaac/server/drivers/k8s/image-engine'
 import { NODE_PIDS_LIMIT } from '@yaac/server/drivers/k8s/install/check'
+import {
+  TAILSCALE_OPERATOR_PIN_FILE,
+  TAILSCALE_OPERATOR_VERSION,
+  tailscaleOperatorManifestUrl,
+  tailscaleOperatorOauthSecret,
+  tailscaleOperatorObjects,
+} from '@yaac/server/drivers/k8s/install/tailscale-operator'
+import { env } from '@yaac/shared/env'
 import { kindByoLayout, type KindByoLayout } from '#kind-byo-layout'
 
 const execFileAsync = promisify(execFile)
@@ -49,16 +57,8 @@ const KIND_BYO_NFS_SHARE = '/export'
 
 const CSI_NFS_VERSION = 'v4.13.4'
 const LOCAL_PATH_VERSION = 'v0.0.37'
-const TAILSCALE_OPERATOR_VERSION = 'v1.102.4'
-/**
- * Digest pins for images the fetched manifests name only by tag: the
- * operator, its proxies, and local-path's helper (an untagged `busybox`).
- */
-const PINNED_IMAGES = {
-  operator: `tailscale/k8s-operator:${TAILSCALE_OPERATOR_VERSION}@sha256:3c8958c42fb3c46068e8553e11b944f2133b4671d4f36c86adc11f206746bf34`,
-  proxy: `tailscale/tailscale:${TAILSCALE_OPERATOR_VERSION}@sha256:2667499ed87ae29218f292556ba062918402dd5e92e93637af14867e4df12dd3`,
-  helper: 'docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e',
-}
+/** local-path's helper image, which its manifest names as an untagged `busybox`. */
+const HELPER_IMAGE = 'docker.io/library/busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e'
 /** The ProxyClass every kind-byo proxy defaults to: staging certificates. */
 const STAGING_PROXY_CLASS = 'kind-byo-letsencrypt-staging'
 const STAGING_ROOTS = [
@@ -277,7 +277,7 @@ async function ensureLocalPath(layout: KindByoLayout): Promise<void> {
     data['config.json'] = JSON.stringify({
       nodePathMap: [{ node: 'DEFAULT_PATH_FOR_NON_LISTED_NODES', paths: [layout.dataDir] }],
     })
-    data['helperPod.yaml'] = data['helperPod.yaml'].replace(/image: \S+/, `image: ${PINNED_IMAGES.helper}`)
+    data['helperPod.yaml'] = data['helperPod.yaml'].replace(/image: \S+/, `image: ${HELPER_IMAGE}`)
     return { ...d, data }
   })
   log(`applying local-path-provisioner ${LOCAL_PATH_VERSION}`)
@@ -500,27 +500,22 @@ async function ensureCsiNfs(layout: KindByoLayout): Promise<void> {
  * (`ensureStagingRoots`); the CLI is unchanged.
  */
 async function ensureOperator(layout: KindByoLayout): Promise<void> {
-  const id = process.env.TS_OAUTH_CLIENT_ID
-  const secret = process.env.TS_OAUTH_CLIENT_SECRET
-  if (!id || !secret) {
+  const client = env.tailscaleOauthClient
+  if (!client) {
     log('no TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET in the environment, so no Tailscale '
       + 'operator: the install stops at its operator gate.')
     return
   }
-  const docs = (docsOf(await fetchPinned(layout, `tailscale-operator-${TAILSCALE_OPERATOR_VERSION}/operator.yaml`,
-    `https://raw.githubusercontent.com/tailscale/tailscale/${TAILSCALE_OPERATOR_VERSION}/cmd/k8s-operator/deploy/manifests/operator.yaml`,
-  )) as Obj[])
-    // The OAuth Secret is ours to write; its manifest ships a placeholder.
-    .filter((d) => !(d.kind === 'Secret' && d.metadata?.name === 'operator-oauth'))
-    .map((d) => (d.kind === 'Deployment' ? pinOperatorImages(d) : d))
+  const pin = (await fs.readFile(TAILSCALE_OPERATOR_PIN_FILE, 'utf8')).trim().split(/\s+/)[0]
+  const raw = await fetchVerified(
+    path.join(layout.clientDir, 'cache', 'kind-byo', `tailscale-operator-${TAILSCALE_OPERATOR_VERSION}.yaml`),
+    tailscaleOperatorManifestUrl(), pin,
+  )
+  // The host's own install may run another operator, so the device is named apart.
+  const docs = tailscaleOperatorObjects(raw, `${CLUSTER}-operator`)
+    .map((d) => (d.kind === 'Deployment' ? withStagingClass(d) : d))
   log(`applying the Tailscale operator ${TAILSCALE_OPERATOR_VERSION}`)
-  await kubectlApplyDocs(layout, [
-    ...docs,
-    {
-      apiVersion: 'v1', kind: 'Secret', metadata: { name: 'operator-oauth', namespace: 'tailscale' },
-      stringData: { client_id: id, client_secret: secret },
-    },
-  ])
+  await kubectlApplyDocs(layout, [...docs, tailscaleOperatorOauthSecret(client)])
   await run(layout, 'kubectl', [
     'wait', '--for=condition=established', 'crd/proxyclasses.tailscale.com', '--timeout=60s',
   ], { timeout: 70_000 })
@@ -546,21 +541,14 @@ async function ensureStagingRoots(layout: KindByoLayout): Promise<void> {
   await fs.writeFile(layout.stagingCa, pems.map((p) => p.trim()).join('\n') + '\n')
 }
 
-/** `:stable` → the pinned digest, for the operator and the proxies it runs. */
-function pinOperatorImages(deployment: Obj): Obj {
-  const text = JSON.stringify(deployment)
-    .replaceAll('tailscale/k8s-operator:stable', PINNED_IMAGES.operator)
-    .replaceAll('tailscale/tailscale:stable', PINNED_IMAGES.proxy)
-    // The host's own install may run another operator.
-    .replaceAll('"value":"tailscale-operator"', `"value":"${CLUSTER}-operator"`)
-  const pinned = JSON.parse(text) as Obj & {
-    spec: { template: { spec: { containers: Array<{ env?: Array<{ name: string; value: string }> }> } } }
+/** Every proxy the operator runs defaults to the staging ProxyClass. */
+function withStagingClass(deployment: Obj): Obj {
+  const dep = deployment as Obj & {
+    spec: { template: { spec: { containers: Array<{ env?: Array<{ name: string; value?: string | null }> }> } } }
   }
-  pinned.spec.template.spec.containers[0].env = [
-    ...(pinned.spec.template.spec.containers[0].env ?? []),
-    { name: 'PROXY_DEFAULT_CLASS', value: STAGING_PROXY_CLASS },
-  ]
-  return pinned
+  const [container] = dep.spec.template.spec.containers
+  container.env = [...container.env ?? [], { name: 'PROXY_DEFAULT_CLASS', value: STAGING_PROXY_CLASS }]
+  return dep
 }
 
 /**

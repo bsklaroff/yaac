@@ -111,7 +111,7 @@ async function runDeployedServerVerb(
   if (opts.tailnet !== undefined || opts.owner !== undefined) {
     throw new Error(
       'this install\'s server runs in the cluster, whose access mode `yaac cluster install` '
-      + 'sets: use `yaac cluster install --tailnet [--owner <login>]`.',
+      + 'sets: use `yaac cluster install --tailnet [<host>] [--owner <login>]`.',
     )
   }
   if (verb === 'logs') {
@@ -294,7 +294,7 @@ cluster
   .option('--byo', 'Bring your own cluster: install into the cluster your kubeconfig points at instead of creating one — gated on its nodes, its Calico, the Tailscale operator and its storage classes; the server is published on the tailnet')
   .option('--rwx-storage-class <name>', 'With --byo (required): the NFS-family StorageClass the shared yaac-global claim is provisioned from')
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
-  .option('--tailnet', 'Publish the server on your Tailscale tailnet through the Tailscale Kubernetes operator (which must already be installed) instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user')
+  .option('--tailnet [host]', 'Publish the server on your Tailscale tailnet instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user. With <host> (this machine\'s MagicDNS name), through this machine\'s own `tailscale serve`; without, through the Tailscale Kubernetes operator, which install sets up from TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET when the cluster lacks it')
   .option('--owner <login>', 'With --tailnet (or --byo): switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install')
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.

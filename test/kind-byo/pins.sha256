@@ -4,7 +4,6 @@
 fa2bba4674821b3317d1e016f3c9d54abe04fcdc6fed3fce9e58994c8311c4a0  csi-driver-nfs-v4.13.4/csi-nfs-driverinfo.yaml
 dcc1aa5188c93bea3a3239175ce4e9ac577702818c4fb9fa611a0039aa5ab255  csi-driver-nfs-v4.13.4/csi-nfs-controller.yaml
 b66104b44d4569c926e11af5c6c3858fbc38fd16099b206fc4a0dc0f7fcd94d2  csi-driver-nfs-v4.13.4/csi-nfs-node.yaml
-f05038a304b7b3693bd74654c6316def629c5f29afd487f5be09de4bc969c00a  tailscale-operator-v1.102.4/operator.yaml
 3a5e1171e5f5c2d41522d438f225602e4236a68fb29c32399a95921a4ae80e73  letsencrypt-staging/letsencrypt-stg-root-x1.pem
 497c36c1b50c0daff30870d5908c9b97af29223d5510c5e6c24957d0cc502fb8  letsencrypt-staging/letsencrypt-stg-root-x2.pem
 bf41a8c5f7fffc181e46d5df1a2b867f0efb6e169df6f0a45bd4064b1d023084  letsencrypt-staging/root-ye.pem

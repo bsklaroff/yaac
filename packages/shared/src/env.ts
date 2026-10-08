@@ -306,6 +306,17 @@ export const env = {
   },
 
   /**
+   * `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_CLIENT_SECRET` — the Tailscale OAuth
+   * client `yaac cluster install --tailnet` gives the operator it installs
+   * on a kind cluster. Undefined unless both are set.
+   */
+  get tailscaleOauthClient(): { id: string; secret: string } | undefined {
+    const id = process.env.TS_OAUTH_CLIENT_ID?.trim()
+    const secret = process.env.TS_OAUTH_CLIENT_SECRET?.trim()
+    return id && secret ? { id, secret } : undefined
+  },
+
+  /**
    * `YAAC_BUNDLED` — set to `'true'` by tsup in the shipped bundle (a build
    * define, not a runtime var). In the bundle static assets live in `dist/`;
    * in dev/test it is unset.

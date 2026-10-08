@@ -14,11 +14,13 @@ delete process.env.GIT_WORK_TREE
 // - YAAC_WORKSPACE_ID makes the identity rule treat any unproxied request
 //   as local.
 // - YAAC_SECRET / YAAC_SECRETS choose the key secrets are sealed under.
+// - TS_OAUTH_CLIENT_ID / _SECRET would let `cluster install --tailnet`
+//   install the Tailscale operator.
 // Stripped for every project, since e2e/api servers inherit process.env.
 // Tests that exercise these stub them per case.
 for (const key of [
   'YAAC_ALLOWED_HOSTS', 'YAAC_ACCESS_MODE', 'YAAC_ACCESS_OWNER', 'YAAC_FORWARD_BIND',
-  'YAAC_WORKSPACE_ID', 'YAAC_SECRET', 'YAAC_SECRETS',
+  'YAAC_WORKSPACE_ID', 'YAAC_SECRET', 'YAAC_SECRETS', 'TS_OAUTH_CLIENT_ID', 'TS_OAUTH_CLIENT_SECRET',
 ] as const) {
   delete process.env[key]
 }

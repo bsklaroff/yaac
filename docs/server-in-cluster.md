@@ -28,8 +28,9 @@ one mounts two (see "Storage is two claims").
    port is never reachable from pods before the policy exists (see "The
    ingress policy is the wall").
 5. **The Service** (ClusterIP) and its **fronting**, meaning how the Service
-   is reached from outside the cluster: a forwarder on kind, the Tailscale
-   operator's Ingress under `--tailnet` (see "Reachability"). Objects of the
+   is reached from outside the cluster: a forwarder on kind (with this
+   machine's `tailscale serve` in front of it under `--tailnet <host>`), the
+   Tailscale operator's Ingress under `--tailnet` (see "Reachability"). Objects of the
    other fronting are deleted first. The fronting comes before the
    Deployment because the origin it publishes goes into the Deployment's
    environment.
@@ -37,7 +38,7 @@ one mounts two (see "Storage is two claims").
    priority, plain runc, `runAsUser` set to the install uid (see "The uid
    everything runs as"), three mounts (the two claims and the node's
    node-local directory), and the fronting's access mode
-   (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet`, with `--owner` as
+   (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet [<host>]`, with `--owner` as
    `YAAC_ACCESS_OWNER`) and hostname (`YAAC_ALLOWED_HOSTS`), which the server
    checks against the mode it recorded (docs/remote-hosting.md "Access
    modes").
@@ -76,6 +77,10 @@ install` from `dist/package.json`. `scripts/write-dist-manifest.ts` writes
 that file at build time from the root manifest, resolving the `catalog:`
 pins (the build machine may not have pnpm's catalog). The root manifest is
 the dependency list, already checked by `scripts/check-cli-externals.ts`.
+npm resolves everything below those exact pins when the image is built, so
+the same script writes `release-age.npmrc` from pnpm's `minimumReleaseAge`
+and its excludes, and the install reads it: the image takes no package
+published more recently than the repo's own installs would.
 
 The image includes node, `kubectl`, `git`, and the pinned llama.cpp release
 at the path `llamaCppDir()` resolves under the pod's `$HOME`, so auto-titles
@@ -152,19 +157,46 @@ own, which is what the server's identity check reads (docs/remote-hosting.md).
 An L4 exposure would pass through whatever headers a tailnet device sent,
 including `Host: 127.0.0.1`, making every tailnet device the owner.
 
-The operator is the cluster owner's to install. `--tailnet` refuses up front
-without it (its CRD, Deployment and IngressClass), printing the helm
-command, and reports a cluster it cannot query as *unevaluated* rather than
-missing. `--byo` (docs/cluster-setup.md "Bring your own cluster") always uses
-this fronting, since a cloud cluster has no loopback to publish on.
+On kind, yaac owns the cluster, so `--tailnet` installs the operator
+itself when it is missing, from Tailscale's static manifest pinned by
+checksum (`k8s/tailscale-operator/`) with digest-pinned images, and the OAuth
+client from `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_CLIENT_SECRET`. What it applies
+carries `app.kubernetes.io/managed-by: yaac`, and later installs converge
+only an operator with that label, reusing its Secret; one installed some
+other way is its installer's. So are its cluster-wide objects: a Tailscale
+CRD or `tailscale` IngressClass without the label, with no operator in the
+`tailscale` namespace (an operator installed elsewhere, or a half-removed
+one), makes install refuse rather than take it over. A manifest naming an
+image yaac has no digest for is refused too, so an upgrade cannot start an
+unpinned image. Without the operator or a client, install
+refuses before applying anything. `--byo` (docs/cluster-setup.md "Bring your
+own cluster") always uses this fronting, since a cloud cluster has no
+loopback to publish on, and there the operator is the cluster owner's:
+install only checks for it (its CRD, Deployment and IngressClass), printing
+the helm command when it is missing. Either way, a cluster it cannot query
+is reported as *unevaluated* rather than missing.
+
+### Under `--tailnet <host>`: this machine's `tailscale serve`
+
+The kind forwarder unchanged, with the machine's own `tailscale serve`
+forwarding `https://<host>` to the kind port, the way a containerless server
+is published (docs/remote-hosting.md). Serve terminates TLS and adds the
+caller's identity, so the Deployment runs in `tailnet` mode with `<host>` as
+`YAAC_ALLOWED_HOSTS`, and install registers `https://<host>`. No operator,
+OAuth client or second tailnet device is involved. Install does not
+configure serve; when the origin does not answer it prints the `tailscale
+serve` command for the cluster's port. A tailnet device cannot reach the
+kind port directly (it is bound to the host's loopback), so every request
+from the tailnet comes through serve, as the identity check needs.
 
 ### Which fronting is installed
 
-Only the live Ingress records this; nothing on disk does. `yaac server
-start|restart` read it back (`frontingOfIngress`), wait on the origin it
-implies, and print it. A `tailscale`-class `yaac-server` Ingress means the
-tailnet fronting. No such Ingress (every kind install, and the e2e harness)
-means the kind fronting.
+Only the live cluster records this; nothing on disk does. `yaac server
+start|restart` read it back (`liveFronting`), wait on the origin it implies,
+and print it. A `tailscale`-class `yaac-server` Ingress means the operator
+fronting. Without one, a server Deployment in `tailnet` mode means the serve
+fronting at the host it admits, and anything else (a `local` kind install,
+and the e2e harness) the kind fronting.
 
 ### The ingress policy is the wall
 
@@ -191,8 +223,8 @@ Kubernetes unions):
   itself; it never changes its own Deployment.
 - `yaac-server-ingress-front`, the **fronting half**: the fronting's peers.
   Under `--tailnet` that is the operator's proxy pod, selected by its
-  namespace and its `tailscale.com/parent-resource*` labels. On kind it is
-  empty, because the host-networked forwarder is already covered by the
+  namespace and its `tailscale.com/parent-resource*` labels. With the
+  forwarder (kind, and `--tailnet <host>`) it is empty, because the host-networked forwarder is already covered by the
   node half. It is applied even when empty, so switching fronting replaces
   the old peer. Only install writes it.
 
