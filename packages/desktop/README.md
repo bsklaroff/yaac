@@ -137,6 +137,8 @@ crashes the GPU process at launch. The app is unsigned and not notarized.
 Also check in the desktop app:
 
 - a terminal attaches, and Cmd-C/V work in it;
+- holding k in vim in a terminal pane repeats the key with no accent popup,
+  from the first launch;
 - a forwarded-port link opens in the system browser;
 - close hides to the tray, and tray Open brings the window back;
 - a waiting workspace badges the dock and notifies once, and clicking the

@@ -12,7 +12,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, Tray,
+  app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray,
 } from 'electron'
 import { resolveServerTarget } from '@yaac/shared/server-api'
 import {
@@ -39,6 +39,16 @@ import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state
 import { createFsTransitionGuard, zoomAction } from '#window-zoom'
 
 app.setName('yaac')
+/*
+ * macOS answers a held letter key with its accent picker instead of key
+ * repeat, which breaks holding hjkl in a terminal pane. Registered defaults
+ * live in memory for this process only, so nothing is written to any plist.
+ * The setting is app-wide, so the chat composer loses the picker too; Option
+ * dead keys (Option-e e) still type accents.
+ */
+if (process.platform === 'darwin') {
+  systemPreferences.registerDefaults({ ApplePressAndHoldEnabled: false })
+}
 
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
