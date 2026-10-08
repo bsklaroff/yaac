@@ -12,7 +12,7 @@ import {
   refreshPlanUsage,
   runtimeMediatesEgress,
 } from '#domain/auth'
-import { closeDb, findWorkspaceRow, listProjectRows, openDb } from '#db'
+import { closeDb, findWorkspaceRow, listProjectRows, NewerSchemaRefusal, openDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorkspaceContainer } from '#domain/workspaces'
@@ -477,11 +477,26 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     })
   }, LEASE_HEARTBEAT_MS)
   leaseTimer.unref?.()
-  // Open the DB only under the lock (PGlite's single-writer guard), and
-  // fail the start if it cannot open.
+  // A refused start stays up answering `/health` with the reason, which
+  // `yaac server start` and `yaac cluster install` print, and serves
+  // nothing else.
+  const refuse = (reason: string): void => {
+    access = { refused: reason }
+    serverLog(`[server] start refused: ${reason}`)
+    const quit = (): void => { void removeLock(lease.instance).finally(() => process.exit(1)) }
+    process.once('SIGTERM', quit)
+    process.once('SIGINT', quit)
+  }
+  // Open the DB only under the lock (PGlite's single-writer guard). A
+  // database from a newer yaac is refused; any other open failure fails the
+  // start.
   try {
     await openDb()
   } catch (err) {
+    if (err instanceof NewerSchemaRefusal) {
+      refuse(err.message)
+      return
+    }
     serverLog(`[server] db init failed: ${String(err)}`)
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await removeLock(lease.instance)
@@ -490,18 +505,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // Before the mode settles, since a settled mode admits requests.
   await moveLegacyUserBuildDir().catch((err: unknown) =>
     serverLog(`[server] moving the user build dir failed: ${String(err)}`))
-  // A refused start stays up answering `/health` with the reason, which
-  // `yaac server start` and `yaac cluster install` print, and serves
-  // nothing else.
   try {
     access = await settleAccessMode()
   } catch (err) {
     if (!(err instanceof AccessModeRefusal)) throw err
-    access = { refused: err.message }
-    serverLog(`[server] start refused: ${err.message}`)
-    const quit = (): void => { void removeLock(lease.instance).finally(() => process.exit(1)) }
-    process.once('SIGTERM', quit)
-    process.once('SIGINT', quit)
+    refuse(err.message)
     return
   }
   serverLog(`[server] access mode: ${access}`)
