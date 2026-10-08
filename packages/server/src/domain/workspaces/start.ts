@@ -30,10 +30,12 @@ export interface StartWorkspaceRequest {
   /** Try a prewarmed spare first. A spare has its own id, so callers that
    *  already handed out `workspaceId` pass false. */
   claimSpare: boolean
-  /** Set when a create the user stops should be kept as a draft (updating
-   *  draft `id`, if it came from one). A queued launch leaves it unset,
-   *  since its entry goes back on the queue instead. */
-  draftOnStop?: { id?: string }
+  /** Set when a create the user stops should keep its prompt as a draft
+   *  (updating draft `id`, if it came from one), and with `onFailure` one
+   *  that fails too. Only a caller that can come back to the draft sets
+   *  `onFailure`, since each failure otherwise adds another. A queued launch
+   *  leaves it unset, since its entry goes back on the queue instead. */
+  draft?: { id?: string; onFailure?: boolean }
 }
 
 /**
@@ -41,9 +43,9 @@ export interface StartWorkspaceRequest {
  * claim a spare or create cold. Used by the create route, `yaac-mama create`
  * and queued launches.
  *
- * A create the user stops before its agent runs is rolled back at its next
- * checkpoint. Its prompt is all it had worth keeping, so with `draftOnStop`
- * it becomes a draft (docs/draft-workspaces.md).
+ * A create that the user stops before its agent runs, or that fails, is
+ * rolled back. Its prompt is all it had worth keeping, so per `draft` it
+ * becomes a draft (docs/draft-workspaces.md).
  */
 export async function startWorkspace(
   principal: Actor,
@@ -77,6 +79,7 @@ export async function startWorkspace(
     kind: 'create',
     ...(groupId !== undefined ? { groupId } : {}),
     ...(title !== undefined ? { title } : {}),
+    ...(prompt !== undefined ? { prompt } : {}),
     ...(setup.model !== undefined ? { model: setup.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
     ...(branch !== undefined ? { branch } : {}),
@@ -107,11 +110,9 @@ export async function startWorkspace(
       ...(groupId !== undefined ? { groupId } : {}),
     })
   } catch (err) {
-    const { draftOnStop } = request
-    // Only a checkpoint's own error means the create rolled back. Anything
-    // else (a failed build) keeps its usual outcome, so a stop never leaves
-    // both a draft and a stopped workspace.
-    if (draftOnStop === undefined || prompt === undefined || !(err instanceof ProvisionStoppedError)) throw err
+    const { draft } = request
+    if (draft === undefined || prompt === undefined) throw err
+    if (!(err instanceof ProvisionStoppedError) && draft.onFailure !== true) throw err
     const settings = {
       prompt,
       tool,
@@ -122,11 +123,18 @@ export async function startWorkspace(
       ...(title !== undefined ? { title } : {}),
       ...(groupId !== undefined ? { groupId } : {}),
     }
-    // The draft may have been discarded meanwhile; then save a new one.
-    await (draftOnStop.id === undefined
+    // The draft may have been discarded meanwhile; then save a new one. If
+    // no draft can be saved, the create's own error is the one to report.
+    const saved = await (draft.id === undefined
       ? saveDraftWorkspace(principal, projectId, settings)
-      : saveDraftWorkspace(principal, projectId, settings, draftOnStop.id)
+      : saveDraftWorkspace(principal, projectId, settings, draft.id)
         .catch(() => saveDraftWorkspace(principal, projectId, settings)))
-    throw new ServerError('CONFLICT', 'stopped before its agent started; its prompt is kept as a draft')
+      .then(() => true, () => false)
+    if (!saved || !(err instanceof Error)) throw err
+    // A copy, since concurrent creates can share one error (a shared install
+    // or build). It keeps the code, and a plain error's message still
+    // classifies as it did (`toErrorBody`).
+    const message = `${err.message.replace(/\.$/, '')}; its prompt is kept as a draft`
+    throw err instanceof ServerError ? new ServerError(err.code, message) : new Error(message, { cause: err })
   }
 }

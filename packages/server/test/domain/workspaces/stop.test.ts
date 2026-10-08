@@ -162,7 +162,7 @@ describe('stopWorkspace', () => {
           title: 'Build',
           rememberDefaults: false,
           claimSpare: false,
-          draftOnStop: {},
+          draft: {},
         }, onProgress))
       create.catch(() => { /* asserted by the test */ })
       return { create, destroyed, deregistered }

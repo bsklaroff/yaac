@@ -1153,6 +1153,8 @@ export interface ProvisioningWorkspaceEntry {
    *  restart. */
   model?: string
   modelName?: string
+  /** The prompt a create opens with. Absent on a restart. */
+  prompt?: string
   /** Latest progress line (e.g. 'Pulling image…'). */
   message: string
   /** Set when provisioning failed; the row stays until dismissed. */

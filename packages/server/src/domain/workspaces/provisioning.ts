@@ -29,6 +29,8 @@ interface ProvisioningEntry {
   /** Sidebar group, so the row shows in its section while provisioning. */
   groupId?: string
   title?: string
+  /** The prompt a create opens with, shown with its failure. */
+  prompt?: string
   /** The launch model and its display name. */
   model?: string
   modelName?: string
@@ -68,6 +70,7 @@ interface ProvisioningInput {
   message?: string
   groupId?: string
   title?: string
+  prompt?: string
   model?: string
   modelName?: string
   branch?: string
@@ -92,6 +95,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
     message: input.message ?? 'Starting…',
     ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
     ...(input.title !== undefined ? { title: input.title } : {}),
+    ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
     ...(input.branch !== undefined ? { branch: input.branch } : {}),
@@ -103,7 +107,7 @@ export function registerProvisioning(input: ProvisioningInput): void {
 }
 
 /**
- * Register, or update an existing entry's tool, group, title, model and branch
+ * Register, or update an existing entry's tool, group, title, prompt, model and branch
  * without changing its order, message or error (for callers the route may
  * already have registered).
  */
@@ -117,6 +121,7 @@ export function ensureProvisioning(input: ProvisioningInput): void {
   delete e.reserved
   if (input.groupId !== undefined) e.groupId = input.groupId
   if (input.title !== undefined) e.title = input.title
+  if (input.prompt !== undefined) e.prompt = input.prompt
   if (input.model !== undefined) e.model = input.model
   if (input.modelName !== undefined) e.modelName = input.modelName
   if (input.branch !== undefined) e.branch = input.branch
@@ -341,6 +346,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
       ...(e.error !== undefined ? { error: e.error } : {}),
       ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
       ...(e.title !== undefined ? { title: e.title } : {}),
+      ...(e.prompt !== undefined ? { prompt: e.prompt } : {}),
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       ...(e.claimedId !== undefined ? { claimedId: e.claimedId } : {}),

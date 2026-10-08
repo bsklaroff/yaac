@@ -207,6 +207,10 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // Sidebar group by id or name; an unknown name creates the group.
       group: z.string().min(1).max(MAX_TITLE_LENGTH).optional(),
       draftId,
+      // Keep the prompt as a draft if the create fails, not only if it is
+      // stopped. The webapp sets it, since its sidebar is where the draft is
+      // retried from; a CLI retry could only add another draft.
+      draftOnFailure: z.boolean().optional(),
     })),
     async (c) => {
       const body = c.req.valid('json')
@@ -257,7 +261,10 @@ export const workspaceApp = new Hono<IdentityEnv>()
           // A user request, so its settings become the project's defaults.
           rememberDefaults: true,
           claimSpare: true,
-          draftOnStop: body.draftId !== undefined ? { id: body.draftId } : {},
+          draft: {
+            ...(body.draftId !== undefined ? { id: body.draftId } : {}),
+            ...(body.draftOnFailure === true ? { onFailure: true } : {}),
+          },
         }, onProgress)
       }))
     },
