@@ -17,7 +17,6 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
   LABEL_INSTALL_ID,
   SERVER_APP_NAME,
-  TAILSCALE_OPERATOR_NAMESPACE,
   ensurePriorityClasses,
   execFileAsync,
   isAbsent,
@@ -27,13 +26,13 @@ import {
   nodeLocalNodePath,
   processIdentity,
   readObject,
-  type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { buildBuiltinImages } from './builtin-images'
-import { ClusterInstallError, resolveNodeCount } from './arg-guards'
+import { ClusterInstallError, resolveNodeCount, tailnetServeHost } from './arg-guards'
 import { assessCniAdoption, gatherCniFacts } from './cni-adopt'
+import { ensurePinnedManifest } from './pinned-manifest'
 import { readServerConfig, recordInstall, type InstallRecord } from '@yaac/shared/server-config'
 import {
   hostNodeArchitecture,
@@ -51,11 +50,12 @@ import {
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#drivers/k8s/container'
 import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
 import { BYO_INSTALL_IDENTITY, deployServerWorkload } from './server-deploy'
-import { TAILNET_HOSTNAME, kindFronting, tailnetFronting } from './server-fronting'
+import { TAILNET_HOSTNAME, kindFronting, serveFronting, tailnetFronting } from './server-fronting'
+import { ensureTailnetOperator, verifyTailnetOperator } from './tailscale-operator'
 // The data dir identifies the install.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { PACKAGE_ROOT, getDataDir, nodeLocalRoot } from '@yaac/shared/paths'
-import { CALICO_DIR, calicoManifestCachePath } from '@yaac/shared/project-paths'
+import { CALICO_DIR } from '@yaac/shared/project-paths'
 import { resolveServerPort } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 
@@ -94,56 +94,9 @@ import { env } from '@yaac/shared/env'
  */
 export const CALICO_VERSION = '3.32.1'
 
-/** Committed integrity pin for the fetched manifest (bare hex sha256). */
-const CALICO_SHA256_FILE = path.join(CALICO_DIR, 'calico.yaml.sha256')
-
 /** Upstream release manifest (the KDD/iptables install) for a version tag. */
 export function calicoManifestUrl(version: string = CALICO_VERSION): string {
   return `https://raw.githubusercontent.com/projectcalico/calico/v${version}/manifests/calico.yaml`
-}
-
-function sha256Hex(text: string): string {
-  return crypto.createHash('sha256').update(text, 'utf8').digest('hex')
-}
-
-/**
- * The pinned Calico manifest, from the per-version cache or downloaded and
- * cached. Both the cached and downloaded copies are checked against the
- * committed hash on every use; a mismatch is fatal.
- */
-async function ensureCalicoManifest(deps: ClusterInstallDeps): Promise<string> {
-  const pin = await deps.readTextFile(CALICO_SHA256_FILE)
-  const expected = pin?.trim().split(/\s+/)[0]
-  if (!expected) {
-    throw new ClusterInstallError(
-      `Calico manifest checksum not found at ${CALICO_SHA256_FILE} — broken install?`,
-    )
-  }
-  const cache = calicoManifestCachePath(CALICO_VERSION)
-  const cached = await deps.readTextFile(cache)
-  if (cached !== null && sha256Hex(cached) === expected) return cached
-
-  const url = calicoManifestUrl()
-  deps.log(`Fetching Calico ${CALICO_VERSION} manifest (one-time — cached at ${cache})...`)
-  let raw: string
-  try {
-    raw = await deps.fetchText(url)
-  } catch (err) {
-    throw new ClusterInstallError(
-      `Could not download the Calico manifest from ${url} `
-      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}). `
-      + `Check network access, or drop a verified copy at ${cache} and re-run.`,
-    )
-  }
-  const actual = sha256Hex(raw)
-  if (actual !== expected) {
-    throw new ClusterInstallError(
-      `The Calico manifest at ${url} does not match the pinned checksum `
-      + `(expected ${expected}, got ${actual}) — not installing it.`,
-    )
-  }
-  await deps.writeTextFile(cache, raw)
-  return raw
 }
 
 export interface ClusterInstallOptions {
@@ -158,12 +111,13 @@ export interface ClusterInstallOptions {
   /** `--byo`: the class `yaac-server-local` uses; default: the cluster's default. */
   rwoStorageClass?: string
   /**
-   * Publish the server on the Tailscale tailnet through the Tailscale
-   * Kubernetes operator, instead of on this machine's loopback. The cluster
-   * owner installs the operator; install refuses without it. Implied by
-   * `--byo`.
+   * Serve tailnet users instead of only this machine. `true` publishes the
+   * server through the Tailscale Kubernetes operator, which install sets up
+   * on kind (tailscale-operator.ts); implied by `--byo`. A hostname
+   * publishes a kind install through this machine's own `tailscale serve`
+   * at that MagicDNS name instead.
    */
-  tailnet?: boolean
+  tailnet?: boolean | string
   /**
    * With the tailnet fronting: the tailnet login that claims a `local`
    * install's projects and settings as it switches to `tailnet`
@@ -342,7 +296,7 @@ export async function runClusterInstall(
     })
   }
   // Before any layer is applied.
-  if (opts.tailnet && !opts.byo) await verifyTailnetOperator(deps)
+  if (opts.tailnet === true && !opts.byo) await ensureTailnetOperator(deps)
 
   // A pod naming a missing PriorityClass is rejected and its Job hangs.
   deps.log('Installing the yaac PriorityClasses (infra > sessions)...')
@@ -628,7 +582,12 @@ async function createKindCluster(
  * Calico installs work too.
  */
 async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise<void> {
-  const raw = await ensureCalicoManifest(deps)
+  const raw = await ensurePinnedManifest(deps, {
+    what: 'Calico',
+    url: calicoManifestUrl(),
+    pinFile: path.join(CALICO_DIR, 'calico.yaml.sha256'),
+    cacheName: `calico-${CALICO_VERSION}.yaml`,
+  })
   await sideloadCalicoImages(deps, cluster, raw)
   const context = `kind-${cluster}`
   deps.log(`Installing Calico ${CALICO_VERSION} (CNI + NetworkPolicy)...`)
@@ -672,50 +631,6 @@ async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
     )
   }
   deps.log('  CNI accepted: Calico in the iptables dataplane, kube-proxy owning ClusterIP DNAT.')
-}
-
-/**
- * `--tailnet` check: the Tailscale Kubernetes operator must be installed,
- * or the server's Ingress never gets a hostname. A failed read is reported
- * separately from a missing object, since they need different fixes.
- */
-async function verifyTailnetOperator(deps: ClusterInstallDeps, flag = '--tailnet'): Promise<void> {
-  deps.log(`Verifying the Tailscale Kubernetes operator (${flag})...`)
-  const reads: Array<[string, ObjectRef]> = [
-    ['the ProxyClass CRD (proxyclasses.tailscale.com)', {
-      apiVersion: 'apiextensions.k8s.io/v1', kind: 'CustomResourceDefinition', name: 'proxyclasses.tailscale.com',
-    }],
-    [`the operator Deployment (${TAILSCALE_OPERATOR_NAMESPACE}/operator)`, {
-      apiVersion: 'apps/v1', kind: 'Deployment', name: 'operator', namespace: TAILSCALE_OPERATOR_NAMESPACE,
-    }],
-    ['the operator\'s IngressClass (tailscale)', {
-      apiVersion: 'networking.k8s.io/v1', kind: 'IngressClass', name: 'tailscale',
-    }],
-  ]
-  for (const [what, ref] of reads) {
-    let found: unknown
-    try {
-      found = await readObject(ref)
-    } catch (err) {
-      throw new ClusterInstallError(
-        `${flag} needs the Tailscale Kubernetes operator, and whether it is installed could not `
-        + `be evaluated: reading ${what} failed (${k8sErrorSummary(err)}).\n`
-        + '    Fix the cluster access (kubeconfig, apiserver) and re-run.',
-      )
-    }
-    if (!found) {
-      throw new ClusterInstallError(
-        `${flag} needs the Tailscale Kubernetes operator, and ${what} is not in this cluster.\n`
-        + '    Install it (an OAuth client with the tag its proxies use — see '
-        + 'https://tailscale.com/kb/1236/kubernetes-operator), then re-run:\n'
-        + '      helm repo add tailscale https://pkgs.tailscale.com/helmcharts\n'
-        + '      helm upgrade --install tailscale-operator tailscale/tailscale-operator \\\n'
-        + `        --namespace=${TAILSCALE_OPERATOR_NAMESPACE} --create-namespace \\\n`
-        + '        --set-string oauth.clientId=<id> --set-string oauth.clientSecret=<secret> --wait',
-      )
-    }
-  }
-  deps.log('  Tailscale operator present: the server will be published on the tailnet.')
 }
 
 /**
@@ -1028,7 +943,10 @@ async function deployServer(
       + "instead — a pod's loopback is its own.",
     )
   }
-  const fronting = opts.tailnet ? tailnetFronting({ hostname: TAILNET_HOSTNAME }) : kindFronting()
+  const serveHost = tailnetServeHost(opts)
+  const fronting = serveHost !== undefined
+    ? serveFronting({ hostname: serveHost })
+    : opts.tailnet ? tailnetFronting({ hostname: TAILNET_HOSTNAME }) : kindFronting()
   // Run as the host's uid on kind, since the claims are hostPaths into this
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()

@@ -57,13 +57,16 @@ export const PROXY_DIR = path.join(PACKAGE_ROOT, 'k8s', 'proxy')
 export const NETD_DIR = path.join(PACKAGE_ROOT, 'k8s', 'netd')
 /** Pin for the Calico install manifest: version and checksum only. */
 export const CALICO_DIR = path.join(PACKAGE_ROOT, 'k8s', 'calico')
+/** Pin for the Tailscale operator's static manifest: checksum only. */
+export const TAILSCALE_OPERATOR_DIR = path.join(PACKAGE_ROOT, 'k8s', 'tailscale-operator')
 
 /**
- * CLIENT-LOCAL. Cache of the verified Calico manifest, keyed by version.
- * Only the CLI (`yaac cluster install`) reads it.
+ * CLIENT-LOCAL. Cache of a verified upstream manifest (Calico, the
+ * Tailscale operator), named with its version. Only the CLI (`yaac
+ * cluster install`) reads it.
  */
-export function calicoManifestCachePath(version: string): string {
-  return clientLocalPath('cache', `calico-${version}.yaml`)
+export function pinnedManifestCachePath(fileName: string): string {
+  return clientLocalPath('cache', fileName)
 }
 
 /**

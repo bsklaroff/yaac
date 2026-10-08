@@ -576,6 +576,40 @@ function tailnetRun(operator: 'present' | 'absent' | 'unreachable'): RunMock {
   return vi.fn(happyRun)
 }
 
+/** Stand-in operator manifest in the upstream shape, and its checksum. */
+const FAKE_OPERATOR_MANIFEST = [
+  'apiVersion: v1', 'kind: Namespace', 'metadata:', '  name: tailscale', '---',
+  'apiVersion: v1', 'kind: Secret', 'metadata:', '  name: operator-oauth', '  namespace: tailscale',
+  'stringData:', '  client_id: # SET CLIENT ID HERE', '---',
+  'apiVersion: apiextensions.k8s.io/v1', 'kind: CustomResourceDefinition', 'metadata:',
+  '  name: proxyclasses.tailscale.com', '---',
+  'apiVersion: apps/v1', 'kind: Deployment', 'metadata:', '  name: operator', '  namespace: tailscale',
+  'spec:', '  template:', '    spec:', '      containers:', '      - image: tailscale/k8s-operator:stable',
+  '        env:', '        - name: OPERATOR_HOSTNAME', '          value: tailscale-operator',
+  '        - name: OPERATOR_LOGIN_SERVER', '          value: null',
+  '        - name: PROXY_IMAGE', '          value: tailscale/tailscale:stable', '---',
+  'apiVersion: networking.k8s.io/v1', 'kind: IngressClass', 'metadata:', '  name: tailscale', '',
+].join('\n')
+const FAKE_OPERATOR_SHA256 = crypto.createHash('sha256').update(FAKE_OPERATOR_MANIFEST, 'utf8').digest('hex')
+
+/** readTextFile serving the operator pin, with no cached copy, over the Calico reads. */
+function operatorReads(sha = FAKE_OPERATOR_SHA256) {
+  return vi.fn((p: string) => p.endsWith('operator.yaml.sha256')
+    ? Promise.resolve(`${sha}  operator.yaml\n`)
+    : p.includes('tailscale-operator-') ? Promise.resolve(null) : fakeCalicoReadTextFile(p))
+}
+
+/** An object as a yaac install applied it. */
+function yaacManaged(o: FakeObject): FakeObject {
+  return { ...o, metadata: { ...o.metadata, labels: { 'app.kubernetes.io/managed-by': 'yaac' } } }
+}
+
+function operatorFetch() {
+  return vi.fn((url: string) => Promise.resolve(
+    url.includes('k8s-operator') ? FAKE_OPERATOR_MANIFEST : FAKE_CALICO_MANIFEST,
+  ))
+}
+
 /** Everything install logged, joined. */
 function logged(deps: { log: unknown }): string {
   return vi.mocked(deps.log as (m: string) => void).mock.calls.map(([m]) => m).join('\n')
@@ -1376,20 +1410,120 @@ describe('runClusterInstall', () => {
     expect(env).toContainEqual({ name: 'YAAC_ACCESS_OWNER', value: 'alice@example.com' })
     expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net' })
     expect(logged(deps)).toContain('Tailscale operator present')
+    // An operator installed some other way (helm) is its installer's to
+    // upgrade, so install only checks it.
+    expect(appliedOf('IngressClass')).toEqual([])
+    expect(deps.fetchText).not.toHaveBeenCalled()
   })
 
-  it('--tailnet refuses before anything is applied when the operator is absent', async () => {
+  it('--tailnet installs the pinned operator on a kind cluster that lacks it, before any layer', async () => {
+    vi.stubEnv('TS_OAUTH_CLIENT_ID', 'client-id')
+    vi.stubEnv('TS_OAUTH_CLIENT_SECRET', 'client-secret')
+    const deps = makeDeps({ run: tailnetRun('absent'), readTextFile: operatorReads(), fetchText: operatorFetch() })
+    await expect(runClusterInstall({ tailnet: true }, deps)).resolves.toBeUndefined()
+
+    expect(deps.fetchText).toHaveBeenCalledWith(
+      'https://raw.githubusercontent.com/tailscale/tailscale/v1.102.4/cmd/k8s-operator/deploy/manifests/operator.yaml',
+    )
+    // The OAuth Secret comes from the client, never the manifest's placeholder.
+    expect(appliedOf('Secret', 'operator-oauth')).toEqual([expect.objectContaining({
+      stringData: { client_id: 'client-id', client_secret: 'client-secret' },
+    })])
+    const [operator] = appliedOf('Deployment', 'operator') as unknown as Array<{
+      metadata: { labels: Record<string, string> }
+      spec: { template: { spec: { containers: Array<{ image: string; env: Array<{ name: string; value?: string }> }> } } }
+    }>
+    const [container] = operator.spec.template.spec.containers
+    expect(container.image).toMatch(/^tailscale\/k8s-operator:v1\.102\.4@sha256:[0-9a-f]{64}$/)
+    expect(container.env).toEqual([
+      { name: 'OPERATOR_HOSTNAME', value: 'yaac-operator' },
+      { name: 'PROXY_IMAGE', value: expect.stringMatching(/^tailscale\/tailscale:v1\.102\.4@sha256:/) as string },
+    ])
+    // Labeled, so the next install converges it.
+    expect(operator.metadata.labels).toMatchObject({ 'app.kubernetes.io/managed-by': 'yaac' })
+    expect(appliedOf('IngressClass', 'tailscale')).toHaveLength(1)
+    expect(logged(deps)).toContain('Tailscale operator present')
+    // Before the first layer, so a refusal or a failed rollout leaves the
+    // cluster as it was.
+    const operatorAt = cluster.applied.indexOf(operator as unknown as Applied)
+    expect(cluster.applied.findIndex((m) => m.kind === 'Deployment' && m.metadata.name === SERVER_APP_NAME))
+      .toBeGreaterThan(operatorAt)
+    expect(appliedOf('Ingress')).toHaveLength(1)
+  })
+
+  it('--tailnet converges the operator an earlier install put there, keeping its Secret', async () => {
+    fakeCluster.seed(...OPERATOR.map(yaacManaged))
+    const deps = makeDeps({ readTextFile: operatorReads(), fetchText: operatorFetch() })
+    await expect(runClusterInstall({ tailnet: true }, deps)).resolves.toBeUndefined()
+    expect(appliedOf('Deployment', 'operator')).toHaveLength(1)
+    expect(appliedOf('Secret', 'operator-oauth')).toEqual([])
+  })
+
+  it.each([
+    ['IngressClass', 'the operator\'s IngressClass (tailscale)'],
+    ['CustomResourceDefinition', 'the ProxyClass CRD (proxyclasses.tailscale.com)'],
+  ])('--tailnet refuses to take over a %s another operator install left, with no operator here', async (kind, what) => {
+    // A helm install in another namespace, or a half-removed one: applying
+    // would force the shared cluster-wide objects over to yaac.
+    vi.stubEnv('TS_OAUTH_CLIENT_ID', 'client-id')
+    vi.stubEnv('TS_OAUTH_CLIENT_SECRET', 'client-secret')
+    fakeCluster.seed(...OPERATOR.filter((o) => o.kind === kind))
+    const deps = makeDeps({ readTextFile: operatorReads(), fetchText: operatorFetch() })
+    const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
+    expect((err as Error).message).toContain(`but ${what} is already in this cluster`)
+    expect(deps.fetchText).not.toHaveBeenCalled()
+    expect(cluster.applied).toEqual([])
+    expect(ran('ensurePriorityClasses')).toBe(0)
+  })
+
+  it('--tailnet refuses an operator manifest naming an image it has no digest for', async () => {
+    // A later manifest could add a container; it must not run by tag.
+    vi.stubEnv('TS_OAUTH_CLIENT_ID', 'client-id')
+    vi.stubEnv('TS_OAUTH_CLIENT_SECRET', 'client-secret')
+    const manifest = FAKE_OPERATOR_MANIFEST.replace(
+      '      containers:',
+      '      initContainers:\n      - image: tailscale/k8s-operator-init:stable\n      containers:',
+    )
+    const sha = crypto.createHash('sha256').update(manifest, 'utf8').digest('hex')
+    const deps = makeDeps({
+      readTextFile: operatorReads(sha),
+      fetchText: vi.fn().mockResolvedValue(manifest),
+    })
+    const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
+    expect((err as Error).message).toContain('tailscale/k8s-operator-init:stable, which has no pinned digest')
+    expect(cluster.applied).toEqual([])
+  })
+
+  it('--tailnet without the operator or an OAuth client refuses before anything is applied', async () => {
     // Without the operator the Ingress never gets a hostname, and install
-    // would wait out the publish timeout. Refuse up front with the helm
-    // command.
+    // would wait out the publish timeout. Refuse up front with both ways on.
     const deps = makeDeps({ run: tailnetRun('absent') })
     const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
-    expect((err as Error).message).toContain('proxyclasses.tailscale.com')
-    expect((err as Error).message).toContain('helm upgrade --install tailscale-operator')
+    expect((err as Error).message).toContain('TS_OAUTH_CLIENT_ID=<id> TS_OAUTH_CLIENT_SECRET=<secret>')
+    expect((err as Error).message).toContain('yaac cluster install --tailnet <this machine')
     expect(ran('ensurePriorityClasses')).toBe(0)
     expect(ran('ensureMainRegistry')).toBe(0)
     expect(ran('deployServerWorkload')).toBe(0)
+  })
+
+  it('--tailnet <host> publishes through this machine\'s tailscale serve, needing no operator', async () => {
+    const deps = makeDeps({ run: tailnetRun('absent') })
+    await expect(runClusterInstall({ tailnet: 'Srv.Tail.ts.net', owner: 'alice@example.com' }, deps))
+      .resolves.toBeUndefined()
+    // The kind forwarder serve points at, and no Ingress.
+    expect(appliedOf('Ingress')).toEqual([])
+    expect(appliedOf('Deployment', 'yaac-server-front')).toHaveLength(1)
+    const env = serverPod().containers[0].env
+    expect(env).toContainEqual({ name: 'YAAC_ACCESS_MODE', value: 'tailnet' })
+    expect(env).toContainEqual({ name: 'YAAC_ALLOWED_HOSTS', value: 'srv.tail.ts.net' })
+    expect(env).toContainEqual({ name: 'YAAC_ACCESS_OWNER', value: 'alice@example.com' })
+    expect(vi.mocked(globalThis.fetch).mock.calls.map(([u]) => u))
+      .toContain('https://srv.tail.ts.net/api/health')
+    expect(await readServerConfig()).toMatchObject({ url: 'https://srv.tail.ts.net', driver: 'k8s' })
+    expect(logged(deps)).not.toContain('Tailscale Kubernetes operator')
   })
 
   it('--tailnet reports an operator it could not evaluate, never as absent', async () => {
@@ -1474,6 +1608,9 @@ describe('runClusterInstall', () => {
       [{ rwoStorageClass: 'fast' }, /--rwo-storage-class is for --byo only/],
       // --owner only means anything on the switch to tailnet.
       [{ owner: 'alice@example.com' }, /--owner .* needs --tailnet/],
+      // A byo cluster has no loopback port for this machine's serve.
+      [{ ...BYO, tailnet: 'srv.tail.ts.net' }, /--byo install is published through the Tailscale operator/],
+      [{ tailnet: 'https://srv.tail.ts.net' }, /--tailnet takes the bare MagicDNS name/],
     ] as const) {
       const d = makeDeps({ run: adoptRun() })
       const err = await runClusterInstall(opts, d).catch((e: unknown) => e)

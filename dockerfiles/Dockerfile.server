@@ -55,8 +55,10 @@ RUN mkdir -p /home/yaac/.cache/yaac/llama-cpp && \
 
 COPY . /opt/yaac/
 # Install cli.js's unbundled externals from the manifest shipped beside it
-# (checked at build time by scripts/check-cli-externals.ts).
-RUN cd /opt/yaac && npm install --omit=dev --no-audit --no-fund --no-package-lock && \
+# (checked at build time by scripts/check-cli-externals.ts), under the repo's
+# release-age window (release-age.npmrc, from scripts/write-dist-manifest.ts).
+RUN cd /opt/yaac && npm install --userconfig ./release-age.npmrc \
+      --omit=dev --no-audit --no-fund --no-package-lock && \
     npm cache clean --force && \
     chown -R yaac:0 /opt/yaac && chmod -R g=u /opt/yaac && \
     chmod 0755 /opt/yaac/dockerfiles/server-entrypoint.sh

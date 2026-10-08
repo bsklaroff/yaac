@@ -171,14 +171,14 @@ function liveTailnetIngress(hostname: string): void {
   })
 }
 
-/** The live server Deployment, with the identity and image it runs. */
-function liveDeployment(uid = 1000): void {
+/** The live server Deployment, with the identity, image and env it runs. */
+function liveDeployment(uid = 1000, env: Array<{ name: string; value: string }> = []): void {
   fakeCluster.seed({
     apiVersion: 'apps/v1', kind: 'Deployment',
     metadata: { name: SERVER_APP_NAME, namespace: 'test-ns' },
     spec: { template: { spec: {
       securityContext: { runAsUser: uid, runAsGroup: uid, supplementalGroups: [0] },
-      containers: [{ name: 'server', image: 'reg.local:5000/yaac-server:abc' }],
+      containers: [{ name: 'server', image: 'reg.local:5000/yaac-server:abc', env }],
     } } },
   })
 }
@@ -715,6 +715,32 @@ describe('startClusterServer', () => {
     await expect(startClusterServer()).resolves.toBe('https://yaac.tail1234.ts.net')
     expect(vi.mocked(globalThis.fetch).mock.calls.every(([u]) =>
       (u as string).startsWith('https://yaac.tail1234.ts.net'))).toBe(true)
+  })
+
+  it('waits on the serve origin when the server runs in tailnet mode with no Ingress', async () => {
+    // `--tailnet <host>` on kind: this machine's tailscale serve fronts the
+    // forwarder, so the origin is the name the server admits.
+    liveDeployment(1000, [
+      { name: 'YAAC_ACCESS_MODE', value: 'tailnet' },
+      { name: 'YAAC_ALLOWED_HOSTS', value: 'srv.tail1234.ts.net' },
+    ])
+    await expect(startClusterServer()).resolves.toBe('https://srv.tail1234.ts.net')
+    expect(vi.mocked(globalThis.fetch).mock.calls.every(([u]) =>
+      (u as string).startsWith('https://srv.tail1234.ts.net/'))).toBe(true)
+
+    // Unconfigured serve: the name never answers, and the fix is the serve
+    // command for the forwarder's port.
+    vi.stubEnv('YAAC_SERVER_PORT', '9123')
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
+      const pending = startClusterServer()
+      const verdict = expect(pending).rejects.toThrow(/tailscale serve --bg http:\/\/127\.0\.0\.1:9123\n/)
+      await vi.advanceTimersByTimeAsync(121_000)
+      await verdict
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('turns a rolled-out Deployment that never answers into the fix for it', async () => {

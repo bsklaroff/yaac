@@ -49,7 +49,7 @@ import {
   buildServerIngressNpManifest,
   nodeIpBlocks,
 } from '#drivers/k8s/cluster'
-import { frontingOfIngress, type RemoteHosting, type ServerFronting } from './server-fronting'
+import { liveFronting, type RemoteHosting, type ServerFronting } from './server-fronting'
 import {
   contextHash,
   ensureImageByTag,
@@ -449,7 +449,7 @@ interface RawServerDeployment {
     template?: {
       spec?: {
         securityContext?: { runAsUser?: unknown; runAsGroup?: unknown }
-        containers?: Array<{ name?: string; image?: string }>
+        containers?: Array<{ name?: string; image?: string; env?: Array<{ name?: string; value?: string }> }>
       }
     }
   }
@@ -587,12 +587,13 @@ async function waitForPublishedServer(origin: string, fronting: ServerFronting):
       + `    ${fronting.unreachableDiagnosis(origin)}`)
 }
 
-/** The installed fronting, read from the live cluster (see frontingOfIngress). */
+/** The installed fronting, read from the live cluster (see liveFronting). */
 async function installedFronting(): Promise<ServerFronting> {
   const ingress = await readObject<Record<string, unknown>>({
     apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', name: SERVER_APP_NAME, namespace: k8sNamespace(),
   })
-  return frontingOfIngress(ingress)
+  const dep = await readObject<RawServerDeployment>(serverDeploymentRef())
+  return liveFronting(ingress, dep?.spec?.template?.spec?.containers?.find((c) => c.name === 'server')?.env ?? [])
 }
 
 /** Wait for the installed fronting's origin to answer, and return it. */

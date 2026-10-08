@@ -10,6 +10,12 @@
  *
  * Only runtime dependencies are kept. devDependencies name workspace-only
  * `@yaac/*` packages that npm would try to resolve even with `--omit=dev`.
+ *
+ * It also writes `dist/release-age.npmrc`, which the image's `npm install`
+ * reads with `--userconfig`, so the packages npm resolves below those pins
+ * wait out the same release-age window as the repo's pnpm installs
+ * (`minimumReleaseAge` and its excludes). It is not named `.npmrc` because
+ * `npm pack` never ships a file by that name.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -31,7 +37,11 @@ async function main(): Promise<void> {
   ) as RootManifest
   const workspace = parseYaml(
     await fs.readFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'utf8'),
-  ) as { catalog?: Record<string, string> }
+  ) as {
+    catalog?: Record<string, string>
+    minimumReleaseAge?: number
+    minimumReleaseAgeExclude?: string[]
+  }
   const catalog = workspace.catalog ?? {}
 
   const dependencies: Record<string, string> = {}
@@ -61,6 +71,19 @@ async function main(): Promise<void> {
   const target = path.join(repoRoot, 'dist', 'package.json')
   await fs.mkdir(path.dirname(target), { recursive: true })
   await fs.writeFile(target, `${JSON.stringify(out, null, 2)}\n`)
+
+  if (!workspace.minimumReleaseAge) {
+    throw new Error('pnpm-workspace.yaml sets no minimumReleaseAge for the server image to follow')
+  }
+  // pnpm counts minutes and excludes `name@version`; npm counts days and
+  // can exclude only by name, which exempts every version of that package.
+  const npmrc = [
+    '# Written by scripts/write-dist-manifest.ts from pnpm-workspace.yaml.',
+    `min-release-age=${String(workspace.minimumReleaseAge / 1440)}`,
+    ...(workspace.minimumReleaseAgeExclude ?? [])
+      .map((spec) => `min-release-age-exclude[]=${spec.replace(/(.)@.*$/, '$1')}`),
+  ]
+  await fs.writeFile(path.join(repoRoot, 'dist', 'release-age.npmrc'), `${npmrc.join('\n')}\n`)
 }
 
 await main()
