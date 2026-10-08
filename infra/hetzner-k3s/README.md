@@ -22,7 +22,7 @@ yaac cluster install --byo --rwx-storage-class yaac-nfs
 | Calico from the Tigera operator: VXLAN, the iptables dataplane, MTU 1400 | yaac's egress wall is Calico NetworkPolicy plus netd's iptables redirect. Hetzner's network routes only the addresses it assigned, so pod traffic is encapsulated. |
 | The Hetzner cloud controller | Sets node addresses and provider IDs (the autoscaler finds servers by them) and removes the Node of a deleted server. Its network routes are off. |
 | The Hetzner volume driver; `hcloud-volumes` is the default class | `yaac-server-local`, the registries and the npm cache. |
-| A volume on the control node, exported over NFSv4, and csi-driver-nfs with a `yaac-nfs` class | `yaac-global`, the RWX claim every workspace mounts. Hetzner has no managed NFS. The volume outlives the server and has deletion protection. |
+| A volume on the control node, exported over NFSv4 with delegations off (`fs.leases-enable = 0`), and csi-driver-nfs with a `yaac-nfs` class | `yaac-global`, the RWX claim every workspace mounts. Hetzner has no managed NFS. The volume outlives the server and has deletion protection. Without delegations, a file one node writes is visible to another within about a second (the claim mounts with `actimeo=1`). With directory delegations, a directory created on one node could stay invisible to another indefinitely, and `mkdir` could fail with `EEXIST` after creating its directory. |
 | The Tailscale Kubernetes operator | The only way onto a byo server is its tailnet Ingress. |
 | The cluster autoscaler with its Hetzner provider, one node group per `autoscale_pools` entry | Adds workers as workspaces stop fitting and removes those that hold no workspace (see "Autoscaling"). |
 | The `yaac.workspaces=true:NoSchedule` taint on every worker | Keeps yaac's server and registries on the control node (docs/cluster-setup.md "A dedicated workspace node pool"); workspaces run on every node (see "Nodes"). |
@@ -193,6 +193,20 @@ done by hand.
   the control node. New autoscaled workers join on the new version; a
   manual worker moves when you drain it and
   `tofu apply -replace='hcloud_server.worker["<name>"]'`.
+- **NFS delegations off**: tofu never re-runs the control node's user data,
+  so a control node bootstrapped before this setting still grants
+  delegations. Turn them off there by hand:
+
+  ```sh
+  echo 'fs.leases-enable = 0' | sudo tee /etc/sysctl.d/90-yaac-nfs.conf
+  sudo sysctl -p /etc/sysctl.d/90-yaac-nfs.conf
+  sudo systemctl restart nfs-server
+  ```
+
+  The sysctl only stops new delegations; those already granted stay until
+  recalled, and the restart drops them. It also starts nfsd's grace period
+  (90 s by default), during which opens and locks on the claim from every
+  node wait, so restart when the cluster is quiet.
 
 ## Security notes
 

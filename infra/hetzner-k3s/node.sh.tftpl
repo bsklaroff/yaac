@@ -78,6 +78,12 @@ echo "$dev ${nfs_export} ext4 defaults,nofail,discard 0 2" >> /etc/fstab
 mount '${nfs_export}'
 mkdir -p /etc/nfs.conf.d /etc/exports.d
 printf '[nfsd]\nvers3=n\n' > /etc/nfs.conf.d/yaac.conf
+# No delegations: nfsd grants them only through file leases. With directory
+# delegations, a directory one node created could stay invisible to another
+# indefinitely, and a mkdir could create its directory yet fail with EEXIST.
+# Without them, the claim's actimeo=1 bounds staleness at about a second.
+echo 'fs.leases-enable = 0' > /etc/sysctl.d/90-yaac-nfs.conf
+sysctl -p /etc/sysctl.d/90-yaac-nfs.conf
 echo '${nfs_export} ${subnet_prefix}.0/24(rw,sync,no_subtree_check,no_root_squash)' > /etc/exports.d/yaac.exports
 systemctl enable nfs-server
 systemctl restart nfs-server
