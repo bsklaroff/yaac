@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import clsx from 'clsx'
 import { Tooltip } from '@base-ui/react/tooltip'
@@ -198,16 +198,6 @@ function FindBar({ view, query, matches, current, commit }: {
     else replaceNext(view)
   }
 
-  const count = matches.froms.length
-  const total = `${count}${matches.capped ? '+' : ''}`
-  const status = !text ? ''
-    : !query.valid ? 'Invalid pattern'
-      : matches.slow ? 'Too slow to count'
-        : count === 0 ? 'No results'
-          : current > 0 ? `${current} of ${total}` : `${total} result${count === 1 ? '' : 's'}`
-  const miss = text !== '' && (!query.valid || count === 0)
-
-  const mod = IS_MAC ? '⌘' : 'Ctrl+'
   return (
     // One grid for both rows so the find and replace fields line up.
     <Tooltip.Provider>
@@ -223,70 +213,21 @@ function FindBar({ view, query, matches, current, commit }: {
         >
           <ChevronIcon size={12} className={clsx('transition-transform', replaceOpen && 'rotate-90')} />
         </IconButton>
-        <Field invalid={miss}>
-          <SearchIcon size={12} className="shrink-0 text-text-faint" />
-          <input
-            ref={findRef}
-            {...{ 'main-field': 'true' }}
-            value={text}
-            onChange={(e) => {
-              setText(e.target.value)
-              commit({ search: e.target.value }, true)
-            }}
-            placeholder="Find"
-            aria-label="Find"
-            spellCheck={false}
-            className="min-w-0 flex-1 bg-transparent py-0.5 text-text outline-none placeholder:text-text-faint"
-          />
-          <span role="status" className={clsx('shrink-0 tabular-nums', miss ? 'text-error' : 'text-text-faint')}>
-            {status}
-          </span>
-          <Toggle
-            label="Match case"
-            tip={<Tip title="Match case" hint="Only matches with the same capitalization" />}
-            on={query.caseSensitive}
-            onClick={() => commit({ caseSensitive: !query.caseSensitive }, true)}
-          >
-            <MatchCaseIcon size={14} />
-          </Toggle>
-          <Toggle
-            label="Whole word"
-            tip={<Tip title="Match whole word" hint="Skip matches inside longer words" />}
-            on={query.wholeWord}
-            onClick={() => commit({ wholeWord: !query.wholeWord }, true)}
-          >
-            <WholeWordIcon size={14} />
-          </Toggle>
-          <Toggle
-            label="Regular expression"
-            tip={<Tip title="Use regular expression" hint="Search for a pattern, like foo.*bar" />}
-            on={query.regexp}
-            onClick={() => commit({ regexp: !query.regexp }, true)}
-          >
-            <RegexIcon size={13} />
-          </Toggle>
-        </Field>
-        <div className="flex items-center">
-          <IconButton
-            label="Previous match"
-            tip={<Tip title="Previous match" keys="Shift+Enter" />}
-            disabled={count === 0}
-            onClick={() => findPrevious(view)}
-          >
-            <PrevMatchIcon size={13} />
-          </IconButton>
-          <IconButton
-            label="Next match"
-            tip={<Tip title="Next match" keys="Enter" />}
-            disabled={count === 0}
-            onClick={() => findNext(view)}
-          >
-            <NextMatchIcon size={13} />
-          </IconButton>
-          <IconButton label="Close" tip={<Tip title="Close" keys="Escape" />} onClick={() => closeSearchPanel(view)}>
-            <CloseIcon size={13} />
-          </IconButton>
-        </div>
+        <FindControls
+          inputRef={findRef}
+          text={text}
+          onText={(search) => {
+            setText(search)
+            commit({ search }, true)
+          }}
+          query={query}
+          onToggle={(fields) => commit(fields, true)}
+          matches={matches}
+          current={current}
+          onPrev={() => findPrevious(view)}
+          onNext={() => findNext(view)}
+          onClose={() => closeSearchPanel(view)}
+        />
         {replaceOpen && (
           <>
             <span />
@@ -308,15 +249,15 @@ function FindBar({ view, query, matches, current, commit }: {
               <IconButton
                 label="Replace"
                 tip={<Tip title="Replace" hint="Replace this match and go to the next" keys="Enter" />}
-                disabled={count === 0}
+                disabled={matches.froms.length === 0}
                 onClick={() => replaceNext(view)}
               >
                 <ReplaceIcon size={13} />
               </IconButton>
               <IconButton
                 label="Replace all"
-                tip={<Tip title="Replace all" keys={`${mod}Enter`} />}
-                disabled={count === 0}
+                tip={<Tip title="Replace all" keys={`${IS_MAC ? '⌘' : 'Ctrl+'}Enter`} />}
+                disabled={matches.froms.length === 0}
                 onClick={() => replaceAll(view)}
               >
                 <ReplaceAllIcon size={13} />
@@ -326,6 +267,99 @@ function FindBar({ view, query, matches, current, commit }: {
         )}
       </div>
     </Tooltip.Provider>
+  )
+}
+
+/** The query flags the find toggles flip. */
+type FindFlags = Pick<SearchQuery, 'caseSensitive' | 'wholeWord' | 'regexp'>
+
+/**
+ * A find bar's query field (with its count and case / word / regex toggles)
+ * followed by previous / next / close, as two siblings so the caller lays
+ * them out. Shared by the editor's find panel and the conversation's.
+ */
+export function FindControls({
+  inputRef, text, onText, query, onToggle, matches, current, onPrev, onNext, onClose,
+}: {
+  inputRef: RefObject<HTMLInputElement | null>
+  text: string
+  onText: (text: string) => void
+  query: FindFlags & { valid: boolean }
+  onToggle: (flags: Partial<FindFlags>) => void
+  matches: Matches
+  /** 1-based index of the current match; 0 when on none. */
+  current: number
+  onPrev: () => void
+  onNext: () => void
+  onClose: () => void
+}): JSX.Element {
+  const count = matches.froms.length
+  const total = `${count}${matches.capped ? '+' : ''}`
+  const status = !text ? ''
+    : !query.valid ? 'Invalid pattern'
+      : matches.slow ? 'Too slow to count'
+        : count === 0 ? 'No results'
+          : current > 0 ? `${current} of ${total}` : `${total} result${count === 1 ? '' : 's'}`
+  const miss = text !== '' && (!query.valid || count === 0)
+  return (
+    <>
+      <Field invalid={miss}>
+        <SearchIcon size={12} className="shrink-0 text-text-faint" />
+        <input
+          ref={inputRef}
+          {...{ 'main-field': 'true' }}
+          value={text}
+          onChange={(e) => onText(e.target.value)}
+          placeholder="Find"
+          aria-label="Find"
+          spellCheck={false}
+          className="min-w-0 flex-1 bg-transparent py-0.5 text-text outline-none placeholder:text-text-faint"
+        />
+        <span role="status" className={clsx('shrink-0 tabular-nums', miss ? 'text-error' : 'text-text-faint')}>
+          {status}
+        </span>
+        <Toggle
+          label="Match case"
+          tip={<Tip title="Match case" hint="Only matches with the same capitalization" />}
+          on={query.caseSensitive}
+          onClick={() => onToggle({ caseSensitive: !query.caseSensitive })}
+        >
+          <MatchCaseIcon size={14} />
+        </Toggle>
+        <Toggle
+          label="Whole word"
+          tip={<Tip title="Match whole word" hint="Skip matches inside longer words" />}
+          on={query.wholeWord}
+          onClick={() => onToggle({ wholeWord: !query.wholeWord })}
+        >
+          <WholeWordIcon size={14} />
+        </Toggle>
+        <Toggle
+          label="Regular expression"
+          tip={<Tip title="Use regular expression" hint="Search for a pattern, like foo.*bar" />}
+          on={query.regexp}
+          onClick={() => onToggle({ regexp: !query.regexp })}
+        >
+          <RegexIcon size={13} />
+        </Toggle>
+      </Field>
+      <div className="flex items-center">
+        <IconButton
+          label="Previous match"
+          tip={<Tip title="Previous match" keys="Shift+Enter" />}
+          disabled={count === 0}
+          onClick={onPrev}
+        >
+          <PrevMatchIcon size={13} />
+        </IconButton>
+        <IconButton label="Next match" tip={<Tip title="Next match" keys="Enter" />} disabled={count === 0} onClick={onNext}>
+          <NextMatchIcon size={13} />
+        </IconButton>
+        <IconButton label="Close" tip={<Tip title="Close" keys="Escape" />} onClick={onClose}>
+          <CloseIcon size={13} />
+        </IconButton>
+      </div>
+    </>
   )
 }
 

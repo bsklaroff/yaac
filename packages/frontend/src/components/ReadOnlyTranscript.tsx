@@ -1,4 +1,4 @@
-import { useMemo, useState, type JSX } from 'react'
+import { useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { AcpTranscript, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#components/AcpTranscript'
@@ -6,6 +6,7 @@ import {
   ActivityHeader, callOf, latestActivity, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
 import { ServerError } from '@yaac/shared/errors'
+import { useConversationFind, type FindOptions } from '#components/ConversationFind'
 import { getSessionTranscript, TRANSCRIPT_UNAVAILABLE } from '#lib/transcriptApi'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
@@ -28,19 +29,23 @@ const LIVE_REFRESH_MS = 5000
  * A subagent's card opens its own transcript and a task's card what the
  * record kept of it, as in the live pane; both read the same query, so they
  * refresh with it.
+ *
+ * Cmd/Ctrl-F searches what is shown (`useConversationFind`).
  */
 export function ReadOnlyTranscript({
   workspaceId,
   sessions,
   prompt,
   live = false,
+  find = { chord: true },
 }: {
   workspaceId: string
   sessions: AgentSessionEntry[]
   /** The starting prompt, shown when there is no readable transcript. */
   prompt?: string
   live?: boolean
-}): JSX.Element | null {
+  find?: FindOptions
+}): JSX.Element {
   const viewable = useMemo(
     () => [...sessions].sort((a, b) => a.ordinal - b.ordinal),
     [sessions],
@@ -73,23 +78,20 @@ export function ReadOnlyTranscript({
     ? callOf(data, task.toolCallId)
     : { output: '' }
 
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const { bar, found } = useConversationFind({ groups, scrollRef, ...find })
+
   // Nothing readable: no conversation recorded yet (a just-stopped
   // workspace), one the server has no record of, or a history it found
   // nothing in (a checkpoint not yet exported, a tool's format changed).
   // Show the starting prompt instead.
   const empty = Array.isArray(data) && data.length === 0
-  if (selected === undefined || data === TRANSCRIPT_UNAVAILABLE || (empty && prompt)) {
-    if (!prompt) return null
-    return (
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <p className={clsx(COLUMN, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
-      </div>
-    )
-  }
+  const promptOnly = selected === undefined || data === TRANSCRIPT_UNAVAILABLE || (empty && !!prompt)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {viewable.length > 1 && (
+      {bar}
+      {selected !== undefined && viewable.length > 1 && (
         <div className="flex shrink-0 flex-wrap gap-1 border-b border-hairline-soft px-3 py-1.5">
           {viewable.map((s, i) => (
             <button
@@ -130,38 +132,43 @@ export function ReadOnlyTranscript({
           onBack={() => setOpened(null)}
         />
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <div className={COLUMN}>
-          {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
-          {/* Prefer the server's message, e.g. a conversation too large to send. */}
-          {isError && (
-            <p className="text-xs text-text-faint">
-              {error instanceof ServerError
-                ? `This conversation could not be shown: ${error.message}.`
-                : 'The conversation could not be read.'}
-            </p>
-          )}
-          {!isPending && !isError && groups.length === 0 && (
-            <p className="text-xs text-text-faint">This conversation has no messages.</p>
-          )}
-          {task !== undefined ? (
-            <TaskView
-              task={task}
-              {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
-              streamed={taskCall.output}
-              live={false}
-            />
-          ) : (
-            <>
-              {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
-              <AcpTranscript
-                groups={groups}
-                onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
-                onOpenTask={(id) => setOpened({ kind: 'task', id })}
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        {promptOnly ? (
+          <p className={clsx(COLUMN, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
+        ) : (
+          <div className={COLUMN}>
+            {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
+            {/* Prefer the server's message, e.g. a conversation too large to send. */}
+            {isError && (
+              <p className="text-xs text-text-faint">
+                {error instanceof ServerError
+                  ? `This conversation could not be shown: ${error.message}.`
+                  : 'The conversation could not be read.'}
+              </p>
+            )}
+            {!isPending && !isError && groups.length === 0 && (
+              <p className="text-xs text-text-faint">This conversation has no messages.</p>
+            )}
+            {task !== undefined ? (
+              <TaskView
+                task={task}
+                {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
+                streamed={taskCall.output}
+                live={false}
               />
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
+                <AcpTranscript
+                  groups={groups}
+                  found={found}
+                  onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
+                  onOpenTask={(id) => setOpened({ kind: 'task', id })}
+                />
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
-import { render, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
+import { render, screen, cleanup, waitFor, fireEvent, within, act } from '@testing-library/react'
 import type { AcpClientMessage, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
 import type { PermissionMode } from '@yaac/shared/types'
 
@@ -47,6 +47,8 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import { chatDraftKey, flushChatDrafts, useUiStore } from '#lib/store'
+import { countMatches, type QuerySpec } from '#lib/matchCount'
+import { IS_MAC } from '#lib/platform'
 
 const user = (seq: number, text: string): AcpEvent =>
   ({ type: 'user', seq, content: [{ type: 'text', text }] })
@@ -446,6 +448,65 @@ describe('WorkspaceChat condensed view', () => {
       'reply two', 'working on it', 'long bash', 'also do X', 't3',
     ]) expect(screen.getByText(shown)).toBeTruthy()
     for (const hidden of ['bg check', 't1', 't2']) expect(screen.queryByText(hidden)).toBeNull()
+  })
+})
+
+describe('WorkspaceChat find', () => {
+  /** jsdom has no Worker; this one counts on the main thread a tick later. */
+  class FakeWorker {
+    onmessage: ((e: MessageEvent) => void) | null = null
+    postMessage(msg: { id: number; doc: string; spec: QuerySpec }): void {
+      setTimeout(() => this.onmessage?.({ data: { id: msg.id, matches: countMatches(msg.doc, msg.spec) } } as MessageEvent), 0)
+    }
+    terminate(): void {}
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.stubGlobal('Worker', FakeWorker)
+    Range.prototype.getBoundingClientRect = () => new DOMRect()
+    stream.events = [
+      user(0, 'first ask'),
+      { type: 'thought', seq: 1, content: [{ type: 'text', text: 'the needle is here' }] },
+      { type: 'tool', seq: 2, call: { toolCallId: 't', title: 'ls', kind: 'other', status: 'completed' } },
+      { type: 'agent', seq: 3, content: [{ type: 'text', text: 'done' }] },
+    ]
+    stream.busy = false
+    useUiStore.setState({ chatDrafts: {}, chatCondensed: true })
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
+  const pressFind = (): void => {
+    fireEvent.keyDown(document.body, { code: 'KeyF', key: 'f', ctrlKey: !IS_MAC, metaKey: IS_MAC })
+  }
+  const find = (): HTMLInputElement => screen.getByRole<HTMLInputElement>('textbox', { name: 'Find' })
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 4; i++) await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+  }
+
+  it('opens from the focused pane only, and unfolds the run and the row holding a match', async () => {
+    const { rerender } = render(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" focused={false} />)
+    pressFind()
+    expect(screen.queryByRole('textbox', { name: 'Find' })).toBeNull()
+
+    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" focused />)
+    pressFind()
+    expect(document.activeElement).toBe(find())
+    expect(screen.queryByText('the needle is here')).toBeNull()
+    fireEvent.change(find(), { target: { value: 'needle' } })
+    await settle()
+    expect(screen.getByText('the needle is here')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toBe('1 of 1')
+
+    // Escape hands the keyboard back to the composer.
+    fireEvent.keyDown(find(), { key: 'Escape' })
+    expect(screen.queryByRole('textbox', { name: 'Find' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('textbox'))
   })
 })
 

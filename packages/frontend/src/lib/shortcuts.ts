@@ -263,8 +263,8 @@ function platformChord(code: string, isMac: boolean): Chord {
 
 /**
  * Fixed chords the panes handle themselves: Cmd/Ctrl-S saves a file,
- * Cmd/Ctrl-F opens find in a file pane, and Cmd/Ctrl =/−/0
- * resize text (textSizeStep). They can't be rebound and are reserved, since
+ * Cmd/Ctrl-F opens find in a file pane or a conversation, and Cmd/Ctrl
+ * =/−/0 resize text (textSizeStep). They can't be rebound and are reserved, since
  * the shortcut listener runs before the panes and would swallow them.
  */
 export function saveChord(isMac = IS_MAC): Chord {

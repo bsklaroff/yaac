@@ -340,7 +340,8 @@ undo history, cursor and unsaved text survive.
   registry. Cmd/Ctrl-S is handled on the file pane's root, so it works from
   the header strip, never reaches a terminal (Ctrl-S stays the shell's there),
   and keeps its browser meaning elsewhere. Cmd/Ctrl-F opens the file pane's
-  find bar, or jumps to the explorer's filter.
+  find bar, or jumps to the explorer's filter; in a conversation pane it
+  searches the conversation (docs/agent-modes.md, "Find").
 - **`open-changes` (Alt-G)** opens or focuses the explorer in its changes
   view. Because the workspace's
   shortcut listener runs first (capture phase), `validateChord` refuses these

@@ -6,6 +6,7 @@ import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import { WorkspaceChat } from '#components/WorkspaceChat'
+import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
@@ -569,6 +570,7 @@ export function WorkspaceView({
             height: wsSize.h - headerH - PAD,
           }
           const onScreen = colRect != null || (id === sid && !tiled && target === activeTab)
+          const focused = id === sid && target === activeTab
           const style = colRect
             ? {
                 left: colRect.x + PAD,
@@ -605,7 +607,7 @@ export function WorkspaceView({
                 </div>
               ) : chat !== undefined ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
-                  <WorkspaceChat workspaceId={id} agentSessionId={chat} visible={onScreen} />
+                  <WorkspaceChat workspaceId={id} agentSessionId={chat} visible={onScreen} focused={focused} />
                 </div>
               ) : file ? (
                 <div className="h-full w-full overflow-hidden rounded-md">
@@ -624,7 +626,7 @@ export function WorkspaceView({
                   })()}
                 </div>
               ) : (
-                <div className="h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
+                <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
                   <WorkspaceTerminal
                     key={`${key}:${terminalNonces[id] ?? 0}`}
                     workspaceId={id}
@@ -632,6 +634,13 @@ export function WorkspaceView({
                     visible={onScreen}
                     focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
                   />
+                  {target === 'agent' && (
+                    <TuiTranscriptSearch
+                      workspaceId={id}
+                      sessions={workspaces.find((s) => s.workspaceId === id)?.agentSessions ?? []}
+                      focused={focused}
+                    />
+                  )}
                 </div>
               )}
             </div>
