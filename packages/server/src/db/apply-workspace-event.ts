@@ -1,4 +1,9 @@
-import { deleteWorkspaceAgentSessions, recordAgentSessions, setActiveAgentSessions } from './agent-session-store'
+import {
+  deleteWorkspaceAgentSessions,
+  recordAgentSessionCaptures,
+  recordAgentSessions,
+  setActiveAgentSessions,
+} from './agent-session-store'
 import {
   deleteWorkspaceRow,
   recordWorkspaceCreated,
@@ -47,6 +52,9 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
     }
     case 'sessions-discovered':
       await recordAgentSessions(event.projectId, event.workspaceId, event.sessions)
+      return
+    case 'sessions-captured':
+      await recordAgentSessionCaptures(event.projectId, event.sessions)
       return
     case 'sessions-active':
       await setActiveAgentSessions(event.projectId, event.workspaceId, event.active)

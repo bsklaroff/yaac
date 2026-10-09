@@ -525,6 +525,30 @@ describe('WorkspaceList', () => {
       expect(screen.getByText('Write docs')).toBeTruthy()
       expect(screen.getByRole('group', { name: 'Pinned' })).toBeTruthy()
     })
+
+    it('spins until the stopped results settle, dropping a superseded request', async () => {
+      stoppedRows.push(stoppedEntry('old', { title: 'Parser rewrite' }), stoppedEntry('lexer', { title: 'Lexer port' }))
+      // Hold the first search's reply, so the second supersedes it in flight.
+      let release = (): void => {}
+      server.route('GET /api/workspace/list-stopped', (c: FetchCall) => c.query.get('q') === 'parser'
+        ? new Promise((resolve) => { release = () => resolve(listStopped(c)) })
+        : listStopped(c))
+      renderList([], { project: { stoppedCount: 2, unseenDeaths: 0 } })
+      const search = screen.getByRole('textbox', { name: 'Search workspaces' })
+
+      fireEvent.change(search, { target: { value: 'parser' } })
+      expect(screen.getByLabelText('Searching')).toBeTruthy()
+      await waitFor(() => expect(stoppedQueries().at(-1)).toContain('q=parser'))
+      expect(screen.getByLabelText('Searching')).toBeTruthy()
+      expect(screen.queryByText('No matches')).toBeNull()
+
+      fireEvent.change(search, { target: { value: 'lexer' } })
+      expect(await screen.findByText('Lexer port')).toBeTruthy()
+      expect(screen.queryByLabelText('Searching')).toBeNull()
+      const parser = server.called('GET /api/workspace/list-stopped').find((c) => c.query.get('q') === 'parser')
+      expect(parser?.signal?.aborted).toBe(true)
+      release()
+    })
   })
 
   describe('status filter', () => {

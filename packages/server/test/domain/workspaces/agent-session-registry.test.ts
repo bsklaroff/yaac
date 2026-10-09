@@ -6,7 +6,11 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 import { closeDb } from '#db/client'
 import { acpLogDir, claudeDir, codexDir } from '@yaac/shared/project-paths'
-import { _resetReportedModesForTests, reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
+import {
+  _resetReportedModesForTests,
+  reconcileAgentSessions,
+  reconcileStoppedAgentSessions,
+} from '#domain/workspaces/agent-session-registry'
 import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { applyWorkspaceEvent } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
@@ -85,19 +89,24 @@ describe('reconcileAgentSessions', () => {
   it('records every conversation a pane names, and exactly those are active', async () => {
     // The agent window's conversation, one started by hand in another pane,
     // and a codex pane that has not named a conversation yet.
+    const convA = await claudeOn('%0', 'conv-a', 'refactor the parser')
+    await fs.utimes(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-a.jsonl'),
+      new Date('2026-01-02'), new Date('2026-01-02'))
     live([
-      { ...await claudeOn('%0', 'conv-a', 'refactor the parser'), model: 'claude-opus-5' },
+      { ...convA, model: 'claude-opus-5' },
       await claudeOn('%4', 'conv-s', 'a side question'),
       { handle: '%1', tool: 'codex' },
     ])
     await sweep()
 
     expect(await rows()).toEqual([['conv-a', true, '%0'], ['conv-s', true, '%4']])
+    // Last activity is the transcript's mtime, for the stopped listing.
     expect(await row('conv-a')).toMatchObject({
       mode: 'tui',
       transcriptPath: path.join('claude', 'projects', '-workspace', 'conv-a.jsonl'),
       firstPrompt: 'refactor the parser',
       model: 'claude-opus-5',
+      lastActiveAt: new Date('2026-01-02'),
     })
     expect((await row('conv-s'))?.firstPrompt).toBe('a side question')
 
@@ -420,5 +429,92 @@ describe('reconcileAgentSessions', () => {
     live([{ handle: '%0', tool: 'claude', reportedMode: 'plan' }])
     await sweep()
     expect(await posture()).toBe('plan')
+  })
+})
+
+/**
+ * Stopped workspaces' conversations no running pass finished with, read
+ * once from what they left on the host. The real `applyWorkspaceEvent`
+ * writes the rows the assertions read.
+ */
+describe('reconcileStoppedAgentSessions', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    installFakeWorkspaceDriver()
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  const MTIME = new Date('2026-01-02')
+
+  /** Record a workspace with one conversation, stopped unless `running`. */
+  async function seed(
+    workspaceId: string,
+    session: { tool: 'claude' | 'opencode'; agentSessionId: string; mode?: 'tui' | 'acp'; firstPrompt?: string },
+    opts: { running?: boolean } = {},
+  ): Promise<void> {
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId })
+    await recordAgentSessions(DEMO_PROJECT_ID, workspaceId, [session])
+    if (!opts.running) await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId })
+  }
+
+  /** Write `lines` to `file`, last modified at `MTIME`. */
+  async function writeAt(file: string, lines: unknown[]): Promise<void> {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, lines.map((l) => `${JSON.stringify(l)}\n`).join(''))
+    await fs.utimes(file, MTIME, MTIME)
+  }
+
+  const link = async (workspaceId: string) => (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, workspaceId))[0]
+
+  it('fills each stopped conversation once from its files, and leaves running ones to the live pass', async () => {
+    // A tui conversation that died before any pass recorded its path: its
+    // transcript is found where claude writes it.
+    await seed('wt-early', { tool: 'claude', agentSessionId: 'conv-early' })
+    await writeAt(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-early.jsonl'),
+      [{ type: 'user', message: { role: 'user', content: 'port the lexer' } }])
+    // An acp conversation, read from acpd's record. Its captured prompt is
+    // kept over the record's.
+    await seed('wt-acp', { tool: 'claude', agentSessionId: 'acp-1', mode: 'acp', firstPrompt: 'the real ask' })
+    await writeAt(path.join(acpLogDir(DEMO_PROJECT_ID, 'wt-acp'), 'acp-1.jsonl'), [
+      { jsonrpc: '2.0', id: 7, method: 'session/prompt', params: { prompt: [{ type: 'text', text: 'later text' }] } },
+    ])
+    // opencode leaves no host file, so it gets its creation time.
+    await seed('wt-oc', { tool: 'opencode', agentSessionId: 'oc-1' })
+    await seed('wt-live', { tool: 'claude', agentSessionId: 'conv-live' }, { running: true })
+    await writeAt(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-live.jsonl'),
+      [{ type: 'user', message: { role: 'user', content: 'still going' } }])
+
+    await reconcileStoppedAgentSessions()
+
+    expect(await link('wt-early')).toMatchObject({ firstPrompt: 'port the lexer', lastActiveAt: MTIME })
+    expect(await link('wt-acp')).toMatchObject({ firstPrompt: 'the real ask', lastActiveAt: MTIME })
+    const oc = await link('wt-oc')
+    expect(oc?.lastActiveAt).toEqual(oc?.createdAt)
+    expect(oc?.firstPrompt).toBeUndefined()
+    const running = await link('wt-live')
+    expect([running?.firstPrompt, running?.lastActiveAt]).toEqual([undefined, undefined])
+
+    // Read once: a later change on disk is not picked up.
+    await writeAt(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-early.jsonl'),
+      [{ type: 'user', message: { role: 'user', content: 'rewritten' } }])
+    await fs.utimes(path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-early.jsonl'),
+      new Date('2026-02-01'), new Date('2026-02-01'))
+    await reconcileStoppedAgentSessions()
+    expect(await link('wt-early')).toMatchObject({ firstPrompt: 'port the lexer', lastActiveAt: MTIME })
+  })
+
+  it('drains a backlog larger than one batch in a single pass', async () => {
+    const ids = Array.from({ length: 45 }, (_, i) => `wt-${i}`)
+    for (const id of ids) await seed(id, { tool: 'opencode', agentSessionId: `oc-${id}` })
+
+    await reconcileStoppedAgentSessions()
+
+    for (const id of ids) expect((await link(id))?.lastActiveAt).toBeInstanceOf(Date)
   })
 })

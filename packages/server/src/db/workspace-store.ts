@@ -400,9 +400,6 @@ export interface StoppedRowCursor {
  * precision a cursor carries: older installs hold stops written by the
  * database with microseconds, and comparing those against a cursor that
  * dropped them would skip rows.
- *
- * A prompt the capture step never stored is matched by `q` only once the
- * listing has backfilled it (`stoppedPrompt`).
  */
 export async function listStoppedWorkspaceRows(
   filter: StoppedRowFilter,

@@ -26,13 +26,13 @@ export {
   getAgentSessionsFor,
   getProjectAgentSessions,
   listActiveAgentSessions,
+  listUncapturedStoppedSessions,
   listWorkspaceAgentSessions,
   recordedConversationHandles,
-  setAgentSessionCapture,
   type AgentSessionLinkRow,
 } from './agent-session-store'
 export { applyWorkspaceEvent } from './apply-workspace-event'
-export type { DiscoveredSession, WorkspaceEvent } from './events'
+export type { CapturedSession, DiscoveredSession, WorkspaceEvent } from './events'
 export { desiredWorkspaces } from './desired-workspaces'
 export {
   createWorkspaceGroup,

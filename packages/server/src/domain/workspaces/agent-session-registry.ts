@@ -3,18 +3,26 @@ import type { RuntimeSnapshot } from '#drivers/contract'
 import { isWorkspaceTerminating, liveAgents } from '#runtime/status'
 import {
   acpRecord,
+  getAgentSessionFirstMessage,
   getCodexRolloutSettings,
   locateTranscript,
   readAcpFirstPrompt,
   resolveAgentPermissionMode,
   resolveProjectPath,
+  sessionTranscriptPath,
   setAcpPermissionMode,
   transcriptLastActiveMs,
 } from '#runtime/agents'
-import { applyWorkspaceEvent, getWorkspaceRow, listWorkspaceAgentSessions } from '#db'
+import {
+  applyWorkspaceEvent,
+  getWorkspaceRow,
+  listUncapturedStoppedSessions,
+  listWorkspaceAgentSessions,
+} from '#db'
 import { captureFirstPrompt } from './prompt-capture'
+import { recordedTranscript } from './agent-session-paths'
 import { serverLog } from '#log'
-import type { AgentSessionLinkRow, DiscoveredSession, WorkspaceRow } from '#db'
+import type { AgentSessionLinkRow, CapturedSession, DiscoveredSession, WorkspaceRow } from '#db'
 import type { LiveAgent } from '#runtime/agents'
 import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
 
@@ -98,11 +106,76 @@ export async function reconcileWorkspaceAgentSessions(
   })
 }
 
+/** How many conversations `reconcileStoppedAgentSessions` reads at a time,
+ *  and for how long one pass keeps reading. A backlog (an upgraded install's
+ *  stopped history) drains quickly without stalling the pass. */
+const STOPPED_CAPTURE_BATCH = 20
+const STOPPED_CAPTURE_BUDGET_MS = 500
+
 /**
- * One live conversation, plus its first message if the row lacks one. Under
- * `tui` the message comes from the tool's transcript. Under `acp` most tools
- * leave no transcript yaac can find, so acpd's record is read instead; it
- * also outlives the pod and gives a stopped workspace its last activity.
+ * Record what each stopped workspace's conversations left on disk, once:
+ * the last activity, and the first message if none was captured. A running
+ * workspace's pass records both, so this covers conversations no pass
+ * finished with: a workspace that stopped before one ran, and rows from an
+ * install whose passes did not record `tui` activity. A conversation with no
+ * readable file gets its creation time, which marks it read. The stopped
+ * listing reads only rows, so this is where those files are read for it.
+ */
+export async function reconcileStoppedAgentSessions(): Promise<void> {
+  const deadline = Date.now() + STOPPED_CAPTURE_BUDGET_MS
+  for (;;) {
+    const pending = await listUncapturedStoppedSessions(STOPPED_CAPTURE_BATCH)
+    await captureStoppedBatch(pending)
+    if (pending.length < STOPPED_CAPTURE_BATCH || Date.now() >= deadline) return
+  }
+}
+
+/** Read one batch, recording each workspace's conversations in one event. */
+async function captureStoppedBatch(pending: AgentSessionLinkRow[]): Promise<void> {
+  const byWorkspace = new Map<string, AgentSessionLinkRow[]>()
+  for (const l of pending) {
+    const key = `${l.projectId}/${l.workspaceId}`
+    byWorkspace.set(key, [...byWorkspace.get(key) ?? [], l])
+  }
+  for (const links of byWorkspace.values()) {
+    const { projectId, workspaceId } = links[0]
+    await applyWorkspaceEvent({
+      type: 'sessions-captured',
+      projectId,
+      workspaceId,
+      // A file that cannot be read still marks the conversation read, so it
+      // is not retried every pass.
+      sessions: await Promise.all(links.map((l) => captureStopped(l).catch((): CapturedSession =>
+        ({ tool: l.tool, agentSessionId: l.agentSessionId, lastActiveMs: l.createdAt.getTime() })))),
+    })
+  }
+}
+
+/** One stopped conversation's files, read as `describe` reads a live one's.
+ *  Without a recorded path the transcript is looked for where the tool
+ *  writes it, since a conversation that died early never had one recorded. */
+async function captureStopped(l: AgentSessionLinkRow): Promise<CapturedSession> {
+  const record = { projectId: l.projectId, workspaceId: l.workspaceId, agentSessionId: l.agentSessionId }
+  const activity = l.mode === 'acp' ? acpRecord(record)
+    : recordedTranscript(l) ?? await sessionTranscriptPath(l.projectId, l.workspaceId, l.tool, l.agentSessionId)
+  const firstPrompt = l.firstPrompt !== undefined ? undefined
+    : l.mode === 'acp' ? await readAcpFirstPrompt(record)
+    : await getAgentSessionFirstMessage(l.tool, activity)
+  const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
+  return {
+    tool: l.tool,
+    agentSessionId: l.agentSessionId,
+    lastActiveMs: lastActiveMs ?? l.createdAt.getTime(),
+    ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+  }
+}
+
+/**
+ * One live conversation, plus its first message if the row lacks one, and
+ * its last activity: the mtime of the file the agent appends to, recorded
+ * every pass so the stopped listing can show it without a read. Under `tui`
+ * that file is the tool's transcript. Under `acp` most tools leave no
+ * transcript yaac can find, so acpd's record is read instead.
  *
  * The model is mapped to its catalog id, since an ACP adapter may report its
  * own naming.
@@ -118,15 +191,13 @@ async function describe(
 ): Promise<DiscoveredSession & { paneId: string }> {
   const { tool, transcriptPath } = agent
   const record = { projectId, workspaceId, agentSessionId }
-  const transcript = transcriptPath ?? recorded?.transcriptPath
+  const stored = transcriptPath ?? recorded?.transcriptPath
+  const transcript = stored !== undefined ? resolveProjectPath(projectId, workspaceId, tool, stored) : undefined
   const firstPrompt = recorded?.firstPrompt !== undefined ? undefined
     : mode === 'acp' ? await readAcpFirstPrompt(record)
-    : await captureFirstPrompt(
-      projectId, tool, agentSessionId,
-      transcript !== undefined ? resolveProjectPath(projectId, workspaceId, tool, transcript) : undefined, jobName,
-    )
-  const recordFile = mode === 'acp' ? acpRecord(record) : undefined
-  const lastActiveMs = recordFile !== undefined ? await transcriptLastActiveMs(recordFile) : undefined
+    : await captureFirstPrompt(projectId, tool, agentSessionId, transcript, jobName)
+  const activity = mode === 'acp' ? acpRecord(record) : transcript
+  const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
   return {
     tool,
     agentSessionId,

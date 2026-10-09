@@ -92,9 +92,13 @@ serialize them.
 the rows with a recorded stop, minus live pod ids, newest stop first. Paging
 is by keyset on `(stoppedAt, workspaceId)`, so a stop landing between two
 pages neither repeats nor skips a row, and the search, group filters and
-total all run in the same SQL. Only the page's rows touch the filesystem: one
-`stat` per linked conversation for last activity, newest wins. So a workspace the user
-`/clear`ed an hour ago reads as an hour old, not as old as its first question.
+total all run in the same SQL. The listing never touches the filesystem: the
+sidebar asks for it on every search and every stop, so each entry comes from
+rows alone. Last activity is the newest `lastActiveAt` across the workspace's
+conversations, so a workspace the user `/clear`ed an hour ago reads as an hour
+old, not as old as its first question. The discovery sweep records it on each
+pass for every live conversation: the transcript's mtime under `tui`, acpd's
+record's under `acp`.
 Restart reads a stopped workspace's project and tool from the rows, so a tool
 that leaves no host transcript restarts like any other.
 
@@ -498,9 +502,16 @@ row names. The workspace's founding ask is simply the first conversation's
 opening message.
 
 The discovery sweep reads it once per conversation per server run and writes it
-to the row, so a settled workspace costs one file read per tick. For a workspace
-that died before capture, the stopped listing parses the first transcript on
-demand and saves the result.
+to the row, so a settled workspace costs one file read per tick. Listings read
+only the row.
+
+A conversation no sweep finished with (its workspace stopped before a pass
+ran, or its row predates the sweep recording `tui` activity) is read once
+after the stop by the `stopped-agent-sessions` reconcile step: the first
+message if the row lacks one, and the last activity. That step marks the
+conversation read by writing `lastActiveAt` (its creation time when no file is
+readable), so it never reads one twice. It reads in batches for up to half a
+second per pass, so an upgraded install's backlog drains within a few passes.
 
 ## The node-local tree
 

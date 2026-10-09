@@ -1,6 +1,7 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
 import { getDb } from './client'
-import { agentSessions, workspaceAgentSessions } from './schema'
+import { agentSessions, workspaceAgentSessions, workspaces } from './schema'
+import type { CapturedSession } from './events'
 import { MAX_MODEL_LENGTH, MAX_PROMPT_LENGTH, SELF_NAMING_TOOLS } from '@yaac/shared/types'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import { nullsToUndefined } from '#lib/nulls'
@@ -385,34 +386,40 @@ export async function getAgentSessionsFor(
 
 
 /**
- * Persist a conversation's captured first message and transcript path.
- * `transcriptPath` must be project-relative; callers convert absolute paths
- * first. An absent field leaves the stored value alone.
+ * Conversations of stopped workspaces with no recorded last activity, newest
+ * stop first, at most `limit`: the ones `sessions-captured` has yet to fill.
  */
-export async function setAgentSessionCapture(
-  projectId: string,
-  tool: AgentTool,
-  agentSessionId: string,
-  capture: { firstPrompt?: string; transcriptPath?: string },
-): Promise<void> {
-  const values = {
-    ...(capture.firstPrompt !== undefined
-      ? { firstPrompt: capture.firstPrompt.slice(0, MAX_PROMPT_LENGTH) }
-      : {}),
-    ...(capture.transcriptPath !== undefined
-      ? { transcriptPath: capture.transcriptPath }
-      : {}),
-  }
-  if (Object.keys(values).length === 0) return
-  try {
-    const db = await getDb()
-    await db.update(agentSessions).set(values).where(and(
-      eq(agentSessions.projectId, projectId),
-      eq(agentSessions.tool, tool),
-      eq(agentSessions.agentSessionId, agentSessionId),
+export async function listUncapturedStoppedSessions(limit: number): Promise<AgentSessionLinkRow[]> {
+  const db = await getDb()
+  const rows = await db.select(selectLinked())
+    .from(workspaceAgentSessions)
+    .innerJoin(agentSessions, linkJoin())
+    .innerJoin(workspaces, and(
+      eq(workspaces.projectId, workspaceAgentSessions.projectId),
+      eq(workspaces.workspaceId, workspaceAgentSessions.workspaceId),
     ))
-  } catch {
-    // Non-fatal: the next capture pass retries.
+    .where(and(isNotNull(workspaces.stoppedAt), isNull(agentSessions.lastActiveAt)))
+    .orderBy(desc(workspaces.stoppedAt), asc(workspaceAgentSessions.ordinal))
+    .limit(limit)
+  return rows.map(nullsToUndefined)
+}
+
+/** Fill what a stopped workspace's conversations left on disk, skipping any
+ *  a discovery pass has since recorded. */
+export async function recordAgentSessionCaptures(projectId: string, captures: CapturedSession[]): Promise<void> {
+  const db = await getDb()
+  for (const c of captures) {
+    await db.update(agentSessions).set({
+      lastActiveAt: new Date(c.lastActiveMs),
+      ...(c.firstPrompt !== undefined
+        ? { firstPrompt: sql`coalesce(${agentSessions.firstPrompt}, ${c.firstPrompt.slice(0, MAX_PROMPT_LENGTH)})` }
+        : {}),
+    }).where(and(
+      eq(agentSessions.projectId, projectId),
+      eq(agentSessions.tool, c.tool),
+      eq(agentSessions.agentSessionId, c.agentSessionId),
+      isNull(agentSessions.lastActiveAt),
+    ))
   }
 }
 

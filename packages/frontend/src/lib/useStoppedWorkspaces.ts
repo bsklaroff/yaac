@@ -40,8 +40,13 @@ export interface StoppedList {
   entries: StoppedWorkspaceEntry[]
   /** The server's total for the filter; undefined before the first page. */
   total: number | undefined
+  /** False while the rows are a previous filter's placeholder. */
   hasNextPage: boolean
+  /** Any fetch in flight, including a refetch of the loaded pages. */
+  isFetching: boolean
   isFetchingNextPage: boolean
+  /** The rows are not yet this filter's: its first page is still loading. */
+  settling: boolean
   isError: boolean
   fetchNextPage: () => void
 }
@@ -54,6 +59,10 @@ export interface StoppedList {
  * loaded page. `hidden` names workspaces drawn elsewhere (live, provisioning
  * or held rows). Optimistic entries are shown until a fetched page lists
  * them, and only without a search, since the server does the matching.
+ *
+ * Every request carries the query's abort signal, so a superseded search,
+ * a cancelled refetch or an unmounted list drops its request rather than
+ * leaving it to pile up on the server.
  */
 export function useStoppedWorkspaces(
   projectId: string | null,
@@ -66,9 +75,9 @@ export function useStoppedWorkspaces(
   const q = filter.q?.trim() ?? ''
   const excludeGroups = [...(filter.excludeGroups ?? [])].sort().join(',')
   const exclude = [...(filter.exclude ?? [])].sort().join(',')
-  const { data, hasNextPage, isFetchingNextPage, isError, fetchNextPage } = useInfiniteQuery({
+  const query = useInfiniteQuery({
     queryKey: ['stopped', projectId, q, filter.group ?? '', excludeGroups, exclude],
-    queryFn: async ({ pageParam }) => {
+    queryFn: async ({ pageParam, signal }) => {
       const page = await api.workspace['list-stopped'].$get({
         query: {
           project: projectId ?? '',
@@ -79,7 +88,7 @@ export function useStoppedWorkspaces(
           ...(excludeGroups ? { excludeGroups } : {}),
           ...(exclude ? { exclude } : {}),
         },
-      })
+      }, { init: { signal } })
       // An optimistic entry is no longer needed once the server lists it.
       for (const e of page.entries) removeOptimistic(e.workspaceId)
       return page
@@ -107,6 +116,7 @@ export function useStoppedWorkspaces(
     void queryClient.cancelQueries(filters).then(() => queryClient.invalidateQueries(filters))
   }, [queryClient, projectId, q, group, excludeGroups, exclude, version])
 
+  const { data, isPlaceholderData, isFetching, isFetchingNextPage, isError, fetchNextPage } = query
   const fetched = data?.pages.flatMap((p) => p.entries) ?? []
   const fetchedIds = new Set(fetched.map((e) => e.workspaceId))
   const excluded = new Set(filter.excludeGroups)
@@ -119,10 +129,13 @@ export function useStoppedWorkspaces(
   return {
     entries: [...pending, ...fetched].filter((e) => !opts.hidden.has(e.workspaceId)),
     total: data?.pages[0]?.total,
-    hasNextPage,
+    hasNextPage: query.hasNextPage && !isPlaceholderData,
+    isFetching,
     isFetchingNextPage,
+    settling: isPlaceholderData || (data === undefined && isFetching),
     isError,
-    fetchNextPage: () => { void fetchNextPage() },
+    // Never restart a page already loading.
+    fetchNextPage: () => { void fetchNextPage({ cancelRefetch: false }) },
   }
 }
 

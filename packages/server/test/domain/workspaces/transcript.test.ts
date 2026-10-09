@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorkspaceCreated } from '#db/workspace-store'
-import { recordAgentSessions, setAgentSessionCapture } from '#db/agent-session-store'
+import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
 import { acpLogDir, agentHistoryDir, claudeDir, opencodeCheckpointDir } from '@yaac/shared/project-paths'
 import { getAgentSessionTranscript } from '#domain/workspaces/transcript'
@@ -165,9 +165,11 @@ describe('getAgentSessionTranscript', () => {
     await seedSession(TUI_SESSION)
     const elsewhere = path.join(claudeDir(PROJECT), 'projects', '-elsewhere', 'moved.jsonl')
     await writeClaudeTranscript(TUI_SESSION, elsewhere)
-    await setAgentSessionCapture(PROJECT, 'claude', TUI_SESSION, {
+    await recordAgentSessions(PROJECT, WORKSPACE, [{
+      tool: 'claude',
+      agentSessionId: TUI_SESSION,
       transcriptPath: path.relative(path.dirname(claudeDir(PROJECT)), elsewhere),
-    })
+    }])
 
     expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).map((e) => e.type))
       .toEqual(['user', 'agent'])

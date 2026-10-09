@@ -22,6 +22,7 @@ export interface FetchCall {
   query: URLSearchParams
   /** The parsed JSON body, if any. */
   body: unknown
+  signal?: AbortSignal
 }
 
 type Reply = unknown
@@ -52,6 +53,7 @@ export function mockFetch(routes: Record<string, Reply> = {}): FetchMock {
     const text = typeof init?.body === 'string' ? init.body : ''
     const call: FetchCall = {
       method, path: url.pathname, query: url.searchParams, body: text ? JSON.parse(text) as unknown : undefined,
+      ...(init?.signal ? { signal: init.signal } : {}),
     }
     calls.push(call)
     const key = `${method} ${url.pathname}`

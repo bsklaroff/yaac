@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { EmptyState } from '#components/ui/EmptyState'
 import { agentLabel, workspaceModel } from '#lib/agentLabel'
 import { api } from '#lib/api'
-import { CloseIcon, SearchIcon } from '#lib/icons'
+import { CloseIcon, LoadingIcon, SearchIcon } from '#lib/icons'
 import { usePressDrag } from '#lib/usePressDrag'
 import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
@@ -345,6 +345,10 @@ export function WorkspaceList({
     version: [project?.stoppedCount ?? 0, ...groups.map((g) => g.stoppedCount)].join(','),
     hidden,
   })
+  // The search box spins until the stopped list matches what was typed:
+  // through the typing pause, then until the server's first page lands.
+  const searchSettling = searching && stoppedOpen
+    && (serverQuery !== query.trim() || stopped.settling)
   const stoppedCount = searching
     ? stopped.total ?? 0
     : stoppedSectionCount(project, groups, owning, held, provisioning)
@@ -452,10 +456,18 @@ export function WorkspaceList({
         {projectId && (
           <div className="flex shrink-0 gap-1 px-2 pb-1">
             <div className="relative flex-1">
-              <SearchIcon
-                size={13}
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-faint"
-              />
+              {searchSettling ? (
+                <LoadingIcon
+                  size={13}
+                  aria-label="Searching"
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 animate-spin text-text-faint"
+                />
+              ) : (
+                <SearchIcon
+                  size={13}
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-faint"
+                />
+              )}
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -509,7 +521,7 @@ export function WorkspaceList({
               description={readOnly ? undefined : 'Start one with the + above.'}
             />
           )}
-          {narrowed && nothingLive && (!stoppedShown || stopped.total === 0) && (
+          {narrowed && nothingLive && !searchSettling && (!stoppedShown || stopped.total === 0) && (
             <EmptyState compact className="py-10" title="No matches" />
           )}
           {shown.drafts.length > 0 && <DraftsSection drafts={shown.drafts} />}

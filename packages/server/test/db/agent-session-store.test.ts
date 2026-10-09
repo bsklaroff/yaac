@@ -7,10 +7,11 @@ import { agentSessions } from '#db/schema'
 import {
   recordedConversationHandles,
   deleteWorkspaceAgentSessions,
+  listUncapturedStoppedSessions,
   listWorkspaceAgentSessions,
   recordAgentSessions,
 } from '#db/agent-session-store'
-import { recordWorkspaceCreated } from '#db/workspace-store'
+import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 
 /**
  * The store's writes are covered through the reconciler and the listings that
@@ -155,5 +156,43 @@ describe('recordedConversationHandles', () => {
       { handle: '%0', agentSessionId: 'conv-a' },
       { handle: '%2', agentSessionId: 'conv-c' },
     ])
+  })
+})
+
+describe('listUncapturedStoppedSessions', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5))
+
+  it('lists stopped workspaces\' conversations with no recorded activity, newest stop first, up to the limit', async () => {
+    for (const id of ['wt-old', 'wt-new', 'wt-done', 'wt-live']) {
+      await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: id })
+    }
+    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-old', [{ tool: 'claude', agentSessionId: 'conv-old' }])
+    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-new', [
+      { tool: 'claude', agentSessionId: 'conv-new' },
+      { tool: 'claude', agentSessionId: 'conv-cleared' },
+    ])
+    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-done', [
+      { tool: 'claude', agentSessionId: 'conv-done', lastActiveMs: Date.parse('2026-01-02') },
+    ])
+    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-live', [{ tool: 'claude', agentSessionId: 'conv-live' }])
+    await recordWorkspaceStopped(DEMO_PROJECT_ID, 'wt-old')
+    await tick()
+    await recordWorkspaceStopped(DEMO_PROJECT_ID, 'wt-done')
+    await recordWorkspaceStopped(DEMO_PROJECT_ID, 'wt-new')
+
+    expect((await listUncapturedStoppedSessions(10)).map((l) => [l.workspaceId, l.agentSessionId]))
+      .toEqual([['wt-new', 'conv-new'], ['wt-new', 'conv-cleared'], ['wt-old', 'conv-old']])
+    expect(await listUncapturedStoppedSessions(1)).toHaveLength(1)
   })
 })

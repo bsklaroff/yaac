@@ -69,7 +69,6 @@ export {
   resolveProjectPath,
   sessionIdFromPiLog,
   sessionTranscriptPath,
-  toProjectRelative,
   transcriptLastActiveMs,
   type ConversationFile,
 } from './transcripts'

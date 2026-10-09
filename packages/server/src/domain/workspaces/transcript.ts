@@ -41,7 +41,7 @@ export async function getAgentSessionTranscript(
     throw new ServerError('NOT_FOUND', `conversation ${agentSessionId} not found`)
   }
 
-  // Fall back to the conventional path, as `stoppedPrompt` does.
+  // Fall back to the conventional path when none was recorded.
   const claudeFile = session.tool !== 'claude' ? undefined
     : recordedTranscript(session) ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, agentSessionId)
 

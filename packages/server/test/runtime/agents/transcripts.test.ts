@@ -191,20 +191,6 @@ describe('transcripts', () => {
     })
   })
 
-  describe('toProjectRelative', () => {
-    it('strips the project directory, whatever tool wrote the path', () => {
-      expect(toProjectRelative(claudeFile('sid')))
-        .toBe(path.join('claude', 'projects', '-workspace', 'sid.jsonl'))
-      expect(toProjectRelative({ projectId, dir: codexDir(projectId), rel: 'sessions/2026/rollout-x.jsonl' }))
-        .toBe(path.join('codex', 'sessions', '2026', 'rollout-x.jsonl'))
-    })
-
-    it('refuses a path with no project-relative form', () => {
-      expect(toProjectRelative({ projectId, dir: '/tmp', rel: 'elsewhere.jsonl' })).toBeNull()
-      expect(toProjectRelative({ projectId, dir: claudeDir('other'), rel: 't.jsonl' })).toBeNull()
-    })
-  })
-
   describe('conversationFiles', () => {
     /** A codex rollout whose first line names its parent thread, if any. */
     async function rollout(dir: string, thread: string, parent?: string): Promise<void> {
@@ -395,9 +381,7 @@ describe('transcripts', () => {
         pi: { projectId, dir: agentHistoryDir(projectId, wt, 'pi'), rel: '20260101-120000_sid.jsonl' },
       } as const
       for (const [tool, file] of Object.entries(files)) {
-        const stored = toProjectRelative(file)
-        expect(stored).not.toBeNull()
-        expect(resolveProjectPath(projectId, wt, tool as keyof typeof files, stored ?? '')).toEqual(file)
+        expect(resolveProjectPath(projectId, wt, tool as keyof typeof files, toProjectRelative(file))).toEqual(file)
       }
       expect(resolveProjectPath(projectId, wt, 'claude', `history/${wt}/claude/-workspace/sid.jsonl`))
         .toEqual({ projectId, dir: agentHistoryDir(projectId, wt, 'claude'), rel: '-workspace/sid.jsonl' })

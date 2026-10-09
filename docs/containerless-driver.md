@@ -69,7 +69,7 @@ The state dir is `~/.yaac/global/projects/<project-id>/sessions/<id>`.
 
 The ACP record is not driver-private: under k8s the container path is a
 mount of the shared project location, and every reader (the chat pane, the
-first-prompt scan, a stopped workspace's transcript) opens that location. It
+first-prompt capture, a stopped workspace's transcript) opens that location. It
 must also outlive the state dir, which a stop removes, so a stopped
 workspace's conversation stays readable (docs/agent-modes.md).
 

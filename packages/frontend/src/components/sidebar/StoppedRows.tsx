@@ -11,22 +11,24 @@ import { StoppedWorkspaceRow } from '#components/sidebar/WorkspaceRows'
  * A paged stopped list's rows, then a marker that loads the next page once
  * it scrolls into view. The observer's root is the viewport, but the
  * intersection is clipped by the scrolling sidebar, so the marker counts as
- * visible only when the list is scrolled to it.
+ * visible only when the list is scrolled to it. It is watched only while no
+ * fetch is in flight, so pages load one at a time; observing again after a
+ * fetch reports a marker still in view, which loads the next.
  */
 export function StoppedRows({ list }: { list: StoppedList }): JSX.Element {
   const marker = useRef<HTMLDivElement>(null)
-  const { hasNextPage, isFetchingNextPage, isError } = list
+  const { hasNextPage, isFetching, isFetchingNextPage, isError } = list
   const fetchNext = useRef(list.fetchNextPage)
   fetchNext.current = list.fetchNextPage
   useEffect(() => {
     const el = marker.current
-    if (!el || !hasNextPage || isFetchingNextPage || isError) return
+    if (!el || !hasNextPage || isFetching || isError) return
     const observer = new IntersectionObserver((seen) => {
       if (seen.some((e) => e.isIntersecting)) fetchNext.current()
     })
     observer.observe(el)
     return () => observer.disconnect()
-  }, [hasNextPage, isFetchingNextPage, isError])
+  }, [hasNextPage, isFetching, isError])
 
   return (
     <>

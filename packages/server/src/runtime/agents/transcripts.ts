@@ -143,14 +143,9 @@ function escapesRoot(rel: string): boolean {
   return rel === '' || rel.startsWith('..') || path.isAbsolute(rel)
 }
 
-/**
- * A transcript in stored form, or null if it has none (as when the hook
- * writes an empty record; see workspace-bin/yaac-agent-links): the
- * conversation is real but its path cannot be expressed.
- */
-export function toProjectRelative(file: SandboxFile): string | null {
-  const rel = path.relative(projectDir(file.projectId), path.join(file.dir, file.rel))
-  return escapesRoot(rel) ? null : rel
+/** A file under the project directory, in stored form. */
+export function toProjectRelative(file: SandboxFile): string {
+  return path.relative(projectDir(file.projectId), path.join(file.dir, file.rel))
 }
 
 /**
@@ -208,7 +203,7 @@ export async function locateTranscript(
   if (tool === 'pi') {
     const logs = await piSessionLogs(projectId, workspaceId, agentSessionId)
     const newest = logs[logs.length - 1]
-    return newest === undefined ? undefined : toProjectRelative(newest) ?? undefined
+    return newest === undefined ? undefined : toProjectRelative(newest)
   }
   if (tool === 'opencode' || reported === undefined) return undefined
   const { part, shared } = TRANSCRIPT_LAYOUT[tool]

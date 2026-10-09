@@ -280,8 +280,9 @@ export const agentSessions = snakeCase.table('agent_sessions', {
   /** This conversation's first user message. After a `/clear` it differs
    *  from the workspace's founding prompt (the first conversation's). */
   firstPrompt: text(),
-  /** Transcript mtime at the last reconcile, shown as last activity in the
-   *  stopped listing. */
+  /** Mtime of the file the conversation appends to (its transcript, or
+   *  acpd's record), recorded each pass while it runs and once after a stop;
+   *  shown as last activity in the stopped listing. */
   lastActiveAt: timestamp({ withTimezone: true }),
   /**
    * The model the agent last reported, in the tool's own naming

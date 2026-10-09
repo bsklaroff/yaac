@@ -3,6 +3,7 @@ import {
   reapOrphanNodeLocal,
   reconcileAgentSessions,
   reconcilePrewarmPool,
+  reconcileStoppedAgentSessions,
   reconcileQueuedWorkspaces,
   reconcileStaleWorkspaces,
 } from '#domain/workspaces'
@@ -68,6 +69,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // within a debounce rather than a resync.
     { name: 'agent-sessions', triggers: ['workspaces', 'live-agents'],
       run: (ctx) => reconcileAgentSessions(ctx.snapshot()) },
+    // What stopped workspaces' conversations left on disk, read once each
+    // for the stopped listing, which reads only rows. A stop changes
+    // `workspaces`; a backlog drains a batch per pass.
+    { name: 'stopped-agent-sessions', triggers: ['workspaces'],
+      run: () => reconcileStoppedAgentSessions() },
     // Runtime upkeep (substrate GCs, datapath repairs), after the sweeps
     // above so a just-reaped workspace's leftovers are collected the same
     // pass.
