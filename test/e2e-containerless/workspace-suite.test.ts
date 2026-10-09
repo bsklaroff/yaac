@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import http from 'node:http'
 import { promisify } from 'node:util'
@@ -1883,8 +1884,10 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     )
     expect(await fs.readFile(path.join(home, '.yaac-attachments', path.basename(pasted)))).toEqual(png)
 
-    // A chat message carries the image inline to the agent, and it shows in
-    // the history a later attach receives.
+    // A chat message carries its images inline to the agent, and they show
+    // in the history a later attach receives. acpd keeps a large one out of
+    // the record, which names it by hash, and the server serves it from
+    // there.
     const attach = async (): Promise<{ ws: WebSocket; hello: { events: Array<{ type: string; content?: unknown[] }> } }> => {
       const ws = new WebSocket(
         `ws://127.0.0.1:${String(server.lock.port)}/api/acp/attach?id=${id}&session=e2e-acp-claude`,
@@ -1901,20 +1904,31 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     }
     const first = await vi.waitFor(attach, { timeout: 30_000, interval: 500 })
     const image = { type: 'image', mimeType: 'image/png', data: png.toString('base64') }
-    first.ws.send(JSON.stringify({ type: 'prompt', text: 'what is this?', images: [image] }))
+    const screenshot = Buffer.concat([png, Buffer.alloc(64 * 1024, 1)])
+    const hash = createHash('sha256').update(screenshot).digest('hex')
+    first.ws.send(JSON.stringify({
+      type: 'prompt',
+      text: 'what is this?',
+      images: [image, { type: 'image', mimeType: 'image/png', data: screenshot.toString('base64') }],
+    }))
     const record = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'acp', id, 'e2e-acp-claude.jsonl')
     await vi.waitFor(async () => {
       const prompt = (await fs.readFile(record, 'utf8')).split('\n')
         .map((l) => { try { return JSON.parse(l) as { method?: string; params?: { prompt?: unknown } } } catch { return {} } })
         .find((m) => m.method === 'session/prompt')
-      expect(prompt?.params?.prompt).toEqual([{ type: 'text', text: 'what is this?' }, image])
+      expect(prompt?.params?.prompt).toEqual([
+        { type: 'text', text: 'what is this?' }, image, { type: 'image', mimeType: 'image/png', data: `yaac-image:${hash}` },
+      ])
     }, { timeout: 30_000, interval: 250 })
     first.ws.close()
 
     const second = await attach()
     second.ws.close()
     expect(second.hello.events.find((e) => e.type === 'user')?.content)
-      .toEqual([{ type: 'text', text: 'what is this?' }, image])
+      .toEqual([{ type: 'text', text: 'what is this?' }, image, { type: 'image', mimeType: 'image/png', hash }])
+    const served = await fetch(`${origin()}/api/workspace/${id}/acp-images/${hash}`)
+    expect(served.headers.get('content-type')).toBe('image/png')
+    expect(Buffer.from(await served.arrayBuffer())).toEqual(screenshot)
 
     await runYaac(serverEnv, 'workspace', 'stop', id)
   }, 180_000)

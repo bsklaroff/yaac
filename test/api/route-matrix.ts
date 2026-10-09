@@ -184,6 +184,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // Reads recorded state and host files, so both drivers agree. Its 501 is
   // for a tool (opencode) whose history lives in the container.
   { method: 'GET', path: '/api/workspace/:id/agent-sessions/:sessionId/transcript', request: `${W}/agent-sessions/s1/transcript`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/acp-images/:hash', request: `${W}/acp-images/${'0'.repeat(64)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/changes', request: `${W}/changes`, access: 'reader', k8s: [404, 503], containerless: MISSING },
   // Run git inside the running workspace: 409 when stopped, 404 when
   // unknown.

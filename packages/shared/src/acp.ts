@@ -19,9 +19,17 @@ import type { PermissionMode } from './types'
 export type AcpContent =
   | { type: 'text'; text: string }
   | AcpImage
+  | AcpStoredImage
 
 /** An image block; `data` is base64. */
 export interface AcpImage { type: 'image'; mimeType: string; data: string }
+
+/**
+ * An image acpd keeps beside the record rather than in it, named by the
+ * SHA-256 of its bytes. A pane loads it from
+ * `GET /workspace/:id/acp-images/:hash`.
+ */
+export interface AcpStoredImage { type: 'image'; mimeType: string; hash: string }
 
 /**
  * A file edit as before/after text, kept structured so a pane can render it

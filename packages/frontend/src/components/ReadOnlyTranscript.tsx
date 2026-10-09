@@ -165,6 +165,7 @@ export function ReadOnlyTranscript({
               <>
                 {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
                 <AcpTranscript
+                  workspaceId={workspaceId}
                   groups={groups}
                   found={found}
                   condensed={condensed && subagent === undefined}

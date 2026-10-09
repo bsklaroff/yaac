@@ -67,6 +67,23 @@ describe('ReadOnlyTranscript', () => {
     expect(server.called(TRANSCRIPT)).toHaveLength(1)
   })
 
+  it('shows a message\'s images, loading one stored apart from the record from the server', async () => {
+    const hash = 'ab'.repeat(32)
+    transcript([{
+      type: 'user',
+      seq: 0,
+      content: [
+        { type: 'text', text: 'look' },
+        { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+        { type: 'image', mimeType: 'image/png', hash },
+      ],
+    }])
+    renderPane()
+    await screen.findByText('look')
+    expect([...document.querySelectorAll('img')].map((img) => img.getAttribute('src')))
+      .toEqual(['data:image/png;base64,iVBORw0KGgo=', `/api/workspace/w1/acp-images/${hash}`])
+  })
+
   it('offers the workspace\'s conversations in restore order and switches between them', async () => {
     // `/clear` starts a second conversation in the same workspace; both are
     // readable, and the one the workspace was last in opens first.

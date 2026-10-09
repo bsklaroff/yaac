@@ -234,6 +234,10 @@ export function toStopReason(value: unknown): AcpStopReason {
     : 'end_turn'
 }
 
+/** An image's `data` as acpd records it once it has stored the image beside
+ *  the record (dockerfiles/acpd/acpd.js, "Images"). */
+const STORED_IMAGE = /^yaac-image:([0-9a-f]{64})$/
+
 /**
  * One ACP content block, or undefined for variants an in-workspace agent
  * never sends (`audio`, `resource`, `resource_link`).
@@ -248,9 +252,9 @@ function toContent(value: unknown): AcpContent | undefined {
   if (block.type === 'image') {
     const mimeType = asString(block.mimeType)
     const data = asString(block.data)
-    return mimeType !== undefined && data !== undefined
-      ? { type: 'image', mimeType, data }
-      : undefined
+    if (mimeType === undefined || data === undefined) return undefined
+    const hash = STORED_IMAGE.exec(data)?.[1]
+    return hash === undefined ? { type: 'image', mimeType, data } : { type: 'image', mimeType, hash }
   }
   return undefined
 }

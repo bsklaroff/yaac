@@ -14,12 +14,12 @@
  *     │   └── /tmp/yaac-acp/*.sock│◄───────┤ ctrl stream + socat  │
  *     └───────────────────────────┘        └──────────────────────┘
  *
- * acpd does not parse JSON-RPC; all protocol logic lives in the server.
+ * acpd does not interpret JSON-RPC; all protocol logic lives in the server.
  *
  * ## The record
  *
- * Every byte relayed in either direction is appended verbatim to `--log`, one
- * whole line at a time. The file is the conversation's history, written
+ * Every line relayed in either direction is appended to `--log`, one whole
+ * line at a time. The file is the conversation's history, written
  * whether or not a client is attached, on a host-mounted path the server can
  * read even after the pod is gone. The server reads it for live output too,
  * so nothing is buffered for an absent client. Client lines are recorded
@@ -35,11 +35,25 @@
  * own node, which neither the old path nor, under gVisor, `/dev/fd/<fd>`
  * follows.
  *
+ * Images are kept out of it (see "Images" below), and every other byte is
+ * recorded verbatim.
+ *
  * A conversation that cannot be recorded cannot be rendered, even though RPC
  * still works. So a record failure restarts the agent under a fresh record,
  * and the reattaching client's `session/load` replays the conversation into
  * it. The file is truncated on each start and its first line holds a new life
  * id, so a replay never duplicates history.
+ *
+ * ## Images
+ *
+ * A screenshot is megabytes of base64, and the agent repeats it in more than
+ * one field of a tool result, so a few dozen would fill the record past what
+ * the server reads. Each long line is parsed, and every `data` string in it
+ * that decodes to a PNG, JPEG, GIF or WebP is written to `images/<sha256>`
+ * beside the record and replaced by `yaac-image:<sha256>`. The server serves
+ * the image from there. The relayed bytes are unchanged; only the record
+ * differs. A line that fails to parse, or an image that cannot be stored,
+ * is recorded as it came.
  *
  * ## Attach semantics
  *
@@ -70,8 +84,27 @@ const CHILD_KILL_GRACE_MS = 5_000
 const SETTLE_QUIET_MS = 50
 const SETTLE_MAX_MS = 200
 
+/** Lines shorter than this are recorded unparsed: an image worth storing
+ *  apart makes its line at least this long. */
+const IMAGE_LINE_CHARS = 16 * 1024
+/** The shortest base64 string stored as an image (about 6 KB decoded). */
+const IMAGE_DATA_CHARS = 8 * 1024
+/** What an image's `data` becomes in the record; base64 has no `:`, so it
+ *  cannot be mistaken for image data. */
+const IMAGE_REF_PREFIX = 'yaac-image:'
+
 function controlLine(method, params) {
   return `${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`
+}
+
+/** Whether `bytes` start like a PNG, JPEG, GIF or WebP; the server serves
+ *  only those (`sniffImage` in @yaac/shared/attachments). */
+function isImage(bytes) {
+  const ascii = (at, text) => bytes.subarray(at, at + text.length).toString('latin1') === text
+  return (bytes[0] === 0x89 && ascii(1, 'PNG'))
+    || (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff)
+    || ascii(0, 'GIF8')
+    || (ascii(0, 'RIFF') && ascii(8, 'WEBP'))
 }
 
 /**
@@ -110,7 +143,7 @@ export function createAcpd({
   let server = null
   let closing = false
 
-  /** The record's fd. Bytes are written exactly as relayed. */
+  /** The record's fd. */
   let logFd = null
   /**
    * Record-failure restarts allowed before acpd exits. A full disk does not
@@ -231,6 +264,81 @@ export function createAcpd({
   }
 
   /**
+   * Store one base64 image under its hash, written whole and durably named
+   * (the dir synced after the rename) before the record names it, so not
+   * even a power loss leaves the record pointing at a missing file.
+   * Undefined if the data is not an image.
+   */
+  function storeImage(b64) {
+    if (!isImage(Buffer.from(b64.slice(0, 16), 'base64'))) return undefined
+    const bytes = Buffer.from(b64, 'base64')
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex')
+    const dir = path.join(path.dirname(logPath), 'images')
+    const file = path.join(dir, hash)
+    if (fs.existsSync(file)) return hash
+    fs.mkdirSync(dir, { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    try {
+      const fd = fs.openSync(tmp, 'w')
+      try {
+        fs.writeSync(fd, bytes)
+        fs.fdatasyncSync(fd)
+      } finally {
+        fs.closeSync(fd)
+      }
+      fs.renameSync(tmp, file)
+    } catch (err) {
+      fs.rmSync(tmp, { force: true })
+      throw err
+    }
+    const dirFd = fs.openSync(dir, 'r')
+    try {
+      fs.fsyncSync(dirFd)
+    } finally {
+      fs.closeSync(dirFd)
+    }
+    return hash
+  }
+
+  /** Replace every image `data` under `value` with a stored image's ref;
+   *  returns whether any was. */
+  function storeImagesIn(value) {
+    if (typeof value !== 'object' || value === null) return false
+    let stored = false
+    for (const [key, v] of Object.entries(value)) {
+      if (key === 'data' && typeof v === 'string' && v.length >= IMAGE_DATA_CHARS) {
+        const hash = storeImage(v)
+        if (hash === undefined) continue
+        value[key] = `${IMAGE_REF_PREFIX}${hash}`
+        stored = true
+      } else if (storeImagesIn(v)) {
+        stored = true
+      }
+    }
+    return stored
+  }
+
+  /** Whole lines as the record keeps them: images stored apart (see
+   *  "Images" in the header). */
+  function withoutImages(buf) {
+    if (buf.length < IMAGE_LINE_CHARS) return buf
+    let changed = false
+    const lines = buf.toString('utf8').split('\n').map((line) => {
+      if (line.length < IMAGE_LINE_CHARS) return line
+      try {
+        const msg = JSON.parse(line)
+        if (!storeImagesIn(msg)) return line
+        changed = true
+        return JSON.stringify(msg)
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) log(`image not stored apart (${err.message})`)
+        return line
+      }
+    })
+    return changed ? Buffer.from(lines.join('\n'), 'utf8') : buf
+  }
+
+  /**
    * Append relayed bytes to the record; a failure restarts the agent. `now`
    * settles at once, for lines a reader is waiting on; the agent's output
    * settles once it pauses.
@@ -238,7 +346,7 @@ export function createAcpd({
   function record(buf, now) {
     if (logFd === null) return
     try {
-      fs.writeSync(logFd, buf)
+      fs.writeSync(logFd, withoutImages(buf))
     } catch (err) {
       recordFailed(err)
       return

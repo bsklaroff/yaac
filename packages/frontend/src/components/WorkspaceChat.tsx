@@ -351,6 +351,7 @@ export function WorkspaceChat({
             <>
               <SubagentPrompt task={subagent.task} />
               <AcpTranscript
+                workspaceId={workspaceId}
                 groups={threadGroups}
                 found={found}
                 busy={subagent.state === 'running'}
@@ -373,6 +374,7 @@ export function WorkspaceChat({
           ) : (
             <>
               <AcpTranscript
+                workspaceId={workspaceId}
                 groups={groups}
                 found={found}
                 busy={busy}
@@ -431,6 +433,7 @@ export function WorkspaceChat({
                       <DraftImage
                         key={i}
                         image={image}
+                        workspaceId={workspaceId}
                         {...(awaitingEcho === null
                           ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
                           : {})}
@@ -677,10 +680,14 @@ function QueuedMessage({ prompt, onRemove }: { prompt: AcpQueuedPrompt; onRemove
 }
 
 /** An image attached to the draft, removable until the message is sent. */
-function DraftImage({ image, onRemove }: { image: AcpImage; onRemove?: () => void }): JSX.Element {
+function DraftImage({ image, workspaceId, onRemove }: {
+  image: AcpImage
+  workspaceId: string
+  onRemove?: () => void
+}): JSX.Element {
   return (
     <div className="relative">
-      <img src={useImageSrc(image)} alt="" className="h-14 rounded-lg border border-hairline" />
+      <img src={useImageSrc(image, workspaceId)} alt="" className="h-14 rounded-lg border border-hairline" />
       {onRemove && (
         <button
           type="button"

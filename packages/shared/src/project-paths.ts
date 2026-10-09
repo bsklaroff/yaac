@@ -143,10 +143,11 @@ export function codexDir(projectId: string): string {
 
 /**
  * GLOBAL. One workspace's ACP conversation logs: the raw `session/update`
- * stream acpd records, one file per conversation, mounted at
- * `/home/yaac/.yaac-acp`. Kept outside any tool's home because it belongs
- * to the protocol, not a tool, and outside {@link workspaceStateDir} so a
- * stopped workspace's conversation stays readable.
+ * stream acpd records, one file per conversation, and in `images/` the
+ * images it keeps out of them; mounted at `/home/yaac/.yaac-acp`. Kept
+ * outside any tool's home because it belongs to the protocol, not a tool,
+ * and outside {@link workspaceStateDir} so a stopped workspace's
+ * conversation stays readable.
  */
 export function acpLogDir(projectId: string, workspaceId: string): string {
   return globalProjectPath(projectId, 'acp', workspaceId)

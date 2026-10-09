@@ -3,12 +3,13 @@ import net from 'node:net'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { createAcpd } from '../acpd.js'
 
 /**
  * Drives a real child over a real socket and checks what reaches an attached
  * client and what lands in the record. The child is usually `cat`: acpd
- * parses nothing, so a byte echo exercises everything it does.
+ * interprets no protocol, so a byte echo exercises everything it does.
  */
 
 const daemons: Array<{ close(): void }> = []
@@ -212,6 +213,39 @@ describe('createAcpd', () => {
 
     const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').slice(1)
     expect(parsed(lines)).toEqual([{ agent: 'spoke' }, { user: 'a long line!' }])
+  })
+
+  it('stores images beside the record and names them by hash, relaying them unchanged', async () => {
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
+    tmpDirs.push(path.dirname(logPath))
+    const { sock } = await start(['cat'], { logPath })
+    const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(64 * 1024, 7)])
+    const hash = createHash('sha256').update(png).digest('hex')
+    // An ACP image block, the same image in an Anthropic-style source, a
+    // long string that is not an image, and an image too small to matter.
+    const msg = {
+      prompt: [{ type: 'image', mimeType: 'image/png', data: png.toString('base64') }],
+      rawOutput: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') } }],
+      text: { data: 'x'.repeat(20_000) },
+      icon: { type: 'image', data: png.subarray(0, 100).toString('base64') },
+    }
+    const line = `${JSON.stringify(msg)}\n`
+
+    const a = connect(sock)
+    await a.waitFor((l) => l.length >= 1)
+    // In chunks, as a large write arrives; `cat` echoes it as agent output.
+    a.socket.write(line.slice(0, 5000))
+    await new Promise((r) => setTimeout(r, 20))
+    a.socket.write(line.slice(5000))
+    await a.waitFor((l) => l.length >= 2)
+    expect(a.lines[1]).toBe(line.trimEnd())
+
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').trim().split('\n').length === 3)
+    const ref = `yaac-image:${hash}`
+    const stored = { ...msg, prompt: [{ ...msg.prompt[0], data: ref }], rawOutput: [{ ...msg.rawOutput[0], source: { ...msg.rawOutput[0].source, data: ref } }] }
+    expect(parsed(fs.readFileSync(logPath, 'utf8').trim().split('\n').slice(1))).toEqual([stored, stored])
+    expect(fs.readFileSync(path.join(path.dirname(logPath), 'images', hash)).equals(png)).toBe(true)
+    expect(fs.readdirSync(path.join(path.dirname(logPath), 'images'))).toEqual([hash])
   })
 
   it('ends a line its client abandoned, so the next client\'s first line arrives whole', async () => {
