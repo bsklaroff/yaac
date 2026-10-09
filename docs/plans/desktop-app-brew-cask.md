@@ -70,10 +70,11 @@ Packaging exists but produces only a local, unsigned build
   this machine cannot be reached, the connect page's hint says to run
   `yaac server start` (`src/flow.ts`).
 
-The `yaac` formula installs the npm tarball plus what both drivers need:
-node, tmux, socat, fd and ripgrep for containerless, and kubernetes-cli,
-podman, kind and (on macOS) `bsklaroff/yaac/yaac-krunkit` for a local
-cluster.
+The tap's `yaac-server` formula installs the npm tarball plus the
+containerless host tools, with no tap dependencies; `yaac-cluster` adds
+kubernetes-cli, podman, kind and (on macOS) the tap's `yaac-krunkit`
+(homebrew/README.md). `formula_renames.json` moves `yaac` installs to
+`yaac-cluster`, which keeps every dependency `yaac` had.
 
 The gaps for a distributable app are in
 `packages/desktop/electron-builder.yml`:
@@ -83,52 +84,9 @@ The gaps for a distributable app are in
 
 ## Order
 
-The formula split (Phase 1), the tray (Phase 2) and signing (Phase 3) are
-independent of each other and can land in any order. Phase 4 (the `.dmg`)
-comes after Phase 3, and Phase 5 (the cask) after all the others.
-
-## Phase 1: rename `yaac` to `yaac-server` and split out `yaac-cluster`
-
-- **`yaac.rb` becomes `yaac-server.rb`.** It keeps the npm tarball, `node`,
-  `tmux`, `socat`, `fd`, `ripgrep`, and `uses_from_macos` `curl`, `git`,
-  `lsof`. It drops `kubernetes-cli`, `podman`, `kind` and the whole
-  `on_macos` block. Its caveats lead with `yaac server start` /
-  `yaac host check`, then name `yaac-cluster` for a local cluster.
-- **New `yaac-cluster.rb`** depends on `bsklaroff/yaac/yaac-server`,
-  `kubernetes-cli`, `podman` (6.0 or newer), `kind` (v0.33.0 or newer), and
-  `bsklaroff/yaac/yaac-krunkit` with `arch: :arm64` inside `on_macos`. It
-  installs no files of its own. Its caveats hold the `yaac cluster install`
-  / `yaac cluster check` text `yaac.rb` carries today.
-  - `--byo` installs onto someone else's cluster need podman and kubectl
-    but not kind or krunkit. They are rare enough to share this formula
-    rather than get a third one.
-- **Install hints.** `requireBinaries` in `#drivers/k8s/install`
-  (install.ts) already reports podman, kind and kubectl missing. On macOS
-  its hints should name `bsklaroff/yaac/yaac-cluster` instead of per-tool
-  installs. `initMachine`'s "Is krunkit installed?" hint names the stock
-  `libkrun/krun/krunkit`, which is the wrong one; point it at the same
-  formula.
-
-A `formula_renames.json` entry (`"yaac": "yaac-server"`) in the tap makes
-`brew upgrade` move existing `yaac` installs to `yaac-server`
-(docs.brew.sh "Renaming a Formula or Cask"). Verify it on a Mac with the old
-formula installed.
-
-Existing users who run a kind cluster still need a one-time step. The rename
-carries over only what `yaac-server` depends on, so podman, kind and krunkit
-become `brew autoremove` candidates, and removing krunkit breaks the podman
-machine. The release notes and `yaac-server.rb`'s caveats tell them to
-install `yaac-cluster` once. That is tap metadata and release communication,
-not code, so it needs no `docs/legacy-compat-shims.md` entry.
-
-This phase can ship on its own, independently of the app phases.
-
-Exit check: on a clean Mac, `brew trust bsklaroff/yaac` and
-`brew install bsklaroff/yaac/yaac-server` succeed without the
-`libkrun/krun` tap, and `yaac server start && yaac host check` pass. Adding
-`yaac-cluster` (with its `libkrun/krun` steps) and running
-`yaac cluster install` brings up a kind cluster that `yaac cluster check`
-passes.
+The tray (Phase 2) and signing (Phase 3) are independent of each other.
+Phase 4 (the `.dmg`) comes after Phase 3, and Phase 5 (the cask) after all
+the others.
 
 ## Phase 2: the tray starts and stops this machine's server
 
@@ -304,15 +262,16 @@ steps and check that `yaac cluster install` and `yaac cluster check` pass.
 `homebrew/README.md`'s release flow gains a desktop track:
 
 1. Bump `version` in the root `package.json` (the single version source),
-   `pnpm publish`, and fill the tarball's `sha256` into `yaac-server.rb`, as
-   today.
+   `pnpm publish`, and fill `<VERSION>` and the tarball's `sha256` into
+   `yaac-server.rb` and `yaac-cluster.rb`, as today.
 2. Run `pnpm desktop:package` with signing and notarization credentials in
    the environment.
 3. Upload the `.dmg` to the `v<version>` GitHub Release.
 4. `shasum -a 256` the `.dmg` and fill `version` and `sha256` into
    `homebrew/Casks/yaac-desktop.rb`.
 5. Mirror `homebrew/Formula/` and `homebrew/Casks/` into the tap
-   (`rsync -a --delete`) and push.
+   (`rsync -a --delete`), copy `homebrew/formula_renames.json` to the tap
+   root, and push.
 
 ## Out of scope
 
@@ -329,7 +288,7 @@ steps and check that `yaac cluster install` and `yaac cluster check` pass.
   arm64.
 - **Linux and Windows packages** (AppImage, deb, MSI). Linux installs from
   source.
-- **homebrew-core and homebrew-cask.** After Phase 1, `yaac-server` has no tap
+- **homebrew-core and homebrew-cask.** `yaac-server` has no tap
   dependencies, and the cask would depend only on it. Moving `yaac-server` to
   homebrew-core removes the trust step, and moving the cask to
   homebrew-cask drops the `bsklaroff/yaac/` prefix. Both repos require

@@ -1,8 +1,8 @@
 # Installing from source
 
 A source install and the brew one both own the `bin/yaac` link, so run
-`brew uninstall yaac` first if you have it. To switch back later:
-`npm uninstall -g @bsklaroff/yaac && brew install bsklaroff/yaac/yaac`.
+`brew uninstall yaac-server` first if you have it. To switch back later:
+`npm uninstall -g @bsklaroff/yaac && brew install bsklaroff/yaac/yaac-server`.
 
 ## macOS (arm64)
 

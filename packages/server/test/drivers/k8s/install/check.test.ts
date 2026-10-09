@@ -648,6 +648,22 @@ describe('runClusterCheck', () => {
     expect(results[0].fix).toContain('Install kubectl')
   })
 
+  it('names the yaac-cluster formula for missing tools on macOS', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    try {
+      const run = vi.fn((file: string, args: string[]) => {
+        if (file === 'kubectl' && args.includes('--client')) return Promise.reject(new Error('ENOENT: kubectl'))
+        return Promise.resolve({ stdout: '', stderr: '' })
+      }) as RunMock
+      stage({ run })
+      const { results } = await check()
+      expect(results[0].fix).toContain('brew install bsklaroff/yaac/yaac-cluster')
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+    }
+  })
+
   it('short-circuits after the cluster check when the API server is unreachable', async () => {
     stage()
     fakeCluster.reset()

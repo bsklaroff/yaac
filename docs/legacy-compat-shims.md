@@ -408,3 +408,23 @@ survives an upgrade, and nothing in the current tree starts or stops one.
 - **When it is safe to remove.** Once no supported upgrade starts from a
   release that had `yaac auth server`, so no machine can still hold a
   `.auth-daemon.lock`.
+
+## The `yaac` Homebrew formula renamed to `yaac-cluster`
+
+The tap's single `yaac` formula became `yaac-server` (the CLI and the
+containerless host tools) and `yaac-cluster` (the local cluster's tools on
+top of it). `homebrew/formula_renames.json` maps `yaac` to `yaac-cluster`, the
+one that keeps every dependency `yaac` had. `yaac-cluster.rb`'s caveat tells a
+containerless-only user how to drop the cluster tools afterwards.
+
+- **What it reads.** An installed `yaac` keg, which `brew upgrade` migrates
+  to `yaac-cluster`.
+- **What breaks silently if it goes too early.** Without the rename, an
+  installed `yaac` never upgrades again. Pointing it at `yaac-server` instead
+  orphans podman, kind, kubectl and the tap's krunkit, and brew's default
+  cleanup (after `brew upgrade`, `brew uninstall` or `brew cleanup`) removes
+  them. The cluster keeps running until its podman machine next restarts, then
+  fails far from the cause.
+- **When it is safe to remove.** The caveat paragraph, once no release before
+  the split is still in use. `formula_renames.json` can stay indefinitely: it
+  costs nothing, and lets an install that skipped many releases migrate.

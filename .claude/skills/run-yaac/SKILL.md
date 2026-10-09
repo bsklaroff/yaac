@@ -19,7 +19,7 @@ ripgrep for containerless) are in `README.md` → "From source". Then:
 
 ```bash
 pnpm install && pnpm build        # CLI + SPA + assets into dist/, ~7s
-npm install -g .                  # links `yaac` here; `brew uninstall yaac` first
+npm install -g .                  # links `yaac` here; `brew uninstall yaac-server` first
 
 yaac cluster install && yaac cluster check   # k8s: cluster + server pod
 yaac host check && yaac server start         # or containerless: host process

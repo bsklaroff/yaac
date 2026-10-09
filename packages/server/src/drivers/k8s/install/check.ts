@@ -58,6 +58,7 @@ import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
 import { deployedInstallIdentity } from './server-deploy'
 import { isNfsFamily } from './storage'
+import { YAAC_CLUSTER_INSTALL } from './arg-guards'
 import {
   hostNodeArchitecture,
   nodeArchitectureProblems,
@@ -145,7 +146,9 @@ export async function runClusterCheck(
   } catch {
     add({
       name: 'kubectl', status: 'fail', detail: 'not found on PATH — yaac streams into pods with `kubectl exec`',
-      fix: 'Install kubectl: https://kubernetes.io/docs/tasks/tools/',
+      fix: process.platform === 'darwin'
+        ? `Install kubectl with the rest of the cluster tools:\n${YAAC_CLUSTER_INSTALL}`
+        : 'Install kubectl: https://kubernetes.io/docs/tasks/tools/',
     })
     return { ok: false, results }
   }
@@ -196,7 +199,8 @@ export async function runClusterCheck(
   } catch {
     add({
       name: 'podman', status: 'fail', detail: 'not found on PATH',
-      fix: 'Install podman — yaac builds session images with it.',
+      fix: 'Install podman — yaac builds session images with it.'
+        + (process.platform === 'darwin' ? ` It comes with:\n${YAAC_CLUSTER_INSTALL}` : ''),
     })
   }
 
