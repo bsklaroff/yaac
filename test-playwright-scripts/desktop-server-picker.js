@@ -1,7 +1,7 @@
 /*
  * Verifies the Electron shell's server picker end to end: the main process,
  * the preload bridge and the window together (docs/server-selection.md).
- * Every server is an origin in `server.json`, and the shell starts none.
+ * Every server is an origin in `server.json`.
  *
  *  1. No `server.json`: the window is the picker, titled "No yaac server
  *     selected", with no rows and no "Local server".

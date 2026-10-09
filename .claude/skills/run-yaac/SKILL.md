@@ -86,7 +86,7 @@ yaac remote status                    # the origin this install's clients dial
 curl -s <that origin>/health          # {"ok":true,"buildId":…,"ready":true,"driver":…}
 ```
 
-`yaac server start|stop|restart|logs` — there is no `status`.
+`yaac server start|stop|restart|status|logs`; `status --json` is what the desktop tray reads.
 
 ## Drive the web app
 

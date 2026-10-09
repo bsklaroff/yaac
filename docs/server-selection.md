@@ -3,8 +3,9 @@
 Every client on a machine (the CLI, the desktop shell and its auth daemon)
 reaches its yaac server through an **origin** recorded in
 `~/.yaac-client/server.json`, whatever driver the server uses and wherever it
-runs. Clients never read the server's lock file, hold no credential, and
-never start a server. The server identifies the caller from the request
+runs. Clients never read the server's lock file and hold no credential.
+Only the `yaac` CLI starts a server; the desktop shell does so by running
+it. The server identifies the caller from the request
 (docs/remote-hosting.md "Security model").
 
 ```
@@ -85,8 +86,9 @@ All three commands are listed because this message prints exactly when
 nothing on disk says which kind of install this is.
 
 No client starts a server to recover. The CLI reports and exits; the desktop
-shows its picker. Only `yaac server start` starts one, which keeps a client
-from spawning a host process next to a Deployment.
+shows its picker, which offers a start only when the user asks for one.
+Every start goes through `yaac server start`, which keeps a client from
+spawning a host process next to a Deployment.
 
 ## Build mismatch is a warning
 
@@ -104,7 +106,10 @@ so it has no build to compare, and any server serves it a matching SPA.
 
 The shell reads `server.json`, calls `/whoami` (checking both reachability
 and that the server will identify this device), and loads the origin. It
-never reads a lock or starts a server (see packages/desktop/README.md).
+never reads a lock. It starts, stops and restarts this machine's server
+only when the user asks, from the tray or the picker, and always by running
+`yaac server start|stop|restart` (packages/desktop/README.md, "This
+machine's server").
 
 When no server is reachable (nothing selected, server down, or device not
 identified), the window shows a **picker** instead of an error dialog: with

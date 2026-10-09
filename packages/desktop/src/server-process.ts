@@ -1,6 +1,6 @@
 /**
  * The processes the shell runs: the machine-local auth daemon (the login
- * broker). The shell never starts a server.
+ * broker). A server is the CLI's to run (server-control.ts).
  *
  * The daemon is bundled into the app (dist/auth-daemon.js) and runs in an
  * Electron utilityProcess, so it lives exactly as long as the app and is
@@ -21,8 +21,17 @@ import type { ServerTarget } from '@yaac/shared/server-api'
 const PATH_MARK = '__YAAC_LOGIN_PATH__'
 
 /**
- * Set this process's PATH to the login shell's. Best effort: the inherited
- * PATH stays when the shell can't be run or prints none.
+ * Homebrew's bin dirs (Apple silicon, Intel), where the yaac-server formula
+ * puts `yaac` and the `node` its shebang needs. Appended to whatever PATH
+ * is adopted, so they are found even when the login shell times out or its
+ * rc never runs `brew shellenv`.
+ */
+const HOMEBREW_BINS = ['/opt/homebrew/bin', '/usr/local/bin']
+
+/**
+ * Set this process's PATH to the login shell's, plus Homebrew's bin dirs.
+ * Best effort: the inherited PATH stays when the shell can't be run or
+ * prints none.
  */
 export function adoptLoginShellPath(execImpl: typeof execFile = execFile): Promise<void> {
   return new Promise((resolve) => {
@@ -32,7 +41,9 @@ export function adoptLoginShellPath(execImpl: typeof execFile = execFile): Promi
     execImpl(shell, ['-lic', script], { timeout: 5000 }, (err, stdout) => {
       const found = err ? undefined : new RegExp(`${PATH_MARK}(.+?)${PATH_MARK}`, 's').exec(stdout)?.[1]
       // eslint-disable-next-line no-process-env -- inherited by every child the shell spawns
-      if (found?.trim()) process.env.PATH = found
+      const dirs = (found?.trim() ? found : process.env.PATH ?? '').split(':').filter((d) => d !== '')
+      // eslint-disable-next-line no-process-env -- inherited by every child the shell spawns
+      process.env.PATH = [...dirs, ...HOMEBREW_BINS.filter((d) => !dirs.includes(d))].join(':')
       resolve()
     })
   })

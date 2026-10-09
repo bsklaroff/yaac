@@ -99,9 +99,10 @@ describe('runFlow', () => {
         detail: 'cannot reach the yaac server at http://127.0.0.1:8787',
       },
     })
-    // A server on this machine: the hint names the command to start it.
+    // A server on this machine: the hint points at the picker's and the
+    // tray's Start.
     if (!result.ok) {
-      expect(result.error.hint).toContain('yaac server start')
+      expect(result.error.hint).toMatch(/Start it below or from the yaac menu-bar icon/)
       expect(result.error.hint).toMatch(/pick a different server/)
     }
   })
@@ -114,7 +115,7 @@ describe('runFlow', () => {
       ok: false,
       error: { title: 'Could not connect to https://srv.ts.net', detail: refusal },
     })
-    if (!result.ok) expect(result.error.hint).not.toContain('yaac server start')
+    if (!result.ok) expect(result.error.hint).not.toMatch(/Start it/)
   })
 
   it('a failed auth-daemon ensure never fails the flow', async () => {

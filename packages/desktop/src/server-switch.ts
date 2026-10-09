@@ -99,3 +99,14 @@ export async function removeServer(
   await deps.writeServerConfig({ ...cfg, saved, ...(cfg.url === sel.url ? { url: '' } : {}) })
   return { ok: true }
 }
+
+/**
+ * Put back the selection from `before`, keeping everything else that has
+ * been written since: `yaac server start` saves this machine's origin and
+ * its driver as well as selecting it.
+ */
+export async function restoreSelection(before: ServerConfig, deps: ServerSwitchDeps): Promise<void> {
+  const cfg = await deps.readServerConfig()
+  if (!cfg || (cfg.url === before.url && cfg.enabled === before.enabled)) return
+  await deps.writeServerConfig({ ...cfg, url: before.url, enabled: before.enabled })
+}

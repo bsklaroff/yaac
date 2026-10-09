@@ -14,21 +14,53 @@ identifies it from each request as it would any browser, so the SPA and its
 WebSockets behave exactly as in the webapp. The SPA always comes from the
 server it talks to, so the two cannot be on different versions.
 
-**The shell never starts a server.** A server on this machine is registered in
-`server.json` like any other (`yaac server start` registers a host server,
-`yaac cluster install` the in-cluster one), so the shell has no "local
-server" case. When no server is selected or the selected one cannot be
-reached, the whole window is the server picker (`src/connect-page.ts`), which
-shows the error and uses the same preload bridge as the SPA's Settings →
-Server section.
+A server on this machine is registered in `server.json` like any other
+(`yaac server start` registers a host server, `yaac cluster install` the
+in-cluster one), so the connect flow has no "local server" case. When no
+server is selected or the selected one cannot be reached, the whole window is
+the server picker (`src/connect-page.ts`), which shows the error and uses the
+same preload bridge as the SPA's Settings → Server section.
+
+**The shell starts and stops this machine's server only when asked**, from
+the tray or the picker, by running the `yaac` on PATH
+(`src/server-control.ts`). Quitting never stops a server.
 
 ## Shell behavior
 
 - **Tray.** Closing the window hides it; the shell stays in the tray (Open,
-  a waiting-count line, Quit). Quit exits the shell and its auth daemon; the
-  server keeps running. Reopening (tray click or Dock activate) repeats the connect flow,
-  so it notices a server that came back. A failed connect does not quit
-  either, so the user can go start a server.
+  a waiting-count line, this machine's server, Quit). Quit exits the shell
+  and its auth daemon; the server keeps running. Reopening (tray click or
+  Dock activate) repeats the connect flow, so it notices a server that came
+  back. A failed connect does not quit either.
+- **This machine's server.** The tray reads `yaac server status --json`
+  (every minute and each time its menu opens) and shows one action. Its
+  lines always say "this Mac's server", since the window may be on another:
+  - **Start this Mac's server** when it is stopped. It runs `yaac server
+    start`, which selects that server, and the window lands on it. The
+    CLI's refusals (say, a host start on a k8s data dir) show in a dialog.
+  - **Stop this Mac's server** when it runs. It runs `yaac server stop`,
+    and a window showing that server falls back to the picker.
+  - **Restart this Mac's server to update** in place of Stop when the
+    server runs a different build than the installed CLI, as after `brew
+    upgrade`. A kind install's server is updated by `yaac cluster install`,
+    which rebuilds its image, so the tray names that command instead.
+
+  A window showing a remote server stays on it: a start or restart puts the
+  selection `yaac server start` made back the way it was. Each `yaac` run
+  has a timeout (15 seconds for a status read, five minutes for an action),
+  so a hung CLI shows as a failure rather than wedging the tray or the
+  picker. `yaac` is looked up on the login shell's PATH plus Homebrew's bin
+  dirs, in case the login shell cannot be read.
+
+  These act on this machine's install whichever command started it, and
+  `yaac server start|stop` scale a kind install's Deployment. The picker
+  offers **Start a server on this Mac** whenever that server is stopped,
+  and after starting a containerless server it runs `yaac host check` and
+  lists any failures, which in practice name the agent CLI to install. A
+  `--byo` install's lock is on its cluster, so the tray cannot see it and
+  offers no action. Stopping or restarting the server never stops an agent:
+  a containerless workspace is a tmux server that outlives it, and the next
+  start picks it back up.
 - **Attention signals.** The main process follows the server's `/api/events`
   WebSocket, re-resolving the server on every reconnect so it follows a
   change of selection. Workspaces waiting for input show as a dock badge, the
@@ -56,8 +88,9 @@ Server section.
 - The repo's usual `pnpm install` (the `electron` dev dependency downloads
   its binary).
 - A registered server: add a remote one in the picker, or, for a server on
-  this machine, put `yaac` on PATH and run `yaac server start` or `yaac
-  cluster install` once. A client of a remote server needs no `yaac` at all.
+  this machine, put `yaac` on PATH (`brew install bsklaroff/yaac/yaac-server`)
+  and start it from the picker or the tray (or run `yaac cluster install`
+  once for a cluster). A client of a remote server needs no `yaac` at all.
 - The shell adopts the login-shell PATH at startup, because a Finder launch
   gets a minimal PATH and the daemon's children (claude, codex, the
   installers) need the real one. Only PATH is taken from the login shell.
@@ -142,13 +175,17 @@ Also check in the desktop app:
 - a waiting workspace badges the dock and notifies once, and clicking the
   notification focuses the window;
 - Quit leaves the server running;
+- tray Stop stops the server while a workspace's agent keeps running, and
+  tray Start brings the workspace back;
+- after a rebuild or `brew upgrade` of `yaac`, the tray offers **Restart
+  server to update** within a minute, and afterwards says "Server running";
 - window bounds survive a relaunch.
 
 The picker:
 
 - `yaac server stop`, relaunch: "Could not connect to http://127.0.0.1:…"
-  above a row for that origin. Start the server and click Connect: the app
-  loads.
+  above a row for that origin and **Start a server on this Mac**. Click it:
+  the app loads, and the tray says "Server running".
 - `yaac remote off`, relaunch: "No yaac server selected", with the saved rows
   still listed.
 - Add an origin that does not answer: the error shows inline and the picker

@@ -256,6 +256,29 @@ server
   })
 
 server
+  .command('status')
+  .description('Show whether this install\'s server is running, and whether it runs the installed build')
+  .option('--json', 'Print the status as JSON (what the desktop app reads)')
+  .action(async (options: { json?: boolean }) => {
+    const { serverStatus } = await import('@yaac/server/main/lifecycle')
+    const status = await serverStatus()
+    if (options.json) {
+      console.log(JSON.stringify(status))
+      return
+    }
+    if (status.running === null) {
+      console.log('unknown: a --byo install keeps its server lock on the cluster')
+    } else if (!status.running) {
+      console.log('not running')
+    } else if (status.serverBuildId === status.cliBuildId) {
+      console.log('running')
+    } else {
+      const update = status.driver === 'k8s' ? 'yaac cluster install' : 'yaac server restart'
+      console.log(`running a different build than this CLI; update it with: ${update}`)
+    }
+  })
+
+server
   .command('logs')
   .description('Print the server log (~/.yaac/server-local/server.log; read through the cluster on a --byo install)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')

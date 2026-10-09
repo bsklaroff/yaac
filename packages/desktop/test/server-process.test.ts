@@ -11,7 +11,7 @@ describe('adoptLoginShellPath', () => {
   const inherited = process.env.PATH
   afterEach(() => { process.env.PATH = inherited })
 
-  it('takes the PATH the login shell prints, ignoring what its rc files print', async () => {
+  it('takes the PATH the login shell prints, ignoring what its rc files print, plus Homebrew\'s', async () => {
     // A real shell whose "rc" prints around the PATH line.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-shell-'))
     const shell = path.join(dir, 'sh')
@@ -20,13 +20,13 @@ describe('adoptLoginShellPath', () => {
     process.env.SHELL = shell
     try {
       await adoptLoginShellPath()
-      expect(process.env.PATH).toBe('/opt/homebrew/bin:/usr/bin')
+      expect(process.env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/usr/local/bin')
     } finally {
       process.env.SHELL = savedShell
       await fs.rm(dir, { recursive: true, force: true })
     }
   })
-  it('keeps the inherited PATH on shell failure or no PATH printed', async () => {
+  it('keeps the inherited PATH, plus Homebrew\'s, on shell failure or no PATH printed', async () => {
     const exec = (stdout: string | Error) => ((
       _cmd: string, _args: readonly string[], _opts: object,
       cb: (err: Error | null, stdout: string, stderr: string) => void,
@@ -34,9 +34,12 @@ describe('adoptLoginShellPath', () => {
       if (stdout instanceof Error) cb(stdout, '', '')
       else cb(null, stdout, '')
     }) as unknown as typeof execFile
+    process.env.PATH = '/usr/bin:/bin'
     await adoptLoginShellPath(exec(new Error('no such shell')))
+    expect(process.env.PATH).toBe('/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin')
+    process.env.PATH = '/usr/bin:/bin'
     await adoptLoginShellPath(exec('welcome back\n'))
-    expect(process.env.PATH).toBe(inherited)
+    expect(process.env.PATH).toBe('/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin')
   })
 })
 
