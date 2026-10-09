@@ -5,7 +5,9 @@ import { AcpTranscript, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#co
 import {
   ActivityHeader, callOf, latestActivity, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
+import { useChatColumn } from '#components/WorkspaceChat'
 import { ServerError } from '@yaac/shared/errors'
+import { useUiStore } from '#lib/store'
 import { getSessionTranscript, TRANSCRIPT_UNAVAILABLE } from '#lib/transcriptApi'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
@@ -14,9 +16,10 @@ const LIVE_REFRESH_MS = 5000
 
 /**
  * A workspace's conversations, read-only, rendered with the same
- * `AcpTranscript` as the live chat pane and in the same centered column.
- * They survive the container: an `acp` one as acpd's record, a `tui` one as
- * the tool's own history, translated server-side.
+ * `AcpTranscript` as the live chat pane and in the same column, honoring
+ * its saved width and condensed toggles (which `ReadOnlyWorkspace` shows in
+ * its title bar). They survive the container: an `acp` one as acpd's
+ * record, a `tui` one as the tool's own history, translated server-side.
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
  * as tabs in restore order. Fetched once and cached forever, since a stopped
@@ -45,6 +48,8 @@ export function ReadOnlyTranscript({
     () => [...sessions].sort((a, b) => a.ordinal - b.ordinal),
     [sessions],
   )
+  const column = useChatColumn()
+  const condensed = useUiStore((s) => s.chatCondensed)
   const [picked, setPicked] = useState<string | null>(null)
   // The user's pick, else the last conversation, else the first. Derived
   // rather than stored so a pick from another workspace never sticks.
@@ -82,7 +87,7 @@ export function ReadOnlyTranscript({
     if (!prompt) return null
     return (
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <p className={clsx(COLUMN, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
+        <p className={clsx(column, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
       </div>
     )
   }
@@ -131,7 +136,7 @@ export function ReadOnlyTranscript({
         />
       )}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <div className={COLUMN}>
+        <div className={column}>
           {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
           {/* Prefer the server's message, e.g. a conversation too large to send. */}
           {isError && (
@@ -156,6 +161,7 @@ export function ReadOnlyTranscript({
               {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
               <AcpTranscript
                 groups={groups}
+                condensed={condensed && subagent === undefined}
                 onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
                 onOpenTask={(id) => setOpened({ kind: 'task', id })}
               />
@@ -166,6 +172,3 @@ export function ReadOnlyTranscript({
     </div>
   )
 }
-
-/** The live chat pane's column, so a conversation reads the same either way. */
-const COLUMN = 'mx-auto w-full max-w-5xl'

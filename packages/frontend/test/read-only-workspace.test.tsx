@@ -141,6 +141,32 @@ describe('ReadOnlyWorkspace', () => {
     expect(server.called(MARK)).toHaveLength(1)
   })
 
+  it('carries the chat pane\'s width and condensed toggles in its title bar', async () => {
+    server.route('GET /api/workspace/s1/agent-sessions/c1/transcript', {
+      events: [
+        { type: 'user', seq: 0, content: [{ type: 'text', text: 'fix the parser' }] },
+        { type: 'tool', seq: 1, call: { toolCallId: 't1', title: 'grep parse', kind: 'other', status: 'completed' } },
+        { type: 'agent', seq: 2, content: [{ type: 'text', text: 'fixed' }] },
+      ],
+    })
+    useUiStore.setState({ chatCondensed: true, chatFullWidth: false })
+    renderPane({ kind: 'stopped', entry: stopped({
+      agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
+    }) })
+    expect(await screen.findByText('fixed')).toBeTruthy()
+    expect(screen.queryByText('grep parse')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show every step' }))
+    expect(screen.getByText('grep parse')).toBeTruthy()
+    expect(useUiStore.getState().chatCondensed).toBe(false)
+
+    const column = (): string => screen.getByText('fixed').closest('.mx-auto, .w-full')?.className ?? ''
+    expect(column()).toContain('max-w-5xl')
+    fireEvent.click(screen.getByRole('button', { name: 'Full-width chat' }))
+    expect(column()).not.toContain('max-w-')
+    expect(useUiStore.getState().chatFullWidth).toBe(true)
+  })
+
   it('shows a teammate\'s running workspace with its status and no actions', () => {
     const live: WorkspaceListEntry = {
       workspaceId: 'w1', projectId: 'proj', tool: 'codex', status: 'running', createdAt: '2026-07-13 00:00:00',

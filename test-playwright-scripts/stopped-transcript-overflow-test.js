@@ -1,6 +1,8 @@
 /*
  * Verifies in Chromium (1400x900) that a stopped workspace's conversation,
- * shown read-only in the main pane, stays inside the pane.
+ * shown read-only in the main pane, stays inside the pane, and that the
+ * title bar's view toggles (full width, condensed) work there as they do
+ * in the live chat pane.
  *
  * The pane is a flex item beside the sidebar. Transcripts hold very wide
  * unbreakable content (`white-space: pre` tool output, fenced blocks,
@@ -13,6 +15,8 @@
  *  2. The Restart button is inside the window and hit-testable at its
  *     center.
  *  3. Wide content scrolls inside its own block instead of widening the pane.
+ *  4. "Show every step" unfolds the tool calls, and "Full-width chat"
+ *     widens the conversation's column (checked at 1800px).
  *
  * Desktop only; mobile-shell-test.js covers the phone layout.
  *
@@ -25,7 +29,7 @@
  * Run: YAAC_DATA_DIR=... node test-playwright-scripts/stopped-transcript-overflow-test.js
  */
 import path from 'node:path'
-import { SHOTS, check, finish, origin, requirePlaywright } from './lib.js'
+import { SHOTS, api, check, finish, origin, requirePlaywright } from './lib.js'
 
 /** A source line long enough that no pane is as wide as it is. */
 const LONG_LINE =
@@ -80,7 +84,8 @@ const EVENTS = [
 
 const STOPPED = [{
   workspaceId: 'w-overflow-probe',
-  projectId: 'probe',
+  // A selection is looked up in the active project only, so use a real one.
+  projectId: (await api('/project/list'))[0].id,
   tool: 'claude',
   createdAt: '2026-01-01 00:00:00',
   lastActiveAt: '2026-01-01 00:05:00',
@@ -103,12 +108,31 @@ try {
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
 
   // Selected by the URL; the stopped workspace opens in the main pane.
-  await page.goto(`${origin}/?workspace=${STOPPED[0].workspaceId}`)
+  await page.goto(`${origin}/?project=${STOPPED[0].projectId}&workspace=${STOPPED[0].workspaceId}`)
   const pane = page.locator('main', { has: page.getByRole('button', { name: 'Restart' }) })
   await pane.waitFor({ state: 'visible', timeout: 15_000 })
   // The transcript arrives on a separate fetch.
   await pane.locator('text=why is the build cache missing?').first().waitFor({ timeout: 10_000 })
+  // Condensed is the saved default, which folds the tool calls away.
+  await page.evaluate(() => localStorage.setItem('yaac.chatcondensed.v1', '1'))
+  await page.reload()
+  await pane.locator('text=why is the build cache missing?').first().waitFor({ timeout: 10_000 })
+  check('condensed folds the tool calls', await pane.locator('text=/build-coordinator/').count() === 0)
+  await pane.getByRole('button', { name: 'Show every step' }).click()
   await pane.locator('text=/build-coordinator/').first().waitFor({ timeout: 10_000 })
+  check('"Show every step" unfolds them', true)
+
+  const columnWidth = () => pane.locator('text=why is the build cache missing?').first()
+    .evaluate((el) => el.closest('.mx-auto, .w-full').getBoundingClientRect().width)
+  // At 1400px the pane is barely wider than the centered column.
+  await page.setViewportSize({ width: 1800, height: 900 })
+  const centered = await columnWidth()
+  await pane.getByRole('button', { name: 'Full-width chat' }).click()
+  const full = await columnWidth()
+  check('"Full-width chat" widens the column', full > centered + 20, `${Math.round(centered)}px -> ${Math.round(full)}px`)
+  await page.screenshot({ path: path.join(SHOTS, 'stopped-transcript-full-width.png') })
+  await pane.getByRole('button', { name: 'Center chat' }).click()
+  await page.setViewportSize({ width: 1400, height: 900 })
   const windowRight = 1400
   const paneBox = await pane.boundingBox()
   await page.screenshot({ path: path.join(SHOTS, 'stopped-transcript-overflow.png') })

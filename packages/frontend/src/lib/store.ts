@@ -527,7 +527,7 @@ interface UiState {
   chatFullWidth: boolean
   setChatFullWidth: (full: boolean) => void
   /** Whether chat panes fold away the steps between the user's prompts
-   *  (`condense` in AcpTranscript). Saved; off by default. */
+   *  (`condense` in AcpTranscript). Saved; on by default. */
   chatCondensed: boolean
   setChatCondensed: (condensed: boolean) => void
   /** Tiles or tabs. Saved; small screens default to tabs. */
