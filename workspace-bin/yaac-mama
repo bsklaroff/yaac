@@ -335,8 +335,13 @@ fetch_workspace() {
   download fetch '' workspace "$1"
   short=$(printf '%.8s' "$id")
   [ -n "$short" ] || { echo 'yaac-mama: the server named no workspace' >&2; exit 1; }
+  # A workspace whose branch has no commit yet has no HEAD to fetch.
+  heads=$(git -C "$workdir" bundle list-heads "$tmp/body") || exit 1
+  [ -n "$heads" ] || { echo "yaac-mama: workspace $short has no commits yet" >&2; exit 1; }
+  head=
+  printf '%s\n' "$heads" | grep -q ' HEAD$' && head="+HEAD:refs/yaac/peers/$short/HEAD"
   git -C "$workdir" -c transfer.fsckObjects=true fetch --quiet --prune --no-tags "$tmp/body" \
-    "+refs/heads/*:refs/yaac/peers/$short/*" "+HEAD:refs/yaac/peers/$short/HEAD" || exit 1
+    "+refs/heads/*:refs/yaac/peers/$short/*" $head || exit 1
   git -C "$workdir" for-each-ref --format='%(refname:lstrip=1)' "refs/yaac/peers/$short/"
   exit 0
 }

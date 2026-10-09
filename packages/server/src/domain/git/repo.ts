@@ -47,9 +47,10 @@ export async function getDefaultBranch(repoPath: string): Promise<string> {
     const match = ref.trim().match(/^refs\/remotes\/origin\/(.+)$/)
     if (match) return match[1]
   } catch {
-    // Fallback: origin/HEAD may not be set (e.g. local-only repos)
+    // Fallback: origin/HEAD is unset in local-only repos and clones of an
+    // empty remote, whose HEAD is a branch with no commits yet.
   }
-  return (await runGit(repo(repoPath), ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+  return (await runGit(repo(repoPath), ['symbolic-ref', '--short', 'HEAD'])).trim()
 }
 
 /** True when `refs/remotes/origin/<branch>` exists in the repo. */
@@ -243,6 +244,9 @@ async function mainRefs(
  * `<workspacePath>/.git`, so the destination's inode never changes and a pod
  * can bind `/workspace` before this runs.
  *
+ * When origin has no branches at all (an empty repo), `branch` is left
+ * unborn, so the agent's first commit starts the history.
+ *
  * The checkout is forced: callers reuse a destination that already has a
  * `.git`, so anything else there is a crashed attempt's partial tree. A
  * failure leaves no `.git`, so a retry starts over.
@@ -255,7 +259,10 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
   if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
     throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
   }
-  const startSha = await resolveRemoteRef(repoPath, params.baseBranch)
+  const startSha = await resolveRemoteRef(repoPath, params.baseBranch).catch(async (err: unknown) => {
+    if ((await listRemoteBranches(repoPath)).length > 0) throw err
+    return null
+  })
   // Assembled beside the checkout, where no workspace mounts it.
   const staging = path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`)
   const gitDir = path.join(staging, '.git')
@@ -285,10 +292,12 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     if (originHead !== null) {
       await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'refs/remotes/origin/HEAD', originHead])
     }
-    await runGit({ kind: 'private', gitDir }, ['update-ref', `refs/heads/${params.branch}`, startSha])
     await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'HEAD', `refs/heads/${params.branch}`])
     await fs.mkdir(workspacePath, { recursive: true })
-    await runGit({ kind: 'private', gitDir, workTree: workspacePath }, ['checkout', '--force', '--quiet'])
+    if (startSha !== null) {
+      await runGit({ kind: 'private', gitDir }, ['update-ref', `refs/heads/${params.branch}`, startSha])
+      await runGit({ kind: 'private', gitDir, workTree: workspacePath }, ['checkout', '--force', '--quiet'])
+    }
     await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {
     await fs.rm(staging, { recursive: true, force: true })

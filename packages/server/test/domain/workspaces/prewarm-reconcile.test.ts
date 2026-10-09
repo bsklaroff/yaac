@@ -446,6 +446,14 @@ describe('reconcilePrewarmPool', () => {
       await flush()
       expect(exec).toHaveBeenCalledTimes(2)
       expect(mockRebranch).toHaveBeenCalledTimes(1)
+
+      // Warmed on an empty repo, it has no commit yet: moved once origin
+      // gets its first branch.
+      clearPrewarmStateForTests()
+      head = ''
+      await pass()
+      await flush()
+      expect(mockRebranch).toHaveBeenCalledTimes(2)
     })
 
     it('keeps a spare mid-refresh in the pool without reaping it, and reaps one a refresh broke', async () => {

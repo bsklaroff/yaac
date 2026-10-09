@@ -109,9 +109,11 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
  * their mode. Ignored entries and untracked folders do walk the tree, so
  * only `full` reads them. Conflicts come from the agent's index.
  *
- * `FORK 0` means no fork point was found and the diff is against HEAD, so
- * only uncommitted work appears; callers must not present that as "nothing
- * changed".
+ * With no fork point, a HEAD that shares history with some origin branch
+ * is diffed against itself and prints `FORK 0`: only uncommitted work
+ * appears, and callers must not present that as "nothing changed". A HEAD
+ * that shares none (an empty repo's first commits, or none yet) is diffed
+ * against the empty tree, so all of it counts as added.
  *
  * Every command feeding the file list is status-checked, and `@@OK@@` is
  * printed only after all succeed. The diff body comes last and is
@@ -133,31 +135,34 @@ function changesScript(loc: ChangesLocation): string {
   + `w=$((w+1)); [ $w -le 50 ] || { rm -f "$lk.$$"; exit ${CHANGES_BUSY}; }; sleep 0.2; `
   + 'else rm -f "$lk"; fi; done; '
   + 'rm -f "$lk.$$"; trap \'rm -f "$lk"\' EXIT; '
+  // An unborn HEAD (an empty repo's checkout) reads as the empty tree.
+  + 'e=$(git hash-object -t tree /dev/null) || exit 6; head=$(git rev-parse -q --verify HEAD) || head=$e; '
   + 'ref=; fork=1; '
+  + 'unforked() { if git merge-base "$head" $(git for-each-ref --format="%(objectname)" refs/remotes/origin) '
+  + '>/dev/null 2>&1; then base=$head; fork=0; else base=$e; fi; }; '
   + 'if [ -n "$1" ]; then '
   + 'for r in "origin/$1" "$1"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
   + `[ -n "$ref" ] || exit ${CHANGES_BASE_UNRESOLVED}; `
   + 'elif [ -n "$2" ]; then '
   + 'for r in "origin/$2" "$2" "@{upstream}"; do base=$(git merge-base "$r" HEAD 2>/dev/null) && { ref=$r; break; }; done; '
-  + `[ -n "$ref" ] || { base=$(git rev-parse HEAD 2>/dev/null) || exit ${CHANGES_BASE_UNRESOLVED}; fork=0; }; `
+  + '[ -n "$ref" ] || unforked; '
   + 'else '
-  + 'base=$(git merge-base @{upstream} HEAD 2>/dev/null) && ref=@{upstream} '
-  + `|| { base=$(git rev-parse HEAD 2>/dev/null) || exit ${CHANGES_BASE_UNRESOLVED}; fork=0; }; `
+  + 'base=$(git merge-base @{upstream} HEAD 2>/dev/null) && ref=@{upstream} || unforked; '
   + 'fi; '
   + 'printf "BASE %s\\n" "$base"; '
   + 'printf "FORK %s\\n" "$fork"; '
   + '[ "$ref" != "@{upstream}" ] || ref=$(git rev-parse --abbrev-ref "@{upstream}"); '
   + '[ -z "$ref" ] || { n=$(git rev-list --left-right --count "$ref...HEAD" --) && printf "REF %s %s\\n" "$ref" "$n"; }; '
-  + `c=${loc.indexFile}.committed; key="$base $(git rev-parse HEAD)"; `
+  + `c=${loc.indexFile}.committed; key="$base $head"; `
   + 'if [ "$(head -n 1 "$c" 2>/dev/null)" != "$key" ]; then '
-  + '{ echo "$key"; git diff --numstat "$base" HEAD; } > "$c.tmp" || exit 6; mv "$c.tmp" "$c"; fi; '
+  + '{ echo "$key"; git diff --numstat "$base" "$head"; } > "$c.tmp" || exit 6; mv "$c.tmp" "$c"; fi; '
   + `printf "${M_COMMITTED}\\n"; tail -n +2 "$c"; `
   // The agent's index, copied (git swaps it in by rename, so a copy is
   // never half-written) and written as a tree. With a merge conflict it has
   // no tree, and its changes count as modified.
   + `cp "$(git rev-parse --git-path index)" ${loc.indexFile}.agent 2>/dev/null `
   + `&& agent=$(GIT_INDEX_FILE=${loc.indexFile}.agent git write-tree 2>/dev/null) `
-  + '|| agent=$(git rev-parse "HEAD^{tree}") || exit 6; '
+  + '|| agent=$(git rev-parse "$head^{tree}") || exit 6; '
   // The stable private index lets git's stat cache make `add -A`
   // incremental across polls.
   + `export GIT_INDEX_FILE=${loc.indexFile}; `
@@ -180,7 +185,7 @@ function changesScript(loc: ChangesLocation): string {
   + `{ [ ! -f ${loc.indexFile}.agent ] || GIT_INDEX_FILE=${loc.indexFile}.agent git ls-files -z -c -i --exclude-standard `
   + `| xargs -0 sh -c ${shSingleQuote(FORCE_ADD)} yaac-force-add; } || exit 5; `
   + 'work=$(git write-tree) || exit 5; '
-  + `printf "${M_STAGED}\\n"; git diff --numstat HEAD "$agent" || exit 6; `
+  + `printf "${M_STAGED}\\n"; git diff --numstat "$head" "$agent" || exit 6; `
   + `printf "${M_MODIFIED}\\n"; git diff --numstat --no-renames --diff-filter=a "$agent" "$work" || exit 6; `
   + `printf "${M_UNTRACKED}\\n"; git diff --name-only --no-renames --diff-filter=A "$agent" "$work" || exit 6; `
   + `printf "${M_NUMSTAT}\\n"; git diff --cached --numstat "$base" || exit 6; `
@@ -211,8 +216,7 @@ function shSingleQuote(s: string): string {
  * `sh -c <script> yaac-changes <base> <defaultBase> <diff|nodiff> <listing>`.
  * Both branch names are passed as positionals, never interpolated into the
  * script, so any value reaches git as one literal ref (and a bogus one
- * simply fails to resolve). Both empty selects the `@{upstream}`-else-HEAD
- * default.
+ * simply fails to resolve). Both empty selects the `@{upstream}` default.
  */
 export function buildChangesScript(loc: ChangesLocation, request: ChangesRequest): string {
   return `sh -c ${shSingleQuote(changesScript(loc))} yaac-changes `

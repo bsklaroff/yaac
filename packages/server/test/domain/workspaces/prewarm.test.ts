@@ -172,7 +172,7 @@ describe('tryClaimPrewarmed', () => {
       list: mockList,
       claimSpare: mockClaimSpare,
       // The fetch's fan-out to other workspaces is not counted.
-      exec: async (jobName, cmd) => cmd.endsWith('rev-parse HEAD')
+      exec: async (jobName, cmd) => cmd.includes('rev-parse -q --verify HEAD')
         ? { stdout: `${await mockHead(jobName)}\n`, stderr: '' }
         : cmd.includes('--no-write-fetch-head') ? { stdout: '', stderr: '' } : mockExec(jobName, cmd),
       awaitAgentTransport: mockAwaitTransport,
