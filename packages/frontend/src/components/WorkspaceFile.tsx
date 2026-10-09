@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query'
 import type { EditorView } from '@uiw/react-codemirror'
 import { openSearchPanel } from '@codemirror/search'
 import { ServerError } from '@yaac/shared/errors'
+import { mediaType } from '@yaac/shared/media-types'
 import type { WorkspaceChange, WorkspaceFile as WorkspaceFileRead } from '@yaac/shared/types'
 import {
   DEFAULT_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE, MIN_EDITOR_FONT_SIZE, useUiStore, type FileDiffMode,
@@ -27,6 +28,7 @@ import {
   readWorkspaceFile,
   registerFileSaver,
   saveWorkspaceFile,
+  workspaceMediaUrl,
 } from '#lib/files'
 import { AddIcon, CheckIcon, DiffIcon, LoadingIcon, MinusIcon, SaveIcon, SearchIcon, TextSizeIcon, WarningIcon } from '#lib/icons'
 
@@ -42,6 +44,7 @@ type Phase =
   | { kind: 'error'; message: string }
   | { kind: 'binary' }
   | { kind: 'large'; size: number }
+  | { kind: 'media'; type: string; version: string }
   | { kind: 'ready' }
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'retrying'
@@ -156,7 +159,8 @@ class Saver {
     const seq = ++this.pollSeq
     let file: WorkspaceFileRead
     try {
-      file = await readWorkspaceFile(this.workspaceId, this.path, this.base?.version)
+      const known = this.phase.kind === 'media' ? this.phase.version : this.base?.version
+      file = await readWorkspaceFile(this.workspaceId, this.path, known)
     } catch (err) {
       if (!this.alive || seq <= this.landedAt || this.inFlight) return
       if (err instanceof ServerError && err.code === 'NOT_FOUND') {
@@ -179,6 +183,16 @@ class Saver {
   }
 
   private receive(file: WorkspaceFileRead): void {
+    const type = mediaType(this.path)
+    if (type !== null) {
+      // Media keeps polling, so a regenerated image shows; an unchanged one
+      // does not re-render. A deleted file that is back clears its banner.
+      if (this.phase.kind === 'media' && this.phase.version === file.version) return
+      this.phase = { kind: 'media', type, version: file.version }
+      this.conflict = null
+      this.notify()
+      return
+    }
     if (file.content === null) {
       this.phase = file.binary ? { kind: 'binary' } : { kind: 'large', size: file.size }
       this.notify()
@@ -253,6 +267,29 @@ function useOriginal(workspaceId: string, change: WorkspaceChange | undefined, r
 
 function formatSize(bytes: number): string {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+}
+
+/**
+ * An image, video, audio or PDF file, which the browser renders from the
+ * raw route. `failed` replaces it when the browser cannot decode the file.
+ */
+function MediaView({ src, type, path, failed }: {
+  src: string
+  type: string
+  path: string
+  failed: JSX.Element
+}): JSX.Element {
+  const [broken, setBroken] = useState(false)
+  if (broken) return failed
+  const onError = (): void => setBroken(true)
+  if (type === 'application/pdf') return <iframe src={src} title={path} className="min-h-0 flex-1 border-0" />
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+      {type.startsWith('image/') && <img src={src} alt={path} onError={onError} className="max-h-full max-w-full object-contain" />}
+      {type.startsWith('video/') && <video src={src} controls onError={onError} className="max-h-full max-w-full" />}
+      {type.startsWith('audio/') && <audio src={src} controls onError={onError} />}
+    </div>
+  )
 }
 
 /**
@@ -380,6 +417,16 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         return <div className={center}>Binary file, not shown</div>
       case 'large':
         return <div className={center}>Too large to edit ({formatSize(phase.size)})</div>
+      case 'media':
+        return (
+          <MediaView
+            key={phase.version}
+            src={workspaceMediaUrl(workspaceId, path, phase.version)}
+            type={phase.type}
+            path={path}
+            failed={<div className={center}>This browser can’t show this file</div>}
+          />
+        )
       case 'ready':
         if (conflict?.version === null) {
           return (

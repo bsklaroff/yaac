@@ -51,6 +51,7 @@ macOS virtiofs, the same process user under containerless).
 |---|---|
 | `GET /workspace/:id/dir?path=` | the immediate children of one folder (capped at 5,000) |
 | `GET /workspace/:id/file?path=&known=` | `{ path, version, size, binary, content? }` |
+| `GET /workspace/:id/raw?path=` | a media file's bytes (see "Media files"), honoring one `Range` |
 | `PUT /workspace/:id/file` | `{ path, content, baseVersion }` → `{ path, version, size }`, or 409 |
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
@@ -197,6 +198,23 @@ because the editor's next save uses it). Otherwise it truncates and writes
 through that descriptor. So the file keeps its mode, inode, links and owner,
 no inode is swapped under a gVisor pod's cached dentry, and saving through a
 symlink updates its target.
+
+### Media files
+
+`@yaac/shared/media-types` maps extensions to the image, video, audio and
+PDF types a browser renders itself. The `raw` route streams such a file
+through the same confined descriptor, under that type with `nosniff`, and
+refuses every other file. So the route never serves HTML or SVG, which
+would run script on the app's origin; an SVG opens as text. As a second
+check, the response carries `Content-Security-Policy: default-src 'none';
+sandbox; frame-ancestors 'self'`: a response rendered as a document (opened
+in a tab, or the PDF's iframe) gets an opaque origin and no script, so it
+cannot reach the API. It does not apply to the `<img>`, `<video>` and
+`<audio>` loads, which are subresources, and Chromium's PDF viewer still
+renders under it. Sandboxing the iframe itself instead would break the
+viewer. It honors one
+byte range (anything else gets the whole file), which a `<video>` needs to
+seek, and Safari needs to play at all.
 
 A save never creates a file: a non-null `baseVersion` for a missing file is a
 409 with `version: null`, which stops autosave from bringing back a deleted
@@ -351,6 +369,12 @@ undo history, cursor and unsaved text survive.
   saved next against the version it returned, so the pane never conflicts
   with itself, and a poll sent before a save landed is ignored. Network
   failures retry after 2, 5, then 10 seconds.
+- **Media.** A file whose extension is a media type shows as an `<img>`,
+  `<video>`, `<audio>` or, for a PDF, an `<iframe>` holding the browser's
+  viewer (the desktop app enables Chromium's PDF plugin for it), whatever
+  its bytes. The URL carries the file's version, and the pane keeps
+  polling, so an image the agent regenerates reloads. A file the browser
+  cannot decode says so.
 - **A 409 pauses autosave** until Reload or Overwrite. A deleted file shows
   "Deleted on disk" with Close, plus "Save to recreate" if the buffer is
   dirty; that is the only way a deleted file comes back.

@@ -38,6 +38,7 @@ export {
   listWorkspaceDir,
   readWorkspaceFile,
   readWorkspaceFileAtRev,
+  readWorkspaceMedia,
   renameWorkspaceEntry,
   writeWorkspaceFile,
 } from './files'

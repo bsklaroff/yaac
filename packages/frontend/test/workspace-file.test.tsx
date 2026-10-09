@@ -43,6 +43,8 @@ let holdPut: ((release: () => void) => void) | null
 let holdGet: ((release: () => void) => void) | null
 /** The changes route's answer; null answers as a stopped workspace. */
 let changes: WorkspaceChanges | null
+/** The file reads as binary, as an image does. */
+let binary: boolean
 /** The `file-at` requests, as path and rev. */
 let fileAt: { path: string | null; rev: string | null }[]
 
@@ -75,6 +77,7 @@ beforeEach(() => {
   holdGet = null
   changes = null
   fileAt = []
+  binary = false
   // hono hands the client's fetch a relative URL string.
   globalThis.fetch = vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, 'http://localhost')
@@ -109,7 +112,8 @@ beforeEach(() => {
     await held(hold)
     if (!snapshot) return respond(404, { error: { code: 'NOT_FOUND', message: 'no such file' } })
     const version = String(snapshot.version)
-    const file = { path: 'a.ts', version, size: snapshot.content.length, binary: false }
+    const file = { path: 'a.ts', version, size: snapshot.content.length, binary }
+    if (binary) return respond(200, { ...file, content: null })
     return respond(200, url.searchParams.get('known') === version ? file : { ...file, content: snapshot.content })
   }) as unknown as typeof fetch
 })
@@ -127,9 +131,9 @@ const type = (text: string): void => { fireEvent.change(editor(), { target: { va
 const ctrlS = (el: Element, over: Partial<KeyboardEventInit> = {}): boolean =>
   fireEvent.keyDown(el, { key: 's', code: 'KeyS', ctrlKey: true, ...over })
 
-async function mount(): Promise<ReturnType<typeof render>> {
+async function mount(path = 'a.ts'): Promise<ReturnType<typeof render>> {
   const client = testQueryClient()
-  const view = render(<WorkspaceFile workspaceId="w1" path="a.ts" visible onClose={() => {}} />, {
+  const view = render(<WorkspaceFile workspaceId="w1" path={path} visible onClose={() => {}} />, {
     wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
   })
   await tick(0)
@@ -137,6 +141,21 @@ async function mount(): Promise<ReturnType<typeof render>> {
 }
 
 describe('WorkspaceFile', () => {
+  it('shows a media file by its extension, reloads it when it changes, and says a binary file is not shown', async () => {
+    await mount('img/shot.png')
+    const img = screen.getByAltText<HTMLImageElement>('img/shot.png')
+    expect(img.getAttribute('src')).toBe('/api/workspace/w1/raw?path=img%2Fshot.png&v=1')
+    disk = { content: 'two', version: 2 }
+    await tick(POLL_MS)
+    expect(screen.getByAltText('img/shot.png').getAttribute('src')).toBe('/api/workspace/w1/raw?path=img%2Fshot.png&v=2')
+    fireEvent.error(screen.getByAltText('img/shot.png'))
+    screen.getByText('This browser can’t show this file')
+    cleanup()
+    binary = true
+    await mount('tool.bin')
+    screen.getByText('Binary file, not shown')
+  })
+
   it('reloads a clean buffer in place when the file changes on disk', async () => {
     await mount()
     expect(editor().value).toBe('one\n')

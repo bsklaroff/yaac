@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto'
 import { constants as C, type Stats } from 'node:fs'
 import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
+import { mediaType } from '@yaac/shared/media-types'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type {
   SymlinkTarget,
@@ -393,6 +395,59 @@ export async function readWorkspaceFile(
   } finally {
     await fh.close()
   }
+}
+
+/** A media file's bytes, as the file pane's media view reads them. */
+export interface WorkspaceMedia {
+  type: string
+  size: number
+  /** The inclusive byte range served, or null for the whole file. */
+  range: { start: number; end: number } | null
+  body: ReadableStream<Uint8Array<ArrayBuffer>>
+}
+
+/**
+ * The one range a `Range: bytes=…` header asks for, clamped to the file. A
+ * header this cannot satisfy (several ranges, past the end) gets the whole
+ * file, which HTTP allows.
+ */
+function byteRange(header: string | undefined, size: number): { start: number; end: number } | null {
+  const m = header === undefined ? null : /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+  if (!m || (m[1] === '' && m[2] === '')) return null
+  const start = m[1] === '' ? Math.max(0, size - Number(m[2])) : Number(m[1])
+  const end = m[1] === '' || m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1)
+  return start <= end ? { start, end } : null
+}
+
+/**
+ * Stream an image, video, audio or PDF file (by extension, `mediaType`),
+ * or the byte range `range` asks for, so a video can seek. Any other file is
+ * refused, so a browser is never handed bytes it might run as a page.
+ */
+export async function readWorkspaceMedia(idOrName: string, relPath: string, range?: string): Promise<WorkspaceMedia> {
+  const co = await openCheckout(idOrName)
+  const rel = checkPath(co, relPath)
+  const type = mediaType(rel)
+  if (type === null) throw new ServerError('VALIDATION', `${rel} is not an image, video, audio or PDF file`)
+  const fh = await openFile(co, rel, C.O_RDONLY)
+  let size: number
+  try {
+    size = (await fh.stat()).size
+  } catch (err) {
+    await fh.close()
+    throw err
+  }
+  const slice = byteRange(range, size)
+  // The end is fixed even for the whole file, so a file growing mid-read
+  // cannot overrun the declared length. The stream closes the handle.
+  let stream: Readable
+  if (size === 0) {
+    await fh.close()
+    stream = Readable.from([])
+  } else {
+    stream = fh.createReadStream({ start: slice?.start ?? 0, end: slice?.end ?? size - 1 })
+  }
+  return { type, size, range: slice, body: Readable.toWeb(stream) as ReadableStream<Uint8Array<ArrayBuffer>> }
 }
 
 /**

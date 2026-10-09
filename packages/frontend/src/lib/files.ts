@@ -64,6 +64,12 @@ export function readWorkspaceFile(workspaceId: string, path: string, known?: str
   })
 }
 
+/** Where the browser loads a media file from. The version makes a changed
+ *  file a new URL, so its view reloads. */
+export function workspaceMediaUrl(workspaceId: string, path: string, version: string): string {
+  return `/api/workspace/${encodeURIComponent(workspaceId)}/raw?${new URLSearchParams({ path, v: version })}`
+}
+
 /** A save refused because the file changed since the version it was based
  *  on. `version` is the current version, or null if the file is gone. */
 export class FileConflict extends Error {
