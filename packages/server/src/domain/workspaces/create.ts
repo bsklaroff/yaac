@@ -53,6 +53,7 @@ import {
   createCheckout,
   getDefaultBranch,
   isGitAuthError,
+  listRemoteBranches,
   remoteBranchExists,
   writeKnownHostsFile,
 } from '#domain/git'
@@ -922,7 +923,10 @@ export async function createWorkspace(
       emit(`Reusing existing workspace at ${wtDir}`, options)
       return
     }
-    if (options.branch && !(await remoteBranchExists(repo, options.branch))) {
+    // An empty repo has no branches yet, so its default is the one name
+    // that may be missing.
+    if (options.branch && !(await remoteBranchExists(repo, options.branch))
+      && !(options.branch === await getDefaultBranch(repo) && (await listRemoteBranches(repo)).length === 0)) {
       throw new ServerError('VALIDATION', `branch "${options.branch}" not found on origin.`)
     }
     // A resume whose checkout is gone recreates it from the default.

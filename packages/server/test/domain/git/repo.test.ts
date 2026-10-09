@@ -76,6 +76,14 @@ describe('getDefaultBranch', () => {
     const branch = await getDefaultBranch(cloneDir)
     expect(['main', 'master']).toContain(branch)
   })
+
+  it('names an empty clone\'s branch, which has no commit yet', async () => {
+    const remote = path.join(tmpDir, 'empty.git')
+    await git(tmpDir, ['init', '-q', '--bare', '-b', 'trunk', remote])
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(remote, main, null)
+    expect(await getDefaultBranch(main)).toBe('trunk')
+  })
 })
 
 describe('createCheckout', () => {
@@ -144,6 +152,24 @@ describe('createCheckout', () => {
     await fs.writeFile(path.join(wtPath, 'hello.txt'), 'half-written\n')
     await createCheckout(main, wtPath, { branch: 'agent/r', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
     expect(await fs.readFile(path.join(wtPath, 'hello.txt'), 'utf8')).toBe('hello world\n')
+  })
+
+  it('starts an empty remote\'s checkout on an unborn branch', async () => {
+    const remote = path.join(tmpDir, 'empty.git')
+    await git(tmpDir, ['init', '-q', '--bare', '-b', 'trunk', remote])
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(remote, main, null)
+    const wtPath = path.join(tmpDir, 'workspace')
+    await createCheckout(main, wtPath, { branch: 'agent/e', baseBranch: 'trunk', remoteUrl: remote })
+    expect((await git(wtPath, ['symbolic-ref', 'HEAD'])).trim()).toBe('refs/heads/agent/e')
+    await expect(git(wtPath, ['rev-parse', '--verify', 'HEAD'])).rejects.toThrow()
+
+    // The agent's first commit starts the history, and pushes to the base.
+    await fs.writeFile(path.join(wtPath, 'a.txt'), 'a\n')
+    await git(wtPath, ['add', '.'])
+    await git(wtPath, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '-m', 'first'])
+    await git(wtPath, ['push', '-q', 'origin', 'HEAD:trunk'])
+    expect(await subjectAt(remote, 'trunk')).toBe('first')
   })
 
   it('refuses a shallow main clone', async () => {

@@ -1323,6 +1323,45 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
   }, 120_000)
 
+  // A just-created GitHub repo has no commits, so no branch to fork from:
+  // the picker offers its unborn default, and the checkout starts there.
+  it('creates a workspace for an empty repo, on a branch its first commit starts', async () => {
+    const name = 'cl-empty'
+    const remote = path.join(testEnv.scratchDir, name)
+    await execFileAsync('git', ['init', '-q', '--bare', '-b', 'trunk', remote])
+    const emptyId = await addTestProject(server, remote, { remoteUrl: `https://github.com/test/${name}.git` })
+    await assignTestGitCredential(server, name, GIT_TOKEN)
+    expect(await (await fetch(`${origin()}/api/project/${name}/branches`)).json())
+      .toEqual({ branches: [], defaultBranch: 'trunk' })
+
+    const res = await fetch(`${origin()}/api/workspace/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      // The dialog names the default branch it was offered.
+      body: JSON.stringify({ project: name, tool: 'claude', mode: 'tui', branch: 'trunk' }),
+    })
+    expect(res.status).toBe(200)
+    const { workspaceId: id } = await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})
+    try {
+      const checkout = path.join(testEnv.dataDir, 'global', 'projects', emptyId, 'workspaces', id)
+      expect((await execFileAsync('git', ['-C', checkout, 'symbolic-ref', 'HEAD'])).stdout.trim())
+        .toBe(`refs/heads/agent/${id}`)
+      await expect(execFileAsync('git', ['-C', checkout, 'rev-parse', '--verify', 'HEAD'])).rejects.toThrow()
+      // With no base commit, the review diff counts everything as added.
+      await fs.writeFile(path.join(checkout, 'first.txt'), 'first\n')
+      const changes = await (await fetch(`${origin()}/api/workspace/${id}/changes?diff=0`)).json() as WorkspaceChanges
+      expect(changes.files.map((f) => [f.path, f.status])).toEqual([['first.txt', 'added']])
+      // Nothing to fetch from it either, which yaac-mama says plainly.
+      const creds = await workspaceEnv(id)
+      const fetched = await execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), ['fetch', id], {
+        cwd: checkout, env: { ...process.env, YAAC_MAMA_URL: creds.YAAC_MAMA_URL, YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN },
+      }).then(() => '', (err: { stderr: string }) => err.stderr)
+      expect(fetched).toContain(`workspace ${id.slice(0, 8)} has no commits yet`)
+    } finally {
+      await runYaac(serverEnv, 'workspace', 'stop', id)
+    }
+  }, 120_000)
+
   /**
    * The permission mode a TUI agent reports: claude's prompt hook sets a
    * pane option, which the server records. Checked through the

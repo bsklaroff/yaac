@@ -952,8 +952,9 @@ export interface WorkspaceChange {
  * separate index so the agent's git state is untouched.
  */
 export interface WorkspaceDiff {
-  /** The base commit the diff is taken against (merge-base with the fork
-   *  point), or HEAD when no upstream is resolvable. */
+  /** The base the diff is taken against: the merge-base with the fork
+   *  point; with none, HEAD, or the empty tree when HEAD shares no history
+   *  with origin (an empty repo's first commits, or none yet). */
   base: string
   /** False when `base` fell back to HEAD. The diff then covers only
    *  uncommitted work, and an empty `files` must not read as "no changes". */
@@ -975,7 +976,8 @@ export interface WorkspaceChanges extends WorkspaceDiff {
   /** The branch compared against (the caller's pick, else the fork branch);
    *  null when nothing records one. */
   branch: string | null
-  /** Null when the base fell back to HEAD (`baseResolved: false`). */
+  /** Null when no fork point was found: `base` fell back to HEAD or the
+   *  empty tree. */
   comparison: BranchComparison | null
   /** The checkout's listing, when asked for and not already current at the
    *  caller (its `known` version). */

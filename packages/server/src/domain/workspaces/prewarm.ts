@@ -429,10 +429,12 @@ export async function tryClaimPrewarmed(
     } else {
       // Keep the branch, but move up to where origin now has it. HEAD is
       // read inside the workspace; the server never runs git on its clone.
+      // It reads empty for a spare warmed on an empty repo, so that spare
+      // moves to origin's first branch.
       const warmedBranch = spareUpstreamBranch ?? defaultBranch
       const job = chosen.jobName
       const head = async (): Promise<string> => (await runtime.exec(
-        job, `git -C ${runtime.workspacePaths(job).workspaceDir} rev-parse HEAD`,
+        job, `git -C ${runtime.workspacePaths(job).workspaceDir} rev-parse -q --verify HEAD || true`,
       )).stdout.trim()
       const sha = await refreshTarget(fetched, repo, warmedBranch, claimedId, head)
       if (sha !== null) {

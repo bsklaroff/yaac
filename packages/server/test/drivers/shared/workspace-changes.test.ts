@@ -506,6 +506,8 @@ describe('buildChangesScript', () => {
 
   it('reports FORK 0 and only uncommitted work when no fork point resolves', () => {
     const { repo, idx } = scratchRepo()
+    // Origin shares history, under another name: a deleted fork branch.
+    git(repo, 'update-ref', 'refs/remotes/origin/other', 'HEAD')
     fs.writeFileSync(path.join(repo, 'committed.txt'), 'committed\n')
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', 'work')
@@ -518,6 +520,37 @@ describe('buildChangesScript', () => {
     expect(out.baseResolved).toBe(false)
     // Committed work is absent, hence `baseResolved: false`.
     expect(out.files.map((f) => f.path)).toEqual(['dirty.txt'])
+  })
+
+  // An empty repo's checkout starts unborn, and its first commits share no
+  // history with origin, even once another workspace pushes there first.
+  it('diffs a checkout that shares no history with origin against the empty tree', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-changes-'))
+    tmpDirs.push(root)
+    const repo = path.join(root, 'workspace')
+    fs.mkdirSync(repo)
+    git(repo, 'init', '-q', '-b', 'agent/x')
+    git(repo, 'config', 'branch.agent/x.remote', 'origin')
+    git(repo, 'config', 'branch.agent/x.merge', 'refs/heads/main')
+    const idx = path.join(root, 'scratch.idx')
+    const added = (): Record<string, unknown> => {
+      const { stdout, code } = runPodScript(repo, idx, undefined, 'main')
+      expect(code).toBe(0)
+      const out = parse(stdout)
+      expect(out.baseResolved).toBe(true)
+      return Object.fromEntries(out.files.map((f) => [f.path, [f.status, f.stages]]))
+    }
+
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
+    expect(added()).toEqual({ 'a.txt': ['added', { untracked: { additions: 1, deletions: 0 } }] })
+
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'first')
+    git(repo, 'checkout', '-q', '--orphan', 'theirs')
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'pushed elsewhere')
+    git(repo, 'update-ref', 'refs/remotes/origin/main', 'theirs')
+    git(repo, 'checkout', '-q', 'agent/x')
+    expect(added()).toEqual({ 'a.txt': ['added', { committed: { additions: 1, deletions: 0 } }] })
   })
 
   // The status bar's ahead/behind and the explorer's tree ride on the same

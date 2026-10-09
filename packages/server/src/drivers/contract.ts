@@ -360,7 +360,7 @@ export interface ChangesRequest {
 export interface ChangesReading {
   changes: WorkspaceDiff
   /** The ref the base was found on (`origin/main`, `main`) and HEAD's
-   *  distance from it; null when the base fell back to HEAD. */
+   *  distance from it; null when no fork point was found. */
   ref: { name: string; ahead: number; behind: number } | null
   listing?: {
     /** Every file in the working tree that git does not ignore. */
@@ -585,7 +585,7 @@ export interface WorkspaceDriver {
   count(): Promise<Record<string, number>>
   /** A running workspace's diff, and its listing when asked, read inside
    *  it. Rejects with `WorkspaceExecError` on failure
-   *  (`CHANGES_BASE_UNRESOLVED` when the base has no fork point). */
+   *  (`CHANGES_BASE_UNRESOLVED` when a named base has no fork point). */
   changes(jobName: string, request: ChangesRequest): Promise<ChangesReading>
   /** A fresh view for one reconcile pass (or a direct caller outside one). */
   snapshot(resync?: boolean): RuntimeSnapshot
