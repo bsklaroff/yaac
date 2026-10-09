@@ -61,6 +61,7 @@ export {
   List as FlatListIcon,
   ListTree as TreeListIcon,
   Search as SearchIcon,
+  ListFilter as FilterIcon,
   Sparkles as SkillsIcon,
   Server as ServerIcon,
   Plug as PortIcon,

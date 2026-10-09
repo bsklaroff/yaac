@@ -529,6 +529,57 @@ describe('WorkspaceList', () => {
     })
   })
 
+  describe('status filter', () => {
+    /** Check or uncheck a status in the filter menu, which stays open
+     *  across picks. */
+    const pick = async (status: string): Promise<void> => {
+      if (!screen.queryByRole('menu')) fireEvent.click(screen.getByRole('button', { name: 'Filter by status' }))
+      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: status }))
+    }
+
+    it('narrows the rows and groups to the checked statuses, opening or hiding the Stopped section', async () => {
+      stoppedRows.push(stoppedEntry('old'))
+      renderList([
+        entry({ workspaceId: 'a', title: 'Needs me', status: 'waiting' }),
+        entry({ workspaceId: 'b', title: 'Busy' }),
+        entry({ workspaceId: 'c', title: 'Watching', status: 'background', groupId: 'g1' }),
+      ], {
+        groups: [group(), group({ groupId: 'g2', name: 'Pinned', pinned: true })],
+        project: { stoppedCount: 1, unseenDeaths: 0 },
+        queued: [queuedEntry('q1', { parentWorkspaceId: 'a' }), queuedEntry('q2', { parentWorkspaceId: 'b' })],
+      })
+
+      await pick('Waiting')
+      expect(screen.getByText('Needs me')).toBeTruthy()
+      expect(screen.queryByText('Busy')).toBeNull()
+      expect(screen.queryByRole('group', { name: 'Release' })).toBeNull()
+      expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull()
+      expect(screen.queryByRole('group', { name: 'Stopped workspaces' })).toBeNull()
+      // A queued workspace stays under its shown parent, and goes with a hidden one.
+      expect(screen.getAllByText(/1 queued workspace/)).toHaveLength(1)
+      expect(screen.getByRole('button', { name: 'Filter by status' }).textContent).toBe('1')
+
+      await pick('Monitoring')
+      expect(within(screen.getByRole('group', { name: 'Release' })).getByText('Watching')).toBeTruthy()
+
+      await pick('Stopped')
+      const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
+      expect(await within(stoppedSection).findByText('Stopped old')).toBeTruthy()
+      expect(useUiStore.getState().sidebarStatuses).toEqual(['waiting', 'background', 'stopped'])
+
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Show all' }))
+      expect(screen.getByText('Busy')).toBeTruthy()
+      expect(screen.getByRole('group', { name: 'Pinned' })).toBeTruthy()
+      expect(useUiStore.getState().sidebarStatuses).toEqual([])
+    })
+
+    it('says so when nothing has a checked status', async () => {
+      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 3, unseenDeaths: 0 } })
+      await pick('Waiting')
+      expect(screen.getByText('No matches')).toBeTruthy()
+    })
+  })
+
   // A restarting workspace is missing from the snapshot until it is back, so
   // its placeholder row must sit in its group, not at the top of the list.
   it('draws a restarting workspace inside its group', () => {

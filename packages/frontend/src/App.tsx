@@ -14,7 +14,7 @@ import {
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
-import { searchRows } from './components/WorkspaceList'
+import { narrowRows } from './components/WorkspaceList'
 import { useStoppedEntry } from './lib/useStoppedWorkspaces'
 import { WorkspaceView } from './components/WorkspaceView'
 import { ReadOnlyWorkspace, type ReadOnlySubject } from './components/ReadOnlyWorkspace'
@@ -193,9 +193,11 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // hidden. Terminal-scoped shortcuts belong to WorkspaceView. The ref lets
   // the one listener read the current render's state.
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
-  // The cycle steps through the rows the sidebar search leaves on screen.
+  // The cycle steps through the rows the sidebar search and status filter
+  // leave on screen.
   const sidebarQuery = useUiStore((s) => s.sidebarQuery)
-  const searched = searchRows(sidebarQuery, {
+  const sidebarStatuses = useUiStore((s) => s.sidebarStatuses)
+  const searched = narrowRows(sidebarQuery, sidebarStatuses, {
     workspaces: scoped, provisioning: scopedProvisioning, queued: [], held: [], drafts: [],
   })
   const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scopedGroups, pendingDeleteIds)

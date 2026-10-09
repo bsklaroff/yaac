@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   MAX_EDITOR_FONT_SIZE, MAX_SIDEBAR_WIDTH, MIN_EDITOR_FONT_SIZE, chatDraftKey, flushChatDrafts, loadPersisted,
   loadSelection, persistSelection, useUiStore,
@@ -33,6 +33,7 @@ const LAYOUTS = { s1: addColumn(singleColumn('agent'), 'shell:shell'), s2: [] }
 const CASES: { field: keyof typeof initial; key: string; value: unknown; stored: string; loads: [string, unknown][] }[] = [
   { field: 'soundEnabled', key: 'yaac.sound.v1', value: false, stored: '0', loads: [['1', true], ['x', undefined]] },
   { field: 'chatFullWidth', key: 'yaac.chatfullwidth.v1', value: true, stored: '1', loads: [['0', false]] },
+  { field: 'stoppedExpanded', key: 'yaac.stoppedexpanded.v1', value: true, stored: '1', loads: [['0', false]] },
   { field: 'chatCondensed', key: 'yaac.chatcondensed.v1', value: false, stored: '0', loads: [['1', true]] },
   {
     field: 'sidebarWidth', key: 'yaac.sidebarwidth.v1', value: 300, stored: '300',
@@ -44,6 +45,10 @@ const CASES: { field: keyof typeof initial; key: string; value: unknown; stored:
   },
   { field: 'viewMode', key: 'yaac.viewmode.v1', value: 'tabs', stored: 'tabs', loads: [['garbage', undefined]] },
   { field: 'mobileScreen', key: 'yaac.mobilescreen.v1', value: 'pane', stored: 'pane', loads: [['wat', undefined]] },
+  {
+    field: 'sidebarStatuses', key: 'yaac.sidebarstatuses.v1', value: ['waiting', 'stopped'],
+    stored: '["waiting","stopped"]', loads: [['["stopped","bogus","running"]', ['running', 'stopped']], ['"waiting"', undefined]],
+  },
   { field: 'themePref', key: 'yaac.theme.v1', value: 'light', stored: 'light', loads: [['sepia', undefined]] },
   {
     field: 'pinnedUsageMetric', key: 'yaac.pinnedusage.v1', value: 'weekly_scoped:Fable',
@@ -83,6 +88,14 @@ describe.each(CASES)('$field', ({ field, key, value, stored, loads }) => {
       localStorage.setItem(key, raw)
       expect(loadPersisted()[field]).toEqual(loaded)
     }
+  })
+
+  it('seeds a freshly created store', async () => {
+    localStorage.setItem(key, stored)
+    vi.resetModules()
+    // eslint-disable-next-line no-restricted-syntax -- a fresh store, created over the seeded storage, is the point
+    const fresh = await import('#lib/store')
+    expect(fresh.useUiStore.getState()[field]).toEqual(value)
   })
 })
 
