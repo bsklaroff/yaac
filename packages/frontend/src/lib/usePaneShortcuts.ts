@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { layoutOf, shortcutsSuspended, useUiStore } from '#lib/store'
 import { claimChord, cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import { moveColumn, moveTabInStrip } from '#lib/layout'
-import { isSpecialPane } from '#lib/panes'
+import { isAgentPane, isSpecialPane } from '#lib/panes'
 import { FILES_TARGET } from '#lib/files'
 
 /** What the pane shortcuts act on: the open workspace's state this render. */
@@ -43,8 +43,7 @@ export function usePaneShortcuts(ctx: PaneShortcutContext): void {
           c.openShell()
           return
         case 'kill-terminal':
-          // The agent pane can't be killed.
-          if (!c.activeTab || c.activeTab === 'agent') return
+          if (!c.activeTab || isAgentPane(c.activeTab)) return
           claimChord(e)
           if (isSpecialPane(c.activeTab)) c.closePane(c.activeTab)
           else c.askKill(c.activeTab)

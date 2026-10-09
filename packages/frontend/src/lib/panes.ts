@@ -18,11 +18,21 @@ import { isPreviewTarget } from './preview'
  * Non-terminal panes: left out of the tmux-window sync and closed without a
  * kill confirmation (a file pane saves first, and asks only if that fails).
  * ACP chat panes count too: their tmux window runs acpd, not the
- * conversation, and they are addressed by conversation id.
+ * conversation, and they are addressed by conversation id. They are agent
+ * panes as well, so they get no close button (`isAgentPane`).
  */
 export function isSpecialPane(target: string): boolean {
   return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isFileTarget(target)
     || isAcpTarget(target)
+}
+
+/**
+ * The agent's own pane: the `tui` agent terminal or an `acp` conversation.
+ * It can be neither killed nor closed, since the window sync would reopen a
+ * live conversation's pane as soon as it was closed.
+ */
+export function isAgentPane(target: string): boolean {
+  return target === 'agent' || isAcpTarget(target)
 }
 
 /** The workspace's live conversations, as pane targets. */

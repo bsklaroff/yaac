@@ -15,7 +15,7 @@ import {
   isFilesTarget,
 } from '#lib/files'
 import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
-import { defaultPaneTarget, isSpecialPane, syncPaneLayout } from '#lib/panes'
+import { defaultPaneTarget, isAgentPane, isSpecialPane, syncPaneLayout } from '#lib/panes'
 import { agentLabel } from '#lib/agentLabel'
 import { isElectron } from '#lib/platform'
 import { goBackScreen } from '#lib/mobileHistory'
@@ -361,7 +361,7 @@ export function WorkspaceView({
             // Finger-sized on mobile, where this strip is the only pane switcher.
             'max-md:h-8 max-md:rounded-md max-md:px-3 max-md:text-xs',
             opts.draggable && 'cursor-grab select-none active:cursor-grabbing',
-            t !== 'agent' && 'pr-5 max-md:pr-7',
+            !isAgentPane(t) && 'pr-5 max-md:pr-7',
             drag?.item === t && 'opacity-60',
             opts.isActive
               ? 'bg-surface-3 font-medium text-text'
@@ -370,7 +370,7 @@ export function WorkspaceView({
         >
           {tabName(t)}
         </button>
-        {isSpecialPane(t) ? (
+        {isAgentPane(t) ? null : isSpecialPane(t) ? (
           // A file with unsaved text shows a dot in place of the × until hovered.
           <button
             onClick={() => closePane(t)}
@@ -383,7 +383,7 @@ export function WorkspaceView({
             {dirty && <span className="text-[9px] group-hover/tab:hidden">●</span>}
             <CloseIcon size={10} className={clsx(dirty && 'hidden group-hover/tab:block')} />
           </button>
-        ) : t !== 'agent' && (
+        ) : (
           <button
             onClick={() => setConfirmKill({ target: t, name: paneName(t, terminals) })}
             title={`Kill ${paneName(t, terminals)}`}
