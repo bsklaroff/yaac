@@ -4,33 +4,64 @@ import {
   PI_DEFAULT_PROVIDER,
 } from '@yaac/shared/tool-providers'
 import {
+  CLAUDE_MODELS,
+  EFFORTS,
   MODEL_NAMES,
   MODELS_BY_PROVIDER,
   PI_MODEL_NAMES,
   PI_MODELS_BY_PROVIDER,
   PI_PROVIDER_DEFAULT_MODELS,
 } from '@yaac/shared/tool-providers.generated'
-import type { AgentTool, ModelOption } from '@yaac/shared/types'
+import type { AgentTool, ModelEfforts, ModelOption } from '@yaac/shared/types'
 
 /**
  * The models a tool can be created with, from the baked catalog, newest
- * first. claude and codex use bare ids (their vendor's models.dev list);
- * opencode and pi use `provider/model` for their credential's provider, and
- * pi uses its own registry. Not an allowlist: yaac only shape-checks ids.
+ * first, each with its effort levels. claude uses models.dev's anthropic
+ * list less models the pinned claude doesn't know (`CLAUDE_MODELS`), codex
+ * models.dev's openai list; opencode and pi use `provider/model` for their
+ * credential's provider, and pi uses its own registry. Not an allowlist:
+ * yaac only shape-checks ids.
  */
 export function modelsForTool(tool: AgentTool, provider: string | undefined): ModelOption[] {
-  if (tool === 'claude' || tool === 'codex') {
-    const vendor = tool === 'claude' ? 'anthropic' : 'openai'
-    return (MODELS_BY_PROVIDER[vendor] ?? []).map((id) => option(tool, id))
-  }
+  return catalogIds(tool, provider).map((id) => option(tool, id))
+}
+
+function catalogIds(tool: AgentTool, provider: string | undefined): string[] {
+  if (tool === 'claude') return CLAUDE_MODELS
+  if (tool === 'codex') return MODELS_BY_PROVIDER.openai ?? []
   if (provider === undefined) return []
   const catalog = tool === 'pi' ? PI_MODELS_BY_PROVIDER : MODELS_BY_PROVIDER
-  return (catalog[provider] ?? []).map((m) => option(tool, `${provider}/${m}`))
+  return (catalog[provider] ?? []).map((m) => `${provider}/${m}`)
 }
 
 function option(tool: AgentTool, id: string): ModelOption {
   const name = modelDisplayName(tool, id)
-  return name !== undefined ? { id, name } : { id }
+  const efforts = modelEfforts(tool, id)
+  return {
+    id,
+    ...(name !== undefined ? { name } : {}),
+    ...(efforts !== undefined ? { efforts } : {}),
+  }
+}
+
+/**
+ * Whether the catalog offers this model id. opencode and pi ids name their
+ * provider, which picks the catalog to look in.
+ */
+export function isCatalogModel(tool: AgentTool, id: string): boolean {
+  const provider = tool === 'opencode' || tool === 'pi' ? id.slice(0, Math.max(0, id.indexOf('/'))) : undefined
+  return catalogIds(tool, provider).includes(id)
+}
+
+/**
+ * A model's effort levels and default (docs/effort-levels.md), or undefined
+ * when the catalog has none for it. Tried as given, then without a `[1m]`
+ * suffix or a `-YYYYMMDD` snapshot suffix, as `modelDisplayName` does.
+ */
+export function modelEfforts(tool: AgentTool, id: string): ModelEfforts | undefined {
+  const table = EFFORTS[tool]
+  const undecorated = id.replace(/\[[^\]]*\]$/, '')
+  return table[id] ?? table[undecorated] ?? table[undecorated.replace(/-\d{8}$/, '')]
 }
 
 /**

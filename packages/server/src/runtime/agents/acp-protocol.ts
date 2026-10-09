@@ -1316,6 +1316,44 @@ export function sessionModel(state: unknown): { id: string; name?: string } | un
   return named(s.current, s.models.find((m) => m.id === s.current)?.name)
 }
 
+/**
+ * A session's effort setting (docs/effort-levels.md): the config option that
+ * holds it, the level it is at, and the levels it can be set to, each with
+ * the adapter's display name.
+ */
+export interface AcpEffort {
+  configId: string
+  current?: string
+  options: Array<{ value: string; name: string }>
+}
+
+/** The ids each pinned adapter gives its effort option, for one that does
+ *  not mark it with the `thought_level` category. */
+const EFFORT_OPTION_IDS = ['effort', 'reasoning_effort', 'thought_level']
+
+/**
+ * The session's effort option, from any message carrying session state (as
+ * `sessionModels` reads it), or undefined when it has none. Every pinned
+ * adapter files it under the ACP category `thought_level`.
+ */
+export function sessionEffort(state: unknown): AcpEffort | undefined {
+  const r = asRecord(state)
+  const options = (Array.isArray(r?.configOptions) ? r.configOptions : []).map(asRecord)
+  const option = options.find((o) => o?.category === 'thought_level')
+    ?? options.find((o) => EFFORT_OPTION_IDS.includes(asString(o?.id) ?? ''))
+  const configId = asString(option?.id)
+  if (option === undefined || configId === undefined) return undefined
+  const current = asString(option.currentValue)
+  return {
+    configId,
+    ...(current !== undefined ? { current } : {}),
+    options: selectChoices(option.options).flatMap((c) => {
+      const value = asString(c.value)
+      return value === undefined ? [] : [{ value, name: asString(c.name) ?? value }]
+    }),
+  }
+}
+
 function named(id: string, name: string | undefined): { id: string; name?: string } {
   return name !== undefined ? { id, name } : { id }
 }

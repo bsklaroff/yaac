@@ -53,6 +53,8 @@ export async function attachConvergence(opts: {
     // and only its first handshake sets the session's mode.
     permissionMode: async (session) =>
       (await getWorkspaceRow(session.projectId, session.workspaceId))?.permissionMode,
+    effort: async (session) =>
+      (await getWorkspaceRow(session.projectId, session.workspaceId))?.effort,
     launchModel: async (session, tool) => {
       const model = (await getWorkspaceRow(session.projectId, session.workspaceId))?.model
       const owner = tool === 'pi' ? (await getProjectRow(session.projectId))?.owner : undefined

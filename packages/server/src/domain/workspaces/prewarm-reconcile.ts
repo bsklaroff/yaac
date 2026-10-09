@@ -136,6 +136,7 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
           tool: spare.tool,
           ...(row.model !== undefined ? { model: row.model } : {}),
           permissionMode: row.permissionMode,
+          ...(row.effort !== undefined ? { effort: row.effort } : {}),
           mode: row.mode ?? spare.mode,
         })
       }

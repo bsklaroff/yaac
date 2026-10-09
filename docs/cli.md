@@ -43,6 +43,7 @@ yaac workspace
     -b, --branch <branch>       Base branch (default: the remote's default)
     -p, --prompt <text>         Initial prompt for the agent
     -m, --model <model>         Model id or alias (provider/model for opencode, pi)
+    -e, --effort <level>        Effort level the model offers (effort-levels.md)
     --mode <tui|acp>            Terminal UI, or chat pane over ACP
                                 (agent-modes.md)
     --permission-mode <mode>    bypass, auto, accept-edits, manual, plan or

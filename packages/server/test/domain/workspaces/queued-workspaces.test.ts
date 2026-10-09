@@ -52,6 +52,7 @@ import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-ut
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
+import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
@@ -261,8 +262,18 @@ describe('updateQueuedWorkspace', () => {
     const edited = await updateQueuedWorkspace(local, entry.id, { prompt: 'edited', branch: OTHER }, 'user')
     expect(edited).toMatchObject({ prompt: 'edited', branch: OTHER, model: 'claude-sonnet-5', permissionMode: 'plan' })
 
+    // A stored effort stays for a model that has it and is re-resolved for
+    // one that does not (docs/effort-levels.md).
+    expect((await updateQueuedWorkspace(local, entry.id, { effort: 'max', model: 'claude-opus-4-7' }, 'user')).effort)
+      .toBe('max')
+    expect((await updateQueuedWorkspace(local, entry.id, { model: 'claude-opus-4-6' }, 'user')).effort).toBe('max')
+    expect(await updateQueuedWorkspace(local, entry.id, { model: 'claude-opus-4-5' }, 'user')).not.toHaveProperty('effort')
+    await expect(updateQueuedWorkspace(local, entry.id, { effort: 'low' }, 'user')).rejects.toThrow(/no effort setting/)
+
     const retooled = await updateQueuedWorkspace(local, entry.id, { tool: 'codex' }, 'user')
-    expect(retooled).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex, prompt: 'edited' })
+    expect(retooled).toMatchObject({
+      tool: 'codex', model: FALLBACK_MODELS.codex, prompt: 'edited', effort: EFFORTS.codex[FALLBACK_MODELS.codex].default,
+    })
     expect(retooled.permissionMode).not.toBe('plan')
 
     // A title and a group are kept until named, and a blank or null clears them.

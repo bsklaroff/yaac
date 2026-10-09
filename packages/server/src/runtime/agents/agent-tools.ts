@@ -79,27 +79,37 @@ export function agentModelFormat(tool: AgentTool): string {
  */
 export const MODE_PANE_OPTION = '@yaac-permission-mode'
 
-/** Separator in `agentReportFormat`'s value. The mode half is filtered to
- *  letters and dashes, so the last separator is always the join. */
+/**
+ * The pane option a tool's reporter sets to its effort level, in the tool's
+ * words (docs/effort-levels.md). Set by `workspace-bin/yaac-agent-report`;
+ * codex's comes from its rollout instead.
+ */
+export const EFFORT_PANE_OPTION = '@yaac-effort'
+
+/** Separator in `agentReportFormat`'s value. The mode and effort parts are
+ *  filtered to letters and dashes, so the last two separators are the
+ *  joins. */
 const REPORT_SEPARATOR = '|'
 
 /**
  * The tmux format for a pane's report subscription: model
- * (`agentModelFormat`) and mode (`MODE_PANE_OPTION`) in one value. The mode
- * is filtered inside the format too, more tightly, since mode names are
- * words.
+ * (`agentModelFormat`), mode (`MODE_PANE_OPTION`) and effort
+ * (`EFFORT_PANE_OPTION`) in one value. Mode and effort are filtered inside
+ * the format too, more tightly, since both are words.
  */
 export function agentReportFormat(tool: AgentTool): string {
   return `${agentModelFormat(tool)}${REPORT_SEPARATOR}#{=32;s/[^A-Za-z-]//:${MODE_PANE_OPTION}}`
+    + `${REPORT_SEPARATOR}#{=32;s/[^a-z]//:${EFFORT_PANE_OPTION}}`
 }
 
-/** The two halves of a pushed `agentReportFormat` value; either may be
- *  empty if the tool has not reported it yet. */
-export function splitAgentReport(value: string): { model: string; mode: string } {
-  const at = value.lastIndexOf(REPORT_SEPARATOR)
-  return at < 0
-    ? { model: value, mode: '' }
-    : { model: value.slice(0, at), mode: value.slice(at + REPORT_SEPARATOR.length).trim() }
+/** The parts of a pushed `agentReportFormat` value; any may be empty if
+ *  the tool has not reported it yet. */
+export function splitAgentReport(value: string): { model: string; mode: string; effort: string } {
+  const parts = value.split(REPORT_SEPARATOR)
+  if (parts.length < 3) return { model: value, mode: '', effort: '' }
+  const effort = parts.pop()?.trim() ?? ''
+  const mode = parts.pop()?.trim() ?? ''
+  return { model: parts.join(REPORT_SEPARATOR), mode, effort }
 }
 
 /**
@@ -164,7 +174,7 @@ export function parsePaneSession(value: string): PaneSession | undefined {
  * Under `tui` it is the reporter's value: claude's mode name, or opencode's
  * agent, which is interpreted against the workspace's `current` posture.
  * codex's hooks cannot report a mode, so the registry reads it from the
- * rollout (`getCodexPermissionMode`). pi has no modes.
+ * rollout (`getCodexRolloutSettings`). pi has no modes.
  */
 export function resolveAgentPermissionMode(
   mode: AgentMode,

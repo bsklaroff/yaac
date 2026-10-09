@@ -19,7 +19,7 @@ import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
   ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, asRecord, asString, backgroundWorkReport,
-  sessionModeId, sessionModels, sessionStateModeId, toContentList,
+  sessionEffort, sessionModeId, sessionModels, sessionStateModeId, toContentList, type AcpEffort,
 } from './acp-protocol'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { serverLog } from '#log'
@@ -563,4 +563,25 @@ export async function readAcpModeId(record: AcpRecordRef): Promise<string | unde
     if (msg.error === undefined) modeId = set ?? sessionStateModeId(msg.result) ?? modeId
   }
   return modeId
+}
+
+/**
+ * The effort option the record last shows (`sessionEffort`): from the
+ * handshake reply, each `session/set_config_option` reply, and each
+ * `config_option_update`, last one winning. A reattach runs no handshake,
+ * so this is where it learns the levels a pane may pick.
+ */
+export async function readAcpEffort(record: AcpRecordRef): Promise<AcpEffort | undefined> {
+  const raw = await readRecord(record)
+  if (raw === undefined) return undefined
+  let effort: AcpEffort | undefined
+  for (const line of raw.split('\n')) {
+    const msg = parseLine(line)
+    if (msg === undefined) continue
+    const state = msg.method === ACP.sessionUpdate
+      ? asRecord(asRecord(msg.params)?.update)
+      : msg.method === undefined && msg.error === undefined ? msg.result : undefined
+    effort = sessionEffort(state) ?? effort
+  }
+  return effort
 }

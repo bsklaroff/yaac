@@ -38,6 +38,7 @@ import {
   AGENT_MODES,
   AGENT_TOOLS,
   MAMA_COMMANDS,
+  EFFORT_RE,
   MODEL_RE,
   PERMISSION_MODES,
   isRankedPermissionMode,
@@ -104,7 +105,7 @@ export type MamaOutcome =
 const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 
 /** The options every command that makes a workspace takes. */
-const CREATE_ARGS = ['tool', 'model', 'permission-mode', 'ui-mode', 'branch', 'group', 'title'] as const
+const CREATE_ARGS = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'group', 'title'] as const
 
 /**
  * Options each command accepts. Others are refused rather than ignored, so a
@@ -510,7 +511,10 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
 }
 
 /** Settings shared by `create`, `queue` and `edit-queued`. */
-type CreateSettings = Pick<SpawnRequest, 'tool' | 'model' | 'permissionMode' | 'uiMode' | 'branch' | 'group' | 'title'>
+type CreateSettings = Pick<
+  SpawnRequest,
+  'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'group' | 'title'
+>
 
 /**
  * Validate the shared create options. The group stays a name, resolved
@@ -520,7 +524,7 @@ type CreateSettings = Pick<SpawnRequest, 'tool' | 'model' | 'permissionMode' | '
 function createSettings(
   args: Record<string, string>,
 ): { ok: true; settings: CreateSettings } | { ok: false; error: string } {
-  const { tool, model, branch, group } = args
+  const { tool, model, effort, branch, group } = args
   const permissionMode = args['permission-mode']
   const uiMode = args['ui-mode']
   if (tool !== undefined && !(AGENT_TOOLS as readonly string[]).includes(tool)) {
@@ -535,6 +539,10 @@ function createSettings(
       error: `invalid permission mode '${permissionMode}' (expected one of: ${PERMISSION_MODES.join(', ')})`,
     }
   }
+  // Checked against the model by the create itself; here only its shape.
+  if (effort !== undefined && !EFFORT_RE.test(effort)) {
+    return { ok: false, error: `invalid effort '${effort}' (see \`yaac-mama models\`)` }
+  }
   if (uiMode !== undefined && !(AGENT_MODES as readonly string[]).includes(uiMode)) {
     return { ok: false, error: `invalid ui mode '${uiMode}' (expected one of: ${AGENT_MODES.join(', ')})` }
   }
@@ -547,6 +555,7 @@ function createSettings(
       ...(tool !== undefined ? { tool: tool as AgentTool } : {}),
       ...(model !== undefined ? { model } : {}),
       ...(permissionMode !== undefined ? { permissionMode: permissionMode as PermissionMode } : {}),
+      ...(effort !== undefined ? { effort } : {}),
       ...(uiMode !== undefined ? { uiMode: uiMode as AgentMode } : {}),
       ...(branch !== undefined ? { branch: branch.trim() } : {}),
       ...(group !== undefined ? { group } : {}),
@@ -817,11 +826,16 @@ async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
     const provider = 'opencodeProvider' in auth ? auth.opencodeProvider
       : 'piProvider' in auth ? auth.piProvider
       : undefined
-    const models = modelsForTool(tool, provider)
-      .map((m) => m.name !== undefined ? `${m.id} (${m.name})` : m.id)
+    // Each model's effort levels follow it, its default starred.
+    const models = modelsForTool(tool, provider).map((m) => {
+      const efforts = m.efforts !== undefined
+        ? ` [effort ${m.efforts.levels.map((l) => (l === m.efforts?.default ? `${l}*` : l)).join(' ')}]`
+        : ''
+      return `${m.id}${m.name !== undefined ? ` (${m.name})` : ''}${efforts}`
+    })
     lines.push(`${tool.padEnd(9)} ${auth.kind}${provider ? ` (${provider})` : ''}`)
     if (models.length > 0) lines.push(`          models: ${models.join(', ')}`)
   }
-  lines.push('', 'Pass one with: yaac-mama create --tool <tool> --model <model> "<prompt>"')
+  lines.push('', 'Pass one with: yaac-mama create --tool <tool> --model <model> [--effort <level>] "<prompt>"')
   return { ok: true, output: lines.join('\n') }
 }

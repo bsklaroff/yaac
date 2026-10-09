@@ -3,11 +3,11 @@ import { PI_MESSAGE_KEY } from './agent-command'
 
 /**
  * The in-tool half of agent reporting: what each tool runs so it writes its
- * conversation (`workspace-bin/yaac-agent-links`) and its model and
- * permission mode (`workspace-bin/yaac-agent-report`) onto its tmux pane,
+ * conversation (`workspace-bin/yaac-agent-links`) and its model, permission
+ * mode and effort (`workspace-bin/yaac-agent-report`) onto its tmux pane,
  * where the status watcher reads them. claude and codex use hooks; pi and
- * opencode load a small extension/plugin. codex reports no model or mode
- * (they come from its title and rollout).
+ * opencode load a small extension/plugin. codex reports no model, mode or
+ * effort (they come from its title and rollout).
  *
  * Installed into the project's tool homes at create, since every workspace
  * mounts them and a tool started by hand in a shell then reports too. The
@@ -31,13 +31,14 @@ import { PI_MESSAGE_KEY } from './agent-command'
 const sessionHook = (home: string, tool: string): string => `yaac-agent-links "${home}" ${tool}`
 
 /**
- * claude's model and mode reporter. Model: `PostModelSwitch` (`to_model`)
- * and `SessionStart` (`model`), which fires on interactive startup but not
- * on `--resume` or `/clear`, so a restarted pane keeps its row's model until
- * the next `/model`. Mode: `UserPromptSubmit` and `Stop`
- * (`permission_mode`); no event fires on Shift+Tab, so a mode change is
- * reported at the next prompt or turn end. Stdout must stay empty, because
- * claude passes it to the model on these events.
+ * claude's model, mode and effort reporter. Model: `PostModelSwitch`
+ * (`to_model`) and `SessionStart` (`model`), which fires on interactive
+ * startup but not on `--resume` or `/clear`, so a restarted pane keeps its
+ * row's model until the next `/model`. Mode and effort: `UserPromptSubmit`
+ * and `Stop` (`permission_mode`, `effort.level`); no event fires on
+ * Shift+Tab or `/effort`, so a change is reported at the next prompt or turn
+ * end. Stdout must stay empty, because claude passes it to the model on
+ * these events.
  *
  * Guarded because claude hot-reloads this shared file, and a workspace
  * whose staged bin lacks the script would show a hook error on every
@@ -70,15 +71,15 @@ const CODEX_HOOKS: Hooks = [
 
 /**
  * pi's extension, auto-discovered from `$PI_CODING_AGENT_DIR/extensions`.
- * `session_start` (startup, resume, `/new`) gives the session id, log and
- * model; `model_select` fires on any model change; `session_shutdown` fires
- * as a session ends.
+ * `session_start` (startup, resume, `/new`) gives the session id, log,
+ * model and thinking level; `model_select` and `thinking_level_select` fire
+ * on any change to those; `session_shutdown` fires as a session ends.
  *
  * It also takes `yaac-mama send` messages (`buildMessageCmd`): on
  * `PI_MESSAGE_KEY` it submits the file left for its conversation, queued
  * as a follow-up mid-turn, without touching what the user has in the editor.
  */
-const PI_EXTENSION = `// Written by yaac: reports the conversation and model to the pane
+const PI_EXTENSION = `// Written by yaac: reports the conversation, model and thinking level to the pane
 // (see yaac-agent-links and yaac-agent-report), and submits messages that
 // other workspaces send it (see yaac-mama send).
 import { readFileSync, unlinkSync } from 'node:fs'
@@ -90,7 +91,7 @@ export default function (pi) {
     return reported
   }
   const report = (model) => {
-    if (model !== undefined) run('yaac-agent-report', [model.provider + '/' + model.id])
+    if (model !== undefined) run('yaac-agent-report', [model.provider + '/' + model.id, '', pi.getThinkingLevel()])
   }
   let session = ''
   pi.on('session_start', (_event, ctx) => {
@@ -99,6 +100,7 @@ export default function (pi) {
     report(ctx.model)
   })
   pi.on('model_select', (event) => report(event.model))
+  pi.on('thinking_level_select', (event) => run('yaac-agent-report', ['', '', event.level]))
   pi.on('session_shutdown', () => run('yaac-agent-links', ['', 'pi', session, '--end']))
   pi.registerShortcut('${PI_MESSAGE_KEY}', {
     description: 'yaac: submit a message another workspace sent',
@@ -129,14 +131,15 @@ export default function (pi) {
  * ends the previous one. A resumed session emits no event, so yaac's resume
  * launch names it (`buildAgentCmd`). The plugin ends its session on dispose.
  *
- * Model and agent: the TUI tells the server about a `/models` pick or a Tab
- * between `build` and `plan` only when the next prompt is sent
- * (`session.model.selected`, `session.agent.selected`). `session.created`
- * and each `session.step.started` also name them, which covers resumed
- * conversations and a first prompt sent before the plugin loaded. Both are
- * reported together whenever either changes.
+ * Model, variant and agent: the TUI tells the server about a `/models` or
+ * `/variants` pick or a Tab between `build` and `plan` only when the next
+ * prompt is sent (`session.model.selected`, `session.agent.selected`).
+ * `session.created` and each `session.step.started` also name them, which
+ * covers resumed conversations and a first prompt sent before the plugin
+ * loaded. The model's `variant` is the effort, `default` when it has none.
+ * All are reported together whenever one changes.
  */
-const OPENCODE_PLUGIN = `// Written by yaac: reports the conversation, model and agent to the pane
+const OPENCODE_PLUGIN = `// Written by yaac: reports the conversation, model, variant and agent to the pane
 // (see yaac-agent-links and yaac-agent-report).
 import { execFile, execFileSync } from 'node:child_process'
 
@@ -149,6 +152,7 @@ export default {
     if (process.argv.includes('--service')) return () => {}
     const abort = new AbortController()
     let model = ''
+    let variant = ''
     let agent = ''
     let session = ''
     let reported = Promise.resolve()
@@ -165,11 +169,13 @@ export default {
         const m = MODEL_EVENTS.has(event.type) ? event.data?.model : undefined
         const a = AGENT_EVENTS.has(event.type) ? event.data?.agent : undefined
         const nextModel = m ? m.providerID + '/' + m.id : model
+        const nextVariant = m ? (typeof m.variant === 'string' ? m.variant : 'default') : variant
         const nextAgent = typeof a === 'string' ? a : agent
-        if (nextModel === model && nextAgent === agent) continue
+        if (nextModel === model && nextVariant === variant && nextAgent === agent) continue
         model = nextModel
+        variant = nextVariant
         agent = nextAgent
-        run('yaac-agent-report', [model, agent])
+        run('yaac-agent-report', [model, agent, variant])
       }
     })().catch(() => {})
     return () => {

@@ -251,6 +251,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
           ...(body.tool !== undefined ? { tool: body.tool } : {}),
           ...(body.model !== undefined ? { model: body.model } : {}),
           ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
+          ...(body.effort !== undefined ? { effort: body.effort } : {}),
           ...(body.mode !== undefined ? { mode: body.mode } : {}),
           ...(body.branch !== undefined ? { branch: body.branch } : {}),
           ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),

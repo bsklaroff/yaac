@@ -48,7 +48,7 @@ import {
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
-import { credentialOwnerKey, defaultModelFor, loadToolAuthEntry, seedProjectToolHome } from '#domain/auth'
+import { credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome } from '#domain/auth'
 import {
   createCheckout,
   getDefaultBranch,
@@ -110,6 +110,7 @@ import {
   AGENT_CLIS,
   DEFAULT_AGENT_MODE,
   defaultPermissionMode,
+  effortFor,
   launchablePermissionMode,
   resolveToolCreateDefaults,
   SELF_NAMING_TOOLS,
@@ -239,6 +240,12 @@ export interface WorkspaceCreateOptions {
    * recorded mode.
    */
   permissionMode?: PermissionMode
+  /**
+   * The effort level the agents launch at, in the tool's words, already
+   * checked against the model. Restart passes the recorded one; absent
+   * launches with none.
+   */
+  effort?: string
   /**
    * Called with each user-visible progress message. The HTTP route streams
    * them to the CLI as NDJSON events.
@@ -385,6 +392,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
         permissionMode,
         ...(piProvider !== undefined ? { piProvider } : {}),
         ...(options.model !== undefined ? { model: options.model } : {}),
+        ...(options.effort !== undefined ? { effort: options.effort } : {}),
       }),
     }
   })
@@ -592,6 +600,8 @@ export interface CreateSetup {
    *  agent then launches without `--model`. */
   model?: string
   permissionMode: PermissionMode
+  /** Absent when the model has no effort setting. */
+  effort?: string
   mode: AgentMode
 }
 
@@ -601,13 +611,19 @@ export interface CreateSetup {
  * valid, else `resolveToolCreateDefaults`. The tool itself defaults to the
  * project's last tool, else claude.
  *
- * A requested permission mode the tool lacks is refused; a remembered one it
- * lacks falls back to the default. Restart skips this and calls
- * `createWorkspace` directly.
+ * A requested permission mode or effort the tool or model lacks is refused;
+ * a remembered one it lacks falls back to the default. Restart skips this
+ * and calls `createWorkspace` directly.
  */
 export async function resolveCreate(
   projectId: string,
-  request: { tool?: AgentTool; model?: string; permissionMode?: PermissionMode; mode?: AgentMode },
+  request: {
+    tool?: AgentTool
+    model?: string
+    permissionMode?: PermissionMode
+    effort?: string
+    mode?: AgentMode
+  },
 ): Promise<CreateSetup> {
   const row = await getProjectRow(projectId)
   const tool = request.tool ?? row?.lastTool ?? 'claude'
@@ -624,16 +640,49 @@ export async function resolveCreate(
     remembered,
     ...(provider !== undefined ? { provider } : {}),
     defaultModel: defaultModelFor(tool, provider),
+    effortsFor: (model) => modelEfforts(tool, model),
   })
   const model = request.model ?? fallback.model
+  const effort = request.effort !== undefined
+    ? namedEffort(tool, model, request.effort)
+    // A named model re-resolves the remembered effort against itself.
+    : request.model !== undefined
+      ? rememberedEffort(tool, model, remembered?.effort)
+      : fallback.effort
   return {
     tool,
     ...(model !== '' ? { model } : {}),
     permissionMode: request.permissionMode !== undefined
       ? launchPermissionMode({ tool, driver, requested: request.permissionMode })
       : fallback.permissionMode,
+    ...(effort !== undefined ? { effort } : {}),
     mode,
   }
+}
+
+/** A remembered effort where `model` has it, else its default; none for a
+ *  model without effort levels. */
+function rememberedEffort(tool: AgentTool, model: string, remembered: string | undefined): string | undefined {
+  const efforts = modelEfforts(tool, model)
+  return efforts !== undefined ? effortFor(efforts, remembered) : undefined
+}
+
+/**
+ * A named effort, refused when the model's levels are known and lack it. A
+ * model outside the catalog takes it as is, like a named model.
+ */
+function namedEffort(tool: AgentTool, model: string, effort: string): string {
+  const efforts = modelEfforts(tool, model)
+  if (efforts !== undefined && !efforts.levels.includes(effort)) {
+    throw new ServerError(
+      'VALIDATION',
+      `${model} has no "${effort}" effort; it supports: ${efforts.levels.join(', ')}`,
+    )
+  }
+  if (efforts === undefined && model !== '' && isCatalogModel(tool, model)) {
+    throw new ServerError('VALIDATION', `${model} has no effort setting`)
+  }
+  return effort
 }
 
 export async function createWorkspace(
@@ -774,6 +823,7 @@ export async function createWorkspace(
     permissionMode,
     mode,
     ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.effort !== undefined ? { effort: options.effort } : {}),
     ...(timeZone !== null ? { timeZone } : {}),
     resume: options.resume,
     ...(options.prewarm === true ? { spare: true } : {}),

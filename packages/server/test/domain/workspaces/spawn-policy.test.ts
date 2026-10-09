@@ -177,6 +177,17 @@ describe('decideSpawn', () => {
     await settle()
   })
 
+  // Refused here, since the create itself runs detached and a refusal there
+  // would never reach the caller.
+  it('threads a named effort into the create, refusing one the model lacks', async () => {
+    const create = stubCreate()
+    expect((await decideSpawn(makeRequest({ tool: 'claude', model: 'claude-opus-4-7', effort: 'max' }))).ok).toBe(true)
+    expect((await createdWith(create))[0]).toMatchObject({ model: 'claude-opus-4-7', effort: 'max' })
+    expect(await decideSpawn(makeRequest({ tool: 'claude', model: 'claude-opus-4-6', effort: 'xhigh' })))
+      .toEqual({ ok: false, error: expect.stringContaining('no "xhigh" effort') as unknown })
+    await settle()
+  })
+
   it('threads a provider/model override for a non-claude tool', async () => {
     // No explicit tool, so the caller's tool (codex) is used.
     const create = stubCreate()

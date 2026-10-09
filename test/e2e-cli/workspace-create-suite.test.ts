@@ -1640,8 +1640,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 300_000)
   })
 
-  /** --prompt, --model, --permission-mode and --branch on one workspace. */
-  describe('create-time overrides (--prompt, --model, --branch)', () => {
+  /** --prompt, --model, --effort, --permission-mode and --branch on one
+   *  workspace. */
+  describe('create-time overrides (--prompt, --model, --effort, --branch)', () => {
     const NAME = 'overridden'
     let jobName = ''
     let createStdout = ''
@@ -1666,7 +1667,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }) + '\n')
 
       const created = await createWorkspace(
-        NAME, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8',
+        NAME, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8', '--effort', 'xhigh',
         '--permission-mode', 'accept-edits', '--branch', 'dev',
       )
       jobName = created.jobName
@@ -1685,15 +1686,25 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }, { timeout: 120_000, interval: 1000 })
     }, 240_000)
 
-    it('launches claude with the requested --model and --permission-mode', async () => {
+    it('launches claude with the requested --model, --effort and --permission-mode', async () => {
       // Check the flags claude was launched with, not what its TUI shows.
       const { stdout: startCmd } = await execInJob(jobName, [
         'sh', '-c',
         `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
       ])
       expect(startCmd).toContain(
-        'claude --permission-mode acceptEdits --model claude-opus-4-8',
+        'claude --permission-mode acceptEdits --model claude-opus-4-8 --effort xhigh',
       )
+    }, 60_000)
+
+    // The server knows each model's levels (docs/effort-levels.md), so one
+    // the model lacks is refused before anything starts.
+    it('refuses an --effort the model does not have', async () => {
+      const bad = await runYaac(
+        serverEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--model', 'claude-opus-4-6', '--effort', 'xhigh',
+      )
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stdout + bad.stderr).toContain('claude-opus-4-6 has no "xhigh" effort')
     }, 60_000)
 
 

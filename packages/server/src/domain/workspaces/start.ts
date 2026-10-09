@@ -17,6 +17,8 @@ export interface StartWorkspaceRequest {
   tool?: AgentTool
   model?: string
   permissionMode?: PermissionMode
+  /** Effort level, in the tool's words; refused if the model lacks it. */
+  effort?: string
   mode?: AgentMode
   /** Reference branch on `origin`; unnamed is the project's default. */
   branch?: string
@@ -58,6 +60,7 @@ export async function startWorkspace(
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
     ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
+    ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
   })
   const { tool } = setup
@@ -66,6 +69,7 @@ export async function startWorkspace(
     await recordProjectCreate(projectId, tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
+      ...(request.effort !== undefined ? { effort: request.effort } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
     }, branch)
   }
@@ -104,6 +108,7 @@ export async function startWorkspace(
       mode: setup.mode,
       permissionMode: setup.permissionMode,
       ...(setup.model !== undefined ? { model: setup.model } : {}),
+      ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
       ...(branch !== undefined ? { branch } : {}),
       ...(prompt !== undefined ? { initialPrompt: prompt } : {}),
       ...(title !== undefined ? { title } : {}),
@@ -119,6 +124,7 @@ export async function startWorkspace(
       mode: setup.mode,
       permissionMode: setup.permissionMode,
       ...(setup.model !== undefined ? { model: setup.model } : {}),
+      ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
       ...(branch !== undefined ? { branch } : {}),
       ...(title !== undefined ? { title } : {}),
       ...(groupId !== undefined ? { groupId } : {}),

@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import { registerProvisioning, runProvisioned } from './provisioning'
 import { resolveGroup } from './groups'
 import { startWorkspace } from './start'
+import { resolveCreate } from './create'
 import { getProjectRow } from '#db'
 import type { Actor } from '#domain/access'
 import { loadToolAuthEntry } from '#domain/auth'
@@ -16,6 +17,7 @@ import {
   type PermissionMode,
 } from '@yaac/shared/types'
 import { serverLog } from '#log'
+import { ServerError } from '@yaac/shared/errors'
 
 /** A `yaac-mama create` request with its caller resolved. */
 export interface SpawnRequest {
@@ -38,6 +40,9 @@ export interface SpawnRequest {
   tool?: AgentTool
   model?: string
   permissionMode?: PermissionMode
+  /** Unnamed is the project's remembered effort where the model has it,
+   *  else the model's default. No ceiling: effort is not a restraint. */
+  effort?: string
   /** `tui` or `acp`; unnamed is the caller's, else the create default. */
   uiMode?: AgentMode
   /** Reference branch on `origin`; unnamed is the project's default. */
@@ -137,6 +142,7 @@ export async function decideSpawn(
     permissionMode,
     prompt: request.prompt,
     ...(request.model !== undefined ? { model: request.model } : {}),
+    ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
     ...(request.title !== undefined ? { title: request.title } : {}),
@@ -161,7 +167,8 @@ type Admission =
  * The checks a spawn passes once its in-flight slot is reserved: pick its
  * tool, refuse one the project owner has not signed in to (the spawn runs on
  * their credentials, so its agent could not authenticate), settle its
- * posture, and resolve its group, last so a refused spawn creates none.
+ * posture, check a named effort against its model, and resolve its group,
+ * last so a refused spawn creates none.
  */
 async function admit(request: SpawnRequest, deps: SpawnPolicyDeps): Promise<Admission> {
   // Tool precedence: explicit request > the caller's own tool > the agent
@@ -176,6 +183,20 @@ async function admit(request: SpawnRequest, deps: SpawnPolicyDeps): Promise<Admi
   }
   const posture = agentPermissionMode(tool, request.callerPermissionMode, request.permissionMode)
   if (!posture.ok) return posture
+  // A named effort the model lacks is refused here, the last point the
+  // caller can see a refusal: the create itself runs detached.
+  if (request.effort !== undefined) {
+    try {
+      await resolveCreate(request.callerProjectId, {
+        tool,
+        effort: request.effort,
+        ...(request.model !== undefined ? { model: request.model } : {}),
+      })
+    } catch (err) {
+      if (err instanceof ServerError && err.code === 'VALIDATION') return { ok: false, error: err.message }
+      throw err
+    }
+  }
   const groupId = request.group === undefined
     ? undefined
     : (await resolveGroup(request.callerProjectId, request.group, { create: true })).groupId

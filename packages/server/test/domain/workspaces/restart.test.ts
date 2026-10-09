@@ -124,8 +124,12 @@ describe('restartWorkspace', () => {
     expect(listProvisioning()).toEqual([])
   })
 
-  it('relaunches a stopped workspace with no unit to tear down, in its recorded posture', async () => {
-    await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', workspaceId: 'wt-2', permissionMode: 'plan' })
+  it('relaunches a stopped workspace with no unit to tear down, in its recorded posture and effort', async () => {
+    await createWorkspace(DEMO_PROJECT_ID, {
+      mode: 'tui', workspaceId: 'wt-2', permissionMode: 'plan', model: 'claude-opus-4-7', effort: 'max',
+    })
+    // The agent moved itself since; the restart follows it.
+    await applyWorkspaceEvent({ type: 'effort-changed', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2', effort: 'low' })
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2' })
     calls = []
 
@@ -133,7 +137,21 @@ describe('restartWorkspace', () => {
 
     expect(calls.some((c) => c.startsWith('destroy'))).toBe(false)
     expect(calls.find((c) => c.includes('respawn-window'))).toContain('--permission-mode plan')
+    expect(calls.find((c) => c.includes('respawn-window'))).toContain('--effort low')
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2'))?.stoppedAt).toBeUndefined()
+  })
+
+  // A row with no effort (one created before effort existed) still names
+  // one: the model's default, since naming none would take whatever the
+  // shared tool home holds.
+  it("relaunches a row with no effort at its model's default", async () => {
+    await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', workspaceId: 'wt-5', permissionMode: 'bypass', model: 'claude-opus-4-7' })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-5' })
+    calls = []
+
+    await restartWorkspace(local, 'wt-5')
+
+    expect(calls.find((c) => c.includes('respawn-window'))).toContain('--effort xhigh')
   })
 
   it('keeps the stop record, and a failed provisioning row, when the resume fails', async () => {

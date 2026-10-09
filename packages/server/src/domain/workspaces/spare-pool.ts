@@ -20,6 +20,7 @@ export interface SpareAgent {
   tool: AgentTool
   model?: string
   permissionMode: PermissionMode
+  effort?: string
   mode: AgentMode
 }
 
@@ -43,6 +44,7 @@ function respawnAgentExec(
     paths,
     permissionMode: agent.permissionMode,
     ...(agent.model !== undefined ? { model: agent.model } : {}),
+    ...(agent.effort !== undefined ? { effort: agent.effort } : {}),
     ...(piProvider !== undefined ? { piProvider } : {}),
   })}'`
 }

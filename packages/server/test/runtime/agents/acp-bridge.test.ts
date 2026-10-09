@@ -814,6 +814,39 @@ describe('attachAcp', () => {
     expect(requests('session/set_mode')).toHaveLength(0)
   })
 
+  // docs/effort-levels.md. The menu lists the adapter's own levels for the
+  // current model, so a reattach reads them back from the record.
+  it('shows a pane the effort, switches it to an offered level and refuses any other', async () => {
+    const reported: string[] = []
+    const option = (current: string): Record<string, unknown> => ({
+      id: 'effort', category: 'thought_level', type: 'select', currentValue: current,
+      options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }],
+    })
+    reattach(acpAdapterFor('claude'), {
+      recoverEffort: () => Promise.resolve({
+        configId: 'effort', current: 'high', options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }],
+      }),
+      onEffort: (effort) => reported.push(effort),
+    })
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock)
+    await waitForHello(sock)
+    const efforts = (): AcpServerMessage[] => sock.sent.filter((m) => m.type === 'effort')
+    await waitFor(() => efforts().some((m) => (m as { current?: string }).current === 'high'))
+    expect(efforts().at(-1)).toEqual({
+      type: 'effort', current: 'high', available: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }],
+    })
+
+    for (const effort of ['ultra', '', null, 42, ['max']]) sock.clientSend({ type: 'effort', effort })
+    sock.clientSend({ type: 'effort', effort: 'max' })
+    await waitFor(() => requests('session/set_config_option').length === 1)
+    expect(requests('session/set_config_option')[0].params).toEqual({ sessionId: 'acp-1', configId: 'effort', value: 'max' })
+    reply(requests('session/set_config_option')[0].id, { configOptions: [option('max')] })
+    await waitFor(() => (efforts().at(-1) as { current?: string }).current === 'max')
+    // Reported upward, so the workspace row follows.
+    expect(reported).toEqual(['high', 'max'])
+  })
+
   it('offers only the postures the handshake announced, and refuses crafted frames', async () => {
     conversation.close()
     transport = new FakeTransport()

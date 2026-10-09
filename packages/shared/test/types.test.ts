@@ -87,7 +87,7 @@ describe('toolSupportsPermissionMode', () => {
 describe('resolveToolCreateDefaults', () => {
   const resolve = (args: Partial<Parameters<typeof resolveToolCreateDefaults>[0]> = {}) =>
     resolveToolCreateDefaults({
-      driver: 'k8s', tool: 'claude', remembered: undefined, defaultModel: 'fallback', ...args,
+      driver: 'k8s', tool: 'claude', remembered: undefined, defaultModel: 'fallback', effortsFor: () => undefined, ...args,
     })
 
   it('falls back per field when nothing is remembered', () => {
@@ -98,6 +98,18 @@ describe('resolveToolCreateDefaults', () => {
   it('takes what is remembered where it still fits', () => {
     expect(resolve({ remembered: { model: 'claude-sonnet-5', permissionMode: 'plan' } }))
       .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
+  })
+
+  // One level name means the same across a tool's models, so a remembered
+  // effort carries to another model that has it; one that lacks it runs at
+  // its own default, and a model with no levels gets none.
+  it('takes a remembered effort where the model has it, else the model default', () => {
+    const effortsFor = (model: string) =>
+      model === 'big' ? { levels: ['low', 'high', 'max'], default: 'high' } : undefined
+    expect(resolve({ effortsFor, defaultModel: 'big' }).effort).toBe('high')
+    expect(resolve({ effortsFor, defaultModel: 'big', remembered: { effort: 'max' } }).effort).toBe('max')
+    expect(resolve({ effortsFor, defaultModel: 'big', remembered: { effort: 'xhigh' } }).effort).toBe('high')
+    expect(resolve({ effortsFor, remembered: { effort: 'max' } })).not.toHaveProperty('effort')
   })
 
   // A remembered posture is a preference, so it falls back rather than

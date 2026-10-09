@@ -85,6 +85,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       title: row?.title,
       groupId: row?.groupId,
       ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
+      ...(row?.effort !== undefined ? { effort: row.effort } : {}),
     }
     if (w.phase === 'terminating') {
       // Non-interactive placeholder: no ports, and `running` so no attention

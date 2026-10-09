@@ -264,6 +264,40 @@ describe('buildAgentCmd', () => {
         .toContain('--permission-mode plan')
     })
   })
+
+  // Every launch names its effort, since an in-session change is saved to
+  // the project's shared tool home and would otherwise carry into this one
+  // (docs/effort-levels.md).
+  describe('effort', () => {
+    const launch = (tool: AgentTool, extra: { model?: string; resume?: boolean } = {}): string =>
+      buildAgentCmd({ tool, workspaceId: 's', permissionMode: 'bypass', effort: 'high', ...extra })
+
+    it("passes each tool's own flag, and none when unset", () => {
+      expect(launch('claude', { resume: true })).toMatch(/ --effort high --resume s$/)
+      expect(launch('pi')).toContain(' --thinking high --session-id s')
+      // Before `resume`, so it binds to a resumed conversation too.
+      expect(launch('codex', { resume: true })).toMatch(/ -c "model_reasoning_effort=high" .*resume s/)
+      for (const tool of ['claude', 'codex', 'pi'] as const) {
+        expect(buildAgentCmd({ tool, workspaceId: 's', permissionMode: 'bypass' })).not.toMatch(/effort|thinking/)
+      }
+    })
+
+    // opencode takes a variant only on an agent, beside its model, and on
+    // both agents so a Tab keeps it; `default` is no variant at all.
+    it('gives opencode the variant on both agents through the shell it is embedded in', () => {
+      const cmd = launch('opencode', { model: 'openai/gpt-5' })
+      const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
+      const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], { encoding: 'utf8' })
+      expect((JSON.parse(out) as { agent?: unknown }).agent).toEqual({
+        build: { model: 'openai/gpt-5', variant: 'high' },
+        plan: { model: 'openai/gpt-5', variant: 'high' },
+      })
+      const plain = buildAgentCmd({
+        tool: 'opencode', workspaceId: 's', permissionMode: 'bypass', model: 'openai/gpt-5', effort: 'default',
+      })
+      expect(plain).not.toContain('agent')
+    })
+  })
 })
 
 describe('verifyAgentWindowAlive', () => {

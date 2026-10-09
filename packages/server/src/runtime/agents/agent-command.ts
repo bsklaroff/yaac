@@ -74,6 +74,9 @@ export interface AgentCmdSpec {
    *  Validated against MODEL_RE by the create route, so it can be embedded
    *  bare in the single-quoted respawn-window wrapper. */
   model?: string
+  /** Effort level, in the tool's words (docs/effort-levels.md). Shape-checked
+   *  (`EFFORT_RE`), so it embeds bare like the model. Absent passes none. */
+  effort?: string
   /**
    * The permission posture to launch in. Required, not defaulted: without a
    * sandbox it decides what the agent may do to this machine unsupervised.
@@ -116,6 +119,7 @@ interface OpencodeRule { action: string; resource: string; effect: 'allow' | 'as
 interface OpencodeConfig {
   default_agent?: string
   permissions?: OpencodeRule[]
+  agent?: Record<string, { model: string; variant: string }>
 }
 
 /**
@@ -175,17 +179,31 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  * posture plus the model, if given (`provider/model`; otherwise opencode
  * uses the model saved in the shared config or its default). Quoting is
  * `envJsonAssignment`'s.
+ *
+ * An effort is a model variant, which opencode's config takes only on an
+ * agent, beside the model it applies to (a `model#variant` there is dropped
+ * as a legacy reference, checked against 2.0.21). It goes on both built-in
+ * agents, so a Tab between them keeps it. `default` (no variant) needs no
+ * entry.
  */
-export function opencodeConfigArg(mode: PermissionMode, model: string | undefined): string {
-  const config = {
+export function opencodeConfigArg(
+  mode: PermissionMode,
+  model: string | undefined,
+  effort?: string,
+): string {
+  const variant = model !== undefined && effort !== undefined && effort !== 'default'
+    ? { model, variant: effort }
+    : undefined
+  const config: OpencodeConfig & { model?: string } = {
     ...OPENCODE_POSTURE[postureFor('opencode', mode)],
     ...(model === undefined ? {} : { model }),
+    ...(variant === undefined ? {} : { agent: { build: variant, plan: variant } }),
   }
   return envJsonAssignment('OPENCODE_CONFIG_CONTENT', config)
 }
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {
-  const { tool, workspaceId, piProvider, model } = spec
+  const { tool, workspaceId, piProvider, model, effort } = spec
   const mode = postureFor(tool, spec.permissionMode)
   const resume = spec.resume ?? false
   if (tool === 'codex') {
@@ -213,6 +231,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     const config = [
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
       ...codexLaunchConfig(spec.paths?.workspaceDir),
+      ...(effort !== undefined ? [`model_reasoning_effort=${effort}`] : []),
     ]
     // Name the workspace with `-C`: a resume from a different cwd than the
     // one recorded stops on a "session or current directory?" screen.
@@ -239,7 +258,8 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     const piModel = model ?? piProviderInfo(piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
     // Guard against a provider with no default model.
     const modelFlag = piModel ? ` --model ${piModel}` : ''
-    const pi = `pi --approve --tui-mode fullscreen${modelFlag} --session-id ${workspaceId}`
+    const thinkingFlag = effort !== undefined ? ` --thinking ${effort}` : ''
+    const pi = `pi --approve --tui-mode fullscreen${modelFlag}${thinkingFlag} --session-id ${workspaceId}`
     // On a fresh run pi warns on stderr that no session with this id exists
     // and it is creating one. The id is chosen by yaac on purpose (pi embeds
     // it in its JSONL filename; see transcripts.ts), so this always fires
@@ -260,7 +280,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // process's env and nothing stale outlives the window. The TUI rejects
     // unknown flags, and takes model and agent only via config.
     return [
-      opencodeConfigArg(mode, model),
+      opencodeConfigArg(mode, model, effort),
       envJsonAssignment('OPENCODE_CLI_CONFIG_CONTENT', { keybinds: OPENCODE_TUI_KEYBINDS }),
       'opencode --standalone',
       resume ? `--session ${workspaceId}` : '',
@@ -294,6 +314,9 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   return [
     `env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
     model ? `--model ${model}` : '',
+    // Outranks the effort a `/effort` in another workspace saved to the
+    // shared settings.
+    effort !== undefined ? `--effort ${effort}` : '',
     resume ? `--resume ${workspaceId}` : `--session-id ${workspaceId}`,
   ].filter(Boolean).join(' ')
 }

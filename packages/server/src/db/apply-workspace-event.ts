@@ -6,6 +6,7 @@ import {
   recordWorkspaceResumed,
   recordWorkspaceStopped,
   setWorkspaceBaseBranch,
+  setWorkspaceEffort,
   setWorkspacePermissionMode,
 } from './workspace-store'
 import { notifyWorkspaceListChanged } from '#notify'
@@ -53,6 +54,9 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
     case 'permission-mode-changed':
       await setWorkspacePermissionMode(event.projectId, event.workspaceId, event.permissionMode)
       return
+    case 'effort-changed':
+      await setWorkspaceEffort(event.projectId, event.workspaceId, event.effort)
+      return
     case 'workspace-stopped':
       await recordWorkspaceStopped(event.projectId, event.workspaceId, event.cause)
       return
@@ -60,11 +64,12 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
 }
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const { projectId, workspaceId, baseBranch, resume, permissionMode, model, mode, timeZone } = event
+  const { projectId, workspaceId, baseBranch, resume, permissionMode, model, mode, effort, timeZone } = event
   const launch = {
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(mode !== undefined ? { mode } : {}),
+    ...(effort !== undefined ? { effort } : {}),
     ...(timeZone !== undefined ? { timeZone } : {}),
   }
   // A fresh create inserts the row (refusing a taken id); a resume updates

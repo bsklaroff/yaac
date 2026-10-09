@@ -1,19 +1,21 @@
 #!/bin/sh
 # yaac agent reporter: puts what an agent says about itself on its tmux pane,
 # where the server's status watcher is subscribed over tmux control mode —
-# the model as the pane option @yaac-model, and the permission mode it is in
-# as @yaac-permission-mode. That subscription is the whole transport — tmux
-# pushes the new value the moment it is set, so a model switch or a mode
-# change reaches the workspace's row without anything reading a transcript.
+# the model as the pane option @yaac-model, the permission mode it is in as
+# @yaac-permission-mode, and its effort level as @yaac-effort. That
+# subscription is the whole transport — tmux pushes the new value the moment
+# it is set, so a model switch or a mode change reaches the workspace's row
+# without anything reading a transcript.
 #
 # A caller that has the values in hand (a plugin or extension) passes them:
-# $1 the model, $2 the mode, either of which may be empty. With no arguments
-# they are read from a hook payload on stdin: claude's PostModelSwitch carries
-# `to_model`, its SessionStart `model` — on an interactive startup, not on a
-# CLI `--resume` — and its UserPromptSubmit and Stop `permission_mode`. A
-# value the payload does not name leaves that option alone: a SessionStart
-# for `/clear` changed no model, and the option belongs to the pane, so the
-# conversation that now owns the pane inherits it.
+# $1 the model, $2 the mode, $3 the effort, any of which may be empty. With
+# no arguments they are read from a hook payload on stdin: claude's
+# PostModelSwitch carries `to_model`, its SessionStart `model` — on an
+# interactive startup, not on a CLI `--resume` — and its UserPromptSubmit
+# and Stop `permission_mode` and `effort.level`. A value the payload does
+# not name leaves that option alone: a SessionStart for `/clear` changed no
+# model, and the option belongs to the pane, so the conversation that now
+# owns the pane inherits it.
 #
 # The mode is the tool's own word for it (claude's `acceptEdits`, opencode's
 # `plan` agent); the server reads it as a posture and records it on the
@@ -29,6 +31,7 @@
 if [ $# -gt 0 ]; then
   MODEL="${1:-}"
   MODE="${2:-}"
+  EFFORT="${3:-}"
 else
   # The payload is one line of JSON, and a quote inside a string field (the
   # prompt, the last message) is escaped — so only the real fields match.
@@ -37,8 +40,10 @@ else
   [ -n "$MODEL" ] \
     || MODEL=$(printf '%s' "$INPUT" | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   MODE=$(printf '%s' "$INPUT" | sed -n 's/.*"permission_mode"[[:space:]]*:[[:space:]]*"\([A-Za-z-]*\)".*/\1/p')
+  EFFORT=$(printf '%s' "$INPUT" \
+    | sed -n 's/.*"effort"[[:space:]]*:[[:space:]]*{[[:space:]]*"level"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p')
 fi
-[ -n "$MODEL$MODE" ] || exit 0
+[ -n "$MODEL$MODE$EFFORT" ] || exit 0
 [ -n "${TMUX_PANE:-}" ] || exit 0
 SERVER="${TMUX:-${YAAC_TMUX:-}}"
 [ -n "$SERVER" ] || exit 0
@@ -48,4 +53,5 @@ set_option() {
 }
 [ -z "$MODEL" ] || set_option @yaac-model "$MODEL"
 [ -z "$MODE" ] || set_option @yaac-permission-mode "$MODE"
+[ -z "$EFFORT" ] || set_option @yaac-effort "$EFFORT"
 exit 0

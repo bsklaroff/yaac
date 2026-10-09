@@ -75,7 +75,7 @@ export {
 } from './transcripts'
 // codex's posture is read from its rollout rather than pushed on its pane;
 // rollout names and lineage also group a workspace's history.
-export { codexRolloutParent, codexRolloutThreadId, getCodexPermissionMode } from './codex'
+export { codexRolloutParent, codexRolloutThreadId, getCodexRolloutSettings } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 export { ensureToolApiKeyConfig } from './tool-api-keys'
 // How the server reads and writes the project dirs an agent can write too.

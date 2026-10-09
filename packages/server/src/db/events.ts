@@ -24,6 +24,7 @@ export type WorkspaceEvent =
   | SessionsDiscovered
   | SessionsActive
   | PermissionModeChanged
+  | EffortChanged
   | WorkspaceStopped
 
 /**
@@ -51,6 +52,8 @@ export interface WorkspaceCreated {
    *  request against (see `workspaces.model`). */
   model?: string
   mode?: AgentMode
+  /** The effort its agents launch at, recorded so a restart reuses it. */
+  effort?: string
   /** The zone it launches with as `TZ` (see `workspaces.timeZone`). */
   timeZone?: string
 }
@@ -185,6 +188,18 @@ export interface PermissionModeChanged {
   projectId: string
   workspaceId: string
   permissionMode: PermissionMode
+}
+
+/**
+ * The running agent's effort level changed (`/effort`, a model switch that
+ * re-seeds it, the chat pane's menu). The row follows, so a restart
+ * relaunches at it (docs/effort-levels.md).
+ */
+export interface EffortChanged {
+  type: 'effort-changed'
+  projectId: string
+  workspaceId: string
+  effort: string
 }
 
 

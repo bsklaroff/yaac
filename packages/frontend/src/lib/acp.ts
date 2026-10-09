@@ -34,6 +34,8 @@ export interface AcpStream {
   subagentTranscripts: Record<string, SubagentTranscript>
   /** The conversation's posture and the ones it can be switched to. */
   permissionModes: { current?: PermissionMode; available: PermissionMode[] }
+  /** The conversation's effort level and the ones its model offers. */
+  efforts: { current?: string; available: Array<{ value: string; name: string }> }
 }
 
 /** The end of a background task's output, or why it could not be read. */
@@ -71,6 +73,7 @@ export function useAcpStream(
   const [taskOutputs, setTaskOutputs] = useState<Record<string, TaskOutput>>({})
   const [subagentTranscripts, setSubagentTranscripts] = useState<Record<string, SubagentTranscript>>({})
   const [permissionModes, setPermissionModes] = useState<AcpStream['permissionModes']>({ available: [] })
+  const [efforts, setEfforts] = useState<AcpStream['efforts']>({ available: [] })
   const socketRef = useRef<ReconnectingSocket | null>(null)
 
   useEffect(() => {
@@ -114,6 +117,11 @@ export function useAcpStream(
           setPermissionModes(modes)
           return false
         }
+        if (msg.type === 'effort') {
+          const { type: _, ...next } = msg
+          setEfforts(next)
+          return false
+        }
         if (msg.type === 'health') setConnected(msg.connected)
         if (msg.type === 'task-output') {
           const { taskId, ...output } = msg
@@ -142,6 +150,7 @@ export function useAcpStream(
     taskOutputs,
     subagentTranscripts,
     permissionModes,
+    efforts,
     send: (msg) => socketRef.current?.send(JSON.stringify(msg)) ?? false,
   }
 }

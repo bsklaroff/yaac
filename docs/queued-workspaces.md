@@ -160,8 +160,8 @@ snapshot omits it while its provisioning row stands in for it.
 - **Snapshot.** `queuedWorkspaces` (entries not launching, oldest first) and
   `heldWorkspaces` (stopped rows that entries wait on, in a slimmer shape
   than the stopped listing, which is too slow for a snapshot).
-  `WorkspaceListEntry.permissionMode` lets the create dialog seed a child
-  from a live parent.
+  `WorkspaceListEntry.permissionMode` and `effort` let the create dialog
+  seed a child from a live parent.
 - **`yaac-mama queue`** queues under the workspace or entry named by the
   required `--parent-workspace` (a follow-up to the caller passes
   `$YAAC_WORKSPACE_ID`). It takes every option `yaac-mama create` does and

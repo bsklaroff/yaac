@@ -122,8 +122,8 @@ export const projects = snakeCase.table('projects', {
 
 /**
  * Remembered create defaults per (project, agent): the model, permission
- * mode and agent mode last chosen, read back as the next create's defaults
- * (#domain/workspaces). Per agent because model ids and permission modes are
+ * mode, agent mode and effort last chosen, read back as the next create's
+ * defaults (#domain/workspaces). Per agent because model ids and permission modes are
  * tool-specific; per project because they tend to follow the repo. A null
  * column falls back to the resolver's default.
  */
@@ -134,6 +134,8 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
   model: text(),
   permissionMode: text().$type<PermissionMode>(),
   mode: text().$type<AgentMode>(),
+  /** In the tool's words; used where the next create's model has it. */
+  effort: text(),
 }, (t) => [uniqueIndex().on(t.projectId, t.tool)])
 
 /**
@@ -203,6 +205,13 @@ export const workspaces = snakeCase.table('workspaces', {
    */
   model: text(),
   mode: text().$type<AgentMode>(),
+  /**
+   * The effort level its agents run at, in the tool's words. Set at create
+   * or claim, then updated whenever the running agent reports a change, so a
+   * restart relaunches at it (docs/effort-levels.md). Null when its model
+   * has no effort setting.
+   */
+  effort: text(),
   /**
    * The IANA zone it launched with as `TZ`, null when none was set. A spare
    * warmed in another zone than the user's current one is never claimed.
@@ -402,6 +411,8 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   model: text().notNull(),
   mode: text().$type<AgentMode>().notNull(),
   permissionMode: text().$type<PermissionMode>().notNull(),
+  /** Null when its model has no effort setting. */
+  effort: text(),
   /** The branch to fork from (no `origin/` prefix), fetched at launch so the
    *  child starts from its latest tip. */
   branch: text().notNull(),
@@ -453,6 +464,8 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   /** Null when the dialog hadn't resolved one yet (still loading); reopening
    *  then uses the default. */
   model: text(),
+  /** Null when the model has no effort setting, or none was resolved. */
+  effort: text(),
   branch: text(),
   /** The dialog's Start field: the workspace or queued entry to wait on, or
    *  null for "Now". Not a live reference; a parent that is gone when the

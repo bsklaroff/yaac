@@ -20,6 +20,8 @@ import {
   AGENT_TOOLS,
   PERMISSION_MODE_COPY,
   SUPPORTED_PERMISSION_MODES,
+  effortFor,
+  effortLabel,
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
@@ -50,6 +52,7 @@ interface Seed {
   model?: string
   mode?: AgentMode
   permissionMode?: PermissionMode
+  effort?: string
   branch?: string
   groupId?: string
 }
@@ -71,6 +74,7 @@ function workspaceSeed(w: WorkspaceListEntry): Seed {
     ...(first?.mode !== undefined ? { mode: first.mode } : {}),
     ...(first?.model !== undefined ? { model: first.model } : {}),
     ...(w.permissionMode !== undefined ? { permissionMode: w.permissionMode } : {}),
+    ...(w.effort !== undefined ? { effort: w.effort } : {}),
     ...(w.baseBranch !== undefined ? { branch: w.baseBranch } : {}),
     ...(w.groupId !== undefined ? { groupId: w.groupId } : {}),
   }
@@ -82,6 +86,7 @@ function entrySeed(e: QueuedWorkspaceEntry): Seed {
     model: e.model,
     mode: e.mode,
     permissionMode: e.permissionMode,
+    ...(e.effort !== undefined ? { effort: e.effort } : {}),
     branch: e.branch,
     ...(e.groupId !== undefined ? { groupId: e.groupId } : {}),
   }
@@ -94,7 +99,7 @@ const workspaceName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New workspace', 40)
 
 const DRAFT_FIELDS = [
-  'prompt', 'tool', 'mode', 'permissionMode', 'model', 'branch', 'startAfter', 'title', 'groupId',
+  'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'branch', 'startAfter', 'title', 'groupId',
 ] as const satisfies
   readonly (keyof DraftWorkspaceSettings)[]
 
@@ -268,6 +273,7 @@ function CreateWorkspaceForm({
         ...(from.model !== undefined ? { model: from.model } : {}),
         mode: from.mode,
         permissionMode: from.permissionMode,
+        ...(from.effort !== undefined ? { effort: from.effort } : {}),
       },
     }
     : { picks: {} })
@@ -353,7 +359,14 @@ function CreateWorkspaceForm({
     ? fromSeed.permissionMode
     : undefined
   const permissionMode = picks.permissionMode ?? seededPosture ?? base.permissionMode
-  const modelName = base.models.find((m) => m.id === model)?.name
+  const modelOption = base.models.find((m) => m.id === model)
+  const modelName = modelOption?.name
+  // Picked, seeded or remembered, where this model has it; else its default.
+  // A model with no levels (or none known) has no effort.
+  const efforts = modelOption?.efforts
+  const effort = efforts !== undefined
+    ? effortFor(efforts, picks.effort ?? fromSeed?.effort ?? base.effort)
+    : undefined
   const signedIn = defaults.configured.has(tool)
   const needsGitAuth = defaults.ready && !defaults.hasGitCredential
 
@@ -406,6 +419,7 @@ function CreateWorkspaceForm({
     mode,
     permissionMode,
     ...(model !== '' ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
     ...(branchValue !== '' ? { branch: branchValue } : {}),
     ...(start !== '' ? { startAfter: start } : {}),
     ...(titleText !== '' ? { title: titleText } : {}),
@@ -480,6 +494,7 @@ function CreateWorkspaceForm({
         model,
         ...(modelName !== undefined ? { modelName } : {}),
         permissionMode,
+        ...(effort !== undefined ? { effort } : {}),
         mode,
         ...(text !== '' ? { prompt: text } : {}),
         ...(titleText !== '' ? { title: titleText } : {}),
@@ -495,6 +510,7 @@ function CreateWorkspaceForm({
       model,
       mode,
       permissionMode,
+      ...(effort !== undefined ? { effort } : {}),
       branch: branchValue,
       title: titleText,
       group: newGroup !== null ? newGroupName : groupId,
@@ -739,6 +755,24 @@ function CreateWorkspaceForm({
                   onDismiss={() => setModelQuery(null)}
                 />
               </div>
+            </Row>
+
+            <Row label="Effort" title="How hard the model thinks, in the agent's own levels">
+              <select
+                aria-label="Effort"
+                value={effort ?? ''}
+                disabled={efforts === undefined}
+                onChange={(e) => setPicks((p) => ({ ...p, effort: e.target.value }))}
+                className={`${SELECT} disabled:opacity-60`}
+              >
+                {efforts === undefined
+                  ? <option value="">—</option>
+                  : efforts.levels.map((l) => (
+                    <option key={l} value={l}>
+                      {effortLabel(l)}{l === efforts.default ? ' (default)' : ''}
+                    </option>
+                  ))}
+              </select>
             </Row>
 
             <Row label="Permissions" title={PERMISSION_MODE_HELP[permissionMode]}>
