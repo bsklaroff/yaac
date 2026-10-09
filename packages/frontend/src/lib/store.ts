@@ -463,7 +463,8 @@ interface UiState {
   previewPort: Record<string, number>
   /** Show another forwarded port in the preview pane. */
   setPreviewPort: (workspaceId: string, containerPort: number) => void
-  /** Open or focus the preview pane, setting its port if unset. */
+  /** Open or focus the preview pane, on `containerPort` when given and on
+   *  the port it last showed otherwise. */
   openPreview: (workspaceId: string, containerPort?: number) => void
   /** Open or focus a workspace's file explorer in its changes view:
    *  changed files only, as a flat list, each with its diff, its filter
@@ -922,7 +923,7 @@ export const useUiStore = create<UiState>((set) => ({
   )),
   openPreview: (workspaceId, containerPort) => set((s) => ({
     ...openSpecialPane(s, workspaceId, PREVIEW_TARGET),
-    ...(containerPort !== undefined && s.previewPort[workspaceId] === undefined
+    ...(containerPort !== undefined
       ? { previewPort: { ...s.previewPort, [workspaceId]: containerPort } }
       : {}),
   })),

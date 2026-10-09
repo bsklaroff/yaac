@@ -484,6 +484,7 @@ describe('view mode (tiles vs tabs)', () => {
     useUiStore.getState().openPreview('s1', 3000)
     useUiStore.getState().openChanges('s1')
     useUiStore.getState().openPreview('s1', 4000)
+    useUiStore.getState().openPreview('s1')
     const state = useUiStore.getState()
     expect(state.layouts.s1).toEqual([
       { tabs: ['agent'], active: 'agent' },
@@ -491,8 +492,9 @@ describe('view mode (tiles vs tabs)', () => {
       { tabs: [FILES_TARGET], active: FILES_TARGET },
     ])
     expect(state.activeTabs.s1).toBe(PREVIEW_TARGET)
-    // The first port opened sticks; reopening only refocuses.
-    expect(state.previewPort.s1).toBe(3000)
+    // Reopening on another port switches the pane to it; reopening with
+    // none keeps the port it shows.
+    expect(state.previewPort.s1).toBe(4000)
     // Changes open as the explorer's changes view, a flat list with every
     // diff open, keeping the rest of its view state.
     expect(state.paneView[paneViewKey('s1', FILES_TARGET)]).toEqual({

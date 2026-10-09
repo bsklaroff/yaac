@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
 import clsx from 'clsx'
-import { POPUP } from '#components/ui/menu'
+import { MENU_ITEM, POPUP } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
 import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
@@ -23,7 +23,7 @@ import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import {
-  AddIcon, ChangesIcon, CloseIcon, FilesIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
+  AddIcon, ChangesIcon, ChevronIcon, CloseIcon, FilesIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
   TerminalIcon, TilesIcon, TOOL_LABEL,
 } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -140,6 +140,12 @@ export function WorkspaceView({
   const previewPorts = workspace?.forwardedPorts ?? []
   const chipPorts = embedPreview ? [] : previewPorts
   const previewPortForWorkspace = sid ? previewPortMap[sid] : undefined
+  // With several ports, the header's Preview button (and Alt-P) offers a
+  // choice of port. The shortcut opens that menu from wherever focus is, and
+  // a dismissed menu hands focus back there.
+  const pickPreviewPort = embedPreview && !isMobile && previewPorts.length > 1
+  const previewMenuTrigger = useRef<HTMLButtonElement>(null)
+  const previewMenuReturn = useRef<HTMLElement | null>(null)
 
   // Show the provisioning placeholder only when its row is selected and the
   // workspace isn't listed yet.
@@ -272,7 +278,21 @@ export function WorkspaceView({
     sid,
     targets,
     activeTab,
-    canPreview: previewPorts.length > 0,
+    openPreview: previewPorts.length === 0 ? null : () => {
+      if (!sid) return
+      if (!pickPreviewPort) {
+        openPreview(sid, previewPorts.length === 1 ? previewPorts[0].containerPort : undefined)
+        return
+      }
+      // A click with no pointer opens the menu as a keypress would, with its
+      // first item highlighted. Pressed again, it closes the menu, keeping
+      // the return target recorded when it opened.
+      const trigger = previewMenuTrigger.current
+      const from = document.activeElement
+      const wasOpen = trigger?.hasAttribute('data-popup-open')
+      trigger?.click()
+      if (!wasOpen) previewMenuReturn.current = from instanceof HTMLElement ? from : null
+    },
     isMobile,
     openShell,
     closePane,
@@ -432,13 +452,19 @@ export function WorkspaceView({
                 <FilesIcon size={13} />
                 Files
               </button>
-              {embedPreview && previewPorts.length > 0 && (
+              {pickPreviewPort ? (
+                <PreviewPortMenu
+                  ports={previewPorts}
+                  trigger={previewMenuTrigger}
+                  returnFocus={previewMenuReturn}
+                  onPick={(p) => openPreview(workspace.workspaceId, p)}
+                />
+              ) : embedPreview && previewPorts.length > 0 && (
                 <button
                   onClick={() => openPreview(workspace.workspaceId, previewPorts[0].containerPort)}
                   title={`Open preview (${previewPorts.map(portLinkLabel).join(', ')})`}
                   aria-label="Open preview"
-                  className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px]
-                    text-text-dim transition hover:bg-surface-2 hover:text-text"
+                  className={PREVIEW_BUTTON}
                 >
                   <PreviewIcon size={11} />
                   Preview
@@ -738,6 +764,67 @@ export function paneBarClass(isMobile: boolean): string {
     : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
 }
 
+const PREVIEW_BUTTON = 'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] '
+  + 'text-text-dim transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2'
+
+/**
+ * The header's Preview button for a workspace with several forwarded ports:
+ * a menu of them, whose pick opens the preview on that port. A pick leaves
+ * focus with the pane it opened; a dismissal returns it to `returnFocus`
+ * when set (the menu was opened by shortcut), else to the button.
+ */
+function PreviewPortMenu({
+  ports,
+  trigger,
+  returnFocus,
+  onPick,
+}: {
+  ports: WorkspaceListEntry['forwardedPorts']
+  trigger: RefObject<HTMLButtonElement | null>
+  returnFocus: RefObject<HTMLElement | null>
+  onPick: (containerPort: number) => void
+}): JSX.Element {
+  const picked = useRef(false)
+  return (
+    <Menu.Root
+      onOpenChange={(open) => {
+        if (!open) return
+        picked.current = false
+        returnFocus.current = null
+      }}
+    >
+      <Menu.Trigger
+        ref={trigger}
+        title={`Open preview (${ports.map(portLinkLabel).join(', ')})`}
+        aria-label="Open preview"
+        className={PREVIEW_BUTTON}
+      >
+        <PreviewIcon size={11} />
+        Preview
+        <ChevronIcon size={10} className="rotate-90" />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner side="bottom" align="start" sideOffset={4}>
+          <Menu.Popup
+            finalFocus={() => !picked.current && (returnFocus.current?.isConnected ? returnFocus.current : true)}
+            className={clsx('min-w-[120px]', POPUP)}
+          >
+            {ports.map((p) => (
+              <Menu.Item
+                key={p.containerPort}
+                className={MENU_ITEM}
+                onClick={() => { picked.current = true; onPick(p.containerPort) }}
+              >
+                <span className="font-mono">:{p.containerPort}</span>
+              </Menu.Item>
+            ))}
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
+  )
+}
+
 /**
  * The mobile workspace bar's ⋯ menu, holding the desktop bar's controls
  * that don't fit on a phone. Warning badges stay in the bar.
@@ -788,12 +875,12 @@ function PaneOverflowMenu({
               <FilesIcon size={14} />
               Browse files
             </Menu.Item>
-            {previewPorts.length > 0 && (
-              <Menu.Item className={ITEM} onClick={() => onOpenPreview(previewPorts[0].containerPort)}>
+            {previewPorts.map((p) => (
+              <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview(p.containerPort)}>
                 <PreviewIcon size={14} />
-                Preview
+                {previewLabel(previewPorts.length > 1 ? p.containerPort : undefined)}
               </Menu.Item>
-            )}
+            ))}
             {/* window.open from a click, which popup blockers allow. */}
             {chipPorts.map((p) => (
               <Menu.Item
