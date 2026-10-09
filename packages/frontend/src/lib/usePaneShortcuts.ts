@@ -9,8 +9,9 @@ export interface PaneShortcutContext {
   sid: string | null
   targets: string[]
   activeTab: string | undefined
-  /** Whether the workspace has a forwarded port to preview. */
-  canPreview: boolean
+  /** Open the preview, or offer a choice of port; null when the workspace
+   *  has no forwarded port. */
+  openPreview: (() => void) | null
   isMobile: boolean
   openShell: () => void
   /** Close a special pane, which needs no confirmation. */
@@ -58,9 +59,9 @@ export function usePaneShortcuts(ctx: PaneShortcutContext): void {
           state.openChanges(c.sid)
           return
         case 'open-preview':
-          if (!c.canPreview) return
+          if (!c.openPreview) return
           claimChord(e)
-          state.openPreview(c.sid)
+          c.openPreview()
           return
         case 'view-tabs':
         case 'view-tiles':
