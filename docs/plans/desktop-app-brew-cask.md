@@ -66,9 +66,10 @@ Packaging exists but produces only a local, unsigned build
   daemon and runs it in a `utilityProcess` that dies with the app; node-pty
   ships outside the asar. It is the only auth daemon on a machine:
   `yaac auth update` signs in in-process.
-- The shell never starts or stops a server. When the selected server on
-  this machine cannot be reached, the connect page's hint says to run
-  `yaac server start` (`src/flow.ts`).
+- The tray and the connect page start, stop and restart this machine's
+  server through the `yaac` CLI, and offer a restart when it runs a
+  different build than the installed CLI (packages/desktop/README.md,
+  "This machine's server").
 
 The tap's `yaac-server` formula installs the npm tarball plus the
 containerless host tools, with no tap dependencies; `yaac-cluster` adds
@@ -84,56 +85,8 @@ The gaps for a distributable app are in
 
 ## Order
 
-The tray (Phase 2) and signing (Phase 3) are independent of each other.
-Phase 4 (the `.dmg`) comes after Phase 3, and Phase 5 (the cask) after all
-the others.
-
-## Phase 2: the tray starts and stops this machine's server
-
-A cask user has the CLI, but the app should not send them to a terminal to
-start a server. Starting and stopping are explicit choices in the tray.
-Quitting the app never stops a server, as today.
-
-**Tray items.** Below the waiting-count line, the tray shows this machine's
-server and one action:
-
-- **Start server** when it is not running. It runs `yaac server start`,
-  then connects. The CLI's guards still apply: a k8s data dir refuses a host
-  start, and the tray shows that refusal.
-- **Stop server** when it is running. It runs `yaac server stop`, and the
-  window falls back to the connect page.
-- **Restart server to update** in place of Stop when the running server's
-  version differs from the installed `yaac --version`. After
-  `brew upgrade`, a running server keeps its old code until restarted. This
-  needs the server to report its version, if it does not already.
-
-These act on this machine's install, whichever command started it, the same
-as running the commands by hand. They cover a k8s install too, because
-`yaac server start|stop|restart` already scale its Deployment.
-
-**First run.** With no server selected, the connect page offers **Start a
-server on this Mac** next to adding a remote one. It is the tray's Start
-item, plus a `yaac host check` afterwards that lists any failures. The
-formula installs every tool the check requires except the agent CLIs
-(claude, codex, opencode, pi), so in practice it says which agent to
-install.
-
-**Agents survive a stop.** A containerless workspace is a tmux server that
-outlives the yaac server (docs/containerless-driver.md), so stopping or
-restarting the server never stops an agent. While the server is down,
-nothing watches them. Starting it again picks them back up.
-
-**Code and docs.** `src/main.ts`'s and `src/server-process.ts`'s headers and
-packages/desktop/README.md ("The shell never starts a server", "Tray")
-describe the tray items. They replace the `yaac server start` hint in
-`src/flow.ts`.
-
-Exit check: from a packaged build, the connect page starts a containerless
-server and drives a workspace end to end. Tray Stop stops the server while
-the workspace's agent keeps running, and tray Start brings the workspace
-back. Quitting the app leaves a running server running. After installing a
-newer `yaac`, the tray offers a restart, and the restarted server reports
-the new version.
+Phase 4 (the `.dmg`) comes after Phase 3, and Phase 5 (the cask) after
+both.
 
 ## Phase 3: signing and notarization
 

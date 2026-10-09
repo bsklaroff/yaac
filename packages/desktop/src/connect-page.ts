@@ -9,10 +9,13 @@
  */
 import type { DesktopServerTargets } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
+import type { LocalServerState } from '#server-control'
 
 export interface ConnectPageState {
   error: LaunchError
   targets: DesktopServerTargets
+  /** This machine's server; null when it could not be read. */
+  local: LocalServerState | null
 }
 
 function escapeHtml(text: string): string {
@@ -24,7 +27,7 @@ function escapeHtml(text: string): string {
 }
 
 export function connectPageHtml(state: ConnectPageState): string {
-  const { error, targets } = state
+  const { error, targets, local } = state
   const rows = targets.saved.map((url) => {
     const selected = url === targets.current
     return `
@@ -38,6 +41,21 @@ export function connectPageHtml(state: ConnectPageState): string {
   const list = targets.saved.length > 0
     ? `<ul class="rows">${rows}</ul>`
     : '<p class="empty">No servers configured yet.</p>'
+
+  // Offered only when there is a server here to start, or a CLI to install.
+  // A stopped kind install's start scales its Deployment back up.
+  const where = local?.kind === 'status' && local.status.driver === 'k8s'
+    ? 'Run workspaces in this Mac\'s kind cluster.'
+    : 'Run workspaces here, each in its own checkout.'
+  const startLocal = local?.kind === 'status' && local.status.running === false
+    ? `<h2>This Mac</h2>
+      <p class="note">${where} The server keeps running when the app quits.</p>
+      <p><button id="start-local">Start a server on this Mac</button></p>`
+    : local?.kind === 'no-cli'
+      ? `<h2>This Mac</h2>
+      <p class="note">To run a server on this Mac, install the yaac CLI:
+        <code>brew install bsklaroff/yaac/yaac-server</code></p>`
+      : ''
 
   return `<!doctype html>
 <html lang="en">
@@ -81,12 +99,12 @@ export function connectPageHtml(state: ConnectPageState): string {
       .origin { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tag { font-size: 11px; color: light-dark(#888, #888); }
-      button.connect, button.add, #retry {
+      button.connect, button.add, #retry, #start-local {
         border: 0; border-radius: 6px; cursor: pointer; font-size: 12px;
         font-weight: 500; padding: 5px 11px;
         background: light-dark(#e4e4e4, #303030); color: inherit;
       }
-      button.connect:hover, button.add:hover, #retry:hover { background: light-dark(#d6d6d6, #3c3c3c); }
+      button.connect:hover, button.add:hover, #retry:hover, #start-local:hover { background: light-dark(#d6d6d6, #3c3c3c); }
       button:disabled { opacity: .5; cursor: default; }
       .empty { color: light-dark(#777, #888); margin: 0; }
       form { display: flex; gap: 6px; margin-top: 8px; }
@@ -115,6 +133,8 @@ export function connectPageHtml(state: ConnectPageState): string {
       <h2>Servers</h2>
       ${list}
 
+      ${startLocal}
+
       <h2>Add a server</h2>
       <p class="note">
         A yaac server origin: <code>https://host.ts.net</code> for one served on
@@ -140,9 +160,9 @@ export function connectPageHtml(state: ConnectPageState): string {
           buttons.forEach(function (b) { if (b.id !== 'close') b.disabled = on })
         }
         // On success the shell replaces this page, so only failures update it.
-        function handle(promise) {
+        function handle(promise, busyText) {
           busy(true)
-          setStatus('Connecting…', 'busy')
+          setStatus(busyText || 'Connecting…', 'busy')
           promise.then(function (outcome) {
             if (outcome && outcome.ok) return
             busy(false)
@@ -163,6 +183,12 @@ export function connectPageHtml(state: ConnectPageState): string {
           setStatus('The server picker is unavailable in this window.', 'error')
           busy(true)
           return
+        }
+        var startLocal = document.getElementById('start-local')
+        if (startLocal) {
+          startLocal.addEventListener('click', function () {
+            handle(bridge.startLocal(), 'Starting the server…')
+          })
         }
         document.querySelectorAll('button.connect').forEach(function (btn) {
           btn.addEventListener('click', function () {

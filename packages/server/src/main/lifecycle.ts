@@ -14,8 +14,8 @@ import { waitFor } from '#lib/wait-for'
 import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
 import { assertHostServerAllowed } from '#main/driver-choice'
-import { registerServer } from '@yaac/shared/server-config'
-import type { AccessMode } from '@yaac/shared/types'
+import { readServerConfig, registerServer } from '@yaac/shared/server-config'
+import type { AccessMode, LocalServerStatus } from '@yaac/shared/types'
 
 /**
  * The access flags of `yaac server start|restart` (docs/remote-hosting.md
@@ -193,6 +193,20 @@ export async function restartServer(opts: ServerAccessOptions = {}): Promise<voi
   tailnetHost(opts)
   await stopServer()
   await startServer(opts)
+}
+
+/**
+ * Entry point for `yaac server status`: whether this install's server runs,
+ * and on which build. The lock answers for a host server and for a kind
+ * install's pod alike, since both keep it in this data dir.
+ */
+export async function serverStatus(): Promise<LocalServerStatus> {
+  const cfg = await readServerConfig()
+  const base = { driver: cfg?.driver ?? null, cliBuildId: await readBuildId() }
+  if (cfg?.byo) return { ...base, running: null, serverBuildId: null }
+  const lock = await readLock()
+  const live = lock !== null && await isLockLive(lock)
+  return { ...base, running: live, serverBuildId: live ? lock.buildId : null }
 }
 
 /** Check the access flags; returns the lowercased tailnet name. */

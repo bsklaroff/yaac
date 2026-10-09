@@ -5,6 +5,7 @@ import {
   getServerTargets,
   parseServerSelection,
   removeServer,
+  restoreSelection,
   type ServerSwitchDeps,
 } from '#server-switch'
 import type { ServerConfig } from '@yaac/shared/server-config'
@@ -190,5 +191,26 @@ describe('removeServer', () => {
     expect(await removeServer({ url: 'https://nope.ts.net' }, deps))
       .toEqual({ ok: false, error: 'unknown server: https://nope.ts.net' })
     expect(deps.writeServerConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe('restoreSelection', () => {
+  it('puts back the remote selection a `yaac server start` replaced, keeping what it saved', async () => {
+    const started: ServerConfig = {
+      url: 'http://127.0.0.1:8787',
+      enabled: true,
+      saved: [{ url: 'http://127.0.0.1:8787' }, ...CFG.saved],
+      driver: 'containerless',
+    }
+    const deps = makeDeps(started)
+    await restoreSelection(CFG, deps)
+    expect(deps.writeServerConfig).toHaveBeenCalledWith({ ...started, url: CFG.url, enabled: true })
+  })
+  it('writes nothing when the selection is unchanged, or nothing is configured', async () => {
+    for (const cfg of [CFG, null]) {
+      const deps = makeDeps(cfg)
+      await restoreSelection(CFG, deps)
+      expect(deps.writeServerConfig).not.toHaveBeenCalled()
+    }
   })
 })

@@ -158,11 +158,23 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(await health.json()).toMatchObject({ ok: true, ready: true })
   })
 
-  it('`server stop` scales to zero, and `server start` brings it back', async () => {
+  it('`server stop` scales to zero, and `server start` brings it back, as `server status` reports', async () => {
+    // The pod's lock is another host's, so status judges it by its lease.
+    const status = async () => {
+      const res = await runYaac(testEnv.env, 'server', 'status', '--json')
+      expect(res.exitCode, res.stderr).toBe(0)
+      return JSON.parse(res.stdout) as { running: boolean, driver: string, serverBuildId: string | null, cliBuildId: string }
+    }
+    const running = await status()
+    expect(running).toMatchObject({ running: true, driver: 'k8s' })
+    // The pod runs the bundle this CLI came from, so the tray offers no update.
+    expect(running.serverBuildId).toBe(running.cliBuildId)
+
     const stop = await runYaac(testEnv.env, 'server', 'stop')
     expect(stop.exitCode, stop.stderr).toBe(0)
     expect(stop.stderr).toMatch(/Deployment scaled to 0/)
     expect(await replicas()).toBe(0)
+    expect(await status()).toMatchObject({ running: false, driver: 'k8s', serverBuildId: null })
 
     // Stop scales to zero; the workload, RBAC and ingress policy remain.
     const start = await runYaac(testEnv.env, 'server', 'start')

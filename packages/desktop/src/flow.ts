@@ -3,8 +3,8 @@
  * answers `GET /whoami` for this device, and return its origin for the
  * window to load. After that the window is a plain browser on that origin.
  *
- * The shell never starts a server. An unreachable one becomes a failure the
- * window renders as a server picker (connect-page.ts).
+ * An unreachable server becomes a failure the window renders as a server
+ * picker (connect-page.ts), which can start this machine's server.
  */
 import {
   getApiClient, isLoopbackOrigin, type ApiClientOptions, type ServerTarget,
@@ -73,8 +73,8 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
       title: `Could not connect to ${target.baseUrl}`,
       detail: message(err),
       hint: isLoopbackOrigin(target.baseUrl)
-        ? 'Start it with `yaac server start` (or `yaac cluster install`), then '
-          + 'Try again — or pick a different server below.'
+        ? 'Start it below or from the yaac menu-bar icon — or pick a '
+          + 'different server below.'
         : 'Check that the server is running, then connect again — or pick a '
           + 'different server below.',
     })

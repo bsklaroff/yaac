@@ -24,4 +24,6 @@ contextBridge.exposeInMainWorld('yaacServer', {
   // Re-run the boot flow against the current `server.json`, so the static
   // picker page can pick up a server started from a terminal.
   retry: () => ipcRenderer.invoke('server:retry'),
+  // Start this machine's server (`yaac server start`) and land on it.
+  startLocal: () => ipcRenderer.invoke('server:start-local'),
 })

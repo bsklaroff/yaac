@@ -1520,6 +1520,22 @@ export type DesktopServerOutcome =
   | { ok: true }
   | { ok: false; error: string }
 
+/**
+ * This machine's server as `yaac server status --json` reports it, read
+ * from the server lock in this data dir. The desktop tray starts, stops and
+ * restarts the server from it.
+ */
+export interface LocalServerStatus {
+  /** null when this machine cannot read the lock (a `--byo` install's is on the cluster). */
+  running: boolean | null
+  /** The install's recorded driver; null before any server was started. */
+  driver: DriverKind | null
+  /** The running server's build; null when none runs. */
+  serverBuildId: string | null
+  /** The build of the CLI that answered, the one `yaac server restart` would start. */
+  cliBuildId: string
+}
+
 
 /**
  * Cap on a recorded model id. Model ids come from the agent (a tmux pane

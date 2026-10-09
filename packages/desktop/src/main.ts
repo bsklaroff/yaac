@@ -2,12 +2,14 @@
  * Electron entry point: untested glue over the sibling modules, which hold
  * the logic.
  *
- * The shell is a client of whatever server `server.json` names and never
- * starts or stops one. Close hides to the tray; Quit exits the shell and
- * its auth daemon and leaves the server running. With no server reachable
- * the window shows the picker (connect-page.ts). While running it follows
- * `/events` to show waiting workspaces (dock badge, tray, notifications) and
- * to hold the workspaces' port forwards.
+ * The shell is a client of whatever server `server.json` names. The tray
+ * and the picker also start, stop and restart this machine's server through
+ * the `yaac` CLI (server-control.ts), but only when asked: Close hides to
+ * the tray, and Quit exits the shell and its auth daemon and leaves the
+ * server running. With no server reachable the window shows the picker
+ * (connect-page.ts). While running it follows `/events` to show waiting
+ * workspaces (dock badge, tray, notifications) and to hold the workspaces'
+ * port forwards.
  */
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,12 +17,12 @@ import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray,
   utilityProcess,
 } from 'electron'
-import { resolveServerTarget } from '@yaac/shared/server-api'
+import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import {
   normalizeServerUrl, probeServer, readServerConfig, withServerSelected, writeServerConfig,
 } from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
-import type { ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
+import type { DesktopServerOutcome, ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
 import { AttentionMonitor, badgeText, notificationFor } from '#attention'
 import { startEventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
@@ -30,7 +32,11 @@ import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
 import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
 import {
-  addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, removeServer,
+  createRunYaac, readLocalServer, runServerAction, trayServerItems,
+  type LocalServerState, type ServerAction,
+} from '#server-control'
+import {
+  addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, removeServer, restoreSelection,
   type ServerSwitchDeps,
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
@@ -69,6 +75,13 @@ let attention = new AttentionMonitor()
 // True while the window shows the picker. Re-showing such a window re-runs
 // the boot flow, since the user may have fixed things from a terminal.
 let onConnectPage = false
+let waiting = 0
+// This machine's server as the tray last read it, and the action under way.
+let localServer: LocalServerState | null = null
+let serverBusy: ServerAction | null = null
+let refreshing: Promise<void> | null = null
+/** Counts server actions, so a status read can tell one overlapped it. */
+let actionEpoch = 0
 
 const resolveTarget = resolveServerTarget
 
@@ -77,6 +90,9 @@ const authDaemonReady = Promise.all([adoptLoginShellPath(), stopLegacyAuthDaemon
 const authDaemon = createAuthDaemonRunner((baseUrl) => utilityProcess.fork(
   path.join(distDir, 'auth-daemon.js'), [baseUrl], { serviceName: 'yaac auth daemon' },
 ))
+const runYaac = createRunYaac()
+// A `brew upgrade` or a server started from a terminal shows up within this.
+const LOCAL_SERVER_POLL_MS = 60_000
 
 function windowStateFile(): string {
   return path.join(app.getPath('userData'), 'window-state.json')
@@ -191,7 +207,8 @@ async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<vo
   attention = new AttentionMonitor()
   applyAttention(0, [], [])
   const targets = await getServerTargets(serverSwitchDeps)
-  await w.loadURL(connectPageUrl({ error, targets }))
+  await refreshLocalServer()
+  await w.loadURL(connectPageUrl({ error, targets, local: localServer }))
     .catch((err: unknown) => {
       dialog.showErrorBox(error.title, err instanceof Error ? err.message : String(err))
     })
@@ -217,21 +234,102 @@ function createTray(): void {
   image.setTemplateImage(true)
   tray = new Tray(image)
   tray.setToolTip(app.name)
-  updateTray(0)
+  updateTray()
   tray.on('click', () => showWindow())
+  setInterval(() => void refreshLocalServer(), LOCAL_SERVER_POLL_MS)
 }
 
-function updateTray(waitingCount: number): void {
-  tray?.setContextMenu(Menu.buildFromTemplate([
+function updateTray(): void {
+  if (!tray) return
+  const serverItems = trayServerItems(localServer, serverBusy).map((item) => ({
+    label: item.label,
+    enabled: item.action !== undefined,
+    click: () => {
+      if (item.action) void trayServerAction(item.action)
+    },
+  }))
+  const menu = Menu.buildFromTemplate([
     { label: 'Open yaac', click: () => showWindow() },
     { type: 'separator' },
     {
-      label: waitingCount > 0 ? `${waitingCount} waiting for input` : 'No workspaces waiting',
+      label: waiting > 0 ? `${waiting} waiting for input` : 'No workspaces waiting',
       enabled: false,
     },
     { type: 'separator' },
+    ...serverItems,
+    ...(serverItems.length > 0 ? [{ type: 'separator' as const }] : []),
     { label: 'Quit yaac', click: () => app.quit() },
-  ]))
+  ])
+  // An open menu cannot change, so this refresh is for the next opening.
+  menu.once('menu-will-show', () => void refreshLocalServer())
+  tray.setContextMenu(menu)
+}
+
+/**
+ * Re-read this machine's server for the tray. Callers share one read in
+ * flight, and a read that an action overlapped is dropped, since it may
+ * describe the server from before the action.
+ */
+function refreshLocalServer(): Promise<void> {
+  refreshing ??= readLocalServerState().finally(() => { refreshing = null })
+  return refreshing
+}
+
+async function readLocalServerState(): Promise<void> {
+  if (serverBusy) return
+  const epoch = actionEpoch
+  // The login-shell PATH is what finds `yaac`.
+  await authDaemonReady
+  const state = await readLocalServer(runYaac)
+  if (serverBusy || epoch !== actionEpoch) return
+  // Rebuilding swaps the tray's menu, which empties it if it is open.
+  if (JSON.stringify(state) === JSON.stringify(localServer)) return
+  localServer = state
+  updateTray()
+}
+
+/**
+ * Start, stop or restart this machine's server. `yaac server start` (and
+ * restart) selects it, so a window showing a remote server puts that
+ * selection back and stays where it is. Otherwise the window moves: onto
+ * the server after a start or restart, and onto the picker after a stop if
+ * it was showing that server.
+ */
+async function serverAction(action: ServerAction): Promise<DesktopServerOutcome> {
+  if (serverBusy) return { ok: false, error: 'a server action is already running' }
+  serverBusy = action
+  actionEpoch++
+  updateTray()
+  await authDaemonReady
+  const remote = onConnectPage || await showingLocalServer() ? null : await readServerConfig()
+  const outcome = await runServerAction(action, runYaac)
+  if (remote) await restoreSelection(remote, serverSwitchDeps)
+  serverBusy = null
+  await refreshing
+  await refreshLocalServer()
+  if (!outcome.ok) return outcome
+  if (!remote && (action !== 'stop' || await showingLocalServer())) setImmediate(() => void openWindow())
+  if (outcome.hostCheckFailures) {
+    void dialog.showMessageBox({
+      type: 'warning',
+      message: 'The server is running, but this Mac cannot run every workspace yet',
+      detail: `yaac host check:\n\n${outcome.hostCheckFailures}`,
+    })
+  }
+  return { ok: true }
+}
+
+async function trayServerAction(action: ServerAction): Promise<void> {
+  const outcome = await serverAction(action)
+  if (!outcome.ok) dialog.showErrorBox(`Could not ${action} the server`, outcome.error)
+}
+
+async function showingLocalServer(): Promise<boolean> {
+  try {
+    return isLoopbackOrigin((await resolveTarget()).baseUrl)
+  } catch {
+    return false
+  }
 }
 
 function applyAttention(
@@ -240,7 +338,10 @@ function applyAttention(
   projects: ProjectSummary[],
 ): void {
   if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
-  updateTray(waitingCount)
+  if (waiting !== waitingCount) {
+    waiting = waitingCount
+    updateTray()
+  }
   if (!Notification.isSupported()) return
   for (const s of toNotify) {
     const n = new Notification(notificationFor(s, projects))
@@ -297,6 +398,9 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
+// The picker's "Start a server on this Mac". The reply comes back before
+// the window lands, which replaces the calling page.
+ipcMain.handle('server:start-local', () => serverAction('start'))
 // Removal never touches the selected server, so the window stays put.
 ipcMain.handle('server:remove', async (_e, raw: unknown) => {
   const sel = parseServerSelection(raw)

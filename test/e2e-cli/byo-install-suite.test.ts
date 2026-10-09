@@ -261,6 +261,13 @@ describe('yaac cluster install --byo, on kind-byo', () => {
   }, INSTALL_TIMEOUT)
 
   it('server stop|start|restart|logs act on the installed Deployment and answer at the origin', async () => {
+    // The lock is on the cluster's claim, out of this machine's sight.
+    const status = await runYaac(operatorEnv, 'server', 'status')
+    expect(status.exitCode, status.stderr).toBe(0)
+    expect(status.stdout).toMatch(/^unknown: a --byo install/)
+    const json = await runYaac(operatorEnv, 'server', 'status', '--json')
+    expect(JSON.parse(json.stdout)).toMatchObject({ running: null, driver: 'k8s', serverBuildId: null })
+
     const stop = await runYaac(operatorEnv, 'server', 'stop')
     expect(stop.exitCode, stop.stderr).toBe(0)
     expect((await kubectl('get', 'deployment', 'yaac-server', '-n', 'yaac', '-o', 'jsonpath={.spec.replicas}')).trim()).toBe('0')

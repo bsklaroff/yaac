@@ -185,6 +185,27 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     expect(res.status).toBe(200)
   })
 
+  it('`server status [--json]` reports whether the server runs, and on which build', async () => {
+    const status = async (env: NodeJS.ProcessEnv, ...args: string[]) => {
+      const r = await runYaac(env, 'server', 'status', ...args)
+      expect(r.exitCode).toBe(0)
+      return r.stdout.trim()
+    }
+    expect(await status(testEnv.env)).toBe('not running')
+    expect(JSON.parse(await status(testEnv.env, '--json'))).toMatchObject({ running: false, driver: null, serverBuildId: null })
+
+    // A server on another build than the CLI is what the desktop tray
+    // offers to restart.
+    expect((await runYaac({ ...testEnv.env, YAAC_BUILD_ID: 'old-build' }, 'server', 'start')).exitCode).toBe(0)
+    const json = JSON.parse(await status(testEnv.env, '--json')) as Record<string, unknown>
+    expect(json).toMatchObject({ running: true, driver: 'containerless', serverBuildId: 'old-build' })
+    expect(json.cliBuildId).not.toBe('old-build')
+    expect(await status(testEnv.env)).toMatch(/different build than this CLI; update it with: yaac server restart/)
+
+    expect((await runYaac(testEnv.env, 'server', 'restart')).exitCode).toBe(0)
+    expect(await status(testEnv.env)).toBe('running')
+  })
+
 })
 
 describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
