@@ -24,16 +24,20 @@ A workspace runs on one of two drivers, decided by how you start the server:
 
 ```sh
 brew trust bsklaroff/yaac
-brew trust libkrun/krun
-brew tap libkrun/krun
-brew install bsklaroff/yaac/yaac
-yaac cluster install                # kubernetes
-yaac server start && yaac host check  # or containerless
+brew install bsklaroff/yaac/yaac-server
+yaac server start && yaac host check   # containerless
 ```
 
-The formula installs everything both drivers need, including a patched
-`krunkit`/`libkrun` pair
-([why](docs/cluster-setup.md#macos-the-podman-machine)).
+For the kubernetes driver, add the local cluster's tools, including a
+patched `krunkit`/`libkrun` pair
+([why](docs/cluster-setup.md#macos-the-podman-machine)):
+
+```sh
+brew trust libkrun/krun
+brew tap libkrun/krun
+brew install bsklaroff/yaac/yaac-cluster
+yaac cluster install
+```
 
 To install from source on macOS or Linux, see
 [docs/install-from-source.md](docs/install-from-source.md).

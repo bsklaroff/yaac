@@ -868,14 +868,14 @@ describe('runClusterInstall', () => {
     }
   })
 
-  it('reports every missing binary at once', async () => {
+  it.each(['linux', 'darwin'] as const)('reports every missing binary at once on %s', async (platform) => {
     const run = vi.fn((file: string) => {
       if (file === 'podman' || file === 'kind' || file === 'kubectl') {
         return Promise.reject(new Error('ENOENT'))
       }
       return Promise.resolve({ stdout: '', stderr: '' })
     }) as RunMock
-    const deps = makeDeps({ run })
+    const deps = makeDeps({ run, platform })
     const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
     const msg = (err as Error).message
@@ -883,6 +883,12 @@ describe('runClusterInstall', () => {
     expect(msg).toContain('podman')
     expect(msg).toContain('kind')
     expect(msg).toContain('kubectl')
+    if (platform === 'darwin') {
+      expect(msg).toContain('brew install bsklaroff/yaac/yaac-cluster')
+      expect(msg).not.toContain('apt install')
+    } else {
+      expect(msg).not.toContain('brew')
+    }
     expect(ran('ensureMainRegistry')).toBe(0)
     expect(deps.runStreaming).not.toHaveBeenCalled()
   })
@@ -1342,6 +1348,8 @@ describe('runClusterInstall', () => {
     const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ClusterInstallError)
     expect((err as Error).message).toContain('krunkit crashed')
+    // The machine exists, so this is where an upgrade that lost krunkit fails.
+    expect((err as Error).message).toContain('brew install bsklaroff/yaac/yaac-cluster')
     expect(deps.confirm).not.toHaveBeenCalled()
   })
 

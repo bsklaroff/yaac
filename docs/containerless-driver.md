@@ -470,7 +470,7 @@ startup.
 
 Tools the agents themselves use (`ripgrep`, `fd`, `gh`, `jq`) are not
 checked, matching what the builtin skills assume; pi downloads its own `fd`
-if needed. The Homebrew formula installs the useful ones anyway.
+if needed. The `yaac-server` Homebrew formula installs the useful ones anyway.
 
 ### Agent binaries
 

@@ -30,7 +30,7 @@ import {
 import { registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { buildBuiltinImages } from './builtin-images'
-import { ClusterInstallError, resolveNodeCount, tailnetServeHost } from './arg-guards'
+import { ClusterInstallError, YAAC_CLUSTER_INSTALL, resolveNodeCount, tailnetServeHost } from './arg-guards'
 import { assessCniAdoption, gatherCniFacts } from './cni-adopt'
 import { ensurePinnedManifest } from './pinned-manifest'
 import { readServerConfig, recordInstall, type InstallRecord } from '@yaac/shared/server-config'
@@ -384,37 +384,39 @@ function renderKindConfig(
 /**
  * Check for every required binary and report all missing ones at once.
  * Returns `kind version`'s output. kind is optional under `--byo`; podman
- * is always needed to build images.
+ * is always needed to build images. On macOS one formula, yaac-cluster,
+ * installs all of them, so the report names it instead of each tool.
  */
 async function requireBinaries(
   deps: ClusterInstallDeps,
   opts: { requireKind: boolean } = { requireKind: true },
 ): Promise<string> {
+  const mac = deps.platform === 'darwin'
   const missing: string[] = []
   let kind = ''
   try {
     await deps.run('podman', ['--version'])
   } catch {
-    missing.push('podman — yaac builds session images with it and hosts the kind node on it.\n'
-      + '  Install: brew install podman (macOS) / sudo apt install podman (Debian/Ubuntu)')
+    missing.push('podman — yaac builds session images with it and hosts the kind node on it.'
+      + (mac ? '' : '\n  Install: sudo apt install podman (Debian/Ubuntu)'))
   }
   try {
     kind = (await deps.run('kind', ['version'])).stdout.trim()
   } catch {
     if (opts.requireKind) {
-      missing.push('kind — creates the local kubernetes cluster.\n'
-        + '  Install: brew install kind (macOS) / go install sigs.k8s.io/kind@latest\n'
-        + '  (v0.33.0 or newer)')
+      missing.push('kind — creates the local kubernetes cluster (v0.33.0 or newer).'
+        + (mac ? '' : '\n  Install: go install sigs.k8s.io/kind@latest'))
     }
   }
   try {
     await deps.run('kubectl', ['version', '--client', '--output', 'json'])
   } catch {
-    missing.push('kubectl — yaac streams into pods (exec, port-forward) through it.\n'
-      + '  Install: https://kubernetes.io/docs/tasks/tools/')
+    missing.push('kubectl — yaac streams into pods (exec, port-forward) through it.'
+      + (mac ? '' : '\n  Install: https://kubernetes.io/docs/tasks/tools/'))
   }
   if (missing.length > 0) {
-    throw new ClusterInstallError(`Missing required tools:\n\n${missing.join('\n')}`)
+    throw new ClusterInstallError(`Missing required tools:\n\n${missing.join('\n')}`
+      + (mac ? `\n\nInstall them all with:\n${YAAC_CLUSTER_INSTALL}` : ''))
   }
   return kind
 }
@@ -1061,7 +1063,7 @@ async function initMachine(deps: ClusterInstallDeps): Promise<void> {
   } catch (err) {
     throw new ClusterInstallError(
       `podman machine init failed (${err instanceof Error ? err.message : String(err)}).\n`
-      + 'Is krunkit installed? brew install libkrun/krun/krunkit',
+      + `Is yaac's patched krunkit installed? It comes with:\n${YAAC_CLUSTER_INSTALL}`,
     )
   }
 }
@@ -1140,6 +1142,11 @@ async function startMachine(deps: ClusterInstallDeps): Promise<void> {
   } catch (err) {
     const stderr = ((err as { stderr?: string })?.stderr ?? '')
       + (err instanceof Error ? err.message : '')
-    throw new ClusterInstallError(`podman machine start failed:\n  ${stderr.trim().split('\n')[0]}`)
+    // An upgrade that dropped yaac's krunkit leaves a libkrun machine that
+    // can no longer start, so name the formula that brings it back.
+    throw new ClusterInstallError(
+      `podman machine start failed:\n  ${stderr.trim().split('\n')[0]}\n`
+      + `Is yaac's patched krunkit installed? It comes with:\n${YAAC_CLUSTER_INSTALL}`,
+    )
   }
 }

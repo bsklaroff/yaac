@@ -90,7 +90,7 @@ describe('yaac cluster install (real CLI)', () => {
     expect(stderr).toMatch(/Missing required tools/)
     expect(stderr).toMatch(/podman/)
     expect(stderr).toMatch(/kind/)
-    expect(stderr).toMatch(/brew install/)
+    expect(stderr).toMatch(/Install/)
   }, 30_000)
 
   // The option check runs before the binary preflight, so these need no
