@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
-import { FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
+import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
 import type {
@@ -298,24 +298,22 @@ export function mergeProvisioning(
 }
 
 /**
- * View state of a pane that unmounts when off-screen (the explorer), kept
- * here so it survives: expanded folders, scroll position, filter, and its
- * toggles. In memory only.
+ * View state of a pane that unmounts when off-screen (the explorer and the
+ * Changes pane), kept here so it survives: expanded folders, scroll
+ * position, filter, and its toggles. In memory only.
  */
 export interface PaneView {
   expanded?: string[]
   scroll?: number
   find?: string
   showIgnored?: boolean
-  /** List only the files changed since the diff base (the changes view). */
-  changedOnly?: boolean
-  /** In the changes view: one row per file with its full path, not a
-   *  tree. Unset counts as flat, and opening the view sets it. */
+  /** In the Changes pane: one row per file with its full path, not a
+   *  tree. Unset counts as flat. */
   flat?: boolean
-  /** In the changes view, whose folders start open: the ones closed. */
+  /** In the Changes pane, whose folders start open: the ones closed. */
   collapsed?: string[]
-  /** In the changes view, where each file's diff starts open under its row:
-   *  the files whose diff is folded. Opening the view clears it. */
+  /** In the Changes pane, where each file's diff starts open under its
+   *  row: the files whose diff is folded. */
   foldedDiffs?: string[]
 }
 
@@ -482,9 +480,8 @@ interface UiState {
   /** Open or focus the preview pane, on `containerPort` when given and on
    *  the port it last showed otherwise. */
   openPreview: (workspaceId: string, containerPort?: number) => void
-  /** Open or focus a workspace's file explorer in its changes view:
-   *  changed files only, as a flat list, each with its diff, its filter
-   *  focused. */
+  /** Open or focus a workspace's Changes pane, its filter cleared and
+   *  focused, so what it totals is every change (as the status bar does). */
   openChanges: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
@@ -561,10 +558,11 @@ interface UiState {
   /** Drop drafts of workspaces the snapshot no longer lists. Drafts of
    *  inactive sessions are kept, since a session can come back. */
   syncChatDrafts: (workspaceIds: string[]) => void
-  /** One-time request from the open-files shortcut to focus the explorer's
-   *  filter. The explorer clears it once handled. */
-  filesFindPending: boolean
-  setFilesFindPending: (pending: boolean) => void
+  /** One-time request to focus the filter of the explorer or the Changes
+   *  pane (its target), from their shortcuts. The pane clears it once
+   *  handled. */
+  findPending: string | null
+  setFindPending: (target: string | null) => void
   /** Optimistic provisioning rows, shown until a snapshot lists the id
    *  (`reconcileSnapshot`). */
   optimisticProvisioning: ProvisioningWorkspaceEntry[]
@@ -784,7 +782,7 @@ export const useUiStore = create<UiState>((set) => ({
   activeTabs: {},
   changesBase: {},
   paneView: {},
-  filesFindPending: false,
+  findPending: null,
   dirtyFiles: {},
   optimisticProvisioning: [],
   pendingDeleteIds: [],
@@ -951,13 +949,12 @@ export const useUiStore = create<UiState>((set) => ({
       : {}),
   })),
   openChanges: (workspaceId) => set((s) => {
-    const key = paneViewKey(workspaceId, FILES_TARGET)
+    const key = paneViewKey(workspaceId, CHANGES_TARGET)
     return {
-      ...openSpecialPane(s, workspaceId, FILES_TARGET),
-      paneView: { ...s.paneView, [key]: { ...s.paneView[key], changedOnly: true, flat: true, foldedDiffs: [], find: '' } },
-      // Focus its filter, as the open-files shortcut does, so Cmd/Ctrl-F
-      // and typing work without a click.
-      filesFindPending: true,
+      ...openSpecialPane(s, workspaceId, CHANGES_TARGET),
+      paneView: { ...s.paneView, [key]: { ...s.paneView[key], find: '' } },
+      // Focus its filter, so typing and Cmd/Ctrl-F work without a click.
+      findPending: CHANGES_TARGET,
     }
   }),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
@@ -1003,8 +1000,8 @@ export const useUiStore = create<UiState>((set) => ({
     const same = (Object.keys(patch) as Array<keyof PaneView>).every((k) => cur[k] === next[k])
     return same ? s : { paneView: { ...s.paneView, [key]: next } }
   }),
-  setFilesFindPending: (pending) => set((s) => (
-    s.filesFindPending === pending ? s : { filesFindPending: pending }
+  setFindPending: (target) => set((s) => (
+    s.findPending === target ? s : { findPending: target }
   )),
   setFileDirty: (workspaceId, path, dirty) => set((s) => {
     const key = fileKey(workspaceId, path)

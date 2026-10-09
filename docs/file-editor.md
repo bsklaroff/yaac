@@ -1,12 +1,14 @@
 # File editor
 
-The webapp browses, edits and reviews a workspace's files through two kinds
-of pane, both ordinary layout leaves next to terminals:
+The webapp browses, edits and reviews a workspace's files through three
+kinds of pane, all ordinary layout leaves next to terminals:
 
 - **`files`**: the explorer, one per workspace. A tree, a filter that doubles
   as quick-open, a "show ignored" toggle, git status colors, line counts
-  against the diff base, create / rename / delete, and a changes view that
-  is the workspace's review diff.
+  against the diff base, and create / rename / delete.
+- **`changes`**: the Changes pane, one per workspace: the workspace's review
+  diff. It is the same component as the explorer (`WorkspaceFiles` with
+  `changedOnly`), listing only the changed files, each with its diff.
 - **`file:<path>`**: one editor pane per open file (`<path>` is relative to
   the workspace root). Side-by-side files, tabs, drag, Alt-W, tab cycling and
   persistence across reloads all come from the layout, so there is no second
@@ -30,7 +32,8 @@ so a stopped workspace's files open and save like a running one's
 (docs/workspace-storage.md). The exceptions are the changes (which carry the
 listing and the status bar's counts) and a file's text at the diff base,
 which run git inside the workspace. For a stopped workspace they return
-`CONFLICT`, shown as "Start the workspace to browse its files".
+`CONFLICT`, shown as "Start the workspace to browse its files" (or "to
+review its changes").
 
 Ownership needs no handling: the server already runs as the workspace's user
 (the install uid from `installSecurityContext()` on k8s, the host user under
@@ -121,7 +124,7 @@ never changes and the client caches it for good.
 
 `GitStatusBar`, above a workspace's panes, shows the reference branch and how
 far HEAD is ahead of and behind it, then the total changed lines
-(`+52 −3`), which open the explorer's changes view. Both come from the
+(`+52 −3`), which open the Changes pane. Both come from the
 changes answer (`branch`, `comparison`, `files`), polled every 10 seconds
 while the workspace is on screen. The bar also asks for `listing=paths`, so
 the explorer's tree and the terminal's file links are ready before the
@@ -203,36 +206,38 @@ and the changes, as `mv` or `rm` in a terminal would.
 basename plus enough parent path to tell two `index.ts` apart) and
 `placeFile`. `placeFile` follows VS Code's "open in the active editor group":
 a tab in the column holding the active file pane, else in any column with a
-file pane, else a new column right of the explorer, else at the end.
+file pane, else a new column right of the explorer or the Changes pane (the
+active one first), else at the end.
 `renameTargets` in `#lib/layout` updates every `file:` target under a renamed
 path.
 
-### Explorer (`WorkspaceFiles`)
+### Explorer and Changes pane (`WorkspaceFiles`)
 
-It unmounts when off-screen. Its view state (expanded folders, scroll,
-filter, its toggles) is in the store's `paneView`.
+Both unmount when off-screen. Each keeps its own view state (expanded or
+collapsed folders, scroll, filter, its toggles) in the store's `paneView`.
 
 The changes and the listing come from `useWorkspaceChanges`, one query
-shared by the explorer, the status bar and every file pane, so a workspace
-polls once however many show them. Each reader sets its own poll: 3
-seconds while the explorer or a visible file pane shows them, 10 seconds for
-the status bar alone. A hidden file pane never fetches; it reads what the
-others fetched. The costly parts go only while some reader wants them: the
-diff body, up to 1 MB, for the changes view, and the full listing's walks
-for the explorer. What a fetch asks for is read when it runs rather than
-kept in the query key, so readers mounting together share one fetch and a
-reader leaving never forks the query. The listing lands in its own cache
-entry (`useWorkspaceFiles`), so the tree, the line counts and the colors
-always come from one snapshot. An answer without a diff body is one that
-did not ask for it, so the changes view shows its diffs as loading until
-its own fetch lands. On the server, `runChangesRead` (`#drivers/shared`)
-runs one read of a checkout at a time, since each walks the whole working
-tree: a request merges into the read queued behind the running one, never
-into the running one, which could predate an edit the caller just made. A
-failed poll leaves the last answer cached,
-so the status bar shows the error in its place and the explorer marks its
-tree "Not up to date". When a picked base stops resolving (its branch was
-pruned), the explorer offers to compare with the fork branch again.
+shared by the explorer, the Changes pane, the status bar and every file
+pane, so a workspace polls once however many show them. Each reader sets its
+own poll: 3 seconds while the explorer, the Changes pane or a visible file
+pane shows them, 10 seconds for the status bar alone. A hidden file pane
+never fetches; it reads what the others fetched. The costly parts go only
+while some reader wants them: the diff body, up to 1 MB, for the Changes
+pane, and the full listing's walks for the explorer (the Changes pane needs
+only `paths`, for conflicts). What a fetch asks for is read when it runs
+rather than kept in the query key, so readers mounting together share one
+fetch and a reader leaving never forks the query. The listing lands in its
+own cache entry (`useWorkspaceFiles`), so the tree, the line counts and the
+colors always come from one snapshot. An answer without a diff body is one
+that did not ask for it, so the Changes pane shows its diffs as loading
+until its own fetch lands. On the server, `runChangesRead`
+(`#drivers/shared`) runs one read of a checkout at a time, since each walks
+the whole working tree: a request merges into the read queued behind the
+running one, never into the running one, which could predate an edit the
+caller just made. A failed poll leaves the last answer cached, so the status
+bar shows the error in its place and both panes mark their tree "Not up to
+date". When a picked base stops resolving (its branch was pruned), they
+offer to compare with the fork branch again.
 
 - **Tree.** Only rows under expanded folders render, so a large repo needs no
   virtualization. Files get an icon and tint from `languageForPath`. A
@@ -242,23 +247,38 @@ pruned), the explorer offers to compare with the fork branch again.
   committed, `S` staged, `M` modified (unstaged), `U` untracked, after a `!` for a
   merge conflict. A folder shows a dot in the strongest color among its
   files (`pathStatuses` in `#lib/gitStatus`).
-- **Changes view** (the "changed files only" toggle, or the status bar's line
-  counts, or `open-changes`) lists only the changed files, including deleted
-  ones (struck through, not openable), each with its read-only diff under
-  its row. However it is opened, it starts as a flat list of full paths with
-  every diff open, and its filter focused; a toggle switches to a tree, whose
-  folders start open (so it records the closed ones). A diff mounts in
+- **Changes pane** (its header button, the status bar's line counts, or
+  `open-changes`) lists only the changed files, including deleted ones
+  (struck through, not openable), each with its read-only diff under its
+  row. Opening it clears its filter, so its totals are every change, as the
+  status bar's are; its layout and folds stay as last left. It starts as a
+  flat list of full paths with every diff open; a toggle switches to a tree,
+  whose folders start open (so it records the closed ones). A diff mounts in
   200-line chunks only as they come within a screen of view, holding their
   height (every diff row is the same height) until then, so a change of
   hundreds of files opens at once. Clicking a file's row folds its diff
   (remembered per file across both layouts), and only its name opens it. A
   header button collapses every diff while any is open, and shows them all
-  once none is. The full tree's ignored-files and create buttons are hidden
-  there. A strip shows the diff base with a branch picker, the shown files'
-  totals overall and per stage, and what the diff leaves out (only uncommitted work when no fork
-  point resolves, a body cut at 1 MB). The filter matches a path or a line
-  of a diff.
-- **Collapse / expand all folders** in the full tree collapses every folder
+  once none is. A strip shows the diff base with a branch picker, the shown
+  files' totals overall and per stage, and what the diff leaves out (only
+  uncommitted work when no fork point resolves, a body cut at 1 MB). The
+  filter matches paths (a rename's old one too) the way quick-open does,
+  keeping the list's order.
+- **Find in diffs** (Cmd/Ctrl-F in the Changes pane, or its header's search
+  button) uses the find bar's controls (`FindControls` in `ui/FindPanel`),
+  as the editor's and the conversation's do, with no replace row, over the
+  diff lines of every file the filter shows, in the order shown
+  (`useDiffFind`). Hunk headers are left out. The lines are joined into one
+  document so the same worker (`MatchCounter`) counts them, with no cap,
+  since stepping walks the counted matches and the 1 MB body bounds them.
+  Each match maps back to a file and line, highlighted in `DiffView` in the
+  editor's match colors. Typing lands on the first match; Enter and
+  Shift+Enter step, unfolding the diff and folders the match is in, forcing
+  its chunk to mount, and scrolling to it. A step re-renders only the diffs
+  of the old and new current match. Escape closes the bar and clears the
+  marks; the query stays for the next Cmd/Ctrl-F while the pane is mounted
+  (it is component state, so leaving the tab drops it).
+- **Collapse / expand all folders** in the explorer collapses every folder
   while any is open, and expands them all once none is, except the folders
   listed on demand (ignored ones and folder links).
 - **Quick-open** replaces the tree while the filter has text: basename first,
@@ -333,17 +353,18 @@ undo history, cursor and unsaved text survive.
 ### Keys
 
 - **`open-files` (Alt-E)** is a shortcut-registry command. It opens or
-  focuses the explorer and sets `filesFindPending`, so the explorer focuses
+  focuses the explorer and sets `findPending` to it, so the explorer focuses
   its filter: Alt-E, a few letters, Enter is quick-open. (Option-E is a dead
   key on macOS, like every Alt-letter default.)
 - **Cmd/Ctrl-S, Cmd/Ctrl-F and Cmd/Ctrl =/−/0 are fixed**, not in the
   registry. Cmd/Ctrl-S is handled on the file pane's root, so it works from
   the header strip, never reaches a terminal (Ctrl-S stays the shell's there),
   and keeps its browser meaning elsewhere. Cmd/Ctrl-F opens the file pane's
-  find bar, or jumps to the explorer's filter; in a conversation pane it
-  searches the conversation (docs/agent-modes.md, "Find").
-- **`open-changes` (Alt-G)** opens or focuses the explorer in its changes
-  view. Because the workspace's
+  find bar or the Changes pane's, or jumps to the explorer's filter; in a
+  conversation pane it searches the conversation (docs/agent-modes.md,
+  "Find").
+- **`open-changes` (Alt-G)** opens or focuses the Changes pane and focuses
+  its filter, the same way. Because the workspace's
   shortcut listener runs first (capture phase), `validateChord` refuses these
   chords and `mergeBindings` drops a stored override that uses one.
 

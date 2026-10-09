@@ -1,6 +1,6 @@
 /**
  * Diff lines for the panes, from two sources: a combined `git diff` (the
- * explorer's changes view) and a before/after text pair (an ACP edit tool
+ * Changes pane) and a before/after text pair (an ACP edit tool
  * call in the chat pane). Both produce `DiffLine[]`, so one renderer draws
  * both.
  */
@@ -198,21 +198,4 @@ export function diffStats(lines: DiffLine[]): { additions: number; deletions: nu
     additions: lines.filter((l) => l.kind === 'add').length,
     deletions: lines.filter((l) => l.kind === 'del').length,
   }
-}
-
-/**
- * Whether a changed file matches a find query: a case-insensitive substring
- * of its path (either side of a rename) or of any code line in its diff.
- * Hunk headers are skipped. An empty query matches everything.
- */
-export function changeMatchesQuery(
-  file: { path: string; oldPath?: string },
-  diff: ParsedFileDiff | undefined,
-  query: string,
-): boolean {
-  const q = query.toLowerCase()
-  if (q === '') return true
-  if (file.path.toLowerCase().includes(q)) return true
-  if (file.oldPath && file.oldPath.toLowerCase().includes(q)) return true
-  return diff?.lines.some((l) => l.kind !== 'hunk' && l.text.toLowerCase().includes(q)) ?? false
 }

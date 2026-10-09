@@ -11,7 +11,8 @@ import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
 import { isPreviewTarget, previewLabel } from '#lib/preview'
 import {
-  discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isFileTarget, isFilesTarget,
+  discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
+  isFilesTarget,
 } from '#lib/files'
 import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
 import { defaultPaneTarget, isSpecialPane, syncPaneLayout } from '#lib/panes'
@@ -88,6 +89,7 @@ function paneName(
 ): string {
   if (isPreviewTarget(target)) return previewLabel(previewPort)
   if (isFilesTarget(target)) return 'Files'
+  if (isChangesTarget(target)) return 'Changes'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
   if (target === 'agent' || isAcpTarget(target)) {
     const sessions = workspace?.agentSessions ?? []
@@ -453,6 +455,16 @@ export function WorkspaceView({
                 <FilesIcon size={13} />
                 Files
               </button>
+              <button
+                onClick={() => openChanges(workspace.workspaceId)}
+                title="Show changes"
+                aria-label="Show changes"
+                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
+                  text-text-dim transition hover:bg-surface-2 hover:text-text"
+              >
+                <ChangesIcon size={13} />
+                Changes
+              </button>
               {pickPreviewPort ? (
                 <PreviewPortMenu
                   ports={previewPorts}
@@ -575,7 +587,7 @@ export function WorkspaceView({
           const id = key.slice(0, sep)
           const target = key.slice(sep + 1)
           const preview = isPreviewTarget(target)
-          const explorer = isFilesTarget(target)
+          const explorer = isFilesTarget(target) || isChangesTarget(target)
           const file = isFileTarget(target)
           const chat = acpTargetSession(target)
           // Panes unmounted when off-screen, since they poll the workspace.
@@ -648,7 +660,14 @@ export function WorkspaceView({
                 <div className="h-full w-full overflow-hidden rounded-md">
                   {(() => {
                     const ws = workspaces.find((s) => s.workspaceId === id)
-                    return <WorkspaceFiles workspaceId={id} projectId={ws?.projectId ?? ''} baseBranch={ws?.baseBranch} />
+                    return (
+                      <WorkspaceFiles
+                        workspaceId={id}
+                        projectId={ws?.projectId ?? ''}
+                        baseBranch={ws?.baseBranch}
+                        changedOnly={isChangesTarget(target)}
+                      />
+                    )
                   })()}
                 </div>
               ) : (

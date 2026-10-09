@@ -78,7 +78,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'kill-terminal', label: 'Kill terminal',
     description: 'Close the active terminal (asks to confirm).', defaultChord: alt('KeyW') },
   { id: 'open-changes', label: 'Open changes',
-    description: 'Open the file explorer showing only changed files and their diffs.', defaultChord: alt('KeyG') },
+    description: 'Open the changed files and their diffs, and focus their filter.', defaultChord: alt('KeyG') },
   { id: 'open-files', label: 'Open file tree',
     description: 'Open the file tree and focus its filter.', defaultChord: alt('KeyE') },
   { id: 'open-preview', label: 'Open preview',

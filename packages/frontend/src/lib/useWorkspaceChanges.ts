@@ -57,9 +57,9 @@ function useReader(workspaceId: string, base: string | undefined, part: Part | u
 /**
  * A workspace's changes since its diff base, how far HEAD is from the base
  * branch, and its listing: everything the webapp polls about a checkout,
- * shared by the status bar, the explorer and every file pane through one
- * query, so they poll the server once between them. The base is the
- * explorer's pick, else the server's default (the branch the workspace
+ * shared by the status bar, the explorer, the Changes pane and every file
+ * pane through one query, so they poll the server once between them. The
+ * base is the Changes pane's pick, else the server's default (the branch the workspace
  * forked from).
  *
  * The diff body can run to a megabyte and a full listing walks the working

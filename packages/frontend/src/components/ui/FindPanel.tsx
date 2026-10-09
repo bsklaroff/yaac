@@ -11,14 +11,11 @@ import {
 } from '@codemirror/search'
 import { IS_MAC } from '#lib/platform'
 import { Tip, WithTip } from '#components/ui/Tooltip'
-import { MatchCounter, NO_MATCHES, type Matches } from '#lib/matchCount'
+import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches } from '#lib/matchCount'
 import {
   ChevronIcon, CloseIcon, MatchCaseIcon, NextMatchIcon, PrevMatchIcon, RegexIcon, ReplaceAllIcon, ReplaceIcon,
   SearchIcon, WholeWordIcon,
 } from '#lib/icons'
-
-/** Delay after a keystroke or edit before the match count reruns. */
-export const COUNT_DEBOUNCE_MS = 80
 
 type QueryFields = Partial<ConstructorParameters<typeof SearchQuery>[0]>
 
@@ -276,7 +273,8 @@ type FindFlags = Pick<SearchQuery, 'caseSensitive' | 'wholeWord' | 'regexp'>
 /**
  * A find bar's query field (with its count and case / word / regex toggles)
  * followed by previous / next / close, as two siblings so the caller lays
- * them out. Shared by the editor's find panel and the conversation's.
+ * them out. Shared by the editor's find panel, the conversation's and the
+ * Changes pane's.
  */
 export function FindControls({
   inputRef, text, onText, query, onToggle, matches, current, onPrev, onNext, onClose,

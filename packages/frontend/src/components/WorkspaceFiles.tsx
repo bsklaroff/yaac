@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { MENU_ITEM, POPUP } from '#components/ui/menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -10,20 +10,23 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { SymlinkTarget, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
 import { layoutOf, paneViewKey, useUiStore } from '#lib/store'
 import { BranchPicker } from '#components/BranchPicker'
-import { DiffView } from '#components/DiffView'
+import { DiffView, type FindMark } from '#components/DiffView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { FindControls } from '#components/ui/FindPanel'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
 import { PathLabel } from '#components/ui/PathLabel'
 import { Tip, WithTip } from '#components/ui/Tooltip'
-import { changeMatchesQuery, indexDiffsByPath, type ParsedFileDiff } from '#lib/diff'
+import { indexDiffsByPath, type ParsedFileDiff } from '#lib/diff'
 import { CHANGE_STAGES, ROW_STATUS, lineTotals, pathStatuses, stageTotals, type RowStatus } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
 import { chordMatches, findChord, formatChord } from '#lib/shortcuts'
 import { useProjectBranches } from '#lib/useProjectBranches'
 import { CHANGES_POLL_MS, useWorkspaceChanges, useWorkspaceFiles } from '#lib/useWorkspaceChanges'
+import { useDiffFind, type DiffMatch } from '#lib/useDiffFind'
 import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
 import {
+  CHANGES_TARGET,
   FILES_TARGET,
   FileConflict,
   buildTree,
@@ -37,12 +40,13 @@ import {
   flushFileSavers,
   isFileTarget,
   listWorkspaceDir,
+  matchScore,
   renameWorkspaceEntry,
   saveWorkspaceFile,
   type TreeNode,
 } from '#lib/files'
 import {
-  BranchIcon, ChangesIcon, ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
+  BranchIcon, ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
   FileImageIcon, FileJsonIcon, FileShellIcon, FileTextIcon, FlatListIcon, FolderIcon, FolderOpenIcon, HideIcon,
   LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon, WarningIcon,
 } from '#lib/icons'
@@ -118,23 +122,25 @@ function isStopped(err: unknown): boolean {
  * The file explorer (docs/file-editor.md): a tree from one gitignore-aware
  * listing, a filter that doubles as quick-open, a "show ignored" toggle, git
  * status colors, line counts against the diff base, and create / rename /
- * delete. Its changes view lists only the changed files, as a tree or flat,
- * optionally with each one's diff. Unmounted off-screen; view state lives in
- * the store.
+ * delete. As the Changes pane (`changedOnly`) it lists only the changed
+ * files, as a tree or flat, each with its diff, which Cmd/Ctrl-F searches.
+ * Unmounted off-screen; view state lives in the store.
  */
-export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
+export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly = false }: {
   workspaceId: string
   projectId: string
   /** The branch the workspace forked from: the diff base picker's default. */
   baseBranch?: string
+  changedOnly?: boolean
 }): JSX.Element {
   const queryClient = useQueryClient()
-  // The tree rides on the changes poll below, which asks for the full
-  // listing while the explorer is mounted.
+  // The tree rides on the changes poll below, which asks for the listing
+  // while the pane is mounted.
   const data = useWorkspaceFiles(workspaceId)
   const refresh = (): void => { void queryClient.invalidateQueries({ queryKey: ['changes', workspaceId] }) }
 
-  const viewKey = paneViewKey(workspaceId, FILES_TARGET)
+  const target = changedOnly ? CHANGES_TARGET : FILES_TARGET
+  const viewKey = paneViewKey(workspaceId, target)
   const view = useUiStore((s) => s.paneView[viewKey])
   const setPaneView = useUiStore((s) => s.setPaneView)
   const openFile = useUiStore((s) => s.openFile)
@@ -149,11 +155,10 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
     setPaneView(viewKey, { foldedDiffs: [...next] })
   }
   const showIgnored = view?.showIgnored === true
-  const changedOnly = view?.changedOnly === true
   const flat = changedOnly && view?.flat !== false
   const find = view?.find ?? ''
   const setExpanded = (paths: Set<string>): void => setPaneView(viewKey, { expanded: [...paths] })
-  // The changes view's folders start open, so it records the closed ones.
+  // The Changes pane's folders start open, so it records the closed ones.
   const isOpen = (path: string): boolean => (changedOnly ? !collapsed.has(path) : expanded.has(path))
   const toggle = (path: string): void => {
     const next = new Set(changedOnly ? collapsed : expanded)
@@ -162,9 +167,11 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
     setPaneView(viewKey, changedOnly ? { collapsed: [...next] } : { expanded: [...next] })
   }
 
-  // Every row shows its line counts, so the changes are fetched in both
-  // views; their diff lines only in the changes view, which shows them.
-  const changes = useWorkspaceChanges(workspaceId, { diff: changedOnly, listing: 'full', poll: CHANGES_POLL_MS })
+  // Every row shows its line counts, so the explorer fetches the changes
+  // too. The Changes pane needs only the paths, for conflicts.
+  const changes = useWorkspaceChanges(workspaceId, {
+    diff: changedOnly, listing: changedOnly ? 'paths' : 'full', poll: CHANGES_POLL_MS,
+  })
   // A picked base whose branch went away fails every poll; this goes back
   // to the fork branch.
   const pick = useUiStore((s) => s.changesBase[workspaceId])
@@ -183,10 +190,13 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
     () => (changedOnly ? indexDiffsByPath(changes.data?.diff ?? '') : new Map<string, ParsedFileDiff>()),
     [changedOnly, changes.data?.diff],
   )
-  // In the changes view the filter matches a path or a line of its diff.
+  // The Changes pane's filter matches paths (a rename's old one too) as
+  // quick-open does.
   const visibleChanged = useMemo(
-    () => changed.filter((c) => changeMatchesQuery(c, diffMap.get(c.path), find)),
-    [changed, diffMap, find],
+    () => (find
+      ? changed.filter((c) => [c.path, c.oldPath].some((p) => p !== undefined && matchScore(find, p) !== null))
+      : changed),
+    [changed, find],
   )
 
   const tree = useMemo(() => {
@@ -204,10 +214,11 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
   )
   const ignoredFiles = useMemo(() => new Set(data?.ignored ?? []), [data?.ignored])
 
-  // The open-files shortcut (Alt-E) sets filesFindPending; the pane focuses
-  // its filter in response, making Alt-E, a few letters, Enter a quick-open.
-  const findPending = useUiStore((s) => s.filesFindPending)
-  const setFindPending = useUiStore((s) => s.setFilesFindPending)
+  // The open-files and open-changes shortcuts (Alt-E, Alt-G) set
+  // findPending; the pane focuses its filter in response, making Alt-E, a
+  // few letters, Enter a quick-open.
+  const findPending = useUiStore((s) => s.findPending === target)
+  const setFindPending = useUiStore((s) => s.setFindPending)
   const findRef = useRef<HTMLInputElement | null>(null)
   // The highlighted quick-open result: arrows move it, Enter opens it.
   const [active, setActive] = useState(0)
@@ -221,18 +232,87 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
   }, [active])
   useEffect(() => {
     if (!findPending || !findRef.current) return
-    setFindPending(false)
+    setFindPending(null)
     findRef.current.focus()
     findRef.current.select()
   }, [findPending, data, setFindPending])
+
+  // Cmd/Ctrl-F searches the Changes pane's diffs, in the order shown.
+  const searched = useMemo(() => {
+    if (!changedOnly || !tree) return []
+    const order = (n: TreeNode): string[] => (n.dir ? n.children.flatMap(order) : [n.path])
+    const paths = flat ? visibleChanged.map((c) => c.path) : order(tree.root)
+    return paths.flatMap((p) => diffMap.get(p) ?? [])
+  }, [changedOnly, tree, flat, visibleChanged, diffMap])
+  // Unfold the diff and the folders a match sits in.
+  const reveal = ({ path }: DiffMatch): void => {
+    const folders = path.split('/').slice(0, -1).map((_, i, segs) => segs.slice(0, i + 1).join('/'))
+    setPaneView(viewKey, {
+      ...foldedDiffs.has(path) && { foldedDiffs: [...foldedDiffs].filter((p) => p !== path) },
+      ...!flat && folders.some((f) => collapsed.has(f)) && {
+        collapsed: [...collapsed].filter((p) => !folders.includes(p)),
+      },
+    })
+  }
+  const finder = useDiffFind(searched, reveal)
+  // Each file's marks by line, kept across steps so a step re-renders only
+  // the diffs of the old and new current match.
+  const marks = useMemo(() => {
+    const byPath = new Map<string, Map<number, FindMark[]>>()
+    if (!finder.isOpen) return byPath
+    for (const { path, line, from, to } of finder.located) {
+      const lines = byPath.get(path) ?? new Map<number, FindMark[]>()
+      byPath.set(path, lines)
+      lines.set(line, [...lines.get(line) ?? [], { from, to, current: false }])
+    }
+    return byPath
+  }, [finder.isOpen, finder.located])
+  const currentMatch = finder.isOpen ? finder.located[finder.current] : undefined
+  const currentMarks = useMemo(() => {
+    const lines = currentMatch && marks.get(currentMatch.path)
+    if (!currentMatch || !lines) return undefined
+    const { line, from } = currentMatch
+    return new Map(lines).set(line, lines.get(line)!.map((m) => (m.from === from ? { ...m, current: true } : m)))
+  }, [marks, currentMatch])
+  const marksOf = (path: string): Map<number, FindMark[]> | undefined => (
+    path === currentMatch?.path ? currentMarks : marks.get(path)
+  )
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const findInputRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (!finder.focusKey) return
+    findInputRef.current?.focus()
+    findInputRef.current?.select()
+  }, [finder.focusKey])
+  const closeFind = (): void => {
+    finder.close()
+    rootRef.current?.focus()
+  }
+  const onFindKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      closeFind()
+    } else if (e.key === 'Enter' && e.target === findInputRef.current) {
+      e.preventDefault()
+      finder.step(e.shiftKey ? -1 : 1)
+    }
+  }
+
   const onKeyDown = (e: KeyboardEvent): void => {
-    if (!chordMatches(findChord(), e.nativeEvent) || !findRef.current) return
+    if (!chordMatches(findChord(), e.nativeEvent)) return
     e.preventDefault()
-    findRef.current.focus()
-    findRef.current.select()
+    if (changedOnly) {
+      finder.open()
+    } else if (findRef.current) {
+      findRef.current.focus()
+      findRef.current.select()
+    }
   }
 
   const listRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (finder.moved) listRef.current?.querySelector('[data-find-current]')?.scrollIntoView({ block: 'center', inline: 'nearest' })
+  }, [finder.moved])
   const restoredScroll = useRef(false)
   useLayoutEffect(() => {
     const el = listRef.current
@@ -373,7 +453,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
     // Listing needs the workspace running; open tabs still work when stopped.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
-        <span>Start the workspace to browse its files.</span>
+        <span>Start the workspace to {changedOnly ? 'review its changes' : 'browse its files'}.</span>
       </div>
     )
   }
@@ -455,7 +535,14 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
             diff={changedOnly && row.change ? {
               open: !foldedDiffs.has(row.path),
               toggle: () => toggleDiff(row.path),
-              body: <ChangeDiff change={row.change} diff={diffMap.get(row.path)} unfetched={changes.data?.diff !== undefined ? undefined : changes.isError ? 'failed' : 'loading'} />,
+              body: (
+                <ChangeDiff
+                  change={row.change}
+                  diff={diffMap.get(row.path)}
+                  unfetched={changes.data?.diff !== undefined ? undefined : changes.isError ? 'failed' : 'loading'}
+                  marks={marksOf(row.path)}
+                />
+              ),
             } : undefined}
           >
             {row.dir && isOpen(row.path) && ((): JSX.Element => {
@@ -513,8 +600,10 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
               if (find !== '') setFind('')
               else e.currentTarget.blur()
             }}
-            placeholder={changedOnly ? 'Filter changes…' : `Go to file… (${formatChord(bindings['open-files'], IS_MAC)})`}
-            aria-label="Filter files"
+            placeholder={changedOnly
+              ? `Filter changed files… (${formatChord(bindings['open-changes'], IS_MAC)})`
+              : `Go to file… (${formatChord(bindings['open-files'], IS_MAC)})`}
+            aria-label={changedOnly ? 'Filter changed files' : 'Filter files'}
             spellCheck={false}
             className="min-w-0 flex-1 bg-transparent py-0.5 text-[11px] text-text outline-none placeholder:text-text-faint"
           />
@@ -526,18 +615,11 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
             {data.truncated && !changedOnly && '+'}
           </span>
         </label>
-        <HeaderButton
-          label={changedOnly ? 'Show all files' : 'Show only changed files'}
-          pressed={changedOnly}
-          // The changes view opens as a flat list with every diff open, each time.
-          onClick={() => setPaneView(viewKey, changedOnly
-            ? { changedOnly: false }
-            : { changedOnly: true, flat: true, foldedDiffs: [] })}
-        >
-          <ChangesIcon size={13} />
-        </HeaderButton>
         {changedOnly ? (
           <>
+            <HeaderButton label={`Find in diffs (${formatChord(findChord(), IS_MAC)})`} onClick={finder.open}>
+              <SearchIcon size={13} />
+            </HeaderButton>
             <HeaderButton
               label={flat ? 'Show as a tree' : 'Show as a flat list'}
               pressed={flat}
@@ -628,7 +710,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
 
   return (
     // Focusable so Cmd/Ctrl-F reaches the filter after a click in the list.
-    <div tabIndex={-1} onKeyDown={onKeyDown} className="flex h-full flex-col bg-surface outline-none">
+    <div ref={rootRef} tabIndex={-1} onKeyDown={onKeyDown} className="flex h-full flex-col bg-surface outline-none">
       {header}
       {changedOnly && (
         <ChangesStrip
@@ -638,6 +720,28 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch }: {
           data={changes.data}
           files={visibleChanged}
         />
+      )}
+      {changedOnly && finder.isOpen && (
+        <Tooltip.Provider>
+          <div
+            onKeyDown={onFindKeyDown}
+            className="grid shrink-0 grid-cols-[minmax(0,380px)_auto] items-center justify-start gap-x-1 border-b
+              border-hairline bg-surface px-1.5 py-1 font-sans text-[11px] text-text-dim"
+          >
+            <FindControls
+              inputRef={findInputRef}
+              text={finder.query.search}
+              onText={(search) => finder.commit({ search }, true)}
+              query={finder.query}
+              onToggle={(flags) => finder.commit(flags, true)}
+              matches={finder.matches}
+              current={finder.current + 1}
+              onPrev={() => finder.step(-1)}
+              onNext={() => finder.step(1)}
+              onClose={closeFind}
+            />
+          </div>
+        </Tooltip.Provider>
       )}
       {actionError && (
         <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-error">
@@ -886,17 +990,20 @@ const DIFF_CHUNK_LINES = 200
 const DIFF_LINE_PX = 16.5
 
 /**
- * One changed file's diff, read-only, under its row in the changes view.
+ * One changed file's diff, read-only, under its row in the Changes pane.
  * It mounts in chunks as they come near the screen, so opening a view of
- * hundreds of changed files renders only the diffs in sight. `unfetched`
- * says why the shared changes poll holds no diff body yet: it leaves the
- * body out while no changes view is open, so one is `loading` until the
- * view's own fetch lands, unless that fetch `failed`.
+ * hundreds of changed files renders only the diffs in sight; the chunk
+ * holding the current find match mounts regardless. `unfetched` says why
+ * the shared changes poll holds no diff body yet: it leaves the body out
+ * while no Changes pane is open, so one is `loading` until the pane's own
+ * fetch lands, unless that fetch `failed`.
  */
-function ChangeDiff({ change, diff, unfetched }: {
+const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks }: {
   change: WorkspaceChange
   diff: ParsedFileDiff | undefined
   unfetched?: 'loading' | 'failed'
+  /** Find matches, by line index. */
+  marks?: Map<number, FindMark[]>
 }): JSX.Element {
   const chunks = useMemo(() => {
     const lines = diff && !diff.binary ? diff.lines : []
@@ -904,12 +1011,21 @@ function ChangeDiff({ change, diff, unfetched }: {
     for (let i = 0; i < lines.length; i += DIFF_CHUNK_LINES) out.push(lines.slice(i, i + DIFF_CHUNK_LINES))
     return out
   }, [diff])
+  const chunkMarks = useMemo(() => chunks.map((_, i) => {
+    const start = i * DIFF_CHUNK_LINES
+    const own = [...marks ?? []].filter(([line]) => line >= start && line < start + DIFF_CHUNK_LINES)
+    return own.length ? new Map(own.map(([line, m]) => [line - start, m])) : undefined
+  }), [chunks, marks])
   const language = languageForPath(change.path)
   return (
     <div className="overflow-x-auto border-y border-hairline bg-bg">
       {chunks.length > 0 ? chunks.map((lines, i) => (
-        <NearScreen key={i} height={lines.length * DIFF_LINE_PX}>
-          <DiffView lines={lines} language={language} />
+        <NearScreen
+          key={i}
+          height={lines.length * DIFF_LINE_PX}
+          force={[...chunkMarks[i]?.values() ?? []].some((ms) => ms.some((m) => m.current))}
+        >
+          <DiffView lines={lines} language={language} marks={chunkMarks[i]} />
         </NearScreen>
       )) : (
         <div className="px-3 py-1.5 text-[11px] text-text-faint">
@@ -920,7 +1036,7 @@ function ChangeDiff({ change, diff, unfetched }: {
       )}
     </div>
   )
-}
+})
 
 /** The one observer behind every `NearScreen`, and who to tell per element. */
 let nearObserver: IntersectionObserver | null = null
@@ -939,11 +1055,15 @@ function observeNear(el: Element, onChange: (near: boolean) => void): () => void
 }
 
 /**
- * Renders its children only while within a screen or so of the viewport,
- * holding `height` (theirs, known in advance) in the meantime, so the
- * scrollbar stays true. Without IntersectionObserver it always renders.
+ * Renders its children only while within a screen or so of the viewport or
+ * `force`d, holding `height` (theirs, known in advance) in the meantime, so
+ * the scrollbar stays true. Without IntersectionObserver it always renders.
  */
-function NearScreen({ height, children }: { height: number; children: ReactNode }): JSX.Element {
+function NearScreen({ height, force = false, children }: {
+  height: number
+  force?: boolean
+  children: ReactNode
+}): JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null)
   const [near, setNear] = useState(typeof IntersectionObserver === 'undefined')
   useEffect(() => {
@@ -951,11 +1071,12 @@ function NearScreen({ height, children }: { height: number; children: ReactNode 
     if (!el || typeof IntersectionObserver === 'undefined') return
     return observeNear(el, setNear)
   }, [])
-  return <div ref={ref} style={near ? undefined : { height }}>{near && children}</div>
+  const shown = near || force
+  return <div ref={ref} style={shown ? undefined : { height }}>{shown && children}</div>
 }
 
 /**
- * The changes view's strip under the header: the diff base (and a picker
+ * The Changes pane's strip under the header: the diff base (and a picker
  * for it), the shown files' line totals, overall and per stage, and what
  * the diff leaves out.
  */

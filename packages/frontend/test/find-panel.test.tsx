@@ -4,25 +4,8 @@ import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import type { EditorView } from '@uiw/react-codemirror'
 import { getSearchQuery, openSearchPanel } from '@codemirror/search'
 import { CodeEditor } from '#components/ui/CodeEditor'
-import { COUNT_DEBOUNCE_MS } from '#components/ui/FindPanel'
-import { COUNT_TIMEOUT_MS, countMatches, type QuerySpec } from '#lib/matchCount'
-
-/** A regex that backtracks forever; the fake worker never answers it. */
-const HANGS = '(a|aa)+b'
-
-/** jsdom has no Worker. This one runs the real `countMatches` a tick later,
- *  and never answers for HANGS. */
-class FakeWorker {
-  onmessage: ((e: MessageEvent) => void) | null = null
-  private terminated = false
-  postMessage(msg: { id: number; doc: string; spec: QuerySpec }): void {
-    if (msg.spec.search === HANGS) return
-    setTimeout(() => {
-      if (!this.terminated) this.onmessage?.({ data: { id: msg.id, matches: countMatches(msg.doc, msg.spec) } } as MessageEvent)
-    }, 0)
-  }
-  terminate(): void { this.terminated = true }
-}
+import { COUNT_DEBOUNCE_MS, COUNT_TIMEOUT_MS } from '#lib/matchCount'
+import { FakeWorker, HANGS } from './harness'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })

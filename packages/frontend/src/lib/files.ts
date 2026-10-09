@@ -17,10 +17,18 @@ import { addColumn, addTab, groupIndexOf, moveTargetToColumn, paneTargets, type 
 /** The one layout target a workspace's explorer uses. */
 export const FILES_TARGET = 'files'
 
+/** The one layout target of a workspace's Changes pane: the explorer
+ *  listing only changed files, each with its diff. */
+export const CHANGES_TARGET = 'changes'
+
 const FILE_PREFIX = 'file:'
 
 export function isFilesTarget(target: string): boolean {
   return target === FILES_TARGET
+}
+
+export function isChangesTarget(target: string): boolean {
+  return target === CHANGES_TARGET
 }
 
 /** The editor pane of one file, by its path relative to the workspace. */
@@ -293,14 +301,17 @@ export function fileTabLabels(paths: string[]): Record<string, string> {
  * Place a newly opened file, like VS Code's "open in the active editor
  * group". An open file stays put. Otherwise it becomes a tab in the column
  * with the active file pane, else any column with a file pane, else a new
- * column right of the explorer, else a new column at the end.
+ * column right of the explorer (the active one, if either is), else a new
+ * column at the end.
  */
 export function placeFile(ws: PaneLayout, target: string, activeTarget?: string): PaneLayout {
   if (paneTargets(ws).includes(target)) return ws
   const active = activeTarget && isFileTarget(activeTarget) ? groupIndexOf(ws, activeTarget) : -1
   const withFile = active !== -1 ? active : ws.findIndex((g) => g.tabs.some(isFileTarget))
   if (withFile !== -1) return addTab(ws, withFile, target)
-  const explorer = groupIndexOf(ws, FILES_TARGET)
+  const explorer = [activeTarget, FILES_TARGET, CHANGES_TARGET]
+    .filter((t): t is string => t === FILES_TARGET || t === CHANGES_TARGET)
+    .map((t) => groupIndexOf(ws, t)).find((i) => i !== -1) ?? -1
   const added = addColumn(ws, target)
   return explorer === -1 ? added : moveTargetToColumn(added, target, explorer + 1)
 }
