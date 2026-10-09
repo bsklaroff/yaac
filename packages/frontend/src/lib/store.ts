@@ -171,6 +171,16 @@ const oneOf = <T extends string>(key: string, values: readonly T[]): Persisted<T
   parse: (raw) => values.find((v) => v === raw),
 })
 
+/** A JSON array, keeping the `values` it holds, in their order. */
+const someOf = <T extends string>(key: string, values: readonly T[]): Persisted<T[]> => ({
+  key,
+  parse: (raw) => {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? values.filter((v) => parsed.includes(v)) : undefined
+  },
+  serialize: JSON.stringify,
+})
+
 const number = (key: string, clamp: (n: number) => number): Persisted<number> => ({
   key,
   parse: (raw) => (raw.trim() !== '' && Number.isFinite(Number(raw)) ? clamp(Number(raw)) : undefined),
@@ -202,6 +212,11 @@ function isChatDraft(v: unknown): v is ChatDraft {
 export const FILE_DIFF_MODES = ['plain', 'added', 'inline', 'changes'] as const
 export type FileDiffMode = typeof FILE_DIFF_MODES[number]
 
+/** The statuses the sidebar's filter can narrow its rows to, in menu order.
+ *  `background` is an agent between turns with background work live. */
+export const SIDEBAR_STATUSES = ['waiting', 'running', 'background', 'stopped'] as const
+export type SidebarStatus = typeof SIDEBAR_STATUSES[number]
+
 /** The store fields saved across reloads. */
 const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   // A restart keeps the workspace id, so its layout survives it.
@@ -218,6 +233,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
   stoppedExpanded: flag('yaac.stoppedexpanded.v1'),
+  sidebarStatuses: someOf('yaac.sidebarstatuses.v1', SIDEBAR_STATUSES),
   editorFontSize: number('yaac.editorfontsize.v1', clampEditorFontSize),
   fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
@@ -641,6 +657,10 @@ interface UiState {
   /** Groups the user collapsed; groups start expanded. */
   collapsedGroups: string[]
   setGroupCollapsed: (groupId: string, collapsed: boolean) => void
+  /** The statuses the sidebar's filter shows; empty shows every row.
+   *  Saved. */
+  sidebarStatuses: SidebarStatus[]
+  setSidebarStatuses: (statuses: SidebarStatus[]) => void
   /** The sidebar search box's text. Cleared when the project changes. */
   sidebarQuery: string
   setSidebarQuery: (query: string) => void
@@ -757,6 +777,9 @@ export const useUiStore = create<UiState>((set) => ({
   pinnedUsageMetric: null,
   chatDrafts: {},
   readWaiting: {},
+  stoppedExpanded: false,
+  sidebarStatuses: [],
+  // Every saved field's default goes above this line, so a loaded value wins.
   ...loadPersisted(),
   activeTabs: {},
   changesBase: {},
@@ -812,7 +835,6 @@ export const useUiStore = create<UiState>((set) => ({
   }),
   revealQueued: null,
   setRevealQueued: (reveal) => set({ revealQueued: reveal }),
-  stoppedExpanded: false,
   setStoppedExpanded: (stoppedExpanded) => set({ stoppedExpanded }),
   stoppedShownGroups: [],
   setGroupShowsStopped: (groupId, shown) => set((s) => ({
@@ -822,6 +844,7 @@ export const useUiStore = create<UiState>((set) => ({
   setGroupCollapsed: (groupId, collapsed) => set((s) => ({
     collapsedGroups: toggled(s.collapsedGroups, groupId, collapsed),
   })),
+  setSidebarStatuses: (sidebarStatuses) => set({ sidebarStatuses }),
   sidebarQuery: '',
   setSidebarQuery: (sidebarQuery) => set({ sidebarQuery }),
 

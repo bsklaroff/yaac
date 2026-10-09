@@ -1,15 +1,17 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
-import { groupDisplay, searchRows } from '#components/WorkspaceList'
+import { groupDisplay, narrowRows } from '#components/WorkspaceList'
 import { stoppedSectionCount } from '#lib/useStoppedWorkspaces'
 import type {
+  DraftWorkspaceEntry,
   HeldWorkspaceEntry,
   ProvisioningWorkspaceEntry,
   QueuedWorkspaceEntry,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
+import type { SidebarStatus } from '#lib/store'
 
 /** A workspace entry. `at` is the seconds field of its creation time, which is
  *  what the list orders on. */
@@ -285,7 +287,7 @@ describe('sidebarRowIds', () => {
 describe('groupDisplay', () => {
   const live = { provisioning: [], members: [entry('a', 1)], held: [] }
   const ghostsOnly = { provisioning: [], members: [], held: [] }
-  const state = { collapsed: false, showStopped: true, searching: false }
+  const state = { collapsed: false, showStopped: true, narrowed: false }
 
   it('owns its ghosts only while they are on screen', () => {
     expect(groupDisplay(live, state)).toEqual({ onlyGhosts: false, expanded: true, ownsGhosts: true })
@@ -293,7 +295,7 @@ describe('groupDisplay', () => {
     expect(groupDisplay(live, { ...state, collapsed: true }).ownsGhosts).toBe(false)
     expect(groupDisplay(live, { ...state, showStopped: false }).ownsGhosts).toBe(false)
     // A search holds the group open and hides its ghosts.
-    expect(groupDisplay(live, { ...state, collapsed: true, searching: true }))
+    expect(groupDisplay(live, { ...state, collapsed: true, narrowed: true }))
       .toEqual({ onlyGhosts: false, expanded: true, ownsGhosts: false })
   })
 
@@ -304,7 +306,7 @@ describe('groupDisplay', () => {
   })
 })
 
-describe('searchRows', () => {
+describe('narrowRows', () => {
   it('keeps every kind of row whose title, prompt or agent matches, ignoring case', () => {
     const rows = {
       workspaces: [entry('t', 1, { title: 'Fix PARSER' }), entry('p', 2, { prompt: 'the parser' }),
@@ -314,13 +316,35 @@ describe('searchRows', () => {
       held: [{ ...held('h'), title: 'Parser held' }, held('h2')],
       drafts: [],
     }
-    const hit = searchRows('  Parser ', rows)
+    const hit = narrowRows('  Parser ', [], rows)
     expect(hit.workspaces.map((w) => w.workspaceId)).toEqual(['t', 'p'])
     expect(hit.provisioning.map((p) => p.workspaceId)).toEqual(['pv'])
     expect(hit.queued.map((e) => e.id)).toEqual(['q-parser'])
     expect(hit.held.map((h) => h.workspaceId)).toEqual(['h'])
-    expect(searchRows('codex', rows).workspaces.map((w) => w.workspaceId)).toEqual(['x'])
-    expect(searchRows('  ', rows)).toBe(rows)
+    expect(narrowRows('codex', [], rows).workspaces.map((w) => w.workspaceId)).toEqual(['x'])
+    expect(narrowRows('  ', [], rows)).toBe(rows)
+  })
+
+  it('keeps the rows with a checked status, counting provisioning as running and held as stopped', () => {
+    const rows = {
+      workspaces: [entry('w', 1, { status: 'waiting', title: 'fix' }), entry('r', 2),
+        entry('b', 3, { status: 'background' })],
+      provisioning: [prov('pv', 4)],
+      queued: [queued('q', 'w')],
+      held: [held('h')],
+      // Only the id is read.
+      drafts: [{ id: 'd' } as DraftWorkspaceEntry],
+    }
+    const ids = (query: string, picked: SidebarStatus[]): string[][] => {
+      const kept = narrowRows(query, picked, rows)
+      return [kept.workspaces.map((w) => w.workspaceId), kept.provisioning.map((p) => p.workspaceId),
+        kept.queued.map((e) => e.id), kept.held.map((h) => h.workspaceId), kept.drafts.map((d) => d.id)]
+    }
+    expect(ids('', ['waiting', 'background'])).toEqual([['w', 'b'], [], ['q'], [], []])
+    expect(ids('', ['running'])).toEqual([['r'], ['pv'], ['q'], [], []])
+    expect(ids('', ['stopped'])).toEqual([[], [], ['q'], ['h'], []])
+    // Both must hold.
+    expect(ids('FIX', ['waiting', 'running'])).toEqual([['w'], [], [], [], []])
   })
 })
 

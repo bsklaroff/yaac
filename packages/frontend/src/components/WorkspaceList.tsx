@@ -10,7 +10,7 @@ import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
 import { stoppedSectionCount, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
-import { useUiStore } from '#lib/store'
+import { useUiStore, type SidebarStatus } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
@@ -39,6 +39,7 @@ import {
 } from '#components/sidebar/WorkspaceRows'
 import { GroupSection } from '#components/sidebar/GroupSection'
 import { StoppedSection } from '#components/sidebar/StoppedRows'
+import { StatusFilterMenu } from '#components/sidebar/StatusFilterMenu'
 
 /** Newest first (UTC timestamps compare as strings), with the id as a
  *  tiebreak. */
@@ -182,21 +183,22 @@ export function sidebarRowIds(
 
 /**
  * How a group's section shows. `expanded` is what its panel renders with: a
- * search holds it open, a section of only ghosts follows its "Show stopped
- * workspaces" toggle, and any other follows the user's collapse. It owns its
- * ghost rows only while they are actually on screen; the Stopped section
- * lists them otherwise, so each stopped workspace appears in one place.
+ * search or status filter (`narrowed`) holds it open, a section of only
+ * ghosts follows its "Show stopped workspaces" toggle, and any other follows
+ * the user's collapse. It owns its ghost rows only while they are actually
+ * on screen; the Stopped section lists them otherwise, so each stopped
+ * workspace appears in one place.
  */
 export function groupDisplay(
   section: Pick<SidebarGroupSection, 'provisioning' | 'members' | 'held'>,
-  state: { collapsed: boolean; showStopped: boolean; searching: boolean },
+  state: { collapsed: boolean; showStopped: boolean; narrowed: boolean },
 ): { onlyGhosts: boolean; expanded: boolean; ownsGhosts: boolean } {
   const onlyGhosts = section.provisioning.length + section.members.length + section.held.length === 0
-  const expanded = state.searching || (onlyGhosts ? state.showStopped : !state.collapsed)
-  return { onlyGhosts, expanded, ownsGhosts: !state.searching && expanded && state.showStopped }
+  const expanded = state.narrowed || (onlyGhosts ? state.showStopped : !state.collapsed)
+  return { onlyGhosts, expanded, ownsGhosts: !state.narrowed && expanded && state.showStopped }
 }
 
-/** The rows the sidebar search keeps. */
+/** The rows the sidebar search and status filter keep. */
 export interface SearchableRows {
   workspaces: WorkspaceListEntry[]
   provisioning: ProvisioningWorkspaceEntry[]
@@ -206,20 +208,33 @@ export interface SearchableRows {
 }
 
 /**
- * The rows matching a sidebar search, by title, prompt and agent label,
- * ignoring case; all of them for a blank query. Stopped workspaces are
- * searched by the server, since only their loaded pages are here.
+ * The rows a sidebar search and status filter keep: those whose title,
+ * prompt or agent label holds the query, ignoring case, and whose status is
+ * checked. A blank query or no checked status lets every row past that test.
+ * A provisioning row counts as running and a held one as stopped. Drafts
+ * have no status, so any filter hides them. Queued workspaces skip the
+ * status test so they stay nested under a shown parent; while filtering, the
+ * caller hides every orphan, since an orphan has no status either. Stopped
+ * workspaces are searched by the server, since only their loaded pages are
+ * here.
  */
-export function searchRows(query: string, rows: SearchableRows): SearchableRows {
+export function narrowRows(
+  query: string,
+  statuses: readonly SidebarStatus[],
+  rows: SearchableRows,
+): SearchableRows {
   const q = query.trim().toLowerCase()
-  if (!q) return rows
-  const hit = (...texts: (string | undefined)[]): boolean => texts.some((t) => t?.toLowerCase().includes(q))
+  if (!q && statuses.length === 0) return rows
+  /** `status` undefined skips the status test; null fails any filter. */
+  const keep = (status: SidebarStatus | null | undefined, ...texts: (string | undefined)[]): boolean =>
+    (status === undefined || statuses.length === 0 || (status !== null && statuses.includes(status)))
+    && (!q || texts.some((t) => t?.toLowerCase().includes(q)))
   return {
-    workspaces: rows.workspaces.filter((w) => hit(w.title, w.prompt, agentLabel(w.tool, workspaceModel(w)))),
-    provisioning: rows.provisioning.filter((p) => hit(p.title, p.prompt, agentLabel(p.tool, p))),
-    queued: rows.queued.filter((e) => hit(queuedTitle(e), e.prompt, agentLabel(e.tool, undefined))),
-    held: rows.held.filter((h) => hit(h.title, h.prompt, agentLabel(h.tool, undefined))),
-    drafts: rows.drafts.filter((d) => hit(d.title, d.generatedTitle, d.prompt)),
+    workspaces: rows.workspaces.filter((w) => keep(w.status, w.title, w.prompt, agentLabel(w.tool, workspaceModel(w)))),
+    provisioning: rows.provisioning.filter((p) => keep('running', p.title, p.prompt, agentLabel(p.tool, p))),
+    queued: rows.queued.filter((e) => keep(undefined, queuedTitle(e), e.prompt, agentLabel(e.tool, undefined))),
+    held: rows.held.filter((h) => keep('stopped', h.title, h.prompt, agentLabel(h.tool, undefined))),
+    drafts: rows.drafts.filter((d) => keep(null, d.title, d.generatedTitle, d.prompt)),
   }
 }
 
@@ -237,14 +252,16 @@ interface RowDrag {
 
 
 /**
- * The workspace list: a search box over the scrolling rows, which are
- * drafts, provisioning rows, ungrouped workspaces, group sections and the
- * Stopped section. It has no outer chrome, so the desktop `Sidebar` and the
- * mobile workspaces screen can each wrap it.
+ * The workspace list: a search box and status filter over the scrolling
+ * rows, which are drafts, provisioning rows, ungrouped workspaces, group
+ * sections and the Stopped section. It has no outer chrome, so the desktop
+ * `Sidebar` and the mobile workspaces screen can each wrap it.
  *
- * A search filters the rows here and the stopped list on the server, holds
- * the Stopped section open, and hides groups with no match, pinned or not.
- * A workspace the search hides stays selected.
+ * A search filters the rows here and the stopped list on the server. A
+ * search, or a filter including stopped, holds the Stopped section open; a
+ * filter without stopped hides it. Either hides groups with no match,
+ * pinned or not, and lists every stopped workspace in the Stopped section.
+ * A workspace they hide stays selected.
  */
 export function WorkspaceList({
   projectId,
@@ -283,6 +300,7 @@ export function WorkspaceList({
   const setStoppedExpanded = useUiStore((s) => s.setStoppedExpanded)
   const stoppedShownGroups = useUiStore((s) => s.stoppedShownGroups)
   const collapsedGroups = useUiStore((s) => s.collapsedGroups)
+  const statuses = useUiStore((s) => s.sidebarStatuses)
 
   // The server search waits for a pause in typing.
   const [serverQuery, setServerQuery] = useState(query.trim())
@@ -291,16 +309,19 @@ export function WorkspaceList({
     return () => clearTimeout(t)
   }, [query])
   const searching = query.trim() !== ''
-  const shown = searchRows(query, { workspaces, provisioning, queued, held, drafts })
+  const filtering = statuses.length > 0
+  const narrowed = searching || filtering
+  const shown = narrowRows(query, statuses, { workspaces, provisioning, queued, held, drafts })
   const layout = sidebarLayout(shown.workspaces, groups, shown.provisioning, shown.queued, shown.held)
-  const sections = searching
+  const orphans = filtering ? [] : layout.orphans
+  const sections = narrowed
     ? layout.groups.filter((s) => s.provisioning.length + s.members.length + s.held.length > 0)
     : layout.groups
 
   const owning = new Set(sections.filter((s) => groupDisplay(s, {
     collapsed: collapsedGroups.includes(s.group.groupId),
     showStopped: stoppedShownGroups.includes(s.group.groupId),
-    searching,
+    narrowed,
   }).ownsGhosts).map((s) => s.group.groupId))
   // Stopped workspaces with a row elsewhere, held or restarting. The server
   // leaves them out of the stopped lists, so each total counts only what it
@@ -311,7 +332,9 @@ export function WorkspaceList({
     ...provisioning.filter((p) => p.kind === 'restart').map((p) => p.workspaceId),
   ]
   const hidden = new Set([...workspaces.map((w) => w.workspaceId), ...elsewhere])
-  const stoppedOpen = stoppedExpanded || searching
+  const stoppedShown = !filtering || statuses.includes('stopped')
+  const stoppedHeldOpen = searching || (filtering && stoppedShown)
+  const stoppedOpen = stoppedShown && (stoppedExpanded || stoppedHeldOpen)
   const stopped = useStoppedWorkspaces(projectId, {
     ...(searching && serverQuery ? { q: serverQuery } : {}),
     excludeGroups: [...owning],
@@ -329,10 +352,10 @@ export function WorkspaceList({
 
   // So a stop from a row's menu can select the next row.
   const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
-  const visibleCount = layout.defaultList.length + layout.defaultHeld.length + layout.orphans.length
+  // Every queued row nests under a counted row or is an orphan.
+  const visibleCount = layout.defaultList.length + layout.defaultHeld.length + orphans.length
     + sections.reduce((n, s) => n + s.members.length + s.held.length, 0)
-  const nothingLive = visibleCount === 0 && shown.provisioning.length === 0 && shown.queued.length === 0
-    && shown.drafts.length === 0
+  const nothingLive = visibleCount === 0 && shown.provisioning.length === 0 && shown.drafts.length === 0
   // Names of possible parents, for a queued row's discard dialog.
   const names = new Map<string, QueueParent>([
     ...provisioning.map((p) => [p.workspaceId, { name: p.title ?? 'New workspace', kind: 'live' }] as const),
@@ -427,8 +450,8 @@ export function WorkspaceList({
     <QueueContext.Provider value={queueContext}>
       <div className="flex min-h-0 flex-1 flex-col">
         {projectId && (
-          <div className="shrink-0 px-2 pb-1">
-            <div className="relative">
+          <div className="flex shrink-0 gap-1 px-2 pb-1">
+            <div className="relative flex-1">
               <SearchIcon
                 size={13}
                 className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-faint"
@@ -459,6 +482,7 @@ export function WorkspaceList({
                 </button>
               )}
             </div>
+            <StatusFilterMenu />
           </div>
         )}
         <div className="flex-1 overflow-y-auto py-1">
@@ -477,7 +501,7 @@ export function WorkspaceList({
                 : 'Pick a project from the rail on the left.'}
             />
           )}
-          {projectId && !searching && nothingLive && stoppedCount === 0 && (
+          {projectId && !narrowed && nothingLive && stoppedCount === 0 && (
             <EmptyState
               compact
               className="py-10"
@@ -485,11 +509,11 @@ export function WorkspaceList({
               description={readOnly ? undefined : 'Start one with the + above.'}
             />
           )}
-          {searching && nothingLive && stopped.total === 0 && (
+          {narrowed && nothingLive && (!stoppedShown || stopped.total === 0) && (
             <EmptyState compact className="py-10" title="No matches" />
           )}
           {shown.drafts.length > 0 && <DraftsSection drafts={shown.drafts} />}
-          {layout.orphans.map((e) => (
+          {orphans.map((e) => (
             <Fragment key={e.id}>
               <QueuedWorkspaceRow entry={e} depth={0} />
               <QueuedRows parentId={e.id} depth={1} />
@@ -538,19 +562,19 @@ export function WorkspaceList({
               rowIds={rowIds}
               dropTarget={dropTarget(section.group.groupId)}
               zoneRef={zoneRef(section.group.groupId)}
-              searching={searching}
+              narrowed={narrowed}
               elsewhere={elsewhere}
               hidden={hidden}
             />
           ))}
 
-          {projectId && (
+          {projectId && stoppedShown && (
             <StoppedSection
               projectId={projectId}
               count={stoppedCount}
               unseenDeaths={Math.max(0, (project?.unseenDeaths ?? 0) - ownedDeaths)}
               expanded={stoppedOpen}
-              {...(searching ? {} : { onExpandedChange: setStoppedExpanded })}
+              {...(stoppedHeldOpen ? {} : { onExpandedChange: setStoppedExpanded })}
               list={stopped}
             />
           )}

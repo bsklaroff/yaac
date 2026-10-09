@@ -25,8 +25,8 @@ import type { WorkspaceGroupSummary } from '@yaac/shared/types'
  * time while shown. Whether they are shown, and whether the group is
  * collapsed, live in the store, because while the ghosts are on screen the
  * Stopped section leaves them out (`groupDisplay`). In a section of only
- * ghosts, the caret and the menu item toggle the same thing. A search holds
- * every listed group open and hides its ghosts.
+ * ghosts, the caret and the menu item toggle the same thing. A search or
+ * status filter holds every listed group open and hides its ghosts.
  */
 export function GroupSection({
   section,
@@ -35,7 +35,7 @@ export function GroupSection({
   rowIds,
   dropTarget,
   zoneRef,
-  searching,
+  narrowed,
   elsewhere,
   hidden,
 }: {
@@ -48,8 +48,8 @@ export function GroupSection({
   /** A drop here would move the dragged workspace into this group. */
   dropTarget: boolean
   zoneRef: (el: HTMLDivElement | null) => void
-  /** A sidebar search is active. */
-  searching: boolean
+  /** A sidebar search or status filter is active. */
+  narrowed: boolean
   /** Stopped workspaces with a row elsewhere (held, restarting), which the
    *  server leaves out of the ghost list. */
   elsewhere: string[]
@@ -61,7 +61,7 @@ export function GroupSection({
   const showStopped = useUiStore((s) => s.stoppedShownGroups.includes(group.groupId))
   const setGroupCollapsed = useUiStore((s) => s.setGroupCollapsed)
   const setGroupShowsStopped = useUiStore((s) => s.setGroupShowsStopped)
-  const { onlyGhosts, expanded, ownsGhosts } = groupDisplay(section, { collapsed, showStopped, searching })
+  const { onlyGhosts, expanded, ownsGhosts } = groupDisplay(section, { collapsed, showStopped, narrowed })
   // The snapshot counts every stopped member; held ones and restarts in
   // flight have rows of their own.
   const restarts = provisioning.filter((p) => p.kind === 'restart').length
@@ -91,7 +91,7 @@ export function GroupSection({
   // With only ghosts, the caret sets both, so the state carries over when a
   // live row returns.
   const toggleExpanded = (next: boolean): void => {
-    if (searching) return
+    if (narrowed) return
     if (onlyGhosts) setGroupShowsStopped(group.groupId, next)
     setGroupCollapsed(group.groupId, !next)
   }
