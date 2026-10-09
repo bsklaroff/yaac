@@ -256,8 +256,7 @@ describe('tryClaimPrewarmed', () => {
     expect(await tryClaimPrewarmed('p', 'req', setup('claude'), emit)).toBeUndefined()
     await flush()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
-    // The proxy injects credentials only for the registered tool, so no
-    // respawn starts until the registration has landed.
+    // No respawn starts until the registration has landed.
     expect(mockRetool).not.toHaveBeenCalled()
   })
 
