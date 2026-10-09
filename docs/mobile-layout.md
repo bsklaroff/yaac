@@ -231,10 +231,10 @@ The viewport meta sets `viewport-fit=cover`, and the shell's container has
 `.safe-area-inset`, so screens inside it clear the notch and home indicator.
 
 Below `md`, fixed-size dialogs go full screen. Settings' left nav becomes a
-scrolling row of chips, and the `inset-4` overlays (skills, stopped
-workspaces, image builds) go edge to edge.
+scrolling row of chips, and the `inset-4` overlays (skills, image builds)
+go edge to edge.
 
-Those three overlays are list/detail layouts, and a 20rem list leaves the
+Those two overlays are list/detail layouts, and a 20rem list leaves the
 detail a few dozen pixels at 390px. `components/ui/MasterDetail` is their
 shared body: side by side above `md`, one at a time below it (the list until
 a row is tapped, then the detail with a back chevron).
@@ -247,15 +247,12 @@ a row is tapped, then the detail with a back chevron).
   skills overlay remounts its detail each time).
 - **`detailOpen` means "the user picked a row"**, not "a row is selected".
   Each overlay auto-selects its first row so the desktop detail is never
-  blank; below the breakpoint that auto-pick is skipped.
-- **Only reads may ride on the auto-picked row.** The stopped overlay's death
-  acknowledgement is a durable, cross-client write, so it keys on the clicked
-  row at every width. Otherwise opening the overlay, typing in its search box,
-  or rotating a phone to landscape would each acknowledge a death the user
-  never picked.
+  blank; below the breakpoint that auto-pick is skipped. Only reads may ride
+  on the auto-picked row.
 
-The stopped-workspaces entry point under the workspace list changes shape: a
-thin header-style line on desktop, a full-width tap-sized card on touch.
+Stopped workspaces are a section of the workspace list rather than an
+overlay. Tapping one selects it like any row, so on a phone it opens the
+pane screen, which shows it read-only.
 
 Elsewhere, no row of controls may assume desktop width. `min-width: 0` stops
 overflow, but fitting is not usable: Settings' add-git-credential row stacks
@@ -267,8 +264,8 @@ Unit tests in `packages/frontend/test/`: `viewport.test.ts`,
 `mobile-nav.test.ts` (the tap vs. app-choosing split; the
 `autoSelectWorkspace` case is the regression this design prevents),
 `mobile-shell.test.tsx` (layer visibility, history stack),
-`mobile-overlays.test.tsx` (no auto-pick, no detail fetch, no death
-acknowledged until a tap), `workspace-list.test.tsx`, `pty-input.test.ts`,
+`mobile-overlays.test.tsx` (no auto-pick and no detail fetch until a tap),
+`workspace-list.test.tsx`, `pty-input.test.ts`,
 `terminal-key-bar.test.tsx`, `touch-scroll.test.ts`.
 
 **Layout is not covered by CI.** jsdom has no layout engine, so the geometry

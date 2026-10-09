@@ -335,7 +335,7 @@ describe('Settings → Credentials → git', () => {
   }
   /** A project keyed by `id-<name>`, so the rows show the name, not the key. */
   const project = (name: string, remoteUrl: string, gitCredential: ProjectSummary['gitCredential']): ProjectSummary =>
-    ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, createDefaults: {}, gitCredential })
+    ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, unseenDeaths: 0, createDefaults: {}, gitCredential })
   const ALPHA = project('alpha', 'https://github.com/o/alpha.git', { id: 'c-token', name: 'alpha-token' })
   const BETA = project('beta', 'git@gitlab.com:o/beta.git', null)
   const GAMMA = project('gamma', 'https://github.com/o/gamma', null)

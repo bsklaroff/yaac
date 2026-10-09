@@ -88,10 +88,12 @@ checkout runs concurrently with the pod boot, and making the row wait would
 serialize them.
 
 `listActiveWorkspaces` joins live pods to one `getProjectWorkspaceRows` and one
-`getProjectAgentSessions` query per project. `listStoppedWorkspaces` takes the
-recorded rows minus live pod ids, sorts by `stoppedAt` (else `createdAt`),
-caps the list, and only then touches the filesystem: one `stat` per linked
-conversation for last activity, newest wins. So a workspace the user
+`getProjectAgentSessions` query per project. `listStoppedWorkspaces` pages
+the rows with a recorded stop, minus live pod ids, newest stop first. Paging
+is by keyset on `(stoppedAt, workspaceId)`, so a stop landing between two
+pages neither repeats nor skips a row, and the search, group filters and
+total all run in the same SQL. Only the page's rows touch the filesystem: one
+`stat` per linked conversation for last activity, newest wins. So a workspace the user
 `/clear`ed an hour ago reads as an hour old, not as old as its first question.
 Restart reads a stopped workspace's project and tool from the rows, so a tool
 that leaves no host transcript restarts like any other.

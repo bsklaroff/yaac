@@ -1,16 +1,16 @@
 /*
- * Verifies in Chromium (1400x900) that a conversation loaded in the
- * stopped-workspaces overlay stays inside the overlay.
+ * Verifies in Chromium (1400x900) that a stopped workspace's conversation,
+ * shown read-only in the main pane, stays inside the pane.
  *
- * The detail pane is a flex item beside the fixed-width list. Transcripts
- * hold very wide unbreakable content (`white-space: pre` tool output, fenced
- * blocks, diffs), and a flex item's default minimum width is its content's.
- * Without an explicit floor, the pane grows to the widest line and pushes
- * the Restart button off the overlay.
+ * The pane is a flex item beside the sidebar. Transcripts hold very wide
+ * unbreakable content (`white-space: pre` tool output, fenced blocks,
+ * diffs), and a flex item's default minimum width is its content's. Without
+ * an explicit floor, the pane grows to the widest line and pushes the
+ * Restart button off the window.
  *
  * Checks:
- *  1. The detail pane is no wider than the overlay.
- *  2. The Restart button is inside the overlay and hit-testable at its
+ *  1. The pane is no wider than the window.
+ *  2. The Restart button is inside the window and hit-testable at its
  *     center.
  *  3. Wide content scrolls inside its own block instead of widening the pane.
  *
@@ -98,39 +98,29 @@ try {
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 
   await page.route('**/api/workspace/list-stopped*', (route) =>
-    route.fulfill({ contentType: 'application/json', body: JSON.stringify(STOPPED) }))
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify({ entries: STOPPED, total: STOPPED.length }) }))
   await page.route('**/api/workspace/*/agent-sessions/*/transcript*', (route) =>
     route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
 
-  await page.goto(`${origin}/`)
-
-  await page.locator('text=Stopped workspaces').first().click({ timeout: 15_000 })
-  const popup = page.locator('[role="dialog"]').last()
-  await popup.waitFor({ state: 'visible', timeout: 10_000 })
+  // Selected by the URL; the stopped workspace opens in the main pane.
+  await page.goto(`${origin}/?workspace=${STOPPED[0].workspaceId}`)
+  const pane = page.locator('main', { has: page.getByRole('button', { name: 'Restart' }) })
+  await pane.waitFor({ state: 'visible', timeout: 15_000 })
   // The transcript arrives on a separate fetch.
-  await popup.locator('text=why is the build cache missing?').first().waitFor({ timeout: 10_000 })
-  await popup.locator('text=/build-coordinator/').first().waitFor({ timeout: 10_000 })
-
-  const popupBox = await popup.boundingBox()
-  const popupRight = Math.round(popupBox.x + popupBox.width)
-  // The detail pane is the overlay column holding Restart.
-  const detailBox = await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('[role="dialog"] button')]
-      .find((b) => b.textContent?.trim() === 'Restart')
-    let el = btn?.parentElement
-    while (el && !(el.parentElement?.classList.contains('gap-3'))) el = el.parentElement
-    return el?.getBoundingClientRect().toJSON() ?? null
-  })
+  await pane.locator('text=why is the build cache missing?').first().waitFor({ timeout: 10_000 })
+  await pane.locator('text=/build-coordinator/').first().waitFor({ timeout: 10_000 })
+  const windowRight = 1400
+  const paneBox = await pane.boundingBox()
   await page.screenshot({ path: path.join(SHOTS, 'stopped-transcript-overflow.png') })
 
-  check('the detail pane stays inside the overlay',
-    detailBox !== null && detailBox.right <= popupRight + 1,
-    `detail right ${Math.round(detailBox?.right)}px vs overlay right ${popupRight}px`)
+  check('the pane stays inside the window',
+    paneBox !== null && paneBox.x + paneBox.width <= windowRight + 1,
+    `pane right ${Math.round(paneBox?.x + paneBox?.width)}px`)
 
-  const restartBox = await popup.locator('button', { hasText: 'Restart' }).last().boundingBox()
-  check('the Restart button is inside the overlay',
-    restartBox !== null && restartBox.x + restartBox.width <= popupRight + 1 && restartBox.x >= popupBox.x - 1,
-    `button right ${Math.round(restartBox?.x + restartBox?.width)}px vs overlay right ${popupRight}px`)
+  const restartBox = await pane.getByRole('button', { name: 'Restart' }).boundingBox()
+  check('the Restart button is inside the window',
+    restartBox !== null && restartBox.x + restartBox.width <= windowRight + 1,
+    `button right ${Math.round(restartBox?.x + restartBox?.width)}px`)
   // An overflowing ancestor can cover the button even inside the box.
   const hit = restartBox && await page.evaluate(({ x, y }) =>
     document.elementFromPoint(x, y)?.closest('button')?.textContent?.trim() ?? null,
@@ -140,7 +130,7 @@ try {
   const doc = await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth])
   check('the page does not scroll sideways', doc[0] <= doc[1], `${doc[0]} vs ${doc[1]}`)
 
-  const scrollable = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] *')]
+  const scrollable = await page.evaluate(() => [...document.querySelectorAll('main *')]
     .some((el) => el.scrollWidth > el.clientWidth + 1 && getComputedStyle(el).overflowX !== 'visible'))
   check('wide transcript content scrolls inside its own block', scrollable)
 } finally {

@@ -14,8 +14,10 @@ import {
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
+import { searchRows } from './components/WorkspaceList'
+import { useStoppedEntry } from './lib/useStoppedWorkspaces'
 import { WorkspaceView } from './components/WorkspaceView'
-import { ReadOnlyWorkspace } from './components/ReadOnlyWorkspace'
+import { ReadOnlyWorkspace, type ReadOnlySubject } from './components/ReadOnlyWorkspace'
 import { MobileScreenLayer } from './components/mobile/MobileScreenLayer'
 import { ProjectsScreen } from './components/mobile/ProjectsScreen'
 import { WorkspacesScreen } from './components/mobile/WorkspacesScreen'
@@ -191,6 +193,12 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // hidden. Terminal-scoped shortcuts belong to WorkspaceView. The ref lets
   // the one listener read the current render's state.
   const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
+  // The cycle steps through the rows the sidebar search leaves on screen.
+  const sidebarQuery = useUiStore((s) => s.sidebarQuery)
+  const searched = searchRows(sidebarQuery, {
+    workspaces: scoped, provisioning: scopedProvisioning, queued: [], held: [], drafts: [],
+  })
+  const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scopedGroups, pendingDeleteIds)
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const newWorkspace = (): void => {
     if (activeProjectId && !readOnly) openCreateWorkspace({ projectId: activeProjectId, focus: 'prompt' })
@@ -199,8 +207,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const selectedWorkspace = selectedWorkspaceId && !readOnly && !pendingDeleteIds.includes(selectedWorkspaceId)
     ? workspaces.find((s) => s.workspaceId === selectedWorkspaceId && !s.stopping) ?? null
     : null
-  const shortcutCtx = useRef({ rowIds, selectedWorkspaceId, selectedWorkspace, newWorkspace })
-  shortcutCtx.current = { rowIds, selectedWorkspaceId, selectedWorkspace, newWorkspace }
+  const shortcutCtx = useRef({ cycleIds, selectedWorkspaceId, selectedWorkspace, newWorkspace })
+  shortcutCtx.current = { cycleIds, selectedWorkspaceId, selectedWorkspace, newWorkspace }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -221,7 +229,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         case 'next-workspace': {
           const delta = cycleDeltaFor(id)
           if (delta === null) return
-          const next = resolveCycleTarget(ctx.rowIds, ctx.selectedWorkspaceId ?? undefined, delta)
+          const next = resolveCycleTarget(ctx.cycleIds, ctx.selectedWorkspaceId ?? undefined, delta)
           if (!next) return
           claimChord(e)
           useUiStore.getState().selectWorkspace(next)
@@ -242,6 +250,18 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       .catch((e: unknown) => console.error('loading shortcut overrides failed', e))
   }, [])
 
+  // A selection that is neither live nor provisioning may be a stopped
+  // workspace, which the pane shows read-only. Looked up once the snapshot
+  // says it is not live.
+  const activeProject = projects.find((p) => p.id === activeProjectId)
+  const live = selectedWorkspaceId !== null && (workspaces.some((w) => w.workspaceId === selectedWorkspaceId)
+    || provisioning.some((p) => p.workspaceId === selectedWorkspaceId))
+  const stoppedSelection = useStoppedEntry(activeProjectId, selectedWorkspaceId, {
+    enabled: snapshot !== undefined && !live,
+    version: String(activeProject?.stoppedCount ?? 0),
+  })
+  const stoppedEntry = stoppedSelection.entry
+
   // Fill the pane when the project changed or the open workspace vanished
   // (see resolveVacantSelection). `rowIds` is in sidebar order, so "the top
   // row" is the one the user sees first. autoSelectWorkspace, not
@@ -256,13 +276,14 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       activeProjectId,
       selectedWorkspaceId,
       rowIds,
+      stopped: stoppedEntry !== undefined || stoppedSelection.pending,
       claims,
       inFlight: inFlightProvisions,
     })
     if (!pick) return
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
-  }, [activeProjectId, rowIds, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
+  }, [activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
   // Viewing a waiting workspace marks its current waiting spell as read,
   // whether it was selected while waiting or started waiting while open.
   useEffect(() => {
@@ -343,6 +364,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           ) : (
             <WorkspacesScreen
               projectId={activeProjectId}
+              project={activeProject}
               projectRemoteUrl={projectRemoteUrl}
               workspaces={scoped}
               groups={scopedGroups}
@@ -363,6 +385,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       ) : sidebarOpen && (
         <Sidebar
           projectId={activeProjectId}
+          project={activeProject}
           projectRemoteUrl={projectRemoteUrl}
           workspaces={scoped}
           groups={scopedGroups}
@@ -381,9 +404,24 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           ? ['absolute inset-0', mobileScreen !== 'pane' && 'invisible pointer-events-none']
           : 'min-w-0 flex-1 p-2')}
       >
-        {readOnly
-          ? <ReadOnlyWorkspace workspace={workspaces.find((w) => w.workspaceId === selectedWorkspaceId)} />
-          : <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />}
+        {/* A stopped workspace covers the workspace view rather than
+            replacing it, so its terminals stay mounted and laid out. */}
+        {readOnly && !stoppedEntry ? (
+          <ReadOnlyWorkspace subject={liveSubject(workspaces, selectedWorkspaceId)} />
+        ) : (
+          <div className="relative h-full">
+            {!readOnly && (
+              <div inert={stoppedEntry !== undefined} className={clsx('h-full', stoppedEntry && 'invisible')}>
+                <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />
+              </div>
+            )}
+            {stoppedEntry && (
+              <div className="absolute inset-0">
+                <ReadOnlyWorkspace subject={{ kind: 'stopped', entry: stoppedEntry }} />
+              </div>
+            )}
+          </div>
+        )}
       </div>}
 
       {/* Confirm for the delete-workspace shortcut. */}
@@ -399,6 +437,12 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       <AddProjectDialog />
     </div>
   )
+}
+
+/** A teammate's selected running workspace, for the read-only pane. */
+function liveSubject(workspaces: WorkspaceListEntry[], selectedId: string | null): ReadOnlySubject | undefined {
+  const entry = workspaces.find((w) => w.workspaceId === selectedId)
+  return entry && { kind: 'live', entry }
 }
 
 function FullScreen({ children }: { children: ReactNode }): JSX.Element {

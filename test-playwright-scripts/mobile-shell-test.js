@@ -8,10 +8,11 @@
  *     back/forward walk between them.
  *  2. The pane is in tabs mode with the key bar below it; row actions show
  *     without a hover and are finger-sized.
- *  3. The Skills and Stopped overlays show one MasterDetail pane at a time,
- *     at full width, with no sideways scroll and >=32px header targets; the
- *     list keeps its scroll offset across a drill-down. Stopped workspaces
- *     are stubbed so the list is long enough to scroll.
+ *  3. The Skills overlay shows one MasterDetail pane at a time, at full
+ *     width, with no sideways scroll and >=32px header targets. The
+ *     workspace list's Stopped section header is finger-sized, and tapping
+ *     a stopped row opens it read-only on the pane screen. Stopped
+ *     workspaces are stubbed.
  *  4. No text control reached on the walk is under 16px (a smaller one makes
  *     iOS Safari zoom in for good), spills off screen, or is crushed narrow.
  *     A control the walk could not open is listed, not passed.
@@ -162,7 +163,7 @@ try {
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
   await page.route('**/api/workspace/list-stopped*', (r) =>
-    r.fulfill({ contentType: 'application/json', body: JSON.stringify(STOPPED) }))
+    r.fulfill({ contentType: 'application/json', body: JSON.stringify({ entries: STOPPED, total: STOPPED.length }) }))
   await page.route('**/api/workspace/mark-death-seen*', (r) => r.fulfill({ contentType: 'application/json', body: '{}' }))
 
   const shell = page.locator('#root > div > div > div')
@@ -254,38 +255,19 @@ try {
     return r
   }
 
-  const entry = workspacesLayer.locator('button', { hasText: 'Stopped workspaces' }).first()
+  const entry = workspacesLayer.getByRole('button', { name: /^Stopped/ }).first()
   await entry.waitFor({ state: 'visible', timeout: 15_000 })
   const entryBox = await entry.boundingBox()
-  const rowBox = await liveRow.boundingBox()
-  check('the stopped-workspaces entry is a finger-sized row, about a workspace row tall',
-    entryBox.height >= 44 && Math.abs(entryBox.height - rowBox.height) <= 16,
-    `entry=${entryBox.height} row=${rowBox.height}`)
-  await entry.tap()
+  check('the Stopped section header is finger-sized', entryBox.height >= 32, `header=${entryBox.height}`)
+  if (await entry.getAttribute('aria-expanded') === 'false') await entry.tap()
+  const stoppedRow = workspacesLayer.getByText(STOPPED[0].title).first()
+  await stoppedRow.waitFor({ state: 'visible', timeout: 15_000 })
+  await stoppedRow.tap()
   await page.waitForTimeout(800)
-  await phonePanes('stopped list')
-  const small = await page.evaluate(smallTargets)
-  check('stopped overlay targets are >=32px', small.length === 0, small.join(', '))
-  await sweep('stopped')
-  await page.getByText(STOPPED[0].title).first().tap()
-  await page.waitForTimeout(600)
-  const detail = await phonePanes('stopped detail')
-  check('the detail swaps in with the list still mounted',
-    detail.panes?.length === 2 && detail.shown?.[0]?.text.includes('Rework'))
-  await page.getByLabel('Back to stopped workspaces').tap()
-  // Click in page context: Playwright's tap would scroll the row into view.
-  const before = await page.evaluate(() => {
-    const list = document.querySelector('[role="dialog"] ul')
-    list.scrollTop = 220
-    ;[...list.querySelectorAll('button')].find((b) => b.offsetTop >= list.scrollTop)?.click()
-    return list.scrollTop
-  })
+  check('a stopped row opens on the pane screen, read-only',
+    await paneLayer.getByText('Rework').first().isVisible() && await paneLayer.locator('main').getByRole('button', { name: 'Restart' }).isVisible())
+  await paneLayer.getByLabel('Back to workspaces').tap()
   await page.waitForTimeout(500)
-  await page.getByLabel('Back to stopped workspaces').tap()
-  await page.waitForTimeout(500)
-  const after = await page.evaluate(() => document.querySelector('[role="dialog"] ul').scrollTop)
-  check('the list keeps its scroll offset across a drill-down', before > 0 && after === before, `${before} -> ${after}`)
-  await escape()
 
   await workspacesLayer.getByLabel('Skills').tap()
   await page.locator('[role="dialog"] li button').first().waitFor({ state: 'visible', timeout: 15_000 })

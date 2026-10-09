@@ -2,6 +2,7 @@ import { api, projectNames } from '#commands/api'
 import type {
   GitAuthFailure,
   StoppedWorkspaceEntry,
+  StoppedWorkspacePage,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
 
@@ -23,8 +24,8 @@ export async function workspaceList(
     const query: { project?: string; limit?: string } = {}
     if (project) query.project = project
     if (limit !== undefined) query.limit = String(limit)
-    const [stopped, names] = await Promise.all([api.workspace['list-stopped'].$get({ query }), projectNames()])
-    renderStopped(stopped, project, limit, names)
+    const [page, names] = await Promise.all([api.workspace['list-stopped'].$get({ query }), projectNames()])
+    renderStopped(page, project, names)
     return
   }
 
@@ -144,9 +145,8 @@ export function resolveStoppedLimit(options: WorkspaceListOptions): number | und
 }
 
 function renderStopped(
-  stopped: StoppedWorkspaceEntry[],
+  { entries: stopped, total }: StoppedWorkspacePage,
   project: string | undefined,
-  limit: number | undefined,
   projectNames: Map<string, string>,
 ): void {
   if (stopped.length === 0) {
@@ -184,14 +184,12 @@ function renderStopped(
 
   for (const s of stopped) {
     const promptText = truncatePrompt(s.prompt, promptWidth)
-    // Stop time, else last activity, else creation time.
-    const when = s.stoppedAt ?? s.lastActiveAt ?? s.createdAt
     const diedCell = hasDeaths ? ` ${(s.deathReason ?? '').padEnd(diedWidth)}` : ''
     const titleCell = hasTitles ? ` ${(s.title ?? '').padEnd(titleWidth)}` : ''
-    console.log(`${s.workspaceId.slice(0, 8).padEnd(10)} ${nameOf(s).padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${when}${diedCell}${titleCell}  ${promptText}`)
+    console.log(`${s.workspaceId.slice(0, 8).padEnd(10)} ${nameOf(s).padEnd(projectWidth)} ${s.tool.padEnd(toolWidth)} ${s.stoppedAt}${diedCell}${titleCell}  ${promptText}`)
   }
-  if (limit !== undefined && stopped.length >= limit) {
-    console.log(`(showing most recent ${limit}; pass --all or -n <num> to see more)`)
+  if (total > stopped.length) {
+    console.log(`(showing most recent ${stopped.length} of ${total}; pass --all or -n <num> to see more)`)
   }
   console.log('')
 }

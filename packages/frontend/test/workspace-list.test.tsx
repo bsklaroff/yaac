@@ -7,8 +7,10 @@ import type {
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
   ProvisioningWorkspaceEntry,
+  ProjectSummary,
   QueuedWorkspaceEntry,
   StoppedWorkspaceEntry,
+  StoppedWorkspacePage,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -29,7 +31,10 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 import { WorkspaceList } from '#components/WorkspaceList'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, testQueryClient, type FetchMock } from './harness'
+import { mockFetch, testQueryClient, type FetchCall, type FetchMock } from './harness'
+
+/** The elements the Stopped lists' load-more markers are watching. */
+const watched = new Set<{ fire: () => void }>()
 
 beforeAll(() => {
   globalThis.ResizeObserver ??= class {
@@ -37,7 +42,21 @@ beforeAll(() => {
     unobserve(): void {}
     disconnect(): void {}
   }
+  // jsdom has no layout, so a test says when a marker scrolls into view.
+  globalThis.IntersectionObserver = class {
+    private readonly entry: { fire: () => void }
+    constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
+      this.entry = { fire: () => callback([{ isIntersecting: true }]) }
+    }
+    observe(): void { watched.add(this.entry) }
+    disconnect(): void { watched.delete(this.entry) }
+  } as unknown as typeof IntersectionObserver
 })
+
+/** Scroll every load-more marker into view. */
+function scrollToEnd(): void {
+  act(() => { for (const w of [...watched]) w.fire() })
+}
 
 const initial = useUiStore.getState()
 
@@ -52,6 +71,38 @@ const DRAFT_DISCARD = 'POST /api/workspace/draft/discard'
 
 /** The project's stopped workspaces, as the server lists them. */
 const stoppedRows: StoppedWorkspaceEntry[] = []
+
+/** `GET /workspace/list-stopped` over `stoppedRows`, honoring the filters
+ *  the sidebar sends. The cursor is a row index. */
+function listStopped(c: FetchCall): StoppedWorkspacePage {
+  const q = c.query.get('q')?.toLowerCase()
+  const group = c.query.get('group')
+  const exclude = c.query.get('excludeGroups')?.split(',') ?? []
+  const excludeIds = c.query.get('exclude')?.split(',') ?? []
+  const rows = stoppedRows.filter((r) => (group ? r.groupId === group : !exclude.includes(r.groupId ?? ''))
+    && !excludeIds.includes(r.workspaceId)
+    && (!q || `${r.title ?? ''} ${r.prompt ?? ''}`.toLowerCase().includes(q)))
+  const start = Number(c.query.get('cursor') || 0)
+  const end = start + Number(c.query.get('limit') || rows.length)
+  return { entries: rows.slice(start, end), total: rows.length, ...(end < rows.length ? { nextCursor: String(end) } : {}) }
+}
+
+/** A stopped workspace in the project. */
+const stoppedEntry = (workspaceId: string, over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
+  workspaceId,
+  projectId: 'proj',
+  tool: 'claude',
+  createdAt: '2026-08-10 00:00:00',
+  stoppedAt: '2026-08-10 01:00:00',
+  title: `Stopped ${workspaceId}`,
+  seen: true,
+  agentSessions: [],
+  ...over,
+})
+
+/** The stopped-list requests so far, as their query strings. */
+const stoppedQueries = (): string[] =>
+  server.called('GET /api/workspace/list-stopped').map((c) => c.query.toString())
 let server: FetchMock
 /** The JSON bodies posted to a route so far. */
 const posted = (route: string): unknown[] => server.called(route).map((c) => c.body)
@@ -61,10 +112,11 @@ const filed = (workspaceId: string, groupId: string | null): unknown => ({ proje
 beforeEach(() => {
   localStorage.clear()
   stoppedRows.length = 0
+  watched.clear()
   snapshot.mockReturnValue(undefined)
   useUiStore.setState(initial, true)
   server = mockFetch({
-    'GET /api/workspace/list-stopped': () => stoppedRows,
+    'GET /api/workspace/list-stopped': listStopped,
     [SET_GROUP]: undefined,
     [GROUP_CREATE]: { groupId: 'g-new', name: 'Release' },
     [GROUP_RENAME]: undefined,
@@ -101,6 +153,8 @@ const group = (over: Partial<WorkspaceGroupSummary> = {}): WorkspaceGroupSummary
   name: 'Release',
   pinned: false,
   createdAt: '2026-08-10 00:00:00',
+  stoppedCount: 0,
+  unseenDeaths: 0,
   ...over,
 })
 
@@ -130,6 +184,8 @@ const queuedEntry = (id: string, over: Partial<QueuedWorkspaceEntry> = {}): Queu
 })
 
 interface ListOpts {
+  /** The project's stopped counts, from the snapshot. */
+  project?: Pick<ProjectSummary, 'stoppedCount' | 'unseenDeaths'>
   groups?: WorkspaceGroupSummary[]
   projectId?: string | null
   provisioning?: ProvisioningWorkspaceEntry[]
@@ -149,6 +205,7 @@ function renderList(
     <QueryClientProvider client={client}>
       <WorkspaceList
         projectId={o.projectId === undefined ? 'proj' : o.projectId}
+        project={o.project}
         workspaces={w}
         groups={o.groups ?? []}
         provisioning={o.provisioning ?? []}
@@ -230,26 +287,22 @@ describe('WorkspaceList', () => {
   })
 
   it('counts a group\'s stopped members in its header, and shows them only when asked', async () => {
-    const stoppedMember = (workspaceId: string, title: string): StoppedWorkspaceEntry => ({
-      workspaceId,
-      projectId: 'proj',
-      tool: 'claude',
-      createdAt: '2026-08-10 00:00:00',
-      stoppedAt: '2026-08-10 01:00:00',
-      title,
-      seen: false,
-      agentSessions: [],
-      groupId: 'g1',
+    stoppedRows.push(stoppedEntry('gone', { title: 'Stopped one', groupId: 'g1' }),
+      stoppedEntry('gone2', { title: 'Stopped two', groupId: 'g1' }))
+    renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
+      groups: [group({ stoppedCount: 2 })],
+      project: { stoppedCount: 2, unseenDeaths: 0 },
     })
-    stoppedRows.push(stoppedMember('gone', 'Stopped one'), stoppedMember('gone2', 'Stopped two'))
-    renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
 
+    // Counted from the snapshot, with nothing fetched for a hidden list.
     const section = screen.getByRole('group', { name: group().name })
-    await waitFor(() => expect(section.textContent).toContain('(1/3)'))
+    expect(section.textContent).toContain('(1/3)')
     expect(screen.queryByText('Stopped one')).toBeNull()
+    expect(stoppedQueries()).toEqual([])
 
     // Shown at the foot of the section, after the live rows.
     await pickAction('Show stopped workspaces', 'Group actions')
+    await within(section).findByText('Stopped one')
     expect(section.textContent?.indexOf('Stopped one'))
       .toBeGreaterThan(section.textContent?.indexOf('Filed one') ?? Infinity)
     const row = screen.getByText('Stopped one').closest<HTMLElement>('.group')
@@ -258,62 +311,43 @@ describe('WorkspaceList', () => {
 
     // Hiding them leaves the live rows where they were.
     await pickAction('Hide stopped workspaces', 'Group actions')
-    expect(screen.queryByText('Stopped one')).toBeNull()
+    expect(within(section).queryByText('Stopped two')).toBeNull()
     expect(screen.getByText('Filed one')).toBeTruthy()
   })
 
   it('makes the caret the show/hide toggle for a group with only stopped members', async () => {
-    stoppedRows.push({
-      workspaceId: 'gone',
-      projectId: 'proj',
-      tool: 'claude',
-      createdAt: '2026-08-10 00:00:00',
-      stoppedAt: '2026-08-10 01:00:00',
-      title: 'Stopped one',
-      seen: true,
-      agentSessions: [],
-      groupId: 'g1',
-    })
-    renderList([], { groups: [group({ pinned: true })] })
+    stoppedRows.push(stoppedEntry('gone', { title: 'Stopped one', groupId: 'g1' }))
+    renderList([], { groups: [group({ pinned: true, stoppedCount: 1 })] })
 
     const caret = await screen.findByRole('button', { name: /Release.*\(0\/1\)/ })
     expect(caret.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(caret)
-    expect(screen.getByText('Stopped one')).toBeTruthy()
+    expect(await screen.findByText('Stopped one')).toBeTruthy()
 
     // The menu sees the same state the caret set, and closes the caret too.
     await pickAction('Hide stopped workspaces', 'Group actions')
     expect(screen.queryByText('Stopped one')).toBeNull()
     expect(caret.getAttribute('aria-expanded')).toBe('false')
     await pickAction('Show stopped workspaces', 'Group actions')
-    expect(screen.getByText('Stopped one')).toBeTruthy()
+    expect(await screen.findByText('Stopped one')).toBeTruthy()
     expect(caret.getAttribute('aria-expanded')).toBe('true')
   })
 
   it('keeps an all-stopped group the caret opened open once a member restarts', async () => {
     // Collapsed while it still has a live member...
-    const opts = { groups: [group({ pinned: true })] }
-    const rerender = renderList([entry({ workspaceId: 'gone', title: 'Live one', groupId: 'g1' })], opts)
+    const rerender = renderList([entry({ workspaceId: 'gone', title: 'Live one', groupId: 'g1' })],
+      { groups: [group({ pinned: true })] })
     fireEvent.click(screen.getByRole('button', { name: /Release.*\(1\/1\)/ }))
     expect(screen.queryByText('Live one')).toBeNull()
 
     // ...then it stops, leaving only stopped members, and the caret opens it.
-    stoppedRows.push({
-      workspaceId: 'gone',
-      projectId: 'proj',
-      tool: 'claude',
-      createdAt: '2026-08-10 00:00:00',
-      stoppedAt: '2026-08-10 01:00:00',
-      title: 'Stopped one',
-      seen: true,
-      agentSessions: [],
-      groupId: 'g1',
-    })
+    stoppedRows.push(stoppedEntry('gone', { title: 'Stopped one', groupId: 'g1' }))
+    const opts = { groups: [group({ pinned: true, stoppedCount: 1 })] }
     rerender([], opts)
     const caret = await screen.findByRole('button', { name: /Release.*\(0\/1\)/ })
     expect(caret.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(caret)
-    expect(screen.getByText('Stopped one')).toBeTruthy()
+    expect(await screen.findByText('Stopped one')).toBeTruthy()
 
     // A restart makes it live again. It must not revert to its old collapsed
     // state and hide the row the user just asked for.
@@ -323,75 +357,176 @@ describe('WorkspaceList', () => {
   })
 
   it('keeps a held member on screen as its queue comes and goes', async () => {
-    const stoppedMember = (workspaceId: string, over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
-      workspaceId,
-      projectId: 'proj',
-      tool: 'claude',
-      createdAt: '2026-08-10 00:00:00',
-      stoppedAt: '2026-08-10 01:00:00',
-      title: `Stopped ${workspaceId}`,
-      seen: true,
-      agentSessions: [],
-      groupId: 'g1',
-      ...over,
-    })
     const live = [entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })]
-    const held = [{ workspaceId: 's', projectId: 'proj', tool: 'claude' as const, groupId: 'g1',
+    const held = [{ workspaceId: 's', projectId: 'proj', tool: 'claude' as const, title: 'Stopped s', groupId: 'g1',
       stoppedAt: '2026-08-10 01:00:00' }]
-    stoppedRows.push(stoppedMember('s'))
-    const rerender = renderList(live, { groups: [group()], queued: [queuedEntry('q1', { parentWorkspaceId: 's' })], held })
+    stoppedRows.push(stoppedEntry('s', { groupId: 'g1' }))
+    const rerender = renderList(live, {
+      groups: [group({ stoppedCount: 1 })], queued: [queuedEntry('q1', { parentWorkspaceId: 's' })], held,
+    })
 
     // Held: its row stays out, with what waits on it.
-    expect(await screen.findByText('Stopped s')).toBeTruthy()
+    expect(screen.getByText('Stopped s')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '1 queued workspace' }))
     expect(screen.getByText('Step q1')).toBeTruthy()
 
     // Its queue drains: hidden with the other stopped members.
-    rerender(live, { groups: [group()] })
+    rerender(live, { groups: [group({ stoppedCount: 1 })] })
     expect(screen.queryByText('Stopped s')).toBeNull()
 
     // Once shown, they stay shown as another member stops. An unread death
     // shows on the header, since hidden rows would hide it.
     await pickAction('Show stopped workspaces', 'Group actions')
-    // The stopped list is refetched when the live set changes.
-    stoppedRows.push(stoppedMember('t', { deathReason: 'oom', seen: false }))
+    stoppedRows.push(stoppedEntry('t', { groupId: 'g1', deathReason: 'oom', seen: false }))
     const more = [...live, entry({ workspaceId: 'c', title: 'Other' })]
-    rerender(more, { groups: [group()] })
+    const grown = [group({ stoppedCount: 2, unseenDeaths: 1 })]
+    rerender(more, { groups: grown })
     expect(await screen.findByRole('button', { name: /Release.*\(1\/3\).*1 died/ })).toBeTruthy()
-    expect(screen.getByText('Stopped t')).toBeTruthy()
+    expect(await screen.findByText('Stopped t')).toBeTruthy()
     expect(screen.getByText('Stopped s')).toBeTruthy()
 
     // It gains a queued child: on screen again whatever the toggle says.
     await pickAction('Hide stopped workspaces', 'Group actions')
-    rerender(more, { groups: [group()], queued: [queuedEntry('q2', { parentWorkspaceId: 's' })], held })
+    rerender(more, { groups: grown, queued: [queuedEntry('q2', { parentWorkspaceId: 's' })], held })
     expect(screen.getByText('Stopped s')).toBeTruthy()
     expect(screen.queryByText('Stopped t')).toBeNull()
   })
 
-  it('opens a stopped member\'s conversation, without selecting a workspace', async () => {
-    // A ghost row has no pane, but its conversation is readable in the
-    // stopped overlay. Selection must not change: the pane has nothing to show
-    // until a restart, and on a phone selecting would leave the list.
-    stoppedRows.push({
-      workspaceId: 'gone',
-      projectId: 'proj',
-      tool: 'claude',
-      createdAt: '2026-08-10 00:00:00',
-      stoppedAt: '2026-08-10 01:00:00',
-      title: 'Stopped one',
-      seen: false,
-      agentSessions: [],
-      groupId: 'g1',
+  it('opens a stopped workspace in the pane by selecting it', async () => {
+    stoppedRows.push(stoppedEntry('gone', { title: 'Stopped one', groupId: 'g1' }))
+    renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
+      groups: [group({ stoppedCount: 1 })],
     })
-    renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], { groups: [group()] })
 
-    await screen.findByRole('button', { name: /Release.*\(1\/2\)/ })
     await pickAction('Show stopped workspaces', 'Group actions')
-    fireEvent.click(screen.getByText('Stopped one'))
+    fireEvent.click(await screen.findByText('Stopped one'))
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('gone')
+  })
 
-    expect(useUiStore.getState().stoppedOverlayOpen).toBe(true)
-    expect(useUiStore.getState().stoppedOverlayFocus).toBe('gone')
-    expect(useUiStore.getState().selectedWorkspaceId).not.toBe('gone')
+  describe('the Stopped section', () => {
+    const many = (n: number): StoppedWorkspaceEntry[] =>
+      Array.from({ length: n }, (_, i) => stoppedEntry(`s${String(i).padStart(3, '0')}`))
+
+    it('shows the real count collapsed, then pages in more rows as the list scrolls to its end', async () => {
+      stoppedRows.push(...many(120))
+      renderList([entry({ workspaceId: 'a', title: 'Live one' })], { project: { stoppedCount: 120, unseenDeaths: 0 } })
+
+      const header = screen.getByRole('button', { name: /Stopped\s*120/ })
+      expect(header.getAttribute('aria-expanded')).toBe('false')
+      expect(stoppedQueries()).toEqual([])
+
+      fireEvent.click(header)
+      expect(await screen.findByText('Stopped s049')).toBeTruthy()
+      expect(screen.queryByText('Stopped s050')).toBeNull()
+      scrollToEnd()
+      expect(await screen.findByText('Stopped s099')).toBeTruthy()
+      scrollToEnd()
+      expect(await screen.findByText('Stopped s119')).toBeTruthy()
+      expect(stoppedQueries()).toHaveLength(3)
+      expect(screen.getByRole('button', { name: /Stopped\s*120/ })).toBeTruthy()
+      // The choice is saved.
+      expect(useUiStore.getState().stoppedExpanded).toBe(true)
+    })
+
+    it('lists a grouped workspace only while its group is not showing it', async () => {
+      stoppedRows.push(stoppedEntry('mine', { title: 'Grouped stop', groupId: 'g1' }), stoppedEntry('loose'))
+      useUiStore.setState({ stoppedExpanded: true })
+      renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
+        groups: [group({ stoppedCount: 1 })],
+        project: { stoppedCount: 2, unseenDeaths: 0 },
+      })
+      const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
+      const groupSection = screen.getByRole('group', { name: 'Release' })
+      expect(await within(stoppedSection).findByText('Grouped stop')).toBeTruthy()
+      expect(stoppedSection.textContent).toMatch(/Stopped\s*2/)
+
+      // Shown in the group: gone from the section, and from its count.
+      await pickAction('Show stopped workspaces', 'Group actions')
+      expect(await within(groupSection).findByText('Grouped stop')).toBeTruthy()
+      await waitFor(() => expect(within(stoppedSection).queryByText('Grouped stop')).toBeNull())
+      expect(stoppedSection.textContent).toMatch(/Stopped\s*1/)
+      expect(stoppedQueries().at(-1)).toContain('excludeGroups=g1')
+
+      // Collapsing the group sends it back to the section.
+      fireEvent.click(screen.getByRole('button', { name: /Release/ }))
+      expect(await within(stoppedSection).findByText('Grouped stop')).toBeTruthy()
+      expect(within(groupSection).queryByText('Grouped stop')).toBeNull()
+      expect(stoppedSection.textContent).toMatch(/Stopped\s*2/)
+
+      // Expanding it again takes it back.
+      fireEvent.click(screen.getByRole('button', { name: /Release/ }))
+      expect(await within(groupSection).findByText('Grouped stop')).toBeTruthy()
+      await waitFor(() => expect(within(stoppedSection).queryByText('Grouped stop')).toBeNull())
+    })
+
+    it('leaves out held workspaces and restarts, which have rows of their own, from its rows and its count', async () => {
+      stoppedRows.push(stoppedEntry('held'), stoppedEntry('back'), stoppedEntry('plain'), stoppedEntry('failed'))
+      useUiStore.setState({ stoppedExpanded: true })
+      renderList([], {
+        project: { stoppedCount: 4, unseenDeaths: 0 },
+        held: [{ workspaceId: 'held', projectId: 'proj', tool: 'claude', title: 'Stopped held', stoppedAt: '2026-08-10 01:00:00' }],
+        queued: [queuedEntry('q1', { parentWorkspaceId: 'held' })],
+        // A create stopped mid-provision keeps its failed row, and is listed
+        // as stopped too.
+        provisioning: [provisioning({ workspaceId: 'back' }),
+          provisioning({ workspaceId: 'failed', kind: 'create', error: 'stopped' })],
+      })
+      const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
+      expect(await within(stoppedSection).findByText('Stopped plain')).toBeTruthy()
+      expect(within(stoppedSection).getByText('Stopped failed')).toBeTruthy()
+      expect(within(stoppedSection).queryByText('Stopped held')).toBeNull()
+      expect(within(stoppedSection).queryByText('Stopped back')).toBeNull()
+      expect(stoppedSection.textContent).toMatch(/Stopped\s*2/)
+
+      // A search's count is the server's, which leaves them out as well.
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'Stopped' } })
+      await waitFor(() => expect(stoppedQueries().at(-1)).toContain('q=Stopped'))
+      expect(stoppedQueries().at(-1)).toContain(`exclude=${encodeURIComponent('back,held')}`)
+      await waitFor(() => expect(stoppedSection.textContent).toMatch(/Stopped\s*2/))
+    })
+
+    it('marks every death seen from its menu', async () => {
+      stoppedRows.push(stoppedEntry('dead', { deathReason: 'oom', seen: false }))
+      server.route('POST /api/workspace/mark-all-deaths-seen', undefined)
+      renderList([], { project: { stoppedCount: 1, unseenDeaths: 1 } })
+      await pickAction('Mark all as read', 'Stopped workspaces actions')
+      await waitFor(() => expect(posted('POST /api/workspace/mark-all-deaths-seen')).toEqual([{ projectId: 'proj' }]))
+    })
+  })
+
+  describe('search', () => {
+    it('filters the rows and groups, searches the stopped list on the server, and keeps the selection', async () => {
+      stoppedRows.push(stoppedEntry('old', { title: 'Parser rewrite, take one' }), stoppedEntry('other'))
+      useUiStore.setState({ selectedWorkspaceId: 'b' })
+      renderList([
+        entry({ workspaceId: 'a', title: 'Fix the parser' }),
+        entry({ workspaceId: 'b', title: 'Write docs' }),
+        entry({ workspaceId: 'c', title: 'Parser tests', groupId: 'g1' }),
+        entry({ workspaceId: 'd', title: 'Unrelated', groupId: 'g2' }),
+      ], {
+        groups: [group(), group({ groupId: 'g2', name: 'Pinned', pinned: true })],
+        project: { stoppedCount: 2, unseenDeaths: 0 },
+      })
+
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'PARSER' } })
+      expect(screen.getByText('Fix the parser')).toBeTruthy()
+      expect(screen.queryByText('Write docs')).toBeNull()
+      expect(screen.getByText('Parser tests')).toBeTruthy()
+      // A group with no match goes, pinned or not.
+      expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull()
+      // The stopped section opens on the server's matches.
+      expect(await screen.findByText('Parser rewrite, take one')).toBeTruthy()
+      expect(screen.queryByText('Stopped other')).toBeNull()
+      expect(stoppedQueries().at(-1)).toContain('q=PARSER')
+      expect(useUiStore.getState().selectedWorkspaceId).toBe('b')
+
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'zzz' } })
+      expect(await screen.findByText('No matches')).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+      expect(screen.getByText('Write docs')).toBeTruthy()
+      expect(screen.getByRole('group', { name: 'Pinned' })).toBeTruthy()
+    })
   })
 
   // A restarting workspace is missing from the snapshot until it is back, so
@@ -669,6 +804,12 @@ describe('WorkspaceList', () => {
     renderList([])
     expect(screen.getByText('No workspaces yet')).toBeTruthy()
 
+    // Only stopped workspaces: the Stopped section is something to show.
+    cleanup()
+    renderList([], { project: { stoppedCount: 3, unseenDeaths: 0 } })
+    expect(screen.queryByText('No workspaces yet')).toBeNull()
+    expect(screen.getByRole('button', { name: /Stopped\s*3/ })).toBeTruthy()
+
     cleanup()
     renderList([], { projectId: null })
     expect(screen.getByText('No project selected')).toBeTruthy()
@@ -840,7 +981,7 @@ describe('WorkspaceList', () => {
       fireEvent.keyDown(input, { key: 'Enter' })
 
       expect(renameWorkspace).toHaveBeenCalledWith('a', 'New name')
-      expect(screen.queryByRole('textbox')).toBeNull()
+      expect(screen.queryByRole('textbox', { name: 'Workspace row title' })).toBeNull()
     })
 
     it('commits a rename on blur', async () => {
@@ -859,7 +1000,7 @@ describe('WorkspaceList', () => {
       fireEvent.keyDown(input, { key: 'Escape' })
 
       expect(renameWorkspace).not.toHaveBeenCalled()
-      expect(screen.queryByRole('textbox')).toBeNull()
+      expect(screen.queryByRole('textbox', { name: 'Workspace row title' })).toBeNull()
     })
 
     it('does not rename when the value is unchanged', async () => {
@@ -886,7 +1027,7 @@ describe('WorkspaceList', () => {
       stoppedAt: '2026-08-09 01:00:00', title: 'Old run', seen: true, agentSessions: [], groupId: 'g1',
     })
     renderList([entry({ workspaceId: 'a', title: 'Their run' }), entry({ workspaceId: 'b', title: 'Filed', groupId: 'g1' })], {
-      groups: [group()],
+      groups: [group({ stoppedCount: 1 })],
       provisioning: [provisioning({ kind: 'create', title: 'Booting' })],
       queued: [queuedEntry('q1')],
       drafts: [{
@@ -903,9 +1044,7 @@ describe('WorkspaceList', () => {
     // Queued entries and drafts open the create form, which writes.
     expect(screen.getByRole<HTMLButtonElement>('button', { name: /An idea/ }).disabled).toBe(true)
 
-    // The group menu keeps only what changes this client's view, once the
-    // stopped list gives it one.
-    await screen.findByRole('button', { name: 'Group actions' })
+    // The group menu keeps only what changes this client's view.
     await pickAction('Show stopped workspaces', 'Group actions')
     await screen.findByText('Old run')
     expect(screen.queryByRole('button', { name: 'Restart workspace' })).toBeNull()

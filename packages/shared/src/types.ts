@@ -912,6 +912,9 @@ export interface WorkspaceGroupSummary {
   pinned: boolean
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) — the groups' display order. */
   createdAt: string
+  /** Stopped members, and how many of them died unseen. */
+  stoppedCount: number
+  unseenDeaths: number
 }
 
 /** How a file changed, mapped from git's name-status letters. */
@@ -1159,8 +1162,8 @@ export interface StoppedWorkspaceEntry {
    *  leaves no host transcript). */
   lastActiveAt?: string
   /** When it was stopped, 'YYYY-MM-DD HH:MM:SS' (UTC); the sort key, newest
-   *  first. Absent if removed out-of-band (sorted by `lastActiveAt`). */
-  stoppedAt?: string
+   *  first. */
+  stoppedAt: string
   /** The first conversation's first user message. */
   prompt?: string
   /** User-assigned display title. */
@@ -1179,6 +1182,15 @@ export interface StoppedWorkspaceEntry {
   /** The sidebar group it is filed under; a stopped member shows as a ghost
    *  row there. */
   groupId?: string
+}
+
+/** One page of `GET /workspace/list-stopped`, newest stop first. */
+export interface StoppedWorkspacePage {
+  entries: StoppedWorkspaceEntry[]
+  /** Every stopped workspace matching the filters, not just this page. */
+  total: number
+  /** Pass back as `cursor` for the next page; absent on the last one. */
+  nextCursor?: string
 }
 
 /** A non-agent tmux window in a workspace the webapp can attach to: an
@@ -1204,6 +1216,9 @@ export interface ProjectSummary {
    *  its project's owner. */
   owner: string
   workspaceCount: number
+  /** Stopped workspaces, and how many of them died unseen. */
+  stoppedCount: number
+  unseenDeaths: number
   /** The agent last created with; the create form opens on it. Absent
    *  before the first create (claude is assumed). */
   lastTool?: AgentTool

@@ -6,6 +6,7 @@ import {
   listQueuedWorkspaces,
   listWorkspaceGroups,
 } from '#domain/workspaces'
+import { countStoppedWorkspaces } from '#db'
 import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
@@ -23,12 +24,14 @@ export interface WsLike {
  * data the HTTP reads return, in one message.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
+  // Shared by the project and group summaries.
+  const stoppedCounts = countStoppedWorkspaces()
   const [
     active, workspaceGroups, projects, usage, queuedWorkspaces, heldWorkspaces, draftWorkspaces,
   ] = await Promise.all([
     listActiveWorkspaces(),
-    listWorkspaceGroups(),
-    listProjects(),
+    listWorkspaceGroups(undefined, stoppedCounts),
+    listProjects(stoppedCounts),
     planUsageForSnapshot(),
     listQueuedWorkspaces(),
     listHeldWorkspaces(),

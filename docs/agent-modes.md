@@ -121,7 +121,8 @@ NFS sends a held-open file's bytes only on close, sync or writeback
 
 `GET /workspace/:id/agent-sessions/:sessionId/transcript` returns the same
 `AcpEvent[]` a pane renders, read from files rather than from a running
-workspace, so the stopped-workspaces view can show the whole conversation.
+workspace, so the read-only pane can show a stopped workspace's whole
+conversation.
 
 - An `acp` conversation is a replay of its acpd record.
 - A `tui` conversation has no record, so the tool's own history is

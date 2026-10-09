@@ -123,12 +123,14 @@ export {
 export {
   claimSpareWorkspace,
   clearWorkspaceStopped,
+  countStoppedWorkspaces,
   deleteProjectWorkspaces,
   deleteSpareWorkspaceRow,
   findWorkspaceRow,
   getProjectWorkspaceRows,
   getWorkspaceRow,
   listProjectWorkspaceIds,
+  listStoppedWorkspaceRows,
   listWorkspaceRows,
   recordAllDeathsSeen,
   recordDeathSeen,
@@ -136,5 +138,7 @@ export {
   findWorkspaceByMamaToken,
   setWorkspaceMamaTokenHash,
   setWorkspaceTitle,
+  type StoppedCount,
+  type StoppedRowCursor,
   type WorkspaceRow,
 } from './workspace-store'

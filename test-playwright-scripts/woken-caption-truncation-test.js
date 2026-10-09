@@ -13,8 +13,9 @@
  * agent turn, credentials or stopped workspace is needed. Everything below
  * the fetch is the real app.
  *
- * Needs a running `yaac server` with the project PROJECT (default `yaac`),
- * which a phone opens on so the Stopped workspaces entry is in view.
+ * Needs a running `yaac server` with the project PROJECT (default `yaac`).
+ * The page opens with the stubbed workspace selected, which the main pane
+ * shows read-only.
  *
  * Run: node test-playwright-scripts/woken-caption-truncation-test.js
  */
@@ -59,14 +60,10 @@ try {
     const page = await browser.newPage({ viewport })
     page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
     await page.route('**/api/workspace/list-stopped*', (route) =>
-      route.fulfill({ contentType: 'application/json', body: JSON.stringify(STOPPED) }))
+      route.fulfill({ contentType: 'application/json', body: JSON.stringify({ entries: STOPPED, total: STOPPED.length }) }))
     await page.route('**/api/workspace/*/agent-sessions/*/transcript*', (route) =>
       route.fulfill({ contentType: 'application/json', body: JSON.stringify({ events: EVENTS }) }))
-    await page.goto(`${origin}/?project=${project.id}`)
-    // A phone keeps a hidden copy of the sidebar, so take the visible entry.
-    await page.locator('button:visible', { hasText: 'Stopped workspaces' }).first().click({ timeout: 15_000 })
-    // On a phone the listing opens first; pick the probe's row.
-    if (name === 'phone') await page.locator('[role="dialog"] button:visible', { hasText: 'woken caption probe' }).first().click()
+    await page.goto(`${origin}/?project=${project.id}&workspace=${STOPPED[0].workspaceId}`)
     await page.locator('text=Both finished.').first().waitFor({ timeout: 15_000 })
 
     const captions = await page.evaluate(() => [...document.querySelectorAll('span')]

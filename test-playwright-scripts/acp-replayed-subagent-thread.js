@@ -80,9 +80,9 @@ async function checkThread(stage, ready) {
 }
 
 const composer = (page) => page.getByPlaceholder('Message the agent…').waitFor({ state: 'visible', timeout: 120_000 })
-/** The stopped conversation, in the sidebar's Stopped workspaces dialog. */
-const stoppedDialog = async (page) => {
-  await page.locator('aside button:has-text("Stopped workspaces")').first().click()
+/** The stopped conversation: the URL still selects the workspace, which the
+ *  main pane now shows read-only. */
+const stoppedPane = async (page) => {
   await page.getByRole('button', { name: /^Agent\s*Survey packages/ }).first().waitFor({ state: 'visible', timeout: 60_000 })
 }
 const stop = () => api('/workspace/stop', { method: 'POST', body: { workspaceId: workspace.workspaceId } })
@@ -90,11 +90,11 @@ const stop = () => api('/workspace/stop', { method: 'POST', body: { workspaceId:
 try {
   await checkThread('live', composer)
   await stop()
-  await checkThread('stopped', stoppedDialog)
+  await checkThread('stopped', stoppedPane)
   execFileSync('yaac', ['workspace', 'restart', workspace.workspaceId], { stdio: 'ignore', timeout: 300_000 })
   await checkThread('restarted', composer)
   await stop()
-  await checkThread('restopped', stoppedDialog)
+  await checkThread('restopped', stoppedPane)
 } finally {
   await browser.close()
   if (owned) await stop().catch(() => {})

@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
+import { groupDisplay, searchRows } from '#components/WorkspaceList'
+import { stoppedSectionCount } from '#lib/useStoppedWorkspaces'
 import type {
   HeldWorkspaceEntry,
   ProvisioningWorkspaceEntry,
   QueuedWorkspaceEntry,
-  StoppedWorkspaceEntry,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -39,21 +40,9 @@ const group = (
   name: groupId,
   pinned: false,
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
+  stoppedCount: 0,
+  unseenDeaths: 0,
   ...extra,
-})
-
-const stopped = (
-  workspaceId: string,
-  at: number,
-  groupId?: string,
-): StoppedWorkspaceEntry => ({
-  workspaceId,
-  projectId: 'p',
-  tool: 'claude',
-  createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
-  seen: false,
-  agentSessions: [],
-  ...(groupId !== undefined ? { groupId } : {}),
 })
 
 /** A provisioning row: a create in flight, or a workspace being restarted. */
@@ -72,14 +61,13 @@ const prov = (
 })
 
 /** { top: [provisioning ids], default: [ids],
- *    <group name>: [its provisioning ids + member ids + ghost ids] } */
+ *    <group name>: [its provisioning ids + member ids] } */
 const shape = (
   workspaces: WorkspaceListEntry[],
   groups: WorkspaceGroupSummary[],
-  stoppedRows: StoppedWorkspaceEntry[] = [],
   provisioning: ProvisioningWorkspaceEntry[] = [],
 ): Record<string, string[]> => {
-  const layout = sidebarLayout(workspaces, groups, stoppedRows, provisioning)
+  const layout = sidebarLayout(workspaces, groups, provisioning)
   return {
     ...(provisioning.length > 0 ? { top: layout.provisioning.map((p) => p.workspaceId) } : {}),
     default: layout.defaultList.map((w) => w.workspaceId),
@@ -88,7 +76,6 @@ const shape = (
       [
         ...s.provisioning.map((p) => p.workspaceId),
         ...s.members.map((w) => w.workspaceId),
-        ...s.ghosts.map((d) => d.workspaceId),
       ],
     ])),
   }
@@ -149,31 +136,13 @@ describe('sidebarLayout', () => {
       .toEqual({ default: [], g: ['t'] })
   })
 
-  it('ghosts every shown group\'s stopped members, pinned or not', () => {
-    const g = group('g', 10)
-    // An unpinned group with one live workspace still shows its dead ones.
-    expect(shape(
-      [entry('live', 2, { groupId: 'g' })],
-      [g],
-      [stopped('gone', 1, 'g'), stopped('elsewhere', 1), stopped('other-group', 1, 'nope')],
-    )).toEqual({ default: [], g: ['live', 'gone'] })
-
-    // Ungrouped stopped workspaces are never drawn (they live in the stopped
-    // overlay), and neither are a hidden group's.
-    expect(shape([], [g], [stopped('gone', 1, 'g')])).toEqual({ default: [] })
-    expect(shape([], [{ ...g, pinned: true }], [stopped('gone', 1, 'g')]))
-      .toEqual({ default: [], g: ['gone'] })
-  })
-
   it('files a provisioning row into its group, above the live rows', () => {
     const g = group('g', 10)
-    // Restarting a stopped member: the caller already dropped the ghost row
-    // (de-duped against provisioning ids), and the restarting row takes its
-    // place inside the section rather than at the top of the sidebar.
+    // Restarting a stopped member: the restarting row takes its place inside
+    // the section rather than at the top of the sidebar.
     expect(shape(
       [entry('live', 2, { groupId: 'g' })],
       [g],
-      [],
       [prov('coming-back', 9, { groupId: 'g' }), prov('fresh', 9)],
     )).toEqual({ top: ['fresh'], default: [], g: ['coming-back', 'live'] })
   })
@@ -182,19 +151,18 @@ describe('sidebarLayout', () => {
     // The last live member is mid-restart. The section has no other rows but
     // must not disappear from under this one.
     const g = group('g', 10)
-    expect(shape([], [g], [], [prov('coming-back', 9, { groupId: 'g' })]))
+    expect(shape([], [g], [prov('coming-back', 9, { groupId: 'g' })]))
       .toEqual({ top: [], default: [], g: ['coming-back'] })
   })
 
   it('leaves a provisioning row naming an unknown group at the top', () => {
-    expect(shape([], [], [], [prov('orphan', 9, { groupId: 'gone' })]))
+    expect(shape([], [], [prov('orphan', 9, { groupId: 'gone' })]))
       .toEqual({ top: ['orphan'], default: [] })
   })
 
   it('falls back to the default list for a group that no longer exists', () => {
     // A snapshot that arrives mid-delete.
     expect(shape([entry('orphan', 1, { groupId: 'gone' })], [])).toEqual({ default: ['orphan'] })
-    expect(sidebarLayout([], [], [stopped('a', 1, 'gone')]).groups).toEqual([])
   })
 })
 
@@ -231,7 +199,7 @@ const held = (workspaceId: string, groupId?: string): HeldWorkspaceEntry => ({
 
 describe('sidebarLayout with queued workspaces', () => {
   it('nests each entry under what it waits on, chains included', () => {
-    const layout = sidebarLayout([entry('a', 1)], [], [], [prov('p', 2)], [
+    const layout = sidebarLayout([entry('a', 1)], [], [prov('p', 2)], [
       queued('q1', 'a'),
       queued('q2', 'q1', { chained: true }),
       queued('q3', 'p'),
@@ -244,39 +212,32 @@ describe('sidebarLayout with queued workspaces', () => {
 
   it('holds a stopped parent in its place, the default list included', () => {
     const g = group('g', 10)
-    const layout = sidebarLayout([], [g], [stopped('grouped', 3, 'g'), stopped('gone', 2, 'g')], [],
+    const layout = sidebarLayout([], [g], [],
       [queued('q1', 'loose'), queued('q2', 'grouped')],
       [held('loose'), held('grouped', 'g')])
     expect(layout.defaultHeld.map((d) => d.workspaceId)).toEqual(['loose'])
-    // The group shows for its held member alone. That member is drawn once,
-    // from the stopped listing (whose row has more detail), and not among the
-    // ghosts, which stay hidden while entries queued under them wait.
+    // The group shows for its held member alone.
     expect(layout.groups.map((s) => s.held.map((d) => d.workspaceId))).toEqual([['grouped']])
-    expect(layout.groups[0]?.held[0]?.createdAt).toBe('2026-01-01 00:00:03')
-    expect(layout.groups.map((s) => s.ghosts.map((d) => d.workspaceId))).toEqual([['gone']])
     expect(layout.orphans).toEqual([])
   })
 
   it('draws a held parent once, as its live or restarting row', () => {
-    // Every list the group header sums: provisioning, members, held, ghosts.
+    // Every list the group header sums: provisioning, members, held.
     const counted = (layout: ReturnType<typeof sidebarLayout>): string[][][] => layout.groups.map((s) =>
-      [s.provisioning, s.members, s.held, s.ghosts].map((l) => l.map((w) => w.workspaceId)))
-    const stopping = sidebarLayout([entry('a', 1, { groupId: 'g' })], [group('g', 10)], [], [],
+      [s.provisioning, s.members, s.held].map((l) => l.map((w) => w.workspaceId)))
+    const stopping = sidebarLayout([entry('a', 1, { groupId: 'g' })], [group('g', 10)], [],
       [queued('q1', 'a')], [held('a', 'g')])
-    expect(counted(stopping)).toEqual([[[], ['a'], [], []]])
+    expect(counted(stopping)).toEqual([[[], ['a'], []]])
     expect(stopping.orphans).toEqual([])
-    const restarting = sidebarLayout([], [group('g', 10)], [], [prov('a', 1, { groupId: 'g' })],
+    const restarting = sidebarLayout([], [group('g', 10)], [prov('a', 1, { groupId: 'g' })],
       [queued('q1', 'a')], [held('a', 'g')])
-    expect(counted(restarting)).toEqual([[['a'], [], [], []]])
+    expect(counted(restarting)).toEqual([[['a'], [], []]])
     expect(restarting.orphans).toEqual([])
   })
 
-  it('does not show a group for a stopped member nothing waits on', () => {
-    expect(sidebarLayout([], [group('g', 10)], [stopped('gone', 1, 'g')], [], [], []).groups).toEqual([])
-  })
 
   it('puts an entry with no row to nest under at the top', () => {
-    const layout = sidebarLayout([entry('a', 1)], [], [], [], [
+    const layout = sidebarLayout([entry('a', 1)], [], [], [
       queued('q1', 'nowhere', { orphaned: true }),
       queued('q2', 'q1', { chained: true }),
       queued('q3', 'not-drawn'),
@@ -318,5 +279,59 @@ describe('sidebarRowIds', () => {
     // A pinned-but-empty group contributes no selectable row.
     expect(sidebarRowIds([], [], [group('g', 10, { pinned: true })], [])).toEqual([])
     expect(sidebarRowIds([], [], [], [])).toEqual([])
+  })
+})
+
+describe('groupDisplay', () => {
+  const live = { provisioning: [], members: [entry('a', 1)], held: [] }
+  const ghostsOnly = { provisioning: [], members: [], held: [] }
+  const state = { collapsed: false, showStopped: true, searching: false }
+
+  it('owns its ghosts only while they are on screen', () => {
+    expect(groupDisplay(live, state)).toEqual({ onlyGhosts: false, expanded: true, ownsGhosts: true })
+    // Collapsed, or with the toggle off, the Stopped section lists them.
+    expect(groupDisplay(live, { ...state, collapsed: true }).ownsGhosts).toBe(false)
+    expect(groupDisplay(live, { ...state, showStopped: false }).ownsGhosts).toBe(false)
+    // A search holds the group open and hides its ghosts.
+    expect(groupDisplay(live, { ...state, collapsed: true, searching: true }))
+      .toEqual({ onlyGhosts: false, expanded: true, ownsGhosts: false })
+  })
+
+  it('expands a group of only ghosts with its toggle, whatever the collapse says', () => {
+    expect(groupDisplay(ghostsOnly, { ...state, collapsed: true }))
+      .toEqual({ onlyGhosts: true, expanded: true, ownsGhosts: true })
+    expect(groupDisplay(ghostsOnly, { ...state, showStopped: false }).expanded).toBe(false)
+  })
+})
+
+describe('searchRows', () => {
+  it('keeps every kind of row whose title, prompt or agent matches, ignoring case', () => {
+    const rows = {
+      workspaces: [entry('t', 1, { title: 'Fix PARSER' }), entry('p', 2, { prompt: 'the parser' }),
+        entry('x', 3, { title: 'docs', tool: 'codex' }), entry('n', 4, { title: 'nothing' })],
+      provisioning: [prov('pv', 5, { kind: 'create', title: 'parser run' }), prov('other', 6, { kind: 'create' })],
+      queued: [queued('q-parser', 'a'), queued('q-other', 'a')],
+      held: [{ ...held('h'), title: 'Parser held' }, held('h2')],
+      drafts: [],
+    }
+    const hit = searchRows('  Parser ', rows)
+    expect(hit.workspaces.map((w) => w.workspaceId)).toEqual(['t', 'p'])
+    expect(hit.provisioning.map((p) => p.workspaceId)).toEqual(['pv'])
+    expect(hit.queued.map((e) => e.id)).toEqual(['q-parser'])
+    expect(hit.held.map((h) => h.workspaceId)).toEqual(['h'])
+    expect(searchRows('codex', rows).workspaces.map((w) => w.workspaceId)).toEqual(['x'])
+    expect(searchRows('  ', rows)).toBe(rows)
+  })
+})
+
+describe('stoppedSectionCount', () => {
+  it('counts the project\'s stops less those drawn elsewhere', () => {
+    const groups = [group('g', 1, { stoppedCount: 4 }), group('h', 2, { stoppedCount: 2 })]
+    // 10 stops: g's 4 are its own ghosts; a held row and a restart outside g
+    // have rows of their own; the ones inside g are already in its 4.
+    expect(stoppedSectionCount({ stoppedCount: 10 }, groups, new Set(['g']),
+      [held('x'), held('y', 'g')],
+      [prov('r1', 1), prov('r2', 1, { groupId: 'g' }), prov('fresh', 1, { kind: 'create' })])).toBe(4)
+    expect(stoppedSectionCount(undefined, [], new Set(), [], [])).toBe(0)
   })
 })

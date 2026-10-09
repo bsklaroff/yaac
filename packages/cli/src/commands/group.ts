@@ -87,8 +87,7 @@ export async function groupDelete(project: string, group: string): Promise<void>
 
 /**
  * Which project a workspace belongs to, so `yaac group move` can take an id
- * alone. Checks running workspaces, then stopped ones. `--project` covers a
- * workspace old enough to have fallen off the stopped listing.
+ * alone. Checks running workspaces, then stopped ones.
  */
 async function projectOfWorkspace(workspaceId: string): Promise<string | undefined> {
   const matches = (w: { workspaceId: string }): boolean =>
@@ -99,7 +98,7 @@ async function projectOfWorkspace(workspaceId: string): Promise<string | undefin
   if (running) return running.projectId
 
   const stopped = await api.workspace['list-stopped'].$get({ query: {} })
-  return stopped.find(matches)?.projectId
+  return stopped.entries.find(matches)?.projectId
 }
 
 /**

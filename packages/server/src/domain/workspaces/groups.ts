@@ -1,4 +1,4 @@
-import { createWorkspaceGroup, listWorkspaceGroupRows } from '#db'
+import { countStoppedWorkspaces, createWorkspaceGroup, listWorkspaceGroupRows, type StoppedCount } from '#db'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
@@ -7,19 +7,26 @@ import type { WorkspaceGroupSummary } from '@yaac/shared/types'
 /**
  * Every sidebar group in wire form, for the snapshot. Membership is carried
  * on the workspace entries (`groupId`), and the client decides which groups
- * to show, so the two cannot disagree.
+ * to show, so the two cannot disagree. The snapshot passes in the stopped
+ * counts it shares with `listProjects`, so the count query runs once.
  */
 export async function listWorkspaceGroups(
   projectFilter?: string,
+  stoppedCounts: Promise<StoppedCount[]> = countStoppedWorkspaces(),
 ): Promise<WorkspaceGroupSummary[]> {
-  const rows = await listWorkspaceGroupRows(projectFilter)
-  return rows.map((r) => ({
-    groupId: r.groupId,
-    projectId: r.projectId,
-    name: r.name,
-    pinned: r.pinned,
-    createdAt: formatUtcTimestamp(r.createdAt.getTime()),
-  }))
+  const [rows, counts] = await Promise.all([listWorkspaceGroupRows(projectFilter), stoppedCounts])
+  return rows.map((r) => {
+    const stopped = counts.find((c) => c.projectId === r.projectId && c.groupId === r.groupId)
+    return {
+      groupId: r.groupId,
+      projectId: r.projectId,
+      name: r.name,
+      pinned: r.pinned,
+      createdAt: formatUtcTimestamp(r.createdAt.getTime()),
+      stoppedCount: stopped?.stopped ?? 0,
+      unseenDeaths: stopped?.unseenDeaths ?? 0,
+    }
+  })
 }
 
 export interface ResolvedGroup {
