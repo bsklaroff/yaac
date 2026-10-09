@@ -125,6 +125,8 @@ async function createWindow(): Promise<BrowserWindow> {
       // For the workspace preview. Guests are hardened and pinned to loopback
       // below (will-attach-webview, web-contents-created).
       webviewTag: true,
+      // Chromium's PDF viewer, for a PDF opened in a file pane.
+      plugins: true,
     },
   })
   if (process.platform === 'darwin') w.setWindowButtonVisibility(false)

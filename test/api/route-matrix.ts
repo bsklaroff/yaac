@@ -193,6 +193,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // it needs no running workspace.
   { method: 'GET', path: '/api/workspace/:id/dir', request: `${W}/dir?path=a`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/file', request: `${W}/file?path=a`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/raw', request: `${W}/raw?path=a.png`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/workspace/:id/file', request: `${W}/file`, body: { path: 'a', content: '', baseVersion: null }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/workspace/:id/file', request: `${W}/file?path=a`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/folder', request: `${W}/folder`, body: { path: 'a' }, access: 'owner', k8s: MISSING, containerless: MISSING },

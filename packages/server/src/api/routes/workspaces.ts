@@ -20,6 +20,7 @@ import {
   listWorkspaceGroups,
   readWorkspaceFile,
   readWorkspaceFileAtRev,
+  readWorkspaceMedia,
   dismissProvisioning,
   registerProvisioning,
   renameWorkspaceEntry,
@@ -611,6 +612,27 @@ export const workspaceApp = new Hono<IdentityEnv>()
     async (c) => {
       const { path, known } = c.req.valid('query')
       return c.json(await readWorkspaceFile(c.req.param('id'), path, known))
+    },
+  )
+  // An image, video, audio or PDF file's bytes for the file pane's media
+  // view. One byte range is honored, so a video can seek. The bytes are
+  // the workspace's, so a response rendered as a page anyway (opened in a
+  // tab, or the PDF iframe) is sandboxed into an opaque origin with no
+  // script, away from the API; Chromium's PDF viewer still runs under it.
+  .get(
+    '/:id/raw',
+    zv('query', z.object({ path: z.string().min(1) })),
+    async (c) => {
+      const media = await readWorkspaceMedia(c.req.param('id'), c.req.valid('query').path, c.req.header('range'))
+      const { start, end } = media.range ?? { start: 0, end: media.size - 1 }
+      c.header('Content-Type', media.type)
+      c.header('Content-Length', String(end - start + 1))
+      c.header('Accept-Ranges', 'bytes')
+      c.header('X-Content-Type-Options', 'nosniff')
+      c.header('Content-Security-Policy', "default-src 'none'; sandbox; frame-ancestors 'self'")
+      c.header('Cache-Control', 'no-cache')
+      if (media.range) c.header('Content-Range', `bytes ${start}-${end}/${media.size}`)
+      return c.body(media.body, media.range ? 206 : 200)
     },
   )
   // A file as it was at a commit, for the editor's diff against the fork

@@ -16,6 +16,7 @@ import {
   listWorkspaceDir,
   readWorkspaceFile,
   readWorkspaceFileAtRev,
+  readWorkspaceMedia,
   renameWorkspaceEntry,
   writeWorkspaceFile,
 } from '#domain/workspaces'
@@ -586,6 +587,47 @@ describe('readWorkspaceFile', () => {
     } finally {
       await fs.chmod(path.join(dir, 'xo'), 0o755)
     }
+  })
+})
+
+describe('readWorkspaceMedia', () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01])
+  beforeAll(async () => {
+    const dir = await makeCheckout('media')
+    await write(dir, 'img/shot.PNG', png)
+    await write(dir, 'empty.pdf')
+    await fs.symlink('img/shot.PNG', path.join(dir, 'alias.png'))
+    await fs.symlink(path.relative(dir, path.join(outside, 'secret.txt')), path.join(dir, 'out.png'))
+  })
+
+  async function bytes(range?: string): Promise<{ range: unknown; body: Buffer }> {
+    const media = await readWorkspaceMedia('media', 'img/shot.PNG', range)
+    expect(media).toMatchObject({ type: 'image/png', size: png.length })
+    return { range: media.range, body: Buffer.from(await new Response(media.body).arrayBuffer()) }
+  }
+
+  it('streams a media file whole, or the one byte range asked for', async () => {
+    expect(await bytes()).toEqual({ range: null, body: png })
+    expect(await bytes('bytes=2-4')).toEqual({ range: { start: 2, end: 4 }, body: png.subarray(2, 5) })
+    expect(await bytes('bytes=7-')).toEqual({ range: { start: 7, end: 9 }, body: png.subarray(7) })
+    expect(await bytes('bytes=-3')).toEqual({ range: { start: 7, end: 9 }, body: png.subarray(7) })
+    expect(await bytes('bytes=8-99')).toEqual({ range: { start: 8, end: 9 }, body: png.subarray(8) })
+    // What one range cannot answer gets the whole file.
+    for (const whole of ['bytes=10-', 'bytes=0-1,4-5', 'bytes=-0', 'items=0-1']) {
+      expect(await bytes(whole)).toEqual({ range: null, body: png })
+    }
+    const empty = await readWorkspaceMedia('media', 'empty.pdf')
+    expect(empty).toMatchObject({ type: 'application/pdf', size: 0, range: null })
+    expect((await new Response(empty.body).arrayBuffer()).byteLength).toBe(0)
+    expect((await readWorkspaceMedia('media', 'alias.png')).size).toBe(png.length)
+  })
+
+  it('refuses a file that is not media, or not plainly inside the workspace', async () => {
+    expect(await refusal(readWorkspaceMedia('media', 'a.txt')))
+      .toEqual({ code: 'VALIDATION', message: 'a.txt is not an image, video, audio or PDF file' })
+    expect((await refusal(readWorkspaceMedia('media', 'out.png'))).code).toBe('VALIDATION')
+    expect((await refusal(readWorkspaceMedia('media', '../x.png'))).code).toBe('VALIDATION')
+    expect((await refusal(readWorkspaceMedia('media', 'missing.png'))).code).toBe('NOT_FOUND')
   })
 })
 
