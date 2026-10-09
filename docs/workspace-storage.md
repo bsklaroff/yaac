@@ -529,16 +529,16 @@ on every backend:
   server merges; nothing relies on a cross-pod lock.
 - **No filesystem watchers.** Freshness comes from reading on reconcile,
   which works the same over NFS.
-- **A writer that another node reads closes soon after each write a reader
+- **A writer that another node reads syncs soon after each write a reader
   waits on.** NFS promises only close-to-open consistency: bytes written
   through a held-open file reach the server when it is closed or synced, or
-  when the kernel writes them back, up to 30 s later. acpd closes and reopens
-  its record at once for a line someone is waiting on, and within 200 ms for
-  streamed output. It reopens the descriptor (`/dev/fd/<fd>`), not the path,
-  since paths on the shared tier can be renamed under a writer. Files a
-  workspace's own processes hold open (a build log, say) follow no such rule,
-  so a reader on another node, such as the server's file editor, can see them
-  up to 30 s behind.
+  when the kernel writes them back, up to 30 s later. acpd `fdatasync`s its
+  record at once for a line someone is waiting on, and within 200 ms for
+  streamed output. It syncs rather than closing and reopening, since another
+  node may rename the file under it, which neither the old path nor, under
+  gVisor, `/dev/fd/<fd>` follows. Files a workspace's own processes hold open
+  (a build log, say) follow no such rule, so a reader on another node, such as
+  the server's file editor, can see them up to 30 s behind.
 - **Every path stored in a row is relative** to the data dir or a directory
   under it (see "Transcript paths"), so the data dir can move.
 - **The node-local tier is disposable.** It holds re-derivable caches and

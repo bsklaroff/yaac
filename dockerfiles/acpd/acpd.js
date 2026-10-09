@@ -25,14 +25,15 @@
  * so nothing is buffered for an absent client. Client lines are recorded
  * because the agent echoes user messages only when replaying `session/load`.
  *
- * The record is closed and reopened (in append mode) after each client line,
- * after acpd's own lines, and once the agent's output pauses or has run on
- * for a while. On NFS a file's data reaches the server only when it is closed,
- * synced or the kernel writes it back (up to 30 s later), and the server reads
- * the record from another node, so a record held open would show a sent
- * message only once the agent's next output pushed it out. It is reopened
- * through its descriptor, not its path, because the server renames a fresh
- * conversation's record while acpd writes it.
+ * The record is synced (`fdatasync`) after each client line, after acpd's
+ * own lines, and once the agent's output pauses or has run on for a while. On
+ * NFS a file's data reaches the server only when it is closed, synced or the
+ * kernel writes it back (up to 30 s later), and the server reads the record
+ * from another node, so an unsynced record would show a sent message only once
+ * the agent's next output pushed it out. It is synced, not closed and
+ * reopened, because the server renames a fresh conversation's record from its
+ * own node, which neither the old path nor, under gVisor, `/dev/fd/<fd>`
+ * follows.
  *
  * A conversation that cannot be recorded cannot be rendered, even though RPC
  * still works. So a record failure restarts the agent under a fresh record,
@@ -138,7 +139,7 @@ export function createAcpd({
         method: '_acpd/life',
         params: { id: crypto.randomUUID(), startedAt: new Date().toISOString() },
       })}\n`)
-      logFd = reopenRecord(logFd)
+      fs.fdatasyncSync(logFd)
       return true
     } catch (err) {
       log(`log unavailable (${err.message})`)
@@ -207,26 +208,13 @@ export function createAcpd({
     restartForRecord(err.message)
   }
 
-  /** A fresh append-mode fd on the record `fd` names, wherever it has been
-   *  renamed to; `fd` is closed, which is what sends its bytes over NFS. */
-  function reopenRecord(fd) {
-    const fresh = fs.openSync(`/dev/fd/${fd}`, 'a')
-    try {
-      fs.closeSync(fd)
-    } catch (err) {
-      fs.closeSync(fresh)
-      throw err
-    }
-    return fresh
-  }
-
-  /** Close and reopen the record so what was written reaches the reader. */
+  /** Sync the record so what was written reaches the reader. */
   function settle() {
     clearTimeout(settleTimer)
     settleTimer = null
     if (logFd === null) return
     try {
-      logFd = reopenRecord(logFd)
+      fs.fdatasyncSync(logFd)
     } catch (err) {
       recordFailed(err)
     }

@@ -137,7 +137,7 @@ describe('createAcpd', () => {
     expect(recorded).toContain('while detached')
   })
 
-  it('reopens the record through its fd after a client line, a pause and a long burst, across a rename', async () => {
+  it('syncs the record after a client line, a pause and a long burst, opening it once, across a rename', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-'))
     tmpDirs.push(dir)
     const logPath = path.join(dir, 'launch.jsonl')
@@ -152,30 +152,32 @@ describe('createAcpd', () => {
     })`
     const opens: string[] = []
     const realOpen = fs.openSync
-    const spy = vi.spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, flags?: fs.OpenMode, mode?: fs.Mode) => {
-      if (p === logPath) opens.push(`path ${String(flags)}`)
-      else if (String(p).startsWith('/dev/fd/')) opens.push(`fd ${String(flags)}`)
+    const openSpy = vi.spyOn(fs, 'openSync').mockImplementation(((p: fs.PathLike, flags?: fs.OpenMode, mode?: fs.Mode) => {
+      opens.push(`${String(p)} ${String(flags)}`)
       return realOpen(p, flags, mode)
     }) as typeof fs.openSync)
+    let syncs = 0
+    const realSync = fs.fdatasyncSync
+    const syncSpy = vi.spyOn(fs, 'fdatasyncSync').mockImplementation((fd: number) => { syncs++; realSync(fd) })
     try {
       const { sock } = await start(['node', '-e', agent], { logPath })
-      expect(opens).toEqual(['path w', 'fd a'])
+      expect(syncs).toBe(1)
 
       const a = connect(sock)
       await a.waitFor((l) => l.length >= 1)
       a.socket.write('{"said":"prompt"}\n')
-      // The client line settles at once; the agent's echo after the pause.
+      // The client line syncs at once; the agent's echo after the pause.
       await a.waitFor((l) => l.some((line) => line.includes('prompt')))
       await new Promise((r) => setTimeout(r, 120))
-      expect(opens.length).toBeGreaterThanOrEqual(4)
+      expect(syncs).toBeGreaterThanOrEqual(3)
 
       // The server adopts the record under the session's name mid-conversation.
       fs.renameSync(logPath, adopted)
       a.socket.write('{"said":"burst"}\n')
       await a.waitFor((l) => l.some((line) => line.includes('burst')))
-      const before = opens.length
+      const before = syncs
       await new Promise((r) => setTimeout(r, 450))
-      expect(opens.length).toBeGreaterThanOrEqual(before + 2)
+      expect(syncs).toBeGreaterThanOrEqual(before + 2)
       await a.waitFor((l) => l.filter((line) => line.includes('"out"')).length === 50)
       await new Promise((r) => setTimeout(r, 120))
 
@@ -184,9 +186,12 @@ describe('createAcpd', () => {
       expect(lines[0]).toContain('_acpd/life')
       const said = lines.slice(1).map((l) => (JSON.parse(l) as { said: string }).said)
       expect(said).toEqual(['prompt', 'prompt', 'burst', 'burst', ...Array<string>(50).fill('out')])
-      expect(opens.slice(1).every((o) => o === 'fd a')).toBe(true)
+      // Opened once, by path, and never again: a reopen cannot follow a rename
+      // made from another node.
+      expect(opens.filter((o) => o.startsWith(logPath) || o.startsWith('/dev/fd/'))).toEqual([`${logPath} w`])
     } finally {
-      spy.mockRestore()
+      openSpy.mockRestore()
+      syncSpy.mockRestore()
     }
   })
 
