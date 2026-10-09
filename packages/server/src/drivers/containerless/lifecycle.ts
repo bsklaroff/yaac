@@ -21,7 +21,7 @@ import type { DriverSinks } from '#drivers/contract'
  * Driver start/stop: recovering workspaces on server start, and noticing when
  * one dies. tmux servers outlive the yaac server, so a new server reads the
  * markers on disk and probes each socket. While running, it holds one idle
- * read-only tmux client per workspace; that client exiting signals the
+ * tmux client per workspace; that client exiting signals the
  * workspace died. The reconcile resync covers a missed event.
  */
 
@@ -89,16 +89,17 @@ function socketAnswers(marker: WorkspaceMarker): Promise<boolean> {
 }
 
 /**
- * Watch a workspace by holding a read-only, output-suppressed tmux
- * control-mode client open. tmux ends its clients when the server dies, so
- * the client's exit signals the workspace is gone.
+ * Watch a workspace by holding an output-suppressed tmux control-mode client
+ * open. tmux ends its clients when the server dies, so the client's exit
+ * signals the workspace is gone. Not `read-only`: from tmux 3.7, a
+ * command-line `send-keys` is refused while any read-only client is attached.
  */
 function watchWorkspace(workspaceId: string, jobName: string, sinks: DriverSinks): void {
   if (watches.has(workspaceId)) return
   const paths = containerlessWorkspacePaths(jobName)
   const child = spawn('tmux', [
     '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
-    '-f', 'read-only,ignore-size,no-output',
+    '-f', 'ignore-size,no-output',
   ], {
     // stdin must stay an open pipe: a control-mode client exits when its
     // stdin closes, which would look like the workspace dying.

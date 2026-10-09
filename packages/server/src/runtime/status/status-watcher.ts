@@ -27,7 +27,7 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  * driver from the workspace's mode (`#runtime/agents`), feeds observations
  * into the status store, and owns what both modes share: respawn, backoff,
  * the stream self-heal, and the terminal listing, refreshed over the
- * driver's read-only channel when the stream comes up and on every tmux
+ * driver's tmux command channel when the stream comes up and on every tmux
  * window add, close or rename.
  *
  * A dropped connection only flips the store's health bit: status stays
@@ -76,7 +76,7 @@ export interface StatusWatcherDeps {
 
 export class WorkspaceStatusWatcher {
   private connection: { close(): void } | null = null
-  /** The driver's read-only tmux channel while its stream is up. */
+  /** The driver's tmux command channel while its stream is up. */
   private send: ((cmd: string) => Promise<string>) | null = null
   /** Bumped per terminal listing, so only the newest one is stored. */
   private listing = 0

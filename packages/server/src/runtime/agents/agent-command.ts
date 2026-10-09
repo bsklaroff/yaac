@@ -581,6 +581,10 @@ function atInputTest(tool: AgentTool, TMUX: string, target: string, agentSession
  * opencode has a stash stack but binds no keys to it, so yaac's launch binds
  * two (`OPENCODE_TUI_KEYBINDS`). Pop replaces what is in the box, so it only
  * follows a push that happened, which the stash file changing shows.
+ *
+ * Each box reader's awk runs in the C locale: its patterns are bytes
+ * (`\302\240` is a no-break space), which macOS's awk does not match in a
+ * UTF-8 locale.
  */
 function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: string): {
   defs?: string; box: string; prepare: string; stash: string; finish: string; unstash: string
@@ -592,7 +596,7 @@ function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: str
       // `claude_box state` exits as `box` does; `lines` prints how many
       // lines it holds; `stashed` and `pasted` exit 0 for a stash, and for
       // a collapsed paste or image in the box.
-      const claudeBox = `claude_box() { ${TMUX} capture-pane -p -e ${target} | awk -v want="$1" '
+      const claudeBox = `claude_box() { ${TMUX} capture-pane -p -e ${target} | LC_ALL=C awk -v want="$1" '
   { s=$0; gsub(/\\033\\[[0-9;]*m/, "", s) }
   s ~ /^(─)+$/ { prev=last; last=NR; next }
   { raw[NR]=$0; txt[NR]=s }
@@ -624,7 +628,7 @@ function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: str
         // The composer is the last line starting `›` at or above the
         // cursor, with only its own indented lines between.
         box: `set -- $(${TMUX} display -p ${target} "#{cursor_flag} #{cursor_y}"); [ "$1" = 1 ] || return 2
-  ${TMUX} capture-pane -p -e ${target} | awk -v row=$(($2 + 1)) '
+  ${TMUX} capture-pane -p -e ${target} | LC_ALL=C awk -v row=$(($2 + 1)) '
   { raw[NR]=$0; s=$0; gsub(/\\033\\[[0-9;]*m/, "", s); txt[NR]=s; if (NR <= row && index(s, "›") == 1) c=NR }
   END { if (!c) exit 2; for (i=c+1; i<=row; i++) if (txt[i] !~ /^(  |$)/) exit 2;
     if (row > c) exit 1; r=raw[c];
@@ -639,7 +643,7 @@ function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: str
       return {
         // The box is the last run of `┃` lines, ending in its agent line;
         // above that, its lines are blank but for the placeholder.
-        box: `${TMUX} capture-pane -p ${target} | awk '
+        box: `${TMUX} capture-pane -p ${target} | LC_ALL=C awk '
   { sub(/^[ \\t]+/, "") }
   /^┃/ { if (!run) start=NR; run=1; line[NR]=$0; if ($0 ~ /^┃  [^ ].* · /) agent=NR; next }
   { run=0 }
@@ -670,7 +674,8 @@ export const OPENCODE_TUI_KEYBINDS = { 'prompt.stash': 'f9', 'prompt.stash.pop':
  * `buildPromptPasteCmd`, detached: write the script to a workspace-local
  * file and setsid it, so the exec returns at once instead of waiting through
  * the script's polling (5s+ on a fresh agent). The script survives the exec
- * stream closing and logs to `yaac-prompt.log` in the scratch dir.
+ * stream closing and logs to `yaac-prompt.log` in the scratch dir. macOS has
+ * no setsid, so a containerless host there detaches it with nohup.
  */
 export function buildPromptPasteBgCmd(
   target: string,
@@ -681,7 +686,8 @@ export function buildPromptPasteBgCmd(
   const script = `${paths.scratchDir}/.yaac-prompt.sh`
   const log = `${paths.scratchDir}/yaac-prompt.log`
   return `printf %s ${b64} | base64 -d > ${script}`
-    + ` && setsid sh ${script} >${log} 2>&1 </dev/null &`
+    + ` && { if command -v setsid >/dev/null; then setsid sh ${script}; else nohup sh ${script}; fi; }`
+    + ` >${log} 2>&1 </dev/null &`
 }
 
 /**

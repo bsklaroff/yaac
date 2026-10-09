@@ -136,7 +136,7 @@ describe('WorkspaceStatusWatcher (title tools)', () => {
     const child = children[0]
     await connectWatcher(child)
     const sent = child.writes.join('')
-    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     // Includes the pane id, since same-name subscriptions replace each other.
     expect(sent).toContain("refresh-client -B 'status-7:%7:#{pane_title}'")
     // No status yet reads as waiting.
@@ -318,7 +318,7 @@ describe('WorkspaceStatusWatcher (pane tools)', () => {
     const child = children[0]
     await connectWatcher(child, '%2', 'opencode')
     const sent = child.writes.join('')
-    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+    expect(sent).toContain("list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     // tmux itself searches the pane content; nothing is captured.
     expect(sent).toContain("refresh-client -B 'status-2:%2:#{?#{||:#{C/ri:")
     expect(sent).not.toContain('capture-pane')

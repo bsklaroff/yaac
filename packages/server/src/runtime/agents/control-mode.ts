@@ -29,24 +29,27 @@ import type { WorkspacePaths } from '#drivers/contract'
 
 /**
  * The in-workspace control-mode attach argv, dialed as a ctrl stream. Flags:
- * `read-only` (never inject input), `ignore-size` (never reshape the grid a
- * content search reads), `no-output` (state comes only from subscriptions
- * and notifications).
+ * `ignore-size` (never reshape the grid a content search reads), `no-output`
+ * (state comes only from subscriptions and notifications). Not `read-only`:
+ * from tmux 3.7, a `send-keys` run from the command line is refused while
+ * any read-only client is attached, which would stop every prompt and
+ * message yaac types into a pane.
  */
 export function controlModeAttachArgv(paths: WorkspacePaths): string[] {
   return [
     'tmux', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
-    '-f', 'read-only,ignore-size,no-output',
+    '-f', 'ignore-size,no-output',
   ]
 }
 
 /**
- * `1` while a pane still runs the session's `sleep infinity` keepalive
- * (some tmux versions quote the start command). An agent respawned into
- * the pane announces nothing, so a driver subscribes to this to learn when
- * the agent has replaced it.
+ * `1` while a pane still runs the session's keepalive: a pod's `sleep
+ * infinity`, or containerless's `sleep 2147483647`, since macOS's sleep has
+ * no `infinity` (some tmux versions quote the start command). An agent
+ * respawned into the pane announces nothing, so a driver subscribes to this
+ * to learn when the agent has replaced it.
  */
-export const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep infinity"?$,#{pane_start_command}}'
+export const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep (infinity|2147483647)"?$,#{pane_start_command}}'
 
 /** Reject `promise` if it has not settled within `ms`. */
 export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {

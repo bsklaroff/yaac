@@ -44,10 +44,10 @@ longer. The temp dir name is keyed by the data dir, so two servers on one
 host never collide.
 
 The session has the same shape as the one `workspace-bin/yaac-workspace-init`
-creates in a pod (the `sleep infinity` placeholder the stale reaper looks
-for, the `yaac:<tool>` window names the status watcher parses, the tmux
-options the webapp terminal needs), because that machinery is shared by both
-drivers.
+creates in a pod (the placeholder the stale reaper looks for, `sleep
+2147483647` here because macOS's sleep has no `infinity`; the `yaac:<tool>`
+window names the status watcher parses; the tmux options the webapp terminal
+needs), because that machinery is shared by both drivers.
 
 ## Paths
 
@@ -376,8 +376,10 @@ output.
 
 ## Observation and recovery
 
-With no informer, the driver tracks liveness with one read-only tmux
-control-mode client per running workspace. tmux ends every client when its
+With no informer, the driver tracks liveness with one output-suppressed tmux
+control-mode client per running workspace. It never writes to tmux, and it
+is not attached `read-only`: from tmux 3.7, a command-line `send-keys` is
+refused while any read-only client is attached. tmux ends every client when its
 server dies, so the client's exit is the workspace's death. Its stdin must be
 a pipe held open, because a control-mode client exits when stdin closes.
 
