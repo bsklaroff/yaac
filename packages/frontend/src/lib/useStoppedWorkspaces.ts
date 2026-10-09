@@ -185,7 +185,7 @@ function cachedEntry(queryClient: QueryClient, projectId: string, workspaceId: s
 }
 
 /** Patch every cached stopped list and entry of a project so a change (e.g.
- *  marking a death seen, ungrouping) shows before the server write returns. */
+ *  marking a death seen) shows before the server write returns. */
 export function patchStopped(
   queryClient: QueryClient,
   projectId: string,

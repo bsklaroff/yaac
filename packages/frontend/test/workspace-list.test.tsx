@@ -305,9 +305,7 @@ describe('WorkspaceList', () => {
     await within(section).findByText('Stopped one')
     expect(section.textContent?.indexOf('Stopped one'))
       .toBeGreaterThan(section.textContent?.indexOf('Filed one') ?? Infinity)
-    const row = screen.getByText('Stopped one').closest<HTMLElement>('.group')
-    fireEvent.click(within(row ?? document.body).getByLabelText('Remove from group'))
-    await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('gone', null)]))
+    expect(within(section).queryByLabelText('Remove from group')).toBeNull()
 
     // Hiding them leaves the live rows where they were.
     await pickAction('Hide stopped workspaces', 'Group actions')
@@ -1099,7 +1097,6 @@ describe('WorkspaceList', () => {
     await pickAction('Show stopped workspaces', 'Group actions')
     await screen.findByText('Old run')
     expect(screen.queryByRole('button', { name: 'Restart workspace' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Remove from group' })).toBeNull()
 
     fireEvent.click(screen.getByText('Their run'))
     expect(useUiStore.getState().selectedWorkspaceId).toBe('a')

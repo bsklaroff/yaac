@@ -7,7 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import clsx from 'clsx'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon, StopIcon } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
@@ -23,7 +23,7 @@ import { useUiStore, isUnreadWaiting, isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
 import { useReadOnly } from '#lib/viewer'
-import { patchStopped, refetchStopped, useRestartStopped } from '#lib/useStoppedWorkspaces'
+import { useRestartStopped } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 // The server refuses longer group names, so the name fields stop here.
@@ -480,30 +480,16 @@ function GroupDialog({
  * A stopped workspace's row: in the Stopped section, or in a group as a
  * ghost or held row. Selecting it shows its conversation in the main pane.
  * It stays out of the Alt+J/K row cycle (`sidebarRowIds`) and reads as
- * dimmed until selected. Its hover actions remove it from its group or
- * restart it; a restart shows a provisioning row in its place.
+ * dimmed until selected. Its hover action restarts it, which shows a
+ * provisioning row in its place.
  */
 export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry }): JSX.Element {
-  const queryClient = useQueryClient()
   const selected = useUiStore((s) => s.selectedWorkspaceId === entry.workspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
-  const removeOptimisticStopped = useUiStore((s) => s.removeOptimisticStopped)
   const restart = useRestartStopped()
   const [confirmRestart, setConfirmRestart] = useState(false)
   const readOnly = useReadOnly()
   const unseen = isUnseenDeath(entry)
-
-  // The stopped lists aren't in the snapshot, so patch the cached ones to
-  // show the change right away, and refetch once the server has it, since
-  // the row may now belong in another list.
-  const ungroup = (): void => {
-    patchStopped(queryClient, entry.projectId,
-      (e) => (e.workspaceId === entry.workspaceId ? { ...e, groupId: undefined } : e))
-    removeOptimisticStopped(entry.workspaceId)
-    api.workspace['set-group'].$post({ json: { projectId: entry.projectId, workspaceId: entry.workspaceId, groupId: null } })
-      .then(() => refetchStopped(queryClient, entry.projectId))
-      .catch((e: unknown) => console.error('group move failed', e))
-  }
 
   const stopLine = entry.deathReason
     ? `died ${relativeAge(entry.stoppedAt)} — ${describeWorkspaceDeathReason(entry.deathReason)}`
@@ -523,7 +509,7 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
             : unseen ? 'bg-amber-500/10 opacity-80 hover:bg-amber-500/15' : 'opacity-60 hover:bg-surface-2/50 hover:opacity-90',
         )}
       >
-        <span className="flex items-center gap-2 group-hover:pr-12 max-md:pr-14">
+        <span className="flex items-center gap-2 group-hover:pr-6 max-md:pr-9">
           {unseen && <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
           <span className="truncate font-medium text-text-dim">
             {entry.title || entry.prompt || 'New workspace'}
@@ -535,18 +521,6 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
         </span>
       </button>
 
-      {/* Overlay buttons as on live rows: remove from group, then restart. */}
-      {entry.groupId !== undefined && !readOnly && <button
-        onClick={ungroup}
-        title="Remove from group"
-        aria-label="Remove from group"
-        className="absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100
-          max-md:right-9 max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-      >
-        <GroupRemoveIcon size={13} />
-      </button>}
       {!readOnly && <button
         onClick={() => setConfirmRestart(true)}
         title="Restart workspace"
