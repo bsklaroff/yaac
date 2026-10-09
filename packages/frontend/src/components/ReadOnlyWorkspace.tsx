@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
+import { ChatViewToggles } from '#components/WorkspaceChat'
 import { PaneBarLeading, paneBarClass } from '#components/WorkspaceView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -26,6 +27,7 @@ export type ReadOnlySubject =
  * bar, a line of facts about it, and its conversations. A running one is
  * refetched while it runs. Terminals, chat and files are left out, since
  * attaching to them grants control (docs/multi-user.md "Authorization").
+ * The title bar carries the chat pane's width and condensed toggles.
  *
  * The user's own stopped workspace also gets a Restart action, and opening
  * one that died unseen marks it seen. That write is the owner's alone, so a
@@ -58,10 +60,17 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
   }, [readOnly, stopped, markSeen])
 
   return (
-    <main className="flex h-full min-w-0 flex-col">
+    <main className="@container flex h-full min-w-0 flex-col">
       <header className={paneBarClass(isMobile)}>
         <PaneBarLeading />
         <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">{title}</span>
+        {subject && (
+          <ChatViewToggles
+            className="no-drag h-6 shrink-0 rounded px-1.5 text-text-dim transition hover:bg-surface-2
+              hover:text-text max-md:h-9 max-md:px-2"
+            iconSize={13}
+          />
+        )}
         {stopped && !readOnly && (
           <button
             type="button"

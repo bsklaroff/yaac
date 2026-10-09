@@ -6,13 +6,16 @@ import { screen, fireEvent, cleanup } from '@testing-library/react'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
+import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 /**
  * The read-only pane's conversation view. The server is answered at
  * `fetch` and rendering is real, so the tests check what the reader sees:
  * the conversation, a picker when there are several, and the founding prompt
- * when there is nothing to read.
+ * when there is nothing to read. Every step is shown unless a case turns
+ * condensed on; folding the main conversation is covered with the title-bar
+ * toggles in read-only-workspace.test.tsx.
  */
 
 const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
@@ -34,6 +37,7 @@ const asked = (seq: number, text: string): AcpEvent =>
 
 let server: FetchMock
 beforeEach(() => {
+  useUiStore.setState({ chatCondensed: false })
   server = mockFetch({ [TRANSCRIPT]: { events: [asked(0, 'what changed?'), said(1, 'the router')] } })
 })
 
@@ -156,9 +160,18 @@ describe('ReadOnlyTranscript', () => {
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 
-  it('opens a subagent with what it was asked, and a task with the command that started it', async () => {
+  it('opens a subagent with what it was asked and every step, and a task with the command that started it', async () => {
+    // Condensed folds the main conversation only, as in the live pane.
+    useUiStore.setState({ chatCondensed: true })
     transcript([
       { type: 'subagent', seq: 0, subagent: { id: 's1', name: 'Explore', task: 'find the router', state: 'completed' } },
+      {
+        type: 'tool',
+        seq: 3,
+        thread: 's1',
+        call: { toolCallId: 't8', title: 'grep router', kind: 'search', status: 'completed' },
+      },
+      { type: 'agent', seq: 4, thread: 's1', content: [{ type: 'text', text: 'in src/router.ts' }] },
       {
         type: 'tool',
         seq: 1,
@@ -172,8 +185,11 @@ describe('ReadOnlyTranscript', () => {
     ])
     renderPane()
 
-    fireEvent.click(await screen.findByRole('button', { name: /Explore/ }))
+    fireEvent.click(await screen.findByRole('button', { name: '1 tool call, 1 subagent, 1 task' }))
+    fireEvent.click(screen.getByRole('button', { name: /Explore/ }))
     expect(screen.getByText('find the router')).toBeTruthy()
+    expect(screen.getByText('in src/router.ts')).toBeTruthy()
+    expect(screen.getByText('grep router')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Back/ }))
     fireEvent.click(screen.getByRole('button', { name: /dev server/ }))
     expect(screen.getByText('npm run dev', { selector: 'pre' })).toBeTruthy()

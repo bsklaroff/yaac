@@ -57,11 +57,8 @@ export function WorkspaceChat({
   const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts, permissionModes, efforts } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
-  const fullWidth = useUiStore((s) => s.chatFullWidth)
-  const setFullWidth = useUiStore((s) => s.setChatFullWidth)
   const condensed = useUiStore((s) => s.chatCondensed)
-  const setCondensed = useUiStore((s) => s.setChatCondensed)
-  const column = fullWidth ? 'w-full' : COLUMN
+  const column = useChatColumn()
   /**
    * The draft is local state mirrored into the store, so typing needs no
    * store round trip. The pane is keyed by conversation, so seeding once on
@@ -463,24 +460,10 @@ export function WorkspaceChat({
                   >
                     <AttachImageIcon size={16} />
                   </button>
-                  <button
-                    type="button"
-                    aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
-                    title={fullWidth ? 'Center chat' : 'Full-width chat'}
-                    onClick={() => setFullWidth(!fullWidth)}
-                    className="hidden rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text @min-[66rem]:block"
-                  >
-                    {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={condensed ? 'Show every step' : 'Show key messages only'}
-                    title={condensed ? 'Show every step' : 'Show key messages only'}
-                    onClick={() => setCondensed(!condensed)}
+                  <ChatViewToggles
                     className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text"
-                  >
-                    {condensed ? <UncondenseIcon size={16} /> : <CondenseIcon size={16} />}
-                  </button>
+                    iconSize={16}
+                  />
                   <div className="mr-auto flex items-center">
                     {permissionModes.current !== undefined && (
                       <PermissionModeMenu
@@ -551,6 +534,45 @@ export function WorkspaceChat({
  *  toggle shows only in a pane wider than this cap plus the `px-4` padding
  *  (66rem), since in a narrower one both widths look the same. */
 const COLUMN = 'mx-auto w-full max-w-5xl'
+
+/** The column a chat pane's conversation sits in, per the saved width. */
+export function useChatColumn(): string {
+  return useUiStore((s) => s.chatFullWidth) ? 'w-full' : COLUMN
+}
+
+/**
+ * The saved view toggles every chat pane shares, live or read-only: full
+ * width and condensed. The width toggle needs an `@container` ancestor as
+ * wide as the pane. `className` styles both buttons, minus their display.
+ */
+export function ChatViewToggles({ className, iconSize }: { className: string; iconSize: number }): JSX.Element {
+  const fullWidth = useUiStore((s) => s.chatFullWidth)
+  const setFullWidth = useUiStore((s) => s.setChatFullWidth)
+  const condensed = useUiStore((s) => s.chatCondensed)
+  const setCondensed = useUiStore((s) => s.setChatCondensed)
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
+        title={fullWidth ? 'Center chat' : 'Full-width chat'}
+        onClick={() => setFullWidth(!fullWidth)}
+        className={clsx(className, 'hidden items-center @min-[66rem]:flex')}
+      >
+        {fullWidth ? <NarrowIcon size={iconSize} /> : <WidenIcon size={iconSize} />}
+      </button>
+      <button
+        type="button"
+        aria-label={condensed ? 'Show every step' : 'Show key messages only'}
+        title={condensed ? 'Show every step' : 'Show key messages only'}
+        onClick={() => setCondensed(!condensed)}
+        className={clsx(className, 'flex items-center')}
+      >
+        {condensed ? <UncondenseIcon size={iconSize} /> : <CondenseIcon size={iconSize} />}
+      </button>
+    </>
+  )
+}
 
 /** The main conversation's latest context report. */
 function contextUsage(events: readonly AcpEvent[]): { used: number; size: number } | undefined {
