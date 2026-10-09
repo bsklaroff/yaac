@@ -1687,6 +1687,93 @@ describe('agentDriver', () => {
     expect(asked).toEqual(['pi'])
   })
 
+  // opencode answers `session/new` before its model catalog has loaded,
+  // offering only its built-in provider, and refuses any other model until
+  // the catalog arrives as a `config_option_update`.
+  it('names the launch model once the session offers it', async () => {
+    const stream = new FakeStream()
+    tmuxWindows = 'opencode\n'
+    const target = 'openrouter/deepseek/deepseek-v4.1-flash'
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: acpDial(() => stream),
+      permissionMode: () => Promise.resolve('bypass'),
+      launchModel: () => Promise.resolve(target),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    const modelOption = (values: string[]): Record<string, unknown> => ({
+      id: 'model', currentValue: 'opencode/big-pickle', options: values.map((value) => ({ value })),
+    })
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: created.id, result: { sessionId: 'ses_1', configOptions: [modelOption(['opencode/big-pickle'])] },
+    })}\n`)
+
+    await new Promise((r) => setTimeout(r, 20))
+    expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(false)
+    stream.feed(updateLine('ses_1', {
+      sessionUpdate: 'config_option_update', configOptions: [modelOption(['opencode/big-pickle', target])],
+    }))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
+    expect(stream.sent().find((m) => m.method === 'session/set_config_option')!.params)
+      .toEqual({ sessionId: 'ses_1', configId: 'model', value: target })
+  })
+
+  // A model the session never offers is asked for anyway once the wait runs
+  // out, so the handshake still finishes and the refusal reaches the pane.
+  it('names a launch model the session never offers after the wait, and reports the refusal', async () => {
+    const stream = new FakeStream()
+    tmuxWindows = 'opencode\n'
+    const target = 'openrouter/retired/model'
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: acpDial(() => stream),
+      permissionMode: () => Promise.resolve('bypass'),
+      launchModel: () => Promise.resolve(target),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'opencode')).toBeDefined())
+    const events: AcpEventInit[] = []
+    acpConversationByHandle('demo', 'wt-1', 'opencode')!.subscribe((e) => events.push(e))
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    const modelOption = (values: string[]): Record<string, unknown> => ({
+      id: 'model', currentValue: 'opencode/big-pickle', options: values.map((value) => ({ value })),
+    })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      stream.feed(`${JSON.stringify({
+        jsonrpc: '2.0', id: created.id, result: { sessionId: 'ses_1', configOptions: [modelOption(['opencode/big-pickle'])] },
+      })}\n`)
+      stream.feed(updateLine('ses_1', {
+        sessionUpdate: 'config_option_update',
+        configOptions: [modelOption(['opencode/big-pickle', 'openrouter/deepseek/deepseek-v4.1-flash'])],
+      }))
+      await vi.advanceTimersByTimeAsync(9_000)
+      expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(false)
+      await vi.advanceTimersByTimeAsync(1_000)
+    } finally {
+      vi.useRealTimers()
+    }
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
+    const setModel = stream.sent().find((m) => m.method === 'session/set_config_option')!
+    expect(setModel.params).toEqual({ sessionId: 'ses_1', configId: 'model', value: target })
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: setModel.id, error: { code: -32602, message: `model not found: ${target}` },
+    })}\n`)
+    await vi.waitFor(() => expect(events.some((e) => e.type === 'error')).toBe(true))
+    expect((events.find((e) => e.type === 'error') as { message: string }).message)
+      .toContain(`would not switch to the model "${target}"`)
+  })
+
   /** pi-acp's thinking-level option at `current` (docs/effort-levels.md). */
   const thoughtLevel = (current: string): Record<string, unknown> => ({
     id: 'thought_level',

@@ -58,6 +58,7 @@ import {
   sessionEffort,
   sessionModeId,
   sessionModel,
+  sessionModels,
   toStopReason,
   type AcpEffort,
   type AcpInitializeResult,
@@ -289,6 +290,10 @@ export class AcpConversation {
   /** The model the session last reported; see `onModel`. Unknown after a
    *  reattach until the adapter next reports it. */
   private currentModel: string | undefined
+  /** The model ids a new session last offered; see `whenModelOffered`. */
+  private offeredModels: string[] | undefined
+  /** Woken when `offeredModels` changes or the connection closes. */
+  private readonly offerWaiters = new Set<() => void>()
   /** The session's effort option as last reported; on a reattach, read
    *  back from the record (`recoverEffort`). */
   private effortOption: AcpEffort | undefined
@@ -603,6 +608,7 @@ export class AcpConversation {
         if (update?.sessionUpdate === 'config_option_update') {
           this.setModel(sessionModel(update))
           this.setEffortOption(sessionEffort(update))
+          this.setOfferedModels(update)
         }
         if (update !== undefined) this.setModeId(sessionModeId(update))
         this.noteAgentState(method, params)
@@ -889,6 +895,8 @@ export class AcpConversation {
         this.deps.onSessionId(created.sessionId)
         this.setModel(sessionModel(created))
         this.setEffortOption(sessionEffort(created))
+        // An update read before this reply is newer.
+        if (this.offeredModels === undefined) this.setOfferedModels(created)
         await this.applyLaunchModel()
       }
       // After the model, whose switch re-seeds the effort. A loaded session
@@ -1069,6 +1077,7 @@ export class AcpConversation {
       return undefined
     })
     if (model === undefined || this.sessionId === undefined) return
+    await this.whenModelOffered(model, 10_000)
     try {
       await this.requestModel(model)
       this.notices.delete('model')
@@ -1079,6 +1088,40 @@ export class AcpConversation {
       this.log(`[server] acp: ${message}`)
       this.notice('model', { type: 'error', message })
     }
+  }
+
+  private setOfferedModels(state: unknown): void {
+    const models = sessionModels(state)?.models
+    if (models === undefined || models.length === 0) return
+    this.offeredModels = models.map((m) => m.id)
+    for (const wake of this.offerWaiters) wake()
+  }
+
+  /**
+   * Wait until the session offers `model`, for at most `timeoutMs`. opencode
+   * answers `session/new` before it has loaded its model catalog, offering
+   * only its built-in provider's models, and announces the rest in a
+   * `config_option_update` moments later; a model asked for before then is
+   * refused as not found. A session that lists no models, or never offers
+   * this one, is asked anyway, and its answer reported.
+   */
+  private whenModelOffered(model: string, timeoutMs: number): Promise<void> {
+    const offered = (): boolean =>
+      this.closed || this.offeredModels === undefined || this.offeredModels.includes(model)
+    if (offered()) return Promise.resolve()
+    this.log(`[server] acp: waiting for the session to offer the model ${model}`)
+    return new Promise((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer)
+        this.offerWaiters.delete(wake)
+        resolve()
+      }
+      const wake = (): void => {
+        if (offered()) done()
+      }
+      const timer = setTimeout(done, timeoutMs)
+      this.offerWaiters.add(wake)
+    })
   }
 
   /** Switch the model as the user asked from the pane (`/model`). A refusal
@@ -1403,6 +1446,7 @@ export class AcpConversation {
     this.failWaiters(new Error('conversation is closed'))
     // Release the queue; its turns then fail as closed.
     this.wakeStatusWaiters()
+    for (const wake of this.offerWaiters) wake()
     this.peer.close()
     for (const fn of this.closeSubscribers) fn()
     this.closeSubscribers.clear()
