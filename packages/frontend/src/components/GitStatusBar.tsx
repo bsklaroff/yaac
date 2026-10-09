@@ -11,8 +11,8 @@ import type { BranchComparison } from '@yaac/shared/types'
 /**
  * Strip above a workspace's panes saying how far HEAD is ahead of and behind
  * its base branch, and how many lines differ from it in all. The base is the
- * explorer's pick, else the branch the workspace forked from. The line
- * counts open the explorer's changes view, which breaks them down.
+ * Changes pane's pick, else the branch the workspace forked from. The line
+ * counts open the Changes pane, which breaks them down.
  *
  * The strip always takes its height, even when empty: a row appearing later
  * would resize the panes below and send a SIGWINCH to the agent's TUI.

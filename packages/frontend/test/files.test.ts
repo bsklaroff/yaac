@@ -124,6 +124,10 @@ describe('placeFile', () => {
     ]
     expect(placeFile(withExplorer, a).map((g) => g.tabs)).toEqual([['agent'], ['files'], [a], ['shell:x']])
     expect(placeFile(singleColumn('agent'), a).map((g) => g.tabs)).toEqual([['agent'], [a]])
+    // With the Changes pane open too, beside whichever of the two is active.
+    const both: PaneLayout = [{ tabs: ['changes'], active: 'changes' }, ...withExplorer]
+    expect(placeFile(both, a).map((g) => g.tabs)).toEqual([['changes'], ['agent'], ['files'], [a], ['shell:x']])
+    expect(placeFile(both, a, 'changes').map((g) => g.tabs)).toEqual([['changes'], [a], ['agent'], ['files'], ['shell:x']])
   })
 
   it('tabs into the column of the active file pane, then of any file pane', () => {

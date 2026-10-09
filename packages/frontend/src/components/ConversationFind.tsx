@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, typ
 import { Tooltip } from '@base-ui/react/tooltip'
 import { SearchQuery } from '@codemirror/search'
 import { groupFindText, type Found, type Group } from '#components/AcpTranscript'
-import { COUNT_DEBOUNCE_MS, FindControls } from '#components/ui/FindPanel'
+import { FindControls } from '#components/ui/FindPanel'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
-import { MatchCounter, NO_MATCHES, type Matches, type QuerySpec } from '#lib/matchCount'
+import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches, type QuerySpec } from '#lib/matchCount'
 import { chordMatches, claimChord, findChord } from '#lib/shortcuts'
 import { shortcutsSuspended, useUiStore } from '#lib/store'
 

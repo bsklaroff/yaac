@@ -8,8 +8,8 @@
  *     recolors the shell and persists yaac.theme.v1; a reload comes back
  *     light before first paint (the inline script in index.html).
  *  4. Hide sidebar removes it, and "Show sidebar" renders only while hidden.
- *  5. The explorer's changed-files toggle opens its changes view ("No
- *     changes yet" on a clean checkout, a changed-file count otherwise).
+ *  5. The header's Changes button opens the Changes pane ("No changes yet"
+ *     on a clean checkout, a changed-file count otherwise).
  *
  * Run: node test-playwright-scripts/theme-and-shell-test.js
  * Needs a running server (see lib.js); step 5 opens its first workspace and
@@ -73,18 +73,17 @@ try {
   await page.getByTitle('Show sidebar').click()
   check('Show brings it back', await page.locator('aside').waitFor({ timeout: 5_000 }).then(() => true, () => false))
 
-  // 5. The explorer's changes view.
+  // 5. The Changes pane.
   const [ws] = (await api('/workspace/list')).workspaces
   if (ws) {
     await page.goto(`${origin}/?project=${ws.projectId}&workspace=${ws.workspaceId}`)
-    await page.getByRole('button', { name: 'Browse files' }).click()
-    await page.getByRole('button', { name: 'Show only changed files', exact: true }).click()
+    await page.getByRole('button', { name: 'Show changes' }).click()
     const shown = await page.getByText(/^(No changes yet|Nothing uncommitted|\d+ changed)$/)
       .first().waitFor({ timeout: 15_000 }).then(() => true, () => false)
-    check('the explorer opens its changes view', shown)
+    check('the header opens the Changes pane', shown)
     await page.screenshot({ path: path.join(SHOTS, 'theme-changes-view.png') })
   } else {
-    console.log('SKIP  changes view: no workspace')
+    console.log('SKIP  Changes pane: no workspace')
   }
 } finally {
   await browser.close()

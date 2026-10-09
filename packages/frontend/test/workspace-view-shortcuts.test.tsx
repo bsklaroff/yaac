@@ -36,7 +36,7 @@ const snapshot = { workspaces: [workspace] } as unknown as ServerSnapshot
 
 const initial = useUiStore.getState()
 beforeEach(() => {
-  useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {}, filesFindPending: false })
+  useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {}, findPending: null })
   // No changes, and a one-file listing for the explorer.
   mockFetch({
     'GET /api/workspace/s1/changes': {
@@ -68,7 +68,7 @@ describe('WorkspaceView: open-files', () => {
     expect(useUiStore.getState().activeTabs.s1).toBe('files')
     const filter = await screen.findByLabelText('Filter files')
     await waitFor(() => expect(document.activeElement).toBe(filter))
-    expect(useUiStore.getState().filesFindPending).toBe(false)
+    expect(useUiStore.getState().findPending).toBeNull()
   })
 
   it('surfaces an explorer that is already open as a hidden tab', () => {
@@ -76,7 +76,7 @@ describe('WorkspaceView: open-files', () => {
     renderView()
     altE()
     expect(useUiStore.getState().layouts.s1).toEqual([{ tabs: ['agent', 'files'], active: 'files' }])
-    expect(useUiStore.getState().filesFindPending).toBe(true)
+    expect(useUiStore.getState().findPending).toBe('files')
   })
 
   it('follows a rebinding, and the old chord no longer opens it', () => {
@@ -88,6 +88,23 @@ describe('WorkspaceView: open-files', () => {
     expect(tabsOf()).not.toContain('files')
     fireEvent.keyDown(window, { code: 'KeyO', key: 'o', altKey: true })
     expect(tabsOf()).toContain('files')
+  })
+})
+
+describe('WorkspaceView: open-changes', () => {
+  it('opens the Changes pane on Alt+G or its header button, apart from the explorer', async () => {
+    renderView()
+    altE()
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Filter files')))
+    fireEvent.keyDown(window, { code: 'KeyG', key: 'g', altKey: true })
+    expect(tabsOf()).toEqual(['agent', 'files', 'changes'])
+    expect(useUiStore.getState().activeTabs.s1).toBe('changes')
+    const filter = await screen.findByLabelText('Filter changed files')
+    await waitFor(() => expect(document.activeElement).toBe(filter))
+
+    act(() => useUiStore.getState().focusTerminal('s1', 'agent'))
+    fireEvent.click(screen.getByRole('button', { name: 'Show changes' }))
+    expect(useUiStore.getState().activeTabs.s1).toBe('changes')
   })
 })
 

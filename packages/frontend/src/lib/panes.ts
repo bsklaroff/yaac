@@ -10,7 +10,7 @@
 
 import { acpTarget, isAcpTarget } from '@yaac/shared/acp'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
-import { isFilesTarget, isFileTarget } from './files'
+import { isChangesTarget, isFilesTarget, isFileTarget } from './files'
 import { addColumn, paneTargets, removeTarget, renameTargets, type PaneLayout } from './layout'
 import { isPreviewTarget } from './preview'
 
@@ -21,7 +21,8 @@ import { isPreviewTarget } from './preview'
  * conversation, and they are addressed by conversation id.
  */
 export function isSpecialPane(target: string): boolean {
-  return isPreviewTarget(target) || isFilesTarget(target) || isFileTarget(target) || isAcpTarget(target)
+  return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isFileTarget(target)
+    || isAcpTarget(target)
 }
 
 /** The workspace's live conversations, as pane targets. */

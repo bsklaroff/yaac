@@ -3,6 +3,7 @@ import { vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, type RenderResult } from '@testing-library/react'
 import { whoamiQuery } from '#lib/viewer'
+import { countMatches, type QuerySpec } from '#lib/matchCount'
 import type { Whoami } from '@yaac/shared/types'
 
 /**
@@ -90,4 +91,21 @@ export function testQueryClient(whoami: Whoami | null = TEST_WHOAMI): QueryClien
 /** Render inside a fresh query client. */
 export function renderWithClient(ui: ReactElement, client = testQueryClient()): RenderResult {
   return render(createElement(QueryClientProvider, { client }, ui))
+}
+
+/** A regex that backtracks forever; `FakeWorker` never answers it. */
+export const HANGS = '(a|aa)+b'
+
+/** jsdom has no Worker. Stub this in for `MatchCounter`'s: it runs the real
+ *  `countMatches` a tick later, and never answers for HANGS. */
+export class FakeWorker {
+  onmessage: ((e: MessageEvent) => void) | null = null
+  private terminated = false
+  postMessage(msg: { id: number; doc: string; spec: QuerySpec; limit: number }): void {
+    if (msg.spec.search === HANGS) return
+    setTimeout(() => {
+      if (!this.terminated) this.onmessage?.({ data: { id: msg.id, matches: countMatches(msg.doc, msg.spec, msg.limit) } } as MessageEvent)
+    }, 0)
+  }
+  terminate(): void { this.terminated = true }
 }

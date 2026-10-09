@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { FILES_TARGET } from '#lib/files'
+import { CHANGES_TARGET, FILES_TARGET } from '#lib/files'
 import {
   isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingByProject, useUiStore,
@@ -467,20 +467,20 @@ describe('view mode (tiles vs tabs)', () => {
     expect(useUiStore.getState().changesBase).toEqual({ s2: 'main' })
   })
 
-  it('setFilesFindPending raises and clears the focus request, no-oping on the same value', () => {
-    expect(useUiStore.getState().filesFindPending).toBe(false)
-    useUiStore.getState().setFilesFindPending(true)
-    expect(useUiStore.getState().filesFindPending).toBe(true)
-    useUiStore.getState().setFilesFindPending(false)
-    expect(useUiStore.getState().filesFindPending).toBe(false)
+  it('setFindPending raises and clears the focus request, no-oping on the same value', () => {
+    expect(useUiStore.getState().findPending).toBeNull()
+    useUiStore.getState().setFindPending(FILES_TARGET)
+    expect(useUiStore.getState().findPending).toBe(FILES_TARGET)
+    useUiStore.getState().setFindPending(null)
+    expect(useUiStore.getState().findPending).toBeNull()
     // Clearing an already-clear request keeps state identity (no needless render).
     const before = useUiStore.getState()
-    useUiStore.getState().setFilesFindPending(false)
+    useUiStore.getState().setFindPending(null)
     expect(useUiStore.getState()).toBe(before)
   })
 
   it('openPreview and openChanges add their pane once, as a focused column', () => {
-    useUiStore.getState().setPaneView(paneViewKey('s1', FILES_TARGET), { find: 'x', flat: false, expanded: ['src'] })
+    useUiStore.getState().setPaneView(paneViewKey('s1', CHANGES_TARGET), { find: 'x', flat: false })
     useUiStore.getState().openPreview('s1', 3000)
     useUiStore.getState().openChanges('s1')
     useUiStore.getState().openPreview('s1', 4000)
@@ -489,17 +489,16 @@ describe('view mode (tiles vs tabs)', () => {
     expect(state.layouts.s1).toEqual([
       { tabs: ['agent'], active: 'agent' },
       { tabs: [PREVIEW_TARGET], active: PREVIEW_TARGET },
-      { tabs: [FILES_TARGET], active: FILES_TARGET },
+      { tabs: [CHANGES_TARGET], active: CHANGES_TARGET },
     ])
     expect(state.activeTabs.s1).toBe(PREVIEW_TARGET)
     // Reopening on another port switches the pane to it; reopening with
     // none keeps the port it shows.
     expect(state.previewPort.s1).toBe(4000)
-    // Changes open as the explorer's changes view, a flat list with every
-    // diff open, keeping the rest of its view state.
-    expect(state.paneView[paneViewKey('s1', FILES_TARGET)]).toEqual({
-      find: '', flat: true, changedOnly: true, foldedDiffs: [], expanded: ['src'],
-    })
+    // The Changes pane is asked to focus its filter, cleared so it lists
+    // every change; the rest of its view state stays.
+    expect(state.findPending).toBe(CHANGES_TARGET)
+    expect(state.paneView[paneViewKey('s1', CHANGES_TARGET)]).toEqual({ find: '', flat: false })
   })
 
   it('openFile places a file beside the explorer, then as a tab of the file column, and focuses it', () => {

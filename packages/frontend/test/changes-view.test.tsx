@@ -4,20 +4,23 @@ import { act, screen, cleanup, waitFor, fireEvent, within } from '@testing-libra
 import type { WorkspaceChanges, WorkspaceFiles as WorkspaceFilesData } from '@yaac/shared/types'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { GitStatusBar } from '#components/GitStatusBar'
-import { FILES_TARGET } from '#lib/files'
+import { CHANGES_TARGET, FILES_TARGET } from '#lib/files'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { IS_MAC } from '#lib/platform'
+import { MAX_COUNTED } from '#lib/matchCount'
 import { paneViewKey, useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
+import { FakeWorker, mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 /**
- * The explorer's changes view and the status bar's way into it: the files
- * changed since the diff base, their line counts, diffs and stages.
+ * The Changes pane and the status bar's way into it: the files changed
+ * since the diff base, their line counts, diffs and stages, and find across
+ * the diffs. The explorer shows the same counts and stages in its tree.
  */
 
 const CHANGES = 'GET /api/workspace/s1/changes'
 const VIEW = paneViewKey('s1', FILES_TARGET)
+const CHANGES_VIEW = paneViewKey('s1', CHANGES_TARGET)
 const BASE_TRIGGER = 'Choose the branch changes are compared against'
 
 const LISTING: WorkspaceFilesData = {
@@ -100,12 +103,13 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
-  useUiStore.setState({ paneView: {}, changesBase: {}, layouts: {}, activeTabs: {}, filesFindPending: false })
+  useUiStore.setState({ paneView: {}, changesBase: {}, layouts: {}, activeTabs: {}, findPending: null })
 })
 
-const renderExplorer = (): void => {
-  renderWithClient(<WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />)
-}
+const explorer = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
+const changesPane = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" changedOnly />
+const renderExplorer = (): void => { renderWithClient(explorer) }
+const renderChanges = (): void => { renderWithClient(changesPane) }
 /** A file's row, whose title is its path. */
 const row = (path: string): HTMLElement => screen.getByTitle(path)
 
@@ -142,14 +146,13 @@ describe('WorkspaceFiles changes', () => {
   })
 
   it('lists only changed files, flat first or as an open tree, each with its diff', async () => {
-    // A tree and folds chosen last time do not carry over: the view opens
-    // flat, with every diff open.
-    useUiStore.getState().setPaneView(VIEW, { flat: false, foldedDiffs: ['src/app.ts'] })
-    renderExplorer()
+    // The explorer's polls leave the diff body out, so until the Changes
+    // pane's own fetch lands its diffs say they are loading, not that none
+    // exist.
+    const client = testQueryClient()
+    const view = renderWithClient(explorer, client)
     await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
-    fireEvent.click(screen.getByLabelText('Show only changed files'))
-    // The full tree's polls leave the diff body out, so until the view's
-    // own fetch lands its diffs say they are loading, not that none exist.
+    view.rerender(<QueryClientProvider client={client}>{changesPane}</QueryClientProvider>)
     expect(screen.getAllByText('Loading diff…')).toHaveLength(3)
     expect(screen.queryByText('No textual diff')).toBeNull()
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
@@ -160,7 +163,7 @@ describe('WorkspaceFiles changes', () => {
     expect(screen.queryByRole('button', { name: /^src$/ })).toBeNull()
     expect(screen.getByText('alpha')).toBeTruthy()
     expect(screen.getAllByText('No textual diff')).toHaveLength(1)
-    // Creating files and folding the whole tree belong to the full tree.
+    // Creating files and folding the whole tree belong to the explorer.
     for (const label of ['New file', 'New folder', 'Collapse all folders', 'Show ignored files']) {
       expect(screen.queryByLabelText(label)).toBeNull()
     }
@@ -186,18 +189,32 @@ describe('WorkspaceFiles changes', () => {
     fireEvent.click(screen.getByTitle('Open src/app.ts'))
     expect(useUiStore.getState().activeTabs.s1).toBe('file:src/app.ts')
 
-    // The filter matches a line of a diff, not only a path.
-    fireEvent.change(screen.getByLabelText('Filter files'), { target: { value: 'needle' } })
+    // The filter matches paths as quick-open does, never a diff's lines.
+    fireEvent.change(screen.getByLabelText('Filter changed files'), { target: { value: 'nw' } })
     expect(screen.getByText('1 of 3 changed')).toBeTruthy()
-    expect(screen.queryByText('alpha')).toBeNull()
-    fireEvent.change(screen.getByLabelText('Filter files'), { target: { value: 'zzz' } })
-    expect(screen.getByText('No changes match “zzz”')).toBeTruthy()
+    expect(screen.queryByText('needle1')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Filter changed files'), { target: { value: 'alpha' } })
+    expect(screen.getByText('No changes match “alpha”')).toBeTruthy()
+    // The explorer keeps its own filter and view.
+    expect(useUiStore.getState().paneView[VIEW]?.find).toBeUndefined()
+  })
+
+  // A rename's row shows both paths, so the filter matches either.
+  it('filters a rename by its old path too', async () => {
+    server.route(CHANGES, reply({
+      ...PAYLOAD,
+      files: PAYLOAD.files.map((f) => (f.path === 'src/app.ts' ? { ...f, status: 'renamed', oldPath: 'lib/legacy.ts' } : f)),
+    }))
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { find: 'legacy' })
+    renderChanges()
+    await waitFor(() => expect(screen.getByText('1 of 3 changed')).toBeTruthy())
+    expect(screen.getByTitle('lib/legacy.ts → src/app.ts')).toBeTruthy()
   })
 
   // A row folds its own diff; only the name opens the file.
   it('folds one file’s diff from its row, in the tree and the flat list', async () => {
-    useUiStore.getState().setPaneView(VIEW, { changedOnly: true, flat: false })
-    renderExplorer()
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { flat: false })
+    renderChanges()
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
 
     fireEvent.click(row('src/app.ts'))
@@ -218,9 +235,8 @@ describe('WorkspaceFiles changes', () => {
   })
 
   it('picks the diff base, and says what an unresolved base or a cut diff leaves out', async () => {
-    useUiStore.getState().setPaneView(VIEW, { changedOnly: true })
     server.route(CHANGES, reply({ ...PAYLOAD, baseResolved: false, truncated: true }))
-    renderExplorer()
+    renderChanges()
     await waitFor(() => expect(screen.getByText('uncommitted only')).toBeTruthy())
     expect(screen.getByText('diff truncated (large changeset)')).toBeTruthy()
     expect(screen.getByTitle(BASE_TRIGGER).textContent).toContain('main')
@@ -252,8 +268,7 @@ describe('WorkspaceFiles changes, at scale', () => {
       }
       unobserve(): void {}
     })
-    useUiStore.getState().setPaneView(VIEW, { changedOnly: true })
-    renderExplorer()
+    renderChanges()
     await waitFor(() => expect(screen.getByTitle('src/app.ts')).toBeTruthy())
     await waitFor(() => expect(observed).toHaveLength(2))
     expect(screen.queryByText('needle1')).toBeNull()
@@ -269,16 +284,9 @@ describe('WorkspaceFiles changes, at scale', () => {
 
   // Every reader of a workspace's changes shares one query, which carries
   // the diff body while any of them shows it.
-  it('polls once for the status bar and the changes view together', async () => {
-    useUiStore.getState().setPaneView(VIEW, { changedOnly: true })
+  it('polls once for the status bar, the explorer and the Changes pane together', async () => {
     const client = testQueryClient()
-    renderWithClient(
-      <>
-        <GitStatusBar workspaceId="s1" />
-        <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
-      </>,
-      client,
-    )
+    renderWithClient(<><GitStatusBar workspaceId="s1" />{explorer}{changesPane}</>, client)
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
     const active = client.getQueryCache().findAll({ queryKey: ['changes', 's1'], type: 'active' })
     expect(active.map((q) => q.queryKey)).toEqual([['changes', 's1', null]])
@@ -302,19 +310,93 @@ describe('WorkspaceFiles changes, at scale', () => {
     expect(server.called(CHANGES)).toHaveLength(1)
   })
 
-  // Opening the view focuses its filter, so typing filters and Cmd/Ctrl-F
-  // needs no click; from anywhere in the explorer the chord returns there.
-  it('focuses its filter when opened, and on Cmd/Ctrl-F', async () => {
-    renderExplorer()
-    await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
+  // Opening the pane focuses its filter, so typing filters with no click.
+  // Cmd/Ctrl-F searches the diffs instead: across files in the order shown,
+  // unfolding what a match sits in.
+  it('focuses its filter when opened, and finds across the diffs on Cmd/Ctrl-F', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const scrolled: Element[] = []
+    Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this) }
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { flat: false, collapsed: ['src'], foldedDiffs: ['src/new.ts'] })
+    renderChanges()
+    await waitFor(() => expect(screen.getByTitle('src')).toBeTruthy())
     act(() => useUiStore.getState().openChanges('s1'))
-    const filter = screen.getByLabelText('Filter files')
+    const filter = screen.getByLabelText('Filter changed files')
     await waitFor(() => expect(document.activeElement).toBe(filter))
 
-    filter.blur()
-    const list = screen.getByTitle('src/app.ts')
-    fireEvent.keyDown(list, { key: 'f', code: 'KeyF', ctrlKey: !IS_MAC, metaKey: IS_MAC })
-    expect(document.activeElement).toBe(filter)
+    const ctrlF = (el: Element): void => {
+      fireEvent.keyDown(el, { key: 'f', code: 'KeyF', ctrlKey: !IS_MAC, metaKey: IS_MAC })
+    }
+    ctrlF(screen.getByTitle('src'))
+    const find = screen.getByRole('textbox', { name: 'Find' })
+    expect(document.activeElement).toBe(find)
+    const status = (): string => screen.getByRole('status').textContent ?? ''
+    const current = (): Element | null => document.querySelector('[data-find-current]')
+
+    // "l" is in old and needle1 (src/app.ts), then alpha (src/new.ts). The
+    // first match opens the folder it is in, and scrolls to it.
+    fireEvent.change(find, { target: { value: 'l' } })
+    await waitFor(() => expect(status()).toBe('1 of 3'))
+    expect(current()?.parentElement?.textContent).toBe('old')
+    expect(scrolled.at(-1)).toBe(current())
+    fireEvent.keyDown(find, { key: 'Enter' })
+    expect(status()).toBe('2 of 3')
+    expect(current()?.parentElement?.textContent).toBe('needle1')
+    // The next match is in a folded diff, which unfolds.
+    fireEvent.keyDown(find, { key: 'Enter' })
+    expect(status()).toBe('3 of 3')
+    expect(current()?.parentElement?.textContent).toBe('alpha')
+    expect(useUiStore.getState().paneView[CHANGES_VIEW]?.foldedDiffs).toEqual([])
+    fireEvent.keyDown(find, { key: 'Enter', shiftKey: true })
+    expect(status()).toBe('2 of 3')
+
+    // Only the files the filter shows are searched.
+    fireEvent.change(filter, { target: { value: 'app' } })
+    await waitFor(() => expect(status()).toMatch(/ of 2$/))
+
+    // Escape closes the bar and clears the marks; Cmd/Ctrl-F brings the
+    // query back.
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Find' }), { key: 'Escape' })
+    expect(screen.queryByRole('textbox', { name: 'Find' })).toBeNull()
+    expect(current()).toBeNull()
+    ctrlF(screen.getByTitle('src/app.ts'))
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Find' }).value).toBe('l')
+  })
+})
+
+describe('WorkspaceFiles changes, find at scale', () => {
+  // The editor's count stops at MAX_COUNTED; stepping here walks the
+  // counted matches, so the Changes pane counts them all.
+  it('steps to every match, past the editor count cap', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    // Never near the screen, so only the chunk holding the current match
+    // mounts.
+    vi.stubGlobal('IntersectionObserver', class {
+      observe(): void {}
+      unobserve(): void {}
+    })
+    Element.prototype.scrollIntoView = () => {}
+    const n = MAX_COUNTED + 2
+    const body = Array.from({ length: n }, () => '+x').join('\n')
+    server.route(CHANGES, reply({
+      ...PAYLOAD,
+      files: [{
+        path: 'big.txt', status: 'added', additions: n, deletions: 0, binary: false,
+        stages: { untracked: { additions: n, deletions: 0 } },
+      }],
+      diff: `diff --git a/big.txt b/big.txt\n--- /dev/null\n+++ b/big.txt\n@@ -0,0 +1,${n} @@\n${body}`,
+    }))
+    renderChanges()
+    await waitFor(() => expect(screen.getByTitle('big.txt')).toBeTruthy())
+    fireEvent.keyDown(screen.getByTitle('big.txt'), { key: 'f', code: 'KeyF', ctrlKey: !IS_MAC, metaKey: IS_MAC })
+    const find = screen.getByRole('textbox', { name: 'Find' })
+    fireEvent.change(find, { target: { value: 'x' } })
+    const status = (): string => screen.getByRole('status').textContent ?? ''
+    await waitFor(() => expect(status()).toBe(`1 of ${n}`))
+    fireEvent.keyDown(find, { key: 'Enter', shiftKey: true })
+    expect(status()).toBe(`${n} of ${n}`)
+    // The last line's chunk mounted to show it.
+    expect(document.querySelector('[data-find-current]')?.closest('.flex')?.textContent).toBe(`${n}+x`)
   })
 })
 
@@ -326,8 +408,8 @@ describe('GitStatusBar changes', () => {
     expect(button.textContent).toBe('+4 −5')
     expect(screen.getByText(/2 commits ahead of/)).toBeTruthy()
     fireEvent.click(button)
-    expect(useUiStore.getState().activeTabs.s1).toBe(FILES_TARGET)
-    expect(useUiStore.getState().paneView[VIEW]).toMatchObject({ changedOnly: true, flat: true, foldedDiffs: [] })
+    expect(useUiStore.getState().activeTabs.s1).toBe(CHANGES_TARGET)
+    expect(useUiStore.getState().findPending).toBe(CHANGES_TARGET)
   })
 
   // A failed poll keeps the last answer in the cache; neither reader may
@@ -338,13 +420,7 @@ describe('GitStatusBar changes', () => {
       call.query.get('base') === 'gone' ? gone : reply(PAYLOAD)(call)
     ))
     const client = testQueryClient()
-    renderWithClient(
-      <>
-        <GitStatusBar workspaceId="s1" />
-        <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
-      </>,
-      client,
-    )
+    const view = renderWithClient(<><GitStatusBar workspaceId="s1" />{explorer}</>, client)
     await screen.findByTitle('Review changes')
     await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
 
@@ -362,7 +438,7 @@ describe('GitStatusBar changes', () => {
     server.route(CHANGES, (call: { query: URLSearchParams }) => (
       call.query.get('diff') === '1' ? serverError('INTERNAL', 'exec failed', 500) : reply(PAYLOAD)(call)
     ))
-    fireEvent.click(screen.getByLabelText('Show only changed files'))
+    view.rerender(<QueryClientProvider client={client}><GitStatusBar workspaceId="s1" />{changesPane}</QueryClientProvider>)
     await waitFor(() => expect(screen.getAllByText('Diff not loaded')).toHaveLength(3))
     expect(screen.queryByText('Loading diff…')).toBeNull()
   })

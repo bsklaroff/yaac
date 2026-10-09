@@ -3,6 +3,7 @@ import { layoutOf, shortcutsSuspended, useUiStore } from '#lib/store'
 import { claimChord, cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import { moveColumn, moveTabInStrip } from '#lib/layout'
 import { isSpecialPane } from '#lib/panes'
+import { FILES_TARGET } from '#lib/files'
 
 /** What the pane shortcuts act on: the open workspace's state this render. */
 export interface PaneShortcutContext {
@@ -52,7 +53,7 @@ export function usePaneShortcuts(ctx: PaneShortcutContext): void {
           // Open the explorer with its filter focused, for quick-open.
           claimChord(e)
           state.openFiles(c.sid)
-          state.setFilesFindPending(true)
+          state.setFindPending(FILES_TARGET)
           return
         case 'open-changes':
           claimChord(e)
