@@ -3,16 +3,16 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-// The listing joins DB rows with what is read off disk (live runtimes,
-// transcripts for prompts and last-activity stamps). Only the runtime is
-// faked; the rest runs for real.
+// The listing joins DB rows with the live runtimes, which are faked. It
+// never reads a transcript, which the prompt test checks by leaving one on
+// disk that the rows do not record.
 import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
   setWorkspaceTitle,
 } from '#db/workspace-store'
 import { createWorkspaceGroup } from '#db/group-store'
-import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
+import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { listStoppedWorkspaces } from '#domain/workspaces/stopped-list'
@@ -198,55 +198,33 @@ describe('listStoppedWorkspaces', () => {
       .toMatchObject({ entries: [{ workspaceId: 'loose' }], total: 1 })
   })
 
-  it('reports last activity from the transcript, and creation time without one', async () => {
-    const workspacesDir = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace')
-    await fs.mkdir(workspacesDir, { recursive: true })
-    const transcript = path.join(workspacesDir, 'withlog.jsonl')
-    await fs.writeFile(transcript, '{}\n')
-    await fs.utimes(transcript, new Date('2026-01-02'), new Date('2026-01-02'))
-    await seedWorkspace(DEMO_PROJECT_ID, 'withlog', { deleted: true })
-    // Last activity comes from the workspace's conversations. The path is
-    // relative, as discovery records it; an absolute one would be refused and
-    // the listing would fall back to the conventional path, so the test
-    // would not check the recorded path at all.
-    await recordAgentSessions(DEMO_PROJECT_ID, 'withlog', [
-      {
-        tool: 'claude',
-        agentSessionId: 'withlog',
-        transcriptPath: path.join('claude', 'projects', '-workspace', 'withlog.jsonl'),
-        firstPrompt: 'hi',
-      },
+  it('reports the newest recorded activity across conversations, and creation time without one', async () => {
+    await seedWorkspace(DEMO_PROJECT_ID, 'active', { deleted: true })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'active', [
+      { tool: 'claude', agentSessionId: 'active', lastActiveMs: Date.parse('2026-01-02') },
+      { tool: 'claude', agentSessionId: 'cleared', lastActiveMs: Date.parse('2026-01-03') },
     ])
-    await seedWorkspace(DEMO_PROJECT_ID, 'nolog', { tool: 'opencode', deleted: true })
+    await seedWorkspace(DEMO_PROJECT_ID, 'idle', { deleted: true })
 
     const result = await entries()
-    expect(result.find((r) => r.workspaceId === 'withlog')?.lastActiveAt).toBe('2026-01-02 00:00:00')
-    const nolog = result.find((r) => r.workspaceId === 'nolog')
-    expect(nolog?.lastActiveAt).toBe(nolog?.createdAt)
+    expect(result.find((r) => r.workspaceId === 'active')?.lastActiveAt).toBe('2026-01-03 00:00:00')
+    const idle = result.find((r) => r.workspaceId === 'idle')
+    expect(idle?.lastActiveAt).toBe(idle?.createdAt)
   })
 
-  it('parses the prompt on demand for a session that died before capture, then keeps it', async () => {
+  it('takes the prompt from the row alone, leaving it unset when never captured', async () => {
     const workspacesDir = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace')
     await fs.mkdir(workspacesDir, { recursive: true })
     const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello there' } })
-    await fs.writeFile(path.join(workspacesDir, 'a.jsonl'), `${first}\n`)
-    await seedWorkspace(DEMO_PROJECT_ID, 'a', { deleted: true })
+    await fs.writeFile(path.join(workspacesDir, 'uncaptured.jsonl'), `${first}\n`)
+    await seedWorkspace(DEMO_PROJECT_ID, 'uncaptured', { deleted: true })
+    await seedWorkspace(DEMO_PROJECT_ID, 'captured', { deleted: true })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'captured', [
+      { tool: 'claude', agentSessionId: 'captured', firstPrompt: 'port the lexer' },
+    ])
 
-    expect((await entries())[0]?.prompt).toBe('hello there')
-    // The parse read an absolute path but must record the relative form.
-    const [link] = await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'a')
-    expect(link?.transcriptPath).toBe(path.join('claude', 'projects', '-workspace', 'a.jsonl'))
-    // The prompt is persisted, so it survives the transcript's removal.
-    await fs.rm(path.join(workspacesDir, 'a.jsonl'))
-    expect((await entries())[0]?.prompt).toBe('hello there')
-  })
-
-  it('leaves the prompt unset for an opencode session that was never captured', async () => {
-    await seedWorkspace(DEMO_PROJECT_ID, 'ocsess', { tool: 'opencode', deleted: true })
-    expect((await entries())[0]).toMatchObject({
-      workspaceId: 'ocsess',
-      tool: 'opencode',
-    })
-    expect((await entries())[0]?.prompt).toBeUndefined()
+    const result = await entries()
+    expect(result.find((r) => r.workspaceId === 'captured')?.prompt).toBe('port the lexer')
+    expect(result.find((r) => r.workspaceId === 'uncaptured')?.prompt).toBeUndefined()
   })
 })

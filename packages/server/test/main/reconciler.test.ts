@@ -12,7 +12,10 @@ import type * as titleGenerationModule from '#domain/titles/title-generation'
 vi.mock('#domain/workspaces/stale-workspaces', () => ({ reconcileStaleWorkspaces: vi.fn() }))
 vi.mock('#domain/workspaces/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
 vi.mock('#drivers/k8s/workspaces/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
-vi.mock('#domain/workspaces/agent-session-registry', () => ({ reconcileAgentSessions: vi.fn() }))
+vi.mock('#domain/workspaces/agent-session-registry', () => ({
+  reconcileAgentSessions: vi.fn(),
+  reconcileStoppedAgentSessions: vi.fn(),
+}))
 vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   ...(await importOriginal<typeof cleanupModule>()),
   gcOrphanEphemeralModuleDirs: vi.fn(),

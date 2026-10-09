@@ -196,8 +196,6 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'DELETE', path: '/api/workspace/:id/file', request: `${W}/file?path=a`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/folder', request: `${W}/folder`, body: { path: 'a' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/rename', request: `${W}/rename`, body: { from: 'a', to: 'b' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  // Recorded state, so no running workspace (and no 503) is involved.
-  { method: 'GET', path: '/api/workspace/:id/prompt', request: `${W}/prompt`, access: 'reader', k8s: [200, 404], containerless: [200, 404] },
   // An image pasted into a terminal pane; needs a running workspace.
   { method: 'POST', path: '/api/workspace/:id/attachments', request: `${W}/attachments`, access: 'owner', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/terminals', request: `${W}/terminals`, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },

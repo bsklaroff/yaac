@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
 import path from 'node:path'
 import WebSocket from 'ws'
 import {
@@ -293,12 +292,9 @@ describe('with seeded projects', () => {
     })
 
     /**
-     * Stopped-workspace rows, written as a create-then-stop would.
-     *
-     * proj-del's workspace has no recorded prompt or transcript path, as
-     * when a pod dies before the prompt is captured. Its prompt then comes
-     * from the transcript at claude's default path (`stoppedPrompt`'s
-     * fallback), which is what that test checks.
+     * Stopped-workspace rows, written as a create-then-stop would. The
+     * listing reads only rows, so proj-del's prompt is the one captured on
+     * its conversation.
      *
      * The listings name these projects by id prefix and by full id.
      */
@@ -313,19 +309,11 @@ describe('with seeded projects', () => {
     )
     const allIds = Array.from({ length: 3 }, () => crypto.randomUUID())
 
-    async function seedTranscript(projectId: string, workspaceId: string, body: string): Promise<void> {
-      const dir = path.join(
-        testEnv.dataDir, 'global', 'projects', projectId, 'claude', 'projects', '-workspace',
-      )
-      await fs.mkdir(dir, { recursive: true })
-      await fs.writeFile(path.join(dir, `${workspaceId}.jsonl`), body)
-    }
-
     /** One recorded workspace that is stopped, with one claude conversation. */
-    async function seedStopped(projectId: string, workspaceId: string): Promise<void> {
+    async function seedStopped(projectId: string, workspaceId: string, firstPrompt?: string): Promise<void> {
       await recordWorkspaceCreated({ projectId: projectId, workspaceId })
       await recordAgentSessions(projectId, workspaceId, [
-        { tool: 'claude', agentSessionId: crypto.randomUUID() },
+        { tool: 'claude', agentSessionId: crypto.randomUUID(), ...(firstPrompt !== undefined ? { firstPrompt } : {}) },
       ])
       await recordWorkspaceStopped(projectId, workspaceId)
     }
@@ -339,21 +327,10 @@ describe('with seeded projects', () => {
       delId = await add(DEL_NAME)
       capId = await add('proj-del-many')
       allId = await add('proj-del-all')
-      const firstMsg = JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: 'port the lexer to rust' },
-      })
-      // The fallback looks up the transcript by workspace id.
-      await seedTranscript(delId, promptWorkspaceId, [
-        `{"type":"permission-mode","workspaceId":"${promptWorkspaceId}"}`,
-        firstMsg,
-        '',
-      ].join('\n'))
-
       // The DB allows one writer, so stop the server to write rows.
       await server.stop()
       setDataDir(testEnv.dataDir)
-      await seedStopped(delId, promptWorkspaceId)
+      await seedStopped(delId, promptWorkspaceId, 'port the lexer to rust')
       for (const id of capIds) await seedStopped(capId, id)
       for (const id of allIds) await seedStopped(allId, id)
       await closeDb()

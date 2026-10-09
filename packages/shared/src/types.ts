@@ -1157,9 +1157,9 @@ export interface StoppedWorkspaceEntry {
   tool: AgentTool
   /** 'YYYY-MM-DD HH:MM:SS' (UTC). Workspace birth time. */
   createdAt: string
-  /** Last activity as 'YYYY-MM-DD HH:MM:SS' (UTC): the newest transcript
-   *  mtime across all its conversations, else the creation time (opencode
-   *  leaves no host transcript). */
+  /** Last activity as 'YYYY-MM-DD HH:MM:SS' (UTC): the newest recorded
+   *  across all its conversations (the mtime of the file each appends to),
+   *  else the creation time. */
   lastActiveAt?: string
   /** When it was stopped, 'YYYY-MM-DD HH:MM:SS' (UTC); the sort key, newest
    *  first. */

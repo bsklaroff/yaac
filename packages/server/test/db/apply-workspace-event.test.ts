@@ -185,6 +185,41 @@ describe('applyWorkspaceEvent', () => {
     expect(links[1].model).toBeUndefined()
   })
 
+  // A capture fills what no discovery pass recorded, and nothing else: a
+  // conversation a pass has since recorded is left as the pass wrote it.
+  it('fills a stopped conversation\'s activity once, keeping a captured prompt', async () => {
+    await applyWorkspaceEvent({
+      type: 'sessions-discovered',
+      projectId: PROJ,
+      workspaceId: 'wt-1',
+      sessions: [
+        { tool: 'claude', agentSessionId: 'conv-a' },
+        { tool: 'claude', agentSessionId: 'conv-b', firstPrompt: 'the real ask' },
+        { tool: 'claude', agentSessionId: 'conv-c', lastActiveMs: Date.parse('2026-03-01') },
+      ],
+    })
+    const captured = (agentSessionId: string, lastActiveMs: number, firstPrompt?: string) => ({
+      tool: 'claude' as const, agentSessionId, lastActiveMs, ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+    })
+    await applyWorkspaceEvent({
+      type: 'sessions-captured',
+      projectId: PROJ,
+      workspaceId: 'wt-1',
+      sessions: [
+        captured('conv-a', Date.parse('2026-01-02'), 'from the transcript'),
+        captured('conv-b', Date.parse('2026-01-02'), 'from the transcript'),
+        captured('conv-c', Date.parse('2026-01-02'), 'from the transcript'),
+      ],
+    })
+
+    const links = await listWorkspaceAgentSessions(PROJ, 'wt-1')
+    expect(links.map((l) => [l.agentSessionId, l.firstPrompt, l.lastActiveAt?.toISOString()])).toEqual([
+      ['conv-a', 'from the transcript', '2026-01-02T00:00:00.000Z'],
+      ['conv-b', 'the real ask', '2026-01-02T00:00:00.000Z'],
+      ['conv-c', undefined, '2026-03-01T00:00:00.000Z'],
+    ])
+  })
+
   it('stamps the stop, and the cause when a reaper supplied one', async () => {
     await applyWorkspaceEvent({
       type: 'workspace-stopped',

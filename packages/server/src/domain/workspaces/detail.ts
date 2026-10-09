@@ -1,8 +1,5 @@
 import { ServerError } from '@yaac/shared/errors'
-import { firstAgentSession } from '#db'
-import { recordedTranscript } from './agent-session-paths'
-import { resolveWorkspaceId, resolveWorkspaceRecord } from './resolve'
-import { getAgentSessionFirstMessage } from '#runtime/agents'
+import { resolveWorkspaceId } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeHandle } from '#drivers/contract'
 import type { AgentTool, GitAuthFailure } from '@yaac/shared/types'
@@ -53,22 +50,4 @@ export async function getWorkspaceBlockedHosts(idOrPrefix: string): Promise<stri
   const match = await findWorkspace(idOrPrefix)
   if (!match.workspaceId) return []
   return workspaceDriver().blockedHosts(match.workspaceId)
-}
-
-/**
- * The first prompt of a workspace's first conversation. Read from recorded
- * state (row or host transcript), so it works for stopped workspaces; only
- * the opencode fallback needs a running one.
- */
-export async function getWorkspacePrompt(idOrPrefix: string): Promise<string | undefined> {
-  const { projectId, workspaceId, jobName, tool } = await resolveWorkspaceRecord(idOrPrefix)
-  if (!workspaceId || !projectId) return undefined
-  // Prefer the captured row: this route is polled, and the opencode lookup
-  // costs an exec.
-  const first = await firstAgentSession(projectId, workspaceId).catch(() => undefined)
-  if (first?.firstPrompt !== undefined) return first.firstPrompt
-  const which = first?.tool ?? tool
-  if (which === undefined) return undefined
-  // Use the recorded transcript path; codex's rollout name cannot be derived.
-  return getAgentSessionFirstMessage(which, recordedTranscript(first), jobName, first?.agentSessionId)
 }

@@ -22,6 +22,7 @@ export type WorkspaceEvent =
   | BaseBranchResolved
   | SessionsLaunched
   | SessionsDiscovered
+  | SessionsCaptured
   | SessionsActive
   | PermissionModeChanged
   | EffortChanged
@@ -154,6 +155,27 @@ export interface DiscoveredSession {
   model?: string
   /** When the sweep first saw it, used as its birth if it is new. */
   firstSeenMs?: number
+}
+
+/**
+ * What a stopped workspace's conversations left on disk, read once each
+ * because no discovery pass recorded it before the stop. Fills only
+ * conversations with no recorded last activity, and keeps a recorded first
+ * message.
+ */
+export interface SessionsCaptured {
+  type: 'sessions-captured'
+  projectId: string
+  workspaceId: string
+  sessions: CapturedSession[]
+}
+
+export interface CapturedSession {
+  agentSessionId: string
+  tool: AgentTool
+  /** Always set, so the conversation is not read again. */
+  lastActiveMs: number
+  firstPrompt?: string
 }
 
 /**

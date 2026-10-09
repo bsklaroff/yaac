@@ -13,7 +13,6 @@ import {
   getWorkspaceBlockedHosts,
   getWorkspaceChanges,
   getWorkspaceDetail,
-  getWorkspacePrompt,
   listActiveWorkspaces,
   listStoppedWorkspaces,
   listWorkspaceDir,
@@ -746,7 +745,3 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  .get('/:id/prompt', async (c) => {
-    const prompt = await getWorkspacePrompt(c.req.param('id'))
-    return c.json({ prompt: prompt ?? '' })
-  })

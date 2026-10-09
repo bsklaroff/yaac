@@ -10,7 +10,7 @@
 // Each name added here needs a unit test in
 // packages/server/test/domain/workspaces/.
 
-export { reconcileAgentSessions } from './agent-session-registry'
+export { reconcileAgentSessions, reconcileStoppedAgentSessions } from './agent-session-registry'
 export { toAgentSessionEntry } from './agent-session-entry'
 export {
   cleanupWorkspaceDetached,
@@ -28,7 +28,6 @@ export {
 export {
   getWorkspaceBlockedHosts,
   getWorkspaceDetail,
-  getWorkspacePrompt,
 } from './detail'
 export { allowWorkspaceHost } from './allow-host'
 export { saveWorkspaceAttachment } from './attachments'

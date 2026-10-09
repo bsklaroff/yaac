@@ -1,20 +1,12 @@
 import { workspaceDriver } from '#drivers/driver'
 import {
-  getAgentSessionFirstMessage,
-  sessionTranscriptPath,
-  toProjectRelative,
-  transcriptLastActiveMs,
-} from '#runtime/agents'
-import {
   getAgentSessionsFor,
   listStoppedWorkspaceRows,
-  setAgentSessionCapture,
   type AgentSessionLinkRow,
   type StoppedRowCursor,
   type WorkspaceRow,
 } from '#db'
 import { toAgentSessionEntry } from './agent-session-entry'
-import { recordedTranscript } from './agent-session-paths'
 import { ensureProjectExists } from './list'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -43,7 +35,9 @@ export interface StoppedListQuery {
 /**
  * Recorded workspaces with a recorded stop and nothing running (a restart
  * keeps its stop until it succeeds), one page at a time, newest stop first.
- * Transcripts are read only for the page's rows.
+ * Built from rows alone: the sidebar asks for this on every search and every
+ * stop, so it never touches a transcript. The prompt and last activity are
+ * what the agent-session registry captured while the workspace ran.
  */
 export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promise<StoppedWorkspacePage> {
   if (query.project) await ensureProjectExists(query.project)
@@ -63,17 +57,17 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
     projectId: r.projectId,
     workspaceId: r.workspaceId,
   })))
-  const entries = await Promise.all(rows.map(async (r): Promise<StoppedWorkspaceEntry> => {
+  const entries = rows.map((r): StoppedWorkspaceEntry => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
     const first = links[0]
-    const prompt = await stoppedPrompt(r, links)
+    const prompt = first?.firstPrompt
     return {
       workspaceId: r.workspaceId,
       projectId: r.projectId,
       // From the first conversation; claude if none, as restart assumes.
       tool: first?.tool ?? 'claude',
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
-      lastActiveAt: formatUtcTimestamp(await lastActiveMs(r, links) ?? r.createdAt.getTime()),
+      lastActiveAt: formatUtcTimestamp(lastActiveMs(links) ?? r.createdAt.getTime()),
       stoppedAt: formatUtcTimestamp(stoppedAtOf(r).getTime()),
       agentSessions: links.map((l) => toAgentSessionEntry(l)),
       seen: r.deathSeen,
@@ -83,7 +77,7 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
       ...(r.deathDetail !== undefined ? { deathDetail: r.deathDetail } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
     }
-  }))
+  })
   const last = rows.at(-1)
   const more = query.limit !== undefined && last !== undefined && rows.length === query.limit
   return {
@@ -117,55 +111,9 @@ function parseCursor(cursor: string): StoppedRowCursor {
   return { stoppedAt: new Date(ms), workspaceId: cursor.slice(sep + 1) }
 }
 
-/**
- * The newest transcript mtime across all the workspace's conversations
- * (so a `/clear` counts), falling back to each one's recorded
- * `lastActiveAt`. Undefined when nothing is readable.
- */
-async function lastActiveMs(
-  r: WorkspaceRow,
-  links: AgentSessionLinkRow[],
-): Promise<number | undefined> {
-  const stamps = await Promise.all(links.map(async (l) => {
-    const recorded = recordedTranscript(l)
-    const fromDisk = recorded === undefined
-      ? undefined
-      : await transcriptLastActiveMs(recorded)
-    return fromDisk ?? l.lastActiveAt?.getTime()
-  }))
-  const known = stamps.filter((s): s is number => s !== undefined)
-  if (known.length > 0) return Math.max(...known)
-  // No readable links (died before the registry ran): try the transcript of
-  // the conversation named after the workspace id.
-  const pinned = await sessionTranscriptPath(
-    r.projectId, r.workspaceId, links[0]?.tool ?? 'claude',
-  )
-  return pinned === undefined ? undefined : await transcriptLastActiveMs(pinned)
-}
-
-/**
- * The first prompt, parsed from the first conversation's transcript if the
- * capture step never ran, and saved so it is parsed once. opencode leaves no
- * host transcript, so it gets none.
- */
-async function stoppedPrompt(
-  r: WorkspaceRow,
-  links: AgentSessionLinkRow[],
-): Promise<string | undefined> {
-  const first = links[0]
-  if (first === undefined) return undefined
-  if (first.firstPrompt !== undefined) return first.firstPrompt
-  // Fall back to the conventional path: the registry records paths only for
-  // running pods, so a pod that died early has none.
-  const transcript = recordedTranscript(first)
-    ?? await sessionTranscriptPath(r.projectId, r.workspaceId, first.tool)
-  const prompt = await getAgentSessionFirstMessage(first.tool, transcript)
-  if (prompt === undefined) return undefined
-  // The column is project-relative; skip the path if it cannot be expressed.
-  const stored = transcript !== undefined ? toProjectRelative(transcript) : null
-  await setAgentSessionCapture(r.projectId, first.tool, first.agentSessionId, {
-    firstPrompt: prompt,
-    ...(stored !== null ? { transcriptPath: stored } : {}),
-  })
-  return prompt
+/** The newest recorded activity across the workspace's conversations, so a
+ *  `/clear` counts. Undefined when none was recorded. */
+function lastActiveMs(links: AgentSessionLinkRow[]): number | undefined {
+  const known = links.flatMap((l) => l.lastActiveAt === undefined ? [] : [l.lastActiveAt.getTime()])
+  return known.length > 0 ? Math.max(...known) : undefined
 }
