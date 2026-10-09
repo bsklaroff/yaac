@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { constants as C, existsSync, type Dirent, type Stats } from 'node:fs'
 import fs, { type FileHandle } from 'node:fs/promises'
+import { constants as osConstants } from 'node:os'
 import path from 'node:path'
 import { createKeyedMutex } from './keyed-mutex'
 
@@ -120,12 +121,26 @@ function outside(rel: string): ConfinedPathError {
   return new ConfinedPathError(rel, 'outside', `${rel} points outside its root`)
 }
 
+/**
+ * Whether an open failed because the entry is a socket, which cannot be
+ * opened at all: ENXIO on Linux, and on macOS EOPNOTSUPP, which Node cannot
+ * name, so that error has an `errno` but no `code`. Only on macOS, since
+ * Linux's EOPNOTSUPP is ENOTSUP, which a filesystem may return for anything.
+ */
+function socketRefused(err: unknown): boolean {
+  const e = err as NodeJS.ErrnoException
+  return e.code === 'ENXIO' || (process.platform === 'darwin' && e.errno === -osConstants.errno.EOPNOTSUPP)
+}
+
+function notAFile(rel: string): ConfinedPathError {
+  return new ConfinedPathError(rel, 'not-a-file', `${rel} is not a regular file`)
+}
+
 /** An error meaning "nothing readable there", as opposed to a real failure. */
 function unreadable(err: unknown): boolean {
   if (err instanceof ConfinedPathError) return err.reason !== 'too-large' && err.reason !== 'invalid'
   const code = (err as NodeJS.ErrnoException).code
-  // ENXIO: a socket, which cannot be opened at all.
-  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR' || code === 'ELOOP' || code === 'ENXIO'
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EISDIR' || code === 'ELOOP'
 }
 
 async function landed(fh: FileHandle): Promise<string> {
@@ -260,6 +275,9 @@ export async function openRoot(
         try {
           fh = await fs.open(at.child(name), (todo.length === 0 ? flags : C.O_RDONLY) | C.O_NOFOLLOW | C.O_NONBLOCK | C.O_NOCTTY)
         } catch (err) {
+          // A socket answers as a FIFO or file there would: not a folder
+          // with more of the path to go, not a regular file at its end.
+          if (socketRefused(err)) throw todo.length > 0 ? errno('ENOTDIR', rel) : notAFile(rel)
           const code = (err as NodeJS.ErrnoException).code
           if (code === 'ENOENT' && create && !made.has(expected)) {
             made.add(expected)
@@ -315,7 +333,9 @@ export async function openRoot(
   const walk = async (segments: string[], create: boolean): Promise<PinnedDir> => {
     if (policy === 'inside') {
       const rel = segments.join('/') || '.'
-      const { fh, dir } = await resolve(segments, rel, C.O_RDONLY, create)
+      const { fh, dir } = await resolve(segments, rel, C.O_RDONLY, create).catch((err: unknown) => {
+        throw err instanceof ConfinedPathError && err.reason === 'not-a-file' ? errno('ENOTDIR', rel) : err
+      })
       if (dir) return dir
       await fh.close()
       throw errno('ENOTDIR', rel)
@@ -374,6 +394,7 @@ export async function openRoot(
         fh = await fs.open(dir.child(name), safe | C.O_NOFOLLOW)
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ELOOP') throw outside(rel)
+        if (socketRefused(err)) throw notAFile(rel)
         throw err
       }
       if (PROC_FD && await landed(fh) !== expected) {
@@ -391,7 +412,7 @@ export async function openRoot(
     try {
       const st = await fh.stat()
       if (st.isDirectory()) throw errno('EISDIR', rel)
-      if (!st.isFile()) throw new ConfinedPathError(rel, 'not-a-file', `${rel} is not a regular file`)
+      if (!st.isFile()) throw notAFile(rel)
       return fh
     } catch (err) {
       await fh.close()
