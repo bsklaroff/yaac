@@ -58,10 +58,19 @@ describe('clone refresh commands', () => {
   describe('buildCloneLinkExec', () => {
     it('rewrites the alternates line to the main clone as the server sees it', async () => {
       await fs.writeFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), '/yaac/global/elsewhere/.git/objects\n')
-      await run(buildCloneLinkExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: wt })))
+      const cmd = buildCloneLinkExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: wt }))
+      await run(cmd)
       expect(await fs.readFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), 'utf8'))
         .toBe(`${path.join(main, '.git', 'objects')}\n`)
       expect((await git(wt, ['status', '--porcelain'])).trim()).toBe('')
+      // It ends by warming the file cache with a detached status that takes
+      // no index lock the agent's git could collide with.
+      expect(cmd).toMatch(/&& \{ setsid git -C \S+ --no-optional-locks status --porcelain <\/dev\/null >\/dev\/null 2>&1 & \}$/)
+    })
+
+    it('fails when the alternates line cannot be written, warm-up or not', async () => {
+      const cmd = buildCloneLinkExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: path.join(tmp, 'missing') }))
+      await expect(run(cmd)).rejects.toThrow()
     })
   })
 

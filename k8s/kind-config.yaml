@@ -7,9 +7,9 @@
 #      cannot resolve by cluster DNS; one-shot pods hostPath-mount that
 #      directory and write each registry's live ClusterIP into it.
 #   2. extraMounts: your home directory, visible to the node at the same
-#      path — the two storage claims (`yaac-global`, `yaac-server-local`)
-#      bind static hostPath PVs into the data dir, which resolve on the
-#      NODE, not the host. `yaac cluster install` renders a SECOND entry
+#      path — the storage claims (`yaac-global`, `yaac-server-local`,
+#      `yaac-checkouts`) bind static hostPath PVs into the data dir, which
+#      resolve on the NODE, not the host. `yaac cluster install` renders a SECOND entry
 #      beside it, `<dataDir>/node-local` → `/var/lib/yaac/node/<hash>`, so
 #      the node-local tier (pnpm stores, image stores) lives on the host
 #      disk too and survives a cluster delete; it is per install (the

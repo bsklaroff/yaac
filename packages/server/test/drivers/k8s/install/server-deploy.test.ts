@@ -322,7 +322,7 @@ describe('deployServerWorkload', () => {
     // The claims (PV then PVC per tier) are applied before the Deployment.
     const pvs = applied('PersistentVolume') as unknown as Array<{ spec: { hostPath: { path: string } } }>
     expect(pvs.map((p) => p.spec.hostPath.path)).toEqual([
-      path.join(tmpDir, 'global'), path.join(tmpDir, 'server-local'),
+      path.join(tmpDir, 'global'), path.join(tmpDir, 'server-local'), path.join(tmpDir, 'global'),
     ])
     expect(order('PersistentVolume')).toBeLessThan(order('PersistentVolumeClaim'))
     expect(order('PersistentVolumeClaim')).toBeLessThan(order('Deployment'))

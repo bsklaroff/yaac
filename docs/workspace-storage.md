@@ -552,9 +552,17 @@ on every backend:
   the server's file editor, can see them up to 30 s behind.
 - **Every path stored in a row is relative** to the data dir or a directory
   under it (see "Transcript paths"), so the data dir can move.
+- **Checkouts are the one exception to `actimeo=1`.** A pod mounts its
+  checkout through `yaac-checkouts`, which caches file attributes for up to
+  a minute and directories for a second, so a warm `git status` stats from
+  memory. Only the workspace writes its checkout while it runs; the file
+  editor, the one other writer, opens what it overwrites inside the pod. An
+  edit made while the workspace is stopped needs nothing: a new pod's
+  sandbox revalidates each file the first time it opens it
+  (docs/nfs-checkout-performance.md).
 - **The node-local tier is disposable.** It holds re-derivable caches and
-  working copies of a shared checkpoint, as opencode's database is. Checkouts
-  stay on the shared tier (docs/plans/node-local-checkouts.md).
+  working copies of a shared checkpoint, as opencode's database is.
+  Checkouts stay on the shared tier.
 
 ## Package installs
 

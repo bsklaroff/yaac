@@ -135,7 +135,8 @@ type HostPathType = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' 
  * container path does not change.
  *
  *  - `hostPath`: a node-local path on the node's disk.
- *  - `pvc`: a subPath of the RWX `yaac-global` claim (the global tier).
+ *  - `pvc`: a subPath of a claim on the global tier: `yaac-global`, or
+ *    `yaac-checkouts` for a checkout.
  *  - `emptyDir`: pod-local scratch, e.g. the tmux socket dir
  *    (CONTAINER_TMUX_DIR).
  *

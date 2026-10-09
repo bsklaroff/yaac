@@ -5,16 +5,16 @@ The webapp polls `/changes` every 3 seconds while the explorer is open
 (`#drivers/shared` `workspace-changes.ts`) in the workspace. The script walks
 the whole working tree: `git add -A` into a private index `lstat`s every
 file, and a `full` listing walks again for ignored entries and untracked
-folders. On a byo install the checkout is on `yaac-nfs`, mounted with
-`actimeo=1`, so at a 3-second poll the attribute cache has always expired.
-Nearly every `lstat` is then a round trip to the NFS server, made from
-under gVisor. On `infra/hetzner-k3s` a run takes seconds, and opening the
-changes view waits up to two of them: the rest of the poll already
+folders. On a byo install the checkout is on `yaac-nfs`. It is mounted
+with file attributes cached for up to a minute and a gVisor dentry cache
+large enough for the tree, which together take most `lstat`s off the
+network (docs/nfs-checkout-performance.md, measured on a single host). On
+`infra/hetzner-k3s` a run took seconds before those settings, and opening
+the changes view waits up to two of them: the rest of the poll already
 running, then its own.
 
-docs/plans/node-local-checkouts.md removes the round trips. This plan
-measures the cost first, then tries the cheap git-side cuts that apply
-either way.
+This plan measures what is left on a real network first, then tries the
+cheap git-side cuts that apply either way.
 
 ## 1. Measure
 
@@ -36,9 +36,8 @@ Run each twice, once right after a poll and once after 5 seconds idle, to
 see how much the attribute cache saves. Then time the whole request
 (`curl -w '%{time_total}' '<origin>/api/workspace/<id>/changes?diff=1&listing=full'`)
 to see what is left for the exec transport. Repeat on node disk (an
-`emptyDir` copy of the checkout) to size what node-local checkouts would
-win. That is the measurement the node-local plan asks for, taken on a real
-network.
+`emptyDir` copy of the checkout) to size what is left for node-local
+checkouts to win (docs/nfs-checkout-performance.md "What stays slow").
 
 Expected: the `add -A` walk and the two `ls-files` walks dominate, and the
 diff body is small next to them. If the transport dominates instead, the

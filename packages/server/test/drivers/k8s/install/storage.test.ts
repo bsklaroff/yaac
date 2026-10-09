@@ -1,5 +1,5 @@
 /**
- * The two storage claims, bound through both storage shapes, against the
+ * The storage claims, bound through both storage shapes, against the
  * shared fake cluster. A reconcile hook run before every read plays the
  * apiserver's binding controllers: a claim naming an Available volume
  * binds at once, and a claim naming only a class stays Pending until the
@@ -32,7 +32,7 @@ interface Obj {
     storageClassName?: string
     claimRef?: { namespace?: string; name?: string; uid?: string | null }
     hostPath?: { path: string; type: string }
-    csi?: { driver: string }
+    csi?: { driver: string; volumeHandle?: string; volumeAttributes?: Record<string, string> }
     mountOptions?: string[]
     volumeName?: string
     capacity?: { storage: string }
@@ -44,6 +44,8 @@ interface Obj {
 }
 
 let classOptions: string[]
+/** The CSI driver and handle the RWX class provisions with. */
+let rwxCsi: { driver: string; volumeHandle: string }
 /** What the binder pod prints and how it ends; a test may change them. */
 let binderLogs: string
 let binderPhase: string
@@ -62,7 +64,9 @@ function provision(pvc: Obj): void {
     spec: {
       storageClassName: pvc.spec.storageClassName,
       persistentVolumeReclaimPolicy: 'Delete',
-      csi: { driver: pvc.spec.accessModes?.[0] === 'ReadWriteMany' ? 'nfs.csi.k8s.io' : 'rancher.io/local-path' },
+      csi: pvc.spec.accessModes?.[0] === 'ReadWriteMany'
+        ? { ...rwxCsi, volumeAttributes: { server: 'nfs.example', share: '/export' } }
+        : { driver: 'rancher.io/local-path', volumeHandle: name },
       mountOptions: pvc.spec.accessModes?.[0] === 'ReadWriteMany' ? [...classOptions] : [],
       claimRef: { namespace: 'test-ns', name: pvc.metadata.name },
       capacity: { storage: pvc.spec.resources?.requests.storage ?? '' },
@@ -106,6 +110,7 @@ let tmpDir: string
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   classOptions = ['nfsvers=4.1']
+  rwxCsi = { driver: 'nfs.csi.k8s.io', volumeHandle: 'nfs.example#export#pvc-1##' }
   binderLogs = ''
   binderPhase = 'Succeeded'
   binding = true
@@ -157,8 +162,10 @@ describe('ensureStorageClaims', () => {
       'PersistentVolumeClaim/yaac-global',
       'PersistentVolume/yaac-server-local-ddh16',
       'PersistentVolumeClaim/yaac-server-local',
+      'PersistentVolume/yaac-checkouts-ddh16',
+      'PersistentVolumeClaim/yaac-checkouts',
     ])
-    const [globalPv, globalPvc, localPv] = applied()
+    const [globalPv, globalPvc, localPv, , checkoutsPv] = applied()
     expect(globalPv.metadata.labels).toEqual({
       app: 'yaac-server', 'yaac.install-namespace': 'test-ns',
       'yaac.data-dir-hash': 'ddh16', 'yaac.claim': 'yaac-global',
@@ -176,6 +183,13 @@ describe('ensureStorageClaims', () => {
     expect(localPv.spec).toMatchObject({
       accessModes: ['ReadWriteOnce'],
       hostPath: { path: path.join(tmpDir, 'server-local'), type: 'Directory' },
+    })
+    // Checkouts are the global directory again; a hostPath caches nothing,
+    // so it needs no options of its own.
+    expect(checkoutsPv.spec).toMatchObject({
+      accessModes: ['ReadWriteMany'],
+      hostPath: { path: path.join(tmpDir, 'global'), type: 'Directory' },
+      claimRef: { namespace: 'test-ns', name: 'yaac-checkouts' },
     })
     expect(globalPvc.metadata).toMatchObject({ name: 'yaac-global', namespace: 'test-ns' })
     expect(globalPvc.spec).toMatchObject({ storageClassName: '', volumeName: 'yaac-global-ddh16' })
@@ -212,6 +226,7 @@ describe('ensureStorageClaims', () => {
     })
     boundClaim('yaac-global', 'yaac-global-ddh16')
     boundClaim('yaac-server-local', 'yaac-server-local-ddh16')
+    boundClaim('yaac-checkouts', 'yaac-checkouts-ddh16')
     await ensureStorageClaims({ shape: staticShape() })
     expect(applied()).toEqual([])
 
@@ -269,6 +284,55 @@ describe('ensureStorageClaims', () => {
     expect(globalPv.metadata.labels).toMatchObject({
       'yaac.install-id': 'install-1', 'yaac.install-namespace': 'test-ns', 'yaac.claim': 'yaac-global',
     })
+
+    // Checkouts bind a static copy of the global volume: the same driver
+    // and attributes under a handle of its own, with checkout caching in
+    // place of actimeo=1.
+    const checkoutsPv = volume('pvc-yaac-global-provisioned-checkouts')!
+    expect(checkoutsPv.spec).toMatchObject({
+      accessModes: ['ReadWriteMany'],
+      persistentVolumeReclaimPolicy: 'Retain',
+      storageClassName: '',
+      claimRef: { namespace: 'test-ns', name: 'yaac-checkouts' },
+      csi: {
+        driver: 'nfs.csi.k8s.io',
+        volumeHandle: 'nfs.example#export#pvc-1###checkouts',
+        volumeAttributes: { server: 'nfs.example', share: '/export' },
+      },
+    })
+    expect(checkoutsPv.spec.mountOptions)
+      .toEqual(['nfsvers=4.1', 'soft', 'acregmin=3', 'acregmax=60', 'acdirmin=1', 'acdirmax=1'])
+    expect(checkoutsPv.metadata.labels).toMatchObject({ 'yaac.install-id': 'install-1', 'yaac.claim': 'yaac-checkouts' })
+    expect(claim('yaac-checkouts')?.spec).toMatchObject({
+      volumeName: 'pvc-yaac-global-provisioned-checkouts', storageClassName: '',
+    })
+    expect(claim('yaac-checkouts')?.status?.phase).toBe('Bound')
+  })
+
+  it('classes: gives the checkouts copy a handle each NFS-family driver reads as the same directory', async () => {
+    const copyHandle = async (driver: string, volumeHandle: string): Promise<string | undefined> => {
+      wipe()
+      rwxCsi = { driver, volumeHandle }
+      await ensureStorageClaims({ shape: classShape })
+      return volume('pvc-yaac-global-provisioned-checkouts')?.spec.csi?.volumeHandle
+    }
+    // EFS: an empty path and `/` are the same directory, as are `/x` and
+    // `/x/`; the optional `efs:` prefix shifts the fields.
+    expect(await copyHandle('efs.csi.aws.com', 'fs-0123::fsap-9')).toBe('fs-0123:/:fsap-9')
+    expect(await copyHandle('efs.csi.aws.com', 'fs-0123')).toBe('fs-0123:/')
+    expect(await copyHandle('efs.csi.aws.com', 'fs-0123:/data')).toBe('fs-0123:/data/')
+    expect(await copyHandle('efs.csi.aws.com', 'efs:fs-0123:/data/:fsap-9')).toBe('efs:fs-0123:/data:fsap-9')
+    // Azure Files: the fifth field is a free-form uuid.
+    expect(await copyHandle('file.csi.azure.com', 'rg#acct#share')).toBe('rg#acct#share##checkouts')
+    expect(await copyHandle('file.csi.azure.com', 'rg#acct#share#disk#u1#ns')).toBe('rg#acct#share#disk#u1checkouts#ns')
+    // Without a resource group the fifth field is a secret namespace.
+    await expect(copyHandle('file.csi.azure.com', '#acct#share#disk#ns')).rejects.toThrow(/names no resource group/)
+
+
+    // A driver yaac cannot mount a second way stops the install.
+    wipe()
+    rwxCsi = { driver: 'example.com/other', volumeHandle: 'x' }
+    await expect(ensureStorageClaims({ shape: classShape })).rejects.toThrow(/example.com\/other is not an NFS-family CSI driver/)
   })
 
   /** A volume that outlived its claim. */
@@ -277,7 +341,7 @@ describe('ensureStorageClaims', () => {
       kind: 'PersistentVolume',
       metadata: { name, labels: { 'yaac.install-namespace': 'test-ns', 'yaac.claim': 'yaac-global', ...labels } },
       spec: {
-        storageClassName: 'nfs-class', capacity: { storage: '100Gi' }, mountOptions: ['actimeo=1'],
+        storageClassName: 'nfs-class', capacity: { storage: '100Gi' }, mountOptions: ['actimeo=1'], csi: { ...rwxCsi },
         claimRef: { namespace: 'test-ns', name: 'yaac-global', uid: 'old' }, ...over,
       },
       status: { phase },

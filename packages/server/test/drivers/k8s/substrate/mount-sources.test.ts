@@ -14,6 +14,8 @@ import {
   cachedPackagesDir,
   claudeDir,
   imageStoreDir,
+  repoDir,
+  workspaceDir,
 } from '@yaac/shared/project-paths'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 
@@ -33,6 +35,18 @@ describe('resolveMountSource', () => {
       source: { kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/claude' },
       mountPath: '/home/yaac/.claude',
     })
+  })
+
+  it('mounts a checkout through the checkouts claim, at the same subPath', () => {
+    setDataDir('/data/yaac')
+    const m: PodMount = { source: { kind: 'hostPath', path: workspaceDir('demo', 'ws1') }, mountPath: '/workspace' }
+    expect(resolveMountSource(m)).toEqual({
+      source: { kind: 'pvc', claimName: 'yaac-checkouts', subPath: 'projects/demo/workspaces/ws1' },
+      mountPath: '/workspace',
+    })
+    // Only the checkout itself: the main clone stays on the global claim.
+    const repo: PodMount = { source: { kind: 'hostPath', path: `${repoDir('demo')}/.git` }, mountPath: '/r', readOnly: true }
+    expect(resolveMountSource(repo).source).toEqual({ kind: 'pvc', claimName: 'yaac-global', subPath: 'projects/demo/repo/.git' })
   })
 
   it('turns a global File into a subPath to that file, keeping readOnly', () => {

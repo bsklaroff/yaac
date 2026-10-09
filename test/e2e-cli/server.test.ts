@@ -211,7 +211,8 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     const { stdout: pvcs } = await execFileAsync('kubectl', [
       'get', 'pvc', '-n', TEST_NAMESPACE, '-o', 'jsonpath={range .items[*]}{.metadata.name}={.status.phase}{"\\n"}{end}',
     ])
-    expect(pvcs.trim().split('\n').sort()).toEqual(['yaac-global=Bound', 'yaac-server-local=Bound'])
+    // The checkouts claim is for workspace pods; the server mounts the other two.
+    expect(pvcs.trim().split('\n').sort()).toEqual(['yaac-checkouts=Bound', 'yaac-global=Bound', 'yaac-server-local=Bound'])
   })
 
   it('`server logs` prints the log the pod wrote into the server-local claim', async () => {

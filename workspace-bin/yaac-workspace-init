@@ -120,6 +120,10 @@ cd /
 git config --global user.name "$YAAC_GIT_NAME"
 git config --global user.email "$YAAC_GIT_EMAIL"
 git config --global --add safe.directory /workspace
+# Write a large checkout's files from 8 processes at once: on the shared
+# tier each file costs network round trips, which this overlaps. Keep in
+# sync with CHECKOUT_WORKERS (packages/server/src/domain/git/repo.ts).
+git config --global checkout.workers 8
 
 # The install's npm cache as the DEFAULT registry, at user-config
 # precedence: pnpm (10 and 11) and npm read ~/.npmrc below the project's own

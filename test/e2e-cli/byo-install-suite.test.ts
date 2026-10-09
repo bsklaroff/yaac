@@ -166,10 +166,16 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     expect(dep.metadata.labels['yaac.install-id']).toBe(installId)
 
     const volumes = await claimVolumes()
-    const pv = JSON.parse(await kubectl('get', 'pv', volumes['yaac-global'], '-o', 'json')) as {
+    type Pv = {
       metadata: { labels: Record<string, string> }
-      spec: { storageClassName: string; persistentVolumeReclaimPolicy: string; mountOptions: string[] }
+      spec: {
+        storageClassName: string
+        persistentVolumeReclaimPolicy: string
+        mountOptions: string[]
+        csi: { driver: string; volumeHandle: string; volumeAttributes: Record<string, string> }
+      }
     }
+    const pv = JSON.parse(await kubectl('get', 'pv', volumes['yaac-global'], '-o', 'json')) as Pv
     // The operator's class said Delete and set no actimeo; install pinned both.
     expect(pv.spec).toMatchObject({ storageClassName: 'kind-byo-nfs', persistentVolumeReclaimPolicy: 'Retain' })
     // The block claim went through the class named, not the default one.
@@ -177,6 +183,15 @@ describe('yaac cluster install --byo, on kind-byo', () => {
       .toBe('kind-byo-rwo')
     expect(pv.spec.mountOptions).toEqual(expect.arrayContaining(['actimeo=1']))
     expect(pv.metadata.labels).toMatchObject({ 'yaac.claim': 'yaac-global', 'yaac.install-id': installId })
+
+    // Checkouts mount the same directory through a copy of that volume,
+    // under a handle of its own, with checkout caching in place of actimeo=1.
+    expect(volumes['yaac-checkouts']).toBe(`${volumes['yaac-global']}-checkouts`)
+    const copy = JSON.parse(await kubectl('get', 'pv', volumes['yaac-checkouts'], '-o', 'json')) as Pv
+    expect(copy.spec.csi.volumeAttributes).toEqual(pv.spec.csi.volumeAttributes)
+    expect(copy.spec.csi.volumeHandle).not.toBe(pv.spec.csi.volumeHandle)
+    expect(copy.spec.mountOptions).toEqual(expect.arrayContaining(['acregmax=60', 'acdirmax=1']))
+    expect(copy.spec.mountOptions).not.toContain('actimeo=1')
 
     // One directory per claim where kind-byo's classes put them, marked
     // for this install and owned by the install uid.
@@ -340,6 +355,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     const after = await claimVolumes()
     expect(after['yaac-global']).toBe(before['yaac-global'])
     expect(after['yaac-server-local']).toBe(before['yaac-server-local'])
+    expect(after['yaac-checkouts']).toBe(before['yaac-checkouts'])
 
     // The database came back with the volume: the project is still there.
     await waitForHealth(120_000)

@@ -233,6 +233,10 @@ async function mainRefs(
   return { refs, originHead }
 }
 
+/** How many processes write a checkout's files; workspace-bin/yaac-workspace-init
+ *  sets the same for the workspace's own git. More than 8 measured no faster. */
+const CHECKOUT_WORKERS = 8
+
 /**
  * Create a workspace's checkout at `workspacePath`, which may already exist
  * with entries (mount points for ephemeral module dirs are created first).
@@ -250,6 +254,11 @@ async function mainRefs(
  * The checkout is forced: callers reuse a destination that already has a
  * `.git`, so anything else there is a crashed attempt's partial tree. A
  * failure leaves no `.git`, so a retry starts over.
+ *
+ * The tree is written by `CHECKOUT_WORKERS` processes at once. Each file
+ * on the shared tier costs a few network round trips, so overlapping them
+ * cuts a large checkout's time about fourfold
+ * (docs/nfs-checkout-performance.md).
  */
 export async function createCheckout(repoPath: string, workspacePath: string, params: {
   branch: string
@@ -296,7 +305,8 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     await fs.mkdir(workspacePath, { recursive: true })
     if (startSha !== null) {
       await runGit({ kind: 'private', gitDir }, ['update-ref', `refs/heads/${params.branch}`, startSha])
-      await runGit({ kind: 'private', gitDir, workTree: workspacePath }, ['checkout', '--force', '--quiet'])
+      await runGit({ kind: 'private', gitDir, workTree: workspacePath },
+        ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet'])
     }
     await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {

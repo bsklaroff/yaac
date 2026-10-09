@@ -199,7 +199,10 @@ function world(c: FakeCall): void {
     const volumeName = (obj.spec as { volumeName?: string }).volumeName || `${c.name}-pv`
     fakeCluster.seed(
       { ...obj, spec: { ...obj.spec as object, volumeName }, status: { phase: 'Bound' } },
-      { apiVersion: 'v1', kind: 'PersistentVolume', metadata: { name: volumeName }, spec: {} },
+      {
+        apiVersion: 'v1', kind: 'PersistentVolume', metadata: { name: volumeName },
+        spec: { csi: { driver: 'nfs.csi.k8s.io', volumeHandle: volumeName } },
+      },
     )
   } else if (c.kind === 'Pod') {
     fakeCluster.seed({ ...obj, status: { phase: 'Succeeded' } })
@@ -1573,7 +1576,7 @@ describe('runClusterInstall', () => {
     // block class, and a new install id recorded before anything is applied.
     expect(appliedOf('Ingress')).toHaveLength(1)
     expect(serverPod().securityContext).toMatchObject({ runAsUser: 1000, runAsGroup: 1000 })
-    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'standard' })
+    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'standard', 'yaac-checkouts': '' })
     // The binder stamps the volumes with the id recorded before anything
     // was applied.
     const binderArgs = (appliedOf('Pod')[0] as unknown as {
@@ -1604,7 +1607,7 @@ describe('runClusterInstall', () => {
     const classes = [...BYO_CLASSES, { metadata: { name: 'fast-ssd' }, provisioner: 'pd.csi.storage.gke.io' }]
     const deps = makeDeps({ run: adoptRun({ kind: false, classes }) })
     await expect(runClusterInstall({ ...BYO, rwoStorageClass: 'fast-ssd' }, deps)).resolves.toBeUndefined()
-    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'fast-ssd' })
+    expect(claimClasses()).toEqual({ 'yaac-global': 'byo-nfs', 'yaac-server-local': 'fast-ssd', 'yaac-checkouts': '' })
   })
 
   it('--byo refuses the flag combinations it cannot honor, before touching anything', async () => {

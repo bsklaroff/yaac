@@ -96,7 +96,7 @@ export async function runClusterDelete(
 /**
  * Manual uninstall steps printed for a byo install, whose cluster yaac
  * does not delete: this install's namespaces and cluster-scoped objects,
- * then the objects all installs on the cluster share, and last the two
+ * then the objects all installs on the cluster share, and last the
  * `Retain` volumes, selected by install id.
  */
 function byoUninstall(installId: string | undefined): string {
@@ -117,7 +117,7 @@ function byoUninstall(installId: string | undefined): string {
     `  kubectl delete validatingadmissionpolicy,validatingadmissionpolicybinding ${BUILDER_ROLE_GUARD_NAME}`,
     `  kubectl label nodes --all ${nodeLabels}`,
     'The gVisor runtime the installer put on each node stays in its containerd config until the node',
-    'is replaced. The two storage volumes are Retain, so the data survives all of the above; remove',
+    'is replaced. The storage volumes are Retain, so the data survives all of the above; remove',
     'them deliberately, and then their bytes on the storage backend:',
     installId
       ? `  kubectl delete pv -l ${LABEL_INSTALL_ID}=${installId}`

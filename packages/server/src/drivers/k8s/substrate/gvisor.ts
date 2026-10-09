@@ -164,6 +164,14 @@ export function gvisorInstallerHostMounts(): {
 }
 
 /**
+ * The sandbox-wide cap on cached file lookups (runsc `dcache`). It must
+ * exceed a large checkout's file and folder count for warm `git status` to
+ * stay off the network. A cached entry costs sandbox memory and may hold a
+ * host file descriptor, but only once something has looked that file up.
+ */
+export const SANDBOX_DENTRY_CACHE = 200_000
+
+/**
  * runsc flags for one handler (the file named by `ConfigPath`):
  *  - platform systrap: needs no /dev/kvm, and works on kind nodes.
  *  - host-uds all: unix sockets on hostPath mounts become real host
@@ -174,6 +182,11 @@ export function gvisorInstallerHostMounts(): {
  *  - overlay2 root:self: keep rootfs writes in a sentry-internal overlay
  *    for speed. Root only: `all:` would make hostPath volume writes
  *    ephemeral too.
+ *  - dcache: how many unused file lookups the sandbox keeps. The default
+ *    (1000 per mount) is smaller than a checkout, so every `git status` on
+ *    the shared tier would look each file up over NFS again
+ *    (docs/nfs-checkout-performance.md). The value is a string: the shim
+ *    rejects a TOML integer.
  *  - nested only: raw/packet sockets for the in-sandbox container engine.
  */
 function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string {
@@ -185,6 +198,7 @@ function runscShimConfigToml(handler: 'gvisor' | 'gvisor-nested'): string {
     '  host-uds = "all"',
     '  allow-suid = "true"',
     '  overlay2 = "root:self"',
+    `  dcache = "${String(SANDBOX_DENTRY_CACHE)}"`,
   ]
   if (handler === 'gvisor-nested') {
     lines.push('  net-raw = "true"')

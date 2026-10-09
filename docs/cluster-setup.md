@@ -241,10 +241,10 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    Secret `yaac-registry-grant-key` in its own `yaac-registry-keys`
    namespace.
 2. **Two extraMounts per node.** Your home directory, at the same path: the
-   two storage claims (`yaac-global`, `yaac-server-local`) bind static
-   hostPath volumes onto the data dir's `global/` and `server-local/`
-   folders, and a hostPath resolves on the node, so this mount is what makes
-   the volume the host's bytes (docs/server-in-cluster.md "Storage is two
+   storage claims (`yaac-global`, `yaac-server-local`, and `yaac-checkouts`
+   over `global/` again) bind static hostPath volumes onto the data dir's
+   `global/` and `server-local/` folders, and a hostPath resolves on the node, so this mount is what makes
+   the volume the host's bytes (docs/server-in-cluster.md "Storage
    claims"). And `<dataDir>/node-local` at `/var/lib/yaac/node/<hash>`,
    holding the node-local tier (package caches, image stores, opencode
    working copies). On kind that tier is therefore host disk and survives a
@@ -386,7 +386,7 @@ What differs:
   its own volumes that a namespace delete left `Released`, matched by the
   random install id recorded in `server.json` (never by data-dir path). It
   claims each volume root for that id through a one-shot binder pod and
-  sets both volumes to `Retain` (docs/server-in-cluster.md "Storage is two
+  sets both volumes to `Retain` (docs/server-in-cluster.md "Storage
   claims"). A class with a fixed `subDir` or base path gives every claim the
   same directory, so it can host only one install; a second is refused.
 - **The uid** is a fixed 1000, not this machine's
@@ -407,8 +407,9 @@ A byo install also follows four rules:
   cert-manager, no DNS.
 - **One architecture per install**, the CLI machine's. Mixed pools would
   need per-architecture images published each release.
-- **Backups are the operator's.** Snapshot the two `Retain` volumes with
-  the provider's tools.
+- **Backups are the operator's.** Snapshot the `yaac-global` and
+  `yaac-server-local` volumes with the provider's tools (`yaac-checkouts`
+  is a second view of the first).
 
 **Gates.** These run in order before anything is built or applied, and
 before the podman setup, so a refusal changes nothing:
@@ -470,13 +471,16 @@ the node usually needs a reboot, or to be cordoned and replaced. `soft`
 turns the hang into EIO after retries, which a git checkout or half-written
 file then has to survive. yaac always sets `actimeo=1` on the volume: one
 attribute check per file per second (billed latency on EFS) bounds how long
-a workspace can act on a file the server has already changed.
+a workspace can act on a file the server has already changed. Checkouts are
+mounted through a copy of the volume (`yaac-checkouts`) that caches file
+attributes for up to a minute instead, so a `git status` does not re-check
+every file (docs/nfs-checkout-performance.md).
 
 **`yaac cluster delete` refuses on a byo install**, since the cluster is not
 yaac's. It prints the uninstall steps instead: the install's namespaces (the
 registry signing key has its own) and the cluster-scoped objects labelled
 with them, then the runtime objects and `yaac.gvisor` node labels, which
-every install on the cluster shares. The two `Retain` volumes survive on
+every install on the cluster shares. The `Retain` volumes survive on
 purpose; it says how to remove them by install id.
 
 **A node that joins a running install is synced by the server.** Each
@@ -771,11 +775,12 @@ order:
 - `kubectl`, `cluster`, `nodes` (how many nodes, how many can run
   workspaces, and whether they are Ready), then `architecture` and
   `node-os` (the byo node gates), `podman`, `registry` and `namespace`.
-- `storage`: both claims are Bound and both volumes are `Retain`. On kind
-  each volume is a static one pointing at the data dir's own tier folder.
-  On byo each is labelled with this install's id, and the global one is
-  NFS-family and mounted with `actimeo` of at most 1. A missing claim fails
-  and points at install.
+- `storage`: every claim is Bound and every volume is `Retain`. On kind
+  each volume is a static one pointing at the data dir's own tier folder
+  (`yaac-checkouts` at the global one). On byo each is labelled with this
+  install's id, the global one is NFS-family and mounted with `actimeo` of
+  at most 1, and the checkouts one is a copy of it that caches directories
+  for at most a second. A missing claim fails and points at install.
 - `priority-classes` and `node-fixups` (kind only, warn).
 - `gvisor`: the RuntimeClasses exist, at least one node has the
   `yaac.gvisor` label, and a `gvisor`-class pod really runs inside the
@@ -795,8 +800,9 @@ order:
   check never touches this machine's copy of the data dir, so it works the
   same when the claims live elsewhere.
 - `egress`: a workspace-labelled pod cannot reach the API server and cannot
-  dial the proxy's transparent ports directly. This is the NetworkPolicy
-  enforcement test.
+  dial the proxy's transparent ports directly, nor on byo the global
+  volume's NFS server (on EFS, the mount target of each zone the nodes are
+  in). This is the NetworkPolicy enforcement test.
 - `npm-cache`: a workspace-labelled pod fetches a package through the
   cache. Warns when there is no ready cache pod; fails when a ready one
   does not serve.
@@ -856,8 +862,8 @@ yaac cluster delete        # prompts first; -y / --yes skips the prompt
 
 This runs `kind delete`, and that is all it needs to do: everything yaac
 deploys lives in the cluster, including Calico, netd, the main and
-per-project registries with every pushed image, and the two storage claims
-and their volumes. Running workspace pods stop, but nothing under the yaac
+per-project registries with every pushed image, and the storage claims and
+their volumes. Running workspace pods stop, but nothing under the yaac
 data dir is touched. The volumes are `Retain` and their bytes are the data
 dir's own folders, so on-disk workspaces, the database and the node-local
 caches all survive. A later `yaac cluster install` re-creates the cluster,

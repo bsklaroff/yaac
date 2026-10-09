@@ -245,18 +245,21 @@ yet exercised:
   been applied on EKS yet, so neither has a check run where only the
   workspace node takes sandboxed pods.
 - **EFS under load.** `cluster check`'s POSIX-semantics and uid probes
-  pass on it, but git and package-install performance over EFS with
-  `hard,actimeo=1` are unmeasured.
+  pass on it, but git and package-install performance over EFS is
+  unmeasured. docs/nfs-checkout-performance.md has the numbers for an NFS
+  server on the same host, and says which of them a real network changes.
 - **Reboots.** AL2023's nodeadm rewrites `/etc/containerd/config.toml` at
   boot. The gVisor installer puts its block back when its pod restarts, and
   until then a rebooted node still carries its `yaac.gvisor` label.
-- **`cluster check` skips its NFS reachability probe on EFS.** The volume
-  names a file system ID rather than a server, so the probe that a
-  workspace cannot reach port 2049 does not run. Under the VPC CNI a pod
-  shares its node's security group, so a pod can reach the mount targets:
-  workspace pods are kept off them by NetworkPolicy, builder pods are not.
-  What stops either from mounting is the file system policy, which refuses
-  any client without the node role's IAM credentials.
+- **`cluster check`'s NFS reachability probe on EFS.** The volume names a
+  file system ID rather than a server, so the probe resolves the mount
+  target of each zone the nodes are in from a pod in the cluster and checks
+  that a workspace pod cannot dial it on 2049. It has not run here yet.
+  Under the VPC CNI a pod shares its node's security group, so a pod can
+  reach the mount targets: workspace pods are kept off them by
+  NetworkPolicy, builder pods are not. What stops either from mounting is
+  the file system policy, which refuses any client without the node role's
+  IAM credentials.
 - **No swap on the nodes.** Unlike the kind setup in the top-level README,
   a workspace under memory pressure is OOM-killed rather than swapped.
 

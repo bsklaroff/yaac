@@ -81,7 +81,7 @@ export function setDataDir(dir: string): void {
  *
  * The server Deployment points the first three at its mounts via
  * `YAAC_GLOBAL_ROOT` / `YAAC_SERVER_LOCAL_ROOT` / `YAAC_NODE_LOCAL_ROOT`
- * (docs/server-in-cluster.md, "Storage is two claims"). project-paths.ts
+ * (docs/server-in-cluster.md, "Storage claims"). project-paths.ts
  * assigns each path its tier.
  */
 

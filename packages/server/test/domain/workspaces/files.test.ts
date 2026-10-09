@@ -100,15 +100,22 @@ beforeAll(async () => {
   await git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'])
 })
 
+/** Every command the fake driver ran in a workspace, with its options. */
+let execs: Array<{ cmd: string; opts?: { timeout?: number; maxAttempts?: number } }> = []
+
 // The test setup resets the fake driver after every test.
 beforeEach(() => {
+  execs = []
   installFakeWorkspaceDriver({
     find: (id) => Promise.resolve(handleFixture({
       workspaceId: id, projectId: PROJECT, jobName: id,
       ...(id === 'stopped' ? { running: false, state: 'stopped' } : {}),
     })),
     workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(PROJECT, jobName) }),
-    exec: async (_jobName, cmd) => execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }),
+    exec: async (_jobName, cmd, opts) => {
+      execs.push({ cmd, opts })
+      return execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 })
+    },
     changes: hostChanges,
   })
 })
@@ -603,9 +610,26 @@ describe('writeWorkspaceFile', () => {
     expect(saved.saved).toMatchObject({ path: 'a.txt', size: 4 })
     expect(saved.saved.version).not.toBe(version)
     expect(await read('a.txt')).toBe('one\n')
+    // The pod opens what was overwritten, once and briefly, so its cached
+    // attributes catch up; a refused save opens nothing.
+    expect(execs).toHaveLength(1)
+    expect(execs[0].cmd).toContain('timeout 5 sh -c')
+    expect(execs[0].cmd).toMatch(/ yaac 'a\.txt'$/)
+    expect(execs[0].opts).toEqual({ maxAttempts: 1, timeout: 10_000 })
     expect(await writeWorkspaceFile(local, 'write', 'a.txt', 'two\n', version))
       .toEqual({ conflict: saved.saved.version })
     expect(await read('a.txt')).toBe('one\n')
+    expect(execs).toHaveLength(1)
+
+    // A host checkout caches nothing, so containerless opens nothing.
+    installFakeWorkspaceDriver({
+      kind: 'containerless',
+      find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
+      exec: (_jobName, cmd) => { execs.push({ cmd }); return Promise.resolve({ stdout: '', stderr: '' }) },
+    })
+    const now = (await readWorkspaceFile('write', 'a.txt')).version
+    expect(await writeWorkspaceFile(local, 'write', 'a.txt', 'three\n', now)).toMatchObject({ saved: { path: 'a.txt' } })
+    expect(execs).toHaveLength(1)
   })
 
   it('creates a file and its folders, and a create conflicts with what is there', async () => {

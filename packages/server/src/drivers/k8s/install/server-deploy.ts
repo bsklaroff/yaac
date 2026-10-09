@@ -239,7 +239,7 @@ interface ServerEnvOptions {
 /**
  * The server pod's environment. `YAAC_DATA_DIR` is the host's path, so the
  * install's identity is unchanged; the three root variables are where the
- * storage tiers are mounted (docs/server-in-cluster.md "Storage is two
+ * storage tiers are mounted (docs/server-in-cluster.md "Storage
  * claims"). `YAAC_IN_CLUSTER` makes the registry client dial the
  * registry's Service directly.
  *

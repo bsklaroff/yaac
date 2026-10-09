@@ -4,11 +4,14 @@
  * name a claim without pulling in the path resolver.
  *
  * The three tiers (the legend in packages/shared/src/paths.ts) reach the
- * cluster as two claims and one node path (docs/server-in-cluster.md
- * "Storage is two claims"):
+ * cluster as three claims and one node path (docs/server-in-cluster.md
+ * "Storage claims"):
  *
  *  - GLOBAL is the RWX claim `yaac-global`. The server pod mounts it whole
  *    at `POD_GLOBAL_ROOT`; every workspace pod mounts subPaths of it.
+ *    Workspace pods mount their checkout through `yaac-checkouts` instead:
+ *    a second volume over the same directory whose mounts cache file
+ *    attributes longer (docs/nfs-checkout-performance.md).
  *  - SERVER-LOCAL is the RWO claim `yaac-server-local`, mounted by the
  *    server pod alone at `POD_SERVER_LOCAL_ROOT`. No workspace pod may
  *    mount it, and the resolver refuses a path under it.
@@ -22,6 +25,7 @@
 
 export const GLOBAL_CLAIM_NAME = 'yaac-global'
 export const SERVER_LOCAL_CLAIM_NAME = 'yaac-server-local'
+export const CHECKOUTS_CLAIM_NAME = 'yaac-checkouts'
 
 export const POD_GLOBAL_ROOT = '/yaac/global'
 export const POD_SERVER_LOCAL_ROOT = '/yaac/server-local'
@@ -38,7 +42,7 @@ export const NODE_LOCAL_NODE_ROOT = '/var/lib/yaac/node'
  */
 export const LABEL_INSTALL_NAMESPACE = 'yaac.install-namespace'
 /**
- * Label naming which of the two claims a PersistentVolume backs. A
+ * Label naming which claim a PersistentVolume backs. A
  * class-provisioned volume's name is chosen by the provisioner, so this
  * label plus the install id is how a later install finds a volume that
  * outlived its claim.

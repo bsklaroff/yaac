@@ -331,7 +331,7 @@ interface KindNode {
  *
  * Each node gets two extraMounts. `$HOME → $HOME` lets the static PVs
  * behind the storage claims resolve on the node (docs/server-in-cluster.md
- * "Storage is two claims"). The second binds `<dataDir>/node-local` to
+ * "Storage claims"). The second binds `<dataDir>/node-local` to
  * `/var/lib/yaac/node/<hash>`, so node-local data (pnpm and image stores,
  * working copies) lives on host disk and survives a cluster delete.
  *

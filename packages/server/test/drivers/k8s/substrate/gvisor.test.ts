@@ -34,6 +34,7 @@ import {
   NODE_RUNSC_CONFIG_PATH,
   NODE_RUNSC_NESTED_CONFIG_PATH,
   REGISTRY_CONFIG_MARKER,
+  SANDBOX_DENTRY_CACHE,
 } from '#drivers/k8s/substrate/gvisor'
 import {
   NODE_SYSTEMD_CONF_DIR,
@@ -145,8 +146,10 @@ describe('gvisorInstallScript', () => {
     expect(script).toContain(`bin='/host${NODE_BIN_DIR}'`)
 
     // Handler flag files: systrap, host-uds for hostPath unix sockets, suid,
-    // and a rootfs-only overlay (overlay on everything would drop workspace
-    // dir writes). Only the nested handler gets raw/packet sockets.
+    // a rootfs-only overlay (overlay on everything would drop workspace dir
+    // writes) and a dentry cache bigger than a checkout, written as the
+    // string the shim requires. Only the nested handler gets raw/packet
+    // sockets.
     const [defaultCfg, nestedCfg] = [NODE_RUNSC_CONFIG_PATH, NODE_RUNSC_NESTED_CONFIG_PATH]
       .map((p) => shellLiteralAfter(script, `write_if_changed '/host${p}' `))
     for (const cfg of [defaultCfg, nestedCfg]) {
@@ -155,6 +158,7 @@ describe('gvisorInstallScript', () => {
       expect(cfg).toContain('host-uds = "all"')
       expect(cfg).toContain('allow-suid = "true"')
       expect(cfg).toContain('overlay2 = "root:self"')
+      expect(cfg).toContain(`dcache = "${String(SANDBOX_DENTRY_CACHE)}"`)
     }
     expect(defaultCfg).not.toContain('net-raw')
     expect(nestedCfg).toContain('net-raw = "true"')
