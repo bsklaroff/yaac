@@ -205,6 +205,8 @@ describe('buildDynamicRules', () => {
 
     // A provider key opens MITM, and is swapped, for its owner's workspaces only.
     expect(hostNeedsDynamicMitm(objects, 'nobody', 'openrouter.ai', 443)).toBe(false)
+    expect(hostNeedsDynamicMitm(objects, 'alice', 'openrouter.ai', 443)).toBe(false)
+    expect(hostNeedsDynamicMitm(objects, 'bob', 'openrouter.ai', 443)).toBe(true)
     expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_OC}` }, 'alice').authorization)
       .toBe(`Bearer ${PH_OC}`)
     expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_OC}` }, 'bob').authorization)
@@ -213,6 +215,7 @@ describe('buildDynamicRules', () => {
 
   it('swaps nothing for a tool with no credential configured', async () => {
     const none = await load({}, { ws: {}, oc: { tool: 'opencode' }, pi: { tool: 'pi' } })
+    for (const ws of ['ws', 'oc', 'pi']) expect(hostNeedsDynamicMitm(none, ws, 'openrouter.ai', 443)).toBe(false)
     expect(send(none, 'api.anthropic.com', { 'x-api-key': PH_KEY })['x-api-key']).toBe(PH_KEY)
     expect(send(none, 'api.anthropic.com', { authorization: `Bearer ${PH_ACCESS}` }).authorization)
       .toBe(`Bearer ${PH_ACCESS}`)
@@ -225,7 +228,7 @@ describe('buildDynamicRules', () => {
 })
 
 describe('hostNeedsDynamicMitm', () => {
-  it('opens the tool hosts always, a provider host only for its tool, and never port 22', async () => {
+  it('opens the tool hosts always, a provider host whatever the workspace\'s tool, and never port 22', async () => {
     const objects = await load(
       {
         'opencode.json': { kind: 'api-key', apiKey: 'sk-or', apiHost: 'openrouter.ai' },
@@ -237,10 +240,13 @@ describe('hostNeedsDynamicMitm', () => {
     for (const host of ['api.anthropic.com', 'platform.claude.com', 'api.openai.com', 'auth.openai.com', 'chatgpt.com']) {
       expect(hostNeedsDynamicMitm(objects, 'cl', host, 443)).toBe(true)
     }
-    expect(hostNeedsDynamicMitm(objects, 'oc', 'openrouter.ai', 443)).toBe(true)
-    expect(hostNeedsDynamicMitm(objects, 'cl', 'openrouter.ai', 443)).toBe(false)
-    expect(hostNeedsDynamicMitm(objects, 'pi', 'api.groq.com', 443)).toBe(true)
-    for (const ws of ['oc', 'cl']) expect(hostNeedsDynamicMitm(objects, ws, 'api.groq.com', 443)).toBe(false)
+    // A claude workspace can run opencode or pi itself (yaac-in-yaac), and
+    // carries their placeholders, so it gets their swaps too.
+    for (const ws of ['oc', 'pi', 'cl']) {
+      expect(hostNeedsDynamicMitm(objects, ws, 'openrouter.ai', 443)).toBe(true)
+      expect(hostNeedsDynamicMitm(objects, ws, 'api.groq.com', 443)).toBe(true)
+    }
+    expect(hostNeedsDynamicMitm(objects, 'cl', 'groq.com', 443)).toBe(false)
     expect(hostNeedsDynamicMitm(objects, 'oc', 'github.com', 443)).toBe(true)
     expect(hostNeedsDynamicMitm(objects, 'oc', 'api.github.com', 443)).toBe(true)
     expect(hostNeedsDynamicMitm(objects, 'cl', 'github.com', 443)).toBe(false)

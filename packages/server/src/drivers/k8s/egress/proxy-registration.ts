@@ -61,9 +61,8 @@ export interface UpstreamRedirect {
 
 /**
  * The registration ConfigMap's payload. `tool` and `projectId` are
- * required (the proxy drops a registration without them): all
- * agent-credential injection is gated on the registered tool, and
- * git-auth-failure records are keyed by the owning project. `owner` names
+ * required (the proxy drops a registration without them); git-auth-failure
+ * records are keyed by the owning project. `owner` names
  * the credentials Secret entry every swap, refresh and ssh key resolves
  * through.
  */
@@ -193,8 +192,8 @@ export async function applyProxyRegistration(
 /**
  * Write a workspace's full registration from the config, tool and remote
  * the caller resolved, and return it. Idempotent; a claimed prewarmed
- * workspace calls it again under its new tool, since the proxy gates all
- * credential injection on the registered tool.
+ * workspace calls it again to pick up the project's current allowlist and
+ * proxied secrets.
  */
 export async function registerWorkspaceEgress(
   reg: WorkspaceRegistration,

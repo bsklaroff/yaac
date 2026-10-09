@@ -267,13 +267,11 @@ export function hostNeedsDynamicMitm(
   if (hostname === OPENAI_API_HOST) return true
   if (hostname === OPENAI_TOKEN_URL_HOST) return true
   if (hostname === CHATGPT_HOST) return true
-  // opencode / pi: only the provider host the credential points at, and
-  // only for a workspace running that tool.
-  const tool = objects.registration(workspaceId)?.tool
-  if (tool === 'opencode' || tool === 'pi') {
-    const creds = workspaceCredentials(objects, workspaceId)[tool]
-    if (creds && hostname === creds.apiHost) return true
-  }
+  // opencode / pi: the provider host each credential points at, whatever
+  // the workspace's tool. Every workspace carries both placeholders, so an
+  // opencode run inside a claude workspace (yaac-in-yaac) needs the swap.
+  const creds = workspaceCredentials(objects, workspaceId)
+  if (hostname === creds.opencode?.apiHost || hostname === creds.pi?.apiHost) return true
   if (workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)) return true
   // gh CLI talks to api.github.com, not the git remote host.
   if (resolveGithubApiTokenForWorkspace(objects, workspaceId, hostname) !== null) return true
@@ -348,10 +346,8 @@ function swapApiKeyHeader(
  * restarts. Another owner's credentials are never consulted.
  *
  * Each tool credential swap fires only when the request carries the matching
- * placeholder, so a user's own key passes through unchanged. The rules here
- * don't check the workspace's tool, but they apply only to hosts the proxy
- * MITMs: the Claude and Codex hosts always, the opencode/pi provider host
- * only for a workspace of that tool (see `hostNeedsDynamicMitm`).
+ * placeholder, so a user's own key passes through unchanged. The rules
+ * apply only to hosts the proxy MITMs (see `hostNeedsDynamicMitm`).
  */
 export function buildDynamicRules(
   objects: ProxyObjects,

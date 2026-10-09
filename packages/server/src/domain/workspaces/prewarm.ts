@@ -467,8 +467,8 @@ export async function tryClaimPrewarmed(
     const spare = chosen
     await allSucceed([
       (async () => {
-        // The proxy injects agent credentials only for the registered tool,
-        // so the registration lands before any respawn boots the agent.
+        // The registration lands before any respawn boots the agent, so the
+        // agent starts under the project's current allowlist and secrets.
         await runtime.registerWorkspace(registration)
         // Restart the agent on the new checkout, unless a retool follows.
         if (prep !== null) await rebranchSpare(spare, prep.branch, prep.sha, asWarmed ? setup : null)
