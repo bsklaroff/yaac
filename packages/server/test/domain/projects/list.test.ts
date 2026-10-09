@@ -7,6 +7,7 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 import { listProjects } from '#domain/projects'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { BUILT_IN_USER_ID } from '#db'
+import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 
 const FOO = 'acbd18db-4cc2-485c-8def-654fccc4a4d8'
 const BAR = '37b51d19-4a75-43e4-8b56-f6524f2d51f2'
@@ -67,5 +68,13 @@ describe('listProjects', () => {
     await recordTestProject(FOO, { remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
     counts.mockResolvedValue({})
     expect((await listProjects())[0]?.workspaceCount).toBe(0)
+  })
+
+  it('counts the recorded stops and unseen deaths', async () => {
+    await recordTestProject(FOO, { remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
+    for (const id of ['live', 'quit', 'oom']) await recordWorkspaceCreated({ projectId: FOO, workspaceId: id })
+    await recordWorkspaceStopped(FOO, 'quit')
+    await recordWorkspaceStopped(FOO, 'oom', { reason: 'oom' })
+    expect((await listProjects())[0]).toMatchObject({ stoppedCount: 2, unseenDeaths: 1 })
   })
 })

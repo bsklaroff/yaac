@@ -13,22 +13,23 @@ import type { AgentSessionEntry } from '@yaac/shared/types'
 const LIVE_REFRESH_MS = 5000
 
 /**
- * A stopped workspace's conversations, rendered with the same `AcpTranscript`
- * as the live chat pane. They survive the container: an `acp` one as acpd's
- * record, a `tui` one as the tool's own history, translated server-side.
+ * A workspace's conversations, read-only, rendered with the same
+ * `AcpTranscript` as the live chat pane and in the same centered column.
+ * They survive the container: an `acp` one as acpd's record, a `tui` one as
+ * the tool's own history, translated server-side.
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
  * as tabs in restore order. Fetched once and cached forever, since a stopped
  * conversation cannot change, unless `live`: a running workspace a teammate
- * reads this way (ReadOnlyWorkspace) is refetched every few seconds, under
- * its own cache key, so a poll taken before the workspace stopped is never
- * served as its final record.
+ * reads this way is refetched every few seconds, under its own cache key, so
+ * a poll taken before the workspace stopped is never served as its final
+ * record.
  *
  * A subagent's card opens its own transcript and a task's card what the
  * record kept of it, as in the live pane; both read the same query, so they
  * refresh with it.
  */
-export function StoppedTranscript({
+export function ReadOnlyTranscript({
   workspaceId,
   sessions,
   prompt,
@@ -80,17 +81,16 @@ export function StoppedTranscript({
   if (selected === undefined || data === TRANSCRIPT_UNAVAILABLE || (empty && prompt)) {
     if (!prompt) return null
     return (
-      <p className="mt-4 min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap rounded bg-bg/80 p-2.5
-        text-xs leading-relaxed text-text-dim">
-        {prompt}
-      </p>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <p className={clsx(COLUMN, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
+      </div>
     )
   }
 
   return (
-    <div className="mt-4 flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       {viewable.length > 1 && (
-        <div className="mb-2 flex shrink-0 flex-wrap gap-1">
+        <div className="flex shrink-0 flex-wrap gap-1 border-b border-hairline-soft px-3 py-1.5">
           {viewable.map((s, i) => (
             <button
               key={s.agentSessionId}
@@ -130,38 +130,42 @@ export function StoppedTranscript({
           onBack={() => setOpened(null)}
         />
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto rounded bg-bg/80 p-2.5">
-        {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
-        {/* Prefer the server's message, e.g. a conversation too large to send. */}
-        {isError && (
-          <p className="text-xs text-text-faint">
-            {error instanceof ServerError
-              ? `This conversation could not be shown: ${error.message}.`
-              : 'The conversation could not be read.'}
-          </p>
-        )}
-        {!isPending && !isError && groups.length === 0 && (
-          <p className="text-xs text-text-faint">This conversation has no messages.</p>
-        )}
-        {task !== undefined ? (
-          <TaskView
-            task={task}
-            {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
-            streamed={taskCall.output}
-            live={false}
-          />
-        ) : (
-          <>
-            {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
-            <AcpTranscript
-              groups={groups}
-              className="text-xs"
-              onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
-              onOpenTask={(id) => setOpened({ kind: 'task', id })}
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className={COLUMN}>
+          {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
+          {/* Prefer the server's message, e.g. a conversation too large to send. */}
+          {isError && (
+            <p className="text-xs text-text-faint">
+              {error instanceof ServerError
+                ? `This conversation could not be shown: ${error.message}.`
+                : 'The conversation could not be read.'}
+            </p>
+          )}
+          {!isPending && !isError && groups.length === 0 && (
+            <p className="text-xs text-text-faint">This conversation has no messages.</p>
+          )}
+          {task !== undefined ? (
+            <TaskView
+              task={task}
+              {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
+              streamed={taskCall.output}
+              live={false}
             />
-          </>
-        )}
+          ) : (
+            <>
+              {subagent !== undefined && <SubagentPrompt task={subagent.task} />}
+              <AcpTranscript
+                groups={groups}
+                onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
+                onOpenTask={(id) => setOpened({ kind: 'task', id })}
+              />
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
 }
+
+/** The live chat pane's column, so a conversation reads the same either way. */
+const COLUMN = 'mx-auto w-full max-w-5xl'

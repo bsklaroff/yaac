@@ -217,6 +217,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   },
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
+  stoppedExpanded: flag('yaac.stoppedexpanded.v1'),
   editorFontSize: number('yaac.editorfontsize.v1', clampEditorFontSize),
   fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
@@ -356,7 +357,8 @@ export function unreadWaitingByProject(
  * choosing it, or null to leave it empty. This covers two cases:
  *   1. the active project changed, and
  *   2. the selected workspace vanished (stopped from the CLI, reaped).
- * Both select the top row, except:
+ * A selection the pane shows as a stopped workspace (`stopped`) has not
+ * vanished. Both select the top row, except:
  *   - a create that claimed a prewarmed spare (`claims`) follows the spare's
  *     id once it is listed;
  *   - a selection whose provision is still in flight (`inFlight`) waits,
@@ -371,12 +373,14 @@ export function resolveVacantSelection(args: {
   selectedWorkspaceId: string | null
   /** The sidebar's selectable rows in display order (`sidebarRowIds`). */
   rowIds: string[]
+  /** The selection is a stopped workspace, or one still being looked up. */
+  stopped?: boolean
   claims: Record<string, string>
   inFlight: string[]
 }): string | null {
   const { previousProjectId, activeProjectId, selectedWorkspaceId, rowIds, claims, inFlight } = args
   if (!activeProjectId) return null
-  if (selectedWorkspaceId && rowIds.includes(selectedWorkspaceId)) return null
+  if (selectedWorkspaceId && (rowIds.includes(selectedWorkspaceId) || args.stopped === true)) return null
   const vanished = selectedWorkspaceId !== null
   const switchedProject = previousProjectId !== null && previousProjectId !== activeProjectId
   if (!vanished && !switchedProject) return null
@@ -625,13 +629,20 @@ interface UiState {
    *  there, then clears this. */
   revealQueued: { id: string; parent: string } | null
   setRevealQueued: (reveal: { id: string; parent: string } | null) => void
-  /** Whether the stopped-workspaces overlay is open (for the active project). */
-  stoppedOverlayOpen: boolean
-  /** The workspace the overlay opens onto, when opened from that
-   *  workspace's row. Cleared on close. */
-  stoppedOverlayFocus: string | null
-  openStoppedOverlay: (workspaceId?: string) => void
-  closeStoppedOverlay: () => void
+  /** Whether the sidebar's Stopped section is expanded. Saved. */
+  stoppedExpanded: boolean
+  setStoppedExpanded: (expanded: boolean) => void
+  /** Groups whose stopped members are shown as ghost rows ("Show stopped
+   *  workspaces"). While such a group is on screen and expanded, its
+   *  stopped members are left out of the Stopped section. */
+  stoppedShownGroups: string[]
+  setGroupShowsStopped: (groupId: string, shown: boolean) => void
+  /** Groups the user collapsed; groups start expanded. */
+  collapsedGroups: string[]
+  setGroupCollapsed: (groupId: string, collapsed: boolean) => void
+  /** The sidebar search box's text. Cleared when the project changes. */
+  sidebarQuery: string
+  setSidebarQuery: (query: string) => void
   /** Whether the skills overlay is open (for the active project). */
   skillsOverlayOpen: boolean
   openSkillsOverlay: () => void
@@ -705,6 +716,12 @@ function openSpecialPane(s: UiState, workspaceId: string, target: string): Parti
 
 const initialSelection = loadSelection()
 
+/** `list` with `id` added (`on`) or removed, unchanged if already so. */
+function toggled(list: string[], id: string, on: boolean): string[] {
+  if (list.includes(id) === on) return list
+  return on ? [...list, id] : list.filter((x) => x !== id)
+}
+
 /**
  * Whether shortcuts are off: while settings records a rebind, or while the
  * create dialog is open (where they could discard the prompt or queue a
@@ -716,7 +733,9 @@ export function shortcutsSuspended(state: Pick<UiState, 'recordingShortcut' | 'c
 
 export const useUiStore = create<UiState>((set) => ({
   viewedUserId: null,
-  viewUser: (userId, projectId) => set({ viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null }),
+  viewUser: (userId, projectId) => set({
+    viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, sidebarQuery: '',
+  }),
   activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
   focusNonce: 0,
@@ -792,13 +811,18 @@ export const useUiStore = create<UiState>((set) => ({
   }),
   revealQueued: null,
   setRevealQueued: (reveal) => set({ revealQueued: reveal }),
-  stoppedOverlayOpen: false,
-  stoppedOverlayFocus: null,
-  openStoppedOverlay: (workspaceId) => set({
-    stoppedOverlayOpen: true,
-    stoppedOverlayFocus: workspaceId ?? null,
-  }),
-  closeStoppedOverlay: () => set({ stoppedOverlayOpen: false, stoppedOverlayFocus: null }),
+  stoppedExpanded: false,
+  setStoppedExpanded: (stoppedExpanded) => set({ stoppedExpanded }),
+  stoppedShownGroups: [],
+  setGroupShowsStopped: (groupId, shown) => set((s) => ({
+    stoppedShownGroups: toggled(s.stoppedShownGroups, groupId, shown),
+  })),
+  collapsedGroups: [],
+  setGroupCollapsed: (groupId, collapsed) => set((s) => ({
+    collapsedGroups: toggled(s.collapsedGroups, groupId, collapsed),
+  })),
+  sidebarQuery: '',
+  setSidebarQuery: (sidebarQuery) => set({ sidebarQuery }),
 
   skillsOverlayOpen: false,
   openSkillsOverlay: () => set({ skillsOverlayOpen: true }),
@@ -868,9 +892,10 @@ export const useUiStore = create<UiState>((set) => ({
   setActiveProject: (projectId) => set({
     activeProjectId: projectId,
     selectedWorkspaceId: null,
+    sidebarQuery: '',
     mobileScreen: projectId ? 'workspaces' : 'projects',
   }),
-  restoreActiveProject: (projectId) => set({ activeProjectId: projectId, selectedWorkspaceId: null }),
+  restoreActiveProject: (projectId) => set({ activeProjectId: projectId, selectedWorkspaceId: null, sidebarQuery: '' }),
   // A deselect (null) doesn't change the mobile screen.
   selectWorkspace: (id) => set((s) => ({
     selectedWorkspaceId: id,

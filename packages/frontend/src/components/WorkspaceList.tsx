@@ -1,18 +1,20 @@
 import { Fragment, useEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { StoppedWorkspacesButton } from '#components/StoppedWorkspacesButton'
 import { EmptyState } from '#components/ui/EmptyState'
+import { agentLabel, workspaceModel } from '#lib/agentLabel'
 import { api } from '#lib/api'
+import { CloseIcon, SearchIcon } from '#lib/icons'
 import { usePressDrag } from '#lib/usePressDrag'
 import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
-import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
+import { stoppedSectionCount, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
 import { useUiStore } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
+  ProjectSummary,
   StoppedWorkspaceEntry,
   ProvisioningWorkspaceEntry,
   QueuedWorkspaceEntry,
@@ -29,13 +31,14 @@ import {
   type QueueParent,
 } from '#components/sidebar/QueuedRows'
 import {
-  DeletedWorkspaceRow,
   isTerminating,
   ProvisioningRow,
+  StoppedWorkspaceRow,
   WorkspaceRow,
   type SidebarDrag,
 } from '#components/sidebar/WorkspaceRows'
 import { GroupSection } from '#components/sidebar/GroupSection'
+import { StoppedSection } from '#components/sidebar/StoppedRows'
 
 /** Newest first (UTC timestamps compare as strings), with the id as a
  *  tiebreak. */
@@ -51,11 +54,9 @@ export interface SidebarGroupSection {
   /** Live (and terminating) members, newest first. */
   members: WorkspaceListEntry[]
   /** Held members (stopped, with queued workspaces waiting on them), newest
-   *  first, shown as stopped rows after the live ones. */
+   *  first, shown as stopped rows after the live ones. Other stopped members
+   *  are the group's ghost rows, fetched by `GroupSection`. */
   held: StoppedWorkspaceEntry[]
-  /** Other stopped members, newest first: ghost rows at the end of the
-   *  section, collapsed by default. */
-  ghosts: StoppedWorkspaceEntry[]
 }
 
 export interface SidebarLayout {
@@ -102,14 +103,10 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
  * restarting workspace (absent from the snapshot meanwhile) stays in place.
  *
  * A group is shown when it is pinned or has a live, provisioning or held
- * member. A shown group lists all its members, with stopped ones as
- * collapsed ghost rows that can be restarted. An unpinned group whose
- * members have all stopped disappears until one is restarted.
- *
- * `stopped` is the project's stopped list, already filtered against live
- * and provisioning ids by the caller; entries outside a shown group appear
- * only in the "Stopped workspaces" overlay. A workspace whose group no
- * longer exists falls back to the default list.
+ * member. A shown group can also list its other stopped members as ghost
+ * rows (`GroupSection`). An unpinned group whose members have all stopped
+ * disappears until one is restarted. A workspace whose group no longer
+ * exists falls back to the default list.
  *
  * A held workspace (stopped, with queued workspaces waiting on it) keeps a
  * stopped row in its usual place and keeps its group shown, so its queue
@@ -119,7 +116,6 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
 export function sidebarLayout(
   workspaces: WorkspaceListEntry[],
   groups: WorkspaceGroupSummary[],
-  stopped: StoppedWorkspaceEntry[] = [],
   provisioning: ProvisioningWorkspaceEntry[] = [],
   queued: QueuedWorkspaceEntry[] = [],
   held: HeldWorkspaceEntry[] = [],
@@ -131,14 +127,8 @@ export function sidebarLayout(
   const liveIds = new Set([...workspaces, ...provisioning].map((w) => w.workspaceId))
   // A held workspace still stopping keeps its live row; don't draw it twice.
   const shownHeld = held.filter((h) => !liveIds.has(h.workspaceId))
-  // Prefer the stopped list's fuller entry over the snapshot's held entry.
-  const stoppedIds = new Set(stopped.map((d) => d.workspaceId))
   const heldIds = new Set(shownHeld.map((h) => h.workspaceId))
-  const heldRows = [
-    ...stopped.filter((d) => heldIds.has(d.workspaceId)),
-    ...shownHeld.filter((h) => !stoppedIds.has(h.workspaceId)).map(heldAsStopped),
-  ].sort(byCreatedAt)
-  const ghosts = stopped.filter((d) => !heldIds.has(d.workspaceId)).sort(byCreatedAt)
+  const heldRows = shownHeld.map(heldAsStopped).sort(byCreatedAt)
   // Provisioning rows keep the order they were started in (the caller sorts
   // them), so they don't move under the pointer.
   const sections = shownGroups(groups, [...workspaces, ...provisioning, ...shownHeld])
@@ -148,7 +138,6 @@ export function sidebarLayout(
       provisioning: provisioning.filter((p) => filedIn(p) === group.groupId),
       members: live.filter((w) => filedIn(w) === group.groupId),
       held: heldRows.filter((d) => filedIn(d) === group.groupId),
-      ghosts: ghosts.filter((d) => filedIn(d) === group.groupId),
     }))
   const defaultHeld = heldRows.filter((d) => filedIn(d) === null)
 
@@ -178,7 +167,7 @@ export function sidebarRowIds(
   pendingDeleteIds: string[],
 ): string[] {
   // Derived from the layout so it always matches what is drawn.
-  const layout = sidebarLayout(workspaces, groups, [], provisioning)
+  const layout = sidebarLayout(workspaces, groups, provisioning)
   const selectable = (list: WorkspaceListEntry[]): string[] =>
     list.filter((w) => !isTerminating(w, pendingDeleteIds)).map((w) => w.workspaceId)
   return [
@@ -191,6 +180,53 @@ export function sidebarRowIds(
   ]
 }
 
+/**
+ * How a group's section shows. `expanded` is what its panel renders with: a
+ * search holds it open, a section of only ghosts follows its "Show stopped
+ * workspaces" toggle, and any other follows the user's collapse. It owns its
+ * ghost rows only while they are actually on screen; the Stopped section
+ * lists them otherwise, so each stopped workspace appears in one place.
+ */
+export function groupDisplay(
+  section: Pick<SidebarGroupSection, 'provisioning' | 'members' | 'held'>,
+  state: { collapsed: boolean; showStopped: boolean; searching: boolean },
+): { onlyGhosts: boolean; expanded: boolean; ownsGhosts: boolean } {
+  const onlyGhosts = section.provisioning.length + section.members.length + section.held.length === 0
+  const expanded = state.searching || (onlyGhosts ? state.showStopped : !state.collapsed)
+  return { onlyGhosts, expanded, ownsGhosts: !state.searching && expanded && state.showStopped }
+}
+
+/** The rows the sidebar search keeps. */
+export interface SearchableRows {
+  workspaces: WorkspaceListEntry[]
+  provisioning: ProvisioningWorkspaceEntry[]
+  queued: QueuedWorkspaceEntry[]
+  held: HeldWorkspaceEntry[]
+  drafts: DraftWorkspaceEntry[]
+}
+
+/**
+ * The rows matching a sidebar search, by title, prompt and agent label,
+ * ignoring case; all of them for a blank query. Stopped workspaces are
+ * searched by the server, since only their loaded pages are here.
+ */
+export function searchRows(query: string, rows: SearchableRows): SearchableRows {
+  const q = query.trim().toLowerCase()
+  if (!q) return rows
+  const hit = (...texts: (string | undefined)[]): boolean => texts.some((t) => t?.toLowerCase().includes(q))
+  return {
+    workspaces: rows.workspaces.filter((w) => hit(w.title, w.prompt, agentLabel(w.tool, workspaceModel(w)))),
+    provisioning: rows.provisioning.filter((p) => hit(p.title, p.prompt, agentLabel(p.tool, p))),
+    queued: rows.queued.filter((e) => hit(queuedTitle(e), e.prompt, agentLabel(e.tool, undefined))),
+    held: rows.held.filter((h) => hit(h.title, h.prompt, agentLabel(h.tool, undefined))),
+    drafts: rows.drafts.filter((d) => hit(d.title, d.generatedTitle, d.prompt)),
+  }
+}
+
+/** How long the search box waits after a keystroke before asking the
+ *  server for matching stopped workspaces. */
+const SEARCH_DEBOUNCE_MS = 200
+
 /** A dragged row: the workspace and the group it started in (null for
  *  the default list). */
 interface RowDrag {
@@ -201,13 +237,18 @@ interface RowDrag {
 
 
 /**
- * The scrollable workspace list: drafts, provisioning rows, ungrouped
- * workspaces, group sections and the stopped-workspaces button. It has no
- * outer chrome, so the desktop `Sidebar` and the mobile workspaces screen
- * can each wrap it.
+ * The workspace list: a search box over the scrolling rows, which are
+ * drafts, provisioning rows, ungrouped workspaces, group sections and the
+ * Stopped section. It has no outer chrome, so the desktop `Sidebar` and the
+ * mobile workspaces screen can each wrap it.
+ *
+ * A search filters the rows here and the stopped list on the server, holds
+ * the Stopped section open, and hides groups with no match, pinned or not.
+ * A workspace the search hides stays selected.
  */
 export function WorkspaceList({
   projectId,
+  project,
   workspaces,
   groups,
   provisioning,
@@ -216,6 +257,8 @@ export function WorkspaceList({
   drafts = [],
 }: {
   projectId: string | null
+  /** The active project's stopped counts, from the snapshot. */
+  project?: Pick<ProjectSummary, 'stoppedCount' | 'unseenDeaths'>
   workspaces: WorkspaceListEntry[]
   /** The active project's groups, from the snapshot. */
   groups: WorkspaceGroupSummary[]
@@ -234,13 +277,62 @@ export function WorkspaceList({
   const readOnly = useReadOnly()
   const viewedUserId = useViewedUserId()
   const viewedName = useWhoami()?.users.find((u) => u.id === viewedUserId)?.name ?? 'A teammate'
-  const stopped = useStoppedWorkspaces(projectId, workspaces, provisioning)
+  const query = useUiStore((s) => s.sidebarQuery)
+  const setQuery = useUiStore((s) => s.setSidebarQuery)
+  const stoppedExpanded = useUiStore((s) => s.stoppedExpanded)
+  const setStoppedExpanded = useUiStore((s) => s.setStoppedExpanded)
+  const stoppedShownGroups = useUiStore((s) => s.stoppedShownGroups)
+  const collapsedGroups = useUiStore((s) => s.collapsedGroups)
 
-  const layout = sidebarLayout(workspaces, groups, stopped, provisioning, queued, held)
+  // The server search waits for a pause in typing.
+  const [serverQuery, setServerQuery] = useState(query.trim())
+  useEffect(() => {
+    const t = setTimeout(() => setServerQuery(query.trim()), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(t)
+  }, [query])
+  const searching = query.trim() !== ''
+  const shown = searchRows(query, { workspaces, provisioning, queued, held, drafts })
+  const layout = sidebarLayout(shown.workspaces, groups, shown.provisioning, shown.queued, shown.held)
+  const sections = searching
+    ? layout.groups.filter((s) => s.provisioning.length + s.members.length + s.held.length > 0)
+    : layout.groups
+
+  const owning = new Set(sections.filter((s) => groupDisplay(s, {
+    collapsed: collapsedGroups.includes(s.group.groupId),
+    showStopped: stoppedShownGroups.includes(s.group.groupId),
+    searching,
+  }).ownsGhosts).map((s) => s.group.groupId))
+  // Stopped workspaces with a row elsewhere, held or restarting. The server
+  // leaves them out of the stopped lists, so each total counts only what it
+  // lists. Live ids are left out on this side too, where a just-stopped
+  // workspace's optimistic entry waits for its live row to go.
+  const elsewhere = [
+    ...held.map((h) => h.workspaceId),
+    ...provisioning.filter((p) => p.kind === 'restart').map((p) => p.workspaceId),
+  ]
+  const hidden = new Set([...workspaces.map((w) => w.workspaceId), ...elsewhere])
+  const stoppedOpen = stoppedExpanded || searching
+  const stopped = useStoppedWorkspaces(projectId, {
+    ...(searching && serverQuery ? { q: serverQuery } : {}),
+    excludeGroups: [...owning],
+    exclude: elsewhere,
+  }, {
+    // A search waits for the typing to pause rather than listing everything.
+    enabled: stoppedOpen && (!searching || serverQuery === query.trim()),
+    version: [project?.stoppedCount ?? 0, ...groups.map((g) => g.stoppedCount)].join(','),
+    hidden,
+  })
+  const stoppedCount = searching
+    ? stopped.total ?? 0
+    : stoppedSectionCount(project, groups, owning, held, provisioning)
+  const ownedDeaths = groups.filter((g) => owning.has(g.groupId)).reduce((n, g) => n + g.unseenDeaths, 0)
+
   // So a stop from a row's menu can select the next row.
   const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
   const visibleCount = layout.defaultList.length + layout.defaultHeld.length + layout.orphans.length
-    + layout.groups.reduce((n, s) => n + s.members.length + s.held.length + s.ghosts.length, 0)
+    + sections.reduce((n, s) => n + s.members.length + s.held.length, 0)
+  const nothingLive = visibleCount === 0 && shown.provisioning.length === 0 && shown.queued.length === 0
+    && shown.drafts.length === 0
   // Names of possible parents, for a queued row's discard dialog.
   const names = new Map<string, QueueParent>([
     ...provisioning.map((p) => [p.workspaceId, { name: p.title ?? 'New workspace', kind: 'live' }] as const),
@@ -333,85 +425,136 @@ export function WorkspaceList({
 
   return (
     <QueueContext.Provider value={queueContext}>
-      <div className="flex-1 overflow-y-auto py-1">
-        {readOnly && (
-          <p className="mx-3 mb-1 rounded-md bg-surface-2 px-2.5 py-1.5 text-[11px] text-text-dim">
-            {viewedName}&apos;s workspaces, read-only
-          </p>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {projectId && (
+          <div className="shrink-0 px-2 pb-1">
+            <div className="relative">
+              <SearchIcon
+                size={13}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text-faint"
+              />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== 'Escape' || !query) return
+                  e.stopPropagation()
+                  setQuery('')
+                }}
+                placeholder="Search workspaces"
+                aria-label="Search workspaces"
+                className="w-full rounded-md border border-border bg-bg py-1.5 pl-8 pr-7 text-xs text-text
+                  outline-none placeholder:text-text-faint focus:border-border-strong max-md:py-2.5 max-md:text-base"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery('')}
+                  title="Clear search"
+                  aria-label="Clear search"
+                  className="absolute right-1.5 top-1/2 flex h-5 w-5 -translate-y-1/2 items-center justify-center
+                    rounded text-text-faint transition hover:bg-surface-2 hover:text-text"
+                >
+                  <CloseIcon size={12} />
+                </button>
+              )}
+            </div>
+          </div>
         )}
-        {!projectId && (
-          <EmptyState
-            compact
-            className="py-10"
-            title="No project selected"
-            description={isMobile
-              ? 'Go back and pick a project.'
-              : 'Pick a project from the rail on the left.'}
-          />
-        )}
-        {projectId && visibleCount === 0 && provisioning.length === 0 && queued.length === 0
-          && drafts.length === 0 && (
-          <EmptyState
-            compact
-            className="py-10"
-            title="No workspaces yet"
-            description={readOnly ? undefined : 'Start one with the + above.'}
-          />
-        )}
-        {drafts.length > 0 && <DraftsSection drafts={drafts} />}
-        {layout.orphans.map((e) => (
-          <Fragment key={e.id}>
-            <QueuedWorkspaceRow entry={e} depth={0} />
-            <QueuedRows parentId={e.id} depth={1} />
-          </Fragment>
-        ))}
-        {layout.provisioning.map((p) => (
-          <Fragment key={p.workspaceId}>
-            <ProvisioningRow entry={p} />
-            <QueuedSet parentId={p.workspaceId} />
-          </Fragment>
-        ))}
-
-        {/* The default list is a drop zone that ungroups a workspace. While
-            dragging, an empty list shows a placeholder to drop on. */}
-        <div
-          ref={zoneRef(null)}
-          role="group"
-          aria-label="Ungrouped workspaces"
-          className={clsx('py-1', dropTarget(null) && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
-        >
-          {layout.defaultList.map((s) => (
-            <Fragment key={s.workspaceId}>
-              <WorkspaceRow workspace={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
-              <QueuedSet parentId={s.workspaceId} />
-            </Fragment>
-          ))}
-          {layout.defaultHeld.map((d) => (
-            <Fragment key={d.workspaceId}>
-              <DeletedWorkspaceRow entry={d} />
-              <QueuedSet parentId={d.workspaceId} />
-            </Fragment>
-          ))}
-          {drag !== null && layout.defaultList.length === 0 && (
-            <p className="mx-2 rounded-lg border border-dashed border-border px-2.5 py-3 text-center text-xs text-text-faint">
-              Ungrouped
+        <div className="flex-1 overflow-y-auto py-1">
+          {readOnly && (
+            <p className="mx-3 mb-1 rounded-md bg-surface-2 px-2.5 py-1.5 text-[11px] text-text-dim">
+              {viewedName}&apos;s workspaces, read-only
             </p>
           )}
+          {!projectId && (
+            <EmptyState
+              compact
+              className="py-10"
+              title="No project selected"
+              description={isMobile
+                ? 'Go back and pick a project.'
+                : 'Pick a project from the rail on the left.'}
+            />
+          )}
+          {projectId && !searching && nothingLive && stoppedCount === 0 && (
+            <EmptyState
+              compact
+              className="py-10"
+              title="No workspaces yet"
+              description={readOnly ? undefined : 'Start one with the + above.'}
+            />
+          )}
+          {searching && nothingLive && stopped.total === 0 && (
+            <EmptyState compact className="py-10" title="No matches" />
+          )}
+          {shown.drafts.length > 0 && <DraftsSection drafts={shown.drafts} />}
+          {layout.orphans.map((e) => (
+            <Fragment key={e.id}>
+              <QueuedWorkspaceRow entry={e} depth={0} />
+              <QueuedRows parentId={e.id} depth={1} />
+            </Fragment>
+          ))}
+          {layout.provisioning.map((p) => (
+            <Fragment key={p.workspaceId}>
+              <ProvisioningRow entry={p} />
+              <QueuedSet parentId={p.workspaceId} />
+            </Fragment>
+          ))}
+
+          {/* The default list is a drop zone that ungroups a workspace. While
+              dragging, an empty list shows a placeholder to drop on. */}
+          <div
+            ref={zoneRef(null)}
+            role="group"
+            aria-label="Ungrouped workspaces"
+            className={clsx('py-1', dropTarget(null) && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
+          >
+            {layout.defaultList.map((s) => (
+              <Fragment key={s.workspaceId}>
+                <WorkspaceRow workspace={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
+                <QueuedSet parentId={s.workspaceId} />
+              </Fragment>
+            ))}
+            {layout.defaultHeld.map((d) => (
+              <Fragment key={d.workspaceId}>
+                <StoppedWorkspaceRow entry={d} />
+                <QueuedSet parentId={d.workspaceId} />
+              </Fragment>
+            ))}
+            {drag !== null && layout.defaultList.length === 0 && (
+              <p className="mx-2 rounded-lg border border-dashed border-border px-2.5 py-3 text-center text-xs text-text-faint">
+                Ungrouped
+              </p>
+            )}
+          </div>
+
+          {sections.map((section) => (
+            <GroupSection
+              key={section.group.groupId}
+              section={section}
+              shownGroups={shownGroups}
+              drag={rowDrag}
+              rowIds={rowIds}
+              dropTarget={dropTarget(section.group.groupId)}
+              zoneRef={zoneRef(section.group.groupId)}
+              searching={searching}
+              elsewhere={elsewhere}
+              hidden={hidden}
+            />
+          ))}
+
+          {projectId && (
+            <StoppedSection
+              projectId={projectId}
+              count={stoppedCount}
+              unseenDeaths={Math.max(0, (project?.unseenDeaths ?? 0) - ownedDeaths)}
+              expanded={stoppedOpen}
+              {...(searching ? {} : { onExpandedChange: setStoppedExpanded })}
+              list={stopped}
+            />
+          )}
         </div>
-
-        {layout.groups.map((section) => (
-          <GroupSection
-            key={section.group.groupId}
-            section={section}
-            shownGroups={shownGroups}
-            drag={rowDrag}
-            rowIds={rowIds}
-            dropTarget={dropTarget(section.group.groupId)}
-            zoneRef={zoneRef(section.group.groupId)}
-          />
-        ))}
-
-        {projectId && <StoppedWorkspacesButton projectId={projectId} stopped={stopped} />}
       </div>
     </QueueContext.Provider>
   )

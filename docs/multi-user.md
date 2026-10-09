@@ -206,7 +206,8 @@ install-wide fields (image builds, plan usage, driver) pass through.
   the view to its owner.
 - **A teammate's view is read-only.** Controls that write are hidden or
   disabled, and nothing attaches: a teammate's workspace, running or
-  stopped, opens in the transcript view, refetched every 5 seconds. Views
+  stopped, opens in the read-only pane (the same one the caller's own
+  stopped workspaces open in), a running one refetched every 5 seconds. Views
   that write as a side effect (marking a death seen, remembering create
   choices) skip the write. The server refuses all of these anyway.
 - **Settings.** A teammate's project pages show read-only, env var names

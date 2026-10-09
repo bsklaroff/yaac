@@ -183,11 +183,15 @@ export const workspaceApp = new Hono<IdentityEnv>()
     zv('query', z.object({
       project: optionalProjectRef,
       limit: z.coerce.number().int().positive().optional(),
+      cursor: z.string().optional(),
+      q: z.string().optional(),
+      group: z.string().optional(),
+      // Comma-separated ids.
+      excludeGroups: z.string().optional().transform((v) => v ? v.split(',') : undefined),
+      exclude: z.string().optional().transform((v) => v ? v.split(',') : undefined),
+      workspace: z.string().optional(),
     })),
-    async (c) => {
-      const { project, limit } = c.req.valid('query')
-      return c.json(await listStoppedWorkspaces(project, limit))
-    },
+    async (c) => c.json(await listStoppedWorkspaces(c.req.valid('query'))),
   )
   .post(
     '/create',

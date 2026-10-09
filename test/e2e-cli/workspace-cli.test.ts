@@ -379,7 +379,7 @@ describe('with seeded projects', () => {
       expect(exitCode).toBe(0)
       const matches = capIds.filter((id) => stdout.includes(id.slice(0, 8)))
       expect(matches).toHaveLength(2)
-      expect(stdout).toMatch(/showing most recent 2/)
+      expect(stdout).toMatch(/showing most recent 2 of 5;/)
     })
 
     it('workspace list --stopped --all omits the cap hint', async () => {
@@ -460,11 +460,15 @@ describe('with seeded projects', () => {
       await createTestRepo(repo)
       grpId = await addTestProject(server, repo)
 
-      // Write rows with the server stopped (single DB writer).
+      // Write rows with the server stopped (single DB writer). Both are
+      // stopped workspaces, which the stopped listing knows by their
+      // recorded stop.
       await server.stop()
       setDataDir(testEnv.dataDir)
-      await recordWorkspaceCreated({ projectId: grpId, workspaceId: memberId })
-      await recordWorkspaceCreated({ projectId: grpId, workspaceId: otherId })
+      for (const workspaceId of [memberId, otherId]) {
+        await recordWorkspaceCreated({ projectId: grpId, workspaceId })
+        await recordWorkspaceStopped(grpId, workspaceId)
+      }
       await closeDb()
       server = await spawnYaacServer(testEnv.env)
     })

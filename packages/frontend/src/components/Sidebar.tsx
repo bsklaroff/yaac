@@ -15,6 +15,7 @@ import {
   useUiStore,
 } from '#lib/store'
 import type {
+  ProjectSummary,
   GitAuthFailure,
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
@@ -112,6 +113,7 @@ function ResizeHandle(): JSX.Element {
  */
 export function Sidebar({
   projectId,
+  project,
   projectRemoteUrl,
   workspaces,
   groups,
@@ -123,6 +125,8 @@ export function Sidebar({
   gitAuthFailures,
 }: {
   projectId: string | null
+  /** The active project's stopped counts, for the Stopped section. */
+  project?: Pick<ProjectSummary, 'stoppedCount' | 'unseenDeaths'>
   /** Active project's git remote ('' until the snapshot loads), typed to
    *  confirm project removal. */
   projectRemoteUrl: string
@@ -191,6 +195,7 @@ export function Sidebar({
 
         <WorkspaceList
           projectId={projectId}
+          project={project}
           workspaces={workspaces}
           groups={groups}
           provisioning={provisioning}

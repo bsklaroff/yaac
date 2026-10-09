@@ -1,14 +1,14 @@
 /*
- * Verifies in Chromium (1400x900) that the stopped-workspaces overlay shows
- * the whole conversation of a stopped `tui` workspace for codex, pi and
+ * Verifies in Chromium (1400x900) that the read-only pane shows the whole
+ * conversation of a stopped `tui` workspace for codex, pi and
  * opencode, translated from each tool's own history: the user prompt, every
  * tool call (title and, once expanded, its output) and the agent's final
  * text. Not just the opening prompt, and not "This conversation has no
  * messages." A fourth case checks that an opencode tool call that failed
  * shows as failed with its error.
  *
- * Nothing is stubbed: the overlay fetches the real list-stopped and
- * transcript routes. It needs a running containerless server with these
+ * Nothing is stubbed: the sidebar's Stopped section and the pane fetch the
+ * real list-stopped and transcript routes. It needs a running containerless server with these
  * stopped workspaces (matched by title), each a `tui` workspace whose agent
  * was told to run `echo hello-from-<tool>`, write `note-<tool>.txt` and end
  * with a reply containing `FINAL-<TOOL>-REPLY`:
@@ -79,22 +79,23 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.goto(`${origin}/`)
-  await page.locator('text=Stopped workspaces').first().click({ timeout: 15_000 })
-  const dialog = page.locator('[role="dialog"]').last()
-  await dialog.waitFor({ state: 'visible', timeout: 10_000 })
+  const section = page.getByRole('group', { name: 'Stopped workspaces' })
+  const header = section.getByRole('button', { name: /^Stopped/ }).first()
+  await header.waitFor({ timeout: 15_000 })
+  if (await header.getAttribute('aria-expanded') === 'false') await header.click()
 
   for (const c of CASES) {
     console.log(`\n${c.title} (${c.tool})`)
-    const row = dialog.getByText(c.title, { exact: true }).first()
+    const row = section.getByText(c.title, { exact: true }).first()
+    await row.waitFor({ timeout: 10_000 }).catch(() => {})
     if (await row.count() === 0) {
       check(`${c.title}: listed as a stopped workspace`, false)
       continue
     }
     await row.click()
-    // The detail pane is the column holding Restart; its heading is the title.
-    const detail = dialog.locator('div', { has: page.getByRole('button', { name: 'Restart' }) })
-      .filter({ has: page.getByText(c.title, { exact: true }) }).last()
-    const pane = detail.locator('.overflow-y-auto').last()
+    // The read-only pane is the <main> holding Restart.
+    const pane = page.locator('main', { has: page.getByRole('button', { name: 'Restart' }) })
+      .locator('.overflow-y-auto').last()
     const reply = c.reply ?? `FINAL-${c.tool.toUpperCase()}-REPLY`
     try {
       await pane.getByText(reply).first().waitFor({ timeout: 15_000 })

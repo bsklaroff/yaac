@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
-import { createWorkspaceGroup, listWorkspaceGroupRows } from '#db/group-store'
-import { recordWorkspaceCreated } from '#db/workspace-store'
+import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db/group-store'
+import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { listWorkspaceGroups, resolveGroup } from '#domain/workspaces/groups'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -42,6 +42,22 @@ describe('workspace groups (domain)', () => {
 
       expect((await listWorkspaceGroups()).map((g) => g.projectId).sort())
         .toEqual([OTHER, PROJ, PROJ].sort())
+    })
+
+    it('counts each group\'s stopped members and their unseen deaths', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'live' })
+      const group = await createWorkspaceGroup(PROJ, 'g', 'live')
+      for (const id of ['quit', 'oom']) {
+        await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
+        await setWorkspaceGroup(PROJ, id, group.groupId)
+      }
+      await recordWorkspaceStopped(PROJ, 'quit')
+      await recordWorkspaceStopped(PROJ, 'oom', { reason: 'oom' })
+      const empty = await createWorkspaceGroup(PROJ, 'empty', null)
+
+      const groups = await listWorkspaceGroups(PROJ)
+      expect(groups.find((g) => g.groupId === group.groupId)).toMatchObject({ stoppedCount: 2, unseenDeaths: 1 })
+      expect(groups.find((g) => g.groupId === empty.groupId)).toMatchObject({ stoppedCount: 0, unseenDeaths: 0 })
     })
   })
 

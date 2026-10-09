@@ -2,7 +2,8 @@ import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { claudeDir } from '@yaac/shared/project-paths'
-import { closeDb } from '#db/client'
+import { sql } from 'drizzle-orm'
+import { closeDb, getDb } from '#db/client'
 import {
   deleteProjectWorkspaces,
   deleteWorkspaceRow,
@@ -11,7 +12,9 @@ import {
   setWorkspaceBaseBranch,
   getProjectWorkspaceRows,
   getWorkspaceRow,
+  countStoppedWorkspaces,
   listStoppedWorkspaceIds,
+  listStoppedWorkspaceRows,
   listWorkspaceRows,
   recordDeathSeen,
   recordWorkspaceCreated,
@@ -20,6 +23,7 @@ import {
   restoreSpareWorkspace,
   clearWorkspaceStopped,
   setWorkspaceTitle,
+  type StoppedRowCursor,
 } from '#db/workspace-store'
 import { applyWorkspaceEvent } from '#db/apply-workspace-event'
 import { firstAgentSession, recordAgentSessions } from '#db/agent-session-store'
@@ -295,6 +299,77 @@ describe('session store', () => {
       await recordWorkspaceStopped(PROJ, 'dead')
 
       expect(await listStoppedWorkspaceIds()).toEqual(new Set([`${PROJ}/dead`]))
+    })
+  })
+
+  describe('listStoppedWorkspaceRows', () => {
+    it('lists recorded stops newest first, leaving out spares and the excluded ids, with the full total', async () => {
+      await create('live')
+      for (const id of ['a', 'b', 'c']) {
+        await create(id)
+        await recordWorkspaceStopped(PROJ, id)
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      await create('spare-1', { spare: true })
+      await recordWorkspaceStopped(PROJ, 'spare-1')
+
+      const page = await listStoppedWorkspaceRows({ projectId: PROJ, excludeIds: ['b'] }, { limit: 1 })
+      expect(page.rows.map((r) => r.workspaceId)).toEqual(['c'])
+      expect(page.total).toBe(2)
+      const c = page.rows[0]
+      const rest = await listStoppedWorkspaceRows(
+        { projectId: PROJ, excludeIds: ['b'] },
+        { after: { stoppedAt: c?.stoppedAt ?? new Date(), workspaceId: 'c' } },
+      )
+      expect(rest.rows.map((r) => r.workspaceId)).toEqual(['a'])
+    })
+
+    it('pages stops written with microseconds without skipping any', async () => {
+      // Older installs hold stops the database stamped, with microseconds;
+      // a cursor carries milliseconds.
+      const ids = ['us-1', 'us-2', 'us-3', 'us-4']
+      for (const id of ids) {
+        await create(id)
+        await recordWorkspaceStopped(PROJ, id)
+      }
+      const db = await getDb()
+      for (const [i, id] of ids.entries()) {
+        await db.execute(sql`update workspaces set stopped_at = ${`2026-07-01 00:00:00.000${i + 1}00+00`}::timestamptz
+          where workspace_id = ${id}`)
+      }
+      const seen: string[] = []
+      let after: StoppedRowCursor | undefined
+      for (let i = 0; i < 4; i++) {
+        const { rows } = await listStoppedWorkspaceRows({ projectId: PROJ }, { limit: 1, ...(after ? { after } : {}) })
+        const row = rows[0]
+        if (row?.stoppedAt === undefined) break
+        seen.push(row.workspaceId)
+        after = { stoppedAt: row.stoppedAt, workspaceId: row.workspaceId }
+      }
+      expect(seen).toEqual(['us-4', 'us-3', 'us-2', 'us-1'])
+    })
+  })
+
+  describe('countStoppedWorkspaces', () => {
+    it('counts stops and unseen deaths per project and group', async () => {
+      await create('live')
+      await create('quit')
+      await recordWorkspaceStopped(PROJ, 'quit')
+      await create('oom')
+      await recordWorkspaceStopped(PROJ, 'oom', { reason: 'oom' })
+      await create('seen')
+      await recordWorkspaceStopped(PROJ, 'seen', { reason: 'oom' })
+      // The snapshot carries the unseen count, so marking one seen pushes.
+      const before = pushes
+      await recordDeathSeen(PROJ, 'seen')
+      expect(pushes).toBe(before + 1)
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'other' })
+      await recordWorkspaceStopped(OTHER, 'other')
+
+      expect(await countStoppedWorkspaces()).toEqual(expect.arrayContaining([
+        { projectId: PROJ, groupId: null, stopped: 3, unseenDeaths: 1 },
+        { projectId: OTHER, groupId: null, stopped: 1, unseenDeaths: 0 },
+      ]))
     })
   })
 

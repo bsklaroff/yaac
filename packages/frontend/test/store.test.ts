@@ -34,7 +34,7 @@ describe('pending-delete tracking', () => {
 describe('optimistic deleted tracking', () => {
   const entry = (workspaceId: string) => ({
     workspaceId, projectId: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
-    prompt: 'hi', seen: false, agentSessions: [],
+    stoppedAt: '2026-01-01 00:00:01', prompt: 'hi', seen: false, agentSessions: [],
   })
 
   it('addOptimisticStopped prepends, with no duplicates', () => {
@@ -187,6 +187,11 @@ describe('resolveVacantSelection', () => {
     // row; the caller passes display order.
     expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone' }))).toBe('w1')
     expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone', rowIds: ['w2', 'w1'] }))).toBe('w2')
+  })
+
+  it('keeps a stopped selection, or one still being looked up, which the pane shows read-only', () => {
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'stopped', stopped: true }))).toBeNull()
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'stopped', stopped: false }))).toBe('w1')
   })
 
   it('follows a create into the prewarmed spare it claimed, once the spare lists', () => {

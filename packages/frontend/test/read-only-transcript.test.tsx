@@ -5,11 +5,11 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { screen, fireEvent, cleanup } from '@testing-library/react'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
-import { StoppedTranscript } from '#components/StoppedTranscript'
+import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
 
 /**
- * The stopped-workspace pane's conversation view. The server is answered at
+ * The read-only pane's conversation view. The server is answered at
  * `fetch` and rendering is real, so the tests check what the reader sees:
  * the conversation, a picker when there are several, and the founding prompt
  * when there is nothing to read.
@@ -45,9 +45,9 @@ afterEach(() => {
 /** Answer conversation c1's transcript with these events. */
 const transcript = (events: AcpEvent[]): void => server.route(TRANSCRIPT, { events })
 
-function renderPane(props: Partial<Parameters<typeof StoppedTranscript>[0]> = {}): void {
+function renderPane(props: Partial<Parameters<typeof ReadOnlyTranscript>[0]> = {}): void {
   renderWithClient(
-    <StoppedTranscript
+    <ReadOnlyTranscript
       workspaceId="w1"
       sessions={[session()]}
       prompt="what changed?"
@@ -56,7 +56,7 @@ function renderPane(props: Partial<Parameters<typeof StoppedTranscript>[0]> = {}
   )
 }
 
-describe('StoppedTranscript', () => {
+describe('ReadOnlyTranscript', () => {
   it('renders what was actually said, not just the founding ask', async () => {
     renderPane()
     expect(await screen.findByText('the router')).toBeTruthy()
@@ -200,7 +200,7 @@ describe('StoppedTranscript', () => {
     // A teammate's running workspace is polled; once it stops, the stopped
     // view must fetch its final record rather than reuse the last poll.
     const client = testQueryClient()
-    const pane = (live: boolean): JSX.Element => <StoppedTranscript workspaceId="w1" sessions={[session()]} live={live} />
+    const pane = (live: boolean): JSX.Element => <ReadOnlyTranscript workspaceId="w1" sessions={[session()]} live={live} />
     const view = renderWithClient(pane(true), client)
     expect(await screen.findByText('the router')).toBeTruthy()
     transcript([asked(0, 'what changed?'), said(1, 'the router'), said(2, 'and the final turn')])

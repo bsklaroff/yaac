@@ -5,69 +5,66 @@ import {
   toProjectRelative,
   transcriptLastActiveMs,
 } from '#runtime/agents'
-import { listWorkspaceRows, type WorkspaceRow } from '#db'
 import {
   getAgentSessionsFor,
+  listStoppedWorkspaceRows,
   setAgentSessionCapture,
   type AgentSessionLinkRow,
+  type StoppedRowCursor,
+  type WorkspaceRow,
 } from '#db'
 import { toAgentSessionEntry } from './agent-session-entry'
 import { recordedTranscript } from './agent-session-paths'
 import { ensureProjectExists } from './list'
+import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
+import type { StoppedWorkspaceEntry, StoppedWorkspacePage } from '@yaac/shared/types'
+
+/** What `GET /workspace/list-stopped` narrows the listing to. */
+export interface StoppedListQuery {
+  project?: string
+  /** Searched in the title, first prompts and tools. */
+  q?: string
+  /** Only this group's members. */
+  group?: string
+  /** Leave out these groups' members: the webapp lists them in their
+   *  group instead. */
+  excludeGroups?: string[]
+  /** Leave out these workspaces: the webapp draws them elsewhere. */
+  exclude?: string[]
+  /** Only this workspace, for a deep link. */
+  workspace?: string
+  /** Page size; undefined lists everything after `cursor`. */
+  limit?: number
+  /** `nextCursor` of the previous page. */
+  cursor?: string
+}
 
 /**
- * Recorded workspaces with nothing running: stopped, with the checkout kept
- * for restart. If the substrate is unreachable, all count as stopped.
- *
- * Sorted newest first and cut to `limit` (grouped workspaces always kept)
- * before reading transcripts, so only listed rows pay for the last-activity
- * stat; rows with no recorded stop pay it up front as their sort key.
- * `undefined` / `0` disables the limit.
+ * Recorded workspaces with a recorded stop and nothing running (a restart
+ * keeps its stop until it succeeds), one page at a time, newest stop first.
+ * Transcripts are read only for the page's rows.
  */
-export async function listStoppedWorkspaces(
-  projectFilter?: string,
-  limit?: number,
-): Promise<StoppedWorkspaceEntry[]> {
-  if (projectFilter) await ensureProjectExists(projectFilter)
-
-  const runningIds = new Set<string>()
-  try {
-    for (const w of await workspaceDriver().list()) {
-      if (w.workspaceId) runningIds.add(w.workspaceId)
-    }
-  } catch {
-    // Substrate unreachable: treat all as stopped.
-  }
-
-  const rows = (await listWorkspaceRows(projectFilter))
-    .filter((r) => !runningIds.has(r.workspaceId))
+export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promise<StoppedWorkspacePage> {
+  if (query.project) await ensureProjectExists(query.project)
+  const { rows, total } = await listStoppedWorkspaceRows({
+    projectId: query.project,
+    q: query.q,
+    groupId: query.group,
+    excludeGroupIds: query.excludeGroups,
+    workspaceId: query.workspace,
+    excludeIds: [...await runningIds(), ...query.exclude ?? []],
+  }, {
+    limit: query.limit,
+    after: query.cursor ? parseCursor(query.cursor) : undefined,
+  })
 
   const linksByWorkspace = await getAgentSessionsFor(rows.map((r) => ({
     projectId: r.projectId,
     workspaceId: r.workspaceId,
   })))
-  const linksOf = (r: WorkspaceRow): AgentSessionLinkRow[] =>
-    linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
-  const activeMs = async (r: WorkspaceRow): Promise<number> =>
-    await lastActiveMs(r, linksOf(r)) ?? r.createdAt.getTime()
-
-  // Newest stop first; rows with no recorded stop sort by last activity.
-  const unstoppedActive = new Map(await Promise.all(rows
-    .filter((r) => r.stoppedAt === undefined)
-    .map(async (r) => [r, await activeMs(r)] as const)))
-  const sortKey = (r: WorkspaceRow): number => r.stoppedAt?.getTime() ?? unstoppedActive.get(r) ?? 0
-  rows.sort((a, b) => sortKey(b) - sortKey(a) || b.createdAt.getTime() - a.createdAt.getTime())
-
-  // Grouped workspaces show as ghost rows in their sidebar group, so they
-  // survive the cap.
-  const capped = limit && limit > 0
-    ? rows.filter((r, i) => i < limit || r.groupId !== undefined)
-    : rows
-
-  return Promise.all(capped.map(async (r) => {
-    const links = linksOf(r)
+  const entries = await Promise.all(rows.map(async (r): Promise<StoppedWorkspaceEntry> => {
+    const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
     const first = links[0]
     const prompt = await stoppedPrompt(r, links)
     return {
@@ -76,17 +73,48 @@ export async function listStoppedWorkspaces(
       // From the first conversation; claude if none, as restart assumes.
       tool: first?.tool ?? 'claude',
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
-      lastActiveAt: formatUtcTimestamp(unstoppedActive.get(r) ?? await activeMs(r)),
+      lastActiveAt: formatUtcTimestamp(await lastActiveMs(r, links) ?? r.createdAt.getTime()),
+      stoppedAt: formatUtcTimestamp(stoppedAtOf(r).getTime()),
       agentSessions: links.map((l) => toAgentSessionEntry(l)),
       seen: r.deathSeen,
       ...(prompt !== undefined ? { prompt } : {}),
       ...(r.title !== undefined ? { title: r.title } : {}),
-      ...(r.stoppedAt !== undefined ? { stoppedAt: formatUtcTimestamp(r.stoppedAt.getTime()) } : {}),
       ...(r.deathReason !== undefined ? { deathReason: r.deathReason } : {}),
       ...(r.deathDetail !== undefined ? { deathDetail: r.deathDetail } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
     }
   }))
+  const last = rows.at(-1)
+  const more = query.limit !== undefined && last !== undefined && rows.length === query.limit
+  return {
+    entries,
+    total,
+    ...(more ? { nextCursor: `${stoppedAtOf(last).getTime()}:${last.workspaceId}` } : {}),
+  }
+}
+
+/** Ids the runtime reports running; none when it is unreachable, since the
+ *  recorded stops are still worth listing. */
+async function runningIds(): Promise<string[]> {
+  try {
+    return (await workspaceDriver().list()).map((w) => w.workspaceId).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+/** Narrows the type: the listing selects only rows with a stop. */
+function stoppedAtOf(r: WorkspaceRow): Date {
+  if (r.stoppedAt === undefined) throw new Error(`workspace ${r.workspaceId} has no recorded stop`)
+  return r.stoppedAt
+}
+
+/** `<stop ms>:<workspace id>`, as `listStoppedWorkspaces` writes it. */
+function parseCursor(cursor: string): StoppedRowCursor {
+  const sep = cursor.indexOf(':')
+  const ms = Number(cursor.slice(0, sep))
+  if (sep < 0 || !Number.isFinite(ms)) throw new ServerError('VALIDATION', `invalid cursor: ${cursor}`)
+  return { stoppedAt: new Date(ms), workspaceId: cursor.slice(sep + 1) }
 }
 
 /**

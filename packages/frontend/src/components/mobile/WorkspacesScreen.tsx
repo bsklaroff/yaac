@@ -8,6 +8,7 @@ import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { WorkspaceList } from '#components/WorkspaceList'
 import type {
+  ProjectSummary,
   GitAuthFailure,
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
@@ -24,6 +25,7 @@ import type {
  */
 export function WorkspacesScreen({
   projectId,
+  project,
   projectRemoteUrl,
   workspaces,
   groups,
@@ -36,6 +38,8 @@ export function WorkspacesScreen({
   onBack,
 }: {
   projectId: string | null
+  /** The active project's stopped counts, for the Stopped section. */
+  project?: Pick<ProjectSummary, 'stoppedCount' | 'unseenDeaths'>
   /** Active project's git remote ('' until the first snapshot); typed back
    *  to confirm removing the project. */
   projectRemoteUrl: string
@@ -84,6 +88,7 @@ export function WorkspacesScreen({
 
       <WorkspaceList
         projectId={projectId}
+        project={project}
         workspaces={workspaces}
         groups={groups}
         provisioning={provisioning}

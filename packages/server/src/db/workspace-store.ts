@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { and, eq, isNotNull, isNull } from 'drizzle-orm'
+import { and, count, desc, eq, exists, ilike, isNotNull, isNull, lt, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
 import { deleteWorkspaceAgentSessions } from './agent-session-store'
 import { agentSessions, workspaceAgentSessions, workspaces } from './schema'
@@ -272,15 +272,18 @@ export async function clearWorkspaceStopped(
   }).where(key(projectId, workspaceId))
 }
 
-/** Mark an abnormal death as seen (the user opened its detail). */
+/** Mark an abnormal death as seen (the user opened its detail). Notifies,
+ *  since the snapshot counts unseen deaths. */
 export async function recordDeathSeen(projectId: string, workspaceId: string): Promise<void> {
   const db = await getDb()
   await db.update(workspaces).set({ deathSeen: true }).where(key(projectId, workspaceId))
+  notifyWorkspaceListChanged()
 }
 
 /**
  * Mark every recorded abnormal death in a project as seen ("mark all as
- * read"). Only rows that actually died are touched.
+ * read"). Only rows that actually died are touched. Notifies, like
+ * `recordDeathSeen`.
  */
 export async function recordAllDeathsSeen(projectId: string): Promise<void> {
   const db = await getDb()
@@ -288,6 +291,7 @@ export async function recordAllDeathsSeen(projectId: string): Promise<void> {
     eq(workspaces.projectId, projectId),
     isNotNull(workspaces.deathReason),
   ))
+  notifyWorkspaceListChanged()
 }
 
 /**
@@ -363,6 +367,110 @@ export async function listWorkspaceRows(projectId?: string): Promise<WorkspaceRo
     : await db.select().from(workspaces)
       .where(and(eq(workspaces.projectId, projectId), notSpare))
   return rows.map(toRow)
+}
+
+/** What `listStoppedWorkspaceRows` narrows the stopped rows to. */
+export interface StoppedRowFilter {
+  projectId?: string
+  /** Ids to leave out: the ones the runtime reports running, since a
+   *  restart keeps its stop until it succeeds. */
+  excludeIds?: string[]
+  /** Matched case-insensitively against the title, and the first prompt and
+   *  tool of each of the workspace's conversations. */
+  q?: string
+  groupId?: string
+  /** Leave out the members of these groups. */
+  excludeGroupIds?: string[]
+  workspaceId?: string
+}
+
+/** Where a page of stopped rows starts: just after this row. */
+export interface StoppedRowCursor {
+  stoppedAt: Date
+  workspaceId: string
+}
+
+/**
+ * Rows with a recorded stop, newest stop first (the id breaks ties), one
+ * page at a time, plus how many match in all. Paging is by keyset, so a stop
+ * landing between two pages neither repeats nor skips a row. `limit`
+ * undefined returns every row after the cursor.
+ *
+ * Both the order and the keyset use the stop time cut to milliseconds, the
+ * precision a cursor carries: older installs hold stops written by the
+ * database with microseconds, and comparing those against a cursor that
+ * dropped them would skip rows.
+ *
+ * A prompt the capture step never stored is matched by `q` only once the
+ * listing has backfilled it (`stoppedPrompt`).
+ */
+export async function listStoppedWorkspaceRows(
+  filter: StoppedRowFilter,
+  page: { limit?: number; after?: StoppedRowCursor } = {},
+): Promise<{ rows: WorkspaceRow[]; total: number }> {
+  const db = await getDb()
+  const conds: (SQL | undefined)[] = [isNotNull(workspaces.stoppedAt), notSpare]
+  if (filter.projectId !== undefined) conds.push(eq(workspaces.projectId, filter.projectId))
+  if (filter.workspaceId !== undefined) conds.push(eq(workspaces.workspaceId, filter.workspaceId))
+  if (filter.groupId !== undefined) conds.push(eq(workspaces.groupId, filter.groupId))
+  if (filter.excludeIds?.length) conds.push(notInArray(workspaces.workspaceId, filter.excludeIds))
+  if (filter.excludeGroupIds?.length) {
+    conds.push(or(isNull(workspaces.groupId), notInArray(workspaces.groupId, filter.excludeGroupIds)))
+  }
+  const q = filter.q?.trim()
+  if (q) {
+    const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
+    conds.push(or(
+      ilike(workspaces.title, pattern),
+      exists(db.select({ one: sql`1` }).from(workspaceAgentSessions)
+        .innerJoin(agentSessions, and(
+          eq(workspaceAgentSessions.projectId, agentSessions.projectId),
+          eq(workspaceAgentSessions.tool, agentSessions.tool),
+          eq(workspaceAgentSessions.agentSessionId, agentSessions.agentSessionId),
+        ))
+        .where(and(
+          eq(workspaceAgentSessions.projectId, workspaces.projectId),
+          eq(workspaceAgentSessions.workspaceId, workspaces.workspaceId),
+          or(ilike(agentSessions.firstPrompt, pattern), ilike(agentSessions.tool, pattern)),
+        ))),
+    ))
+  }
+  const where = and(...conds)
+  const after = page.after
+  const stoppedMs = sql`date_trunc('milliseconds', ${workspaces.stoppedAt})`
+  const afterMs = after && sql`${after.stoppedAt.toISOString()}::timestamptz`
+  const rows = await db.select().from(workspaces)
+    .where(after === undefined ? where : and(where, or(
+      sql`${stoppedMs} < ${afterMs}`,
+      and(sql`${stoppedMs} = ${afterMs}`, lt(workspaces.workspaceId, after.workspaceId)),
+    )))
+    .orderBy(desc(stoppedMs), desc(workspaces.workspaceId))
+    .limit(page.limit ?? Number.MAX_SAFE_INTEGER)
+  const [counted] = await db.select({ n: count() }).from(workspaces).where(where)
+  return { rows: rows.map(toRow), total: counted?.n ?? 0 }
+}
+
+/** Stopped workspaces counted per project and group, for the snapshot. */
+export interface StoppedCount {
+  projectId: string
+  /** Null for ungrouped workspaces. */
+  groupId: string | null
+  stopped: number
+  /** Deaths the user has not viewed yet. */
+  unseenDeaths: number
+}
+
+export async function countStoppedWorkspaces(): Promise<StoppedCount[]> {
+  const db = await getDb()
+  return db.select({
+    projectId: workspaces.projectId,
+    groupId: workspaces.groupId,
+    stopped: count(),
+    unseenDeaths: sql<number>`count(*) filter (where ${workspaces.deathReason} is not null and not ${workspaces.deathSeen})`
+      .mapWith(Number),
+  }).from(workspaces)
+    .where(and(isNotNull(workspaces.stoppedAt), notSpare))
+    .groupBy(workspaces.projectId, workspaces.groupId)
 }
 
 /**

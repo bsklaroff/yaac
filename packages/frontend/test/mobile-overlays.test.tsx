@@ -3,17 +3,10 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import type { JSX } from 'react'
-import type { ImageBuildEntry, ProjectSkills, SkillDetail, StoppedWorkspaceEntry } from '@yaac/shared/types'
-
-const provision = vi.hoisted(() => vi.fn())
-
-vi.mock('#lib/createWorkspace', () => ({ restartWorkspace: vi.fn() }))
-vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
+import type { ImageBuildEntry, ProjectSkills, SkillDetail } from '@yaac/shared/types'
 
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { SkillsButton } from '#components/SkillsButton'
-import { StoppedWorkspacesButton } from '#components/StoppedWorkspacesButton'
-import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { MasterDetail } from '#components/ui/MasterDetail'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
@@ -45,7 +38,6 @@ function setMobileViewport(mobile: boolean): void {
 
 const flushEffects = (): Promise<void> => act(async () => { await Promise.resolve() })
 
-const MARK = 'POST /api/workspace/mark-death-seen'
 const SKILL_BODY = 'GET /api/project/proj/skills/body'
 const BUILD_LOG = 'GET /api/image/builds/build-1/log'
 
@@ -53,7 +45,7 @@ let server: FetchMock
 beforeEach(() => {
   vi.clearAllMocks()
   setMobileViewport(true)
-  server = mockFetch({ [MARK]: undefined, [BUILD_LOG]: { log: 'STEP 1/2: FROM ubuntu' } })
+  server = mockFetch({ [BUILD_LOG]: { log: 'STEP 1/2: FROM ubuntu' } })
 })
 
 afterEach(() => {
@@ -109,70 +101,6 @@ describe('MasterDetail', () => {
     expect(back.className).toContain('md:hidden')
     fireEvent.click(back)
     expect(onBack).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('StoppedWorkspacesButton on a phone', () => {
-  const stopped = (over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEntry => ({
-    workspaceId: 's1',
-    projectId: 'proj',
-    tool: 'claude',
-    createdAt: '2026-07-13 00:00:00',
-    stoppedAt: '2026-07-13 01:00:00',
-    seen: false,
-    agentSessions: [],
-    ...over,
-  })
-
-  function Harness(): JSX.Element {
-    return <StoppedWorkspacesButton projectId="proj" stopped={useStoppedWorkspaces('proj', [], [])} />
-  }
-
-  const openOverlay = async (): Promise<void> => {
-    useUiStore.setState({ stoppedOverlayOpen: false, optimisticStopped: [] })
-    renderWithClient(<Harness />)
-    fireEvent.click(await screen.findByRole('button', { name: /^Stopped workspaces/ }))
-  }
-
-  beforeEach(() => {
-    server.route('GET /api/workspace/list-stopped', [
-      stopped({ workspaceId: 's1', title: 'OOMed run', prompt: 'fix the parser', deathReason: 'oom' }),
-      stopped({ workspaceId: 's2', title: 'Add tests', tool: 'codex' }),
-    ])
-  })
-
-  it('opens on the list, with no row read until one is tapped', async () => {
-    await openOverlay()
-    await screen.findByText('Add tests')
-    // The detail pane is off-screen, so the top row isn't auto-selected;
-    // viewing a detail would mark its death as seen.
-    expect(screen.queryByText('fix the parser')).toBeNull()
-    expect(screen.queryByRole('button', { name: /Restart/ })).toBeNull()
-    await flushEffects()
-    expect(server.called(MARK)).toEqual([])
-  })
-
-  it('drills into a row and comes back to the list', async () => {
-    await openOverlay()
-    fireEvent.click((await screen.findAllByText('OOMed run'))[0])
-    // Detail-only content: the prompt, the metadata grid, and Restart.
-    await waitFor(() => expect(screen.getByText('fix the parser')).toBeTruthy())
-    expect(screen.getByText('Cause')).toBeTruthy()
-    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectId: 'proj', workspaceId: 's1' }]))
-
-    fireEvent.click(screen.getByRole('button', { name: 'Back to stopped workspaces' }))
-    await waitFor(() => expect(screen.queryByText('fix the parser')).toBeNull())
-    expect(screen.getByText('Add tests')).toBeTruthy()
-  })
-
-  it('reopens on the list rather than on the last row read', async () => {
-    await openOverlay()
-    fireEvent.click((await screen.findAllByText('OOMed run'))[0])
-    await waitFor(() => expect(screen.getByText('fix the parser')).toBeTruthy())
-
-    act(() => { useUiStore.getState().closeStoppedOverlay() })
-    act(() => { useUiStore.getState().openStoppedOverlay() })
-    await waitFor(() => expect(screen.queryByText('fix the parser')).toBeNull())
   })
 })
 
