@@ -64,6 +64,12 @@ function roundTrip(linkDir: string, via: string, to: string): string {
   return `${path.relative(linkDir, via)}/${path.relative(via, to)}`
 }
 
+/** A UNIX socket at `dir/name`, bound by a relative path since macOS caps a
+ *  socket path at 104 bytes. It outlives the process that bound it. */
+async function bindSocket(dir: string, name: string): Promise<void> {
+  await execFileAsync(process.execPath, ['-e', `require('net').createServer().listen('${name}', () => process.exit(0))`], { cwd: dir })
+}
+
 async function write(dir: string, rel: string, content: string | Buffer = ''): Promise<void> {
   await fs.mkdir(path.dirname(path.join(dir, rel)), { recursive: true })
   await fs.writeFile(path.join(dir, rel), content)
@@ -458,11 +464,14 @@ describe('listWorkspaceDir', () => {
     expect(entries.map((e) => e.name).sort()).toEqual(['index.js', 'lib', 'main.js'])
   })
 
-  it('refuses a link that leads outside, and a file', async () => {
+  it('refuses a link that leads outside, a file and a socket', async () => {
     expect(await refusal(listWorkspaceDir('dir', 'away')))
       .toEqual({ code: 'VALIDATION', message: 'away points outside the workspace' })
     expect((await refusal(listWorkspaceDir('dir', 'a.txt'))).code).toBe('VALIDATION')
     expect((await refusal(listWorkspaceDir('dir', 'missing'))).code).toBe('NOT_FOUND')
+    await bindSocket(dir, 'sock')
+    expect(await refusal(listWorkspaceDir('dir', 'sock')))
+      .toEqual({ code: 'VALIDATION', message: 'sock is not a folder' })
   })
 
   it('caps a large folder and says so', async () => {
@@ -522,10 +531,17 @@ describe('readWorkspaceFile', () => {
     expect((await refusal(readWorkspaceFile('read', 'sub'))).code).toBe('VALIDATION')
   })
 
-  it('refuses a FIFO at once rather than waiting for a writer', async () => {
+  it('refuses a FIFO at once rather than waiting for a writer, and a socket alike', async () => {
     await execFileAsync('mkfifo', [path.join(dir, 'pipe')])
     expect(await refusal(readWorkspaceFile('read', 'pipe')))
       .toEqual({ code: 'VALIDATION', message: 'pipe is not a regular file' })
+    await bindSocket(dir, 'sock')
+    expect(await refusal(readWorkspaceFile('read', 'sock')))
+      .toEqual({ code: 'VALIDATION', message: 'sock is not a regular file' })
+    // As a folder in the path, it is missing, as a FIFO or file there is.
+    expect(await refusal(readWorkspaceFile('read', 'sock/x')))
+      .toEqual({ code: 'NOT_FOUND', message: 'no such file: sock/x' })
+    expect((await refusal(readWorkspaceFile('read', 'pipe/x'))).code).toBe('NOT_FOUND')
   })
 
   it('gives binary and oversized files no content', async () => {
@@ -601,6 +617,16 @@ describe('writeWorkspaceFile', () => {
     const { version } = await readWorkspaceFile('write', 'b.txt')
     expect(await writeWorkspaceFile(local, 'write', 'b.txt', 'clobber', null)).toEqual({ conflict: version })
     expect(await read('b.txt')).toBe('bravo\n')
+  })
+
+  it('refuses to save onto a socket or create beneath one', async () => {
+    await bindSocket(dir, 'sock')
+    for (const baseVersion of [null, 'any']) {
+      expect(await refusal(writeWorkspaceFile(local, 'write', 'sock', 'x', baseVersion)))
+        .toEqual({ code: 'VALIDATION', message: 'sock is not a regular file' })
+    }
+    expect((await refusal(writeWorkspaceFile(local, 'write', 'sock/new.txt', 'x', null))).code).toBe('NOT_FOUND')
+    expect((await fs.lstat(path.join(dir, 'sock'))).isSocket()).toBe(true)
   })
 
   it('never recreates a file that is gone', async () => {
