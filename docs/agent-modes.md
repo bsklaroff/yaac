@@ -199,6 +199,37 @@ handshake, then the whole conversation in one `hello` frame): that is the
 "Connecting to the agent…" wait. The warm-up that pre-attaches terminals
 after a page load covers chat panes too.
 
+## Find
+
+Cmd/Ctrl-F searches the whole conversation in the main pane, whichever mode
+it runs in and whether the workspace is running or stopped. The chord is
+claimed on `window` by the conversation pane the user is in, so it never
+reaches a terminal or the browser's own find. One find bar
+(`useConversationFind`) serves every case:
+
+- **`acp`, running:** the chat pane searches the view it shows (the
+  conversation, a subagent's thread or a task).
+- **Stopped, or a teammate's:** the read-only pane searches the transcript
+  it shows.
+- **`tui`, running:** the terminal holds only the screens tmux last drew, so
+  the chord lays the tool's own history over it instead, read through the
+  transcript route above and refreshed while the workspace runs. Escape
+  returns to the terminal.
+
+A search must find what a row hides until opened (thinking, tool output, a
+condensed view's folded runs), so it runs in two passes, each counted in a
+Worker like the file editor's find (docs/file-editor.md): first over the
+conversation's events, to open the rows that hold a match, then over the
+text rendered on screen. The first pass reads messages as markdown source,
+so it only approximates what the second will find; it never affects the
+count. The count, previous / next and the highlights work
+on the second pass, so they agree with what the reader sees, and it reruns
+as a live turn streams. Highlights are CSS custom highlights, which leave the
+transcript's DOM alone. A search opens rows without changing what the
+reader chose: they can close a row while it holds a match, and once it no
+longer does, it goes back to how they left it. Closing the bar keeps only
+the current match's row open, so the rows a search opened don't stay open.
+
 ## Sending mid-turn
 
 The composer stays open while the agent works, as a TUI's prompt does: Enter
@@ -737,4 +768,5 @@ the image.
 | Chat pane | `packages/frontend/src/components/WorkspaceChat.tsx`, `src/lib/acp.ts` |
 | Composer `/` and `$` completion | `packages/frontend/src/components/ComposerMenu.tsx` |
 | Subagent and task views | `packages/frontend/src/components/AcpActivity.tsx` |
+| Find | `packages/frontend/src/components/ConversationFind.tsx`, `TuiTranscriptSearch.tsx` |
 | Pasted images | `packages/frontend/src/lib/attachments.ts`, `packages/server/src/domain/workspaces/attachments.ts`, `packages/shared/src/attachments.ts` |

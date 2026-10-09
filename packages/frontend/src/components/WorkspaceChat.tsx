@@ -6,6 +6,7 @@ import {
   ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
+import { useConversationFind } from '#components/ConversationFind'
 import { EffortMenu } from '#components/EffortMenu'
 import { PermissionModeMenu } from '#components/PermissionModeMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
@@ -32,6 +33,8 @@ import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shar
  * subagents or background tasks the agent started (`AcpActivity`), and Esc
  * or Back returns. Those views have no composer, since the agent takes
  * messages only on its main thread.
+ *
+ * Cmd/Ctrl-F searches whichever view is shown (`useConversationFind`).
  */
 
 /** The text parts of a `user` event, for comparing against a draft. */
@@ -49,10 +52,13 @@ export function WorkspaceChat({
   workspaceId,
   agentSessionId,
   visible = true,
+  focused = visible,
 }: {
   workspaceId: string
   agentSessionId: string
   visible?: boolean
+  /** The pane the user is in, which Cmd/Ctrl-F searches. */
+  focused?: boolean
 }): JSX.Element {
   const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts, permissionModes, efforts } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
@@ -122,6 +128,12 @@ export function WorkspaceChat({
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const { bar: findBar, found } = useConversationFind({
+    groups: subagent !== undefined ? threadGroups : task !== undefined ? [] : groups,
+    scrollRef,
+    chord: focused,
+    onClose: () => inputRef.current?.focus(),
+  })
 
   // Follow the tail only while the reader is already at it, so streaming
   // never yanks someone who scrolled up.
@@ -323,6 +335,7 @@ export function WorkspaceChat({
           )}
         </ActivityHeader>
       )}
+      {findBar}
       <div
         ref={scrollRef}
         onScroll={onScroll}
@@ -339,6 +352,7 @@ export function WorkspaceChat({
               <SubagentPrompt task={subagent.task} />
               <AcpTranscript
                 groups={threadGroups}
+                found={found}
                 busy={subagent.state === 'running'}
                 live
                 onAnswerPermission={answerPermission}
@@ -360,6 +374,7 @@ export function WorkspaceChat({
             <>
               <AcpTranscript
                 groups={groups}
+                found={found}
                 busy={busy}
                 live
                 condensed={condensed}

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
 import clsx from 'clsx'
 import { CodeView } from '#components/CodeView'
 import { DiffView } from '#components/DiffView'
@@ -313,6 +313,46 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   return groups
 }
 
+/** The groups a find bar matched (see `useConversationFind`), by seq. */
+export interface Found {
+  /** Groups with a match anywhere, whose folded run a condensed view opens. */
+  any: ReadonlySet<number>
+  /** Groups with a match in what their row hides until opened. */
+  hidden: ReadonlySet<number>
+}
+
+/** A tool call's text as [what its row shows, what opening it shows]. */
+function toolFindText(call: AcpToolCall, output = ''): [string, string] {
+  const diffs = (call.content ?? []).flatMap((c) => (c.type === 'diff' ? [c.oldText ?? '', c.newText] : []))
+  return [
+    call.description ?? call.title,
+    // A described call's title is drawn only for a shell call, as its command.
+    [call.description !== undefined && call.shell === true ? call.title : '', toolTextOf(call.content), ...diffs,
+      stripAnsi(output)].join('\n'),
+  ]
+}
+
+/** A group's searchable text as [what its row shows, what opening it shows].
+ *  Messages are their markdown source, not the rendered text, so this only
+ *  approximates what a find will highlight: it decides which rows to open. */
+export function groupFindText(g: Group): [string, string] {
+  switch (g.kind) {
+    case 'user': case 'agent': return [g.text, '']
+    case 'thought': return ['', g.text]
+    case 'tool': return toolFindText(g.call, g.output)
+    case 'plan': return [g.entries.map((e) => e.content).join('\n'), '']
+    case 'subagent': return [`${g.subagent.name}\n${g.subagent.task}`, '']
+    case 'task': return [`${g.task.name}\n${g.task.summary ?? ''}`, '']
+    case 'error': return [g.message, '']
+    case 'turn-end': return [g.stopReason, '']
+    case 'permission': {
+      if (g.toolCall === undefined) return ['', '']
+      const [shown, hidden] = toolFindText(g.toolCall, g.output)
+      return g.decided === undefined ? [`${shown}\n${hidden}`, ''] : [g.toolCall.title, hidden]
+    }
+  }
+}
+
 /** A run of groups the condensed view hides behind one row. Keyed by its
  *  first group's seq, which stays put as a live run grows, so the row keeps
  *  its open state. */
@@ -513,6 +553,24 @@ function useClipped(text: string): [RefObject<HTMLSpanElement | null>, boolean] 
 }
 
 /**
+ * A collapsible row's open state. While `reveal` (it holds a find match) the
+ * row is open unless the reader closes it then; otherwise it is the reader's
+ * own choice, else `byDefault`. A reveal never changes that choice, so the
+ * row goes back to it when the reveal ends.
+ */
+function useOpen(reveal: boolean, byDefault: boolean): [boolean, (open: boolean) => void] {
+  const [choice, setChoice] = useState<boolean | null>(null)
+  const [shut, setShut] = useState(false)
+  useEffect(() => {
+    if (!reveal) setShut(false)
+  }, [reveal])
+  return [
+    reveal ? !shut : choice ?? byDefault,
+    (open) => (reveal ? setShut(!open) : setChoice(open)),
+  ]
+}
+
+/**
  * The header line shared by tool calls, thinking and answered asks: a
  * disclosure caret on the left, then an icon and label. Rows with nothing to
  * expand keep the caret's space so their icons line up with their
@@ -577,6 +635,7 @@ export function ToolRow({
   progress,
   asked = false,
   defaultOpen = false,
+  reveal = false,
 }: {
   call: AcpToolCall
   /** Terminal output the call streamed, shown verbatim. */
@@ -588,6 +647,8 @@ export function ToolRow({
   asked?: boolean
   /** Expanded until the user collapses it; edits always are. */
   defaultOpen?: boolean
+  /** Holds a find match; see `useOpen`. */
+  reveal?: boolean
 }): JSX.Element {
   const diffs = useMemo(
     () => (call.content ?? []).filter((c): c is AcpDiff => c.type === 'diff'),
@@ -607,11 +668,10 @@ export function ToolRow({
   const fullLabel = clipped && !(call.shell === true && description === undefined)
   /** A shell call always expands, to show its command above any output. */
   const hasContent = call.shell === true || fullLabel || body !== '' || output !== '' || edits.length > 0
-  /** The user's expand/collapse choice, or `null` if they haven't made one.
-   *  Edits default open. The default is derived each render because a call
+  /** Edits default open. The default is derived each render because a call
    *  arrives empty and gains content in later updates. */
-  const [choice, setChoice] = useState<boolean | null>(null)
-  const open = (choice ?? (defaultOpen || edits.length > 0)) && hasContent
+  const [expanded, setExpanded] = useOpen(reveal, defaultOpen || edits.length > 0)
+  const open = expanded && hasContent
   const stats = useMemo(
     () => edits.flatMap((g) => g.hunks).reduce(
       (a, lines) => {
@@ -626,7 +686,7 @@ export function ToolRow({
     <div>
       <DisclosureRow
         open={open}
-        onToggle={() => setChoice(!open)}
+        onToggle={() => setExpanded(!open)}
         expandable={hasContent}
         icon={KIND_ICON[call.kind]}
         busy={unfinished(call) && progress === 'running'}
@@ -704,11 +764,11 @@ export function ToolRow({
   )
 }
 
-function ThoughtRow({ text }: { text: string }): JSX.Element {
-  const [open, setOpen] = useState(false)
+function ThoughtRow({ text, reveal }: { text: string; reveal: boolean }): JSX.Element {
+  const [open, setOpen] = useOpen(reveal, false)
   return (
     <div>
-      <DisclosureRow open={open} onToggle={() => setOpen((v) => !v)} expandable icon={ThinkingIcon}>
+      <DisclosureRow open={open} onToggle={() => setOpen(!open)} expandable icon={ThinkingIcon}>
         Thinking
       </DisclosureRow>
       {open && (
@@ -743,6 +803,7 @@ function PermissionRow({
   options,
   decided,
   onAnswer,
+  reveal,
 }: {
   requestId: string
   toolCall?: AcpToolCall
@@ -751,9 +812,10 @@ function PermissionRow({
   options: AcpPermissionOption[]
   decided?: { outcome: 'selected' | 'cancelled'; optionId?: string }
   onAnswer?: (requestId: string, optionId?: string) => boolean
+  reveal: boolean
 }): JSX.Element {
   const [sending, setSending] = useState(false)
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useOpen(reveal, false)
   const answer = (optionId?: string): void => {
     if (onAnswer === undefined) return
     setSending(true)
@@ -767,7 +829,7 @@ function PermissionRow({
       <div>
         <DisclosureRow
           open={open}
-          onToggle={() => setOpen((v) => !v)}
+          onToggle={() => setOpen(!open)}
           expandable={toolCall !== undefined && !inView}
           icon={allowed ? DoneIcon : FailedIcon}
           tint={allowed ? 'text-success' : 'text-error'}
@@ -980,6 +1042,7 @@ export function AcpTranscript({
   onOpenSubagent,
   onOpenTask,
   condensed = false,
+  found,
 }: {
   groups: Group[]
   className?: string
@@ -997,16 +1060,28 @@ export function AcpTranscript({
   /** Show a subagent's or task's own view; a card is inert without one. */
   onOpenSubagent?: (id: string) => void
   onOpenTask?: (id: string) => void
+  /** What a find bar matched: those rows show open. */
+  found?: Found
 }): JSX.Element {
-  /** The folded runs the reader opened, by seq. */
+  /** The folded runs the reader opened, by seq, and those they closed while
+   *  a find match held them open; the same rule as a row's `useOpen`. */
   const [unfolded, setUnfolded] = useState<ReadonlySet<number>>(new Set())
-  const toggle = (seq: number): void => setUnfolded((cur) => {
+  const [heldShut, setHeldShut] = useState<ReadonlySet<number>>(new Set())
+  const flip = (seq: number) => (cur: ReadonlySet<number>): ReadonlySet<number> => {
     const next = new Set(cur)
     if (!next.delete(seq)) next.add(seq)
     return next
-  })
-  const rows = (condensed ? condense(groups, busy) : groups)
-    .flatMap((g) => (g.kind === 'folded' && unfolded.has(g.seq) ? [g, ...g.groups] : [g]))
+  }
+  const held = (f: Folded): boolean => f.groups.some((g) => found?.any.has(g.seq) === true)
+  const isOpen = (f: Folded): boolean => (held(f) ? !heldShut.has(f.seq) : unfolded.has(f.seq))
+  const toggle = (f: Folded): void => (held(f) ? setHeldShut : setUnfolded)(flip(f.seq))
+  const shown = condensed ? condense(groups, busy) : groups
+  const heldKey = shown.flatMap((g) => (g.kind === 'folded' && held(g) ? [g.seq] : [])).join(',')
+  useEffect(() => {
+    const still = new Set(heldKey.split(',').map(Number))
+    setHeldShut((cur) => ([...cur].every((seq) => still.has(seq)) ? cur : new Set([...cur].filter((seq) => still.has(seq)))))
+  }, [heldKey])
+  const rows = shown.flatMap((g) => (g.kind === 'folded' && isOpen(g) ? [g, ...g.groups] : [g]))
   /** Calls waiting on an unanswered ask: not running, and not interrupted. */
   const asking = new Set(groups.flatMap((g) => (
     g.kind === 'permission' && g.decided === undefined && g.toolCall !== undefined ? [g.toolCall.toolCallId] : []
@@ -1021,6 +1096,7 @@ export function AcpTranscript({
       {rows.map((g, i) => (
         <div
           key={g.kind === 'folded' ? `f${String(g.seq)}` : g.seq}
+          data-seq={g.kind === 'folded' ? undefined : g.seq}
           className={clsx(i > 0 && (isStep(g) && isStep(rows[i - 1]) ? 'mt-0.5' : 'mt-4'))}
         >
           {g.kind !== 'folded' && g.woken !== undefined && (
@@ -1031,7 +1107,7 @@ export function AcpTranscript({
             />
           )}
           {g.kind === 'folded' ? (
-            <DisclosureRow open={unfolded.has(g.seq)} onToggle={() => toggle(g.seq)} expandable icon={MoreIcon}>
+            <DisclosureRow open={isOpen(g)} onToggle={() => toggle(g)} expandable icon={MoreIcon}>
               {foldedLabel(g.groups)}
             </DisclosureRow>
           ) : g.kind === 'subagent' ? (
@@ -1055,6 +1131,7 @@ export function AcpTranscript({
           ) : (
             <GroupView
               group={g}
+              reveal={found?.hidden.has(g.seq) === true}
               {...(g.kind === 'tool' ? { progress: progressOf(g) } : {})}
               {...(onAnswerPermission !== undefined ? { onAnswerPermission } : {})}
             />
@@ -1112,10 +1189,13 @@ function isStep(g: Group | Folded): boolean {
 
 function GroupView({
   group: g,
+  reveal,
   progress,
   onAnswerPermission,
 }: {
   group: Exclude<Group, { kind: 'subagent' | 'task' }>
+  /** Open the row: it holds a find match. */
+  reveal: boolean
   /** How to mark an unfinished tool call; see `ToolRow`. */
   progress?: 'running' | 'interrupted'
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean
@@ -1140,11 +1220,12 @@ function GroupView({
       </div>
     )
   }
-  if (g.kind === 'thought') return <ThoughtRow text={g.text} />
+  if (g.kind === 'thought') return <ThoughtRow text={g.text} reveal={reveal} />
   if (g.kind === 'tool') {
     return (
       <ToolRow
         call={g.call}
+        reveal={reveal}
         {...(g.output !== undefined ? { output: g.output } : {})}
         {...(progress !== undefined ? { progress } : {})}
       />
@@ -1158,6 +1239,7 @@ function GroupView({
         {...(g.toolCall !== undefined ? { toolCall: g.toolCall } : {})}
         {...(g.output !== undefined ? { output: g.output } : {})}
         inView={g.inView === true}
+        reveal={reveal}
         options={g.options}
         {...(g.decided !== undefined ? { decided: g.decided } : {})}
         {...(onAnswerPermission !== undefined ? { onAnswer: onAnswerPermission } : {})}

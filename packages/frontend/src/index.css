@@ -528,3 +528,12 @@ body.col-resizing * {
 :is(.diff-hl, .cm-editor) .tok-link,
 :is(.diff-hl, .cm-editor) .tok-url { color: var(--syntax-entity); text-decoration: underline; }
 :is(.diff-hl, .cm-editor) .tok-invalid { color: var(--syntax-invalid); text-decoration: underline wavy; }
+
+/* A conversation's find matches (ConversationFind), drawn as CSS custom
+   highlights so the transcript's DOM is left alone. The editor's find tints. */
+::highlight(find-match) {
+  background-color: rgb(210 153 34 / 0.3);
+}
+::highlight(find-current) {
+  background-color: rgb(210 153 34 / 0.7);
+}
