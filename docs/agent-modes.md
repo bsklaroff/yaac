@@ -111,7 +111,7 @@ replaying under `session/load`; without the client's `session/prompt` lines
 the record would show no live user turns. Nothing is buffered for an absent
 client, and the server keeps no copy.
 
-acpd closes and reopens the record after each client line and whenever the
+acpd syncs the record (`fdatasync`) after each client line and whenever the
 agent's output pauses (at least every 200 ms while it streams). On a byo
 install the record is on NFS and the server reads it from another node, and
 NFS sends a held-open file's bytes only on close, sync or writeback

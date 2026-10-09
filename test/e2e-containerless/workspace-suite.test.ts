@@ -1352,7 +1352,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       const changes = await (await fetch(`${origin()}/api/workspace/${id}/changes?diff=0`)).json() as WorkspaceChanges
       expect(changes.files.map((f) => [f.path, f.status])).toEqual([['first.txt', 'added']])
       // Nothing to fetch from it either, which yaac-mama says plainly.
-      const creds = await workspaceEnv(id)
+      const creds = await paneEnv(id)
       const fetched = await execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), ['fetch', id], {
         cwd: checkout, env: { ...process.env, YAAC_MAMA_URL: creds.YAAC_MAMA_URL, YAAC_MAMA_TOKEN: creds.YAAC_MAMA_TOKEN },
       }).then(() => '', (err: { stderr: string }) => err.stderr)
