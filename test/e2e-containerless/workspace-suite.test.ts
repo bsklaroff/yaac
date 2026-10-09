@@ -87,6 +87,10 @@ const CAN_RUN = await hostReady()
 const CAN_RUN_ACP = CAN_RUN
   && await execFileAsync('sh', ['-c', 'command -v socat']).then(() => true, () => false)
 
+/** A loopback address other than 127.0.0.1. macOS routes only 127.0.0.1 of
+ *  127.0.0.0/8, so it uses the IPv6 loopback. */
+const OTHER_LOOPBACK = process.platform === 'linux' ? '127.0.0.2' : '::1'
+
 /** Whether port detection works here: it uses `lsof`, and reports nothing without it. */
 const CAN_RUN_PORTS = CAN_RUN
   && await execFileAsync('sh', ['-c', 'command -v lsof']).then(() => true, () => false)
@@ -112,8 +116,8 @@ const FAKE_CODEX = [
   'printf \'%s\\n\' "$*" >> "$CODEX_HOME/launches-${PWD##*/}"',
   // The alternate screen is the readiness signal the prompt paste waits for.
   "printf '\\033[?1049h'",
-  'case " $* " in *" resume "*) exec sleep infinity ;; esac',
-  'read -r _ || exec sleep infinity',
+  'case " $* " in *" resume "*) exec sleep 2147483647 ;; esac',
+  'read -r _ || exec sleep 2147483647',
   'mkdir -p "$CODEX_HOME/sessions"',
   'rollout="$CODEX_HOME/sessions/rollout-thread-$$.jsonl"',
   ': > "$rollout"',
@@ -121,7 +125,7 @@ const FAKE_CODEX = [
   'printf \'{"session_id":"title-%s","transcript_path":null}\' $$ | yaac-agent-links "$CODEX_HOME" codex',
   "printf '  ? for shortcuts\\n› '",
   'while read -r line; do printf \'%s\\n\' "$line" >> "$CODEX_HOME/sent-${PWD##*/}"; printf \'  ? for shortcuts\\n› \'; done',
-  'exec sleep infinity',
+  'exec sleep 2147483647',
   '',
 ].join('\n')
 
@@ -139,16 +143,19 @@ const managedBin = (binary: string): string =>
  * opencode's adapter is its CLI's `acp` subcommand, so its fake is both.
  */
 async function installFakeAgents(): Promise<void> {
-  // `dir`: the binary whose install dir the file goes in.
+  await fs.mkdir(agentEnvDir(), { recursive: true })
+  const reportEnv = `env > '${agentEnvDir()}'/$$.env\n`
+  // `dir`: the binary whose install dir the file goes in. A shell agent
+  // reports its environment first (`processEnv`).
   const write = async (name: string, body: string, dir = name): Promise<string> => {
     const file = path.join(path.dirname(managedBin(dir)), name)
     await fs.mkdir(path.dirname(file), { recursive: true })
-    await fs.writeFile(file, body)
+    await fs.writeFile(file, body.replace(/^#!\/bin\/sh\n/, (shebang) => shebang + reportEnv))
     await fs.chmod(file, 0o755)
     return file
   }
   for (const tool of ['claude', 'pi']) {
-    await write(tool, '#!/bin/sh\nexec sleep infinity\n')
+    await write(tool, '#!/bin/sh\nexec sleep 2147483647\n')
   }
   await write('codex', FAKE_CODEX)
 
@@ -163,7 +170,7 @@ async function installFakeAgents(): Promise<void> {
     'opencode',
     '#!/bin/sh\n'
     + 'if [ "$1" = "acp" ]; then shift; exec opencode-acp-impl "$@"; fi\n'
-    + 'exec sleep infinity\n',
+    + 'exec sleep 2147483647\n',
   )
 }
 
@@ -366,6 +373,42 @@ async function tmux(id: string, ...args: string[]): Promise<string> {
   return stdout
 }
 
+/**
+ * The environment a fake agent started with, which it writes to
+ * `<agentEnvDir()>/<pid>.env` (see `installFakeAgents`). macOS hides other
+ * processes' environments, so the agents report their own on every platform.
+ */
+async function processEnv(pid: string): Promise<Record<string, string>> {
+  const dump = await fs.readFile(path.join(agentEnvDir(), `${pid}.env`), 'utf8').catch(() => '')
+  return Object.fromEntries(dump.split('\n').filter((e) => e.indexOf('=') > 0)
+    .map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]))
+}
+
+const agentEnvDir = (): string => path.join(testEnv.scratchDir, 'agent-env')
+
+/**
+ * The environment of workspace `id`'s first pane, once its agent has replaced
+ * the placeholder, which reports nothing. `show-environment` shows what
+ * future panes get rather than what the launch set, and running `printenv` in
+ * a new window would change the shared fixture.
+ */
+async function paneEnv(id: string): Promise<Record<string, string>> {
+  let env: Record<string, string> = {}
+  await vi.waitFor(async () => {
+    env = await processEnv((await tmux(id, 'display-message', '-p', '-t', 'yaac', '#{pane_pid}')).trim())
+    expect(Object.keys(env)).not.toHaveLength(0)
+  }, { timeout: 30_000, interval: 250 })
+  return env
+}
+
+/** A process's direct children. */
+async function childPids(pid: string): Promise<string[]> {
+  const out = process.platform === 'linux'
+    ? await fs.readFile(`/proc/${pid}/task/${pid}/children`, 'utf8').catch(() => '')
+    : (await execFileAsync('pgrep', ['-P', pid]).catch(() => ({ stdout: '' }))).stdout
+  return out.trim().split(/\s+/).filter(Boolean)
+}
+
 /** A variable from the workspace tmux server's environment, which every pane inherits. */
 async function workspaceEnvVar(id: string, name: string): Promise<string> {
   const line = (await tmux(id, 'show-environment', '-g', name)).trim()
@@ -489,7 +532,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('launches the workspace in the zone the CLI reported, not the server host\'s', async () => {
     const res = await fetch(`${origin()}/api/config/time-zone`)
     expect(await res.json()).toEqual({ timeZone: CLI_TIME_ZONE, pinned: false })
-    expect((await workspaceEnv(workspaceId)).TZ).toBe(CLI_TIME_ZONE)
+    expect((await paneEnv(workspaceId)).TZ).toBe(CLI_TIME_ZONE)
   })
 
   it('gives the workspace a real checkout on the host, which is what the agent sees', async () => {
@@ -750,10 +793,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     // Without --port the ports come from the server's `/events` snapshots,
     // bound on another loopback address so they miss the dev server's.
-    const offered = startForwardCli(workspaceId, '--bind', '127.0.0.2')
+    const offered = startForwardCli(workspaceId, '--bind', OTHER_LOOPBACK)
     try {
       await offered.ready()
-      const res = await fetch(`http://127.0.0.2:${String(devPort)}/`)
+      const res = await fetch(`http://${OTHER_LOOPBACK.includes(':') ? `[${OTHER_LOOPBACK}]` : OTHER_LOOPBACK}:${String(devPort)}/`)
       expect(await res.text()).toBe('hello from the workspace')
     } finally {
       await offered.stop()
@@ -839,26 +882,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }, { timeout: 30_000, interval: 250 })
   })
 
-  /**
-   * The environment of a live pane, read from `/proc`. `show-environment`
-   * shows what future panes get rather than what the launch set, and
-   * running `printenv` in a new window would change the shared fixture.
-   */
-  async function workspaceEnv(id: string): Promise<Record<string, string>> {
-    const pid = (await tmux(id, 'display-message', '-p', '-t', 'yaac', '#{pane_pid}')).trim()
-    const raw = await fs.readFile(`/proc/${pid}/environ`, 'utf8')
-    const env: Record<string, string> = {}
-    for (const entry of raw.split('\0')) {
-      const eq = entry.indexOf('=')
-      if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1)
-    }
-    return env
-  }
 
   /** The workspace's own yaac-mama credentials, memoized per file. */
   let mamaEnv: Record<string, string> | undefined
   const mamaCreds = async (): Promise<Record<string, string>> =>
-    (mamaEnv ??= await workspaceEnv(workspaceId))
+    (mamaEnv ??= await paneEnv(workspaceId))
 
   /**
    * Run `yaac-mama` as the workspace would. With no proxy, it posts directly
@@ -894,7 +922,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   it('resolves its tool homes from the project, not the server user', async () => {
     // Unit tests check the env the driver computes; this checks what a pane
     // actually gets, with bogus values in the server's env (`beforeAll`).
-    const env = await workspaceEnv(workspaceId)
+    const env = await paneEnv(workspaceId)
 
     // Overrides with no replacement are removed, so tools fall back to the
     // private HOME. So are the variables of a claude session that started
@@ -1028,7 +1056,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // another workspace's token retitles that workspace, not this one.
     const otherId = await createWorkspace()
     try {
-      const theirs = await workspaceEnv(otherId)
+      const theirs = await paneEnv(otherId)
       expect(theirs.YAAC_MAMA_TOKEN).not.toBe((await mamaCreds()).YAAC_MAMA_TOKEN)
 
       const res = await fetch(`${origin()}/api/workspace/mama`, {
@@ -1082,7 +1110,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // Its own subject: the self-stop takes down the tmux server the command
     // runs in.
     const doomed = await createWorkspace()
-    const theirs = await workspaceEnv(doomed)
+    const theirs = await paneEnv(doomed)
     const asDoomed = async (...args: string[]): Promise<{ code: number; out: string }> => {
       const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
       const { stdout } = await execFileAsync('sh', ['-c',
@@ -1315,12 +1343,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const pane = (await tmux(workspaceId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_id}')).trim()
     const pid = (await tmux(workspaceId, 'display-message', '-p', '-t', 'yaac:claude', '#{pane_pid}')).trim()
     const agentEnv = async (p: string): Promise<string | undefined> => {
-      const env = (await fs.readFile(`/proc/${p}/environ`, 'utf8').catch(() => ''))
-        .split('\0').find((e) => e.startsWith('YAAC_TMUX='))
-      if (env !== undefined) return env.slice('YAAC_TMUX='.length)
-      const kids = (await fs.readFile(`/proc/${p}/task/${p}/children`, 'utf8').catch(() => ''))
-        .trim().split(/\s+/).filter(Boolean)
-      for (const kid of kids) {
+      const env = (await processEnv(p)).YAAC_TMUX
+      if (env !== undefined) return env
+      for (const kid of await childPids(p)) {
         const found = await agentEnv(kid)
         if (found !== undefined) return found
       }
@@ -2034,9 +2059,7 @@ describe.skipIf(!CAN_RUN)('a create that fails', () => {
 describe.skipIf(!CAN_RUN)('queued workspaces', () => {
   /** `yaac-mama` as the workspace `id` runs it, with its own credentials. */
   async function mamaAs(id: string, ...args: string[]): Promise<string> {
-    const pid = (await tmux(id, 'display-message', '-p', '-t', 'yaac', '#{pane_pid}')).trim()
-    const env = Object.fromEntries((await fs.readFile(`/proc/${pid}/environ`, 'utf8'))
-      .split('\0').filter((e) => e.includes('=')).map((e) => [e.slice(0, e.indexOf('=')), e.slice(e.indexOf('=') + 1)]))
+    const env = await paneEnv(id)
     const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
     const { stdout } = await execFileAsync('sh', ['-c',
       `YAAC_MAMA_URL='${env.YAAC_MAMA_URL}' YAAC_MAMA_TOKEN='${env.YAAC_MAMA_TOKEN}' `

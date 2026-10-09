@@ -95,10 +95,10 @@ describe('launchWorkspace', () => {
     await launchWorkspace(spec())
     const newSession = tmuxCalls().find((a) => a.includes('new-session'))
     expect(newSession).toBeDefined()
-    // `probeAgentPaneState` reads `sleep infinity` as "no agent yet".
+    // `probeAgentPaneState` reads the placeholder as "no agent yet".
     // Starting the agent here would let a fast-failing tool end the session
     // before setup finished.
-    expect(newSession).toContain('sleep infinity')
+    expect(newSession).toContain('sleep 2147483647')
     expect(newSession).toContain('yaac')
     // The window is named for the tool, the `yaac:<tool>` target later
     // respawns and probes use.

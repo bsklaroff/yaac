@@ -382,10 +382,11 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const statusRight = env.YAAC_STATUS_RIGHT ?? ''
 
   spec.onProgress?.('Starting the workspace session...')
-  // Start on a `sleep infinity` placeholder, as the pod's init script does;
-  // the agent is respawned in after setup, and the stale reaper recognizes
-  // the placeholder. A large -x/-y lets tmux shrink to the client on attach,
-  // which TUIs handle better than growing.
+  // Start on a placeholder, as the pod's init script does; the agent is
+  // respawned in after setup, and the stale reaper recognizes the
+  // placeholder (PLACEHOLDER_FORMAT). macOS's sleep has no `infinity`. A
+  // large -x/-y lets tmux shrink to the client on attach, which TUIs handle
+  // better than growing.
   //
   // `update-environment` is emptied before any client attaches; otherwise
   // the liveness watch (attaching with the server's env) would give the
@@ -398,7 +399,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     'set-option', '-g', 'history-limit', '200000', ';',
     'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
     '-x', '500', '-y', '200', '-c', paths.workspaceDir,
-    'sleep infinity', ';',
+    'sleep 2147483647', ';',
     'set-option', '-g', 'update-environment', '',
   ], { cwd: paths.workspaceDir, env, timeoutMs: 30_000 })
 

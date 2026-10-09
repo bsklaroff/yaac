@@ -134,7 +134,7 @@ export async function isTmuxSessionAlive(target: ProbeTarget): Promise<boolean> 
 
 /**
  * Outcome of an agent-pane probe.
- * - `placeholder`: the first pane still runs create's `sleep infinity`
+ * - `placeholder`: the first pane still runs create's
  *                  keepalive; setup died before `respawn-window` (e.g. a
  *                  server restart mid-create), so no agent will start.
  * - `started`:     the agent was respawned. Final: `respawn-window -k`

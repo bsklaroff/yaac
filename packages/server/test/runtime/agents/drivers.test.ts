@@ -473,7 +473,7 @@ describe('agentDriver', () => {
     stream.feed('%begin 1 101 1\n%7\tclaude\t0\tclaude|conv-a|claude/projects/-workspace/conv-a.jsonl\n'
       + '%9\tNew Shell\t0\t\n%end 1 101 1\n')
     expect(stream.writes.join('')).toContain(
-      "list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
+      "list-panes -s -F '#{pane_id}\t#{window_name}\t#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}\t#{=1024;s/[^ -~]//:@yaac-session}' -t yaac")
     await answer(stream, "refresh-client -B 'session-7:")
     await answer(stream, "refresh-client -B 'status-7:")
     await answer(stream, "refresh-client -B 'report-7:")
@@ -532,7 +532,7 @@ describe('agentDriver', () => {
     // The placeholder in the agent window before launch is not an agent.
     await vi.waitFor(() => expect(listings()).toBe(1))
     stream.feed('%begin 1 101 1\n%7\tclaude\t1\t\n%end 1 101 1\n')
-    await answer(stream, "refresh-client -B 'boot-7:%7:#{m/r:^\"?sleep infinity\"?$,#{pane_start_command}}'")
+    await answer(stream, "refresh-client -B 'boot-7:%7:#{m/r:^\"?sleep (infinity|2147483647)\"?$,#{pane_start_command}}'")
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     expect(agentSets()).toEqual([])
 
@@ -2260,7 +2260,9 @@ describe('agentDriver', () => {
       // One attempt: a retried paste would submit the prompt twice.
       expect(opts).toEqual({ maxAttempts: 1, timeout: 15_000 })
       const b64 = /^printf %s ([A-Za-z0-9+/=]+) \| base64 -d > \/tmp\/\.yaac-prompt\.sh && /.exec(cmd)?.[1]
-      expect(cmd).toContain('setsid sh /tmp/.yaac-prompt.sh >/tmp/yaac-prompt.log 2>&1 </dev/null &')
+      // Detached, by setsid where the host has it and nohup on macOS.
+      expect(cmd).toContain('then setsid sh /tmp/.yaac-prompt.sh; else nohup sh /tmp/.yaac-prompt.sh; fi; }'
+        + ' >/tmp/yaac-prompt.log 2>&1 </dev/null &')
       return Buffer.from(b64!, 'base64').toString('utf8')
     }
 

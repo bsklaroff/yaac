@@ -166,8 +166,8 @@ which dirties the reconcile tick. Two cases leave the active set untouched:
 
 - The watcher has not enumerated panes yet, so a stream gap never reads as
   "every agent exited".
-- The `sleep infinity` keepalive a session starts with, in the window its agent
-  is respawned into, is not an agent pane, so a restart does not mark its
+- The keepalive a session starts with (`PLACEHOLDER_FORMAT`), in the window its
+  agent is respawned into, is not an agent pane, so a restart does not mark its
   conversations inactive before its agents are running.
 
 Discovery only adds rows: a `/clear` leaves the old conversation recorded,

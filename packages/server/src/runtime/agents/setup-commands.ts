@@ -68,7 +68,7 @@ export function validateInitWindows(config: YaacConfig): InitWindow[] {
 /**
  * Create the init-command windows and replace the keepalive placeholder
  * with the first agent, in one exec. `respawn-window -k` kills the
- * postStart hook's `sleep infinity` and keeps the window's tmux options.
+ * placeholder keepalive and keeps the window's tmux options.
  *
  * `agentCmds` has one entry per conversation to start, in restore order: one
  * for a fresh create, whatever was live for a restart. Only the first
