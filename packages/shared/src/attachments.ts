@@ -7,7 +7,7 @@
 /**
  * Max image bytes per message after browser downscaling: one terminal
  * upload, or all images of a chat message together. Roughly the model
- * APIs' per-image limit; chat images are also kept in the conversation log
+ * APIs' per-image limit; chat images are also kept with the conversation
  * permanently.
  */
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024

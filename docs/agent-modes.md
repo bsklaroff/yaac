@@ -111,6 +111,17 @@ replaying under `session/load`; without the client's `session/prompt` lines
 the record would show no live user turns. Nothing is buffered for an absent
 client, and the server keeps no copy.
 
+Images are the exception to recording lines verbatim. A screenshot is
+megabytes of base64, and claude repeats each one in a tool result's
+`rawOutput`, so a few dozen would carry the record past the 64 MB the server
+reads (`MAX_ACP_RECORD_BYTES`). acpd parses each long line, writes every
+`data` string that decodes to a PNG, JPEG, GIF or WebP to `images/<sha256>`
+beside the record, and records `yaac-image:<sha256>` in its place. The
+projection turns that into an image event carrying the hash, and a pane
+loads it from `GET /workspace/:id/acp-images/:hash`, which serves only a
+file whose bytes are one of those four types, since the workspace can write
+there. Small images (under about 6 KB) stay inline.
+
 acpd syncs the record (`fdatasync`) after each client line and whenever the
 agent's output pauses (at least every 200 ms while it streams). On a byo
 install the record is on NFS and the server reads it from another node, and
@@ -175,6 +186,12 @@ restart's `session/load` replays the whole conversation, so the new file ends
 up complete. This depends on every adapter replaying on load, which is
 adapter behavior, not a protocol guarantee. An adapter that didn't would come
 back blank, and the fix would be to keep the record instead of truncating it.
+
+A record past the cap is not followed further, since its size is the
+workspace's to choose but the memory is the server's. The tail reports it
+once as an `error` event, so a pane attaching to an oversized record shows
+why it has nothing to show rather than an empty conversation, and one
+following a record as it crosses the cap says the pane stops there.
 
 The record is named for the conversation, not the window. Window names are
 slots, and a restart that drops an earlier conversation shifts later ones
@@ -731,11 +748,11 @@ adapter yaac runs advertises `promptCapabilities.image`, so a chat message's
 images go inline after its text. The server checks each image's magic bytes,
 as the upload route does, and caps all of a message's images together at
 5 MB (`MAX_ATTACHMENT_BYTES`). A message over the cap is refused whole, and
-the composer warns before sending. Because acpd records the prompt, images
-are part of the history and show on replay and in a stopped workspace's
-transcript. That is why the browser shrinks them first: the long edge to
-1568 px (the most a model reads), and a PNG still over 1 MB re-encoded as
-WebP or JPEG when smaller.
+the composer warns before sending. acpd stores the images beside the record
+(see "Where history lives"), so they show on replay and in a stopped
+workspace's transcript. They are kept for good, which is why the browser
+shrinks them first: the long edge to 1568 px (the most a model reads), and a
+PNG still over 1 MB re-encoded as WebP or JPEG when smaller.
 
 For large prompts, acpd writes whole lines only, so a multi-megabyte prompt
 arriving in chunks is never split by agent output; a client that disconnects

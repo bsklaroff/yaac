@@ -44,6 +44,16 @@ export function acpRecord(ref: AcpRecordRef): SandboxFile | undefined {
   return { projectId: ref.projectId, dir: acpLogDir(ref.projectId, ref.workspaceId), rel: `${ref.agentSessionId}.jsonl` }
 }
 
+/**
+ * An image acpd stored beside its workspace's records (`AcpStoredImage`), as
+ * a file confined to the record dir. Undefined for anything but a SHA-256
+ * hex digest, since the hash is joined into the path.
+ */
+export function acpStoredImage(ref: Omit<AcpRecordRef, 'agentSessionId'>, hash: string): SandboxFile | undefined {
+  if (!/^[0-9a-f]{64}$/.test(hash)) return undefined
+  return { projectId: ref.projectId, dir: acpLogDir(ref.projectId, ref.workspaceId), rel: `images/${hash}` }
+}
+
 /** Size cap for the whole-file readers below. */
 export const MAX_ACP_RECORD_BYTES = 64 * 1024 * 1024
 
@@ -124,6 +134,10 @@ const TAIL_READ_BYTES = 1024 * 1024
  * it. acpd's `_acpd/life` line is always first and small.
  */
 const LIFE_HEADER_BYTES = 512
+
+/** What a pane shows once its record is past the cap. */
+const RECORD_TOO_LARGE = `This conversation's record is past the ${String(MAX_ACP_RECORD_BYTES / (1024 * 1024))} MB `
+  + 'a chat pane can show, so nothing more of it is shown here. The agent is unaffected.'
 
 export interface AcpLogTail {
   /** Read anything appended since the last pass, now. Used before emitting
@@ -209,10 +223,12 @@ export function tailAcpLog(
 
       const events: AcpEventInit[] = []
       // Stop at the cap: the file size is the workspace's to choose, but
-      // memory is the server's.
-      if (size > MAX_ACP_RECORD_BYTES) {
-        if (!tooLarge) serverLog(`[server] acp log for ${record.agentSessionId}: past ${String(MAX_ACP_RECORD_BYTES)} bytes, no longer followed`)
+      // memory is the server's. The pane says so rather than going blank
+      // or quiet.
+      if (size > MAX_ACP_RECORD_BYTES && !tooLarge) {
+        serverLog(`[server] acp log for ${record.agentSessionId}: past ${String(MAX_ACP_RECORD_BYTES)} bytes, no longer followed`)
         tooLarge = true
+        events.push({ type: 'error', message: RECORD_TOO_LARGE })
       }
       // Read in windows, each split once, so an endless line costs linear
       // memory and time.

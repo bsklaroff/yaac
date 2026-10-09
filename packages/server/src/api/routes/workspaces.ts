@@ -9,6 +9,7 @@ import {
   deleteWorkspaceEntry,
   dismissWorkspacePort,
   forwardWorkspacePort,
+  getAcpStoredImage,
   getAgentSessionTranscript,
   getWorkspaceBlockedHosts,
   getWorkspaceChanges,
@@ -567,6 +568,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
       projectId, workspaceId, c.req.param('sessionId'),
     )
     return c.json({ events })
+  })
+  // An image a chat transcript names by hash (`AcpStoredImage`). The bytes
+  // never change for a hash, so the browser may keep them.
+  .get('/:id/acp-images/:hash', async (c) => {
+    const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
+    const { bytes, mimeType } = await getAcpStoredImage(projectId, workspaceId, c.req.param('hash'))
+    c.header('Content-Type', mimeType)
+    c.header('Cache-Control', 'private, max-age=31536000, immutable')
+    c.header('X-Content-Type-Options', 'nosniff')
+    return c.body(new Uint8Array(bytes))
   })
   // Everything the webapp polls about a running workspace's checkout
   // (docs/file-editor.md): the review diff against its base branch, how far

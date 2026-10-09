@@ -14,7 +14,7 @@ import {
 } from '#lib/icons'
 import { stripAnsi } from '@yaac/shared/ansi'
 import type {
-  AcpContent, AcpDiff, AcpEvent, AcpImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
+  AcpContent, AcpDiff, AcpEvent, AcpImage, AcpStoredImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
   AcpToolContent, AcpToolKind, AcpWake,
 } from '@yaac/shared/acp'
 
@@ -22,13 +22,16 @@ import type {
  * Renders an ACP conversation: messages, thinking, tool calls, plans,
  * permission asks, and cards for the subagents and background tasks the
  * agent started. Shared by the live chat pane and a stopped workspace's
- * transcript, so it depends only on the events it is given (no socket, store
- * or workspace id).
+ * transcript, so it depends only on the events it is given and the workspace
+ * they belong to, for loading stored images (no socket or store).
  *
  * The agent streams text in small chunks, one event each; consecutive
  * same-kind chunks are merged into one bubble at render time so a live pane
  * updates as text arrives.
  */
+
+/** An image in a message, inline or stored apart from the record. */
+type MessageImage = AcpImage | AcpStoredImage
 
 /** One rendered unit of a conversation. Text groups keep images separate so
  *  they can be drawn rather than named. `turn` marks the first group of a run
@@ -36,9 +39,9 @@ import type {
  *  and `woken` what woke the agent into that run, when known. */
 export type Group = ({ turn?: true; woken?: AcpWake[] } & (
   /** `steered` marks a message added to a running turn, which it does not end. */
-  | { kind: 'user'; seq: number; text: string; images: AcpImage[]; steered?: true }
-  | { kind: 'agent'; seq: number; text: string; images: AcpImage[] }
-  | { kind: 'thought'; seq: number; text: string; images: AcpImage[] }
+  | { kind: 'user'; seq: number; text: string; images: MessageImage[]; steered?: true }
+  | { kind: 'agent'; seq: number; text: string; images: MessageImage[] }
+  | { kind: 'thought'; seq: number; text: string; images: MessageImage[] }
   /** `interrupted` marks a call whose turn is over though it never finished;
    *  `background` one that runs on as a task (codex's background shell);
    *  `output` is the terminal output it streamed (raw text, not Markdown). */
@@ -427,21 +430,21 @@ function foldedLabel(groups: Group[]): string {
 }
 
 /** A message's images, each a thumbnail that opens to the column's width. */
-function MessageImages({ images }: { images: AcpImage[] }): JSX.Element | null {
+function MessageImages({ images, workspaceId }: { images: MessageImage[]; workspaceId: string }): JSX.Element | null {
   if (images.length === 0) return null
   return (
     <div className="my-1 flex flex-wrap gap-1.5">
-      {images.map((image, i) => <MessageImage key={i} image={image} />)}
+      {images.map((image, i) => <MessageImageView key={i} image={image} workspaceId={workspaceId} />)}
     </div>
   )
 }
 
-function MessageImage({ image }: { image: AcpImage }): JSX.Element {
+function MessageImageView({ image, workspaceId }: { image: MessageImage; workspaceId: string }): JSX.Element {
   const [open, setOpen] = useState(false)
   return (
     <button type="button" onClick={() => setOpen((o) => !o)} className="max-w-full">
       <img
-        src={useImageSrc(image)}
+        src={useImageSrc(image, workspaceId)}
         alt=""
         className={clsx('max-w-full rounded border border-hairline', !open && 'max-h-48')}
       />
@@ -1034,6 +1037,7 @@ function ActivityCard({
  * horizontally instead.
  */
 export function AcpTranscript({
+  workspaceId,
   groups,
   className,
   busy = false,
@@ -1044,6 +1048,7 @@ export function AcpTranscript({
   condensed = false,
   found,
 }: {
+  workspaceId: string
   groups: Group[]
   className?: string
   /** Hide all but the key messages behind expandable rows (see `condense`). */
@@ -1130,6 +1135,7 @@ export function AcpTranscript({
             />
           ) : (
             <GroupView
+              workspaceId={workspaceId}
               group={g}
               reveal={found?.hidden.has(g.seq) === true}
               {...(g.kind === 'tool' ? { progress: progressOf(g) } : {})}
@@ -1188,11 +1194,13 @@ function isStep(g: Group | Folded): boolean {
 }
 
 function GroupView({
+  workspaceId,
   group: g,
   reveal,
   progress,
   onAnswerPermission,
 }: {
+  workspaceId: string
   group: Exclude<Group, { kind: 'subagent' | 'task' }>
   /** Open the row: it holds a find match. */
   reveal: boolean
@@ -1206,7 +1214,7 @@ function GroupView({
       <div className="flex flex-col items-start gap-0.5">
         {g.steered === true && <span className="px-1 text-[11px] text-text-faint">sent mid-turn</span>}
         <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-accent/20 bg-accent/10 px-3 py-2 text-text">
-          <MessageImages images={g.images} />
+          <MessageImages images={g.images} workspaceId={workspaceId} />
           {g.text}
         </div>
       </div>
@@ -1216,7 +1224,7 @@ function GroupView({
     return (
       <div className="leading-relaxed text-text">
         <Markdown>{g.text}</Markdown>
-        <MessageImages images={g.images} />
+        <MessageImages images={g.images} workspaceId={workspaceId} />
       </div>
     )
   }

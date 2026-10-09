@@ -2,13 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { promisify } from 'node:util'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
 import { acpLogDir, agentHistoryDir, claudeDir, opencodeCheckpointDir } from '@yaac/shared/project-paths'
-import { getAgentSessionTranscript } from '#domain/workspaces/transcript'
+import { getAcpStoredImage, getAgentSessionTranscript } from '#domain/workspaces/transcript'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 
 /**
@@ -304,5 +305,26 @@ describe('getAgentSessionTranscript', () => {
 
     expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)).map((e) => e.type))
       .toEqual(['agent'])
+  })
+})
+
+describe('getAcpStoredImage', () => {
+  it('serves an image a record names by hash, typed from its bytes, and nothing else from beside it', async () => {
+    const dir = path.join(acpLogDir(PROJECT, WORKSPACE), 'images')
+    await fs.mkdir(dir, { recursive: true })
+    const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(32)])
+    const hash = createHash('sha256').update(png).digest('hex')
+    await fs.writeFile(path.join(dir, hash), png)
+    // The workspace can write here, so a planted page must not be served.
+    const page = 'cd'.repeat(32)
+    await fs.writeFile(path.join(dir, page), '<script>alert(1)</script>')
+    await fs.writeFile(path.join(acpLogDir(PROJECT, WORKSPACE), 'x.jsonl'), '{}\n')
+
+    const image = await getAcpStoredImage(PROJECT, WORKSPACE, hash)
+    expect(image.mimeType).toBe('image/png')
+    expect(image.bytes.equals(png)).toBe(true)
+    for (const bad of [page, 'ef'.repeat(32), '../x.jsonl', hash.toUpperCase()]) {
+      await expect(getAcpStoredImage(PROJECT, WORKSPACE, bad)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    }
   })
 })

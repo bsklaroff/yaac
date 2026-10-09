@@ -1,7 +1,9 @@
 import { ServerError } from '@yaac/shared/errors'
 import { ConfinedPathError } from '#lib/confined-fs'
+import { sniffImage } from '@yaac/shared/attachments'
 import {
   acpRecord,
+  acpStoredImage,
   claudeSubagentThreads,
   claudeTranscriptAsAcp,
   codexTranscriptAsAcp,
@@ -67,6 +69,30 @@ export async function getAgentSessionTranscript(
     case 'opencode':
       return opencodeTranscriptAsAcp(projectId, workspaceId, agentSessionId)
   }
+}
+
+/** Largest stored image served: well past a full-screen screenshot. */
+const MAX_STORED_IMAGE_BYTES = 32 * 1024 * 1024
+
+/**
+ * An image acpd stored apart from a workspace's records (`AcpStoredImage`),
+ * with its type sniffed from the bytes. The workspace can write the file, so
+ * anything that is not a PNG, JPEG, GIF or WebP is not served, and neither
+ * is a file over the cap.
+ */
+export async function getAcpStoredImage(
+  projectId: string,
+  workspaceId: string,
+  hash: string,
+): Promise<{ bytes: Buffer; mimeType: string }> {
+  const file = acpStoredImage({ projectId, workspaceId }, hash)
+  const bytes = file === undefined ? null : await readSandboxFile(file, MAX_STORED_IMAGE_BYTES).catch((err: unknown) => {
+    if (err instanceof ConfinedPathError && err.reason === 'too-large') throw new ServerError('TOO_LARGE', 'the image is too large to show')
+    throw err
+  })
+  const kind = bytes === null ? undefined : sniffImage(bytes)
+  if (bytes === null || kind === undefined) throw new ServerError('NOT_FOUND', `image ${hash} not found`)
+  return { bytes, mimeType: kind.mimeType }
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   type AcpRecordRef,
 } from '#runtime/agents/acp-log'
 import { acpLogDir, setDataDir } from '@yaac/shared/project-paths'
+import type { AcpEventInit } from '@yaac/shared/acp'
 
 /**
  * The log acpd writes is a conversation's history and what a pane renders.
@@ -238,16 +239,28 @@ describe('tailAcpLog', () => {
     expect(events).toHaveLength(1)
   })
 
-  it('follows no record past the cap, whatever size it claims', async () => {
-    // A huge sparse file is cheap to create but costly to read.
+  it('follows no record past the cap, whatever size it claims, and says so once', async () => {
     const { file, ref } = await scratch()
-    const handle = await fs.open(file, 'w')
+    await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } }) + '\n')
+    const growing: Array<{ events: AcpEventInit[]; reset: boolean }> = []
+    tails.push(tailAcpLog(ref, (events, reset) => growing.push({ events, reset }), { intervalMs: 20 }))
+    await until(() => growing.length > 0)
+
+    // A huge sparse file is cheap to create but costly to read.
+    const handle = await fs.open(file, 'r+')
     await handle.truncate(MAX_ACP_RECORD_BYTES + 1)
     await handle.close()
-    const batches: Array<{ events: unknown[]; reset: boolean }> = []
-    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
-    await until(() => batches.length > 0)
-    expect(batches[0]).toEqual({ events: [], reset: true })
+    await until(() => growing.length > 1)
+    const tooLarge = { type: 'error', message: expect.stringContaining('past the 64 MB a chat pane can show') as string }
+    expect(growing[1]).toEqual({ events: [tooLarge], reset: false })
+
+    // A pane attaching now gets the notice as its whole history.
+    const fresh: Array<{ events: AcpEventInit[]; reset: boolean }> = []
+    tails.push(tailAcpLog(ref, (events, reset) => fresh.push({ events, reset }), { intervalMs: 20 }))
+    await until(() => fresh.length > 0)
+    expect(fresh[0]).toEqual({ events: [tooLarge], reset: true })
+    await new Promise((r) => setTimeout(r, 100))
+    expect([growing.length, fresh.length]).toEqual([2, 1])
   })
 
   it('stops reading once closed', async () => {
@@ -534,8 +547,10 @@ describe('replayAcpLog', () => {
     expect(events.map((e) => e.type)).toEqual(['tool', 'user'])
   })
 
-  it('replays a message\'s images with its words', () => {
-    // User turns exist only as `session/prompt` lines, images included.
+  it('replays a message\'s images with its words, inline or stored beside the record', () => {
+    // User turns exist only as `session/prompt` lines, images included. acpd
+    // stores a large image apart and records its hash in place of the data.
+    const hash = 'ab'.repeat(32)
     const raw = (line({
       jsonrpc: '2.0',
       id: 'abc-1',
@@ -545,6 +560,7 @@ describe('replayAcpLog', () => {
         prompt: [
           { type: 'text', text: 'what is this?' },
           { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+          { type: 'image', mimeType: 'image/png', data: `yaac-image:${hash}` },
         ],
       },
     }) + '\n')
@@ -554,6 +570,7 @@ describe('replayAcpLog', () => {
       content: [
         { type: 'text', text: 'what is this?' },
         { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+        { type: 'image', mimeType: 'image/png', hash },
       ],
     }])
   })

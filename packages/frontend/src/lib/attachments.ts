@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
-import type { AcpImage } from '@yaac/shared/acp'
+import type { AcpImage, AcpStoredImage } from '@yaac/shared/acp'
 import { api } from '#lib/api'
 
 /**
@@ -10,11 +10,11 @@ import { api } from '#lib/api'
  */
 
 /** The long edge model APIs resize images down to anyway. Larger images
- *  waste bytes, which under `acp` stay in the record for good. */
+ *  waste bytes, which under `acp` are kept with the conversation for good. */
 const MAX_EDGE = 1568
 
 /** Above this size a PNG is re-encoded lossily if that is smaller, since a
- *  chat image is re-sent on every attach. */
+ *  chat image is kept with the conversation for good. */
 const COMPACT_BYTES = 1024 * 1024
 
 const SENT_AS_IS = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
@@ -105,10 +105,15 @@ export async function toAcpImage(image: Blob): Promise<AcpImage> {
   return { type: 'image', mimeType: image.type, data: url.slice(url.indexOf(',') + 1) }
 }
 
-/** An image block as a data URL for `<img>`. Memoized because it can be
- *  megabytes and the transcript re-renders on every event. */
-export function useImageSrc(image: AcpImage): string {
-  return useMemo(() => `data:${image.mimeType};base64,${image.data}`, [image])
+/**
+ * Where `<img>` loads an image block from: a data URL, or `workspaceId`'s
+ * server route for one acpd stored apart from the record. Memoized because a
+ * data URL can be megabytes and the transcript re-renders on every event.
+ */
+export function useImageSrc(image: AcpImage | AcpStoredImage, workspaceId: string): string {
+  return useMemo(() => ('hash' in image
+    ? `/api/workspace/${encodeURIComponent(workspaceId)}/acp-images/${image.hash}`
+    : `data:${image.mimeType};base64,${image.data}`), [image, workspaceId])
 }
 
 /** How many bytes an image block decodes to. */
