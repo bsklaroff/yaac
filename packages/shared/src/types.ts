@@ -5,6 +5,9 @@ import {
   type OpencodeProvider,
   type PiProvider,
 } from '#tool-providers'
+import type { ModelEfforts } from '#tool-providers.generated'
+
+export type { ModelEfforts }
 
 export type AgentTool = 'claude' | 'codex' | 'opencode' | 'pi'
 
@@ -46,6 +49,43 @@ export function normalizeTool(raw: string | undefined): AgentTool {
 export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
 
 /**
+ * An effort level, in the tool's own words (`high`, `xhigh`, opencode's
+ * `default`). Embedded bare in launch commands like a model, so it is one
+ * lowercase word (docs/effort-levels.md).
+ */
+export const EFFORT_RE = /^[a-z]+$/
+export const effortSchema = z.string().regex(EFFORT_RE).max(32)
+
+/** How each tool's effort words read in a menu. Anything else shows as is. */
+const EFFORT_COPY: Record<string, string> = {
+  default: 'Default',
+  none: 'None',
+  off: 'Off',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+  max: 'Max',
+  ultra: 'Ultra',
+  thinking: 'Thinking',
+}
+
+export function effortLabel(effort: string): string {
+  return EFFORT_COPY[effort] ?? effort
+}
+
+/**
+ * The effort to launch a model at: `wanted` where the model has it, else
+ * the model's default. A model whose levels are unknown (not in the
+ * catalog) takes `wanted` as is, since only the tool can judge it.
+ */
+export function effortFor(efforts: ModelEfforts | undefined, wanted: string | undefined): string | undefined {
+  if (efforts === undefined) return wanted
+  return wanted !== undefined && efforts.levels.includes(wanted) ? wanted : efforts.default
+}
+
+/**
  * An agent conversation id from outside the server, checked before it is
  * joined into a path (`acp/<ws>/<id>.jsonl`) or a launch command
  * (`--resume <id>`). It must start with a letter or digit so it can't be read
@@ -76,12 +116,13 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
  * Each tool's agent CLI, pinned. `dockerfiles/Dockerfile.tools` installs the
  * same versions (a test checks) and so does a host install.
  *
- * yaac launches permission postures as each CLI's flags or config and reads
- * the CLI's reports back as postures (docs/permission-modes.md). A release
- * that changes either can fail silently, so bump a version only after
- * re-checking both against the new binary. Bump the matching
- * `ACP_ADAPTERS` entry with it, since codex-acp and pi-acp depend on their
- * CLI's version.
+ * yaac launches permission postures and effort levels as each CLI's flags
+ * or config and reads the CLI's reports back (docs/permission-modes.md,
+ * docs/effort-levels.md). A release that changes either can fail silently,
+ * so bump a version only after re-checking both against the new binary.
+ * Bump the matching `ACP_ADAPTERS` entry with it, since codex-acp and pi-acp
+ * depend on their CLI's version. Then run `pnpm gen:providers`: the claude
+ * catalog and every tool's effort levels are read from the pinned CLIs.
  *
  * `installScriptSha256` is the SHA-256 of the `install.sh` asset of codex's
  * release, which the auth daemon's Install button runs. Release assets can
@@ -270,18 +311,20 @@ export interface ToolCreateDefaults {
   model?: string
   permissionMode?: PermissionMode
   mode?: AgentMode
+  effort?: string
 }
 
 /**
- * The model and posture a create for `tool` runs with when the request names
- * neither: what the project remembers for that agent where it still fits,
- * else the fallback. Both the create form and the server call this, so the
- * form shows what an untouched create would run.
+ * The model, posture and effort a create for `tool` runs with when the
+ * request names none of them: what the project remembers for that agent
+ * where it still fits, else the fallback. Both the create form and the
+ * server call this, so the form shows what an untouched create would run.
  *
  * A remembered posture the tool lacks goes through
  * `launchablePermissionMode`. A remembered opencode/pi model must name the
  * credential's current provider; any claude or codex model stands, since the
- * catalog is not an allowlist.
+ * catalog is not an allowlist. A remembered effort stands where the model
+ * has it, else the model's default; a model with no effort levels gets none.
  */
 export function resolveToolCreateDefaults(args: {
   driver: DriverKind
@@ -291,18 +334,24 @@ export function resolveToolCreateDefaults(args: {
   provider?: string
   /** What the tool runs when nothing is remembered (`defaultModelFor`). */
   defaultModel: string
-}): { model: string; permissionMode: PermissionMode } {
+  /** A model's effort levels, from the catalog (`ModelOption.efforts`). */
+  effortsFor: (model: string) => ModelEfforts | undefined
+}): { model: string; permissionMode: PermissionMode; effort?: string } {
   const { driver, tool, remembered, provider } = args
   const posture = remembered?.permissionMode
-  const model = remembered?.model
   const qualified = tool === 'opencode' || tool === 'pi'
-  const modelFits = model !== undefined
-    && (!qualified || provider === undefined || model.startsWith(`${provider}/`))
+  const rememberedModel = remembered?.model
+  const modelFits = rememberedModel !== undefined
+    && (!qualified || provider === undefined || rememberedModel.startsWith(`${provider}/`))
+  const model = modelFits ? rememberedModel : args.defaultModel
+  const efforts = args.effortsFor(model)
+  const effort = efforts !== undefined ? effortFor(efforts, remembered?.effort) : undefined
   return {
-    model: modelFits ? model : args.defaultModel,
+    model,
     permissionMode: posture !== undefined
       ? launchablePermissionMode(tool, posture)
       : defaultPermissionMode(driver, tool),
+    ...(effort !== undefined ? { effort } : {}),
   }
 }
 
@@ -635,6 +684,8 @@ export interface ToolAuthSummary {
 export interface ModelOption {
   id: string
   name?: string
+  /** Its effort levels and default; absent when it has no effort setting. */
+  efforts?: ModelEfforts
 }
 
 export interface AuthListResult {
@@ -840,6 +891,9 @@ export interface WorkspaceListEntry {
   /** The permission posture its agents run in; a workspace queued after
    *  this one defaults to it. Absent until its row is written. */
   permissionMode?: PermissionMode
+  /** The effort its agents run at, in the tool's words; a workspace queued
+   *  after this one defaults to it. Absent when it runs at none. */
+  effort?: string
 }
 
 /**
@@ -1215,6 +1269,8 @@ export interface QueuedWorkspaceEntry {
   modelName?: string
   mode: AgentMode
   permissionMode: PermissionMode
+  /** The effort it launches at; absent when its model has none. */
+  effort?: string
   /** The reference branch it forks from, fetched fresh at launch. */
   branch: string
   /** The user's title for the workspace; suppresses auto-titling. */
@@ -1251,6 +1307,7 @@ export const queuedWorkspaceSettingsSchema = z.object({
   model: z.string().regex(MODEL_RE).max(100).optional(),
   mode: z.enum(AGENT_MODES).optional(),
   permissionMode: z.enum(PERMISSION_MODES).optional(),
+  effort: effortSchema.optional(),
   branch: z.string().min(1).max(255).optional(),
   title: z.string().max(500).optional(),
 })

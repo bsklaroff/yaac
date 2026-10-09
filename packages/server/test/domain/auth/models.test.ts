@@ -1,17 +1,21 @@
 import { describe, it, expect } from 'vitest'
-import { catalogModel, defaultModelFor, modelDisplayName, modelsForTool } from '#domain/auth'
+import { catalogModel, defaultModelFor, isCatalogModel, modelDisplayName, modelEfforts, modelsForTool } from '#domain/auth'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import {
+  CLAUDE_MODELS,
+  EFFORTS,
   MODELS_BY_PROVIDER,
   PI_MODELS_BY_PROVIDER,
   PI_PROVIDER_DEFAULT_MODELS,
 } from '@yaac/shared/tool-providers.generated'
 
 describe('modelsForTool', () => {
-  it('lists a vendor tool\'s models by bare id, newest first, named', () => {
+  it('lists a vendor tool\'s models by bare id, newest first, named, with their effort levels', () => {
     const claude = modelsForTool('claude', undefined)
-    expect(claude[0]).toEqual({ id: 'claude-sonnet-5-5', name: 'Sonnet 5.5' })
-    expect(claude.map((m) => m.id)).toEqual(MODELS_BY_PROVIDER['anthropic'])
+    expect(claude[0]).toEqual({ id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', efforts: EFFORTS.claude['claude-sonnet-5-5'] })
+    // Only the models the pinned claude knows (docs/effort-levels.md).
+    expect(claude.map((m) => m.id)).toEqual(CLAUDE_MODELS)
+    expect(claude.find((m) => m.id === 'claude-opus-4-5')).not.toHaveProperty('efforts')
     expect(modelsForTool('codex', undefined).map((m) => m.id)).toEqual(MODELS_BY_PROVIDER['openai'])
   })
 
@@ -22,6 +26,27 @@ describe('modelsForTool', () => {
       .toEqual((PI_MODELS_BY_PROVIDER['anthropic'] ?? []).map((m) => `anthropic/${m}`))
     // No credential, no provider — nothing to offer.
     expect(modelsForTool('opencode', undefined)).toEqual([])
+  })
+})
+
+describe('isCatalogModel', () => {
+  it('finds an id in the catalog its tool, and for opencode or pi its provider, offers', () => {
+    expect(isCatalogModel('claude', 'claude-opus-4-5')).toBe(true)
+    expect(isCatalogModel('claude', 'opus')).toBe(false)
+    expect(isCatalogModel('opencode', 'anthropic/claude-opus-5-5')).toBe(true)
+    expect(isCatalogModel('opencode', 'nowhere/claude-opus-5-5')).toBe(false)
+    expect(isCatalogModel('pi', 'no-slash')).toBe(false)
+  })
+})
+
+describe('modelEfforts', () => {
+  it('looks a model up as given and through the decorations a transcript adds', () => {
+    const opus = EFFORTS.claude['claude-opus-4-7']
+    expect(modelEfforts('claude', 'claude-opus-4-7')).toBe(opus)
+    expect(modelEfforts('claude', 'claude-opus-4-7[1m]')).toBe(opus)
+    expect(modelEfforts('claude', 'claude-opus-4-7-20260101')).toBe(opus)
+    expect(modelEfforts('codex', 'gpt-6-sol')?.levels).toContain('ultra')
+    expect(modelEfforts('claude', 'opus')).toBeUndefined()
   })
 })
 

@@ -49,6 +49,8 @@ export interface WorkspaceCreatedInput {
   /** The model and agent mode its first agent launches with. */
   model?: string
   mode?: AgentMode
+  /** The effort its agents launch at. */
+  effort?: string
   /** The zone it launches with as `TZ`. */
   timeZone?: string
 }
@@ -89,6 +91,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.mode !== undefined ? { mode: input.mode } : {}),
+      ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
     })
     .onConflictDoNothing({ target: workspaces.workspaceId })
@@ -110,7 +113,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
 export async function recordWorkspaceResumed(
   input: Pick<
     WorkspaceCreatedInput,
-    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'timeZone'
+    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'effort' | 'timeZone'
   >,
 ): Promise<void> {
   const db = await getDb()
@@ -118,6 +121,7 @@ export async function recordWorkspaceResumed(
     ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.mode !== undefined ? { mode: input.mode } : {}),
+    ...(input.effort !== undefined ? { effort: input.effort } : {}),
     // A resume launches a new process, in the zone the create read now.
     timeZone: input.timeZone ?? null,
   }).where(key(input.projectId, input.workspaceId))
@@ -142,7 +146,7 @@ export async function recordWorkspaceResumed(
 export async function claimSpareWorkspace(
   projectId: string,
   workspaceId: string,
-  claim: Pick<WorkspaceCreatedInput, 'permissionMode' | 'model' | 'mode'> = {},
+  claim: Pick<WorkspaceCreatedInput, 'permissionMode' | 'model' | 'mode' | 'effort'> = {},
 ): Promise<void> {
   const db = await getDb()
   const rows = await db.update(workspaces).set({
@@ -155,6 +159,8 @@ export async function claimSpareWorkspace(
     ...(claim.permissionMode !== undefined ? { permissionMode: claim.permissionMode } : {}),
     ...(claim.model !== undefined ? { model: claim.model } : {}),
     ...(claim.mode !== undefined ? { mode: claim.mode } : {}),
+    // The claimed model may have no effort setting, so this always writes.
+    effort: claim.effort ?? null,
   }).where(and(key(projectId, workspaceId), eq(workspaces.spare, true)))
     .returning({ workspaceId: workspaces.workspaceId })
   if (!rows[0]) {
@@ -199,6 +205,7 @@ export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void>
     permissionMode: warmed.permissionMode,
     model: warmed.model ?? null,
     mode: warmed.mode ?? null,
+    effort: warmed.effort ?? null,
   }).where(key(projectId, workspaceId))
   await deleteWorkspaceAgentSessions(projectId, workspaceId)
 }
@@ -423,6 +430,16 @@ export async function setWorkspacePermissionMode(
 ): Promise<void> {
   const db = await getDb()
   await db.update(workspaces).set({ permissionMode }).where(key(projectId, workspaceId))
+}
+
+/** Record the effort level the running agent moved to. */
+export async function setWorkspaceEffort(
+  projectId: string,
+  workspaceId: string,
+  effort: string,
+): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ effort }).where(key(projectId, workspaceId))
 }
 
 /**

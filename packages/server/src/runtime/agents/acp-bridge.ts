@@ -147,6 +147,7 @@ export function attachAcp(
           send({ type: 'event', event: { ...notice, seq: seq++ } })
         }
         send({ type: 'permission-mode', ...conversation.permissionModes })
+        send({ type: 'effort', ...conversation.efforts })
         return
       }
       for (const event of events) send({ type: 'event', event: { ...event, seq: seq++ } })
@@ -177,6 +178,9 @@ export function attachAcp(
   })
   const unsubscribePermissionModes = conversation.onPermissionModes((modes) => {
     if (!detached) send({ type: 'permission-mode', ...modes })
+  })
+  const unsubscribeEfforts = conversation.onEfforts((efforts) => {
+    if (!detached) send({ type: 'effort', ...efforts })
   })
   // The pane is bound to this conversation object. When it closes, close
   // the socket too: a replacement under the same `acp:<id>` is a different
@@ -220,6 +224,10 @@ export function attachAcp(
     }
     if (msg.type === 'permission-mode' && conversation.permissionModes.available.includes(msg.mode)) {
       void conversation.switchPermissionMode(msg.mode)
+      return
+    }
+    if (msg.type === 'effort' && conversation.efforts.available.some((o) => o.value === msg.effort)) {
+      void conversation.switchEffort(msg.effort)
       return
     }
     if (msg.type === 'stop-task' && typeof msg.taskId === 'string' && tasks.get(msg.taskId)?.canStop === true) {
@@ -285,6 +293,7 @@ export function attachAcp(
     unsubscribe()
     unsubscribeQueue()
     unsubscribePermissionModes()
+    unsubscribeEfforts()
     unsubscribeClose()
   })
 }

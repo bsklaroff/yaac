@@ -38,6 +38,7 @@ const stream = {
   taskOutputs: {} as Record<string, { text?: string; error?: string }>,
   subagentTranscripts: {} as Record<string, { events?: AcpEventInit[]; error?: string }>,
   permissionModes: { available: [] } as { current?: PermissionMode; available: PermissionMode[] },
+  efforts: { available: [] } as { current?: string; available: Array<{ value: string; name: string }> },
 }
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
@@ -289,6 +290,36 @@ describe('WorkspaceChat permission mode', () => {
     show()
     expect(screen.getByText('Accept edits')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Permission mode' })).toBeNull()
+  })
+})
+
+// docs/effort-levels.md. The levels and names are the adapter's own, for
+// the conversation's current model.
+describe('WorkspaceChat effort', () => {
+  afterEach(() => {
+    cleanup()
+    stream.efforts = { available: [] }
+  })
+
+  it("shows the level by the agent's name for it and switches it from the menu", async () => {
+    stream.send.mockClear()
+    stream.efforts = {
+      current: 'xhigh',
+      available: [{ value: 'high', name: 'High' }, { value: 'xhigh', name: 'Xhigh' }, { value: 'max', name: 'Max' }],
+    }
+    show()
+    const trigger = screen.getByRole('button', { name: 'Effort' })
+    expect(trigger.textContent).toContain('Xhigh effort')
+    fireEvent.click(trigger)
+    const items = await screen.findAllByRole('menuitemradio')
+    expect(items.map((i) => i.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false'])
+    fireEvent.click(items[2])
+    expect(stream.send).toHaveBeenCalledWith({ type: 'effort', effort: 'max' })
+  })
+
+  it('shows nothing for an agent with no effort option', () => {
+    show()
+    expect(screen.queryByRole('button', { name: 'Effort' })).toBeNull()
   })
 })
 

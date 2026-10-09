@@ -324,6 +324,7 @@ describe('runMamaCommand', () => {
         [{ tool: 'not-a-tool' }, "invalid tool 'not-a-tool'"],
         [{ model: "opus'; rm -rf /" }, "invalid model 'opus'; rm -rf /'"],
         [{ 'permission-mode': 'yolo' }, "invalid permission mode 'yolo'"],
+        [{ effort: 'HIGH; x' }, "invalid effort 'HIGH; x'"],
         [{ 'ui-mode': 'gui' }, "invalid ui mode 'gui'"],
         [{ branch: '  ' }, 'branch must not be empty'],
         [{ title: '  ' }, 'title must not be empty'],
@@ -993,6 +994,8 @@ describe('runMamaCommand', () => {
       expect(text).toContain('not configured')
       // It names the caller's own tool, the known-good default.
       expect(text).toContain('codex')
+      // Each model's effort levels follow it, its default starred.
+      expect(text).toContain('claude-opus-4-7 (Opus 4.7) [effort low medium high xhigh* max]')
     })
   })
 })

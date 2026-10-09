@@ -3,10 +3,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import {
-  _resetCodexPosturesForTests,
+  _resetCodexRolloutReadsForTests,
   codexRolloutParent,
   codexRolloutThreadId,
-  getCodexPermissionMode,
+  getCodexRolloutSettings,
 } from '#runtime/agents/codex'
 import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 
@@ -14,11 +14,11 @@ import type { SandboxFile } from '#runtime/agents/sandbox-fs'
 const at = (file: string): SandboxFile => ({ projectId: 'demo', dir: path.dirname(file), rel: path.basename(file) })
 
 
-describe('getCodexPermissionMode', () => {
+describe('getCodexRolloutSettings', () => {
   let dir: string
   beforeEach(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-posture-'))
-    _resetCodexPosturesForTests()
+    _resetCodexRolloutReadsForTests()
   })
   afterEach(async () => {
     await fs.rm(dir, { recursive: true, force: true })
@@ -70,7 +70,7 @@ describe('getCodexPermissionMode', () => {
       [{ permission_profile: READ_ONLY }, 'read-only'],
     ]
     for (const [s, mode] of cases) {
-      expect((await getCodexPermissionMode(at(await rollout([turnContext(s)]))))?.permissionMode).toBe(mode)
+      expect((await getCodexRolloutSettings(at(await rollout([turnContext(s)]))))?.permissionMode).toBe(mode)
     }
   })
 
@@ -83,14 +83,14 @@ describe('getCodexPermissionMode', () => {
       { ...applied({ approval_policy: 'never', permission_profile: FULL }) as object, timestamp: '2026-09-24T20:21:41.151Z' },
     ])
     // The timestamp tells this run's settings from ones a restart resumed.
-    await expect(getCodexPermissionMode(at(jsonl)))
+    await expect(getCodexRolloutSettings(at(jsonl)))
       .resolves.toEqual({ permissionMode: 'bypass', atMs: Date.parse('2026-09-24T20:21:41.151Z') })
 
     // Plan mode only instructs the model; it does not change the sandbox.
     await fs.appendFile(jsonl, JSON.stringify(applied({
       approval_policy: 'never', permission_profile: FULL, collaboration_mode: { mode: 'plan' },
     })) + '\n')
-    expect((await getCodexPermissionMode(at(jsonl)))?.permissionMode).toBe('bypass')
+    expect((await getCodexRolloutSettings(at(jsonl)))?.permissionMode).toBe('bypass')
   })
 
   // Unknown settings map to the loosest posture that is no looser than them.
@@ -102,18 +102,30 @@ describe('getCodexPermissionMode', () => {
       [{ approvals_reviewer: 'auto_review', permission_profile: READ_ONLY }, 'auto'],
     ]
     for (const [s, mode] of cases) {
-      expect((await getCodexPermissionMode(at(await rollout([turnContext(s)]))))?.permissionMode).toBe(mode)
+      expect((await getCodexRolloutSettings(at(await rollout([turnContext(s)]))))?.permissionMode).toBe(mode)
     }
   })
 
   // Unrecognized settings yield nothing, not an older entry's posture.
   it('answers nothing for settings no posture stands for', async () => {
     const jsonl = await rollout([turnContext(), applied({ approval_policy: { granular: {} } })])
-    await expect(getCodexPermissionMode(at(jsonl))).resolves.toBeUndefined()
+    await expect(getCodexRolloutSettings(at(jsonl))).resolves.toBeUndefined()
+  })
+
+  // codex writes the level as `effort` in each turn context (checked against
+  // codex-cli 0.159.3) and as `reasoning_effort` in a settings change.
+  it('reads the effort beside the posture, from either entry', async () => {
+    const turn = await rollout([turnContext({ effort: 'xhigh' })])
+    expect(await getCodexRolloutSettings(at(turn))).toMatchObject({ permissionMode: 'accept-edits', effort: 'xhigh' })
+    const changed = await rollout([turnContext({ effort: 'xhigh' }), applied({ reasoning_effort: 'low' })])
+    expect((await getCodexRolloutSettings(at(changed)))?.effort).toBe('low')
+    // Not a level's shape: dropped, as anything in the workspace can write it.
+    const forged = await rollout([turnContext({ effort: 'x"y' })])
+    expect(await getCodexRolloutSettings(at(forged))).not.toHaveProperty('effort')
   })
 
   it('reads nothing from a rollout that is not there', async () => {
-    await expect(getCodexPermissionMode(at(path.join(dir, 'missing.jsonl')))).resolves.toBeUndefined()
+    await expect(getCodexRolloutSettings(at(path.join(dir, 'missing.jsonl')))).resolves.toBeUndefined()
   })
 })
 

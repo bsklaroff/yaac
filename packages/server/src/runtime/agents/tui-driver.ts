@@ -88,6 +88,8 @@ class TuiConnection implements AgentConnection {
   private readonly modelPushes = new Map<string, string>()
   /** Each pane's reported permission mode, as its tool last put it. */
   private readonly modes = new Map<string, string>()
+  /** Each pane's reported effort level, in its tool's words. */
+  private readonly efforts = new Map<string, string>()
   /** Every pane with a session subscription (agent windows and scratch
    *  shells), with the conversation it last named. */
   private readonly sessions = new Map<string, PaneSession | undefined>()
@@ -224,6 +226,7 @@ class TuiConnection implements AgentConnection {
       this.models.delete(paneId)
       this.modelPushes.delete(paneId)
       this.modes.delete(paneId)
+      this.efforts.delete(paneId)
       this.sessions.delete(paneId)
     }
     this.publishAgents()
@@ -245,6 +248,7 @@ class TuiConnection implements AgentConnection {
       const own = session?.tool === tool ? session : undefined
       const model = this.models.get(handle)
       const reportedMode = this.modes.get(handle)
+      const reportedEffort = this.efforts.get(handle)
       agents.push({
         handle,
         tool,
@@ -252,6 +256,7 @@ class TuiConnection implements AgentConnection {
         ...(own?.transcriptPath !== undefined ? { transcriptPath: own.transcriptPath } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(reportedMode !== undefined ? { reportedMode } : {}),
+        ...(reportedEffort !== undefined ? { reportedEffort } : {}),
       })
     }
     this.sink({ kind: 'live-agents', agents })
@@ -265,16 +270,20 @@ class TuiConnection implements AgentConnection {
   }
 
   /**
-   * A pane's reported permission mode changed. Kept in the tool's terms and
-   * mapped to a posture later (`LiveAgent.reportedMode`), since opencode's
-   * agent means different things under different launches. Empty keeps the
-   * previous value.
+   * A pane's reported permission mode or effort changed. Both are kept in
+   * the tool's terms; the mode is mapped to a posture later
+   * (`LiveAgent.reportedMode`), since opencode's agent means different
+   * things under different launches. Empty keeps the previous value.
    */
-  private onMode(paneId: string, mode: string): void {
-    if (mode === '' || this.done || !this.subscribed.has(paneId)) return
-    if (this.modes.get(paneId) === mode) return
-    this.modes.set(paneId, mode)
-    this.publishAgents()
+  private onReport(paneId: string, mode: string, effort: string): void {
+    if (this.done || !this.subscribed.has(paneId)) return
+    let changed = false
+    for (const [reports, value] of [[this.modes, mode], [this.efforts, effort]] as const) {
+      if (value === '' || reports.get(paneId) === value) continue
+      reports.set(paneId, value)
+      changed = true
+    }
+    if (changed) this.publishAgents()
   }
 
   /**
@@ -317,8 +326,8 @@ class TuiConnection implements AgentConnection {
       const tool = this.subscribed.get(n.paneId)
       if (tool === undefined) return
       if (n.name.startsWith(REPORT_SUBSCRIPTION_PREFIX)) {
-        const { model, mode } = splitAgentReport(n.value)
-        this.onMode(n.paneId, mode)
+        const { model, mode, effort } = splitAgentReport(n.value)
+        this.onReport(n.paneId, mode, effort)
         void this.onModel(n.paneId, tool, model)
         return
       }
@@ -413,6 +422,7 @@ export const tuiDriver: AgentDriver = {
       paths: spec.paths,
       ...(spec.piProvider !== undefined ? { piProvider: spec.piProvider } : {}),
       ...(spec.model !== undefined ? { model: spec.model } : {}),
+      ...(spec.effort !== undefined ? { effort: spec.effort } : {}),
     })
   },
 

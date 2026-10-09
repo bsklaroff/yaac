@@ -6,8 +6,8 @@
 #   yaac-mama create [opts] "<prompt>"
 #   yaac-mama queue --parent-workspace W [opts] "<prompt>"
 #   yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
-#     where opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U]
-#                 [--branch B] [--group G] [--title T]
+#     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
+#                 [--ui-mode U] [--branch B] [--group G] [--title T]
 #   yaac-mama send [--conversation C] <workspace> "<message>"
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama stop [<workspace>]
@@ -79,6 +79,10 @@ Options for create, queue and edit-queued:
   --model <model>  model id the agent launches with — any id the tool accepts:
                    a model id/alias for claude/codex (e.g. opus), provider/model
                    for opencode and pi (e.g. anthropic/claude-opus-4-8).
+  --effort <level> how hard the model thinks, in the tool's own words (e.g.
+                   low, high, xhigh); `yaac-mama models` lists each model's
+                   levels and stars its default. Omitted, the project's last
+                   choice where the model has it, else the model's default.
   --permission-mode <mode>
                    how much the new agent may do before it asks: bypass, auto,
                    accept-edits, manual, then plan or read-only (codex's
@@ -418,16 +422,17 @@ EOF
 
   create|queue|edit-queued)
     cmd=$1; shift
-    tool=""; model=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""
+    tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --tool|--model|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace)
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
       case "$1" in
         --tool) tool=$2 ;;
         --model) model=$2 ;;
+        --effort) effort=$2 ;;
         --permission-mode) perm=$2 ;;
         --ui-mode) ui_mode=$2 ;;
         --branch) branch=$2 ;;
@@ -437,7 +442,7 @@ EOF
       esac
       shift 2
     done
-    opts='[--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]'
+    opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]'
     queued=""; prompt=""
     case "$cmd" in
       create)
@@ -466,7 +471,7 @@ EOF
         ;;
     esac
     run "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" tool "$tool" model "$model" \
-      permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
+      effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
     ;;
 
   send)

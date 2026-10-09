@@ -6,6 +6,7 @@ import {
   ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
+import { EffortMenu } from '#components/EffortMenu'
 import { PermissionModeMenu } from '#components/PermissionModeMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
@@ -53,7 +54,7 @@ export function WorkspaceChat({
   agentSessionId: string
   visible?: boolean
 }): JSX.Element {
-  const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts, permissionModes } = useAcpStream(workspaceId, agentSessionId)
+  const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts, permissionModes, efforts } = useAcpStream(workspaceId, agentSessionId)
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const fullWidth = useUiStore((s) => s.chatFullWidth)
@@ -480,13 +481,21 @@ export function WorkspaceChat({
                   >
                     {condensed ? <UncondenseIcon size={16} /> : <CondenseIcon size={16} />}
                   </button>
-                  <div className="mr-auto">
+                  <div className="mr-auto flex items-center">
                     {permissionModes.current !== undefined && (
                       <PermissionModeMenu
                         current={permissionModes.current}
                         available={permissionModes.available}
                         disabled={!connected}
                         onSelect={(mode) => send({ type: 'permission-mode', mode })}
+                      />
+                    )}
+                    {efforts.current !== undefined && efforts.available.length > 0 && (
+                      <EffortMenu
+                        current={efforts.current}
+                        available={efforts.available}
+                        disabled={!connected}
+                        onSelect={(effort) => send({ type: 'effort', effort })}
                       />
                     )}
                   </div>

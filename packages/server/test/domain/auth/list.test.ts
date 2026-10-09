@@ -3,6 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { addHttpsCredential } from '#domain/projects'
 import { BUILT_IN_USER_ID, closeDb, seeTailnetUser, setToolCredential } from '#db'
 import { listAuth } from '#domain/auth'
+import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 
 describe('listAuth', () => {
   let tmpDir: string
@@ -56,7 +57,9 @@ describe('listAuth', () => {
         savedAt: '2026-04-20T00:00:00.000Z',
         opencodeProvider: undefined,
         piProvider: undefined,
-        models: expect.arrayContaining([{ id: 'claude-opus-5-5', name: 'Opus 5.5' }]) as unknown,
+        models: expect.arrayContaining([{
+          id: 'claude-opus-5-5', name: 'Opus 5.5', efforts: EFFORTS.claude['claude-opus-5-5'],
+        }]) as unknown,
         defaultModel: 'claude-opus-5-5',
       },
       expect.objectContaining({ tool: 'codex', kind: 'api-key', keyPreview: '****' }),

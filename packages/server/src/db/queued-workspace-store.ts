@@ -27,13 +27,14 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string }
 
 /** An entry's settings: what an insert takes and an update replaces. An
- *  absent title or group is stored as null. */
+ *  absent title, group or effort is stored as null. */
 export interface QueuedWorkspaceSettings {
   prompt: string
   tool: AgentTool
   model: string
   mode: AgentMode
   permissionMode: PermissionMode
+  effort?: string
   branch: string
   title?: string
   groupId?: string
@@ -56,7 +57,7 @@ function parentColumns(parent: QueuedParent): { parentWorkspaceId: string | null
 }
 
 function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspaces.$inferInsert, 'projectId'> {
-  return { ...s, title: s.title ?? null, groupId: s.groupId ?? null }
+  return { ...s, title: s.title ?? null, groupId: s.groupId ?? null, effort: s.effort ?? null }
 }
 
 /** Not mid-launch: the guard on every edit. */

@@ -22,7 +22,7 @@ import {
 import { resolveWorkspace } from './resolve'
 import { startWorkspace } from './start'
 import { agentPermissionMode } from './spawn-policy'
-import { modelDisplayName } from '#domain/auth'
+import { modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
 import {
@@ -70,6 +70,9 @@ export interface QueueRequest {
   model?: string
   mode?: AgentMode
   permissionMode?: PermissionMode
+  /** Refused if the model lacks it; unnamed is the project's remembered
+   *  effort where the model has it, else the model's default. */
+  effort?: string
   branch?: string
   /** The launched workspace's title; blank leaves it to be auto-titled. */
   title?: string
@@ -119,7 +122,8 @@ export async function queueWorkspace(
 
 /**
  * Edit a queued entry's fields or parent. A new tool without a model or
- * permission mode re-resolves those. A parent that would form a cycle is
+ * permission mode re-resolves those, and a stored effort the new tool or
+ * model lacks is re-resolved too. A parent that would form a cycle is
  * refused. An agent's edit is held to its ceiling, counting the stored
  * permission mode as requested.
  */
@@ -135,6 +139,7 @@ export async function updateQueuedWorkspace(
     ? await resolveParent(row.projectId, patch.parent)
     : await parentInfo(row.projectId, pointerOf(row))
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
+  const keptEffort = patch.effort ?? (retooled ? undefined : keepableEffort(row, patch.model))
   const settings = await resolveSettings(row.projectId, parent, {
     prompt: patch.prompt ?? row.prompt,
     tool: patch.tool ?? row.tool,
@@ -146,6 +151,7 @@ export async function updateQueuedWorkspace(
     ...(patch.permissionMode !== undefined
       ? { permissionMode: patch.permissionMode }
       : retooled ? {} : { permissionMode: row.permissionMode }),
+    ...(keptEffort !== undefined ? { effort: keptEffort } : {}),
   }, source)
   const updated = await updateQueuedWorkspaceRow(id, {
     ...settings,
@@ -153,6 +159,14 @@ export async function updateQueuedWorkspace(
   })
   if (!updated) throw launchingConflict()
   return (await toEntries([updated]))[0]
+}
+
+/** An entry's stored effort, if the model it will run (a new one, or its
+ *  own) has it. */
+function keepableEffort(row: QueuedWorkspaceRow, model: string | undefined): string | undefined {
+  if (row.effort === undefined) return undefined
+  const levels = modelEfforts(row.tool, model ?? row.model)?.levels
+  return levels?.includes(row.effort) === true ? row.effort : undefined
 }
 
 /** Discard an entry. Its children splice up to its own parent. */
@@ -285,6 +299,7 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
         model: row.model,
         mode: row.mode,
         permissionMode: row.permissionMode,
+        ...(row.effort !== undefined ? { effort: row.effort } : {}),
         branch: row.branch,
         prompt: row.prompt,
         ...(title !== undefined ? { title } : {}),
@@ -462,6 +477,7 @@ async function resolveSettings(
     tool,
     ...(mode !== undefined ? { mode } : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.model !== undefined
       ? { model: request.model }
       : sameTool && parent.model !== undefined ? { model: parent.model } : {}),
@@ -479,6 +495,7 @@ async function resolveSettings(
     model: setup.model,
     mode: setup.mode,
     permissionMode: setup.permissionMode,
+    ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
     branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)),
     ...(title !== '' ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
@@ -506,6 +523,7 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       ...(modelName !== undefined ? { modelName } : {}),
       mode: r.mode,
       permissionMode: r.permissionMode,
+      ...(r.effort !== undefined ? { effort: r.effort } : {}),
       branch: r.branch,
       ...(r.title !== undefined ? { title: r.title } : {}),
       ...(r.generatedTitle !== undefined ? { generatedTitle: r.generatedTitle } : {}),

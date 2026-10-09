@@ -28,6 +28,7 @@ function columns(s: DraftWorkspaceSettings): Omit<typeof draftWorkspaces.$inferI
     mode: s.mode,
     permissionMode: s.permissionMode,
     model: s.model ?? null,
+    effort: s.effort ?? null,
     branch: s.branch ?? null,
     startAfter: s.startAfter ?? null,
     title: s.title ?? null,

@@ -229,13 +229,14 @@ export function setLiveAgents(projectId: string, workspaceId: string, agents: Li
     || previous.length !== agents.length
     || agents.some((a) => !previous.some((p) =>
       p.handle === a.handle && p.agentSessionId === a.agentSessionId && p.model === a.model
-      && p.reportedMode === a.reportedMode && p.transcriptPath === a.transcriptPath))
+      && p.reportedMode === a.reportedMode && p.reportedEffort === a.reportedEffort
+      && p.transcriptPath === a.transcriptPath))
   e.liveAgents = agents
   for (const handle of [...e.agents.keys()]) if (!next.has(handle)) e.agents.delete(handle)
   e.updatedAtMs = Date.now()
-  // Membership, id, model or mode changes trigger a reconcile pass (the
-  // registry joins against them), so a new ACP conversation becomes a row
-  // without waiting for the resync.
+  // Membership, id, model, mode or effort changes trigger a reconcile pass
+  // (the registry joins against them), so a new ACP conversation becomes a
+  // row without waiting for the resync.
   if (changed) liveAgentsListener?.()
   if (changed || readWorkspaceStatus(projectId, workspaceId) !== before) notifyWorkspaceListChanged()
 }

@@ -360,7 +360,8 @@ describe('agentDriver', () => {
     // tool's hooks report. tmux filters and bounds the values, since the
     // workspace can set them to anything, including newlines.
     await answer(stream,
-      "refresh-client -B 'report-7:%7:#{=128;s/[^ -~]//:@yaac-model}|#{=32;s/[^A-Za-z-]//:@yaac-permission-mode}'")
+      "refresh-client -B 'report-7:%7:#{=128;s/[^ -~]//:@yaac-model}|#{=32;s/[^A-Za-z-]//:@yaac-permission-mode}"
+      + "|#{=32;s/[^a-z]//:@yaac-effort}'")
 
     await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
     // The handle is the pane id; no conversation id yet.
@@ -376,26 +377,28 @@ describe('agentDriver', () => {
     // A report, and then a switch, each republish the live set.
     const agentSets = (): unknown[] => seen.filter((o) => o.kind === 'live-agents')
     const before = agentSets().length
-    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : \n')
-    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-opus-5-5[1m]\n')
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : ||\n')
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-opus-5-5[1m]||\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-opus-5-5[1m]' }],
     }))
-    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5\n')
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5||\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents', agents: [{ handle: '%7', tool: 'claude', model: 'claude-sonnet-5' }],
     }))
     expect(agentSets().length).toBe(before + 2)
 
-    // The mode arrives in claude's own terms; mapping it to a posture happens
-    // elsewhere.
-    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|acceptEdits\n')
+    // The mode and effort arrive in claude's own terms; mapping the mode to
+    // a posture happens elsewhere.
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|acceptEdits|xhigh\n')
     await vi.waitFor(() => expect(seen).toContainEqual({
       kind: 'live-agents',
-      agents: [{ handle: '%7', tool: 'claude', model: 'claude-sonnet-5', reportedMode: 'acceptEdits' }],
+      agents: [{
+        handle: '%7', tool: 'claude', model: 'claude-sonnet-5', reportedMode: 'acceptEdits', reportedEffort: 'xhigh',
+      }],
     }))
-    // An unchanged push is ignored; an empty half keeps the last value.
-    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5|\n')
+    // An unchanged push is ignored; an empty part keeps the last value.
+    stream.feed('%subscription-changed report-7 $0 @0 0 %7 : claude-sonnet-5||\n')
     expect(agentSets().length).toBe(before + 3)
 
     // A reply nothing asked for, and malformed notifications, change nothing.
@@ -1682,6 +1685,82 @@ describe('agentDriver', () => {
     expect(stream.sent().find((m) => m.method === 'session/set_config_option')!.params)
       .toEqual({ sessionId: 'pi-1', configId: 'model', value: 'openrouter/moonshotai/kimi-k2.6' })
     expect(asked).toEqual(['pi'])
+  })
+
+  /** pi-acp's thinking-level option at `current` (docs/effort-levels.md). */
+  const thoughtLevel = (current: string): Record<string, unknown> => ({
+    id: 'thought_level',
+    category: 'thought_level',
+    type: 'select',
+    currentValue: current,
+    options: [{ value: 'low', name: 'Thinking: low' }, { value: 'high', name: 'Thinking: high' }],
+  })
+  /** Every effort the connection published on its live set, in order. */
+  const reportedEfforts = (seen: AgentObservation[]): string[] => seen.flatMap((o) =>
+    o.kind === 'live-agents' ? o.agents.flatMap((a) => (a.reportedEffort !== undefined ? [a.reportedEffort] : [])) : [])
+
+  // A new conversation is put at the workspace's effort, since its adapter
+  // would otherwise read what another workspace saved to the shared home.
+  // Every level it then reports goes upward for the row to follow, and the
+  // pane is offered the adapter's own list.
+  it("puts a conversation at the workspace's effort and follows each level it reports", async () => {
+    const stream = new FakeStream()
+    tmuxWindows = 'pi\n'
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      dial: acpDial(() => stream),
+      permissionMode: () => Promise.resolve('bypass'),
+      effort: () => Promise.resolve('high'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
+    stream.feed(helloLine(true))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: created.id, result: { sessionId: 'pi-1', configOptions: [thoughtLevel('low')] },
+    })}\n`)
+
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
+    const setEffort = stream.sent().find((m) => m.method === 'session/set_config_option')!
+    expect(setEffort.params).toEqual({ sessionId: 'pi-1', configId: 'thought_level', value: 'high' })
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: setEffort.id, result: { configOptions: [thoughtLevel('high')] } })}\n`)
+    const conversation = acpConversationByHandle('demo', 'wt-1', 'pi')!
+    await vi.waitFor(() => expect(conversation.efforts).toEqual({
+      current: 'high',
+      available: [{ value: 'low', name: 'Thinking: low' }, { value: 'high', name: 'Thinking: high' }],
+    }))
+
+    // The user moves it in the agent's own UI; the update is the report.
+    stream.feed(updateLine('pi-1', { sessionUpdate: 'config_option_update', configOptions: [thoughtLevel('low')] }))
+    await vi.waitFor(() => expect(reportedEfforts(seen)).toEqual(['low', 'high', 'low']))
+  })
+
+  // A reattach runs no handshake, so the levels a pane may pick come from
+  // the record, and the level is left as the user last set it.
+  it("reads a reattached conversation's effort back from its record", async () => {
+    await record('acp-1', [
+      lifeLine,
+      { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
+      { jsonrpc: '2.0', id: 'h-1', result: { sessionId: 'acp-1', configOptions: [thoughtLevel('low')] } },
+      { jsonrpc: '2.0', id: 'h-2', result: { configOptions: [thoughtLevel('high')] } },
+    ])
+    const stream = new FakeStream()
+    tmuxWindows = 'pi\n'
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      dial: acpDial(() => stream),
+      recordedSessions: () => Promise.resolve([{ handle: 'pi', agentSessionId: 'acp-1' }]),
+      permissionMode: () => Promise.resolve('bypass'),
+      effort: () => Promise.resolve('low'),
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
+    stream.feed(helloLine(false))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')!.efforts.current).toBe('high'))
+    expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(false)
   })
 
   it('forwards an adapter question under bypass when the adapter has no permissions to waive', async () => {

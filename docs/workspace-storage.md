@@ -251,7 +251,8 @@ and the watcher subscribes to it on agent windows:
 
 A third pane option, `@yaac-permission-mode`, carries the agent's permission
 mode through the same script, subscription and plugin (docs/permission-modes.md,
-"Following the agent"). A pushed model belongs to the pane, and so to whatever
+"Following the agent"), and a fourth, `@yaac-effort`, its effort level
+(docs/effort-levels.md). A pushed model belongs to the pane, and so to whatever
 conversation the pane names, which is why a `/clear` hands the new conversation
 its predecessor's model.
 

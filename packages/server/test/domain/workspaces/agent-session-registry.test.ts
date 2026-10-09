@@ -11,7 +11,7 @@ import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-sessi
 import { applyWorkspaceEvent } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
 import { getWorkspaceRow, recordWorkspaceCreated, recordWorkspaceLife, setWorkspacePermissionMode } from '#db/workspace-store'
-import { _resetCodexPosturesForTests } from '#runtime/agents/codex'
+import { _resetCodexRolloutReadsForTests } from '#runtime/agents/codex'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '@yaac/test-utils/fake-driver'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import type { LiveAgent } from '#runtime/agents'
@@ -41,7 +41,7 @@ describe('reconcileAgentSessions', () => {
     _resetWorkspaceStatusStoreForTests()
     _resetPromptCaptureForTests()
     _resetReportedModesForTests()
-    _resetCodexPosturesForTests()
+    _resetCodexRolloutReadsForTests()
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
     await recordWorkspaceLife(DEMO_PROJECT_ID, 'wt-1')
   })
@@ -322,6 +322,40 @@ describe('reconcileAgentSessions', () => {
     }))
     await sweep()
     expect(await posture()).toBe('accept-edits')
+  })
+
+  // Efforts are followed like modes (docs/effort-levels.md): a claude pane's
+  // reported level, then codex's from its rollout. A report that is not a
+  // level's shape is dropped, since anything in the workspace can set it.
+  it("follows each agent's effort, codex's from its rollout", async () => {
+    const effort = async (): Promise<string | undefined> => (await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.effort
+    const rel = path.join('codex', 'sessions', 'rollout-conv-e.jsonl')
+    const rollout = path.join(codexDir(DEMO_PROJECT_ID), 'sessions', 'rollout-conv-e.jsonl')
+    await fs.mkdir(path.dirname(rollout), { recursive: true })
+
+    live([{ ...await claudeOn('%0', 'conv-a'), reportedEffort: 'xhigh' }])
+    await sweep()
+    expect(await effort()).toBe('xhigh')
+    live([{ ...await claudeOn('%0', 'conv-a'), reportedEffort: 'x"y' }])
+    await sweep()
+    expect(await effort()).toBe('xhigh')
+    // A word the model has no level for is dropped too; `default` is kept,
+    // since claude's ACP adapter offers it.
+    live([{ ...await claudeOn('%0', 'conv-a'), model: 'claude-opus-4-6', reportedEffort: 'dangerously' }])
+    await sweep()
+    expect(await effort()).toBe('xhigh')
+    live([{ ...await claudeOn('%0', 'conv-a'), model: 'claude-opus-4-6', reportedEffort: 'default' }])
+    await sweep()
+    expect(await effort()).toBe('default')
+
+    await fs.writeFile(rollout, `${JSON.stringify({
+      timestamp: new Date(Date.now() + 1000).toISOString(),
+      type: 'turn_context',
+      payload: { approval_policy: 'never', permission_profile: { type: 'disabled' }, effort: 'ultra' },
+    })}\n`)
+    live([{ handle: '%1', tool: 'codex', agentSessionId: 'conv-e', transcriptPath: rel }])
+    await sweep()
+    expect(await effort()).toBe('ultra')
   })
 
   // After a restart, the rollout's newest entry is from the old process and

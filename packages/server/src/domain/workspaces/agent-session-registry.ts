@@ -1,9 +1,9 @@
-import { catalogModel } from '#domain/auth'
+import { catalogModel, modelEfforts } from '#domain/auth'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { isWorkspaceTerminating, liveAgents } from '#runtime/status'
 import {
   acpRecord,
-  getCodexPermissionMode,
+  getCodexRolloutSettings,
   locateTranscript,
   readAcpFirstPrompt,
   resolveAgentPermissionMode,
@@ -16,7 +16,7 @@ import { captureFirstPrompt } from './prompt-capture'
 import { serverLog } from '#log'
 import type { AgentSessionLinkRow, DiscoveredSession, WorkspaceRow } from '#db'
 import type { LiveAgent } from '#runtime/agents'
-import type { AgentMode } from '@yaac/shared/types'
+import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
 
 /**
  * Record agent conversations from what running workspaces report.
@@ -73,7 +73,9 @@ export async function reconcileWorkspaceAgentSessions(
   const row = await getWorkspaceRow(projectId, workspaceId)
   const links = await listWorkspaceAgentSessions(projectId, workspaceId)
   if (row !== undefined) {
-    await followReportedModes(projectId, workspaceId, mode, row, await withRolloutModes(row, observed, links))
+    const reports = await withRolloutReports(row, observed, links)
+    await followReportedModes(projectId, workspaceId, mode, row, reports)
+    await followReportedEfforts(projectId, workspaceId, row, reports)
   }
 
   // Skip agents that have not named their conversation yet (ACP handshake in
@@ -138,15 +140,29 @@ async function describe(
 }
 
 /**
- * Each live agent's last reported mode, per workspace, keyed to the pod life.
- * Handles (`%0`, or the tool's name) repeat in a new pod, so reports are
- * only compared within one life.
+ * Each live agent's last reported mode and effort, per workspace, keyed to
+ * the pod life. Handles (`%0`, or the tool's name) repeat in a new pod, so
+ * reports are only compared within one life.
  */
-const reportedModes = new Map<string, { life: number; byHandle: Map<string, string> }>()
+type SeenReports = Map<string, { life: number; byHandle: Map<string, string> }>
+const reportedModes: SeenReports = new Map()
+const reportedEfforts: SeenReports = new Map()
 
-/** Test helper: forget every mode seen so far. */
+/** Test helper: forget every mode and effort seen so far. */
 export function _resetReportedModesForTests(): void {
   reportedModes.clear()
+  reportedEfforts.clear()
+}
+
+/** This life's reports seen for a workspace, reset when a new life starts. */
+function seenThisLife(reports: SeenReports, key: string, row: WorkspaceRow): Map<string, string> {
+  const life = row.lifeStartedAt?.getTime() ?? 0
+  let seen = reports.get(key)
+  if (seen?.life !== life) {
+    seen = { life, byHandle: new Map() }
+    reports.set(key, seen)
+  }
+  return seen.byHandle
 }
 
 /**
@@ -165,16 +181,10 @@ async function followReportedModes(
   row: WorkspaceRow,
   observed: LiveAgent[],
 ): Promise<void> {
-  const key = `${projectId}/${workspaceId}`
-  const life = row.lifeStartedAt?.getTime() ?? 0
-  let seen = reportedModes.get(key)
-  if (seen?.life !== life) {
-    seen = { life, byHandle: new Map() }
-    reportedModes.set(key, seen)
-  }
+  const seen = seenThisLife(reportedModes, `${projectId}/${workspaceId}`, row)
   for (const a of observed) {
-    if (a.reportedMode === undefined || seen.byHandle.get(a.handle) === a.reportedMode) continue
-    seen.byHandle.set(a.handle, a.reportedMode)
+    if (a.reportedMode === undefined || seen.get(a.handle) === a.reportedMode) continue
+    seen.set(a.handle, a.reportedMode)
     const posture = resolveAgentPermissionMode(mode, a.tool, a.reportedMode, row.permissionMode)
     if (posture === undefined || posture === row.permissionMode) continue
     await applyWorkspaceEvent({ type: 'permission-mode-changed', projectId, workspaceId, permissionMode: posture })
@@ -183,8 +193,35 @@ async function followReportedModes(
 }
 
 /**
- * Adds codex's permission mode, read from its rollout file
- * (`getCodexPermissionMode`), since codex's pane title cannot show it. A
+ * Record effort changes the live agents report (`/effort`, a model switch
+ * that re-seeds it, the chat pane's menu), as `followReportedModes` does
+ * modes. Anything in the workspace can set a pane option, so a report that
+ * is not one word, or not a level the agent's model has, is ignored.
+ * `default` is kept: claude's ACP adapter offers it beside the model's
+ * levels, and a restart maps it to the model's default.
+ */
+async function followReportedEfforts(
+  projectId: string,
+  workspaceId: string,
+  row: WorkspaceRow,
+  observed: LiveAgent[],
+): Promise<void> {
+  const seen = seenThisLife(reportedEfforts, `${projectId}/${workspaceId}`, row)
+  for (const a of observed) {
+    const effort = a.reportedEffort
+    if (effort === undefined || !EFFORT_RE.test(effort) || seen.get(a.handle) === effort) continue
+    seen.set(a.handle, effort)
+    const model = a.model !== undefined ? catalogModel(a.tool, a.model, a.modelName) : row.model
+    const levels = model !== undefined ? modelEfforts(a.tool, model)?.levels : undefined
+    if (levels !== undefined && effort !== 'default' && !levels.includes(effort)) continue
+    if (effort === row.effort) continue
+    await applyWorkspaceEvent({ type: 'effort-changed', projectId, workspaceId, effort })
+  }
+}
+
+/**
+ * Adds codex's permission mode and effort, read from its rollout file
+ * (`getCodexRolloutSettings`), since codex's pane title cannot show them. A
  * resumed conversation's pane names no rollout until its next turn, so the
  * row's recorded path is used then.
  *
@@ -192,7 +229,7 @@ async function followReportedModes(
  * rollout's newest entry belongs to the old process until codex writes again,
  * and reporting it would undo the mode the restart launched with.
  */
-async function withRolloutModes(
+async function withRolloutReports(
   row: WorkspaceRow,
   observed: LiveAgent[],
   links: AgentSessionLinkRow[],
@@ -204,7 +241,12 @@ async function withRolloutModes(
     const rollout = a.tool === 'codex' && transcript !== undefined
       ? resolveProjectPath(row.projectId, row.workspaceId, 'codex', transcript)
       : undefined
-    const read = rollout !== undefined ? await getCodexPermissionMode(rollout) : undefined
-    return read !== undefined && read.atMs >= life ? { ...a, reportedMode: read.permissionMode } : a
+    const read = rollout !== undefined ? await getCodexRolloutSettings(rollout) : undefined
+    if (read === undefined || read.atMs < life) return a
+    return {
+      ...a,
+      ...(read.permissionMode !== undefined ? { reportedMode: read.permissionMode } : {}),
+      ...(read.effort !== undefined ? { reportedEffort: read.effort } : {}),
+    }
   }))
 }

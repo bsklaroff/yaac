@@ -280,6 +280,13 @@ export type AcpServerMessage =
    * postures (opencode and pi carry theirs in launch config, or have none).
    */
   | { type: 'permission-mode'; current?: PermissionMode; available: PermissionMode[] }
+  /**
+   * The conversation's effort level (docs/effort-levels.md), sent after
+   * `hello` and whenever it changes, replacing what the pane held.
+   * `available` is the adapter's list for the current model, in the tool's
+   * words with its display names; empty when the agent has no effort option.
+   */
+  | { type: 'effort'; current?: string; available: Array<{ value: string; name: string }> }
 
 /** Pane → server. */
 export type AcpClientMessage =
@@ -303,6 +310,9 @@ export type AcpClientMessage =
   /** Switch the session's posture to one the last `permission-mode` frame
    *  offered. A refusal comes back as an `error` event. */
   | { type: 'permission-mode'; mode: PermissionMode }
+  /** Switch the session's effort to one the last `effort` frame offered. A
+   *  refusal comes back as an `error` event. */
+  | { type: 'effort'; effort: string }
   /** Stop a background task the record announced with `canStop`. Its
    *  `stopped` state comes back as a `task` event. */
   | { type: 'stop-task'; taskId: string }

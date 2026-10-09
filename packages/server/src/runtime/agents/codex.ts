@@ -2,7 +2,7 @@ import type { FileHandle } from 'node:fs/promises'
 import { codexDir } from '@yaac/shared/project-paths'
 import { scanJsonlForward } from './jsonl'
 import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
-import type { PermissionMode } from '@yaac/shared/types'
+import { EFFORT_RE, type PermissionMode } from '@yaac/shared/types'
 
 // ---------------------------------------------------------------------------
 // Status + first-message
@@ -133,18 +133,20 @@ const ROLLOUT_TAIL_BYTES = 1024 * 1024
 
 /** Each rollout's last answer, keyed by its size and mtime, so an
  *  unchanged rollout costs only a `stat`. */
-const rolloutPostures = new Map<string, { size: number; mtimeMs: number; posture: CodexPosture | undefined }>()
+const rolloutReads = new Map<string, { size: number; mtimeMs: number; read: CodexRolloutSettings | undefined }>()
 
-/** The posture a rollout's newest settings map to, and when they were
- *  written (to tell this process's settings from a pre-restart one's). */
-export interface CodexPosture {
-  permissionMode: PermissionMode
+/** The posture and effort a rollout's newest settings name, and when they
+ *  were written (to tell this process's settings from a pre-restart one's). */
+export interface CodexRolloutSettings {
+  permissionMode?: PermissionMode
+  effort?: string
   atMs: number
 }
 
 /**
- * codex's current posture from the newest settings in its rollout, with
- * their timestamp, or undefined if none are found or they match no posture.
+ * codex's current posture and effort from the newest settings in its
+ * rollout, with their timestamp, or undefined if none are found or they
+ * name neither.
  *
  * codex's hooks only report `bypassPermissions` or `default`. The rollout
  * says more: `thread_settings_applied` is written as soon as
@@ -159,33 +161,42 @@ export interface CodexPosture {
  * posture no looser than them.
  *
  * The collaboration mode is ignored: codex's plan mode is just model
- * instructions and restricts nothing.
+ * instructions and restricts nothing. The effort is `turn_context.effort`
+ * (`reasoning_effort` in a settings change).
  */
-export async function getCodexPermissionMode(rollout: SandboxFile): Promise<CodexPosture | undefined> {
+export async function getCodexRolloutSettings(rollout: SandboxFile): Promise<CodexRolloutSettings | undefined> {
   const key = `${rollout.dir}/${rollout.rel}`
   let handle: FileHandle | null = null
   try {
     handle = await openSandboxFile(rollout)
     if (handle === null) return undefined
     const { size, mtimeMs } = await handle.stat()
-    const known = rolloutPostures.get(key)
-    if (known?.size === size && known.mtimeMs === mtimeMs) return known.posture
+    const known = rolloutReads.get(key)
+    if (known?.size === size && known.mtimeMs === mtimeMs) return known.read
     const start = Math.max(0, size - ROLLOUT_TAIL_BYTES)
     const buf = Buffer.alloc(size - start)
     const { bytesRead } = await handle.read(buf, 0, buf.length, start)
     const lines = buf.subarray(0, bytesRead).toString('utf8').split('\n')
     // A read that starts mid-file starts mid-line.
     if (start > 0) lines.shift()
-    let posture: CodexPosture | undefined
+    let read: CodexRolloutSettings | undefined
     for (let i = lines.length - 1; i >= 0; i--) {
       const entry = rolloutSettings(lines[i])
       if (entry === undefined) continue
       const permissionMode = codexPosture(entry.settings)
-      if (permissionMode !== undefined) posture = { permissionMode, atMs: entry.atMs }
+      const effort = [entry.settings.effort, entry.settings.reasoning_effort]
+        .find((e): e is string => typeof e === 'string' && EFFORT_RE.test(e))
+      if (permissionMode !== undefined || effort !== undefined) {
+        read = {
+          ...(permissionMode !== undefined ? { permissionMode } : {}),
+          ...(effort !== undefined ? { effort } : {}),
+          atMs: entry.atMs,
+        }
+      }
       break
     }
-    rolloutPostures.set(key, { size, mtimeMs, posture })
-    return posture
+    rolloutReads.set(key, { size, mtimeMs, read })
+    return read
   } catch {
     return undefined
   } finally {
@@ -198,6 +209,8 @@ interface CodexThreadSettings {
   approval_policy?: unknown
   approvals_reviewer?: unknown
   permission_profile?: { type?: unknown; file_system?: { entries?: unknown } }
+  effort?: unknown
+  reasoning_effort?: unknown
 }
 
 function rolloutSettings(line: string): { settings: CodexThreadSettings; atMs: number } | undefined {
@@ -294,6 +307,6 @@ function spawnParent(source: unknown): unknown {
 }
 
 /** Test helper: forget what each rollout last answered. */
-export function _resetCodexPosturesForTests(): void {
-  rolloutPostures.clear()
+export function _resetCodexRolloutReadsForTests(): void {
+  rolloutReads.clear()
 }

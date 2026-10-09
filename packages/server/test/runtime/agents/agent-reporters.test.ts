@@ -137,7 +137,7 @@ describe('ensureAgentReporters', () => {
   })
 
   // Against the extension API of pi 0.99.2.
-  it("reports pi's conversation and model, ends each conversation as pi does, and submits messages sent to it", async () => {
+  it("reports pi's conversation, model and thinking level, ends each conversation as pi does, and submits messages sent to it", async () => {
     await ensureAgentReporters(await roots())
     const messages = path.join(dir, 'pi-agent', 'yaac-messages')
     await fs.mkdir(messages, { recursive: true })
@@ -152,6 +152,7 @@ describe('ensureAgentReporters', () => {
       '  on: (event, handler) => { on[event] = handler },',
       '  exec: (cmd, args) => new Promise((done, fail) => execFile(cmd, args, (e) => (e ? fail(e) : done()))),',
       '  registerShortcut: (key, shortcut) => { keys[key] = shortcut },',
+      "  getThinkingLevel: () => 'medium',",
       `  sendUserMessage: (text, opts) => appendFileSync(${JSON.stringify(calls)}, 'sent ' + JSON.stringify([text, opts]) + '\\n'),`,
       '})',
       "on.session_start({ reason: 'startup' }, {",
@@ -162,14 +163,16 @@ describe('ensureAgentReporters', () => {
       // Nothing waiting: the key does nothing.
       `await keys[${JSON.stringify(PI_MESSAGE_KEY)}].handler({ isIdle: () => true })`,
       "on.model_select({ model: { provider: 'openrouter', id: 'moonshot/kimi-k3' } })",
+      "on.thinking_level_select({ level: 'high', previousLevel: 'medium' })",
       "on.session_shutdown({ reason: 'new' })",
       "await on.session_shutdown({ reason: 'quit' })",
     ])).toEqual([
       // Mid-turn, the message waits for the turn.
       'sent ["Sent from w via yaac-mama:\\n\\nhi",{"deliverAs":"followUp"}]',
       'yaac-agent-links /h/.pi|pi|pi-1|/h/.pi/agent/sessions/t_pi-1.jsonl',
-      'yaac-agent-report openrouter/z-ai/glm-5|||',
-      'yaac-agent-report openrouter/moonshot/kimi-k3|||',
+      'yaac-agent-report openrouter/z-ai/glm-5||medium|',
+      'yaac-agent-report openrouter/moonshot/kimi-k3||medium|',
+      'yaac-agent-report ||high|',
       // `/new` ends the conversation and starts another.
       'yaac-agent-links |pi|pi-1|--end',
       'yaac-agent-links |pi|pi-1|--end',
@@ -181,7 +184,7 @@ describe('ensureAgentReporters', () => {
   // Against opencode 2.0.21's events. An agent switch arrives with the next
   // prompt as `session.agent.selected`; subagent sessions (`parentID`) are
   // not the pane's.
-  it("reports opencode's conversation, model and agent, and ends the conversation on dispose", async () => {
+  it("reports opencode's conversation, model, variant and agent, and ends the conversation on dispose", async () => {
     await ensureAgentReporters(await roots())
     const model = { providerID: 'opencode', id: 'big-pickle' }
     const events = [
@@ -189,6 +192,8 @@ describe('ensureAgentReporters', () => {
       { type: 'session.agent.selected', data: { sessionID: 'ses_1', agent: 'plan' } },
       { type: 'session.created', data: { sessionID: 'ses_child', parentID: 'ses_1', model, agent: 'explore' } },
       { type: 'session.step.started', data: { sessionID: 'ses_1', agent: 'plan', model } },
+      // A `/variants` pick is the model with its variant.
+      { type: 'session.model.selected', data: { sessionID: 'ses_1', model: { ...model, variant: 'high' } } },
       { type: 'session.agent.selected', data: { sessionID: 'ses_1', agent: 'build', previous: 'plan' } },
       // `/new` sends no end event for the session it replaces.
       { type: 'session.created', data: { sessionID: 'ses_2', model, agent: 'build' } },
@@ -199,17 +204,20 @@ describe('ensureAgentReporters', () => {
       'const dispose = reporter.setup({ event: { subscribe: async function* () { yield* events } } })',
       // opencode disposes a plugin when its server exits.
       "const { readFileSync } = await import('node:fs')",
-      `while ((readFileSync(${JSON.stringify(calls)}, { encoding: 'utf8', flag: 'a+' }).match(/\\n/g) ?? []).length < 6) {`,
+      `while ((readFileSync(${JSON.stringify(calls)}, { encoding: 'utf8', flag: 'a+' }).match(/\\n/g) ?? []).length < 8) {`,
       '  await new Promise((r) => setTimeout(r, 10))',
       '}',
       'dispose()',
     ])).toEqual([
       'yaac-agent-links |opencode|ses_1|',
-      'yaac-agent-report opencode/big-pickle|||',
-      'yaac-agent-report opencode/big-pickle|plan||',
-      'yaac-agent-report opencode/big-pickle|build||',
+      'yaac-agent-report opencode/big-pickle||default|',
+      'yaac-agent-report opencode/big-pickle|plan|default|',
+      'yaac-agent-report opencode/big-pickle|plan|high|',
+      'yaac-agent-report opencode/big-pickle|build|high|',
       'yaac-agent-links |opencode|ses_1|--end',
       'yaac-agent-links |opencode|ses_2|',
+      // A new conversation's model names no variant: opencode's default.
+      'yaac-agent-report opencode/big-pickle|build|default|',
       'yaac-agent-links |opencode|ses_2|--end',
     ])
   })

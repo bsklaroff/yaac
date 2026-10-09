@@ -2,7 +2,8 @@
 
 A permission mode (or *posture*) sets how much a workspace's agent may do
 before it stops to ask. It is one enum, `PermissionMode` in `@yaac/shared`,
-translated per tool at launch by `buildAgentCmd`:
+translated per tool at launch by `buildAgentCmd` (effort levels travel the
+same paths, docs/effort-levels.md):
 
 | Mode | claude | codex | opencode | pi |
 |---|---|---|---|---|

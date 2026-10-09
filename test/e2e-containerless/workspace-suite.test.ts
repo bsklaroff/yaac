@@ -465,10 +465,13 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   })
 
   it('creates a workspace as a tmux session on this host', async () => {
-    workspaceId = await createWorkspace()
+    workspaceId = await createWorkspace('--effort', 'high')
     // A tmux server of its own on this host.
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
+    // The named effort rides the launch (docs/effort-levels.md).
+    expect(await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
+      .toContain('--effort high')
     // The agent keeps the session's first pane, so its history limit must be
     // set before the session exists: it is the scrollback the webapp seeds.
     expect((await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{history_limit}')).trim()).toBe('200000')
@@ -997,8 +1000,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(above.out).toContain("more permissive than this workspace's own ('accept-edits')")
 
     const { stdout: branch } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])
+    // An effort the model lacks is refused before anything starts.
+    const unoffered = await runMama('create', '--model', 'claude-opus-4-6', '--effort', 'xhigh', 'x')
+    expect(unoffered.code).toBe(1)
+    expect(unoffered.out).toContain('no "xhigh" effort')
+
     const made = await runMama(
-      'create', '--permission-mode', 'plan', '--ui-mode', 'tui', '--branch', branch.trim(), 'plan the work',
+      'create', '--permission-mode', 'plan', '--effort', 'low', '--ui-mode', 'tui', '--branch', branch.trim(),
+      'plan the work',
     )
     expect(made.code).toBe(0)
     const sibling = made.out.trim()
@@ -1007,6 +1016,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       await vi.waitFor(async () => {
         const cmd = await tmux(sibling, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}')
         expect(cmd).toContain('--permission-mode plan')
+        expect(cmd).toContain('--effort low')
       }, { timeout: 60_000, interval: 500 })
     } finally {
       await runYaac(serverEnv, 'workspace', 'stop', sibling)
@@ -1324,7 +1334,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     )
     const binDir = path.join(home, '.local', 'bin')
     // Run the registered command through `sh -c`, as claude does.
-    const prompt = (permissionMode: string): Promise<string> => new Promise((resolve, reject) => {
+    const prompt = (permissionMode: string, effort?: string): Promise<string> => new Promise((resolve, reject) => {
       const child = execFile('sh', ['-c', command ?? ''], {
         env: {
           ...process.env,
@@ -1337,6 +1347,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       }, (err, out) => (err ? reject(err instanceof Error ? err : new Error('hook failed')) : resolve(out)))
       child.stdin?.end(JSON.stringify({
         session_id: workspaceId, hook_event_name: 'UserPromptSubmit', prompt: 'go', permission_mode: permissionMode,
+        ...(effort !== undefined ? { effort: { level: effort } } : {}),
       }))
     })
     const ceiling = async (): Promise<string> => (await runMama('create', '--permission-mode', 'bypass', 'x')).out
@@ -1351,10 +1362,17 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }, { timeout: 30_000, interval: 500 })
 
     // A move above the created posture is recorded too, and left for the
-    // restart case.
-    await prompt('auto')
+    // restart case, as is an `/effort` reported with the same prompt.
+    await prompt('auto', 'max')
     await vi.waitFor(async () => {
       expect(await ceiling()).toContain("more permissive than this workspace's own ('auto')")
+    }, { timeout: 30_000, interval: 500 })
+    expect((await tmux(workspaceId, 'show-options', '-p', '-t', pane, '-v', '@yaac-effort')).trim()).toBe('max')
+    await vi.waitFor(async () => {
+      const { workspaces } = await (await fetch(`${origin()}/api/workspace/list`)).json() as {
+        workspaces: Array<{ workspaceId: string; effort?: string }>
+      }
+      expect(workspaces.find((w) => w.workspaceId === workspaceId)?.effort).toBe('max')
     }, { timeout: 30_000, interval: 500 })
   }, 120_000)
 
@@ -1431,10 +1449,12 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
-    // Relaunched in the last reported posture (auto, from the case above).
+    // Relaunched in the last reported posture and effort (auto and max, from
+    // the case above).
     await vi.waitFor(async () => {
-      expect(await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}'))
-        .toContain('--permission-mode auto')
+      const command = await tmux(workspaceId, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}')
+      expect(command).toContain('--permission-mode auto')
+      expect(command).toContain('--effort max')
     }, { timeout: 30_000, interval: 250 })
 
     expect((await fs.stat(path.join(checkout, '.git'))).isDirectory()).toBe(true)
@@ -2048,12 +2068,15 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       await expect(mamaAs(parent, 'edit-queued', child.slice(0, 8), ''))
         .rejects.toThrow(/usage: yaac-mama edit-queued/)
       expect(await mamaAs(
-        parent, 'edit-queued', '--tool', 'codex', '--model', 'gpt-5.5', '--permission-mode', 'read-only',
-        '--title', 'Say hello', child.slice(0, 8), 'hello',
+        parent, 'edit-queued', '--tool', 'codex', '--model', 'gpt-5.5', '--effort', 'high',
+        '--permission-mode', 'read-only', '--title', 'Say hello', child.slice(0, 8), 'hello',
       )).toContain(`Updated queued workspace ${child.slice(0, 8)}: codex gpt-5.5, read-only — hello`)
       // Moved from the parent to the child; if the move were lost, the
       // parent's stop would launch it too.
-      const grandchild = await mamaAs(parent, 'queue', '--parent-workspace', parent, 'after that')
+      // A level the model lacks is refused at queue time, not at launch.
+      await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--model', 'claude-opus-4-6', '--effort', 'xhigh', 'x'))
+        .rejects.toThrow(/no "xhigh" effort/)
+      const grandchild = await mamaAs(parent, 'queue', '--parent-workspace', parent, '--effort', 'low', 'after that')
       expect(await mamaAs(
         parent, 'edit-queued', '--parent-workspace', child.slice(0, 8), '--ui-mode', 'acp',
         '--branch', 'release/next', '--group', 'e2e follow-ups', grandchild.slice(0, 8),
@@ -2080,6 +2103,7 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       )
       expect(launches).toContain('--sandbox read-only')
       expect(launches).toContain('--model gpt-5.5')
+      expect(launches).toContain('model_reasoning_effort=high')
 
       // A running sibling messages the child's agent, which receives it as a
       // submitted line of input.

@@ -17,6 +17,8 @@ import {
 export interface AgentSetup {
   model: string
   permissionMode: PermissionMode
+  /** Absent when the model has no effort setting. */
+  effort?: string
   mode: AgentMode
   /** The credential's model list, newest first, shown as suggestions. */
   models: ModelOption[]
@@ -64,14 +66,16 @@ export function useCreateDefaults(projectId: string | null): CreateDefaults {
       const mode = remembered?.mode ?? DEFAULT_AGENT_MODE
       const provider = summary?.opencodeProvider ?? summary?.piProvider
       const defaultModel = summary?.defaultModel ?? ''
+      const models = summary?.models ?? []
       const resolved = resolveToolCreateDefaults({
         driver: driver ?? 'k8s',
         tool,
         remembered,
         ...(provider !== undefined ? { provider } : {}),
         defaultModel,
+        effortsFor: (model) => models.find((m) => m.id === model)?.efforts,
       })
-      return { ...resolved, mode, models: summary?.models ?? [], defaultModel }
+      return { ...resolved, mode, models, defaultModel }
     },
   }
 }
@@ -85,7 +89,7 @@ export function useCreateDefaults(projectId: string | null): CreateDefaults {
 export function useCreateWorkspace(): (
   projectId: string,
   tool: AgentTool,
-  setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'mode'> & {
+  setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'effort' | 'mode'> & {
     modelName?: string
     prompt?: string
     title?: string
@@ -100,7 +104,7 @@ export function useCreateWorkspace(): (
 ) => void {
   const provision = useProvisionWorkspace()
   return useCallback((projectId, tool, setup, branch) => {
-    const { model, modelName, permissionMode, mode, prompt, title, shownTitle, groupId, newGroup, draftId } = setup
+    const { model, modelName, permissionMode, effort, mode, prompt, title, shownTitle, groupId, newGroup, draftId } = setup
     const label = title || shownTitle
     provision(projectId, tool, 'create', randomUUID(),
       (sid, onProgress) =>
@@ -109,6 +113,7 @@ export function useCreateWorkspace(): (
           // Empty when the provider lists no models; launch without one.
           ...(model !== '' ? { model } : {}),
           permissionMode,
+          ...(effort !== undefined ? { effort } : {}),
           mode,
           ...(prompt ? { prompt } : {}),
           ...(title ? { title } : {}),

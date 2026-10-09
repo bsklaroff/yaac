@@ -70,7 +70,7 @@ describe('yaac-mama skill', () => {
     expect(body).toContain('yaac-mama queue --parent-workspace W [opts] "<prompt>"')
     expect(body).toContain('yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]')
     expect(body).toContain(
-      '# opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')
+      '# opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
     // Omitting the workspace stops the caller itself, and a self-stop's

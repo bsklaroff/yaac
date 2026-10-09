@@ -19,6 +19,9 @@ export interface WorkspaceCreateOptions {
    * opencode/pi.
    */
   model?: string
+  /** Effort level, in the tool's words; the server refuses one the model
+   *  lacks. See docs/effort-levels.md. */
+  effort?: string
   /** How the agent is driven; defaults to this project's last choice for
    *  the tool, else acp. See docs/agent-modes.md. */
   mode?: AgentMode
@@ -51,6 +54,7 @@ export async function workspaceCreate(project: string, options: WorkspaceCreateO
       branch: options.branch,
       prompt: options.prompt,
       model: options.model,
+      effort: options.effort,
       mode: options.mode,
       permissionMode: options.permissionMode,
       group: options.group,

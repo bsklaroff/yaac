@@ -450,7 +450,8 @@ set and stored as the catalog's id, matched by display name when the adapter
 uses its own id (claude's adapter may answer with a picker alias such as
 `opus`), so the sidebar label matches the create form. Mode changes
 travel the same way and become the workspace's posture
-(docs/permission-modes.md, "Following the agent").
+(docs/permission-modes.md, "Following the agent"), as do effort changes,
+through the adapter's `thought_level` option (docs/effort-levels.md).
 
 The row is written by the reconciler's conversation sweep, so the id
 appearing in the live agent set is itself a reconcile trigger (`live-agents`,

@@ -687,6 +687,18 @@ describe('tryClaimPrewarmed', () => {
     expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), want)
   })
 
+  // Effort is launch state like the model, so a spare warmed at another
+  // level is respawned, and the claim records the one asked for.
+  it('respawns a spare warmed at another effort, recording the requested one', async () => {
+    mockList.mockResolvedValue([spare()])
+    launched({ model: 'claude-opus-5-5', effort: 'medium' })
+    const want = setup('claude', { model: 'claude-opus-5-5', effort: 'max' })
+
+    expect((await tryClaimPrewarmed('p', 'req', want, emit))?.workspaceId).toBe('spare1')
+    expect(mockRetool).toHaveBeenCalledWith(expect.objectContaining({ jobName: 'yaac-p-spare' }), want)
+    expect(vi.mocked(claimSpareWorkspace)).toHaveBeenCalledWith('p', 'spare1', expect.objectContaining({ effort: 'max' }))
+  })
+
   it('prefers a spare warmed as asked over a newer one that would need a respawn', async () => {
     mockList.mockResolvedValue([
       spare({ jobName: 'yaac-p-new', workspaceId: 'new', createdAtMs: 9_000 }),

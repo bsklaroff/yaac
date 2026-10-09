@@ -54,6 +54,9 @@ export interface StatusWatcherDeps {
   /** The workspace's launch model for a tool, injected like
    *  `recordedSessions` (see `AgentConnectDeps.launchModel`). */
   launchModel?: (session: WatchedWorkspace, tool: AgentTool) => Promise<string | undefined>
+  /** The workspace's effort level, injected like `recordedSessions` (see
+   *  `AgentConnectDeps.effort`). */
+  effort?: (session: WatchedWorkspace) => Promise<string | undefined>
   /**
    * Test hook for the stream self-heal (see scheduleRespawn). Default: the
    * driver's `reviveStatusStream`.
@@ -140,6 +143,9 @@ export class WorkspaceStatusWatcher {
           : {}),
         ...(this.deps.launchModel !== undefined
           ? { launchModel: (tool: AgentTool) => this.deps.launchModel!(this.session, tool) }
+          : {}),
+        ...(this.deps.effort !== undefined
+          ? { effort: () => this.deps.effort!(this.session) }
           : {}),
       },
     )

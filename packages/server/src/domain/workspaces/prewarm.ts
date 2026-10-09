@@ -321,7 +321,7 @@ export async function tryClaimPrewarmed(
     const matches = (p: RuntimeHandle): boolean => {
       const row = launched.get(p.jobName)
       return row !== undefined && p.tool === tool && row.model === setup.model
-        && row.permissionMode === setup.permissionMode
+        && row.permissionMode === setup.permissionMode && row.effort === setup.effort
     }
     const candidates = spares
       // Neither the mode nor the zone can be converted: an `acp` pod has a
@@ -393,6 +393,7 @@ export async function tryClaimPrewarmed(
       permissionMode: setup.permissionMode,
       mode: setup.mode,
       ...(setup.model !== undefined ? { model: setup.model } : {}),
+      ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
     })
     // An acp spare's connection read the warm-time posture; a conversation
     // the retool below starts must handshake with the claimed one.

@@ -288,6 +288,48 @@ describe('CreateWorkspaceDialog', () => {
     expect(modelInput().value).toBe('Claude Opus 4.8')
   })
 
+  // docs/effort-levels.md. Levels are the model's own; a pick or the
+  // remembered level stands where the model has it, else its default.
+  it("offers the model's own effort levels, keeps a level the next model has, and sends it", async () => {
+    const efforts = {
+      ...CLAUDE,
+      models: [
+        { id: 'claude-opus-5-5', name: 'Opus 5.5', efforts: { levels: ['low', 'medium', 'high', 'max'], default: 'medium' } },
+        { id: 'claude-sonnet-5', name: 'Sonnet 5', efforts: { levels: ['low', 'high'], default: 'high' } },
+        { id: 'claude-haiku-4-5', name: 'Haiku 4.5' },
+      ],
+    }
+    server.route(AUTH_LIST, { gitCredentials: [], toolAuth: [efforts] })
+    snapshot.mockReturnValue(project({ createDefaults: { claude: { effort: 'max' } } }))
+    await openReady()
+    expect(select('Effort').value).toBe('max')
+    expect([...select('Effort').options].map((o) => o.textContent))
+      .toEqual(['Low', 'Medium (default)', 'High', 'Max'])
+
+    // Sonnet has no max: its default instead. A pick it has then stays.
+    const pickModel = (text: string): void => {
+      fireEvent.change(modelInput(), { target: { value: text } })
+      fireEvent.keyDown(modelInput(), { key: 'Enter' })
+    }
+    pickModel('claude-sonnet')
+    expect(select('Effort').value).toBe('high')
+    fireEvent.change(select('Effort'), { target: { value: 'low' } })
+    pickModel('claude-opus')
+    expect(select('Effort').value).toBe('low')
+    fireEvent.click(createButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ model: 'claude-opus-5-5', effort: 'low' })
+
+    // A model with no levels has no effort to send.
+    cleanup()
+    act(() => useUiStore.getState().closeCreateWorkspace())
+    forget()
+    await openReady()
+    pickModel('claude-haiku')
+    expect(select('Effort').disabled).toBe(true)
+    fireEvent.click(createButton())
+    expect(sent(CREATE).at(-1)).not.toHaveProperty('effort')
+  })
+
   it('searches models by name or id, and Enter picks before it creates', async () => {
     await openReady()
 

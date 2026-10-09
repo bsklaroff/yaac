@@ -41,6 +41,8 @@ export interface CreateWorkspaceOptions {
   model?: string
   mode?: AgentMode
   permissionMode?: PermissionMode
+  /** Effort level, in the tool's words. */
+  effort?: string
   /** The agent's opening message, typed into it once it is up. */
   prompt?: string
   /** The workspace's title, which turns off auto-titling it. */
@@ -66,6 +68,7 @@ export async function createWorkspace(
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
     ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
+    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
     ...(opts.prompt ? { prompt: opts.prompt } : {}),
     ...(opts.title ? { title: opts.title } : {}),
     ...(opts.group !== undefined ? { group: opts.group } : {}),

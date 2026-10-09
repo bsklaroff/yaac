@@ -55,9 +55,11 @@ import {
   backgroundWorkReport,
   isWorkUpdate,
   permissionReply,
+  sessionEffort,
   sessionModeId,
   sessionModel,
   toStopReason,
+  type AcpEffort,
   type AcpInitializeResult,
   type AcpNewSessionResult,
   type AcpPromptResult,
@@ -137,6 +139,18 @@ export interface AcpConversationDeps {
    *  after `session/new`. */
   recoverLaunchModel?: () => Promise<string | undefined>
   /**
+   * The effort level to put a new or loaded session at: the workspace's
+   * (docs/effort-levels.md), as its connection last knew it. Absent or
+   * undefined leaves the adapter's own.
+   */
+  effort?: () => string | undefined
+  /** The effort option the record last shows (`readAcpEffort`), read on a
+   *  reattach, which runs no handshake to learn it. */
+  recoverEffort?: () => Promise<AcpEffort | undefined>
+  /** The session's effort level changed or was first learned. Fires only on
+   *  change. */
+  onEffort?: (effort: string) => void
+  /**
    * The session's model changed or was first learned. Fires on the switch
    * (`config_option_update`), only when the value changes. `name` is the
    * adapter's display name, when known (see `sessionModel`).
@@ -168,6 +182,9 @@ export interface AcpConversationDeps {
 
 /** The posture state a `permission-mode` frame carries. */
 export type AcpPermissionModes = Omit<Extract<AcpServerMessage, { type: 'permission-mode' }>, 'type'>
+
+/** The effort state an `effort` frame carries. */
+export type AcpEfforts = Omit<Extract<AcpServerMessage, { type: 'effort' }>, 'type'>
 
 /** A queued message with what is needed to send it and settle its caller. */
 export interface QueuedTurn extends AcpQueuedPrompt {
@@ -217,6 +234,7 @@ export class AcpConversation {
   private readonly queue: QueuedTurn[] = []
   private readonly queueSubscribers = new Set<(queued: AcpQueuedPrompt[]) => void>()
   private readonly permissionModeSubscribers = new Set<(modes: AcpPermissionModes) => void>()
+  private readonly effortSubscribers = new Set<(efforts: AcpEfforts) => void>()
   /** Whether `drain` is running, which is also when a new message must wait. */
   private draining = false
   /** Tail of message routing; see `prompt`. */
@@ -263,7 +281,7 @@ export class AcpConversation {
    * requested. Keyed by topic so a later success clears the notice; every
    * attaching pane gets them (see `attachAcp`).
    */
-  private readonly notices = new Map<'mode' | 'model', AcpEventInit>()
+  private readonly notices = new Map<'mode' | 'model' | 'effort', AcpEventInit>()
   /** The session's modes, per `session/new` or `session/load`. */
   private sessionModes: AcpSessionModes | undefined
   /** The same facts as config options; opencode v2 sends only these. */
@@ -271,6 +289,9 @@ export class AcpConversation {
   /** The model the session last reported; see `onModel`. Unknown after a
    *  reattach until the adapter next reports it. */
   private currentModel: string | undefined
+  /** The session's effort option as last reported; on a reattach, read
+   *  back from the record (`recoverEffort`). */
+  private effortOption: AcpEffort | undefined
   /** The posture a first attach launched in; see `posture()`. Never set on
    *  a reattach. */
   private launchPosture: PermissionMode | undefined
@@ -394,6 +415,38 @@ export class AcpConversation {
   private publishPermissionModes(): void {
     const modes = this.permissionModes
     for (const fn of this.permissionModeSubscribers) fn(modes)
+  }
+
+  /**
+   * The effort level the session is at and the levels a pane may switch it
+   * to: the adapter's own list for the current model. Empty when the adapter
+   * has no effort option.
+   */
+  get efforts(): AcpEfforts {
+    const option = this.effortOption
+    return {
+      ...(option?.current !== undefined ? { current: option.current } : {}),
+      available: option?.options ?? [],
+    }
+  }
+
+  /** Watch `efforts`; returns the unsubscribe. */
+  onEfforts(fn: (efforts: AcpEfforts) => void): () => void {
+    this.effortSubscribers.add(fn)
+    return () => this.effortSubscribers.delete(fn)
+  }
+
+  /** Take the effort option a message reported, if it carried one. */
+  private setEffortOption(option: AcpEffort | undefined): void {
+    if (option === undefined) return
+    const previous = this.effortOption
+    this.effortOption = option
+    if (option.current !== undefined && option.current !== previous?.current) {
+      this.deps.onEffort?.(option.current)
+    }
+    if (JSON.stringify(previous) === JSON.stringify(option)) return
+    const efforts = this.efforts
+    for (const fn of this.effortSubscribers) fn(efforts)
   }
 
   /** Watch for the conversation closing, so an attached pane can show it.
@@ -547,7 +600,10 @@ export class AcpConversation {
         // `config_option_update`, a mode change as `current_mode_update` or a
         // `config_option_update` for the `mode` option.
         const update = asRecord(asRecord(params)?.update)
-        if (update?.sessionUpdate === 'config_option_update') this.setModel(sessionModel(update))
+        if (update?.sessionUpdate === 'config_option_update') {
+          this.setModel(sessionModel(update))
+          this.setEffortOption(sessionEffort(update))
+        }
         if (update !== undefined) this.setModeId(sessionModeId(update))
         this.noteAgentState(method, params)
         return
@@ -786,11 +842,15 @@ export class AcpConversation {
         // the turn (`prompt`), and asks for the posture to be recovered.
         this.postureRecovery = this.recoverMode().finally(() => { this.postureRecovery = undefined })
         this.markReady()
+        void this.recoverEffort()
         await this.postureRecovery
         await this.recover()
         return
       }
 
+      // Read before the session reports its own level, which the accessor
+      // may then follow.
+      const launchEffort = this.deps.effort?.()
       const init = await this.peer.request<AcpInitializeResult>(ACP.initialize, {
         protocolVersion: ACP_PROTOCOL_VERSION,
         clientCapabilities: clientCapabilities(this.deps.profile?.capabilitiesMeta),
@@ -810,6 +870,7 @@ export class AcpConversation {
         this.sessionModes = loaded.modes
         this.sessionConfig = loaded.configOptions
         this.setModel(sessionModel(loaded))
+        this.setEffortOption(sessionEffort(loaded))
       } else {
         if (this.sessionId !== undefined) {
           this.log('[server] acp: adapter cannot load sessions — starting a fresh conversation')
@@ -827,8 +888,13 @@ export class AcpConversation {
         this.sessionConfig = created.configOptions
         this.deps.onSessionId(created.sessionId)
         this.setModel(sessionModel(created))
+        this.setEffortOption(sessionEffort(created))
         await this.applyLaunchModel()
       }
+      // After the model, whose switch re-seeds the effort. A loaded session
+      // gets it too: its new process would otherwise start at whatever the
+      // tool's shared settings hold.
+      await this.applyLaunchEffort(launchEffort)
       await this.applyPermissionMode()
       this.markReady()
       // A fresh agent process has nothing in flight; classify it now.
@@ -912,8 +978,70 @@ export class AcpConversation {
     if (current !== undefined) this.deps.onModeId?.(current)
   }
 
+  /**
+   * Put the session at the workspace's effort level. A level the session
+   * does not offer (another model's, or an adapter that has none) is
+   * reported in the pane and survived, like a model it would not take.
+   */
+  private async applyLaunchEffort(wanted: string | undefined): Promise<void> {
+    const option = this.effortOption
+    if (wanted === undefined || option === undefined || option.current === wanted) return
+    try {
+      if (!option.options.some((o) => o.value === wanted)) throw new Error('not offered for this model')
+      await this.requestEffort(option.configId, wanted)
+      this.notices.delete('effort')
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      const message = `The agent would not switch to the "${wanted}" effort`
+        + ` (${detail}) — running at ${option.current ?? 'its own default'} instead.`
+      this.log(`[server] acp: ${message}`)
+      this.notice('effort', { type: 'error', message })
+    }
+  }
+
+  /**
+   * Switch the effort as the user asked from the pane. The new level is
+   * reported upward (`onEffort`), so the row follows it. A refusal is shown
+   * in the pane, and the session keeps the level it had.
+   */
+  async switchEffort(effort: string): Promise<void> {
+    try {
+      await this.whenReady(120_000)
+      const configId = this.effortOption?.configId
+      if (configId === undefined) throw new Error('no effort option')
+      await this.requestEffort(configId, effort)
+      this.notices.delete('effort')
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      this.emit({ type: 'error', message: `The agent would not switch to the "${effort}" effort (${detail}).` })
+    }
+  }
+
+  /** Set the effort config option. The reply holds the session's options;
+   *  an adapter that returns none is taken at its word. */
+  private async requestEffort(configId: string, effort: string): Promise<void> {
+    if (this.sessionId === undefined) throw new Error('no ACP session')
+    const reply = await this.peer.request(ACP.sessionSetConfigOption,
+      { sessionId: this.sessionId, configId, value: effort })
+    const option = this.effortOption
+    this.setEffortOption(sessionEffort(reply)
+      ?? (option !== undefined ? { ...option, current: effort } : undefined))
+    this.log(`[server] acp: session effort set to ${effort}`)
+  }
+
+  /** Read a reattached session's effort option back from its record. One
+   *  the adapter reported during the read is newer and wins. */
+  private async recoverEffort(): Promise<void> {
+    try {
+      const recorded = await this.deps.recoverEffort?.()
+      if (this.effortOption === undefined) this.setEffortOption(recorded)
+    } catch (err) {
+      this.log(`[server] acp: could not recover the session effort: ${String(err)}`)
+    }
+  }
+
   /** Emit now and keep it for later attachers until it no longer applies. */
-  private notice(about: 'mode' | 'model', event: AcpEventInit): void {
+  private notice(about: 'mode' | 'model' | 'effort', event: AcpEventInit): void {
     this.notices.set(about, event)
     this.emit(event)
   }
@@ -994,6 +1122,8 @@ export class AcpConversation {
     const reply = await this.peer.request(ACP.sessionSetConfigOption,
       { sessionId: this.sessionId, configId: 'model', value: model })
     this.setModel(sessionModel(reply) ?? { id: model })
+    // A model switch re-seeds the effort to one the new model has.
+    this.setEffortOption(sessionEffort(reply))
     this.log(`[server] acp: session model set to ${model}`)
   }
 

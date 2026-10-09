@@ -13,7 +13,7 @@ import {
   type PiProvider,
   type ToolProviderInfo,
 } from '@yaac/shared/tool-providers'
-import { MODEL_NAMES, MODELS_BY_PROVIDER } from '@yaac/shared/tool-providers.generated'
+import { CLAUDE_MODELS, EFFORTS, MODEL_NAMES, MODELS_BY_PROVIDER } from '@yaac/shared/tool-providers.generated'
 
 // Both registries are generated (scripts/gen-tool-providers.ts), so these
 // check invariants rather than a fixed list.
@@ -118,5 +118,53 @@ describe('MODELS_BY_PROVIDER', () => {
     for (const names of Object.values(MODEL_NAMES)) {
       for (const name of Object.values(names)) expect(name).not.toContain('(latest)')
     }
+  })
+})
+
+// The effort table is read from each tool's own catalog
+// (docs/effort-levels.md). These rows pin what the pinned tools say, so a
+// regeneration that quietly loses a source fails here.
+describe('effort table', () => {
+  it("reads claude's levels and defaults from its own model table", () => {
+    expect(EFFORTS.claude['claude-opus-4-7']).toEqual({ levels: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'xhigh' })
+    expect(EFFORTS.claude['claude-opus-4-6']).toEqual({ levels: ['low', 'medium', 'high', 'max'], default: 'high' })
+    // A default other than the `high` fallback, so a parser that stops
+    // reading `default_effort` fails here.
+    expect(EFFORTS.claude['claude-opus-5-5']?.default).toBe('medium')
+    // models.dev lists effort for opus-4-5; Claude Code offers none.
+    expect(EFFORTS.claude['claude-opus-4-5']).toBeUndefined()
+    expect(EFFORTS.claude['claude-sonnet-4-5']).toBeUndefined()
+  })
+
+  it("reads codex's from its bundled catalog, not models.dev", () => {
+    expect(EFFORTS.codex['gpt-5.5']?.levels).not.toContain('none')
+    expect(EFFORTS.codex['gpt-6-sol']?.levels).toContain('ultra')
+  })
+
+  // opencode answers before it has loaded models.dev; a table generated
+  // from that early answer would hold only its built-in provider.
+  it("covers opencode's providers, not only its built-in one", () => {
+    for (const id of ['anthropic/claude-opus-4-7', 'openrouter/anthropic/claude-opus-4.7', 'openrouter/openai/gpt-5']) {
+      expect(EFFORTS.opencode[id]?.levels, id).toContain('high')
+    }
+    expect(Object.keys(EFFORTS.opencode).length).toBeGreaterThan(1000)
+  })
+
+  it('leads every opencode entry with its no-variant default', () => {
+    for (const efforts of Object.values(EFFORTS.opencode)) {
+      expect(efforts.levels[0]).toBe('default')
+      expect(efforts.default).toBe('default')
+    }
+  })
+
+  it('gives every model a default among its own levels', () => {
+    for (const table of Object.values(EFFORTS)) {
+      for (const efforts of Object.values(table)) expect(efforts.levels).toContain(efforts.default)
+    }
+  })
+
+  it('offers only claude models the pinned claude knows, the fallback among them', () => {
+    expect(CLAUDE_MODELS).toContain(FALLBACK_MODELS.claude)
+    for (const id of Object.keys(EFFORTS.claude)) expect(CLAUDE_MODELS).toContain(id)
   })
 })

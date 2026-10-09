@@ -64,6 +64,12 @@ export interface LiveAgent {
    * posture. Absent until reported, which for some tools is never.
    */
   reportedMode?: string
+  /**
+   * The effort level as the agent last reported it, in the tool's words: the
+   * adapter's effort option under `acp`, the reporter's value under `tui`
+   * (`EFFORT_PANE_OPTION`). Absent until reported.
+   */
+  reportedEffort?: string
 }
 
 /**
@@ -120,6 +126,11 @@ export interface AgentConnectDeps {
    * since a server restart between launch and handshake loses the park.
    */
   launchModel?: (tool: AgentTool) => Promise<string | undefined>
+  /**
+   * The workspace's effort level, which `acp` puts a new or loaded
+   * conversation at (`session/set_config_option`). `tui` passes it at launch.
+   */
+  effort?: () => Promise<string | undefined>
   /** Test hook replacing the ctrl-stream dial, the process boundary both
    *  drivers are mocked at. */
   dial?: (session: DrivenWorkspace, argv: string[]) => StreamChild
@@ -150,6 +161,8 @@ export interface AgentLaunchSpec {
    *  its handle. */
   windowName: string
   model?: string
+  /** Effort level, in the tool's words. See `AgentCmdSpec`. */
+  effort?: string
   piProvider?: PiProvider
   /** The permission posture to launch in. See `AgentCmdSpec`. */
   permissionMode: PermissionMode

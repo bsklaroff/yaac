@@ -33,7 +33,7 @@ import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#log'
 import { shellQuote } from '#lib/shell'
 import { AcpConversation } from './acp-client'
-import { readAcpInFlight, readAcpModeId, readAcpPendingPermissions, type AcpRecordRef } from './acp-log'
+import { readAcpEffort, readAcpInFlight, readAcpModeId, readAcpPendingPermissions, type AcpRecordRef } from './acp-log'
 import {
   ControlModeClient,
   PLACEHOLDER_FORMAT,
@@ -154,6 +154,7 @@ interface Attached {
   model?: string
   modelName?: string
   modeId?: string
+  effort?: string
 }
 
 /**
@@ -185,6 +186,13 @@ class AcpConnection implements AgentConnection {
   private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
   private readonly readLaunchModel: (tool: AgentTool) => Promise<string | undefined>
+  private readonly readEffort: () => Promise<string | undefined>
+  /**
+   * The effort a new or loaded conversation is put at: the row's, read at
+   * connect, then whatever a conversation here last reported (the row
+   * follows those too).
+   */
+  private effort: string | undefined
   /**
    * The posture, read at connect (and on each heartbeat until a read
    * succeeds) and then followed through `setAcpPermissionMode`. Cached
@@ -207,6 +215,7 @@ class AcpConnection implements AgentConnection {
     this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
     this.readPermissionMode = deps.permissionMode ?? (() => Promise.resolve('bypass'))
     this.readLaunchModel = deps.launchModel ?? (() => Promise.resolve(undefined))
+    this.readEffort = deps.effort ?? (() => Promise.resolve(undefined))
     openConnections.add(this)
 
     let child: StreamChild
@@ -239,8 +248,10 @@ class AcpConnection implements AgentConnection {
   }
 
   private async init(): Promise<void> {
-    // Before any attach, so new conversations handshake with the posture.
+    // Before any attach, so new conversations handshake with the posture
+    // and effort. An unreadable effort leaves the adapter's own.
     await this.loadPermissionMode()
+    this.effort = await this.readEffort().catch(() => undefined)
     await this.sync()
     if (this.done) return
     this.sink({ kind: 'up' })
@@ -439,6 +450,7 @@ class AcpConnection implements AgentConnection {
         { maxAttempts: 1, timeout: this.commandTimeoutMs },
       )).stdout,
       permissionMode: () => this.permissionMode,
+      effort: () => this.effort,
       profile,
       ...(launchModel !== undefined ? { launchModel } : {}),
       ...(recoverLaunchModel !== undefined ? { recoverLaunchModel } : {}),
@@ -449,6 +461,7 @@ class AcpConnection implements AgentConnection {
         recoverInFlight: () => readAcpInFlight(this.record(resumeSessionId)),
         recoverPendingPermissions: () => readAcpPendingPermissions(this.record(resumeSessionId)),
         recoverModeId: () => readAcpModeId(this.record(resumeSessionId)),
+        recoverEffort: () => readAcpEffort(this.record(resumeSessionId)),
       } : {}),
       onSessionId: (agentSessionId) => {
         // The agent mints the id, and it is later joined into paths and a
@@ -477,6 +490,11 @@ class AcpConnection implements AgentConnection {
       },
       onModeId: (modeId) => {
         entry.modeId = modeId
+        this.publishAgents()
+      },
+      onEffort: (effort) => {
+        entry.effort = effort
+        this.effort = effort
         this.publishAgents()
       },
       onStatus: () => {
@@ -536,6 +554,7 @@ class AcpConnection implements AgentConnection {
       ...(e.model !== undefined ? { model: e.model } : {}),
       ...(e.modelName !== undefined ? { modelName: e.modelName } : {}),
       ...(e.modeId !== undefined ? { reportedMode: e.modeId } : {}),
+      ...(e.effort !== undefined ? { reportedEffort: e.effort } : {}),
     }))
     this.sink({ kind: 'live-agents', agents })
     // A newly attached conversation has had no turn boundary yet, so publish

@@ -54,8 +54,8 @@ Other exits keep the prompt too:
 
 ## What a draft holds
 
-Every field as the dialog showed it: prompt, title, agent, model, UI mode,
-permission mode, reference branch, group, and **Start**. Reopening the draft
+Every field as the dialog showed it: prompt, title, agent, model, effort, UI
+mode, permission mode, reference branch, group, and **Start**. Reopening the draft
 restores the screen.
 
 - Model and branch are empty if the dialog had not loaded them yet; reopening

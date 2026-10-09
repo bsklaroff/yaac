@@ -89,6 +89,18 @@ describe('applyWorkspaceEvent', () => {
     expect(await rowOf('wt-p')).toMatchObject({ model: 'claude-opus-5-5', mode: 'tui' })
   })
 
+  // The effort is followed the same way (docs/effort-levels.md), and a
+  // restart that names none keeps what the agent last moved to.
+  it('follows the effort the agent moved to, and keeps it over a restart that names none', async () => {
+    const effort = async (): Promise<string | undefined> => (await rowOf('wt-e'))?.effort
+    await created('wt-e', { permissionMode: 'bypass', effort: 'high' })
+    expect(await effort()).toBe('high')
+    await applyWorkspaceEvent({ type: 'effort-changed', projectId: PROJ, workspaceId: 'wt-e', effort: 'low' })
+    expect(await effort()).toBe('low')
+    await created('wt-e', { resume: true, permissionMode: 'bypass' })
+    expect(await effort()).toBe('low')
+  })
+
   // A workspace id is claimed once across all projects: otherwise a create
   // posting a live workspace's id could re-stamp it and then tear it down
   // as its own when the create failed.

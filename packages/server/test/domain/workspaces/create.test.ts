@@ -51,6 +51,7 @@ import {
   recordProjectCreate,
 } from '#db/project-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
+import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 import { WorkspaceExecError, type WorkspaceDriver, type WorkspaceSpec } from '#drivers/contract'
 import type { AgentTool, PermissionMode, YaacConfig } from '@yaac/shared/types'
 
@@ -90,7 +91,11 @@ describe('resolveCreate', () => {
 
   it('falls back per field when nothing is remembered', async () => {
     expect(await resolveCreate(P, {})).toEqual({
-      tool: 'claude', model: FALLBACK_MODELS.claude, permissionMode: 'bypass', mode: 'acp',
+      tool: 'claude',
+      model: FALLBACK_MODELS.claude,
+      permissionMode: 'bypass',
+      effort: EFFORTS.claude[FALLBACK_MODELS.claude].default,
+      mode: 'acp',
     })
     // The permission-mode fallback comes from the driver.
     // In a container, prompting protects nothing. Containerless runs as the
@@ -109,7 +114,7 @@ describe('resolveCreate', () => {
 
     // codex lacks `plan`, so the nearest stricter mode, `read-only`, is used.
     expect(await resolveCreate(P, {})).toEqual({
-      tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', mode: 'acp',
+      tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', effort: EFFORTS.codex['gpt-5.5'].default, mode: 'acp',
     })
     await recordProjectCreate(P, 'codex', { mode: 'tui' })
     expect((await resolveCreate(P, {})).mode).toBe('tui')
@@ -125,6 +130,26 @@ describe('resolveCreate', () => {
     // user's.
     expect((await getProjectRow(P))?.createDefaults.claude)
       .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
+  })
+
+  // docs/effort-levels.md. One level name means the same across a tool's
+  // models, so a remembered effort carries to any model that has it.
+  it('resolves effort per model: named if it has it, else remembered if it has it, else its default', async () => {
+    await recordProjectCreate(P, 'claude', { effort: 'max' })
+    expect((await resolveCreate(P, { tool: 'claude', model: 'claude-opus-4-6' })).effort).toBe('max')
+    await recordProjectCreate(P, 'claude', { effort: 'xhigh' })
+    // opus-4-6 has no xhigh: its own default instead.
+    expect((await resolveCreate(P, { tool: 'claude', model: 'claude-opus-4-6' })).effort).toBe('high')
+    // Claude Code offers opus-4-5 no effort at all.
+    expect(await resolveCreate(P, { tool: 'claude', model: 'claude-opus-4-5' })).not.toHaveProperty('effort')
+
+    expect((await resolveCreate(P, { tool: 'claude', model: 'claude-opus-4-6', effort: 'low' })).effort).toBe('low')
+    await expect(resolveCreate(P, { tool: 'claude', model: 'claude-opus-4-6', effort: 'xhigh' }))
+      .rejects.toThrow(/no "xhigh" effort; it supports: low, medium, high, max/)
+    await expect(resolveCreate(P, { tool: 'claude', model: 'claude-opus-4-5', effort: 'low' }))
+      .rejects.toThrow(/has no effort setting/)
+    // A model outside the catalog is the tool's to judge, like the model.
+    expect((await resolveCreate(P, { tool: 'claude', model: 'opus', effort: 'ultra' })).effort).toBe('ultra')
   })
 
   it('refuses a named posture the agent lacks, under either UI, naming the ones it has', async () => {

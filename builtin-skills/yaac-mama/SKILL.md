@@ -15,7 +15,7 @@ yaac-mama list <workspace>...                     # just those, with full prompt
 yaac-mama create [opts] "<prompt>"
 yaac-mama queue --parent-workspace W [opts] "<prompt>"
 yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
-  # opts: [--tool T] [--model M] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
+  # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
 yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
@@ -64,6 +64,11 @@ pass — the server resolves who is calling and answers for that project only.
     `anthropic/claude-opus-5`), where the provider must be the one that tool
     is authed for. There is no fixed list yaac enforces, only a shape check,
     so a typo'd id spawns and fails at the vendor.
+  - **`--effort`**: how hard the new agent's model thinks, in the tool's own
+    words (`low`, `high`, `xhigh`, opencode's `default`, …). `yaac-mama
+    models` lists each model's levels and stars its default; one the model
+    lacks is refused. Omitted, the project's last choice where the model has
+    it, else the model's default.
   - **`--permission-mode`**: how much the new agent may do before it asks —
     `bypass`, `auto`, `accept-edits`, `manual` or `plan`, most permissive
     first. Omitted, it **inherits this workspace's own** (or, when the tool

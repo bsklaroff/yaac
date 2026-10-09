@@ -10,6 +10,7 @@ import {
 } from './provisioning'
 import { clearWorkspaceStopped, findWorkspaceRow } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
+import { modelEfforts } from '#domain/auth'
 import { serverLog } from '#log'
 import {
   firstAgentSession,
@@ -17,7 +18,7 @@ import {
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorkspaceCreateResult } from './create'
-import { DEFAULT_AGENT_MODE, type AgentTool } from '@yaac/shared/types'
+import { DEFAULT_AGENT_MODE, effortFor, type AgentTool } from '@yaac/shared/types'
 
 export interface RestartResolution {
   projectId: string
@@ -124,10 +125,18 @@ export async function restartWorkspace(
     if (active.length > 1) onProgress(`Restoring ${active.length} agent sessions...`)
 
     // Relaunch in the recorded permission mode (e.g. `plan` must not come
-    // back as `bypass`), and in the first conversation's agent mode (one per
-    // workspace), else the mode the workspace launched in. An `acp` launch
-    // whose handshake failed records no conversation.
+    // back as `bypass`) and effort, and in the first conversation's agent
+    // mode (one per workspace), else the mode the workspace launched in. An
+    // `acp` launch whose handshake failed records no conversation.
     const recorded = await findWorkspaceRow(workspaceId).catch(() => undefined)
+    // The recorded effort, checked against the model the first conversation
+    // last reported: one it lacks, or none recorded, relaunches at that
+    // model's default, since a launch naming none would take whatever the
+    // shared tool home holds.
+    const model = active[0]?.model ?? recorded?.model
+    const effort = model !== undefined
+      ? effortFor(modelEfforts(tool, model), recorded?.effort)
+      : recorded?.effort
 
     const result = await createWorkspace(projectId, {
       resume: true,
@@ -136,6 +145,7 @@ export async function restartWorkspace(
       mode: active[0]?.mode ?? recorded?.mode ?? DEFAULT_AGENT_MODE,
       resumeAgentSessions: active,
       ...(recorded !== undefined ? { permissionMode: recorded.permissionMode } : {}),
+      ...(effort !== undefined ? { effort } : {}),
       onProgress,
     })
 
