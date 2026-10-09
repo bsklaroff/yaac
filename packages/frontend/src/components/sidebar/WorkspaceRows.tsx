@@ -9,7 +9,7 @@ import {
 import clsx from 'clsx'
 import { useMutation } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
-import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon, StopIcon } from '#lib/icons'
+import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StopWorkspaceDialog } from '#components/StopWorkspaceDialog'
 import { RowMenu } from '#components/sidebar/RowMenu'
@@ -55,7 +55,7 @@ export interface SidebarDrag {
 }
 
 /** Row for a workspace still provisioning. Clicking it shows the progress in
- *  the main pane. Its ■ stops it; once failed, its × dismisses it. */
+ *  the main pane. Its × stops it, or once failed, dismisses it. */
 export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
@@ -105,7 +105,7 @@ export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }
             opacity-0 transition hover:bg-surface-3 hover:text-text group-hover:opacity-100
             max-md:h-7 max-md:w-7 max-md:opacity-100"
         >
-          {entry.error ? <CloseIcon size={14} /> : <StopIcon size={11} />}
+          <CloseIcon size={14} />
         </button>
       )}
     </div>
