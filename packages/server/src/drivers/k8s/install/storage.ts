@@ -1,15 +1,20 @@
 /**
- * The two claims the server mounts, and the volumes behind them
- * (docs/server-in-cluster.md "Storage is two claims"). `yaac-global` (RWX)
- * holds the global tier: the server mounts it whole and workspace pods
- * mount subPaths. `yaac-server-local` (RWO) is the server's alone.
+ * The install's claims, and the volumes behind them
+ * (docs/server-in-cluster.md "Storage claims"). `yaac-global` (RWX) holds
+ * the global tier: the server mounts it whole and workspace pods mount
+ * subPaths. `yaac-server-local` (RWO) is the server's alone.
+ * `yaac-checkouts` is a second volume over the global tier's directory,
+ * through which workspace pods mount their checkout with longer attribute
+ * caching (docs/nfs-checkout-performance.md).
  *
  * The storage shape decides what backs them:
  *  - `static` (kind): a hostPath PV per claim into the host's data dir, so
  *    the data stays on the host and survives `yaac cluster delete`.
- *  - `classes` (byo): each claim is provisioned from a named StorageClass
- *    (NFS-family for RWX), then a one-shot binder pod claims each volume
- *    root for this install, and the volume is labeled with the install id.
+ *  - `classes` (byo): `yaac-global` and `yaac-server-local` are provisioned
+ *    from named StorageClasses (NFS-family for RWX), then a one-shot binder
+ *    pod claims each volume root for this install, and the volume is
+ *    labeled with the install id. `yaac-checkouts` binds a static copy of
+ *    the global volume.
  *
  * Every volume is `Retain`, so deleting a claim or namespace keeps the
  * data. PVs are cluster-scoped and shared by several installs, so static PV
@@ -17,6 +22,7 @@
  */
 import fs from 'node:fs/promises'
 import {
+  CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
   LABEL_CLAIM,
   LABEL_DATA_DIR_HASH,
@@ -52,8 +58,9 @@ interface ClaimShape {
 
 const GLOBAL: ClaimShape = { claimName: GLOBAL_CLAIM_NAME, accessMode: 'ReadWriteMany' }
 const SERVER_LOCAL: ClaimShape = { claimName: SERVER_LOCAL_CLAIM_NAME, accessMode: 'ReadWriteOnce' }
+const CHECKOUTS: ClaimShape = { claimName: CHECKOUTS_CLAIM_NAME, accessMode: 'ReadWriteMany' }
 
-/** What backs the two claims: see the module comment. */
+/** What backs the claims: see the module comment. */
 export type StorageShape =
   | {
     kind: 'static'
@@ -154,12 +161,13 @@ interface RawPv {
     capacity?: { storage?: string }
     mountOptions?: string[]
     claimRef?: { namespace?: string; name?: string }
+    csi?: { driver?: string; volumeHandle?: string } & Record<string, unknown>
   }
   status?: { phase?: string }
 }
 
 /**
- * Create both claims for the storage shape and wait until both are
+ * Create the claims for the storage shape and wait until all are
  * `Bound`. An existing claim is left alone, since a bound claim's spec is
  * immutable; if it is bound to a different volume or class, this throws
  * a message naming both.
@@ -180,9 +188,12 @@ async function ensureStaticClaims(
   for (const dir of [shape.globalHostPath, shape.serverLocalHostPath, shape.nodeLocalHostPath]) {
     await fs.mkdir(dir, { recursive: true })
   }
+  // The checkouts volume needs no mount options here: a hostPath mount
+  // caches nothing.
   const pairs: Array<[ClaimShape, string]> = [
     [GLOBAL, shape.globalHostPath],
     [SERVER_LOCAL, shape.serverLocalHostPath],
+    [CHECKOUTS, shape.globalHostPath],
   ]
   for (const [claim, hostPath] of pairs) {
     const existing = await readClaim(claim.claimName)
@@ -205,7 +216,7 @@ async function ensureStaticClaims(
       storageClassName: '', volumeName: wanted, storage: NOMINAL_CAPACITY,
     }))
   }
-  await waitForBound([GLOBAL, SERVER_LOCAL], log)
+  await waitForBound([GLOBAL, SERVER_LOCAL, CHECKOUTS], log)
 }
 
 /**
@@ -240,6 +251,87 @@ async function ensureClassClaims(
   await runBinder(shape, log)
   await waitForBound([GLOBAL, SERVER_LOCAL], log)
   for (const [claim] of pairs) await pinVolume(claim, shape.installId)
+  await ensureCheckoutsClaim(shape.installId, log)
+}
+
+/**
+ * Bind `yaac-checkouts` to a static copy of the bound global volume: the
+ * same directory through the same driver, but with checkout caching mount
+ * options. Kubernetes has no per-pod mount options, so a second volume is
+ * the only way to mount one directory two ways. The copy is named after the
+ * global volume, whose CSI block cannot change, so an existing copy is
+ * already right.
+ */
+async function ensureCheckoutsClaim(installId: string, log: (message: string) => void): Promise<void> {
+  const globalVolume = (await readClaim(GLOBAL_CLAIM_NAME))?.spec?.volumeName
+  const source = globalVolume ? await readVolume(globalVolume) : null
+  const csi = source?.spec?.csi
+  if (!globalVolume || !csi?.driver || !csi.volumeHandle) {
+    throw new Error(`the ${GLOBAL_CLAIM_NAME} volume ${globalVolume ?? '<unbound>'} is not a CSI volume, `
+      + `so ${CHECKOUTS_CLAIM_NAME} cannot mount the same directory`)
+  }
+  const name = `${globalVolume}-checkouts`
+  if ((await readVolume(name))?.status?.phase === 'Released') await clearStaleClaimRef(name, CHECKOUTS, log)
+  await applyObject({
+    apiVersion: 'v1',
+    kind: 'PersistentVolume',
+    metadata: { name, labels: storageLabels(CHECKOUTS_CLAIM_NAME, installId) },
+    spec: {
+      capacity: { storage: source?.spec?.capacity?.storage ?? NOMINAL_CAPACITY },
+      accessModes: [CHECKOUTS.accessMode],
+      persistentVolumeReclaimPolicy: 'Retain',
+      storageClassName: '',
+      mountOptions: withCheckoutCaching(source?.spec?.mountOptions ?? []),
+      claimRef: { namespace: k8sNamespace(), name: CHECKOUTS_CLAIM_NAME },
+      csi: { ...csi, volumeHandle: checkoutsVolumeHandle(csi.driver, csi.volumeHandle) },
+    },
+  })
+  if (!await readClaim(CHECKOUTS_CLAIM_NAME)) {
+    await applyObject(buildPvcManifest(CHECKOUTS, { storageClassName: '', volumeName: name, storage: NOMINAL_CAPACITY }))
+  }
+  await waitForBound([CHECKOUTS], log)
+}
+
+/**
+ * The global volume's handle, rewritten so it names the same directory but
+ * differs as a string. kubelet keys a CSI volume by driver and handle, so
+ * two volumes sharing a handle would be mounted once in a pod that uses
+ * both. Each NFS-family driver (`isNfsFamily`) has its own handle format:
+ *
+ * - csi-driver-nfs mounts from the volume's attributes and only needs the
+ *   handle to be unique, so a suffix is enough.
+ * - The EFS driver reads `[efs:]<fs id>[:<path>[:<access point>]]`; an empty
+ *   path and `/` mount the same directory, as do `/x` and `/x/`.
+ * - The Azure Files driver reads `#`-separated fields whose fifth is a
+ *   free-form uuid, there to tell apart handles for one share. With no
+ *   resource group (the first field) it reads the fifth as a secret
+ *   namespace instead, so that form is refused.
+ */
+function checkoutsVolumeHandle(driver: string, handle: string): string {
+  switch (driver) {
+    case 'nfs.csi.k8s.io':
+      return `${handle}#checkouts`
+    case 'efs.csi.aws.com': {
+      const parts = handle.split(':')
+      const at = parts[0] === 'efs' ? 2 : 1
+      while (parts.length <= at) parts.push('')
+      const p = parts[at]
+      parts[at] = p === '' ? '/' : p === '/' ? '' : p.endsWith('/') ? p.slice(0, -1) : `${p}/`
+      return parts.join(':')
+    }
+    case 'file.csi.azure.com': {
+      const fields = handle.split('#')
+      if (fields[0] === '') {
+        throw new Error(`the Azure Files volume handle ${handle} names no resource group, so its fifth field `
+          + 'is a secret namespace yaac cannot vary to mount the share a second way')
+      }
+      while (fields.length < 5) fields.push('')
+      fields[4] = `${fields[4]}checkouts`
+      return fields.join('#')
+    }
+    default:
+      throw new Error(`${driver} is not an NFS-family CSI driver yaac can mount a second way`)
+  }
 }
 
 /**
@@ -463,6 +555,8 @@ async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
   })
 }
 
+const ATTRIBUTE_CACHE_OPTION = /^(actimeo|acregmin|acregmax|acdirmin|acdirmax)=|^noac$/
+
 /**
  * Add `actimeo=1` to an RWX volume's mount options, replacing any
  * attribute-cache options. It keeps NFS clients from seeing each other's
@@ -472,8 +566,22 @@ async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
  * own cluster").
  */
 function withNfsCoherence(options: string[]): string[] {
-  const superseded = /^(actimeo|acregmin|acregmax|acdirmin|acdirmax)=|^noac$/
-  return [...options.filter((o) => !superseded.test(o)), 'actimeo=1']
+  return [...options.filter((o) => !ATTRIBUTE_CACHE_OPTION.test(o)), 'actimeo=1']
+}
+
+/**
+ * The checkouts volume's attribute caching. File attributes are cached for
+ * 3 to 60 seconds, so a warm `git status` stats from the cache; directory
+ * attributes for at most a second, so a file another machine creates,
+ * deletes or renames in (the server writing `.git`, the file editor) shows
+ * within a second. An edit to an existing file can stay unseen by `stat`
+ * for up to a minute unless the file is opened, which revalidates it; the
+ * file editor opens what it writes in the workspace for that reason.
+ */
+export const CHECKOUT_CACHE_OPTIONS = ['acregmin=3', 'acregmax=60', 'acdirmin=1', 'acdirmax=1']
+
+function withCheckoutCaching(options: string[]): string[] {
+  return [...options.filter((o) => !ATTRIBUTE_CACHE_OPTION.test(o)), ...CHECKOUT_CACHE_OPTIONS]
 }
 
 /**

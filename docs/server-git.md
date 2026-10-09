@@ -23,7 +23,10 @@ object format, `remote.origin` (the project row's URL, without a token), and
 `.git`, so the checkout directory itself is never replaced; a pod may already
 have it bound as `/workspace`. Plain `git clone` can't do this: it refuses a
 non-empty destination, copies local branches rather than remote-tracking
-ones, and writes its own alternates path.
+ones, and writes its own alternates path. The tree is written by eight
+processes at once (`checkout.workers`, which a workspace's own git also
+gets), since each file on NFS costs network round trips
+(docs/nfs-checkout-performance.md).
 
 **The alternates line** is the only path stored in a checkout's git state. It
 always holds the main clone's objects dir as the server sees it, and a pod
@@ -80,7 +83,10 @@ copies them over (`origin.ts` in `#domain/projects`):
 - **A timer fetches.** The `origin-refresh` reconcile step fetches every
   project that has a running workspace and was not fetched in the last five
   minutes. A failure is logged and retried next interval.
-- **Every launch refreshes**, right after rewriting the alternates line.
+- **Every launch refreshes**, right after rewriting the alternates line. The
+  same exec then starts a detached `git --no-optional-locks status`, which
+  fills the sandbox's file cache before anything else asks
+  (docs/nfs-checkout-performance.md).
 
 The refresh (`buildOriginRefreshExec`) is a local fetch from the main clone,
 run inside the workspace:

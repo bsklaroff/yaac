@@ -58,6 +58,15 @@ function applied(): Array<[unknown]> {
   return fakeCluster.callsOf('apply').map((c) => [c.body])
 }
 
+/** The script (`sh -c <script>`) of the last probe pod applied under `name`. */
+function appliedPodCommand(name: string): string {
+  const pod = applied()
+    .map((c) => c[0] as { kind?: string; metadata?: { name?: string }; spec?: { containers?: Array<{ command?: string[] }> } })
+    .filter((m) => m.kind === 'Pod' && m.metadata?.name === name)
+    .pop()
+  return pod?.spec?.containers?.[0]?.command?.[2] ?? ''
+}
+
 /**
  * The args an applied probe pod got after its script (`sh -c <script> --
  * <args>`), which is how the fakes learn the nonce a peer pod publishes.
@@ -194,7 +203,7 @@ let installerDeployed = true
 let peerSawWrite = true
 /** Pod name -> the kubelet Warning event (`<reason>|<message>`) for a pod that never ran. */
 let podEvents: Record<string, string> = {}
-/** The two storage claims as the apiserver reports them; a case edits. */
+/** The storage claims as the apiserver reports them; a case edits. */
 let storageClaims: Record<string, { spec: { volumeName: string }; status: { phase: string } }> = {}
 /** PV name -> the volume, replacing the static hostPath default; a case edits. */
 let volumes: Record<string, { metadata?: Record<string, unknown>; spec: Record<string, unknown> }> = {}
@@ -270,7 +279,7 @@ function seedCluster(): void {
       metadata: { name: volumeName, ...volumes[volumeName]?.metadata },
       spec: volumes[volumeName]?.spec ?? {
         persistentVolumeReclaimPolicy: 'Retain',
-        hostPath: { path: volumeName.startsWith('yaac-global') ? globalRoot() : serverLocalRoot() },
+        hostPath: { path: volumeName.startsWith('yaac-server-local') ? serverLocalRoot() : globalRoot() },
       },
     })).filter((pv) => pv.metadata.name),
     ...(storageClassProvisioner
@@ -456,6 +465,7 @@ describe('runClusterCheck', () => {
     storageClaims = {
       'yaac-global': { spec: { volumeName: 'yaac-global-ddh' }, status: { phase: 'Bound' } },
       'yaac-server-local': { spec: { volumeName: 'yaac-server-local-ddh' }, status: { phase: 'Bound' } },
+      'yaac-checkouts': { spec: { volumeName: 'yaac-checkouts-ddh' }, status: { phase: 'Bound' } },
     }
     volumes = {}
     storageClassProvisioner = null
@@ -1428,6 +1438,47 @@ describe('runClusterCheck', () => {
     expect(storage.detail).toContain('actimeo=30, not actimeo<=1')
   })
 
+  it('judges the checkouts volume as a copy of the global one with second-long directory caching', async () => {
+    volumes['yaac-global-ddh'] = byoGlobalVolume()
+    storageClassProvisioner = 'nfs.csi.k8s.io'
+    const copy = {
+      metadata: { labels: { 'yaac.data-dir-hash': 'ddh16', 'yaac.claim': 'yaac-checkouts' } },
+      spec: {
+        persistentVolumeReclaimPolicy: 'Retain',
+        storageClassName: '',
+        csi: { driver: 'nfs.csi.k8s.io', volumeHandle: 'h#checkouts', volumeAttributes: { server: '10.96.5.5' } },
+        mountOptions: ['nfsvers=4.1', 'acregmin=3', 'acregmax=60', 'acdirmin=1', 'acdirmax=1'],
+      },
+    }
+    volumes['yaac-global-ddh'].spec.csi = { driver: 'nfs.csi.k8s.io', volumeHandle: 'h', volumeAttributes: { server: '10.96.5.5' } }
+    volumes['yaac-checkouts-ddh'] = copy
+    stage()
+    let { results } = await check()
+    expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
+
+    // Another directory, the global volume's own handle, no labels and a
+    // minute of directory caching are each named.
+    volumes['yaac-checkouts-ddh'] = {
+      metadata: { labels: {} },
+      spec: {
+        ...copy.spec,
+        csi: { driver: 'nfs.csi.k8s.io', volumeHandle: 'h', volumeAttributes: { server: '10.96.9.9' } },
+        mountOptions: ['acdirmax=60'],
+      },
+    }
+    ;({ results } = await check())
+    const storage = byName(results, 'storage')!
+    expect(storage.status).toBe('fail')
+    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-ddh is not a copy of the yaac-global volume yaac-global-ddh')
+    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-ddh does not carry this install\'s labels')
+    expect(storage.detail).toContain('caches directories for longer than a second')
+
+    // On kind it is a hostPath, which must be the global tier's directory.
+    volumes['yaac-checkouts-ddh'] = { spec: { persistentVolumeReclaimPolicy: 'Retain', hostPath: { path: '/elsewhere' } } }
+    ;({ results } = await check())
+    expect(byName(results, 'storage')?.detail).toContain('yaac-checkouts: volume yaac-checkouts-ddh is /elsewhere')
+  })
+
   it('tells a provisioned hostPath volume (local-path) from kind\'s static one by its class', async () => {
     // local-path (k3s, kind-byo) provisions hostPath volumes at its own path,
     // which the static-pair checks would wrongly flag.
@@ -1464,11 +1515,61 @@ describe('runClusterCheck', () => {
   it('fails egress when a session pod reaches the NFS server behind the global claim', async () => {
     volumes['yaac-global-ddh'] = byoGlobalVolume()
     storageClassProvisioner = 'nfs.csi.k8s.io'
-    podLogs['yaac-cluster-check-egress'] = 'NP_BLOCKED\nNP_NFS_OPEN\n'
+    podLogs['yaac-cluster-check-egress'] = 'NP_BLOCKED\nNP_NFS0_OPEN\n'
     stage()
     const { results } = await check()
     expect(byName(results, 'egress')).toMatchObject({ status: 'fail' })
     expect(byName(results, 'egress')?.detail).toMatch(/reached the NFS server .*10\.96\.5\.5/)
+  })
+
+  it('dials every EFS mount target the nodes use, resolved from inside the cluster', async () => {
+    // An EFS volume names a file system, not a server. Each node zone has a
+    // mount target whose zone-specific name only the VPC resolves.
+    const zone = (z: string): Record<string, string> =>
+      ({ 'topology.kubernetes.io/region': 'us-east-1', 'topology.kubernetes.io/zone': z })
+    clusterNodes = [
+      nodeItem('yaac-control-plane', { labels: zone('us-east-1a') }),
+      nodeItem('worker-b', { labels: zone('us-east-1b') }),
+    ]
+    volumes['yaac-global-ddh'] = {
+      ...byoGlobalVolume(),
+      spec: { ...byoGlobalVolume().spec, csi: { driver: 'efs.csi.aws.com', volumeHandle: 'fs-0abc::fsap-1' } },
+    }
+    storageClassProvisioner = 'efs.csi.aws.com'
+    // Zone b's target does not resolve, and is reported as unverified.
+    podLogs['yaac-cluster-check-efs-resolve'] = 'EFS_IP us-east-1a.fs-0abc.efs.us-east-1.amazonaws.com 10.0.1.5\n'
+      + 'EFS_IP us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com\n'
+    stage()
+    let { results } = await check()
+    const resolver = appliedPodCommand('yaac-cluster-check-efs-resolve')
+    expect(resolver).toContain('nslookup us-east-1a.fs-0abc.efs.us-east-1.amazonaws.com')
+    expect(resolver).toContain('nslookup us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com')
+    expect(appliedPodCommand('yaac-cluster-check-egress')).toContain('nc -w 4 10.0.1.5 2049')
+    expect(byName(results, 'egress')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'egress')?.detail).toContain('the NFS server us-east-1a.fs-0abc.efs.us-east-1.amazonaws.com')
+    expect(byName(results, 'egress')?.detail)
+      .toContain('NFS server us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com unresolvable from here')
+
+    podLogs['yaac-cluster-check-egress'] = 'NP_BLOCKED\nNP_NFS0_OPEN\n'
+    ;({ results } = await check())
+    expect(byName(results, 'egress')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'egress')?.detail).toMatch(/reached the NFS server .*us-east-1a\.fs-0abc/)
+
+    // A zone label is the node's to set, so one that is not a DNS name is
+    // never put in the resolver's script, and that target is unverified.
+    delete podLogs['yaac-cluster-check-egress']
+    clusterNodes = [nodeItem('yaac-control-plane', { labels: zone('a;reboot') })]
+    ;({ results } = await check())
+    expect(appliedPodCommand('yaac-cluster-check-efs-resolve')).not.toContain('reboot')
+    expect(byName(results, 'egress')?.detail).toContain('NFS server a;reboot.fs-0abc.efs.us-east-1.amazonaws.com unresolvable')
+
+    // A handle naming a mount target by DNS name is looked up as is.
+    volumes['yaac-global-ddh'].spec.csi = {
+      driver: 'efs.csi.aws.com', volumeHandle: 'us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com::fsap-1',
+    }
+    podLogs['yaac-cluster-check-efs-resolve'] = 'EFS_IP us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com 10.0.2.7\n'
+    ;({ results } = await check())
+    expect(appliedPodCommand('yaac-cluster-check-egress')).toContain('nc -w 4 10.0.2.7 2049')
   })
 
   it('fails a pool that has drifted from what --byo installed on, naming the nodes', async () => {

@@ -82,6 +82,7 @@ export { waitForRollout } from './rollout'
 export { runOnEachNode, runPodToCompletion } from './one-shot-pods'
 export { PRIVILEGED_PSS_LABELS } from './pss'
 export {
+  CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
   LABEL_CLAIM,
   LABEL_INSTALL_ID,

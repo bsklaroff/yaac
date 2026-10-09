@@ -28,10 +28,16 @@ import type { AgentTool, YaacConfig } from '@yaac/shared/types'
  * (docs/server-git.md). It is always the main clone's objects dir as the
  * server sees it; pods mount the main clone at that same path. Rewriting it
  * every launch heals a checkout whose data dir moved.
+ *
+ * Last, a detached `git status` looks up every file once, so a pod's file
+ * cache is warm before the agent's or the changes poll's first status
+ * (docs/nfs-checkout-performance.md). `--no-optional-locks` keeps it from
+ * taking the index lock the agent's own git needs.
  */
 export function buildCloneLinkExec(repoGitDir: string, paths: WorkspacePaths): string {
   return `printf '%s\\n' '${shellEscape(`${repoGitDir}/objects`)}' > ${paths.workspaceDir}/.git/objects/info/alternates`
     + ` && { ${buildOriginRefreshExec(repoGitDir, paths)}; }`
+    + ` && { setsid git -C ${paths.workspaceDir} --no-optional-locks status --porcelain </dev/null >/dev/null 2>&1 & }`
 }
 
 /**

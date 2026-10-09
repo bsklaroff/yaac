@@ -513,17 +513,23 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         'test', '-f', '/tmp/yaac-prompt',
       ])).rejects.toThrow()
 
-      // Every volume is the global claim, the node-local tree, an emptyDir or
-      // the CA ConfigMap; nothing is a hostPath into the data dir
-      // (docs/server-in-cluster.md, "Storage is two claims").
+      // Every volume is the global claim, the checkouts claim (the checkout
+      // alone), the node-local tree, an emptyDir or the CA ConfigMap; nothing
+      // is a hostPath into the data dir (docs/server-in-cluster.md, "Storage
+      // claims").
       const volumes = (await readObject<{
         spec: { template: { spec: {
           initContainers?: Array<{ name: string }>
+          containers: Array<{ volumeMounts: Array<{ name: string; mountPath: string }> }>
           volumes: Array<{ name: string; hostPath?: { path: string }; persistentVolumeClaim?: { claimName: string }; emptyDir?: unknown; configMap?: unknown }>
         } } }
       }>({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() }))!.spec.template.spec
+      const checkoutVolume = volumes.containers[0].volumeMounts.find((m) => m.mountPath === '/workspace')?.name
+      expect(volumes.volumes.find((v) => v.name === checkoutVolume)?.persistentVolumeClaim?.claimName).toBe('yaac-checkouts')
+      // The workspace's own git writes big checkouts in parallel.
+      expect((await execInJob(jobName, ['git', 'config', '--global', 'checkout.workers'])).stdout.trim()).toBe('8')
       for (const v of volumes.volumes) {
-        const ok = v.persistentVolumeClaim?.claimName === 'yaac-global'
+        const ok = ['yaac-global', 'yaac-checkouts'].includes(v.persistentVolumeClaim?.claimName ?? '')
           || v.hostPath?.path.startsWith(nodeLocalNodePath()) === true
           || v.emptyDir !== undefined || v.configMap !== undefined
         expect(ok, `volume ${v.name}: ${JSON.stringify(v)}`).toBe(true)

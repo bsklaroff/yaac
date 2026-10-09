@@ -2,7 +2,7 @@ import path from 'node:path'
 import { globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
 import { dataDirHash } from './api'
 import type { PodMount } from './pod-spec'
-import { GLOBAL_CLAIM_NAME, NODE_LOCAL_NODE_ROOT } from './storage-constants'
+import { CHECKOUTS_CLAIM_NAME, GLOBAL_CLAIM_NAME, NODE_LOCAL_NODE_ROOT } from './storage-constants'
 
 /**
  * This install's node-local directory on a node:
@@ -21,7 +21,10 @@ export function nodeLocalNodePath(): string {
  * knows how each tier is stored.
  *
  * - Global root: a subPath of the `yaac-global` claim, which the server
- *   pod also mounts, so the pod sees what the server wrote.
+ *   pod also mounts, so the pod sees what the server wrote. A checkout
+ *   (`workspaceDir` in @yaac/shared/project-paths) is the same subPath of
+ *   `yaac-checkouts` instead, the same directory mounted with longer
+ *   attribute caching (docs/nfs-checkout-performance.md).
  * - Node-local root: the matching path under this install's node directory.
  * - Server-local root, or no root at all: an error.
  * - `emptyDir` and `pvc` sources pass through unchanged.
@@ -34,7 +37,8 @@ export function resolveMountSource(m: PodMount): PodMount {
   if (source.kind !== 'hostPath') return m
   const global = under(source.path, globalRoot())
   if (global !== null) {
-    return { ...m, source: { kind: 'pvc', claimName: GLOBAL_CLAIM_NAME, subPath: global } }
+    const claimName = CHECKOUT_SUBPATH.test(global) ? CHECKOUTS_CLAIM_NAME : GLOBAL_CLAIM_NAME
+    return { ...m, source: { kind: 'pvc', claimName, subPath: global } }
   }
   const nodeLocal = under(source.path, nodeLocalRoot())
   if (nodeLocal !== null) {
@@ -57,6 +61,9 @@ export function resolveMountSource(m: PodMount): PodMount {
     + `(${globalRoot()}, ${nodeLocalRoot()}) — declare it through a tier helper`,
   )
 }
+
+/** A checkout, relative to the global root: `projects/<id>/workspaces/<id>`. */
+const CHECKOUT_SUBPATH = /^projects\/[^/]+\/workspaces\/[^/]+$/
 
 /**
  * The node path for a server-side node-local path, as mounted by the store

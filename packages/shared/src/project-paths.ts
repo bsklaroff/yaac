@@ -46,7 +46,7 @@ export {
  * Each helper below is tagged with its storage tier (GLOBAL, NODE-LOCAL,
  * SERVER-LOCAL or CLIENT-LOCAL; defined in paths.ts). The k8s driver picks
  * a path's mount source from its tier (docs/server-in-cluster.md, "Storage
- * is two claims"). A new helper chooses its tier by building on
+ * claims"). A new helper chooses its tier by building on
  * `globalProjectPath`, `nodeLocalProjectPath`, `serverLocalPath` or
  * `clientLocalPath`.
  */
@@ -245,9 +245,9 @@ export function workspacesDir(projectId: string): string {
 }
 
 /**
- * GLOBAL. The workspace's checkout, mounted at `/workspace`. It would be
- * faster node-local, but the server creates it (a clone borrowing
- * `repo/.git`'s objects) from its own filesystem.
+ * GLOBAL. The workspace's checkout, mounted at `/workspace`. A pod mounts
+ * it through the `yaac-checkouts` claim, which caches file attributes
+ * longer than the rest of the tier (docs/nfs-checkout-performance.md).
  */
 export function workspaceDir(projectId: string, workspaceId: string): string {
   return path.join(workspacesDir(projectId), workspaceId)

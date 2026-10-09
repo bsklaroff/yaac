@@ -14,6 +14,7 @@ import { isIP } from 'node:net'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+  CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
   GVISOR_NODE_LABEL,
   WORKSPACE_POOL_KEY,
@@ -89,7 +90,7 @@ const KIND_SETUP_FIX = [
   '  yaac cluster install',
   'It provisions the podman machine (macOS), the kind cluster (home and',
   'node-local extraMounts), Calico, the kind node fixups, every built-in',
-  'image, the in-cluster registry, and the two storage claims.',
+  'image, the in-cluster registry, and the storage claims.',
 ].join('\n')
 
 /**
@@ -118,7 +119,7 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  * - nodes: how many can take a workspace, whether all are Ready, and the
  *   `architecture` and `node-os` gates `--byo` installs on.
  * - podman present; the in-cluster registry answering; the namespace.
- * - storage: both claims Bound, `Retain`, and the right backing.
+ * - storage: every claim Bound, `Retain`, and the right backing.
  * - PriorityClasses present.
  * - node-fixups (kind only, warn): kubelet housekeeping and pids limit.
  * - gvisor: RuntimeClasses exist, a node is labeled, and a pod on the class
@@ -493,10 +494,11 @@ async function runNodeFixupsCheck(nodes: string[]): Promise<CheckResult> {
 }
 
 const STORAGE_FIX =
-  'The two storage claims are applied by `yaac cluster install`: on kind, '
+  'The storage claims are applied by `yaac cluster install`: on kind, '
   + 'static hostPath volumes into the data dir\'s `global/` and `server-local/` '
   + 'folders; on a byo install, volumes provisioned from the named classes, '
-  + 'pinned `Retain`, labelled, and (the RWX one) mounted with `actimeo=1`. '
+  + 'pinned `Retain`, labelled, and (the RWX one) mounted with `actimeo=1`, plus '
+  + 'a copy of the RWX one that checkouts are mounted through. '
   + 'Re-run it; it converges each of these in place.'
 
 interface RawPvcRead {
@@ -508,7 +510,7 @@ interface RawPvRead {
   spec?: {
     persistentVolumeReclaimPolicy?: string
     hostPath?: { path?: string }
-    csi?: { driver?: string; volumeAttributes?: Record<string, string> }
+    csi?: { driver?: string; volumeHandle?: string; volumeAttributes?: Record<string, string> }
     storageClassName?: string
     mountOptions?: string[]
   }
@@ -516,8 +518,10 @@ interface RawPvRead {
 
 /**
  * The storage gate (fail-level; the server pod and the probes mount the
- * global claim). Both claims must be Bound with `Retain` volumes, so
- * deleting a claim or namespace never deletes data. Then, by volume class:
+ * global claim). Every claim must be Bound with a `Retain` volume, so
+ * deleting a claim or namespace never deletes data. The checkouts volume
+ * must be the global tier's directory again (`checkoutsVolumeProblems`).
+ * The other two are judged by volume class:
  *
  * - No class (kind's static volumes): a hostPath into this data dir's own
  *   tier folder. (Checked by class, not source, because local-path also
@@ -538,7 +542,12 @@ async function runStorageCheck(): Promise<CheckResult> {
     const installId = (await readServerConfig())?.installId
     const problems: string[] = []
     const bound: string[] = []
-    for (const name of [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME]) {
+    const ours = (name: string, labels: Record<string, string>): boolean =>
+      (installId !== undefined
+        ? labels[LABEL_INSTALL_ID] === installId
+        : labels[LABEL_DATA_DIR_HASH] === dataDirHash())
+      && labels[LABEL_CLAIM] === name
+    for (const name of [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME, CHECKOUTS_CLAIM_NAME]) {
       const pvc = await readObject<RawPvcRead>({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', name, namespace: ns })
       if (!pvc) {
         problems.push(`${name}: no such claim in "${ns}"`)
@@ -555,6 +564,11 @@ async function runStorageCheck(): Promise<CheckResult> {
       if (reclaim !== 'Retain') {
         problems.push(`${name}: volume ${volumeName} reclaims by ${reclaim ?? 'an unknown policy'}, not Retain`)
       }
+      if (name === CHECKOUTS_CLAIM_NAME) {
+        problems.push(...await checkoutsVolumeProblems(volumeName, pv, ours(name, pv?.metadata?.labels ?? {})))
+        bound.push(`${name} → ${volumeName}`)
+        continue
+      }
       if (!pv?.spec?.storageClassName) {
         const hostPath = pv?.spec?.hostPath?.path
         if (hostPath !== expectedHostPath[name]) {
@@ -564,11 +578,7 @@ async function runStorageCheck(): Promise<CheckResult> {
         bound.push(`${name} → ${volumeName} (${hostPath ?? '?'})`)
         continue
       }
-      const labels = pv.metadata?.labels ?? {}
-      const ours = installId !== undefined
-        ? labels[LABEL_INSTALL_ID] === installId
-        : labels[LABEL_DATA_DIR_HASH] === dataDirHash()
-      if (!ours || labels[LABEL_CLAIM] !== name) {
+      if (!ours(name, pv.metadata?.labels ?? {})) {
         problems.push(`${name}: volume ${volumeName} does not carry this install's labels, so a `
           + 're-install could not find it again')
       }
@@ -578,7 +588,7 @@ async function runStorageCheck(): Promise<CheckResult> {
     if (problems.length > 0) {
       return { name: 'storage', status: 'fail', detail: problems.join('; '), fix: STORAGE_FIX }
     }
-    return { name: 'storage', status: 'pass', detail: `${bound.join('; ')}, both Bound and Retain` }
+    return { name: 'storage', status: 'pass', detail: `${bound.join('; ')}, all Bound and Retain` }
   } catch (err) {
     return {
       name: 'storage', status: 'fail',
@@ -614,6 +624,42 @@ async function sharedVolumeProblems(volumeName: string, pv: RawPvRead | null): P
     problems.push(`${GLOBAL_CLAIM_NAME}: volume ${volumeName} is mounted with `
       + `${actimeo === undefined ? 'no actimeo' : `actimeo=${actimeo}`}, not actimeo<=1 — another `
       + 'pod\'s writes could stay invisible for up to a minute')
+  }
+  return problems
+}
+
+/**
+ * What the checkouts volume must be: the global tier's directory again. On
+ * kind that is a hostPath to it. On byo it is a copy of the global volume
+ * (same driver and attributes, its own handle), labelled as this install's,
+ * whose mounts see another machine's new, deleted and renamed files within
+ * a second (`acdirmax<=1`): the server writes a checkout's `.git` while its
+ * pod may already be looking.
+ */
+async function checkoutsVolumeProblems(volumeName: string, pv: RawPvRead | null, labelled: boolean): Promise<string[]> {
+  const hostPath = pv?.spec?.hostPath?.path
+  if (hostPath !== undefined) {
+    return hostPath === globalRoot() ? [] : [`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} is ${hostPath}, not ${globalRoot()}`]
+  }
+  const problems: string[] = []
+  const globalVolume = (await readObject<RawPvcRead>({
+    apiVersion: 'v1', kind: 'PersistentVolumeClaim', name: GLOBAL_CLAIM_NAME, namespace: k8sNamespace(),
+  }))?.spec?.volumeName
+  const source = globalVolume ? (await readPv(globalVolume))?.spec?.csi : undefined
+  const csi = pv?.spec?.csi
+  if (!csi || !source || csi.driver !== source.driver || csi.volumeHandle === source.volumeHandle
+    || JSON.stringify(csi.volumeAttributes ?? {}) !== JSON.stringify(source.volumeAttributes ?? {})) {
+    problems.push(`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} is not a copy of the ${GLOBAL_CLAIM_NAME} `
+      + `volume ${globalVolume ?? '<unbound>'} under a handle of its own`)
+  }
+  if (!labelled) {
+    problems.push(`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} does not carry this install's labels`)
+  }
+  const dirCache = (pv?.spec?.mountOptions ?? [])
+    .map((o) => /^(?:acdirmax|actimeo)=(\d+)$/.exec(o)?.[1]).filter((v) => v !== undefined)
+  if (dirCache.length === 0 || dirCache.some((v) => Number(v) > 1)) {
+    problems.push(`${CHECKOUTS_CLAIM_NAME}: volume ${volumeName} caches directories for longer than a `
+      + 'second — a .git the server writes could stay invisible to the workspace')
   }
   return problems
 }
@@ -1406,26 +1452,75 @@ async function serviceIp(name: string, namespace: string): Promise<string | null
 }
 
 /**
- * The NFS server named by the global volume (csi-driver-nfs's `server`
- * attribute), resolved to an IP here because the probe pod has no working
- * DNS. `null` when the volume names no server; `ip` undefined when the name
- * cannot be resolved.
+ * The NFS servers behind the global volume, each resolved to an IP here
+ * because the probe pod has no working DNS. Empty when the volume names
+ * none; `ip` undefined when a name cannot be resolved.
+ *
+ * - csi-driver-nfs names one server, its `server` attribute.
+ * - An EFS volume names a file system, served by one mount target per
+ *   availability zone (`efsMountTargets`).
  */
-async function sharedVolumeNfsServer(): Promise<{ server: string; ip?: string } | null> {
+async function sharedVolumeNfsServers(): Promise<Array<{ server: string; ip?: string }>> {
   const pvc = await readObject<RawPvcRead>({
     apiVersion: 'v1', kind: 'PersistentVolumeClaim', name: GLOBAL_CLAIM_NAME, namespace: k8sNamespace(),
   })
   const volume = pvc?.spec?.volumeName
-  const pv = volume ? await readPv(volume) : null
-  const server = pv?.spec?.csi?.volumeAttributes?.server
-  if (!server) return null
-  if (isIP(server)) return { server, ip: server }
+  const csi = volume ? (await readPv(volume))?.spec?.csi : undefined
+  if (csi?.driver === 'efs.csi.aws.com' && csi.volumeHandle) return efsMountTargets(csi.volumeHandle)
+  const server = csi?.volumeAttributes?.server
+  if (!server) return []
+  if (isIP(server)) return [{ server, ip: server }]
   const svc = /^([a-z0-9-]+)\.([a-z0-9-]+)\.svc(\.|$)/.exec(server)
   if (svc) {
-    return { server, ip: await serviceIp(svc[1], svc[2]) ?? undefined }
+    return [{ server, ip: await serviceIp(svc[1], svc[2]) ?? undefined }]
   }
   const ip = await dns.lookup(server).then((r) => r.address, () => undefined)
-  return { server, ip }
+  return [{ server, ip }]
+}
+
+const EFS_RESOLVE_POD_NAME = 'yaac-cluster-check-efs-resolve'
+
+/** A lowercase DNS name, the only thing interpolated into the resolver's script. */
+const DNS_NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/
+
+/**
+ * The mount targets of the EFS file system an EFS volume handle
+ * (`[efs:]<fs id>[:...]`) names: one per availability zone the nodes are
+ * in, by EFS's zone-specific name `<zone>.<fs id>.efs.<region>.amazonaws.com`.
+ * A handle may name a mount target by DNS name instead, which is used as
+ * is. Those names resolve only inside the VPC, so a plain pod in the cluster
+ * looks them up. A target that does not resolve, or whose name (a node's
+ * zone label, the handle) is not a plain DNS name, is returned without an IP.
+ */
+async function efsMountTargets(handle: string): Promise<Array<{ server: string; ip?: string }>> {
+  const fields = handle.split(':')
+  const fs = fields[0] === 'efs' ? fields[1] : fields[0]
+  let names: string[]
+  if (fs.includes('.')) {
+    names = [fs]
+  } else {
+    const labels = (await listObjects<{ metadata?: { labels?: Record<string, string> } }>('v1', 'Node'))
+      .map((n) => n.metadata?.labels ?? {})
+    const region = labels.map((l) => l['topology.kubernetes.io/region']).find(Boolean)
+    if (!region) return [{ server: fs }]
+    const zones = [...new Set(labels.map((l) => l['topology.kubernetes.io/zone']).filter(Boolean))]
+    names = zones.length > 0
+      ? zones.map((zone) => `${zone}.${fs}.efs.${region}.amazonaws.com`)
+      : [`${fs}.efs.${region}.amazonaws.com`]
+  }
+  const lookups = names.filter((name) => DNS_NAME.test(name))
+  const { logs } = lookups.length === 0 ? { logs: '' } : await runProbePod(EFS_RESOLVE_POD_NAME, {
+    timeoutMs: 60_000,
+    container: {
+      image: await ensureProbeImage(),
+      command: ['sh', '-c', lookups.map((name) => `echo "EFS_IP ${name} $(nslookup ${name} 2>/dev/null `
+        + `| awk '/^Name:/ { f = 1 } f && /^Address/ { for (i = 2; i <= NF; i++) if ($i ~ /^[0-9.]+$/) { print $i; exit } }')"`)
+        .join('; ')],
+    },
+  })
+  const resolved = new Map(logs.split('\n').map((l) => l.trim().split(/\s+/))
+    .filter(([tag, , ip]) => tag === 'EFS_IP' && ip && isIP(ip)).map(([, name, ip]) => [name, ip]))
+  return names.map((name) => ({ server: name, ip: resolved.get(name) }))
 }
 
 /**
@@ -1454,7 +1549,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
 
     // Everything a session must not dial directly, with how it reports an
     // open path. A target that is not deployed is reported as unverified.
-    const nfs = await sharedVolumeNfsServer()
+    const nfsServers = await sharedVolumeNfsServers()
     const targets: EgressTarget[] = [
       {
         key: 'REGISTRY',
@@ -1492,8 +1587,8 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
             + 'the Deployment (the server re-applies the node half on start).',
         },
       },
-      ...(nfs ? [{
-        key: 'NFS',
+      ...nfsServers.map((nfs, i) => ({
+        key: `NFS${String(i)}`,
         ip: nfs.ip ?? null,
         port: NFS_PORT,
         denied: `the NFS server ${nfs.server}`,
@@ -1509,7 +1604,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
             + 'firewall the NFS server to the node addresses as well — a kernel mount comes '
             + 'from the node, never from a pod.',
         },
-      }] : []),
+      })),
       {
         key: 'PROXY',
         ip: await serviceIp(PROXY_APP_NAME, ns),

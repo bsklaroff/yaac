@@ -24,8 +24,16 @@ and on phones, the filter (quick-open) is the way to find a file.
 `#domain/workspaces` (`files.ts`) reads and writes the checkout with plain
 `fs` on `workspaceDir(projectId, id)`. Under k8s the server pod mounts that path;
 under containerless it is the host checkout. So there is no driver verb, and
-both drivers behave the same. The cost: node-local checkouts
-(docs/plans/node-local-checkouts.md) would need an in-pod path.
+both drivers behave the same.
+
+A save that overwrites a file in a running k8s workspace then opens that
+file inside the pod, after releasing the workspace's edit lock: one exec,
+an open that reads nothing, bounded to a few seconds, logged if it fails. A pod mounts its checkout with file
+attributes cached for up to a minute, so without the open its `git status`
+(the changes view, the agent's own) could miss the edit for that long; an
+open always revalidates (docs/nfs-checkout-performance.md). Creating,
+renaming or deleting needs nothing, since the pod caches directories for a
+second.
 
 Every file route resolves the workspace's record (`resolveWorkspaceRecord`),
 so a stopped workspace's files open and save like a running one's

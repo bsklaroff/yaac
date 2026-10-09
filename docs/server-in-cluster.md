@@ -7,7 +7,7 @@ it at a fixed origin: loopback on kind, or a tailnet name.
 It runs as a pod so that the server and workspace pods can mount the same
 storage. A host process can share files with pods only through hostPath and
 the assumption that the node is the host. A pod can mount a claim, and this
-one mounts two (see "Storage is two claims").
+one mounts two (see "Storage claims").
 
 ## What install deploys
 
@@ -15,9 +15,9 @@ one mounts two (see "Storage is two claims").
 
 1. **Stop the running server pod**, if there is one, and build and push the
    server image.
-2. **The two storage claims** and, on kind, the static volumes behind them
-   (see "Storage is two claims"). On byo, the binder pod that binds them
-   runs the server image, which is why the image comes first.
+2. **The storage claims** and the volumes behind them (see "Storage
+   claims"). On byo, the binder pod that binds them runs the server image,
+   which is why the image comes first.
 3. **A ServiceAccount** (`yaac-server`) and a **ClusterRole** bound to it.
    The role is cluster-scoped because the server creates per-project
    registry namespaces at runtime and applies the cluster-scoped
@@ -36,7 +36,7 @@ one mounts two (see "Storage is two claims").
    environment.
 6. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
    priority, plain runc, `runAsUser` set to the install uid (see "The uid
-   everything runs as"), three mounts (the two claims and the node's
+   everything runs as"), three mounts (`yaac-global`, `yaac-server-local` and the node's
    node-local directory), and the fronting's access mode
    (`YAAC_ACCESS_MODE`, `tailnet` under `--tailnet [<host>]`, with `--owner` as
    `YAAC_ACCESS_OWNER`) and hostname (`YAAC_ALLOWED_HOSTS`), which the server
@@ -330,7 +330,7 @@ Install picks the uid, and the server Deployment's `runAsUser` records it:
 - **On byo**, it is always 1000. An NFS server passes uids through
   unchanged, so the machine running install is irrelevant, and a constant
   keeps ownership stable whichever machine re-installs. The storage binder
-  makes each volume root owned by that uid (see "Storage is two claims").
+  makes each volume root owned by that uid (see "Storage claims").
 
 On kind, chowning to another uid does not get around this: a `chown` inside
 the node changes nothing on the host, and a `chown` on the host leaves the
@@ -420,7 +420,7 @@ Things to know when reading a failure there:
 - The forward binds the file's own `YAAC_SERVER_PORT`, because that is the
   origin `yaac server start|restart` wait on.
 - The server's ClusterRole and ClusterRoleBinding are named
-  `yaac-server-<namespace>`, and the two PersistentVolumes are named by the
+  `yaac-server-<namespace>`, and the PersistentVolumes are named by the
   file's data-dir hash, so every concurrent file has its own. None of these
   are deleted with a namespace, so per-file teardown and the global sweep
   delete them by their install-namespace label. The volumes are `Retain`,
@@ -443,7 +443,7 @@ Things to know when reading a failure there:
   delete. That delete removes the registry, so the project runs alone and
   pushes no prebuilt images.
 
-## Storage is two claims
+## Storage claims
 
 The data dir has three tier folders on every driver: `global/`,
 `server-local/` and `node-local/` (see the legend in
@@ -478,7 +478,7 @@ claim is namespaced and belongs to one install, so every install namespace
 uses `yaac-global`. A PersistentVolume is cluster-scoped, and one cluster can
 host several installs (the real one and every e2e namespace), so its name
 includes the install hash and its `claimRef` pins it to its own namespace's
-claim. On kind both volumes are `Retain` with an empty storage class: no
+claim. On kind every volume is `Retain` with an empty storage class: no
 provisioner, and deleting a claim or namespace never touches the hostPath.
 `kind delete` removes the objects with the cluster and leaves the bytes
 under `~/.yaac`, so `yaac cluster delete` touches no data. Kubernetes
@@ -489,19 +489,32 @@ Workspace pods mount **subPaths** of `yaac-global`, never the whole claim,
 and never the server's claim. The k8s driver maps each declared mount by
 the tier its path is under (`resolveMountSource`): a GLOBAL path becomes a
 claim subPath, a NODE-LOCAL path the matching path under the node's
-directory, and a SERVER-LOCAL path is an error. A `File` mount is a subPath
+directory, and a SERVER-LOCAL path is an error. A checkout is the one GLOBAL
+path mounted through a third claim, `yaac-checkouts` (below). A `File` mount is a subPath
 to that file, so every global file a pod mounts must exist before its Job
 is applied; kubelet would otherwise create it as a root-owned directory.
 The node-local directories a pod mounts are chowned to the pod's uid by its
 own init container, running as root, because hostPath ignores `fsGroup` and
 kubelet creates each one root-owned before the init container runs.
 
+**`yaac-checkouts`** is a second volume over the same `global/` directory,
+which workspace pods mount their checkout through. It exists for its mount
+options: a checkout's mount caches file attributes for up to a minute and
+directory attributes for a second, where the shared tier's `actimeo=1`
+caches both for a second, which makes every `git status` re-stat the whole
+tree over the network (docs/nfs-checkout-performance.md). Kubernetes sets
+mount options per volume, never per pod, so a second volume is the only way
+to mount one directory two ways. The server never mounts it. On kind it is
+one more static hostPath volume to `<dataDir>/global`, which caches nothing
+either way. On byo it is a static copy of the bound global volume (below).
+
 ### Claims on byo
 
 Install applies the claims after stopping the running server, through one
-of two storage shapes (`ensureStorageClaims`): kind's static pair above, or
-on byo, claims provisioned from named StorageClasses. The class path makes
-each provisioned volume belong to this install, in three steps:
+of two storage shapes (`ensureStorageClaims`): kind's static volumes above,
+or on byo, claims provisioned from named StorageClasses. The class path
+makes each provisioned volume belong to this install, in three steps, then
+binds `yaac-checkouts` (step 4):
 
 1. **Re-adopt first.** `Retain` only helps if a later install can find the
    data again. A namespace delete leaves both volumes `Released`, so before
@@ -536,13 +549,25 @@ each provisioned volume belong to this install, in three steps:
    rather than required of the operator's class. The class's other options
    (`soft` or `hard` included) stay. A PV's options are read at each mount,
    and the binder has unmounted before any real pod mounts.
+4. **Copy the global volume for checkouts.** `yaac-checkouts` binds a static
+   PV named `<global PV>-checkouts`: the global volume's CSI block with the
+   checkout caching options (`acregmin=3,acregmax=60,acdirmin=1,acdirmax=1`)
+   in place of `actimeo=1`. kubelet treats two CSI volumes with the same
+   driver and handle as one mount within a pod, so the copy gets a handle of
+   its own that its driver reads as the same directory: a suffix for
+   csi-driver-nfs (which mounts from the attributes), `/` for an empty EFS
+   path (or a trailing slash toggled), and the free uuid field for Azure
+   Files. The copy holds no data, so one whose source changed is replaced.
 
 A claim's class cannot be changed, so a re-install naming a different class
 is refused. The RWX class must be NFS-family (csi-driver-nfs, EFS, or Azure
 Files over NFS), because that is what was measured. `cluster check`'s
 `storage` gate checks all of the above on every run. Its `egress` gate adds
 one check on such a volume: a workspace-labelled pod must fail to reach the
-volume's NFS server. That server uses AUTH_SYS and trusts whatever uid a
+volume's NFS server. An EFS volume names a file system rather than a
+server, so the gate resolves the mount target of each availability zone the
+nodes are in (`<zone>.<fs id>.efs.<region>.amazonaws.com`, which only the
+VPC resolves) from a plain pod in the cluster, and dials each. That server uses AUTH_SYS and trusts whatever uid a
 client claims, so a sandbox that reached it could read and write every
 project as anyone. The workspace network policy is what prevents that, and
 the probe proves it on the cluster at hand.

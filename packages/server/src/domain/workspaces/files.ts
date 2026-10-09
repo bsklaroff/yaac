@@ -25,6 +25,8 @@ import {
   ConfinedPathError, openExactDir, openRoot, type ConfinedRoot, type PinnedDir,
 } from '#lib/confined-fs'
 import { createKeyedMutex } from '#lib/keyed-mutex'
+import { shellQuote } from '#lib/shell'
+import { serverLog } from '#log'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
 import { workspaceForkBranch } from './fork-branch'
 import { checkoutBlobAt } from './checkout-git'
@@ -55,6 +57,8 @@ const mutate = createKeyedMutex()
 interface Checkout {
   workspaceId: string
   projectId: string
+  /** The workspace's runtime unit, when it has one. */
+  jobName?: string
   dir: string
   /** The confined checkout. Its `.git` counts as outside, so the editor
    *  cannot plant a hook or config there. */
@@ -64,11 +68,11 @@ interface Checkout {
 /** Open a workspace's checkout. A write passes its caller, who must own
  *  the workspace. */
 async function openCheckout(idOrName: string, writer?: Actor): Promise<Checkout> {
-  const { projectId, workspaceId } = await resolveWorkspaceRecord(idOrName)
+  const { projectId, workspaceId, jobName } = await resolveWorkspaceRecord(idOrName)
   if (writer !== undefined) await authorizeProject(writer, projectId)
   const dir = workspaceDir(projectId, workspaceId)
   try {
-    return { workspaceId, projectId, dir, root: await openRoot(dir, 'inside', { exclude: ['.git'] }) }
+    return { workspaceId, projectId, jobName, dir, root: await openRoot(dir, 'inside', { exclude: ['.git'] }) }
   } catch {
     throw new ServerError('NOT_FOUND', `workspace ${idOrName} has no checkout`)
   }
@@ -440,7 +444,7 @@ export async function writeWorkspaceFile(
     throw new ServerError('TOO_LARGE', `${rel} is over the ${MAX_TEXT_FILE_BYTES / 1024 ** 2} MiB editable size`)
   }
   const saved = { saved: { path: rel, version: hash(data), size: data.length } }
-  return mutate(co.workspaceId, async () => {
+  const result = await mutate(co.workspaceId, async (): Promise<WorkspaceFileWrite> => {
     if (baseVersion === null) {
       const { dir, name } = await openParent(co, rel, true)
       let fh: FileHandle
@@ -468,16 +472,42 @@ export async function writeWorkspaceFile(
       throw err
     }
     try {
-        const bytes = await readEditable(fh)
+      const bytes = await readEditable(fh)
       const current = bytes === null ? largeVersion(await fh.stat()) : hash(bytes)
       if (current !== baseVersion) return { conflict: current }
       await fh.truncate(0)
       await writeAll(fh, data)
-      return saved
     } finally {
       await fh.close()
     }
+    return saved
   })
+  // Outside the lock: a stuck workspace must not hold up the next edit.
+  if (baseVersion !== null && 'saved' in result) await reopenInWorkspace(co, rel)
+  return result
+}
+
+/**
+ * Open a file the editor overwrote from inside its running pod. A pod
+ * mounts its checkout with file attributes cached for up to a minute, so
+ * its `git status` (the changes view, the agent's own) could miss the edit
+ * until then; an open revalidates them (docs/nfs-checkout-performance.md).
+ * A new, deleted or renamed file needs nothing: directories are cached for
+ * a second. A host checkout caches nothing, so containerless skips it.
+ *
+ * The open reads nothing and gives up after a few seconds (a FIFO blocks
+ * an open), and a failure is logged rather than retried.
+ */
+async function reopenInWorkspace(co: Checkout, rel: string): Promise<void> {
+  const driver = workspaceDriver()
+  if (co.jobName === undefined || driver.kind !== 'k8s') return
+  const script = `cd ${shellQuote(driver.workspacePaths(co.jobName).workspaceDir)} && timeout 5 sh -c ': < "$1"' yaac "$1"`
+  try {
+    await driver.exec(co.jobName, `sh -c ${shellQuote(script)} yaac ${shellQuote(rel)}`, { maxAttempts: 1, timeout: 10_000 })
+  } catch (err) {
+    serverLog(`[files] ${co.workspaceId}: could not open ${rel} in the workspace after saving it, `
+      + `so its git may not see the edit for up to a minute: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 /** The version of what a create found in its way. */
