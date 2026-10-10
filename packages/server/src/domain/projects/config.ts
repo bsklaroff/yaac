@@ -7,7 +7,7 @@ import { isInfraPort } from '#lib/port-policy'
 
 const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
 
-const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'addAllowedUrls', 'setAllowedUrls', 'ephemeralModulesPaths', 'nestedContainers', 'npmCache'])
+const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'ephemeralModulesPaths', 'nestedContainers', 'npmCache'])
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -115,6 +115,11 @@ export function parseProjectConfig(raw: string): YaacConfig {
   const obj = parsed as Record<string, unknown>
 
   for (const key of Object.keys(obj)) {
+    // The allowlist is a project setting (docs/legacy-compat-shims.md
+    // "Moving the egress allowlist out of yaac-config.json").
+    if (key === 'addAllowedUrls' || key === 'setAllowedUrls') {
+      throw new Error(`yaac-config.json: ${key} is not read here; edit the egress allowlist in Settings → Project Config`)
+    }
     if (!KNOWN_KEYS.has(key)) console.warn(`yaac-config.json: unknown field "${key}"`)
   }
 
@@ -180,24 +185,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
       }
       config.portForward.push({ containerPort: entry.containerPort, hostPortStart: entry.hostPortStart })
     }
-  }
-
-  if (obj.addAllowedUrls !== undefined) {
-    if (!Array.isArray(obj.addAllowedUrls) || !obj.addAllowedUrls.every((v) => typeof v === 'string')) {
-      throw new Error('yaac-config.json: addAllowedUrls must be a string array')
-    }
-    config.addAllowedUrls = obj.addAllowedUrls
-  }
-
-  if (obj.setAllowedUrls !== undefined) {
-    if (!Array.isArray(obj.setAllowedUrls) || !obj.setAllowedUrls.every((v) => typeof v === 'string')) {
-      throw new Error('yaac-config.json: setAllowedUrls must be a string array')
-    }
-    config.setAllowedUrls = obj.setAllowedUrls
-  }
-
-  if (config.addAllowedUrls && config.setAllowedUrls) {
-    throw new Error('yaac-config.json: addAllowedUrls and setAllowedUrls are mutually exclusive')
   }
 
   if (obj.nestedContainers !== undefined) {

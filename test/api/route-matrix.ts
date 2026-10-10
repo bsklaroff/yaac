@@ -108,6 +108,8 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/project/:projectId/env', request: `${P}/env`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/env', request: `${P}/env`, body: { name: 'A', value: '1' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:projectId/env/:id', request: `${P}/env/abc`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/project/:projectId/allowlist', request: `${P}/allowlist`, access: 'reader', why: 'mediates no egress', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'PUT', path: '/api/project/:projectId/allowlist', request: `${P}/allowlist`, body: { hosts: [], defaults: true }, access: 'owner', why: 'mediates no egress', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/project/:projectId/branches', request: `${P}/branches`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/skills', request: `${P}/skills`, access: 'reader', k8s: OK_OR_MISSING, containerless: OK_OR_MISSING },
   { method: 'GET', path: '/api/project/:projectId/skills/body', request: `${P}/skills/body?path=x`, access: 'reader', k8s: [200, 400, 404], containerless: [200, 400, 404] },

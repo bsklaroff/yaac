@@ -1,20 +1,16 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-
-vi.mock('#domain/projects/local-config', () => ({
-  addAllowedHostToProjectConfig: vi.fn(() => Promise.resolve({})),
-}))
-
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-import { addAllowedHostToProjectConfig } from '#domain/projects/local-config'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { getProjectAllowlist } from '#domain/projects'
 import { allowWorkspaceHost } from '#domain/workspaces/allow-host'
-import { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { DEMO_PROJECT_ID as PROJ } from '@yaac/test-utils/project-fixture'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
-const mockPersist = vi.mocked(addAllowedHostToProjectConfig)
+const DEFAULTS = { hosts: [], defaults: true }
+let tmpDir: string
 const mockAllowHost = vi.fn<
   (t: { workspaceId: string; projectId: string }, h: string, o: { fanOutToProject: boolean }) => Promise<void>
 >()
@@ -25,8 +21,8 @@ const HANDLE = handleFixture({
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  tmpDir = await createTempDataDir()
   await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now' }, BUILT_IN_USER_ID)
-  mockPersist.mockResolvedValue({})
   mockAllowHost.mockResolvedValue()
   installFakeWorkspaceDriver({
     find: () => Promise.resolve(HANDLE),
@@ -34,46 +30,43 @@ beforeEach(async () => {
   })
 })
 
+afterEach(async () => {
+  await cleanupTempDir(tmpDir)
+})
+
 describe('allowWorkspaceHost', () => {
-  it('widens live only, writing no config, when persist is false', async () => {
+  it('widens live only, leaving the project allowlist, when persist is false', async () => {
     await allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: false })
 
-    expect(mockPersist).not.toHaveBeenCalled()
+    expect(await getProjectAllowlist(PROJ)).toEqual(DEFAULTS)
     expect(mockAllowHost).toHaveBeenCalledExactlyOnceWith(
       { workspaceId: 'sid-1', projectId: PROJ }, 'h.com', { fanOutToProject: false },
     )
   })
 
   it('persists before widening, and a persisted host implies the fan-out', async () => {
-    const order: string[] = []
-    mockPersist.mockImplementation(() => {
-      order.push('config')
-      return Promise.resolve({})
-    })
-    mockAllowHost.mockImplementation(() => {
-      order.push('runtime')
-      return Promise.resolve()
+    let persisted: unknown
+    mockAllowHost.mockImplementation(async () => {
+      persisted = await getProjectAllowlist(PROJ)
     })
 
     await allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: true })
 
-    // The config write comes first, so a failure there leaves the live
+    // The allowlist write comes first, so a failure there leaves the live
     // allowlist unchanged too.
-    expect(order).toEqual(['config', 'runtime'])
-    expect(mockPersist).toHaveBeenCalledExactlyOnceWith(local, PROJ, 'h.com')
+    expect(persisted).toEqual({ hosts: ['h.com'], defaults: true })
     expect(mockAllowHost).toHaveBeenCalledExactlyOnceWith(
       { workspaceId: 'sid-1', projectId: PROJ }, 'h.com', { fanOutToProject: true },
     )
   })
 
-  it('widens nothing when the config write fails', async () => {
-    mockPersist.mockRejectedValue(new ServerError('VALIDATION', 'bad config'))
-
-    await expect(allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: true })).rejects.toThrow('bad config')
+  it('widens nothing when the allowlist write fails', async () => {
+    await expect(allowWorkspaceHost(local, 'sid-1', 'h.com/x', { persist: true }))
+      .rejects.toMatchObject({ code: 'VALIDATION' })
     expect(mockAllowHost).not.toHaveBeenCalled()
   })
 
-  it('refuses a workspace that is not running, before touching config', async () => {
+  it('refuses a workspace that is not running, before touching the allowlist', async () => {
     installFakeWorkspaceDriver({
       find: () => Promise.resolve(handleFixture({ workspaceId: 'sid-1', projectId: PROJ, state: 'stopped' })),
       allowHost: mockAllowHost,
@@ -81,7 +74,7 @@ describe('allowWorkspaceHost', () => {
 
     await expect(allowWorkspaceHost(local, 'sid-1', 'h.com', { persist: true }))
       .rejects.toMatchObject({ code: 'CONFLICT' })
-    expect(mockPersist).not.toHaveBeenCalled()
+    expect(await getProjectAllowlist(PROJ)).toEqual(DEFAULTS)
     expect(mockAllowHost).not.toHaveBeenCalled()
   })
 })

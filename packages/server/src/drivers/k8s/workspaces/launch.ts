@@ -147,6 +147,7 @@ export async function prepareWorkspaceSubstrate(
   // (`syncProjectSecrets`).
   const registration = buildProxyRegistration({
     config,
+    allowlist: intent.allowlist,
     remoteUrl: intent.remoteUrl,
     tool: intent.tool,
     projectId,

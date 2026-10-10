@@ -5,7 +5,6 @@ import {
   hostMatchesPattern,
   resolveAllowedHosts,
 } from '#lib/allowed-hosts'
-import type { YaacConfig } from '@yaac/shared/types'
 
 describe('DEFAULT_ALLOWED_HOSTS', () => {
   it('is a non-empty array of strings', () => {
@@ -87,49 +86,37 @@ describe('resolveAllowedHosts', () => {
     vi.restoreAllMocks()
   })
 
-  it('returns DEFAULT_ALLOWED_HOSTS when neither field is set', () => {
-    const result = resolveAllowedHosts({})
-    expect(result).toBe(DEFAULT_ALLOWED_HOSTS)
+  const only = (hosts: string[]) => resolveAllowedHosts({ hosts, defaults: false })
+
+  it('returns the defaults when the project adds nothing', () => {
+    expect(resolveAllowedHosts({ hosts: [], defaults: true })).toEqual(DEFAULT_ALLOWED_HOSTS)
   })
 
-  it('returns setAllowedUrls when set (replaces defaults)', () => {
-    const config: YaacConfig = { setAllowedUrls: ['custom.example.com'] }
-    const result = resolveAllowedHosts(config)
-    expect(result).toEqual(['custom.example.com'])
-    expect(result).not.toContain('api.anthropic.com')
-  })
-
-  it('returns merged list when addAllowedUrls is set', () => {
-    const config: YaacConfig = { addAllowedUrls: ['extra.example.com'] }
-    const result = resolveAllowedHosts(config)
+  it('appends added hosts to the defaults, skipping ones already there', () => {
+    const result = resolveAllowedHosts({ hosts: ['extra.example.com', 'github.com'], defaults: true })
     expect(result).toContain('api.anthropic.com')
     expect(result).toContain('extra.example.com')
     expect(result.length).toBe(DEFAULT_ALLOWED_HOSTS.length + 1)
   })
 
-  it('passes through ["*"] correctly', () => {
-    const config: YaacConfig = { setAllowedUrls: ['*'] }
-    const result = resolveAllowedHosts(config)
-    expect(result).toEqual(['*'])
+  it('returns only the added hosts with the defaults off', () => {
+    const result = only(['custom.example.com'])
+    expect(result).toEqual(['custom.example.com'])
+    expect(result).not.toContain('api.anthropic.com')
   })
 
-  it('passes through empty array correctly', () => {
-    const config: YaacConfig = { setAllowedUrls: [] }
-    const result = resolveAllowedHosts(config)
-    expect(result).toEqual([])
+  it('collapses any list holding * to ["*"]', () => {
+    expect(only(['*'])).toEqual(['*'])
+    expect(resolveAllowedHosts({ hosts: ['a.com', '*'], defaults: true })).toEqual(['*'])
   })
 
-  it('throws when both fields are set', () => {
-    const config: YaacConfig = {
-      addAllowedUrls: ['a.com'],
-      setAllowedUrls: ['b.com'],
-    }
-    expect(() => resolveAllowedHosts(config)).toThrow('mutually exclusive')
+  it('returns an empty list with the defaults off and nothing added', () => {
+    expect(only([])).toEqual([])
   })
 
   it('warns when resolved list lacks api.anthropic.com', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    resolveAllowedHosts({ setAllowedUrls: ['github.com', 'api.github.com'] })
+    only(['github.com', 'api.github.com'])
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Anthropic API (api.anthropic.com)'),
     )
@@ -137,7 +124,7 @@ describe('resolveAllowedHosts', () => {
 
   it('warns when resolved list lacks github.com', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    resolveAllowedHosts({ setAllowedUrls: ['api.anthropic.com'] })
+    only(['api.anthropic.com'])
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('GitHub (github.com)'),
     )
@@ -145,19 +132,19 @@ describe('resolveAllowedHosts', () => {
 
   it('does not warn about api.github.com', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    resolveAllowedHosts({ setAllowedUrls: ['api.anthropic.com', 'github.com'] })
+    only(['api.anthropic.com', 'github.com'])
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
   it('does not warn when ["*"] is used', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    resolveAllowedHosts({ setAllowedUrls: ['*'] })
+    only(['*'])
     expect(warnSpy).not.toHaveBeenCalled()
   })
 
   it('does not warn when defaults are used', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    resolveAllowedHosts({})
+    resolveAllowedHosts({ hosts: [], defaults: true })
     expect(warnSpy).not.toHaveBeenCalled()
   })
 })

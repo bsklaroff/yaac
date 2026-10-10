@@ -7,8 +7,8 @@ import { ActionsBadge } from '#components/ui/ActionsBadge'
 
 /**
  * Blocked-host count badge whose popover lists the hosts. Each host can be
- * allowed for this workspace, or permanently for the project (saved to
- * yaac-config.json so future workspaces inherit it). A teammate's
+ * allowed for this workspace, or permanently for the project (added to its
+ * egress allowlist so future workspaces inherit it). A teammate's
  * workspace (#lib/viewer) lists the hosts with no actions.
  */
 export function BlockedHostsBadge({

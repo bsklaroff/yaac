@@ -2,6 +2,7 @@ import type {
   AccessMode,
   AgentMode,
   AgentTool,
+  EgressAllowlist,
   PermissionMode,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
@@ -118,6 +119,9 @@ export const projects = snakeCase.table('projects', {
    * same statement whenever the credential or the remote changes.
    */
   knownHostsEntry: text(),
+  /** Which hosts the project's workspaces may reach through the egress
+   *  proxy (docs/workspace-egress.md). */
+  egressAllowlist: jsonb().$type<EgressAllowlist>().notNull().default({ hosts: [], defaults: true }),
 })
 
 /**

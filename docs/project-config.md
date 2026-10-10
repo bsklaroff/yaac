@@ -12,7 +12,6 @@ Both are stored on the server, so this works against a remote server too.
   "cacheVolumes": { "pip-cache": "/home/yaac/.cache/pip" },
   "initCommands": ["pnpm install"],
   "portForward": [{ "containerPort": 3000, "hostPortStart": 3000 }],
-  "addAllowedUrls": ["internal.corp.example.com", "*.mycdn.example.com"],
   "hideInitPane": false
 }
 ```
@@ -36,14 +35,6 @@ Both are stored on the server, so this works against a remote server too.
 - **cacheVolumes:** named directories that persist across workspaces. Keys
   are names (stored at `global/projects/<project id>/cache-volumes/<name>`),
   values are absolute paths in the workspace.
-- **addAllowedUrls:** hosts to allow in addition to the proxy's default
-  allowlist (`DEFAULT_ALLOWED_HOSTS` in `packages/server/src/lib/allowed-hosts.ts`).
-  Exact names (`api.example.com`) or wildcards (`*.example.com`). k8s only; see
-  [workspace-egress.md](workspace-egress.md).
-- **setAllowedUrls:** replace the default allowlist entirely. Can't be combined
-  with `addAllowedUrls`. `["*"]` allows everything; `[]` blocks all external
-  access. yaac warns if the list leaves out `api.anthropic.com` or
-  `github.com`.
 - **nestedContainers:** run a container engine inside the workspace so
   `docker build`, `docker run` and `docker compose` work. k8s only; see
   [nested-containers.md](nested-containers.md).
@@ -69,6 +60,18 @@ it goes: a header, `authorization` with a `Bearer ` prefix by default, or a
 form/JSON body field). Under containerless the real value goes into the
 environment. GitHub access comes from the project's HTTPS git credential, so
 you don't need a `GITHUB_TOKEN` secret.
+
+## Egress allowlist (k8s)
+
+Also not in `yaac-config.json`: set it under Settings → Project Config →
+Egress allowlist, or allow a blocked host for the whole project from a
+workspace's blocked-hosts badge. A workspace may reach the proxy's default
+hosts (`DEFAULT_ALLOWED_HOSTS` in `packages/server/src/lib/allowed-hosts.ts`)
+plus the hosts you add: exact names (`api.example.com`) or wildcards
+(`*.example.com`); `*` allows everything. Turning the defaults off leaves only
+your hosts, so an empty list blocks all external access; yaac warns if that
+leaves out `api.anthropic.com` or `github.com`. Changes apply to workspaces
+created afterwards. See [workspace-egress.md](workspace-egress.md).
 
 ## Custom images (k8s)
 

@@ -3,7 +3,7 @@ import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
 import { notifyWorkspaceListChanged } from '#notify'
 import { nullsToUndefined } from '#lib/nulls'
-import type { AgentTool, ProjectMeta, ToolCreateDefaults } from '@yaac/shared/types'
+import type { AgentTool, EgressAllowlist, ProjectMeta, ToolCreateDefaults } from '@yaac/shared/types'
 
 /*
  * Which projects exist, as the server records them. The clone, config and
@@ -67,6 +67,7 @@ export interface ProjectRow extends ProjectMeta {
   /** The remote's host key for an SSH credential. Null for a token, and
    *  after the remote changes until the key is assigned again. */
   knownHostsEntry: string | null
+  egressAllowlist: EgressAllowlist
 }
 
 function toProjectRow(
@@ -83,6 +84,18 @@ function toProjectRow(
     gitCredentialId: r.gitCredentialId,
     knownHostsEntry: r.knownHostsEntry,
   }
+}
+
+/** Replace the project's egress allowlist. False when there is no such
+ *  project. */
+export async function setProjectEgressAllowlist(
+  projectId: string,
+  egressAllowlist: EgressAllowlist,
+): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ egressAllowlist })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  return rows.length > 0
 }
 
 export async function getProjectRow(projectId: string): Promise<ProjectRow | undefined> {

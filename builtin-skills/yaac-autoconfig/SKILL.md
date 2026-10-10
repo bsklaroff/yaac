@@ -80,7 +80,7 @@ keep probing:
 - **Blocked egress**: if install/build fails reaching a host, the proxy blocked
   it. Common package registries (npm, PyPI, crates.io, Go proxy, apt, GitHub,
   Docker Hub) are on the default allowlist. Record any *extra* host you needed —
-  it goes in `addAllowedUrls`.
+  the user adds it to the project's egress allowlist (not the config file).
 - **Missing system tooling**: if the build needs a compiler, runtime, or system
   package the image lacks, that belongs in the project's **`Dockerfile.yaac`**
   (`yaac config edit-dockerfile <project>`), **not** `initCommands` — sessions
@@ -127,7 +127,6 @@ Keep it minimal — only the options this project needs.
   ```json
   "portForward": [{ "containerPort": 5173, "hostPortStart": 5173 }]
   ```
-- **`addAllowedUrls`**: only the extra egress hosts the build actually needed.
 
 ### 5. Report back
 
@@ -141,7 +140,10 @@ Tell the user:
 - how they'll reach the app: the forwarded-port chip in the web app opens
   `http://<host>:<hostPort>`, where `hostPort` starts at your `hostPortStart`
   and may increment if that host port was busy,
-- any follow-up they still owe — e.g. adding a toolchain to `Dockerfile.yaac`.
+- any follow-up they still owe — e.g. adding a toolchain to `Dockerfile.yaac`,
+  or adding the extra egress hosts the build needed under Settings → Project
+  Config → Egress allowlist (or with the blocked-hosts badge's "Allow
+  permanently for this project").
 
 ## Worked example
 
@@ -175,8 +177,6 @@ Every option is optional. Include only what the project needs.
 | `portForward` | `{containerPort, hostPortStart}[]` | Forward an in-container port to the host. `hostPortStart` is the preferred host port; yaac scans upward if it's busy. |
 | `hideInitPane` | `boolean` (default `false`) | When `true`, close the init tmux pane after commands finish/error instead of keeping it (with `remain-on-exit`) for inspection. Per-window override via each object entry's `hidePane`. |
 | `cacheVolumes` | `Record<string,string>` | Per-project persistent caches that survive across sessions. Key = cache name, value = absolute container path. (pnpm's store is already shared at `~/.cached-packages` — no entry needed.) |
-| `addAllowedUrls` | `string[]` | Extra host patterns to allow past the egress proxy, on top of the default allowlist. Exact (`api.example.com`) or wildcard (`*.example.com`). Mutually exclusive with `setAllowedUrls`. |
-| `setAllowedUrls` | `string[]` | **Replace** the default allowlist entirely. `["*"]` allows all (disables filtering); `[]` blocks all egress. Warns if it omits `api.anthropic.com`/`github.com`. Mutually exclusive with `addAllowedUrls`. |
 | `nestedContainers` | `boolean` | Run an in-pod podman so `docker build`/`run`/`compose up` work inside the session (the `docker` CLI talks to podman's socket). Needed for docker-compose-based projects. |
 | `ephemeralModulesPaths` | `string[]` (default `["node_modules"]`) | Paths (relative to `/workspace`) bind-mounted onto per-session storage so package-manager writes don't touch the host workspace. `[]` disables the redirect. |
 

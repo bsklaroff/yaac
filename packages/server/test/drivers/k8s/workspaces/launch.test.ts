@@ -70,6 +70,7 @@ const INTENT = {
   owner: 'o',
   tool: 'claude' as const,
   config: {},
+  allowlist: { hosts: [], defaults: true },
   remoteUrl: 'https://github.com/example/repo.git',
   nestedContainers: false,
   proxySecretRules: {},
@@ -339,7 +340,7 @@ describe('launchWorkspace', () => {
     //  - a proxied npmjs secret (the cache fetches anonymously).
     for (const intent of [
       { ...INTENT, config: { npmCache: false } },
-      { ...INTENT, config: { setAllowedUrls: ['github.com', 'api.anthropic.com'] } },
+      { ...INTENT, allowlist: { hosts: ['github.com', 'api.anthropic.com'], defaults: false } },
       {
         ...INTENT,
         proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } },

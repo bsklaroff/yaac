@@ -207,23 +207,10 @@ describe('resolveProjectConfig', () => {
   })
 
   describe('egress allowlists', () => {
-    it('round-trips addAllowedUrls and setAllowedUrls, including empty lists', async () => {
-      expect(await roundTrip({ addAllowedUrls: ['extra.example.com', '*.corp.example.com'] }))
-        .toEqual({ addAllowedUrls: ['extra.example.com', '*.corp.example.com'] })
-      expect(await roundTrip({ setAllowedUrls: ['*'] })).toEqual({ setAllowedUrls: ['*'] })
-      expect(await roundTrip({ addAllowedUrls: [] })).toEqual({ addAllowedUrls: [] })
-      expect(await roundTrip({ setAllowedUrls: [] })).toEqual({ setAllowedUrls: [] })
-    })
-
-    it('rejects non-string-array values and the two lists together', async () => {
-      await expect(roundTrip({ addAllowedUrls: 'not-an-array' }))
-        .rejects.toThrow('addAllowedUrls must be a string array')
-      await expect(roundTrip({ addAllowedUrls: [123] }))
-        .rejects.toThrow('addAllowedUrls must be a string array')
-      await expect(roundTrip({ setAllowedUrls: 'not-an-array' }))
-        .rejects.toThrow('setAllowedUrls must be a string array')
-      await expect(roundTrip({ addAllowedUrls: ['a.com'], setAllowedUrls: ['b.com'] }))
-        .rejects.toThrow('addAllowedUrls and setAllowedUrls are mutually exclusive')
+    it('refuses the allowlist keys, which are a project setting', async () => {
+      for (const key of ['addAllowedUrls', 'setAllowedUrls']) {
+        await expect(roundTrip({ [key]: ['a.com'] })).rejects.toThrow(`${key} is not read here`)
+      }
     })
   })
 

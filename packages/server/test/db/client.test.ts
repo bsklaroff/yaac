@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { drizzle } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { openDb, getDb, closeDb, NewerSchemaRefusal } from '#db/client'
+import { openDb, getDb, closeDb, MigrationRefusal } from '#db/client'
 import { preferences } from '#db/schema'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 
@@ -175,7 +175,9 @@ describe('openDb', () => {
     }
   })
 
-  it('refuses a database migrated by a newer server', async () => {
+  // The same refusal covers a newer server's database and an install that
+  // lost its own migration files, so the message names both.
+  it('refuses a database recording a migration this build does not ship', async () => {
     await freshDataDir()
     await openDb()
     const db = await getDb()
@@ -185,8 +187,8 @@ describe('openDb', () => {
     )
     await closeDb()
     const refused = openDb()
-    await expect(refused).rejects.toBeInstanceOf(NewerSchemaRefusal)
-    await expect(refused).rejects.toThrow(/migrated by a newer yaac.*20990101000000_from_the_future/)
+    await expect(refused).rejects.toBeInstanceOf(MigrationRefusal)
+    await expect(refused).rejects.toThrow(/20990101000000_from_the_future.*upgrade yaac.*rebuild or reinstall/)
   })
 
   it('reopens against the new dir when setDataDir changes it', async () => {

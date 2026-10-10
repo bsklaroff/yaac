@@ -39,6 +39,7 @@ import {
   insertGitCredential,
   listWorkspaceAgentSessions,
   setGitIdentity,
+  setProjectEgressAllowlist,
   setProjectGitCredential,
   setTimeZone,
   seeTailnetUser,
@@ -573,7 +574,7 @@ describe('createWorkspace', () => {
     // Nothing listens on this host's 443, so the fetch fails at once.
     vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
     await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'https://127.0.0.1/o/r.git' })
-    await writeConfig({ addAllowedUrls: ['127.0.0.1'] })
+    await setProjectEgressAllowlist(DEMO_PROJECT_ID, { hosts: ['127.0.0.1'], defaults: true })
 
     await expect(createWorkspace(DEMO_PROJECT_ID, { mode: 'tui', workspaceId: 'wt-nofetch' })).rejects.toThrow(/could not fetch from remote/)
 

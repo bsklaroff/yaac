@@ -38,6 +38,7 @@ import { getDefaultBranch, remoteBranchExists, resolveRemoteRef } from '#domain/
 import { credentialOwnerKey } from '#domain/auth'
 import {
   fetchProjectOrigin,
+  getProjectAllowlist,
   projectRemoteUrl,
   resolveProjectConfig,
   resolveProjectEnv,
@@ -443,10 +444,11 @@ export async function tryClaimPrewarmed(
       }
     }
     // Re-register from the current config (allowlist, secrets, remote), under
-    // the claimed tool, so project edits since warming apply. The config is
-    // read fresh here so an allow-host during the fetch is not overwritten.
-    const [config, remoteUrl, projectEnv] = await Promise.all([
+    // the claimed tool, so project edits since warming apply. The allowlist
+    // is read fresh here so an allow-host during the fetch is not overwritten.
+    const [config, allowlist, remoteUrl, projectEnv] = await Promise.all([
       resolveProjectConfig(projectId),
+      getProjectAllowlist(projectId),
       projectRemoteUrl(projectId),
       resolveProjectEnv(projectId),
     ])
@@ -456,6 +458,7 @@ export async function tryClaimPrewarmed(
       owner: credentialOwnerKey(owner),
       tool,
       config: config ?? {},
+      allowlist,
       remoteUrl,
       proxySecretRules: Object.fromEntries(
         Object.entries(projectEnv.secrets).map(([name, { rule }]) => [name, rule]),
