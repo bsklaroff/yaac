@@ -286,13 +286,13 @@ offer to compare with the fork branch again.
   files opens at once. Out of view, a chunk holds the height it measured
   when last on screen, or, once its lines or the pane's width have changed
   since, an estimate of their wrapped height at the current width. Clicking
-  a file's row opens or folds its diff (remembered per file across both layouts), and
-  only its name opens it. A header button collapses every diff while any is
-  open, and shows them all once none is. A strip shows the diff base with a
-  branch picker, the shown files' totals overall and per stage, and what the
-  diff leaves out (only uncommitted work when no fork point resolves, a body
-  cut at 1 MB). The filter matches paths (a rename's old one too) the way
-  quick-open does, keeping the list's order.
+  a file's row opens or folds its diff (remembered per file across both
+  layouts), and only its name opens it. A header button collapses every diff
+  while any is open, and shows them all once none is. A strip shows the diff
+  base with a branch picker, the shown files' totals overall and per stage,
+  and what the diff leaves out (only uncommitted work when no fork point
+  resolves, a body cut at 1 MB). The filter matches paths (a rename's old
+  one too) the way quick-open does, keeping the list's order.
 - **Find in diffs** (Cmd/Ctrl-F in the Changes pane, or its header's search
   button) uses the find bar's controls (`FindControls` in `ui/FindPanel`),
   as the editor's and the conversation's do, with no replace row, over the
