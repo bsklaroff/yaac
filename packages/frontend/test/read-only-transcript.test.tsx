@@ -202,7 +202,7 @@ describe('ReadOnlyTranscript', () => {
   })
 
   it('opens a subagent with what it was asked and every step, and a task with the command that started it', async () => {
-    // Condensed folds the main conversation only, as in the live pane.
+    // Condensed folds the subagent's steps too, as in the live pane.
     useUiStore.setState({ chatCondensed: true })
     transcript([
       { type: 'subagent', seq: 0, subagent: { id: 's1', name: 'Explore', task: 'find the router', state: 'completed' } },
@@ -230,6 +230,8 @@ describe('ReadOnlyTranscript', () => {
     fireEvent.click(screen.getByRole('button', { name: /Explore/ }))
     expect(screen.getByText('find the router')).toBeTruthy()
     expect(screen.getByText('in src/router.ts')).toBeTruthy()
+    expect(screen.queryByText('grep router')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '1 tool call' }))
     expect(screen.getByText('grep router')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /Back/ }))
     fireEvent.click(screen.getByRole('button', { name: /dev server/ }))

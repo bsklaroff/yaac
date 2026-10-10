@@ -622,7 +622,10 @@ export class AcpProjection {
   openPermission(requestId: string, params: unknown): AcpEventInit {
     this.openPermissions.add(requestId)
     const { toolCall, options } = parsePermissionRequest(params)
+    // claude asks about a subagent's call without naming its thread, so an
+    // ask goes to the thread of the call it is about.
     const thread = this.threadOf(params)
+      ?? (toolCall !== undefined ? this.toolThreads.get(toolCall.toolCallId) : undefined)
     return {
       type: 'permission-request',
       ...(thread !== undefined ? { thread } : {}),
@@ -948,11 +951,22 @@ export class AcpProjection {
   closeLoad(requestId: string): AcpEventInit[] | undefined {
     if (requestId !== this.loadRequest) return undefined
     this.loadRequest = undefined
-    const subagents = [...this.replayedSubagents].flatMap((id) => {
+    return this.settle(this.replayedSubagents, this.replayedTasks)
+  }
+
+  /** End an agent life at its exit: whatever it left running died with it,
+   *  and no later update will say so. */
+  endLife(): AcpEventInit[] {
+    return this.settle(this.subagents.keys(), this.tasks.keys())
+  }
+
+  /** Mark those of the given subagents and tasks still running as ended. */
+  private settle(subagentIds: Iterable<string>, taskIds: Iterable<string>): AcpEventInit[] {
+    const subagents = [...subagentIds].flatMap((id) => {
       const s = this.subagents.get(id)
       return s?.state === 'running' ? [s] : []
     })
-    const tasks = [...this.replayedTasks].flatMap((id) => {
+    const tasks = [...taskIds].flatMap((id) => {
       const t = this.tasks.get(id)
       return t?.state === 'running' ? [t] : []
     })

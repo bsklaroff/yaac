@@ -1,9 +1,13 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
+import {
+  useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type MouseEventHandler, type ReactNode,
+} from 'react'
 import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
-import { AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#components/AcpTranscript'
 import {
-  ActivityBar, ActivityHeader, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
+  AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory, type Group,
+} from '#components/AcpTranscript'
+import {
+  ActivityBar, ActivityTitleBar, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
 import { useConversationFind } from '#components/ConversationFind'
@@ -31,8 +35,8 @@ import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shar
  *
  * Like a TUI, the pane can switch from the conversation to one of the
  * subagents or background tasks the agent started (`AcpActivity`), and Esc
- * or Back returns. Those views have no composer, since the agent takes
- * messages only on its main thread.
+ * or Back returns. Those views put their title bar in the composer's place,
+ * since the agent takes messages only on its main thread.
  *
  * Cmd/Ctrl-F searches whichever view is shown (`useConversationFind`).
  */
@@ -297,9 +301,6 @@ export function WorkspaceChat({
   const answerPermission = (requestId: string, optionId?: string): boolean =>
     send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) })
 
-  /** A turn waiting on a permission answer: busy, but not "working…". */
-  const awaitingPermission = groups.some((g) => g.kind === 'permission' && g.decided === undefined)
-
   return (
     <div
       className="@container flex h-full w-full flex-col bg-bg"
@@ -313,28 +314,6 @@ export function WorkspaceChat({
         attach(files)
       }}
     >
-      {subagent !== undefined && (
-        <ActivityHeader
-          category={SUBAGENT_CATEGORY}
-          title={subagent.name}
-          state={subagent.state}
-          live
-          onBack={() => open(undefined)}
-        />
-      )}
-      {task !== undefined && (
-        <ActivityHeader
-          category={taskCategory(task)}
-          title={task.name}
-          state={task.state}
-          live
-          onBack={() => open(undefined)}
-        >
-          {active(task) && task.canStop === true && (
-            <StopTaskButton onStop={() => send({ type: 'stop-task', taskId: task.id })} />
-          )}
-        </ActivityHeader>
-      )}
       {findBar}
       <div
         ref={scrollRef}
@@ -356,9 +335,11 @@ export function WorkspaceChat({
                 found={found}
                 busy={subagent.state === 'running'}
                 live
+                condensed={condensed}
                 onAnswerPermission={answerPermission}
                 onOpenSubagent={(id) => open({ kind: 'subagent', id })}
               />
+              {subagent.state === 'running' && !awaitingPermission(threadGroups) && <Working />}
             </>
           ) : task !== undefined ? (
             <TaskView
@@ -385,15 +366,7 @@ export function WorkspaceChat({
                 onOpenSubagent={(id) => open({ kind: 'subagent', id })}
                 onOpenTask={(id) => open({ kind: 'task', id })}
               />
-              {busy && !awaitingPermission && (
-                <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
-                  <LoadingIcon size={12} className="animate-spin" />
-                  <span>
-                    working
-                    <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
-                  </span>
-                </div>
-              )}
+              {busy && !awaitingPermission(groups) && <Working />}
               {queued.map((q) => (
                 <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
               ))}
@@ -402,148 +375,164 @@ export function WorkspaceChat({
         </div>
       </div>
 
-      <div className="px-4 pb-3">
-        <div className={column}>
-          {!connected && (
-            <div className="mb-1.5 px-1 text-xs text-text-faint">
-              Disconnected — the agent keeps working; this pane reattaches automatically.
-            </div>
-          )}
-          <ActivityBar
-            subagents={activity.subagents}
-            tasks={activity.tasks}
-            {...(view !== undefined ? { current: view } : {})}
-            onOpen={open}
+      <ChatBottomBar
+        above={
+          <>
+            {!connected && (
+              <div className="mb-1.5 px-1 text-xs text-text-faint">
+                Disconnected — the agent keeps working; this pane reattaches automatically.
+              </div>
+            )}
+            <ActivityBar
+              subagents={activity.subagents}
+              tasks={activity.tasks}
+              {...(view !== undefined ? { current: view } : {})}
+              onOpen={open}
+            />
+            {view === undefined && imageError !== null && (
+              <div className="mb-1.5 px-1 text-xs text-error">Image not attached: {imageError}</div>
+            )}
+            {view === undefined && menu}
+          </>
+        }
+        onClick={(e) => {
+          if (e.target === e.currentTarget) inputRef.current?.focus()
+        }}
+      >
+        {subagent !== undefined ? (
+          <ActivityTitleBar
+            category={SUBAGENT_CATEGORY}
+            title={subagent.name}
+            state={subagent.state}
+            live
+            onBack={() => open(undefined)}
+            controls={<ChatViewToggles />}
           />
-          {view === undefined && (
-            <>
-              {imageError !== null && (
-                <div className="mb-1.5 px-1 text-xs text-error">Image not attached: {imageError}</div>
-              )}
-              {menu}
-              <div
-                onClick={(e) => {
-                  if (e.target === e.currentTarget) inputRef.current?.focus()
-                }}
-                className="rounded-xl border border-border bg-surface shadow-sm transition-colors
-                  focus-within:border-border-strong"
+        ) : task !== undefined ? (
+          <ActivityTitleBar
+            category={taskCategory(task)}
+            title={task.name}
+            state={task.state}
+            live
+            onBack={() => open(undefined)}
+          >
+            {active(task) && task.canStop === true && (
+              <StopTaskButton onStop={() => send({ type: 'stop-task', taskId: task.id })} />
+            )}
+          </ActivityTitleBar>
+        ) : (
+          <>
+            {images.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 px-3 pt-3">
+                {images.map((image, i) => (
+                  <DraftImage
+                    key={i}
+                    image={image}
+                    workspaceId={workspaceId}
+                    {...(awaitingEcho === null
+                      ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
+                      : {})}
+                  />
+                ))}
+              </div>
+            )}
+            <textarea
+              ref={inputRef}
+              {...menuInputProps}
+              rows={1}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onPaste={(e) => {
+                const files = imageFiles(e.clipboardData)
+                if (files.length === 0 || awaitingEcho !== null) return
+                e.preventDefault()
+                attach(files)
+              }}
+              onKeyDown={(e) => {
+                if (menuKeyDown(e)) return
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  submit()
+                }
+              }}
+              placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
+              readOnly={awaitingEcho !== null}
+              // index.css raises this to 16px on phones so iOS Safari does not
+              // zoom on focus.
+              className="block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1
+                text-sm text-text placeholder:text-text-faint focus:outline-none"
+            />
+            <div className="flex items-center justify-between px-2 pb-2">
+              <button
+                type="button"
+                aria-label="Attach image"
+                title="Attach image"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={awaitingEcho !== null}
+                className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40"
               >
-                {images.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 px-3 pt-3">
-                    {images.map((image, i) => (
-                      <DraftImage
-                        key={i}
-                        image={image}
-                        workspaceId={workspaceId}
-                        {...(awaitingEcho === null
-                          ? { onRemove: () => setImages((cur) => cur.filter((_, j) => j !== i)) }
-                          : {})}
-                      />
-                    ))}
-                  </div>
+                <AttachImageIcon size={16} />
+              </button>
+              <ChatViewToggles />
+              <div className="mr-auto flex items-center">
+                {permissionModes.current !== undefined && (
+                  <PermissionModeMenu
+                    current={permissionModes.current}
+                    available={permissionModes.available}
+                    disabled={!connected}
+                    onSelect={(mode) => send({ type: 'permission-mode', mode })}
+                  />
                 )}
-                <textarea
-                  ref={inputRef}
-                  {...menuInputProps}
-                  rows={1}
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onPaste={(e) => {
-                    const files = imageFiles(e.clipboardData)
-                    if (files.length === 0 || awaitingEcho !== null) return
-                    e.preventDefault()
-                    attach(files)
-                  }}
-                  onKeyDown={(e) => {
-                    if (menuKeyDown(e)) return
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      submit()
-                    }
-                  }}
-                  placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
-                  readOnly={awaitingEcho !== null}
-                  // index.css raises this to 16px on phones so iOS Safari does not
-                  // zoom on focus.
-                  className="block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1
-                    text-sm text-text placeholder:text-text-faint focus:outline-none"
-                />
-                <div className="flex items-center justify-between px-2 pb-2">
+                {efforts.current !== undefined && efforts.available.length > 0 && (
+                  <EffortMenu
+                    current={efforts.current}
+                    available={efforts.available}
+                    disabled={!connected}
+                    onSelect={(effort) => send({ type: 'effort', effort })}
+                  />
+                )}
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  attach([...(e.target.files ?? [])])
+                  e.target.value = ''
+                }}
+              />
+              {/* One group, so Stop stays beside Send however the row spreads. */}
+              <div className="flex items-center">
+                {usage !== undefined && <ContextMeter used={usage.used} size={usage.size} />}
+                {busy && (
                   <button
                     type="button"
-                    aria-label="Attach image"
-                    title="Attach image"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={awaitingEcho !== null}
-                    className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40"
+                    aria-label="Stop turn"
+                    title="Stop"
+                    onClick={() => send({ type: 'cancel' })}
+                    className="mr-1.5 flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
                   >
-                    <AttachImageIcon size={16} />
+                    <StopIcon size={11} fill="currentColor" />
                   </button>
-                  <ChatViewToggles
-                    className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text"
-                    iconSize={16}
-                  />
-                  <div className="mr-auto flex items-center">
-                    {permissionModes.current !== undefined && (
-                      <PermissionModeMenu
-                        current={permissionModes.current}
-                        available={permissionModes.available}
-                        disabled={!connected}
-                        onSelect={(mode) => send({ type: 'permission-mode', mode })}
-                      />
-                    )}
-                    {efforts.current !== undefined && efforts.available.length > 0 && (
-                      <EffortMenu
-                        current={efforts.current}
-                        available={efforts.available}
-                        disabled={!connected}
-                        onSelect={(effort) => send({ type: 'effort', effort })}
-                      />
-                    )}
-                  </div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    hidden
-                    onChange={(e) => {
-                      attach([...(e.target.files ?? [])])
-                      e.target.value = ''
-                    }}
-                  />
-                  {/* One group, so Stop stays beside Send however the row spreads. */}
-                  <div className="flex items-center">
-                    {usage !== undefined && <ContextMeter used={usage.used} size={usage.size} />}
-                    {busy && (
-                      <button
-                        type="button"
-                        aria-label="Stop turn"
-                        title="Stop"
-                        onClick={() => send({ type: 'cancel' })}
-                        className="mr-1.5 flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
-                      >
-                        <StopIcon size={11} fill="currentColor" />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      aria-label="Send"
-                      title="Send (Enter)"
-                      onClick={() => submit()}
-                      disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
-                      className="flex size-8 items-center justify-center rounded-full bg-text text-bg
-                        hover:opacity-90 disabled:bg-surface-3 disabled:text-text-faint"
-                    >
-                      <SendIcon size={15} strokeWidth={2.5} />
-                    </button>
-                  </div>
-                </div>
+                )}
+                <button
+                  type="button"
+                  aria-label="Send"
+                  title="Send (Enter)"
+                  onClick={() => submit()}
+                  disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
+                  className="flex size-8 items-center justify-center rounded-full bg-text text-bg
+                    hover:opacity-90 disabled:bg-surface-3 disabled:text-text-faint"
+                >
+                  <SendIcon size={15} strokeWidth={2.5} />
+                </button>
               </div>
-            </>
-          )}
-        </div>
-      </div>
+            </div>
+          </>
+        )}
+      </ChatBottomBar>
     </div>
   )
 }
@@ -560,11 +549,40 @@ export function useChatColumn(): string {
 }
 
 /**
- * The saved view toggles every chat pane shares, live or read-only: full
- * width and condensed. The width toggle needs an `@container` ancestor as
- * wide as the pane. `className` styles both buttons, minus their display.
+ * The card under a chat pane's conversation, in its column: the composer,
+ * or what takes its place (a subagent's or task's title bar, a stopped
+ * workspace's actions). `above` stacks over the card, outside it.
  */
-export function ChatViewToggles({ className, iconSize }: { className: string; iconSize: number }): JSX.Element {
+export function ChatBottomBar({ above, onClick, children }: {
+  above?: ReactNode
+  onClick?: MouseEventHandler<HTMLDivElement>
+  children: ReactNode
+}): JSX.Element {
+  return (
+    <div className="px-4 pb-3">
+      <div className={useChatColumn()}>
+        {above}
+        <div
+          onClick={onClick}
+          className="rounded-xl border border-border bg-surface shadow-sm transition-colors
+            focus-within:border-border-strong"
+        >
+          {children}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** How each view toggle is drawn, minus its display. */
+const TOGGLE = 'rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text'
+
+/**
+ * The saved view toggles every chat pane shares, live or read-only, in the
+ * bar under the conversation: full width and condensed. The width toggle
+ * needs an `@container` ancestor as wide as the pane.
+ */
+export function ChatViewToggles(): JSX.Element {
   const fullWidth = useUiStore((s) => s.chatFullWidth)
   const setFullWidth = useUiStore((s) => s.setChatFullWidth)
   const condensed = useUiStore((s) => s.chatCondensed)
@@ -576,20 +594,38 @@ export function ChatViewToggles({ className, iconSize }: { className: string; ic
         aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
         title={fullWidth ? 'Center chat' : 'Full-width chat'}
         onClick={() => setFullWidth(!fullWidth)}
-        className={clsx(className, 'hidden items-center @min-[66rem]:flex')}
+        className={clsx(TOGGLE, 'hidden items-center @min-[66rem]:flex')}
       >
-        {fullWidth ? <NarrowIcon size={iconSize} /> : <WidenIcon size={iconSize} />}
+        {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
       </button>
       <button
         type="button"
         aria-label={condensed ? 'Show every step' : 'Show key messages only'}
         title={condensed ? 'Show every step' : 'Show key messages only'}
         onClick={() => setCondensed(!condensed)}
-        className={clsx(className, 'flex items-center')}
+        className={clsx(TOGGLE, 'flex items-center')}
       >
-        {condensed ? <UncondenseIcon size={iconSize} /> : <CondenseIcon size={iconSize} />}
+        {condensed ? <UncondenseIcon size={16} /> : <CondenseIcon size={16} />}
       </button>
     </>
+  )
+}
+
+/** A thread waiting on a permission answer: running, but not "working…". */
+function awaitingPermission(groups: readonly Group[]): boolean {
+  return groups.some((g) => g.kind === 'permission' && g.decided === undefined)
+}
+
+/** Under a running thread, in place of a TUI's spinner. */
+function Working(): JSX.Element {
+  return (
+    <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
+      <LoadingIcon size={12} className="animate-spin" />
+      <span>
+        working
+        <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
+      </span>
+    </div>
   )
 }
 

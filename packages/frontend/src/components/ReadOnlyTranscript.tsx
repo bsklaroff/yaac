@@ -1,11 +1,11 @@
-import { useMemo, useRef, useState, type JSX } from 'react'
+import { useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { AcpTranscript, groupEvents, SUBAGENT_CATEGORY, taskCategory } from '#components/AcpTranscript'
 import {
-  ActivityHeader, callOf, latestActivity, SubagentPrompt, TaskView, type ActivityTarget,
+  ActivityTitleBar, callOf, latestActivity, SubagentPrompt, TaskView, type ActivityTarget,
 } from '#components/AcpActivity'
-import { useChatColumn } from '#components/WorkspaceChat'
+import { ChatBottomBar, ChatViewToggles, useChatColumn } from '#components/WorkspaceChat'
 import { useConversationFind, type FindOptions } from '#components/ConversationFind'
 import { ServerError } from '@yaac/shared/errors'
 import { useUiStore } from '#lib/store'
@@ -18,9 +18,11 @@ const LIVE_REFRESH_MS = 5000
 /**
  * A workspace's conversations, read-only, rendered with the same
  * `AcpTranscript` as the live chat pane and in the same column, honoring
- * its saved width and condensed toggles (which `ReadOnlyWorkspace` shows in
- * its title bar). They survive the container: an `acp` one as acpd's
- * record, a `tui` one as the tool's own history, translated server-side.
+ * its saved width and condensed toggles. A `footer` (`ReadOnlyWorkspace`'s
+ * toggles and Restart) fills the bottom bar where the live pane's composer
+ * sits. They
+ * survive the container: an `acp` one as acpd's record, a `tui` one as the
+ * tool's own history, translated server-side.
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
  * as tabs in restore order. Fetched once and cached forever, since a stopped
@@ -30,8 +32,8 @@ const LIVE_REFRESH_MS = 5000
  * record.
  *
  * A subagent's card opens its own transcript and a task's card what the
- * record kept of it, as in the live pane; both read the same query, so they
- * refresh with it.
+ * record kept of it, as in the live pane, with its title bar in the
+ * footer's place; both read the same query, so they refresh with it.
  *
  * Cmd/Ctrl-F searches what is shown (`useConversationFind`).
  */
@@ -41,6 +43,7 @@ export function ReadOnlyTranscript({
   prompt,
   live = false,
   find = { chord: true },
+  footer,
 }: {
   workspaceId: string
   sessions: AgentSessionEntry[]
@@ -48,6 +51,7 @@ export function ReadOnlyTranscript({
   prompt?: string
   live?: boolean
   find?: FindOptions
+  footer?: ReactNode
 }): JSX.Element {
   const viewable = useMemo(
     () => [...sessions].sort((a, b) => a.ordinal - b.ordinal),
@@ -119,24 +123,6 @@ export function ReadOnlyTranscript({
           ))}
         </div>
       )}
-      {subagent !== undefined && (
-        <ActivityHeader
-          category={SUBAGENT_CATEGORY}
-          title={subagent.name}
-          state={subagent.state}
-          live={false}
-          onBack={() => setOpened(null)}
-        />
-      )}
-      {task !== undefined && (
-        <ActivityHeader
-          category={taskCategory(task)}
-          title={task.name}
-          state={task.state}
-          live={false}
-          onBack={() => setOpened(null)}
-        />
-      )}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {promptOnly ? (
           <p className={clsx(column, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
@@ -169,7 +155,7 @@ export function ReadOnlyTranscript({
                   workspaceId={workspaceId}
                   groups={groups}
                   found={found}
-                  condensed={condensed && subagent === undefined}
+                  condensed={condensed}
                   onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
                   onOpenTask={(id) => setOpened({ kind: 'task', id })}
                 />
@@ -178,6 +164,28 @@ export function ReadOnlyTranscript({
           </div>
         )}
       </div>
+      {(subagent !== undefined || task !== undefined || footer !== undefined) && (
+        <ChatBottomBar>
+          {subagent !== undefined ? (
+            <ActivityTitleBar
+              category={SUBAGENT_CATEGORY}
+              title={subagent.name}
+              state={subagent.state}
+              live={false}
+              onBack={() => setOpened(null)}
+              controls={<ChatViewToggles />}
+            />
+          ) : task !== undefined ? (
+            <ActivityTitleBar
+              category={taskCategory(task)}
+              title={task.name}
+              state={task.state}
+              live={false}
+              onBack={() => setOpened(null)}
+            />
+          ) : footer}
+        </ChatBottomBar>
+      )}
     </div>
   )
 }

@@ -141,7 +141,7 @@ describe('ReadOnlyWorkspace', () => {
     expect(server.called(MARK)).toHaveLength(1)
   })
 
-  it('carries the chat pane\'s width and condensed toggles in its title bar', async () => {
+  it('carries the chat pane\'s width and condensed toggles under the conversation', async () => {
     server.route('GET /api/workspace/s1/agent-sessions/c1/transcript', {
       events: [
         { type: 'user', seq: 0, content: [{ type: 'text', text: 'fix the parser' }] },
