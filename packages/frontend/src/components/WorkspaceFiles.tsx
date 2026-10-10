@@ -988,6 +988,17 @@ function TreeRowView({
 const DIFF_CHUNK_LINES = 200
 /** A diff row's height: `DiffView`'s 11px text at a 1.5 line height. */
 const DIFF_LINE_PX = 16.5
+/** `DiffView`'s monospace advance at 11px (0.6em in the font-mono faces),
+ *  and the width its gutter and padding take from a row. */
+const DIFF_CHAR_PX = 6.6
+const DIFF_GUTTER_PX = 64
+
+/** A chunk's height at `width` were each line to wrap at its last fitting
+ *  character. Wrapping at spaces makes a few rows more, so this runs short. */
+function estimateChunkPx(lines: ParsedFileDiff['lines'], width: number): number {
+  const perRow = Math.max(1, Math.floor((width - DIFF_GUTTER_PX) / DIFF_CHAR_PX))
+  return lines.reduce((px, line) => px + Math.max(1, Math.ceil(line.text.length / perRow)) * DIFF_LINE_PX, 0)
+}
 
 /**
  * One changed file's diff, read-only, under its row in the Changes pane.
@@ -1018,11 +1029,12 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks }: 
   }), [chunks, marks])
   const language = languageForPath(change.path)
   return (
-    <div className="overflow-x-auto border-y border-hairline bg-bg">
+    <div className="border-y border-hairline bg-bg">
       {chunks.length > 0 ? chunks.map((lines, i) => (
         <NearScreen
           key={i}
-          height={lines.length * DIFF_LINE_PX}
+          content={lines}
+          estimate={(width) => estimateChunkPx(lines, width)}
           force={[...chunkMarks[i]?.values() ?? []].some((ms) => ms.some((m) => m.current))}
         >
           <DiffView lines={lines} language={language} marks={chunkMarks[i]} />
@@ -1038,14 +1050,19 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks }: 
   )
 })
 
-/** The one observer behind every `NearScreen`, and who to tell per element. */
+/**
+ * The one observer behind every `NearScreen`, and who to tell per element.
+ * Its root is the viewport, so `rootMargin` alone would not reach past the
+ * Changes list's own clip; `scrollMargin` widens that clip too, letting a
+ * chunk mount before it scrolls into sight.
+ */
 let nearObserver: IntersectionObserver | null = null
 const nearListeners = new Map<Element, (near: boolean) => void>()
 
 function observeNear(el: Element, onChange: (near: boolean) => void): () => void {
   nearObserver ??= new IntersectionObserver((entries) => {
     for (const e of entries) nearListeners.get(e.target)?.(e.isIntersecting)
-  }, { rootMargin: '800px 0px' })
+  }, { rootMargin: '800px 0px', scrollMargin: '800px 0px' })
   nearListeners.set(el, onChange)
   nearObserver.observe(el)
   return () => {
@@ -1056,22 +1073,46 @@ function observeNear(el: Element, onChange: (near: boolean) => void): () => void
 
 /**
  * Renders its children only while within a screen or so of the viewport or
- * `force`d, holding `height` (theirs, known in advance) in the meantime, so
- * the scrollbar stays true. Without IntersectionObserver it always renders.
+ * `force`d, holding their height in the meantime so the scrollbar stays
+ * true. That height is what they measured when last unmounted, as long as
+ * neither `content` nor the width has changed since; otherwise `estimate`'s
+ * answer for the current width. Without IntersectionObserver it always
+ * renders.
  */
-function NearScreen({ height, force = false, children }: {
-  height: number
+function NearScreen({ content, estimate, force = false, children }: {
+  /** What the children show, compared by identity. */
+  content: unknown
+  estimate: (width: number) => number
   force?: boolean
   children: ReactNode
 }): JSX.Element {
   const ref = useRef<HTMLDivElement | null>(null)
+  const latestContent = useRef(content)
+  const measured = useRef<{ content: unknown; width: number; px: number } | null>(null)
   const [near, setNear] = useState(typeof IntersectionObserver === 'undefined')
+  const [width, setWidth] = useState<number | null>(null)
+  useEffect(() => {
+    latestContent.current = content
+  })
   useEffect(() => {
     const el = ref.current
     if (!el || typeof IntersectionObserver === 'undefined') return
-    return observeNear(el, setNear)
+    const resize = new ResizeObserver(() => setWidth(el.offsetWidth))
+    resize.observe(el)
+    const stopNear = observeNear(el, (n) => {
+      if (!n && el.firstChild) {
+        measured.current = { content: latestContent.current, width: el.offsetWidth, px: el.offsetHeight }
+      }
+      setNear(n)
+    })
+    return () => {
+      resize.disconnect()
+      stopNear()
+    }
   }, [])
   const shown = near || force
+  const m = measured.current
+  const height = m && m.content === content && m.width === width ? m.px : estimate(width ?? Infinity)
   return <div ref={ref} style={shown ? undefined : { height }}>{shown && children}</div>
 }
 

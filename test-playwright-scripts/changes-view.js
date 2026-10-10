@@ -5,7 +5,8 @@
  *      Changes pane, its filter focused, listing the changed files as a
  *      flat list, each with its
  *      read-only diff, under a strip breaking the lines down by stage.
- *      Each row badges the stages its changes sit in.
+ *      Each row badges the stages its changes sit in. A line longer than
+ *      the pane wraps rather than scrolling the pane sideways.
  *   2. Clicking a file's row folds its diff and clicking it again unfolds
  *      it; its name opens the file. "Collapse all changes" folds every
  *      diff, and "Show all changes" opens them again.
@@ -23,7 +24,8 @@
  * (unstaged) and an untracked change. README.md must be among the changed
  * files, with a committed and a staged change and a stretch of at least 10
  * unchanged lines between or around them, so `changes` has something to
- * fold. The script reads these but does not make them.
+ * fold. One changed line must be longer than the pane is wide. The script
+ * reads these but does not make them.
  *
  * Run: YAAC_DATA_DIR=... node test-playwright-scripts/changes-view.js <workspace-id>
  */
@@ -63,6 +65,15 @@ for (const stage of ['committed', 'staged', 'modified', 'untracked']) {
 }
 const readmeBadges = await page.locator('div[title="README.md"] [title="Committed"], div[title="README.md"] [title="Staged"]').count()
 check('a file changed in two stages shows both letters', readmeBadges === 2)
+check('a long line wraps instead of scrolling sideways', await page.locator('.diff-hl').evaluateAll((els) => {
+  const rows = els.flatMap((el) => [...el.children])
+  const wraps = rows.some((row) => row.offsetHeight > 20)
+  const scrolls = els.some((el) => {
+    for (let a = el.parentElement; a; a = a.parentElement) if (a.scrollWidth > a.clientWidth) return true
+    return false
+  })
+  return wraps && !scrolls
+}))
 await page.screenshot({ path: path.join(SHOTS, 'changes-view.png') })
 
 // 2. Fold one diff from its row, then all of them, then open them all.
