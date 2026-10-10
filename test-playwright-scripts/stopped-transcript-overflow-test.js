@@ -1,7 +1,7 @@
 /*
  * Verifies in Chromium (1400x900) that a stopped workspace's conversation,
  * shown read-only in the main pane, stays inside the pane, and that the
- * title bar's view toggles (full width, condensed) work there as they do
+ * bottom bar's view toggles (full width, condensed) work there as they do
  * in the live chat pane.
  *
  * The pane is a flex item beside the sidebar. Transcripts hold very wide

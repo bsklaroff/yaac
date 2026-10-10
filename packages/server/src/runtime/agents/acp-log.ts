@@ -331,6 +331,7 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
   if (msg.method === ACPD.exit) {
     projection.agentState(false)
     projection.forgetWakes()
+    return projection.endLife()
   }
   const running = agentRunningReport(msg.method, msg.params)
   if (running !== undefined) return projection.agentState(running)

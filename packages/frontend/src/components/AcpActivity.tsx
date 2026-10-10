@@ -108,14 +108,17 @@ export function ActivityBar({
   )
 }
 
-/** The bar over a subagent's or task's view, with the way back. */
-export function ActivityHeader({
+/** The contents of the bottom bar (`ChatBottomBar`) under a subagent's or
+ *  task's view, in the composer's place: the way back and, beneath it, any
+ *  view `controls`. */
+export function ActivityTitleBar({
   category: { icon: Icon, label, tint },
   title,
   state,
   live,
   onBack,
   children,
+  controls,
 }: {
   category: ActivityCategory
   title: string
@@ -124,35 +127,43 @@ export function ActivityHeader({
   onBack: () => void
   /** Actions beside the state, such as Stop. */
   children?: ReactNode
+  controls?: ReactNode
 }): JSX.Element {
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-2 text-xs">
-      <button
-        type="button"
-        onClick={onBack}
-        title="Back to the conversation (Esc)"
-        className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-text-dim hover:bg-surface-2 hover:text-text"
-      >
-        <NavBackIcon size={13} />
-        Back
-      </button>
-      <Icon size={14} className={clsx('shrink-0', tint)} />
-      <span className="shrink-0 text-text-faint">{label}</span>
-      <span className="min-w-0 flex-1 wrap-anywhere text-text">{title}</span>
-      {children}
-      <StateMark state={state} live={live} />
+    <div className="text-xs">
+      <div className="flex items-center gap-2 p-2">
+        <button
+          type="button"
+          onClick={onBack}
+          title="Back to the conversation (Esc)"
+          className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-text-dim hover:bg-surface-2 hover:text-text"
+        >
+          <NavBackIcon size={13} />
+          Back
+        </button>
+        <Icon size={14} className={clsx('shrink-0', tint)} />
+        <span className="shrink-0 text-text-faint">{label}</span>
+        <span className="min-w-0 flex-1 wrap-anywhere text-text">{title}</span>
+        {children}
+        <StateMark state={state} live={live} />
+      </div>
+      {controls !== undefined && <div className="flex items-center px-1.5 pb-1.5">{controls}</div>}
     </div>
   )
 }
 
-/** What a subagent was asked to do, atop its own view. */
+/** What a subagent was asked to do, atop its own view, drawn like a user
+ *  prompt. */
 export function SubagentPrompt({ task }: { task: string }): JSX.Element | null {
   if (task === '') return null
   return (
-    <p className="mb-4 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-xl border border-hairline
-      bg-surface px-3 py-2 text-xs text-text-dim">
-      {task}
-    </p>
+    <div className="mb-4 flex flex-col items-start gap-0.5 text-sm">
+      <span className="px-1 text-[11px] text-text-faint">Subagent instructions:</span>
+      <p className="max-h-40 max-w-[85%] overflow-y-auto whitespace-pre-wrap rounded-xl border border-accent/20
+        bg-accent/10 px-3 py-2 text-text">
+        {task}
+      </p>
+    </div>
   )
 }
 
@@ -229,7 +240,7 @@ function OutputView({ text }: { text: string }): JSX.Element {
   )
 }
 
-/** Stop a running task; shown in its header. */
+/** Stop a running task; shown in its title bar. */
 export function StopTaskButton({ onStop }: { onStop: () => void }): JSX.Element {
   return (
     <button

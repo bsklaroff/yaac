@@ -1458,7 +1458,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
     flushChatDrafts()
   })
 
-  it('keeps a subagent\'s work out of the conversation, and shows it, without a composer, once opened', () => {
+  it('keeps a subagent\'s work out of the conversation, and shows it, working, without a composer, once opened', () => {
     show()
     expect(screen.queryByText('Looked in src/router.ts.')).toBeNull()
     // Running things are listed over the composer by category, as a TUI
@@ -1472,11 +1472,66 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.getByText('find the router')).toBeTruthy()
     expect(screen.queryByText('Delegating.')).toBeNull()
     expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByText('working')).toBeTruthy()
 
     // Esc goes back to the conversation and its composer.
     fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.getByText('Delegating.')).toBeTruthy()
     expect(box()).toBeTruthy()
+  })
+
+  it('shows a subagent\'s ask in its own view, to answer there, and does not call it working', () => {
+    // The server files claude's ask under the thread of the call it is about.
+    stream.events = [
+      ...stream.events,
+      {
+        type: 'tool', seq: 5, thread: 'sub-1',
+        call: { toolCallId: 's1', title: 'rm -rf dist', kind: 'execute', status: 'pending' },
+      },
+      {
+        type: 'permission-request', seq: 6, thread: 'sub-1', requestId: '9',
+        toolCall: { toolCallId: 's1', title: 'rm -rf dist', kind: 'execute', status: 'pending' },
+        options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+      },
+    ]
+    show()
+    fireEvent.click(within(screen.getByRole('group', { name: 'Agents' })).getByRole('button', { name: 'Agent: Explore' }))
+    expect(screen.queryByText('working')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Allow Once' }))
+    expect(stream.send).toHaveBeenCalledWith({ type: 'permission', requestId: '9', optionId: 'allow' })
+  })
+
+  it('stops calling a subagent working once it is cancelled, as the agent exiting settles it', () => {
+    stream.busy = false
+    stream.events = [
+      ...stream.events,
+      { type: 'subagent', seq: 5, subagent: { id: 'sub-1', name: 'Explore', task: 'find the router', state: 'cancelled' } },
+      { type: 'error', seq: 6, message: 'the agent process exited (code 1)' },
+    ]
+    show()
+    fireEvent.click(screen.getByRole('button', { name: /Explore/ }))
+    expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
+    expect(screen.queryByText('working')).toBeNull()
+  })
+
+  it('condenses a subagent\'s view to its report from the toggles under its Back bar', () => {
+    stream.events = [
+      ...stream.events,
+      {
+        type: 'tool', seq: 5, thread: 'sub-1',
+        call: { toolCallId: 's1', title: 'grep router', kind: 'search', status: 'completed' },
+      },
+      agent(6, 'The router is in src/router.ts.', 'sub-1'),
+      subagent(7, 'completed'),
+    ]
+    show()
+    fireEvent.click(screen.getByRole('button', { name: /Explore/ }))
+    expect(screen.getByText('grep router')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Show key messages only' }))
+    expect(useUiStore.getState().chatCondensed).toBe(true)
+    expect(screen.queryByText('grep router')).toBeNull()
+    expect(screen.queryByText('Looked in src/router.ts.')).toBeNull()
+    expect(screen.getByText('The router is in src/router.ts.')).toBeTruthy()
   })
 
   it('opens a finished subagent from its card, though it has left the strip', () => {
@@ -1485,6 +1540,8 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.queryByTitle('Explore')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Explore/ }))
     expect(screen.getByText('Looked in src/router.ts.')).toBeTruthy()
+    // The main turn is still busy, but this thread is done.
+    expect(screen.queryByText('working')).toBeNull()
     // Its thread is in the record, so its transcript is not read.
     expect(stream.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'subagent-transcript' }))
     fireEvent.click(screen.getByRole('button', { name: /Back/ }))

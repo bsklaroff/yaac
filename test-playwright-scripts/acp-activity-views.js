@@ -10,7 +10,7 @@
  *     grouped under a "Shells" label with its count, apart from "Agents";
  *     opening it shows its output (read from its file) and no Stop, since
  *     claude stops a task only for an AIR client; Esc returns;
- *  4. the subagent's card opens its own transcript, with a Back header, and
+ *  4. the subagent's card opens its own transcript, with a Back bar, and
  *     not the launch metadata its Agent call returns.
  *
  * The prompt makes one model call per step, so it costs a few cents. With no

@@ -666,8 +666,12 @@ way, and the projection turns every answer into the same `subagent` and
   running, with no end and no stop, so yaac shows it as an ordinary call.
 
 The projection tags a subagent's events with a `thread`, and a pane shows
-one thread at a time. A subagent's permission asks also show in the main
-thread, since an unanswered one blocks the whole turn.
+one thread at a time. claude asks about a subagent's call under the main
+session's id, so an ask takes the thread of the call it is about. A
+subagent's permission asks also show in the main thread, since an
+unanswered one blocks the whole turn. When the agent process exits
+(`_acpd/exit`), every subagent and task still running is settled as
+stopped: they died with it, and no later update would say so.
 
 Streamed terminal output is projected as `tool-output` deltas, apart from the
 call: it is raw text, shown verbatim rather than as Markdown, and resending

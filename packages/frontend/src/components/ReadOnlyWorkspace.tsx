@@ -27,7 +27,8 @@ export type ReadOnlySubject =
  * bar, a line of facts about it, and its conversations. A running one is
  * refetched while it runs. Terminals, chat and files are left out, since
  * attaching to them grants control (docs/multi-user.md "Authorization").
- * The title bar carries the chat pane's width and condensed toggles.
+ * A bar where the live pane's composer sits carries its width and condensed
+ * toggles.
  *
  * The user's own stopped workspace also gets a Restart action, and opening
  * one that died unseen marks it seen. That write is the owner's alone, so a
@@ -64,24 +65,6 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
       <header className={paneBarClass(isMobile)}>
         <PaneBarLeading />
         <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">{title}</span>
-        {subject && (
-          <ChatViewToggles
-            className="no-drag h-6 shrink-0 rounded px-1.5 text-text-dim transition hover:bg-surface-2
-              hover:text-text max-md:h-9 max-md:px-2"
-            iconSize={13}
-          />
-        )}
-        {stopped && !readOnly && (
-          <button
-            type="button"
-            onClick={() => setConfirmRestart(true)}
-            className="no-drag flex shrink-0 items-center gap-1.5 rounded-md bg-surface-3 px-2.5 py-1
-              font-medium text-text transition hover:bg-border-strong max-md:py-2"
-          >
-            <RestartIcon size={12} />
-            Restart
-          </button>
-        )}
       </header>
       {subject ? (
         <>
@@ -92,6 +75,22 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
             sessions={subject.entry.agentSessions}
             {...(subject.entry.prompt !== undefined ? { prompt: subject.entry.prompt } : {})}
             live={subject.kind === 'live'}
+            footer={
+              <div className="flex items-center p-2">
+                <ChatViewToggles />
+                {stopped && !readOnly && (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRestart(true)}
+                    className="ml-auto flex h-8 items-center gap-1.5 rounded-full bg-text px-3.5 text-xs
+                      font-medium text-bg hover:opacity-90"
+                  >
+                    <RestartIcon size={12} />
+                    Restart
+                  </button>
+                )}
+              </div>
+            }
           />
         </>
       ) : (
@@ -136,7 +135,7 @@ function Facts({ subject }: { subject: ReadOnlySubject }): JSX.Element {
     if (e.deathReason) facts.push(['Cause', describeWorkspaceDeathReason(e.deathReason, e.deathDetail)])
   }
   return (
-    <dl className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-b border-hairline-soft px-4 pb-2 pt-1 text-xs">
+    <dl className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-b border-hairline-soft px-2 pb-2 pt-1 text-xs">
       {facts.map(([term, value]) => (
         <div key={term} className="flex min-w-0 gap-1.5">
           <dt className="shrink-0 text-text-faint">{term}</dt>

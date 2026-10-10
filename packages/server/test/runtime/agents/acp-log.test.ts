@@ -820,6 +820,35 @@ describe('replayAcpLog', () => {
     expect(events[8]).toMatchObject({ task: { id: 'b1', state: 'completed' } })
   })
 
+  it('files claude\'s ask about a subagent\'s call under its thread, and ends what an exit left running', () => {
+    // claude sends the ask with the main session's id, naming only the call.
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const claudeUpdate = (u: Record<string, unknown>, claudeCode: Record<string, unknown>): string =>
+      update({ ...u, _meta: { claudeCode } })
+    const events = replayAcpLog([
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_bash', title: 'tick loop', kind: 'execute', status: 'pending' }, { toolName: 'Bash' }),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_agent', title: 'count files', kind: 'think', status: 'pending' }, { toolName: 'Agent' }),
+      sdk({ subtype: 'task_started', task_id: 'b1', tool_use_id: 'toolu_bash', description: 'Print ticks', is_backgrounded: true, task_type: 'local_bash' }),
+      sdk({
+        subtype: 'task_started', task_id: 'a1', tool_use_id: 'toolu_agent', description: 'count files',
+        subagent_type: 'general-purpose', is_backgrounded: false, task_type: 'local_agent', prompt: 'Run ls',
+      }),
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_ls', title: 'ls', kind: 'execute', status: 'pending' }, { toolName: 'Bash', parentToolUseId: 'toolu_agent' }),
+      line({
+        jsonrpc: '2.0', id: 7, method: 'session/request_permission',
+        params: { sessionId: 'acp-1', toolCall: { toolCallId: 'toolu_ls', title: 'ls', kind: 'execute' }, options: [] },
+      }),
+      line({ jsonrpc: '2.0', method: '_acpd/exit', params: { code: 1, signal: null } }),
+    ].join('\n'))
+
+    expect(events.find((e) => e.type === 'permission-request')).toMatchObject({ thread: 'toolu_agent', requestId: '7' })
+    expect(events.slice(-2)).toMatchObject([
+      { type: 'subagent', subagent: { id: 'toolu_agent', state: 'cancelled' } },
+      { type: 'task', task: { id: 'b1', state: 'stopped' } },
+    ])
+  })
+
   it('shows a claude Monitor as a monitor, and marks an artifact watch ambient', () => {
     // As claude-agent-acp 0.84.0 (claude 2.1.284) sends them: the Monitor
     // call comes first, then its task, which claude reports as a backgrounded
