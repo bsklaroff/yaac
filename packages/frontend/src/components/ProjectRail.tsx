@@ -6,7 +6,7 @@ import { UserSwitcher } from '#components/UserSwitcher'
 import { WindowControls } from '#components/WindowControls'
 import { LoadingIcon, WarningIcon } from '#lib/icons'
 import { isElectron } from '#lib/platform'
-import { projectColor, projectInitial } from '#lib/projectIdentity'
+import { identityColor, identityInitial } from '#lib/projectIdentity'
 import type { ProjectOp } from '#lib/store'
 import type { ProjectSummary } from '@yaac/shared/types'
 
@@ -41,7 +41,7 @@ export function ProjectRail({
       {[...projects, ...ops.filter((o) => o.kind === 'add')].map((p) => {
         const op = ops.find((o) => o.id === p.id)
         const active = p.id === activeProjectId
-        const color = projectColor(p.id)
+        const color = identityColor(p.id)
         const waiting = attentionByProject[p.id] ?? 0
         return (
           <button
@@ -73,7 +73,7 @@ export function ProjectRail({
               }}
             >
               {op === undefined
-                ? projectInitial(p.name)
+                ? identityInitial(p.name)
                 : op.error === undefined
                   ? <LoadingIcon size={18} className="animate-spin" aria-label={`${op.kind === 'add' ? 'Adding' : 'Removing'} project`} />
                   : <WarningIcon size={18} className="text-danger" aria-label="Failed" />}

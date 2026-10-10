@@ -5,8 +5,9 @@
  *
  *  1. Ada, the project's owner, sees her workspace with its controls and no
  *     read-only banner.
- *  2. Bob starts on his own (empty) projects; the user switcher lists Ada,
- *     and its menu says this containerless server does not separate users.
+ *  2. Bob starts on his own (empty) projects; the user switcher lists Ada
+ *     with her one active workspace and Bob as idle, and its menu says
+ *     this containerless server does not separate users.
  *  3. Switching to Ada shows her project and workspace laid out as hers,
  *     read-only: banner, no new-workspace button, no row menu; the
  *     workspace opens in the transcript view, with no terminal.
@@ -156,8 +157,11 @@ async function main() {
   check('Bob starts on his own projects', (await switcher.getAttribute('aria-label')) === 'Switch user (Your projects)')
   await switcher.click()
   check('the switcher lists Ada', await bob.getByRole('menuitem', { name: /Ada Lovelace/ }).count() === 1)
+  check('it counts Ada\'s active workspace', await bob.getByRole('menuitem', { name: /Ada Lovelace.*1 active/ }).count() === 1)
+  check('it shows Bob as idle', await bob.getByRole('menuitem', { name: /Bob Builder.*idle/ }).count() === 1)
   check('it says containerless does not separate users', await bob.getByText(/does not separate users/).count() === 1)
-  await bob.screenshot({ path: path.join(SHOTS, 'multi-user-switcher.png') })
+  await bob.waitForTimeout(300) // the menu's fade-in
+  await bob.screenshot({ path: path.join(SHOTS, 'multi-user-switcher.png'), clip: { x: 0, y: 0, width: 400, height: 240 } })
 
   // 3. Ada's projects, read-only.
   await bob.getByRole('menuitem', { name: /Ada Lovelace/ }).click()

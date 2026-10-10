@@ -6,7 +6,7 @@ import { SettingsButton } from '#components/SettingsButton'
 import { UserSwitcher } from '#components/UserSwitcher'
 import { EmptyState } from '#components/ui/EmptyState'
 import { WelcomePane } from '#components/WelcomePane'
-import { projectColor, projectInitial } from '#lib/projectIdentity'
+import { identityColor, identityInitial } from '#lib/projectIdentity'
 import type { ProjectOp } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
 import type { ProjectSummary } from '@yaac/shared/types'
@@ -51,7 +51,7 @@ export function ProjectsScreen({
         {empty && readOnly && <EmptyState compact className="py-12" title="No projects yet" />}
         {[...projects, ...ops.filter((o) => o.kind === 'add')].map((p) => {
           const op = ops.find((o) => o.id === p.id)
-          const color = projectColor(p.id)
+          const color = identityColor(p.id)
           const waiting = op === undefined ? attentionByProject[p.id] ?? 0 : 0
           return (
             <button
@@ -69,7 +69,7 @@ export function ProjectsScreen({
                 }}
               >
                 {op === undefined
-                  ? projectInitial(p.name)
+                  ? identityInitial(p.name)
                   : op.error === undefined
                     ? <LoadingIcon size={16} className="animate-spin" />
                     : <WarningIcon size={16} className="text-danger" />}
