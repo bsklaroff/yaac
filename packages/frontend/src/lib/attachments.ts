@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
+import { IMAGE_MIME_TYPES, MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpImage, AcpStoredImage } from '@yaac/shared/acp'
 import { api } from '#lib/api'
 
@@ -16,8 +16,6 @@ const MAX_EDGE = 1568
 /** Above this size a PNG is re-encoded lossily if that is smaller, since a
  *  chat image is kept with the conversation for good. */
 const COMPACT_BYTES = 1024 * 1024
-
-const SENT_AS_IS = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
 
 /** Text that is only a URL, which Firefox's Copy Image puts beside the
  *  image. */
@@ -66,7 +64,7 @@ export async function prepareImage(file: Blob): Promise<Blob> {
   const bitmap = await createImageBitmap(file)
   const { width, height } = bitmap
   const scale = Math.min(1, MAX_EDGE / Math.max(width, height))
-  if (scale === 1 && file.size <= COMPACT_BYTES && SENT_AS_IS.has(file.type)) {
+  if (scale === 1 && file.size <= COMPACT_BYTES && IMAGE_MIME_TYPES.has(file.type)) {
     bitmap.close()
     return file
   }

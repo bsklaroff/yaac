@@ -29,6 +29,7 @@ import type {
   AcpToolStatus,
   AcpWake,
 } from '@yaac/shared/acp'
+import { IMAGE_MIME_TYPES } from '@yaac/shared/attachments'
 
 /** The ACP revision this client negotiates. */
 export const ACP_PROTOCOL_VERSION = 1
@@ -240,7 +241,9 @@ const STORED_IMAGE = /^yaac-image:([0-9a-f]{64})$/
 
 /**
  * One ACP content block, or undefined for variants an in-workspace agent
- * never sends (`audio`, `resource`, `resource_link`).
+ * never sends (`audio`, `resource`, `resource_link`). An image is kept only
+ * in a type in `IMAGE_MIME_TYPES`: a tool's output is the workspace's to
+ * choose, and an SVG can be made arbitrarily costly for a pane to draw.
  */
 function toContent(value: unknown): AcpContent | undefined {
   const block = asRecord(value)
@@ -252,7 +255,7 @@ function toContent(value: unknown): AcpContent | undefined {
   if (block.type === 'image') {
     const mimeType = asString(block.mimeType)
     const data = asString(block.data)
-    if (mimeType === undefined || data === undefined) return undefined
+    if (mimeType === undefined || data === undefined || !IMAGE_MIME_TYPES.has(mimeType)) return undefined
     const hash = STORED_IMAGE.exec(data)?.[1]
     return hash === undefined ? { type: 'image', mimeType, data } : { type: 'image', mimeType, hash }
   }
@@ -358,6 +361,18 @@ function toPlanEntries(value: unknown): AcpPlanEntry[] {
 }
 
 /**
+ * The images a tool result carries only in `rawOutput`, as an MCP-style
+ * content list: every pi tool's (`rawOutput.content`, beside a `content` of
+ * its text) and codex's MCP calls' (`rawOutput.result.content`, with no
+ * `content` at all).
+ */
+function rawOutputImages(rawOutput: unknown): AcpContent[] {
+  const raw = asRecord(rawOutput)
+  const list = raw?.content ?? asRecord(raw?.result)?.content
+  return Array.isArray(list) ? toContentList(list).filter((c) => c.type === 'image') : []
+}
+
+/**
  * A partial tool call: `tool_call` is complete, `tool_call_update` names
  * only what changed. The caller merges patches, so status and title are
  * optional.
@@ -410,7 +425,12 @@ function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | un
   const monitorCommand = monitor ? asString(rawInput?.command) : undefined
   const kind = !monitor ? asString(update.kind) : monitorCommand !== undefined ? 'execute' : undefined
   const status = asString(update.status)
-  const content = 'content' in update ? toToolContent(update.content) : undefined
+  const listed = 'content' in update ? toToolContent(update.content) : undefined
+  // claude repeats `content`'s images in `rawOutput`; only its shape (an array
+  // of Anthropic blocks) keeps `rawOutputImages` from reading them, so it is
+  // not asked when `content` already has one.
+  const images = listed?.some((c) => c.type === 'image') === true ? [] : rawOutputImages(update.rawOutput)
+  const content = images.length > 0 ? [...listed ?? [], ...images] : listed
   const locations = toLocations(update.locations)
   const shell = isShellCall(update, kind)
   const description = asString(rawInput?.description)

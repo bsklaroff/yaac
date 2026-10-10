@@ -168,6 +168,7 @@ const OUTPUT_POLL_MS = 2000
  * Without either (a stopped workspace's file) only the record is shown.
  */
 export function TaskView({
+  workspaceId,
   task,
   call,
   streamed = '',
@@ -175,6 +176,7 @@ export function TaskView({
   live,
   onRefresh,
 }: {
+  workspaceId: string
   task: AcpTask
   /** The tool call that started it, when it is in the transcript. */
   call?: AcpToolCall
@@ -203,7 +205,7 @@ export function TaskView({
       {task.description !== '' && task.description !== task.name && (
         <p className="text-text-dim">{task.description}</p>
       )}
-      {call !== undefined && <ToolRow call={call} defaultOpen />}
+      {call !== undefined && <ToolRow workspaceId={workspaceId} call={call} defaultOpen />}
       {task.summary !== undefined && <p className="text-text-dim">{task.summary}</p>}
       {readable ? (
         output?.error !== undefined ? (

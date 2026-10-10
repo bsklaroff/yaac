@@ -575,6 +575,44 @@ describe('replayAcpLog', () => {
     }])
   })
 
+  it('replays a tool result\'s images, from `content` or, where an adapter sends them only there, `rawOutput`, once each', () => {
+    const png = (hash: string): unknown => ({ type: 'image', mimeType: 'image/png', data: `yaac-image:${hash}` })
+    const done = (toolCallId: string, rest: object): string =>
+      update({ sessionUpdate: 'tool_call_update', toolCallId, status: 'completed', ...rest })
+    const calls = replayAcpLog([
+      // claude and opencode: an image content entry after the text. claude
+      // repeats it in `rawOutput` as an Anthropic block. An SVG, which a pane
+      // would draw at whatever cost it asks, is dropped.
+      done('claude', {
+        content: [
+          { type: 'content', content: { type: 'text', text: 'Took the screenshot' } },
+          { type: 'content', content: png('a'.repeat(64)) },
+          { type: 'content', content: { type: 'image', mimeType: 'image/svg+xml', data: 'PHN2Zz4=' } },
+        ],
+        rawOutput: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: `yaac-image:${'a'.repeat(64)}` } }],
+      }),
+      // An image in both `content` and an MCP-style `rawOutput` shows once.
+      done('both', {
+        content: [{ type: 'content', content: png('d'.repeat(64)) }],
+        rawOutput: { content: [png('d'.repeat(64))] },
+      }),
+      // pi: text in `content`, the whole pi result in `rawOutput`.
+      done('pi', {
+        content: [{ type: 'content', content: { type: 'text', text: 'Read image file [image/png]' } }],
+        rawOutput: { content: [{ type: 'text', text: 'Read image file [image/png]' }, png('b'.repeat(64))] },
+      }),
+      // codex's MCP calls: no `content`, the MCP result in `rawOutput`.
+      done('codex', { rawOutput: { result: { content: [png('c'.repeat(64))], structuredContent: null }, error: null } }),
+    ].join('\n')).flatMap((e) => (e.type === 'tool' ? [e.call] : []))
+
+    expect(calls.map((c) => c.content)).toEqual([
+      [{ type: 'text', text: 'Took the screenshot' }, { type: 'image', mimeType: 'image/png', hash: 'a'.repeat(64) }],
+      [{ type: 'image', mimeType: 'image/png', hash: 'd'.repeat(64) }],
+      [{ type: 'text', text: 'Read image file [image/png]' }, { type: 'image', mimeType: 'image/png', hash: 'b'.repeat(64) }],
+      [{ type: 'image', mimeType: 'image/png', hash: 'c'.repeat(64) }],
+    ])
+  })
+
   it('reconstructs user turns from the client\'s own prompts', () => {
     // The agent echoes user messages only on `session/load`, so live turns
     // come from these request lines.

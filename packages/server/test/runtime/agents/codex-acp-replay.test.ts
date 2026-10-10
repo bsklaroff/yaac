@@ -179,7 +179,7 @@ describe('codexTranscriptAsAcp', () => {
     ])
   })
 
-  it('shows an attached image file as the image the model was sent', () => {
+  it('shows an attached image file as the image the model was sent, and an MCP tool\'s images', () => {
     // `codex exec --image img.png`, as the TUI attaches a pasted image: the
     // message keeps the path, the model input before it the data.
     const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
@@ -196,10 +196,18 @@ describe('codexTranscriptAsAcp', () => {
         type: 'UserMessage', id: '01a11127-647d-7621-acb2-acaa409efa31',
         content: [{ type: 'local_image', path: 'img.png' }, { type: 'text', text: 't-userimg via exec', text_elements: [] }],
       }, started_at_ms: 1791289156736, completed_at_ms: 1791289156736 } },
+      { timestamp: '2026-10-06T12:19:17.100Z', type: 'event_msg', payload: { type: 'item_completed', thread_id: '01a11127-6104-7890-a69d-3124d70e980d', turn_id: '01a11127-62ce-7b01-b13a-fcb3ac6825c6', item: {
+        type: 'McpToolCall', id: 'exec-shot', server: 'playwright', tool: 'browser_take_screenshot', arguments: {}, status: 'completed',
+        result: { content: [{ type: 'text', text: 'Took the screenshot' }, { type: 'image', data: png, mimeType: 'image/png' }] },
+      }, started_at_ms: 1791289156900, completed_at_ms: 1791289157100 } },
     ]
     const events = codexTranscriptAsAcp([lines.map((l) => JSON.stringify(l)).join('\n')])
     expect(events[0]).toMatchObject({
       type: 'user', content: [{ type: 'image', mimeType: 'image/png', data: png }, { type: 'text', text: 't-userimg via exec' }],
+    })
+    // The adapter shows an MCP result's images but not its text.
+    expect(events.filter((e) => e.type === 'tool').at(-1)).toMatchObject({
+      call: { title: 'mcp.playwright.browser_take_screenshot', status: 'completed', content: [{ type: 'image', mimeType: 'image/png', data: png }] },
     })
   })
 

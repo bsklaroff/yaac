@@ -23,6 +23,9 @@ const SIGNATURES: ReadonlyArray<{ mimeType: string; ext: string; test: (b: Uint8
   { mimeType: 'image/webp', ext: 'webp', test: (b) => ascii(b, 0, 'RIFF') && ascii(b, 8, 'WEBP') },
 ]
 
+/** The image types yaac draws, stores and accepts: what `sniffImage` detects. */
+export const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set(SIGNATURES.map((s) => s.mimeType))
+
 function ascii(bytes: Uint8Array, at: number, text: string): boolean {
   for (let i = 0; i < text.length; i++) {
     if (bytes[at + i] !== text.charCodeAt(i)) return false
