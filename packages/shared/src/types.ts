@@ -1521,9 +1521,9 @@ export type DesktopServerOutcome =
   | { ok: false; error: string }
 
 /**
- * This machine's server as `yaac server status --json` reports it, read
- * from the server lock in this data dir. The desktop tray starts, stops and
- * restarts the server from it.
+ * One of this machine's servers as `yaac server|cluster status --json`
+ * reports it, read from the server lock in that install's data dir. The
+ * desktop tray starts, stops and restarts the server from it.
  */
 export interface LocalServerStatus {
   /** null when this machine cannot read the lock (a `--byo` install's is on the cluster). */

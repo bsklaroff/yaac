@@ -7,6 +7,13 @@ import { env } from '#env'
 export const DEFAULT_SERVER_PORT = 8787
 
 /**
+ * The host port a new kind cluster publishes its server on, apart from the
+ * host server's so the two installs can run side by side. kind fixes it at
+ * cluster creation; later runs read it back from the node.
+ */
+export const DEFAULT_CLUSTER_SERVER_PORT = 8790
+
+/**
  * The port to bind: `--port` (`optPort`), else `YAAC_SERVER_PORT`, else
  * DEFAULT_SERVER_PORT. `0` asks the OS for an ephemeral port. An invalid
  * explicit value throws.
@@ -35,9 +42,10 @@ export const MAX_PORT_PROBES = 64
 
 /**
  * Try `bind` on `startPort`, then each next port while it rejects with
- * `EADDRINUSE`, and return the first success. Port 0 is tried once. Gives
- * up after MAX_PORT_PROBES ports or at 65535, and throws at once on any
- * other error.
+ * `EADDRINUSE`, and return the first success. DEFAULT_CLUSTER_SERVER_PORT
+ * is skipped unless asked for, so the host server never takes the port a
+ * kind cluster publishes on. Port 0 is tried once. Gives up after
+ * MAX_PORT_PROBES ports or at 65535, and throws at once on any other error.
  */
 export async function bindWithAutoIncrement<T>(
   startPort: number,
@@ -48,6 +56,7 @@ export async function bindWithAutoIncrement<T>(
   for (let i = 0; i < MAX_PORT_PROBES; i++) {
     const port = startPort + i
     if (port > 65535) break
+    if (port === DEFAULT_CLUSTER_SERVER_PORT && i > 0) continue
     try {
       return await bind(port)
     } catch (err) {

@@ -22,14 +22,14 @@ import {
 const execFileAsync = promisify(execFile)
 
 /**
- * `yaac server start|stop|restart|logs` against a server that runs as a
- * Deployment (docs/server-in-cluster.md). Assertions read the Deployment's
- * replica count and pods; the host-process form is covered by
- * test/e2e-containerless/server-lifecycle.test.ts.
+ * `yaac cluster start|stop|restart|logs|status` against a server that runs
+ * as a Deployment (docs/server-in-cluster.md). Assertions read the
+ * Deployment's replica count and pods; the host server's `yaac server …`
+ * is covered by test/e2e-containerless/server-lifecycle.test.ts.
  *
  * One server for the file: every case leaves it running or restores it.
  */
-describe('yaac server lifecycle against the in-cluster Deployment', () => {
+describe('yaac cluster start|stop|restart|logs|status against the in-cluster Deployment', () => {
   let testEnv: YaacTestEnv
   let server: SpawnedServer
 
@@ -118,9 +118,9 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(logs).not.toContain('NP_SERVER_OPEN')
   })
 
-  it('`server start` against a rolled-out Deployment is idempotent', async () => {
+  it('`cluster start` against a rolled-out Deployment is idempotent', async () => {
     const before = await serverPods()
-    const res = await runYaac(testEnv.env, 'server', 'start')
+    const res = await runYaac(testEnv.env, 'cluster', 'start')
     expect(res.exitCode, res.stderr).toBe(0)
     expect(res.stderr).toMatch(/server started at http:\/\/127\.0\.0\.1:/)
     // Already at one replica, so nothing is replaced.
@@ -128,21 +128,21 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(await replicas()).toBe(1)
   })
 
-  it('`server start|restart --tailnet/--owner` defer to `cluster install`, leaving the pod alone', async () => {
+  it('a host `server start|restart` refuses the cluster install\'s data dir, leaving the pod alone', async () => {
     const before = await serverPods()
-    for (const args of [['start', '--tailnet', 'srv.tailnet.ts.net'], ['restart', '--tailnet', 'srv.tailnet.ts.net', '--owner', 'a@b.c']]) {
+    for (const args of [['start'], ['restart', '--tailnet', 'srv.tailnet.ts.net', '--owner', 'a@b.c']]) {
       const res = await runYaac(testEnv.env, 'server', ...args)
       expect(res.exitCode).toBe(1)
-      expect(res.stderr).toMatch(/access mode `yaac cluster install` sets: use `yaac cluster install --tailnet \[<host>\] \[--owner <login>\]`/)
+      expect(res.stderr).toMatch(new RegExp(`is a cluster install[\\s\\S]*yaac cluster ${args[0]}`))
     }
     expect(await serverPods()).toEqual(before)
   })
 
-  it('`server restart` rolls the pod, and the new one takes the lease', async () => {
+  it('`cluster restart` rolls the pod, and the new one takes the lease', async () => {
     const [before] = await serverPods()
     const beforeLock = await readLock()
 
-    const res = await runYaac(testEnv.env, 'server', 'restart')
+    const res = await runYaac(testEnv.env, 'cluster', 'restart')
     expect(res.exitCode, res.stderr).toBe(0)
     expect(res.stderr).toMatch(/server restarted at/)
 
@@ -158,10 +158,10 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(await health.json()).toMatchObject({ ok: true, ready: true })
   })
 
-  it('`server stop` scales to zero, and `server start` brings it back, as `server status` reports', async () => {
+  it('`cluster stop` scales to zero, and `cluster start` brings it back, as `cluster status` reports', async () => {
     // The pod's lock is another host's, so status judges it by its lease.
     const status = async () => {
-      const res = await runYaac(testEnv.env, 'server', 'status', '--json')
+      const res = await runYaac(testEnv.env, 'cluster', 'status', '--json')
       expect(res.exitCode, res.stderr).toBe(0)
       return JSON.parse(res.stdout) as { running: boolean, driver: string, serverBuildId: string | null, cliBuildId: string }
     }
@@ -170,14 +170,14 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     // The pod runs the bundle this CLI came from, so the tray offers no update.
     expect(running.serverBuildId).toBe(running.cliBuildId)
 
-    const stop = await runYaac(testEnv.env, 'server', 'stop')
+    const stop = await runYaac(testEnv.env, 'cluster', 'stop')
     expect(stop.exitCode, stop.stderr).toBe(0)
     expect(stop.stderr).toMatch(/Deployment scaled to 0/)
     expect(await replicas()).toBe(0)
     expect(await status()).toMatchObject({ running: false, driver: 'k8s', serverBuildId: null })
 
     // Stop scales to zero; the workload, RBAC and ingress policy remain.
-    const start = await runYaac(testEnv.env, 'server', 'start')
+    const start = await runYaac(testEnv.env, 'cluster', 'start')
     expect(start.exitCode, start.stderr).toBe(0)
     expect(await replicas()).toBe(1)
     expect(await serverPods()).toHaveLength(1)
@@ -215,33 +215,31 @@ describe('yaac server lifecycle against the in-cluster Deployment', () => {
     expect(pvcs.trim().split('\n').sort()).toEqual(['yaac-checkouts=Bound', 'yaac-global=Bound', 'yaac-server-local=Bound'])
   })
 
-  it('`server logs` prints the log the pod wrote into the server-local claim', async () => {
-    // Read through the pod: on a byo install this host cannot see the
-    // server-local volume.
-    const logs = await runYaac(testEnv.env, 'server', 'logs')
+  it('`cluster logs` prints the log the pod wrote into the server-local claim', async () => {
+    const logs = await runYaac(testEnv.env, 'cluster', 'logs')
     expect(logs.exitCode, logs.stderr).toBe(0)
     // The Deployment sets YAAC_BIND_ADDR=0.0.0.0 so the Service can reach it.
     expect(logs.stdout).toMatch(/\[server\] listening on 0\.0\.0\.0:/)
   })
 
-  it('`server logs -n` and `--lines` take the tail of that same file', async () => {
+  it('`cluster logs -n` and `--lines` take the tail of that same file', async () => {
     // Assert line counts, not contents: health probes append lines while
     // the test runs.
-    const whole = await runYaac(testEnv.env, 'server', 'logs')
+    const whole = await runYaac(testEnv.env, 'cluster', 'logs')
     expect(whole.exitCode, whole.stderr).toBe(0)
     expect(whole.stdout.split('\n').filter(Boolean).length).toBeGreaterThan(2)
 
-    const one = await runYaac(testEnv.env, 'server', 'logs', '-n', '1')
+    const one = await runYaac(testEnv.env, 'cluster', 'logs', '-n', '1')
     expect(one.exitCode).toBe(0)
     expect(one.stdout.split('\n').filter(Boolean)).toHaveLength(1)
 
-    const two = await runYaac(testEnv.env, 'server', 'logs', '--lines', '2')
+    const two = await runYaac(testEnv.env, 'cluster', 'logs', '--lines', '2')
     expect(two.exitCode).toBe(0)
     expect(two.stdout.split('\n').filter(Boolean)).toHaveLength(2)
   })
 
-  it('`server logs -f` keeps printing what the pod appends, until interrupted', async () => {
-    const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'server', 'logs', '-f'], {
+  it('`cluster logs -f` keeps printing what the pod appends, until interrupted', async () => {
+    const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'cluster', 'logs', '-f'], {
       env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'],
     })
     try {

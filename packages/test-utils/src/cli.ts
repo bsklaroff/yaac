@@ -79,7 +79,7 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
 
   // The port `server start`/`restart` binds (under k8s, the forward's
-  // port). Drawn free so workers and rigs never collide.
+  // port, which `cluster start`/`restart` wait on). Drawn free so workers and rigs never collide.
   const serverPort = await freeLocalPort()
 
   const env: NodeJS.ProcessEnv = {

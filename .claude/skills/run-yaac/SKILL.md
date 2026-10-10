@@ -21,8 +21,8 @@ ripgrep for containerless) are in `README.md` → "From source". Then:
 pnpm install && pnpm build        # CLI + SPA + assets into dist/, ~7s
 npm install -g .                  # links `yaac` here; `brew uninstall yaac-server` first
 
-yaac cluster install && yaac cluster check   # k8s: cluster + server pod
-yaac host check && yaac server start         # or containerless: host process
+yaac cluster install && yaac cluster check   # k8s: cluster + server pod (data dir ~/.yaac-cluster)
+yaac host check && yaac server start         # and/or containerless: host process (~/.yaac)
 ```
 
 The user normally adds credentials and projects from the app.
@@ -39,8 +39,10 @@ change for a containerless server. If a fix "does nothing", compare
 
 ## A second instance beside an existing one
 
-With no `YAAC_DATA_DIR`, `yaac` drives the install in `~/.yaac` (its
-workspaces, its kind cluster named `yaac`). When that is the user's working
+With no `YAAC_DATA_DIR`, `yaac server …` drives the host install in
+`~/.yaac` and `yaac cluster …` the cluster install in `~/.yaac-cluster` (its
+kind cluster named `yaac`, published on port 8790), both registered in
+`~/.yaac-client/server.json`. When that is the user's working
 setup and you are testing rather than setting it up, leave it alone and run
 a second instance. Check whether one already exists first
 (`env | grep ^YAAC_ ; kind get clusters`); otherwise export these **in every
@@ -60,8 +62,10 @@ export YAAC_DATA_DIR="$HOME/.yaac-dev" YAAC_SERVER_PORT=8890 \
 yaac cluster install && yaac cluster check
 ```
 
-- `YAAC_SERVER_PORT` keeps clear of the first instance's `8787` (for k8s it
-  is the host port the server is published on).
+- `YAAC_SERVER_PORT` keeps clear of the first instances' `8787` and `8790`
+  (for k8s it is the host port the server is published on).
+- With `YAAC_DATA_DIR` set, `yaac server …` and `yaac cluster …` share that
+  one dir, so it holds one install of either kind.
 - Keep the k8s data dir under `$HOME`, never `/tmp`: pods hostPath-mount
   paths beneath it, and kind maps only `$HOME` onto the node.
 - Never run `yaac cluster install|delete` here without `YAAC_KIND_CLUSTER`
@@ -74,7 +78,7 @@ yaac cluster install && yaac cluster check
 
 ```bash
 yaac workspace list        # then `yaac workspace stop <id>` for each
-yaac server stop
+yaac server stop              # containerless
 yaac cluster delete --yes     # k8s: deletes the YAAC_KIND_CLUSTER cluster
 rm -rf "$YAAC_DATA_DIR" "$YAAC_DATA_DIR-client"
 ```
@@ -86,7 +90,7 @@ yaac remote status                    # the origin this install's clients dial
 curl -s <that origin>/health          # {"ok":true,"buildId":…,"ready":true,"driver":…}
 ```
 
-`yaac server start|stop|restart|status|logs`; `status --json` is what the desktop tray reads.
+`yaac server start|stop|restart|status|logs` for the host server, `yaac cluster start|stop|restart|status|logs` for the cluster's; both `status --json` are what the desktop tray reads.
 
 ## Drive the web app
 

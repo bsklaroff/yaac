@@ -37,6 +37,7 @@ export function expandTilde(p: string): string {
 }
 
 let dataDir: string | null = null
+let installDataDir: string | null = null
 
 /**
  * The data dir from the environment alone, ignoring any {@link setDataDir}
@@ -49,18 +50,36 @@ export function ambientDataDir(): string {
 }
 
 /**
+ * The data dir of this machine's clients: `~/.yaac` unless overridden. It
+ * is also the containerless install's, and the client-local tier is its
+ * sibling.
+ */
+export function clientDataDir(): string {
+  return dataDir || ambientDataDir()
+}
+
+/**
  * The install's data dir. It identifies the install (it is hashed into the
  * cluster label) and, on a host, holds the three tier folders below. In the
  * server pod the tiers are separate mounts and nothing exists at this path.
  * Build storage paths on a tier root, not on this.
  */
 export function getDataDir(): string {
-  if (dataDir) return dataDir
-  return ambientDataDir()
+  return installDataDir || clientDataDir()
 }
 
+/** Test hook: move the data dir, and the client-local tier with it. */
 export function setDataDir(dir: string): void {
   dataDir = dir
+}
+
+/**
+ * Point this process at a cluster install's data dir. `yaac cluster …`
+ * calls it first; the client-local tier stays where it is, so both
+ * installs register in one `server.json`.
+ */
+export function useInstallDataDir(dir: string): void {
+  installDataDir = dir
 }
 
 /*
@@ -76,8 +95,8 @@ export function setDataDir(dir: string): void {
  *    secret key). `<dataDir>/server-local` on a host; the RWO claim
  *    `yaac-server-local` in the cluster. No workspace pod mounts it.
  *  - CLIENT-LOCAL: processes on the user's machine only (CLI, auth daemon,
- *    desktop app, `yaac cluster install`). A sibling of the data dir, so a
- *    pod mounting the data dir can never see it.
+ *    desktop app, `yaac cluster install`). A sibling of the client data
+ *    dir, so a pod mounting a data dir can never see it.
  *
  * The server Deployment points the first three at its mounts via
  * `YAAC_GLOBAL_ROOT` / `YAAC_SERVER_LOCAL_ROOT` / `YAAC_NODE_LOCAL_ROOT`
@@ -141,12 +160,12 @@ export function installTmpDir(): string {
 }
 
 /**
- * Root of the CLIENT-LOCAL tier: `<dataDir>-client` (e.g. `~/.yaac-client`).
- * Deriving it from the data dir means each install, and each test's data
- * dir, gets its own without another environment variable.
+ * Root of the CLIENT-LOCAL tier: `<clientDataDir>-client` (e.g.
+ * `~/.yaac-client`). Deriving it from the data dir means each test's data
+ * dir gets its own without another environment variable.
  */
 export function clientLocalRoot(): string {
-  return `${getDataDir()}-client`
+  return `${clientDataDir()}-client`
 }
 
 /** A CLIENT-LOCAL path: `<clientLocalRoot>/<…rest>`. */

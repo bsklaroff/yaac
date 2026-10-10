@@ -5,7 +5,7 @@
  * manifests, ingress peers, published origin and timeouts.
  *
  * The fronting is not stored on disk: `liveFronting` reads it back from
- * the live cluster so `yaac server start|restart` can wait on the right
+ * the live cluster so `yaac cluster start|restart` can wait on the right
  * origin.
  */
 import {

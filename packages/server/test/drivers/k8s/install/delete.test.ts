@@ -20,7 +20,8 @@ vi.mock('node:readline/promises', () => ({
 
 import { ClusterDeleteError, runClusterDelete } from '#drivers/k8s/install'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
-import { serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
+import { installRecordPath, recordInstall } from '@yaac/shared/install-record'
+import { serverConfigPath } from '@yaac/shared/server-config'
 import fs from 'node:fs/promises'
 
 const mockRun = vi.mocked(execFileAsync)
@@ -64,9 +65,7 @@ describe('runClusterDelete', () => {
   it('refuses on a byo install, printing the uninstall instead of deleting anything', async () => {
     // The cluster is not yaac's to delete, even if a same-named kind
     // cluster exists on this host.
-    await writeServerConfig({
-      url: 'https://yaac.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'install-1', byo: true,
-    })
+    await recordInstall({ driver: 'k8s', installId: 'install-1', byo: true })
     try {
       const err = await runClusterDelete({ yes: true }).catch((e: unknown) => e)
       expect(err).toBeInstanceOf(ClusterDeleteError)
@@ -84,6 +83,7 @@ describe('runClusterDelete', () => {
       expect(message).toContain('kubectl delete pv -l yaac.install-id=install-1')
       expect(deleteCall()).toBeUndefined()
     } finally {
+      await fs.rm(installRecordPath(), { force: true })
       await fs.rm(serverConfigPath(), { force: true })
     }
   })

@@ -492,7 +492,7 @@ export async function deployServerWorkload(
     fronting: ServerFronting
     /** The uid and gid install decided this install's pods run as. */
     identity: InstallIdentity
-    /** Who this install is (`server.json`'s `installId`). */
+    /** Who this install is (`install.json`'s `installId`). */
     installId: string
     /** Static volumes (kind) or storage classes (byo) for the claims. */
     storage: { kind: 'static' } | { kind: 'classes'; rwx: string; rwo: string }
@@ -522,9 +522,10 @@ export async function deployServerWorkload(
   const origin = await ensureServerDeployment(imageRef, opts.fronting, opts.identity, opts)
   await waitForPublishedServer(origin, opts.fronting)
   // Point this machine's clients at the origin and record the data dir as
-  // k8s, so `yaac server start` manages the Deployment rather than
-  // spawning a host server (docs/server-in-cluster.md).
-  await registerServer(origin, 'k8s')
+  // k8s, so a host `yaac server start` on it is refused
+  // (docs/server-in-cluster.md). A re-install leaves a selection of another
+  // server alone.
+  await registerServer(origin, 'k8s', { keepSelection: true })
   // Without a loopback path this CLI must pass the identity check too;
   // warn now if it cannot.
   await probeServer(origin).catch((err: unknown) => {
@@ -605,7 +606,7 @@ async function waitForInstalledServer(): Promise<string> {
 }
 
 /**
- * `yaac server start`: scale the existing Deployment back to one replica
+ * `yaac cluster start`: scale the existing Deployment back to one replica
  * and return the origin once it answers. It does not deploy anything.
  */
 export async function startClusterServer(): Promise<string> {
@@ -616,7 +617,7 @@ export async function startClusterServer(): Promise<string> {
 }
 
 /**
- * `yaac server stop`: scale to zero, keeping the Deployment so `start` can
+ * `yaac cluster stop`: scale to zero, keeping the Deployment so `start` can
  * bring it back without a full install.
  */
 export async function stopClusterServer(): Promise<void> {
@@ -632,7 +633,7 @@ export async function stopClusterServer(): Promise<void> {
 }
 
 /**
- * `yaac server restart`: roll the pod and return the origin once it
+ * `yaac cluster restart`: roll the pod and return the origin once it
  * answers. `Recreate` removes the old pod before starting the new one.
  */
 export async function restartClusterServer(): Promise<string> {
@@ -646,7 +647,7 @@ export async function restartClusterServer(): Promise<string> {
 }
 
 /**
- * `yaac server logs` on a byo install, where the log is on a volume this
+ * `yaac cluster logs` on a byo install, where the log is on a volume this
  * machine cannot see (kind's CLI reads the host file directly). Runs
  * `tail` in the server pod if it is running, otherwise in a short-lived
  * reader pod that mounts the claim read-only, on the server pod's node if

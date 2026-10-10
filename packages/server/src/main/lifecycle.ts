@@ -14,7 +14,8 @@ import { waitFor } from '#lib/wait-for'
 import { preflightHostTor, torCoverageWarning } from '#main/server-run'
 import { env } from '@yaac/shared/env'
 import { assertHostServerAllowed } from '#main/driver-choice'
-import { readServerConfig, registerServer } from '@yaac/shared/server-config'
+import { registerServer } from '@yaac/shared/server-config'
+import { readInstallRecord } from '@yaac/shared/install-record'
 import type { AccessMode, LocalServerStatus } from '@yaac/shared/types'
 
 /**
@@ -39,7 +40,7 @@ export interface ServerAccessOptions {
  *   wait for it to be ready, or to report that it refused the access mode
  *   (then stop it and throw the reason).
  */
-export async function startServer(opts: ServerAccessOptions = {}): Promise<void> {
+export async function startServer(opts: ServerAccessOptions = {}, keepSelection = false): Promise<void> {
   const tailnet = tailnetHost(opts)
   const mode: AccessMode = tailnet === undefined ? 'local' : 'tailnet'
   const origin = (port: number): string => tailnet === undefined ? `http://127.0.0.1:${port}` : `https://${tailnet}`
@@ -69,7 +70,7 @@ export async function startServer(opts: ServerAccessOptions = {}): Promise<void>
       console.error(`[yaac] server already running pid=${existing.pid} port=${existing.port}`)
       // Register anyway: the running server may be a foreground
       // `yaac server run`, which registers nothing.
-      await registerLocalServer(origin(existing.port))
+      await registerLocalServer(origin(existing.port), keepSelection)
       return
     }
     throw new Error(
@@ -100,7 +101,7 @@ export async function startServer(opts: ServerAccessOptions = {}): Promise<void>
       `server buildId ${fresh.buildId} does not match CLI buildId ${cliBuildId}`,
     )
   }
-  await registerLocalServer(origin(fresh.port))
+  await registerLocalServer(origin(fresh.port), keepSelection)
   const torPrefix = env.useTor ? '(using tor) ' : ''
   console.error(`[yaac] ${torPrefix}server started pid=${fresh.pid} port=${fresh.port}`)
   // A host server is always containerless (`#main/driver-choice`). Repeat
@@ -110,14 +111,14 @@ export async function startServer(opts: ServerAccessOptions = {}): Promise<void>
 }
 
 /**
- * Register the host server in `server.json` as a containerless install,
- * the same registration `yaac cluster install` does for the Deployment. On
- * failure the server keeps running but clients cannot find it; rerunning
- * the command fixes that.
+ * Register the host server in `server.json` and record its data dir as a
+ * containerless install, the same registration `yaac cluster install` does
+ * for the Deployment. On failure the server keeps running but clients
+ * cannot find it; rerunning the command fixes that.
  */
-async function registerLocalServer(origin: string): Promise<void> {
+async function registerLocalServer(origin: string, keepSelection: boolean): Promise<void> {
   try {
-    await registerServer(origin, 'containerless')
+    await registerServer(origin, 'containerless', { keepSelection })
   } catch (err) {
     console.error(
       `[yaac] WARNING: the server is up, but this machine could not be pointed at it: ${
@@ -145,18 +146,15 @@ export async function stopServer(): Promise<void> {
   }
 
   if (!isSameHostLock(existing)) {
-    // A live lock from another host belongs to the in-cluster server
-    // (docs/server-in-cluster.md). `yaac server stop` normally scales that
-    // Deployment through `#drivers/k8s/install` before reaching here, so
-    // getting here means the cluster was unreachable. Removing the lock
-    // would make the pod exit and restart, and would let a later
-    // `yaac server start` add a second writer, so change nothing.
+    // A live lock from another host belongs to an in-cluster server
+    // (docs/server-in-cluster.md) on a data dir that records no driver.
+    // Removing the lock would make the pod exit and restart, and would let
+    // a later `yaac server start` add a second writer, so change nothing.
     console.error(
-      `[yaac] this install's server runs in the cluster (lock held by `
-      + `${existing.host ?? 'another host'}, lease still being renewed), and `
-      + 'this command could not reach the cluster to scale it down.\n'
-      + '    Check your kubeconfig and cluster, then try again — or scale it '
-      + 'by hand:\n'
+      `[yaac] this data dir's server runs in a cluster (lock held by `
+      + `${existing.host ?? 'another host'}, lease still being renewed), so `
+      + 'there is no host server to stop.\n'
+      + '    Stop it with `yaac cluster stop`, or scale it by hand:\n'
       + '    kubectl -n <namespace> scale deployment/yaac-server --replicas=0',
     )
     process.exitCode = 1
@@ -187,21 +185,22 @@ export async function stopServer(): Promise<void> {
 
 /**
  * Entry point for `yaac server restart`. Stops any running server, then
- * starts a fresh one.
+ * starts a fresh one, leaving the selection on another server alone.
  */
 export async function restartServer(opts: ServerAccessOptions = {}): Promise<void> {
   tailnetHost(opts)
   await stopServer()
-  await startServer(opts)
+  await startServer(opts, true)
 }
 
 /**
- * Entry point for `yaac server status`: whether this install's server runs,
- * and on which build. The lock answers for a host server and for a kind
- * install's pod alike, since both keep it in this data dir.
+ * Entry point for `yaac server status` and `yaac cluster status`: whether
+ * this data dir's server runs, and on which build. The lock answers for a
+ * host server and for a kind install's pod alike, since both keep it in
+ * their data dir.
  */
 export async function serverStatus(): Promise<LocalServerStatus> {
-  const cfg = await readServerConfig()
+  const cfg = await readInstallRecord()
   const base = { driver: cfg?.driver ?? null, cliBuildId: await readBuildId() }
   if (cfg?.byo) return { ...base, running: null, serverBuildId: null }
   const lock = await readLock()

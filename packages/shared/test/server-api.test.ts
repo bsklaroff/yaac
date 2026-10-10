@@ -156,10 +156,7 @@ describe('resolveServerTarget', () => {
     await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
     expect(await resolveServerTarget()).toEqual({ baseUrl: 'https://srv.ts.net' })
     // A loopback origin takes the same path.
-    await writeServerConfig({
-      url: 'http://127.0.0.1:8787', enabled: true, saved: [],
-      driver: 'containerless',
-    })
+    await writeServerConfig({ url: 'http://127.0.0.1:8787', enabled: true, saved: [] })
     expect(await resolveServerTarget())
       .toEqual({ baseUrl: 'http://127.0.0.1:8787' })
   })
@@ -173,7 +170,7 @@ describe('resolveServerTarget', () => {
 
   it('with no config at all, names all three ways to get one', async () => {
     await expect(resolveServerTarget()).rejects.toThrow(
-      /yaac server start.*yaac cluster install.*yaac remote set/s,
+      /yaac server start.*yaac cluster install.*yaac cluster start.*yaac remote set/s,
     )
   })
 })

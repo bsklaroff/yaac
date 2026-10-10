@@ -3,7 +3,7 @@
  * the logic.
  *
  * The shell is a client of whatever server `server.json` names. The tray
- * and the picker also start, stop and restart this machine's server through
+ * and the picker also start, stop and restart this machine's servers through
  * the `yaac` CLI (server-control.ts), but only when asked: Close hides to
  * the tray, and Quit exits the shell and its auth daemon and leaves the
  * server running. With no server reachable the window shows the picker
@@ -33,7 +33,7 @@ import { splashUrl, type LaunchError } from '#messages'
 import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
 import {
   createRunYaac, readLocalServer, runServerAction, trayServerItems,
-  type LocalServerState, type ServerAction,
+  type LocalServers, type ScopedAction, type ServerScope,
 } from '#server-control'
 import {
   addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, removeServer, restoreSelection,
@@ -76,9 +76,9 @@ let attention = new AttentionMonitor()
 // the boot flow, since the user may have fixed things from a terminal.
 let onConnectPage = false
 let waiting = 0
-// This machine's server as the tray last read it, and the action under way.
-let localServer: LocalServerState | null = null
-let serverBusy: ServerAction | null = null
+// This machine's servers as the tray last read them, and the action under way.
+let localServers: LocalServers = { server: null, cluster: null }
+let serverBusy: ScopedAction | null = null
 let refreshing: Promise<void> | null = null
 /** Counts server actions, so a status read can tell one overlapped it. */
 let actionEpoch = 0
@@ -210,7 +210,7 @@ async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<vo
   applyAttention(0, [], [])
   const targets = await getServerTargets(serverSwitchDeps)
   await refreshLocalServer()
-  await w.loadURL(connectPageUrl({ error, targets, local: localServer }))
+  await w.loadURL(connectPageUrl({ error, targets, local: localServers }))
     .catch((err: unknown) => {
       dialog.showErrorBox(error.title, err instanceof Error ? err.message : String(err))
     })
@@ -243,7 +243,7 @@ function createTray(): void {
 
 function updateTray(): void {
   if (!tray) return
-  const serverItems = trayServerItems(localServer, serverBusy).map((item) => ({
+  const serverItems = trayServerItems(localServers, serverBusy).map((item) => ({
     label: item.label,
     enabled: item.action !== undefined,
     click: () => {
@@ -268,7 +268,7 @@ function updateTray(): void {
 }
 
 /**
- * Re-read this machine's server for the tray. Callers share one read in
+ * Re-read this machine's servers for the tray. Callers share one read in
  * flight, and a read that an action overlapped is dropped, since it may
  * describe the server from before the action.
  */
@@ -282,29 +282,30 @@ async function readLocalServerState(): Promise<void> {
   const epoch = actionEpoch
   // The login-shell PATH is what finds `yaac`.
   await authDaemonReady
-  const state = await readLocalServer(runYaac)
+  const [server, cluster] = await Promise.all([readLocalServer(runYaac, 'server'), readLocalServer(runYaac, 'cluster')])
   if (serverBusy || epoch !== actionEpoch) return
   // Rebuilding swaps the tray's menu, which empties it if it is open.
-  if (JSON.stringify(state) === JSON.stringify(localServer)) return
-  localServer = state
+  if (JSON.stringify({ server, cluster }) === JSON.stringify(localServers)) return
+  localServers = { server, cluster }
   updateTray()
 }
 
 /**
- * Start, stop or restart this machine's server. `yaac server start` (and
- * restart) selects it, so a window showing a remote server puts that
- * selection back and stays where it is. Otherwise the window moves: onto
- * the server after a start or restart, and onto the picker after a stop if
- * it was showing that server.
+ * Start, stop or restart one of this machine's servers. A start selects it
+ * (a restart only when no other server is selected), so a window showing a
+ * remote server puts that selection back and stays where it is. Otherwise
+ * the window reloads the selected server after a start or restart, and
+ * moves to the picker after a stop if it was showing that server.
  */
-async function serverAction(action: ServerAction): Promise<DesktopServerOutcome> {
+async function serverAction(scoped: ScopedAction): Promise<DesktopServerOutcome> {
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
-  serverBusy = action
+  const { action } = scoped
+  serverBusy = scoped
   actionEpoch++
   updateTray()
   await authDaemonReady
   const remote = onConnectPage || await showingLocalServer() ? null : await readServerConfig()
-  const outcome = await runServerAction(action, runYaac)
+  const outcome = await runServerAction(scoped, runYaac)
   if (remote) await restoreSelection(remote, serverSwitchDeps)
   serverBusy = null
   await refreshing
@@ -321,9 +322,9 @@ async function serverAction(action: ServerAction): Promise<DesktopServerOutcome>
   return { ok: true }
 }
 
-async function trayServerAction(action: ServerAction): Promise<void> {
-  const outcome = await serverAction(action)
-  if (!outcome.ok) dialog.showErrorBox(`Could not ${action} the server`, outcome.error)
+async function trayServerAction(scoped: ScopedAction): Promise<void> {
+  const outcome = await serverAction(scoped)
+  if (!outcome.ok) dialog.showErrorBox(`Could not ${scoped.action} the server`, outcome.error)
 }
 
 async function showingLocalServer(): Promise<boolean> {
@@ -400,9 +401,12 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
-// The picker's "Start a server on this Mac". The reply comes back before
-// the window lands, which replaces the calling page.
-ipcMain.handle('server:start-local', () => serverAction('start'))
+// The picker's start buttons. The reply comes back before the window
+// lands, which replaces the calling page.
+ipcMain.handle('server:start-local', (_e, raw: unknown) => {
+  const scope: ServerScope = raw === 'cluster' ? 'cluster' : 'server'
+  return serverAction({ scope, action: 'start' })
+})
 // Removal never touches the selected server, so the window stays put.
 ipcMain.handle('server:remove', async (_e, raw: unknown) => {
   const sel = parseServerSelection(raw)

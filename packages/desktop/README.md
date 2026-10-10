@@ -28,39 +28,43 @@ the tray or the picker, by running the `yaac` on PATH
 ## Shell behavior
 
 - **Tray.** Closing the window hides it; the shell stays in the tray (Open,
-  a waiting-count line, this machine's server, Quit). Quit exits the shell
-  and its auth daemon; the server keeps running. Reopening (tray click or
+  a waiting-count line, this machine's servers, Quit). Quit exits the shell
+  and its auth daemon; the servers keep running. Reopening (tray click or
   Dock activate) repeats the connect flow, so it notices a server that came
   back. A failed connect does not quit either.
-- **This machine's server.** The tray reads `yaac server status --json`
-  (every minute and each time its menu opens) and shows one action. Its
-  lines always say "this Mac's server", since the window may be on another:
-  - **Start this Mac's server** when it is stopped. It runs `yaac server
-    start`, which selects that server, and the window lands on it. The
-    CLI's refusals (say, a host start on a k8s data dir) show in a dialog.
+- **This machine's servers.** A Mac can run two installs side by side
+  (docs/server-selection.md "Two installs on one machine"): the host server
+  and a cluster's. The tray reads `yaac server status --json` and `yaac
+  cluster status --json` (every minute and each time its menu opens) and
+  shows one action for each install there is. Its lines always say "this
+  Mac's", since the window may be on another server:
+  - **Start this Mac's server** when the host server is stopped. It runs
+    `yaac server start`, which selects that server, and the window lands on
+    it. The CLI's refusals show in a dialog.
   - **Stop this Mac's server** when it runs. It runs `yaac server stop`,
     and a window showing that server falls back to the picker.
   - **Restart this Mac's server to update** in place of Stop when the
     server runs a different build than the installed CLI, as after `brew
-    upgrade`. A kind install's server is updated by `yaac cluster install`,
-    which rebuilds its image, so the tray names that command instead.
+    upgrade`.
+  - **Start / Stop this Mac's cluster server** for a cluster install, by
+    `yaac cluster start|stop`. Its server is updated by `yaac cluster
+    install`, which rebuilds its image, so the tray names that command
+    rather than offering a restart. A `--byo` install's lock is on its
+    cluster, so the tray cannot see it and offers no action.
 
   A window showing a remote server stays on it: a start or restart puts the
-  selection `yaac server start` made back the way it was. Each `yaac` run
-  has a timeout (15 seconds for a status read, five minutes for an action),
-  so a hung CLI shows as a failure rather than wedging the tray or the
-  picker. `yaac` is looked up on the login shell's PATH plus Homebrew's bin
-  dirs, in case the login shell cannot be read.
+  selection the CLI made back the way it was. Each `yaac` run has a timeout
+  (15 seconds for a status read, five minutes for an action), so a hung CLI
+  shows as a failure rather than wedging the tray or the picker. `yaac` is
+  looked up on the login shell's PATH plus Homebrew's bin dirs, in case the
+  login shell cannot be read.
 
-  These act on this machine's install whichever command started it, and
-  `yaac server start|stop` scale a kind install's Deployment. The picker
-  offers **Start a server on this Mac** whenever that server is stopped,
-  and after starting a containerless server it runs `yaac host check` and
-  lists any failures, which in practice name the agent CLI to install. A
-  `--byo` install's lock is on its cluster, so the tray cannot see it and
-  offers no action. Stopping or restarting the server never stops an agent:
-  a containerless workspace is a tmux server that outlives it, and the next
-  start picks it back up.
+  The picker offers a start button for each of those servers that is
+  stopped, and after starting the host server it runs `yaac host check` and
+  lists any failures, which in practice name the agent CLI to install.
+  Stopping or restarting a server never stops an agent: a containerless
+  workspace is a tmux server that outlives it, and the next start picks it
+  back up.
 - **Attention signals.** The main process follows the server's `/api/events`
   WebSocket, re-resolving the server on every reconnect so it follows a
   change of selection. Workspaces waiting for input show as a dock badge, the
@@ -90,7 +94,7 @@ the tray or the picker, by running the `yaac` on PATH
 - A registered server: add a remote one in the picker, or, for a server on
   this machine, put `yaac` on PATH (`brew install bsklaroff/yaac/yaac-server`)
   and start it from the picker or the tray (or run `yaac cluster install`
-  once for a cluster). A client of a remote server needs no `yaac` at all.
+  once for a cluster, after which the tray drives it too). A client of a remote server needs no `yaac` at all.
 - The shell adopts the login-shell PATH at startup, because a Finder launch
   gets a minimal PATH and the daemon's children (claude, codex, the
   installers) need the real one. Only PATH is taken from the login shell.
@@ -177,6 +181,8 @@ Also check in the desktop app:
 - Quit leaves the server running;
 - tray Stop stops the server while a workspace's agent keeps running, and
   tray Start brings the workspace back;
+- with a cluster install beside the host server, the tray lists both, and
+  each Start and Stop acts on its own;
 - after a rebuild or `brew upgrade` of `yaac`, the tray offers **Restart
   server to update** within a minute, and afterwards says "Server running";
 - window bounds survive a relaunch.

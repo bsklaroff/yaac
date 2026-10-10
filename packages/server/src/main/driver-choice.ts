@@ -1,5 +1,7 @@
-import { recordedDriver } from '@yaac/shared/install-driver'
+import { recordedDriver } from '@yaac/shared/install-record'
 import { env } from '@yaac/shared/env'
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- names the data dir in a refusal; builds no path
+import { getDataDir } from '@yaac/shared/paths'
 import type { DriverKind } from '@yaac/shared/types'
 
 /**
@@ -7,7 +9,7 @@ import type { DriverKind } from '@yaac/shared/types'
  * running as a pod of its cluster is `k8s`; a host process is
  * `containerless`. There is no per-start choice.
  *
- * The answer is recorded in the client-local `server.json` by the command
+ * The answer is recorded in the data dir's `install.json` by the command
  * that stood the server up (`yaac server start` or `yaac cluster install`),
  * so a client that cannot reach the server knows which command fixes it.
  * `recordedDriver` in `@yaac/shared` reads it back. `yaac cluster install`
@@ -37,9 +39,9 @@ export async function assertHostServerAllowed(): Promise<void> {
   if (env.inCluster) return
   if (await recordedDriver() !== 'k8s') return
   throw new Error(
-    'This install runs its server in the cluster, so there is no host server '
-    + 'to start — starting one would put two writers on this data dir.\n'
-    + '    Converge the cluster instead: `yaac cluster install`. '
-    + '(`yaac server start|stop|restart` act on the Deployment once it exists.)',
+    `The data dir ${getDataDir()} is a cluster install, whose server runs in the cluster, `
+    + 'so there is no host server to start: one would be a second writer of this data dir.\n'
+    + '    Start the cluster\'s server with `yaac cluster start`, or point YAAC_DATA_DIR '
+    + 'at a data dir of its own for a host server.',
   )
 }

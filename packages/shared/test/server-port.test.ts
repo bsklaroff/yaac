@@ -81,8 +81,18 @@ describe('bindWithAutoIncrement', () => {
       tried.push(p)
       return busy.has(p) ? Promise.reject(inUse()) : Promise.resolve(`bound:${p}`)
     })
-    expect(result).toBe('bound:8790')
-    expect(tried).toEqual([8787, 8788, 8789, 8790])
+    expect(result).toBe('bound:8791')
+    // 8790 is a kind cluster's, so the host server walks past it.
+    expect(tried).toEqual([8787, 8788, 8789, 8791])
+  })
+
+  it('binds the cluster\'s port only when asked for it outright', async () => {
+    const tried: number[] = []
+    expect(await bindWithAutoIncrement(8790, (p) => {
+      tried.push(p)
+      return Promise.resolve(`bound:${p}`)
+    })).toBe('bound:8790')
+    expect(tried).toEqual([8790])
   })
 
   it('binds port 0 exactly once without incrementing', async () => {
@@ -110,7 +120,8 @@ describe('bindWithAutoIncrement', () => {
       calls++
       return Promise.reject(inUse())
     })).rejects.toThrow(/no free port found/)
-    expect(calls).toBe(MAX_PORT_PROBES)
+    // Every port in the range but the cluster's.
+    expect(calls).toBe(MAX_PORT_PROBES - 1)
   })
 
   it('walks past a really-bound socket to the next free port', async () => {

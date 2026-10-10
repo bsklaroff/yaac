@@ -66,7 +66,7 @@ import {
   nodeOsProblems,
   type PlatformNode,
 } from './byo-gates'
-import { readServerConfig } from '@yaac/shared/server-config'
+import { readInstallRecord } from '@yaac/shared/install-record'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
@@ -269,7 +269,7 @@ export async function runClusterCheck(
     // than let a wrong-uid probe fail with a misleading message.
     let identity: InstallIdentity
     try {
-      identity = await deployedInstallIdentity((await readServerConfig())?.byo === true)
+      identity = await deployedInstallIdentity((await readInstallRecord())?.byo === true)
     } catch (err) {
       add({
         name: 'probe', status: 'fail',
@@ -437,7 +437,7 @@ const NODE_FIXUPS_FIX =
 async function runNodeFixupsCheck(nodes: string[]): Promise<CheckResult> {
   // Checked explicitly: a byo install on kind also has podman node
   // containers, but their settings are not yaac's to manage.
-  if ((await readServerConfig())?.byo) {
+  if ((await readInstallRecord())?.byo) {
     return {
       name: 'node-fixups', status: 'skip',
       detail: 'a byo install — the kubelet and pids settings are the node pool\'s, not yaac\'s',
@@ -539,7 +539,7 @@ async function runStorageCheck(): Promise<CheckResult> {
   }
   try {
     // An e2e file's server records none; it is matched by its data dir.
-    const installId = (await readServerConfig())?.installId
+    const installId = (await readInstallRecord())?.installId
     const problems: string[] = []
     const bound: string[] = []
     const ours = (name: string, labels: Record<string, string>): boolean =>
@@ -1676,7 +1676,7 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         name: 'egress', status: 'fail',
         detail: `the egress proxy has no ${PROXY_EGRESS_NP_NAME} NetworkPolicy — a session whose `
           + 'allowlist admits any host could reach the server through it as its owner',
-        fix: 'Restart the yaac server (`yaac server restart`), which applies it on start.',
+        fix: 'Restart the yaac server (`yaac cluster restart`), which applies it on start.',
       }
     }
     if (logs.includes('NP_BLOCKED')) {

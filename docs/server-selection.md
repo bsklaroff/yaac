@@ -9,13 +9,13 @@ it. The server identifies the caller from the request
 (docs/remote-hosting.md "Security model").
 
 ```
-yaac server start ──(containerless)──┐
-                                     ├─► registerServer(origin, driver)
-yaac cluster install ──(k8s)─────────┘            │
-                                                  ▼
-                             ~/.yaac-client/server.json
-                                                  │
-                    CLI ─ desktop + auth daemon ─ test fixtures
+yaac server start ──(containerless)───────┐
+                                          ├─► registerServer(origin, driver)
+yaac cluster install|start|restart ──(k8s)┘            │
+                                                       ▼
+                                  ~/.yaac-client/server.json
+                                                       │
+                         CLI ─ desktop + auth daemon ─ test fixtures
 ```
 
 ## Why there is no local shortcut
@@ -33,10 +33,12 @@ other's.
 ## Registration
 
 `registerServer(origin, driver)` in `@yaac/shared/server-config` is the only
-registration. `yaac server start` calls it for the host process it spawns,
-and `yaac cluster install` for the Deployment it applies. In one atomic write
-it selects the origin, keeps the other saved servers, and records the
-driver.
+registration. `yaac server start|restart` calls it for the host process it
+spawns, and `yaac cluster install|start|restart` for the Deployment. It
+records the driver in the data dir's `install.json` and saves the origin,
+keeping the other saved servers. A start selects the origin. A restart or a
+re-install selects it only when it is new or no other server is selected,
+so maintaining one install never moves clients off the other.
 
 `yaac server run` is the server process itself (what `start` spawns, what
 the server image runs, what e2e fixtures spawn) and registers nothing; the
@@ -48,28 +50,49 @@ also registers when a server is already running, so a server started with
 
 ```json
 { "url": "http://127.0.0.1:8787", "enabled": true,
-  "saved": [ { "url": "…" } ], "driver": "containerless" }
+  "saved": [ { "url": "…" } ] }
 ```
 
 - `url`: the selected server. `enabled: false` deselects it without
   forgetting it.
 - `saved`: every server configured and not since removed, so a client can
   switch back. There is one selection at a time.
-- `driver`: the driver **this install** runs, not the selected server's. A
-  k8s install also records `installId`, `clusterUid`, `kubeContext` and
-  `byo` (see the `ServerConfig` type).
 
-The install fields are top-level because they describe this data dir ("is
-there a host server to start, or a Deployment to update?"), which does not
-change when the selection points elsewhere. So `yaac remote set
-https://elsewhere` cannot allow a host `yaac server start` on a k8s install.
-`recordedDriver` reads `driver`, and `assertHostServerAllowed` refuses on it.
-A remote server's driver is not recorded; its snapshot reports it.
+What kind of install a data dir is lives in its `install.json`, so
+forgetting servers never loses it. For an older `yaac`, which reads it only
+here, `server.json` also carries a copy of the client data dir's record, and
+`yaac remote unset` keeps the file while it does (docs/legacy-compat-shims.md).
 
-For the same reason `yaac remote unset` clears the selection but keeps the
-install fields, deleting the file only when there are none. Losing `driver`
-would let a host start run beside a k8s install, with two servers writing one
-PGlite directory.
+## What `install.json` holds
+
+Each data dir records the install it is in `<dataDir>/install.json`
+(`@yaac/shared/install-record`): `driver`, and for a cluster also
+`installId`, `clusterUid`, `kubeContext` and `byo` (see the `InstallRecord`
+type). It describes the data dir ("is there a host server to start, or a
+Deployment to update?"), which does not change when the selection points
+elsewhere, so `yaac remote set https://elsewhere` cannot allow a host
+`yaac server start` on a k8s install. `recordedDriver` reads `driver`, and
+`assertHostServerAllowed` refuses on it. A remote server's driver is not
+recorded; its snapshot reports it.
+
+## Two installs on one machine
+
+A machine can run the host server and a cluster's side by side. With no
+`YAAC_DATA_DIR`:
+
+| | data dir | commands | published at |
+|---|---|---|---|
+| host (containerless) | `~/.yaac` | `yaac server …` | `127.0.0.1:8787` |
+| cluster (k8s) | `~/.yaac-cluster` | `yaac cluster …` | `127.0.0.1:8790` |
+
+Both register in the one `~/.yaac-client/server.json`, so every client can
+switch between them like any two servers. `yaac cluster …` points the
+process at the cluster's data dir before it runs (`clusterDataDir`), while
+the client tier stays where it is. A `~/.yaac` that is already a cluster
+install stays one (docs/legacy-compat-shims.md).
+
+`YAAC_DATA_DIR` names one data dir for every command, so that dir is one
+install of either kind. The test harness works this way.
 
 ## Nothing selected
 
@@ -78,17 +101,14 @@ client says:
 
 ```
 No yaac server selected.
-    Start one on this machine with `yaac server start` (or `yaac cluster install` on a k8s install),
+    Start one on this machine with `yaac server start` (or, for a cluster, `yaac cluster install` once and then `yaac cluster start`),
     or point at one with `yaac remote set <url>`.
 ```
 
-All three commands are listed because this message prints exactly when
-nothing on disk says which kind of install this is.
-
 No client starts a server to recover. The CLI reports and exits; the desktop
 shows its picker, which offers a start only when the user asks for one.
-Every start goes through `yaac server start`, which keeps a client from
-spawning a host process next to a Deployment.
+Every start goes through the CLI, which keeps a client from spawning a host
+process next to a Deployment.
 
 ## Build mismatch is a warning
 
@@ -106,10 +126,10 @@ so it has no build to compare, and any server serves it a matching SPA.
 
 The shell reads `server.json`, calls `/whoami` (checking both reachability
 and that the server will identify this device), and loads the origin. It
-never reads a lock. It starts, stops and restarts this machine's server
+never reads a lock. It starts, stops and restarts this machine's servers
 only when the user asks, from the tray or the picker, and always by running
-`yaac server start|stop|restart` (packages/desktop/README.md, "This
-machine's server").
+`yaac server start|stop|restart` or `yaac cluster start|stop`
+(packages/desktop/README.md, "This machine's servers").
 
 When no server is reachable (nothing selected, server down, or device not
 identified), the window shows a **picker** instead of an error dialog: with

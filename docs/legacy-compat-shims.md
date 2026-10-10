@@ -428,3 +428,69 @@ containerless-only user how to drop the cluster tools afterwards.
 - **When it is safe to remove.** The caveat paragraph, once no release before
   the split is still in use. `formula_renames.json` can stay indefinitely: it
   costs nothing, and lets an install that skipped many releases migrate.
+
+## The install record in `server.json`: the lift and the mirror
+
+A data dir's install record (`driver`, `installId`, `clusterUid`,
+`kubeContext`, `byo`) lives in `<dataDir>/install.json`. Older installs kept
+it in the client tier's `server.json`, beside the selection, and an older
+`yaac` still reads it only there. Two shims bridge that, both in
+`packages/shared/src/install-record.ts`:
+
+- **What they read.**
+  - *The lift.* When the client data dir's `install.json` is absent (or
+    torn by a crash), `readInstallRecord` copies the fields from
+    `<clientDataDir>-client/server.json` into one (`liftLegacyRecord`). An
+    absent file is filled only if no other process wrote it meanwhile.
+  - *The mirror.* The client data dir's record is also kept in
+    `server.json`: `writeServerConfig` writes it beside every selection,
+    `clearServerConfig` keeps the file while it has one, and `recordInstall`
+    copies a changed record there (`mirrorIntoServerJson`). Only the client
+    data dir's record is mirrored; a `~/.yaac-cluster` install has no older
+    CLI that could look for it.
+- **What breaks silently if they go too early.**
+  - Without the lift, an upgraded k8s install loses its record. A host
+    `yaac server start` is then allowed on the cluster's data dir, putting
+    two writers on one database, and `yaac cluster install` mints a new
+    install id and refuses its own byo Deployment as another install's.
+  - Without the mirror, an older `yaac` on PATH (a brew `yaac-server` beside
+    a source build, or the one the desktop app finds) sees no driver in
+    `server.json`, takes a cluster's `~/.yaac` for a containerless one and
+    starts a host server on it.
+- **When it is safe to remove.** Together, once both hold:
+  - every `<dir>-client/server.json` that carries install fields has a
+    sibling `<dir>/install.json` (the lift has run everywhere);
+  - no `yaac` from before `install.json` is installed on any machine that
+    has a data dir.
+- **Order.** Remove them together with, or after, the `~/.yaac` cluster
+  rule below, which finds a legacy record through the lift.
+
+## A cluster install that already lives in `~/.yaac`
+
+With no `YAAC_DATA_DIR`, `yaac cluster …` uses `~/.yaac-cluster`, beside the
+host server's `~/.yaac`. Older cluster installs live in `~/.yaac` itself.
+
+- **What it reads.** `clusterDataDir` in
+  `packages/shared/src/install-record.ts` keeps `~/.yaac` when its record
+  says `driver: k8s`. It reads that record through `readInstallRecord`, so
+  it sees one still only in `server.json` (the lift above). The desktop tray
+  hides the host server's lines when `yaac server status --json` reports
+  `driver: k8s` (`hostStatus` in `packages/desktop/src/server-control.ts`),
+  since that data dir is the cluster's.
+- **What breaks silently if it goes too early.** `yaac cluster install`
+  starts a fresh install in `~/.yaac-cluster` against the existing kind
+  cluster. A byo install is refused, because its Deployment carries the old
+  install id. A kind install gets further and fails in `ensureStaticClaims`
+  ("the yaac-global claim is bound to <old volume>, not to <new volume>"),
+  whose advice is to delete the claim and re-run. Doing that binds the
+  server to fresh volumes under `~/.yaac-cluster`, and the install comes up
+  **empty**: every project is still in `~/.yaac`, unreachable.
+- **When it is safe to remove.** Once no machine has a cluster install in
+  `~/.yaac`: neither `~/.yaac/install.json` nor `~/.yaac-client/server.json`
+  records `driver: k8s`.
+- **Moving one by hand.** There is no in-place move; the result is a fresh,
+  empty cluster install, and the old one's projects stay in its data dir.
+  `yaac cluster delete` (running workspaces are lost), then
+  `mv ~/.yaac ~/.yaac-old-cluster` (keeps its projects and database), then
+  `rm ~/.yaac-client/server.json` (it mirrors the old record, which would
+  otherwise be lifted back into a new `~/.yaac`), then `yaac cluster install`.

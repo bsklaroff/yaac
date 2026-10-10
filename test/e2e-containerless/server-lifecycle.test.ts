@@ -13,6 +13,7 @@ import { readLock, serverLockPath } from '@yaac/shared/lock'
 import { MAX_PORT_PROBES } from '@yaac/shared/server-port'
 import { serverLogPath } from '@yaac/shared/paths'
 import { readServerConfig } from '@yaac/shared/server-config'
+import { readInstallRecord } from '@yaac/shared/install-record'
 import { asTailnet } from '@yaac/test-utils/api'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
@@ -21,7 +22,8 @@ import path from 'node:path'
 /**
  * The server as a host process: binding, the lock file, `start`/`stop`/
  * `restart`, and `logs`. Only the containerless server is a host process;
- * under k8s it is a Deployment (docs/server-in-cluster.md), covered by
+ * under k8s it is a Deployment (docs/server-in-cluster.md) driven by
+ * `yaac cluster start|stop|restart|logs|status`, covered by
  * test/e2e-cli/server.test.ts.
  */
 
@@ -242,7 +244,8 @@ describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
   it('records a fresh install\'s mode, registers its tailnet origin, and never switches back', async () => {
     const started = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST.toUpperCase())
     expect(started.exitCode).toBe(0)
-    expect(await readServerConfig()).toMatchObject({ url: `https://${HOST}`, driver: 'containerless' })
+    expect(await readServerConfig()).toMatchObject({ url: `https://${HOST}` })
+    expect(await readInstallRecord()).toEqual({ driver: 'containerless' })
     expect((await whoami(asTailnet('alice@example.com', HOST))).body).toMatchObject({ kind: 'tailnet', login: 'alice@example.com' })
     expect((await whoami({ host: '127.0.0.1' })).status).toBe(401)
 
@@ -294,7 +297,7 @@ describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
   })
 })
 
-describe('yaac server start on a k8s install', () => {
+describe('yaac server and yaac cluster: two installs, two data dirs', () => {
   let testEnv: YaacTestEnv
 
   beforeEach(async () => {
@@ -306,22 +309,59 @@ describe('yaac server start on a k8s install', () => {
     await testEnv.cleanup()
   })
 
-  it('refuses, and never spawns a second writer of that data dir', async () => {
-    // The recorded driver marks this data dir as a k8s install
-    // (docs/server-in-cluster.md). A host server here would be a second
-    // writer of the same database and would reap every workspace as podless.
-    const clientRoot = `${testEnv.dataDir}-client`
-    await fs.mkdir(clientRoot, { recursive: true })
-    await fs.writeFile(path.join(clientRoot, 'server.json'), JSON.stringify({
-      url: '', enabled: false, saved: [], driver: 'k8s',
-    }), { mode: 0o600 })
+  async function json(env: NodeJS.ProcessEnv, ...args: string[]): Promise<unknown> {
+    const res = await runYaac(env, ...args, '--json')
+    expect(res.exitCode, res.stderr).toBe(0)
+    return JSON.parse(res.stdout)
+  }
 
-    const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'start')
-    expect(exitCode).toBe(1)
-    // The record names no cluster, so the CLI refuses before asking one.
-    expect(stderr).toMatch(/records no cluster[\s\S]*yaac cluster install/)
-    // Nothing was spawned.
+  it('refuses every host verb on a cluster install\'s data dir, naming the cluster verb, and spawns nothing', async () => {
+    // A host server here would be a second writer of the same database and
+    // would reap every workspace as podless (docs/server-in-cluster.md).
+    await fs.writeFile(path.join(testEnv.dataDir, 'install.json'), JSON.stringify({ driver: 'k8s' }), { mode: 0o600 })
+    for (const verb of ['start', 'stop', 'restart', 'logs']) {
+      const { exitCode, stderr } = await runYaac(testEnv.env, 'server', verb)
+      expect(exitCode).toBe(1)
+      expect(stderr).toMatch(new RegExp(`is a cluster install[\\s\\S]*yaac cluster ${verb}`))
+    }
     expect(await readLock()).toBeNull()
+    // Status still answers, so the desktop app can tell whose data dir it is.
+    expect((await runYaac(testEnv.env, 'server', 'status')).stdout).toMatch(/cluster install; see `yaac cluster status`/)
+    expect(await json(testEnv.env, 'server', 'status')).toMatchObject({ driver: 'k8s', running: false })
+    expect(await json(testEnv.env, 'cluster', 'status')).toMatchObject({ driver: 'k8s', running: false })
+    // A record `yaac cluster install` never stamped names no cluster to act on.
+    const start = await runYaac(testEnv.env, 'cluster', 'start')
+    expect(start.exitCode).toBe(1)
+    expect(start.stderr).toMatch(/records no cluster[\s\S]*yaac cluster install/)
+  })
+
+  it('`yaac cluster start|stop|restart|logs|status` say there is no cluster install, whatever the host server is doing', async () => {
+    await fs.writeFile(path.join(testEnv.dataDir, 'install.json'), JSON.stringify({ driver: 'containerless' }), { mode: 0o600 })
+    for (const verb of ['start', 'stop', 'restart', 'logs']) {
+      const { exitCode, stderr } = await runYaac(testEnv.env, 'cluster', verb)
+      expect(exitCode).toBe(1)
+      expect(stderr).toMatch(/There is no cluster install at .*yaac cluster install/)
+    }
+    for (const args of [['-n', '1'], ['-f']]) {
+      expect((await runYaac(testEnv.env, 'cluster', 'logs', ...args)).stderr).toMatch(/no cluster install/)
+    }
+    expect((await runYaac(testEnv.env, 'cluster', 'status')).stdout).toMatch(/no cluster install; create one with `yaac cluster install`/)
+    expect(await json(testEnv.env, 'cluster', 'status'))
+      .toEqual({ driver: null, running: false, serverBuildId: null, cliBuildId: 'test-build-id' })
+  })
+
+  it('keeps a cluster install in ~/.yaac-cluster beside the host server\'s ~/.yaac', async () => {
+    // With no YAAC_DATA_DIR each install gets its own data dir, so the
+    // host server and a cluster's can run side by side.
+    const home = path.join(testEnv.scratchDir, 'home')
+    await fs.mkdir(path.join(home, '.yaac-cluster'), { recursive: true })
+    await fs.writeFile(path.join(home, '.yaac-cluster', 'install.json'), JSON.stringify({ driver: 'k8s' }))
+    const env: NodeJS.ProcessEnv = { ...testEnv.env, HOME: home }
+    delete env.YAAC_DATA_DIR
+    expect(await json(env, 'cluster', 'status')).toMatchObject({ driver: 'k8s', running: false })
+    expect(await json(env, 'server', 'status')).toMatchObject({ driver: null, running: false })
+    // The cluster verbs act on that data dir, not on ~/.yaac.
+    expect((await runYaac(env, 'cluster', 'stop')).stderr).toMatch(/records no cluster/)
   })
 
   it('has no --driver flag to choose a substrate with', async () => {

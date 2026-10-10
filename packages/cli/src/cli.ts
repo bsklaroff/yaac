@@ -35,6 +35,11 @@ import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
 import { FAKE_AUTH_KINDS } from '@yaac/shared/types'
 import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
+import { clusterDataDir, readInstallRecord, recordedDriver } from '@yaac/shared/install-record'
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- names the data dir in refusals; builds no path
+import { clientDataDir, getDataDir, useInstallDataDir } from '@yaac/shared/paths'
+import { registerServer } from '@yaac/shared/server-config'
+import type { LocalServerStatus } from '@yaac/shared/types'
 
 /**
  * Throw a `cluster install` invocation's flag error, if it has one. Runs
@@ -71,75 +76,89 @@ async function runningServerDriver(): Promise<string | undefined> {
 }
 
 /**
- * Run `yaac server start|stop|restart|logs` against a server that is a
- * Deployment, and report whether it did. The k8s server runs in the cluster
- * (docs/server-in-cluster.md), so these verbs scale and roll the Deployment.
- * On a byo install `logs` also goes through the cluster, since the log is not
- * on this machine.
- *
- * Returns false (take the host path) only when the cluster says there is no
- * Deployment. If the cluster can't be asked, this throws: falling back would
- * let `start` put a second server on the same data dir.
+ * Refuse a host `yaac server <verb>` on a data dir that is a cluster
+ * install: its server is a Deployment, which `yaac cluster <verb>` manages.
  */
-async function runDeployedServerVerb(
+async function refuseHostVerbOnCluster(verb: string): Promise<void> {
+  if (await recordedDriver() !== 'k8s') return
+  throw new Error(
+    `The data dir ${getDataDir()} is a cluster install, whose server runs in the cluster: `
+    + `use \`yaac cluster ${verb}\`.`,
+  )
+}
+
+/**
+ * Run `yaac cluster start|stop|restart|logs` against this install's server
+ * Deployment (docs/server-in-cluster.md). A kind install's log is a file in
+ * its data dir; a byo install's is on a volume this machine cannot see, so
+ * it is read through the cluster. A start selects the server, as a host
+ * `yaac server start` does; a restart leaves a selection of another server
+ * alone.
+ */
+async function runClusterServerVerb(
   verb: 'start' | 'stop' | 'restart' | 'logs',
-  opts: { follow?: boolean; lines?: number; tailnet?: string; owner?: string } = {},
-): Promise<boolean> {
-  const { recordedDriver } = await import('@yaac/shared/install-driver')
-  if (await recordedDriver() !== 'k8s') return false
-  // A kind install's log is on a hostPath in this machine's data dir.
-  const { readServerConfig } = await import('@yaac/shared/server-config')
-  if (verb === 'logs' && !(await readServerConfig())?.byo) return false
+  opts: { follow?: boolean; lines?: number } = {},
+): Promise<void> {
+  const record = await readInstallRecord()
+  if (record?.driver !== 'k8s') {
+    throw new Error(`There is no cluster install at ${getDataDir()}. Create one with \`yaac cluster install\`.`)
+  }
+  if (verb === 'logs' && !record.byo) {
+    const { serverLogs } = await import('@yaac/server/main/lifecycle')
+    await serverLogs(opts)
+    return
+  }
   const install = await import('@yaac/server/drivers/k8s/install')
   // Checked first, or another cluster would answer "no Deployment".
   const refusal = await install.foreignClusterRefusal()
   if (refusal) throw new Error(refusal)
-  let deployed: boolean
-  try {
-    deployed = await install.serverDeploymentExists()
-  } catch (err) {
-    throw new Error(
-      'cannot ask the cluster whether this install\'s server is deployed: '
-      + (err instanceof Error ? err.message : String(err))
-      + '\n    This is a k8s install, so falling back to a host server could '
-      + 'put a second server on the same data dir. Fix the cluster access '
-      + '(kubeconfig, kubectl, apiserver) and try again.',
-    )
-  }
-  if (!deployed) return false
-  if (opts.tailnet !== undefined || opts.owner !== undefined) {
-    throw new Error(
-      'this install\'s server runs in the cluster, whose access mode `yaac cluster install` '
-      + 'sets: use `yaac cluster install --tailnet [<host>] [--owner <login>]`.',
-    )
+  if (!await install.serverDeploymentExists()) {
+    throw new Error('This install has no server Deployment yet. Deploy it with `yaac cluster install`.')
   }
   if (verb === 'logs') {
     await install.clusterServerLogs(opts)
-    return true
+    return
   }
   if (verb === 'stop') {
     await install.stopClusterServer()
     console.error('[yaac] server stopped (Deployment scaled to 0)')
-    return true
+    return
   }
   const origin = verb === 'start'
     ? await install.startClusterServer()
     : await install.restartClusterServer()
+  await registerServer(origin, 'k8s', { keepSelection: verb === 'restart' })
   console.error(`[yaac] server ${verb === 'start' ? 'started' : 'restarted'} at ${origin}`)
-  return true
+}
+
+/** `yaac server status` and `yaac cluster status`, as text or JSON. */
+function printServerStatus(status: LocalServerStatus, json: boolean | undefined): void {
+  if (json) {
+    console.log(JSON.stringify(status))
+  } else if (status.running === null) {
+    console.log('unknown: a --byo install keeps its server lock on the cluster')
+  } else if (!status.running) {
+    console.log('not running')
+  } else if (status.serverBuildId === status.cliBuildId) {
+    console.log('running')
+  } else {
+    const update = status.driver === 'k8s' ? 'yaac cluster install' : 'yaac server restart'
+    console.log(`running a different build than this CLI; update it with: ${update}`)
+  }
 }
 
 /**
  * Refuse a `yaac cluster …` command on a containerless install. The recorded
  * driver decides: it is this install's, whatever server is selected, and a
  * loopback origin can still be a tunnel to another machine. Only with
- * nothing recorded (a bare `yaac server run` registers nothing) is a local
- * running server asked.
+ * nothing recorded on a data dir clients share (a bare `yaac server run`
+ * registers nothing) is a local running server asked.
  */
 async function refuseClusterOnContainerless(): Promise<void> {
-  const { recordedDriver } = await import('@yaac/shared/install-driver')
   const recorded = await recordedDriver()
-  const running = recorded === undefined ? await runningServerDriver() : undefined
+  const running = recorded === undefined && getDataDir() === clientDataDir()
+    ? await runningServerDriver()
+    : undefined
   if ((recorded ?? running) !== 'containerless') return
   const where = running !== undefined
     ? 'The running server uses the containerless driver'
@@ -213,7 +232,7 @@ const OWNER_HELP = 'With --tailnet: switch a local install to tailnet mode, givi
 
 const server = program
   .command('server')
-  .description('Manage the yaac server (HTTP server the CLI talks to)')
+  .description('Manage the host yaac server, which runs workspaces as processes on this machine (a cluster\'s server is `yaac cluster`\'s)')
 
 server
   .command('run')
@@ -230,7 +249,7 @@ server
   .option('--tailnet <host>', TAILNET_HELP)
   .option('--owner <login>', OWNER_HELP)
   .action(async (options: ServerAccessOptions) => {
-    if (await runDeployedServerVerb('start', options)) return
+    await refuseHostVerbOnCluster('start')
     const { startServer } = await import('@yaac/server/main/lifecycle')
     await startServer(options)
   })
@@ -239,7 +258,7 @@ server
   .command('stop')
   .description('Stop the running server')
   .action(async () => {
-    if (await runDeployedServerVerb('stop')) return
+    await refuseHostVerbOnCluster('stop')
     const { stopServer } = await import('@yaac/server/main/lifecycle')
     await stopServer()
   })
@@ -250,48 +269,45 @@ server
   .option('--tailnet <host>', TAILNET_HELP)
   .option('--owner <login>', OWNER_HELP)
   .action(async (options: ServerAccessOptions) => {
-    if (await runDeployedServerVerb('restart', options)) return
+    await refuseHostVerbOnCluster('restart')
     const { restartServer } = await import('@yaac/server/main/lifecycle')
     await restartServer(options)
   })
 
 server
   .command('status')
-  .description('Show whether this install\'s server is running, and whether it runs the installed build')
+  .description('Show whether the server is running, and whether it runs the installed build')
   .option('--json', 'Print the status as JSON (what the desktop app reads)')
   .action(async (options: { json?: boolean }) => {
     const { serverStatus } = await import('@yaac/server/main/lifecycle')
     const status = await serverStatus()
-    if (options.json) {
-      console.log(JSON.stringify(status))
+    // JSON still answers, so the desktop app can tell this data dir is a cluster's.
+    if (status.driver === 'k8s' && !options.json) {
+      console.log('this data dir is a cluster install; see `yaac cluster status`')
       return
     }
-    if (status.running === null) {
-      console.log('unknown: a --byo install keeps its server lock on the cluster')
-    } else if (!status.running) {
-      console.log('not running')
-    } else if (status.serverBuildId === status.cliBuildId) {
-      console.log('running')
-    } else {
-      const update = status.driver === 'k8s' ? 'yaac cluster install' : 'yaac server restart'
-      console.log(`running a different build than this CLI; update it with: ${update}`)
-    }
+    printServerStatus(status, options.json)
   })
 
 server
   .command('logs')
-  .description('Print the server log (~/.yaac/server-local/server.log; read through the cluster on a --byo install)')
+  .description('Print the server log (~/.yaac/server-local/server.log)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
   .action(async (options: { follow?: boolean; lines?: number }) => {
-    if (await runDeployedServerVerb('logs', options)) return
+    await refuseHostVerbOnCluster('logs')
     const { serverLogs } = await import('@yaac/server/main/lifecycle')
     await serverLogs(options)
   })
 
+// Every `yaac cluster` command acts on the cluster install's data dir
+// (`clusterDataDir`), while clients keep the shared `server.json`.
 const cluster = program
   .command('cluster')
-  .description('Manage the kubernetes cluster yaac runs workspaces on')
+  .description('Manage the kubernetes cluster yaac runs workspaces on, and its server (data dir ~/.yaac-cluster)')
+  .hook('preAction', async () => {
+    useInstallDataDir(await clusterDataDir())
+  })
 
 cluster
   .command('check')
@@ -340,6 +356,52 @@ cluster
     // the current context, and byo refuses delete outright.
     const { runClusterDelete } = await import('@yaac/server/drivers/k8s/install')
     await runClusterDelete(options)
+  })
+
+cluster
+  .command('start')
+  .description('Start the cluster\'s server (scale its Deployment back up) and select it')
+  .action(async () => {
+    await runClusterServerVerb('start')
+  })
+
+cluster
+  .command('stop')
+  .description('Stop the cluster\'s server (scale its Deployment to zero; workspaces keep running)')
+  .action(async () => {
+    await runClusterServerVerb('stop')
+  })
+
+cluster
+  .command('restart')
+  .description('Restart the cluster\'s server pod on the image it runs (`cluster install` updates it)')
+  .action(async () => {
+    await runClusterServerVerb('restart')
+  })
+
+cluster
+  .command('status')
+  .description('Show whether the cluster\'s server is running, and whether it runs the installed build')
+  .option('--json', 'Print the status as JSON (what the desktop app reads)')
+  .action(async (options: { json?: boolean }) => {
+    const { serverStatus } = await import('@yaac/server/main/lifecycle')
+    const status = await serverStatus()
+    if (status.driver === 'k8s') {
+      printServerStatus(status, options.json)
+    } else if (options.json) {
+      console.log(JSON.stringify({ ...status, driver: null, running: false, serverBuildId: null }))
+    } else {
+      console.log('no cluster install; create one with `yaac cluster install`')
+    }
+  })
+
+cluster
+  .command('logs')
+  .description('Print the cluster\'s server log (read through the cluster on a --byo install)')
+  .option('-f, --follow', 'Keep printing new lines as they are appended')
+  .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
+  .action(async (options: { follow?: boolean; lines?: number }) => {
+    await runClusterServerVerb('logs', options)
   })
 
 const host = program

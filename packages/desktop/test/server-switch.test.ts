@@ -31,7 +31,6 @@ function makeDeps(cfg: ServerConfig | null): Omit<ServerSwitchDeps, 'writeServer
       url,
       enabled: true,
       saved: [{ url }, ...(existing?.saved ?? []).filter((s) => s.url !== url)],
-      ...(existing?.driver ? { driver: existing.driver } : {}),
     }),
     probeServer: vi.fn().mockResolvedValue({ buildId: 'b' }),
     normalizeUrl: (raw: string) => {
@@ -72,10 +71,8 @@ describe('getServerTargets', () => {
     })
   })
 
-  it('reports nothing selected for the cleared-but-driver-kept config', async () => {
-    const cleared: ServerConfig = {
-      url: '', enabled: false, saved: [], driver: 'k8s',
-    }
+  it('reports nothing selected for a config with no selection', async () => {
+    const cleared: ServerConfig = { url: '', enabled: false, saved: [] }
     expect(await getServerTargets(makeDeps(cleared))).toEqual({ current: null, saved: [] })
   })
 })
@@ -96,12 +93,6 @@ describe('applyServerSwitch', () => {
     expect(await applyServerSwitch({ url: 'https://a.ts.net' }, deps)).toEqual({ ok: true })
     expect(deps.probeServer).toHaveBeenCalledWith('https://a.ts.net')
     expect(deps.writeServerConfig).toHaveBeenCalledTimes(1)
-  })
-
-  it('carries the install driver through a switch', async () => {
-    const deps = makeDeps({ ...CFG, driver: 'k8s' })
-    await applyServerSwitch({ url: 'https://b.ts.net' }, deps)
-    expect(deps.writeServerConfig.mock.calls[0][0]).toMatchObject({ driver: 'k8s' })
   })
 
   it('a failed probe surfaces its message and leaves the config untouched', async () => {
@@ -156,11 +147,11 @@ describe('addServerRemote', () => {
 })
 
 describe('removeServer', () => {
-  it('forgets a saved server, keeping the selection and install record', async () => {
-    const deps = makeDeps({ ...CFG, driver: 'k8s' })
+  it('forgets a saved server, keeping the selection', async () => {
+    const deps = makeDeps(CFG)
     expect(await removeServer({ url: 'https://b.ts.net' }, deps)).toEqual({ ok: true })
     expect(deps.writeServerConfig).toHaveBeenCalledWith({
-      url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }], driver: 'k8s',
+      url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }],
     })
   })
 
@@ -200,7 +191,6 @@ describe('restoreSelection', () => {
       url: 'http://127.0.0.1:8787',
       enabled: true,
       saved: [{ url: 'http://127.0.0.1:8787' }, ...CFG.saved],
-      driver: 'containerless',
     }
     const deps = makeDeps(started)
     await restoreSelection(CFG, deps)
