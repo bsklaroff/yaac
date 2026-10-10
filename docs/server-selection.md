@@ -126,17 +126,22 @@ so it has no build to compare, and any server serves it a matching SPA.
 
 The shell reads `server.json`, calls `/whoami` (checking both reachability
 and that the server will identify this device), and loads the origin. It
-never reads a lock. It starts, stops and restarts this machine's servers
-only when the user asks, from the tray or the picker, and always by running
-`yaac server start|stop|restart` or `yaac cluster start|stop`
-(packages/desktop/README.md, "This machine's servers").
+never reads a lock. It sets up, starts, stops and restarts this machine's
+servers only when the user asks, from the tray, the picker or Settings →
+Server, and always by running `brew` and `yaac server start|stop|restart`
+or `yaac cluster install|start|stop` (packages/desktop/README.md, "This
+machine's servers" and "Setup"). A setup ends the way the terminal's
+commands do: `yaac server start` or the first `yaac cluster install`
+registers and selects the new origin, and the shell lands on it.
 
 When no server is reachable (nothing selected, server down, or device not
 identified), the window shows a **picker** instead of an error dialog: with
 no server there is no SPA, and a dialog over a blank window leaves nothing to
 click. The picker is an HTML string on a `data:` URL, like the boot splash,
 so it needs no renderer bundle. It shows the failure verbatim, lists saved
-origins with Connect buttons, and accepts a new origin. It uses the same
+origins with Connect buttons, and accepts a new origin. On a Mac with no
+`yaac`, or with no install and nothing selected, it leads with the two
+installs to set up instead. It uses the same
 preload bridge as the SPA's Settings → Server section, so both reach the same
 main-process handlers, which re-validate input.
 

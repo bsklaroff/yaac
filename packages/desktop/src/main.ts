@@ -2,9 +2,10 @@
  * Electron entry point: untested glue over the sibling modules, which hold
  * the logic.
  *
- * The shell is a client of whatever server `server.json` names. The tray
- * and the picker also start, stop and restart this machine's servers through
- * the `yaac` CLI (server-control.ts), but only when asked: Close hides to
+ * The shell is a client of whatever server `server.json` names. The tray,
+ * the picker and the SPA's Server settings also set up, start, stop and
+ * restart this machine's servers through `brew` and the `yaac` CLI
+ * (local-setup.ts, server-control.ts), but only when asked: Close hides to
  * the tray, and Quit exits the shell and its auth daemon and leaves the
  * server running. With no server reachable the window shows the picker
  * (connect-page.ts). While running it follows `/events` to show waiting
@@ -22,17 +23,18 @@ import {
   normalizeServerUrl, probeServer, readServerConfig, withServerSelected, writeServerConfig,
 } from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
-import type { DesktopServerOutcome, ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
+import type { DesktopLocalState, DesktopServerOutcome, ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
 import { AttentionMonitor, badgeText, notificationFor } from '#attention'
 import { startEventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
 import { connectPageUrl } from '#connect-page'
+import { CLUSTER_SUPPORTED, createSetupRunner, localView, onPath } from '#local-setup'
 import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
 import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
 import {
-  createRunYaac, readLocalServer, runServerAction, trayServerItems,
+  createRunYaac, parseScope, readLocalServer, runServerAction, trayServerItems,
   type LocalServers, type ScopedAction, type ServerScope,
 } from '#server-control'
 import {
@@ -78,8 +80,12 @@ let onConnectPage = false
 let waiting = 0
 // This machine's servers as the tray last read them, and the action under way.
 let localServers: LocalServers = { server: null, cluster: null }
+let brewFound = false
+let lastLocalRead = 0
 let serverBusy: ScopedAction | null = null
 let refreshing: Promise<void> | null = null
+// The tray menu as last built, so a change that leaves it alone keeps it open.
+let trayMenuKey = ''
 /** Counts server actions, so a status read can tell one overlapped it. */
 let actionEpoch = 0
 
@@ -91,8 +97,17 @@ const authDaemon = createAuthDaemonRunner((baseUrl) => utilityProcess.fork(
   path.join(distDir, 'auth-daemon.js'), [baseUrl], { serviceName: 'yaac auth daemon' },
 ))
 const runYaac = createRunYaac()
+const setup = createSetupRunner(() => updateTray())
 // A `brew upgrade` or a server started from a terminal shows up within this.
 const LOCAL_SERVER_POLL_MS = 60_000
+// A renderer asking for this Mac's state gets a read at most this old.
+const LOCAL_STATE_FRESH_MS = 5000
+
+function localState(): DesktopLocalState {
+  return localView({
+    local: localServers, busy: serverBusy, setup: setup.current(), brew: brewFound, clusterSupported: CLUSTER_SUPPORTED,
+  })
+}
 
 function windowStateFile(): string {
   return path.join(app.getPath('userData'), 'window-state.json')
@@ -210,10 +225,26 @@ async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<vo
   applyAttention(0, [], [])
   const targets = await getServerTargets(serverSwitchDeps)
   await refreshLocalServer()
-  await w.loadURL(connectPageUrl({ error, targets, local: localServers }))
+  await w.loadURL(connectPageUrl({ error, targets, local: localState() }))
     .catch((err: unknown) => {
       dialog.showErrorBox(error.title, err instanceof Error ? err.message : String(err))
     })
+}
+
+/**
+ * Show one setup on its own, from the tray. The page stays until the setup
+ * lands the window on its server or the user goes back; events and
+ * forwards for the selected server keep running underneath.
+ */
+async function showSetupPage(scope: ServerScope): Promise<void> {
+  if (!win || win.isDestroyed()) win = await createWindow()
+  const w = win
+  w.show()
+  w.focus()
+  onConnectPage = false
+  const targets = await getServerTargets(serverSwitchDeps)
+  await w.loadURL(connectPageUrl({ error: { title: 'Set up yaac on this Mac' }, targets, local: localState(), setup: scope }))
+    .catch(() => { /* superseded by the next load */ })
 }
 
 function showWindow(): void {
@@ -243,11 +274,18 @@ function createTray(): void {
 
 function updateTray(): void {
   if (!tray) return
-  const serverItems = trayServerItems(localServers, serverBusy).map((item) => ({
+  const items = trayServerItems(localState())
+  // Rebuilding swaps the tray's menu, which empties it if it is open.
+  const key = JSON.stringify({ items, waiting })
+  if (key === trayMenuKey) return
+  trayMenuKey = key
+  const serverItems = items.map((item) => ({
     label: item.label,
     enabled: item.action !== undefined,
     click: () => {
-      if (item.action) void trayServerAction(item.action)
+      const action = item.action
+      if (action?.action === 'setup') void showSetupPage(action.scope)
+      else if (action) void trayServerAction(action)
     },
   }))
   const menu = Menu.buildFromTemplate([
@@ -263,7 +301,7 @@ function updateTray(): void {
     { label: 'Quit yaac', click: () => app.quit() },
   ])
   // An open menu cannot change, so this refresh is for the next opening.
-  menu.once('menu-will-show', () => void refreshLocalServer())
+  menu.on('menu-will-show', () => void refreshLocalServer())
   tray.setContextMenu(menu)
 }
 
@@ -280,32 +318,35 @@ function refreshLocalServer(): Promise<void> {
 async function readLocalServerState(): Promise<void> {
   if (serverBusy) return
   const epoch = actionEpoch
-  // The login-shell PATH is what finds `yaac`.
+  lastLocalRead = Date.now()
+  // The login-shell PATH is what finds `yaac` and `brew`.
   await authDaemonReady
-  const [server, cluster] = await Promise.all([readLocalServer(runYaac, 'server'), readLocalServer(runYaac, 'cluster')])
+  const [server, cluster, brew] = await Promise.all([
+    readLocalServer(runYaac, 'server'), readLocalServer(runYaac, 'cluster'), onPath('brew'),
+  ])
   if (serverBusy || epoch !== actionEpoch) return
-  // Rebuilding swaps the tray's menu, which empties it if it is open.
-  if (JSON.stringify({ server, cluster }) === JSON.stringify(localServers)) return
   localServers = { server, cluster }
+  brewFound = brew
   updateTray()
 }
 
 /**
- * Start, stop or restart one of this machine's servers. A start selects it
- * (a restart only when no other server is selected), so a window showing a
- * remote server puts that selection back and stays where it is. Otherwise
+ * Set up, start, stop or restart one of this machine's servers. A start
+ * selects it (a restart only when no other server is selected), so a window
+ * showing a remote server puts that selection back and stays where it is.
+ * A setup lands on the server it made wherever the window was. Otherwise
  * the window reloads the selected server after a start or restart, and
  * moves to the picker after a stop if it was showing that server.
  */
 async function serverAction(scoped: ScopedAction): Promise<DesktopServerOutcome> {
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
-  const { action } = scoped
+  const { scope, action } = scoped
   serverBusy = scoped
   actionEpoch++
   updateTray()
   await authDaemonReady
-  const remote = onConnectPage || await showingLocalServer() ? null : await readServerConfig()
-  const outcome = await runServerAction(scoped, runYaac)
+  const remote = action === 'setup' || onConnectPage || await showingLocalServer() ? null : await readServerConfig()
+  const outcome = action === 'setup' ? await setup.run(scope) : await runServerAction({ scope, action }, runYaac)
   if (remote) await restoreSelection(remote, serverSwitchDeps)
   serverBusy = null
   await refreshing
@@ -401,11 +442,34 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
-// The picker's start buttons. The reply comes back before the window
-// lands, which replaces the calling page.
+// Start and stop buttons in the picker and the SPA. The reply comes back
+// before the window lands, which replaces the calling page.
 ipcMain.handle('server:start-local', (_e, raw: unknown) => {
-  const scope: ServerScope = raw === 'cluster' ? 'cluster' : 'server'
-  return serverAction({ scope, action: 'start' })
+  const scope = parseScope(raw)
+  return scope ? serverAction({ scope, action: 'start' }) : { ok: false, error: 'invalid arguments' }
+})
+ipcMain.handle('server:stop-local', (_e, raw: unknown) => {
+  const scope = parseScope(raw)
+  return scope ? serverAction({ scope, action: 'stop' }) : { ok: false, error: 'invalid arguments' }
+})
+// This Mac's installs and setup, which the picker and the SPA poll.
+ipcMain.handle('server:local', async () => {
+  if (Date.now() - lastLocalRead > LOCAL_STATE_FRESH_MS) await refreshLocalServer()
+  return localState()
+})
+// A setup runs in the background and replies once it has begun; renderers
+// follow it through `server:local`, and it lands the window when it ends.
+ipcMain.handle('server:setup', (_e, raw: unknown): DesktopServerOutcome => {
+  const scope = parseScope(raw)
+  if (!scope) return { ok: false, error: 'invalid arguments' }
+  if (serverBusy) return { ok: false, error: 'a server action is already running' }
+  if (localState().choices[scope].blocked === 'unsupported') return { ok: false, error: 'this Mac cannot run a local cluster' }
+  void serverAction({ scope, action: 'setup' })
+  return { ok: true }
+})
+ipcMain.handle('server:setup-cancel', () => {
+  setup.cancel()
+  return { ok: true }
 })
 // Removal never touches the selected server, so the window stays put.
 ipcMain.handle('server:remove', async (_e, raw: unknown) => {

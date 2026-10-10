@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import { CheckIcon, DeleteIcon } from '#lib/icons'
-import { serverBridge } from '#lib/desktopServer'
+import { localServerBridge, serverBridge } from '#lib/desktopServer'
 import { api } from '#lib/api'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { ThisMacSettings } from '#components/settings/ThisMacSettings'
 import type { DesktopServerSelection, DesktopServerTargets, Principal } from '@yaac/shared/types'
 
 /**
@@ -89,6 +90,7 @@ export function ServerSettings(): JSX.Element {
   }
 
   const saved = targets?.saved ?? []
+  const local = localServerBridge(bridge)
 
   return (
     <section>
@@ -141,6 +143,8 @@ export function ServerSettings(): JSX.Element {
           </div>
         ))}
       </div>
+
+      {local && <ThisMacSettings bridge={local} />}
 
       <div className="mt-6">
         <div className="text-xs font-medium text-text">Add a server</div>

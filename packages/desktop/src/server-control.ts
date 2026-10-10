@@ -11,7 +11,9 @@
  * (docs/containerless-driver.md), so a stop never stops an agent either.
  */
 import { execFile } from 'node:child_process'
-import type { LocalServerStatus } from '@yaac/shared/types'
+import type {
+  DesktopInstallState, DesktopLocalScope, DesktopLocalState, DesktopSetupRun, LocalServerStatus,
+} from '@yaac/shared/types'
 
 export interface YaacResult {
   ok: boolean
@@ -45,7 +47,12 @@ export function createRunYaac(execImpl: typeof execFile = execFile): RunYaac {
 }
 
 /** Which install: the host server or the cluster's (`yaac server …` / `yaac cluster …`). */
-export type ServerScope = 'server' | 'cluster'
+export type ServerScope = DesktopLocalScope
+
+/** A renderer-supplied scope, or null for anything else. */
+export function parseScope(raw: unknown): ServerScope | null {
+  return raw === 'server' || raw === 'cluster' ? raw : null
+}
 
 export type LocalServerState =
   | { kind: 'status', status: LocalServerStatus }
@@ -88,11 +95,31 @@ export function hostStatus(local: LocalServers): LocalServerStatus | null {
   return local.server?.kind === 'status' && local.server.status.driver !== 'k8s' ? local.server.status : null
 }
 
-export type ServerAction = 'start' | 'stop' | 'restart'
+/**
+ * One install's state. An install exists once its driver is recorded: the
+ * host's by its first `yaac server start`, a cluster's by `yaac cluster
+ * install`. Null until read, and for a host data dir that is itself the
+ * cluster install.
+ */
+export function installState(local: LocalServers, scope: ServerScope): DesktopInstallState | null {
+  const read = local[scope]
+  if (read?.kind === 'no-cli') return 'missing'
+  if (read?.kind === 'error') return 'unavailable'
+  const status = scope === 'server' ? hostStatus(local) : clusterStatus(local)
+  if (!status) return read && scope === 'cluster' ? 'missing' : null
+  if (scope === 'server' && status.driver === null && !status.running) return 'missing'
+  if (status.running === null) return 'elsewhere'
+  if (!status.running) return 'stopped'
+  return status.serverBuildId === status.cliBuildId ? 'running' : 'outdated'
+}
 
-export interface ScopedAction {
+export type ServerAction = 'start' | 'stop' | 'restart'
+/** What the app does to an install; only one runs at a time. */
+export type LocalAction = ServerAction | 'setup'
+
+export interface ScopedAction<A extends LocalAction = LocalAction> {
   scope: ServerScope
-  action: ServerAction
+  action: A
 }
 
 /** A tray line; one without an action is a disabled label. */
@@ -102,8 +129,9 @@ export interface TrayServerItem {
 }
 
 const NOUN: Record<ServerScope, string> = { server: 'this Mac\'s server', cluster: 'this Mac\'s cluster server' }
-const BUSY: Record<ServerAction, string> = { start: 'Starting', stop: 'Stopping', restart: 'Restarting' }
+const BUSY: Record<LocalAction, string> = { start: 'Starting', stop: 'Stopping', restart: 'Restarting', setup: 'Setting up' }
 const VERB: Record<ServerAction, string> = { start: 'Start', stop: 'Stop', restart: 'Restart' }
+const SETUP: Record<ServerScope, string> = { server: 'Set up a server on this Mac…', cluster: 'Set up a cluster on this Mac…' }
 
 function line(scope: ServerScope, state: string): TrayServerItem {
   const noun = NOUN[scope]
@@ -114,32 +142,50 @@ function act(scope: ServerScope, action: ServerAction, suffix = ''): TrayServerI
   return { label: `${VERB[action]} ${NOUN[scope]}${suffix}`, action: { scope, action } }
 }
 
+/** "Step 3 of 6: …" for the step a setup is on. */
+function setupProgress(run: DesktopSetupRun): string | null {
+  const at = run.steps.findIndex((s) => s.state === 'running')
+  return at < 0 ? null : `Step ${at + 1} of ${run.steps.length}: ${run.steps[at].label}`
+}
+
 /**
  * The tray's server lines: for each install a state label and at most one
  * action. They always name this Mac's servers, since the window may be on a
- * remote one. A host server on a different build than the installed CLI
- * (after `brew upgrade`) offers a restart instead of a stop. A cluster's
- * server is updated by `yaac cluster install`, which rebuilds its image, so
- * the tray only names that command.
+ * remote one. A missing install offers its setup, unless this Mac cannot
+ * run it. A host server on a different build than the installed CLI (after
+ * `brew upgrade`) offers a restart instead of a stop. A cluster's server is
+ * updated by `yaac cluster install`, which rebuilds its image, so the tray
+ * only names that command.
  */
-export function trayServerItems(local: LocalServers, busy: ScopedAction | null): TrayServerItem[] {
-  if (busy) return [{ label: `${BUSY[busy.action]} ${NOUN[busy.scope]}…` }]
-  const items: TrayServerItem[] = []
-  const host = hostStatus(local)
-  if (local.server?.kind === 'no-cli') items.push({ label: 'No yaac CLI on PATH' })
-  else if (local.server?.kind === 'error') items.push(line('server', 'status unavailable'))
-  else if (host && !host.running) items.push(line('server', 'stopped'), act('server', 'start'))
-  else if (host && host.serverBuildId === host.cliBuildId) items.push(line('server', 'running'), act('server', 'stop'))
-  else if (host) items.push(line('server', 'running an older build'), act('server', 'restart', ' to update'))
-
-  const cluster = clusterStatus(local)
-  // An older `yaac` has no `cluster status`, so this asks for an update.
-  if (local.cluster?.kind === 'error') items.push(line('cluster', 'status unavailable'))
-  else if (cluster?.running === null) items.push({ label: 'This Mac\'s cluster server runs on its cluster' })
-  else if (cluster && !cluster.running) items.push(line('cluster', 'stopped'), act('cluster', 'start'))
-  else if (cluster && cluster.serverBuildId === cluster.cliBuildId) items.push(line('cluster', 'running'), act('cluster', 'stop'))
-  else if (cluster) {
-    items.push({ label: 'Update this Mac\'s cluster server with `yaac cluster install`' }, act('cluster', 'stop'))
+export function trayServerItems(view: DesktopLocalState): TrayServerItem[] {
+  const { busy, setup } = view
+  if (busy) {
+    const progress = busy.action === 'setup' && setup ? setupProgress(setup) : null
+    return [{ label: `${BUSY[busy.action]} ${NOUN[busy.scope]}…` }, ...progress ? [{ label: progress }] : []]
+  }
+  const items: TrayServerItem[] = view.cli ? [] : [{ label: 'No yaac CLI on PATH' }]
+  const offerSetup = (scope: ServerScope): void => {
+    if (view.choices[scope].blocked !== 'unsupported') items.push({ label: SETUP[scope], action: { scope, action: 'setup' } })
+  }
+  switch (view.installs.server) {
+    case 'missing': offerSetup('server'); break
+    case 'unavailable': items.push(line('server', 'status unavailable')); break
+    case 'stopped': items.push(line('server', 'stopped'), act('server', 'start')); break
+    case 'running': items.push(line('server', 'running'), act('server', 'stop')); break
+    case 'outdated': items.push(line('server', 'running an older build'), act('server', 'restart', ' to update')); break
+    default: break
+  }
+  switch (view.installs.cluster) {
+    case 'missing': offerSetup('cluster'); break
+    // An older `yaac` has no `cluster status`, so this asks for an update.
+    case 'unavailable': items.push(line('cluster', 'status unavailable')); break
+    case 'elsewhere': items.push({ label: 'This Mac\'s cluster server runs on its cluster' }); break
+    case 'stopped': items.push(line('cluster', 'stopped'), act('cluster', 'start')); break
+    case 'running': items.push(line('cluster', 'running'), act('cluster', 'stop')); break
+    case 'outdated':
+      items.push({ label: 'Update this Mac\'s cluster server with `yaac cluster install`' }, act('cluster', 'stop'))
+      break
+    default: break
   }
   return items
 }
@@ -154,7 +200,7 @@ export type ActionOutcome =
  * installs every tool it requires except the agent CLIs, so in practice it
  * names the agent to install.
  */
-export async function runServerAction({ scope, action }: ScopedAction, run: RunYaac): Promise<ActionOutcome> {
+export async function runServerAction({ scope, action }: ScopedAction<ServerAction>, run: RunYaac): Promise<ActionOutcome> {
   let result: YaacResult
   try {
     result = await run([scope, action], ACTION_TIMEOUT_MS)
@@ -169,7 +215,7 @@ export async function runServerAction({ scope, action }: ScopedAction, run: RunY
 }
 
 /** The `✗` results of `yaac host check`'s output, each with its indented fix. */
-function failedChecks(stdout: string): string {
+export function failedChecks(stdout: string): string {
   const blocks: string[][] = []
   for (const line of stdout.split('\n')) {
     if (/^\s/.test(line) && blocks.length > 0) blocks[blocks.length - 1].push(line)

@@ -1,17 +1,26 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
+import type { DesktopLocalState, DesktopSetupRun } from '@yaac/shared/types'
 import { connectPageHtml, connectPageUrl, type ConnectPageState } from '#connect-page'
+import { localView } from '#local-setup'
 import type { LocalServers, LocalServerState } from '#server-control'
 
-const STOPPED = {
+/** No install: what `yaac server|cluster status --json` reports before one exists. */
+const NONE = {
   kind: 'status',
   status: { running: false, driver: null, serverBuildId: null, cliBuildId: 'b1' },
 } satisfies LocalServerState
+const STOPPED: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'containerless' } }
+const CLUSTER_STOPPED: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'k8s' } }
+const NO_CLI: LocalServers = { server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }
 
-const NOTHING_READ: LocalServers = { server: null, cluster: null }
+function view(local: LocalServers, more: Partial<Parameters<typeof localView>[0]> = {}): DesktopLocalState {
+  return localView({ local, busy: null, setup: null, brew: true, clusterSupported: true, ...more })
+}
+
+const NOTHING_READ = view({ server: null, cluster: null })
 /** A stopped host server, and no cluster install. */
-const HOST_STOPPED: LocalServers = { server: STOPPED, cluster: STOPPED }
-const CLUSTER_STOPPED: LocalServerState = { kind: 'status', status: { ...STOPPED.status, driver: 'k8s' } }
+const HOST_STOPPED = view({ server: STOPPED, cluster: NONE })
 
 const STATE: ConnectPageState = {
   error: {
@@ -83,27 +92,81 @@ describe('connectPageHtml', () => {
     expect(html).toContain('&lt;img src=x')
   })
 
-  it('offers to start each of this machine\'s servers that is stopped, and the CLI when none is installed', () => {
+  it('offers to start each of this machine\'s servers that is stopped', () => {
     const stopped = connectPageHtml({ ...STATE, local: HOST_STOPPED })
     expect(stopped).toContain('data-scope="server">Start a server on this Mac')
     expect(stopped).toContain('each in its own checkout')
     expect(stopped).not.toContain('data-scope="cluster"')
     // A scaled-down cluster install starts back up as pods, beside the host server.
-    const both = connectPageHtml({ ...STATE, local: { server: STOPPED, cluster: CLUSTER_STOPPED } })
+    const both = connectPageHtml({ ...STATE, local: view({ server: STOPPED, cluster: CLUSTER_STOPPED }) })
     expect(both).toContain('data-scope="server"')
     expect(both).toContain('data-scope="cluster">Start this Mac\'s cluster server')
     expect(both).toContain('kind cluster')
     // A ~/.yaac that is itself the cluster install offers only the cluster.
-    const legacy = connectPageHtml({ ...STATE, local: { server: CLUSTER_STOPPED, cluster: CLUSTER_STOPPED } })
+    const legacy = connectPageHtml({ ...STATE, local: view({ server: CLUSTER_STOPPED, cluster: CLUSTER_STOPPED }) })
     expect(legacy).not.toContain('data-scope="server"')
     expect(legacy).toContain('data-scope="cluster"')
-    const running: LocalServerState = { kind: 'status', status: { ...STOPPED.status, running: true } }
+    const running: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'containerless', running: true } }
     for (const server of [running, null, { kind: 'error', message: 'x' } as const]) {
-      expect(connectPageHtml({ ...STATE, local: { server, cluster: STOPPED } })).not.toContain('class="start"')
+      expect(connectPageHtml({ ...STATE, local: view({ server, cluster: NONE }) })).not.toContain('class="start"')
     }
-    const noCli = connectPageHtml({ ...STATE, local: { server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } } })
-    expect(noCli).not.toContain('class="start"')
-    expect(noCli).toContain('brew install bsklaroff/yaac/yaac-server')
+  })
+
+  it('leads with both setups when there is no CLI, or no install and no server selected', () => {
+    const unselected = { ...STATE, targets: { current: null, saved: [] } }
+    for (const state of [{ ...STATE, local: view(NO_CLI) }, { ...unselected, local: view({ server: NONE, cluster: NONE }) }]) {
+      const html = connectPageHtml(state)
+      expect(html).toContain('Pick where workspaces run')
+      expect(html).toContain('This Mac (containerless)')
+      expect(html).toContain('the permission mode defaults to accept-edits')
+      expect(html).toContain('Local Kubernetes cluster (kind)')
+      expect(html).toContain('gVisor-sandboxed pod')
+      expect(html).toContain([
+        'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'yaac server start', 'yaac host check',
+      ].join('\n'))
+      expect(html).toContain([
+        'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'brew trust libkrun/krun',
+        'brew tap libkrun/krun', 'brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install',
+      ].join('\n'))
+      expect(html).toContain('<button class="setup" data-scope="server">')
+      expect(html).toContain('<button class="setup" data-scope="cluster">')
+      expect(html).not.toContain('class="start"')
+    }
+    // With no saved server either, it is a welcome rather than an error.
+    const welcome = connectPageHtml({ ...unselected, local: view(NO_CLI) })
+    expect(welcome).toContain('<h1>Set up yaac</h1>')
+    expect(welcome).not.toContain('Could not connect')
+    expect(welcome).not.toContain('<h2>Servers</h2>')
+    expect(welcome).toContain('id="add"')
+    expect(connectPageHtml({ ...STATE, local: view(NO_CLI) })).toContain('Could not connect to http://127.0.0.1:8787')
+    // A selected server that is down is not a fresh Mac: no setup.
+    expect(connectPageHtml({ ...STATE, local: view({ server: NONE, cluster: NONE }) })).not.toContain('class="setup"')
+    // A Mac with one install is not a fresh Mac either.
+    expect(connectPageHtml({ ...unselected, local: view({ server: STOPPED, cluster: NONE }) })).not.toContain('class="setup"')
+  })
+
+  it('says what a setup lacks, and turns its button off', () => {
+    const html = connectPageHtml({ ...STATE, local: view(NO_CLI, { brew: false, clusterSupported: false }) })
+    expect(html).toContain('<button class="setup" data-scope="server" disabled data-blocked>')
+    expect(html).toContain('Homebrew is not installed')
+    expect(html).toContain('href="https://brew.sh"')
+    expect(html).toContain('<button class="setup" data-scope="cluster" disabled data-blocked>')
+    expect(html).toContain('it needs macOS on Apple silicon')
+    // With the CLI there, the containerless setup needs no Homebrew.
+    const cli = connectPageHtml({ ...STATE, targets: { current: null, saved: [] }, local: view({ server: NONE, cluster: NONE }, { brew: false }) })
+    expect(cli).toContain('<button class="setup" data-scope="server">')
+    expect(cli).toContain('<button class="setup" data-scope="cluster" disabled data-blocked>')
+  })
+
+  it('shows one setup alone when the tray asks for it, with a way back', () => {
+    const html = connectPageHtml({
+      error: { title: 'Set up yaac on this Mac' }, targets: STATE.targets, local: HOST_STOPPED, setup: 'cluster',
+    })
+    expect(html).toContain('id="choice-cluster"')
+    expect(html).not.toContain('id="choice-server"')
+    expect(html).toContain('>Back</button>')
+    expect(html).not.toContain('id="add"')
+    expect(html).not.toContain('class="connect"')
   })
 })
 
@@ -118,10 +181,17 @@ describe('connectPageUrl', () => {
 
 /** The page's inline script, run against jsdom and a stub preload bridge. */
 describe('connectPageHtml (running in a document)', () => {
-  interface Calls { switchTo: unknown[]; addRemote: unknown[][]; closed: number; retried: number; started: unknown[] }
+  interface Calls {
+    switchTo: unknown[]; addRemote: unknown[][]; closed: number; retried: number; started: unknown[]
+    setups: unknown[]; cancels: number
+  }
+
+  /** What the bridge's `localState` answers, which a test changes as a setup moves on. */
+  let polled: DesktopLocalState = NOTHING_READ
 
   function mount(state: ConnectPageState, outcome: unknown = { ok: false, error: 'cannot reach it' }) {
-    const calls: Calls = { switchTo: [], addRemote: [], closed: 0, retried: 0, started: [] }
+    polled = state.local
+    const calls: Calls = { switchTo: [], addRemote: [], closed: 0, retried: 0, started: [], setups: [], cancels: 0 }
     const w = window as unknown as Record<string, unknown>
     w.yaacServer = {
       switchTo: (sel: unknown) => {
@@ -139,6 +209,15 @@ describe('connectPageHtml (running in a document)', () => {
       startLocal: (scope: unknown) => {
         calls.started.push(scope)
         return Promise.resolve(outcome)
+      },
+      localState: () => Promise.resolve(polled),
+      setupLocal: (scope: unknown) => {
+        calls.setups.push(scope)
+        return Promise.resolve(outcome)
+      },
+      cancelSetup: () => {
+        calls.cancels += 1
+        return Promise.resolve({ ok: true })
       },
     }
     w.yaacWindow = { close: () => { calls.closed += 1 } }
@@ -207,7 +286,7 @@ describe('connectPageHtml (running in a document)', () => {
   })
 
   it('each start button starts its server, and shows a refusal inline', async () => {
-    const calls = mount({ ...STATE, local: { server: STOPPED, cluster: CLUSTER_STOPPED } }, { ok: false, error: 'no Deployment yet' })
+    const calls = mount({ ...STATE, local: view({ server: STOPPED, cluster: CLUSTER_STOPPED }) }, { ok: false, error: 'no Deployment yet' })
     const start = document.querySelector<HTMLButtonElement>('button.start[data-scope="cluster"]')!
     start.click()
     expect(document.getElementById('status')?.textContent).toContain('Starting the server…')
@@ -217,6 +296,67 @@ describe('connectPageHtml (running in a document)', () => {
     expect(start.disabled).toBe(false)
     document.querySelector<HTMLButtonElement>('button.start[data-scope="server"]')!.click()
     expect(calls.started).toEqual(['cluster', 'server'])
+  })
+
+  it('runs a setup, follows its steps and output, and cancels it', async () => {
+    const fresh = view(NO_CLI)
+    const calls = mount({ ...STATE, local: fresh }, { ok: true })
+    const runEl = document.getElementById('run')!
+    expect(runEl.hidden).toBe(true)
+
+    const run: DesktopSetupRun = {
+      scope: 'cluster',
+      phase: 'running',
+      steps: [
+        { label: 'Trust the yaac tap', command: 'brew trust bsklaroff/yaac', state: 'skipped', note: 'already trusted' },
+        { label: 'Install the cluster', command: 'yaac cluster install', state: 'running' },
+      ],
+      log: ['$ yaac cluster install', 'Creating the podman machine <img src=x>'],
+    }
+    polled = { ...fresh, busy: { scope: 'cluster', action: 'setup' }, setup: run }
+    document.querySelector<HTMLButtonElement>('button.setup[data-scope="cluster"]')!.click()
+    await settle()
+    await settle()
+    expect(calls.setups).toEqual(['cluster'])
+    expect(runEl.hidden).toBe(false)
+    expect(document.getElementById('run-title')?.textContent).toBe('Setting up…')
+    const steps = [...document.querySelectorAll('#run-steps li')].map((li) => li.textContent)
+    expect(steps).toEqual(['– Trust the yaac tap (already trusted)', '… Install the cluster'])
+    // Inside the card of the setup that runs.
+    expect(runEl.parentElement?.id).toBe('choice-cluster')
+    expect(document.getElementById('run-log')?.textContent).toContain('Creating the podman machine <img src=x>')
+    expect(document.querySelector('#run img')).toBeNull()
+    // One setup or server action at a time.
+    expect(document.querySelector<HTMLButtonElement>('button.setup[data-scope="server"]')!.disabled).toBe(true)
+
+    polled = {
+      ...fresh,
+      setup: { ...run, phase: 'cancelled', error: 'setup cancelled', steps: [run.steps[0], { ...run.steps[1], state: 'cancelled' }] },
+    }
+    document.getElementById('run-cancel')!.click()
+    await settle()
+    await settle()
+    expect(calls.cancels).toBe(1)
+    expect(document.getElementById('run-title')?.textContent).toBe('Setup cancelled')
+    expect(document.getElementById('run-error')?.textContent).toBe('setup cancelled')
+    expect(document.getElementById('run-cancel')!.hidden).toBe(true)
+    expect(document.querySelector<HTMLButtonElement>('button.setup[data-scope="server"]')!.disabled).toBe(false)
+  })
+
+  it('shows a refused setup inline, and picks up a run started elsewhere on load', async () => {
+    mount({ ...STATE, local: view(NO_CLI) }, { ok: false, error: 'a server action is already running' })
+    document.querySelector<HTMLButtonElement>('button.setup[data-scope="server"]')!.click()
+    await settle()
+    expect(document.getElementById('status')?.textContent).toBe('a server action is already running')
+
+    // A finished run shows beside its own setup only, so a stale one does not linger.
+    const failed: DesktopSetupRun = { scope: 'cluster', phase: 'failed', steps: [], log: [], error: 'boom' }
+    mount({ ...STATE, local: view(NO_CLI, { setup: failed }) })
+    await settle()
+    expect(document.getElementById('run')!.hidden).toBe(false)
+    mount({ ...STATE, local: view({ server: STOPPED, cluster: NONE }, { setup: failed }) })
+    await settle()
+    expect(document.getElementById('run')!.hidden).toBe(true)
   })
 
   it('the close button drives the window bridge (the traffic lights are hidden)', () => {
