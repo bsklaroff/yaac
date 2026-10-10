@@ -26,7 +26,7 @@
  *     of this Mac's installs (a stand-in for a port the app forwards for a
  *     remote server), which the remote page moves the window to.
  *  7. Quitting during a setup asks first, then cancels it: the hanging
- *     brew install's child is gone once the app has exited.
+ *     `yaac server start`'s child is gone once the app has exited.
  *
  * The native confirmation before each setup is answered from the main
  * process (declined once, then accepted), since Playwright cannot click a
@@ -59,7 +59,7 @@ const DATA_DIR = path.join(SCRATCH, 'data')
 const CLIENT_DIR = `${DATA_DIR}-client`
 const BIN = path.join(SCRATCH, 'bin')
 const CALLS = path.join(SCRATCH, 'brew-calls')
-/** While this exists, the stand-in `brew install` hangs, for the cancel case. */
+/** While this exists, the stand-in `brew install` and `yaac server start` hang, for the cancel and quit cases. */
 const SLOW = path.join(SCRATCH, 'slow')
 /** The hanging install's child, which a cancel must kill. */
 const SLEEP_PID = path.join(SCRATCH, 'sleep-pid')
@@ -80,8 +80,12 @@ function write(file, text) {
 function setUpFakes() {
   fs.mkdirSync(BIN, { recursive: true })
   write(SHELL, '#!/bin/sh\nshift\neval "$1"\n')
-  // What the formula install puts on PATH.
-  write(path.join(SCRATCH, 'yaac'), `#!/bin/sh\nexec node '${CLI}' "$@"\n`)
+  // What the formula install puts on PATH. While SLOW exists its
+  // `server start` hangs first, for the quit case.
+  write(path.join(SCRATCH, 'yaac'), `#!/bin/sh
+if [ "$1 $2" = "server start" ] && [ -e '${SLOW}' ]; then sleep 600 & echo $! > '${SLEEP_PID}'; wait; fi
+exec node '${CLI}' "$@"
+`)
   write(path.join(BIN, 'brew'), `#!/bin/sh
 echo "brew $*" >> '${CALLS}'
 case "$*" in
@@ -276,8 +280,7 @@ async function main() {
     console.log('\n7. Quit during a setup → asks, cancels it, then quits')
     await win.evaluate((url) => window.yaacServer.switchTo({ url }), origin)
     await until(win, (o) => location.origin === o, origin, 30_000)
-    // Uninstall the stand-in CLI so the install step runs, and hangs, again.
-    fs.rmSync(path.join(BIN, 'yaac'))
+    // This time `yaac server start` hangs.
     fs.rmSync(SLEEP_PID, { force: true })
     fs.writeFileSync(SLOW, '')
     const begun = await win.evaluate(() => window.yaacServer.setupLocal('server'))

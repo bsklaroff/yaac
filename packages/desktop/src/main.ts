@@ -464,23 +464,19 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
  * Whether an IPC call comes from a page allowed to drive this Mac's
  * servers: the main window's top frame, showing the picker or one of this
  * Mac's running servers. Checked against the frame's URL when the call
- * arrives, since that is what is showing. A miss re-reads the installs
- * once, for a server started from a terminal since the last read.
+ * arrives, since that is what is showing, and against a read of the
+ * installs at most LOCAL_STATE_FRESH_MS old: a server stopped from a
+ * terminal frees its port for a forward to take.
  */
 async function fromLocalPage(e: IpcMainInvokeEvent): Promise<boolean> {
-  const allowed = (): boolean => {
-    try {
-      const frame = e.senderFrame
-      return e.sender === win?.webContents && frame?.parent === null && mayControlLocalServers(frame.url, localServers)
-    } catch {
-      // The frame is gone.
-      return false
-    }
+  if (Date.now() - lastLocalRead > LOCAL_STATE_FRESH_MS) await refreshLocalServer()
+  try {
+    const frame = e.senderFrame
+    return e.sender === win?.webContents && frame?.parent === null && mayControlLocalServers(frame.url, localServers)
+  } catch {
+    // The frame is gone.
+    return false
   }
-  if (allowed()) return true
-  if (Date.now() - lastLocalRead <= LOCAL_STATE_FRESH_MS) return false
-  await refreshLocalServer()
-  return allowed()
 }
 const NOT_LOCAL: DesktopServerOutcome = { ok: false, error: 'only this Mac\'s own pages can drive its servers' }
 
@@ -500,7 +496,6 @@ ipcMain.handle('server:stop-local', async (e, raw: unknown) => {
 // refusal is a rejection, so the SPA leaves its "This Mac" area out.
 ipcMain.handle('server:local', async (e) => {
   if (!await fromLocalPage(e)) throw new Error(NOT_LOCAL.error)
-  if (Date.now() - lastLocalRead > LOCAL_STATE_FRESH_MS) await refreshLocalServer()
   return localState()
 })
 // A setup runs only once the user confirms it in a native dialog, then in
