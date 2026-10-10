@@ -10,3 +10,8 @@ export function Field({ label, hint, children }: { label: string; hint?: ReactNo
     </div>
   )
 }
+
+/** A small uppercase heading over a list of settings rows. */
+export function SectionLabel({ children }: { children: ReactNode }): JSX.Element {
+  return <div className="text-[10px] font-semibold uppercase tracking-wider text-text-faint">{children}</div>
+}

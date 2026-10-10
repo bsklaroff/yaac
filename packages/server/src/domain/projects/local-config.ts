@@ -32,33 +32,6 @@ export async function writeProjectConfig(principal: Actor, projectId: string, ra
 }
 
 /**
- * Return a config with `host` added to its egress allowlist: to
- * setAllowedUrls if the project pins an exact list, else to addAllowedUrls.
- * No-op if already present.
- */
-export function withAllowedHost(config: YaacConfig, host: string): YaacConfig {
-  const key = config.setAllowedUrls ? 'setAllowedUrls' : 'addAllowedUrls'
-  const list = config[key] ?? []
-  return list.includes(host) ? config : { ...config, [key]: [...list, host] }
-}
-
-/** Add an allowed host to a project's stored config, so future workspaces
- *  inherit it. */
-export async function addAllowedHostToProjectConfig(
-  principal: Actor,
-  projectId: string,
-  host: string,
-): Promise<YaacConfig> {
-  let overlay: YaacConfig | null
-  try {
-    overlay = await resolveProjectConfig(projectId)
-  } catch (err) {
-    throw new ServerError('VALIDATION', err instanceof Error ? err.message : String(err))
-  }
-  return writeProjectConfig(principal, projectId, withAllowedHost(overlay ?? {}, host))
-}
-
-/**
  * Return a config with a `portForward` entry for `containerPort`, using the
  * same number as the starting host port. No-op if already present.
  */

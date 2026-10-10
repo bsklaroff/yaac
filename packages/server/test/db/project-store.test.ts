@@ -7,6 +7,7 @@ import {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectEgressAllowlist,
   setProjectGitCredential,
 } from '#db/project-store'
 import { insertGitCredential } from '#db/git-credential-store'
@@ -45,6 +46,7 @@ describe('recordProject', () => {
       createDefaults: {},
       gitCredentialId: null,
       knownHostsEntry: null,
+      egressAllowlist: { hosts: [], defaults: true },
     })
   })
 
@@ -133,6 +135,7 @@ describe('listProjectRows', () => {
         createDefaults: {},
         gitCredentialId: null,
         knownHostsEntry: null,
+        egressAllowlist: { hosts: [], defaults: true },
       },
     ])
   })
@@ -218,5 +221,27 @@ describe('setProjectGitCredential', () => {
     expect(await setProjectGitCredential(APP, b.id, 'x ssh-ed25519 TWO')).toBe(true)
     expect(await getProjectRow(APP)).toMatchObject({ gitCredentialId: b.id, knownHostsEntry: 'x ssh-ed25519 TWO' })
     expect(await setProjectGitCredential('0a0a0a0a-0000-4000-8000-0000000000ff', a.id, null)).toBe(false)
+  })
+})
+
+describe('setProjectEgressAllowlist', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('replaces the allowlist, and reports an unknown projectId', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+
+    expect(await setProjectEgressAllowlist(APP, { hosts: ['a.com'], defaults: true })).toBe(true)
+    expect(await setProjectEgressAllowlist(APP, { hosts: ['b.com'], defaults: false })).toBe(true)
+    expect(await getProjectRow(APP)).toMatchObject({ egressAllowlist: { hosts: ['b.com'], defaults: false } })
+    expect(await setProjectEgressAllowlist('0a0a0a0a-0000-4000-8000-0000000000ff', { hosts: [], defaults: true }))
+      .toBe(false)
   })
 })

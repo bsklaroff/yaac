@@ -16,7 +16,7 @@ import { NESTED_PULL_HOSTS, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { notifyWorkspaceListChanged } from '#notify'
 import { serverLog } from '#log'
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentTool, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
+import type { AgentTool, EgressAllowlist, SecretProxyRule, YaacConfig } from '@yaac/shared/types'
 import type { PassContext, WorkspaceRegistration } from '#drivers/contract'
 
 /**
@@ -152,6 +152,7 @@ export function parseUpstreamRedirectsEnv(
  */
 export function buildProxyRegistration(input: {
   config: YaacConfig
+  allowlist: EgressAllowlist
   remoteUrl: string
   tool: AgentTool
   projectId: string
@@ -161,11 +162,10 @@ export function buildProxyRegistration(input: {
 }): ProxyRegistration {
   // eslint-disable-next-line no-process-env -- DI seam: tests pass input.env.
   const env = input.env ?? process.env
-  // Copy: resolveAllowedHosts may return the shared default array.
-  const allowedHosts = [...resolveAllowedHosts(input.config)]
-  // Nested workspaces need the registry pull hosts, unless the user pinned
-  // an exact allowlist with setAllowedUrls.
-  if (input.config.nestedContainers && !input.config.setAllowedUrls) {
+  const allowedHosts = resolveAllowedHosts(input.allowlist)
+  // Nested workspaces need the registry pull hosts, unless the project
+  // turned the defaults off to pin an exact list.
+  if (input.config.nestedContainers && input.allowlist.defaults && allowedHosts[0] !== '*') {
     allowedHosts.push(...NESTED_PULL_HOSTS.filter((h) => !allowedHosts.includes(h)))
   }
   return {
@@ -200,6 +200,7 @@ export async function registerWorkspaceEgress(
 ): Promise<ProxyRegistration> {
   const registration = buildProxyRegistration({
     config: reg.config,
+    allowlist: reg.allowlist,
     remoteUrl: reg.remoteUrl,
     tool: reg.tool,
     projectId: reg.projectId,

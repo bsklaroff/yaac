@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "egress_allowlist" jsonb DEFAULT '{"hosts":[],"defaults":true}' NOT NULL;

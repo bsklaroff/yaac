@@ -583,8 +583,9 @@ export interface InitCommandSpec {
 /**
  * A project's config overlay (`config/yaac-config.json`), edited through the
  * server so a client needs no shell on its host. Env vars and secrets are
- * rows (`ProjectEnvVar`), not keys here, and there are no host-directory
- * mounts: both would need a shell on the server machine to set up.
+ * rows (`ProjectEnvVar`) and the egress allowlist is `EgressAllowlist`, not
+ * keys here, and there are no host-directory mounts: those would need a shell
+ * on the server machine to set up.
  */
 export interface YaacConfig {
   cacheVolumes?: Record<string, string>
@@ -605,8 +606,6 @@ export interface YaacConfig {
   initCommands?: string[] | InitCommandSpec[]
   portForward?: PortForwardConfig[]
   hideInitPane?: boolean
-  addAllowedUrls?: string[]
-  setAllowedUrls?: string[]
   /**
    * Paths (relative to /workspace) of installed-package dirs that belong to
    * the workspace's runtime rather than the shared checkout. A pod backs each
@@ -614,6 +613,20 @@ export interface YaacConfig {
    * Removed at stop. Unset → `["node_modules"]`; empty disables.
    */
   ephemeralModulesPaths?: string[]
+}
+
+/**
+ * A project's egress allowlist (docs/workspace-egress.md): which hosts its
+ * workspaces may reach through the proxy. Patterns are exact names
+ * (`api.example.com`) or wildcards (`*.example.com`); a lone `*` allows
+ * everything.
+ */
+export interface EgressAllowlist {
+  /** Hosts allowed besides the defaults. */
+  hosts: string[]
+  /** Whether the install's default hosts are allowed too. Off, only `hosts`
+   *  are, so an empty list blocks all egress. */
+  defaults: boolean
 }
 
 /**

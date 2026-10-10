@@ -741,14 +741,15 @@ export async function createWorkspace(
   if (!credential) throw missingCredentialError(projectRow.name)
 
   // Fail now rather than let the agent hit a confusing proxy 403 on fetch.
-  const allowedHosts = resolveAllowedHosts(config)
-  const hostAllowed = allowedHosts.length === 1 && allowedHosts[0] === '*'
-    || allowedHosts.some((pattern) => hostMatchesPattern(parsedRemote.host, pattern))
-  if (!hostAllowed) {
+  // Containerless has no proxy, so nothing to check.
+  const allowlist = projectRow.egressAllowlist
+  const allowedHosts = resolveAllowedHosts(allowlist)
+  if (runtime.kind !== 'containerless' && allowedHosts[0] !== '*'
+    && !allowedHosts.some((pattern) => hostMatchesPattern(parsedRemote.host, pattern))) {
     throw new ServerError(
       'VALIDATION',
-      `Project remote host "${parsedRemote.host}" is not in the resolved allowlist. `
-      + `Add "${parsedRemote.host}" to addAllowedUrls in yaac-config.json.`,
+      `Project remote host "${parsedRemote.host}" is not in the egress allowlist. `
+      + 'Add it in Settings \u2192 Project Config.',
     )
   }
 
@@ -943,6 +944,7 @@ export async function createWorkspace(
     owner: credentialOwnerKey(owner),
     tool,
     config,
+    allowlist,
     remoteUrl,
     nestedContainers,
     proxySecretRules: Object.fromEntries(

@@ -6,7 +6,7 @@
 //
 // The handle (`client.ts`) and schema (`schema.ts`) stay off this barrel so
 // no other layer can build its own queries; only `openDb`/`closeDb` and the
-// `NewerSchemaRefusal` that `openDb` can throw are exported, for the
+// `MigrationRefusal` that `openDb` can throw are exported, for the
 // composition root. Observed facts enter only as a `WorkspaceEvent`
 // through `applyWorkspaceEvent`, which decides which rows change. User
 // intent (a title, a group, a preference) is written through the plain
@@ -43,7 +43,7 @@ export {
   setWorkspaceGroup,
   setWorkspaceGroupPinned,
 } from './group-store'
-export { closeDb, NewerSchemaRefusal, openDb } from './client'
+export { closeDb, MigrationRefusal, openDb } from './client'
 export {
   deleteDraftWorkspace,
   deleteProjectDraftWorkspaces,
@@ -103,6 +103,7 @@ export {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectEgressAllowlist,
   setProjectGitCredential,
   type ProjectRow,
 } from './project-store'

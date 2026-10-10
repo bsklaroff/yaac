@@ -173,6 +173,7 @@ describe('registerWorkspace', () => {
     owner: 'o',
     tool: 'codex',
     config: {},
+    allowlist: { hosts: [], defaults: true },
     remoteUrl: 'https://github.com/example/repo.git',
     proxySecretRules: {},
     ...o,
@@ -184,8 +185,8 @@ describe('registerWorkspace', () => {
   }
 
   // If the cache still applies, only the registration is rewritten.
-  it('writes the registration from the config it is handed', async () => {
-    await registerWorkspace(reg({ config: { setAllowedUrls: ['*'] } }))
+  it('writes the registration from the allowlist it is handed', async () => {
+    await registerWorkspace(reg({ allowlist: { hosts: ['*'], defaults: false } }))
 
     expect(registeredHosts()).toEqual(['*'])
     expect(fakeCluster.callsOf('list')).toEqual([])
@@ -201,7 +202,7 @@ describe('registerWorkspace', () => {
     fakeCluster.intercept((c) => {
       if (c.verb === 'patch') expect(execArgs).toHaveLength(1)
     })
-    await registerWorkspace(reg({ config: { setAllowedUrls: ['api.example.com'] } }))
+    await registerWorkspace(reg({ allowlist: { hosts: ['api.example.com'], defaults: false } }))
 
     expect(registeredHosts()).toEqual(['api.example.com'])
     const [exec] = execArgs
@@ -215,7 +216,7 @@ describe('registerWorkspace', () => {
     fakeCluster.reset()
     fakeCluster.seed(pod('s1'))
     await registerWorkspace(reg({
-      config: { setAllowedUrls: ['*'] },
+      allowlist: { hosts: ['*'], defaults: false },
       proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'] } },
     }))
 
@@ -228,7 +229,7 @@ describe('registerWorkspace', () => {
     fakeCluster.reset()
     fakeCluster.seed(pod('s1', { [LABEL_NPM_CACHE]: 'true' }))
     fakeCluster.intercept((c) => { if (c.verb === 'patch') throw apiError(503, 'apiserver down') })
-    await expect(registerWorkspace(reg({ config: { setAllowedUrls: ['api.example.com'] } })))
+    await expect(registerWorkspace(reg({ allowlist: { hosts: ['api.example.com'], defaults: false } })))
       .rejects.toThrow('apiserver down')
   })
 })

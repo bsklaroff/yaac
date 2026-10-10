@@ -1,8 +1,9 @@
-import { useState, type FormEvent, type JSX } from 'react'
+import { useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DeleteIcon } from '#lib/icons'
 import { api } from '#lib/api'
+import { SectionLabel } from '#components/settings/Field'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
 
 /** One-line summary of where a secret is injected, for the row. */
@@ -26,9 +27,13 @@ interface Draft {
   prefix: string
 }
 
+/** A header field's default, as the proxy applies it to a rule naming none. */
+const DEFAULT_HEADER = 'authorization'
+
+/** Starts on the proxy's defaults, so the user sees what a rule does. */
 const EMPTY: Draft = {
   name: '', value: '', secret: false,
-  hosts: '', path: '', injectInto: 'header', field: '', prefix: '',
+  hosts: '', path: '/*', injectInto: 'header', field: DEFAULT_HEADER, prefix: 'Bearer ',
 }
 
 function draftFrom(v: ProjectEnvVar): Draft {
@@ -38,23 +43,35 @@ function draftFrom(v: ProjectEnvVar): Draft {
     value: v.value ?? '',
     secret: v.secret,
     hosts: rule?.hosts.join(', ') ?? '',
-    path: rule?.path ?? '',
+    path: rule?.path ?? EMPTY.path,
     injectInto: rule?.bodyParam ? 'bodyParam' : 'header',
-    field: rule?.bodyParam ?? rule?.header ?? '',
-    prefix: rule?.prefix ?? '',
+    field: rule?.bodyParam ?? rule?.header ?? DEFAULT_HEADER,
+    // The proxy prefixes "Bearer " only when the rule names no header.
+    prefix: rule?.prefix ?? (rule?.header ? '' : EMPTY.prefix),
   }
 }
 
 function ruleFromDraft(draft: Draft): SecretProxyRule {
   const hosts = draft.hosts.split(/[\s,]+/).map((h) => h.trim()).filter((h) => h.length > 0)
+  const field = draft.field.trim()
   return {
     hosts,
-    ...(draft.path.trim() ? { path: draft.path.trim() } : {}),
+    path: draft.path.trim() || EMPTY.path,
+    // The prefix is sent even when blank, so clearing it means no prefix.
     ...(draft.injectInto === 'bodyParam'
-      ? { bodyParam: draft.field.trim() }
-      : draft.field.trim() ? { header: draft.field.trim() } : {}),
-    ...(draft.prefix ? { prefix: draft.prefix } : {}),
+      ? { bodyParam: field }
+      : { ...(field ? { header: field } : {}), prefix: draft.prefix }),
   }
+}
+
+/** A small caption over a rule field. */
+function Caption({ label, className, children }: { label: string; className?: string; children: ReactNode }): JSX.Element {
+  return (
+    <label className={clsx('block min-w-0', className)}>
+      <span className="mb-1 block text-[10px] text-text-faint">{label}</span>
+      {children}
+    </label>
+  )
 }
 
 /**
@@ -118,135 +135,158 @@ export function ProjectEnv({ projectId, mediatedEgress, readOnly = false }: {
   const inputClass = 'w-full rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono '
     + 'text-xs text-text outline-none focus:border-border-strong'
 
+  const edit = (v: ProjectEnvVar): void => { setEditing(v.id); setDraft(draftFrom(v)) }
+  const row = (v: ProjectEnvVar, detail: JSX.Element): JSX.Element => (
+    <div
+      key={v.id}
+      className={clsx('flex items-center gap-2 rounded-md bg-bg px-2.5 py-1.5 font-mono text-xs',
+        editing === v.id && 'ring-1 ring-accent-soft')}
+    >
+      <button
+        onClick={() => edit(v)}
+        disabled={readOnly || busy}
+        title={readOnly ? undefined : `Edit ${v.name}`}
+        className={clsx('flex min-w-0 flex-1 items-center gap-3 text-left',
+          !readOnly && 'transition hover:opacity-80')}
+      >
+        <span className="max-w-[50%] shrink-0 truncate text-text">{v.name}</span>
+        {detail}
+      </button>
+      {!readOnly && <button
+        onClick={() => { save.reset(); remove.mutate(v) }}
+        disabled={busy}
+        aria-label={`Delete ${v.name}`}
+        className="shrink-0 text-text-faint transition hover:text-text disabled:opacity-50"
+      >
+        <DeleteIcon size={12} />
+      </button>}
+    </div>
+  )
+  const plain = vars?.filter((v) => !v.secret) ?? []
+  const secrets = vars?.filter((v) => v.secret) ?? []
+
   return (
     <div>
-      <div className="text-xs font-medium text-text">Environment</div>
+      <SectionLabel>Environment</SectionLabel>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
         Variables every workspace of this project starts with. Applies to workspaces
         created after saving.
       </p>
 
-      {vars !== undefined && vars.length > 0 && (
-        <div className="mt-3 space-y-1.5">
-          {vars.map((v) => (
-            <div
-              key={v.id}
-              className="flex items-start justify-between gap-2 rounded-md bg-bg px-2.5 py-1.5 text-xs"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate font-mono text-text">{v.name}</span>
-                  {v.secret && (
-                    <span className="shrink-0 rounded bg-surface-3 px-1 text-[10px] text-text-dim">
-                      secret
-                    </span>
-                  )}
-                </div>
-                <div className="truncate font-mono text-[11px] text-text-faint">
-                  {v.secret
-                    ? (v.hasValue ? '••••••••' : 'no value stored')
-                    : v.value}
-                </div>
-                {v.secret && (
-                  <div className="truncate text-[11px] text-text-faint">{ruleSummary(v.rule)}</div>
-                )}
-              </div>
-              {!readOnly && <div className="flex shrink-0 items-center gap-1">
-                <button
-                  onClick={() => { setEditing(v.id); setDraft(draftFrom(v)) }}
-                  disabled={busy}
-                  className="rounded-md bg-surface-3 px-2 py-0.5 text-[11px] text-text transition
-                    hover:bg-border-strong disabled:opacity-50"
-                >
-                  Edit
-                </button>
-                <button
-                  onClick={() => { save.reset(); remove.mutate(v) }}
-                  disabled={busy}
-                  aria-label={`Delete ${v.name}`}
-                  className="rounded-md p-1 text-text-faint transition hover:text-text disabled:opacity-50"
-                >
-                  <DeleteIcon size={12} />
-                </button>
-              </div>}
-            </div>
-          ))}
+      {plain.length > 0 && <div className="mt-3 space-y-1">
+        {plain.map((v) => row(v, <span className="min-w-0 flex-1 truncate text-text-faint">{v.value}</span>))}
+      </div>}
+
+      {secrets.length > 0 && <>
+        <div className="mt-4"><SectionLabel>Secrets</SectionLabel></div>
+        <div className="mt-2 space-y-1">
+          {secrets.map((v) => row(v, <>
+            <span className={clsx('shrink-0', v.hasValue ? 'text-text-faint' : 'font-sans text-[11px] text-error')}>
+              {v.hasValue ? '••••••••' : 'no value stored'}
+            </span>
+            <span title={ruleSummary(v.rule)} className="min-w-0 flex-1 truncate text-right text-accent">
+              {v.rule?.hosts.join(', ')}
+            </span>
+          </>))}
         </div>
-      )}
+      </>}
 
       {readOnly && vars?.length === 0 && <p className="mt-3 text-[11px] text-text-faint">None set.</p>}
 
       {!readOnly && <form onSubmit={submit} className="mt-3 space-y-2">
         <div className="flex gap-2">
+          <div role="radiogroup" aria-label="Kind" className="flex shrink-0 rounded-md border border-border bg-bg p-0.5">
+            {([['Variable', false], ['Secret', true]] as const).map(([label, secret]) => (
+              <button
+                key={label}
+                type="button"
+                role="radio"
+                aria-checked={draft.secret === secret}
+                onClick={() => setDraft({ ...draft, secret })}
+                className={clsx('rounded px-2 text-[11px] transition',
+                  draft.secret === secret ? 'bg-surface-3 text-text' : 'text-text-faint hover:text-text')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <input
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             placeholder="NAME"
-            className={clsx(inputClass, 'flex-1')}
+            className={clsx(inputClass, 'min-w-0 flex-1')}
           />
           <input
             value={draft.value}
             onChange={(e) => setDraft({ ...draft, value: e.target.value })}
             type={draft.secret ? 'password' : 'text'}
             placeholder={draft.secret && editing !== null ? 'unchanged' : 'value'}
-            className={clsx(inputClass, 'flex-1')}
+            className={clsx(inputClass, 'min-w-0 flex-1')}
           />
         </div>
 
-        <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
-          <input
-            type="checkbox"
-            checked={draft.secret}
-            onChange={(e) => setDraft({ ...draft, secret: e.target.checked })}
-          />
-          Secret — stored encrypted
-          {mediatedEgress
-            ? ', injected into outbound requests by the proxy so it never enters the workspace'
-            : '. This server runs workspaces on the host, with no proxy, so the value is placed in the workspace environment'}
-        </label>
+        {draft.secret && (
+          <p className="text-[11px] leading-relaxed text-text-faint">
+            Stored encrypted and never shown again.{' '}
+            {mediatedEgress
+              ? 'The workspace sees only a placeholder; the proxy swaps in the value on requests matching:'
+              : 'The workspace gets the real value in its environment.'}
+          </p>
+        )}
 
         {draft.secret && (
           <div className="space-y-2 rounded-md border border-border p-2">
-            <input
-              value={draft.hosts}
-              onChange={(e) => setDraft({ ...draft, hosts: e.target.value })}
-              placeholder="hosts to inject into, e.g. api.example.com, *.example.com"
-              className={inputClass}
-            />
-            <div className="flex gap-2">
-              <select
-                value={draft.injectInto}
-                onChange={(e) => setDraft({
-                  ...draft,
-                  injectInto: e.target.value === 'bodyParam' ? 'bodyParam' : 'header',
-                })}
-                className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text
-                  outline-none focus:border-border-strong"
-              >
-                <option value="header">Header</option>
-                <option value="bodyParam">Body parameter</option>
-              </select>
+            <Caption label="hosts">
               <input
-                value={draft.field}
-                onChange={(e) => setDraft({ ...draft, field: e.target.value })}
-                placeholder={draft.injectInto === 'header' ? 'authorization' : 'client_secret'}
-                className={clsx(inputClass, 'flex-1')}
+                value={draft.hosts}
+                onChange={(e) => setDraft({ ...draft, hosts: e.target.value })}
+                placeholder="api.example.com, *.example.com"
+                className={inputClass}
               />
-            </div>
-            <div className="flex gap-2">
-              <input
-                value={draft.path}
-                onChange={(e) => setDraft({ ...draft, path: e.target.value })}
-                placeholder="path (default /*)"
-                className={clsx(inputClass, 'flex-1')}
-              />
-              {draft.injectInto === 'header' && (
+            </Caption>
+            <Caption label="inject into">
+              <div className="flex gap-2">
+                <select
+                  value={draft.injectInto}
+                  onChange={(e) => {
+                    const injectInto = e.target.value === 'bodyParam' ? 'bodyParam' : 'header'
+                    // Swap in the new kind's default unless the user named a field.
+                    const field = draft.field === DEFAULT_HEADER || draft.field === ''
+                      ? (injectInto === 'header' ? DEFAULT_HEADER : '')
+                      : draft.field
+                    setDraft({ ...draft, injectInto, field })
+                  }}
+                  className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text
+                    outline-none focus:border-border-strong"
+                >
+                  <option value="header">Header</option>
+                  <option value="bodyParam">Body parameter</option>
+                </select>
                 <input
-                  value={draft.prefix}
-                  onChange={(e) => setDraft({ ...draft, prefix: e.target.value })}
-                  placeholder="prefix (default &quot;Bearer &quot;)"
+                  value={draft.field}
+                  onChange={(e) => setDraft({ ...draft, field: e.target.value })}
+                  placeholder={draft.injectInto === 'header' ? DEFAULT_HEADER : 'client_secret'}
                   className={clsx(inputClass, 'flex-1')}
                 />
+              </div>
+            </Caption>
+            <div className="flex gap-2">
+              <Caption label="path" className="flex-1">
+                <input
+                  value={draft.path}
+                  onChange={(e) => setDraft({ ...draft, path: e.target.value })}
+                  className={inputClass}
+                />
+              </Caption>
+              {draft.injectInto === 'header' && (
+                <Caption label="prefix" className="flex-1">
+                  <input
+                    value={draft.prefix}
+                    onChange={(e) => setDraft({ ...draft, prefix: e.target.value })}
+                    placeholder="none"
+                    className={inputClass}
+                  />
+                </Caption>
               )}
             </div>
           </div>

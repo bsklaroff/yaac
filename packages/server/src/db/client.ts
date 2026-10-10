@@ -93,7 +93,7 @@ async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
   await fs.chmod(dir, 0o700)
   const db = drizzle({ connection: { dataDir: dir } })
   try {
-    await refuseNewerSchema(db, dir)
+    await refuseUnknownMigrations(db, dir)
     await migrate(db, { migrationsFolder: MIGRATIONS_DIR })
   } catch (err) {
     await db.$client.close().catch(() => undefined)
@@ -102,18 +102,23 @@ async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
   return db
 }
 
-/** Why `openDb` refused a database migrated by a newer yaac. The server
- *  stays up answering `/health` with the message rather than exiting. */
-export class NewerSchemaRefusal extends Error {}
+/** Why `openDb` refused the database: it records a migration this build
+ *  does not ship. The server stays up answering `/health` with the message
+ *  rather than exiting. */
+export class MigrationRefusal extends Error {}
 
 /**
- * Refuse a database that a newer server has migrated with a migration this
- * build does not ship. drizzle applies only the migrations missing from its
- * table, so it would open such a database silently, and this server would
- * then read and write a schema it does not know. A fresh database has no
- * table yet and passes.
+ * Refuse a database that records a migration this build does not ship.
+ * drizzle applies only the migrations missing from its table, so it would
+ * open such a database silently, and this server would then read and write a
+ * schema it does not know. A fresh database has no table yet and passes.
+ *
+ * Usually a newer yaac migrated it, but the same check fires when this
+ * install lost some of its own migration files (a server started while a
+ * build was copying them). Names cannot tell the two apart, since migrations
+ * do not land in timestamp order, so the message names both.
  */
-async function refuseNewerSchema(db: Db, dir: string): Promise<void> {
+async function refuseUnknownMigrations(db: Db, dir: string): Promise<void> {
   const { rows: [table] } = await db.$client.query<{ name: string | null }>(
     'SELECT to_regclass(\'drizzle.__drizzle_migrations\') AS name',
   )
@@ -124,9 +129,10 @@ async function refuseNewerSchema(db: Db, dir: string): Promise<void> {
   const known = new Set(await fs.readdir(MIGRATIONS_DIR))
   const unknown = rows.flatMap((r) => (r.name && !known.has(r.name) ? [r.name] : []))
   if (unknown.length === 0) return
-  throw new NewerSchemaRefusal(
-    `the database at ${dir} was migrated by a newer yaac (unknown migrations: `
-    + `${unknown.join(', ')}); upgrade yaac to open it`,
+  throw new MigrationRefusal(
+    `the database at ${dir} records migrations missing from ${MIGRATIONS_DIR} (${unknown.join(', ')}). `
+    + 'Either a newer yaac migrated it, so upgrade yaac, or this install\'s migration files are '
+    + 'incomplete, so rebuild or reinstall it',
   )
 }
 

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectConfigDir, getProjectsDir } from '@yaac/shared/project-paths'
-import { addAllowedHostToProjectConfig, addPortForwardToProjectConfig, readProjectConfigRaw, removeProjectConfig, writeProjectConfig } from '#domain/projects'
+import { addPortForwardToProjectConfig, readProjectConfigRaw, removeProjectConfig, writeProjectConfig } from '#domain/projects'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
@@ -96,39 +96,6 @@ describe('removeProjectConfig', () => {
 
   it('is a no-op when no config dir exists', async () => {
     await removeProjectConfig(local, projectId)
-  })
-})
-
-describe('addAllowedHostToProjectConfig', () => {
-  it('persists a new host, is idempotent, and appends further hosts', async () => {
-    await addAllowedHostToProjectConfig(local, projectId, 'new.example.com')
-    expect(await readOverlay()).toEqual({ addAllowedUrls: ['new.example.com'] })
-
-    await addAllowedHostToProjectConfig(local, projectId, 'new.example.com') // dedup no-op
-    await addAllowedHostToProjectConfig(local, projectId, 'other.example.com')
-    expect((await readOverlay()).addAllowedUrls)
-      .toEqual(['new.example.com', 'other.example.com'])
-  })
-
-  it('appends to setAllowedUrls when the stored overlay pins an exact list', async () => {
-    await seedOverlay(JSON.stringify({ setAllowedUrls: ['pinned.com'] }))
-    await addAllowedHostToProjectConfig(local, projectId, 'extra.com')
-    expect(await readOverlay()).toEqual({ setAllowedUrls: ['pinned.com', 'extra.com'] })
-
-    await addAllowedHostToProjectConfig(local, projectId, 'pinned.com') // dedup no-op
-    expect((await readOverlay()).setAllowedUrls).toEqual(['pinned.com', 'extra.com'])
-  })
-
-  it('preserves unrelated fields of the stored overlay', async () => {
-    await seedOverlay(JSON.stringify({ nestedContainers: true }))
-    await addAllowedHostToProjectConfig(local, projectId, 'a.com')
-    expect(await readOverlay()).toEqual({ nestedContainers: true, addAllowedUrls: ['a.com'] })
-  })
-
-  it('rejects a malformed stored overlay as VALIDATION', async () => {
-    await seedOverlay('{"addAllowedUrls": "not-an-array"}')
-    await expect(addAllowedHostToProjectConfig(local, projectId, 'x.com'))
-      .rejects.toThrow('addAllowedUrls must be a string array')
   })
 })
 

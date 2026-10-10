@@ -1,4 +1,4 @@
-import type { YaacConfig } from '@yaac/shared/types'
+import type { EgressAllowlist } from '@yaac/shared/types'
 
 // Default allowed host patterns for the proxy URL allowlist.
 // Based on https://code.claude.com/docs/en/claude-code-on-the-web#default-allowed-domains
@@ -307,7 +307,7 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
  * Registry and CDN hosts an in-pod `docker pull` reaches. Appended to the
  * allowlist only for `nestedContainers` workspaces (see
  * `buildProxyRegistration`), since other workspaces never pull images. Not
- * appended when `setAllowedUrls` replaces the allowlist. ghcr.io and
+ * appended when the project turns the defaults off. ghcr.io and
  * pkg-containers.githubusercontent.com are already in the default list.
  */
 export const NESTED_PULL_HOSTS: string[] = [
@@ -346,31 +346,12 @@ const CRITICAL_HOSTS = [
   { host: 'github.com', label: 'GitHub' },
 ]
 
-/**
- * Resolve the effective allowed hosts list from project config.
- *
- * - Neither field set → DEFAULT_ALLOWED_HOSTS
- * - addAllowedUrls → DEFAULT_ALLOWED_HOSTS + additional
- * - setAllowedUrls → replaces defaults entirely
- */
-export function resolveAllowedHosts(config: YaacConfig): string[] {
-  if (config.addAllowedUrls && config.setAllowedUrls) {
-    throw new Error('addAllowedUrls and setAllowedUrls are mutually exclusive')
-  }
-
-  let resolved: string[]
-  if (config.setAllowedUrls) {
-    resolved = config.setAllowedUrls
-  } else if (config.addAllowedUrls) {
-    resolved = [...DEFAULT_ALLOWED_HOSTS, ...config.addAllowedUrls]
-  } else {
-    resolved = DEFAULT_ALLOWED_HOSTS
-  }
-
-  // Warn if critical hosts are not allowed.
-  if (resolved.length === 1 && resolved[0] === '*') {
-    return resolved
-  }
+/** Resolve a project's allowlist to the patterns the proxy enforces. */
+export function resolveAllowedHosts(allowlist: EgressAllowlist): string[] {
+  const resolved = allowlist.defaults
+    ? [...DEFAULT_ALLOWED_HOSTS, ...allowlist.hosts.filter((h) => !DEFAULT_ALLOWED_HOSTS.includes(h))]
+    : [...allowlist.hosts]
+  if (resolved.includes('*')) return ['*']
 
   for (const { host, label } of CRITICAL_HOSTS) {
     const isAllowed = resolved.some((pattern) => hostMatchesPattern(host, pattern))

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import {
   addProject,
   assignProjectCredential,
+  getProjectAllowlist,
   getProjectBranches,
   getProjectDetail,
   listProjectEnv,
@@ -14,6 +15,7 @@ import {
   removeProjectConfig,
   removeProjectEnvVar,
   resolveProjectConfigWithSource,
+  setProjectAllowlist,
   setProjectEnvVar,
   writeProjectConfig,
   writeProjectDockerfile,
@@ -24,6 +26,7 @@ import { removeProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
+import { DEFAULT_ALLOWED_HOSTS } from '#lib/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { authorizeProject } from '#domain/access'
@@ -146,6 +149,22 @@ export const projectApp = new Hono<IdentityEnv>()
     await syncRunningWorkspaces(projectId, 'the variable was removed')
     return c.body(null, 204)
   })
+  // The project's egress allowlist, with the install's defaults so a client
+  // can list them. Applies to workspaces created afterwards.
+  .get('/:projectId/allowlist', async (c) => {
+    requireDriverFeature('egress')
+    const allowlist = await getProjectAllowlist(await resolveProjectId(c.req.param('projectId')))
+    return c.json({ allowlist, defaultHosts: DEFAULT_ALLOWED_HOSTS })
+  })
+  .put(
+    '/:projectId/allowlist',
+    zv('json', z.object({ hosts: z.array(z.string()), defaults: z.boolean() })),
+    async (c) => {
+      requireDriverFeature('egress')
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      return c.json({ allowlist: await setProjectAllowlist(c.get('principal'), projectId, c.req.valid('json')) })
+    },
+  )
   // Branch data for the new-workspace picker: local remote-tracking refs
   // (instant), or freshly fetched with ?refresh=1.
   .get(

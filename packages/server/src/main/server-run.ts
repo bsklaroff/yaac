@@ -12,7 +12,7 @@ import {
   refreshPlanUsage,
   runtimeMediatesEgress,
 } from '#domain/auth'
-import { closeDb, findWorkspaceRow, listProjectRows, NewerSchemaRefusal, openDb } from '#db'
+import { closeDb, findWorkspaceRow, listProjectRows, MigrationRefusal, openDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorkspaceContainer } from '#domain/workspaces'
@@ -488,12 +488,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     process.once('SIGINT', quit)
   }
   // Open the DB only under the lock (PGlite's single-writer guard). A
-  // database from a newer yaac is refused; any other open failure fails the
-  // start.
+  // database recording a migration this build lacks is refused; any other
+  // open failure fails the start.
   try {
     await openDb()
   } catch (err) {
-    if (err instanceof NewerSchemaRefusal) {
+    if (err instanceof MigrationRefusal) {
       refuse(err.message)
       return
     }

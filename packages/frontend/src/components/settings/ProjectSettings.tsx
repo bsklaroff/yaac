@@ -3,7 +3,9 @@ import { remoteKind } from '#components/GitCredentialPicker'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
+import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { api } from '#lib/api'
+import { WarningIcon } from '#lib/icons'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
@@ -52,7 +54,7 @@ export function ProjectSettings(): JSX.Element {
   // hidden.
   const buildsImages = useSnapshot()?.driver !== 'containerless'
   // Only with an egress proxy can a secret's value stay out of the
-  // workspace.
+  // workspace, or an allowlist apply.
   const mediatedEgress = useSnapshot()?.driver !== 'containerless'
 
   return (
@@ -83,6 +85,19 @@ export function ProjectSettings(): JSX.Element {
             </p>
           </div>
 
+          {!mediatedEgress && (
+            <div role="note" className="mt-6 flex gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-text-dim">
+              <WarningIcon size={14} className="mt-0.5 shrink-0 text-warning" />
+              <div>
+                <div className="font-medium text-warning">This server runs workspaces directly on the host</div>
+                <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                  <li>Secrets are placed unencrypted in each workspace&apos;s environment, where agents can read them.</li>
+                  <li>Internet access is not restricted: workspaces can reach any URL.</li>
+                </ul>
+              </div>
+            </div>
+          )}
+
           <div className="mt-6">
             <ProjectEnv
               key={`env:${projectId}`}
@@ -91,6 +106,10 @@ export function ProjectSettings(): JSX.Element {
               readOnly={readOnly}
             />
           </div>
+
+          {mediatedEgress && <div className="mt-6">
+            <EgressAllowlist key={`allowlist:${projectId}`} projectId={projectId} readOnly={readOnly} />
+          </div>}
 
           <div className="mt-6">
             <div className="text-xs font-medium text-text">yaac-config.json</div>

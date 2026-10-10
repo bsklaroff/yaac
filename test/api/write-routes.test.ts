@@ -337,6 +337,26 @@ describe('write routes', () => {
     })
   })
 
+  describe('project allowlist routes', () => {
+    it('round-trips the allowlist beside the defaults, and refuses a host with a path', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const put = await client.project[':projectId'].allowlist.$put({
+        param: { projectId: DEMO },
+        json: { hosts: ['*.CDN.example.com'], defaults: false },
+      })
+      expect((await put.json()).allowlist).toEqual({ hosts: ['*.cdn.example.com'], defaults: false })
+
+      const got = await (await client.project[':projectId'].allowlist.$get({ param: { projectId: DEMO } })).json()
+      expect(got.allowlist).toEqual({ hosts: ['*.cdn.example.com'], defaults: false })
+      expect(got.defaultHosts).toContain('api.anthropic.com')
+
+      expect((await client.project[':projectId'].allowlist.$put({
+        param: { projectId: DEMO },
+        json: { hosts: ['example.com/x'], defaults: true },
+      })).status).toBe(400)
+    })
+  })
+
   describe('GET/PUT /config/git-identity', () => {
     it('is null until set, then round-trips', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))

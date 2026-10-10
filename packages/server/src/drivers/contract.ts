@@ -4,6 +4,7 @@ import type {
   AgentStatus,
   AgentTool,
   DriverKind,
+  EgressAllowlist,
   GitAuthFailure,
   ImageBuildEntry,
   PortForwardConfig,
@@ -130,6 +131,7 @@ export interface WorkspaceRegistration {
   owner: string
   tool: AgentTool
   config: YaacConfig
+  allowlist: EgressAllowlist
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
   /**
@@ -220,6 +222,7 @@ export interface SubstrateIntent {
   owner: string
   tool: AgentTool
   config: YaacConfig
+  allowlist: EgressAllowlist
   /** The project's `origin` remote, as the workspace will see it. */
   remoteUrl: string
   nestedContainers: boolean

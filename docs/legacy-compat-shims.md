@@ -341,6 +341,38 @@ hand repair. The directory is removed once empty.
   `.credentials-unreadable/` is the user's to delete; nothing reads it.
 - **Order.** None.
 
+## Moving the egress allowlist out of yaac-config.json
+
+A project's allowlist was two `yaac-config.json` keys, `addAllowedUrls` and
+`setAllowedUrls`; it is the `projects.egress_allowlist` column.
+`importConfigAllowlists` in `packages/server/src/domain/projects/allowlist.ts`
+runs on every server start, from the driver's `recover` hook right after the
+project dir move below. For each project whose config file holds either key it
+merges the hosts into the column (`setAllowedUrls` turns the defaults off),
+then rewrites the file without the two keys. It keeps only entries whose effect
+does not change: one the proxy could never match (uppercase, a scheme, path or
+port) is dropped, and so is a `*` that was not the whole of `setAllowedUrls`,
+since there it matched only single-label names and the column treats `*` as
+allow-all. Each drop is logged by name. A file holding both keys, or a list
+that is not a string array, is left alone and logged; a file that is not JSON
+is skipped silently, since parsing it already fails loudly. `parseProjectConfig`
+also refuses either key with a pointer to the settings page, so a pasted old
+config, and one the import left alone, fails loudly instead of being ignored.
+
+- **What it reads.** `global/projects/<id>/config/yaac-config.json` for every
+  project row.
+- **What breaks silently if it goes too early.** An upgraded install's extra
+  hosts stop being allowed (its workspaces get proxy 403s from hosts they used
+  to reach), and a project that had replaced the defaults gets them back,
+  widening its egress. With the refusal still in place the leftover keys make
+  every create and the config editor fail instead, which is loud; deleting
+  both at once makes the loss silent.
+- **When it is safe to remove.** Once every install has started a server with
+  the change: no project's `yaac-config.json` contains `AllowedUrls`. Remove the
+  refusal in `parseProjectConfig` with it.
+- **Order.** It reads project dirs by id, so it runs after
+  `moveProjectDirsToIds`, and must be removed no later than that move is.
+
 ## The built-in user's credentials keep the `install` key
 
 Before credentials were per user, the server pushed its one set to the

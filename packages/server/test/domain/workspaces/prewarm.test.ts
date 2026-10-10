@@ -39,6 +39,7 @@ vi.mock('#domain/git', () => ({
 vi.mock('#domain/projects/config', () => ({ resolveProjectConfig: vi.fn() }))
 vi.mock('#domain/projects/credentials', () => ({ resolveProjectCredential: vi.fn() }))
 vi.mock('#domain/projects/env', () => ({ resolveProjectEnv: vi.fn() }))
+vi.mock('#domain/projects/allowlist', () => ({ getProjectAllowlist: vi.fn() }))
 vi.mock('#domain/projects/detail', async (importOriginal) => ({
   ...await importOriginal<object>(),
   projectRemoteUrl: vi.fn(() => Promise.resolve('https://example.com/p.git')),
@@ -67,6 +68,7 @@ import {
 } from '#domain/git'
 import { resolveProjectConfig } from '#domain/projects/config'
 import { resolveProjectEnv } from '#domain/projects/env'
+import { getProjectAllowlist } from '#domain/projects/allowlist'
 import { ServerError } from '@yaac/shared/errors'
 import type { WorkspaceEvent } from '#db'
 import {
@@ -187,6 +189,7 @@ describe('tryClaimPrewarmed', () => {
     // Spare warmed from main and no configured default, so no re-branch
     // unless a test asks.
     mockResolveConfig.mockResolvedValue({})
+    vi.mocked(getProjectAllowlist).mockResolvedValue({ hosts: [], defaults: true })
     mockDefaultBranch.mockResolvedValue('main')
     mockRemoteBranchExists.mockResolvedValue(true)
     mockFetchOrigin.mockResolvedValue(undefined)
@@ -215,7 +218,8 @@ describe('tryClaimPrewarmed', () => {
   // must reach it at claim time, as they would a cold create.
   it('re-registers the spare from the project as it is at claim time', async () => {
     mockList.mockResolvedValue([spare()])
-    mockResolveConfig.mockResolvedValue({ setAllowedUrls: ['*'] })
+    mockResolveConfig.mockResolvedValue({ npmCache: false })
+    vi.mocked(getProjectAllowlist).mockResolvedValue({ hosts: ['*'], defaults: false })
     vi.mocked(resolveProjectEnv).mockResolvedValue({
       plain: {},
       secrets: { API_KEY: { value: 'v', rule: { hosts: ['api.example.com'] } } },
@@ -228,7 +232,8 @@ describe('tryClaimPrewarmed', () => {
       projectId: 'p',
       owner: 'install',
       tool: 'claude',
-      config: { setAllowedUrls: ['*'] },
+      config: { npmCache: false },
+      allowlist: { hosts: ['*'], defaults: false },
       remoteUrl: 'https://example.com/p.git',
       proxySecretRules: { API_KEY: { hosts: ['api.example.com'] } },
     })
