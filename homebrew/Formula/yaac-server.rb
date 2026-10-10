@@ -50,7 +50,8 @@ class YaacServer < Formula
       run (claude, codex, opencode, pi) on this machine; `yaac host check`
       names the commands.
 
-      To run a local Kubernetes cluster instead, install its tools:
+      To run a local Kubernetes cluster as well (it keeps its own data
+      dir, ~/.yaac-cluster), install its tools:
 
         brew trust libkrun/krun
         brew tap libkrun/krun

@@ -21,8 +21,8 @@ const execFileAsync = promisify(execFile)
  * survives a namespace delete.
  *
  * There are two clients. The operator uses the install's own data dir and
- * kubeconfig, which the host-side commands (`server stop|start|restart|logs`,
- * `cluster check|delete|install`) read. The user goes through the API. The
+ * kubeconfig, which the host-side commands (`cluster
+ * stop|start|restart|logs|check|delete|install`) read. The user goes through the API. The
  * https origin identifies callers by tailnet user and this machine is a
  * tagged device, so the origin refuses `/whoami` here. User actions
  * therefore go through a loopback port-forward to the server's Service,
@@ -72,8 +72,15 @@ async function kubectl(...args: string[]): Promise<string> {
 
 interface InstallJson { url: string; installId?: string; clusterUid?: string; kubeContext?: string; byo?: boolean }
 
+/**
+ * The selection (`server.json`) merged with the install record
+ * (`install.json`). A rig installed before the record had its own file
+ * keeps it in `server.json` until a CLI run lifts it out.
+ */
 async function readServerJson(): Promise<InstallJson> {
-  return JSON.parse(await fs.readFile(path.join(layout.clientDir, 'server.json'), 'utf8')) as InstallJson
+  const selection = JSON.parse(await fs.readFile(path.join(layout.clientDir, 'server.json'), 'utf8')) as InstallJson
+  const record = await fs.readFile(path.join(layout.dataDir, 'install.json'), 'utf8').catch(() => '{}')
+  return { ...selection, ...JSON.parse(record) as Partial<InstallJson> }
 }
 
 /** The installed server, reached as its owner through a loopback forward. */
@@ -268,39 +275,39 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     }, { timeout: 60_000, interval: 1_000 })
     expect(fwdOutput, 'yaac forward output').toContain(bound)
     const body = await fetch(`http://127.0.0.1:${String(mapping.hostPort)}/`).then((r) => r.text()).catch(async (err: unknown) => {
-      const serverLog = (await runYaac(operatorEnv, 'server', 'logs', '-n', '400')).stdout
+      const serverLog = (await runYaac(operatorEnv, 'cluster', 'logs', '-n', '400')).stdout
       throw new Error(`the forwarded fetch failed (${String(err)})\n--- yaac forward:\n${fwdOutput}`
         + `\n--- server log (forward lines):\n${serverLog.split('\n').filter((l) => /forward|tunnel|relay|attach/i.test(l)).join('\n')}`)
     })
     expect(body).toBe('byo-forward')
   }, INSTALL_TIMEOUT)
 
-  it('server stop|start|restart|logs act on the installed Deployment and answer at the origin', async () => {
+  it('cluster stop|start|restart|logs act on the installed Deployment and answer at the origin', async () => {
     // The lock is on the cluster's claim, out of this machine's sight.
-    const status = await runYaac(operatorEnv, 'server', 'status')
+    const status = await runYaac(operatorEnv, 'cluster', 'status')
     expect(status.exitCode, status.stderr).toBe(0)
     expect(status.stdout).toMatch(/^unknown: a --byo install/)
-    const json = await runYaac(operatorEnv, 'server', 'status', '--json')
+    const json = await runYaac(operatorEnv, 'cluster', 'status', '--json')
     expect(JSON.parse(json.stdout)).toMatchObject({ running: null, driver: 'k8s', serverBuildId: null })
 
-    const stop = await runYaac(operatorEnv, 'server', 'stop')
+    const stop = await runYaac(operatorEnv, 'cluster', 'stop')
     expect(stop.exitCode, stop.stderr).toBe(0)
     expect((await kubectl('get', 'deployment', 'yaac-server', '-n', 'yaac', '-o', 'jsonpath={.spec.replicas}')).trim()).toBe('0')
     // With the server stopped, the log is read through a temporary reader
     // pod, since a cloud install's claim is not visible from this machine.
-    const stopped = await runYaac(operatorEnv, 'server', 'logs', '-n', '5')
+    const stopped = await runYaac(operatorEnv, 'cluster', 'logs', '-n', '5')
     expect(stopped.exitCode, stopped.stderr).toBe(0)
     expect(stopped.stdout.split('\n').filter(Boolean).length).toBe(5)
     await vi.waitFor(async () => expect((await kubectl('get', 'pod', 'yaac-server-log-reader', '-n', 'yaac',
       '--ignore-not-found', '-o', 'name')).trim()).toBe(''), { timeout: 60_000, interval: 1_000 })
-    const start = await runYaac(operatorEnv, 'server', 'start')
+    const start = await runYaac(operatorEnv, 'cluster', 'start')
     expect(start.exitCode, start.stderr).toBe(0)
     expect(start.stderr).toContain(`started at ${origin}`)
-    const restart = await runYaac(operatorEnv, 'server', 'restart')
+    const restart = await runYaac(operatorEnv, 'cluster', 'restart')
     expect(restart.exitCode, restart.stderr).toBe(0)
     expect(restart.stderr).toContain(`restarted at ${origin}`)
     // ...and through the server pod itself while it runs.
-    const logs = await runYaac(operatorEnv, 'server', 'logs', '-n', '5')
+    const logs = await runYaac(operatorEnv, 'cluster', 'logs', '-n', '5')
     expect(logs.exitCode, logs.stderr).toBe(0)
     expect(logs.stdout.split('\n').filter(Boolean).length).toBe(5)
   }, INSTALL_TIMEOUT)

@@ -8,13 +8,12 @@ import {
   normalizeServerUrl,
   probeServer,
   readServerConfig,
-  recordInstall,
   registerServer,
   serverConfigPath,
   withServerSelected,
   writeServerConfig,
 } from '#server-config'
-import { recordedDriver } from '#install-driver'
+import { readInstallRecord } from '#install-record'
 import { clientLocalRoot, setDataDir } from '#paths'
 
 describe('server config store', () => {
@@ -73,55 +72,35 @@ describe('server config store', () => {
   })
 
   it('reads a file that still carries tokens, and the next write drops them', async () => {
-    // An older install's field, ignored.
     await fs.mkdir(clientLocalRoot(), { recursive: true })
     await fs.writeFile(serverConfigPath(), JSON.stringify({
       url: 'https://a.ts.net', token: 'ta', enabled: true,
-      saved: [{ url: 'https://a.ts.net', token: 'ta' }], driver: 'k8s',
+      saved: [{ url: 'https://a.ts.net', token: 'ta' }],
     }))
     const cfg = await readServerConfig()
-    expect(cfg).toEqual({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }], driver: 'k8s' })
+    expect(cfg).toEqual({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }] })
     await writeServerConfig(cfg!)
     expect(await fs.readFile(serverConfigPath(), 'utf8')).not.toContain('token')
   })
 
-  it('keeps the install driver when the servers are forgotten', async () => {
-    // Losing `driver` would let a host `yaac server start` run against a
-    // k8s install's data dir.
-    await writeServerConfig({
-      url: 'https://a.ts.net', enabled: true, saved: [], driver: 'k8s',
-    })
-    await clearServerConfig()
-    expect(await readServerConfig()).toMatchObject({ driver: 'k8s', enabled: false, saved: [] })
-    expect(await recordedDriver()).toBe('k8s')
-    // With nothing selected, the empty url is not offered as a server.
-    expect((await readServerConfig())?.saved).toEqual([])
-  })
-})
-
-describe('recordedDriver', () => {
-  let dir: string
-
-  beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-driver-'))
-    setDataDir(dir)
-  })
-
-  afterEach(async () => {
-    setDataDir('')
-    await fs.rm(dir, { recursive: true, force: true })
-  })
-
-  it('is undefined until something stands a server up', async () => {
-    expect(await recordedDriver()).toBeUndefined()
-  })
-
-  it('reads the field written beside the origin', async () => {
-    await writeServerConfig({
-      url: 'http://127.0.0.1:8787', enabled: true, saved: [],
-      driver: 'containerless',
-    })
-    expect(await recordedDriver()).toBe('containerless')
+  it('lifts a legacy install record into install.json, and keeps a copy here for an older yaac', async () => {
+    // An older `yaac` reads the record only from server.json: losing
+    // `driver` here would let it start a host server on a k8s data dir.
+    for (const rewrite of [
+      async () => writeServerConfig(withServerSelected(await readServerConfig(), 'https://b.ts.net')),
+      clearServerConfig,
+    ]) {
+      await fs.rm(path.join(dir, 'install.json'), { force: true })
+      await fs.mkdir(clientLocalRoot(), { recursive: true })
+      await fs.writeFile(serverConfigPath(), JSON.stringify({
+        url: 'https://a.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'i-1',
+      }))
+      await rewrite()
+      expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
+      expect(JSON.parse(await fs.readFile(serverConfigPath(), 'utf8'))).toMatchObject({ driver: 'k8s', installId: 'i-1' })
+    }
+    // Forgetting keeps the file while it carries the record.
+    expect(await readServerConfig()).toEqual({ url: '', enabled: false, saved: [] })
   })
 })
 
@@ -138,54 +117,34 @@ describe('registerServer', () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  it('selects the origin and records the driver, keeping the other saved servers', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', enabled: false, saved: [], driver: 'containerless' })
+  it('selects the origin and records the driver, keeping the other saved servers and the install record', async () => {
+    await writeServerConfig({ url: 'https://srv.ts.net', enabled: false, saved: [] })
+    await fs.writeFile(path.join(dir, 'install.json'), JSON.stringify({ driver: 'containerless', installId: 'i-1' }))
     await registerServer('http://127.0.0.1:8787', 'k8s')
     expect(await readServerConfig()).toEqual({
       url: 'http://127.0.0.1:8787',
       enabled: true,
       saved: [{ url: 'http://127.0.0.1:8787' }, { url: 'https://srv.ts.net' }],
-      driver: 'k8s',
     })
+    expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
   })
 
-  it('keeps the install record it finds', async () => {
-    await writeServerConfig({ url: '', enabled: false, saved: [], driver: 'k8s', installId: 'i-1', byo: true })
-    await registerServer('https://yaac.tail.ts.net', 'k8s')
-    expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net', installId: 'i-1', byo: true })
-  })
-})
-
-describe('recordInstall', () => {
-  let dir: string
-
-  beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-record-'))
-    setDataDir(dir)
-  })
-
-  afterEach(async () => {
-    setDataDir('')
-    await fs.rm(dir, { recursive: true, force: true })
-  })
-
-  it('records an install before any server, merges later records, and survives every rewrite of the selection', async () => {
-    // Install records who and where it is before it has an origin.
-    await recordInstall({ driver: 'k8s', installId: 'i-1', clusterUid: 'uid-1', kubeContext: 'prod', byo: true })
-    expect(await readServerConfig()).toEqual({
-      url: '', enabled: false, saved: [],
-      driver: 'k8s', installId: 'i-1', clusterUid: 'uid-1', kubeContext: 'prod', byo: true,
-    })
-    await registerServer('https://yaac.tail.ts.net', 'k8s')
-    // A later record merges; `undefined` drops a field.
-    await recordInstall({ clusterUid: 'uid-2', byo: undefined })
-    expect(await readServerConfig()).toMatchObject({ url: 'https://yaac.tail.ts.net', installId: 'i-1', clusterUid: 'uid-2' })
-    expect((await readServerConfig())?.byo).toBeUndefined()
-    // `yaac remote set` and forget change the selection, never the
-    // install's record.
-    await writeServerConfig(withServerSelected(await readServerConfig(), 'https://other.ts.net'))
-    await clearServerConfig()
-    expect(await readServerConfig()).toMatchObject({ url: '', driver: 'k8s', installId: 'i-1', clusterUid: 'uid-2', kubeContext: 'prod' })
+  it('on a restart or re-install, leaves a selection of another server alone unless the origin is new', async () => {
+    const host = 'http://127.0.0.1:8787'
+    const cluster = 'http://127.0.0.1:8790'
+    await writeServerConfig({ url: host, enabled: true, saved: [{ url: host }, { url: cluster }] })
+    await registerServer(cluster, 'k8s', { keepSelection: true })
+    expect(await readServerConfig()).toMatchObject({ url: host, enabled: true })
+    // A first install's origin is new, so it is selected.
+    await registerServer('https://srv.ts.net', 'k8s', { keepSelection: true })
+    expect(await readServerConfig()).toMatchObject({ url: 'https://srv.ts.net' })
+    // With nothing selected, a restart selects its server.
+    await writeServerConfig({ url: host, enabled: false, saved: [{ url: host }, { url: cluster }] })
+    await registerServer(cluster, 'k8s', { keepSelection: true })
+    expect(await readServerConfig()).toMatchObject({ url: cluster, enabled: true })
+    // A start always selects.
+    await registerServer(host, 'containerless')
+    expect(await readServerConfig()).toMatchObject({ url: host, enabled: true })
   })
 })
 

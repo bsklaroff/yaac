@@ -2,7 +2,8 @@
  * `yaac server stop` and `start` against locks and configs they did not
  * write. `stop` must not clear a live in-cluster server's lock, which would
  * let a second server open the same database (docs/server-in-cluster.md).
- * `start` must register the server in `server.json`. Only the data dir and
+ * `start` must register the server in `server.json` and record its driver
+ * in the data dir's `install.json`. Only the data dir and
  * the server socket are faked.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -11,6 +12,7 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { newLeaseFields, readLock, writeLock } from '@yaac/shared/lock'
+import { readInstallRecord, recordInstall } from '@yaac/shared/install-record'
 import { readServerConfig, writeServerConfig } from '@yaac/shared/server-config'
 import { LEASE_STALE_MS } from '@yaac/shared/server-lock-file'
 import { startServer, stopServer } from '#main/lifecycle'
@@ -51,16 +53,16 @@ afterEach(async () => {
 describe('stopServer', () => {
   it('refuses a live in-cluster server rather than clearing its lock', async () => {
     // Clearing it would make the pod exit and restart, and let a host
-    // `yaac server start` open the same data dir. This path runs only when
-    // the cluster was unreachable, so the right action is none.
+    // `yaac server start` open the same data dir. The CLI refuses a data
+    // dir recorded as k8s before this; this one records no driver.
     await podLock()
 
     await stopServer()
 
     expect(await readLock()).not.toBeNull()
-    expect(stderr.join('\n')).toMatch(/runs in the cluster/)
+    expect(stderr.join('\n')).toMatch(/runs in a cluster/)
     // Names the fix and fails, rather than silently doing nothing.
-    expect(stderr.join('\n')).toMatch(/scale deployment\/yaac-server --replicas=0/)
+    expect(stderr.join('\n')).toMatch(/yaac cluster stop[\s\S]*scale deployment\/yaac-server --replicas=0/)
     expect(process.exitCode).toBe(1)
   })
 
@@ -126,8 +128,8 @@ describe('startServer registration', () => {
         url: `http://127.0.0.1:${server.port}`,
         enabled: true,
         saved: [{ url: `http://127.0.0.1:${server.port}` }],
-        driver: 'containerless',
       })
+      expect(await readInstallRecord()).toEqual({ driver: 'containerless' })
     } finally {
       await server.close()
       vi.unstubAllEnvs()
@@ -136,10 +138,9 @@ describe('startServer registration', () => {
 
   it('refuses to start on a k8s install rather than registering a second server', async () => {
     vi.stubEnv('YAAC_BUILD_ID', 'test-build')
-    await writeServerConfig({
-      url: 'http://127.0.0.1:9999', enabled: true, saved: [], driver: 'k8s',
-    })
-    await expect(startServer()).rejects.toThrow(/yaac cluster install/)
+    await recordInstall({ driver: 'k8s' })
+    await writeServerConfig({ url: 'http://127.0.0.1:9999', enabled: true, saved: [] })
+    await expect(startServer()).rejects.toThrow(/yaac cluster start/)
     // The refusal left the selection unchanged.
     expect(await readServerConfig()).toMatchObject({ url: 'http://127.0.0.1:9999' })
     vi.unstubAllEnvs()

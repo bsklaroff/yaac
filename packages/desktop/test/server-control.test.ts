@@ -52,40 +52,69 @@ describe('createRunYaac', () => {
 })
 
 describe('readLocalServer', () => {
-  it('parses the status, and tells a missing CLI from a failing one', async () => {
-    expect(await readLocalServer(fakeYaac({ 'server status --json': statusReply({}) }).run))
+  it('parses each scope\'s status, and tells a missing CLI from a failing one', async () => {
+    expect(await readLocalServer(fakeYaac({ 'server status --json': statusReply({}) }).run, 'server'))
       .toEqual({ kind: 'status', status: STATUS })
-    expect(await readLocalServer(fakeYaac({}).run)).toEqual({ kind: 'no-cli' })
-    expect(await readLocalServer(fakeYaac({ 'server status --json': { ok: false, stderr: 'broken install\n' } }).run))
+    expect(await readLocalServer(fakeYaac({ 'cluster status --json': statusReply({ driver: 'k8s' }) }).run, 'cluster'))
+      .toEqual({ kind: 'status', status: { ...STATUS, driver: 'k8s' } })
+    expect(await readLocalServer(fakeYaac({}).run, 'server')).toEqual({ kind: 'no-cli' })
+    expect(await readLocalServer(fakeYaac({ 'server status --json': { ok: false, stderr: 'broken install\n' } }).run, 'server'))
       .toEqual({ kind: 'error', message: 'broken install' })
   })
 })
 
 describe('trayServerItems', () => {
-  const items = (s: Partial<LocalServerStatus>) => trayServerItems({ kind: 'status', status: { ...STATUS, ...s } }, null)
+  const status = (s: Partial<LocalServerStatus>) => ({ kind: 'status' as const, status: { ...STATUS, ...s } })
+  /** A cluster status as `yaac cluster status --json` reports one. */
+  const kind = (s: Partial<LocalServerStatus> = {}) => status({ driver: 'k8s', ...s })
+  const NO_CLUSTER = status({ driver: null, running: false, serverBuildId: null })
+  const items = (s: Partial<LocalServerStatus>) => trayServerItems({ server: status(s), cluster: NO_CLUSTER }, null)
+  const hostStop = { label: 'Stop this Mac\'s server', action: { scope: 'server', action: 'stop' } }
+  const clusterStop = { label: 'Stop this Mac\'s cluster server', action: { scope: 'cluster', action: 'stop' } }
 
-  it('offers one action per state, and a restart when the server is on another build', () => {
-    const stop = { label: 'Stop this Mac\'s server', action: 'stop' }
+  it('offers one action per state, and a restart when the host server is on another build', () => {
     expect(items({ running: false, serverBuildId: null })).toEqual([
-      { label: 'This Mac\'s server: stopped' }, { label: 'Start this Mac\'s server', action: 'start' },
+      { label: 'This Mac\'s server: stopped' },
+      { label: 'Start this Mac\'s server', action: { scope: 'server', action: 'start' } },
     ])
-    expect(items({})).toEqual([{ label: 'This Mac\'s server: running' }, stop])
+    expect(items({})).toEqual([{ label: 'This Mac\'s server: running' }, hostStop])
     expect(items({ serverBuildId: 'old' })).toEqual([
       { label: 'This Mac\'s server: running an older build' },
-      { label: 'Restart this Mac\'s server to update', action: 'restart' },
+      { label: 'Restart this Mac\'s server to update', action: { scope: 'server', action: 'restart' } },
     ])
-    // A kind install's restart rolls the same image, so only cluster install updates it.
-    expect(items({ driver: 'k8s', serverBuildId: 'old' })).toEqual([
-      { label: 'Update this Mac\'s server with `yaac cluster install`' }, stop,
+  })
+
+  it('lists a cluster install\'s server beside the host one, updated only by `cluster install`', () => {
+    const host = status({ running: false, serverBuildId: null })
+    expect(trayServerItems({ server: host, cluster: kind({ running: false, serverBuildId: null }) }, null)).toEqual([
+      { label: 'This Mac\'s server: stopped' },
+      { label: 'Start this Mac\'s server', action: { scope: 'server', action: 'start' } },
+      { label: 'This Mac\'s cluster server: stopped' },
+      { label: 'Start this Mac\'s cluster server', action: { scope: 'cluster', action: 'start' } },
+    ])
+    // A restart rolls the same image, so only cluster install updates it.
+    expect(trayServerItems({ server: null, cluster: kind({ serverBuildId: 'old' }) }, null)).toEqual([
+      { label: 'Update this Mac\'s cluster server with `yaac cluster install`' }, clusterStop,
+    ])
+    expect(trayServerItems({ server: null, cluster: kind({ running: null, serverBuildId: null }) }, null))
+      .toEqual([{ label: 'This Mac\'s cluster server runs on its cluster' }])
+    // A ~/.yaac that is itself the cluster install shows once, as the cluster.
+    expect(trayServerItems({ server: kind(), cluster: kind() }, null)).toEqual([
+      { label: 'This Mac\'s cluster server: running' }, clusterStop,
     ])
   })
 
   it('shows no action while one runs, or when the server cannot be driven from here', () => {
-    expect(trayServerItems({ kind: 'status', status: STATUS }, 'restart'))
-      .toEqual([{ label: 'Restarting this Mac\'s server…' }])
-    expect(items({ running: null })).toEqual([{ label: 'This Mac\'s server runs on its cluster' }])
-    expect(trayServerItems({ kind: 'no-cli' }, null)).toEqual([{ label: 'No yaac CLI on PATH' }])
-    expect(trayServerItems(null, null)).toEqual([])
+    expect(trayServerItems({ server: status({}), cluster: kind() }, { scope: 'cluster', action: 'restart' }))
+      .toEqual([{ label: 'Restarting this Mac\'s cluster server…' }])
+    expect(trayServerItems({ server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }, null))
+      .toEqual([{ label: 'No yaac CLI on PATH' }])
+    expect(trayServerItems({ server: { kind: 'error', message: 'x' }, cluster: { kind: 'error', message: 'x' } }, null))
+      .toEqual([{ label: 'This Mac\'s server: status unavailable' }, { label: 'This Mac\'s cluster server: status unavailable' }])
+    // An older yaac without `cluster status` still shows the host server.
+    expect(trayServerItems({ server: status({}), cluster: { kind: 'error', message: 'unknown command' } }, null))
+      .toEqual([{ label: 'This Mac\'s server: running' }, hostStop, { label: 'This Mac\'s cluster server: status unavailable' }])
+    expect(trayServerItems({ server: null, cluster: null }, null)).toEqual([])
   })
 })
 
@@ -98,30 +127,31 @@ describe('runServerAction', () => {
     '    fix: Workspaces are not sandboxed.',
   ].join('\n')
 
-  it('after starting a containerless server, returns the host check\'s failures alone', async () => {
+  it('after starting the host server, returns the host check\'s failures alone', async () => {
     const { run, calls } = fakeYaac({
       'server start': {},
-      'server status --json': statusReply({}),
       'host check': { ok: false, stdout: HOST_CHECK_FAIL },
     })
-    expect(await runServerAction('start', run)).toEqual({
+    expect(await runServerAction({ scope: 'server', action: 'start' }, run)).toEqual({
       ok: true,
       hostCheckFailures: '✗ claude: not on PATH\n    fix: npm install -g @anthropic-ai/claude-code',
     })
-    expect(calls).toEqual(['server start @action', 'server status --json @read', 'host check @read'])
+    expect(calls).toEqual(['server start @action', 'host check @read'])
   })
 
-  it('skips the host check for a k8s start and for a stop, and surfaces a refusal', async () => {
-    const k8s = fakeYaac({ 'server start': {}, 'server status --json': statusReply({ driver: 'k8s' }) })
-    expect(await runServerAction('start', k8s.run)).toEqual({ ok: true })
-    expect(k8s.calls).not.toContain('host check @read')
+  it('skips the host check for a cluster start and for a stop, and surfaces a refusal', async () => {
+    const cluster = fakeYaac({ 'cluster start': {} })
+    expect(await runServerAction({ scope: 'cluster', action: 'start' }, cluster.run)).toEqual({ ok: true })
+    expect(cluster.calls).toEqual(['cluster start @action'])
 
     const stop = fakeYaac({ 'server stop': {} })
-    expect(await runServerAction('stop', stop.run)).toEqual({ ok: true })
+    expect(await runServerAction({ scope: 'server', action: 'stop' }, stop.run)).toEqual({ ok: true })
     expect(stop.calls).toEqual(['server stop @action'])
 
-    const refused = fakeYaac({ 'server start': { ok: false, stderr: 'this install runs on k8s\n' } })
-    expect(await runServerAction('start', refused.run)).toEqual({ ok: false, error: 'this install runs on k8s' })
-    expect(await runServerAction('restart', fakeYaac({}).run)).toMatchObject({ ok: false, error: /yaac-server/ })
+    const refused = fakeYaac({ 'server start': { ok: false, stderr: 'this data dir is a cluster install\n' } })
+    expect(await runServerAction({ scope: 'server', action: 'start' }, refused.run))
+      .toEqual({ ok: false, error: 'this data dir is a cluster install' })
+    expect(await runServerAction({ scope: 'server', action: 'restart' }, fakeYaac({}).run))
+      .toMatchObject({ ok: false, error: /yaac-server/ })
   })
 })

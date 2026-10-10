@@ -1,10 +1,12 @@
 import fs from 'node:fs/promises'
-import { clientLocalPath, ensureClientLocalRoot } from '#paths'
+import { clientDataDir, clientLocalPath } from '#paths'
+import { writeJsonFile } from '#json-file'
+import { readInstallRecord, recordInstall } from '#install-record'
 import type { DriverKind, Principal } from '#types'
 
 /**
- * Which yaac server this machine's clients talk to, and what kind of
- * install this data dir is (`~/.yaac-client/server.json`, 0600).
+ * Which yaac server this machine's clients talk to
+ * (`~/.yaac-client/server.json`, 0600).
  *
  * `url` is the selected server; `enabled` deselects it without forgetting
  * it; `saved` lists every server configured and not since removed, so
@@ -12,7 +14,8 @@ import type { DriverKind, Principal } from '#types'
  * install` register their server here (`registerServer`), so clients
  * always reach a server by its origin. The file holds no credential: the
  * server identifies the caller from the request (docs/remote-hosting.md,
- * docs/server-selection.md).
+ * docs/server-selection.md). What kind of install a data dir is lives in
+ * its own `install.json` (`#install-record`).
  */
 export interface SavedServer {
   url: string
@@ -22,42 +25,6 @@ export interface ServerConfig {
   url: string
   enabled: boolean
   saved: SavedServer[]
-  /**
-   * Which substrate this data dir's install runs, not the selected server's
-   * (which may be on another machine and reports its own driver).
-   */
-  driver?: DriverKind
-  /**
-   * Random id minted by the first `yaac cluster install` and stamped on its
-   * Deployment and volumes. Data-dir paths repeat across machines, so volume
-   * re-adoption, foreign-Deployment refusal and byo uninstall key on this.
-   */
-  installId?: string
-  /**
-   * The uid of the install's cluster's `kube-system` namespace. Unlike a
-   * context name, it cannot be reused by another cluster, so host-side
-   * cluster commands refuse when the current context points elsewhere.
-   */
-  clusterUid?: string
-  /** The kube context the install used; shown in refusal messages. */
-  kubeContext?: string
-  /**
-   * The install is `--byo`: yaac did not create the cluster, so
-   * `yaac cluster delete` refuses and nothing here execs into its nodes.
-   */
-  byo?: boolean
-}
-
-const INSTALL_KEYS = ['driver', 'installId', 'clusterUid', 'kubeContext', 'byo'] as const
-
-/** What this data dir records about its install, beside the selection. */
-export type InstallRecord = Pick<ServerConfig, typeof INSTALL_KEYS[number]>
-
-/** The install-level fields a rewrite of the selection must carry over. */
-function installFields(cfg: InstallRecord | null): InstallRecord {
-  const out: Record<string, unknown> = {}
-  for (const key of INSTALL_KEYS) if (cfg?.[key]) out[key] = cfg[key]
-  return out
 }
 
 /** CLIENT-LOCAL: read only by clients, never by the server. */
@@ -80,49 +47,37 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
       .filter((s: unknown): s is SavedServer =>
         !!s && typeof s === 'object' && typeof (s as Record<string, unknown>).url === 'string')
       .map((s) => ({ url: s.url }))
-    // An empty url means nothing is selected (see clearServerConfig).
+    // An empty url means nothing is selected.
     if (cfg.url !== '' && !saved.some((s) => s.url === cfg.url)) {
       saved.unshift({ url: cfg.url })
     }
-    const str = (v: unknown): string | undefined => typeof v === 'string' ? v : undefined
-    return {
-      url: cfg.url,
-      enabled: cfg.enabled,
-      saved,
-      ...installFields({
-        driver: cfg.driver === 'k8s' || cfg.driver === 'containerless' ? cfg.driver : undefined,
-        installId: str(cfg.installId),
-        clusterUid: str(cfg.clusterUid),
-        kubeContext: str(cfg.kubeContext),
-        byo: cfg.byo === true,
-      }),
-    }
+    return { url: cfg.url, enabled: cfg.enabled, saved }
   } catch {
     return null
   }
 }
 
-/** Persist atomically (tmp + rename) at 0600, like everything client-local. */
+/**
+ * Persist atomically at 0600, like everything client-local. The client
+ * data dir's install record is written beside the selection, for an older
+ * `yaac` that reads it only here (docs/legacy-compat-shims.md); reading it
+ * first also lifts a legacy record out before this rewrite.
+ */
 export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
-  await ensureClientLocalRoot()
-  const p = serverConfigPath()
-  const tmp = `${p}.${process.pid}.tmp`
-  await fs.writeFile(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 })
-  await fs.rename(tmp, p)
+  const record = await readInstallRecord(clientDataDir())
+  await writeJsonFile(serverConfigPath(), { ...cfg, ...record })
 }
 
 /**
- * Forget every configured server (`yaac remote unset`) but keep the install
- * record, so a k8s install still refuses a host `yaac server start`. The
- * file is deleted only when there is no install record.
+ * Forget every configured server (`yaac remote unset`). The file stays
+ * while it carries the install record (see writeServerConfig).
  */
 export async function clearServerConfig(): Promise<void> {
-  const install = installFields(await readServerConfig())
-  if (install.driver === undefined) {
-    await fs.rm(serverConfigPath(), { force: true })
+  if (await readInstallRecord(clientDataDir())) {
+    await writeServerConfig({ url: '', enabled: false, saved: [] })
     return
   }
-  await writeServerConfig({ url: '', enabled: false, saved: [], ...install })
+  await fs.rm(serverConfigPath(), { force: true })
 }
 
 /**
@@ -148,17 +103,11 @@ export function normalizeServerUrl(raw: string): string {
 
 /**
  * A config with `url` as the selected server, moved to the front of
- * `saved`. Other saved servers and the install record carry over from
- * `existing`.
+ * `saved`. Other saved servers carry over from `existing`.
  */
 export function withServerSelected(existing: ServerConfig | null, url: string): ServerConfig {
   const others = (existing?.saved ?? []).filter((s) => s.url !== url)
-  return {
-    url,
-    enabled: true,
-    saved: [{ url }, ...others],
-    ...installFields(existing),
-  }
+  return { url, enabled: true, saved: [{ url }, ...others] }
 }
 
 const PROBE_TIMEOUT_MS = 5000
@@ -204,25 +153,19 @@ export async function probeServer(origin: string): Promise<{ buildId: string; pr
 }
 
 /**
- * Select a just-started server and record the install's driver. Called by
- * `yaac server start` and `yaac cluster install`.
+ * Record the install's driver and make its origin known to this machine's
+ * clients. A start selects it. A restart or re-install (`keepSelection`)
+ * selects it only when it is new or nothing else is selected, so
+ * maintenance on one install never moves clients off another.
  */
-export async function registerServer(origin: string, driver: DriverKind): Promise<void> {
-  await writeServerConfig({ ...withServerSelected(await readServerConfig(), origin), driver })
-}
-
-/**
- * Merge `patch` into the install record, leaving the selection alone; an
- * `undefined` value drops the field. `yaac cluster install` calls this
- * before changing anything, so a rerun after a failure recognizes what the
- * failed run created.
- */
-export async function recordInstall(patch: InstallRecord): Promise<void> {
-  const existing = await readServerConfig()
-  await writeServerConfig({
-    url: existing?.url ?? '',
-    enabled: existing?.enabled ?? false,
-    saved: existing?.saved ?? [],
-    ...installFields({ ...installFields(existing), ...patch }),
-  })
+export async function registerServer(
+  origin: string,
+  driver: DriverKind,
+  opts: { keepSelection?: boolean } = {},
+): Promise<void> {
+  await recordInstall({ driver })
+  const cfg = await readServerConfig()
+  const elsewhere = !!cfg?.enabled && cfg.url !== '' && cfg.url !== origin
+  if (opts.keepSelection && elsewhere && cfg.saved.some((s) => s.url === origin)) return
+  await writeServerConfig(withServerSelected(cfg, origin))
 }

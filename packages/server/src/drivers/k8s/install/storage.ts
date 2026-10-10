@@ -76,7 +76,7 @@ export type StorageShape =
     rwo: string
     /** Who each volume root is made to belong to. */
     identity: InstallIdentity
-    /** Which install the volumes are (`server.json`'s `installId`). */
+    /** Which install the volumes are (`install.json`'s `installId`). */
     installId: string
     /** An image in the cluster registry with `sh`, `stat` and `chown` —
      *  the binder pod's. */
@@ -341,7 +341,7 @@ function checkoutsVolumeHandle(driver: string, handle: string): string {
  *
  * Throws when this install's volume is in a different class, or when a
  * volume from the same data-dir path belongs to a different install id
- * (another machine, or a lost `server.json`); the latter is only adopted
+ * (another machine, or a lost `install.json`); the latter is only adopted
  * when the user relabels it.
  */
 async function readoptVolume(
@@ -489,7 +489,7 @@ async function runBinder(
         .join(', and ')}, not this install's (${shape.installId}), so nothing was written to it. A class `
       + 'that gives every claim the same directory — a fixed `subDir` or base path — cannot host two '
       + 'installs: use a class that provisions a directory per volume. If it IS this install\'s data and '
-      + 'its record was lost, restore the server.json that names that install id instead.',
+      + 'its record was lost, restore the install.json that names that install id instead.',
     )
   }
   const refused = logs.split('\n').map((l) => /^BIND_REFUSED=(.*)$/.exec(l)?.[1]).filter(Boolean)

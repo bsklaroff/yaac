@@ -102,8 +102,8 @@ export async function removeServer(
 
 /**
  * Put back the selection from `before`, keeping everything else that has
- * been written since: `yaac server start` saves this machine's origin and
- * its driver as well as selecting it.
+ * been written since: a start saves this machine's origin as well as
+ * selecting it.
  */
 export async function restoreSelection(before: ServerConfig, deps: ServerSwitchDeps): Promise<void> {
   const cfg = await deps.readServerConfig()

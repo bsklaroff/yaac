@@ -1,6 +1,6 @@
 /**
  * The server as a workload in its own cluster: what `yaac cluster install`
- * applies, and what `yaac server start|stop|restart` do afterwards.
+ * applies, and what `yaac cluster start|stop|restart` do afterwards.
  *
  * Only the cluster (the shared fake, plus the kubectl processes for rollout
  * waits and log tails), the registry client and the host `fetch` (which
@@ -85,6 +85,7 @@ import {
 } from '#drivers/k8s/substrate'
 // Setup value: the real hash function, to derive the expected tag.
 import { stringHash } from '#drivers/k8s/image-engine'
+import { readInstallRecord } from '@yaac/shared/install-record'
 import { readServerConfig } from '@yaac/shared/server-config'
 // Setup value: writes the data-dir lock the pre-deploy guard reads.
 import { writeLock } from '@yaac/shared/lock'
@@ -327,12 +328,11 @@ describe('deployServerWorkload', () => {
     expect(order('PersistentVolume')).toBeLessThan(order('PersistentVolumeClaim'))
     expect(order('PersistentVolumeClaim')).toBeLessThan(order('Deployment'))
 
-    // The published origin is recorded in `server.json` with driver k8s,
-    // so clients find it and `yaac server start` uses the Deployment.
+    // The published origin is selected in `server.json` so clients find
+    // it, and the data dir is recorded as k8s, so a host start refuses it.
     expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
-    expect(await readServerConfig()).toMatchObject({
-      url: origin, enabled: true, driver: 'k8s',
-    })
+    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true })
+    expect(await readInstallRecord()).toMatchObject({ driver: 'k8s' })
     // Labelled with its install, which a later install compares.
     expect(applied('Deployment').find((d) => d.metadata?.name === SERVER_APP_NAME)?.metadata?.labels)
       .toMatchObject({ 'yaac.install-id': 'install-1' })
@@ -376,7 +376,7 @@ describe('deployServerWorkload', () => {
   })
 
   it('carries the forward bind the install shell was given, but not its allowed hosts', async () => {
-    // Set on the Deployment; `yaac server restart` only rolls existing
+    // Set on the Deployment; `yaac cluster restart` only rolls existing
     // pods, so re-running install is how it changes. Which names the server
     // answers to follows the fronting alone: a shell-set YAAC_ALLOWED_HOSTS
     // must not open a local install to anything.
@@ -510,7 +510,7 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_ALLOWED_HOSTS).toBe('yaac.tail1234.ts.net')
     expect(env.YAAC_ACCESS_MODE).toBe('tailnet')
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([u]) => (u as string).startsWith(origin))).toBe(true)
-    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true, driver: 'k8s' })
+    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true })
   })
 
   it('hands --owner to the server, and fails on the reason a server refusing its access mode gives', async () => {
@@ -578,7 +578,7 @@ describe('deployServerWorkload', () => {
 
     expect(log.mock.calls.flat().join('\n'))
       .toMatch(/WARNING: .*refused to identify this device: tailscale serve sent no user identity/)
-    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true, driver: 'k8s' })
+    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true })
   })
 
   it('stops the pod that is there before it deploys', async () => {

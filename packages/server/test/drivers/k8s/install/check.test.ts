@@ -42,7 +42,7 @@ import {
 import type { NodeTaint } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { globalRoot, serverLocalRoot } from '@yaac/shared/paths'
-import { writeServerConfig } from '@yaac/shared/server-config'
+import { recordInstall } from '@yaac/shared/install-record'
 
 const NS = 'test-ns'
 const mockRun = vi.mocked(execFileAsync)
@@ -1113,7 +1113,7 @@ describe('runClusterCheck', () => {
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
     expect(egress?.detail).toContain('yaac-proxy-egress')
-    expect(egress?.fix).toContain('yaac server restart')
+    expect(egress?.fix).toContain('yaac cluster restart')
   })
 
   // A workspace pod fetching through the Service checks the egress rule,
@@ -1482,9 +1482,7 @@ describe('runClusterCheck', () => {
   it('tells a provisioned hostPath volume (local-path) from kind\'s static one by its class', async () => {
     // local-path (k3s, kind-byo) provisions hostPath volumes at its own path,
     // which the static-pair checks would wrongly flag.
-    await writeServerConfig({
-      url: 'https://yaac.tailnet.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'install-1', byo: true,
-    })
+    await recordInstall({ driver: 'k8s', installId: 'install-1', byo: true })
     const labelled = (claim: string, id: string): Record<string, string> =>
       ({ 'yaac.install-id': id, 'yaac.data-dir-hash': 'ddh16', 'yaac.claim': claim })
     const localVolume = (id: string): typeof volumes[string] => ({
@@ -1590,7 +1588,7 @@ describe('runClusterCheck', () => {
   it('leaves the kind node fixups alone on a byo install, whose nodes are the pool\'s', async () => {
     // kind-byo's nodes are podman containers with node names, so checking
     // podman alone would probe a cluster install never touched.
-    await writeServerConfig({ url: 'https://yaac.tailnet.ts.net', enabled: true, saved: [], driver: 'k8s', byo: true })
+    await recordInstall({ driver: 'k8s', byo: true })
     const deps = stage()
     const { results } = await check()
     expect(byName(results, 'node-fixups')).toMatchObject({ status: 'skip' })

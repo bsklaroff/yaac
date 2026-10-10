@@ -44,8 +44,9 @@ one mounts two (see "Storage claims").
    modes").
 
 Install then waits for the published origin to report ready and registers
-the server: `server.json` gets that origin and the driver `k8s`. This is the
-same `registerServer` call `yaac server start` makes for a host process,
+the server: `server.json` selects that origin and the data dir's
+`install.json` records the driver `k8s`. This is the same `registerServer`
+call `yaac server start` makes for a host process,
 because clients reach either kind of server the same way
 (docs/server-selection.md). Finally it calls `/whoami` and warns if the
 server will not identify this machine (under the tailnet fronting there is
@@ -58,6 +59,9 @@ Install refuses to run in two cases:
   would put two writers on one database, and the published-origin check
   could be answered by the old server itself.
 - **The data dir is a containerless install.** One data dir is one install.
+  Unless `YAAC_DATA_DIR` names one, a cluster install gets its own data dir,
+  `~/.yaac-cluster`, beside the host server's `~/.yaac`
+  (docs/server-selection.md "Two installs on one machine").
 
 ## The server image
 
@@ -111,8 +115,9 @@ resolver that may hang.
 The kind `extraPortMapping` delivers `127.0.0.1:<server port>` on the host
 to that node port. kind writes port mappings only when a cluster is
 created, so the port is read back from the control-plane node's mapping
-(`podman port`) whenever install or `yaac server start|restart` needs the
-origin, unless `YAAC_SERVER_PORT` names it. There is no fallback port:
+(`podman port`) whenever install or `yaac cluster start|restart` needs the
+origin, unless `YAAC_SERVER_PORT` names it. A new cluster maps port 8790,
+not the host server's 8787, so the two installs never contend for it. There is no fallback port:
 whatever answers a guessed port is not this cluster. A node without the
 mapping is refused with the fix: `yaac cluster delete`, then `yaac cluster
 install`. That loses running workspaces and nothing else, because the data
@@ -361,22 +366,22 @@ build redeploys it (`rollIfStale`), so running workspaces get the new proxy
 without waiting for a launch. Where no proxy exists yet, the first launch
 deploys it.
 
-`yaac server start|stop|restart` act on the Deployment (scale to 1 and
-wait, scale to 0, `rollout restart`) instead of running a host process,
-which would put two servers on one data dir. The `k8s` driver recorded in
-`server.json` sends them there; if the cluster cannot be reached they fail
-rather than fall back to a host process. `stop` scales to zero rather than
-deleting, so `start` can undo it without a full install. It waits for the
-pod to disappear, not for a replica count: a Deployment at zero omits
-`status.replicas`, so waiting for `0` would wait forever.
+`yaac cluster start|stop|restart` act on the Deployment (scale to 1 and
+wait, scale to 0, `rollout restart`); `yaac cluster status` reads its lock.
+`start` selects the server, as a host `yaac server start` does; `restart`
+leaves a selection of another server alone. `stop` scales to zero rather than deleting, so `start` can undo it
+without a full install. It waits for the pod to disappear, not for a
+replica count: a Deployment at zero omits `status.replicas`, so waiting for
+`0` would wait forever. `restart` rolls the pod on the image it already
+runs; only `yaac cluster install` builds a new one.
 
 There is no host-process form of this driver. A server detects that it is
 in the cluster from `YAAC_IN_CLUSTER`, which only this Deployment sets. A
-host `yaac server start` on a data dir recorded as `k8s` is refused and
-points at `yaac cluster install`; `yaac cluster install` refuses a
-containerless data dir. The two never share a data dir.
+host `yaac server start|stop|restart|logs` on a data dir recorded as `k8s`
+is refused and names the `yaac cluster` verb; `yaac cluster install`
+refuses a containerless data dir. The two never share a data dir.
 
-`yaac server logs` reads `server.log` on the server-local claim, passing
+`yaac cluster logs` reads `server.log` on the server-local claim, passing
 `-n` and `-F` to `tail`:
 
 - On kind the claim is this machine's disk, so the CLI reads the file
@@ -387,7 +392,7 @@ containerless data dir. The two never share a data dir.
   `yaac-server-log-reader`, a short-lived pod with the server's image and
   identity that mounts the claim read-only (on the server pod's node, if
   there is one, since an attach-once volume is already there), and deletes
-  it when the command ends. `server start|restart` also delete any leftover
+  it when the command ends. `cluster start|restart` also delete any leftover
   reader first, so it cannot hold an attach-once volume on the wrong node.
 
 There is no hot-reload loop in the cluster: `pnpm watch` is the
@@ -418,7 +423,7 @@ Things to know when reading a failure there:
   run by `test/global-setup.ts` from the suite's frozen copy of the bundle.
   The fixture passes `requirePrebuilt`, so a worker never builds.
 - The forward binds the file's own `YAAC_SERVER_PORT`, because that is the
-  origin `yaac server start|restart` wait on.
+  origin `yaac cluster start|restart` wait on.
 - The server's ClusterRole and ClusterRoleBinding are named
   `yaac-server-<namespace>`, and the PersistentVolumes are named by the
   file's data-dir hash, so every concurrent file has its own. None of these
@@ -481,7 +486,7 @@ includes the install hash and its `claimRef` pins it to its own namespace's
 claim. On kind every volume is `Retain` with an empty storage class: no
 provisioner, and deleting a claim or namespace never touches the hostPath.
 `kind delete` removes the objects with the cluster and leaves the bytes
-under `~/.yaac`, so `yaac cluster delete` touches no data. Kubernetes
+under the data dir, so `yaac cluster delete` touches no data. Kubernetes
 enforces no access mode on a hostPath, so the same claim spec works with a
 real RWX class on a cloud cluster.
 
@@ -520,7 +525,7 @@ binds `yaac-checkouts` (step 4):
    data again. A namespace delete leaves both volumes `Released`, so before
    applying a claim install looks for a volume labelled with this install's
    id (`yaac.install-id`, the random `installId` the first run recorded in
-   `server.json`), namespace, and claim name (`yaac.claim`). It clears that
+   `install.json`), namespace, and claim name (`yaac.claim`). It clears that
    volume's stale `claimRef` and pre-binds the new claim to it by
    `volumeName`, instead of provisioning two empty volumes. The match uses
    the install id, not the data-dir hash, because the hash is of a path and
@@ -580,22 +585,28 @@ the stored credentials, in the database, are readable only by the server.
 
 The pod mounts the tiers, so anything inside them is visible to the pod and
 owned by its uid. Some files belong to the user's machine, not the server:
-`server.json` (the origin this machine's clients dial, and the driver),
-the `login-*` scratch of a tool sign-in, and the installer's caches (the
-Calico manifest, the podman-pid file). Only processes on the user's machine
+`server.json` (the origin this machine's clients dial), the `login-*`
+scratch of a tool sign-in, and the installer's caches (the Calico manifest,
+the podman-pid file). Only processes on the user's machine
 read and write them: the CLI, the desktop app and its auth daemon, and
 `yaac cluster install`.
 
 These form the CLIENT-LOCAL tier (`clientLocalRoot` in `shared/paths.ts`),
 at `<dataDir>-client` (`~/.yaac` pairs with `~/.yaac-client`). It is a
 sibling, not a subdirectory, because the pod mounts the data dir's contents.
-It is derived from the data dir, so `YAAC_DATA_DIR` isolation carries over.
+It is derived from the client's data dir, so `YAAC_DATA_DIR` isolation
+carries over, and a cluster install in `~/.yaac-cluster` registers in the
+same `~/.yaac-client` as the host server.
+
+What kind of install a data dir is lives at its root, in `install.json`
+(the driver, and for a cluster its install id, cluster uid and kube
+context). No pod mounts the root, only the tier folders inside it.
 
 Two consequences:
 
 - **No server process records the driver.** `resolveDriverKind` writes
   nothing. The command that stands the server up records it, and `yaac
-  cluster install` writes `k8s` alongside the origin.
+  cluster install` writes `k8s` to its data dir's `install.json`.
 - **`resolveServerTarget` reads only the origin in `server.json`**
   (docs/server-selection.md), never the lock. The lock is the server's own
   file; under this driver a client may be unable to read it, and its port

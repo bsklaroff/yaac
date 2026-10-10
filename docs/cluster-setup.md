@@ -27,11 +27,12 @@ Install is idempotent and safe to re-run at any time. In order, it:
 
 Under `k8s` the server is a workload in the cluster, so this command is also
 how the server is installed and upgraded: `npm update`, then `yaac cluster
-install`. On such an install, `yaac server start` scales the server
-Deployment. It refuses when there is no Deployment, because a host process
-on a k8s data dir would be a second writer of the same database. Put simply,
-`yaac server start` stands up a containerless server and `yaac cluster
-install` stands up a k8s one.
+install`. `yaac cluster start|stop|restart|logs|status` then manage the
+server Deployment. Put simply, `yaac server …` is the containerless host
+server and `yaac cluster …` the k8s one. Each has its own data dir
+(`~/.yaac` and `~/.yaac-cluster`, unless `YAAC_DATA_DIR` names one), and the
+cluster publishes its server on port 8790, so both can run on one machine
+(docs/server-selection.md "Two installs on one machine").
 
 Nothing in install is destructive. An existing cluster is converged, never
 recreated. Only `yaac cluster delete` tears a cluster down, and it is the one
@@ -384,7 +385,7 @@ What differs:
   (csi-driver-nfs, EFS, Azure Files over NFS). `yaac-server-local` uses
   `--rwo-storage-class` or the cluster's default class. Install re-adopts
   its own volumes that a namespace delete left `Released`, matched by the
-  random install id recorded in `server.json` (never by data-dir path). It
+  random install id recorded in `install.json` (never by data-dir path). It
   claims each volume root for that id through a one-shot binder pod and
   sets both volumes to `Retain` (docs/server-in-cluster.md "Storage
   claims"). A class with a fixed `subDir` or base path gives every claim the
@@ -445,11 +446,11 @@ that node's readiness with the reason.
 
 **The cluster is recorded.** Every cluster call uses the kubeconfig's
 current context, and a cloud user likely has several. Install records the
-cluster in `server.json` as the uid of its `kube-system` namespace, since a
+cluster in `install.json` as the uid of its `kube-system` namespace, since a
 context name can point at a different cluster in another kubeconfig; the
 context name is kept only for error hints. Every host-side command that
-touches the cluster (`cluster install|check`, `server
-start|stop|restart|logs`) refuses when the current context is a different
+touches the cluster (`cluster install|check|start|stop|restart|logs`)
+refuses when the current context is a different
 cluster, or cannot be identified (reading `kube-system` is Forbidden under
 typical namespace-scoped RBAC). The refusal suggests `kubectl config
 use-context <recorded>` where that helps. Refusing avoids threading

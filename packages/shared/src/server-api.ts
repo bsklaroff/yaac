@@ -139,8 +139,8 @@ export async function resolveServerTarget(): Promise<ServerTarget> {
  */
 export const NO_SERVER_SELECTED =
   'No yaac server selected.\n'
-  + '    Start one on this machine with `yaac server start` (or `yaac cluster '
-  + 'install` on a k8s install),\n'
+  + '    Start one on this machine with `yaac server start` (or, for a cluster, '
+  + '`yaac cluster install` once and then `yaac cluster start`),\n'
   + '    or point at one with `yaac remote set <url>`.'
 
 /** Print the error's message and exit 1. */

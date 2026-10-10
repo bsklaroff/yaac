@@ -20,12 +20,14 @@ yaac host check          # the counterpart of `yaac cluster check`
 There is no driver flag. The k8s server is a pod of the cluster it manages
 (docs/server-in-cluster.md) and this one is a process on your machine, so
 `yaac server start` means containerless and `yaac cluster install` means
-k8s. The command that stands the server up records the driver in
-`server.json` (docs/server-selection.md), so a client that cannot reach the
-server knows whether the fix is a start or an install.
+k8s. The command that stands the server up records the driver in its data
+dir's `install.json` (docs/server-selection.md), so a client that cannot
+reach the server knows which command brings it back.
 
-The two never share a data dir: a host start against a data dir recorded as
-`k8s` is refused, and `yaac cluster install` refuses a containerless one. A
+The two never share a data dir: by default this one is `~/.yaac` and a
+cluster's is `~/.yaac-cluster`, so both can run on one machine. A host start
+against a data dir recorded as `k8s` is refused, and `yaac cluster install`
+refuses a containerless one. A
 k8s server cannot see tmux workspaces. It would reap their rows and its
 teardown would delete the state dirs holding their markers, leaving agents
 running as the user with nothing able to reach them.

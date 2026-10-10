@@ -4,8 +4,8 @@
  *
  * Every cluster call uses the current context, so a shell pointed at
  * another cluster would otherwise act on the wrong one. Install records the
- * `kube-system` namespace's uid as `server.json`'s `clusterUid`, and
- * `cluster install|check` and `server start|stop|restart|logs` compare it
+ * `kube-system` namespace's uid as `install.json`'s `clusterUid`, and
+ * `cluster install|check|start|stop|restart|logs` compare it
  * with the current cluster. `cluster delete` is not guarded: byo refuses
  * it, and kind deletes its cluster by name.
  *
@@ -14,7 +14,7 @@
  * `use-context` hint.
  */
 import { execFileAsync, k8sErrorSummary, readObject } from '#drivers/k8s/substrate'
-import { readServerConfig, type InstallRecord } from '@yaac/shared/server-config'
+import { readInstallRecord, type InstallRecord } from '@yaac/shared/install-record'
 
 type Run = (file: string, args: string[]) => Promise<{ stdout: string }>
 
@@ -100,7 +100,7 @@ export function clusterRefusal(recorded: InstallRecord, current: CurrentCluster)
  * record without one is refused until it runs.
  */
 export async function foreignClusterRefusal(): Promise<string | null> {
-  const recorded = await readServerConfig()
+  const recorded = await readInstallRecord()
   if (recorded?.driver !== 'k8s') return null
   if (!recorded.clusterUid) {
     return 'This install records no cluster to check kubectl against. Run `yaac cluster install`, '

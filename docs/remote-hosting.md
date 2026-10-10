@@ -8,7 +8,7 @@ can share the machine, each as their own user (docs/multi-user.md).
 ```
 SERVER MACHINE (on the tailnet)
   containerless: host process on 127.0.0.1:8787, fronted by `tailscale serve`
-  k8s on kind:   server pod published at 127.0.0.1:8787, fronted by `tailscale serve`,
+  k8s on kind:   server pod published at 127.0.0.1:8790, fronted by `tailscale serve`,
                  or by the Tailscale operator's Ingress
   k8s --byo:     server pod, fronted by the Tailscale operator's Ingress
 
@@ -88,7 +88,7 @@ A **kind** server can be published the same way, by the machine's own
 `tailscale serve` in front of the port kind publishes it on:
 
 ```sh
-tailscale serve --bg http://127.0.0.1:8787            # the kind install's port
+tailscale serve --bg http://127.0.0.1:8790            # the kind install's port
 yaac cluster install --tailnet srv.<tailnet>.ts.net \
   --owner you@example.com                              # --owner for a local install with data
 ```
@@ -97,7 +97,7 @@ Install runs the server in `tailnet` mode admitting that name, waits for
 `https://srv.<tailnet>.ts.net` to answer, and registers it, so every client,
 this machine's CLI included, goes through serve. It does not configure serve
 itself; if the name never answers it prints the `tailscale serve` command
-for the cluster's port. Later `yaac server start|restart` read the name back
+for the cluster's port. Later `yaac cluster start|restart` read the name back
 from the server Deployment, so they need no flag; a later `yaac cluster
 install` takes the same `--tailnet <host>`, as every install of a `tailnet`
 server must.

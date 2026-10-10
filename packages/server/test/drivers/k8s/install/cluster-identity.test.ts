@@ -1,6 +1,6 @@
 /**
  * Compares the recorded cluster with the kubeconfig's current context.
- * `kubectl config` and the API server are faked; `server.json` is written
+ * `kubectl config` and the API server are faked; `install.json` is written
  * for real.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -15,7 +15,8 @@ vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
 
 import { foreignClusterRefusal } from '#drivers/k8s/install'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
-import { serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
+import { installRecordPath, recordInstall } from '@yaac/shared/install-record'
+import { serverConfigPath } from '@yaac/shared/server-config'
 
 const mockRun = vi.mocked(execFileAsync)
 
@@ -31,18 +32,18 @@ function current(context: string, uid: string | Error): void {
 }
 
 const RECORD = {
-  url: '', enabled: false, saved: [], driver: 'k8s' as const,
-  installId: 'install-1', clusterUid: 'uid-prod', kubeContext: 'prod',
+  driver: 'k8s' as const, installId: 'install-1', clusterUid: 'uid-prod', kubeContext: 'prod',
 }
 
 afterEach(async () => {
   vi.clearAllMocks()
+  await fs.rm(installRecordPath(), { force: true })
   await fs.rm(serverConfigPath(), { force: true })
 })
 
 describe('foreignClusterRefusal', () => {
   it('refuses a current context on another cluster — by uid, whatever its name — naming the way back', async () => {
-    await writeServerConfig(RECORD)
+    await recordInstall(RECORD)
     current('dev', 'uid-dev')
     expect(await foreignClusterRefusal())
       .toMatch(/cluster of kube context "prod", and kubectl's current context "dev" is a different cluster[\s\S]*kubectl config use-context prod/)
@@ -62,17 +63,17 @@ describe('foreignClusterRefusal', () => {
 
   it('refuses a k8s record with no cluster, and a cluster it cannot identify, saying why', async () => {
     // No k8s install here: nothing to compare against.
-    await writeServerConfig({ ...RECORD, driver: 'containerless', clusterUid: undefined, kubeContext: undefined })
+    await recordInstall({ ...RECORD, driver: 'containerless', clusterUid: undefined, kubeContext: undefined })
     current('anything', 'uid-anything')
     expect(await foreignClusterRefusal()).toBeNull()
     // A k8s record that `yaac cluster install` has not stamped yet.
-    await writeServerConfig({ ...RECORD, clusterUid: undefined, kubeContext: undefined })
+    await recordInstall({ ...RECORD, clusterUid: undefined, kubeContext: undefined })
     expect(await foreignClusterRefusal()).toMatch(/records no cluster[\s\S]*yaac cluster install/)
     expect(mockRun).not.toHaveBeenCalled()
 
     // Namespace-scoped RBAC makes kube-system Forbidden, which means the
     // cluster is not this install's.
-    await writeServerConfig(RECORD)
+    await recordInstall(RECORD)
     current('dev', apiError(403, 'namespaces "kube-system" is forbidden: User "me" cannot get resource'))
     expect(await foreignClusterRefusal())
       .toMatch(/current context "dev" points at cannot be identified \(.*403: .*forbidden[\s\S]*kubectl config use-context prod/)

@@ -40,6 +40,10 @@ describe('yaac remote (real CLI + shared server)', () => {
     return path.join(`${testEnv.dataDir}-client`, 'server.json')
   }
 
+  function recordPath(): string {
+    return path.join(testEnv.dataDir, 'install.json')
+  }
+
   /** Point the client back at the running server (`server start` re-registers it). */
   async function resetSelection(): Promise<void> {
     const res = await runYaac(testEnv.env, 'server', 'start')
@@ -128,11 +132,14 @@ describe('yaac remote (real CLI + shared server)', () => {
     })
 
     it('the install driver survives `remote unset`, so a k8s install stays refused', async () => {
-      // `driver` lives in server.json beside the selection.
+      // `driver` lives in the data dir's install.json, with a copy in
+      // server.json for an older yaac, which reads only that.
       await resetSelection()
       expect((await runYaac(testEnv.env, 'remote', 'unset')).exitCode).toBe(0)
-      const raw = JSON.parse(await fs.readFile(configPath(), 'utf8')) as { driver?: string }
-      expect(raw.driver).toBe('containerless')
+      for (const file of [recordPath(), configPath()]) {
+        const raw = JSON.parse(await fs.readFile(file, 'utf8')) as { driver?: string }
+        expect(raw.driver, file).toBe('containerless')
+      }
       await resetSelection()
     })
 
@@ -146,12 +153,12 @@ describe('yaac remote (real CLI + shared server)', () => {
       await new Promise<void>((resolve) => remote.listen(0, '127.0.0.1', resolve))
       await resetSelection()
       const saved = await fs.readFile(configPath(), 'utf8')
+      const record = await fs.readFile(recordPath(), 'utf8')
       try {
         const { port } = remote.address() as { port: number }
         const url = `http://127.0.0.1:${port}`
-        await fs.writeFile(configPath(), JSON.stringify({
-          url, enabled: true, saved: [{ url }], driver: 'k8s',
-        }))
+        await fs.writeFile(configPath(), JSON.stringify({ url, enabled: true, saved: [{ url }] }))
+        await fs.writeFile(recordPath(), JSON.stringify({ driver: 'k8s' }))
         // An invalid --nodes stops the install before it touches a
         // cluster, so reaching its message proves the refusal was skipped.
         const res = await runYaac(testEnv.env, 'cluster', 'install', '--nodes', '0')
@@ -162,6 +169,7 @@ describe('yaac remote (real CLI + shared server)', () => {
         remote.close()
         // `server start` would refuse the k8s record, so restore by hand.
         await fs.writeFile(configPath(), saved)
+        await fs.writeFile(recordPath(), record)
       }
     })
   })

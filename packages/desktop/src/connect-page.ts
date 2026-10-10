@@ -9,13 +9,13 @@
  */
 import type { DesktopServerTargets } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
-import type { LocalServerState } from '#server-control'
+import { clusterStatus, hostStatus, type LocalServers } from '#server-control'
 
 export interface ConnectPageState {
   error: LaunchError
   targets: DesktopServerTargets
-  /** This machine's server; null when it could not be read. */
-  local: LocalServerState | null
+  /** This machine's installs, as last read. */
+  local: LocalServers
 }
 
 function escapeHtml(text: string): string {
@@ -43,15 +43,22 @@ export function connectPageHtml(state: ConnectPageState): string {
     : '<p class="empty">No servers configured yet.</p>'
 
   // Offered only when there is a server here to start, or a CLI to install.
-  // A stopped kind install's start scales its Deployment back up.
-  const where = local?.kind === 'status' && local.status.driver === 'k8s'
-    ? 'Run workspaces in this Mac\'s kind cluster.'
-    : 'Run workspaces here, each in its own checkout.'
-  const startLocal = local?.kind === 'status' && local.status.running === false
+  const host = hostStatus(local)
+  const cluster = clusterStatus(local)
+  const starts = [
+    host?.running === false
+      ? `<p class="note">Run workspaces here, each in its own checkout. The server keeps running when the app quits.</p>
+      <p><button class="start" data-scope="server">Start a server on this Mac</button></p>`
+      : '',
+    cluster?.running === false
+      ? `<p class="note">Run workspaces in this Mac's kind cluster.</p>
+      <p><button class="start" data-scope="cluster">Start this Mac's cluster server</button></p>`
+      : '',
+  ].join('')
+  const thisMac = starts !== ''
     ? `<h2>This Mac</h2>
-      <p class="note">${where} The server keeps running when the app quits.</p>
-      <p><button id="start-local">Start a server on this Mac</button></p>`
-    : local?.kind === 'no-cli'
+      ${starts}`
+    : local.server?.kind === 'no-cli'
       ? `<h2>This Mac</h2>
       <p class="note">To run a server on this Mac, install the yaac CLI:
         <code>brew install bsklaroff/yaac/yaac-server</code></p>`
@@ -99,12 +106,12 @@ export function connectPageHtml(state: ConnectPageState): string {
       .origin { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .tag { font-size: 11px; color: light-dark(#888, #888); }
-      button.connect, button.add, #retry, #start-local {
+      button.connect, button.add, button.start, #retry {
         border: 0; border-radius: 6px; cursor: pointer; font-size: 12px;
         font-weight: 500; padding: 5px 11px;
         background: light-dark(#e4e4e4, #303030); color: inherit;
       }
-      button.connect:hover, button.add:hover, #retry:hover, #start-local:hover { background: light-dark(#d6d6d6, #3c3c3c); }
+      button.connect:hover, button.add:hover, button.start:hover, #retry:hover { background: light-dark(#d6d6d6, #3c3c3c); }
       button:disabled { opacity: .5; cursor: default; }
       .empty { color: light-dark(#777, #888); margin: 0; }
       form { display: flex; gap: 6px; margin-top: 8px; }
@@ -133,7 +140,7 @@ export function connectPageHtml(state: ConnectPageState): string {
       <h2>Servers</h2>
       ${list}
 
-      ${startLocal}
+      ${thisMac}
 
       <h2>Add a server</h2>
       <p class="note">
@@ -184,12 +191,11 @@ export function connectPageHtml(state: ConnectPageState): string {
           busy(true)
           return
         }
-        var startLocal = document.getElementById('start-local')
-        if (startLocal) {
-          startLocal.addEventListener('click', function () {
-            handle(bridge.startLocal(), 'Starting the server…')
+        document.querySelectorAll('button.start').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            handle(bridge.startLocal(btn.getAttribute('data-scope')), 'Starting the server…')
           })
-        }
+        })
         document.querySelectorAll('button.connect').forEach(function (btn) {
           btn.addEventListener('click', function () {
             handle(bridge.switchTo({ url: btn.getAttribute('data-url') }))

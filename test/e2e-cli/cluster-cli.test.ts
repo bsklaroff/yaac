@@ -216,15 +216,14 @@ describe('yaac cluster install (real CLI)', () => {
       'every cluster verb refuses a same-named context on another cluster; plain install refuses a byo data dir',
       async () => {
         const dataDir = path.join(testEnv.scratchDir, 'foreign-cluster')
-        await fs.mkdir(`${dataDir}-client`, { recursive: true })
-        await fs.writeFile(path.join(`${dataDir}-client`, 'server.json'), JSON.stringify({
-          url: '', enabled: false, saved: [], driver: 'k8s',
-          installId: 'install-1', clusterUid: 'uid-recorded', kubeContext: 'fake-byo', byo: true,
+        await fs.mkdir(dataDir, { recursive: true })
+        await fs.writeFile(path.join(dataDir, 'install.json'), JSON.stringify({
+          driver: 'k8s', installId: 'install-1', clusterUid: 'uid-recorded', kubeContext: 'fake-byo', byo: true,
         }))
         const env = { ...shimEnv, YAAC_DATA_DIR: dataDir }
         fake.state = {}
         for (const verb of [
-          ['server', 'stop'], ['server', 'start'], ['server', 'restart'], ['server', 'logs'],
+          ['cluster', 'stop'], ['cluster', 'start'], ['cluster', 'restart'], ['cluster', 'logs'],
           ['cluster', 'check'], ['cluster', 'install', '--byo', '--rwx-storage-class', 'nfs'],
         ]) {
           const res = await runYaac(env, ...verb)
@@ -232,7 +231,7 @@ describe('yaac cluster install (real CLI)', () => {
           expect(res.stderr, verb.join(' ')).toMatch(/same name but is a different cluster/)
         }
         fake.state = { clusterUid: 'uid-recorded' }
-        const same = await runYaac(env, 'server', 'stop')
+        const same = await runYaac(env, 'cluster', 'stop')
         expect(same.stderr).not.toMatch(/different cluster/)
 
         // A byo data dir is never installed down the kind path.

@@ -49,7 +49,7 @@ export const LABEL_INSTALL_NAMESPACE = 'yaac.install-namespace'
  */
 export const LABEL_CLAIM = 'yaac.claim'
 /**
- * Label carrying `server.json`'s `installId` on the server Deployment and
+ * Label carrying `install.json`'s `installId` on the server Deployment and
  * on every volume a byo install provisions. It identifies the install; the
  * data-dir hash only identifies the path it was installed from.
  */

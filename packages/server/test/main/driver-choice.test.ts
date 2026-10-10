@@ -3,13 +3,14 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { clientLocalPath, setDataDir } from '@yaac/shared/paths'
+import { recordInstall } from '@yaac/shared/install-record'
 import { writeServerConfig } from '@yaac/shared/server-config'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 
 /**
  * Where the server runs decides its driver (docs/server-in-cluster.md).
- * The driver record in `server.json` is seeded here the way `yaac server
- * start` and `yaac cluster install` write it.
+ * The data dir's `install.json` is seeded here the way `yaac server start`
+ * and `yaac cluster install` write it.
  */
 let dataDir: string
 
@@ -25,9 +26,7 @@ afterEach(async () => {
 })
 
 async function record(kind: 'k8s' | 'containerless'): Promise<void> {
-  await writeServerConfig({
-    url: 'http://127.0.0.1:8787', enabled: true, saved: [], driver: kind,
-  })
+  await recordInstall({ driver: kind })
 }
 
 describe('resolveDriverKind', () => {
@@ -45,6 +44,7 @@ describe('resolveDriverKind', () => {
     expect(resolveDriverKind()).toBe('containerless')
     await expect(fs.access(clientLocalPath('driver'))).rejects.toThrow()
     await expect(fs.access(clientLocalPath('server.json'))).rejects.toThrow()
+    await expect(fs.access(path.join(dataDir, 'install.json'))).rejects.toThrow()
   })
 
   it('ignores YAAC_DRIVER: a host process cannot elect to be a k8s server', () => {
@@ -61,17 +61,16 @@ describe('assertHostServerAllowed', () => {
     await expect(assertHostServerAllowed()).resolves.toBeUndefined()
   })
 
-  it('refuses a host start on a k8s install, naming the converge command', async () => {
+  it('refuses a host start on a k8s install, naming the command that starts its server', async () => {
     await record('k8s')
-    await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
+    await expect(assertHostServerAllowed()).rejects.toThrow(/is a cluster install[\s\S]*yaac cluster start/)
   })
 
   it('refuses even when the selection points at a server on another machine', async () => {
     // The record describes this data dir, whatever server is selected.
-    await writeServerConfig({
-      url: 'https://elsewhere.ts.net', enabled: true, saved: [], driver: 'k8s',
-    })
-    await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster install/)
+    await record('k8s')
+    await writeServerConfig({ url: 'https://elsewhere.ts.net', enabled: true, saved: [] })
+    await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster start/)
   })
 
   it('does not refuse the pod itself, which is that install\'s server', async () => {

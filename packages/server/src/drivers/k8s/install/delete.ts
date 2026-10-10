@@ -11,7 +11,7 @@ import {
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { REGISTRY_GRANT_NAMESPACE, REGISTRY_NAMESPACE } from '#drivers/k8s/container'
-import { readServerConfig } from '@yaac/shared/server-config'
+import { readInstallRecord } from '@yaac/shared/install-record'
 import { env } from '@yaac/shared/env'
 
 /**
@@ -62,7 +62,7 @@ async function listKindClusters(): Promise<string[]> {
 export async function runClusterDelete(
   opts: ClusterDeleteOptions = {},
 ): Promise<void> {
-  const recorded = await readServerConfig()
+  const recorded = await readInstallRecord()
   if (recorded?.byo) throw new ClusterDeleteError(byoUninstall(recorded.installId))
 
   const cluster = env.kindCluster

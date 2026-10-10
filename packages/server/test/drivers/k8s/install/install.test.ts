@@ -62,7 +62,7 @@ vi.mock('#drivers/k8s/container', async (importOriginal) => ({
   invalidateRegistryEndpoint: vi.fn(),
   execFileAsync: (file: string, args: string[]) =>
     file === 'podman' && args[0] === 'port'
-      ? Promise.resolve({ stdout: '127.0.0.1:8787\n', stderr: '' })
+      ? Promise.resolve({ stdout: `127.0.0.1:${String(DEFAULT_CLUSTER_SERVER_PORT)}\n`, stderr: '' })
       : Promise.reject(new Error(`unexpected host process: ${file} ${args.join(' ')}`)),
 }))
 // Hashing the real build contexts would need `pnpm build` for the bundle.
@@ -267,14 +267,27 @@ import {
   nodeLocalNodePath,
 } from '#drivers/k8s/substrate'
 import { nodeLocalRoot } from '@yaac/shared/paths'
-import { readServerConfig, serverConfigPath, writeServerConfig } from '@yaac/shared/server-config'
+import { installRecordPath, readInstallRecord, recordInstall, type InstallRecord } from '@yaac/shared/install-record'
+import { readServerConfig, serverConfigPath } from '@yaac/shared/server-config'
+import { DEFAULT_CLUSTER_SERVER_PORT } from '@yaac/shared/server-port'
 
 afterEach(async () => {
   vi.unstubAllEnvs()
   vi.unstubAllGlobals()
-  // Clear the install record between tests.
-  await fs.rm(serverConfigPath(), { force: true })
+  await clearRecord()
 })
+
+/** Remove the install record, and its copy in `server.json`. */
+async function clearRecord(): Promise<void> {
+  await fs.rm(installRecordPath(), { force: true })
+  await fs.rm(serverConfigPath(), { force: true })
+}
+
+/** Replace the install record outright, as a data dir would hold it. */
+async function writeRecord(record: InstallRecord): Promise<void> {
+  await clearRecord()
+  await recordInstall(record)
+}
 
 type RunMock = ReturnType<typeof vi.fn<
   (file: string, args: string[], opts?: unknown) => Promise<{ stdout: string; stderr: string }>
@@ -675,13 +688,15 @@ describe('runClusterInstall', () => {
     // The config carries the server's port mapping. kind sets mappings only
     // at create, which is why an older cluster is refused.
     expect(createCall?.[2]?.input).toContain(`containerPort: ${String(SERVER_FRONT_PORT)}`)
+    // Apart from the host server's port, so the two installs coexist.
+    expect(createCall?.[2]?.input).toContain(`hostPort: ${String(DEFAULT_CLUSTER_SERVER_PORT)}`)
     expect(createCall?.[2]?.input).toContain('listenAddress: 127.0.0.1')
 
     // The server is deployed last, after everything it uses, published on
     // the kind node's port rather than through an Ingress.
     expect(ran('deployServerWorkload')).toBe(1)
     expect(appliedOf('Ingress')).toEqual([])
-    expect(await readServerConfig()).toMatchObject({ url: 'http://127.0.0.1:8787' })
+    expect(await readServerConfig()).toMatchObject({ url: `http://127.0.0.1:${String(DEFAULT_CLUSTER_SERVER_PORT)}` })
     expect(order('deployServerWorkload'))
       .toBeGreaterThan(order('ensureNetd'))
     expect(createCall?.[2]?.env?.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
@@ -1095,12 +1110,12 @@ describe('runClusterInstall', () => {
       expect((err as Error).message).toMatch(/every layer would go to the wrong cluster[\s\S]*kind export kubeconfig --name yaac/)
       expect(ran('ensurePriorityClasses')).toBe(0)
     }
-    expect(await readServerConfig()).toBeNull()
+    expect(await readInstallRecord()).toBeNull()
 
     // A kind cluster re-created under the same install is recorded again.
-    await writeServerConfig({ url: '', enabled: false, saved: [], driver: 'k8s', installId: 'kind-one', clusterUid: 'uid-gone' })
+    await writeRecord({ driver: 'k8s', installId: 'kind-one', clusterUid: 'uid-gone' })
     await expect(runClusterInstall({}, makeDeps())).resolves.toBeUndefined()
-    expect(await readServerConfig()).toMatchObject({ installId: 'kind-one', clusterUid: 'uid-kind', kubeContext: 'kind-yaac' })
+    expect(await readInstallRecord()).toMatchObject({ installId: 'kind-one', clusterUid: 'uid-kind', kubeContext: 'kind-yaac' })
   })
 
   it('notes that --nodes cannot change an existing cluster, and converges anyway', async () => {
@@ -1533,7 +1548,8 @@ describe('runClusterInstall', () => {
     expect(env).toContainEqual({ name: 'YAAC_ACCESS_OWNER', value: 'alice@example.com' })
     expect(vi.mocked(globalThis.fetch).mock.calls.map(([u]) => u))
       .toContain('https://srv.tail.ts.net/api/health')
-    expect(await readServerConfig()).toMatchObject({ url: 'https://srv.tail.ts.net', driver: 'k8s' })
+    expect(await readServerConfig()).toMatchObject({ url: 'https://srv.tail.ts.net' })
+    expect(await readInstallRecord()).toMatchObject({ driver: 'k8s' })
     expect(logged(deps)).not.toContain('Tailscale Kubernetes operator')
   })
 
@@ -1584,7 +1600,7 @@ describe('runClusterInstall', () => {
     }).spec.containers[0].command.slice(-3)
     expect(binderArgs.slice(0, 2)).toEqual(['1000', '1000'])
     expect(binderArgs[2]).toMatch(/^[0-9a-f-]{36}$/)
-    expect(await readServerConfig()).toMatchObject({
+    expect(await readInstallRecord()).toEqual({
       driver: 'k8s', byo: true, installId: binderArgs[2], clusterUid: 'uid-byo', kubeContext: 'byo-context',
     })
 
@@ -1701,17 +1717,17 @@ describe('runClusterInstall', () => {
     let err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
     expect((err as Error).message)
       .toMatch(/another install \(install id theirs, installed from the data dir \/elsewhere\/\.yaac; this data dir's is [0-9a-f-]{36}\)/)
-    expect(await readServerConfig()).toBeNull()
+    expect(await readInstallRecord()).toBeNull()
 
     // This install's own server is a re-install.
-    const mine = { url: '', enabled: false, saved: [], driver: 'k8s' as const, installId: 'mine', byo: true }
-    await writeServerConfig({ ...mine, clusterUid: 'uid-byo', kubeContext: 'byo-context' })
+    const mine = { driver: 'k8s' as const, installId: 'mine', byo: true }
+    await writeRecord({ ...mine, clusterUid: 'uid-byo', kubeContext: 'byo-context' })
     deps = makeDeps({ run: adoptRun({ deployed: { installId: 'mine', dataDir: '/elsewhere/.yaac' } }) })
     await expect(runClusterInstall(BYO, deps)).resolves.toBeUndefined()
     events.length = 0
 
     // Recorded in one cluster, run against another: matched by uid.
-    await writeServerConfig({ ...mine, clusterUid: 'uid-prod', kubeContext: 'prod' })
+    await writeRecord({ ...mine, clusterUid: 'uid-prod', kubeContext: 'prod' })
     deps = makeDeps({ run: adoptRun({ context: 'dev', clusterUid: 'uid-dev' }) })
     err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
     expect((err as Error).message).toMatch(/kube context "prod"[\s\S]*kubectl config use-context prod/)
@@ -1725,17 +1741,17 @@ describe('runClusterInstall', () => {
     err = await runClusterInstall({}, deps).catch((e: unknown) => e)
     expect((err as Error).message).toMatch(/This data dir is a --byo install\. Re-run with --byo/)
     expect(deps.run).not.toHaveBeenCalled()
-    await writeServerConfig({ url: 'http://127.0.0.1:8787', enabled: true, saved: [], driver: 'k8s', installId: 'kind-one' })
+    await writeRecord({ driver: 'k8s', installId: 'kind-one' })
     err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
     expect((err as Error).message).toMatch(/This data dir is a kind install, so --byo cannot install from it/)
     expect(deps.run).not.toHaveBeenCalled()
 
     // A containerless data dir is refused too.
-    await writeServerConfig({ url: 'http://127.0.0.1:8787', enabled: true, saved: [], driver: 'containerless' })
+    await writeRecord({ driver: 'containerless' })
     deps = makeDeps({ run: adoptRun() })
     err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
-    expect((err as Error).message).toMatch(/is a containerless install/)
-    await fs.rm(serverConfigPath(), { force: true })
+    expect((err as Error).message).toMatch(/is a containerless install[\s\S]*~\/\.yaac-cluster/)
+    await clearRecord()
 
     vi.stubEnv('YAAC_USE_TOR', '1')
     deps = makeDeps({ run: adoptRun() })

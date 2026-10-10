@@ -33,7 +33,7 @@ import { buildBuiltinImages } from './builtin-images'
 import { ClusterInstallError, YAAC_CLUSTER_INSTALL, resolveNodeCount, tailnetServeHost } from './arg-guards'
 import { assessCniAdoption, gatherCniFacts } from './cni-adopt'
 import { ensurePinnedManifest } from './pinned-manifest'
-import { readServerConfig, recordInstall, type InstallRecord } from '@yaac/shared/server-config'
+import { readInstallRecord, recordInstall, type InstallRecord } from '@yaac/shared/install-record'
 import {
   hostNodeArchitecture,
   nodeArchitectureProblems,
@@ -56,7 +56,7 @@ import { ensureTailnetOperator, verifyTailnetOperator } from './tailscale-operat
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { PACKAGE_ROOT, getDataDir, nodeLocalRoot } from '@yaac/shared/paths'
 import { CALICO_DIR } from '@yaac/shared/project-paths'
-import { resolveServerPort } from '@yaac/shared/server-port'
+import { DEFAULT_CLUSTER_SERVER_PORT } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 
 /**
@@ -240,7 +240,7 @@ export async function runClusterInstall(
 ): Promise<void> {
 
   const nodeCount = resolveNodeCount(opts)
-  const recorded = await readServerConfig()
+  const recorded = await readInstallRecord()
   refuseByoSwitch(recorded, opts)
   // Created by the first run and reused, so a run that failed halfway
   // recognizes the objects it made.
@@ -551,7 +551,7 @@ async function createKindCluster(
     homedir: deps.homedir(),
     nodes,
     // kind sets port mappings only at cluster creation.
-    serverHostPort: resolveServerPort(),
+    serverHostPort: env.serverPort ?? DEFAULT_CLUSTER_SERVER_PORT,
     nodeLocalHostPath: nodeLocalRoot(),
     nodeLocalNodePath: nodeLocalNodePath(),
   })
@@ -657,7 +657,7 @@ async function verifyByoCluster(
   const storage = await verifyStorageClasses(deps, opts)
   await verifyInstallIdentity(installId)
   const current = await currentCluster(deps.run)
-  const refusal = clusterRefusal((await readServerConfig()) ?? {}, current)
+  const refusal = clusterRefusal((await readInstallRecord()) ?? {}, current)
   if (refusal) throw new ClusterInstallError(refusal)
   if (!current.uid) {
     throw new ClusterInstallError(
@@ -758,10 +758,11 @@ interface RawServerDeployment {
  * another install's id (installing over it would take over its storage).
  */
 async function verifyInstallIdentity(installId: string): Promise<void> {
-  if ((await readServerConfig())?.driver === 'containerless') {
+  if ((await readInstallRecord())?.driver === 'containerless') {
     throw new ClusterInstallError(
       `The data dir ${getDataDir()} is a containerless install, and one data dir is one install. `
-      + 'Point YAAC_DATA_DIR at a data dir of its own for this cluster.',
+      + 'Unset YAAC_DATA_DIR (a cluster defaults to ~/.yaac-cluster), or point it at a data dir '
+      + 'of its own for this cluster.',
     )
   }
   const dep = await readForByo(() => readObject<RawServerDeployment>({
@@ -775,7 +776,7 @@ async function verifyInstallIdentity(installId: string): Promise<void> {
       `Namespace ${k8sNamespace()} already runs the yaac server of another install (install id `
       + `${owner ?? 'unset'}${dataDir ? `, installed from the data dir ${dataDir}` : ''}; `
       + `this data dir's is ${installId}). Installing over it would take over its storage. Run `
-      + 'install from that install\'s data dir (its server.json names that id), or set '
+      + 'install from that install\'s data dir (its install.json names that id), or set '
       + 'YAAC_K8S_NAMESPACE to a namespace of this install\'s own.',
     )
   }
