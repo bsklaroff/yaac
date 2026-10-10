@@ -6,8 +6,8 @@
  * An agent may list the project's workspaces, create or queue one, edit what
  * it queued, send a running one a message, retitle, group, stop one (its own
  * included), fetch another's branches and read another's conversation
- * history. Stopping is allowed because it is reversible: the checkout, row
- * and conversations are kept. Deleting, restarting and reconfiguring stay
+ * history, and change its own reference branch. Stopping is allowed because
+ * it is reversible: the checkout, row and conversations are kept. Deleting, restarting and reconfiguring stay
  * the user's.
  *
  * The caller's identity comes from the transport (pod IP under k8s, a
@@ -20,6 +20,7 @@ import { listWorkspaceGroups, resolveGroup } from './groups'
 import {
   getProjectRow,
   getProjectWorkspaceRows,
+  applyWorkspaceEvent,
   getWorkspaceRow,
   listActiveAgentSessions,
   listQueuedWorkspaceRows,
@@ -52,7 +53,9 @@ import {
 import { loadToolAuthEntry, modelsForTool } from '#domain/auth'
 import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
-import { bundleCheckout } from '#domain/git'
+import { bundleCheckout, listRemoteBranches } from '#domain/git'
+import { fetchProjectOrigin } from '#domain/projects'
+import { testEnv } from '@yaac/shared/env'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import {
   formatSize,
@@ -116,6 +119,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   list: [],
   create: CREATE_ARGS,
   rename: ['workspace'],
+  'set-base': [],
   stop: ['workspace'],
   'group-create': [],
   'group-move': ['workspace'],
@@ -159,6 +163,7 @@ export async function runMamaCommand(
       case 'list': return await runList(caller, request)
       case 'create': return await runCreate(caller, request)
       case 'rename': return await runRename(caller, request)
+      case 'set-base': return await runSetBase(caller, request)
       case 'stop': return await runStop(caller, request)
       case 'group-create': return await runGroupCreate(caller, request)
       case 'group-move': return await runGroupMove(caller, request)
@@ -581,6 +586,59 @@ async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise
   // Read back the stored (normalized) title.
   const stored = (await getProjectWorkspaceRows(caller.projectId)).get(workspaceId)?.title
   return { ok: true, output: `Renamed ${workspaceId.slice(0, 8)} to "${stored ?? title}".` }
+}
+
+/** How long after one fetch of origin `set-base` may start another. */
+const SET_BASE_FETCH_INTERVAL_MS = 10_000
+
+/**
+ * Whether `name` could name a branch under `git check-ref-format --branch`'s
+ * rules, so `set-base` refuses one that never could without fetching.
+ */
+function isBranchName(name: string): boolean {
+  return /^(?![-./])[^\p{Cc} ~^:?*[\\]+$/u.test(name)
+    && !/\.\.|@\{|\/[./]|\.lock(?:\/|$)|[/.]$/.test(name)
+    && name !== '@'
+}
+
+/**
+ * Point the caller's reference branch (`workspaces.baseBranch`) at another
+ * branch on origin, as when its work is stacked on another PR's. That is the
+ * webapp's default diff base and what a workspace queued after it forks
+ * from; the checkout itself is the agent's to rebase. A branch the main
+ * clone lacks may have just been pushed, so origin is fetched before it is
+ * refused, at most once per `SET_BASE_FETCH_INTERVAL_MS`. Only branch names
+ * are taken, never revisions like `main~1`.
+ */
+async function runSetBase(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const branch = request.body.trim()
+  if (branch === '') return { ok: false, error: 'set-base needs a branch' }
+  if (!isBranchName(branch)) return { ok: false, error: `"${branch}" is not a branch name` }
+  const repo = repoDir(caller.projectId)
+  const onOrigin = async (): Promise<boolean> => (await listRemoteBranches(repo)).includes(branch)
+  if (!await onOrigin()) {
+    if (!testEnv.e2eSkipFetch) {
+      await fetchProjectOrigin(caller.projectId, { unlessWithinMs: SET_BASE_FETCH_INTERVAL_MS })
+    }
+    if (!await onOrigin()) {
+      return {
+        ok: false,
+        error: `branch "${branch}" not found on origin (pushed just now? retry in ${SET_BASE_FETCH_INTERVAL_MS / 1000}s)`,
+      }
+    }
+  }
+  await applyWorkspaceEvent({
+    type: 'base-branch-resolved',
+    projectId: caller.projectId,
+    workspaceId: caller.workspaceId,
+    baseBranch: branch,
+  })
+  return {
+    ok: true,
+    output: `${caller.workspaceId.slice(0, 8)} is now based on ${branch}: the webapp diffs it `
+      + `against origin/${branch}, and what is queued under it from now on forks from there. `
+      + `Your commits have not moved; rebase onto origin/${branch} yourself if they should.`,
+  }
 }
 
 /**

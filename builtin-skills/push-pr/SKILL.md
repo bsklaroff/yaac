@@ -55,11 +55,14 @@ no such PR the base branch is `main`. `<base>` below means whichever it is.
 Everything downstream follows from it: fetch and rebase onto `origin/<base>`,
 open the PR with `--base <base>`, and count only the commits above
 `origin/<base>` as this branch's own.
-
 1. Store the current branch name.
 2. Resolve `<base>` as described above, then determine the target branch name:
    - Use the argument if one was provided; otherwise generate one from the
      diff/commits about to be pushed.
+   - Record the base: `yaac-mama set-base <base>`, so the yaac webapp's diff
+     for this workspace shows only this branch's own commits. This is
+     best-effort: if it fails (a server too old for it answers `unknown
+     command 'set-base'`), mention that in the final report and carry on.
    - Verify it is new: `git ls-remote --heads origin <name>`. If the branch
      already exists on origin, stop and report it — do not push over it unless
      the user explicitly asked to.
@@ -151,6 +154,12 @@ For each notification:
    attribution to the commit.
 4. Reply on the PR summarizing what you changed
    (`gh pr comment <pr-number> --body "…"`), then continue watching.
+
+When stacked, check `gh pr view <pr-number> --json baseRefName --jq
+.baseRefName` each time a comment wakes you. Once it reads `main` (GitHub
+retargets this PR after the base PR merges), run `yaac-mama set-base main`. The base PR's branch is usually
+deleted after the merge, and a workspace queued under this one would fail to
+start from it. Best-effort, as above.
 
 Keep the watch running until the user tells you to stop (or the session ends);
 use TaskStop to end it if asked.

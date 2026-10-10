@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -18,6 +18,7 @@ yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
   # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
 yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
+yaac-mama set-base <branch>                         # your base branch, on origin
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
@@ -34,7 +35,7 @@ That list is the whole surface. `yaac-mama` is a **strict subset** of the
 (now or queued for later), messages a running one, and stops one. Stopping
 is in reach precisely because it is reversible — a stopped workspace keeps
 its checkout and its conversation, and the user can restart it. There is no
-delete, no restart, no config. If a task needs one of those, ask the user
+delete, no restart, and no config beyond your own base branch. If a task needs one of those, ask the user
 rather than looking for a way around it.
 
 Everything is scoped to **this workspace's project**, which is not a flag you
@@ -153,6 +154,16 @@ pass — the server resolves who is calling and answers for that project only.
   and the user can see it without opening the workspace. Titles are trimmed,
   whitespace-collapsed and capped at 120 characters; the reply tells you what
   was stored. Renaming a sibling works the same way.
+
+- **`set-base <branch>`** — make `<branch>`, a branch on origin, this
+  workspace's base: the branch the webapp's diff view compares it against,
+  and the one a workspace you queue under it from then on forks from. Use it
+  when your work builds on another PR's branch, so the diff shows only your
+  own commits. It changes only that setting, never your checkout: rebase
+  onto `origin/<branch>` yourself (`git fetch origin <branch>` first if your
+  git does not have it yet). A branch not yet on the server's copy of origin
+  is fetched for; one origin lacks is refused. Run it again with the
+  default branch to undo it.
 
 - **`stop [<workspace>]`** — end a workspace's running container (or tmux
   server): its agent stops, and its checkout, title, group and conversation

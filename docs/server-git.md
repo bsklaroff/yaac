@@ -76,7 +76,8 @@ A checkout's `origin/*` refs are its own, so they change only when something
 copies them over (`origin.ts` in `#domain/projects`):
 
 - **Every server fetch fans out.** `fetchProjectOrigin` (create, spare
-  claims, the branch picker's refresh, the timer below) schedules
+  claims, the branch picker's refresh, `yaac-mama set-base`, the timer
+  below) schedules
   `maintainRepo` and refreshes every running workspace of the project, a few
   at a time, without making the caller wait. Fan-outs are coalesced per
   project, so a burst of creates costs at most two rounds.

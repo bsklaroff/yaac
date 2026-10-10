@@ -83,7 +83,10 @@ export interface WorkspaceLifeStarted {
   workspaceId: string
 }
 
-/** A claimed spare was re-branched: the branch it now forks from. */
+/**
+ * The branch a workspace forks from changed: a claimed spare was
+ * re-branched, or its agent ran `yaac-mama set-base`.
+ */
 export interface BaseBranchResolved {
   type: 'base-branch-resolved'
   projectId: string

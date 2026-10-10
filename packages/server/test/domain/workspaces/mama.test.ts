@@ -44,10 +44,11 @@ import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
 import { runMamaCommand, type MamaCaller } from '#domain/workspaces/mama'
 import { queueWorkspace } from '#domain/workspaces/queued-workspaces'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { agentHistoryDir, opencodeCheckpointDir, workspaceDir } from '@yaac/shared/project-paths'
+import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { setToolCredential } from '#db'
+import { getWorkspaceRow, setToolCredential } from '#db'
+import { cloneRepo } from '#domain/git'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
@@ -568,6 +569,66 @@ describe('runMamaCommand', () => {
       const outcome = await run('rename', 'mine now', { workspace: 'foreign-workspace' })
       expect(outcome.ok).toBe(false)
       expect(await titleOf('foreign-workspace', OTHER)).toBeUndefined()
+    })
+  })
+
+  describe('set-base', () => {
+    let origin: string
+    beforeEach(async () => {
+      // A local remote, so a branch pushed after the clone is fetched for real.
+      origin = path.join(tmpDir, 'origin')
+      await fs.mkdir(origin)
+      await git(origin, ['init', '-q', '-b', 'main'])
+      await git(origin, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init'])
+      await recordProject({ id: PROJ, name: 'demo', remoteUrl: origin, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+      await cloneRepo(origin, repoDir(PROJ), null)
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', baseBranch: 'main' })
+    })
+
+    const baseOf = async (id: string): Promise<string | undefined> =>
+      (await getWorkspaceRow(PROJ, id))?.baseBranch
+
+    it('bases the caller on a just-pushed branch, which what it queues then forks from', async () => {
+      await git(origin, ['branch', 'pr/stacked'])
+      const text = await output('set-base', ' pr/stacked ')
+
+      expect(await baseOf('caller-workspace')).toBe('pr/stacked')
+      expect(await baseOf('sibling-workspace')).toBe('main')
+      expect(text).toContain('rebase onto origin/pr/stacked yourself')
+
+      const queued = await output('queue', 'follow-up', { 'parent-workspace': 'caller-workspace', tool: 'claude' })
+      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === queued)?.branch).toBe('pr/stacked')
+    })
+
+    it('refuses what is not a branch on origin, fetching at most once per interval', async () => {
+      // Past any fetch an earlier test made, which the interval is keyed on.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(Date.now() + 3_600_000)
+      try {
+        // Never a branch name, so refused before any fetch.
+        for (const name of ['main~1', 'main:evil', '--upload-pack=x', 'a..b', 'x\ny', 'x/', '@']) {
+          expect(await run('set-base', name)).toEqual({ ok: false, error: `"${name}" is not a branch name` })
+        }
+        const missing = { ok: false, error: 'branch "ghost" not found on origin (pushed just now? retry in 10s)' }
+        expect(await run('set-base', 'ghost')).toEqual(missing)
+        // Pushed now, but origin was fetched moments ago, so not again yet.
+        await git(origin, ['branch', 'ghost'])
+        expect(await run('set-base', 'ghost')).toEqual(missing)
+        vi.setSystemTime(Date.now() + 10_000)
+        await output('set-base', 'ghost')
+        expect(await baseOf('caller-workspace')).toBe('ghost')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('refuses a blank and another workspace', async () => {
+      expect(await run('set-base', '  ')).toEqual({ ok: false, error: 'set-base needs a branch' })
+      expect((await run('set-base', 'main', { workspace: 'sibling' })).ok).toBe(false)
+      expect(await baseOf('caller-workspace')).toBe('main')
     })
   })
 

@@ -71,7 +71,7 @@ the parent:
 - A **workspace** parent supplies its first conversation's tool, mode and
   *current* model (which follows a `/model` switch), its permission mode and
   group, and its **reference branch** (`workspaces.baseBranch`, the branch it
-  forked from, not its own `agent/<id>`). A parent still provisioning has no
+  forked from or a later `yaac-mama set-base` named, not its own `agent/<id>`). A parent still provisioning has no
   conversation yet, so its provisioning row supplies the tool and group.
 - An **entry** parent supplies its stored settings.
 

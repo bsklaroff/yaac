@@ -1569,12 +1569,14 @@ export const MAX_MODEL_LENGTH = 128
  * deletes, restarts or reconfigures stays the user's. `fetch` reads another
  * workspace's branches into the caller's checkout, and `history` its
  * conversations, never writing to theirs. `send` messages a running one's
- * agent, held to the caller's permission mode.
+ * agent, held to the caller's permission mode. `set-base` changes only the
+ * caller's own reference branch.
  */
 export const MAMA_COMMANDS = [
   'list',
   'create',
   'rename',
+  'set-base',
   'stop',
   'group-create',
   'group-move',

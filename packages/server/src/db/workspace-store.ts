@@ -516,8 +516,8 @@ export async function deleteWorkspaceRow(
   await db.delete(workspaces).where(key(projectId, workspaceId))
 }
 
-/** Record the branch the workspace forked from, for a claimed spare that was
- *  re-branched. */
+/** Record the branch the workspace is based on, for a claimed spare that was
+ *  re-branched or a `yaac-mama set-base`. */
 export async function setWorkspaceBaseBranch(
   projectId: string,
   workspaceId: string,
