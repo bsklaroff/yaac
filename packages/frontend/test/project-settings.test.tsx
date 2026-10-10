@@ -77,17 +77,20 @@ describe('ProjectSettings', () => {
 
     fireEvent.change(screen.getByPlaceholderText('NAME'), { target: { value: 'TOKEN' } })
     fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: 's3cret' } })
-    fireEvent.click(screen.getByRole('checkbox'))
-    fireEvent.change(screen.getByPlaceholderText(/hosts to inject into/), { target: { value: 'api.example.com' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'Secret' }))
+    fireEvent.change(screen.getByLabelText('hosts'), { target: { value: 'api.example.com' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
 
     await screen.findByText('TOKEN')
     expect(server.called('PUT /api/project/id-alpha/env').map((c) => c.body)).toEqual([
-      { name: 'TOKEN', value: 's3cret', secret: true, rule: { hosts: ['api.example.com'] } },
+      {
+        name: 'TOKEN', value: 's3cret', secret: true,
+        rule: { hosts: ['api.example.com'], path: '/*', header: 'authorization', prefix: 'Bearer ' },
+      },
     ])
     // A secret shows masked, with where it is injected.
     screen.getByText('••••••••')
-    screen.getByText('api.example.com · header authorization')
+    screen.getByTitle('api.example.com · header authorization')
     expect(screen.getByPlaceholderText<HTMLInputElement>('NAME').value).toBe('')
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete FOO' }))
