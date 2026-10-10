@@ -10,6 +10,7 @@
 #                 [--ui-mode U] [--branch B] [--group G] [--title T]
 #   yaac-mama send [--conversation C] <workspace> "<message>"
 #   yaac-mama rename [<workspace>] "<title>"
+#   yaac-mama set-base <branch>
 #   yaac-mama stop [<workspace>]
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
@@ -21,8 +22,9 @@
 # another workspace, message a running one's agent, file workspaces into named
 # groups, and stop one. Stopping is
 # in reach because it is reversible — the checkout and the conversation
-# survive it. Nothing here deletes, restarts or reconfigures anything; that
-# stays with the user. `fetch` reads another workspace's branches into this
+# survive it. Nothing here deletes or restarts anything, and the one setting
+# it changes is the caller's own base branch; the rest stays with the user.
+# `fetch` reads another workspace's branches into this
 # checkout and `history` its conversations; neither writes to theirs.
 #
 # One request, a JSON envelope {command, args, body} POSTed to the server's
@@ -60,6 +62,7 @@ Usage:
   yaac-mama send [--conversation <c>] <workspace> "<message>"
                                                    # message its running agent
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
+  yaac-mama set-base <branch>                      # change your base branch
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
@@ -150,6 +153,12 @@ conversation, or the one --conversation names (an id or
 unique prefix from `yaac-mama history <workspace>`). An agent mid-turn takes
 it when its turn allows, or queues it. Read its answer with `yaac-mama
 history`. The workspace may not run in a more permissive mode than this one.
+
+set-base makes <branch>, a branch on origin, this workspace's base: what
+the yaac webapp diffs it against, and what a workspace queued under it from
+then on forks from. Use it when this work is stacked on another PR's
+branch. It does not touch this checkout: rebase onto origin/<branch>
+yourself (`git fetch origin <branch>` first if git does not have it yet).
 
 stop ends a workspace's running container/tmux server and keeps its checkout,
 title, group and conversation, so the user can restart it. Stopping YOURSELF
@@ -505,6 +514,15 @@ EOF
     else
       run rename "$2" workspace "$1"
     fi
+    ;;
+
+  set-base)
+    shift
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama set-base <branch>' >&2
+      exit 2
+    fi
+    run set-base "$1"
     ;;
 
   stop)

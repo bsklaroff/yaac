@@ -1022,6 +1022,34 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(mine?.title).toBe('wiring up the mama channel')
   })
 
+  it('rebases its own diff onto another branch on origin, and refuses one origin lacks', async () => {
+    const project = path.join(testEnv.dataDir, 'global', 'projects', projectId)
+    const checkout = path.join(project, 'workspaces', workspaceId)
+    const { stdout: main } = await execFileAsync('git', ['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])
+    // The remote is fake, so the branch is planted where a fetch would put it.
+    for (const repo of [path.join(project, 'repo'), checkout]) {
+      await execFileAsync('git', ['-C', repo, 'update-ref', 'refs/remotes/origin/pr/stacked', 'HEAD'])
+    }
+    try {
+      const usage = await runMama('set-base')
+      expect(usage.code).toBe(2)
+      const ghost = await runMama('set-base', 'ghost')
+      expect(ghost.code).toBe(1)
+      expect(ghost.out).toContain('branch "ghost" not found on origin')
+
+      const set = await runMama('set-base', 'pr/stacked')
+      expect(set.code).toBe(0)
+      const changes = await (await fetch(`${origin()}/api/workspace/${workspaceId}/changes?diff=0`)).json() as WorkspaceChanges
+      expect(changes.branch).toBe('pr/stacked')
+      expect(changes.comparison?.ref).toBe('origin/pr/stacked')
+    } finally {
+      expect((await runMama('set-base', main.trim())).code).toBe(0)
+      for (const repo of [path.join(project, 'repo'), checkout]) {
+        await execFileAsync('git', ['-C', repo, 'update-ref', '-d', 'refs/remotes/origin/pr/stacked'])
+      }
+    }
+  })
+
   it('spawns a sibling with the create form\u2019s options, never above its own posture', async () => {
     // The caller has the containerless default, which caps its siblings.
     const above = await runMama('create', '--permission-mode', 'bypass', 'x')

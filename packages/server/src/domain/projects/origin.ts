@@ -36,10 +36,14 @@ const fanOuts = new Map<string, { again: boolean }>()
 /**
  * Fetch a project's origin into its main clone, then, in the background, gc
  * it (`maintainRepo`) and update every running workspace's `origin/*`
- * (`propagateOrigin`).
+ * (`propagateOrigin`). `unlessWithinMs` skips the fetch when one started
+ * that recently, so a caller a workspace can repeat cannot keep origin
+ * fetching nonstop.
  */
-export async function fetchProjectOrigin(projectId: string): Promise<void> {
-  lastFetchMs.set(projectId, Date.now())
+export async function fetchProjectOrigin(projectId: string, opts: { unlessWithinMs?: number } = {}): Promise<void> {
+  const now = Date.now()
+  if (opts.unlessWithinMs !== undefined && now - (lastFetchMs.get(projectId) ?? 0) < opts.unlessWithinMs) return
+  lastFetchMs.set(projectId, now)
   const repo = repoDir(projectId)
   const fetched = fetchOrigin(repo, await projectRemoteUrl(projectId), await resolveProjectCredential(projectId))
   // Once per fetch; concurrent callers share one.

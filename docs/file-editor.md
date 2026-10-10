@@ -65,8 +65,9 @@ The webapp polls one route per workspace, `changes`, for the diff, the
 status bar's counts and the explorer's listing. The changes are everything
 that differs from the **diff base**: the merge
 base of HEAD with the explorer's picked branch, else with the branch the
-workspace forked from (`workspaceForkBranch`, tried as `origin/<base>`, then
-local, then `@{upstream}`). One script (`#drivers/shared`'s
+workspace forked from, or the one its agent later named with `yaac-mama
+set-base` (`workspaceForkBranch`, tried as `origin/<base>`, then local, then
+`@{upstream}`). One script (`#drivers/shared`'s
 `workspace-changes.ts`) runs inside the workspace under either driver. It
 runs `git add -A` into a private index at a stable scratch path, so the
 whole working tree is diffed without touching the agent's index, and git's

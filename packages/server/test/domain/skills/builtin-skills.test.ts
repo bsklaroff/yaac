@@ -59,6 +59,8 @@ describe('push-pr skill', () => {
   it('is discoverable and drives the watch phase through yaac-watch-prs', async () => {
     expectShipped('push-pr')
     expect(await bodyOf('push-pr')).toContain('yaac-watch-prs --pr <pr-number> --events comment')
+    // A stacked PR records its base, so the webapp's diff shows only its own commits.
+    expect(await bodyOf('push-pr')).toContain('yaac-mama set-base <base>')
   })
 })
 
@@ -73,6 +75,7 @@ describe('yaac-mama skill', () => {
       '# opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
+    expect(body).toContain('yaac-mama set-base <branch>')
     // Omitting the workspace stops the caller itself, and a self-stop's
     // confirmation may never arrive.
     expect(body).toContain('yaac-mama stop [<workspace>]')
