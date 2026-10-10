@@ -34,9 +34,16 @@ export interface InstallRecord {
    * `yaac cluster delete` refuses and nothing here execs into its nodes.
    */
   byo?: boolean
+  /**
+   * The origin this install's server last registered at (`yaac server
+   * start`, `yaac cluster install|start`). The desktop app lets pages from
+   * it, while the server runs, drive this Mac's installs; a page from any
+   * other origin, loopback or not, may not.
+   */
+  origin?: string
 }
 
-const INSTALL_KEYS = ['driver', 'installId', 'clusterUid', 'kubeContext', 'byo'] as const
+const INSTALL_KEYS = ['driver', 'installId', 'clusterUid', 'kubeContext', 'byo', 'origin'] as const
 
 /** The record's known fields, dropping unset and malformed ones. */
 function installFields(raw: Record<string, unknown>): InstallRecord {
@@ -47,6 +54,7 @@ function installFields(raw: Record<string, unknown>): InstallRecord {
     clusterUid: str(raw.clusterUid),
     kubeContext: str(raw.kubeContext),
     byo: raw.byo === true ? true : undefined,
+    origin: str(raw.origin),
   }
   for (const key of INSTALL_KEYS) if (out[key] === undefined) delete out[key]
   return out

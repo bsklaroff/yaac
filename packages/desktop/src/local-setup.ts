@@ -235,8 +235,10 @@ function exec(
       if (settled) return
       settled = true
       clearTimeout(timer)
-      clearTimeout(killTimer)
       clearTimeout(drainTimer)
+      // A stopped command's group still gets its SIGKILL: a member that
+      // ignored SIGTERM may be what holds the pipes open.
+      if (!failure) clearTimeout(killTimer)
       opts.signal.removeEventListener('abort', onAbort)
       child.stdout.destroy()
       child.stderr.destroy()

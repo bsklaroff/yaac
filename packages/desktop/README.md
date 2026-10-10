@@ -118,13 +118,18 @@ Quitting never stops a server.
   (`'server'` or `'cluster'`), and asks for state or a cancel; the
   commands are a fixed table in the main process, which validates every
   IPC payload. Every setup, start, stop, cancel and state call is accepted
-  only from the main window's top frame showing the picker or a page on
-  loopback (a server on this Mac), checked against the frame's URL when
-  the call arrives; a remote server's page is refused, and the SPA leaves
-  its "This Mac" area out. The window follows no navigation its page starts
-  to another origin. Before a setup runs, the main process shows a native
-  confirmation listing its commands and the taps it trusts, which no page
-  can answer.
+  only from the main window's top frame showing the picker or a page from
+  the origin one of this Mac's installs registered, while that install's
+  server runs (`status --json` reports the origin, which an install
+  records each time it registers, so one registered by an older `yaac`
+  has none until its next start); this is checked against the frame's URL
+  when the call arrives. Any other page is
+  refused, loopback included, since a port the app forwards for a remote
+  server is on loopback too, and the SPA leaves its "This Mac" area out
+  there. The window follows no navigation its page starts to another
+  origin. Before a setup runs, the main process shows a native
+  confirmation listing its commands and the taps it trusts, with Cancel as
+  the default, which no page can answer.
   Stopping or restarting a server never stops an agent: a containerless
   workspace is a tmux server that outlives it, and the next start picks it
   back up.

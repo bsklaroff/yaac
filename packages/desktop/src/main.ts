@@ -462,32 +462,44 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
 })
 /**
  * Whether an IPC call comes from a page allowed to drive this Mac's
- * servers: the main window's top frame, showing the picker or a server on
- * loopback. Checked against the frame's URL when the call arrives, since
- * that is what is showing.
+ * servers: the main window's top frame, showing the picker or one of this
+ * Mac's running servers. Checked against the frame's URL when the call
+ * arrives, since that is what is showing. A miss re-reads the installs
+ * once, for a server started from a terminal since the last read.
  */
-function fromLocalPage(e: IpcMainInvokeEvent): boolean {
-  const frame = e.senderFrame
-  return e.sender === win?.webContents && frame?.parent === null && mayControlLocalServers(frame.url)
+async function fromLocalPage(e: IpcMainInvokeEvent): Promise<boolean> {
+  const allowed = (): boolean => {
+    try {
+      const frame = e.senderFrame
+      return e.sender === win?.webContents && frame?.parent === null && mayControlLocalServers(frame.url, localServers)
+    } catch {
+      // The frame is gone.
+      return false
+    }
+  }
+  if (allowed()) return true
+  if (Date.now() - lastLocalRead <= LOCAL_STATE_FRESH_MS) return false
+  await refreshLocalServer()
+  return allowed()
 }
 const NOT_LOCAL: DesktopServerOutcome = { ok: false, error: 'only this Mac\'s own pages can drive its servers' }
 
 // Start and stop buttons in the picker and the SPA. The reply comes back
 // before the window lands, which replaces the calling page.
-ipcMain.handle('server:start-local', (e, raw: unknown) => {
-  if (!fromLocalPage(e)) return NOT_LOCAL
+ipcMain.handle('server:start-local', async (e, raw: unknown) => {
+  if (!await fromLocalPage(e)) return NOT_LOCAL
   const scope = parseScope(raw)
   return scope ? serverAction({ scope, action: 'start' }) : { ok: false, error: 'invalid arguments' }
 })
-ipcMain.handle('server:stop-local', (e, raw: unknown) => {
-  if (!fromLocalPage(e)) return NOT_LOCAL
+ipcMain.handle('server:stop-local', async (e, raw: unknown) => {
+  if (!await fromLocalPage(e)) return NOT_LOCAL
   const scope = parseScope(raw)
   return scope ? serverAction({ scope, action: 'stop' }) : { ok: false, error: 'invalid arguments' }
 })
 // This Mac's installs and setup, which the picker and the SPA poll. A
 // refusal is a rejection, so the SPA leaves its "This Mac" area out.
 ipcMain.handle('server:local', async (e) => {
-  if (!fromLocalPage(e)) throw new Error(NOT_LOCAL.error)
+  if (!await fromLocalPage(e)) throw new Error(NOT_LOCAL.error)
   if (Date.now() - lastLocalRead > LOCAL_STATE_FRESH_MS) await refreshLocalServer()
   return localState()
 })
@@ -495,21 +507,23 @@ ipcMain.handle('server:local', async (e) => {
 // the background: the reply comes once it has begun, renderers follow it
 // through `server:local`, and it lands the window when it ends.
 ipcMain.handle('server:setup', async (e, raw: unknown): Promise<DesktopServerOutcome> => {
-  if (!fromLocalPage(e)) return NOT_LOCAL
+  if (!await fromLocalPage(e)) return NOT_LOCAL
   const scope = parseScope(raw)
   if (!scope) return { ok: false, error: 'invalid arguments' }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   if (localState().choices[scope].blocked === 'unsupported') return { ok: false, error: 'this Mac cannot run a local cluster' }
   const { message, detail } = setupConfirmation(scope)
-  const options = { type: 'question' as const, buttons: ['Cancel', 'Set up'], defaultId: 1, cancelId: 0, message, detail }
+  // Cancel is the default: the page chooses when this appears, so a key
+  // pressed for something else must not consent.
+  const options = { type: 'question' as const, buttons: ['Cancel', 'Set up'], defaultId: 0, cancelId: 0, message, detail }
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
   if (response !== 1) return { ok: false, error: 'setup not started' }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   void serverAction({ scope, action: 'setup' })
   return { ok: true }
 })
-ipcMain.handle('server:setup-cancel', (e) => {
-  if (!fromLocalPage(e)) return NOT_LOCAL
+ipcMain.handle('server:setup-cancel', async (e) => {
+  if (!await fromLocalPage(e)) return NOT_LOCAL
   void setup.cancel()
   return { ok: true }
 })

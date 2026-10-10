@@ -22,7 +22,9 @@
  *     and the cluster setup (or why this machine cannot run it).
  *  6. A page from a server off loopback (a stand-in on this machine's LAN
  *     address) cannot set up, start, stop, cancel or read this Mac's
- *     servers through the bridge.
+ *     servers through the bridge, nor can a loopback page that is not one
+ *     of this Mac's installs (a stand-in for a port the app forwards for a
+ *     remote server), which the remote page moves the window to.
  *  7. Quitting during a setup asks first, then cancels it: the hanging
  *     brew install's child is gone once the app has exited.
  *
@@ -216,45 +218,59 @@ async function main() {
       console.log('    (settings button not found — check by hand)')
     }
 
-    console.log('\n6. a page from off loopback cannot drive this Mac\'s servers')
+    console.log('\n6. pages that are not this Mac\'s installs cannot drive its servers')
+    // Serves a page that calls every local-server method and reports what came back.
+    const prober = () => http.createServer((req, res) => {
+      const json = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body))
+      if (req.url === '/api/health') return json({ ok: true, buildId: 'remote' })
+      if (req.url === '/api/whoami') return json({ kind: 'local', userId: 'remote' })
+      res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>probe</title><script>
+        (async () => {
+          const b = window.yaacServer, out = {}
+          const calls = { setup: () => b.setupLocal('server'), stop: () => b.stopLocal('server'),
+            start: () => b.startLocal('server'), cancel: () => b.cancelSetup(), state: () => b.localState() }
+          for (const [k, f] of Object.entries(calls)) {
+            try { out[k] = await f() } catch { out[k] = 'rejected' }
+          }
+          document.title = JSON.stringify(out)
+        })()
+      </script>`)
+    })
+    const listen = async (server, host) => {
+      await new Promise((r) => server.listen(0, host, r))
+      return `http://${host}:${server.address().port}`
+    }
+    const refusedAll = async (where) => {
+      await until(win, (o) => location.origin === o && document.title.startsWith('{'), where, 30_000)
+      const out = JSON.parse(await win.title())
+      const refused = ['setup', 'stop', 'start', 'cancel'].every((k) => out[k]?.ok === false && /own pages/.test(out[k].error))
+      check(`a page at ${where} was refused setup, stop, start and cancel`, refused, JSON.stringify(out))
+      check(`and could not read this Mac's state`, out.state === 'rejected')
+    }
     const lan = Object.values(os.networkInterfaces()).flat().find((a) => a.family === 'IPv4' && !a.internal)?.address
-    if (lan) {
-      const remote = http.createServer((req, res) => {
-        const json = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body))
-        if (req.url === '/api/health') return json({ ok: true, buildId: 'remote' })
-        if (req.url === '/api/whoami') return json({ kind: 'local', userId: 'remote' })
-        res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>remote</title><script>
-          (async () => {
-            const b = window.yaacServer, out = {}
-            const calls = { setup: () => b.setupLocal('server'), stop: () => b.stopLocal('server'),
-              start: () => b.startLocal('server'), cancel: () => b.cancelSetup(), state: () => b.localState() }
-            for (const [k, f] of Object.entries(calls)) {
-              try { out[k] = await f() } catch { out[k] = 'rejected' }
-            }
-            document.title = JSON.stringify(out)
-          })()
-        </script>`)
-      })
-      await new Promise((r) => remote.listen(0, lan, r))
-      const remoteOrigin = `http://${lan}:${remote.address().port}`
+    const remote = prober()
+    const forwarded = prober()
+    try {
+      const forwardedOrigin = await listen(forwarded, '127.0.0.1')
       const brewCalls = fs.readFileSync(CALLS, 'utf8')
       const dialogCount = (await dialogs()).length
-      try {
+      if (lan) {
+        const remoteOrigin = await listen(remote, lan)
         await win.evaluate((url) => window.yaacServer.addRemote(url), remoteOrigin)
-        await until(win, () => document.title.startsWith('{'), null, 30_000)
-        const out = JSON.parse(await win.title())
-        const refused = ['setup', 'stop', 'start', 'cancel'].every((k) => out[k]?.ok === false && /own pages/.test(out[k].error))
-        check(`the remote page (${remoteOrigin}) was refused setup, stop, start and cancel`, refused, JSON.stringify(out))
-        check('and could not read this Mac\'s state', out.state === 'rejected')
-        check('no command ran and no confirmation showed',
-          fs.readFileSync(CALLS, 'utf8') === brewCalls && (await dialogs()).length === dialogCount)
-        const status = JSON.parse(execFileSync('node', [CLI, 'server', 'status', '--json'], { env: ENV, encoding: 'utf8' }))
-        check('this Mac\'s server is still running', status.running === true)
-      } finally {
-        remote.close()
+        await refusedAll(remoteOrigin)
+      } else {
+        console.log('    (no non-loopback address here — the direct remote case is skipped)')
       }
-    } else {
-      console.log('    (no non-loopback address here — skipped)')
+      // The page now showing moves the window to a loopback port it controls.
+      await win.evaluate((url) => window.yaacServer.addRemote(url), forwardedOrigin)
+      await refusedAll(forwardedOrigin)
+      check('no command ran and no confirmation showed',
+        fs.readFileSync(CALLS, 'utf8') === brewCalls && (await dialogs()).length === dialogCount)
+      const status = JSON.parse(execFileSync('node', [CLI, 'server', 'status', '--json'], { env: ENV, encoding: 'utf8' }))
+      check('this Mac\'s server is still running', status.running === true)
+    } finally {
+      remote.close()
+      forwarded.close()
     }
 
     console.log('\n7. Quit during a setup → asks, cancels it, then quits')

@@ -126,7 +126,7 @@ describe('registerServer', () => {
       enabled: true,
       saved: [{ url: 'http://127.0.0.1:8787' }, { url: 'https://srv.ts.net' }],
     })
-    expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
+    expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1', origin: 'http://127.0.0.1:8787' })
   })
 
   it('on a restart or re-install, leaves a selection of another server alone unless the origin is new', async () => {

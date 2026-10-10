@@ -8,7 +8,9 @@ import {
   type LocalServers, type RunYaac, type YaacResult,
 } from '#server-control'
 
-const STATUS: LocalServerStatus = { running: true, driver: 'containerless', serverBuildId: 'b1', cliBuildId: 'b1' }
+const STATUS: LocalServerStatus = {
+  running: true, driver: 'containerless', serverBuildId: 'b1', cliBuildId: 'b1', origin: 'http://127.0.0.1:8787',
+}
 
 /**
  * A `yaac` that answers each command line from `replies`, recording each
@@ -150,13 +152,31 @@ describe('trayServerItems', () => {
 })
 
 describe('mayControlLocalServers', () => {
-  it('admits the shell\'s own picker and pages from this machine\'s loopback, and nothing else', () => {
-    for (const url of ['data:text/html;charset=utf-8,%3C!doctype', 'http://127.0.0.1:8787/', 'http://localhost:1420/x', 'http://[::1]:8790/']) {
-      expect(mayControlLocalServers(url)).toBe(true)
+  const read = (s: Partial<LocalServerStatus>) => ({ kind: 'status' as const, status: { ...STATUS, ...s } })
+  const local: LocalServers = {
+    server: read({}),
+    cluster: read({ driver: 'k8s', origin: 'http://127.0.0.1:8790' }),
+  }
+
+  it('admits the shell\'s own picker and the pages of this Mac\'s running installs', () => {
+    for (const url of ['data:text/html;charset=utf-8,%3C!doctype', 'http://127.0.0.1:8787/', 'http://127.0.0.1:8790/w/abc']) {
+      expect(mayControlLocalServers(url, local)).toBe(true)
     }
-    for (const url of ['https://srv.tail1234.ts.net/', 'http://10.42.44.100:9455/', 'file://localhost/etc/passwd', 'about:blank', '']) {
-      expect(mayControlLocalServers(url)).toBe(false)
+    // An install in tailnet mode registers its https origin.
+    expect(mayControlLocalServers('https://mac.tail1234.ts.net/', { ...local, server: read({ origin: 'https://mac.tail1234.ts.net' }) }))
+      .toBe(true)
+  })
+
+  it('refuses every other origin, loopback included, and an install that is not running', () => {
+    // A port forwarded for a remote server is on loopback too.
+    for (const url of ['http://127.0.0.1:9456/', 'http://localhost:8787/', 'https://srv.tail1234.ts.net/', 'http://10.42.44.100:9455/', 'about:blank', '']) {
+      expect(mayControlLocalServers(url, local)).toBe(false)
     }
+    // While it is stopped, a forward could take its port.
+    expect(mayControlLocalServers('http://127.0.0.1:8787/', { ...local, server: read({ running: false }) })).toBe(false)
+    // An older yaac reports no origin.
+    expect(mayControlLocalServers('http://127.0.0.1:8787/', { server: read({ origin: null }), cluster: null })).toBe(false)
+    expect(mayControlLocalServers('http://127.0.0.1:8787/', { server: { kind: 'no-cli' }, cluster: null })).toBe(false)
   })
 })
 

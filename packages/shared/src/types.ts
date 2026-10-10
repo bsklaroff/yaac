@@ -1547,6 +1547,8 @@ export interface LocalServerStatus {
   serverBuildId: string | null
   /** The build of the CLI that answered, the one `yaac server restart` would start. */
   cliBuildId: string
+  /** The origin the install's server last registered at; null before it ever did. */
+  origin: string | null
 }
 
 /**

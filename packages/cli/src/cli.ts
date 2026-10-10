@@ -389,7 +389,7 @@ cluster
     if (status.driver === 'k8s') {
       printServerStatus(status, options.json)
     } else if (options.json) {
-      console.log(JSON.stringify({ ...status, driver: null, running: false, serverBuildId: null }))
+      console.log(JSON.stringify({ ...status, driver: null, running: false, serverBuildId: null, origin: null }))
     } else {
       console.log('no cluster install; create one with `yaac cluster install`')
     }

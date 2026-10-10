@@ -35,8 +35,8 @@ other's.
 `registerServer(origin, driver)` in `@yaac/shared/server-config` is the only
 registration. `yaac server start|restart` calls it for the host process it
 spawns, and `yaac cluster install|start|restart` for the Deployment. It
-records the driver in the data dir's `install.json` and saves the origin,
-keeping the other saved servers. A start selects the origin. A restart or a
+records the driver and the origin in the data dir's `install.json` and
+saves the origin, keeping the other saved servers. A start selects the origin. A restart or a
 re-install selects it only when it is new or no other server is selected,
 so maintaining one install never moves clients off the other.
 
@@ -66,9 +66,11 @@ here, `server.json` also carries a copy of the client data dir's record, and
 ## What `install.json` holds
 
 Each data dir records the install it is in `<dataDir>/install.json`
-(`@yaac/shared/install-record`): `driver`, and for a cluster also
-`installId`, `clusterUid`, `kubeContext` and `byo` (see the `InstallRecord`
-type). It describes the data dir ("is there a host server to start, or a
+(`@yaac/shared/install-record`): `driver`, the `origin` its server last
+registered at, and for a cluster also `installId`, `clusterUid`,
+`kubeContext` and `byo` (see the `InstallRecord` type). `yaac server|cluster
+status --json` report the origin, and the desktop shell lets only pages
+from a running install's origin drive this Mac's servers. It describes the data dir ("is there a host server to start, or a
 Deployment to update?"), which does not change when the selection points
 elsewhere, so `yaac remote set https://elsewhere` cannot allow a host
 `yaac server start` on a k8s install. `recordedDriver` reads `driver`, and
@@ -133,8 +135,10 @@ or `yaac cluster install|start|stop` (packages/desktop/README.md, "This
 machine's servers" and "Setup"). A setup ends the way the terminal's
 commands do: `yaac server start` or the first `yaac cluster install`
 registers and selects the new origin, and the shell lands on it. Only the
-picker and pages served from loopback may ask for any of this; a remote
-server's page gets the server-switching bridge but not this Mac's servers.
+picker and pages from a running install's recorded origin may ask for any
+of this. Any other page, a remote server's or one on a port the app
+forwards for it, gets the server-switching bridge but not this Mac's
+servers.
 
 When no server is reachable (nothing selected, server down, or device not
 identified), the window shows a **picker** instead of an error dialog: with

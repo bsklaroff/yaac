@@ -129,7 +129,7 @@ describe('startServer registration', () => {
         enabled: true,
         saved: [{ url: `http://127.0.0.1:${server.port}` }],
       })
-      expect(await readInstallRecord()).toEqual({ driver: 'containerless' })
+      expect(await readInstallRecord()).toEqual({ driver: 'containerless', origin: `http://127.0.0.1:${server.port}` })
     } finally {
       await server.close()
       vi.unstubAllEnvs()

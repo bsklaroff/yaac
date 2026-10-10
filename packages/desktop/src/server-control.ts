@@ -11,7 +11,6 @@
  * (docs/containerless-driver.md), so a stop never stops an agent either.
  */
 import { execFile } from 'node:child_process'
-import { isLoopbackOrigin } from '@yaac/shared/server-api'
 import type {
   DesktopInstallState, DesktopLocalScope, DesktopLocalState, DesktopSetupRun, LocalServerStatus,
 } from '@yaac/shared/types'
@@ -52,11 +51,22 @@ export type ServerScope = DesktopLocalScope
 
 /**
  * Whether the page at `url` may read and drive this Mac's servers: the
- * shell's own picker (a `data:` page) or a page served from this machine's
- * loopback. A remote server's page may not.
+ * shell's own picker (a `data:` page), or a page from the origin one of
+ * this Mac's installs registered, while that install's server runs. Any
+ * other origin may not, loopback included: a port the app forwards for a
+ * remote server is on loopback too, and while an install is stopped such a
+ * forward could take its port.
  */
-export function mayControlLocalServers(url: string): boolean {
-  return url.startsWith('data:') || (/^https?:/.test(url) && isLoopbackOrigin(url))
+export function mayControlLocalServers(url: string, local: LocalServers): boolean {
+  if (url.startsWith('data:')) return true
+  let origin: string
+  try {
+    origin = new URL(url).origin
+  } catch {
+    return false
+  }
+  return [local.server, local.cluster]
+    .some((read) => read?.kind === 'status' && read.status.running === true && read.status.origin === origin)
 }
 
 /** A renderer-supplied scope, or null for anything else. */

@@ -188,10 +188,11 @@ describe('createSetupRunner', () => {
     expect(setupConfirmation('server').detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
   })
 
-  it('cancels a long step, killing what it spawned, and refuses a second run meanwhile', async () => {
+  it('cancels a long step, killing what it spawned even if it ignores SIGTERM, and refuses a second run meanwhile', async () => {
     const pid = path.join(dir, 'pid')
     await fake('yaac', {
-      'cluster install': `sleep 30 & echo $! > '${pid}'; echo creating; wait`,
+      // The child ignores SIGTERM and keeps the pipes, so only the group SIGKILL ends it.
+      'cluster install': `sh -c "trap '' TERM; exec sleep 30" & echo $! > '${pid}'; echo creating; wait`,
     })
     await fake('brew', { 'list --formula --versions yaac-cluster': 'echo yaac-cluster 1.0.0' })
     const { setup } = runner()
@@ -204,12 +205,21 @@ describe('createSetupRunner', () => {
 
     expect(await running).toEqual({ ok: false, error: 'setup cancelled' })
     await cancelled
-    expect(Date.now() - started).toBeLessThan(3000)
+    // Settled by the leader's exit, without waiting for the child.
+    expect(Date.now() - started).toBeLessThan(4000)
     const run = setup.current()!
     expect(run.phase).toBe('cancelled')
     expect(run.steps.at(-1)?.state).toBe('cancelled')
     const grandchild = Number(await fs.readFile(pid, 'utf8'))
-    await new Promise((r) => setTimeout(r, 100))
-    expect(() => process.kill(grandchild, 0)).toThrow()
-  })
+    const gone = (): boolean => {
+      try {
+        process.kill(grandchild, 0)
+        return false
+      } catch {
+        return true
+      }
+    }
+    for (const end = Date.now() + 8000; !gone() && Date.now() < end;) await new Promise((r) => setTimeout(r, 100))
+    expect(gone()).toBe(true)
+  }, 15_000)
 })
