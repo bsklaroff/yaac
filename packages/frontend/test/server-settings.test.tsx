@@ -182,8 +182,13 @@ describe('ServerSettings → This Mac', () => {
       busy: null,
       setup: null,
       choices: {
-        server: { scope: 'server', commands: COMMANDS.server, blocked: null },
-        cluster: { scope: 'cluster', commands: COMMANDS.cluster, blocked: null },
+        server: { scope: 'server', commands: COMMANDS.server, trusts: [{ tap: 'bsklaroff/yaac', thirdParty: false }], blocked: null },
+        cluster: {
+          scope: 'cluster',
+          commands: COMMANDS.cluster,
+          trusts: [{ tap: 'bsklaroff/yaac', thirdParty: false }, { tap: 'libkrun/krun', thirdParty: true }],
+          blocked: null,
+        },
       },
       ...over,
     }
@@ -201,9 +206,19 @@ describe('ServerSettings → This Mac', () => {
     return local
   }
 
-  it('is absent from an app without the local-server bridge', async () => {
+  it('is absent from an app without the local-server bridge, and from a page the shell refuses', async () => {
     installBridge({ current: null, saved: [] })
     render(<ServerSettings />)
+    await waitFor(() => expect(screen.getByText('No servers configured yet.')).toBeTruthy())
+    expect(screen.queryByText('This Mac')).toBeNull()
+    cleanup()
+
+    // A remote server's page: the shell rejects every local-server call.
+    const local = installLocal(localState())
+    local.localState.mockRejectedValue(new Error('only this Mac\'s own pages can drive its servers'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    render(<ServerSettings />)
+    await waitFor(() => expect(local.localState).toHaveBeenCalled())
     await waitFor(() => expect(screen.getByText('No servers configured yet.')).toBeTruthy())
     expect(screen.queryByText('This Mac')).toBeNull()
   })
@@ -229,6 +244,7 @@ describe('ServerSettings → This Mac', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Set up…' })).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: 'Set up…' }))
     expect(screen.getByText(/gVisor-sandboxed pod/)).toBeTruthy()
+    expect(screen.getByText(/trusts the Homebrew taps bsklaroff\/yaac and libkrun\/krun \(third-party, not yaac's\)/)).toBeTruthy()
     expect(screen.getByText(/brew trust bsklaroff\/yaac\s+yaac cluster install/)).toBeTruthy()
 
     const run: DesktopSetupRun = {
@@ -265,6 +281,8 @@ describe('ServerSettings → This Mac', () => {
     await waitFor(() => expect(screen.getByText(/it needs macOS on Apple silicon/)).toBeTruthy())
     expect(screen.getAllByRole('button', { name: 'Set up…' })).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Set up…' }))
+    // What a containerless agent can reach, in the workspace badge's words.
+    expect(screen.getByText('its network access is unfiltered')).toBeTruthy()
     expect(screen.getByRole('link', { name: 'brew.sh' }).getAttribute('href')).toBe('https://brew.sh')
     expect(screen.getByRole('button', { name: 'Run them for me' }).hasAttribute('disabled')).toBe(true)
   })

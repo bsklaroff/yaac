@@ -68,9 +68,9 @@ Packaging exists but produces only a local, unsigned build
   `yaac auth update` signs in in-process.
 - The tray and the connect page start, stop and restart this machine's
   servers through the `yaac` CLI, and offer a restart when the host server
-  runs a different build than the installed CLI. They and Settings → Server
-  also set up a missing install through `brew` and `yaac`
-  (packages/desktop/README.md, "This machine's servers" and "Setup").
+  runs a different build than the installed CLI, and set up a missing
+  install (packages/desktop/README.md, "This machine's servers" and
+  "Setup").
 
 The tap's `yaac-server` formula installs the npm tarball plus the
 containerless host tools, with no tap dependencies; `yaac-cluster` adds
@@ -167,13 +167,8 @@ it opens, but it gets no CLI, and nothing updates the app.
 
 Without the CLI the app still works fully as a client of a remote server:
 the picker, the window, notifications, port forwards and the auth daemon
-are all the app's own. For a server on this Mac, the connect page opens on
-setup (packages/desktop/README.md, "Setup"): it explains the containerless
-and kind choices, shows the `brew trust` / `brew install` / `yaac` commands
-for each, and offers to run them in the background, skipping what is
-already done and landing on the new server. It needs Homebrew, which it
-links to rather than installs. The tray offers the same setup for an
-install this Mac lacks, as does Settings → Server.
+are all the app's own. For a server on this Mac, the app sets one up
+through Homebrew (packages/desktop/README.md, "Setup").
 
 The README documents only the cask. Mixing the two never breaks the app,
 but brew's record goes stale:

@@ -1591,10 +1591,18 @@ export interface DesktopSetupRun {
   hostCheckFailures?: string
 }
 
+/** A Homebrew tap a setup trusts, and whether it is someone other than yaac's. */
+export interface TrustedTap {
+  tap: string
+  thirdParty: boolean
+}
+
 export interface DesktopSetupChoice {
   scope: DesktopLocalScope
   /** What a user would run in a terminal for the same result. */
   commands: string[]
+  /** The taps running it trusts, which lets Homebrew run their formula code. */
+  trusts: TrustedTap[]
   /** Why the app cannot run this setup itself: not an Apple silicon Mac, or no Homebrew. */
   blocked: 'unsupported' | 'no-brew' | null
 }

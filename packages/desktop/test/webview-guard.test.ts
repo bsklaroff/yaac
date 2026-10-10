@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   isAllowedPreviewUrl,
+  isSameOriginNavigation,
   hardenGuestWebPreferences,
   sanitizeWebviewSrc,
 } from '#webview-guard'
@@ -54,5 +55,15 @@ describe('sanitizeWebviewSrc', () => {
     expect(sanitizeWebviewSrc('http://localhost:5173/')).toBe('http://localhost:5173/')
     expect(sanitizeWebviewSrc('http://evil.com/')).toBe('about:blank')
     expect(sanitizeWebviewSrc('http://mybox.tail1234.ts.net:15173/')).toBe('about:blank')
+  })
+})
+
+describe('isSameOriginNavigation', () => {
+  it('lets a page move within its origin only, and never out of the picker', () => {
+    expect(isSameOriginNavigation('http://127.0.0.1:8787/', 'http://127.0.0.1:8787/w/abc')).toBe(true)
+    expect(isSameOriginNavigation('https://srv.ts.net/', 'http://127.0.0.1:8787/')).toBe(false)
+    expect(isSameOriginNavigation('https://srv.ts.net/', 'data:text/html,<script>')).toBe(false)
+    expect(isSameOriginNavigation('data:text/html,a', 'data:text/html,b')).toBe(false)
+    expect(isSameOriginNavigation('http://127.0.0.1:8787/', 'not a url')).toBe(false)
   })
 })

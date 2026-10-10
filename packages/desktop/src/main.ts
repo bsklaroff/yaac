@@ -16,7 +16,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray,
-  utilityProcess,
+  utilityProcess, type IpcMainInvokeEvent,
 } from 'electron'
 import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import {
@@ -29,12 +29,12 @@ import { startEventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
 import { connectPageUrl } from '#connect-page'
-import { CLUSTER_SUPPORTED, createSetupRunner, localView, onPath } from '#local-setup'
+import { CLUSTER_SUPPORTED, createSetupRunner, localView, onPath, setupConfirmation } from '#local-setup'
 import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
 import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
 import {
-  createRunYaac, parseScope, readLocalServer, runServerAction, trayServerItems,
+  createRunYaac, installState, mayControlLocalServers, parseScope, readLocalServer, runServerAction, trayServerItems,
   type LocalServers, type ScopedAction, type ServerScope,
 } from '#server-control'
 import {
@@ -43,7 +43,7 @@ import {
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
-import { hardenGuestWebPreferences, isAllowedPreviewUrl, sanitizeWebviewSrc } from '#webview-guard'
+import { hardenGuestWebPreferences, isAllowedPreviewUrl, isSameOriginNavigation, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
 import { createFsTransitionGuard, zoomAction } from '#window-zoom'
 
@@ -67,6 +67,8 @@ if (process.platform === 'darwin') {
 let win: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
+// Set once the user agrees to quit through a running setup.
+let quitCancelsSetup = false
 // Zoom clicks are ignored during a full-screen transition (see window-zoom.ts).
 const fsGuard = createFsTransitionGuard()
 let events: { stop: () => void } | null = null
@@ -97,7 +99,7 @@ const authDaemon = createAuthDaemonRunner((baseUrl) => utilityProcess.fork(
   path.join(distDir, 'auth-daemon.js'), [baseUrl], { serviceName: 'yaac auth daemon' },
 ))
 const runYaac = createRunYaac()
-const setup = createSetupRunner(() => updateTray())
+const setup = createSetupRunner(() => updateTray(), path.join(app.getPath('userData'), 'unfinished-setups.json'))
 // A `brew upgrade` or a server started from a terminal shows up within this.
 const LOCAL_SERVER_POLL_MS = 60_000
 // A renderer asking for this Mac's state gets a read at most this old.
@@ -105,7 +107,12 @@ const LOCAL_STATE_FRESH_MS = 5000
 
 function localState(): DesktopLocalState {
   return localView({
-    local: localServers, busy: serverBusy, setup: setup.current(), brew: brewFound, clusterSupported: CLUSTER_SUPPORTED,
+    local: localServers,
+    busy: serverBusy,
+    setup: setup.current(),
+    unfinished: setup.unfinished(),
+    brew: brewFound,
+    clusterSupported: CLUSTER_SUPPORTED,
   })
 }
 
@@ -148,6 +155,13 @@ async function createWindow(): Promise<BrowserWindow> {
   fsGuard.settle()
   w.on('enter-full-screen', () => fsGuard.settle())
   w.on('leave-full-screen', () => fsGuard.settle())
+  // Only the shell moves the window to another origin (loadURL fires no
+  // will-navigate), so the preload bridge stays with the pages it loaded.
+  w.webContents.on('will-navigate', (e, url) => {
+    if (isSameOriginNavigation(w.webContents.getURL(), url)) return
+    e.preventDefault()
+    if (/^https?:/.test(url)) void shell.openExternal(url)
+  })
   w.webContents.on('will-attach-webview', (_e, webPreferences, params) => {
     hardenGuestWebPreferences(webPreferences as unknown as Record<string, unknown>)
     params.src = sanitizeWebviewSrc(params.src)
@@ -327,6 +341,10 @@ async function readLocalServerState(): Promise<void> {
   if (serverBusy || epoch !== actionEpoch) return
   localServers = { server, cluster }
   brewFound = brew
+  // An install finished from a terminal is no longer the app's to set up.
+  for (const scope of setup.unfinished()) {
+    if (installState(localServers, scope) === 'running') setup.forget(scope)
+  }
   updateTray()
 }
 
@@ -442,33 +460,57 @@ ipcMain.handle('server:switch', async (_e, raw: unknown) => {
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
+/**
+ * Whether an IPC call comes from a page allowed to drive this Mac's
+ * servers: the main window's top frame, showing the picker or a server on
+ * loopback. Checked against the frame's URL when the call arrives, since
+ * that is what is showing.
+ */
+function fromLocalPage(e: IpcMainInvokeEvent): boolean {
+  const frame = e.senderFrame
+  return e.sender === win?.webContents && frame?.parent === null && mayControlLocalServers(frame.url)
+}
+const NOT_LOCAL: DesktopServerOutcome = { ok: false, error: 'only this Mac\'s own pages can drive its servers' }
+
 // Start and stop buttons in the picker and the SPA. The reply comes back
 // before the window lands, which replaces the calling page.
-ipcMain.handle('server:start-local', (_e, raw: unknown) => {
+ipcMain.handle('server:start-local', (e, raw: unknown) => {
+  if (!fromLocalPage(e)) return NOT_LOCAL
   const scope = parseScope(raw)
   return scope ? serverAction({ scope, action: 'start' }) : { ok: false, error: 'invalid arguments' }
 })
-ipcMain.handle('server:stop-local', (_e, raw: unknown) => {
+ipcMain.handle('server:stop-local', (e, raw: unknown) => {
+  if (!fromLocalPage(e)) return NOT_LOCAL
   const scope = parseScope(raw)
   return scope ? serverAction({ scope, action: 'stop' }) : { ok: false, error: 'invalid arguments' }
 })
-// This Mac's installs and setup, which the picker and the SPA poll.
-ipcMain.handle('server:local', async () => {
+// This Mac's installs and setup, which the picker and the SPA poll. A
+// refusal is a rejection, so the SPA leaves its "This Mac" area out.
+ipcMain.handle('server:local', async (e) => {
+  if (!fromLocalPage(e)) throw new Error(NOT_LOCAL.error)
   if (Date.now() - lastLocalRead > LOCAL_STATE_FRESH_MS) await refreshLocalServer()
   return localState()
 })
-// A setup runs in the background and replies once it has begun; renderers
-// follow it through `server:local`, and it lands the window when it ends.
-ipcMain.handle('server:setup', (_e, raw: unknown): DesktopServerOutcome => {
+// A setup runs only once the user confirms it in a native dialog, then in
+// the background: the reply comes once it has begun, renderers follow it
+// through `server:local`, and it lands the window when it ends.
+ipcMain.handle('server:setup', async (e, raw: unknown): Promise<DesktopServerOutcome> => {
+  if (!fromLocalPage(e)) return NOT_LOCAL
   const scope = parseScope(raw)
   if (!scope) return { ok: false, error: 'invalid arguments' }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   if (localState().choices[scope].blocked === 'unsupported') return { ok: false, error: 'this Mac cannot run a local cluster' }
+  const { message, detail } = setupConfirmation(scope)
+  const options = { type: 'question' as const, buttons: ['Cancel', 'Set up'], defaultId: 1, cancelId: 0, message, detail }
+  const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
+  if (response !== 1) return { ok: false, error: 'setup not started' }
+  if (serverBusy) return { ok: false, error: 'a server action is already running' }
   void serverAction({ scope, action: 'setup' })
   return { ok: true }
 })
-ipcMain.handle('server:setup-cancel', () => {
-  setup.cancel()
+ipcMain.handle('server:setup-cancel', (e) => {
+  if (!fromLocalPage(e)) return NOT_LOCAL
+  void setup.cancel()
   return { ok: true }
 })
 // Removal never touches the selected server, so the window stays put.
@@ -536,7 +578,29 @@ app.on('activate', () => showWindow())
 // Stay in the tray; quitting is explicit (tray Quit or Cmd-Q).
 app.on('window-all-closed', () => { /* stay in the tray */ })
 
-app.on('before-quit', () => {
+/*
+ * A setup's commands run in their own process group, so quitting would
+ * leave one running with no reader for its output, to die at whatever
+ * point it next writes. Quit asks first, and cancels the setup cleanly.
+ */
+app.on('before-quit', (e) => {
+  if (setup.current()?.phase === 'running' && !quitCancelsSetup) {
+    e.preventDefault()
+    void dialog.showMessageBox({
+      type: 'warning',
+      buttons: ['Keep running', 'Cancel setup and quit'],
+      defaultId: 0,
+      cancelId: 0,
+      message: 'A setup is still running',
+      detail: 'Quitting cancels it. Run it again later to pick up where it stopped.',
+    }).then(async ({ response }) => {
+      if (response !== 1) return
+      quitCancelsSetup = true
+      await setup.cancel()
+      app.quit()
+    })
+    return
+  }
   quitting = true
   events?.stop()
   events = null

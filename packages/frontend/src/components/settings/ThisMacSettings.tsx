@@ -2,19 +2,12 @@ import { useCallback, useEffect, useState, type JSX } from 'react'
 import type {
   DesktopInstallState, DesktopLocalScope, DesktopLocalState, DesktopServerOutcome, DesktopSetupRun, DesktopSetupStepState,
 } from '@yaac/shared/types'
+import { SETUP_COPY, trustSentence } from '@yaac/shared/setup-copy'
 import type { LocalServerBridge } from '#lib/desktopServer'
 
 const NAME: Record<DesktopLocalScope, string> = {
   server: 'Containerless server',
   cluster: 'Kubernetes cluster (kind)',
-}
-
-const ABOUT: Record<DesktopLocalScope, string> = {
-  server: 'Agents run as you, each in its own checkout. Nothing is sandboxed: the credentials in a workspace are '
-    + 'your real ones, and the permission mode defaults to accept-edits. Quick to set up. Install the agent CLIs '
-    + 'you want to use yourself; yaac host check names them.',
-  cluster: 'Each workspace is a gVisor-sandboxed pod behind an egress proxy that holds the real credentials. It '
-    + 'needs a podman VM, several GB of disk and memory, and some minutes to install. Macs with Apple silicon only.',
 }
 
 const STATE_TEXT: Record<DesktopInstallState, string> = {
@@ -45,7 +38,7 @@ const button = 'rounded-md bg-surface-3 px-2.5 py-0.5 text-[11px] font-medium te
  * one: the shell runs its own fixed commands in the background while this
  * section polls for progress, then lands the window on the new server.
  */
-export function ThisMacSettings({ bridge }: { bridge: LocalServerBridge }): JSX.Element {
+export function ThisMacSettings({ bridge }: { bridge: LocalServerBridge }): JSX.Element | null {
   const [local, setLocal] = useState<DesktopLocalState | null>(null)
   const [open, setOpen] = useState<DesktopLocalScope | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -81,7 +74,8 @@ export function ThisMacSettings({ bridge }: { bridge: LocalServerBridge }): JSX.
     await refresh()
   }
 
-  if (!local) return <div className="mt-6 text-xs font-medium text-text">This Mac</div>
+  // Also what a page the shell refuses gets: one from a remote server.
+  if (!local) return null
 
   const scopes = (['server', 'cluster'] as const).filter((s) => local.installs[s] !== null)
   const run = local.setup
@@ -128,7 +122,16 @@ export function ThisMacSettings({ bridge }: { bridge: LocalServerBridge }): JSX.
               )}
               {open === scope && state === 'missing' && (
                 <div className="mt-2 border-t border-border pt-2">
-                  <p className="text-[11px] leading-relaxed text-text-faint">{ABOUT[scope]}</p>
+                  <p className="text-[11px] leading-relaxed text-text-faint">{SETUP_COPY[scope].summary}</p>
+                  {SETUP_COPY[scope].reach && (
+                    <>
+                      <p className="mt-1 text-[11px] text-text-faint">An agent can reach everything your account can:</p>
+                      <ul className="list-disc pl-4 text-[11px] leading-relaxed text-text-faint">
+                        {SETUP_COPY[scope].reach.map((line) => <li key={line}>{line}</li>)}
+                      </ul>
+                    </>
+                  )}
+                  <p className="mt-1 text-[11px] leading-relaxed text-text-faint">{trustSentence(choice.trusts)}</p>
                   <pre className="mt-2 select-text whitespace-pre-wrap break-all rounded-md bg-surface-2 px-2 py-1.5 font-mono text-[11px] text-text-dim">
                     {choice.commands.join('\n')}
                   </pre>

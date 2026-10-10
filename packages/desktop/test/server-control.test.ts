@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DesktopSetupRun, LocalServerStatus } from '@yaac/shared/types'
 import { localView } from '#local-setup'
 import {
-  ACTION_TIMEOUT_MS, createRunYaac, readLocalServer, READ_TIMEOUT_MS, runServerAction, trayServerItems,
+  ACTION_TIMEOUT_MS, createRunYaac, mayControlLocalServers, readLocalServer, READ_TIMEOUT_MS, runServerAction,
+  trayServerItems,
   type LocalServers, type RunYaac, type YaacResult,
 } from '#server-control'
 
@@ -70,7 +71,7 @@ describe('trayServerItems', () => {
   const kind = (s: Partial<LocalServerStatus> = {}) => status({ driver: 'k8s', ...s })
   const NO_INSTALL = status({ driver: null, running: false, serverBuildId: null })
   const tray = (local: LocalServers, more: Partial<Parameters<typeof localView>[0]> = {}) =>
-    trayServerItems(localView({ local, busy: null, setup: null, brew: true, clusterSupported: true, ...more }))
+    trayServerItems(localView({ local, busy: null, setup: null, unfinished: [], brew: true, clusterSupported: true, ...more }))
   const items = (s: Partial<LocalServerStatus>) => tray({ server: status(s), cluster: NO_INSTALL }).slice(0, -1)
   const hostStop = { label: 'Stop this Mac\'s server', action: { scope: 'server', action: 'stop' } }
   const clusterStop = { label: 'Stop this Mac\'s cluster server', action: { scope: 'cluster', action: 'stop' } }
@@ -96,6 +97,13 @@ describe('trayServerItems', () => {
     // Without Homebrew the setup still opens, to say so.
     expect(tray({ server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }, { brew: false, clusterSupported: false }))
       .toEqual([{ label: 'No yaac CLI on PATH' }, setUpHost])
+  })
+
+  it('offers setup again for an install whose setup never finished, until it runs', () => {
+    const halfInstalled = { server: status({}), cluster: kind({ running: false, serverBuildId: null }) }
+    expect(tray(halfInstalled, { unfinished: ['cluster'] }))
+      .toEqual([{ label: 'This Mac\'s server: running' }, hostStop, setUpCluster])
+    expect(tray({ ...halfInstalled, cluster: kind() }, { unfinished: ['cluster'] }).slice(-1)).toEqual([clusterStop])
   })
 
   it('lists a cluster install\'s server beside the host one, updated only by `cluster install`', () => {
@@ -138,6 +146,17 @@ describe('trayServerItems', () => {
     expect(tray({ server: status({}), cluster: { kind: 'error', message: 'unknown command' } }))
       .toEqual([{ label: 'This Mac\'s server: running' }, hostStop, { label: 'This Mac\'s cluster server: status unavailable' }])
     expect(tray({ server: null, cluster: null })).toEqual([])
+  })
+})
+
+describe('mayControlLocalServers', () => {
+  it('admits the shell\'s own picker and pages from this machine\'s loopback, and nothing else', () => {
+    for (const url of ['data:text/html;charset=utf-8,%3C!doctype', 'http://127.0.0.1:8787/', 'http://localhost:1420/x', 'http://[::1]:8790/']) {
+      expect(mayControlLocalServers(url)).toBe(true)
+    }
+    for (const url of ['https://srv.tail1234.ts.net/', 'http://10.42.44.100:9455/', 'file://localhost/etc/passwd', 'about:blank', '']) {
+      expect(mayControlLocalServers(url)).toBe(false)
+    }
   })
 })
 

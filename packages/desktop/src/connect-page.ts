@@ -13,6 +13,7 @@
  * progress lives in the main process, so the page polls for it and
  * picks it up again after a reload.
  */
+import { SETUP_COPY, trustSentence } from '@yaac/shared/setup-copy'
 import type { DesktopLocalState, DesktopServerTargets } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
 import type { ServerScope } from '#server-control'
@@ -26,21 +27,6 @@ export interface ConnectPageState {
   setup?: ServerScope
 }
 
-const CHOICE: Record<ServerScope, { title: string, about: string }> = {
-  server: {
-    title: 'This Mac (containerless)',
-    about: 'Agents run as you, each in its own checkout. Nothing is sandboxed: the credentials in a workspace '
-      + 'are your real ones, and the permission mode defaults to accept-edits. Quick to set up. Install the '
-      + 'agent CLIs you want to use yourself; <code>yaac host check</code> names them.',
-  },
-  cluster: {
-    title: 'Local Kubernetes cluster (kind)',
-    about: 'Each workspace is a gVisor-sandboxed pod behind an egress proxy that holds the real credentials. '
-      + 'It needs a podman VM, several GB of disk and memory, and some minutes to install. Macs with Apple '
-      + 'silicon only.',
-  },
-}
-
 /**
  * Whether the page leads with setup: there is no `yaac` CLI, or there is
  * one but no install and no server selected.
@@ -52,7 +38,8 @@ function showsOnboarding(state: ConnectPageState): boolean {
 }
 
 function choiceHtml(local: DesktopLocalState, scope: ServerScope): string {
-  const { commands, blocked } = local.choices[scope]
+  const { commands, blocked, trusts } = local.choices[scope]
+  const { title, summary, reach } = SETUP_COPY[scope]
   const why = blocked === 'unsupported'
     ? '<p class="note blocked">This Mac cannot run it: it needs macOS on Apple silicon.</p>'
     : blocked === 'no-brew'
@@ -61,8 +48,11 @@ function choiceHtml(local: DesktopLocalState, scope: ServerScope): string {
       : ''
   return `
       <section class="choice" id="choice-${scope}">
-        <h3>${CHOICE[scope].title}</h3>
-        <p class="note">${CHOICE[scope].about}</p>
+        <h3>${escapeHtml(title)}</h3>
+        <p class="note">${escapeHtml(summary)}</p>
+        ${reach ? `<p class="note">An agent can reach everything your account can:</p>
+        <ul class="note">${reach.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>` : ''}
+        <p class="note">${escapeHtml(trustSentence(trusts))}</p>
         <pre class="commands" id="commands-${scope}">${commands.map(escapeHtml).join('\n')}</pre>
         <p class="actions">
           <button class="copy" data-scope="${scope}">Copy commands</button>
@@ -182,6 +172,7 @@ export function connectPageHtml(state: ConnectPageState): string {
       #retry:hover, #run-cancel:hover { background: light-dark(#d6d6d6, #3c3c3c); }
       h3 { font-size: 13px; margin: 0 0 4px; }
       .choice { background: light-dark(#fff, #1a1a1a); border-radius: 7px; padding: 10px 12px; margin-bottom: 8px; }
+      ul.note { margin: 2px 0 4px; padding-left: 18px; }
       .actions { display: flex; gap: 6px; margin: 8px 0 0; }
       .blocked { margin-top: 6px; color: light-dark(#b3261e, #f2a49d); }
       pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;

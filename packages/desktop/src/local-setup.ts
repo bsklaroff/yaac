@@ -5,17 +5,20 @@
  * the background on request.
  *
  * A renderer names a setup by its scope alone. The commands come from this
- * module's fixed table, so web content can never choose what runs. Each
- * step first checks whether its effect is already in place (a formula
- * installed, a tap trusted, an install recorded) and skips itself if so.
- * Homebrew itself is never installed here: a setup that needs it and finds
- * none fails, pointing at https://brew.sh.
+ * module's fixed table, so web content can never choose what runs, and the
+ * main process confirms each run in a native dialog (`setupConfirmation`).
+ * Each Homebrew step first checks whether its effect is already in place (a
+ * formula installed, a tap trusted or added) and skips itself if so.
+ * `yaac cluster install` always runs: it converges whatever an earlier,
+ * interrupted install left. Homebrew itself is never installed here: a
+ * setup that needs it and finds none fails, pointing at https://brew.sh.
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { trustSentence } from '@yaac/shared/setup-copy'
 import type {
-  DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep,
+  DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep, TrustedTap,
 } from '@yaac/shared/types'
 import {
   ACTION_TIMEOUT_MS, failedChecks, installState, READ_TIMEOUT_MS,
@@ -28,10 +31,16 @@ const BREW_INSTALL_TIMEOUT_MS = 90 * MINUTE
 /** `yaac cluster install` creates a podman VM and a kind cluster and builds every image. */
 const CLUSTER_INSTALL_TIMEOUT_MS = 90 * MINUTE
 const BREW_TAP_TIMEOUT_MS = 5 * MINUTE
-/** A probe: `brew list`, `brew tap`, `brew trust --json`, `yaac cluster status`. */
+/** A probe: `brew list`, `brew tap`, `brew trust --json`. */
 const PROBE_TIMEOUT_MS = MINUTE
 /** How long a cancelled or timed-out command has to exit before it is killed. */
 const KILL_GRACE_MS = 5000
+/**
+ * How long output may keep arriving after a command exits. Something it
+ * started outside its process group (a VM helper, say) can hold its pipes
+ * open indefinitely.
+ */
+const DRAIN_MS = 2000
 /** Lines of command output a run keeps. */
 const LOG_LINES = 200
 
@@ -41,7 +50,6 @@ interface Probes {
   formula(name: string): Promise<boolean>
   trusted(tap: string): Promise<boolean>
   tapped(tap: string): Promise<boolean>
-  clusterInstalled(): Promise<boolean>
 }
 
 interface StepDef {
@@ -113,7 +121,6 @@ const STEPS = {
     label: 'Install the cluster',
     argv: ['yaac', 'cluster', 'install'],
     timeoutMs: CLUSTER_INSTALL_TIMEOUT_MS,
-    skip: async (p) => await p.clusterInstalled() ? 'this Mac already has one' : null,
   },
 } satisfies Record<string, StepDef>
 
@@ -131,6 +138,28 @@ const PLANS: Record<ServerScope, StepId[]> = {
 /** What a user would type for the same setup. */
 function setupCommands(scope: ServerScope): string[] {
   return PLANS[scope].map((id) => STEPS[id].argv.join(' '))
+}
+
+/** The taps a setup trusts; any but yaac's own is a third party's. */
+function trustedTaps(scope: ServerScope): TrustedTap[] {
+  return PLANS[scope].map((id): readonly string[] => STEPS[id].argv)
+    .filter((argv) => argv[0] === 'brew' && argv[1] === 'trust')
+    .map((argv) => ({ tap: argv[2], thirdParty: !argv[2].startsWith('bsklaroff/') }))
+}
+
+/**
+ * The native confirmation a setup needs before it runs. Web content can
+ * ask for a setup but cannot answer this.
+ */
+export function setupConfirmation(scope: ServerScope): { message: string, detail: string } {
+  return {
+    message: scope === 'server' ? 'Set up a containerless server on this Mac?' : 'Set up a local Kubernetes cluster on this Mac?',
+    detail: [
+      trustSentence(trustedTaps(scope)),
+      'These commands run, skipping any that are already done:',
+      ...setupCommands(scope).map((c) => `  ${c}`),
+    ].join('\n\n'),
+  }
 }
 
 /** Whether `name` is an executable on PATH (the adopted login-shell one). */
@@ -200,20 +229,28 @@ function exec(
     }
     child.stdout.on('data', take)
     child.stderr.on('data', take)
-    const done = (): void => {
+    let drainTimer: ReturnType<typeof setTimeout> | undefined
+    let settled = false
+    const settle = (code: number | null): void => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
       clearTimeout(killTimer)
+      clearTimeout(drainTimer)
       opts.signal.removeEventListener('abort', onAbort)
-    }
-    child.once('error', (err: NodeJS.ErrnoException) => {
-      done()
-      reject(err.code === 'ENOENT' ? new MissingCommand(argv[0]) : err)
-    })
-    child.once('close', (code) => {
-      done()
+      child.stdout.destroy()
+      child.stderr.destroy()
       if (partial.trim() !== '') opts.onLine?.(partial)
       resolve({ ok: code === 0 && !failure, out, failure: failure ?? (code === 0 ? undefined : `exited with code ${code}`) })
+    }
+    child.once('error', (err: NodeJS.ErrnoException) => {
+      settled = true
+      clearTimeout(timer)
+      opts.signal.removeEventListener('abort', onAbort)
+      reject(err.code === 'ENOENT' ? new MissingCommand(argv[0]) : err)
     })
+    child.once('exit', (code) => { drainTimer = setTimeout(() => settle(code), DRAIN_MS) })
+    child.once('close', (code) => settle(code))
   })
 }
 
@@ -248,15 +285,6 @@ function createProbes(signal: AbortSignal): Probes & { forget(): void } {
       const r = await read('brew', 'tap')
       return r.ok && r.out.split('\n').some((l) => l.trim() === tap)
     }),
-    clusterInstalled: () => once('cluster', async () => {
-      if (!await onPath('yaac')) return false
-      const r = await exec(['yaac', 'cluster', 'status', '--json'], { timeoutMs: READ_TIMEOUT_MS, signal })
-      try {
-        return r.ok && (JSON.parse(r.out) as { driver?: unknown }).driver === 'k8s'
-      } catch {
-        return false
-      }
-    }),
     forget: () => memo.clear(),
   }
 }
@@ -266,19 +294,48 @@ export interface SetupRunner {
   current(): DesktopSetupRun | null
   /** Run `scope`'s setup to its end. Never rejects. */
   run(scope: ServerScope): Promise<ActionOutcome>
-  /** Stop the run under way, killing the command it is running. */
-  cancel(): void
+  /** Stop the run under way, killing the command it is running; resolves once it has stopped. */
+  cancel(): Promise<void>
+  /** Setups begun and never finished, even by an earlier launch of the app. */
+  unfinished(): ServerScope[]
+  /** Forget an unfinished setup whose install has since come up some other way. */
+  forget(scope: ServerScope): void
 }
 
-/** One setup at a time; `onChange` fires on every step and output line. */
-export function createSetupRunner(onChange: () => void): SetupRunner {
+/**
+ * One setup at a time; `onChange` fires on every step and output line.
+ * Which setups are unfinished is kept in `unfinishedFile`: an install a
+ * setup left half done (a cluster whose driver is recorded but whose
+ * server was never deployed, say) is offered for setup again rather than
+ * shown as a stopped server.
+ */
+export function createSetupRunner(onChange: () => void, unfinishedFile: string): SetupRunner {
   let current: DesktopSetupRun | null = null
   let abort: AbortController | null = null
+  let running: Promise<ActionOutcome> | null = null
+  let unfinished = new Set<ServerScope>()
+  const loaded = fs.readFile(unfinishedFile, 'utf8').then((text) => {
+    unfinished = new Set((JSON.parse(text) as unknown[]).filter((s): s is ServerScope => s === 'server' || s === 'cluster'))
+    onChange()
+  }, () => { /* none yet */ })
+  const mark = async (scope: ServerScope, open: boolean): Promise<void> => {
+    await loaded
+    if (open === unfinished.has(scope)) return
+    if (open) unfinished.add(scope)
+    else unfinished.delete(scope)
+    await fs.writeFile(unfinishedFile, JSON.stringify([...unfinished])).catch(() => { /* best effort */ })
+  }
 
-  const run = async (scope: ServerScope): Promise<ActionOutcome> => {
-    if (abort) return { ok: false, error: 'a setup is already running' }
+  const run = (scope: ServerScope): Promise<ActionOutcome> => {
+    if (running) return Promise.resolve({ ok: false, error: 'a setup is already running' })
+    running = runSetup(scope).finally(() => { running = null })
+    return running
+  }
+
+  const runSetup = async (scope: ServerScope): Promise<ActionOutcome> => {
     const controller = new AbortController()
     abort = controller
+    await mark(scope, true)
     const plan = PLANS[scope].map((id) => STEPS[id] as StepDef)
     const steps: DesktopSetupStep[] = plan.map((def) => ({ label: def.label, command: def.argv.join(' '), state: 'pending' }))
     const r: DesktopSetupRun = { scope, phase: 'running', steps, log: [] }
@@ -289,7 +346,8 @@ export function createSetupRunner(onChange: () => void): SetupRunner {
       if (r.log.length > LOG_LINES) r.log.splice(0, r.log.length - LOG_LINES)
       onChange()
     }
-    const finish = (phase: DesktopSetupRun['phase'], error?: string): ActionOutcome => {
+    const finish = async (phase: DesktopSetupRun['phase'], error?: string): Promise<ActionOutcome> => {
+      if (phase === 'succeeded') await mark(scope, false)
       r.phase = phase
       if (error) r.error = error
       abort = null
@@ -343,26 +401,41 @@ export function createSetupRunner(onChange: () => void): SetupRunner {
   return {
     current: () => current,
     run,
-    cancel: () => abort?.abort(),
+    cancel: async () => {
+      abort?.abort()
+      await running
+    },
+    unfinished: () => [...unfinished],
+    forget: (scope) => void mark(scope, false).then(onChange),
   }
 }
 
 /** Whether this Mac can run a local kind cluster: the tap's krunkit is Apple silicon only. */
 export const CLUSTER_SUPPORTED = process.platform === 'darwin' && process.arch === 'arm64'
 
-/** This Mac's installs and setups, as the tray, the picker and the SPA show them. */
+/**
+ * This Mac's installs and setups, as the tray, the picker and the SPA show
+ * them. An install whose setup never finished and that is not running
+ * reads as missing, so it is offered for setup again.
+ */
 export function localView(input: {
   local: LocalServers
   busy: ScopedAction | null
   setup: DesktopSetupRun | null
+  unfinished: ServerScope[]
   brew: boolean
   clusterSupported: boolean
 }): DesktopLocalState {
-  const { local, busy, setup, brew, clusterSupported } = input
+  const { local, busy, setup, unfinished, brew, clusterSupported } = input
   const cli = local.server?.kind !== 'no-cli'
+  const state = (scope: ServerScope): DesktopLocalState['installs'][ServerScope] => {
+    const read = installState(local, scope)
+    return unfinished.includes(scope) && read === 'stopped' ? 'missing' : read
+  }
   const choice = (scope: ServerScope): DesktopSetupChoice => ({
     scope,
     commands: setupCommands(scope),
+    trusts: trustedTaps(scope),
     blocked: scope === 'cluster' && !clusterSupported
       ? 'unsupported'
       : !brew && (scope === 'cluster' || !cli) ? 'no-brew' : null,
@@ -370,7 +443,7 @@ export function localView(input: {
   return {
     cli,
     brew,
-    installs: { server: installState(local, 'server'), cluster: installState(local, 'cluster') },
+    installs: { server: state('server'), cluster: state('cluster') },
     busy,
     setup,
     choices: { server: choice('server'), cluster: choice('cluster') },

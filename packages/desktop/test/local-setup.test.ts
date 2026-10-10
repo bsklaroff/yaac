@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createSetupRunner, type SetupRunner } from '#local-setup'
+import { createSetupRunner, setupConfirmation, type SetupRunner } from '#local-setup'
 
 /*
  * The runner spawns real processes. `brew` and `yaac` are shell scripts on
@@ -48,7 +48,7 @@ async function called(): Promise<string[]> {
 
 function runner(): { setup: SetupRunner, changes: () => number } {
   let n = 0
-  const setup = createSetupRunner(() => { n += 1 })
+  const setup = createSetupRunner(() => { n += 1 }, path.join(dir, 'unfinished.json'))
   return { setup, changes: () => n }
 }
 
@@ -102,9 +102,8 @@ describe('createSetupRunner', () => {
     expect(changes()).toBeGreaterThan(run.steps.length)
   })
 
-  it('skips what is already done, and stops at a failing step', async () => {
+  it('skips what is already done, stops at a failing step, and converges an unfinished install next time', async () => {
     await fake('yaac', {
-      'cluster status --json': 'echo \'{"driver":null,"running":false}\'',
       'cluster install': 'echo "kind: creating cluster"; echo "no podman machine" >&2; exit 3',
     })
     await fake('brew', {
@@ -118,7 +117,7 @@ describe('createSetupRunner', () => {
     expect(await setup.run('cluster'))
       .toEqual({ ok: false, error: 'yaac cluster install exited with code 3' })
     // Only the missing formula and the install itself ran.
-    expect((await called()).filter((c) => !/ (list|tap|status|--json)/.test(c) && c !== 'brew tap'))
+    expect((await called()).filter((c) => !/ (list|--json)/.test(c) && c !== 'brew tap'))
       .toEqual(['brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install'])
     const run = setup.current()!
     expect(run.phase).toBe('failed')
@@ -132,17 +131,25 @@ describe('createSetupRunner', () => {
     ])
     expect(run.log.slice(-2)).toEqual(['kind: creating cluster', 'no podman machine'])
 
-    // An existing cluster install, and a Homebrew from before tap trust.
-    await fake('yaac', { 'cluster status --json': 'echo \'{"driver":"k8s","running":true}\'' })
+    // The failed install already recorded its driver; a relaunched app still knows it never finished.
+    expect(setup.unfinished()).toEqual(['cluster'])
+    const relaunched = runner().setup
+    await new Promise((r) => setTimeout(r, 50))
+    expect(relaunched.unfinished()).toEqual(['cluster'])
+
+    // `yaac cluster install` runs again to converge it, here under a Homebrew from before tap trust.
+    await fake('yaac', { 'cluster install': 'echo converged' })
     await fake('brew', {
       'trust --tap --json=v1': 'echo "Error: Unknown command: trust" >&2; exit 1',
       'list --formula --versions yaac-cluster': 'echo yaac-cluster 1.0.0',
     })
-    expect(await setup.run('cluster')).toEqual({ ok: true })
-    expect(setup.current()!.steps.map((s) => s.note)).toEqual([
+    expect(await relaunched.run('cluster')).toEqual({ ok: true })
+    expect(relaunched.current()!.steps.map((s) => s.note)).toEqual([
       'nothing to install from it', 'already installed', 'nothing to install from it', 'nothing to install from it',
-      'already installed', 'this Mac already has one',
+      'already installed', undefined,
     ])
+    expect(relaunched.unfinished()).toEqual([])
+    expect(JSON.parse(await fs.readFile(path.join(dir, 'unfinished.json'), 'utf8'))).toEqual([])
   })
 
   it('points at brew.sh when Homebrew is missing, and needs none when there is nothing to install', async () => {
@@ -156,10 +163,34 @@ describe('createSetupRunner', () => {
     expect(await called()).toEqual(['yaac server start', 'yaac host check'])
   })
 
+  it('finishes a step whose command exits while something it started still holds its output', async () => {
+    const pid = path.join(dir, 'pid')
+    // A helper in a session of its own, as a VM launcher might leave behind.
+    const daemon = `'${process.execPath}' -e "const c = require('child_process').spawn('sleep', ['30'], `
+      + `{ detached: true, stdio: 'inherit' }); require('fs').writeFileSync('${pid}', String(c.pid)); c.unref()"`
+    await fake('yaac', { 'server start': `${daemon}; echo started`, 'host check': 'echo ok' })
+    const { setup } = runner()
+    const started = Date.now()
+    try {
+      expect(await setup.run('server')).toEqual({ ok: true })
+      expect(Date.now() - started).toBeLessThan(10_000)
+      expect(setup.current()!.log).toContain('started')
+    } finally {
+      process.kill(Number(await fs.readFile(pid, 'utf8')))
+    }
+  })
+
+  it('confirms a setup by naming its commands and the taps it trusts', () => {
+    const { message, detail } = setupConfirmation('cluster')
+    expect(message).toBe('Set up a local Kubernetes cluster on this Mac?')
+    expect(detail).toContain('trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
+    expect(detail).toContain('  brew tap libkrun/krun\n\n  brew install bsklaroff/yaac/yaac-cluster')
+    expect(setupConfirmation('server').detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
+  })
+
   it('cancels a long step, killing what it spawned, and refuses a second run meanwhile', async () => {
     const pid = path.join(dir, 'pid')
     await fake('yaac', {
-      'cluster status --json': 'echo \'{"driver":null}\'',
       'cluster install': `sleep 30 & echo $! > '${pid}'; echo creating; wait`,
     })
     await fake('brew', { 'list --formula --versions yaac-cluster': 'echo yaac-cluster 1.0.0' })
@@ -169,9 +200,10 @@ describe('createSetupRunner', () => {
     while (!setup.current()?.log.includes('creating')) await new Promise((r) => setTimeout(r, 20))
     expect(await setup.run('server')).toEqual({ ok: false, error: 'a setup is already running' })
     const started = Date.now()
-    setup.cancel()
+    const cancelled = setup.cancel()
 
     expect(await running).toEqual({ ok: false, error: 'setup cancelled' })
+    await cancelled
     expect(Date.now() - started).toBeLessThan(3000)
     const run = setup.current()!
     expect(run.phase).toBe('cancelled')

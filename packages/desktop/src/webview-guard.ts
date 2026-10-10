@@ -1,5 +1,6 @@
 /**
- * Lockdown helpers for the workspace-preview `<webview>`. The preview shows a
+ * Lockdown helpers for web content: the main window's navigation, and the
+ * workspace-preview `<webview>`. The preview shows a
  * workspace dev server through a port this app forwards on loopback
  * (forwarder.ts). The guest gets no Node access or preload and may only load
  * loopback URLs; anything else (an OAuth hop, a `target=_blank`) opens in the
@@ -39,4 +40,18 @@ export function hardenGuestWebPreferences(prefs: Record<string, unknown>): void 
 /** Clamp a webview's requested src to loopback, else blank it. */
 export function sanitizeWebviewSrc(src: string): string {
   return isAllowedPreviewUrl(src) ? src : 'about:blank'
+}
+
+/**
+ * Whether the main window may follow a navigation its page started: only
+ * within the origin it shows. The shell loads every other page itself, so
+ * a page cannot take the window, and the preload bridge, somewhere else.
+ */
+export function isSameOriginNavigation(from: string, to: string): boolean {
+  try {
+    const origin = new URL(from).origin
+    return origin !== 'null' && origin === new URL(to).origin
+  } catch {
+    return false
+  }
 }

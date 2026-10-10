@@ -11,6 +11,7 @@
  * (docs/containerless-driver.md), so a stop never stops an agent either.
  */
 import { execFile } from 'node:child_process'
+import { isLoopbackOrigin } from '@yaac/shared/server-api'
 import type {
   DesktopInstallState, DesktopLocalScope, DesktopLocalState, DesktopSetupRun, LocalServerStatus,
 } from '@yaac/shared/types'
@@ -48,6 +49,15 @@ export function createRunYaac(execImpl: typeof execFile = execFile): RunYaac {
 
 /** Which install: the host server or the cluster's (`yaac server …` / `yaac cluster …`). */
 export type ServerScope = DesktopLocalScope
+
+/**
+ * Whether the page at `url` may read and drive this Mac's servers: the
+ * shell's own picker (a `data:` page) or a page served from this machine's
+ * loopback. A remote server's page may not.
+ */
+export function mayControlLocalServers(url: string): boolean {
+  return url.startsWith('data:') || (/^https?:/.test(url) && isLoopbackOrigin(url))
+}
 
 /** A renderer-supplied scope, or null for anything else. */
 export function parseScope(raw: unknown): ServerScope | null {

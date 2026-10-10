@@ -72,12 +72,14 @@ Quitting never stops a server.
   those methods, so a browser tab or an older app shows the picker alone.
 - **Setup.** With no `yaac` CLI, or with one but no install and no server
   selected, the picker leads with the two kinds of install
-  (`src/connect-page.ts`): **This Mac (containerless)**, where agents run
-  as you with real credentials and accept-edits by default, and **Local
-  Kubernetes cluster (kind)**, gVisor-sandboxed pods behind the egress
-  proxy, which needs a podman VM, several GB of disk and memory, and an
-  Apple silicon Mac (it is disabled elsewhere). Each shows its commands to
-  copy and a button that runs them in the background
+  (`src/connect-page.ts`): **This Mac (containerless)**, with no sandbox,
+  so an agent reaches everything your account can (listed in the same
+  words as the SPA's containerless badge, from `@yaac/shared/setup-copy`),
+  and **Local Kubernetes cluster (kind)**, gVisor-sandboxed pods behind
+  the egress proxy, which needs a podman VM, several GB of disk and memory,
+  and an Apple silicon Mac (it is disabled elsewhere). Each shows its
+  commands to copy, says which Homebrew taps it trusts (`libkrun/krun` is
+  a third party's), and has a button that runs them in the background
   (`src/local-setup.ts`):
 
   | Containerless | Cluster |
@@ -89,24 +91,40 @@ Quitting never stops a server.
   | | `brew install bsklaroff/yaac/yaac-cluster` |
   | | `yaac cluster install` |
 
-  Each step first checks whether it is already done (the formula installed
-  or `yaac` already on PATH, the tap trusted or added, the cluster install
-  recorded) and skips itself, so only the missing work runs and a
-  source-built `yaac` needs no Homebrew for the containerless setup. The
-  shell never installs Homebrew: without it the setup says so and links
-  https://brew.sh. A run lives in the main process, so it survives the
-  window moving between the picker, the SPA and a reload; the picker and
-  the SPA poll it for its steps and the last lines of output, and either
-  can cancel it, which kills the command's whole process group. Only one
-  setup or server action runs at a time. A brew install or `yaac cluster
-  install` may take up to 90 minutes before it is timed out. A setup ends
+  Each Homebrew step first checks whether it is already done (the formula
+  installed or `yaac` already on PATH, the tap trusted or added) and skips
+  itself, so only the missing work runs and a source-built `yaac` needs no
+  Homebrew for the containerless setup. `yaac cluster install` always
+  runs, since it converges whatever an interrupted install left. The shell
+  never installs Homebrew: without it the setup says so and links
+  https://brew.sh.
+
+  A run lives in the main process, so it survives the window moving
+  between the picker, the SPA and a reload; the picker and the SPA poll it
+  for its steps and the last lines of output, and either can cancel it,
+  which kills the command's whole process group. Only one setup or server
+  action runs at a time. A brew install or `yaac cluster install` may take
+  up to 90 minutes before it is timed out. Quit during a run asks first,
+  then cancels it, rather than leaving its commands running unread. A setup
+  that has not succeeded is remembered across launches (in the app's
+  `unfinished-setups.json`), so a half-made install, such as a cluster
+  whose driver is recorded but whose server was never deployed, is offered
+  for setup again instead of showing as a stopped server. A setup ends
   with its new server selected (`yaac server start` selects; a first
   `yaac cluster install` does too), and the window lands on it, with the
   host check's failures in a dialog as after a start.
 
-  The renderer only ever names a setup by scope (`'server'` or
-  `'cluster'`), and asks for state or a cancel. The commands are a fixed
-  table in the main process, which validates every IPC payload.
+  **Who may run one.** The renderer only ever names a setup by scope
+  (`'server'` or `'cluster'`), and asks for state or a cancel; the
+  commands are a fixed table in the main process, which validates every
+  IPC payload. Every setup, start, stop, cancel and state call is accepted
+  only from the main window's top frame showing the picker or a page on
+  loopback (a server on this Mac), checked against the frame's URL when
+  the call arrives; a remote server's page is refused, and the SPA leaves
+  its "This Mac" area out. The window follows no navigation its page starts
+  to another origin. Before a setup runs, the main process shows a native
+  confirmation listing its commands and the taps it trusts, which no page
+  can answer.
   Stopping or restarting a server never stops an agent: a containerless
   workspace is a tmux server that outlives it, and the next start picks it
   back up.
@@ -234,9 +252,12 @@ Also check in the desktop app:
 The picker:
 
 - With no `yaac` on PATH, launch: both setups, each with its commands and
-  **Run them for me**. Run the containerless one: the steps tick off, the
-  log tail follows the brew output, and the window lands on the new server.
-  Cancel a cluster setup during `brew install` and check that brew stops.
+  **Run them for me**. Run the containerless one: a native confirmation
+  names the commands and the taps, the steps tick off, the log tail
+  follows the brew output, and the window lands on the new server. Cancel
+  a cluster setup during `brew install` and check that brew stops; quit
+  during `yaac cluster install`, and check that relaunching offers the
+  cluster setup again.
 
 - `yaac server stop`, relaunch: "Could not connect to http://127.0.0.1:…"
   above a row for that origin and **Start a server on this Mac**. Click it:

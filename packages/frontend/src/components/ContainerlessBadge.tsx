@@ -3,6 +3,7 @@ import clsx from 'clsx'
 import { Popover } from '@base-ui/react/popover'
 import { POPUP } from '#components/ui/menu'
 import { useSnapshot } from '#lib/useSnapshot'
+import { CONTAINERLESS_REACH } from '@yaac/shared/setup-copy'
 
 /**
  * Workspace-bar warning that this server runs workspaces on its machine with
@@ -34,10 +35,7 @@ export function ContainerlessBadge(): JSX.Element | null {
                 acts as the account the yaac server runs as:
               </p>
               <ul className="list-disc space-y-0.5 pl-4">
-                <li>it can read and change any file that account can, not just this checkout</li>
-                <li>it holds real credentials and tokens: every project&apos;s on this server, not only this one&apos;s</li>
-                <li>its network access is unfiltered</li>
-                <li>it can read and change every other workspace on this server, and drive the yaac server itself</li>
+                {CONTAINERLESS_REACH.map((line) => <li key={line}>{line}</li>)}
               </ul>
               <p>
                 Pick the permission mode with that in mind. For isolated workspaces, use a k8s

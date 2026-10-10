@@ -132,7 +132,9 @@ Server, and always by running `brew` and `yaac server start|stop|restart`
 or `yaac cluster install|start|stop` (packages/desktop/README.md, "This
 machine's servers" and "Setup"). A setup ends the way the terminal's
 commands do: `yaac server start` or the first `yaac cluster install`
-registers and selects the new origin, and the shell lands on it.
+registers and selects the new origin, and the shell lands on it. Only the
+picker and pages served from loopback may ask for any of this; a remote
+server's page gets the server-switching bridge but not this Mac's servers.
 
 When no server is reachable (nothing selected, server down, or device not
 identified), the window shows a **picker** instead of an error dialog: with

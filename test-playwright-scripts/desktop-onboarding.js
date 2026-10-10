@@ -20,6 +20,15 @@
  *     server starts, and the window lands on its origin.
  *  5. The SPA's Settings → Server shows that server running, with a Stop,
  *     and the cluster setup (or why this machine cannot run it).
+ *  6. A page from a server off loopback (a stand-in on this machine's LAN
+ *     address) cannot set up, start, stop, cancel or read this Mac's
+ *     servers through the bridge.
+ *  7. Quitting during a setup asks first, then cancels it: the hanging
+ *     brew install's child is gone once the app has exited.
+ *
+ * The native confirmation before each setup is answered from the main
+ * process (declined once, then accepted), since Playwright cannot click a
+ * native dialog.
  *
  * Prerequisites: as for desktop-server-picker.js (`pnpm build`, then
  * `pnpm --filter @yaac/desktop build`, an Electron binary, its system
@@ -33,6 +42,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -49,6 +59,8 @@ const BIN = path.join(SCRATCH, 'bin')
 const CALLS = path.join(SCRATCH, 'brew-calls')
 /** While this exists, the stand-in `brew install` hangs, for the cancel case. */
 const SLOW = path.join(SCRATCH, 'slow')
+/** The hanging install's child, which a cancel must kill. */
+const SLEEP_PID = path.join(SCRATCH, 'sleep-pid')
 const NODE_DIR = path.dirname(process.execPath)
 
 /*
@@ -76,7 +88,7 @@ case "$*" in
   'trust bsklaroff/yaac') touch '${SCRATCH}/trusted'; echo 'Trusted tap: bsklaroff/yaac' ;;
   'install bsklaroff/yaac/yaac-server')
     echo '==> Fetching bsklaroff/yaac/yaac-server'
-    if [ -e '${SLOW}' ]; then sleep 600; fi
+    if [ -e '${SLOW}' ]; then sleep 600 & echo $! > '${SLEEP_PID}'; wait; fi
     cp '${SCRATCH}/yaac' '${BIN}/yaac'
     echo '==> Pouring yaac-server' ;;
   *) echo "unexpected: brew $*" >&2; exit 99 ;;
@@ -124,6 +136,17 @@ async function main() {
   const app = await electron.launch({ executablePath: electronPath(), args: [DESKTOP], cwd: DESKTOP, env: ENV })
   const win = await app.firstWindow()
   win.on('pageerror', (err) => console.error(`    [page error] ${err.message}`))
+  // Answer native dialogs from here, recording what each said.
+  await app.evaluate(({ dialog }) => {
+    globalThis.dialogs = []
+    globalThis.answer = 1
+    dialog.showMessageBox = async (...args) => {
+      const opts = args.at(-1)
+      globalThis.dialogs.push(`${opts.message}\n${opts.detail ?? ''}`)
+      return { response: globalThis.answer, checkboxChecked: false }
+    }
+  })
+  const dialogs = () => app.evaluate(() => globalThis.dialogs)
   try {
     console.log('1. no yaac on PATH → the picker leads with both setups')
     await until(win, () => document.querySelector('#choice-server') !== null, null, 30_000)
@@ -144,7 +167,14 @@ async function main() {
     const copied = await app.evaluate(({ clipboard }) => clipboard.readText())
     check('the clipboard holds the commands', copied.startsWith('brew trust bsklaroff/yaac'), copied)
 
-    console.log('\n3. a hanging brew install → progress, then Cancel')
+    console.log('\n3. a declined confirmation runs nothing; a hanging brew install → progress, then Cancel')
+    await app.evaluate(() => { globalThis.answer = 0 })
+    await win.click('button.setup[data-scope="server"]')
+    await until(win, () => /not started/.test(document.getElementById('status')?.textContent ?? ''), null, 10_000)
+    const asked = (await dialogs())[0] ?? ''
+    check('the confirmation names the tap it trusts', asked.includes('trusts the Homebrew tap bsklaroff/yaac'), asked)
+    check('declining ran no command', !fs.existsSync(CALLS))
+    await app.evaluate(() => { globalThis.answer = 1 })
     fs.writeFileSync(SLOW, '')
     await win.click('button.setup[data-scope="server"]')
     await until(win, () => /Fetching/.test(document.getElementById('run-log')?.textContent ?? ''), null, 30_000)
@@ -185,6 +215,79 @@ async function main() {
     } else {
       console.log('    (settings button not found — check by hand)')
     }
+
+    console.log('\n6. a page from off loopback cannot drive this Mac\'s servers')
+    const lan = Object.values(os.networkInterfaces()).flat().find((a) => a.family === 'IPv4' && !a.internal)?.address
+    if (lan) {
+      const remote = http.createServer((req, res) => {
+        const json = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body))
+        if (req.url === '/api/health') return json({ ok: true, buildId: 'remote' })
+        if (req.url === '/api/whoami') return json({ kind: 'local', userId: 'remote' })
+        res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>remote</title><script>
+          (async () => {
+            const b = window.yaacServer, out = {}
+            const calls = { setup: () => b.setupLocal('server'), stop: () => b.stopLocal('server'),
+              start: () => b.startLocal('server'), cancel: () => b.cancelSetup(), state: () => b.localState() }
+            for (const [k, f] of Object.entries(calls)) {
+              try { out[k] = await f() } catch { out[k] = 'rejected' }
+            }
+            document.title = JSON.stringify(out)
+          })()
+        </script>`)
+      })
+      await new Promise((r) => remote.listen(0, lan, r))
+      const remoteOrigin = `http://${lan}:${remote.address().port}`
+      const brewCalls = fs.readFileSync(CALLS, 'utf8')
+      const dialogCount = (await dialogs()).length
+      try {
+        await win.evaluate((url) => window.yaacServer.addRemote(url), remoteOrigin)
+        await until(win, () => document.title.startsWith('{'), null, 30_000)
+        const out = JSON.parse(await win.title())
+        const refused = ['setup', 'stop', 'start', 'cancel'].every((k) => out[k]?.ok === false && /own pages/.test(out[k].error))
+        check(`the remote page (${remoteOrigin}) was refused setup, stop, start and cancel`, refused, JSON.stringify(out))
+        check('and could not read this Mac\'s state', out.state === 'rejected')
+        check('no command ran and no confirmation showed',
+          fs.readFileSync(CALLS, 'utf8') === brewCalls && (await dialogs()).length === dialogCount)
+        const status = JSON.parse(execFileSync('node', [CLI, 'server', 'status', '--json'], { env: ENV, encoding: 'utf8' }))
+        check('this Mac\'s server is still running', status.running === true)
+      } finally {
+        remote.close()
+      }
+    } else {
+      console.log('    (no non-loopback address here — skipped)')
+    }
+
+    console.log('\n7. Quit during a setup → asks, cancels it, then quits')
+    await win.evaluate((url) => window.yaacServer.switchTo({ url }), origin)
+    await until(win, (o) => location.origin === o, origin, 30_000)
+    // Uninstall the stand-in CLI so the install step runs, and hangs, again.
+    fs.rmSync(path.join(BIN, 'yaac'))
+    fs.rmSync(SLEEP_PID, { force: true })
+    fs.writeFileSync(SLOW, '')
+    const begun = await win.evaluate(() => window.yaacServer.setupLocal('server'))
+    check('a loopback page may start a setup', begun.ok === true, JSON.stringify(begun))
+    for (const end = Date.now() + 30_000; !fs.existsSync(SLEEP_PID); await new Promise((r) => setTimeout(r, 200))) {
+      if (Date.now() > end) throw new Error('the install never started')
+    }
+    const sleeper = Number(fs.readFileSync(SLEEP_PID, 'utf8'))
+    // "Keep running" first: the app stays, and so does the setup.
+    await app.evaluate(() => { globalThis.answer = 0 })
+    await app.evaluate(({ app: electronApp }) => electronApp.quit())
+    await new Promise((r) => setTimeout(r, 1000))
+    check('Quit asks first', /setup is still running/.test((await dialogs()).at(-1)), (await dialogs()).at(-1))
+    check('"Keep running" keeps the setup', (await win.evaluate(() => window.yaacServer.localState())).setup.phase === 'running')
+    await app.evaluate(() => { globalThis.answer = 1 })
+    const exited = new Promise((r) => app.process().once('exit', r))
+    await app.evaluate(({ app: electronApp }) => electronApp.quit())
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 20_000))])
+    check('the app exited', app.process().exitCode !== null || app.process().signalCode !== null)
+    let alive = true
+    try {
+      process.kill(sleeper, 0)
+    } catch {
+      alive = false
+    }
+    check('the setup\'s command was killed, not orphaned', !alive)
   } finally {
     await closeApp(app)
   }

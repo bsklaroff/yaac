@@ -15,7 +15,7 @@ const CLUSTER_STOPPED: LocalServerState = { kind: 'status', status: { ...NONE.st
 const NO_CLI: LocalServers = { server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }
 
 function view(local: LocalServers, more: Partial<Parameters<typeof localView>[0]> = {}): DesktopLocalState {
-  return localView({ local, busy: null, setup: null, brew: true, clusterSupported: true, ...more })
+  return localView({ local, busy: null, setup: null, unfinished: [], brew: true, clusterSupported: true, ...more })
 }
 
 const NOTHING_READ = view({ server: null, cluster: null })
@@ -121,6 +121,10 @@ describe('connectPageHtml', () => {
       expect(html).toContain('the permission mode defaults to accept-edits')
       expect(html).toContain('Local Kubernetes cluster (kind)')
       expect(html).toContain('gVisor-sandboxed pod')
+      // What a containerless agent can reach, in the badge's words, and which taps each run trusts.
+      expect(html).toContain('<li>its network access is unfiltered</li>')
+      expect(html).toContain('Running it trusts the Homebrew tap bsklaroff/yaac, which lets Homebrew run')
+      expect(html).toContain('Running it trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
       expect(html).toContain([
         'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'yaac server start', 'yaac host check',
       ].join('\n'))
