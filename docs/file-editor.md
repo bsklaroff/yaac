@@ -280,13 +280,13 @@ offer to compare with the fork branch again.
   row, its long lines wrapped to the pane's width. Opening it clears its
   filter, so its totals are every change, as the status bar's are; its
   layout and folds stay as last left. It starts as a flat list of full paths
-  with every diff open; a toggle switches to a tree, whose folders start
+  with every diff folded; a toggle switches to a tree, whose folders start
   open (so it records the closed ones). A diff mounts in 200-line chunks
   only as they come within a screen of view, so a change of hundreds of
   files opens at once. Out of view, a chunk holds the height it measured
   when last on screen, or, once its lines or the pane's width have changed
   since, an estimate of their wrapped height at the current width. Clicking
-  a file's row folds its diff (remembered per file across both layouts), and
+  a file's row opens or folds its diff (remembered per file across both layouts), and
   only its name opens it. A header button collapses every diff while any is
   open, and shows them all once none is. A strip shows the diff base with a
   branch picker, the shown files' totals overall and per stage, and what the

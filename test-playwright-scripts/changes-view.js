@@ -3,7 +3,7 @@
  * (docs/file-editor.md "Changes"):
  *   1. The status bar totals the changed lines; clicking them opens the
  *      Changes pane, its filter focused, listing the changed files as a
- *      flat list, each with its
+ *      flat list with every diff folded; "Show all changes" opens each
  *      read-only diff, under a strip breaking the lines down by stage.
  *      Each row badges the stages its changes sit in. A line longer than
  *      the pane wraps rather than scrolling the pane sideways.
@@ -57,6 +57,9 @@ await filter.waitFor()
 check('the Changes pane focuses its filter', await filter.evaluate((el) => el === document.activeElement))
 check('the Changes pane opens as a flat list',
   await page.getByRole('button', { name: 'Show as a tree', exact: true }).count() === 1)
+await page.locator('div[title="README.md"]').waitFor({ timeout: 10000 })
+check('every diff starts folded', await page.locator('.diff-hl').count() === 0)
+await page.getByRole('button', { name: 'Show all changes', exact: true }).click()
 await page.locator('.diff-hl').first().waitFor({ timeout: 10000 })
 check('each changed file shows its diff', await page.locator('.diff-hl').count() >= 3)
 const strip = await page.locator('[title="Choose the branch changes are compared against"]').locator('..').innerText()
