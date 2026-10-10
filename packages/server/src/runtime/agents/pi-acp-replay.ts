@@ -162,7 +162,13 @@ function toolResult(id: string, m: Entry, args: Entry, cwd: string | undefined):
   }
   const diff = asString(details?.diff)
   const shown = diff?.trim() ? diff : said
-  return { ...base, ...(shown !== '' ? { content: [{ type: 'content', content: { type: 'text', text: shown } }] } : {}) }
+  // pi-acp sends a result's images only in `rawOutput`, which the projection
+  // reads them from; this puts them in `content` directly.
+  const content = [
+    ...(shown !== '' ? [{ type: 'content', content: { type: 'text', text: shown } }] : []),
+    ...blocks(m.content).filter((b) => b.type === 'image').map((b) => ({ type: 'content', content: b })),
+  ]
+  return { ...base, ...(content.length > 0 ? { content } : {}) }
 }
 
 function output(data: string): Entry {

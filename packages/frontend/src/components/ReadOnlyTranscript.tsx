@@ -156,6 +156,7 @@ export function ReadOnlyTranscript({
             )}
             {task !== undefined ? (
               <TaskView
+                workspaceId={workspaceId}
                 task={task}
                 {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
                 streamed={taskCall.output}

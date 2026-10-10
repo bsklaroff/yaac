@@ -112,15 +112,16 @@ the record would show no live user turns. Nothing is buffered for an absent
 client, and the server keeps no copy.
 
 Images are the exception to recording lines verbatim. A screenshot is
-megabytes of base64, and claude repeats each one in a tool result's
-`rawOutput`, so a few dozen would carry the record past the 64 MB the server
-reads (`MAX_ACP_RECORD_BYTES`). acpd parses each long line, writes every
-`data` string that decodes to a PNG, JPEG, GIF or WebP to `images/<sha256>`
-beside the record, and records `yaac-image:<sha256>` in its place. The
-projection turns that into an image event carrying the hash, and a pane
-loads it from `GET /workspace/:id/acp-images/:hash`, which serves only a
-file whose bytes are one of those four types, since the workspace can write
-there. Small images (under about 6 KB) stay inline.
+megabytes of base64, claude repeats each one in a tool result's `rawOutput`,
+and pi sends each one twice when it replays a tool result, so a few dozen
+would carry the record past the 64 MB the server reads
+(`MAX_ACP_RECORD_BYTES`). acpd parses each long line, writes every `data`
+string that decodes to a PNG, JPEG, GIF or WebP to `images/<sha256>` beside
+the record, and records `yaac-image:<sha256>` in its place. The projection
+turns that into an image event carrying the hash, and a pane loads it from
+`GET /workspace/:id/acp-images/:hash`, which serves only a file whose bytes
+are one of those four types, since the workspace can write there. Small
+images (under about 6 KB) stay inline.
 
 acpd syncs the record (`fdatasync`) after each client line and whenever the
 agent's output pauses (at least every 200 ms while it streams). On a byo
@@ -764,6 +765,24 @@ In either pane, a paste that also carries plain text is treated as text,
 since office apps put a picture of the copied selection beside the text. A
 URL alone doesn't count as text, since Firefox's Copy Image puts one beside
 the image.
+
+**Tool results.** An agent's tools return images too: a Playwright
+screenshot, a Read of a PNG. The pane draws them as thumbnails under the
+call's row, shown whether or not the row is open, since a label like
+`browser_take_screenshot` says nothing of what the image shows; they add
+nothing to the text a find searches. Only PNG, JPEG, GIF and WebP are drawn,
+as for every image in the pane, since a tool's output is the workspace's to
+choose. claude and opencode send them as image entries in the call's
+`content`; claude's copy in `rawOutput` is an array of Anthropic blocks,
+which the projection does not read. pi puts only a result's text in
+`content`, and codex nothing of an MCP call's result; both carry the whole
+result in `rawOutput` as an MCP-style list (`rawOutput.content` for pi,
+`rawOutput.result.content` for codex), so the projection takes images from
+there too (`rawOutputImages`), but only for a call whose `content` holds no
+image, so one sent in both places shows once. The tui replays of pi and
+codex conversations show them the same way. Images no adapter sends as data
+are not shown: codex's `view_image` names only the file, and claude turns an
+image given by URL into text.
 
 ## Where things live
 

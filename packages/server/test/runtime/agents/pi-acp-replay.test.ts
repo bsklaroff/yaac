@@ -113,6 +113,23 @@ describe('piTranscriptAsAcp', () => {
     expect(lines).not.toContain('user: MODEL switched')
   })
 
+  it('shows the images a tool returned, as the live projection does', () => {
+    const message = (id: string, parentId: string | null, m: unknown): string =>
+      JSON.stringify({ type: 'message', id, parentId, message: m })
+    const image = { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }
+    const log = [
+      message('u', null, { role: 'user', content: 'read it' }),
+      message('a', 'u', { role: 'assistant', content: [{ type: 'toolCall', id: 'r', name: 'read', arguments: { path: 'a.png' } }] }),
+      message('t', 'a', {
+        role: 'toolResult', toolCallId: 'r', toolName: 'read',
+        content: [{ type: 'text', text: 'Read image file [image/png]' }, image],
+      }),
+    ].join('\n')
+
+    expect(toolCalls(piTranscriptAsAcp(log)).get('r')?.content)
+      .toEqual([{ type: 'text', text: 'Read image file [image/png]' }, image])
+  })
+
   it('tolerates an empty, damaged or cyclic log', () => {
     expect(piTranscriptAsAcp('')).toEqual([])
     const cyclic = '{"type":"message","id":"a","parentId":"a","message":{"role":"user","content":"hi"}}'

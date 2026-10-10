@@ -14,7 +14,7 @@ import {
 } from '#lib/icons'
 import { stripAnsi } from '@yaac/shared/ansi'
 import type {
-  AcpContent, AcpDiff, AcpEvent, AcpImage, AcpStoredImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
+  AcpDiff, AcpEvent, AcpImage, AcpStoredImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
   AcpToolContent, AcpToolKind, AcpWake,
 } from '@yaac/shared/acp'
 
@@ -30,7 +30,8 @@ import type {
  * updates as text arrives.
  */
 
-/** An image in a message, inline or stored apart from the record. */
+/** An image in a message or a tool result, inline or stored apart from the
+ *  record. */
 type MessageImage = AcpImage | AcpStoredImage
 
 /** One rendered unit of a conversation. Text groups keep images separate so
@@ -68,13 +69,10 @@ export type Group = ({ turn?: true; woken?: AcpWake[] } & (
   }
 ))
 
-function textOf(content: AcpContent[]): string {
-  return content.map((c) => (c.type === 'text' ? c.text : `[${c.mimeType} image]`)).join('')
-}
-
-/** A tool call's non-diff output as text. */
+/** A tool call's text output. Its images are drawn under its row instead
+ *  (`ToolRow`). */
 function toolTextOf(content: AcpToolContent[] | undefined): string {
-  return textOf((content ?? []).filter((c): c is AcpContent => c.type !== 'diff'))
+  return (content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('')
 }
 
 /** Whether a call has yet to complete or fail. claude's adapter keeps a
@@ -429,7 +427,8 @@ function foldedLabel(groups: Group[]): string {
   }).join(', ')
 }
 
-/** A message's images, each a thumbnail that opens to the column's width. */
+/** A message's or tool call's images, each a thumbnail that opens to the
+ *  column's width. */
 function MessageImages({ images, workspaceId }: { images: MessageImage[]; workspaceId: string }): JSX.Element | null {
   if (images.length === 0) return null
   return (
@@ -446,6 +445,8 @@ function MessageImageView({ image, workspaceId }: { image: MessageImage; workspa
       <img
         src={useImageSrc(image, workspaceId)}
         alt=""
+        loading="lazy"
+        decoding="async"
         className={clsx('max-w-full rounded border border-hairline', !open && 'max-h-48')}
       />
     </button>
@@ -631,8 +632,12 @@ function DisclosureRow({
  * The row's label is one line, so whatever it cuts off is repeated in full
  * at the top of the expanded panel: a shell call's command, or any label too
  * long for the row.
+ *
+ * Images the call returned (a screenshot, a Read of a PNG) show under the
+ * row whether or not it is open, since its label rarely says what they show.
  */
 export function ToolRow({
+  workspaceId,
   call,
   output = '',
   progress,
@@ -640,6 +645,8 @@ export function ToolRow({
   defaultOpen = false,
   reveal = false,
 }: {
+  /** The workspace the call ran in, for loading its stored images. */
+  workspaceId: string
   call: AcpToolCall
   /** Terminal output the call streamed, shown verbatim. */
   output?: string
@@ -658,6 +665,10 @@ export function ToolRow({
     [call.content],
   )
   const edits = useMemo(() => groupDiffs(diffs), [diffs])
+  const images = useMemo(
+    () => (call.content ?? []).filter((c): c is MessageImage => c.type === 'image'),
+    [call.content],
+  )
   const description = asked ? undefined : call.description
   const text = toolTextOf(call.content)
   /** claude's adapter also sends a shell call's description as its content,
@@ -763,6 +774,9 @@ export function ToolRow({
           )}
         </div>
       )}
+      <div className="ml-[18px]">
+        <MessageImages images={images} workspaceId={workspaceId} />
+      </div>
     </div>
   )
 }
@@ -799,6 +813,7 @@ function isAllow(option: AcpPermissionOption | undefined): boolean {
  * `onAnswer` (a stopped workspace's transcript) no buttons are shown.
  */
 function PermissionRow({
+  workspaceId,
   requestId,
   toolCall,
   output,
@@ -808,6 +823,7 @@ function PermissionRow({
   onAnswer,
   reveal,
 }: {
+  workspaceId: string
   requestId: string
   toolCall?: AcpToolCall
   output?: string
@@ -846,7 +862,12 @@ function PermissionRow({
         </DisclosureRow>
         {open && toolCall !== undefined && !inView && (
           <div className="ml-[18px]">
-            <ToolRow call={toolCall} {...(output !== undefined ? { output } : {})} defaultOpen />
+            <ToolRow
+              workspaceId={workspaceId}
+              call={toolCall}
+              {...(output !== undefined ? { output } : {})}
+              defaultOpen
+            />
           </div>
         )}
       </div>
@@ -859,7 +880,7 @@ function PermissionRow({
         <WarningIcon size={12} className="shrink-0" />
         {onAnswer === undefined ? 'Permission was never answered' : 'Permission needed'}
       </div>
-      {toolCall !== undefined && <ToolRow call={toolCall} asked />}
+      {toolCall !== undefined && <ToolRow workspaceId={workspaceId} call={toolCall} asked />}
       {onAnswer !== undefined && (
         <div className="flex flex-wrap gap-1.5 pt-0.5">
           {options.map((o) => (
@@ -1232,6 +1253,7 @@ function GroupView({
   if (g.kind === 'tool') {
     return (
       <ToolRow
+        workspaceId={workspaceId}
         call={g.call}
         reveal={reveal}
         {...(g.output !== undefined ? { output: g.output } : {})}
@@ -1243,6 +1265,7 @@ function GroupView({
   if (g.kind === 'permission') {
     return (
       <PermissionRow
+        workspaceId={workspaceId}
         requestId={g.requestId}
         {...(g.toolCall !== undefined ? { toolCall: g.toolCall } : {})}
         {...(g.output !== undefined ? { output: g.output } : {})}

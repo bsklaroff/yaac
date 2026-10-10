@@ -335,6 +335,9 @@ function itemUpdates(item: Json, at: 'start' | 'end'): Json[] {
     case 'FileChange':
       return start({ kind: 'edit', title: 'Editing files', content: fileDiffs(item.changes) })
     case 'McpToolCall':
+      // The adapter sends the result only as `rawOutput`, from which the
+      // projection reads its images.
+      if (at === 'end') return [{ ...toolEnd(item), rawOutput: { result: item.result ?? null, error: item.error ?? null } }]
       return start({
         kind: 'execute',
         title: `mcp.${asString(item.server) ?? ''}.${asString(item.tool) ?? ''}`,

@@ -67,21 +67,45 @@ describe('ReadOnlyTranscript', () => {
     expect(server.called(TRANSCRIPT)).toHaveLength(1)
   })
 
-  it('shows a message\'s images, loading one stored apart from the record from the server', async () => {
+  it('shows message and tool result images, loading one stored apart from the record from the server', async () => {
     const hash = 'ab'.repeat(32)
-    transcript([{
-      type: 'user',
-      seq: 0,
-      content: [
-        { type: 'text', text: 'look' },
-        { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
-        { type: 'image', mimeType: 'image/png', hash },
-      ],
-    }])
+    const shot = 'cd'.repeat(32)
+    transcript([
+      {
+        type: 'user',
+        seq: 0,
+        content: [
+          { type: 'text', text: 'look' },
+          { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+          { type: 'image', mimeType: 'image/png', hash },
+        ],
+      },
+      {
+        type: 'tool',
+        seq: 1,
+        call: {
+          toolCallId: 't1',
+          title: 'browser_take_screenshot',
+          kind: 'other',
+          status: 'completed',
+          content: [{ type: 'text', text: 'Took the screenshot' }, { type: 'image', mimeType: 'image/png', hash: shot }],
+        },
+      },
+    ])
     renderPane()
     await screen.findByText('look')
-    expect([...document.querySelectorAll('img')].map((img) => img.getAttribute('src')))
-      .toEqual(['data:image/png;base64,iVBORw0KGgo=', `/api/workspace/w1/acp-images/${hash}`])
+    // A tool's images show while its row is closed, and are drawn rather
+    // than named once it opens.
+    const srcs = (): Array<string | null> => [...document.querySelectorAll('img')].map((img) => img.getAttribute('src'))
+    expect(srcs()).toEqual([
+      'data:image/png;base64,iVBORw0KGgo=',
+      `/api/workspace/w1/acp-images/${hash}`,
+      `/api/workspace/w1/acp-images/${shot}`,
+    ])
+    fireEvent.click(screen.getByText('browser_take_screenshot'))
+    expect(screen.getByText('Took the screenshot')).toBeTruthy()
+    expect(screen.queryByText(/\[image\/png image\]/)).toBeNull()
+    expect(srcs()).toHaveLength(3)
   })
 
   it('offers the workspace\'s conversations in restore order and switches between them', async () => {
