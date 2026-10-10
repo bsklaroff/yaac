@@ -42,9 +42,10 @@ function withMarks(segments: HighlightSegment[], marks: FindMark[]): ReactNode[]
 }
 
 /**
- * Diff lines with +/− markers, tinted rows and syntax highlighting. Used by
- * the Changes pane (git diffs) and the chat pane (agent edits). Line numbers
- * are optional because an agent's edit fragment has no file line numbers.
+ * Diff lines with +/− markers, tinted rows and syntax highlighting, long
+ * lines wrapped to the pane's width. Used by the Changes pane (git diffs) and
+ * the chat pane (agent edits). Line numbers are optional because an agent's
+ * edit fragment has no file line numbers.
  */
 export function DiffView({
   lines,
@@ -64,11 +65,11 @@ export function DiffView({
     [lines, language],
   )
   return (
-    <div className="diff-hl min-w-full font-mono text-[11px] leading-[1.5]">
+    <div className="diff-hl font-mono text-[11px] leading-[1.5]">
       {lines.map((line, idx) => {
         if (line.kind === 'hunk') {
           return (
-            <div key={idx} className="whitespace-pre bg-surface-2 px-2 text-text-faint">
+            <div key={idx} className="whitespace-pre-wrap break-words bg-surface-2 px-2 text-text-faint">
               {line.text}
             </div>
           )
@@ -80,7 +81,7 @@ export function DiffView({
           <div
             key={idx}
             className={clsx(
-              'flex whitespace-pre',
+              'flex whitespace-pre-wrap',
               line.kind === 'add' && 'bg-[rgb(63_185_80/0.14)]',
               line.kind === 'del' && 'bg-[rgb(248_81_73/0.14)]',
             )}
@@ -96,7 +97,7 @@ export function DiffView({
             )}>
               {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
             </span>
-            <span className="pr-3 text-text">
+            <span className="min-w-0 break-words pr-3 text-text">
               {lineMarks
                 ? withMarks(segments ?? [{ text: line.text, className: '' }], lineMarks)
                 : segments

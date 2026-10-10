@@ -492,7 +492,7 @@ function EditGroupView({ group, showPath }: { group: EditGroup; showPath: boolea
         </div>
       )}
       {group.hunks.map((lines, i) => (
-        <div key={i} className={clsx('overflow-x-auto', i > 0 && 'border-t border-hairline')}>
+        <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
           {/* No line numbers: they would count from the hunk, not the file. */}
           <DiffView lines={lines} language={language} showLineNumbers={false} />
         </div>
