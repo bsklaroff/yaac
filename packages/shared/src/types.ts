@@ -1549,6 +1549,69 @@ export interface LocalServerStatus {
   cliBuildId: string
 }
 
+/**
+ * Which of this Mac's installs: the host server (containerless) or a kind
+ * cluster's. Also the id of the setup that creates it, the only thing a
+ * renderer sends to start one.
+ */
+export type DesktopLocalScope = 'server' | 'cluster'
+
+/** One of this Mac's installs as the desktop app shows it. */
+export type DesktopInstallState =
+  | 'missing'
+  | 'stopped'
+  | 'running'
+  /** Running a different build than the installed CLI. */
+  | 'outdated'
+  /** A `--byo` cluster's server, whose lock this Mac cannot read. */
+  | 'elsewhere'
+  /** `yaac … status` failed, e.g. an older CLI without `cluster status`. */
+  | 'unavailable'
+
+export type DesktopSetupStepState = 'pending' | 'running' | 'done' | 'skipped' | 'failed' | 'cancelled'
+
+export interface DesktopSetupStep {
+  label: string
+  /** The command line, as a user would type it. */
+  command: string
+  state: DesktopSetupStepState
+  /** Why a step was skipped, or how it failed. */
+  note?: string
+}
+
+/** A setup the desktop app runs in the background, from its first step to the last. */
+export interface DesktopSetupRun {
+  scope: DesktopLocalScope
+  phase: 'running' | 'succeeded' | 'failed' | 'cancelled'
+  steps: DesktopSetupStep[]
+  /** The last lines the commands printed. */
+  log: string[]
+  error?: string
+  /** `yaac host check`'s failing lines after a containerless start. */
+  hostCheckFailures?: string
+}
+
+export interface DesktopSetupChoice {
+  scope: DesktopLocalScope
+  /** What a user would run in a terminal for the same result. */
+  commands: string[]
+  /** Why the app cannot run this setup itself: not an Apple silicon Mac, or no Homebrew. */
+  blocked: 'unsupported' | 'no-brew' | null
+}
+
+/** This Mac's installs, their setups, and what the app is doing to them. */
+export interface DesktopLocalState {
+  /** Whether a `yaac` CLI is on PATH. */
+  cli: boolean
+  brew: boolean
+  /** null until read, and for a host data dir that is itself the cluster install. */
+  installs: Record<DesktopLocalScope, DesktopInstallState | null>
+  busy: { scope: DesktopLocalScope; action: 'setup' | 'start' | 'stop' | 'restart' } | null
+  /** The setup under way, or the last one to finish. */
+  setup: DesktopSetupRun | null
+  choices: Record<DesktopLocalScope, DesktopSetupChoice>
+}
+
 
 /**
  * Cap on a recorded model id. Model ids come from the agent (a tmux pane
