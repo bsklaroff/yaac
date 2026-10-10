@@ -27,7 +27,17 @@ const ME: Whoami = {
 }
 
 function renderSwitcher(driver: ServerSnapshot['driver'], whoami: Whoami = ME): void {
-  snapshot.mockReturnValue({ driver, projects: [project('mine', 'u-me'), project('ada-1', 'u-ada'), project('ada-2', 'u-ada')] })
+  // Ada has two live workspaces across her projects, one restarting, one
+  // stopping and one that failed to start: three count.
+  const workspaces = [
+    { workspaceId: 'w1', projectId: 'ada-1' }, { workspaceId: 'w2', projectId: 'ada-2' },
+    { workspaceId: 'w3', projectId: 'ada-2', stopping: true },
+  ]
+  const provisioning = [
+    { workspaceId: 'w4', projectId: 'ada-1' },
+    { workspaceId: 'w5', projectId: 'ada-1', error: 'image build failed' },
+  ]
+  snapshot.mockReturnValue({ driver, workspaces, provisioning, projects: [project('mine', 'u-me'), project('ada-1', 'u-ada'), project('ada-2', 'u-ada')] })
   // Opening the menu refetches the users, so a teammate seen since load shows.
   mockFetch({ 'GET /api/whoami': whoami })
   renderWithClient(<UserSwitcher />, testQueryClient(whoami))
@@ -60,12 +70,12 @@ describe('UserSwitcher', () => {
     expect(screen.queryByRole('button', { name: /Switch user/ })).toBeNull()
   })
 
-  it('lists the caller first, opens a teammate on their first project, and switches back', async () => {
+  it('lists the caller first with each user\'s active workspace count, opens a teammate on their first project, and switches back', async () => {
     useUiStore.setState({ activeProjectId: 'mine', selectedWorkspaceId: 'w1' })
     renderSwitcher('k8s')
     fireEvent.click(screen.getByRole('button', { name: 'Switch user (Your projects)' }))
     const items = await screen.findAllByRole('menuitem')
-    expect(items.map((i) => i.textContent)).toEqual(['Me (you)me@x.com', 'Adaada@x.com'])
+    expect(items.map((i) => i.textContent)).toEqual(['MMe (you)me@x.comidle', 'AAdaada@x.com3 active'])
     expect(screen.queryByText(/does not separate users/)).toBeNull()
 
     fireEvent.click(items[1])
