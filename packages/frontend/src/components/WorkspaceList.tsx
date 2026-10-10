@@ -7,7 +7,7 @@ import { CloseIcon, LoadingIcon, SearchIcon } from '#lib/icons'
 import { usePressDrag } from '#lib/usePressDrag'
 import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
-import { stoppedSectionCount, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
+import { stoppedSectionCount, useStoppedEntry, useStoppedMatch, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
 import { useUiStore, type SidebarStatus } from '#lib/store'
@@ -238,6 +238,14 @@ export function narrowRows(
   }
 }
 
+/** Whether a project has any workspace the sidebar can list: live,
+ *  provisioning, queued, held, draft, or one of its `stoppedCount` stops. */
+export function projectHasWorkspaces(projectId: string | null, rows: SearchableRows, stoppedCount: number): boolean {
+  return stoppedCount > 0
+    || [...rows.workspaces, ...rows.provisioning, ...rows.queued, ...rows.held, ...rows.drafts]
+      .some((e) => e.projectId === projectId)
+}
+
 /** How long the search box waits after a keystroke before asking the
  *  server for matching stopped workspaces. */
 const SEARCH_DEBOUNCE_MS = 200
@@ -261,7 +269,8 @@ interface RowDrag {
  * search, or a filter including stopped, holds the Stopped section open; a
  * filter without stopped hides it. Either hides groups with no match,
  * pinned or not, and lists every stopped workspace in the Stopped section.
- * A workspace they hide stays selected.
+ * A workspace they hide stays selected, and its row stays on top of the
+ * list, marked as the one open in the pane, with a button that deselects it.
  */
 export function WorkspaceList({
   projectId,
@@ -301,6 +310,11 @@ export function WorkspaceList({
   const stoppedShownGroups = useUiStore((s) => s.stoppedShownGroups)
   const collapsedGroups = useUiStore((s) => s.collapsedGroups)
   const statuses = useUiStore((s) => s.sidebarStatuses)
+  const selectedId = useUiStore((s) => s.selectedWorkspaceId)
+  const selectWorkspace = useUiStore((s) => s.selectWorkspace)
+  // Deselect unmounts its own button, so focus moves here instead of the
+  // body. Not on a phone, where focusing it would raise the soft keyboard.
+  const searchBox = useRef<HTMLInputElement>(null)
 
   // The server search waits for a pause in typing.
   const [serverQuery, setServerQuery] = useState(query.trim())
@@ -353,6 +367,22 @@ export function WorkspaceList({
     ? stopped.total ?? 0
     : stoppedSectionCount(project, groups, owning, held, provisioning)
   const ownedDeaths = groups.filter((g) => owning.has(g.groupId)).reduce((n, g) => n + g.unseenDeaths, 0)
+
+  // The open workspace, in whichever form it is listed. A plain stopped one
+  // is looked up only while narrowed, under the same key App uses, and
+  // whether the Stopped list's search matches it is the server's answer.
+  const selectedLive = workspaces.find((w) => w.workspaceId === selectedId)
+  const selectedProvisioning = provisioning.find((p) => p.workspaceId === selectedId)
+  const selectedHeld = held.find((h) => h.workspaceId === selectedId)
+  const version = String(project?.stoppedCount ?? 0)
+  const selectedStopped = useStoppedEntry(projectId, selectedId, {
+    enabled: narrowed && !selectedLive && !selectedProvisioning && !selectedHeld,
+    version,
+  }).entry
+  const stoppedMatch = useStoppedMatch(projectId, selectedId, serverQuery, {
+    enabled: searching && stoppedShown && selectedStopped !== undefined,
+    version,
+  })
 
   // So a stop from a row's menu can select the next row.
   const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
@@ -450,6 +480,27 @@ export function WorkspaceList({
   // drag has.
   const shownGroups = layout.groups.map((s) => s.group)
 
+  /** The open workspace's row when the search or filter hides it, else null.
+   *  A stopped one is hidden when the filter leaves out the Stopped list, or
+   *  once the server says the search doesn't match it. */
+  const hiddenSelection = ((): JSX.Element | null => {
+    if (!narrowed) return null
+    if (selectedLive) {
+      return shown.workspaces.includes(selectedLive) ? null
+        : <WorkspaceRow workspace={selectedLive} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
+    }
+    if (selectedProvisioning) {
+      return shown.provisioning.includes(selectedProvisioning) ? null : <ProvisioningRow entry={selectedProvisioning} />
+    }
+    if (selectedHeld) {
+      return shown.held.includes(selectedHeld) ? null : <StoppedWorkspaceRow entry={heldAsStopped(selectedHeld)} />
+    }
+    if (!selectedStopped) return null
+    return !stoppedShown || (searching && stoppedMatch === false)
+      ? <StoppedWorkspaceRow entry={selectedStopped} />
+      : null
+  })()
+
   return (
     <QueueContext.Provider value={queueContext}>
       <div className="flex min-h-0 flex-1 flex-col">
@@ -469,6 +520,7 @@ export function WorkspaceList({
                 />
               )}
               <input
+                ref={searchBox}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
@@ -513,7 +565,9 @@ export function WorkspaceList({
                 : 'Pick a project from the rail on the left.'}
             />
           )}
-          {projectId && !narrowed && nothingLive && stoppedCount === 0 && (
+          {projectId && !narrowed
+            && !projectHasWorkspaces(projectId, { workspaces, provisioning, queued, held, drafts }, project?.stoppedCount ?? 0)
+            && (
             <EmptyState
               compact
               className="py-10"
@@ -523,6 +577,30 @@ export function WorkspaceList({
           )}
           {narrowed && nothingLive && !searchSettling && (!stoppedShown || stopped.total === 0) && (
             <EmptyState compact className="py-10" title="No matches" />
+          )}
+          {hiddenSelection && (
+            <div role="group" aria-label="Open workspace" className="mb-1 border-b border-hairline pb-1">
+              <div className="flex items-center gap-1 py-0.5 pl-4 pr-3.5 text-xs font-medium text-text-faint">
+                <span className="truncate" title="Shown because it is open in the pane, though it doesn't match">
+                  Open in pane
+                </span>
+                <span className="truncate text-text-faint/70">not a match</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    selectWorkspace(null)
+                    if (!isMobile) searchBox.current?.focus()
+                  }}
+                  title="Deselect"
+                  aria-label="Deselect"
+                  className="ml-auto flex h-5 w-5 shrink-0 items-center justify-center rounded transition
+                    hover:bg-surface-2 hover:text-text max-md:h-7 max-md:w-7"
+                >
+                  <CloseIcon size={12} />
+                </button>
+              </div>
+              {hiddenSelection}
+            </div>
           )}
           {shown.drafts.length > 0 && <DraftsSection drafts={shown.drafts} />}
           {orphans.map((e) => (

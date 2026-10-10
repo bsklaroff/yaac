@@ -71,6 +71,9 @@ const DRAFT_DISCARD = 'POST /api/workspace/draft/discard'
 
 /** The project's stopped workspaces, as the server lists them. */
 const stoppedRows: StoppedWorkspaceEntry[] = []
+/** Prompts of their later conversations, which the server searches but the
+ *  rows don't carry. */
+const laterPrompts = new Map<string, string>()
 
 /** `GET /workspace/list-stopped` over `stoppedRows`, honoring the filters
  *  the sidebar sends. The cursor is a row index. */
@@ -79,9 +82,11 @@ function listStopped(c: FetchCall): StoppedWorkspacePage {
   const group = c.query.get('group')
   const exclude = c.query.get('excludeGroups')?.split(',') ?? []
   const excludeIds = c.query.get('exclude')?.split(',') ?? []
+  const workspace = c.query.get('workspace')
   const rows = stoppedRows.filter((r) => (group ? r.groupId === group : !exclude.includes(r.groupId ?? ''))
+    && (!workspace || r.workspaceId === workspace)
     && !excludeIds.includes(r.workspaceId)
-    && (!q || `${r.title ?? ''} ${r.prompt ?? ''}`.toLowerCase().includes(q)))
+    && (!q || `${r.title ?? ''} ${r.prompt ?? ''} ${laterPrompts.get(r.workspaceId) ?? ''}`.toLowerCase().includes(q)))
   const start = Number(c.query.get('cursor') || 0)
   const end = start + Number(c.query.get('limit') || rows.length)
   return { entries: rows.slice(start, end), total: rows.length, ...(end < rows.length ? { nextCursor: String(end) } : {}) }
@@ -112,6 +117,7 @@ const filed = (workspaceId: string, groupId: string | null): unknown => ({ proje
 beforeEach(() => {
   localStorage.clear()
   stoppedRows.length = 0
+  laterPrompts.clear()
   watched.clear()
   snapshot.mockReturnValue(undefined)
   useUiStore.setState(initial, true)
@@ -493,7 +499,7 @@ describe('WorkspaceList', () => {
   })
 
   describe('search', () => {
-    it('filters the rows and groups, searches the stopped list on the server, and keeps the selection', async () => {
+    it('filters the rows and groups, searches the stopped list on the server, and keeps the selection on top', async () => {
       stoppedRows.push(stoppedEntry('old', { title: 'Parser rewrite, take one' }), stoppedEntry('other'))
       useUiStore.setState({ selectedWorkspaceId: 'b' })
       renderList([
@@ -508,7 +514,11 @@ describe('WorkspaceList', () => {
 
       fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'PARSER' } })
       expect(screen.getByText('Fix the parser')).toBeTruthy()
-      expect(screen.queryByText('Write docs')).toBeNull()
+      // The open workspace stays, on top and marked, though it doesn't match.
+      const open = screen.getByRole('group', { name: 'Open workspace' })
+      expect(within(open).getByText('Write docs')).toBeTruthy()
+      expect(within(open).getByText('not a match')).toBeTruthy()
+      expect(screen.getAllByText('Write docs')).toHaveLength(1)
       expect(screen.getByText('Parser tests')).toBeTruthy()
       // A group with no match goes, pinned or not.
       expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull()
@@ -518,12 +528,51 @@ describe('WorkspaceList', () => {
       expect(stoppedQueries().at(-1)).toContain('q=PARSER')
       expect(useUiStore.getState().selectedWorkspaceId).toBe('b')
 
+      // Opening a match drops the pin, and the old selection with it.
+      fireEvent.click(screen.getByText('Fix the parser'))
+      expect(screen.queryByRole('group', { name: 'Open workspace' })).toBeNull()
+      expect(screen.queryByText('Write docs')).toBeNull()
+
+      // A stopped workspace the search hides is pinned too, and deselecting
+      // it leaves the pane empty.
+      act(() => useUiStore.setState({ selectedWorkspaceId: 'other' }))
+      expect(await within(await screen.findByRole('group', { name: 'Open workspace' })).findByText('Stopped other')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Deselect' }))
+      expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
+      expect(screen.queryByRole('group', { name: 'Open workspace' })).toBeNull()
+      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Search workspaces' }))
+
       fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'zzz' } })
       expect(await screen.findByText('No matches')).toBeTruthy()
 
       fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
       expect(screen.getByText('Write docs')).toBeTruthy()
       expect(screen.getByRole('group', { name: 'Pinned' })).toBeTruthy()
+    })
+
+    it('pins a stopped selection by the server\'s match, not by what its row shows', async () => {
+      // Every row matches "parser" in a later conversation, so the selection
+      // sorts onto the second page of the results.
+      for (let i = 0; i < 60; i++) {
+        stoppedRows.push(stoppedEntry(`s${i}`))
+        laterPrompts.set(`s${i}`, 'Refactor the parser')
+      }
+      useUiStore.setState({ selectedWorkspaceId: 's55' })
+      renderList([], { project: { stoppedCount: 60, unseenDeaths: 0 } })
+      const search = screen.getByRole('textbox', { name: 'Search workspaces' })
+
+      // Its agent label holds "claude", but the server's search doesn't match it.
+      fireEvent.change(search, { target: { value: 'claude' } })
+      expect(await within(await screen.findByRole('group', { name: 'Open workspace' })).findByText('Stopped s55')).toBeTruthy()
+
+      // The server matches it, so it is not pinned while its page is unloaded,
+      // and shows once in the list when that page loads.
+      fireEvent.change(search, { target: { value: 'parser' } })
+      await waitFor(() => expect(screen.queryByRole('group', { name: 'Open workspace' })).toBeNull())
+      expect(await screen.findByText('Stopped s0')).toBeTruthy()
+      expect(screen.queryByText('Stopped s55')).toBeNull()
+      scrollToEnd()
+      expect(await screen.findAllByText('Stopped s55')).toHaveLength(1)
     })
 
     it('spins until the stopped results settle, dropping a superseded request', async () => {
@@ -593,6 +642,18 @@ describe('WorkspaceList', () => {
       expect(screen.getByText('Busy')).toBeTruthy()
       expect(screen.getByRole('group', { name: 'Pinned' })).toBeTruthy()
       expect(useUiStore.getState().sidebarStatuses).toEqual([])
+    })
+
+    it('pins a stopped selection when the filter leaves out the Stopped list, though its pages are loaded', async () => {
+      stoppedRows.push(stoppedEntry('old'))
+      useUiStore.setState({ stoppedExpanded: true })
+      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 1, unseenDeaths: 0 } })
+      fireEvent.click(await screen.findByText('Stopped old'))
+
+      await pick('Running')
+      const open = screen.getByRole('group', { name: 'Open workspace' })
+      expect(within(open).getByText('Stopped old')).toBeTruthy()
+      expect(screen.queryByRole('group', { name: 'Stopped workspaces' })).toBeNull()
     })
 
     it('says so when nothing has a checked status', async () => {
