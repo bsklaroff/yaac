@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { ChatViewToggles } from '#components/WorkspaceChat'
 import { PaneBarLeading, paneBarClass } from '#components/WorkspaceView'
@@ -65,6 +66,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
       <header className={paneBarClass(isMobile)}>
         <PaneBarLeading />
         <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">{title}</span>
+        {subject && <ContainerlessBadge />}
       </header>
       {subject ? (
         <>

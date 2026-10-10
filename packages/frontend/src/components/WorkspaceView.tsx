@@ -31,6 +31,7 @@ import {
 import { EmptyState } from '#components/ui/EmptyState'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
+import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
@@ -423,6 +424,7 @@ export function WorkspaceView({
             title={workspace.title ?? ''}
             prompt={workspace.prompt ?? ''}
           />
+          <ContainerlessBadge />
           {!isMobile && (
             <button
               onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
