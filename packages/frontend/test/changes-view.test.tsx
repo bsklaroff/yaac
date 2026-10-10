@@ -110,6 +110,8 @@ const explorer = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="m
 const changesPane = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" changedOnly />
 const renderExplorer = (): void => { renderWithClient(explorer) }
 const renderChanges = (): void => { renderWithClient(changesPane) }
+/** Every changed file, to open all their diffs. */
+const ALL_PATHS = PAYLOAD.files.map((f) => f.path)
 /** A file's row, whose title is its path. */
 const row = (path: string): HTMLElement => screen.getByTitle(path)
 
@@ -145,7 +147,7 @@ describe('WorkspaceFiles changes', () => {
     expect(screen.queryByText('gone.ts')).toBeNull()
   })
 
-  it('lists only changed files, flat first or as an open tree, each with its diff', async () => {
+  it('lists only changed files, flat first or as an open tree, each diff folded until shown', async () => {
     // The explorer's polls leave the diff body out, so until the Changes
     // pane's own fetch lands its diffs say they are loading, not that none
     // exist.
@@ -153,6 +155,8 @@ describe('WorkspaceFiles changes', () => {
     const view = renderWithClient(explorer, client)
     await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
     view.rerender(<QueryClientProvider client={client}>{changesPane}</QueryClientProvider>)
+    expect(screen.queryByText('Loading diff…')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Show all changes'))
     expect(screen.getAllByText('Loading diff…')).toHaveLength(3)
     expect(screen.queryByText('No textual diff')).toBeNull()
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
@@ -211,27 +215,27 @@ describe('WorkspaceFiles changes', () => {
     expect(screen.getByTitle('lib/legacy.ts → src/app.ts')).toBeTruthy()
   })
 
-  // A row folds its own diff; only the name opens the file.
-  it('folds one file’s diff from its row, in the tree and the flat list', async () => {
+  // A row opens and folds its own diff; only the name opens the file.
+  it('opens one file’s diff from its row, in the tree and the flat list', async () => {
     useUiStore.getState().setPaneView(CHANGES_VIEW, { flat: false })
     renderChanges()
-    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    await waitFor(() => expect(row('src/app.ts')).toBeTruthy())
 
     fireEvent.click(row('src/app.ts'))
-    expect(screen.queryByText('needle1')).toBeNull()
-    expect(screen.getByText('alpha')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    expect(screen.queryByText('alpha')).toBeNull()
     expect(useUiStore.getState().layouts.s1).toBeUndefined()
-    expect(screen.getByLabelText('Show the diff of src/app.ts').getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByLabelText('Hide the diff of src/app.ts').getAttribute('aria-expanded')).toBe('true')
 
-    // The fold holds across the flat list, and the chevron unfolds it.
+    // The diff stays open across the flat list, and the chevron folds it.
     fireEvent.click(screen.getByLabelText('Show as a flat list'))
-    expect(screen.queryByText('needle1')).toBeNull()
-    fireEvent.click(screen.getByLabelText('Show the diff of src/app.ts'))
     expect(screen.getByText('needle1')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Hide the diff of src/app.ts'))
+    expect(screen.queryByText('needle1')).toBeNull()
 
-    // Folding each one by hand turns the header button to "Show all".
-    for (const path of ['src/app.ts', 'src/new.ts', 'gone.ts']) fireEvent.click(row(path))
-    expect(screen.getByLabelText('Show all changes')).toBeTruthy()
+    // Opening each one by hand turns the header button to "Collapse all".
+    for (const path of ALL_PATHS) fireEvent.click(row(path))
+    expect(screen.getByLabelText('Collapse all changes')).toBeTruthy()
   })
 
   it('picks the diff base, and says what an unresolved base or a cut diff leaves out', async () => {
@@ -260,6 +264,7 @@ describe('WorkspaceFiles changes, at scale', () => {
   // chunk mounts only once it comes near the screen, holding its height
   // until then.
   it('mounts a diff only when it comes near the screen', async () => {
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS })
     const observed: { el: Element; notify: (near: boolean) => void }[] = []
     vi.stubGlobal('IntersectionObserver', class {
       constructor(private readonly cb: IntersectionObserverCallback) {}
@@ -285,6 +290,7 @@ describe('WorkspaceFiles changes, at scale', () => {
   // Every reader of a workspace's changes shares one query, which carries
   // the diff body while any of them shows it.
   it('polls once for the status bar, the explorer and the Changes pane together', async () => {
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS })
     const client = testQueryClient()
     renderWithClient(<><GitStatusBar workspaceId="s1" />{explorer}{changesPane}</>, client)
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
@@ -317,7 +323,7 @@ describe('WorkspaceFiles changes, at scale', () => {
     vi.stubGlobal('Worker', FakeWorker)
     const scrolled: Element[] = []
     Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this) }
-    useUiStore.getState().setPaneView(CHANGES_VIEW, { flat: false, collapsed: ['src'], foldedDiffs: ['src/new.ts'] })
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { flat: false, collapsed: ['src'], openDiffs: ['src/app.ts'] })
     renderChanges()
     await waitFor(() => expect(screen.getByTitle('src')).toBeTruthy())
     act(() => useUiStore.getState().openChanges('s1'))
@@ -346,7 +352,7 @@ describe('WorkspaceFiles changes, at scale', () => {
     fireEvent.keyDown(find, { key: 'Enter' })
     expect(status()).toBe('3 of 3')
     expect(current()?.parentElement?.textContent).toBe('alpha')
-    expect(useUiStore.getState().paneView[CHANGES_VIEW]?.foldedDiffs).toEqual([])
+    expect(useUiStore.getState().paneView[CHANGES_VIEW]?.openDiffs).toEqual(['src/app.ts', 'src/new.ts'])
     fireEvent.keyDown(find, { key: 'Enter', shiftKey: true })
     expect(status()).toBe('2 of 3')
 
@@ -438,6 +444,7 @@ describe('GitStatusBar changes', () => {
     server.route(CHANGES, (call: { query: URLSearchParams }) => (
       call.query.get('diff') === '1' ? serverError('INTERNAL', 'exec failed', 500) : reply(PAYLOAD)(call)
     ))
+    act(() => useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS }))
     view.rerender(<QueryClientProvider client={client}><GitStatusBar workspaceId="s1" />{changesPane}</QueryClientProvider>)
     await waitFor(() => expect(screen.getAllByText('Diff not loaded')).toHaveLength(3))
     expect(screen.queryByText('Loading diff…')).toBeNull()
