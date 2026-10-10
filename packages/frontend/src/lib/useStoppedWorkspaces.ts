@@ -189,6 +189,31 @@ export function useStoppedEntry(
   return { entry: data ?? optimistic, pending: isLoading && optimistic === undefined }
 }
 
+/**
+ * Whether the server's search `q` matches one stopped workspace, by the same
+ * predicate that fills the Stopped list, so a caller can tell whether that
+ * list will show it without loading every page. Undefined until the first
+ * answer; the previous answer for the same workspace stands while a new
+ * query loads.
+ */
+export function useStoppedMatch(
+  projectId: string | null,
+  workspaceId: string | null,
+  q: string,
+  opts: { enabled: boolean; version: string },
+): boolean | undefined {
+  const enabled = opts.enabled && projectId !== null && workspaceId !== null && q !== ''
+  const { data } = useQuery({
+    queryKey: ['stopped-match', projectId, workspaceId, q, opts.version],
+    queryFn: async ({ signal }) => (await api.workspace['list-stopped'].$get({
+      query: { project: projectId ?? '', workspace: workspaceId ?? '', q, limit: '1' },
+    }, { init: { signal } })).entries.length > 0,
+    enabled,
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === workspaceId ? prev : undefined),
+  })
+  return enabled ? data : undefined
+}
+
 function cachedEntry(queryClient: QueryClient, projectId: string, workspaceId: string): StoppedWorkspaceEntry | undefined {
   for (const [, data] of queryClient.getQueriesData<InfiniteData<StoppedWorkspacePage>>({ queryKey: ['stopped', projectId] })) {
     const hit = data?.pages.flatMap((p) => p.entries).find((e) => e.workspaceId === workspaceId)

@@ -29,6 +29,7 @@ import {
   TerminalIcon, TilesIcon, TOOL_LABEL,
 } from '#lib/icons'
 import { EmptyState } from '#components/ui/EmptyState'
+import { projectHasWorkspaces } from '#components/WorkspaceList'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
@@ -537,7 +538,15 @@ export function WorkspaceView({
           <EmptyState
             className="h-full"
             icon={TerminalIcon}
-            title="No workspaces yet"
+            title={projectHasWorkspaces(activeProjectId, {
+              workspaces,
+              provisioning,
+              queued: snapshot?.queuedWorkspaces ?? [],
+              held: snapshot?.heldWorkspaces ?? [],
+              drafts: snapshot?.draftWorkspaces ?? [],
+            }, snapshot?.projects.find((p) => p.id === activeProjectId)?.stoppedCount ?? 0)
+              ? 'No workspace open'
+              : 'No workspaces yet'}
             description="Start a coding-agent workspace and it opens right here."
             action={activeProjectId
               ? <NewWorkspaceButton projectId={activeProjectId} variant="cta" />
