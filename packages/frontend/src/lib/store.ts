@@ -312,9 +312,9 @@ export interface PaneView {
   flat?: boolean
   /** In the Changes pane, whose folders start open: the ones closed. */
   collapsed?: string[]
-  /** In the Changes pane, where each file's diff starts open under its
-   *  row: the files whose diff is folded. */
-  foldedDiffs?: string[]
+  /** In the Changes pane, where each file's diff starts folded under its
+   *  row: the files whose diff is open. */
+  openDiffs?: string[]
 }
 
 /** Which pane of which workspace a `paneView` entry belongs to. */

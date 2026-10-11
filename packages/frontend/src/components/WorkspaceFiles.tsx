@@ -147,12 +147,12 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const bindings = useUiStore((s) => s.bindings)
   const expanded = useMemo(() => new Set(view?.expanded ?? []), [view?.expanded])
   const collapsed = useMemo(() => new Set(view?.collapsed ?? []), [view?.collapsed])
-  const foldedDiffs = useMemo(() => new Set(view?.foldedDiffs ?? []), [view?.foldedDiffs])
+  const openDiffs = useMemo(() => new Set(view?.openDiffs ?? []), [view?.openDiffs])
   const toggleDiff = (path: string): void => {
-    const next = new Set(foldedDiffs)
+    const next = new Set(openDiffs)
     if (next.has(path)) next.delete(path)
     else next.add(path)
-    setPaneView(viewKey, { foldedDiffs: [...next] })
+    setPaneView(viewKey, { openDiffs: [...next] })
   }
   const showIgnored = view?.showIgnored === true
   const flat = changedOnly && view?.flat !== false
@@ -248,7 +248,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const reveal = ({ path }: DiffMatch): void => {
     const folders = path.split('/').slice(0, -1).map((_, i, segs) => segs.slice(0, i + 1).join('/'))
     setPaneView(viewKey, {
-      ...foldedDiffs.has(path) && { foldedDiffs: [...foldedDiffs].filter((p) => p !== path) },
+      ...!openDiffs.has(path) && { openDiffs: [...openDiffs, path] },
       ...!flat && folders.some((f) => collapsed.has(f)) && {
         collapsed: [...collapsed].filter((p) => !folders.includes(p)),
       },
@@ -533,7 +533,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             onContextMenu={() => setContextRow(row)}
             onMore={(anchor) => setMenu({ row, anchor })}
             diff={changedOnly && row.change ? {
-              open: !foldedDiffs.has(row.path),
+              open: openDiffs.has(row.path),
               toggle: () => toggleDiff(row.path),
               body: (
                 <ChangeDiff
@@ -560,7 +560,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const openable = visibleChanged.filter((c) => c.status !== 'deleted')
   const shown = changedOnly ? openable.map((c) => c.path) : matches
 
-  const anyDiffOpen = visibleChanged.some((c) => !foldedDiffs.has(c.path))
+  const anyDiffOpen = visibleChanged.some((c) => openDiffs.has(c.path))
   const anyFolderOpen = [...expanded].some((p) => tree.index.get(p)?.dir)
   // Expanding all leaves out the folders listed on demand (ignored ones and
   // links), which would each cost a request.
@@ -629,7 +629,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             </HeaderButton>
             <HeaderButton
               label={anyDiffOpen ? 'Collapse all changes' : 'Show all changes'}
-              onClick={() => setPaneView(viewKey, { foldedDiffs: anyDiffOpen ? changed.map((c) => c.path) : [] })}
+              onClick={() => setPaneView(viewKey, { openDiffs: anyDiffOpen ? [] : changed.map((c) => c.path) })}
             >
               {anyDiffOpen ? <CollapseAllIcon size={13} /> : <ExpandAllIcon size={13} />}
             </HeaderButton>
