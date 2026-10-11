@@ -24,7 +24,13 @@ contextBridge.exposeInMainWorld('yaacServer', {
   // Re-run the boot flow against the current `server.json`, so the static
   // picker page can pick up a server started from a terminal.
   retry: () => ipcRenderer.invoke('server:retry'),
-  // Start one of this machine's servers (`yaac server start`, or `yaac
-  // cluster start` for scope 'cluster') and land on it.
-  startLocal: (scope?: string) => ipcRenderer.invoke('server:start-local', scope),
+  // Start or stop one of this machine's servers (`yaac server start`, or
+  // `yaac cluster start` for scope 'cluster'); a start lands on it.
+  startLocal: (scope: unknown) => ipcRenderer.invoke('server:start-local', scope),
+  stopLocal: (scope: unknown) => ipcRenderer.invoke('server:stop-local', scope),
+  // This machine's installs and the setup under way (local-setup.ts).
+  localState: () => ipcRenderer.invoke('server:local'),
+  // Run one of the main process's fixed setups, named by its scope alone.
+  setupLocal: (scope: unknown) => ipcRenderer.invoke('server:setup', scope),
+  cancelSetup: () => ipcRenderer.invoke('server:setup-cancel'),
 })

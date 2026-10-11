@@ -1602,6 +1602,7 @@ describe('runClusterInstall', () => {
     expect(binderArgs[2]).toMatch(/^[0-9a-f-]{36}$/)
     expect(await readInstallRecord()).toEqual({
       driver: 'k8s', byo: true, installId: binderArgs[2], clusterUid: 'uid-byo', kubeContext: 'byo-context',
+      origin: expect.stringMatching(/^https:\/\//) as unknown,
     })
 
     // No node exec: the kind fixups are for kind node containers.

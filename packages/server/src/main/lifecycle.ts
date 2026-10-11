@@ -201,7 +201,7 @@ export async function restartServer(opts: ServerAccessOptions = {}): Promise<voi
  */
 export async function serverStatus(): Promise<LocalServerStatus> {
   const cfg = await readInstallRecord()
-  const base = { driver: cfg?.driver ?? null, cliBuildId: await readBuildId() }
+  const base = { driver: cfg?.driver ?? null, cliBuildId: await readBuildId(), origin: cfg?.origin ?? null }
   if (cfg?.byo) return { ...base, running: null, serverBuildId: null }
   const lock = await readLock()
   const live = lock !== null && await isLockLive(lock)

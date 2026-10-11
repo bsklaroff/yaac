@@ -153,7 +153,7 @@ export async function probeServer(origin: string): Promise<{ buildId: string; pr
 }
 
 /**
- * Record the install's driver and make its origin known to this machine's
+ * Record the install's driver and origin, and make the origin known to this machine's
  * clients. A start selects it. A restart or re-install (`keepSelection`)
  * selects it only when it is new or nothing else is selected, so
  * maintenance on one install never moves clients off another.
@@ -163,7 +163,7 @@ export async function registerServer(
   driver: DriverKind,
   opts: { keepSelection?: boolean } = {},
 ): Promise<void> {
-  await recordInstall({ driver })
+  await recordInstall({ driver, origin })
   const cfg = await readServerConfig()
   const elsewhere = !!cfg?.enabled && cfg.url !== '' && cfg.url !== origin
   if (opts.keepSelection && elsewhere && cfg.saved.some((s) => s.url === origin)) return

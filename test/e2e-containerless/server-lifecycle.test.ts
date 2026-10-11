@@ -194,13 +194,15 @@ describe('yaac server start / stop / restart (real CLI)', () => {
       return r.stdout.trim()
     }
     expect(await status(testEnv.env)).toBe('not running')
-    expect(JSON.parse(await status(testEnv.env, '--json'))).toMatchObject({ running: false, driver: null, serverBuildId: null })
+    expect(JSON.parse(await status(testEnv.env, '--json'))).toMatchObject({ running: false, driver: null, serverBuildId: null, origin: null })
 
     // A server on another build than the CLI is what the desktop tray
     // offers to restart.
     expect((await runYaac({ ...testEnv.env, YAAC_BUILD_ID: 'old-build' }, 'server', 'start')).exitCode).toBe(0)
     const json = JSON.parse(await status(testEnv.env, '--json')) as Record<string, unknown>
     expect(json).toMatchObject({ running: true, driver: 'containerless', serverBuildId: 'old-build' })
+    // The origin the desktop app trusts this install's pages from.
+    expect(json.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(json.cliBuildId).not.toBe('old-build')
     expect(await status(testEnv.env)).toMatch(/different build than this CLI; update it with: yaac server restart/)
 
@@ -245,7 +247,7 @@ describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
     const started = await runYaac(testEnv.env, 'server', 'start', '--tailnet', HOST.toUpperCase())
     expect(started.exitCode).toBe(0)
     expect(await readServerConfig()).toMatchObject({ url: `https://${HOST}` })
-    expect(await readInstallRecord()).toEqual({ driver: 'containerless' })
+    expect(await readInstallRecord()).toEqual({ driver: 'containerless', origin: `https://${HOST}` })
     expect((await whoami(asTailnet('alice@example.com', HOST))).body).toMatchObject({ kind: 'tailnet', login: 'alice@example.com' })
     expect((await whoami({ host: '127.0.0.1' })).status).toBe(401)
 
@@ -347,7 +349,7 @@ describe('yaac server and yaac cluster: two installs, two data dirs', () => {
     }
     expect((await runYaac(testEnv.env, 'cluster', 'status')).stdout).toMatch(/no cluster install; create one with `yaac cluster install`/)
     expect(await json(testEnv.env, 'cluster', 'status'))
-      .toEqual({ driver: null, running: false, serverBuildId: null, cliBuildId: 'test-build-id' })
+      .toEqual({ driver: null, running: false, serverBuildId: null, cliBuildId: 'test-build-id', origin: null })
   })
 
   it('keeps a cluster install in ~/.yaac-cluster beside the host server\'s ~/.yaac', async () => {
