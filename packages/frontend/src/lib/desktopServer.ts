@@ -1,4 +1,6 @@
 import type {
+  DesktopLocalScope,
+  DesktopLocalState,
   DesktopServerOutcome,
   DesktopServerSelection,
   DesktopServerTargets,
@@ -18,6 +20,27 @@ export interface YaacServerBridge {
   remove(selection: DesktopServerSelection): Promise<DesktopServerOutcome>
   /** Re-run the boot flow. Used by the shell's own disconnected page. */
   retry?(): Promise<DesktopServerOutcome>
+  /*
+   * This Mac's installs: their state, start and stop, and the setup that
+   * creates a missing one. A setup is named by its scope alone; the shell
+   * owns the commands. Absent from an app older than them.
+   */
+  localState?(): Promise<DesktopLocalState>
+  startLocal?(scope: DesktopLocalScope): Promise<DesktopServerOutcome>
+  stopLocal?(scope: DesktopLocalScope): Promise<DesktopServerOutcome>
+  /** Begin a setup in the background; `localState` follows it. */
+  setupLocal?(scope: DesktopLocalScope): Promise<DesktopServerOutcome>
+  cancelSetup?(): Promise<DesktopServerOutcome>
+}
+
+export type LocalServerBridge = Required<Pick<
+  YaacServerBridge, 'localState' | 'startLocal' | 'stopLocal' | 'setupLocal' | 'cancelSetup'
+>>
+
+/** The bridge's local-server methods, when the app provides all of them. */
+export function localServerBridge(bridge: YaacServerBridge | undefined): LocalServerBridge | undefined {
+  if (!bridge?.localState || !bridge.startLocal || !bridge.stopLocal || !bridge.setupLocal || !bridge.cancelSetup) return undefined
+  return bridge as LocalServerBridge
 }
 
 /** The bridge, or undefined in a browser / before the preload loads. */

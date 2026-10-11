@@ -1,12 +1,16 @@
 import { execFile } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
-import type { LocalServerStatus } from '@yaac/shared/types'
+import type { DesktopSetupRun, LocalServerStatus } from '@yaac/shared/types'
+import { localView } from '#local-setup'
 import {
-  ACTION_TIMEOUT_MS, createRunYaac, readLocalServer, READ_TIMEOUT_MS, runServerAction, trayServerItems,
-  type RunYaac, type YaacResult,
+  ACTION_TIMEOUT_MS, createRunYaac, mayControlLocalServers, readLocalServer, READ_TIMEOUT_MS, runServerAction,
+  trayServerItems,
+  type LocalServers, type RunYaac, type YaacResult,
 } from '#server-control'
 
-const STATUS: LocalServerStatus = { running: true, driver: 'containerless', serverBuildId: 'b1', cliBuildId: 'b1' }
+const STATUS: LocalServerStatus = {
+  running: true, driver: 'containerless', serverBuildId: 'b1', cliBuildId: 'b1', origin: 'http://127.0.0.1:8787',
+}
 
 /**
  * A `yaac` that answers each command line from `replies`, recording each
@@ -67,10 +71,14 @@ describe('trayServerItems', () => {
   const status = (s: Partial<LocalServerStatus>) => ({ kind: 'status' as const, status: { ...STATUS, ...s } })
   /** A cluster status as `yaac cluster status --json` reports one. */
   const kind = (s: Partial<LocalServerStatus> = {}) => status({ driver: 'k8s', ...s })
-  const NO_CLUSTER = status({ driver: null, running: false, serverBuildId: null })
-  const items = (s: Partial<LocalServerStatus>) => trayServerItems({ server: status(s), cluster: NO_CLUSTER }, null)
+  const NO_INSTALL = status({ driver: null, running: false, serverBuildId: null })
+  const tray = (local: LocalServers, more: Partial<Parameters<typeof localView>[0]> = {}) =>
+    trayServerItems(localView({ local, busy: null, setup: null, unfinished: [], brew: true, clusterSupported: true, ...more }))
+  const items = (s: Partial<LocalServerStatus>) => tray({ server: status(s), cluster: NO_INSTALL }).slice(0, -1)
   const hostStop = { label: 'Stop this Mac\'s server', action: { scope: 'server', action: 'stop' } }
   const clusterStop = { label: 'Stop this Mac\'s cluster server', action: { scope: 'cluster', action: 'stop' } }
+  const setUpHost = { label: 'Set up a server on this Mac…', action: { scope: 'server', action: 'setup' } }
+  const setUpCluster = { label: 'Set up a cluster on this Mac…', action: { scope: 'cluster', action: 'setup' } }
 
   it('offers one action per state, and a restart when the host server is on another build', () => {
     expect(items({ running: false, serverBuildId: null })).toEqual([
@@ -84,37 +92,91 @@ describe('trayServerItems', () => {
     ])
   })
 
+  it('offers the setup of each install this Mac lacks, and only the setups it can run', () => {
+    expect(tray({ server: NO_INSTALL, cluster: NO_INSTALL })).toEqual([setUpHost, setUpCluster])
+    expect(tray({ server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }))
+      .toEqual([{ label: 'No yaac CLI on PATH' }, setUpHost, setUpCluster])
+    // Without Homebrew the setup still opens, to say so.
+    expect(tray({ server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }, { brew: false, clusterSupported: false }))
+      .toEqual([{ label: 'No yaac CLI on PATH' }, setUpHost])
+  })
+
+  it('offers setup again for an install whose setup never finished, until it runs', () => {
+    const halfInstalled = { server: status({}), cluster: kind({ running: false, serverBuildId: null }) }
+    expect(tray(halfInstalled, { unfinished: ['cluster'] }))
+      .toEqual([{ label: 'This Mac\'s server: running' }, hostStop, setUpCluster])
+    expect(tray({ ...halfInstalled, cluster: kind() }, { unfinished: ['cluster'] }).slice(-1)).toEqual([clusterStop])
+  })
+
   it('lists a cluster install\'s server beside the host one, updated only by `cluster install`', () => {
     const host = status({ running: false, serverBuildId: null })
-    expect(trayServerItems({ server: host, cluster: kind({ running: false, serverBuildId: null }) }, null)).toEqual([
+    expect(tray({ server: host, cluster: kind({ running: false, serverBuildId: null }) })).toEqual([
       { label: 'This Mac\'s server: stopped' },
       { label: 'Start this Mac\'s server', action: { scope: 'server', action: 'start' } },
       { label: 'This Mac\'s cluster server: stopped' },
       { label: 'Start this Mac\'s cluster server', action: { scope: 'cluster', action: 'start' } },
     ])
     // A restart rolls the same image, so only cluster install updates it.
-    expect(trayServerItems({ server: null, cluster: kind({ serverBuildId: 'old' }) }, null)).toEqual([
+    expect(tray({ server: null, cluster: kind({ serverBuildId: 'old' }) })).toEqual([
       { label: 'Update this Mac\'s cluster server with `yaac cluster install`' }, clusterStop,
     ])
-    expect(trayServerItems({ server: null, cluster: kind({ running: null, serverBuildId: null }) }, null))
+    expect(tray({ server: null, cluster: kind({ running: null, serverBuildId: null }) }))
       .toEqual([{ label: 'This Mac\'s cluster server runs on its cluster' }])
     // A ~/.yaac that is itself the cluster install shows once, as the cluster.
-    expect(trayServerItems({ server: kind(), cluster: kind() }, null)).toEqual([
+    expect(tray({ server: kind(), cluster: kind() })).toEqual([
       { label: 'This Mac\'s cluster server: running' }, clusterStop,
     ])
   })
 
-  it('shows no action while one runs, or when the server cannot be driven from here', () => {
-    expect(trayServerItems({ server: status({}), cluster: kind() }, { scope: 'cluster', action: 'restart' }))
+  it('shows no action while one runs, with a setup\'s step, or when the server cannot be driven from here', () => {
+    expect(tray({ server: status({}), cluster: kind() }, { busy: { scope: 'cluster', action: 'restart' } }))
       .toEqual([{ label: 'Restarting this Mac\'s cluster server…' }])
-    expect(trayServerItems({ server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }, null))
-      .toEqual([{ label: 'No yaac CLI on PATH' }])
-    expect(trayServerItems({ server: { kind: 'error', message: 'x' }, cluster: { kind: 'error', message: 'x' } }, null))
+    const setup: DesktopSetupRun = {
+      scope: 'cluster',
+      phase: 'running',
+      log: [],
+      steps: [
+        { label: 'Trust the yaac tap', command: 'brew trust bsklaroff/yaac', state: 'skipped' },
+        { label: 'Install the cluster', command: 'yaac cluster install', state: 'running' },
+      ],
+    }
+    expect(tray({ server: NO_INSTALL, cluster: NO_INSTALL }, { busy: { scope: 'cluster', action: 'setup' }, setup }))
+      .toEqual([{ label: 'Setting up this Mac\'s cluster server…' }, { label: 'Step 2 of 2: Install the cluster' }])
+    expect(tray({ server: { kind: 'error', message: 'x' }, cluster: { kind: 'error', message: 'x' } }))
       .toEqual([{ label: 'This Mac\'s server: status unavailable' }, { label: 'This Mac\'s cluster server: status unavailable' }])
     // An older yaac without `cluster status` still shows the host server.
-    expect(trayServerItems({ server: status({}), cluster: { kind: 'error', message: 'unknown command' } }, null))
+    expect(tray({ server: status({}), cluster: { kind: 'error', message: 'unknown command' } }))
       .toEqual([{ label: 'This Mac\'s server: running' }, hostStop, { label: 'This Mac\'s cluster server: status unavailable' }])
-    expect(trayServerItems({ server: null, cluster: null }, null)).toEqual([])
+    expect(tray({ server: null, cluster: null })).toEqual([])
+  })
+})
+
+describe('mayControlLocalServers', () => {
+  const read = (s: Partial<LocalServerStatus>) => ({ kind: 'status' as const, status: { ...STATUS, ...s } })
+  const local: LocalServers = {
+    server: read({}),
+    cluster: read({ driver: 'k8s', origin: 'http://127.0.0.1:8790' }),
+  }
+
+  it('admits the shell\'s own picker and the pages of this Mac\'s running installs', () => {
+    for (const url of ['data:text/html;charset=utf-8,%3C!doctype', 'http://127.0.0.1:8787/', 'http://127.0.0.1:8790/w/abc']) {
+      expect(mayControlLocalServers(url, local)).toBe(true)
+    }
+    // An install in tailnet mode registers its https origin.
+    expect(mayControlLocalServers('https://mac.tail1234.ts.net/', { ...local, server: read({ origin: 'https://mac.tail1234.ts.net' }) }))
+      .toBe(true)
+  })
+
+  it('refuses every other origin, loopback included, and an install that is not running', () => {
+    // A port forwarded for a remote server is on loopback too.
+    for (const url of ['http://127.0.0.1:9456/', 'http://localhost:8787/', 'https://srv.tail1234.ts.net/', 'http://10.42.44.100:9455/', 'about:blank', '']) {
+      expect(mayControlLocalServers(url, local)).toBe(false)
+    }
+    // While it is stopped, a forward could take its port.
+    expect(mayControlLocalServers('http://127.0.0.1:8787/', { ...local, server: read({ running: false }) })).toBe(false)
+    // An older yaac reports no origin.
+    expect(mayControlLocalServers('http://127.0.0.1:8787/', { server: read({ origin: null }), cluster: null })).toBe(false)
+    expect(mayControlLocalServers('http://127.0.0.1:8787/', { server: { kind: 'no-cli' }, cluster: null })).toBe(false)
   })
 })
 

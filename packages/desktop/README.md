@@ -21,9 +21,10 @@ server is selected or the selected one cannot be reached, the whole window is
 the server picker (`src/connect-page.ts`), which shows the error and uses the
 same preload bridge as the SPA's Settings → Server section.
 
-**The shell starts and stops this machine's server only when asked**, from
-the tray or the picker, by running the `yaac` on PATH
-(`src/server-control.ts`). Quitting never stops a server.
+**The shell sets up, starts and stops this machine's servers only when
+asked**, from the tray, the picker or Settings → Server, by running `brew`
+and the `yaac` on PATH (`src/local-setup.ts`, `src/server-control.ts`).
+Quitting never stops a server.
 
 ## Shell behavior
 
@@ -51,6 +52,10 @@ the tray or the picker, by running the `yaac` on PATH
     install`, which rebuilds its image, so the tray names that command
     rather than offering a restart. A `--byo` install's lock is on its
     cluster, so the tray cannot see it and offers no action.
+  - **Set up a server / a cluster on this Mac…** for an install this Mac
+    does not have yet, and both when there is no `yaac` at all. It opens
+    the window on that setup alone (below). While a setup runs, the tray
+    shows its current step.
 
   A window showing a remote server stays on it: a start or restart puts the
   selection the CLI made back the way it was. Each `yaac` run has a timeout
@@ -62,6 +67,69 @@ the tray or the picker, by running the `yaac` on PATH
   The picker offers a start button for each of those servers that is
   stopped, and after starting the host server it runs `yaac host check` and
   lists any failures, which in practice name the agent CLI to install.
+  Settings → Server in the SPA has a "This Mac" area with the same state,
+  start and stop, and setup; it renders only when the preload provides
+  those methods, so a browser tab or an older app shows the picker alone.
+- **Setup.** With no `yaac` CLI, or with one but no install and no server
+  selected, the picker leads with the two kinds of install
+  (`src/connect-page.ts`): **This Mac (containerless)**, with no sandbox,
+  so an agent reaches everything your account can (listed in the same
+  words as the SPA's containerless badge, from `@yaac/shared/setup-copy`),
+  and **Local Kubernetes cluster (kind)**, gVisor-sandboxed pods behind
+  the egress proxy, which needs a podman VM, several GB of disk and memory,
+  and an Apple silicon Mac (it is disabled elsewhere). Each shows its
+  commands to copy, says which Homebrew taps it trusts (`libkrun/krun` is
+  a third party's), and has a button that runs them in the background
+  (`src/local-setup.ts`):
+
+  | Containerless | Cluster |
+  |---|---|
+  | `brew trust bsklaroff/yaac` | `brew trust bsklaroff/yaac` |
+  | `brew install bsklaroff/yaac/yaac-server` | `brew install bsklaroff/yaac/yaac-server` |
+  | `yaac server start` | `brew trust libkrun/krun` |
+  | `yaac host check` | `brew tap libkrun/krun` |
+  | | `brew install bsklaroff/yaac/yaac-cluster` |
+  | | `yaac cluster install` |
+
+  Each Homebrew step first checks whether it is already done (the formula
+  installed or `yaac` already on PATH, the tap trusted or added) and skips
+  itself, so only the missing work runs and a source-built `yaac` needs no
+  Homebrew for the containerless setup. `yaac cluster install` always
+  runs, since it converges whatever an interrupted install left. The shell
+  never installs Homebrew: without it the setup says so and links
+  https://brew.sh.
+
+  A run lives in the main process, so it survives the window moving
+  between the picker, the SPA and a reload; the picker and the SPA poll it
+  for its steps and the last lines of output, and either can cancel it,
+  which kills the command's whole process group. Only one setup or server
+  action runs at a time. A brew install or `yaac cluster install` may take
+  up to 90 minutes before it is timed out. Quit during a run asks first,
+  then cancels it, rather than leaving its commands running unread. A setup
+  that has not succeeded is remembered across launches (in the app's
+  `unfinished-setups.json`), so a half-made install, such as a cluster
+  whose driver is recorded but whose server was never deployed, is offered
+  for setup again instead of showing as a stopped server. A setup ends
+  with its new server selected (`yaac server start` selects; a first
+  `yaac cluster install` does too), and the window lands on it, with the
+  host check's failures in a dialog as after a start.
+
+  **Who may run one.** The renderer only ever names a setup by scope
+  (`'server'` or `'cluster'`), and asks for state or a cancel; the
+  commands are a fixed table in the main process, which validates every
+  IPC payload. Every setup, start, stop, cancel and state call is accepted
+  only from the main window's top frame showing the picker or a page from
+  the origin one of this Mac's installs registered, while that install's
+  server runs (`status --json` reports the origin, which an install
+  records each time it registers, so one registered by an older `yaac`
+  has none until its next start); this is checked against the frame's URL
+  when the call arrives. Any other page is
+  refused, loopback included, since a port the app forwards for a remote
+  server is on loopback too, and the SPA leaves its "This Mac" area out
+  there. The window follows no navigation its page starts to another
+  origin. Before a setup runs, the main process shows a native
+  confirmation listing its commands and the taps it trusts, with Cancel as
+  the default, which no page can answer.
   Stopping or restarting a server never stops an agent: a containerless
   workspace is a tmux server that outlives it, and the next start picks it
   back up.
@@ -91,10 +159,9 @@ the tray or the picker, by running the `yaac` on PATH
 
 - The repo's usual `pnpm install` (the `electron` dev dependency downloads
   its binary).
-- A registered server: add a remote one in the picker, or, for a server on
-  this machine, put `yaac` on PATH (`brew install bsklaroff/yaac/yaac-server`)
-  and start it from the picker or the tray (or run `yaac cluster install`
-  once for a cluster, after which the tray drives it too). A client of a remote server needs no `yaac` at all.
+- A registered server: add a remote one in the picker, or set one up on
+  this machine from the picker or the tray (or from a terminal with the
+  same commands). A client of a remote server needs no `yaac` at all.
 - The shell adopts the login-shell PATH at startup, because a Finder launch
   gets a minimal PATH and the daemon's children (claude, codex, the
   installers) need the real one. Only PATH is taken from the login shell.
@@ -189,6 +256,14 @@ Also check in the desktop app:
 
 The picker:
 
+- With no `yaac` on PATH, launch: both setups, each with its commands and
+  **Run them for me**. Run the containerless one: a native confirmation
+  names the commands and the taps, the steps tick off, the log tail
+  follows the brew output, and the window lands on the new server. Cancel
+  a cluster setup during `brew install` and check that brew stops; quit
+  during `yaac cluster install`, and check that relaunching offers the
+  cluster setup again.
+
 - `yaac server stop`, relaunch: "Could not connect to http://127.0.0.1:…"
   above a row for that origin and **Start a server on this Mac**. Click it:
   the app loads, and the tray says "Server running".
@@ -198,7 +273,8 @@ The picker:
   stays.
 
 `test-playwright-scripts/desktop-server-picker.js` drives these against a real
-Electron build.
+Electron build, and `test-playwright-scripts/desktop-onboarding.js` drives a
+setup against stand-in `brew` and `yaac` commands.
 
 The auth daemon:
 

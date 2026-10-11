@@ -464,7 +464,7 @@ containerless-only user how to drop the cluster tools afterwards.
 ## The install record in `server.json`: the lift and the mirror
 
 A data dir's install record (`driver`, `installId`, `clusterUid`,
-`kubeContext`, `byo`) lives in `<dataDir>/install.json`. Older installs kept
+`kubeContext`, `byo`, `origin`) lives in `<dataDir>/install.json`. Older installs kept
 it in the client tier's `server.json`, beside the selection, and an older
 `yaac` still reads it only there. Two shims bridge that, both in
 `packages/shared/src/install-record.ts`:

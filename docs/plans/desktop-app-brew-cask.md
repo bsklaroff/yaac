@@ -67,9 +67,10 @@ Packaging exists but produces only a local, unsigned build
   ships outside the asar. It is the only auth daemon on a machine:
   `yaac auth update` signs in in-process.
 - The tray and the connect page start, stop and restart this machine's
-  server through the `yaac` CLI, and offer a restart when it runs a
-  different build than the installed CLI (packages/desktop/README.md,
-  "This machine's server").
+  servers through the `yaac` CLI, and offer a restart when the host server
+  runs a different build than the installed CLI, and set up a missing
+  install (packages/desktop/README.md, "This machine's servers" and
+  "Setup").
 
 The tap's `yaac-server` formula installs the npm tarball plus the
 containerless host tools, with no tap dependencies; `yaac-cluster` adds
@@ -166,9 +167,8 @@ it opens, but it gets no CLI, and nothing updates the app.
 
 Without the CLI the app still works fully as a client of a remote server:
 the picker, the window, notifications, port forwards and the auth daemon
-are all the app's own. The only thing missing is a server on this
-Mac, for which the connect page says to install
-`bsklaroff/yaac/yaac-server`.
+are all the app's own. For a server on this Mac, the app sets one up
+through Homebrew (packages/desktop/README.md, "Setup").
 
 The README documents only the cask. Mixing the two never breaks the app,
 but brew's record goes stale:
