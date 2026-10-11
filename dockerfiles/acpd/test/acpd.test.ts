@@ -221,11 +221,22 @@ describe('createAcpd', () => {
     const { sock } = await start(['cat'], { logPath })
     const png = Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(64 * 1024, 7)])
     const hash = createHash('sha256').update(png).digest('hex')
-    // An ACP image block, the same image in an Anthropic-style source, a
-    // long string that is not an image, and an image too small to matter.
+    // An ACP image block, the same image in an Anthropic-style source and
+    // under claude's `toolResponse` key, the image's base64 in fields the
+    // pane renders as text, a long string that is not an image, and an
+    // image too small to matter.
     const msg = {
       prompt: [{ type: 'image', mimeType: 'image/png', data: png.toString('base64') }],
       rawOutput: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') } }],
+      _meta: {
+        claudeCode: { toolResponse: { type: 'image', file: { base64: png.toString('base64'), type: 'image/png' } } },
+        terminal_output: { data: png.toString('base64') },
+        terminal_output_delta: { data: png.toString('base64') },
+      },
+      content: [
+        { type: 'diff', path: 'fixture.b64', newText: png.toString('base64') },
+        { type: 'content', content: { type: 'text', text: png.toString('base64') } },
+      ],
       text: { data: 'x'.repeat(20_000) },
       icon: { type: 'image', data: png.subarray(0, 100).toString('base64') },
     }
@@ -242,7 +253,12 @@ describe('createAcpd', () => {
 
     await waitUntil(() => fs.readFileSync(logPath, 'utf8').trim().split('\n').length === 3)
     const ref = `yaac-image:${hash}`
-    const stored = { ...msg, prompt: [{ ...msg.prompt[0], data: ref }], rawOutput: [{ ...msg.rawOutput[0], source: { ...msg.rawOutput[0].source, data: ref } }] }
+    const stored = {
+      ...msg,
+      prompt: [{ ...msg.prompt[0], data: ref }],
+      rawOutput: [{ ...msg.rawOutput[0], source: { ...msg.rawOutput[0].source, data: ref } }],
+      _meta: { ...msg._meta, claudeCode: { toolResponse: { type: 'image', file: { base64: ref, type: 'image/png' } } } },
+    }
     expect(parsed(fs.readFileSync(logPath, 'utf8').trim().split('\n').slice(1))).toEqual([stored, stored])
     expect(fs.readFileSync(path.join(path.dirname(logPath), 'images', hash)).equals(png)).toBe(true)
     expect(fs.readdirSync(path.join(path.dirname(logPath), 'images'))).toEqual([hash])

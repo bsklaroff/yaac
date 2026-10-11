@@ -48,12 +48,17 @@
  *
  * A screenshot is megabytes of base64, and the agent repeats it in more than
  * one field of a tool result, so a few dozen would fill the record past what
- * the server reads. Each long line is parsed, and every `data` string in it
- * that decodes to a PNG, JPEG, GIF or WebP is written to `images/<sha256>`
- * beside the record and replaced by `yaac-image:<sha256>`. The server serves
- * the image from there. The relayed bytes are unchanged; only the record
- * differs. A line that fails to parse, or an image that cannot be stored,
- * is recorded as it came.
+ * the server reads. Each long line is parsed, and every `data` or `base64`
+ * string in it that decodes to a PNG, JPEG, GIF or WebP is written to
+ * `images/<sha256>` beside the record and replaced by `yaac-image:<sha256>`.
+ * `data` is where ACP and Anthropic blocks carry an image, and `base64` is
+ * claude's `_meta.claudeCode.toolResponse.file` copy. Other keys, and the
+ * `data` of codex's and pi's `_meta.terminal_output*` shell output, are left
+ * alone even when they hold image base64, because the pane renders them as
+ * text (a Write's diff, a pasted prompt, `base64 shot.png`). The server
+ * serves the image from there. The relayed bytes are unchanged; only the
+ * record differs. A line that fails to parse, or an image that cannot be
+ * stored, is recorded as it came.
  *
  * ## Attach semantics
  *
@@ -89,7 +94,10 @@ const SETTLE_MAX_MS = 200
 const IMAGE_LINE_CHARS = 16 * 1024
 /** The shortest base64 string stored as an image (about 6 KB decoded). */
 const IMAGE_DATA_CHARS = 8 * 1024
-/** What an image's `data` becomes in the record; base64 has no `:`, so it
+/** Objects whose `data` is shell output the pane renders as text, so never
+ *  stored apart even when it is a bare base64 image. */
+const TEXT_DATA_KEYS = new Set(['terminal_output', 'terminal_output_delta'])
+/** What an image's string becomes in the record; base64 has no `:`, so it
  *  cannot be mistaken for image data. */
 const IMAGE_REF_PREFIX = 'yaac-image:'
 
@@ -300,13 +308,14 @@ export function createAcpd({
     return hash
   }
 
-  /** Replace every image `data` under `value` with a stored image's ref;
-   *  returns whether any was. */
+  /** Replace every image `data` or `base64` under `value` with a stored
+   *  image's ref; returns whether any was. */
   function storeImagesIn(value) {
     if (typeof value !== 'object' || value === null) return false
     let stored = false
     for (const [key, v] of Object.entries(value)) {
-      if (key === 'data' && typeof v === 'string' && v.length >= IMAGE_DATA_CHARS) {
+      if (TEXT_DATA_KEYS.has(key)) continue
+      if ((key === 'data' || key === 'base64') && typeof v === 'string' && v.length >= IMAGE_DATA_CHARS) {
         const hash = storeImage(v)
         if (hash === undefined) continue
         value[key] = `${IMAGE_REF_PREFIX}${hash}`

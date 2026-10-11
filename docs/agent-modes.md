@@ -112,13 +112,17 @@ the record would show no live user turns. Nothing is buffered for an absent
 client, and the server keeps no copy.
 
 Images are the exception to recording lines verbatim. A screenshot is
-megabytes of base64, claude repeats each one in a tool result's `rawOutput`,
-and pi sends each one twice when it replays a tool result, so a few dozen
-would carry the record past the 64 MB the server reads
-(`MAX_ACP_RECORD_BYTES`). acpd parses each long line, writes every `data`
-string that decodes to a PNG, JPEG, GIF or WebP to `images/<sha256>` beside
-the record, and records `yaac-image:<sha256>` in its place. The projection
-turns that into an image event carrying the hash, and a pane loads it from
+megabytes of base64, claude repeats each one in a tool result's `rawOutput`
+and again in `_meta.claudeCode.toolResponse.file.base64`, and pi sends each
+one twice when it replays a tool result, so a few dozen would carry the
+record past the 64 MB the server reads (`MAX_ACP_RECORD_BYTES`). acpd parses
+each long line, writes every `data` or `base64` string that decodes to a
+PNG, JPEG, GIF or WebP to `images/<sha256>` beside the record, and records
+`yaac-image:<sha256>` in its place. Other keys, and the `data` of codex's
+and pi's `_meta.terminal_output*` shell output, stay verbatim even when they
+hold image base64, since the pane renders them as text (a Write's diff, a
+pasted prompt, `base64 shot.png`). The projection turns that into an image
+event carrying the hash, and a pane loads it from
 `GET /workspace/:id/acp-images/:hash`, which serves only a file whose bytes
 are one of those four types, since the workspace can write there. Small
 images (under about 6 KB) stay inline.
