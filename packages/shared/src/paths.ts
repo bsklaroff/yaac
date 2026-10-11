@@ -2,7 +2,7 @@ import path from 'node:path'
 import os from 'node:os'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { env } from '#env'
 
@@ -38,6 +38,7 @@ export function expandTilde(p: string): string {
 
 let dataDir: string | null = null
 let installDataDir: string | null = null
+let hostDefault: string | null = null
 
 /**
  * The data dir from the environment alone, ignoring any {@link setDataDir}
@@ -50,12 +51,49 @@ export function ambientDataDir(): string {
 }
 
 /**
- * The data dir of this machine's clients: `~/.yaac` unless overridden. It
- * is also the containerless install's, and the client-local tier is its
- * sibling.
+ * The data dir that names this machine's client tier (its `-client`
+ * sibling) and whose install record `server.json` mirrors: `~/.yaac` unless
+ * overridden. With no override it is not where a host server keeps its
+ * data ({@link hostDataDir}).
  */
 export function clientDataDir(): string {
   return dataDir || ambientDataDir()
+}
+
+/**
+ * Legacy: with no override, the host server's data dir is `~/.yaac-server`,
+ * unless a host install still lives in `~/.yaac` and has not been moved
+ * (`moveLegacyHostDataDir`, docs/legacy-compat-shims.md). Resolved once per
+ * process; the move calls {@link resetHostDataDir}. The record is read
+ * synchronously here because `#install-record` imports this module.
+ */
+function defaultHostDataDir(): string {
+  if (hostDefault !== null) return hostDefault
+  const legacy = path.join(os.homedir(), '.yaac')
+  const current = path.join(os.homedir(), '.yaac-server')
+  const unmoved = !existsSync(current)
+    && existsSync(path.join(legacy, 'server-local'))
+    && !isClusterRecord(path.join(legacy, 'install.json'))
+  hostDefault = unmoved ? legacy : current
+  return hostDefault
+}
+
+function isClusterRecord(file: string): boolean {
+  try {
+    return (JSON.parse(readFileSync(file, 'utf8')) as { driver?: unknown }).driver === 'k8s'
+  } catch {
+    return false
+  }
+}
+
+/** Forget the resolved default host data dir, once the move has run. */
+export function resetHostDataDir(): void {
+  hostDefault = null
+}
+
+/** The host server's data dir: the override, else `~/.yaac-server`. */
+export function hostDataDir(): string {
+  return dataDir || env.dataDirOverride || defaultHostDataDir()
 }
 
 /**
@@ -65,7 +103,7 @@ export function clientDataDir(): string {
  * Build storage paths on a tier root, not on this.
  */
 export function getDataDir(): string {
-  return installDataDir || clientDataDir()
+  return installDataDir || hostDataDir()
 }
 
 /** Test hook: move the data dir, and the client-local tier with it. */
@@ -154,8 +192,8 @@ export function serverLocalPath(...rest: string[]): string {
  * of the data dir so installs on one host never collide. Socket paths are
  * limited to about 104 bytes on macOS, too short for a data-dir path.
  */
-export function installTmpDir(): string {
-  const key = crypto.createHash('sha256').update(getDataDir()).digest('hex').slice(0, 8)
+export function installTmpDir(dataDir = getDataDir()): string {
+  const key = crypto.createHash('sha256').update(dataDir).digest('hex').slice(0, 8)
   return path.join(os.tmpdir(), `yaac-${key}`)
 }
 

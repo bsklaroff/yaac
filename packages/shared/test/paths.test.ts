@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -41,7 +41,7 @@ import {
   cacheVolumeDir,
   imageStoreDir,
 } from '#project-paths'
-import { installTmpDir, serverLogPath, expandTilde, findRepoRoot } from '#paths'
+import { installTmpDir, serverLogPath, expandTilde, findRepoRoot, hostDataDir, resetHostDataDir } from '#paths'
 
 /** A project id, as the node-local tier is keyed by. */
 const PROJECT_ID = '0b6c1f4e-8a2d-4c3b-9e7f-5d1a2b3c4d5e'
@@ -259,5 +259,52 @@ describe('pinnedManifestCachePath', () => {
     // Only `yaac cluster install` reads it; no server installs a manifest.
     setDataDir('/tmp/yaac-test')
     expect(pinnedManifestCachePath('calico-3.32.1.yaml')).toBe('/tmp/yaac-test-client/cache/calico-3.32.1.yaml')
+  })
+})
+
+describe('hostDataDir', () => {
+  let home: string
+
+  beforeEach(async () => {
+    home = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-home-'))
+    vi.stubEnv('HOME', home)
+    setDataDir('')
+    resetHostDataDir()
+  })
+
+  afterEach(async () => {
+    vi.unstubAllEnvs()
+    setDataDir('/tmp/yaac-path-test')
+    resetHostDataDir()
+    await fs.rm(home, { recursive: true, force: true })
+  })
+
+  const legacy = (): string => path.join(home, '.yaac')
+  const current = (): string => path.join(home, '.yaac-server')
+
+  it('is ~/.yaac-server on a fresh machine, with the client tier still at ~/.yaac-client', () => {
+    expect(hostDataDir()).toBe(current())
+    expect(getDataDir()).toBe(current())
+    expect(clientLocalRoot()).toBe(path.join(home, '.yaac-client'))
+  })
+
+  it('keeps an unmoved host install in ~/.yaac, but never a cluster install', async () => {
+    await fs.mkdir(path.join(legacy(), 'server-local'), { recursive: true })
+    expect(hostDataDir()).toBe(legacy())
+    // Cached until the move resets it.
+    await fs.writeFile(path.join(legacy(), 'install.json'), JSON.stringify({ driver: 'k8s' }))
+    expect(hostDataDir()).toBe(legacy())
+    resetHostDataDir()
+    expect(hostDataDir()).toBe(current())
+  })
+
+  it('prefers ~/.yaac-server when both exist, and a named dir over either', async () => {
+    await fs.mkdir(path.join(legacy(), 'server-local'), { recursive: true })
+    await fs.mkdir(current())
+    expect(hostDataDir()).toBe(current())
+    vi.stubEnv('YAAC_DATA_DIR', '/tmp/named')
+    expect(hostDataDir()).toBe('/tmp/named')
+    setDataDir('/tmp/hook')
+    expect(hostDataDir()).toBe('/tmp/hook')
   })
 })

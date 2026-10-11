@@ -210,8 +210,10 @@ restart. A project whose workspaces cannot be confirmed stopped keeps its
 old dir until the next start. Before moving, it harvests a refreshed token
 from the old tool homes, drops the macOS Keychain item claude keyed on the
 old path, repoints each checkout's `alternates` at where the main clone is
-going (so a stopped workspace's diff still reads), and drops claude's
-history links named after the old checkout paths. A dir named after a name
+going (so a stopped workspace's diff still reads), drops claude's
+history links named after the old checkout paths, and repoints the paths
+pi, opencode and codex recorded (`rewriteToolRecordPaths`, described under
+the host install below). A dir named after a name
 several projects share goes to the oldest of them.
 
 - **What it reads.** `projects.name`, `projects.id` and `addedAt`, and
@@ -224,7 +226,7 @@ several projects share goes to the oldest of them.
   appear lost, and the old tree is never cleaned up.
 - **When it is safe to remove.** Once every install has started a server
   with this change: no `projects/` entry in any data dir's global tier is
-  anything but a uuid (`ls ~/.yaac/global/projects`, or the global claim
+  anything but a uuid (`ls ~/.yaac-server/global/projects`, or the global claim
   under the in-cluster server).
 - **Order.** It reads `name` as the old dir name, so it must go before
   project names become editable.
@@ -417,7 +419,7 @@ and must be deleted by hand.
   an empty `Dockerfile.user` while the old file sits where nothing reads it.
 - **When it is safe to remove.** Once every install has started a server
   with this change: no data dir's server-local tier has a `build/` entry
-  (`ls ~/.yaac/server-local`, or the server-local claim under the
+  (`ls ~/.yaac-server/server-local`, or the server-local claim under the
   in-cluster server), other than a stale one beside the built-in user's
   dir, which the start log names and which can be deleted.
 
@@ -495,20 +497,33 @@ it in the client tier's `server.json`, beside the selection, and an older
   - no `yaac` from before `install.json` is installed on any machine that
     has a data dir.
 - **Order.** Remove them together with, or after, the `~/.yaac` cluster
-  rule below, which finds a legacy record through the lift.
+  rule and the moves below: the cluster rule finds a legacy record through
+  the lift, and each move strips the mirror.
 
 ## A cluster install that already lives in `~/.yaac`
 
 With no `YAAC_DATA_DIR`, `yaac cluster …` uses `~/.yaac-cluster`, beside the
-host server's `~/.yaac`. Older cluster installs live in `~/.yaac` itself.
+host server's `~/.yaac-server`. Older cluster installs live in `~/.yaac` itself.
+A live cluster's install cannot move: its static volumes are hostPaths into
+`~/.yaac` named by a hash of that path, the kind node's `node-local` mount is
+fixed when the cluster is created, and a bound claim's volume is immutable.
 
-- **What it reads.** `clusterDataDir` in
-  `packages/shared/src/install-record.ts` keeps `~/.yaac` when its record
-  says `driver: k8s`. It reads that record through `readInstallRecord`, so
-  it sees one still only in `server.json` (the lift above). The desktop tray
-  hides the host server's lines when `yaac server status --json` reports
-  `driver: k8s` (`hostStatus` in `packages/desktop/src/server-control.ts`),
-  since that data dir is the cluster's.
+- **What it reads.**
+  - *The rule.* `clusterDataDir` in `packages/shared/src/install-record.ts`
+    keeps `~/.yaac` when its record says `driver: k8s`. It reads that record
+    through `readInstallRecord`, so it sees one still only in `server.json`
+    (the lift above). The desktop tray hides the host server's lines when
+    `yaac server status --json` reports `driver: k8s` (`hostStatus` in
+    `packages/desktop/src/server-control.ts`), since that data dir is the
+    cluster's.
+  - *The move.* Once the install's kind cluster is gone (`yaac cluster
+    delete`, or a podman reset), nothing mounts the old path, so `yaac
+    cluster install` renames `~/.yaac` to `~/.yaac-cluster` before it creates
+    the new cluster (`moveLegacyClusterDataDir` in
+    `packages/shared/src/legacy-data-dir.ts`, asking `kindClusterExists`). The
+    fresh cluster mounts the new path and binds fresh volumes to the same
+    data. It strips the install fields from `~/.yaac-client/server.json`, as
+    the host move does. A byo install, and a `--byo` run, never move.
 - **What breaks silently if it goes too early.** `yaac cluster install`
   starts a fresh install in `~/.yaac-cluster` against the existing kind
   cluster. A byo install is refused, because its Deployment carries the old
@@ -517,12 +532,74 @@ host server's `~/.yaac`. Older cluster installs live in `~/.yaac` itself.
   whose advice is to delete the claim and re-run. Doing that binds the
   server to fresh volumes under `~/.yaac-cluster`, and the install comes up
   **empty**: every project is still in `~/.yaac`, unreachable.
+  Without the move's strip, the next read lifts the mirrored record back into
+  a new `~/.yaac`, and `clusterDataDir` points there again.
 - **When it is safe to remove.** Once no machine has a cluster install in
   `~/.yaac`: neither `~/.yaac/install.json` nor `~/.yaac-client/server.json`
   records `driver: k8s`.
-- **Moving one by hand.** There is no in-place move; the result is a fresh,
-  empty cluster install, and the old one's projects stay in its data dir.
-  `yaac cluster delete` (running workspaces are lost), then
-  `mv ~/.yaac ~/.yaac-old-cluster` (keeps its projects and database), then
-  `rm ~/.yaac-client/server.json` (it mirrors the old record, which would
-  otherwise be lifted back into a new `~/.yaac`), then `yaac cluster install`.
+- **Moving one.** `yaac cluster delete` (running workspaces are lost), then
+  `yaac cluster install`, which moves the data dir and keeps its projects.
+  A byo install has no such path: its volumes live in the cluster, not in
+  `~/.yaac`.
+
+## A host install that still lives in `~/.yaac`
+
+With no `YAAC_DATA_DIR`, the host server keeps its data in `~/.yaac-server`.
+Older host installs live in `~/.yaac`, and are moved once nothing runs from
+them: a containerless workspace holds absolute paths into its data dir and
+a socket in a tmp dir keyed by that path, so the dir cannot move under it.
+A stopped workspace rebuilds most of what names the path at its next launch
+(its HOME links, sockets, alternates and claude's history links). What the
+agent tools record about their conversations is not rebuilt, so the move
+repoints it.
+
+- **What it reads.**
+  - *The fallback.* `defaultHostDataDir` in `packages/shared/src/paths.ts`
+    resolves to `~/.yaac` while `~/.yaac-server` does not exist,
+    `~/.yaac/server-local` does, and `~/.yaac/install.json` does not record
+    `driver: k8s`.
+  - *The move.* `moveLegacyHostDataDir` in
+    `packages/shared/src/legacy-data-dir.ts`, run by `yaac server
+    start|restart` and `yaac cluster install`, renames `~/.yaac` to
+    `~/.yaac-server` unless `~/.yaac`'s record says `k8s`, its server lock is
+    live, or a socket in its tmp dir answers. First it removes claude's
+    history links named after the old checkout paths and repoints each
+    project's tool records (`rewriteToolRecordPaths` in
+    `packages/shared/src/tool-records.ts`): pi's session headers and
+    pi-acp's session map, opencode's database, and codex's rollouts and
+    state database record the checkout as an absolute path, and refuse to
+    resume a conversation from another one. Every `~/.yaac/` prefix in the
+    JSON, JSONL and SQLite files of the project's `history/`, `pi/`,
+    `codex/` and `opencode-data/` becomes `~/.yaac-server/`, without
+    reading any tool's format. opencode's snapshot repos (its undo and
+    revert history) get their `core.worktree` and `alternates` repointed,
+    and are renamed after the sha1 of the new checkout path. A failed rename points them back and leaves
+    `~/.yaac` in use. After the rename it strips the install fields from
+    `~/.yaac-client/server.json`. Every outcome re-resolves the host data
+    dir, so a start that lost a race to move it follows the one that won.
+  - *The Keychain.* On macOS, claude names its Keychain item after a hash
+    of its config dir, which the move changes. Before the rename, each
+    project's item under the old name is written to claude's own
+    `.credentials.json`, which claude falls back to and the server
+    harvests from, and then deleted. Without this, a token claude refreshed
+    but yaac never harvested (a workspace that died without a yaac stop)
+    would be stranded under the old name, and the item would leak.
+- **What breaks silently if it goes too early.** Without the fallback, an
+  unmoved install looks empty: `yaac server status` reports "not running"
+  while the old server serves, and a second, empty server starts beside it.
+  Without the move, the fallback holds forever. Without the strip, the next
+  read of `~/.yaac`'s record lifts the mirrored fields back and recreates
+  `~/.yaac`. Without the repoint, pi, opencode and codex conversations from
+  before the move stop resuming and drop out of the transcript view, and
+  pi-acp writes into a recreated `~/.yaac`. While the move is deferred, or
+  when `~/.yaac` sits unserved beside `~/.yaac-server`, `yaac server
+  status` says so (`legacyHostDataDirHint`).
+- **When it is safe to remove.** Once no machine has a `~/.yaac/server-local`
+  that is not a cluster install. `rewriteToolRecordPaths` goes with the
+  later of this and the slug-named project dir move above.
+- **Order.** Remove it before, or together with, the lift and the mirror
+  above. The move finds a cluster install in `~/.yaac` whose record is still
+  only in `server.json` through the lift. Without the lift it would take
+  that install for a containerless one, and since a pod-hosted server's lock
+  names no host pid, it would judge the live cluster idle and rename `~/.yaac`
+  out from under its hostPath volumes.

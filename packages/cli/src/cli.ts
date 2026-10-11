@@ -39,6 +39,7 @@ import { clusterDataDir, readInstallRecord, recordedDriver } from '@yaac/shared/
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- names the data dir in refusals; builds no path
 import { clientDataDir, getDataDir, useInstallDataDir } from '@yaac/shared/paths'
 import { registerServer } from '@yaac/shared/server-config'
+import { legacyHostDataDirHint, moveLegacyClusterDataDir, moveLegacyHostDataDir } from '@yaac/shared/legacy-data-dir'
 import type { LocalServerStatus } from '@yaac/shared/types'
 
 /**
@@ -287,11 +288,13 @@ server
       return
     }
     printServerStatus(status, options.json)
+    const hint = options.json ? null : await legacyHostDataDirHint()
+    if (hint) console.error(`[yaac] ${hint}`)
   })
 
 server
   .command('logs')
-  .description('Print the server log (~/.yaac/server-local/server.log)')
+  .description('Print the server log (~/.yaac-server/server-local/server.log)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
   .action(async (options: { follow?: boolean; lines?: number }) => {
@@ -339,6 +342,11 @@ cluster
   .action(async (options: ClusterInstallArgs) => {
     await refuseClusterOnContainerless()
     assertClusterInstallArgs(options)
+    const { kindClusterExists } = await import('@yaac/server/drivers/k8s/install')
+    if (!options.byo && await moveLegacyClusterDataDir((name) => kindClusterExists(name))) {
+      useInstallDataDir(await clusterDataDir())
+    }
+    await moveLegacyHostDataDir()
     const { clusterInstall } = await import('#commands/cluster-install')
     await clusterInstall(options)
   })

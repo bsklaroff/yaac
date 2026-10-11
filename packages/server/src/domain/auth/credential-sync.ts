@@ -18,7 +18,7 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
 /**
  * Keeps OAuth credentials consistent between each user's store (`#db`
  * tool_credentials, the "host store" below) and the tool homes of that
- * user's projects (`~/.yaac/projects/<id>/{claude,codex}`), which agents
+ * user's projects (`<globalRoot>/projects/<id>/{claude,codex}`), which agents
  * read. A project's tool home only ever holds its owner's credential.
  *
  * With mediated egress (k8s) the project home holds a sentinel and the proxy

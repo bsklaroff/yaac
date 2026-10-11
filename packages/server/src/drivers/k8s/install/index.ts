@@ -16,7 +16,7 @@
 export { ClusterInstallError, clusterArgError, type ClusterInstallArgs } from './arg-guards'
 export { buildBuiltinImages } from './builtin-images'
 export { runClusterCheck } from './check'
-export { ClusterDeleteError, runClusterDelete } from './delete'
+export { ClusterDeleteError, kindClusterExists, runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
 export { runClusterInstall } from './install'
 export { foreignClusterRefusal } from './cluster-identity'

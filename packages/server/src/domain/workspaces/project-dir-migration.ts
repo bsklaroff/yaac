@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { claudeDir, projectDir, repoDir, workspacesDir } from '@yaac/shared/project-paths'
 import { dropProjectClaudeKeychainItem } from '@yaac/shared/tool-auth'
+import { rewriteToolRecordPaths } from '@yaac/shared/tool-records'
 import { applyWorkspaceEvent, listProjectRows } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { claudeProjectDirName } from '#runtime/agents'
@@ -89,8 +90,9 @@ async function moveProjectDir(name: string, id: string, owner: string): Promise<
   // Before the move, so a crash between the two leaves nothing to repair:
   // repoint each checkout's alternates at where the main clone is going (a
   // launch rewrites it, but a stopped workspace's diff is read before any
-  // launch), and drop claude's history links named after the old checkout
-  // paths, which would otherwise sit beside the new ones.
+  // launch), drop claude's history links named after the old checkout
+  // paths, which would otherwise sit beside the new ones, and repoint the
+  // checkout paths pi, opencode and codex recorded.
   const objects = path.join(repoDir(id), '.git', 'objects')
   for (const workspaceId of await fs.readdir(workspacesDir(name)).catch(() => [])) {
     const checkout = path.join(workspacesDir(name), workspaceId)
@@ -102,6 +104,7 @@ async function moveProjectDir(name: string, id: string, owner: string): Promise<
     }
   }
 
+  await rewriteToolRecordPaths(projectDir(name), projectDir(name), projectDir(id))
   await mergeDir(projectDir(name), projectDir(id))
 }
 

@@ -18,7 +18,7 @@ A workspace runs on one of two drivers, decided by how you start the server:
   No cluster, image, or sandbox: they run as you, with direct access to your
   credentials ([docs/containerless-driver.md](docs/containerless-driver.md)).
 
-One machine can run both: each keeps its own data dir (`~/.yaac` for the
+One machine can run both: each keeps its own data dir (`~/.yaac-server` for the
 host server, `~/.yaac-cluster` for a cluster) and both show up as servers
 you can switch between.
 

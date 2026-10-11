@@ -16,6 +16,7 @@ import { env } from '@yaac/shared/env'
 import { assertHostServerAllowed } from '#main/driver-choice'
 import { registerServer } from '@yaac/shared/server-config'
 import { readInstallRecord } from '@yaac/shared/install-record'
+import { moveLegacyHostDataDir } from '@yaac/shared/legacy-data-dir'
 import type { AccessMode, LocalServerStatus } from '@yaac/shared/types'
 
 /**
@@ -32,6 +33,8 @@ export interface ServerAccessOptions {
 /**
  * Entry point for `yaac server start`.
  *
+ * - First moves a host install out of `~/.yaac` when nothing runs from it
+ *   (`moveLegacyHostDataDir`).
  * - If a server is already running with the matching buildId and access
  *   mode, no-op.
  * - If running with a different buildId or mode, throw — the user should
@@ -41,6 +44,7 @@ export interface ServerAccessOptions {
  *   (then stop it and throw the reason).
  */
 export async function startServer(opts: ServerAccessOptions = {}, keepSelection = false): Promise<void> {
+  await moveLegacyHostDataDir()
   const tailnet = tailnetHost(opts)
   const mode: AccessMode = tailnet === undefined ? 'local' : 'tailnet'
   const origin = (port: number): string => tailnet === undefined ? `http://127.0.0.1:${port}` : `https://${tailnet}`
