@@ -18,7 +18,11 @@ import type { AccessMode, AgentTool, DriverKind } from '#types'
 
 /** Set during real builds or runs (users, operators, the build, or the server). */
 export const env = {
-  /** `YAAC_DATA_DIR` override for the data dir (projects/sessions/lock). Unset → `~/.yaac`. */
+  /**
+   * `YAAC_DATA_DIR` override for the data dir (projects/sessions/lock).
+   * Unset → `~/.yaac-server` for the host server, `~/.yaac-cluster` for a
+   * cluster, and `~/.yaac-client` for the client tier.
+   */
   get dataDirOverride(): string | undefined {
     return process.env.YAAC_DATA_DIR
   },

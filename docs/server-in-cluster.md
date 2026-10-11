@@ -60,7 +60,7 @@ Install refuses to run in two cases:
   could be answered by the old server itself.
 - **The data dir is a containerless install.** One data dir is one install.
   Unless `YAAC_DATA_DIR` names one, a cluster install gets its own data dir,
-  `~/.yaac-cluster`, beside the host server's `~/.yaac`
+  `~/.yaac-cluster`, beside the host server's `~/.yaac-server`
   (docs/server-selection.md "Two installs on one machine").
 
 ## The server image
@@ -592,7 +592,8 @@ read and write them: the CLI, the desktop app and its auth daemon, and
 `yaac cluster install`.
 
 These form the CLIENT-LOCAL tier (`clientLocalRoot` in `shared/paths.ts`),
-at `<dataDir>-client` (`~/.yaac` pairs with `~/.yaac-client`). It is a
+at `<dataDir>-client`: `~/.yaac-client` by default, `X-client` for
+`YAAC_DATA_DIR=X`. It is a
 sibling, not a subdirectory, because the pod mounts the data dir's contents.
 It is derived from the client's data dir, so `YAAC_DATA_DIR` isolation
 carries over, and a cluster install in `~/.yaac-cluster` registers in the

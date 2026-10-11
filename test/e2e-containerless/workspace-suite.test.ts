@@ -953,6 +953,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const nodeLocalProject = path.join(testEnv.dataDir, 'node-local', 'projects', projectId)
     expect(store).toBe(path.join(nodeLocalProject, '.cached-packages', 'pnpm-store'))
     expect(env.npm_config_store_dir).toBe(store)
+    // A moved store path relinks `node_modules` instead of aborting a
+    // non-TTY install.
+    expect(env.pnpm_config_confirm_modules_purge).toBe('false')
+    expect(env.npm_config_confirm_modules_purge).toBe('false')
     // Nothing else is node-local here; opencode opens its global data
     // directly.
     expect((await fs.readdir(nodeLocalProject)).sort()).toEqual(['.cached-packages'])

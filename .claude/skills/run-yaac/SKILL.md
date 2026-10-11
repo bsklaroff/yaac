@@ -22,7 +22,7 @@ pnpm install && pnpm build        # CLI + SPA + assets into dist/, ~7s
 npm install -g .                  # links `yaac` here; `brew uninstall yaac-server` first
 
 yaac cluster install && yaac cluster check   # k8s: cluster + server pod (data dir ~/.yaac-cluster)
-yaac host check && yaac server start         # and/or containerless: host process (~/.yaac)
+yaac host check && yaac server start         # and/or containerless: host process (~/.yaac-server)
 ```
 
 The user normally adds credentials and projects from the app.
@@ -40,7 +40,7 @@ change for a containerless server. If a fix "does nothing", compare
 ## A second instance beside an existing one
 
 With no `YAAC_DATA_DIR`, `yaac server …` drives the host install in
-`~/.yaac` and `yaac cluster …` the cluster install in `~/.yaac-cluster` (its
+`~/.yaac-server` and `yaac cluster …` the cluster install in `~/.yaac-cluster` (its
 kind cluster named `yaac`, published on port 8790), both registered in
 `~/.yaac-client/server.json`. When that is the user's working
 setup and you are testing rather than setting it up, leave it alone and run

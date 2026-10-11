@@ -131,7 +131,7 @@ export async function recordedDriver(): Promise<DriverKind | undefined> {
 /**
  * The data dir `yaac cluster …` acts on. An overridden data dir is one
  * install, so it is that dir. Otherwise a cluster gets `~/.yaac-cluster`,
- * beside the containerless `~/.yaac`, so the two can run side by side; a
+ * beside the containerless `~/.yaac-server`, so the two can run side by side; a
  * `~/.yaac` that is already a cluster install keeps it
  * (docs/legacy-compat-shims.md).
  */

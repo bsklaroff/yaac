@@ -18,7 +18,7 @@ vi.mock('node:readline/promises', () => ({
   },
 }))
 
-import { ClusterDeleteError, runClusterDelete } from '#drivers/k8s/install'
+import { ClusterDeleteError, kindClusterExists, runClusterDelete } from '#drivers/k8s/install'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { installRecordPath, recordInstall } from '@yaac/shared/install-record'
 import { serverConfigPath } from '@yaac/shared/server-config'
@@ -162,5 +162,22 @@ describe('runClusterDelete', () => {
     mockRun.mockRejectedValue(new Error('spawn kind ENOENT'))
     await expect(runClusterDelete({ yes: true }))
       .rejects.toThrow(/Could not list kind clusters[\s\S]*spawn kind ENOENT/)
+  })
+})
+
+describe('kindClusterExists', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('looks for the YAAC_KIND_CLUSTER cluster among the podman provider\'s', async () => {
+    stageClusters('other\nyaac\n')
+    expect(await kindClusterExists()).toBe(true)
+    vi.stubEnv('YAAC_KIND_CLUSTER', 'yaac-alt')
+    expect(await kindClusterExists()).toBe(false)
+    expect(await kindClusterExists('other')).toBe(true)
+    stageClusters('No kind clusters found.\n')
+    vi.unstubAllEnvs()
+    expect(await kindClusterExists()).toBe(false)
   })
 })

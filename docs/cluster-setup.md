@@ -30,7 +30,7 @@ how the server is installed and upgraded: `npm update`, then `yaac cluster
 install`. `yaac cluster start|stop|restart|logs|status` then manage the
 server Deployment. Put simply, `yaac server …` is the containerless host
 server and `yaac cluster …` the k8s one. Each has its own data dir
-(`~/.yaac` and `~/.yaac-cluster`, unless `YAAC_DATA_DIR` names one), and the
+(`~/.yaac-server` and `~/.yaac-cluster`, unless `YAAC_DATA_DIR` names one), and the
 cluster publishes its server on port 8790, so both can run on one machine
 (docs/server-selection.md "Two installs on one machine").
 

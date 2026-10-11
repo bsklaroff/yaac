@@ -84,14 +84,15 @@ A machine can run the host server and a cluster's side by side. With no
 
 | | data dir | commands | published at |
 |---|---|---|---|
-| host (containerless) | `~/.yaac` | `yaac server …` | `127.0.0.1:8787` |
+| host (containerless) | `~/.yaac-server` | `yaac server …` | `127.0.0.1:8787` |
 | cluster (k8s) | `~/.yaac-cluster` | `yaac cluster …` | `127.0.0.1:8790` |
 
 Both register in the one `~/.yaac-client/server.json`, so every client can
 switch between them like any two servers. `yaac cluster …` points the
 process at the cluster's data dir before it runs (`clusterDataDir`), while
 the client tier stays where it is. A `~/.yaac` that is already a cluster
-install stays one (docs/legacy-compat-shims.md).
+install stays one, and a host install still in `~/.yaac` is used there
+until it can be moved (docs/legacy-compat-shims.md).
 
 `YAAC_DATA_DIR` names one data dir for every command, so that dir is one
 install of either kind. The test harness works this way.

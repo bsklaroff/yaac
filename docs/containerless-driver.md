@@ -24,7 +24,7 @@ k8s. The command that stands the server up records the driver in its data
 dir's `install.json` (docs/server-selection.md), so a client that cannot
 reach the server knows which command brings it back.
 
-The two never share a data dir: by default this one is `~/.yaac` and a
+The two never share a data dir: by default this one is `~/.yaac-server` and a
 cluster's is `~/.yaac-cluster`, so both can run on one machine. A host start
 against a data dir recorded as `k8s` is refused, and `yaac cluster install`
 refuses a containerless one. A
@@ -61,13 +61,13 @@ workspace, since all workspaces share one filesystem.
 
 | | k8s | containerless |
 |---|---|---|
-| checkout | `/workspace` | `~/.yaac/global/projects/<project-id>/workspaces/<id>` |
-| project main clone | the server's own path, read-only | `~/.yaac/global/projects/<project-id>/repo/.git` |
+| checkout | `/workspace` | `~/.yaac-server/global/projects/<project-id>/workspaces/<id>` |
+| project main clone | the server's own path, read-only | `~/.yaac-server/global/projects/<project-id>/repo/.git` |
 | tmux socket | `/tmp/yaac-tmux/server` (pod-local) | `$TMPDIR/yaac-<hash>/<short-id>.sock` |
 | scratch | `/tmp` | `<state dir>/containerless/scratch` |
-| ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac/global/projects/<project-id>/acp/<id>` |
+| ACP record | `/home/yaac/.yaac-acp` (mounted) | `~/.yaac-server/global/projects/<project-id>/acp/<id>` |
 
-The state dir is `~/.yaac/global/projects/<project-id>/sessions/<id>`.
+The state dir is `~/.yaac-server/global/projects/<project-id>/sessions/<id>`.
 
 The ACP record is not driver-private: under k8s the container path is a
 mount of the shared project location, and every reader (the chat pane, the
@@ -86,7 +86,7 @@ server sees the other's, so neither would notice two agents in one checkout.
 ## Storage
 
 The data dir has the same three tiers on every substrate: `global/`,
-`server-local/` and `node-local/` under `~/.yaac` (tier legend in
+`server-local/` and `node-local/` under `~/.yaac-server` (tier legend in
 `packages/shared/src/paths.ts`). Under k8s they are volume claims and a node
 hostPath; here they are plain subdirectories. Global and node-local paths are
 symlinked into the workspace's HOME the same way. The only difference: a

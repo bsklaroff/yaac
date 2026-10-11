@@ -94,6 +94,15 @@ export async function runClusterDelete(
 }
 
 /**
+ * Whether the kind cluster `name` (default `YAAC_KIND_CLUSTER`) exists.
+ * `yaac cluster install` asks before moving a cluster install out of
+ * `~/.yaac`, which is safe only once nothing mounts the old path.
+ */
+export async function kindClusterExists(name = env.kindCluster): Promise<boolean> {
+  return (await listKindClusters()).includes(name)
+}
+
+/**
  * Manual uninstall steps printed for a byo install, whose cluster yaac
  * does not delete: this install's namespaces and cluster-scoped objects,
  * then the objects all installs on the cluster share, and last the

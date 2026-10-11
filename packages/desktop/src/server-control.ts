@@ -107,9 +107,10 @@ export function clusterStatus(local: LocalServers): LocalServerStatus | null {
 }
 
 /**
- * The host server's status. Null when `~/.yaac` is itself a cluster install
- * (from before the two had separate data dirs), which the cluster lines
- * already describe.
+ * The host server's status. Null when the host data dir is itself a
+ * cluster install, which the cluster lines already describe: a
+ * `YAAC_DATA_DIR` naming one, or a `~/.yaac` cluster install whose record
+ * is still only in `server.json`.
  */
 export function hostStatus(local: LocalServers): LocalServerStatus | null {
   return local.server?.kind === 'status' && local.server.status.driver !== 'k8s' ? local.server.status : null

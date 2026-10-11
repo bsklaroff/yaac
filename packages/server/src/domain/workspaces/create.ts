@@ -1222,9 +1222,15 @@ export async function createWorkspace(
   // under both names since pnpm 11+ reads only `pnpm_config_` and 10.x only
   // `npm_config_`. Pods cannot share one: pnpm's SQLite (WAL) index needs
   // all writers on one kernel. A pod keeps its store in its `moduleDirs`.
+  // The store path is absolute and pnpm records it in `node_modules`, so a
+  // checkout whose data dir or project dir moved would make a non-TTY
+  // `pnpm install` abort rather than relink; purging is allowed instead,
+  // since `node_modules` is rebuilt from the store.
   if (runtime.kind === 'containerless') {
-    env.push(`pnpm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
-    env.push(`npm_config_store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
+    for (const prefix of ['pnpm_config_', 'npm_config_']) {
+      env.push(`${prefix}store_dir=${CACHED_PACKAGES_CONTAINER_DIR}/pnpm-store`)
+      env.push(`${prefix}confirm_modules_purge=false`)
+    }
   }
 
   // Decide each forwarded port's host port before launch, since the status
