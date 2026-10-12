@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
 import { IS_MAC } from '#lib/platform'
+import type { LocalPortRemap } from '@yaac/shared/types'
 
 /** The window-control bridge the Electron preload exposes on `window`. */
 interface YaacWindow {
@@ -11,6 +12,12 @@ interface YaacWindow {
   openExternal: (url: string) => void
   /** Show the shell's Servers page; absent from an app older than it. */
   showServers?: () => void
+  /**
+   * Follow the forwards the app bound at a fallback local port: called with
+   * the current table, then on every change. Returns an unsubscribe.
+   * Absent from an app older than it.
+   */
+  onForwardRemaps?: (cb: (remaps: LocalPortRemap[]) => void) => () => void
 }
 
 /** The bridge, or undefined in a browser / before the preload loads. */

@@ -18,6 +18,15 @@ function spec(session: string, containerPort: number, hostPort = containerPort):
   return { session, containerPort, hostPort }
 }
 
+/** A live forward holding its own host port. */
+function up(s: ForwardSpec, localPort = s.hostPort): ForwardSpec & { localPort: number } {
+  return { ...s, localPort }
+}
+
+function inUse(): Error {
+  return Object.assign(new Error('listen EADDRINUSE'), { code: 'EADDRINUSE' })
+}
+
 /** Every handle handed out, so a test can see which were closed. */
 let handles: Array<{ spec: ForwardSpec; close: ReturnType<typeof vi.fn> }>
 
@@ -40,7 +49,7 @@ describe('createForwardSet', () => {
 
     expect(startForward).toHaveBeenCalledTimes(2)
     expect(handles[0].close).not.toHaveBeenCalled()
-    expect(set.live()).toEqual([spec('a', 3000), spec('b', 5173)])
+    expect(set.live()).toEqual([up(spec('a', 3000)), up(spec('b', 5173))])
   })
 
   it('drops a forward the server no longer offers', async () => {
@@ -49,7 +58,7 @@ describe('createForwardSet', () => {
     await set.reconcile([spec('a', 3000)])
 
     expect(handles[1].close).toHaveBeenCalledTimes(1)
-    expect(set.live()).toEqual([spec('a', 3000)])
+    expect(set.live()).toEqual([up(spec('a', 3000))])
   })
 
   it('treats a moved host port as a different forward', async () => {
@@ -60,7 +69,7 @@ describe('createForwardSet', () => {
     await set.reconcile([spec('a', 3000, 3001)])
 
     expect(handles[0].close).toHaveBeenCalledTimes(1)
-    expect(set.live()).toEqual([spec('a', 3000, 3001)])
+    expect(set.live()).toEqual([up(spec('a', 3000, 3001))])
   })
 
   it('reports a forward that cannot bind and brings the rest up anyway', async () => {
@@ -74,7 +83,7 @@ describe('createForwardSet', () => {
     await set.reconcile([spec('a', 3000), spec('b', 5173)])
 
     expect(failures).toEqual([[3000, 'EADDRINUSE']])
-    expect(set.live()).toEqual([spec('b', 5173)])
+    expect(set.live()).toEqual([up(spec('b', 5173))])
   })
 
   it('retries a failed bind on the next reconcile', async () => {
@@ -85,13 +94,13 @@ describe('createForwardSet', () => {
     expect(set.live()).toEqual([])
     await set.reconcile([spec('a', 3000)])
 
-    expect(set.live()).toEqual([spec('a', 3000)])
+    expect(set.live()).toEqual([up(spec('a', 3000))])
   })
 
   it('announces each forward coming up and going away', async () => {
     const events: string[] = []
     const set = createForwardSet(TARGET, {
-      onChange: (s, state) => events.push(`${state} ${String(s.hostPort)}`),
+      onChange: (f, state) => events.push(`${state} ${String(f.localPort)}`),
     })
 
     await set.reconcile([spec('a', 3000)])
@@ -111,6 +120,81 @@ describe('createForwardSet', () => {
     expect(handles[0].close).toHaveBeenCalledTimes(1)
     expect(set.live()).toEqual([])
     expect(startForward).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the next free port the other forwards do not ask for', async () => {
+    // Something else holds 3000 and 3001; 3002 belongs to another forward.
+    const taken = new Set([3000, 3001])
+    startForward.mockImplementation((_t: unknown, s: ForwardSpec) => {
+      if (taken.has(s.hostPort)) return Promise.reject(inUse())
+      return Promise.resolve({ hostPort: s.hostPort, close: vi.fn() })
+    })
+    const events: string[] = []
+    const set = createForwardSet(TARGET, {
+      fallback: true,
+      onChange: (f, state) => events.push(`${state} ${String(f.hostPort)}@${String(f.localPort)}`),
+    })
+
+    await set.reconcile([spec('a', 3000), spec('b', 3002)])
+
+    expect(set.live()).toEqual([up(spec('a', 3000), 3003), up(spec('b', 3002))])
+    expect(events).toEqual(['up 3000@3003', 'up 3002@3002'])
+  })
+
+  it('keeps a fallback port after the original frees up, and binds a strict set only as named', async () => {
+    const taken = new Set([3000])
+    startForward.mockImplementation((_t: unknown, s: ForwardSpec) =>
+      taken.has(s.hostPort) ? Promise.reject(inUse()) : Promise.resolve({ hostPort: s.hostPort, close: vi.fn() }))
+    const failures: string[] = []
+    const strict = createForwardSet(TARGET, { onBindError: (_s, m) => failures.push(m) })
+    await strict.reconcile([spec('a', 3000)])
+    expect(strict.live()).toEqual([])
+    expect(failures).toEqual(['listen EADDRINUSE'])
+
+    startForward.mockClear()
+    const set = createForwardSet(TARGET, { fallback: true })
+    await set.reconcile([spec('a', 3000)])
+    // The open page's URL must not move when 3000 frees up.
+    taken.clear()
+    await set.reconcile([spec('a', 3000)])
+    expect(set.live()).toEqual([up(spec('a', 3000), 3001)])
+    // The taken port, then its fallback; the second reconcile binds nothing.
+    expect(startForward).toHaveBeenCalledTimes(2)
+  })
+
+  it('never tries a port the set already holds as a fallback', async () => {
+    // Model the OS: a port this set already listens on is taken too.
+    const held = new Set([3000])
+    startForward.mockImplementation((_t: unknown, s: ForwardSpec) => {
+      if (held.has(s.hostPort)) return Promise.reject(inUse())
+      held.add(s.hostPort)
+      return Promise.resolve({ hostPort: s.hostPort, close: vi.fn() })
+    })
+    const set = createForwardSet(TARGET, { fallback: true })
+    await set.reconcile([spec('a', 3000)])
+    // Both scan past `a`'s fallback from the earlier pass, and `c` past
+    // `b`'s from this one.
+    await set.reconcile([spec('a', 3000), spec('b', 3000), spec('c', 3000)])
+
+    expect(set.live()).toEqual([
+      up(spec('a', 3000), 3001), up(spec('b', 3000), 3002), up(spec('c', 3000), 3003),
+    ])
+    expect(startForward.mock.calls.map(([, s]) => (s as ForwardSpec).hostPort))
+      .toEqual([3000, 3001, 3000, 3002, 3000, 3003])
+  })
+
+  it('gives up after a bounded run of taken ports, and on any other bind error', async () => {
+    startForward.mockImplementation(() => Promise.reject(inUse()))
+    const failures: string[] = []
+    const set = createForwardSet(TARGET, { fallback: true, onBindError: (_s, m) => failures.push(m) })
+    await set.reconcile([spec('a', 3000)])
+    expect(failures).toEqual(['no free port in 3000–3100'])
+
+    startForward.mockReset()
+    startForward.mockImplementation(() => Promise.reject(new Error('EADDRNOTAVAIL')))
+    await set.reconcile([spec('a', 3000)])
+    expect(startForward).toHaveBeenCalledTimes(1)
+    expect(set.live()).toEqual([])
   })
 
   it('runs overlapping reconciles one at a time, so a new port is bound once', async () => {

@@ -259,22 +259,23 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     let fwdOutput = ''
     fwd.stdout.on('data', (b: Buffer) => { fwdOutput += b.toString() })
     fwd.stderr.on('data', (b: Buffer) => { fwdOutput += b.toString() })
-    const mapping = await vi.waitFor(async () => {
+    await vi.waitFor(async () => {
       const res = await api(`/workspace/${workspaceId}/forward-port`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ containerPort: port }),
       })
       if (!res.ok) throw new Error(`the detected port is not offered yet (${String(res.status)})`)
-      return await res.json() as { hostPort: number }
     }, { timeout: 90_000, interval: 1_000 })
-    // Wait for this forwarder's listener, not just any listener: an
-    // orphaned forwarder from an earlier run could hold the port.
-    const bound = `forwarding 127.0.0.1:${String(mapping.hostPort)} `
-    await vi.waitFor(() => {
-      if (!fwdOutput.includes(bound) && !/cannot bind port/.test(fwdOutput)) throw new Error('forwarder not bound yet')
+    // Read the port from this forwarder's line, not just any listener: an
+    // orphaned forwarder from an earlier run could hold the offered port,
+    // in which case this one binds the next free port.
+    const bound = new RegExp(`forwarding 127\\.0\\.0\\.1:(\\d+) -> \\w+:${String(port)}\\b`)
+    const localPort = await vi.waitFor(() => {
+      const m = bound.exec(fwdOutput)
+      if (!m) throw new Error(`forwarder not bound yet:\n${fwdOutput}`)
+      return m[1]
     }, { timeout: 60_000, interval: 1_000 })
-    expect(fwdOutput, 'yaac forward output').toContain(bound)
-    const body = await fetch(`http://127.0.0.1:${String(mapping.hostPort)}/`).then((r) => r.text()).catch(async (err: unknown) => {
+    const body = await fetch(`http://127.0.0.1:${localPort}/`).then((r) => r.text()).catch(async (err: unknown) => {
       const serverLog = (await runYaac(operatorEnv, 'cluster', 'logs', '-n', '400')).stdout
       throw new Error(`the forwarded fetch failed (${String(err)})\n--- yaac forward:\n${fwdOutput}`
         + `\n--- server log (forward lines):\n${serverLog.split('\n').filter((l) => /forward|tunnel|relay|attach/i.test(l)).join('\n')}`)

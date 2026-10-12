@@ -505,7 +505,10 @@ function startEvents(): void {
   forwarder?.stop()
   // Each snapshot carries both the attention signal and the port forwards
   // on offer (docs/port-forward-tunnel.md).
-  forwarder = startForwarder({ resolveTarget })
+  forwarder = startForwarder({
+    resolveTarget,
+    onRemaps: (remaps) => { if (win && !win.isDestroyed()) win.webContents.send('forward:remaps', remaps) },
+  })
   events = startEventsMonitor({
     resolveTarget,
     onSnapshot: (snapshot) => {
@@ -664,6 +667,10 @@ ipcMain.on('window:show-servers', (e) => {
 ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
 })
+// The forwards bound at a local port other than the one the server offers,
+// for the SPA's preview pane (forwarder.ts). Updates arrive on the same
+// channel.
+ipcMain.handle('forward:remaps', () => forwarder?.remaps() ?? [])
 
 // Preview <webview> guests stay on loopback; new windows and off-loopback
 // navigations open in the system browser instead.

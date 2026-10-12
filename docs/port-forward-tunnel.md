@@ -27,9 +27,9 @@ the webapp links to and client forwarders bind.
 
 Declaring also allocates: if two workspaces of a project both ask for 3000,
 the k8s driver gives the second the next free port. It cannot see what else
-holds a port on the user's machine; that shows up as the client failing to
-bind. Under `containerless` the mapping is the identity, since the config's
-port is the port the dev server binds.
+holds a port on the user's machine, so a clash there is the client's to
+resolve (see "Taken ports"). Under `containerless` the mapping is the
+identity, since the config's port is the port the dev server binds.
 
 **A client binds.** `startForward` in `@yaac/shared` listens on the host port
 and, per accepted TCP connection, opens a WebSocket to
@@ -61,9 +61,10 @@ and may import nothing else. It depends only on `ws` and `net`.
 
 `createForwardSet` keeps a set of forwards in line with a desired list,
 matched by identity: a new port does not disturb other forwards' open
-connections, and a forward that cannot bind is reported and retried next
-pass. Both clients take that list from the server's `/events` snapshots
-(`startEventsMonitor` and `snapshotForwards` in `@yaac/shared`):
+connections, and a forward that cannot bind (nor fall back, see "Taken
+ports") is reported and retried next pass. Both clients take that list
+from the server's `/events` snapshots (`startEventsMonitor` and
+`snapshotForwards` in `@yaac/shared`):
 
 - **`yaac forward [workspace-id]`**, for headless machines. It follows
   every running workspace's ports, or the named one's.
@@ -79,6 +80,26 @@ pass. Both clients take that list from the server's `/events` snapshots
 
 With neither running, nothing is forwarded: the link is shown but refuses to
 connect.
+
+## Taken ports
+
+Another process on the client's machine may already hold an offered host
+port: a local kind cluster's server on 8790, say, while a remote workspace
+offers 8790 too. A link to that port would then quietly open the other
+process. So both forwarders bind the next free port above it instead
+(`fallback` in `createForwardSet`), skipping ports other forwards in the set
+ask for, and keep that port for as long as the server offers the forward,
+so the URL does not move under an open page.
+
+The server never learns of the move; the client reports it:
+
+- **`yaac forward`** prints the port it bound, with `(port N is in use
+  here)`. A port named with `--port` is bound as named or not at all.
+- **The desktop app** keeps a remap table (`DesktopForwarder.remaps`) and
+  pushes it to the webapp over IPC (`onForwardRemaps` on the preload
+  bridge). The webapp's `useLocalPorts` swaps each remapped forward's host
+  port for the local one, so the preview pane and its port labels reach
+  the workspace. A browser has no such channel and links the offered port.
 
 ## Containerless servers
 

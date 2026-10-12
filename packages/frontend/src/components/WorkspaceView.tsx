@@ -5,6 +5,7 @@ import { Menu } from '@base-ui/react/menu'
 import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { WorkspacePreview } from '#components/WorkspacePreview'
+import { useLocalPorts } from '#lib/useLocalPorts'
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
@@ -142,7 +143,7 @@ export function WorkspaceView({
   // Forwarded ports open in the embedded preview in the desktop app, and as
   // external-link chips in a browser.
   const embedPreview = isElectron()
-  const previewPorts = workspace?.forwardedPorts ?? []
+  const previewPorts = useLocalPorts(sid, workspace?.forwardedPorts ?? [])
   const chipPorts = embedPreview ? [] : previewPorts
   const previewPortForWorkspace = sid ? previewPortMap[sid] : undefined
   // With several ports, the header's Preview button (and Alt-P) offers a

@@ -794,13 +794,22 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     // Without --port the ports come from the server's `/events` snapshots,
     // bound on another loopback address so they miss the dev server's.
+    // Something else already answers there, so the forwarder moves to the
+    // next free port and says which.
+    const squatter = http.createServer((_req, res) => res.end('some other app'))
+    await new Promise<void>((resolve) => squatter.listen(devPort, OTHER_LOOPBACK, resolve))
     const offered = startForwardCli(workspaceId, '--bind', OTHER_LOOPBACK)
     try {
       await offered.ready()
-      const res = await fetch(`http://${OTHER_LOOPBACK.includes(':') ? `[${OTHER_LOOPBACK}]` : OTHER_LOOPBACK}:${String(devPort)}/`)
+      const moved = new RegExp(`forwarding \\S+:(\\d+) -> \\w+:${String(devPort)} \\(port ${String(devPort)} is in use here\\)`)
+      const localPort = Number(moved.exec(offered.output())?.[1])
+      expect(localPort, offered.output()).toBeGreaterThan(devPort)
+      const host = OTHER_LOOPBACK.includes(':') ? `[${OTHER_LOOPBACK}]` : OTHER_LOOPBACK
+      const res = await fetch(`http://${host}:${String(localPort)}/`)
       expect(await res.text()).toBe('hello from the workspace')
     } finally {
       await offered.stop()
+      squatter.close()
       await tmux(workspaceId, 'kill-window', '-t', 'yaac:dev')
     }
     // A port the workspace is not listening on is refused, not relayed to
