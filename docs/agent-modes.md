@@ -365,27 +365,21 @@ this (v2's `state_update` is still a draft), so each adapter's own is read
 - pi-acp sends `session_info_update` carrying `_meta.piAcp.running`. As yaac
   patches it, that covers a run pi-acp did not start too: pi-acp adopts the
   run at pi's `agent_start` as a turn with no `session/prompt` to answer,
-  and queues prompts behind it. An older install reports only the closing
-  `false` for such a run, so the first thought, tool call or plan update
-  while idle stands in for the start (docs/legacy-compat-shims.md). Plain
-  text does not, since pi-acp also sends text outside any run (an
-  extension's `notify`, its startup prelude) that no `false` would follow.
+  and queues prompts behind it.
 - opencode's ACP server forwards nothing from a turn it did not start, not
   even its content, so such a turn never reaches the record or the pane
   (bsklaroff/yaac#288 tracks the upstream fix).
 
 A conversation is working while either signal says so. The pane's busy
 indicator, Stop and steering follow the combination: a message sent during a
-turn the agent started itself steers into it like any other. pi-acp is the
-exception: its steering patch reaches only turns pi-acp started, so under
-pi such a message queues until pi reports the run settled.
+turn the agent started itself steers into it like any other, and one
+pi-acp cannot steer into such a run queues behind it in pi-acp.
 
 A report the adapter never follows up would pin the conversation running:
-claude's adapter sends no idle once the CLI under it exits, and a start
-inferred for pi has no end report of its own. So the report is dropped when
-Stop is pressed with no prompt of ours running, and when the adapter refuses
-a prompt; a run that goes on reports again. Recovery reads the record the
-same way.
+claude's adapter sends no idle once the CLI under it exits. So the report is
+dropped when Stop is pressed with no prompt of ours running, and when the
+adapter refuses a prompt; a run that goes on reports again. Recovery reads
+the record the same way.
 
 The record projection turns each reported run start into an `agent-turn`
 event. It moves no status; the transcript uses it to keep a self-started

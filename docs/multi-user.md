@@ -165,8 +165,8 @@ server adopts each key's captures into its user's store.
 
 The owner key is opaque to the driver. `credentialOwnerKey` in
 `#domain/auth` makes it the user's id, except for the built-in user, whose
-key is `install` (docs/legacy-compat-shims.md "The built-in user's
-credentials keep the `install` key").
+key is `install`. Running workspaces' registrations name that key, so
+changing it would strand them until they are recreated.
 
 Per-project registries, the build cache and the user-layer repo are keyed
 by project, hence by owner. Registry repositories stay one per project and

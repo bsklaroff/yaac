@@ -27,7 +27,6 @@ vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
 }))
 vi.mock('#drivers/k8s/cluster', () => ({
-  deleteSlugNamedProjectSecrets: vi.fn().mockResolvedValue(undefined),
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   gcOrphanProjectRegistries: vi.fn().mockResolvedValue(undefined),
 }))

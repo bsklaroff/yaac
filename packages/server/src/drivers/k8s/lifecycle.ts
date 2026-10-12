@@ -5,7 +5,7 @@ import {
   setActiveClusterCache,
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
-import { deleteSlugNamedProjectSecrets, ensureMainRegistry } from '#drivers/k8s/cluster'
+import { ensureMainRegistry } from '#drivers/k8s/cluster'
 import {
   PortDetectorManager,
   stopAllWorkspaceForwarders,
@@ -76,8 +76,6 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     // could keep from scheduling. Its failure must not skip the rest.
     await deleteLeakedBuilderPods().catch((err: unknown) =>
       serverLog(`[server] leaked builder pod delete failed: ${String(err)}`))
-    await deleteSlugNamedProjectSecrets().catch((err: unknown) =>
-      serverLog(`[server] slug-named project secrets delete failed: ${String(err)}`))
     // A healthy registry costs one HTTP ping here. The node-address
     // policies are re-rendered by the reconcile pass's node-sync step.
     await ensureMainRegistry()

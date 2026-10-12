@@ -109,15 +109,13 @@ async function holdsRealCredential(owner: string, kind: FakeAuthKind): Promise<b
         ? !isPlaceholderClaudeBundle(creds.claudeAiOauth)
         : creds.apiKey !== PLACEHOLDER_API_KEY
     }
-    // The shared placeholder is what these fakes stored before each tool
-    // had its own (docs/legacy-compat-shims.md).
     case 'opencode-openrouter': {
       const creds = await getToolCredential(owner, 'opencode')
-      return creds !== null && ![PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_API_KEY].includes(creds.apiKey)
+      return creds !== null && creds.apiKey !== PLACEHOLDER_OPENCODE_API_KEY
     }
     case 'pi-openrouter': {
       const creds = await getToolCredential(owner, 'pi')
-      return creds !== null && ![PLACEHOLDER_PI_API_KEY, PLACEHOLDER_API_KEY].includes(creds.apiKey)
+      return creds !== null && creds.apiKey !== PLACEHOLDER_PI_API_KEY
     }
     case 'github':
       return false

@@ -217,8 +217,8 @@ describe('decodeRegistration', () => {
     })
   })
 
-  it('drops a registration without a tool, a project, its lists, or its label', () => {
-    const base = { rules: [], allowedHosts: [], tool: 'claude', projectId: 'demo' }
+  it('drops a registration without a tool, a project, an owner, its lists, or its label', () => {
+    const base = { rules: [], allowedHosts: [], tool: 'claude', projectId: 'demo', owner: 'o' }
     expect(decodeRegistration(cm({ ...base, tool: '' }))).toBeNull()
     expect(decodeRegistration(cm({ ...base, projectId: undefined }))).toBeNull()
     expect(decodeRegistration(cm({ ...base, rules: 'x' }))).toBeNull()
@@ -227,10 +227,7 @@ describe('decodeRegistration', () => {
     expect(decodeRegistration({ metadata: { labels: { [LABEL_WORKSPACE_ID]: 'w1' } }, data: {} })).toBeNull()
     // An empty repoUrl reads as none (an https credential needs a remote).
     expect(decodeRegistration(cm({ ...base, repoUrl: '' }))?.registration.repoUrl).toBeUndefined()
-    // One written before owner keys is kept, owner unset; a malformed owner
-    // (empty, dotted, or not a string) is not a legacy one and is dropped.
-    expect(decodeRegistration(cm(base))?.registration.owner).toBeUndefined()
-    for (const owner of ['', 'a.b', 7]) expect(decodeRegistration(cm({ ...base, owner }))).toBeNull()
+    for (const owner of [undefined, '', 'a.b', 7]) expect(decodeRegistration(cm({ ...base, owner }))).toBeNull()
   })
 })
 

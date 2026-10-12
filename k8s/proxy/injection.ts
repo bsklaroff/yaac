@@ -317,22 +317,22 @@ function headerValue(
  * Swap a tool's API-key placeholder for the real key on an opencode/pi
  * request. Providers differ on the header (`x-api-key` or `Authorization:
  * Bearer`), so the key goes wherever the placeholder is. A request without
- * one of `placeholders` is left alone.
+ * `placeholder` is left alone.
  */
 function swapApiKeyHeader(
   rules: InjectionRule[],
   reqHeaders: http.IncomingHttpHeaders,
-  placeholders: string[],
+  placeholder: string,
   apiKey: string,
 ): void {
   const apiKeyHeader = headerValue(reqHeaders, 'x-api-key')
   const auth = headerValue(reqHeaders, 'authorization')
-  if (apiKeyHeader !== undefined && placeholders.includes(apiKeyHeader)) {
+  if (apiKeyHeader === placeholder) {
     rules.push({
       pathPattern: '*',
       injections: [{ action: 'set_header', name: 'x-api-key', value: apiKey }],
     })
-  } else if (auth !== undefined && placeholders.some((ph) => auth === 'Bearer ' + ph)) {
+  } else if (auth === 'Bearer ' + placeholder) {
     rules.push({
       pathPattern: '*',
       injections: [{ action: 'set_header', name: 'Authorization', value: 'Bearer ' + apiKey }],
@@ -389,15 +389,12 @@ export function buildDynamicRules(
   }
 
   // opencode / pi: API key on the credential's provider host, chosen by the
-  // tool's own placeholder. The shared `PLACEHOLDER_API_KEY` is still
-  // accepted for workspaces launched before the per-tool ones
-  // (docs/legacy-compat-shims.md). Ahead of the claude and codex swaps, so
-  // where a provider host is theirs, their swap of that placeholder lands.
+  // tool's own placeholder.
   if (creds.opencode && hostname === creds.opencode.apiHost) {
-    swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_API_KEY], creds.opencode.apiKey)
+    swapApiKeyHeader(rules, reqHeaders, PLACEHOLDER_OPENCODE_API_KEY, creds.opencode.apiKey)
   }
   if (creds.pi && hostname === creds.pi.apiHost) {
-    swapApiKeyHeader(rules, reqHeaders, [PLACEHOLDER_PI_API_KEY, PLACEHOLDER_API_KEY], creds.pi.apiKey)
+    swapApiKeyHeader(rules, reqHeaders, PLACEHOLDER_PI_API_KEY, creds.pi.apiKey)
   }
 
   if (hostname === ANTHROPIC_API_HOST || hostname === CLAUDE_MCP_PROXY_HOST) {

@@ -44,7 +44,6 @@ vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
 import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
 import {
-  deleteSlugNamedProjectSecrets,
   ensureBuilderRoleGuard,
   ensureCaConfigMap,
   ensureNamespace,
@@ -690,29 +689,6 @@ describe('syncProjectSecrets', () => {
     // An emptied set is applied as such, so a deleted secret stops being injected.
     await syncProjectSecrets(PROJECT_ID, {})
     expect(JSON.parse(b64d(applied()[1].data!['values.json']))).toEqual({})
-  })
-})
-
-describe('deleteSlugNamedProjectSecrets', () => {
-  it('deletes only the proxy secrets objects still labelled by slug', async () => {
-    const secret = (name: string, labels: Record<string, string>) => ({
-      apiVersion: 'v1', kind: 'Secret', metadata: { name, namespace: 'test-ns', labels },
-    })
-    const proxySecrets = { app: 'yaac-proxy', 'yaac.proxy-input': 'secrets' }
-    fakeCluster.seed(
-      secret('yaac-proxy-secrets-demo-1a2b3c4d', { ...proxySecrets, 'yaac.project': 'demo' }),
-      secret(`yaac-proxy-secrets-${PROJECT_ID}`, { ...proxySecrets, 'yaac.project-id': PROJECT_ID }),
-      secret('yaac-proxy-credentials', { app: 'yaac-proxy', 'yaac.proxy-input': 'credentials' }),
-      secret('unrelated', { 'yaac.project': 'demo' }),
-    )
-
-    await deleteSlugNamedProjectSecrets()
-
-    expect(fakeCluster.objects('Secret').map((o) => o.metadata.name).sort()).toEqual([
-      'unrelated', 'yaac-proxy-credentials', `yaac-proxy-secrets-${PROJECT_ID}`,
-    ])
-    // With nothing left to sweep it is a no-op.
-    await expect(deleteSlugNamedProjectSecrets()).resolves.toBeUndefined()
   })
 })
 

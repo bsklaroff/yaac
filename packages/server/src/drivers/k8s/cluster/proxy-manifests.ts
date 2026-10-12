@@ -361,8 +361,8 @@ export function proxyRegistrationName(workspaceId: string): string {
  * One workspace's registration (rules with `secretRef`s but no values,
  * allowed hosts, repo URL, tool, project, owner, test redirects). A
  * ConfigMap, since it holds no secrets. Labelled by workspace and project.
- * Refuses a malformed owner, which the proxy would treat as unknown or, if
- * empty, as a registration from before owner keys.
+ * Refuses a malformed owner, which the proxy would drop the registration
+ * for, failing the workspace closed.
  */
 export function buildRegistrationConfigMapManifest(
   workspaceId: string,

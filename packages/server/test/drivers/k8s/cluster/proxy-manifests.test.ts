@@ -118,8 +118,7 @@ describe('buildRegistrationConfigMapManifest', () => {
     })
     expect(JSON.parse(cm.data['registration.json'])).toEqual(registration)
 
-    // An owner the proxy would read as another key, or as a registration
-    // from before owner keys, is never written.
+    // An owner the proxy would drop the registration for is never written.
     for (const owner of ['', 'a.b']) {
       expect(() => buildRegistrationConfigMapManifest('w1', 'demo', { owner })).toThrow(/owner key/)
     }

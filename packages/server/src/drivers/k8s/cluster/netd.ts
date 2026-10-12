@@ -11,8 +11,6 @@ import {
   TUNNEL_INGRESS_PORT,
   k8sNamespace,
   applyObject,
-  deleteObjects,
-  LABEL_INSTALL_NAMESPACE,
   waitForRollout,
 } from '#drivers/k8s/substrate'
 import { contextHash, prebuiltRef } from '#drivers/k8s/image-engine'
@@ -118,17 +116,6 @@ function buildNetdRoleBindingManifest(): Record<string, unknown> {
     roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: NETD_SA_NAME },
     subjects: [{ kind: 'ServiceAccount', name: NETD_SA_NAME, namespace: k8sNamespace() }],
   }
-}
-
-/**
- * Delete the cluster-wide pod read an older netd was granted, which would
- * otherwise outlive the namespaced Role that replaces it. A legacy-compat
- * shim: see docs/legacy-compat-shims.md.
- */
-async function deleteLegacyNetdClusterRbac(): Promise<void> {
-  const labelSelector = `app=${NETD_APP_NAME},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`
-  await deleteObjects('rbac.authorization.k8s.io/v1', 'ClusterRoleBinding', { labelSelector })
-  await deleteObjects('rbac.authorization.k8s.io/v1', 'ClusterRole', { labelSelector })
 }
 
 interface NetdDaemonSetOptions {
@@ -267,6 +254,4 @@ export async function ensureNetd(): Promise<void> {
       + '(docs/workspace-egress.md). If no pod exists, an admission or quota refusal is '
       + `in \`kubectl -n ${k8sNamespace()} describe ds/${NETD_APP_NAME}\`.`,
   })
-  // After the rollout, so the netd pods being replaced keep their watch.
-  await deleteLegacyNetdClusterRbac()
 }

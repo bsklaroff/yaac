@@ -57,13 +57,9 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
   }
 }
 
-/**
- * Persist atomically at 0600, like everything client-local. `enabled` is
- * written only so an older client, which requires it, can still read the
- * file (docs/legacy-compat-shims.md).
- */
+/** Persist atomically at 0600, like everything client-local. */
 export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
-  await writeJsonFile(serverConfigPath(), { ...cfg, enabled: cfg.url !== '' })
+  await writeJsonFile(serverConfigPath(), cfg)
 }
 
 /**

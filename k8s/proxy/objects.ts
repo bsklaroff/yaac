@@ -132,9 +132,8 @@ export type ProxyRegistration = {
   repoUrl?: string
   tool: string
   projectId: string
-  /** The owner key whose credentials this workspace spends. Absent only on
-   *  a registration written before owner keys (docs/legacy-compat-shims.md). */
-  owner?: string
+  /** The owner key whose credentials this workspace spends. */
+  owner: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -411,8 +410,8 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 
 /**
  * A registration ConfigMap: the workspace id from its label and the payload
- * from `registration.json`. A registration missing `tool` or `projectId`, or
- * with a malformed `owner`, is dropped, so that workspace fails closed.
+ * from `registration.json`. A registration missing `tool`, `projectId` or a
+ * well-formed `owner` is dropped, so that workspace fails closed.
  */
 export function decodeRegistration(
   cm: RawObject,
@@ -424,9 +423,8 @@ export function decodeRegistration(
   if (!Array.isArray(o.rules) || !Array.isArray(o.allowedHosts)) return null
   if (typeof o.tool !== 'string' || !o.tool) return null
   if (typeof o.projectId !== 'string' || !o.projectId) return null
-  // Absent only on a registration from before owner keys; present, it must
-  // be a key the credentials Secret could hold.
-  if (o.owner !== undefined && (typeof o.owner !== 'string' || !OWNER_KEY.test(o.owner))) return null
+  // A key the credentials Secret could hold.
+  if (typeof o.owner !== 'string' || !OWNER_KEY.test(o.owner)) return null
   return {
     workspaceId,
     registration: {

@@ -95,17 +95,10 @@ export class ProxyObjects {
 
   // ── Reads ──────────────────────────────────────────────────────────
 
-  /**
-   * The owner key whose credentials a workspace spends, from its
-   * registration. A registration from before owner keys falls back to the
-   * only owner there is, which is what every such install had
-   * (docs/legacy-compat-shims.md).
-   */
+  /** The owner key whose credentials a workspace spends, from its
+   *  registration. */
   ownerOf(workspaceId: string): string | undefined {
-    const registration = this.registrations.get(workspaceId)
-    if (!registration) return undefined
-    if (registration.owner !== undefined) return registration.owner
-    return this.creds.size === 1 ? [...this.creds.keys()][0] : undefined
+    return this.registrations.get(workspaceId)?.owner
   }
 
   /** One owner's credentials; none for an unknown owner. */

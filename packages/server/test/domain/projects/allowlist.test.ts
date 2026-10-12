@@ -1,12 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { projectConfigDir } from '@yaac/shared/project-paths'
 import {
   addAllowedHostToProject,
   getProjectAllowlist,
-  importConfigAllowlists,
   setProjectAllowlist,
 } from '#domain/projects'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
@@ -31,13 +27,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
-
-const configPath = (id: string): string => path.join(projectConfigDir(id), 'yaac-config.json')
-
-async function seedConfig(id: string, raw: string): Promise<void> {
-  await fs.mkdir(projectConfigDir(id), { recursive: true })
-  await fs.writeFile(configPath(id), raw)
-}
 
 describe('getProjectAllowlist', () => {
   it('starts on the defaults with nothing added', async () => {
@@ -80,56 +69,5 @@ describe('addAllowedHostToProject', () => {
     await addAllowedHostToProject(local, projectId, 'extra.com')
     await addAllowedHostToProject(local, projectId, 'pinned.com')
     expect(await getProjectAllowlist(projectId)).toEqual({ hosts: ['pinned.com', 'extra.com'], defaults: false })
-  })
-})
-
-describe('importConfigAllowlists', () => {
-  it('moves each config allowlist into its project and strips the keys from the file', async () => {
-    await seedConfig(projectId, JSON.stringify({ initCommands: ['make'], addAllowedUrls: ['a.com'] }))
-    await seedConfig(OTHER, JSON.stringify({ setAllowedUrls: ['b.com'] }))
-    await setProjectAllowlist(local, projectId, { hosts: ['kept.com'], defaults: true })
-
-    await importConfigAllowlists()
-
-    expect(await getProjectAllowlist(projectId)).toEqual({ hosts: ['kept.com', 'a.com'], defaults: true })
-    expect(await getProjectAllowlist(OTHER)).toEqual({ hosts: ['b.com'], defaults: false })
-    expect(JSON.parse(await fs.readFile(configPath(projectId), 'utf8'))).toEqual({ initCommands: ['make'] })
-    expect(JSON.parse(await fs.readFile(configPath(OTHER), 'utf8'))).toEqual({})
-
-    // A second start finds nothing to move.
-    await importConfigAllowlists()
-    expect(await getProjectAllowlist(projectId)).toEqual({ hosts: ['kept.com', 'a.com'], defaults: true })
-  })
-
-  it('leaves a malformed file or allowlist, or one with both keys, in place for the user to fix', async () => {
-    const both = { addAllowedUrls: ['a.com'], setAllowedUrls: ['b.com'] }
-    await seedConfig(projectId, '{ broken')
-    await seedConfig(OTHER, JSON.stringify({ addAllowedUrls: 'a.com' }))
-
-    await importConfigAllowlists()
-    expect(await fs.readFile(configPath(projectId), 'utf8')).toBe('{ broken')
-    expect(JSON.parse(await fs.readFile(configPath(OTHER), 'utf8'))).toEqual({ addAllowedUrls: 'a.com' })
-
-    await seedConfig(OTHER, JSON.stringify(both))
-    await importConfigAllowlists()
-    expect(JSON.parse(await fs.readFile(configPath(OTHER), 'utf8'))).toEqual(both)
-    expect(await getProjectAllowlist(OTHER)).toEqual({ hosts: [], defaults: true })
-  })
-
-  it('drops entries that would change effect: unmatchable hosts, and a * beside others', async () => {
-    // A lone `*` in setAllowedUrls allowed everything, so it is kept.
-    await seedConfig(OTHER, JSON.stringify({ setAllowedUrls: ['*'] }))
-    // Elsewhere `*` matched only single-label names, and an uppercase,
-    // scheme, path or port entry never matched the proxy's lowercased host.
-    await seedConfig(projectId, JSON.stringify({
-      addAllowedUrls: ['*', 'ok.example.com', 'Mixed.Example.com', 'https://bad.example.com/x', 'host:8080'],
-    }))
-
-    await importConfigAllowlists()
-
-    expect(await getProjectAllowlist(OTHER)).toEqual({ hosts: ['*'], defaults: false })
-    expect(await getProjectAllowlist(projectId)).toEqual({ hosts: ['ok.example.com'], defaults: true })
-    // What was kept still saves.
-    await addAllowedHostToProject(local, projectId, 'new.example.com')
   })
 })

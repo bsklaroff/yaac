@@ -1,11 +1,10 @@
 import { EventEmitter } from 'node:events'
 import type { execFile } from 'node:child_process'
-import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
+import { adoptLoginShellPath, createAuthDaemonRunner } from '#server-process'
 
 describe('adoptLoginShellPath', () => {
   const inherited = process.env.PATH
@@ -40,44 +39,6 @@ describe('adoptLoginShellPath', () => {
     process.env.PATH = '/usr/bin:/bin'
     await adoptLoginShellPath(exec('welcome back\n'))
     expect(process.env.PATH).toBe('/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin')
-  })
-})
-
-describe('stopLegacyAuthDaemon', () => {
-  let dir: string
-  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }) })
-
-  /** A live process whose command line reads as `extra`. */
-  async function child(...extra: string[]) {
-    const proc = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', ...extra], { stdio: 'ignore' })
-    await new Promise((r) => proc.once('spawn', r))
-    const exited = new Promise((r) => proc.once('exit', (_code, signal) => r(signal)))
-    return { proc, exited }
-  }
-
-  it('signals the daemon an older yaac left and removes its lock', async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-legacy-'))
-    const lock = path.join(dir, '.auth-daemon.lock')
-    const daemon = await child('auth', 'server', 'run')
-    await fs.writeFile(lock, JSON.stringify({ pid: daemon.proc.pid, baseUrl: 'http://x', startedAt: 1 }))
-    await stopLegacyAuthDaemon(lock)
-    expect(await daemon.exited).toBe('SIGTERM')
-    await expect(fs.access(lock)).rejects.toThrow()
-  })
-  it('leaves a process that reused the pid alone, and is a no-op without a lock', async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-legacy-'))
-    const lock = path.join(dir, '.auth-daemon.lock')
-    const other = await child('something', 'else')
-    try {
-      await fs.writeFile(lock, JSON.stringify({ pid: other.proc.pid }))
-      await stopLegacyAuthDaemon(lock)
-      await expect(fs.access(lock)).rejects.toThrow()
-      expect(other.proc.exitCode).toBeNull()
-      expect(other.proc.signalCode).toBeNull()
-      await stopLegacyAuthDaemon(lock)
-    } finally {
-      other.proc.kill()
-    }
   })
 })
 

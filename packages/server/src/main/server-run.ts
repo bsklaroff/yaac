@@ -7,7 +7,6 @@ import type { IdentityEnv } from '#http'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
   authAgentHub,
-  importToolCredentialFiles,
   pushCredentialsToRuntime,
   refreshPlanUsage,
   runtimeMediatesEgress,
@@ -36,7 +35,7 @@ import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-po
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver } from '#drivers/driver'
-import { moveLegacyUserBuildDir, resolveProjectEnv } from '#domain/projects'
+import { resolveProjectEnv } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -510,9 +509,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(lease.instance)
     process.exit(1)
   }
-  // Before the mode settles, since a settled mode admits requests.
-  await moveLegacyUserBuildDir().catch((err: unknown) =>
-    serverLog(`[server] moving the user build dir failed: ${String(err)}`))
   try {
     access = await settleAccessMode()
   } catch (err) {
@@ -521,9 +517,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     return
   }
   serverLog(`[server] access mode: ${access}`)
-  // Before anything reads or pushes the tool credential store.
-  await importToolCredentialFiles()
-    .catch((err: unknown) => serverLog(`[server] importing .credentials/ failed: ${String(err)}`))
   // The ssh agent the server's git signs with (docs/git-credentials.md);
   // needs the DB.
   await startGitSshAgent()

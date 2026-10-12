@@ -230,15 +230,6 @@ describe('ProxyObjects', () => {
     }])
   })
 
-  it('serves a registration from before owner keys from the only owner, and none once there are two', async () => {
-    const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
-    objects.applyRegistration(registrationObject('legacy', { owner: undefined }))
-    await objects.applyCredentials(credentialsSecret({ 'claude.json': { kind: 'api-key', apiKey: 'sk' } }))
-    expect(objects.ownerOf('legacy')).toBe('o')
-    await objects.applyCredentials(credentialsSecret({ 'git-tokens.json': [] }, ['bob', { 'git-tokens.json': [] }]))
-    expect(objects.ownerOf('legacy')).toBeUndefined()
-  })
-
   it('keeps each project’s secret values under its own object', () => {
     const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
     objects.applyProjectSecrets(secretsObject('yaac-proxy-secrets-demo', { 'demo/A': '1', 'demo/B': '2' }))

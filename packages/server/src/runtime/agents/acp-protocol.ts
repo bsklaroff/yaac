@@ -1428,9 +1428,7 @@ export function sessionStateModeId(state: unknown): string | undefined {
  *    `CLAUDE_SDK_MESSAGE` notification, once asked for it in the session's
  *    `_meta` (`CLAUDE_SESSION_META`).
  *  - codex-acp sends `session_info_update` with `_meta.codex.threadStatus`.
- *  - pi-acp sends `session_info_update` with `_meta.piAcp.running`. An
- *    install older than yaac's patch sends only `false` for a run it did not
- *    start; see `AcpAdapterProfile.infersRunStart`.
+ *  - pi-acp sends `session_info_update` with `_meta.piAcp.running`.
  *
  * opencode's ACP server forwards nothing from a turn it did not start, so
  * there is nothing to read.
@@ -1487,17 +1485,4 @@ export function backgroundWorkReport(method: unknown, params: unknown): boolean 
   if (message?.subtype !== 'background_tasks_changed') return undefined
   const tasks = Array.isArray(message.tasks) ? message.tasks : []
   return tasks.some((t) => asRecord(t)?.ambient !== true)
-}
-
-/**
- * Update variants only a run produces; see `AcpAdapterProfile.infersRunStart`.
- * Plain text is not one: pi-acp also sends `agent_message_chunk` outside any
- * run (an extension's `notify`, a UI request it cannot serve, its startup
- * prelude), and no end report would follow it.
- */
-const WORK_UPDATES = new Set(['agent_thought_chunk', 'tool_call', 'tool_call_update', 'plan'])
-
-export function isWorkUpdate(params: unknown): boolean {
-  const kind = asRecord(asRecord(params)?.update)?.sessionUpdate
-  return typeof kind === 'string' && WORK_UPDATES.has(kind)
 }

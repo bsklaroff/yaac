@@ -79,8 +79,7 @@ export function pushCredentialsToRuntime(): Promise<Error | undefined> {
  * never adopted; an api-key or signed-out store is not overwritten; and a
  * compare-and-set skips the write if the store changed meanwhile (that
  * writer stored something at least as fresh). Each owner key's captures
- * go to that user's store, and those a proxy older than owner keys left
- * under `''` to the built-in user's (docs/legacy-compat-shims.md).
+ * go to that user's store.
  */
 export async function adoptRefreshedToolCredentials(
   refreshed: Record<string, RefreshedToolCredentials>,

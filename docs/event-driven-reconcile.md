@@ -113,9 +113,7 @@ way.
 Writes are server-side apply under the field manager `yaac` with `force`. A
 field yaac stops sending is removed only if yaac's apply owns it: a field set
 by a merge patch (an Update, such as the spare claim's labels) stays, and an
-atomic list (a NetworkPolicy's `spec.ingress`) is replaced whole. Objects an
-older install wrote with client-side `kubectl apply` are adopted on their
-first apply (docs/legacy-compat-shims.md). A read returns `null` for an absent
+atomic list (a NetworkPolicy's `spec.ingress`) is replaced whole. A read returns `null` for an absent
 object or resource type, and `isAbsent`/`apiStatus` classify failures by the
 API server's HTTP status rather than by message text.
 

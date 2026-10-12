@@ -15,11 +15,6 @@ import type http from 'node:http'
  */
 export const MAMA_MAGIC_HOST = 'yaac.internal'
 export const MAMA_PATH = '/api/workspace/mama'
-/**
- * Where a yaac-mama script from before the relay POSTs the same envelope.
- * Legacy compat: see docs/legacy-compat-shims.md.
- */
-const LEGACY_MAMA_PATH = '/cmd'
 /** A hosted remote's smart-HTTP paths, as `HOSTED_REMOTE_PREFIX` in
  *  @yaac/shared/hosted-git names them. */
 const HOSTED_GIT_PATH = /^\/api\/workspace\/git\/[0-9a-f-]+\.git\/(info\/refs|git-upload-pack|git-receive-pack)(\?.*)?$/
@@ -34,7 +29,7 @@ const FORWARDED_HEADERS = ['content-type', 'content-length', 'content-encoding',
  * query on that origin.
  */
 export function relayTarget(reqUrl: string, mamaRelayUrl: string): string | null {
-  if (reqUrl === MAMA_PATH || reqUrl === LEGACY_MAMA_PATH) return mamaRelayUrl
+  if (reqUrl === MAMA_PATH) return mamaRelayUrl
   if (HOSTED_GIT_PATH.test(reqUrl)) return new URL(reqUrl, mamaRelayUrl).toString()
   return null
 }

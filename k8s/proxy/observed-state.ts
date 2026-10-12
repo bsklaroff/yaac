@@ -12,8 +12,6 @@ import { isGitSmartHttpPath } from './injection'
 const WRITE_DEBOUNCE_MS = 250
 /** Retry after a failed write; the next change also retries it. */
 const WRITE_RETRY_MS = 5_000
-/** A project id. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export class ObservedState {
   private readonly blockedHosts = new Map<string, Set<string>>()
@@ -29,13 +27,6 @@ export class ObservedState {
       this.blockedHosts.set(workspaceId, new Set(hosts))
     }
     for (const [projectId, entries] of Object.entries(state.gitAuthFailures)) {
-      // An entry keyed by a project slug matches no project any more, so it
-      // is dropped and the record rewritten without it; see
-      // docs/legacy-compat-shims.md.
-      if (!UUID.test(projectId)) {
-        this.scheduleWrite()
-        continue
-      }
       this.gitAuthFailures.set(projectId, new Map(entries.map(({ host, status, atMs }) => [host, { status, atMs }])))
     }
   }

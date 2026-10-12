@@ -150,12 +150,11 @@ describe('buildDynamicRules', () => {
     const both = send(objects, 'openrouter.ai', { 'x-api-key': PH_PI, authorization: `Bearer ${PH_PI}` }, 'pi')
     expect(both['x-api-key']).toBe('sk-or-pi')
     expect(both.authorization).toBe(`Bearer ${PH_PI}`)
-    // A workspace launched before the per-tool placeholders sends the shared
-    // one; pi's swap is applied last, so it is the key that lands.
-    expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_KEY}` }, 'pi').authorization).toBe('Bearer sk-or-pi')
+    // The shared placeholder is claude's and codex's, never opencode's or pi's.
+    expect(send(objects, 'openrouter.ai', { authorization: `Bearer ${PH_KEY}` }, 'pi').authorization).toBe(`Bearer ${PH_KEY}`)
   })
 
-  it('gives claude\'s shared placeholder claude\'s key on a host pi also uses', async () => {
+  it('keeps claude\'s and pi\'s keys apart on a host both use', async () => {
     const objects = await load(
       {
         'claude.json': { kind: 'api-key', apiKey: 'sk-ant-claude' },

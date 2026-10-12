@@ -16,8 +16,7 @@
  * starts by itself, such as a background task finishing, a scheduled
  * wakeup, or a steer codex turns into a turn of its own. Status, the pane's
  * turn boundaries and steering follow either; only `busy` holds back the
- * queue, since most adapters take a prompt while running on their own
- * (pi's is the exception, see `holdsPrompts`).
+ * queue, since adapters take a prompt while running on their own.
  *
  * Between turns, background work the agent started (`backgroundWorkReport`,
  * claude only) makes the status `background` rather than `waiting`.
@@ -53,7 +52,6 @@ import {
   clientCapabilities,
   agentRunningReport,
   backgroundWorkReport,
-  isWorkUpdate,
   permissionReply,
   sessionEffort,
   sessionModeId,
@@ -129,7 +127,7 @@ export interface AcpConversationDeps {
    * adapter's strict default.
    */
   profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass' | 'steers'
-    | 'sessionMeta' | 'capabilitiesMeta' | 'infersRunStart' | 'refusesPromptMidRun'>
+    | 'sessionMeta' | 'capabilitiesMeta'>
   /**
    * The model to send, for adapters that only accept one over the protocol.
    * Sent once after `session/new`, never after `session/load` (the user may
@@ -535,16 +533,6 @@ export class AcpConversation {
     this.wakeStatusWaiters()
   }
 
-  /**
-   * Whether the queue must wait: behind a turn of ours this connection did
-   * not start (a recovered one), or, for an adapter that cannot take a
-   * message mid-run (`AcpAdapterProfile.refusesPromptMidRun`), behind a run
-   * the agent started itself.
-   */
-  private get holdsPrompts(): boolean {
-    return this.busy || (this.deps.profile?.refusesPromptMidRun === true && this.agentRunning === true)
-  }
-
   private wakeStatusWaiters(): void {
     for (const fn of this.statusWaiters) fn()
     this.statusWaiters = []
@@ -557,11 +545,10 @@ export class AcpConversation {
   }
 
   /**
-   * Resolve once nothing holds the queue (`holdsPrompts`). Own turns run
-   * one at a time in `drain`, so this waits out an unclassified
-   * conversation, a recovered turn, which ends via the orphan reply, the
-   * agent exiting, or the conversation closing, and a run the agent started
-   * that `holdsPrompts` waits for, which ends with its idle report or a Stop.
+   * Resolve once nothing holds the queue (`busy`). Own turns run one at a
+   * time in `drain`, so this waits out an unclassified conversation and a
+   * recovered turn, which ends via the orphan reply, the agent exiting, or
+   * the conversation closing.
    *
    * A turn recovered from a torn record (its reply already lost) never
    * ends, so a queue behind it holds until the workspace restarts
@@ -569,7 +556,7 @@ export class AcpConversation {
    * tell that from a long-running turn.
    */
   private whenIdle(): Promise<void> {
-    return this.whenStatus(() => this.statusKnown && !this.holdsPrompts)
+    return this.whenStatus(() => this.statusKnown && !this.busy)
   }
 
   private endTurn(stopReason: Parameters<typeof toStopReason>[0]): void {
@@ -620,19 +607,12 @@ export class AcpConversation {
     }
   }
 
-  /**
-   * Follow the adapter's report of its own state. Inferred starts wait for
-   * `ready`: `session/load` replays history as updates before then.
-   */
+  /** Follow the adapter's report of its own state. */
   private noteAgentState(method: string, params: unknown): void {
     const background = backgroundWorkReport(method, params)
     if (background !== undefined) this.setBackgroundWork(background)
     const running = agentRunningReport(method, params)
     if (running !== undefined) this.setAgentRunning(running)
-    else if (method === ACP.sessionUpdate && this.deps.profile?.infersRunStart === true
-      && this.ready && !this.isBusy && isWorkUpdate(params)) {
-      this.setAgentRunning(true)
-    }
   }
 
   /**
@@ -1326,7 +1306,7 @@ export class AcpConversation {
       this.queue.push({ ...entry, resolve, reject })
       // A message that starts at once was never waiting, so panes are not
       // shown it as queued.
-      if (this.holdsPrompts || this.draining) this.publishQueue()
+      if (this.busy || this.draining) this.publishQueue()
       void this.drain()
     })
   }
@@ -1356,8 +1336,8 @@ export class AcpConversation {
     this.draining = true
     try {
       for (;;) {
-        // Wait out a turn this connection did not start (`holdsPrompts`),
-        // and on a reattach the read that says whether one is running.
+        // Wait out a turn this connection did not start, and on a reattach
+        // the read that says whether one is running.
         await this.whenIdle()
         await this.delivered
         const next = this.queue.shift()
@@ -1415,8 +1395,8 @@ export class AcpConversation {
    *
    * With no prompt of ours running, the adapter's report is dropped at once
    * rather than waiting for that idle report, which may never come: claude's
-   * adapter sends none once its CLI is gone, and a start pi-acp never
-   * reported has no end report either. A run that goes on reports again.
+   * adapter sends none once its CLI is gone. A run that goes on reports
+   * again.
    */
   cancel(): void {
     if (this.sessionId === undefined || !this.isBusy) return
