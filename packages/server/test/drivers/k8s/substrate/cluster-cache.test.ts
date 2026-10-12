@@ -207,7 +207,7 @@ describe('ClusterCache', () => {
     expect(pods?.informer.startCalls).toBe(1)
     expect(pods?.selector).toContain('yaac.workspace-id')
     expect(jobs?.informer.startCalls).toBe(1)
-    expect(jobs?.selector).toContain('yaac.data-dir-hash')
+    expect(jobs?.selector).toContain('yaac.install-id')
 
     // The initial list uses the shared API clients, scoped to the install
     // namespace with the watch's selector.

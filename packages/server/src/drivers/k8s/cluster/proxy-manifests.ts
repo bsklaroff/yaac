@@ -1,7 +1,7 @@
 import {
   BUILDER_ROLE_GUARD_NAME,
   DNS_STUB_PORT,
-  LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_ID,
   LABEL_PROJECT_ID,
   LABEL_PROXY_INPUT,
   LABEL_PROXY_OUTPUT,
@@ -31,7 +31,7 @@ import {
   TRANSPARENT_HTTPS_PORT,
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
-  dataDirHash,
+  installId,
   installSecurityContext,
   k8sNamespace,
 } from '#drivers/k8s/substrate'
@@ -55,10 +55,9 @@ function proxyRunAsSecurityContext(): Record<string, unknown> {
  * dials it pod-to-pod (docs/server-in-cluster.md).
  */
 export function buildProxyDeploymentManifest(imageRef: string): Record<string, unknown> {
-  // The install's data-dir-hash label, as on workspace pods.
   const podLabels = {
     app: PROXY_APP_NAME,
-    [LABEL_DATA_DIR_HASH]: dataDirHash(),
+    [LABEL_INSTALL_ID]: installId(),
   }
   return {
     apiVersion: 'apps/v1',

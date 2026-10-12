@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
-import { clientDataDir, clientLocalPath } from '#paths'
+import { clientLocalPath } from '#paths'
 import { writeJsonFile } from '#json-file'
-import { readInstallRecord, recordInstall } from '#install-record'
+import { recordInstall, retireServerJsonRecord } from '#install-record'
 import type { DriverKind, Principal } from '#types'
 
 /**
@@ -15,7 +15,7 @@ import type { DriverKind, Principal } from '#types'
  * always reach a server by its origin. The file holds no credential: the
  * server identifies the caller from the request (docs/remote-hosting.md,
  * docs/server-selection.md). What kind of install a data dir is lives in
- * its own `install.json` (`#install-record`).
+ * its own `install.json` (`#install-record`), never here.
  */
 export interface SavedServer {
   url: string
@@ -37,6 +37,7 @@ export function serverConfigPath(): string {
  * included in `saved`. Unknown fields are dropped.
  */
 export async function readServerConfig(): Promise<ServerConfig | null> {
+  await retireServerJsonRecord()
   try {
     const raw = await fs.readFile(serverConfigPath(), 'utf8')
     const parsed: unknown = JSON.parse(raw)
@@ -57,26 +58,13 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
   }
 }
 
-/**
- * Persist atomically at 0600, like everything client-local. The client
- * data dir's install record is written beside the selection, for an older
- * `yaac` that reads it only here (docs/legacy-compat-shims.md); reading it
- * first also lifts a legacy record out before this rewrite.
- */
+/** Persist atomically at 0600, like everything client-local. */
 export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
-  const record = await readInstallRecord(clientDataDir())
-  await writeJsonFile(serverConfigPath(), { ...cfg, ...record })
+  await writeJsonFile(serverConfigPath(), cfg)
 }
 
-/**
- * Forget every configured server (`yaac remote unset`). The file stays
- * while it carries the install record (see writeServerConfig).
- */
+/** Forget every configured server (`yaac remote unset`). */
 export async function clearServerConfig(): Promise<void> {
-  if (await readInstallRecord(clientDataDir())) {
-    await writeServerConfig({ url: '', enabled: false, saved: [] })
-    return
-  }
   await fs.rm(serverConfigPath(), { force: true })
 }
 

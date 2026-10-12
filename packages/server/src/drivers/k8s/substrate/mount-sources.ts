@@ -1,17 +1,19 @@
 import path from 'node:path'
 import { globalRoot, nodeLocalRoot, serverLocalRoot } from '@yaac/shared/paths'
-import { dataDirHash } from './api'
+import { installNameKey } from './install-id'
 import type { PodMount } from './pod-spec'
 import { CHECKOUTS_CLAIM_NAME, GLOBAL_CLAIM_NAME, NODE_LOCAL_NODE_ROOT } from './storage-constants'
 
 /**
  * This install's node-local directory on a node:
- * `/var/lib/yaac/node/<hash>`. The install hash keeps installs (and e2e
+ * `/var/lib/yaac/node/<install id>`, which keeps installs (and e2e
  * namespaces) on one cluster apart. On kind an extraMount binds it to
- * `<dataDir>/node-local` on the host (docs/server-in-cluster.md).
+ * `<dataDir>/node-local` on the host (docs/server-in-cluster.md). An
+ * install from before install ids keeps its legacy path
+ * (`installNameKey`), since a kind extraMount cannot change.
  */
 export function nodeLocalNodePath(): string {
-  return `${NODE_LOCAL_NODE_ROOT}/${dataDirHash()}`
+  return `${NODE_LOCAL_NODE_ROOT}/${installNameKey()}`
 }
 
 /**

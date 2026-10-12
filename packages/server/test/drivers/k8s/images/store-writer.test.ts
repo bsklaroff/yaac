@@ -42,7 +42,7 @@ import {
 } from '#drivers/k8s/images/store-writer'
 import { CACHED_GENERATIONS_KEPT, CACHE_TAG_PREFIX } from '#drivers/k8s/images/image-promoter'
 import { imageStoreDir } from '@yaac/shared/project-paths'
-import { dataDirHash, k8sNamespace, nodeLocalHostPath, nodeLocalNodePath } from '#drivers/k8s/substrate'
+import { installId, k8sNamespace, nodeLocalHostPath, nodeLocalNodePath } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
@@ -467,7 +467,7 @@ describe('ensureNodeImageStore', () => {
   // Leftover pods from a crashed run are swept before every build.
   it('sweeps strays from a crashed run before building', async () => {
     stageLiveCluster()
-    const labels = { app: 'yaac-image-store', 'yaac.project-id': ID, 'yaac.store-data-dir-hash': dataDirHash() }
+    const labels = { app: 'yaac-image-store', 'yaac.project-id': ID, 'yaac.install-id': installId() }
     fakeCluster.seed({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'stray', namespace: k8sNamespace(), labels } })
     await ensureNodeImageStore(PROJECT)
     const verbs = fakeCluster.calls.map((c) => `${c.verb} ${c.name ?? ''}`)

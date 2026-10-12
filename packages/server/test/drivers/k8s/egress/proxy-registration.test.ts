@@ -16,8 +16,8 @@ import {
 } from '#drivers/k8s/egress/proxy-registration'
 import { DEFAULT_ALLOWED_HOSTS, NESTED_PULL_HOSTS } from '#lib/allowed-hosts'
 import {
-  LABEL_DATA_DIR_HASH,
-  dataDirHash,
+  LABEL_INSTALL_ID,
+  installId,
   k8sNamespace,
   setActiveClusterCache,
   type ClusterCache,
@@ -392,7 +392,7 @@ describe('reconcileRegistrationGc', () => {
       metadata: {
         name: 'yaac-job-only',
         namespace: k8sNamespace(),
-        labels: { [LABEL_DATA_DIR_HASH]: dataDirHash(), 'yaac.workspace-id': 'job-only', 'yaac.project-id': 'demo' },
+        labels: { [LABEL_INSTALL_ID]: installId(), 'yaac.workspace-id': 'job-only', 'yaac.project-id': 'demo' },
         creationTimestamp: OLD,
       },
     })

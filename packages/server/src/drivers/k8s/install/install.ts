@@ -1,4 +1,5 @@
 import {
+  ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
   ensureNetd,
@@ -15,19 +16,30 @@ import { isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import {
+  GLOBAL_CLAIM_NAME,
+  LABEL_CLAIM,
   LABEL_INSTALL_ID,
+  LABEL_INSTALL_NAMESPACE,
+  NODE_LOCAL_NODE_ROOT,
+  NPM_CACHE_APP_NAME,
   SERVER_APP_NAME,
+  bindInstall,
+  deleteObject,
   ensurePriorityClasses,
   execFileAsync,
+  installId as boundInstallId,
+  type LegacyKeys,
   isAbsent,
   k8sErrorSummary,
   k8sNamespace,
+  legacyHashOf,
   listObjects,
   nodeLocalNodePath,
   processIdentity,
   readObject,
+  runOnEachNode,
 } from '#drivers/k8s/substrate'
-import { registryHost } from '#drivers/k8s/container'
+import { REGISTRY_NAMESPACE, REGISTRY_SERVICE_NAME, registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { buildBuiltinImages } from './builtin-images'
 import { ClusterInstallError, YAAC_CLUSTER_INSTALL, resolveNodeCount, tailnetServeHost } from './arg-guards'
@@ -243,8 +255,9 @@ export async function runClusterInstall(
   const recorded = await readInstallRecord()
   refuseByoSwitch(recorded, opts)
   // Created by the first run and reused, so a run that failed halfway
-  // recognizes the objects it made.
-  const installId = recorded?.installId ?? crypto.randomUUID()
+  // recognizes the objects it made. A test file's own id is used when set.
+  const installId = recorded?.installId ?? env.installId ?? crypto.randomUUID()
+  bindInstall(installId)
 
   const cluster = env.kindCluster
   // A byo install creates no cluster, so it does not need kind.
@@ -252,6 +265,12 @@ export async function runClusterInstall(
 
   // Run the byo checks before changing anything on the cluster or host.
   const byoStorage = opts.byo ? await verifyByoCluster(deps, opts, installId) : undefined
+  let legacy: LegacyKeys = {}
+  if (opts.byo) {
+    legacy = await byoLegacyKeys(deps, recorded)
+    await recordInstall({ legacyDataDirHash: legacy.hash, legacyNames: legacy.names })
+    bindInstall(installId, legacy)
+  }
 
   if (deps.platform === 'darwin') await ensurePodmanMachineSetup(deps)
   else await ensureRootfulPodmanReachable(deps)
@@ -262,7 +281,8 @@ export async function runClusterInstall(
     resetClusterCidrCache()
   } else {
     await preflightKindProvider(deps, kindVersion)
-    if ((await kindNodes(deps, cluster)).length === 0) {
+    const created = (await kindNodes(deps, cluster)).length === 0
+    if (created) {
       await createKindCluster(deps, cluster, nodeCount)
       // Cached node and pod CIDRs belong to whatever cluster this process
       // saw before. Stale pod CIDRs would make netd treat pod-to-pod
@@ -291,9 +311,15 @@ export async function runClusterInstall(
     // Layers go to the kubeconfig's current context, so it must be this
     // machine's kind cluster.
     const current = await verifyKindContext(deps, cluster)
+    // A new cluster names everything after the install id. An older one
+    // keeps the legacy hash its node mounts and volumes were created with.
+    const hash = created ? undefined : recorded?.legacyDataDirHash ?? await readLegacyDataDirHash(false)
+    legacy = hash ? { hash, names: true } : {}
     await recordInstall({
       driver: 'k8s', installId, clusterUid: current.uid, kubeContext: current.context, byo: undefined,
+      legacyDataDirHash: legacy.hash, legacyNames: legacy.names,
     })
+    bindInstall(installId, legacy)
   }
   // Before any layer is applied.
   if (opts.tailnet === true && !opts.byo) await ensureTailnetOperator(deps)
@@ -315,7 +341,8 @@ export async function runClusterInstall(
   await ensureNetd()
   await deployNpmCache(deps)
   // Last: the server depends on every layer above.
-  await deployServer(deps, opts, installId, byoStorage)
+  await deployServer(deps, opts, byoStorage)
+  if (opts.byo && legacy.hash && !legacy.names) await retireLegacyNames(deps, legacy.hash)
 }
 
 interface KindNode {
@@ -332,7 +359,7 @@ interface KindNode {
  * Each node gets two extraMounts. `$HOME → $HOME` lets the static PVs
  * behind the storage claims resolve on the node (docs/server-in-cluster.md
  * "Storage claims"). The second binds `<dataDir>/node-local` to
- * `/var/lib/yaac/node/<hash>`, so node-local data (pnpm and image stores,
+ * `/var/lib/yaac/node/<install id>`, so node-local data (pnpm and image stores,
  * working copies) lives on host disk and survives a cluster delete.
  *
  * Workers are copies of the control-plane entry with the role swapped, so
@@ -749,7 +776,7 @@ async function verifyStorageClasses(
 
 interface RawServerDeployment {
   metadata?: { labels?: Record<string, string> }
-  spec?: { template?: { spec?: { containers?: Array<{ name?: string; env?: Array<{ name?: string; value?: string }> }> } } }
+  spec?: { template?: { metadata?: { labels?: Record<string, string> } } }
 }
 
 /**
@@ -770,16 +797,121 @@ async function verifyInstallIdentity(installId: string): Promise<void> {
   }), `the ${SERVER_APP_NAME} Deployment`)
   const owner = dep?.metadata?.labels?.[LABEL_INSTALL_ID]
   if (dep && owner !== installId) {
-    const dataDir = dep.spec?.template?.spec?.containers
-      ?.find((c) => c.name === 'server')?.env?.find((e) => e.name === 'YAAC_DATA_DIR')?.value
     throw new ClusterInstallError(
       `Namespace ${k8sNamespace()} already runs the yaac server of another install (install id `
-      + `${owner ?? 'unset'}${dataDir ? `, installed from the data dir ${dataDir}` : ''}; `
-      + `this data dir's is ${installId}). Installing over it would take over its storage. Run `
+      + `${owner ?? 'unset'}; this data dir's is ${installId}). Installing over it would take over its storage. Run `
       + 'install from that install\'s data dir (its install.json names that id), or set '
       + 'YAAC_K8S_NAMESPACE to a namespace of this install\'s own.',
     )
   }
+}
+
+/**
+ * Legacy: the data-dir hash an install from before install ids named and
+ * labelled its objects with, read from the cluster rather than hashed from
+ * a path, so a data dir moved before upgrading still finds it: the server
+ * Deployment's pod template, or on kind with the namespace gone, its
+ * `yaac-global` volume. Undefined for an install with no such objects
+ * (docs/legacy-compat-shims.md).
+ */
+async function readLegacyDataDirHash(byo: boolean): Promise<string | undefined> {
+  const dep = await readObject<RawServerDeployment>({
+    apiVersion: 'apps/v1', kind: 'Deployment', name: SERVER_APP_NAME, namespace: k8sNamespace(),
+  })
+  if (dep || byo) return legacyHashOf(dep?.spec?.template?.metadata?.labels)
+  const volumes = await listObjects<{ metadata?: { labels?: Record<string, string> } }>('v1', 'PersistentVolume', {
+    labelSelector: `${LABEL_CLAIM}=${GLOBAL_CLAIM_NAME},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`,
+  })
+  return volumes.map((v) => legacyHashOf(v.metadata?.labels)).find((hash) => hash !== undefined)
+}
+
+/**
+ * Legacy: what a byo install from before install ids still carries. Its
+ * names move to the install id at the first run that finds nothing
+ * mounting its old node tree, and that is recorded at once, so no later run
+ * goes back to them. The hash stays recorded (for the new server's
+ * relabel) until `retireLegacyNames` has removed what was named after it.
+ */
+async function byoLegacyKeys(deps: ClusterInstallDeps, recorded: InstallRecord | null): Promise<LegacyKeys> {
+  const hash = recorded?.legacyDataDirHash ?? await readLegacyDataDirHash(true)
+  if (!hash) return {}
+  // Recorded without `legacyNames`: the names have switched already.
+  if (recorded?.legacyDataDirHash && !recorded.legacyNames) return { hash }
+  return await legacyTreeMounts(hash) === 0 ? { hash } : deferSwitch(deps, hash)
+}
+
+function deferSwitch(deps: ClusterInstallDeps, hash: string): LegacyKeys {
+  deps.log(
+    `note: pods still mount this install's node tree ${NODE_LOCAL_NODE_ROOT}/${hash}, so its node path and `
+    + 'cache claims keep that name. They move to the install id on the first `yaac cluster install` '
+    + 'that finds none.',
+  )
+  return { hash, names: true }
+}
+
+/**
+ * Legacy: how many pods, in any namespace, mount the old node tree. Another
+ * install from the same data-dir path shares it. This install's own server
+ * pods are left out: the rollout replaces them. A failed read counts as in
+ * use.
+ */
+async function legacyTreeMounts(hash: string): Promise<number> {
+  const root = `${NODE_LOCAL_NODE_ROOT}/${hash}`
+  const pods = await listObjects<{
+    metadata?: { namespace?: string; labels?: Record<string, string> }
+    spec?: { volumes?: Array<{ hostPath?: { path?: string } }> }
+  }>('v1', 'Pod').catch(() => null)
+  if (pods === null) return Infinity
+  return pods.filter((p) =>
+    !(p.metadata?.namespace === k8sNamespace() && p.metadata.labels?.app === SERVER_APP_NAME)
+    && p.spec?.volumes?.some((v) => v.hostPath?.path === root || v.hostPath?.path?.startsWith(`${root}/`))).length
+}
+
+/**
+ * Legacy: once the server runs under the install id's names, delete the
+ * cache claims named after the hash (the registry and npm cache already run
+ * on fresh ones) and the old node tree on every node, then drop the hash
+ * from the record. The tree is checked again first, since the old server
+ * could launch a workspace on it until it rolled; one still mounted is
+ * kept, with the hash, for a later run (docs/legacy-compat-shims.md).
+ */
+async function retireLegacyNames(deps: ClusterInstallDeps, hash: string): Promise<void> {
+  const claims: Array<[string, string]> = [
+    [`${REGISTRY_SERVICE_NAME}-storage-${hash}`, REGISTRY_NAMESPACE],
+    [`${NPM_CACHE_APP_NAME}-storage-${hash}`, k8sNamespace()],
+  ]
+  for (const [name, namespace] of claims) {
+    await deleteObject({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', name, namespace })
+  }
+  const mounts = await legacyTreeMounts(hash)
+  if (mounts > 0) {
+    deps.log(
+      `note: ${NODE_LOCAL_NODE_ROOT}/${hash} is kept, since pods still mount it. A later \`yaac cluster `
+      + 'install` removes it once none do.',
+    )
+    return
+  }
+  deps.log(`Removing ${NODE_LOCAL_NODE_ROOT}/${hash}, the node tree the install used before install ids...`)
+  const image = await ensureBuilderImage()
+  const runs = await runOnEachNode({
+    name: 'yaac-legacy-node-tree',
+    labels: { app: 'yaac-legacy-node-tree', [LABEL_INSTALL_ID]: boundInstallId() },
+    timeoutMs: 5 * 60_000,
+    pod: () => ({
+      image,
+      command: ['rm', '-rf', `/node/${hash}`],
+      container: { securityContext: { runAsUser: 0 }, volumeMounts: [{ name: 'node', mountPath: '/node' }] },
+      spec: { volumes: [{ name: 'node', hostPath: { path: NODE_LOCAL_NODE_ROOT, type: 'DirectoryOrCreate' } }] },
+    }),
+  })
+  const failed = runs.filter((r) => r.phase !== 'Succeeded').map((r) => r.node)
+  if (failed.length > 0) {
+    throw new ClusterInstallError(
+      `Could not remove ${NODE_LOCAL_NODE_ROOT}/${hash} on ${failed.join(', ')}. Re-run \`yaac cluster install\` `
+      + 'to retry.',
+    )
+  }
+  await recordInstall({ legacyDataDirHash: undefined })
 }
 
 /**
@@ -922,14 +1054,12 @@ async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
 async function deployServer(
   deps: ClusterInstallDeps,
   opts: ClusterInstallOptions,
-  installId: string,
   byoStorage: { rwx: string; rwo: string } | undefined,
 ): Promise<void> {
   if (byoStorage) {
     const origin = await deployServerWorkload({
       fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
       identity: BYO_INSTALL_IDENTITY,
-      installId,
       owner: opts.owner,
       storage: { kind: 'classes', ...byoStorage },
       log: deps.log,
@@ -954,7 +1084,7 @@ async function deployServer(
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deployServerWorkload({
-    fronting, identity, installId, storage: { kind: 'static' }, torHostAddr, owner: opts.owner, log: deps.log,
+    fronting, identity, storage: { kind: 'static' }, torHostAddr, owner: opts.owner, log: deps.log,
   })
   deps.log(`The yaac server is serving at ${origin}`)
 }

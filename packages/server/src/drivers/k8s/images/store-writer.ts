@@ -21,7 +21,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   LABEL_PROJECT_ID,
-  dataDirHash,
+  LABEL_INSTALL_ID,
+  installId,
   k8sNamespace,
   listObjects,
   nodeLocalHostPath,
@@ -50,10 +51,6 @@ export const DONE_MARKER = '.yaac-store-done'
 /** `app` label of every store-writer pod. */
 const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
 
-/** Ties writer pods to this install without the workspace-id label the
- *  workspace reaper selects on. */
-const LABEL_STORE_DATA_DIR_HASH = 'yaac.store-data-dir-hash'
-
 /** How often one project's store is refreshed. A salvage that pushed
  *  something forces an earlier refresh. */
 export const STORE_REFRESH_INTERVAL_MS = 30 * 60_000
@@ -72,7 +69,7 @@ function storeLabels(projectId: string): Record<string, string> {
   return {
     app: IMAGE_STORE_APP_LABEL,
     [LABEL_PROJECT_ID]: projectId,
-    [LABEL_STORE_DATA_DIR_HASH]: dataDirHash(),
+    [LABEL_INSTALL_ID]: installId(),
   }
 }
 

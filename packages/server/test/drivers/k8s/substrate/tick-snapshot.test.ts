@@ -3,7 +3,7 @@ import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 import {
   createTickSnapshot,
-  dataDirHash,
+  installId,
   setActiveClusterCache,
   type ClusterCache,
   type PodInfo,
@@ -23,7 +23,7 @@ function rawPod(name: string) {
         'yaac.workspace-id': SID,
         'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
         'yaac.tool': 'claude',
-        'yaac.data-dir-hash': dataDirHash(),
+        'yaac.install-id': installId(),
       },
       creationTimestamp: '2026-06-01T00:00:00Z',
     },
@@ -70,10 +70,10 @@ describe('createTickSnapshot', () => {
     await snap.jobs()
     await snap.jobs()
     expect(fakeCluster.callsOf('list')).toHaveLength(2)
-    // Each fallback is scoped install-wide by data-dir hash.
+    // Each fallback is scoped install-wide by install id.
     expect(fakeCluster.callsOf('list', 'Pod')[0]).toMatchObject({
       namespace: 'test-ns',
-      labelSelector: expect.stringMatching(/^yaac\.data-dir-hash=[0-9a-f]{16},yaac\.workspace-id$/) as unknown,
+      labelSelector: expect.stringMatching(/^yaac\.install-id=test-install,yaac\.workspace-id$/) as unknown,
     })
   })
 

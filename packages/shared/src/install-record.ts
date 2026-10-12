@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- the record sits at the data dir's root, outside every tier
@@ -41,9 +42,24 @@ export interface InstallRecord {
    * other origin, loopback or not, may not.
    */
   origin?: string
+  /**
+   * Legacy: the data-dir hash an install from before install ids named and
+   * labelled its cluster objects with, read back from the cluster by `yaac
+   * cluster install`. Set while anything is still named after it
+   * (docs/legacy-compat-shims.md).
+   */
+  legacyDataDirHash?: string
+  /**
+   * Legacy: the install's names and node path still carry
+   * `legacyDataDirHash`. Once dropped it is never set again, so a re-run
+   * never goes back to the hash's names.
+   */
+  legacyNames?: boolean
 }
 
-const INSTALL_KEYS = ['driver', 'installId', 'clusterUid', 'kubeContext', 'byo', 'origin'] as const
+const INSTALL_KEYS = [
+  'driver', 'installId', 'clusterUid', 'kubeContext', 'byo', 'origin', 'legacyDataDirHash', 'legacyNames',
+] as const
 
 /** The record's known fields, dropping unset and malformed ones. */
 function installFields(raw: Record<string, unknown>): InstallRecord {
@@ -55,6 +71,12 @@ function installFields(raw: Record<string, unknown>): InstallRecord {
     kubeContext: str(raw.kubeContext),
     byo: raw.byo === true ? true : undefined,
     origin: str(raw.origin),
+    // It ends up in a root `rm -rf` path, so anything but the hash's shape
+    // is dropped.
+    legacyDataDirHash: typeof raw.legacyDataDirHash === 'string' && /^[0-9a-f]{16}$/.test(raw.legacyDataDirHash)
+      ? raw.legacyDataDirHash
+      : undefined,
+    legacyNames: raw.legacyNames === true ? true : undefined,
   }
   for (const key of INSTALL_KEYS) if (out[key] === undefined) delete out[key]
   return out
@@ -64,48 +86,37 @@ export function installRecordPath(dataDir = getDataDir()): string {
   return path.join(dataDir, 'install.json')
 }
 
-/**
- * Null for an absent or malformed record. A malformed one (a crash
- * mid-write) is re-lifted when `server.json` still holds the record.
- */
+/** Null for an absent or malformed record. */
 export async function readInstallRecord(dataDir = getDataDir()): Promise<InstallRecord | null> {
+  if (dataDir === clientDataDir()) await retireServerJsonRecord()
   const raw = await readJsonFile(installRecordPath(dataDir))
-  if (raw !== 'absent' && raw !== null) return installFields(raw)
-  return liftLegacyRecord(dataDir, raw === 'absent')
+  return raw === 'absent' || raw === null ? null : installFields(raw)
 }
 
 /**
- * Legacy: an install from before `install.json` kept its record in the
- * client tier's `server.json`, beside the selection. Copy it here the first
- * time it is asked for, without overwriting a record another process wrote
- * meanwhile (docs/legacy-compat-shims.md).
+ * Legacy: older installs kept the client data dir's record in the client
+ * tier's `server.json`, beside the selection. Move it out: into
+ * `install.json` when that is missing or torn (an existing one wins, being
+ * what the record was copied from), and out of `server.json`, which is
+ * deleted when all that is left is an empty selection
+ * (docs/legacy-compat-shims.md). Runs from `readServerConfig` and from
+ * `readInstallRecord` for the client data dir, so the first command of any
+ * kind cleans the file.
  */
-async function liftLegacyRecord(dataDir: string, absent: boolean): Promise<InstallRecord | null> {
-  if (dataDir !== clientDataDir()) return null
-  const raw = await readJsonFile(clientLocalPath('server.json'))
-  if (raw === 'absent' || raw === null) return null
-  const record = installFields(raw)
-  if (Object.keys(record).length === 0) return null
-  if (!await writeJsonFile(installRecordPath(dataDir), record, { exclusive: absent })) {
-    return readInstallRecord(dataDir)
-  }
-  return record
-}
-
-/**
- * Legacy: an older `yaac` reads the record only from `server.json`, so the
- * client data dir's record is kept there too, or an older CLI on PATH would
- * take a cluster's `~/.yaac` for a containerless one
- * (docs/legacy-compat-shims.md). `writeServerConfig` adds it to every
- * rewrite; this covers a record changing.
- */
-async function mirrorIntoServerJson(record: InstallRecord): Promise<void> {
+export async function retireServerJsonRecord(): Promise<void> {
   const file = clientLocalPath('server.json')
   const raw = await readJsonFile(file)
-  const selection = raw === 'absent' || raw === null
-    ? { url: '', enabled: false, saved: [] }
-    : { url: raw.url ?? '', enabled: raw.enabled ?? false, saved: raw.saved ?? [] }
-  await writeJsonFile(file, { ...selection, ...record })
+  if (raw === 'absent' || raw === null || !INSTALL_KEYS.some((key) => key in raw)) return
+  const record = installFields(raw)
+  const target = installRecordPath(clientDataDir())
+  const existing = await readJsonFile(target)
+  if (Object.keys(record).length > 0 && (existing === 'absent' || existing === null)) {
+    await writeJsonFile(target, record, { exclusive: existing === 'absent' })
+  }
+  const selection = Object.fromEntries(Object.entries(raw).filter(([key]) => !(INSTALL_KEYS as readonly string[]).includes(key)))
+  const empty = (selection.url ?? '') === '' && (!Array.isArray(selection.saved) || selection.saved.length === 0)
+  if (empty) await fs.rm(file, { force: true })
+  else await writeJsonFile(file, selection)
 }
 
 /**
@@ -116,7 +127,6 @@ async function mirrorIntoServerJson(record: InstallRecord): Promise<void> {
 export async function recordInstall(patch: InstallRecord): Promise<void> {
   const record = installFields({ ...await readInstallRecord(), ...patch })
   await writeJsonFile(installRecordPath(), record)
-  if (getDataDir() === clientDataDir()) await mirrorIntoServerJson(record)
 }
 
 /**

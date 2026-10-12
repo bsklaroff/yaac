@@ -426,7 +426,8 @@ Things to know when reading a failure there:
   origin `yaac cluster start|restart` wait on.
 - The server's ClusterRole and ClusterRoleBinding are named
   `yaac-server-<namespace>`, and the PersistentVolumes are named by the
-  file's data-dir hash, so every concurrent file has its own. None of these
+  install id the harness mints for each server it sets up, so every
+  concurrent file has its own. None of these
   are deleted with a namespace, so per-file teardown and the global sweep
   delete them by their install-namespace label. The volumes are `Retain`,
   so no data is touched.
@@ -457,16 +458,26 @@ paths, which the Deployment names in three variables:
 
 | Tier | Pod mount | Variable | Backing on kind | Backing on byo |
 |---|---|---|---|---|
-| GLOBAL | `/yaac/global` | `YAAC_GLOBAL_ROOT` | PVC `yaac-global` (RWX) → PV `yaac-global-<hash>` → hostPath `<dataDir>/global` | PVC `yaac-global` (RWX) from the NFS-family class given to install |
-| SERVER-LOCAL | `/yaac/server-local` | `YAAC_SERVER_LOCAL_ROOT` | PVC `yaac-server-local` (RWO) → PV `yaac-server-local-<hash>` → hostPath `<dataDir>/server-local` | PVC `yaac-server-local` (RWO) from the RWO class |
-| NODE-LOCAL | `/yaac/node-local` | `YAAC_NODE_LOCAL_ROOT` | hostPath `/var/lib/yaac/node/<hash>` on the node, which a kind extraMount binds to `<dataDir>/node-local` | the same hostPath, on the node's own disk |
+| GLOBAL | `/yaac/global` | `YAAC_GLOBAL_ROOT` | PVC `yaac-global` (RWX) → PV `yaac-global-<install id>` → hostPath `<dataDir>/global` | PVC `yaac-global` (RWX) from the NFS-family class given to install |
+| SERVER-LOCAL | `/yaac/server-local` | `YAAC_SERVER_LOCAL_ROOT` | PVC `yaac-server-local` (RWO) → PV `yaac-server-local-<install id>` → hostPath `<dataDir>/server-local` | PVC `yaac-server-local` (RWO) from the RWO class |
+| NODE-LOCAL | `/yaac/node-local` | `YAAC_NODE_LOCAL_ROOT` | hostPath `/var/lib/yaac/node/<install id>` on the node, which a kind extraMount binds to `<dataDir>/node-local` | the same hostPath, on the node's own disk |
 
-Inside the pod, `YAAC_DATA_DIR` still names the host's data dir. There it is
-only an identity string: `dataDirHash()`, every label and the registry claim
-name hash it, so none of them change across the storage boundary. The path
-helpers resolve into the three roots, which the Deployment sets. A host
-process never sets these variables, so under containerless the tiers are
-just three folders of one directory.
+The install's identity is its install id (`installId()`), the random UUID
+the first `yaac cluster install` records in `install.json`, never the data
+dir's path. Every object the install creates carries it as
+`yaac.install-id`, and the install-keyed names above and the cache claims carry it
+too, so moving the data dir changes nothing in the cluster. A host `yaac
+cluster …` command binds the id its data dir records; the pod gets it as
+`YAAC_INSTALL_ID` and is not told the data dir at all. Every selector pairs
+the install label with a key that tells its kind of object apart
+(`yaac.workspace-id`, `yaac.role`, `app`, `yaac.claim`), since every kind
+carries the same one. An install from before install ids keeps names after
+a hash of its data dir's path until it can drop them
+(docs/legacy-compat-shims.md).
+
+The path helpers resolve into the three roots, which the Deployment sets. A
+host process never sets these variables, so under containerless the tiers
+are just three folders of one directory.
 
 NODE-LOCAL holds nothing durable: per project, the pnpm store and the
 per-workspace module dirs, the image-store generations
@@ -478,11 +489,11 @@ the pod mounts, a node-side writer pod fills the image store, and
 `reapNodeLocal` runs one root pod per node to remove what no live workspace
 owns.
 
-The claims have **fixed names** and the volumes have **hashed names**. A
+The claims have **fixed names** and the volumes have **install-keyed names**. A
 claim is namespaced and belongs to one install, so every install namespace
 uses `yaac-global`. A PersistentVolume is cluster-scoped, and one cluster can
 host several installs (the real one and every e2e namespace), so its name
-includes the install hash and its `claimRef` pins it to its own namespace's
+includes the install id and its `claimRef` pins it to its own namespace's
 claim. On kind every volume is `Retain` with an empty storage class: no
 provisioner, and deleting a claim or namespace never touches the hostPath.
 `kind delete` removes the objects with the cluster and leaves the bytes
@@ -527,12 +538,12 @@ binds `yaac-checkouts` (step 4):
    id (`yaac.install-id`, the random `installId` the first run recorded in
    `install.json`), namespace, and claim name (`yaac.claim`). It clears that
    volume's stale `claimRef` and pre-binds the new claim to it by
-   `volumeName`, instead of provisioning two empty volumes. The match uses
-   the install id, not the data-dir hash, because the hash is of a path and
-   `/root/.yaac` on two machines is two installs. A volume that matches the
-   hash but not the id is refused, with the one-line relabel that adopts it
-   deliberately. This install's own volume under a different class is
-   refused too.
+   `volumeName`, instead of provisioning two empty volumes. The server
+   Deployment's name is fixed, so a namespace holds one install, and a
+   loose volume for the claim with another install id is an earlier
+   install's (a lost `install.json`). It is refused, with the one-line
+   relabel that adopts it deliberately and the one that leaves it be. This
+   install's own volume under a different class is refused too.
 2. **Bind with a binder pod.** A `WaitForFirstConsumer` class (the usual
    block class, and local-path) binds nothing until a pod is scheduled, so
    install runs one: `yaac-storage-bind`, runc, root, with both claims

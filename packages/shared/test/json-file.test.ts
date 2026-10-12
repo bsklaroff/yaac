@@ -36,6 +36,14 @@ describe('writeJsonFile', () => {
     expect(await fs.readdir(path.dirname(file))).toEqual(['x.json'])
   })
 
+  it('removes its temp file when the write fails', async () => {
+    // A directory in the way makes the rename fail.
+    const file = path.join(dir, 'x.json')
+    await fs.mkdir(path.join(file, 'child'), { recursive: true })
+    await expect(writeJsonFile(file, { a: 1 })).rejects.toThrow()
+    expect(await fs.readdir(dir)).toEqual(['x.json'])
+  })
+
   it('with exclusive, never replaces a file another writer put there first', async () => {
     const file = path.join(dir, 'x.json')
     expect(await writeJsonFile(file, { first: true }, { exclusive: true })).toBe(true)

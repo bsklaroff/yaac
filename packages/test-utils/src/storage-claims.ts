@@ -4,8 +4,8 @@ import { deleteStorageVolumes, ensureStorageClaims } from '@yaac/server/drivers/
 import {
   LABEL_INSTALL_NAMESPACE,
   applyObject,
-  dataDirHash,
   deleteObjects,
+  installId,
   k8sNamespace,
   processIdentity,
 } from '@yaac/server/drivers/k8s/substrate'
@@ -20,7 +20,7 @@ import { localPathClass, nfsClass } from '#kind-byo'
  * them a workspace pod stays Pending. `deployTestServer` calls this.
  *
  * On kind: hostPath volumes into `<dataDir>/global` and
- * `<dataDir>/server-local`, named by the data dir's hash.
+ * `<dataDir>/server-local`, named by the install id.
  *
  * On kind-byo: storage classes of the file's own, built like kind-byo's but
  * pointed at the same two folders. Host-side reads and writes keep working,
@@ -39,8 +39,8 @@ export async function ensureTestStorageClaims(binderImage: string): Promise<void
     return
   }
   const root = kindByoLayout().dataDir
-  const rwx = `yaac-test-nfs-${dataDirHash()}`
-  const rwo = `yaac-test-local-${dataDirHash()}`
+  const rwx = `yaac-test-nfs-${installId()}`
+  const rwo = `yaac-test-local-${installId()}`
   // Classes are cluster-scoped; the label lets the sweep find them.
   const labelled = (cls: Record<string, unknown>): Record<string, unknown> => ({
     ...cls,
@@ -48,16 +48,15 @@ export async function ensureTestStorageClaims(binderImage: string): Promise<void
   })
   await applyObject(labelled(nfsClass(rwx, path.relative(root, globalRoot()))))
   await applyObject(labelled(localPathClass(rwo, root, path.relative(root, serverLocalRoot()), false)))
-  const installId = `test-${dataDirHash()}`
   // The volume roots are this host's tiers, which already hold files (e.g.
   // the host log). Mark them as this install's, or the binder would refuse
   // them as another install's.
   for (const tier of [globalRoot(), serverLocalRoot()]) {
     await fs.mkdir(tier, { recursive: true })
-    await fs.writeFile(path.join(tier, '.yaac-install'), installId)
+    await fs.writeFile(path.join(tier, '.yaac-install'), installId())
   }
   await ensureStorageClaims({
-    shape: { kind: 'classes', rwx, rwo, identity: processIdentity(), installId, binderImage },
+    shape: { kind: 'classes', rwx, rwo, identity: processIdentity(), binderImage },
   })
 }
 

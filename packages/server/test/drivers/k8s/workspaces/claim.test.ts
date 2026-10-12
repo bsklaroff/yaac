@@ -15,7 +15,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }))
 
 import { claimSpareWorkspace, registerWorkspace } from '#drivers/k8s/workspaces/claim'
-import { LABEL_DATA_DIR_HASH, LABEL_PREWARMED, LABEL_TOOL, dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { LABEL_INSTALL_ID, LABEL_PREWARMED, LABEL_TOOL, installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { LABEL_NPM_CACHE, NPM_CACHE_APP_NAME } from '#drivers/k8s/substrate/proxy-constants'
 import type { WorkspaceRegistration } from '#drivers/contract'
 
@@ -29,7 +29,7 @@ function pod(workspaceId: string, labels: Record<string, string> = {}): Paramete
       namespace: k8sNamespace(),
       resourceVersion: '7',
       labels: {
-        [LABEL_DATA_DIR_HASH]: dataDirHash(),
+        [LABEL_INSTALL_ID]: installId(),
         'batch.kubernetes.io/job-name': `yaac-proj-${workspaceId}`,
         'yaac.workspace-id': workspaceId,
         'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',

@@ -4,7 +4,6 @@ import type * as apiModule from '#drivers/k8s/substrate/api'
 
 vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...(await importOriginal<typeof apiModule>()),
-  dataDirHash: () => 'ddh0123456789abc',
 }))
 
 import { nodeLocalDirsOf, nodeLocalHostPath, resolveMountSource } from '#drivers/k8s/substrate'
@@ -19,7 +18,7 @@ import {
 } from '@yaac/shared/project-paths'
 import { secretKeyPath } from '@yaac/shared/project-paths'
 
-const NODE_ROOT = '/var/lib/yaac/node/ddh0123456789abc'
+const NODE_ROOT = '/var/lib/yaac/node/test-install'
 
 afterEach(() => {
   setDataDir('')

@@ -52,7 +52,6 @@ import {
 // Setup values and test hooks, not units under test.
 import {
   LABEL_NODE_WRITE,
-  LABEL_REGISTRY_DATA_DIR_HASH,
   LABEL_REGISTRY_SERVES,
   PROJECT_REGISTRY_PORT,
   PROJECT_REGISTRY_STORAGE_SIZE,
@@ -68,7 +67,7 @@ import {
   projectRegistryPvcName,
 } from '#drivers/k8s/cluster/project-registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import { dataDirHash } from '#drivers/k8s/substrate'
+import { LABEL_INSTALL_ID, installId } from '#drivers/k8s/substrate'
 import { pushImageToRegistry, registryHasTag } from '#drivers/k8s/container/registry'
 import { imageExists } from '#drivers/k8s/container/runtime'
 
@@ -78,10 +77,10 @@ const mockImageExists = vi.mocked(imageExists)
 
 const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const registrySelector = (id: string): string =>
-  `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()},yaac.project-id=${id}`
+  `app=${REGISTRY_APP_LABEL},${LABEL_INSTALL_ID}=${installId()},yaac.project-id=${id}`
 /** The labels every registry object of project `id` carries. */
 const registryLabels = (id: string): Record<string, string> => ({
-  app: REGISTRY_APP_LABEL, [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(), 'yaac.project-id': id,
+  app: REGISTRY_APP_LABEL, [LABEL_INSTALL_ID]: installId(), 'yaac.project-id': id,
 })
 
 const NODE_IP = '10.89.0.7'
@@ -501,7 +500,7 @@ describe('gcOrphanProjectRegistries', () => {
 
     expect(remaining()).toEqual([LIVE, '5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9', '6f7a8b9c-0d1e-4f2a-b3c4-d5e6f7a8b9c0'].sort())
     // Only this install's registries are listed.
-    const installSelector = `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`
+    const installSelector = `app=${REGISTRY_APP_LABEL},${LABEL_INSTALL_ID}=${installId()}`
     expect(fakeCluster.callsOf('list').filter((c) => c.kind !== 'Pod' && c.labelSelector === installSelector)
       .map((c) => c.kind).sort()).toEqual(['Deployment', 'PersistentVolumeClaim', 'Service'])
   })
@@ -591,7 +590,7 @@ describe('reconcileProjectRegistryGc', () => {
             matchLabels: {
               app: REGISTRY_APP_LABEL,
               'yaac.project-id': ID,
-              [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
+              [LABEL_INSTALL_ID]: installId(),
             },
             // Excludes one-shot pods, whose node says nothing about the volume.
             matchExpressions: [{ key: LABEL_NODE_WRITE, operator: 'DoesNotExist' }],

@@ -80,7 +80,6 @@ vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
 vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...await importOriginal<typeof apiModule>(),
   k8sNamespace: vi.fn(() => 'test-ns'),
-  dataDirHash: vi.fn(() => 'ddh16'),
   // The rollout waits: every workload rolls out at once.
   execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
 }))
@@ -266,7 +265,7 @@ import {
   TAILSCALE_OPERATOR_NAMESPACE,
   nodeLocalNodePath,
 } from '#drivers/k8s/substrate'
-import { nodeLocalRoot } from '@yaac/shared/paths'
+import { getDataDir, nodeLocalRoot, setDataDir } from '@yaac/shared/paths'
 import { installRecordPath, readInstallRecord, recordInstall, type InstallRecord } from '@yaac/shared/install-record'
 import { readServerConfig, serverConfigPath } from '@yaac/shared/server-config'
 import { DEFAULT_CLUSTER_SERVER_PORT } from '@yaac/shared/server-port'
@@ -470,12 +469,27 @@ interface AdoptFacts {
   nodeInfo?: Record<string, string>
   /** The StorageClasses the cluster serves (default BYO_CLASSES). */
   classes?: object[]
-  /** A server Deployment already in the namespace, and whose it is. */
-  deployed?: { installId?: string; dataDir: string }
+  /**
+   * A server Deployment already in the namespace: whose it is, and the
+   * data-dir hash an install from before install ids labelled its pods with.
+   */
+  deployed?: { installId?: string; legacyHash?: string }
+  /** Pods, in any namespace, with a hostPath volume at `path`. */
+  mounting?: Array<{ namespace: string; path: string }>
   /** The current context's cluster: its kube-system namespace's uid. */
   clusterUid?: string
   /** kubectl's current context (default `byo-context`). */
   context?: string
+}
+
+/** A running pod mounting a node path, as a workspace mounts its node-local dirs. */
+function mountingPod(name: string, namespace: string, path: string): FakeObject {
+  return {
+    apiVersion: 'v1', kind: 'Pod',
+    metadata: { name, namespace, labels: { 'yaac.workspace-id': name } },
+    spec: { volumes: [{ name: 'node', hostPath: { path } }] },
+    status: { phase: 'Running' },
+  }
 }
 
 /** The Tailscale operator's objects, which `--tailnet` and `--byo` look for. */
@@ -520,6 +534,7 @@ function adoptRun(facts: AdoptFacts = {}): RunMock {
       spec: { nodeName: pod.node },
       status: { phase: pod.phase ?? 'Running' },
     })),
+    ...(facts.mounting ?? []).map((m, i) => mountingPod(`yaac-w${String(i)}`, m.namespace, m.path)),
   ])
   replaceKind('PriorityClass', facts.systemNodeCritical === false ? [] : [
     { apiVersion: 'scheduling.k8s.io/v1', kind: 'PriorityClass', metadata: { name: 'system-node-critical' } },
@@ -539,9 +554,9 @@ function adoptRun(facts: AdoptFacts = {}): RunMock {
         name: SERVER_APP_NAME, namespace: 'test-ns',
         labels: facts.deployed.installId ? { 'yaac.install-id': facts.deployed.installId } : {},
       },
-      spec: { template: { spec: { containers: [{
-        name: 'server', env: [{ name: 'YAAC_DATA_DIR', value: facts.deployed.dataDir }],
-      }] } } },
+      spec: { template: { metadata: {
+        labels: facts.deployed.legacyHash ? { 'yaac.data-dir-hash': facts.deployed.legacyHash } : {},
+      } } },
     }],
   ])
   fakeCluster.seed(...OPERATOR, kubeSystem(facts.clusterUid ?? 'uid-byo'))
@@ -691,6 +706,12 @@ describe('runClusterInstall', () => {
     // Apart from the host server's port, so the two installs coexist.
     expect(createCall?.[2]?.input).toContain(`hostPort: ${String(DEFAULT_CLUSTER_SERVER_PORT)}`)
     expect(createCall?.[2]?.input).toContain('listenAddress: 127.0.0.1')
+    // The node-local mount is named after the install id, as is every
+    // object, so nothing in the cluster depends on the data dir's path.
+    expect(createCall?.[2]?.input).toContain('containerPath: /var/lib/yaac/node/test-install')
+    expect(JSON.stringify(cluster.applied)).not.toContain('data-dir-hash')
+    expect(await readInstallRecord()).toMatchObject({ installId: 'test-install' })
+    expect(await readInstallRecord()).not.toHaveProperty('legacyDataDirHash')
 
     // The server is deployed last, after everything it uses, published on
     // the kind node's port rather than through an Ingress.
@@ -1032,6 +1053,37 @@ describe('runClusterInstall', () => {
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
+  })
+
+  it('keeps the hash an older kind cluster\'s node mount and volumes are named after, labelling with the install id', async () => {
+    const HASH = '0123456789abcdef'
+    fakeCluster.seed({
+      apiVersion: 'apps/v1', kind: 'Deployment',
+      metadata: { name: SERVER_APP_NAME, namespace: 'test-ns' },
+      spec: { template: { metadata: { labels: { app: SERVER_APP_NAME, 'yaac.data-dir-hash': HASH } } } },
+    })
+    await runClusterInstall({}, makeDeps())
+
+    // Read back from the cluster, not hashed from this data dir's path.
+    expect(await readInstallRecord()).toMatchObject({ installId: 'test-install', legacyDataDirHash: HASH, legacyNames: true })
+    // kind's extraMount and a bound claim's volume cannot change, so the
+    // names stay; the labels are the install id's alone.
+    const pod = serverPod() as ReturnType<typeof serverPod> & { volumes: Array<{ name: string; hostPath?: { path: string } }> }
+    expect(pod.volumes.find((v) => v.name === 'node-local')?.hostPath?.path).toBe(`/var/lib/yaac/node/${HASH}`)
+    expect(appliedOf('PersistentVolume').map((m) => m.metadata.name)).toContain(`yaac-global-${HASH}`)
+    const env = Object.fromEntries(pod.containers[0].env.map((e) => [e.name, e.value]))
+    expect(env).toMatchObject({ YAAC_INSTALL_ID: 'test-install', YAAC_LEGACY_DATA_DIR_HASH: HASH, YAAC_LEGACY_NAMES: '1' })
+    expect(JSON.stringify(cluster.applied)).not.toContain('data-dir-hash')
+
+    // A recreated cluster names everything after the install id again.
+    fakeCluster.reset()
+    fakeCluster.intercept(world)
+    fakeCluster.seed(kubeSystem('uid-kind'))
+    cluster.applied = []
+    await runClusterInstall({}, makeDeps({ run: freshRun() }))
+    expect(await readInstallRecord()).not.toHaveProperty('legacyDataDirHash')
+    expect(await readInstallRecord()).not.toHaveProperty('legacyNames')
+    expect(appliedOf('PersistentVolume').map((m) => m.metadata.name)).toContain('yaac-global-test-install')
   })
 
   it('starts a node a host reboot left stopped, and waits for its API server', async () => {
@@ -1568,6 +1620,8 @@ describe('runClusterInstall', () => {
   // -------------------------------------------------------------------
 
   it('--byo installs into the cluster it is given: layers, class-backed claims, a tailnet server', async () => {
+    // No test file's id to fall back on, so install mints one.
+    vi.stubEnv('YAAC_INSTALL_ID', '')
     stageAdoptCidrs()
     const deps = makeDeps({ run: adoptRun() })
     await runClusterInstall(BYO, deps)
@@ -1617,6 +1671,102 @@ describe('runClusterInstall', () => {
     expect(log).toContain('192.168.0.0/16')
     expect(log).toContain('veth prefix: cali*')
     expect(log).toContain('yaac-global through byo-nfs, yaac-server-local through standard')
+  })
+
+  it('--byo moves an older install\'s names to its install id once nothing mounts its old node tree, and never back', async () => {
+    const HASH = '0123456789abcdef'
+    const OLD_TREE = `/var/lib/yaac/node/${HASH}`
+    stageAdoptCidrs()
+    await writeRecord({ driver: 'k8s', installId: 'mine', byo: true, clusterUid: 'uid-byo', kubeContext: 'byo-context' })
+    const nodeLocal = (): string | undefined => (serverPod() as ReturnType<typeof serverPod> & {
+      volumes: Array<{ name: string; hostPath?: { path: string } }>
+    }).volumes.find((v) => v.name === 'node-local')?.hostPath?.path
+    const env = (): Record<string, string> => Object.fromEntries(serverPod().containers[0].env.map((e) => [e.name, e.value]))
+    const rmPods = (): Applied[] => appliedOf('Pod').filter((m) => m.metadata.name.startsWith('yaac-legacy-node-tree'))
+    const rerun = async (facts: AdoptFacts): Promise<ClusterInstallDeps & { log: unknown }> => {
+      cluster.applied = []
+      const deps = makeDeps({ run: adoptRun({ deployed: { installId: 'mine', legacyHash: HASH }, ...facts }) })
+      await runClusterInstall(BYO, deps)
+      return deps
+    }
+
+    // A pod in another namespace still mounts the old tree (another install
+    // from the same path), so nothing moves.
+    let deps = await rerun({ mounting: [{ namespace: 'other-ns', path: `${OLD_TREE}/projects/p1` }] })
+    expect(await readInstallRecord()).toMatchObject({ legacyDataDirHash: HASH, legacyNames: true })
+    expect(logged(deps)).toMatch(/pods still mount this install's node tree/)
+    expect(nodeLocal()).toBe(OLD_TREE)
+    expect(env()).toMatchObject({ YAAC_LEGACY_DATA_DIR_HASH: HASH, YAAC_LEGACY_NAMES: '1' })
+
+    // With none, the names switch at once and for good. The new server is
+    // still told the hash, for its startup relabel. A workspace the old
+    // server launches on the old tree before it rolls keeps that tree.
+    fakeCluster.seed(
+      { apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: { name: `yaac-registry-storage-${HASH}`, namespace: 'yaac' } },
+      { apiVersion: 'v1', kind: 'PersistentVolumeClaim', metadata: { name: `yaac-npm-cache-storage-${HASH}`, namespace: 'test-ns' } },
+    )
+    let launchLate = true
+    fakeCluster.intercept((c) => {
+      if (launchLate && c.verb === 'apply' && c.kind === 'Deployment' && c.name === SERVER_APP_NAME) {
+        fakeCluster.seed(mountingPod('late', 'test-ns', `${OLD_TREE}/projects/p1`))
+      }
+    })
+    deps = await rerun({})
+    launchLate = false
+    expect(nodeLocal()).toBe('/var/lib/yaac/node/mine')
+    expect(env()).toMatchObject({ YAAC_LEGACY_DATA_DIR_HASH: HASH })
+    expect(env()).not.toHaveProperty('YAAC_LEGACY_NAMES')
+    expect(fakeCluster.get('PersistentVolumeClaim', `yaac-registry-storage-${HASH}`, 'yaac')).toBeUndefined()
+    expect(fakeCluster.get('PersistentVolumeClaim', `yaac-npm-cache-storage-${HASH}`, 'test-ns')).toBeUndefined()
+    expect(rmPods()).toEqual([])
+    expect(logged(deps)).toMatch(/is kept, since pods still mount it/)
+    expect(await readInstallRecord()).toMatchObject({ legacyDataDirHash: HASH })
+    expect(await readInstallRecord()).not.toHaveProperty('legacyNames')
+
+    // A run whose tree removal fails, while a workspace runs on the new
+    // names, still never goes back to the hash's names.
+    const newTree = { namespace: 'test-ns', path: '/var/lib/yaac/node/mine/projects/p1' }
+    let failRm = true
+    fakeCluster.intercept((c) => {
+      if (failRm && c.verb === 'apply' && c.kind === 'Pod' && c.name?.startsWith('yaac-legacy-node-tree')) {
+        throw apiError(403, 'forbidden')
+      }
+    })
+    await expect(rerun({ mounting: [newTree] })).rejects.toThrow(/forbidden/)
+    expect(nodeLocal()).toBe('/var/lib/yaac/node/mine')
+    expect(await readInstallRecord()).toMatchObject({ legacyDataDirHash: HASH })
+    expect(await readInstallRecord()).not.toHaveProperty('legacyNames')
+
+    failRm = false
+    await rerun({ mounting: [newTree] })
+    expect(nodeLocal()).toBe('/var/lib/yaac/node/mine')
+    expect((rmPods()[0] as unknown as { spec: { containers: Array<{ command: string[] }> } }).spec.containers[0].command)
+      .toEqual(['rm', '-rf', `/node/${HASH}`])
+    expect(await readInstallRecord()).not.toHaveProperty('legacyDataDirHash')
+  })
+
+  it('--byo names nothing after the data dir\'s path, so a moved one applies the same objects', async () => {
+    stageAdoptCidrs()
+    await writeRecord({ driver: 'k8s', installId: 'mine', byo: true, clusterUid: 'uid-byo', kubeContext: 'byo-context' })
+    const shape = (): unknown => cluster.applied.map((m) => [m.kind, m.metadata.name, (m.metadata as { labels?: unknown }).labels])
+    // The second run is a re-install, which the moved one is compared to.
+    await runClusterInstall(BYO, makeDeps({ run: adoptRun({ deployed: { installId: 'mine' } }) }))
+    cluster.applied = []
+    await runClusterInstall(BYO, makeDeps({ run: adoptRun({ deployed: { installId: 'mine' } }) }))
+    const before = shape()
+
+    const from = getDataDir()
+    const to = `${from}-moved`
+    await fs.cp(from, to, { recursive: true })
+    setDataDir(to)
+    try {
+      cluster.applied = []
+      await runClusterInstall(BYO, makeDeps({ run: adoptRun({ deployed: { installId: 'mine' } }) }))
+      expect(shape()).toEqual(before)
+    } finally {
+      setDataDir(from)
+      await fs.rm(to, { recursive: true, force: true })
+    }
   })
 
   it('--byo takes a named RWO class over the default, and needs no kind', async () => {
@@ -1714,16 +1864,17 @@ describe('runClusterInstall', () => {
     stageAdoptCidrs()
     // Another install's server in the namespace: installing over it would
     // take its storage.
-    let deps = makeDeps({ run: adoptRun({ deployed: { installId: 'theirs', dataDir: '/elsewhere/.yaac' } }) })
+    vi.stubEnv('YAAC_INSTALL_ID', '')
+    let deps = makeDeps({ run: adoptRun({ deployed: { installId: 'theirs' } }) })
     let err = await runClusterInstall(BYO, deps).catch((e: unknown) => e)
     expect((err as Error).message)
-      .toMatch(/another install \(install id theirs, installed from the data dir \/elsewhere\/\.yaac; this data dir's is [0-9a-f-]{36}\)/)
+      .toMatch(/another install \(install id theirs; this data dir's is [0-9a-f-]{36}\)/)
     expect(await readInstallRecord()).toBeNull()
 
     // This install's own server is a re-install.
     const mine = { driver: 'k8s' as const, installId: 'mine', byo: true }
     await writeRecord({ ...mine, clusterUid: 'uid-byo', kubeContext: 'byo-context' })
-    deps = makeDeps({ run: adoptRun({ deployed: { installId: 'mine', dataDir: '/elsewhere/.yaac' } }) })
+    deps = makeDeps({ run: adoptRun({ deployed: { installId: 'mine' } }) })
     await expect(runClusterInstall(BYO, deps)).resolves.toBeUndefined()
     events.length = 0
 

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ensureDataDir, setDataDir } from '@yaac/shared/paths'
@@ -75,8 +76,9 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   await fs.writeFile(gitConfigPath, '')
   setDataDir(dataDir)
   await ensureDataDir()
-  // So helpers used by assertions hit the server's namespace.
+  // So helpers used by assertions hit the server's namespace and install.
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
+  process.env.YAAC_INSTALL_ID = `test-${crypto.randomBytes(4).toString('hex')}`
 
   // The port `server start`/`restart` binds (under k8s, the forward's
   // port, which `cluster start`/`restart` wait on). Drawn free so workers and rigs never collide.

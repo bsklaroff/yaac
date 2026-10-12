@@ -19,7 +19,6 @@ import {
   GVISOR_NODE_LABEL,
   WORKSPACE_POOL_KEY,
   LABEL_CLAIM,
-  LABEL_DATA_DIR_HASH,
   LABEL_INSTALL_ID,
   LABEL_NPM_CACHE,
   NESTED_ENGINE_CAPS,
@@ -39,7 +38,7 @@ import {
   TRANSPARENT_HTTPS_PORT,
   applyObject,
   buildPriorityClassManifests,
-  dataDirHash,
+  installId,
   deleteObject,
   ensureKubernetes,
   execFileAsync,
@@ -538,15 +537,10 @@ async function runStorageCheck(): Promise<CheckResult> {
     [SERVER_LOCAL_CLAIM_NAME]: serverLocalRoot(),
   }
   try {
-    // An e2e file's server records none; it is matched by its data dir.
-    const installId = (await readInstallRecord())?.installId
     const problems: string[] = []
     const bound: string[] = []
     const ours = (name: string, labels: Record<string, string>): boolean =>
-      (installId !== undefined
-        ? labels[LABEL_INSTALL_ID] === installId
-        : labels[LABEL_DATA_DIR_HASH] === dataDirHash())
-      && labels[LABEL_CLAIM] === name
+      labels[LABEL_INSTALL_ID] === installId() && labels[LABEL_CLAIM] === name
     for (const name of [GLOBAL_CLAIM_NAME, SERVER_LOCAL_CLAIM_NAME, CHECKOUTS_CLAIM_NAME]) {
       const pvc = await readObject<RawPvcRead>({ apiVersion: 'v1', kind: 'PersistentVolumeClaim', name, namespace: ns })
       if (!pvc) {
@@ -1525,7 +1519,7 @@ async function efsMountTargets(handle: string): Promise<Array<{ server: string; 
 
 /**
  * Verify the CNI enforces workspace egress policy; a non-enforcing CNI
- * fails open. A pod labeled like a workspace (but without the data-dir
+ * fails open. A pod labeled like a workspace (but without the install id
  * label, so listWorkspacePods ignores it) must fail to reach, by IP:
  * the apiserver, the proxy's transparent port, the registry, the yaac
  * server, and the global volume's NFS server. Targets that do not exist

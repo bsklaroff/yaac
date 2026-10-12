@@ -35,7 +35,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     labels: {
       'yaac.project-id': 'demo',
       'yaac.workspace-id': 'abcd',
-      'yaac.data-dir-hash': 'ddh',
+      'yaac.install-id': 'test-install',
       'yaac.tool': 'claude',
     },
     image: 'localhost:5000/yaac-tools:abc',

@@ -38,7 +38,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
 }))
 
 import type * as clusterModule from '#drivers/k8s/cluster'
-import { LABEL_DATA_DIR_HASH, dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { LABEL_INSTALL_ID, installId, k8sNamespace } from '#drivers/k8s/substrate'
 import {
   deregisterWorkspace,
   destroyProjectSubstrate,
@@ -62,7 +62,7 @@ function seedPod(labels: Record<string, string>): void {
       name: 'yaac-proj-s1-abcde',
       namespace: k8sNamespace(),
       labels: {
-        [LABEL_DATA_DIR_HASH]: dataDirHash(),
+        [LABEL_INSTALL_ID]: installId(),
         'batch.kubernetes.io/job-name': 'yaac-proj-s1',
         'yaac.workspace-id': 's1',
         'yaac.tool': 'claude',

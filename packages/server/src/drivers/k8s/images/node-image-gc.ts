@@ -13,11 +13,10 @@
  * Removal runs the node's own `crictl` with a long timeout; its 2s default
  * makes large deletes fail.
  */
-import { dataDirHash, runOnEachNode } from '#drivers/k8s/substrate'
+import { LABEL_INSTALL_ID, installId, runOnEachNode } from '#drivers/k8s/substrate'
 import { REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster'
 import { registryHost, registryTagState } from '#drivers/k8s/container'
 import { serverLog } from '#log'
-import { LABEL_SWEEP_DATA_DIR_HASH } from './node-local-sweep'
 
 /** `app` label of the prune pods, used to delete strays. */
 const NODE_IMAGE_GC_APP_LABEL = 'yaac-node-image-gc'
@@ -53,7 +52,7 @@ export async function pruneNodeImages(inUse: ReadonlySet<string>): Promise<void>
   ].join('\n')
   const runs = await runOnEachNode({
     name: 'yaac-node-image-gc',
-    labels: { app: NODE_IMAGE_GC_APP_LABEL, [LABEL_SWEEP_DATA_DIR_HASH]: dataDirHash() },
+    labels: { app: NODE_IMAGE_GC_APP_LABEL, [LABEL_INSTALL_ID]: installId() },
     timeoutMs: NODE_IMAGE_GC_TIMEOUT_MS,
     pod: async (node) => {
       const refs: string[] = []

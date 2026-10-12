@@ -9,7 +9,7 @@
  * origin.
  */
 import {
-  LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_ID,
   PRIORITY_CLASS_INFRA,
   SERVER_APP_NAME,
   SERVER_FRONT_APP_NAME,
@@ -18,7 +18,7 @@ import {
   TAILSCALE_OPERATOR_NAMESPACE,
   TAILSCALE_PARENT_NAMESPACE_LABEL,
   TAILSCALE_PARENT_RESOURCE_LABEL,
-  dataDirHash,
+  installId,
   k8sNamespace,
   readObject,
   type ObjectRef,
@@ -299,7 +299,7 @@ export function liveFronting(
 
 /** Forwarder pod labels, including the install identity. */
 function frontPodLabels(): Record<string, string> {
-  return { app: SERVER_FRONT_APP_NAME, [LABEL_DATA_DIR_HASH]: dataDirHash() }
+  return { app: SERVER_FRONT_APP_NAME, [LABEL_INSTALL_ID]: installId() }
 }
 
 const FRONT_CONFIG_DIR = '/etc/yaac-server-front'

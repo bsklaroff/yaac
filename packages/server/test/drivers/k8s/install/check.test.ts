@@ -2,12 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { apiError, fakeCluster, type FakeObject } from '@yaac/test-utils/k8s-stub'
 import type * as apiModule from '#drivers/k8s/substrate/api'
 
-// The process boundary (kubectl/podman children), the install namespace,
-// and a fixed data-dir hash for the volume labels. Object reads and writes
-// go to `fakeCluster`.
+// The process boundary (kubectl/podman children) and the install
+// namespace. Object reads and writes go to `fakeCluster`.
 vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...await importOriginal<typeof apiModule>(),
-  dataDirHash: () => 'ddh16',
   execFileAsync: vi.fn(),
   k8sNamespace: () => 'test-ns',
 }))
@@ -409,7 +407,7 @@ function byoGlobalVolume(): {
   spec: Record<string, unknown>
 } {
   return {
-    metadata: { labels: { 'yaac.data-dir-hash': 'ddh16', 'yaac.claim': 'yaac-global' } },
+    metadata: { labels: { 'yaac.install-id': 'test-install', 'yaac.claim': 'yaac-global' } },
     spec: {
       persistentVolumeReclaimPolicy: 'Retain',
       storageClassName: 'byo-nfs',
@@ -463,9 +461,9 @@ describe('runClusterCheck', () => {
     peerSawWrite = true
     podEvents = {}
     storageClaims = {
-      'yaac-global': { spec: { volumeName: 'yaac-global-ddh' }, status: { phase: 'Bound' } },
-      'yaac-server-local': { spec: { volumeName: 'yaac-server-local-ddh' }, status: { phase: 'Bound' } },
-      'yaac-checkouts': { spec: { volumeName: 'yaac-checkouts-ddh' }, status: { phase: 'Bound' } },
+      'yaac-global': { spec: { volumeName: 'yaac-global-vol' }, status: { phase: 'Bound' } },
+      'yaac-server-local': { spec: { volumeName: 'yaac-server-local-vol' }, status: { phase: 'Bound' } },
+      'yaac-checkouts': { spec: { volumeName: 'yaac-checkouts-vol' }, status: { phase: 'Bound' } },
     }
     volumes = {}
     storageClassProvisioner = null
@@ -1407,12 +1405,12 @@ describe('runClusterCheck', () => {
   it('judges a class-provisioned global volume by its labels, its class and its actimeo', async () => {
     // A byo install's provisioned volume is held to what install set on it.
     let volume = byoGlobalVolume()
-    volumes['yaac-global-ddh'] = volume
+    volumes['yaac-global-vol'] = volume
     storageClassProvisioner = 'nfs.csi.k8s.io'
     stage()
     let { results } = await check()
     expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
-    expect(byName(results, 'storage')?.detail).toContain('yaac-global → yaac-global-ddh (byo-nfs)')
+    expect(byName(results, 'storage')?.detail).toContain('yaac-global → yaac-global-vol (byo-nfs)')
     // The egress probe also dials the NFS server, which trusts any uid a
     // client claims; the fake pod was blocked, so it passes.
     const egressPod = applied()
@@ -1429,7 +1427,7 @@ describe('runClusterCheck', () => {
       metadata: { labels: {} },
       spec: { ...volume.spec, mountOptions: ['nfsvers=4.1', 'actimeo=30'] },
     }
-    volumes['yaac-global-ddh'] = volume
+    volumes['yaac-global-vol'] = volume
     ;({ results } = await check())
     const storage = byName(results, 'storage')!
     expect(storage.status).toBe('fail')
@@ -1439,10 +1437,10 @@ describe('runClusterCheck', () => {
   })
 
   it('judges the checkouts volume as a copy of the global one with second-long directory caching', async () => {
-    volumes['yaac-global-ddh'] = byoGlobalVolume()
+    volumes['yaac-global-vol'] = byoGlobalVolume()
     storageClassProvisioner = 'nfs.csi.k8s.io'
     const copy = {
-      metadata: { labels: { 'yaac.data-dir-hash': 'ddh16', 'yaac.claim': 'yaac-checkouts' } },
+      metadata: { labels: { 'yaac.install-id': 'test-install', 'yaac.claim': 'yaac-checkouts' } },
       spec: {
         persistentVolumeReclaimPolicy: 'Retain',
         storageClassName: '',
@@ -1450,15 +1448,15 @@ describe('runClusterCheck', () => {
         mountOptions: ['nfsvers=4.1', 'acregmin=3', 'acregmax=60', 'acdirmin=1', 'acdirmax=1'],
       },
     }
-    volumes['yaac-global-ddh'].spec.csi = { driver: 'nfs.csi.k8s.io', volumeHandle: 'h', volumeAttributes: { server: '10.96.5.5' } }
-    volumes['yaac-checkouts-ddh'] = copy
+    volumes['yaac-global-vol'].spec.csi = { driver: 'nfs.csi.k8s.io', volumeHandle: 'h', volumeAttributes: { server: '10.96.5.5' } }
+    volumes['yaac-checkouts-vol'] = copy
     stage()
     let { results } = await check()
     expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
 
     // Another directory, the global volume's own handle, no labels and a
     // minute of directory caching are each named.
-    volumes['yaac-checkouts-ddh'] = {
+    volumes['yaac-checkouts-vol'] = {
       metadata: { labels: {} },
       spec: {
         ...copy.spec,
@@ -1469,22 +1467,22 @@ describe('runClusterCheck', () => {
     ;({ results } = await check())
     const storage = byName(results, 'storage')!
     expect(storage.status).toBe('fail')
-    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-ddh is not a copy of the yaac-global volume yaac-global-ddh')
-    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-ddh does not carry this install\'s labels')
+    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-vol is not a copy of the yaac-global volume yaac-global-vol')
+    expect(storage.detail).toContain('yaac-checkouts: volume yaac-checkouts-vol does not carry this install\'s labels')
     expect(storage.detail).toContain('caches directories for longer than a second')
 
     // On kind it is a hostPath, which must be the global tier's directory.
-    volumes['yaac-checkouts-ddh'] = { spec: { persistentVolumeReclaimPolicy: 'Retain', hostPath: { path: '/elsewhere' } } }
+    volumes['yaac-checkouts-vol'] = { spec: { persistentVolumeReclaimPolicy: 'Retain', hostPath: { path: '/elsewhere' } } }
     ;({ results } = await check())
-    expect(byName(results, 'storage')?.detail).toContain('yaac-checkouts: volume yaac-checkouts-ddh is /elsewhere')
+    expect(byName(results, 'storage')?.detail).toContain('yaac-checkouts: volume yaac-checkouts-vol is /elsewhere')
   })
 
   it('tells a provisioned hostPath volume (local-path) from kind\'s static one by its class', async () => {
     // local-path (k3s, kind-byo) provisions hostPath volumes at its own path,
     // which the static-pair checks would wrongly flag.
-    await recordInstall({ driver: 'k8s', installId: 'install-1', byo: true })
+    await recordInstall({ driver: 'k8s', installId: 'test-install', byo: true })
     const labelled = (claim: string, id: string): Record<string, string> =>
-      ({ 'yaac.install-id': id, 'yaac.data-dir-hash': 'ddh16', 'yaac.claim': claim })
+      ({ 'yaac.install-id': id, 'yaac.claim': claim })
     const localVolume = (id: string): typeof volumes[string] => ({
       metadata: { labels: labelled('yaac-server-local', id) },
       spec: {
@@ -1493,8 +1491,8 @@ describe('runClusterCheck', () => {
       },
     })
     volumes = {
-      'yaac-global-ddh': { ...byoGlobalVolume(), metadata: { labels: labelled('yaac-global', 'install-1') } },
-      'yaac-server-local-ddh': localVolume('install-1'),
+      'yaac-global-vol': { ...byoGlobalVolume(), metadata: { labels: labelled('yaac-global', 'test-install') } },
+      'yaac-server-local-vol': localVolume('test-install'),
     }
     storageClassProvisioner = 'nfs.csi.k8s.io'
     stage()
@@ -1502,16 +1500,15 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
     expect(byName(results, 'storage')?.detail).toContain('(local-path)')
 
-    // With an install id recorded, the id (not the path hash) decides
-    // ownership, as re-adoption does.
-    volumes['yaac-server-local-ddh'] = localVolume('install-2')
+    // The install id decides ownership, as re-adoption does.
+    volumes['yaac-server-local-vol'] = localVolume('install-2')
     ;({ results } = await check())
     expect(byName(results, 'storage')?.status).toBe('fail')
     expect(byName(results, 'storage')?.detail).toMatch(/yaac-server-local: volume .* does not carry this install's labels/)
   })
 
   it('fails egress when a session pod reaches the NFS server behind the global claim', async () => {
-    volumes['yaac-global-ddh'] = byoGlobalVolume()
+    volumes['yaac-global-vol'] = byoGlobalVolume()
     storageClassProvisioner = 'nfs.csi.k8s.io'
     podLogs['yaac-cluster-check-egress'] = 'NP_BLOCKED\nNP_NFS0_OPEN\n'
     stage()
@@ -1529,7 +1526,7 @@ describe('runClusterCheck', () => {
       nodeItem('yaac-control-plane', { labels: zone('us-east-1a') }),
       nodeItem('worker-b', { labels: zone('us-east-1b') }),
     ]
-    volumes['yaac-global-ddh'] = {
+    volumes['yaac-global-vol'] = {
       ...byoGlobalVolume(),
       spec: { ...byoGlobalVolume().spec, csi: { driver: 'efs.csi.aws.com', volumeHandle: 'fs-0abc::fsap-1' } },
     }
@@ -1562,7 +1559,7 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'egress')?.detail).toContain('NFS server a;reboot.fs-0abc.efs.us-east-1.amazonaws.com unresolvable')
 
     // A handle naming a mount target by DNS name is looked up as is.
-    volumes['yaac-global-ddh'].spec.csi = {
+    volumes['yaac-global-vol'].spec.csi = {
       driver: 'efs.csi.aws.com', volumeHandle: 'us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com::fsap-1',
     }
     podLogs['yaac-cluster-check-efs-resolve'] = 'EFS_IP us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com 10.0.2.7\n'

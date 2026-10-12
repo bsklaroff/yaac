@@ -103,6 +103,32 @@ export const env = {
     return process.env.YAAC_IN_CLUSTER === '1'
   },
 
+  /**
+   * `YAAC_INSTALL_ID` — the k8s install's id (`install.json`'s
+   * `installId`), which the server Deployment passes to its pod. Host
+   * commands read it from the record instead.
+   */
+  get installId(): string | undefined {
+    return nonEmpty(process.env.YAAC_INSTALL_ID)
+  },
+
+  /**
+   * `YAAC_LEGACY_DATA_DIR_HASH` — `install.json`'s `legacyDataDirHash`,
+   * passed to the server pod of an install whose objects predate install
+   * ids (docs/legacy-compat-shims.md).
+   */
+  get legacyDataDirHash(): string | undefined {
+    return nonEmpty(process.env.YAAC_LEGACY_DATA_DIR_HASH)
+  },
+
+  /**
+   * `YAAC_LEGACY_NAMES=1` — `install.json`'s `legacyNames`: the install's
+   * names and node path still carry `YAAC_LEGACY_DATA_DIR_HASH`.
+   */
+  get legacyNames(): boolean {
+    return process.env.YAAC_LEGACY_NAMES === '1'
+  },
+
   /** `YAAC_KIND_CLUSTER` — name of the kind cluster `yaac cluster install` manages. */
   get kindCluster(): string {
     return process.env.YAAC_KIND_CLUSTER ?? 'yaac'

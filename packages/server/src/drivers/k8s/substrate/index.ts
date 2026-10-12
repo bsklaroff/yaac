@@ -35,7 +35,6 @@ export {
   apiStatus,
   applyObject,
   createObject,
-  dataDirHash,
   deleteObject,
   deleteObjects,
   ensureKubernetes,
@@ -48,6 +47,9 @@ export {
   readObject,
 } from './api'
 export type { ObjectRef } from './api'
+export { bindInstall, installId, installNameKey, legacyDataDirHash, legacyNameKey } from './install-id'
+export type { LegacyKeys } from './install-id'
+export { legacyHashOf, relabelLegacyObjects } from './legacy-labels'
 export {
   nodeLocalDirsOf,
   nodeLocalHostPath,
@@ -87,13 +89,13 @@ export {
   LABEL_CLAIM,
   LABEL_INSTALL_ID,
   LABEL_INSTALL_NAMESPACE,
+  NODE_LOCAL_NODE_ROOT,
   POD_GLOBAL_ROOT,
   POD_NODE_LOCAL_ROOT,
   POD_SERVER_LOCAL_ROOT,
   SERVER_LOCAL_CLAIM_NAME,
 } from './storage-constants'
 export {
-  LABEL_DATA_DIR_HASH,
   LABEL_NESTED,
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,

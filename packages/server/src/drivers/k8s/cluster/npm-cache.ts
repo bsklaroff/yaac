@@ -32,7 +32,7 @@ import {
   NPM_CACHE_PORT,
   LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_INFRA,
-  dataDirHash,
+  installNameKey,
   k8sNamespace,
   applyObject,
   listObjects,
@@ -76,7 +76,7 @@ function npmCacheLabels(): Record<string, string> {
 
 /** The cache's claim, keyed by install like every registry store. */
 function npmCachePvcName(): string {
-  return `${NPM_CACHE_APP_NAME}-storage-${dataDirHash()}`
+  return `${NPM_CACHE_APP_NAME}-storage-${installNameKey()}`
 }
 
 /** Requested size (ignored by kind's local-path provisioner). Running out

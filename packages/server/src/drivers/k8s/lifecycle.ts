@@ -1,5 +1,7 @@
 import {
   ClusterCache,
+  legacyDataDirHash,
+  relabelLegacyObjects,
   setActiveClusterCache,
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
@@ -59,6 +61,16 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
   // creation reports RUNTIME_UNAVAILABLE on its own. The namespace and the
   // PriorityClasses need no ensure: `cluster install` creates both, and
   // this server runs as a pod in that namespace.
+  // Legacy: before anything selects on the install id, give it to the
+  // objects an older yaac labelled only with a data-dir hash
+  // (docs/legacy-compat-shims.md). Not best-effort: an unlabelled live
+  // workspace would look absent, and the sweeps would delete its data. A
+  // failure fails the start, and the restarted pod tries again.
+  const legacy = legacyDataDirHash()
+  if (legacy) {
+    const n = await relabelLegacyObjects(legacy)
+    if (n > 0) serverLog(`[server] labelled ${String(n)} object(s) with the install id`)
+  }
   await (async () => {
     // Before the first build, which a leaked pod's memory reservation
     // could keep from scheduling. Its failure must not skip the rest.

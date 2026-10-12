@@ -40,7 +40,7 @@ import {
   servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
 // A setup value: the claim name carries it.
-import { dataDirHash } from '#drivers/k8s/substrate'
+import { installId } from '#drivers/k8s/substrate'
 
 interface Manifest {
   kind: string
@@ -113,7 +113,7 @@ describe('ensureNpmCache', () => {
             },
           ],
           volumes: expect.arrayContaining([
-            { name: 'storage', persistentVolumeClaim: { claimName: `yaac-npm-cache-storage-${dataDirHash()}` } },
+            { name: 'storage', persistentVolumeClaim: { claimName: `yaac-npm-cache-storage-${installId()}` } },
           ]) as unknown,
         },
       },
@@ -142,7 +142,7 @@ describe('ensureNpmCache', () => {
     expect(nginxConf).toContain('set $npmjs registry.npmjs.org;')
     expect(nginxConf).toContain('proxy_ssl_verify on;')
     // No storageClassName: binds through the cluster's default class.
-    expect(appliedNamed('PersistentVolumeClaim', `yaac-npm-cache-storage-${dataDirHash()}`)?.spec).toEqual({
+    expect(appliedNamed('PersistentVolumeClaim', `yaac-npm-cache-storage-${installId()}`)?.spec).toEqual({
       accessModes: ['ReadWriteOnce'],
       resources: { requests: { storage: '20Gi' } },
     })

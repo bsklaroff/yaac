@@ -9,8 +9,10 @@ import { promisify } from 'node:util'
 import { setDataDir, getDataDir, clientLocalRoot, ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import { dataDirHash, deleteObjects, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKSPACE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
+import { deleteObjects, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { installId } from '@yaac/server/drivers/k8s/substrate/install-id'
+import { LABEL_WORKSPACE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
+import { LABEL_INSTALL_ID } from '@yaac/server/drivers/k8s/substrate/storage-constants'
 import type { SpawnedServer } from '#cli'
 import { registerTestProject } from '#api'
 import { PROXY_APP_NAME, PROXY_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
@@ -47,8 +49,8 @@ const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
 
 /**
  * Per-file k8s namespace holding every object a test file creates. Tests
- * within a file share it and are kept apart by the data-dir-hash label
- * (see cleanupWorkspaceJobs). test/global-setup.ts sweeps leaked ones.
+ * within a file share it and are kept apart by their install ids (see
+ * cleanupWorkspaceJobs). test/global-setup.ts sweeps leaked ones.
  */
 export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
 
@@ -104,8 +106,8 @@ export async function execInJob(
 }
 
 /**
- * Delete every workspace Job/pod this test's data dir created (selected by
- * the data-dir-hash label, since tests in a file share a namespace) and
+ * Delete every workspace Job/pod this test's install created (selected by
+ * its install id label, since tests in a file share a namespace) and
  * wait, with a bound, for them to go.
  *
  * Waiting here keeps a slow pod teardown from eating into the next file's
@@ -113,11 +115,11 @@ export async function execInJob(
  * pod from hanging the suite.
  */
 export async function cleanupWorkspaceJobs(timeoutMs = 120_000): Promise<void> {
-  const selector = `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKSPACE_ID}`
+  const selector = `${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID}`
   try {
     // Delete without waiting, then wait for them all, so terminations
     // overlap. The selector keeps the proxy pod, which has the same
-    // data-dir-hash, out.
+    // install id, out.
     await deleteObjects('batch/v1', 'Job', { namespace: k8sNamespace(), labelSelector: selector })
     await deleteObjects('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: selector })
   } catch {

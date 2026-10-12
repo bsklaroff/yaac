@@ -81,8 +81,8 @@ import {
   TRANSPARENT_HTTP_PORT,
   TRANSPARENT_TUNNEL_PORT,
 } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
-import { dataDirHash } from '#drivers/k8s/substrate'
+import { LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
+import { LABEL_INSTALL_ID, installId } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { imageExists } from '#drivers/k8s/container/runtime'
 import { registryHasTag } from '#drivers/k8s/container/registry'
@@ -349,7 +349,7 @@ describe('ensureProxyResources', () => {
     expect(dep.spec.selector.matchLabels).toEqual({ app: PROXY_APP_NAME })
     // Install identity on every proxy pod.
     expect(dep.spec.template.metadata.labels).toEqual({
-      app: PROXY_APP_NAME, [LABEL_DATA_DIR_HASH]: dataDirHash(),
+      app: PROXY_APP_NAME, [LABEL_INSTALL_ID]: installId(),
     })
 
     const pod = dep.spec.template.spec

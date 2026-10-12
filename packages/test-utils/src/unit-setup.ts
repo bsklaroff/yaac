@@ -6,6 +6,10 @@ import { setHermeticScratch } from '#tmp'
 // test sets its own data dir.
 delete process.env.YAAC_DATA_DIR
 
+// A fixed install id, so tests can spell out the labels and names built
+// from it.
+process.env.YAAC_INSTALL_ID = 'test-install'
+
 // A fresh data dir per test would cost ~4s per first getDb() (PGlite boot
 // plus migrations). Share one in-memory instance per worker instead, wiped
 // whenever the data dir changes. test/db/client.test.ts opts back out.

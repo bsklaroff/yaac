@@ -463,56 +463,49 @@ containerless-only user how to drop the cluster tools afterwards.
   the split is still in use. `formula_renames.json` can stay indefinitely: it
   costs nothing, and lets an install that skipped many releases migrate.
 
-## The install record in `server.json`: the lift and the mirror
+## Retiring the install record from `server.json`
 
-A data dir's install record (`driver`, `installId`, `clusterUid`,
-`kubeContext`, `byo`, `origin`) lives in `<dataDir>/install.json`. Older installs kept
-it in the client tier's `server.json`, beside the selection, and an older
-`yaac` still reads it only there. Two shims bridge that, both in
-`packages/shared/src/install-record.ts`:
+A data dir's install record lives in `<dataDir>/install.json`. Older
+installs kept it in the client tier's `server.json`, beside the selection,
+and later ones still copied it there for an older `yaac`. That copy is no
+longer written, and `retireServerJsonRecord` in
+`packages/shared/src/install-record.ts` moves an existing one out.
 
-- **What they read.**
-  - *The lift.* When the client data dir's `install.json` is absent (or
-    torn by a crash), `readInstallRecord` copies the fields from
-    `<clientDataDir>-client/server.json` into one (`liftLegacyRecord`). An
-    absent file is filled only if no other process wrote it meanwhile.
-  - *The mirror.* The client data dir's record is also kept in
-    `server.json`: `writeServerConfig` writes it beside every selection,
-    `clearServerConfig` keeps the file while it has one, and `recordInstall`
-    copies a changed record there (`mirrorIntoServerJson`). Only the client
-    data dir's record is mirrored; a `~/.yaac-cluster` install has no older
-    CLI that could look for it.
-- **What breaks silently if they go too early.**
-  - Without the lift, an upgraded k8s install loses its record. A host
-    `yaac server start` is then allowed on the cluster's data dir, putting
-    two writers on one database, and `yaac cluster install` mints a new
-    install id and refuses its own byo Deployment as another install's.
-  - Without the mirror, an older `yaac` on PATH (a brew `yaac-server` beside
-    a source build, or the one the desktop app finds) sees no driver in
-    `server.json`, takes a cluster's `~/.yaac` for a containerless one and
-    starts a host server on it.
-- **When it is safe to remove.** Together, once both hold:
-  - every `<dir>-client/server.json` that carries install fields has a
-    sibling `<dir>/install.json` (the lift has run everywhere);
-  - no `yaac` from before `install.json` is installed on any machine that
-    has a data dir.
-- **Order.** Remove them together with, or after, the `~/.yaac` cluster
-  rule and the moves below: the cluster rule finds a legacy record through
-  the lift, and each move strips the mirror.
+- **What it reads.** Install keys (`driver`, `installId`, `clusterUid`,
+  `kubeContext`, `byo`, `origin`) in `<clientDataDir>-client/server.json`,
+  on every `readServerConfig` and every `readInstallRecord` of the client
+  data dir. It writes them to that data dir's `install.json` when that is
+  missing (exclusively, so another process's record wins) or torn; an
+  existing readable one is left alone, since the copy came from it. Then
+  it rewrites `server.json` without them, or deletes it when only an empty
+  selection is left. That rewrite can race a concurrent selection change
+  and lose it, once per machine.
+- **What breaks silently if it goes too early.** An install from before
+  `install.json` loses its record, so a host `yaac server start` is
+  allowed on its data dir, and `yaac cluster install` mints a new install
+  id and refuses its own byo Deployment as another install's. A cluster
+  install whose data dir was moved gets the stale copy lifted back into
+  `~/.yaac`, and `clusterDataDir` points there.
+- **When it is safe to remove.** Once no `server.json` on any machine
+  carries an install key, that is, every machine has run one upgraded
+  `yaac` command.
+- **Order.** Independent of the install-id entries below. The `~/.yaac`
+  cluster rule finds a legacy record through it, so it goes with or after
+  that rule.
 
 ## A cluster install that already lives in `~/.yaac`
 
 With no `YAAC_DATA_DIR`, `yaac cluster …` uses `~/.yaac-cluster`, beside the
 host server's `~/.yaac-server`. Older cluster installs live in `~/.yaac` itself.
-A live cluster's install cannot move: its static volumes are hostPaths into
-`~/.yaac` named by a hash of that path, the kind node's `node-local` mount is
-fixed when the cluster is created, and a bound claim's volume is immutable.
+A live kind cluster's install cannot move: its static volumes are hostPaths
+into `~/.yaac`, the kind node's `node-local` mount is fixed when the cluster
+is created, and a bound claim's volume is immutable.
 
 - **What it reads.**
   - *The rule.* `clusterDataDir` in `packages/shared/src/install-record.ts`
     keeps `~/.yaac` when its record says `driver: k8s`. It reads that record
     through `readInstallRecord`, so it sees one still only in `server.json`
-    (the lift above). The desktop tray hides the host server's lines when
+    (the retirement above). The desktop tray hides the host server's lines when
     `yaac server status --json` reports `driver: k8s` (`hostStatus` in
     `packages/desktop/src/server-control.ts`), since that data dir is the
     cluster's.
@@ -522,8 +515,7 @@ fixed when the cluster is created, and a bound claim's volume is immutable.
     the new cluster (`moveLegacyClusterDataDir` in
     `packages/shared/src/legacy-data-dir.ts`, asking `kindClusterExists`). The
     fresh cluster mounts the new path and binds fresh volumes to the same
-    data. It strips the install fields from `~/.yaac-client/server.json`, as
-    the host move does. A byo install, and a `--byo` run, never move.
+    data. A byo install, and a `--byo` run, never move.
 - **What breaks silently if it goes too early.** `yaac cluster install`
   starts a fresh install in `~/.yaac-cluster` against the existing kind
   cluster. A byo install is refused, because its Deployment carries the old
@@ -532,15 +524,14 @@ fixed when the cluster is created, and a bound claim's volume is immutable.
   whose advice is to delete the claim and re-run. Doing that binds the
   server to fresh volumes under `~/.yaac-cluster`, and the install comes up
   **empty**: every project is still in `~/.yaac`, unreachable.
-  Without the move's strip, the next read lifts the mirrored record back into
-  a new `~/.yaac`, and `clusterDataDir` points there again.
 - **When it is safe to remove.** Once no machine has a cluster install in
   `~/.yaac`: neither `~/.yaac/install.json` nor `~/.yaac-client/server.json`
   records `driver: k8s`.
-- **Moving one.** `yaac cluster delete` (running workspaces are lost), then
-  `yaac cluster install`, which moves the data dir and keeps its projects.
-  A byo install has no such path: its volumes live in the cluster, not in
-  `~/.yaac`.
+- **Moving one by hand.** As for any install (docs/cluster-setup.md
+  "Moving an install"): a byo install is `mv` and a re-install; a kind
+  install is `yaac cluster delete` (running workspaces are lost) and `yaac
+  cluster install`, which moves the data dir itself and keeps its
+  projects.
 
 ## A host install that still lives in `~/.yaac`
 
@@ -574,9 +565,8 @@ repoints it.
     reading any tool's format. opencode's snapshot repos (its undo and
     revert history) get their `core.worktree` and `alternates` repointed,
     and are renamed after the sha1 of the new checkout path. A failed rename points them back and leaves
-    `~/.yaac` in use. After the rename it strips the install fields from
-    `~/.yaac-client/server.json`. Every outcome re-resolves the host data
-    dir, so a start that lost a race to move it follows the one that won.
+    `~/.yaac` in use. Every outcome re-resolves the host data dir, so a
+    start that lost a race to move it follows the one that won.
   - *The Keychain.* On macOS, claude names its Keychain item after a hash
     of its config dir, which the move changes. Before the rename, each
     project's item under the old name is written to claude's own
@@ -587,9 +577,7 @@ repoints it.
 - **What breaks silently if it goes too early.** Without the fallback, an
   unmoved install looks empty: `yaac server status` reports "not running"
   while the old server serves, and a second, empty server starts beside it.
-  Without the move, the fallback holds forever. Without the strip, the next
-  read of `~/.yaac`'s record lifts the mirrored fields back and recreates
-  `~/.yaac`. Without the repoint, pi, opencode and codex conversations from
+  Without the move, the fallback holds forever. Without the repoint, pi, opencode and codex conversations from
   before the move stop resuming and drop out of the transcript view, and
   pi-acp writes into a recreated `~/.yaac`. While the move is deferred, or
   when `~/.yaac` sits unserved beside `~/.yaac-server`, `yaac server
@@ -597,9 +585,94 @@ repoints it.
 - **When it is safe to remove.** Once no machine has a `~/.yaac/server-local`
   that is not a cluster install. `rewriteToolRecordPaths` goes with the
   later of this and the slug-named project dir move above.
-- **Order.** Remove it before, or together with, the lift and the mirror
-  above. The move finds a cluster install in `~/.yaac` whose record is still
-  only in `server.json` through the lift. Without the lift it would take
+- **Order.** Remove it before, or together with, the `server.json`
+  retirement above. The move finds a cluster install in `~/.yaac` whose
+  record is still only in `server.json` through the retirement. Without it
+  it would take
   that install for a containerless one, and since a pod-hosted server's lock
   names no host pid, it would judge the live cluster idle and rename `~/.yaac`
   out from under its hostPath volumes.
+
+## Cluster objects keyed by a data-dir hash
+
+An install from before install ids named and labelled its cluster objects
+after the first 16 hex characters of a sha256 of its data dir's path, under
+the labels `yaac.data-dir-hash`, `yaac.registry-data-dir-hash`,
+`yaac.sweep-data-dir-hash` and `yaac.store-data-dir-hash`. Everything is now
+keyed by the install id (docs/server-in-cluster.md "Storage claims"). Three
+shims move an older install over; remove them in this order.
+
+`yaac cluster install` reads the hash back from the cluster, never from a
+path, and records it as `install.json`'s `legacyDataDirHash`
+(`readLegacyDataDirHash` in `packages/server/src/drivers/k8s/install/install.ts`):
+from the server Deployment's pod template, or on kind with the namespace
+gone, from its `yaac-global` volume. Only the hash's shape is accepted, since
+it ends up in a node-tree path. `legacyNames` beside it says the install's
+names still carry the hash. The CLI binds both next to the install id, and
+the server pod gets them as `YAAC_LEGACY_DATA_DIR_HASH` and
+`YAAC_LEGACY_NAMES`. Every shim below is a no-op without a hash, which
+covers every install created since.
+
+### 1. The startup relabel
+
+- **What it reads.** `relabelLegacyObjects` in
+  `packages/server/src/drivers/k8s/substrate/legacy-labels.ts`, run by the
+  server at k8s driver start (`startK8sDriver`) before anything selects on
+  the install id, adds `yaac.install-id` to each Job, Pod, Deployment,
+  Service, claim and NetworkPolicy in the install's namespace whose legacy
+  label equals the hash. Objects a later apply re-sends pick the new label
+  up anyway; this covers the ones nothing re-applies (workspace Jobs and
+  pods, prewarmed spares, builder, store-writer and sweep pods). It runs on
+  every start while the hash is recorded, since a Deployment that is not
+  re-applied (a project registry, the proxy) recreates its pods from a
+  template that carries only the old label. A failure fails the server's
+  start: watching with a live workspace unlabelled would read it as gone,
+  and the sweeps would delete its data. Volumes, which the server may not
+  write, are relabelled by `yaac cluster install` as it ensures them. Old
+  labels are never stripped.
+- **What breaks silently if it goes too early.** Workspaces from before the
+  upgrade are invisible: their pods run on and their Jobs leak, the sweeps
+  remove their session dirs and node-local working copies, and `yaac
+  cluster check` fails a kind install's storage gate.
+- **When it is safe to remove.** Once every legacy install has started an
+  upgraded server, so every object that predates the upgrade carries the
+  install id or is gone.
+
+### 2. Legacy names and node path
+
+- **What it reads.** `installNameKey` in
+  `packages/server/src/drivers/k8s/substrate/install-id.ts` answers the hash
+  instead of the install id while `legacyNames` is set, so the node path
+  (`/var/lib/yaac/node/<hash>`), kind's static volumes (`<claim>-<hash>`) and
+  the main registry and npm cache claims keep their names: kind's extraMount
+  and a bound claim's volume cannot change. A kind install drops them when
+  `yaac cluster install` creates a new cluster.
+  - *byo.* `byoLegacyKeys` switches the names to the install id at the first
+    run that finds no pod, in any namespace, mounting the old tree (another
+    install from the same data-dir path shares it); this install's own
+    server pod is left out, since the rollout replaces it. The switch drops
+    `legacyNames` at once, so no later run goes back to the hash's names.
+    The new server is still handed the hash, for its startup relabel. Once
+    it is up, `retireLegacyNames` deletes the old cache claims (the registry
+    and npm cache start empty; install re-pushes the built-in images and
+    project images rebuild on use), checks the tree again, since the old
+    server could launch a workspace on it until it rolled, and removes it on
+    every node only if nothing mounts it. Only then is the hash cleared; a
+    kept or failed removal is retried by the next run.
+- **What breaks silently if it goes too early.** On kind, the server mounts
+  a node path the extraMount does not back, so node-local data lands on the
+  node container's own filesystem and is lost with it, and claims bound to
+  legacy volume names make install throw. On byo, running workspaces lose
+  their image stores and pnpm stores mid-run.
+- **When it is safe to remove.** Once no install records
+  `legacyDataDirHash`. For kind that means each legacy cluster has been
+  recreated, and nothing forces that.
+
+### 3. The backfill and the record fields
+
+- **What it reads.** `readLegacyDataDirHash` and `legacyHashOf`, the
+  `legacyDataDirHash` and `legacyNames` fields of `InstallRecord`, and the
+  `YAAC_LEGACY_DATA_DIR_HASH` and `YAAC_LEGACY_NAMES` variables.
+- **What breaks silently if it goes too early.** The two shims above never
+  see a hash, with the consequences they list.
+- **When it is safe to remove.** Together with 2.

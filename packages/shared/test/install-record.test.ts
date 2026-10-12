@@ -10,6 +10,7 @@ import {
   recordedDriver,
 } from '#install-record'
 import { clientLocalPath, getDataDir, setDataDir, useInstallDataDir } from '#paths'
+import { readServerConfig } from '#server-config'
 
 let dir: string
 
@@ -35,25 +36,53 @@ describe('readInstallRecord', () => {
     expect(await readInstallRecord()).toEqual({ installId: 'i-1' })
   })
 
-  it('lifts a legacy record out of server.json into install.json, for the client data dir only', async () => {
+  it('round-trips the legacy data-dir hash an older cluster install is still named after, and nothing else in its place', async () => {
+    await recordInstall({ driver: 'k8s', installId: 'i-1', legacyDataDirHash: '0123456789abcdef', legacyNames: true })
+    expect(await readInstallRecord())
+      .toEqual({ driver: 'k8s', installId: 'i-1', legacyDataDirHash: '0123456789abcdef', legacyNames: true })
+    await recordInstall({ legacyDataDirHash: undefined, legacyNames: undefined })
+    expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
+    // It names a node tree a root `rm -rf` removes, so only the hash's
+    // shape is kept.
+    for (const bad of ['.', '../x', 'other-install-id', '0123456789ABCDEF']) {
+      await fs.writeFile(installRecordPath(), JSON.stringify({ installId: 'i-1', legacyDataDirHash: bad }))
+      expect(await readInstallRecord()).toEqual({ installId: 'i-1' })
+    }
+  })
+})
+
+describe('retireServerJsonRecord', () => {
+  const writeServerJson = async (value: object): Promise<void> => {
     await fs.mkdir(path.dirname(clientLocalPath('server.json')), { recursive: true })
-    await fs.writeFile(clientLocalPath('server.json'), JSON.stringify({
-      url: '', enabled: false, saved: [], driver: 'k8s', installId: 'i-1', byo: true,
-    }))
+    await fs.writeFile(clientLocalPath('server.json'), JSON.stringify(value))
+  }
+  const serverJson = async (): Promise<unknown> => JSON.parse(await fs.readFile(clientLocalPath('server.json'), 'utf8'))
+
+  it('moves a record from server.json into a missing install.json, for the client data dir only', async () => {
+    await writeServerJson({ url: 'https://a.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'i-1', byo: true })
     // Another data dir never inherits the client tier's legacy record.
     expect(await readInstallRecord(path.join(dir, 'cluster'))).toBeNull()
 
     expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1', byo: true })
-    const written = await fs.stat(installRecordPath())
-    expect(written.mode & 0o777).toBe(0o600)
-    // From now on install.json answers, whatever server.json says.
-    await fs.writeFile(clientLocalPath('server.json'), JSON.stringify({ url: '', enabled: false, saved: [] }))
-    expect(await recordedDriver()).toBe('k8s')
+    expect((await fs.stat(installRecordPath())).mode & 0o777).toBe(0o600)
+    expect(await serverJson()).toEqual({ url: 'https://a.ts.net', enabled: true, saved: [] })
   })
 
-  it('re-lifts over an install.json a crash left torn, but never over one another process wrote', async () => {
-    await fs.mkdir(path.dirname(clientLocalPath('server.json')), { recursive: true })
-    await fs.writeFile(clientLocalPath('server.json'), JSON.stringify({ url: '', enabled: false, saved: [], driver: 'k8s' }))
+  it('leaves an existing install.json alone and strips server.json, deleting a mirrored empty selection', async () => {
+    await recordInstall({ driver: 'k8s', installId: 'i-1', origin: 'http://127.0.0.1:8787' })
+    await writeServerJson({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }], driver: 'containerless' })
+    expect(await readServerConfig()).toEqual({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }] })
+    expect(await serverJson()).toEqual({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }] })
+    expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1', origin: 'http://127.0.0.1:8787' })
+
+    // What the mirror wrote for a machine with no server selected.
+    await writeServerJson({ url: '', enabled: false, saved: [], driver: 'k8s', installId: 'i-1' })
+    expect(await readServerConfig()).toBeNull()
+    await expect(fs.access(clientLocalPath('server.json'))).rejects.toThrow()
+  })
+
+  it('re-lifts over an install.json a crash left torn', async () => {
+    await writeServerJson({ url: '', enabled: false, saved: [], driver: 'k8s' })
     await fs.mkdir(getDataDir(), { recursive: true })
     await fs.writeFile(installRecordPath(), '')
     expect(await readInstallRecord()).toEqual({ driver: 'k8s' })
@@ -62,17 +91,12 @@ describe('readInstallRecord', () => {
 })
 
 describe('recordInstall', () => {
-  it('mirrors the client data dir\'s record into server.json, for an older yaac, keeping the selection', async () => {
+  it('never writes the record into server.json', async () => {
     await fs.mkdir(path.dirname(clientLocalPath('server.json')), { recursive: true })
-    await fs.writeFile(clientLocalPath('server.json'), JSON.stringify({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }] }))
+    const selection = { url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }] }
+    await fs.writeFile(clientLocalPath('server.json'), JSON.stringify(selection))
     await recordInstall({ driver: 'k8s', installId: 'i-1' })
-    expect(JSON.parse(await fs.readFile(clientLocalPath('server.json'), 'utf8'))).toEqual({
-      url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }], driver: 'k8s', installId: 'i-1',
-    })
-    // Another install's record stays out of it.
-    useInstallDataDir(path.join(dir, 'cluster'))
-    await recordInstall({ driver: 'k8s', installId: 'i-2' })
-    expect(JSON.parse(await fs.readFile(clientLocalPath('server.json'), 'utf8'))).toMatchObject({ installId: 'i-1' })
+    expect(JSON.parse(await fs.readFile(clientLocalPath('server.json'), 'utf8'))).toEqual(selection)
   })
 
   it('records into the install data dir, merges later records, and drops fields set to undefined', async () => {
@@ -115,6 +139,21 @@ describe('clusterDataDir', () => {
     }))
     expect(await clusterDataDir()).toBe(path.join(dir, '.yaac'))
     expect(JSON.parse(await fs.readFile(path.join(dir, '.yaac', 'install.json'), 'utf8'))).toEqual({ driver: 'k8s', installId: 'i-1' })
+  })
+
+  it('is ~/.yaac-cluster once a cluster install moved there, even with a server.json an older yaac wrote', async () => {
+    vi.stubEnv('HOME', dir)
+    setDataDir(path.join(dir, '.yaac'))
+    await recordInstall({ driver: 'k8s', installId: 'i-1' })
+    await fs.mkdir(path.join(dir, '.yaac-client'), { recursive: true })
+    await fs.writeFile(path.join(dir, '.yaac-client', 'server.json'), JSON.stringify({
+      url: 'http://127.0.0.1:8787', enabled: true, saved: [], driver: 'k8s', installId: 'i-1',
+    }))
+    // The first command of any kind cleans server.json.
+    await readServerConfig()
+    await fs.rename(path.join(dir, '.yaac'), path.join(dir, '.yaac-cluster'))
+    expect(await clusterDataDir()).toBe(path.join(dir, '.yaac-cluster'))
+    await expect(fs.access(path.join(dir, '.yaac'))).rejects.toThrow()
   })
 
   it('is an overridden data dir itself: one data dir, one install', async () => {
