@@ -12,7 +12,8 @@
     "dev": "tsup && electron .",
     "dev:hot": "bash scripts/dev-hot.sh",
     "app:build": "tsup && electron-builder --config electron-builder.yml",
-    "app:install": "pnpm app:build && tsx scripts/install-app.ts"
+    "app:install": "pnpm app:build && tsx scripts/install-app.ts",
+    "app:release": "tsup && tsx scripts/release-app.ts"
   },
   "dependencies": {
     "@lydell/node-pty": "catalog:"

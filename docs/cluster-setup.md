@@ -89,7 +89,7 @@ Linux filesystem does. On macOS this constrains the VM stack.
 
 On macOS podman runs in a VM, and yaac needs two non-default machine
 settings: **rootful** (kind requires it) and the **libkrun provider** with
-the patched `yaac-krunkit` from yaac's Homebrew tap.
+the patched `yaac-krunkit` that yaac's `yaac-cluster` formula installs.
 
 The provider choice is about virtiofs ownership. Apple's
 Virtualization.framework (applehv/vz) reports the accessing process as the
