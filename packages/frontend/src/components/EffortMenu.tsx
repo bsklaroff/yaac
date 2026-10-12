@@ -9,11 +9,12 @@ import { effortLabel } from '@yaac/shared/types'
  * The chat composer's effort level (docs/effort-levels.md): a label showing
  * the level the conversation is at, which opens a menu of the levels its
  * current model offers. The levels and their names are the agent's own, so
- * they follow a model switch.
+ * they follow a model switch. A narrow pane drops the word "effort" so the
+ * composer's footer fits on one line.
  */
 
-const TRIGGER = 'flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-text-faint outline-none '
-  + 'hover:bg-surface-2 hover:text-text disabled:opacity-40 data-[popup-open]:bg-surface-2 '
+const TRIGGER = 'flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-text-faint '
+  + 'outline-none hover:bg-surface-2 hover:text-text disabled:opacity-40 data-[popup-open]:bg-surface-2 '
   + 'data-[popup-open]:text-text'
 
 export function EffortMenu({
@@ -31,7 +32,7 @@ export function EffortMenu({
   return (
     <Menu.Root>
       <Menu.Trigger aria-label="Effort" title="How hard the model thinks" disabled={disabled} className={TRIGGER}>
-        {label} effort
+        <span>{label}<span className="hidden @min-[30rem]:inline"> effort</span></span>
         <ChevronIcon size={11} className="-rotate-90" />
       </Menu.Trigger>
       <Menu.Portal>

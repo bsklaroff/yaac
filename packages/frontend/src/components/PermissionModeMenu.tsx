@@ -12,7 +12,8 @@ import { PERMISSION_MODE_COPY, type PermissionMode } from '@yaac/shared/types'
  * ones it can be switched to. The server says which those are; where there
  * are none (opencode, pi) the label is plain text. Under containerless,
  * `bypass` carries the create form's warning, since there the agent then
- * acts as the user on this machine.
+ * acts as the user on this machine. A narrow pane drops the word
+ * "permissions" from the label so the composer's footer fits on one line.
  */
 
 /** What each posture lets the agent do, for hover text and the menu. */
@@ -28,7 +29,7 @@ export const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
     + ' every edit and anything that reaches the network.',
 }
 
-const LABEL = 'flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-text-faint'
+const LABEL = 'flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-text-faint'
 
 export function PermissionModeMenu({
   current,
@@ -43,7 +44,7 @@ export function PermissionModeMenu({
 }): JSX.Element {
   const containerless = useSnapshot()?.driver === 'containerless'
   if (available.length === 0) {
-    return <span className={LABEL} title={PERMISSION_MODE_HELP[current]}>{PERMISSION_MODE_COPY[current]}</span>
+    return <span className={LABEL} title={PERMISSION_MODE_HELP[current]}><Label mode={current} /></span>
   }
   return (
     <Menu.Root>
@@ -54,7 +55,7 @@ export function PermissionModeMenu({
         className={clsx(LABEL, 'outline-none hover:bg-surface-2 hover:text-text disabled:opacity-40',
           'data-[popup-open]:bg-surface-2 data-[popup-open]:text-text')}
       >
-        {PERMISSION_MODE_COPY[current]}
+        <Label mode={current} />
         <ChevronIcon size={11} className="-rotate-90" />
       </Menu.Trigger>
       <Menu.Portal>
@@ -81,4 +82,10 @@ export function PermissionModeMenu({
       </Menu.Portal>
     </Menu.Root>
   )
+}
+
+function Label({ mode }: { mode: PermissionMode }): JSX.Element {
+  const copy = PERMISSION_MODE_COPY[mode]
+  const short = copy.replace(/ permissions$/, '')
+  return <span>{short}{short !== copy && <span className="hidden @min-[30rem]:inline"> permissions</span>}</span>
 }

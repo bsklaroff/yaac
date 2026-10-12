@@ -647,12 +647,15 @@ function tokens(n: number): string {
 
 /** How full the main conversation's context window is, as a ring and a
  *  token count, from the agent's last `usage` report. Clicking it toggles
- *  the longer form with the percentage. */
+ *  the longer form with the percentage. A narrow pane shows one step less
+ *  of each (the bare ring, then the token count), so the composer's footer
+ *  fits on one line. */
 function ContextMeter({ used, size }: { used: number; size: number }): JSX.Element {
   const [expanded, setExpanded] = useState(false)
   const fraction = Math.min(1, used / size)
   const percent = Math.round(fraction * 100)
   const label = `Context: ${tokens(used)} of ${tokens(size)} tokens (${String(percent)}%)`
+  const short = `${tokens(used)} / ${tokens(size)}`
   const circumference = 2 * Math.PI * 6
   return (
     <button
@@ -664,7 +667,8 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
       aria-expanded={expanded}
       onClick={() => setExpanded((e) => !e)}
       className={clsx(
-        'mr-2 flex items-center gap-1 rounded-md px-1 py-0.5 text-xs tabular-nums hover:bg-surface-2',
+        'mr-2 flex items-center gap-1 whitespace-nowrap rounded-md px-1 py-0.5 text-xs tabular-nums',
+        'hover:bg-surface-2',
         percent >= 90 ? 'text-error' : percent >= 75 ? 'text-warning' : 'text-text-faint',
       )}
     >
@@ -681,7 +685,8 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
           strokeDashoffset={circumference * (1 - fraction)}
         />
       </svg>
-      {expanded ? label : `${tokens(used)} / ${tokens(size)}`}
+      <span className={expanded ? '@min-[30rem]:hidden' : 'hidden @min-[30rem]:inline'}>{short}</span>
+      {expanded && <span className="hidden @min-[30rem]:inline">{label}</span>}
     </button>
   )
 }

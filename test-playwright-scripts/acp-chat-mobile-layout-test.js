@@ -8,6 +8,8 @@
  *     page on focus.
  *  3. The page itself never scrolls; only panes inside it do.
  *  4. The input box grows with a multi-line message, up to its max-height.
+ *  5. The composer's footer (attach, toggles, permission and effort menus,
+ *     context meter, Send) sits on one line inside the card.
  *
  * Needs a running `yaac server` with a live ACP workspace (`yaac workspace
  * create <project> --tool claude --mode acp`), and sends it one small
@@ -121,6 +123,24 @@ try {
     overflow.wide.map((w) => `${w.tag}.${w.cls.split(' ')[0]}+${w.overhang}px`).join(' '))
   check('the message list has no horizontal scroll',
     overflow.scrollOverflow === 0, `overflow=${overflow.scrollOverflow}px`)
+
+  // ---- 5. the composer's footer fits on one line ----
+  const footer = await page.evaluate(() => {
+    const row = document.querySelector('button[aria-label="Send"]').closest('.justify-between')
+    const card = row.parentElement.getBoundingClientRect()
+    const controls = [...row.querySelectorAll('button')].map((b) => {
+      const r = b.getBoundingClientRect()
+      return { name: b.getAttribute('aria-label') ?? b.textContent, height: r.height, right: r.right }
+    })
+    return { cardRight: card.right, controls }
+  })
+  console.log('  footer:', JSON.stringify(footer))
+  const tall = footer.controls.filter((c) => c.height > 32)
+  check('no footer control wraps onto a second line', tall.length === 0,
+    tall.map((c) => `${c.name}=${c.height}px`).join(' '))
+  const out = footer.controls.filter((c) => c.right > footer.cardRight)
+  check('every footer control sits inside the card', out.length === 0,
+    out.map((c) => `${c.name}+${Math.round(c.right - footer.cardRight)}px`).join(' '))
 
   // ---- 2. the input is big enough that iOS won't zoom the page ----
   check('the input is at least 16px at phone width, so a focus cannot zoom the page',

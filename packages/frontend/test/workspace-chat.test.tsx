@@ -348,7 +348,7 @@ describe('WorkspaceChat context meter', () => {
     expect(meter.getAttribute('aria-valuetext')).toBe('Context: 160k of 200k tokens (80%)')
     expect(meter.className).toContain('text-warning')
     fireEvent.click(meter)
-    expect(meter.textContent).toBe('Context: 160k of 200k tokens (80%)')
+    expect(meter.textContent).toContain('Context: 160k of 200k tokens (80%)')
     fireEvent.click(meter)
     expect(meter.textContent).toBe('160k / 200k')
     cleanup()
