@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within, act } from '@testing-library/react'
-import type { AcpClientMessage, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
-import type { PermissionMode } from '@yaac/shared/types'
+import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
+import type { AcpClientMessage, AcpDiff, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
+import type { PermissionMode, WorkspaceFiles } from '@yaac/shared/types'
 
 /**
  * jsdom has no ResizeObserver; the pane uses one to follow the tail when it
@@ -49,6 +51,8 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { chatDraftKey, flushChatDrafts, useUiStore } from '#lib/store'
 import { countMatches, type QuerySpec } from '#lib/matchCount'
 import { IS_MAC } from '#lib/platform'
+import { filesKey } from '#lib/useWorkspaceChanges'
+import { testQueryClient } from './harness'
 
 const user = (seq: number, text: string): AcpEvent =>
   ({ type: 'user', seq, content: [{ type: 'text', text }] })
@@ -66,8 +70,22 @@ beforeEach(() => {
   useUiStore.setState({ chatCondensed: false })
 })
 
-function show(workspaceId = 'w1', agentSessionId = 'acp-1'): ReturnType<typeof render> {
-  return render(<WorkspaceChat workspaceId={workspaceId} agentSessionId={agentSessionId} />)
+/** The query client of the latest `show`, which holds the checkout's
+ *  listing a test seeds. */
+let client: QueryClient
+
+function show(workspaceId = 'w1', agentSessionId = 'acp-1', focused?: boolean): ReturnType<typeof render> {
+  client = testQueryClient()
+  const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  return render(
+    <WorkspaceChat
+      workspaceId={workspaceId}
+      agentSessionId={agentSessionId}
+      {...(focused !== undefined ? { focused } : {})}
+    />,
+    { wrapper },
+  )
 }
 
 describe('WorkspaceChat drafts', () => {
@@ -490,7 +508,7 @@ describe('WorkspaceChat find', () => {
   }
 
   it('opens from the focused pane only, and unfolds the run and the row holding a match', async () => {
-    const { rerender } = render(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" focused={false} />)
+    const { rerender } = show('w1', 'acp-1', false)
     pressFind()
     expect(screen.queryByRole('textbox', { name: 'Find' })).toBeNull()
 
@@ -1719,5 +1737,88 @@ describe('WorkspaceChat subagents and background tasks', () => {
     show()
     fireEvent.click(screen.getByRole('button', { name: /^Shellnpm run dev/ }))
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  })
+})
+
+describe('WorkspaceChat file links', () => {
+  const tool = (seq: number, call: Omit<AcpToolCall, 'toolCallId' | 'status'>): AcpEvent =>
+    ({ type: 'tool', seq, call: { toolCallId: `t${seq}`, status: 'completed', ...call } })
+  const diff = (path: string, oldText: string, newText: string): AcpDiff => ({ type: 'diff', path, oldText, newText })
+  const listing: WorkspaceFiles = {
+    version: 'v', root: '/workspace', paths: ['packages/a.ts', 'docs/b c.md', 'README.md'],
+    symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false,
+  }
+  const openFile = vi.fn()
+
+  beforeEach(() => {
+    stream.events = [
+      { type: 'agent', seq: 0, content: [{
+        type: 'text',
+        // A link's label never links again, and a path outside the checkout
+        // never names a file in it.
+        text: 'Edited `packages/a.ts:12`, see [the doc](</workspace/docs/b c.md#L3>) and README.md. '
+          + 'Not `notes.txt`, [`README.md`](https://example.com/readme), /usr/lib/x/README.md or packages/b.ts. '
+          + 'See [`packages/a.ts`](packages/a.ts#L100).',
+      }] },
+      // Each adapter's shape. claude names the file in the label and puts
+      // the line in the location: a Read's offset, an Edit's first hunk.
+      tool(1, { title: 'Read README.md (5 - 9)', kind: 'read', locations: [{ path: '/workspace/README.md', line: 5 }] }),
+      tool(2, {
+        title: 'Edit packages/a.ts', kind: 'edit',
+        content: [diff('/workspace/packages/a.ts', 'x', 'y'), diff('/workspace/packages/a.ts', 'p', 'q')],
+        locations: [{ path: '/workspace/packages/a.ts', line: 40 }, { path: '/workspace/packages/a.ts', line: 52 }],
+      }),
+      // codex titles every edit "Editing files" and gives no location.
+      tool(3, { title: 'Editing files', kind: 'edit', content: [diff('/workspace/packages/a.ts', 'r', 's')] }),
+      tool(4, { title: "Read file '/workspace/README.md'", kind: 'read', locations: [{ path: '/workspace/README.md' }] }),
+      // pi and opencode label a call with the bare tool name.
+      tool(5, {
+        title: 'edit', kind: 'edit', content: [diff('/workspace/packages/a.ts', 't', 'u')],
+        locations: [{ path: '/workspace/packages/a.ts', line: 8 }],
+      }),
+      tool(6, { title: 'read', kind: 'read', locations: [{ path: '/workspace/README.md' }] }),
+    ]
+    useUiStore.setState({ openFile })
+    openFile.mockClear()
+  })
+
+  afterEach(() => {
+    cleanup()
+    stream.events = []
+  })
+
+  it('opens checkout files named in messages and tool calls at their lines, once the listing is in', async () => {
+    show()
+    // Until the listing is in, only the markdown links are links.
+    expect(screen.getAllByRole('link').map((l) => l.textContent)).toEqual(['the doc', 'README.md', 'packages/a.ts'])
+    act(() => { client.setQueryData(filesKey('w1'), listing) })
+    await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(11))
+
+    const links = screen.getAllByRole('link')
+    expect(links.map((l) => [l.textContent, l.getAttribute('title') ?? l.getAttribute('href')])).toEqual([
+      ['packages/a.ts:12', 'packages/a.ts:12'],
+      ['the doc', 'docs/b c.md:3'],
+      ['README.md', 'README.md'],
+      ['README.md', 'https://example.com/readme'],
+      ['packages/a.ts', 'packages/a.ts:100'],
+      ['README.md', 'README.md:5'],
+      ['packages/a.ts', 'packages/a.ts:40'],
+      ['/workspace/packages/a.ts', 'packages/a.ts'],
+      ['/workspace/README.md', 'README.md'],
+      ['packages/a.ts', 'packages/a.ts:8'],
+      ['README.md', 'README.md'],
+    ])
+    fireEvent.click(links[1])
+    fireEvent.click(links[3].querySelector('code')!)
+    fireEvent.click(links[4].querySelector('code')!)
+    fireEvent.keyDown(links[6], { key: 'Enter' })
+    fireEvent.click(links[9])
+    // The Read row's link opens the file without toggling the row.
+    fireEvent.click(links[5])
+    expect(screen.getByRole('button', { name: /Read README.md/ }).getAttribute('aria-expanded')).toBeNull()
+    expect(openFile.mock.calls).toEqual([
+      ['w1', 'docs/b c.md', 3], ['w1', 'packages/a.ts', 100], ['w1', 'packages/a.ts', 40],
+      ['w1', 'packages/a.ts', 8], ['w1', 'README.md', 5],
+    ])
   })
 })

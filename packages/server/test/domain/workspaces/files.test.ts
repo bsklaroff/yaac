@@ -178,6 +178,9 @@ describe('getWorkspaceChanges', () => {
     expect(files.paths).toEqual(expect.arrayContaining([
       '.gitignore', 'a.txt', 'b.txt', 'src/lib/util.ts', 'untracked.txt', 'pkg/keep.ts', 'newpkg/file.ts',
     ]))
+    // Where the workspace sees the checkout, which agent output's absolute
+    // paths are read against.
+    expect(files.root).toBe(workspaceDir(PROJECT, 'list'))
     expect(files.paths).not.toContain('d.txt')
     expect(files.paths).not.toContain('debug.log')
     expect(files.paths.some((p) => p.startsWith('node_modules'))).toBe(false)
@@ -202,6 +205,7 @@ describe('getWorkspaceChanges', () => {
       const crafted = ['../../outside/secret.txt', '/etc/passwd', '.git/config', './a.txt', '..', 'src/../..']
       installFakeWorkspaceDriver({
         find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
+        workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(PROJECT, jobName) }),
         changes: async (jobName, request) => {
           const reading = await hostChanges(jobName, request)
           const read = reading.listing!

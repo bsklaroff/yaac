@@ -1038,6 +1038,10 @@ export interface WorkspaceFiles {
   /** Changes whenever anything below does; the caller sends it back as
    *  `known` so an unchanged listing is not sent again. */
   version: string
+  /** The checkout's absolute path as the workspace sees it (`/workspace` in
+   *  a pod, a host path otherwise), which `paths` are relative to. File
+   *  links read an absolute path in agent output against it. */
+  root: string
   /** Tracked and untracked files, gitignore-aware, deleted ones removed. */
   paths: string[]
   /** The entries of `paths` that are symlinks. */

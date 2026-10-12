@@ -1,7 +1,8 @@
 /**
  * Client side of the file editor (docs/file-editor.md): layout targets for
  * the explorer and editor panes, their API calls, and helpers that turn the
- * server's flat listing into a tree, quick-open results and tab labels.
+ * server's flat listing into a tree, quick-open results, tab labels and the
+ * links on file paths in terminal and chat text.
  */
 import { ServerError } from '@yaac/shared/errors'
 import type {
@@ -273,6 +274,62 @@ export function filterPaths(paths: string[], query: string, limit = 200): string
     if (score !== null) scored.push({ path, score })
   }
   return scored.sort((a, b) => b.score - a.score).slice(0, limit).map((s) => s.path)
+}
+
+// ── Paths in text ──────────────────────────────────────────────────────
+
+/** A file in the checkout, and the line a link to it names. */
+export interface FileRef {
+  path: string
+  line?: number
+}
+
+/** What file links match against: the checkout's absolute root as the
+ *  workspace sees it, and its files relative to that (`WorkspaceFiles`). */
+export interface CheckoutFiles {
+  root: string
+  paths: ReadonlySet<string>
+}
+
+/** A file path found in a run of text (a terminal row, a chat message), by
+ *  string index. */
+export type FileLink = FileRef & { start: number; end: number }
+
+/** Runs of characters a path can be made of; quotes, brackets and the like
+ *  end one. */
+const TOKEN = /[^\s'"`()<>[\]{},;|]+/g
+
+/** A token without the trailing `:line[:col]` and punctuation a path is
+ *  often printed with. */
+function trimToken(token: string): string {
+  return token.replace(/[.:]+$/, '').replace(/(:\d+)+$/, '')
+}
+
+/** The paths in `text` that name checkout files (see `resolveFilePath`). */
+export function fileLinksIn(text: string, files: CheckoutFiles): FileLink[] {
+  const links: FileLink[] = []
+  for (const m of text.matchAll(TOKEN)) {
+    const ref = resolveFilePath(m[0], files)
+    if (ref !== undefined) links.push({ ...ref, start: m.index, end: m.index + trimToken(m[0]).length })
+  }
+  return links
+}
+
+/**
+ * The checkout file `token` names, if any, with the line of a trailing
+ * `:line[:col]`. A token counts with an optional `./` and trailing
+ * punctuation removed, and an absolute one only under the checkout's root,
+ * so `/usr/lib/foo/package.json` never names the checkout's own.
+ */
+export function resolveFilePath(token: string, files: CheckoutFiles): FileRef | undefined {
+  const trimmed = trimToken(token)
+  if (!trimmed.includes('/') && !trimmed.includes('.')) return undefined
+  const lineText = /^:(\d+)/.exec(token.slice(trimmed.length))?.[1]
+  const relative = trimmed.startsWith(`${files.root}/`)
+    ? trimmed.slice(files.root.length + 1)
+    : trimmed.replace(/^\.\//, '')
+  if (!files.paths.has(relative)) return undefined
+  return lineText ? { path: relative, line: Number(lineText) } : { path: relative }
 }
 
 // ── Tabs and placement ─────────────────────────────────────────────────

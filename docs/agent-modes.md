@@ -221,6 +221,26 @@ handshake, then the whole conversation in one `hello` frame): that is the
 "Connecting to the agent…" wait. The warm-up that pre-attaches terminals
 after a page load covers chat panes too.
 
+### File links
+
+A path that names a file in the checkout opens the file pane on click, at
+the line it names (`:12`, or a link's `#L12`), wherever the agent writes
+it: in prose, as inline code, as a link's target (claude writes
+`[main.ts:12](src/main.ts#L12)`), in a tool call's label, or in an edit's
+per-file headers. A tool call's file and line come from its `locations`
+where the adapter reports them (claude: a Read's offset and a finished
+Edit's first hunk; pi: an edit's first changed line). The agents label
+calls differently, so the row adapts: claude and codex name the file in
+the label, pi and opencode label a call with the bare tool name (`read`),
+so their file follows the label, and codex titles every edit "Editing
+files" with no locations, so its edit always shows the file header.
+Matching is the terminal's (`fileLinksIn` in `#lib/files`,
+docs/terminal-mirror.md "Links") against the listing the git status bar
+polls, so a file the agent just created links once the next poll lists it.
+Nothing inside a link's label links again, so a backticked path labelling
+a link opens what the link says. Only the live pane links paths; a stopped
+workspace has no file pane, so its transcript leaves them as text.
+
 ## Find
 
 Cmd/Ctrl-F searches the whole conversation in the main pane, whichever mode

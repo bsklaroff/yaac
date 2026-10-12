@@ -25,6 +25,7 @@ const BASE_TRIGGER = 'Choose the branch changes are compared against'
 
 const LISTING: WorkspaceFilesData = {
   version: 'v1',
+  root: '/workspace',
   paths: ['README.md', 'src/app.ts', 'src/new.ts', 'src/same.ts'],
   symlinks: {},
   ignored: [],

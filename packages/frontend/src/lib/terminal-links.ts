@@ -1,5 +1,6 @@
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import type { IBufferLine, ILink, Terminal } from '@xterm/xterm'
+import { fileLinksIn, type CheckoutFiles } from './files'
 
 /**
  * Clickable links in a workspace terminal: URLs, opened in a new tab (the
@@ -15,45 +16,6 @@ import type { IBufferLine, ILink, Terminal } from '@xterm/xterm'
 
 /** How long a checkout's file listing is reused for path lookups. */
 const LISTING_TTL_MS = 15_000
-
-/** A file path found in a line of terminal text, by string index. */
-export interface FileLink {
-  start: number
-  end: number
-  path: string
-}
-
-/** Runs of characters a path can be made of; quotes, brackets and the like
- *  end one. */
-const TOKEN = /[^\s'"`()<>[\]{},;|]+/g
-
-/**
- * The paths in `text` that name files in `paths` (the checkout's listing,
- * relative to its root). A token counts with an optional `./`, a trailing
- * `:line[:col]` and trailing punctuation removed. An absolute path counts by
- * its longest suffix in the listing, since the checkout's absolute location
- * differs by driver (`/workspace` in a pod, a host path otherwise).
- */
-export function fileLinksIn(text: string, paths: ReadonlySet<string>): FileLink[] {
-  const links: FileLink[] = []
-  for (const m of text.matchAll(TOKEN)) {
-    const token = m[0].replace(/[.:]+$/, '').replace(/(:\d+)+$/, '')
-    if (!token.includes('/') && !token.includes('.')) continue
-    const path = resolvePath(token, paths)
-    if (path !== undefined) links.push({ start: m.index, end: m.index + token.length, path })
-  }
-  return links
-}
-
-function resolvePath(token: string, paths: ReadonlySet<string>): string | undefined {
-  const relative = token.replace(/^\.\//, '')
-  if (!token.startsWith('/')) return paths.has(relative) ? relative : undefined
-  for (let i = token.indexOf('/', 1); i !== -1; i = token.indexOf('/', i + 1)) {
-    const suffix = token.slice(i + 1)
-    if (paths.has(suffix)) return suffix
-  }
-  return undefined
-}
 
 /**
  * A row's text with the cell each string index sits in. A wide character
@@ -80,7 +42,7 @@ function openGesture(event: MouseEvent, isMac: boolean): boolean {
 }
 
 /**
- * Install both kinds of link. `listPaths` fetches the checkout's file
+ * Install both kinds of link. `listFiles` fetches the checkout's file
  * listing, at most once per `LISTING_TTL_MS`: first when the pointer enters
  * the terminal, so a link is ready by the time it is hovered. xterm shows a
  * row's links only once every provider has answered, so a stale listing
@@ -91,8 +53,8 @@ export function installTerminalLinks(
   term: Terminal,
   opts: {
     isMac: boolean
-    listPaths: () => Promise<string[]>
-    openFile: (path: string) => void
+    listFiles: () => Promise<{ root: string; paths: string[] } | undefined>
+    openFile: (path: string, line?: number) => void
   },
 ): () => void {
   const web = new WebLinksAddon((event, uri) => {
@@ -101,16 +63,20 @@ export function installTerminalLinks(
   term.loadAddon(web)
 
   let fetchedAt = -Infinity
-  let pending: Promise<ReadonlySet<string>> | null = null
-  let known: ReadonlySet<string> | null = null
-  const paths = (): Promise<ReadonlySet<string>> => {
+  let pending: Promise<CheckoutFiles> | null = null
+  let known: CheckoutFiles | null = null
+  const none: CheckoutFiles = { root: '', paths: new Set() }
+  const files = (): Promise<CheckoutFiles> => {
     if (!pending || Date.now() - fetchedAt > LISTING_TTL_MS) {
       fetchedAt = Date.now()
-      pending = opts.listPaths().then((p) => (known = new Set(p)), () => known ?? new Set<string>())
+      pending = opts.listFiles().then(
+        (f) => (known = f ? { root: f.root, paths: new Set(f.paths) } : none),
+        () => known ?? none,
+      )
     }
     return known ? Promise.resolve(known) : pending
   }
-  const prefetch = (): void => { void paths() }
+  const prefetch = (): void => { void files() }
   term.element?.addEventListener('mouseenter', prefetch)
 
   const provider = term.registerLinkProvider({
@@ -121,14 +87,14 @@ export function installTerminalLinks(
         callback(undefined)
         return
       }
-      void paths().then((known) => {
+      void files().then((known) => {
         const links: ILink[] = fileLinksIn(text, known).map((l) => ({
           // 1-based cells, end inclusive; a path's characters are narrow.
           range: { start: { x: cellAt[l.start] + 1, y }, end: { x: cellAt[l.end - 1] + 1, y } },
           text: text.slice(l.start, l.end),
           decorations: { underline: true, pointerCursor: true },
           activate: (event) => {
-            if (openGesture(event, opts.isMac)) opts.openFile(l.path)
+            if (openGesture(event, opts.isMac)) opts.openFile(l.path, l.line)
           },
         }))
         callback(links.length > 0 ? links : undefined)

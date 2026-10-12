@@ -288,7 +288,7 @@ export async function getWorkspaceChanges(
       : null
     if (fetchedAtMs !== null) comparison.fetchedAt = formatUtcTimestamp(fetchedAtMs)
   }
-  const listing = reading.listing && await finishListing(await openCheckout(idOrName), reading.listing)
+  const listing = reading.listing && await finishListing(await openCheckout(idOrName), jobName, reading.listing)
   return {
     ...reading.changes,
     branch: named || forkBranch || null,
@@ -308,9 +308,10 @@ function isListable(co: Checkout, rel: string): boolean {
 
 /**
  * The explorer's listing from what the script read: capped, with where each
- * symlink leads and, for a `full` listing, the folders holding no file.
+ * symlink leads and, for a `full` listing, the folders holding no file. Its
+ * `root` is where the workspace sees the checkout.
  */
-async function finishListing(co: Checkout, read: NonNullable<ChangesReading['listing']>): Promise<WorkspaceFiles> {
+async function finishListing(co: Checkout, jobName: string, read: NonNullable<ChangesReading['listing']>): Promise<WorkspaceFiles> {
   // The script runs in the workspace, so every list may name anything. Only
   // paths the file routes accept are kept, before any is opened or resolved.
   const listable = (list: string[]): string[] => list.filter((p) => isListable(co, p.replace(/\/$/, '')))
@@ -326,6 +327,7 @@ async function finishListing(co: Checkout, read: NonNullable<ChangesReading['lis
   const targets = await Promise.all(links.map((p) => linkTarget(co, p)))
   const symlinks: Record<string, SymlinkTarget> = Object.fromEntries(links.map((p, i) => [p, targets[i]]))
   const body = {
+    root: workspaceDriver().workspacePaths(jobName).workspaceDir,
     paths,
     symlinks,
     ignored,

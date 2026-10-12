@@ -5,27 +5,42 @@ import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 // CodeMirror's contenteditable doesn't work under jsdom, and these tests cover
 // the save lifecycle, so the editor is replaced with a textarea.
 // It reports how many extensions it was handed, which is how a diff mode
-// shows here.
-vi.mock('#components/ui/CodeEditor', () => ({
-  CodeEditor: ({ value, onChange, extensions }: {
-    value: string
-    onChange: (v: string) => void
-    extensions?: unknown[]
-  }) => (
-    <textarea
-      aria-label="editor"
-      data-extensions={extensions?.length ?? 0}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  ),
-}))
+// shows here. With `cm.headless` set, a headless EditorView over the first
+// text it was given stands in for the one it creates, so a test can read
+// where the cursor went.
+const cm = vi.hoisted(() => ({ headless: false, view: null as EditorView | null, mounted: new WeakSet<Element>() }))
+vi.mock('#components/ui/CodeEditor', async () => {
+  const { EditorView } = await vi.importActual<typeof CodeMirror>('@uiw/react-codemirror')
+  return {
+    CodeEditor: ({ value, onChange, extensions, onCreateEditor }: {
+      value: string
+      onChange: (v: string) => void
+      extensions?: unknown[]
+      onCreateEditor?: (view: EditorView) => void
+    }) => (
+      <textarea
+        ref={(el) => {
+          if (!cm.headless || !el || cm.mounted.has(el)) return
+          cm.mounted.add(el)
+          cm.view = new EditorView({ doc: value, parent: document.body })
+          onCreateEditor?.(cm.view)
+        }}
+        aria-label="editor"
+        data-extensions={extensions?.length ?? 0}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    ),
+  }
+})
 
 import { AUTOSAVE_MS, POLL_MS, RETRY_MS, WorkspaceFile } from '#components/WorkspaceFile'
 import { discardFileSavers, fileKey, fileSaver, flushFileSavers } from '#lib/files'
 import { useUiStore } from '#lib/store'
 import { testQueryClient } from './harness'
 import { QueryClientProvider } from '@tanstack/react-query'
+import type * as CodeMirror from '@uiw/react-codemirror'
+import type { EditorView } from '@uiw/react-codemirror'
 import type { WorkspaceChanges } from '@yaac/shared/types'
 
 /**
@@ -122,7 +137,11 @@ afterEach(() => {
   cleanup()
   discardFileSavers([fileKey('w1', 'a.ts')])
   vi.useRealTimers()
-  useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain' })
+  useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain', revealLine: null })
+  cm.headless = false
+  cm.view?.destroy()
+  cm.view?.dom.remove()
+  cm.view = null
 })
 
 const tick = (ms: number): Promise<void> => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
@@ -453,5 +472,42 @@ describe('WorkspaceFile', () => {
     expect(useUiStore.getState().fileDiffMode).toBe('inline')
     expect(fileAt).toEqual([{ path: 'old.ts', rev: 'b'.repeat(40) }])
     expect(Number(editor().dataset.extensions)).toBeGreaterThan(0)
+  })
+
+  it('puts the cursor on the line a link opened it at, whether or not the file was open', async () => {
+    disk = { content: 'one\ntwo\nthree\n', version: 1 }
+    cm.headless = true
+    const cursorLine = (): number => cm.view!.state.doc.lineAt(cm.view!.state.selection.main.head).number
+    act(() => useUiStore.getState().openFile('w1', 'a.ts', 2))
+    await mount()
+    expect(cursorLine()).toBe(2)
+    expect(cm.view!.hasFocus).toBe(true)
+    expect(useUiStore.getState().revealLine).toBeNull()
+
+    // Already open; a line past the end lands on the last one.
+    act(() => useUiStore.getState().openFile('w1', 'a.ts', 99))
+    expect(cursorLine()).toBe(4)
+    // Another file's line is left for that file's pane.
+    act(() => useUiStore.getState().openFile('w1', 'b.ts', 1))
+    expect(cursorLine()).toBe(4)
+    expect(useUiStore.getState().revealLine).toMatchObject({ key: fileKey('w1', 'b.ts'), line: 1 })
+    // Opening it without a line drops the line still waiting for its pane.
+    act(() => useUiStore.getState().openFile('w1', 'b.ts'))
+    expect(useUiStore.getState().revealLine).toBeNull()
+  })
+
+  it('leaves focus where the user put it after the click, when the file loads late', async () => {
+    cm.headless = true
+    disk = { content: 'one\ntwo\nthree\n', version: 1 }
+    const link = document.body.appendChild(document.createElement('button'))
+    const composer = document.body.appendChild(document.createElement('textarea'))
+    link.focus()
+    act(() => useUiStore.getState().openFile('w1', 'a.ts', 3))
+    composer.focus()
+    await mount()
+    expect(cm.view!.state.doc.lineAt(cm.view!.state.selection.main.head).number).toBe(3)
+    expect(document.activeElement).toBe(composer)
+    link.remove()
+    composer.remove()
   })
 })

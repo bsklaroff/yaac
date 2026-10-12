@@ -1,11 +1,12 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
 import clsx from 'clsx'
 import { CodeView } from '#components/CodeView'
 import { DiffView } from '#components/DiffView'
-import { Markdown } from '#components/Markdown'
+import { FileLink, FileLinksContext, Linked, Markdown } from '#components/Markdown'
 import { useImageSrc } from '#lib/attachments'
 import { codeLines, unfence } from '#lib/code'
 import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
+import { fileLinksIn, resolveFilePath, type CheckoutFiles, type FileRef } from '#lib/files'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import {
   ChevronIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
@@ -482,13 +483,31 @@ function PathLabel({ path }: { path: string }): JSX.Element {
   )
 }
 
-function EditGroupView({ group, showPath }: { group: EditGroup; showPath: boolean }): JSX.Element {
+/** The checkout file a call's location names, at its line. */
+function locatedFile(
+  location: { path: string; line?: number } | undefined,
+  files: CheckoutFiles | null,
+): FileRef | undefined {
+  const file = location && files ? resolveFilePath(location.path, files) : undefined
+  return file && location?.line !== undefined ? { path: file.path, line: location.line } : file
+}
+
+/** `location` is the call's for this file, which says where its first hunk
+ *  starts once the edit is done. `showPath` is set when the row does not
+ *  name the file: several files, or a call with no locations (codex titles
+ *  every edit "Editing files"). */
+function EditGroupView({ group, showPath, location }: {
+  group: EditGroup
+  showPath: boolean
+  location: { path: string; line?: number } | undefined
+}): JSX.Element {
   const language = languageForPath(group.path)
+  const file = locatedFile(location ?? { path: group.path }, useContext(FileLinksContext))
   return (
     <div>
       {showPath && (
         <div className="border-b border-hairline px-2.5 py-1 font-mono text-[10px]">
-          <PathLabel path={group.path} />
+          {file === undefined ? <PathLabel path={group.path} /> : <FileLink file={file}><PathLabel path={group.path} /></FileLink>}
         </div>
       )}
       {group.hunks.map((lines, i) => (
@@ -676,6 +695,13 @@ export function ToolRow({
   const body = description !== undefined && text.trim() === description.trim() ? '' : text
   const isRead = call.kind === 'read'
   const label = description ?? call.title
+  /** The file the call reads or edits, at its line: a Read's offset, or a
+   *  finished Edit's first hunk. pi and opencode label a call with the bare
+   *  tool name (`read`), so a label that does not name the file is followed
+   *  by it. */
+  const files = useContext(FileLinksContext)
+  const located = locatedFile(call.locations?.[0], files)
+  const unnamed = files !== null && located !== undefined && !fileLinksIn(label, files).some((l) => l.path === located.path)
   const [labelRef, clipped] = useClipped(label)
   /** A label the panel must spell out, unless it is the command the panel
    *  shows anyway. */
@@ -709,8 +735,13 @@ export function ToolRow({
           ref={labelRef}
           className={clsx('truncate', description === undefined && call.kind === 'execute' && 'font-mono text-[11px]')}
         >
-          {label}
+          <Linked {...(located ? { about: located } : {})}>{label}</Linked>
         </span>
+        {unnamed && (
+          <span className="min-w-0 truncate font-mono text-[11px]">
+            <FileLink file={located}><PathLabel path={located.path} /></FileLink>
+          </span>
+        )}
         {edits.length > 0 && (
           <span className="shrink-0 font-mono text-[10px]">
             {stats.additions > 0 && <span className="text-success">+{stats.additions}</span>}
@@ -750,7 +781,11 @@ export function ToolRow({
           )}
           {edits.map((group, i) => (
             <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
-              <EditGroupView group={group} showPath={edits.length > 1} />
+              <EditGroupView
+                group={group}
+                showPath={edits.length > 1 || !call.locations?.length}
+                location={call.locations?.find((l) => l.path === group.path)}
+              />
             </div>
           ))}
           {body !== '' && (isRead ? (
