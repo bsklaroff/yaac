@@ -238,8 +238,10 @@ export async function recordWorkspaceLife(
 
 /**
  * Stamp the stop time, plus the cause when a reaper (not the user) stopped
- * it. Always writes the death columns so a stale cause can't carry over, and
- * resets `deathSeen` so a new death shows the notification again.
+ * it. Only a live row is written: the first stop recorded stands until a
+ * restart clears it. A stale-reaper pass that probed the workspace while a
+ * user stop was killing it would otherwise relabel that stop as a death,
+ * and a resumed teardown would wipe the cause it is resuming.
  *
  * Leaves `workspace_agent_sessions.active` alone: that last observed set is
  * what a restart brings back.
@@ -255,7 +257,7 @@ export async function recordWorkspaceStopped(
     deathReason: cause?.reason ?? null,
     deathDetail: cause?.detail ?? null,
     deathSeen: false,
-  }).where(key(projectId, workspaceId))
+  }).where(and(key(projectId, workspaceId), isNull(workspaces.stoppedAt)))
 }
 
 /** Clear a workspace's stop (its id is live again after a restart). */
@@ -491,17 +493,6 @@ export async function getWorkspaceRow(
   const db = await getDb()
   const rows = await db.select().from(workspaces).where(key(projectId, workspaceId))
   return rows[0] ? toRow(rows[0]) : undefined
-}
-
-/** `<projectId>/<id>` of workspaces with a recorded stop, which the stale reaper
- *  uses to tell its own teardowns from out-of-band ones. */
-export async function listStoppedWorkspaceIds(): Promise<Set<string>> {
-  const db = await getDb()
-  const rows = await db.select({
-    projectId: workspaces.projectId,
-    workspaceId: workspaces.workspaceId,
-  }).from(workspaces).where(and(isNotNull(workspaces.stoppedAt), notSpare))
-  return new Set(rows.map((r) => `${r.projectId}/${r.workspaceId}`))
 }
 
 /**

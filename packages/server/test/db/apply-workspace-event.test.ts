@@ -3,6 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import { applyWorkspaceEvent } from '#db/apply-workspace-event'
 import {
+  clearWorkspaceStopped,
   getProjectWorkspaceRows,
   recordWorkspaceCreated,
   setWorkspaceTitle,
@@ -248,6 +249,25 @@ describe('applyWorkspaceEvent', () => {
     expect(row?.stoppedAt).toBeInstanceOf(Date)
     expect(row?.deathReason).toBeUndefined()
     expect(row?.deathDetail).toBeUndefined()
+  })
+
+  // A reaper pass that probed a workspace mid-stop reports a death after the
+  // user's stop; it must not relabel it, nor a later stop wipe a death.
+  it('keeps the first stop recorded until a restart clears it', async () => {
+    await stopped('wt-1')
+    const stoppedAt = (await rowOf('wt-1'))?.stoppedAt
+    await stopped('wt-1', { cause: { reason: 'agent-exited' } })
+    expect(await rowOf('wt-1')).toMatchObject({ stoppedAt })
+    expect((await rowOf('wt-1'))?.deathReason).toBeUndefined()
+
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-2' })
+    await stopped('wt-2', { cause: { reason: 'oom', detail: 'exit code 137' } })
+    await stopped('wt-2')
+    expect(await rowOf('wt-2')).toMatchObject({ deathReason: 'oom', deathDetail: 'exit code 137' })
+
+    await clearWorkspaceStopped(PROJ, 'wt-2')
+    await stopped('wt-2')
+    expect((await rowOf('wt-2'))?.deathReason).toBeUndefined()
   })
 
   it('touches only the workspace the event names', async () => {
