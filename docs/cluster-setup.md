@@ -453,7 +453,8 @@ touches the cluster (`cluster install|check|start|stop|restart|logs`)
 refuses when the current context is a different
 cluster, or cannot be identified (reading `kube-system` is Forbidden under
 typical namespace-scoped RBAC). The refusal suggests `kubectl config
-use-context <recorded>` where that helps. Refusing avoids threading
+use-context <recorded>` where that helps, and on a kind install whose
+cluster no longer exists, `yaac cluster install` instead. Refusing avoids threading
 `--context` through every call. A kind install checks the other way round,
 since its cluster may be deleted and re-created: the current context must be
 `kind-<cluster>` and point at the API server kind reports, and install then

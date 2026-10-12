@@ -8,6 +8,7 @@ import {
   readInstallRecord,
   recordInstall,
   recordedDriver,
+  recordedKindCluster,
 } from '#install-record'
 import { clientLocalPath, getDataDir, setDataDir, useInstallDataDir } from '#paths'
 import { readServerConfig } from '#server-config'
@@ -115,6 +116,15 @@ describe('recordedDriver', () => {
     expect(await recordedDriver()).toBeUndefined()
     await recordInstall({ driver: 'containerless' })
     expect(await recordedDriver()).toBe('containerless')
+  })
+})
+
+describe('recordedKindCluster', () => {
+  it('names the cluster the recorded kind context is in, else YAAC_KIND_CLUSTER\'s', () => {
+    vi.stubEnv('YAAC_KIND_CLUSTER', 'now')
+    expect(recordedKindCluster({ kubeContext: 'kind-work' })).toBe('work')
+    expect(recordedKindCluster({ kubeContext: 'prod' })).toBe('now')
+    expect(recordedKindCluster(null)).toBe('now')
   })
 })
 

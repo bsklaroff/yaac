@@ -109,7 +109,10 @@ never stops a server.
   Each Homebrew step first checks whether it is already done (the formula
   installed or `yaac` already on PATH, the tap trusted or added) and skips
   itself, so only the missing work runs and a source-built `yaac` needs no
-  Homebrew for the containerless setup. `yaac cluster install` always
+  Homebrew for the containerless setup. With `yaac` already on PATH, as
+  the cask leaves it, the page and the confirmation leave out the steps
+  that only install it, so the containerless setup is just starting the
+  server. `yaac cluster install` always
   runs, since it converges whatever an interrupted install left. The shell
   never installs Homebrew: without it the setup says so and links
   https://brew.sh.

@@ -14,7 +14,9 @@
  * `use-context` hint.
  */
 import { execFileAsync, k8sErrorSummary, readObject } from '#drivers/k8s/substrate'
-import { readInstallRecord, type InstallRecord } from '@yaac/shared/install-record'
+import { readInstallRecord, recordedKindCluster, type InstallRecord } from '@yaac/shared/install-record'
+import { env } from '@yaac/shared/env'
+import { kindClusterExists } from './delete'
 
 type Run = (file: string, args: string[]) => Promise<{ stdout: string }>
 
@@ -97,7 +99,13 @@ export function clusterRefusal(recorded: InstallRecord, current: CurrentCluster)
 /**
  * `clusterRefusal` for this data dir's recorded k8s install, or null when
  * there is none. `yaac cluster install` records the cluster, so a k8s
- * record without one is refused until it runs.
+ * record without one is refused until it runs. A kind install whose
+ * recorded cluster is gone (`yaac cluster delete`, or `kind delete
+ * cluster`) is told to recreate it rather than to fix a kube context that
+ * no longer exists. `yaac cluster install` creates the cluster
+ * `YAAC_KIND_CLUSTER` names, so the advice sets it when that is another
+ * one. Kind is only asked once the check has failed, and a kind that
+ * cannot answer (podman stopped) leaves the refusal as it was.
  */
 export async function foreignClusterRefusal(): Promise<string | null> {
   const recorded = await readInstallRecord()
@@ -106,5 +114,10 @@ export async function foreignClusterRefusal(): Promise<string | null> {
     return 'This install records no cluster to check kubectl against. Run `yaac cluster install`, '
       + 'which records it, and try again.'
   }
-  return clusterRefusal(recorded, await currentCluster())
+  const refusal = clusterRefusal(recorded, await currentCluster())
+  const name = recordedKindCluster(recorded)
+  if (refusal === null || recorded.byo || await kindClusterExists(name).catch(() => true)) return refusal
+  const install = name === env.kindCluster ? 'yaac cluster install' : `YAAC_KIND_CLUSTER=${name} yaac cluster install`
+  return `This install's kind cluster "${name}" no longer exists. Recreate it with \`${install}\`; `
+    + 'its projects and workspaces are kept.'
 }

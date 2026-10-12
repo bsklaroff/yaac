@@ -4,6 +4,7 @@ import path from 'node:path'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- the record sits at the data dir's root, outside every tier
 import { clientDataDir, clientLocalPath, getDataDir } from '#paths'
 import { readJsonFile, writeJsonFile } from '#json-file'
+import { env } from '#env'
 import type { DriverKind } from '#types'
 
 /**
@@ -136,6 +137,15 @@ export async function recordInstall(patch: InstallRecord): Promise<void> {
  */
 export async function recordedDriver(): Promise<DriverKind | undefined> {
   return (await readInstallRecord())?.driver
+}
+
+/**
+ * The kind cluster a kind install is in: the one its recorded `kind-<name>`
+ * context names, which need not be the one `YAAC_KIND_CLUSTER` names now.
+ * A record with no kind context falls back to `YAAC_KIND_CLUSTER`.
+ */
+export function recordedKindCluster(record: InstallRecord | null): string {
+  return record?.kubeContext?.startsWith('kind-') ? record.kubeContext.slice('kind-'.length) : env.kindCluster
 }
 
 /**

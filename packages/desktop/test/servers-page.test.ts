@@ -80,13 +80,13 @@ describe('serversPageHtml', () => {
     const remote = { current: 'https://b.ts.net', saved: STATE.targets.saved }
     expect(serversPageHtml({ targets: remote, local: NOTHING_READ, tailnet: true }))
       .toMatch(/>← Back to https:\/\/b\.ts\.net<\/button>[\s\S]*class="check"[^<]*<\/span>\s*<span class="origin">https:\/\/b\.ts\.net/)
-    expect(html).not.toContain('Try again')
     // The connected server's row only disconnects; the other connects and removes.
     expect(html).toContain('<button class="disconnect">Disconnect</button>')
     expect(html.match(/class="connect" data-url=/g)).toHaveLength(1)
     expect(html).toContain('class="connect" data-url="https://b.ts.net"')
     expect(html).toContain('id="add"')
-    expect(serversPageHtml(STATE)).toContain('>Try again</button>')
+    // An unreachable server has no page to go back to; its row's Connect is the retry.
+    expect(serversPageHtml(STATE)).not.toContain('id="back"')
   })
 
   it('says so, and still takes a new server, when nothing is configured', () => {
@@ -98,8 +98,7 @@ describe('serversPageHtml', () => {
     })
     expect(html).toContain('No servers configured yet.')
     expect(html).not.toContain('class="connect"')
-    expect(html).toContain('id="retry"')
-    // Retry has its own id so `.add` matches only the form's submit button.
+    expect(html).not.toContain('id="back"')
     expect(html.match(/class="add"/g) ?? []).toHaveLength(1)
     expect(html).toContain('name="url"')
     expect(html).not.toContain('name="token"')
@@ -182,27 +181,41 @@ describe('serversPageHtml', () => {
       expect(html).toContain('the permission mode defaults to accept-edits')
       expect(html).toContain('Local kubernetes cluster')
       expect(html).toContain('gVisor-sandboxed pod')
-      // What a containerless agent can reach, in the badge's words, and which taps each run trusts.
+      // What a containerless agent can reach, in the badge's words.
       expect(html).toContain('<li>its network access is unfiltered</li>')
-      expect(html).toContain('Running it trusts the Homebrew tap bsklaroff/yaac, which lets Homebrew run')
-      expect(html).toContain('Running it trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
-      expect(html).toContain([
-        'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'yaac server start', 'yaac host check',
-      ].join('\n'))
-      expect(html).toContain([
-        'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'brew trust libkrun/krun',
-        'brew tap libkrun/krun', 'brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install',
-      ].join('\n'))
       expect(html).toContain('<button class="setup" data-scope="server">')
       expect(html).toContain('<button class="setup" data-scope="cluster">')
       expect(html).not.toContain('class="start"')
     }
+    // With no CLI, each setup installs it first, and says which taps it trusts.
+    const bare = serversPageHtml({ ...STATE, local: view(NO_CLI) })
+    expect(bare).toContain('Running it trusts the Homebrew tap bsklaroff/yaac, which lets Homebrew run')
+    expect(bare).toContain('Running it trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
+    expect(bare).toContain([
+      'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'yaac server start', 'yaac host check',
+    ].join('\n'))
+    expect(bare).toContain([
+      'brew trust bsklaroff/yaac', 'brew install bsklaroff/yaac/yaac-server', 'brew trust libkrun/krun',
+      'brew tap libkrun/krun', 'brew install bsklaroff/yaac/yaac-cluster', 'yaac cluster install',
+    ].join('\n'))
+    // With the CLI already installed (the cask), the server's setup only starts it.
+    const cask = serversPageHtml({ ...unselected, local: view({ server: NONE, cluster: NONE }) })
+    expect(cask).toContain('<pre class="commands" id="commands-server">yaac server start\nyaac host check</pre>')
+    expect(cask).toContain('Running it trusts the Homebrew taps bsklaroff/yaac and libkrun/krun')
+    expect(cask).not.toContain('Running it trusts the Homebrew tap bsklaroff/yaac,')
+    expect(cask).not.toContain('brew install bsklaroff/yaac/yaac-server')
+    expect(cask).toContain('brew install bsklaroff/yaac/yaac-cluster\nyaac cluster install</pre>')
     // With no saved server either, it is a welcome rather than an error.
     const welcome = serversPageHtml({ ...unselected, local: view(NO_CLI) })
     expect(welcome).toContain('<h1>Set up yaac</h1>')
     expect(welcome).not.toContain('Could not connect')
     expect(welcome).not.toContain('<h2>Servers</h2>')
     expect(welcome).toContain('id="add"')
+    // A fresh Mac has nothing to retry, with or without the CLI.
+    expect(welcome).not.toContain('id="back"')
+    expect(welcome).not.toContain('Try again')
+    expect(cask).toContain('<h1>Set up yaac</h1>')
+    expect(cask).not.toContain('id="back"')
     expect(serversPageHtml({ ...STATE, local: view(NO_CLI) })).toContain('Could not connect to http://127.0.0.1:8787')
     // A selected server that is down is not a fresh Mac: its setups stay folded.
     const down = serversPageHtml({ ...STATE, local: view({ server: NONE, cluster: NONE }) })
@@ -256,7 +269,7 @@ describe('serversPageUrl', () => {
 /** The page's inline script, run against jsdom and a stub preload bridge. */
 describe('serversPageHtml (running in a document)', () => {
   interface Calls {
-    switchTo: unknown[]; addRemote: unknown[][]; removed: unknown[]; disconnects: number; closed: number; retried: number
+    switchTo: unknown[]; addRemote: unknown[][]; removed: unknown[]; disconnects: number; closed: number; back: number
     started: unknown[]; stopped: unknown[]; setups: unknown[]; cancels: number
   }
 
@@ -268,7 +281,7 @@ describe('serversPageHtml (running in a document)', () => {
   function mount(state: ServersPageState, outcome: unknown = { ok: false, error: 'cannot reach it' }) {
     polled = state.local
     const calls: Calls = {
-      switchTo: [], addRemote: [], removed: [], disconnects: 0, closed: 0, retried: 0, started: [], stopped: [], setups: [], cancels: 0,
+      switchTo: [], addRemote: [], removed: [], disconnects: 0, closed: 0, back: 0, started: [], stopped: [], setups: [], cancels: 0,
     }
     const w = window as unknown as Record<string, unknown>
     w.yaacServer = {
@@ -288,8 +301,8 @@ describe('serversPageHtml (running in a document)', () => {
         calls.disconnects += 1
         return Promise.resolve(outcome)
       },
-      retry: () => {
-        calls.retried += 1
+      back: () => {
+        calls.back += 1
         return Promise.resolve({ ok: true })
       },
       startLocal: (scope: unknown) => {
@@ -364,16 +377,11 @@ describe('serversPageHtml (running in a document)', () => {
     expect(calls.addRemote).toEqual([['https://new.ts.net']])
   })
 
-  it('Try again re-runs the flow, which is the only exit from a page with no rows', async () => {
-    const calls = mount({
-      error: { title: 'No yaac server selected' },
-      targets: { current: null, saved: [] },
-      local: NOTHING_READ,
-      tailnet: true,
-    })
-    document.getElementById('retry')?.click()
+  it('Back re-runs the flow to uncover the server the page was opened over', async () => {
+    const calls = mount({ targets: STATE.targets, local: NOTHING_READ, tailnet: true })
+    document.getElementById('back')?.click()
     await settle()
-    expect(calls.retried).toBe(1)
+    expect(calls.back).toBe(1)
     expect(document.getElementById('status')?.textContent).toContain('Connecting…')
   })
 

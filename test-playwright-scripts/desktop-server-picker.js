@@ -18,7 +18,8 @@
  *     the failure above the install's row (first, unchecked, Stopped, Start
  *     and Disconnect, no Connect) and the remote's row, marked "(stopped)"
  *     once its probe fails.
- *  5. With the server started from a terminal, Try again lands.
+ *  5. With the server started from a terminal, its row lands (Connect, or
+ *     Start while the page still reads it stopped).
  *  6. The SPA's Servers button (rail, above Settings) opens the page over
  *     the server, in a view that fills the window and follows a resize:
  *     "Servers" with "← Back to Local containerless server", the install's
@@ -251,18 +252,20 @@ async function main() {
     /Stopped/.test(downRow) && (await page.getAttribute('.rows .row', 'id')) === 'install-server'
     && (await page.locator('.check').count()) === 0, downRow.trim())
   check('with Disconnect and Start, and no Connect', (await rowButtons(page)) === 'Disconnect, Start', await rowButtons(page))
+  check('no Back or Try again above the list', (await page.locator('#back').count()) === 0
+    && (await page.getByText('Try again').count()) === 0)
   check('the dead remote has its own row', (await page.locator(`button.connect[data-url="${dead}"]`).count()) === 1)
   const deadTag = `.tag.health[data-url="${dead}"]`
   await until(page, (sel) => document.querySelector(sel)?.hidden === false, deadTag, 15_000)
   check('marked "(stopped)"', (await page.textContent(deadTag)) === '(stopped)')
   await shot(page, '4-unreachable')
 
-  // 5. A server started from a terminal shows up on Try again.
-  console.log('\n5. `yaac server start` in a terminal, then Try again → lands')
+  // 5. A server started from a terminal is reached from its own row.
+  console.log('\n5. `yaac server start` in a terminal, then its row → lands')
   yaac('server', 'start')
-  await page.click('#retry')
+  await page.click(`${row} button.connect, ${row} button.start`)
   await waitForApp(app, win, origin)
-  check('Try again landed the window', (await win.evaluate(() => location.origin)) === origin)
+  check('the row landed the window', (await win.evaluate(() => location.origin)) === origin)
   await shot(win, '5-reconnected')
 
   // 6. The rail's Servers button opens the same page over the server.
@@ -279,7 +282,7 @@ async function main() {
   await new Promise((r) => setTimeout(r, 300))
   check('and follows a resize', fits(await overlays(app)), JSON.stringify(await overlays(app)))
   check('titled "Servers"', (await page.textContent('h1')).trim() === 'Servers')
-  const back = (await page.textContent('#retry')).trim()
+  const back = (await page.textContent('#back')).trim()
   check('Back names the server', back === '← Back to Local containerless server', back)
   // The page renders from the last read of the installs, and again once a fresh one differs.
   await until(page, (sel) => /Running/.test(document.querySelector(sel)?.textContent ?? ''), row, 30_000)
@@ -289,7 +292,7 @@ async function main() {
     && (await page.locator(`${row} .check`).count()) === 1 && /Running/.test(overRow), overRow.trim())
   check('with Disconnect and Stop, and no Connect', (await rowButtons(page)) === 'Disconnect, Stop', await rowButtons(page))
   await shot(page, '6-servers-page')
-  await page.click('#retry')
+  await page.click('#back')
   await waitForApp(app, win, origin)
   check('Back did not reload the SPA', await win.evaluate(() => window.__notReloaded === true))
   check('Back returns to the page the SPA was on', (await win.evaluate(() => location.href)) === spaUrl)

@@ -89,7 +89,7 @@ function choiceHtml(local: DesktopLocalState, scope: ServerScope, open: boolean)
           <p class="note">${escapeHtml(summary)}</p>
           ${reach ? `<p class="note">An agent can reach everything your account can:</p>
           <ul class="note">${reach.map((r) => `<li>${escapeHtml(r)}</li>`).join('')}</ul>` : ''}
-          <p class="note">${escapeHtml(trustSentence(trusts))}</p>
+          ${trusts.length > 0 ? `<p class="note">${escapeHtml(trustSentence(trusts))}</p>` : ''}
           <pre class="commands" id="commands-${scope}">${commands.map(escapeHtml).join('\n')}</pre>
           <p class="actions">
             <button class="copy" data-scope="${scope}">Copy commands</button>
@@ -306,7 +306,7 @@ export function serversPageHtml(state: ServersPageState): string {
       .status { margin-top: 14px; min-height: 17px; }
       .status.error { color: light-dark(#b3261e, #f2a49d); }
       .status.busy { color: light-dark(#666, #999); }
-      #retry { margin-top: 4px; }
+      #back { margin-top: 4px; }
     </style>
   </head>
   <body>
@@ -315,7 +315,7 @@ export function serversPageHtml(state: ServersPageState): string {
       <h1>${escapeHtml(heading.title)}</h1>
       ${heading.detail ? `<p class="detail">${escapeHtml(heading.detail)}</p>` : ''}
       ${heading.hint ? `<p class="hint">${escapeHtml(heading.hint)}</p>` : ''}
-      <p><button id="retry">${error ? 'Try again' : escapeHtml(back)}</button></p>
+      ${error ? '' : `<p><button id="back">${escapeHtml(back)}</button></p>`}
       ${servers}
 
       ${setups}
@@ -377,9 +377,8 @@ export function serversPageHtml(state: ServersPageState): string {
           busy(true)
           return
         }
-        // Back to the server, or a retry that picks up one started from a terminal.
-        document.getElementById('retry').addEventListener('click', function () {
-          handle(bridge.retry())
+        each('#back', function () {
+          handle(bridge.back())
         })
         // A setup's state lives in the main process; poll it while one runs.
         var runEl = document.getElementById('run')
