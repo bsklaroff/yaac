@@ -140,7 +140,8 @@ with everything typed into it.
 Xcode 16 or later on a Mac; deployment target iOS 17.
 
 1. Open `ios/Yaac.xcodeproj`.
-2. Under the Yaac target's Signing & Capabilities, choose your team (the
+2. Under the Yaac target's Signing & Capabilities, Debug signs automatically
+   with the maintainer's team; choose your own if you are not on it (the
    bundle id is `com.bsklaroff.yaac.ios`; change it if your team cannot
    register that one).
 3. Run on a connected iPhone. The camera does not work in the Simulator, but
@@ -163,7 +164,11 @@ survives a relaunch). Nothing in this repo's CI builds the app.
 
 The Apple Developer Program membership that signs the desktop app covers it.
 
-1. In App Store Connect, create an app record for the bundle id.
+1. In App Store Connect, create an app record for the bundle id. In the
+   developer portal, create an App Store provisioning profile for it named
+   `yaac App Store`: Release signs manually with that profile, because
+   automatic signing needs a development profile even to archive, and Apple
+   issues none to a team with no registered devices.
 2. In Xcode, set the build number (`CURRENT_PROJECT_VERSION`) above the last
    upload, then Product → Archive, and in the Organizer, Distribute App →
    TestFlight & App Store.
