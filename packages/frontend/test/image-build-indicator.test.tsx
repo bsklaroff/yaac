@@ -48,7 +48,6 @@ function stubSnapshot(imageBuilds: ImageBuildEntry[]): void {
     imageBuilds,
     planUsage: {},
     codexPlanUsage: {},
-    forwardBindHost: '127.0.0.1',
   })
 }
 

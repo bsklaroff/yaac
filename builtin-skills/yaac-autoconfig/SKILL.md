@@ -47,8 +47,8 @@ The job has three parts:
   interface; if you hit that, make the start command bind `0.0.0.0`.
 - **`hostPortStart` is a preferred starting point, not a guarantee.** If it's
   taken on the host, yaac scans upward (up to ~100 ports). The actual mapping
-  shows up as clickable `:hostPort` chips in the web app (and in the terminal's
-  tmux status line), opening `http://<host>:<hostPort>`.
+  shows up in the terminal's tmux status line, and as the Preview button in
+  the desktop and iPhone apps, which load `http://127.0.0.1:<hostPort>`.
 
 ## Procedure
 
@@ -137,9 +137,10 @@ Tell the user:
   and paste the file's contents (or use the web app's project config editor).
 - that it then takes effect on the **next** session created for this project
   (not the current one),
-- how they'll reach the app: the forwarded-port chip in the web app opens
-  `http://<host>:<hostPort>`, where `hostPort` starts at your `hostPortStart`
-  and may increment if that host port was busy,
+- how they'll reach the app: the Preview button in the desktop or iPhone app
+  (or `yaac forward`, then `http://localhost:<hostPort>` in a browser), where
+  `hostPort` starts at your `hostPortStart` and may increment if that host
+  port was busy,
 - any follow-up they still owe — e.g. adding a toolchain to `Dockerfile.yaac`,
   or adding the extra egress hosts the build needed under Settings → Project
   Config → Egress allowlist (or with the blocked-hosts badge's "Allow

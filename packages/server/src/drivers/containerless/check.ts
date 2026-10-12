@@ -51,7 +51,7 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
   {
     binary: 'lsof',
     why: 'detects the ports a workspace is listening on',
-    fix: 'Install lsof to get clickable port links; workspaces run fine without it.',
+    fix: 'Install lsof to have listening ports suggested for forwarding; workspaces run fine without it.',
   },
   {
     binary: 'socat',

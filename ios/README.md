@@ -23,7 +23,9 @@ workspace; nothing in `pnpm build`, `pnpm lint` or vitest touches it.
 | `Yaac/ServersView.swift` | the server list |
 | `Yaac/QRScanner.swift` | the camera, through VisionKit's `DataScannerViewController` |
 | `Yaac/WebView.swift` | the `WKWebView`, its bridge and navigation policy |
-| `Info.plist` | the keys build settings cannot generate: the `yaac://` scheme, and export compliance (HTTPS only, so exempt) |
+| `Yaac/PreviewView.swift` | a forwarded port's preview, full screen over the webapp |
+| `Yaac/PortForward.swift` | the loopback listener and tunnel a preview loads through |
+| `Info.plist` | the keys build settings cannot generate: the `yaac://` scheme, plain http for previews, and export compliance (only the system's HTTPS, so exempt) |
 
 The project uses Xcode 16 synchronized folders, so a file added under
 `Yaac/` or `YaacTests/` is in its target with no project edit.
@@ -39,7 +41,14 @@ holds no credential, and the server has no notion of it.
 So the Tailscale app must be connected, and the app accepts `https` origins
 only, on a plain ASCII host name: `serve` is always https with a publicly
 trusted `*.ts.net` certificate, so App Transport Security needs no
-exceptions, and a loopback origin or IP address means nothing on a phone.
+exception for servers, and a loopback origin or IP address means nothing on
+a phone. Its one exception, `NSAllowsLocalNetworking`, is for previews,
+which load plain http from the phone's own loopback (see "Previews"). The
+key is not loopback-only: it allows plain http to unqualified and `.local`
+names app-wide. Only a previewed page can use that, since the main view
+sends other origins to Safari and the server list accepts https only. A
+previewed page that reaches a LAN address raises iOS's Local Network
+prompt, with the `NSLocalNetworkUsageDescription` build setting's text.
 Checking the host also keeps a percent-encoded `@` or `/`, or a Unicode
 look-alike, from making the confirmation name one host while the app
 connects to another. A link or code the app cannot use says why above the
@@ -94,19 +103,20 @@ with everything typed into it.
 ## The web view
 
 - **The bridge.** A script injected at document start defines
-  `window.yaacWindow` with `showServers` and `openExternal`, the two calls the
-  SPA makes of a native shell (`windowApi()` in
+  `window.yaacWindow` with `showServers`, `openExternal` and `openPreview`,
+  the three calls the SPA makes of a native shell (`windowApi()` in
   `packages/frontend/src/components/WindowControls.tsx`). The SPA shows its
-  Servers row (`ServersButton`) only when `showServers` exists, and its
-  window controls only under Electron;
+  Servers row (`ServersButton`) only when `showServers` exists, its Preview
+  entries only when `openPreview` does, and its window controls only under
+  Electron;
   `test-playwright-scripts/ios-shell-bridge.js` checks both at a phone
   viewport. A message is accepted only from the top frame
   of the connected origin. As with the desktop shell, the page can show the
   list but never change the selection, so a server cannot move the app onto
   one it chooses.
 - **Navigation.** The top frame stays on the connected origin. Any other
-  link, and every `window.open` or `target=_blank`, opens in Safari, as do
-  forwarded-port links. Subframes are left to the page's CSP.
+  link, and every `window.open` or `target=_blank`, opens in Safari.
+  Subframes are left to the page's CSP.
 - **Layout.** The page pads itself for the notch and home indicator
   (`viewport-fit=cover`, docs/mobile-layout.md) in portrait and landscape,
   so the web view ignores the safe area and its scroll view adds no insets,
@@ -120,15 +130,53 @@ with everything typed into it.
   data store keeps each origin's localStorage (theme, selection, mobile
   screen).
 
+## Previews
+
+A workspace's dev server is on a port the server offers but never binds
+(docs/port-forward-tunnel.md), so the app forwards it itself, as the
+desktop app does. The webapp's Preview entry (in the workspace's `⋯` menu,
+or its header at a wide width) calls `openPreview` with the workspace and
+port, and the app covers the page with `PreviewView`:
+
+- **The forward.** `PortForward` listens on `127.0.0.1`, at the port the
+  server offers when it is free and at any free port otherwise, for as long
+  as the preview shows. Each connection the page makes opens its own
+  WebSocket to `/api/forward/attach`, the protocol `startForward` in
+  `@yaac/shared` speaks, so a dev server's hot-reload socket works too. The
+  WebSocket goes through `serve` like the page, so the server identifies the
+  phone's owner, and admits only the workspace's owner. A failed dial (close
+  code 4001, e.g. nothing listening yet) shows above the page.
+- **Who can use the listener.** Loopback on a phone is shared by every app,
+  so while the listener is up, any code running on the phone (a keyboard
+  extension with full access, a background-audio or VoIP app) can connect
+  to it and reach that one workspace port as the user. It reaches nothing
+  else: the tunnel's workspace and port are fixed when the preview opens.
+  The desktop app and `yaac forward` take the same posture
+  (docs/port-forward-tunnel.md), though there the other processes are the
+  user's own.
+- **Backgrounding.** The listener lives only while the preview is on
+  screen. When the app goes to the background it closes, and the web view
+  goes with it: suspended, the app could not notice another app binding the
+  port and serving the page's origin. On return the preview listens again,
+  on the same port when it is still free, and reopens the page where it
+  was, so its scripts start over. If another app took the port, it listens
+  elsewhere and opens the dev server's start page there; if it cannot
+  listen at all, it says so. So the app holds no standing set of forwards.
+- **The web view** loads `http://127.0.0.1:<port>/` with a data store of its
+  own, which lasts as long as the preview, and no bridge, since it runs repo
+  code. Links and new windows load in place, including other origins, so a
+  dev app's OAuth redirect can come back; while the page is anywhere but
+  the preview's own address the title shows its host instead of its title,
+  so it cannot pass for the dev server. Back, Reload and Done sit in its
+  toolbar.
+
 ## What it does not do
 
 - **Notifications.** The desktop shell notifies by holding `/api/events`
   open while it runs; iOS suspends a backgrounded app within seconds, so the
   server would have to send them through Apple's push service.
-- **Port forwarding.** The desktop binds forwarded ports on loopback
-  (docs/port-forward-tunnel.md). Links open in Safari instead, which reaches
-  a forwarded port at the server's `YAAC_FORWARD_BIND` address
-  (docs/remote-hosting.md).
+- **Standing forwards.** Only the port a preview shows is forwarded, and
+  only while it shows (see "Previews"); Safari cannot reach it.
 - **Tool sign-in**, which needs the desktop app's auth daemon or `yaac auth
   update` on a laptop, and **starting or setting up servers**.
 - **iPad.** The target is iPhone only; on an iPad it runs scaled. The webapp
@@ -155,10 +203,11 @@ xcodebuild test -project ios/Yaac.xcodeproj -scheme Yaac \
   -destination 'platform=iOS Simulator,name=iPhone 16'
 ```
 
-runs `YaacTests`: origin parsing (typed, scanned and linked forms), and
+runs `YaacTests`: origin parsing (typed, scanned and linked forms),
 connect against a stubbed network (refused, look-alike and unreachable
 servers are never saved; the selected server cannot be removed; the list
-survives a relaunch). Nothing in this repo's CI builds the app.
+survives a relaunch), and the URL a preview's tunnel opens. Nothing in this
+repo's CI builds the app.
 
 ## Distribute through TestFlight
 
@@ -195,7 +244,23 @@ On a real iPhone with Tailscale connected, against a `tailnet` server:
 - Open a terminal and type with the soft keyboard: the key bar sits on the
   keyboard and no field zooms the page. Background the app for a minute and
   return: the terminal re-attaches and repaints.
-- A forwarded-port chip and an external link open in Safari; the app stays
-  on its origin.
+- An external link opens in Safari; the app stays on its origin.
+- With a dev server running in a workspace and its port forwarded, the `⋯`
+  menu's Preview opens it full screen, and editing a file hot-reloads it.
+  Navigate within it, then Back, Reload and Done. Preview a forwarded port
+  with nothing listening: the error shows above the page.
+- Leave a Vite preview idle for two minutes or more, then edit a file: the
+  hot reload still applies.
+- Serve a multi-megabyte file with `python3 -m http.server` (HTTP/1.0, which
+  closes after every response) and open it in the preview: it arrives
+  whole.
+- Background the app for a minute and return: the page reopens where it
+  was, on the same URL. Background it again, bind the same port from
+  another app (a local web server app), and return: the preview moves to
+  another port rather than loading the other app's page.
+- Follow a link off the dev server: the title shows the new host.
+- Preview a workspace owned by another user of a `tailnet` install: the
+  server refuses the tunnel, the error shows above the page, and nothing
+  loads.
 - A `yaac://connect?origin=https://example.com` link opened from Notes asks
   first, and Add fails the probe without changing the selection.

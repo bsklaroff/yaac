@@ -325,17 +325,6 @@ export const env = {
   },
 
   /**
-   * `YAAC_FORWARD_BIND` — bind address for workspace port-forward listeners,
-   * reported to clients as `forwardBindHost`. Defaults to loopback; a
-   * remotely hosted server sets its tailnet IP so other tailnet devices can
-   * reach forwarded ports.
-   */
-  get forwardBind(): string {
-    const raw = process.env.YAAC_FORWARD_BIND
-    return raw === undefined || raw.trim() === '' ? '127.0.0.1' : raw.trim()
-  },
-
-  /**
    * `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_CLIENT_SECRET` — the Tailscale OAuth
    * client `yaac cluster install --tailnet` gives the operator it installs
    * on a kind cluster. Undefined unless both are set.

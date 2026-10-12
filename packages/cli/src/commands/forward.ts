@@ -7,8 +7,8 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 
 /**
  * `yaac forward`: bind the workspace ports the server offers on this machine
- * and tunnel each connection back over `/forward/attach`, so the web app's
- * `127.0.0.1:<port>` links work. The server cannot bind them itself: under
+ * and tunnel each connection back over `/forward/attach`, so a browser here
+ * reaches each at `127.0.0.1:<port>`. The server cannot bind them itself: under
  * `k8s` it is a pod, and a remote server is on another machine. The desktop
  * app does the same from its tray; this is for headless machines. See
  * docs/port-forward-tunnel.md.

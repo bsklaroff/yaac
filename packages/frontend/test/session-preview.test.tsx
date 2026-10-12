@@ -4,36 +4,17 @@ import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import type { PortMapping } from '@yaac/shared/types'
 
-const realUA = navigator.userAgent
-function setElectron(on: boolean): void {
-  Object.defineProperty(navigator, 'userAgent', {
-    value: on ? `${realUA} Electron/43` : realUA,
-    configurable: true,
-  })
-}
-
 const fwd = (containerPort: number, hostPort: number): PortMapping => ({
   containerPort, hostPort,
 })
 
 afterEach(() => {
   cleanup()
-  setElectron(false)
   delete (window as unknown as { yaacWindow?: unknown }).yaacWindow
 })
 
-describe('WorkspacePreview (browser build)', () => {
-  it('shows a fallback link to the forwarded port when not in Electron', () => {
-    setElectron(false)
-    render(<WorkspacePreview workspaceId="s1" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
-    const link = screen.getByRole('link', { name: /localhost:15173/ })
-    expect(link.getAttribute('href')).toBe('http://localhost:15173')
-  })
-})
-
-describe('WorkspacePreview (Electron)', () => {
+describe('WorkspacePreview', () => {
   it('creates a partitioned webview and shows the address', () => {
-    setElectron(true)
     const { container } = render(
       <WorkspacePreview workspaceId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
     )
@@ -46,13 +27,11 @@ describe('WorkspacePreview (Electron)', () => {
   })
 
   it('shows a waiting state until the port is forwarded', () => {
-    setElectron(true)
     render(<WorkspacePreview workspaceId="abc" ports={[]} currentPort={undefined} onSwitchPort={() => {}} />)
     expect(screen.getByText(/Waiting for the dev server/)).toBeTruthy()
   })
 
   it('opens the current address in the system browser', () => {
-    setElectron(true)
     const openExternal = vi.fn()
     ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = {
       minimize() {}, toggleMaximize() {}, close() {}, openExternal,
@@ -63,7 +42,6 @@ describe('WorkspacePreview (Electron)', () => {
   })
 
   it('offers a port dropdown when several ports are forwarded', () => {
-    setElectron(true)
     const onSwitchPort = vi.fn()
     render(
       <WorkspacePreview
@@ -80,13 +58,11 @@ describe('WorkspacePreview (Electron)', () => {
   })
 
   it('shows no dropdown for a single port', () => {
-    setElectron(true)
     render(<WorkspacePreview workspaceId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />)
     expect(screen.queryByLabelText('Preview port')).toBeNull()
   })
 
   it('has an overflow menu whose actions drive the webview', async () => {
-    setElectron(true)
     const { container } = render(
       <WorkspacePreview workspaceId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
     )
@@ -105,7 +81,6 @@ describe('WorkspacePreview (Electron)', () => {
   })
 
   it('constrains the webview to a device width, with a clearable pill', async () => {
-    setElectron(true)
     const { container } = render(
       <WorkspacePreview workspaceId="abc" ports={[fwd(5173, 15173)]} currentPort={5173} onSwitchPort={() => {}} />,
     )

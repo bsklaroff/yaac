@@ -116,7 +116,7 @@ the title's hover marquee is off. Dragging rows between groups is mouse-only
   draggable, which also avoids a drag vs. scroll conflict.
 - **The header folds.** The title and the alarm chips (git auth, blocked
   hosts, unforwarded ports) stay, since they report problems. New shell,
-  Changes, Files, Preview and forwarded-port links move into a `⋯` menu
+  Changes, Files and Preview (in the iPhone app) move into a `⋯` menu
   (`PaneOverflowMenu`).
 - **Eager attach drops to 2** (from 12). Each pre-attached pane is a live PTY
   stream; twelve suits a desktop on a LAN, not a metered radio.

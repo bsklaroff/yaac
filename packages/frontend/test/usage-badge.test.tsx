@@ -97,7 +97,6 @@ function stubSnapshot(
     // Another user's readout, which the badge must not show.
     planUsage: { [ME]: planUsage, [OTHER]: { available: false, reason: 'api-key' } },
     codexPlanUsage: { [ME]: codexPlanUsage },
-    forwardBindHost: '127.0.0.1',
   })
 }
 

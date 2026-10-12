@@ -375,13 +375,10 @@ describe('deployServerWorkload', () => {
     })
   })
 
-  it('carries the forward bind the install shell was given, but not its allowed hosts', async () => {
-    // Set on the Deployment; `yaac cluster restart` only rolls existing
-    // pods, so re-running install is how it changes. Which names the server
-    // answers to follows the fronting alone: a shell-set YAAC_ALLOWED_HOSTS
-    // must not open a local install to anything.
+  it('does not carry the allowed hosts the install shell was given', async () => {
+    // Which names the server answers to follows the fronting alone: a
+    // shell-set YAAC_ALLOWED_HOSTS must not open a local install to anything.
     vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
-    vi.stubEnv('YAAC_FORWARD_BIND', '100.64.0.7')
 
     await deploy({ log: vi.fn() })
 
@@ -390,9 +387,6 @@ describe('deployServerWorkload', () => {
     )
     expect(env.YAAC_ALLOWED_HOSTS).toBeUndefined()
     expect(env.YAAC_ACCESS_MODE).toBe('local')
-    // The pod builds the snapshot that forwarded-port links come from, so
-    // it needs the tailnet bind address.
-    expect(env.YAAC_FORWARD_BIND).toBe('100.64.0.7')
   })
 
   it('leaves the loopback defaults off the pod entirely', async () => {
@@ -400,8 +394,6 @@ describe('deployServerWorkload', () => {
 
     const names = deployedPodSpec().containers[0].env.map((e) => e.name)
     expect(names).not.toContain('YAAC_ALLOWED_HOSTS')
-    // Omitted when unset, rather than pinning the 127.0.0.1 default.
-    expect(names).not.toContain('YAAC_FORWARD_BIND')
   })
 
   it('rewrites an IPv6-loopback Tor SOCKS URL to the host, brackets and all', async () => {
