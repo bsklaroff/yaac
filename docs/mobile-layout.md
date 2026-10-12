@@ -162,9 +162,18 @@ An `acp` workspace needs none of this: its pane is a chat composer
 
 ## The chat composer
 
-`WorkspaceChat` has three rules for narrow screens, on top of the 16px minimum
+`WorkspaceChat` has four rules for narrow screens, on top of the 16px minimum
 below:
 
+- **Showing the pane does not focus the input.** On desktop it does, so typing
+  works without a click. On a phone, focus raises the soft keyboard and iOS's
+  form accessory bar, which cover most of the conversation, so the user taps
+  the input when they want to write. Terminal panes, the Files and Changes
+  panes' filters, and a file opened from a chat link skip focusing on open
+  for the same reason. The check is `focusRaisesKeyboard()`: unlike the
+  shell, it also covers a touch-only device past the breakpoint (a
+  landscape phone, a tablet), which has the desktop layout but the soft
+  keyboard.
 - **The message list is `break-words`.** `overflow-wrap` is inherited, so one
   class covers every row. Agents print SHAs and URLs with no break
   opportunities, and one is enough to make the conversation scroll sideways.

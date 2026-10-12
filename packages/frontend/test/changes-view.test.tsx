@@ -320,16 +320,21 @@ describe('WorkspaceFiles changes, at scale', () => {
   // Opening the pane focuses its filter, so typing filters with no click.
   // Cmd/Ctrl-F searches the diffs instead: across files in the order shown,
   // unfolding what a match sits in.
-  it('focuses its filter when opened, and finds across the diffs on Cmd/Ctrl-F', async () => {
+  // A phone skips the focus, which would raise the soft keyboard.
+  it('focuses its filter when opened, except on a phone, and finds across the diffs on Cmd/Ctrl-F', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const scrolled: Element[] = []
     Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this) }
     useUiStore.getState().setPaneView(CHANGES_VIEW, { flat: false, collapsed: ['src'], openDiffs: ['src/app.ts'] })
     renderChanges()
     await waitFor(() => expect(screen.getByTitle('src')).toBeTruthy())
-    act(() => useUiStore.getState().openChanges('s1'))
     const filter = screen.getByLabelText('Filter changed files')
-    await waitFor(() => expect(document.activeElement).toBe(filter))
+    for (const phone of [true, false]) {
+      vi.stubGlobal('matchMedia', (q: string) => ({ matches: phone, media: q, addEventListener() {}, removeEventListener() {} }))
+      act(() => useUiStore.getState().openChanges('s1'))
+      await waitFor(() => expect(useUiStore.getState().findPending).toBeNull())
+      expect(document.activeElement === filter).toBe(!phone)
+    }
 
     const ctrlF = (el: Element): void => {
       fireEvent.keyDown(el, { key: 'f', code: 'KeyF', ctrlKey: !IS_MAC, metaKey: IS_MAC })

@@ -137,6 +137,7 @@ afterEach(() => {
   cleanup()
   discardFileSavers([fileKey('w1', 'a.ts')])
   vi.useRealTimers()
+  vi.unstubAllGlobals()
   useUiStore.setState({ dirtyFiles: {}, fileDiffMode: 'plain', revealLine: null })
   cm.headless = false
   cm.view?.destroy()
@@ -494,6 +495,13 @@ describe('WorkspaceFile', () => {
     // Opening it without a line drops the line still waiting for its pane.
     act(() => useUiStore.getState().openFile('w1', 'b.ts'))
     expect(useUiStore.getState().revealLine).toBeNull()
+
+    // On a phone the cursor still moves, but focus would raise the keyboard.
+    cm.view!.contentDOM.blur()
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener() {}, removeEventListener() {} }))
+    act(() => useUiStore.getState().openFile('w1', 'a.ts', 1))
+    expect(cursorLine()).toBe(1)
+    expect(cm.view!.hasFocus).toBe(false)
   })
 
   it('leaves focus where the user put it after the click, when the file loads late', async () => {

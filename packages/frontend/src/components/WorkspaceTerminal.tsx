@@ -29,6 +29,7 @@ import type { WorkspaceFiles } from '@yaac/shared/types'
 import { resolveEffectiveTheme } from '#lib/theme'
 import { terminalTheme } from '#lib/terminalTheme'
 import { useUiStore } from '#lib/store'
+import { focusRaisesKeyboard } from '#lib/viewport'
 import { DISCONNECT_NOTICE_DELAY_MS, reconnectingSocket, type ReconnectingSocket } from '#lib/reconnect'
 
 /** Keystroke coalescing window, for bursts faster than a human types
@@ -402,9 +403,10 @@ export function WorkspaceTerminal({
   }, [visible])
 
   // Focus xterm's textarea directly. A synthesized click would clear the
-  // selection and be forwarded to the TUI.
+  // selection and be forwarded to the TUI. Not where focus would raise a soft
+  // keyboard (focusRaisesKeyboard); a tap on the terminal still focuses it.
   useEffect(() => {
-    if (focusKey === undefined || dialogHoldsFocus()) return
+    if (focusKey === undefined || dialogHoldsFocus() || focusRaisesKeyboard()) return
     termRef.current?.focus()
   }, [focusKey])
 

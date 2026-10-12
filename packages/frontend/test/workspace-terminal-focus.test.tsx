@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeAll } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, vi } from 'vitest'
 import { render as rtlRender, cleanup } from '@testing-library/react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement, ReactNode } from 'react'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
+import { MOBILE_QUERY } from '#lib/viewport'
 import { testQueryClient } from './harness'
 
 /** A terminal reads the workspace's listing from the query cache. */
@@ -35,12 +36,22 @@ function xtermInput(): Element | null {
 describe('WorkspaceTerminal focus', () => {
   afterEach(() => {
     cleanup()
+    vi.unstubAllGlobals()
     document.body.replaceChildren()
   })
 
   it('focuses the terminal when it is the pane to focus', () => {
     render(<WorkspaceTerminal workspaceId="w1" focusKey={1} />)
     expect(document.activeElement).toBe(xtermInput())
+  })
+
+  it('leaves the terminal unfocused on a phone, where focus raises the keyboard', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({
+      matches: q === MOBILE_QUERY, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
+    }))
+    render(<WorkspaceTerminal workspaceId="w1" focusKey={1} />)
+    expect(xtermInput()).toBeTruthy()
+    expect(document.activeElement).not.toBe(xtermInput())
   })
 
   /** A tui workspace finishing its start-up under the new-workspace dialog. */

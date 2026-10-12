@@ -20,6 +20,7 @@ import { languageForPath } from '#lib/highlight'
 import { CHANGES_POLL_MS, useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { chordMatches, findChord, formatChord, saveChord, textSizeStep } from '#lib/shortcuts'
 import { IS_MAC } from '#lib/platform'
+import { focusRaisesKeyboard } from '#lib/viewport'
 import {
   FileConflict,
   discardFileSavers,
@@ -318,7 +319,8 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
 
   // Put the cursor on the line a link asked for, centered, once the editor
   // holds the text: now if it does, else when it is created. Focus follows
-  // only if nothing else has taken it since the click (see `revealLine`).
+  // only if nothing else has taken it since the click (see `revealLine`), and
+  // not where it would raise a soft keyboard (focusRaisesKeyboard).
   const reveal = useUiStore((s) => (s.revealLine?.key === key ? s.revealLine : undefined))
   const revealPending = (view: EditorView): void => {
     const want = useUiStore.getState().revealLine
@@ -326,7 +328,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
     const { doc } = view.state
     const line = doc.line(Math.min(Math.max(want.line, 1), doc.lines))
     view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) })
-    if (document.activeElement === want.focus) view.focus()
+    if (document.activeElement === want.focus && !focusRaisesKeyboard()) view.focus()
     useUiStore.setState({ revealLine: null })
   }
   useEffect(() => {
