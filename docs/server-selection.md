@@ -145,8 +145,9 @@ vanish exactly when no server answers. The page is an HTML string on a
 window shows it in three cases, all the same page:
 
 - no server is reachable (nothing selected, server down, or device not
-  identified): it states the failure verbatim above the list, with Try
-  again, instead of an error dialog over a blank window;
+  identified): it states the failure verbatim above the list, instead of
+  an error dialog over a blank window, and each row offers its own way
+  back: Connect, or Start for a stopped install;
 - a Mac with no `yaac`, or with no install and nothing selected: it leads
   with the two installs to set up;
 - the user opens it, from the SPA's Servers button in the rail, the server

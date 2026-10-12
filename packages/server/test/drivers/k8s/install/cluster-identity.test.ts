@@ -1,7 +1,7 @@
 /**
  * Compares the recorded cluster with the kubeconfig's current context.
- * `kubectl config` and the API server are faked; `install.json` is written
- * for real.
+ * `kubectl config`, `kind get clusters` and the API server are faked;
+ * `install.json` is written for real.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
@@ -17,12 +17,18 @@ import { foreignClusterRefusal } from '#drivers/k8s/install'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { installRecordPath, recordInstall } from '@yaac/shared/install-record'
 import { serverConfigPath } from '@yaac/shared/server-config'
+import { env } from '@yaac/shared/env'
 
 const mockRun = vi.mocked(execFileAsync)
 
-/** Stage the current context name and kube-system uid; an Error makes the uid read fail. */
-function current(context: string, uid: string | Error): void {
-  mockRun.mockResolvedValue({ stdout: `${context}\n`, stderr: '' })
+/**
+ * Stage the current context name and kube-system uid; an Error makes the
+ * uid read fail. `kindClusters` is what `kind get clusters` lists.
+ */
+function current(context: string, uid: string | Error, kindClusters = [env.kindCluster]): void {
+  mockRun.mockImplementation((file) => Promise.resolve({
+    stdout: file === 'kind' ? kindClusters.map((c) => `${c}\n`).join('') : `${context}\n`, stderr: '',
+  }))
   fakeCluster.reset()
   if (uid instanceof Error) {
     fakeCluster.intercept(() => { throw uid })
@@ -37,6 +43,7 @@ const RECORD = {
 
 afterEach(async () => {
   vi.clearAllMocks()
+  vi.unstubAllEnvs()
   await fs.rm(installRecordPath(), { force: true })
   await fs.rm(serverConfigPath(), { force: true })
 })
@@ -84,5 +91,29 @@ describe('foreignClusterRefusal', () => {
     const down = await foreignClusterRefusal()
     expect(down).toMatch(/"prod" is the one this install was made through, but its cluster cannot be reached[\s\S]*yaac cluster install/)
     expect(down).not.toContain('use-context')
+
+  })
+
+  it('tells a kind install whose recorded cluster is gone to recreate that one', async () => {
+    const KIND = { ...RECORD, clusterUid: 'uid-work', kubeContext: 'kind-work' }
+    const gone = new Error('connect ECONNREFUSED 127.0.0.1:41234')
+    vi.stubEnv('YAAC_KIND_CLUSTER', 'work')
+    await recordInstall(KIND)
+    // `kind delete` takes the context with it, so none is current.
+    current('', gone, ['other'])
+    expect(await foreignClusterRefusal()).toBe('This install\'s kind cluster "work" no longer exists. Recreate it with '
+      + '`yaac cluster install`; its projects and workspaces are kept.')
+    // A plain `yaac cluster install` would create the cluster this shell names instead.
+    vi.stubEnv('YAAC_KIND_CLUSTER', 'other')
+    expect(await foreignClusterRefusal()).toContain('`YAAC_KIND_CLUSTER=work yaac cluster install`')
+
+    // The recorded cluster still runs while kubectl points at another: switch back, not recreate.
+    current('kind-other', 'uid-other', ['work', 'other'])
+    expect(await foreignClusterRefusal()).toMatch(/is a different cluster[\s\S]*kubectl config use-context kind-work/)
+
+    // A byo install's cluster is not kind's, so kind is not asked.
+    await recordInstall({ ...KIND, byo: true })
+    current('', gone, [])
+    expect(await foreignClusterRefusal()).toMatch(/cannot be identified/)
   })
 })

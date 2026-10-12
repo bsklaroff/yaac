@@ -34,9 +34,9 @@ contextBridge.exposeInMainWorld('yaacServer', {
   disconnect: () => ipcRenderer.invoke('server:disconnect'),
   // The saved servers that do not answer or refuse this device, and why.
   serverHealth: () => ipcRenderer.invoke('server:health'),
-  // Re-run the boot flow against the current `server.json`: "Try again", or
-  // "Back" to the server the page was opened over.
-  retry: () => ipcRenderer.invoke('server:retry'),
+  // "Back" to the server the page was opened over, by re-running the boot
+  // flow against the current `server.json`.
+  back: () => ipcRenderer.invoke('server:back'),
   // Start or stop one of this machine's servers (`yaac server start`, or
   // `yaac cluster start` for scope 'cluster'); a start lands on it.
   startLocal: (scope: unknown) => ipcRenderer.invoke('server:start-local', scope),

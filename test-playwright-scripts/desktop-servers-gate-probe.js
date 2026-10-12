@@ -12,8 +12,10 @@
  *  3. Opening and closing the page repeatedly leaves no view or webContents
  *     behind, and the closed view's webContents is destroyed.
  *  4. The view fills the window across a resize and full screen.
- *  5. With the server stopped, the window under the page is a splash, and
- *     Try again after a restart brings the SPA back with no overlay.
+ *  5. With the server stopped, Back leaves the window a splash under the
+ *     page, and the server's own row (Connect, or Start while the page
+ *     still reads it stopped) after a restart brings the SPA back with no
+ *     overlay.
  *
  * Prerequisites and display setup as in desktop-server-picker.js.
  *
@@ -56,7 +58,7 @@ const CALLS = [
   ['remove', { url: 'http://127.0.0.1:1' }],
   ['disconnect'],
   ['serverHealth'],
-  ['retry'],
+  ['back'],
   ['startLocal', 'server'],
   ['stopLocal', 'server'],
   ['localState'],
@@ -110,7 +112,7 @@ async function openOverlay(app, win) {
 
 // A DOM click: a prevented navigation leaves Playwright waiting on page.click.
 async function back(app, page) {
-  await page.evaluate(() => document.getElementById('retry').click())
+  await page.evaluate(() => document.getElementById('back').click())
   await until(async () => (await state(app)).views.length === 0, 30_000, 'the overlay to close')
 }
 
@@ -179,20 +181,20 @@ async function main() {
   check('and after leaving full screen', fits(await state(app)), JSON.stringify(await state(app)))
   await back(app, page)
 
-  console.log('\n5. server stops, then Try again after a restart')
+  console.log('\n5. server stops, then its row after a restart')
   yaac('server', 'stop')
   page = await openOverlay(app, win).catch(() => null)
   if (page) {
-    await page.evaluate(() => document.getElementById('retry').click())
+    await page.evaluate(() => document.getElementById('back').click())
     await until(async () => (await state(app)).windowUrl.startsWith('data:'), 60_000, 'the splash under the page')
     const s = await state(app)
     check('the window under the page is a data: splash', s.windowUrl.startsWith('data:') && s.views.length === 1, JSON.stringify(s))
     yaac('server', 'start')
     page = await overlayPage(app)
-    await page.evaluate(() => document.getElementById('retry').click())
+    await page.evaluate(() => document.querySelector('#install-server button.connect, #install-server button.start').click())
     await until(() => win.evaluate((o) => location.origin === o, origin), 60_000, 'the SPA again')
     await until(async () => (await state(app)).views.length === 0, 10_000, 'no overlay')
-    check('Try again restores the SPA with no overlay', true)
+    check('the server\'s row restores the SPA with no overlay', true)
   }
 
   await Promise.race([app.close().catch(() => {}), sleep(5000)])

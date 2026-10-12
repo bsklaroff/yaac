@@ -96,7 +96,9 @@ export async function runClusterDelete(
 /**
  * Whether the kind cluster `name` (default `YAAC_KIND_CLUSTER`) exists.
  * `yaac cluster install` asks before moving a cluster install out of
- * `~/.yaac`, which is safe only once nothing mounts the old path.
+ * `~/.yaac`, which is safe only once nothing mounts the old path, and
+ * `foreignClusterRefusal` asks to tell a deleted cluster from a wrong
+ * kube context.
  */
 export async function kindClusterExists(name = env.kindCluster): Promise<boolean> {
   return (await listKindClusters()).includes(name)

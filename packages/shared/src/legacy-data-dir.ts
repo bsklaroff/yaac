@@ -5,7 +5,7 @@ import path from 'node:path'
 import { env } from '#env'
 import { clientDataDir, hostDataDir, installTmpDir, resetHostDataDir } from '#paths'
 import { writeJsonFile } from '#json-file'
-import { readInstallRecord } from '#install-record'
+import { readInstallRecord, recordedKindCluster } from '#install-record'
 import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock } from '#server-lock-file'
 import { rewriteToolRecordPaths } from '#tool-records'
 import {
@@ -84,8 +84,7 @@ export async function moveLegacyClusterDataDir(
   if (await legacyDriver() !== 'k8s') return false
   const record = await readInstallRecord(legacyDir())
   if (record?.byo || await exists(clusterDir())) return false
-  const name = record?.kubeContext?.startsWith('kind-') ? record.kubeContext.slice('kind-'.length) : env.kindCluster
-  if (await kindClusterExists(name).catch(() => true)) return false
+  if (await kindClusterExists(recordedKindCluster(record)).catch(() => true)) return false
   return relocate(clusterDir())
 }
 

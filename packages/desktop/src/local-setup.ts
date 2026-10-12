@@ -135,14 +135,26 @@ const PLANS: Record<ServerScope, StepId[]> = {
   cluster: ['trustYaac', 'installServer', 'trustKrun', 'tapKrun', 'installCluster', 'clusterInstall'],
 }
 
+/**
+ * The steps that only get the `yaac` CLI onto this Mac. With `yaac` already
+ * on PATH, as the cask leaves it, they would skip themselves, so a setup
+ * leaves them out: from its commands, its confirmation and its run.
+ */
+const CLI_STEPS: Record<ServerScope, StepId[]> = { server: ['trustYaac', 'installServer'], cluster: ['installServer'] }
+
+/** A setup's steps, given whether `yaac` is on PATH. */
+function shownSteps(scope: ServerScope, cli: boolean): StepDef[] {
+  return PLANS[scope].filter((id) => !cli || !CLI_STEPS[scope].includes(id)).map((id) => STEPS[id])
+}
+
 /** What a user would type for the same setup. */
-function setupCommands(scope: ServerScope): string[] {
-  return PLANS[scope].map((id) => STEPS[id].argv.join(' '))
+function setupCommands(scope: ServerScope, cli: boolean): string[] {
+  return shownSteps(scope, cli).map((step) => step.argv.join(' '))
 }
 
 /** The taps a setup trusts; any but yaac's own is a third party's. */
-function trustedTaps(scope: ServerScope): TrustedTap[] {
-  return PLANS[scope].map((id): readonly string[] => STEPS[id].argv)
+function trustedTaps(scope: ServerScope, cli: boolean): TrustedTap[] {
+  return shownSteps(scope, cli).map((step) => step.argv)
     .filter((argv) => argv[0] === 'brew' && argv[1] === 'trust')
     .map((argv) => ({ tap: argv[2], thirdParty: !argv[2].startsWith('bsklaroff/') }))
 }
@@ -151,13 +163,13 @@ function trustedTaps(scope: ServerScope): TrustedTap[] {
  * The native confirmation a setup needs before it runs. Web content can
  * ask for a setup but cannot answer this.
  */
-export function setupConfirmation(scope: ServerScope): { message: string, detail: string } {
+export function setupConfirmation(scope: ServerScope, cli: boolean): { message: string, detail: string } {
+  const taps = trustedTaps(scope, cli)
   return {
     message: scope === 'server' ? 'Set up a containerless server on this Mac?' : 'Set up a local kubernetes cluster on this Mac?',
     detail: [
-      trustSentence(trustedTaps(scope)),
-      'These commands run, skipping any that are already done:',
-      ...setupCommands(scope).map((c) => `  ${c}`),
+      ...taps.length > 0 ? [trustSentence(taps)] : [],
+      ['These commands run, skipping any that are already done:', ...setupCommands(scope, cli).map((c) => `  ${c}`)].join('\n'),
     ].join('\n\n'),
   }
 }
@@ -294,8 +306,11 @@ function createProbes(signal: AbortSignal): Probes & { forget(): void } {
 export interface SetupRunner {
   /** The run under way, or the last one to finish. */
   current(): DesktopSetupRun | null
-  /** Run `scope`'s setup to its end. Never rejects. */
-  run(scope: ServerScope): Promise<ActionOutcome>
+  /**
+   * Run `scope`'s setup to its end, as `setupConfirmation(scope, cli)`
+   * listed it, so it never runs a step the user was not shown. Never rejects.
+   */
+  run(scope: ServerScope, cli: boolean): Promise<ActionOutcome>
   /** Stop the run under way, killing the command it is running; resolves once it has stopped. */
   cancel(): Promise<void>
   /** Setups begun and never finished, even by an earlier launch of the app. */
@@ -328,17 +343,17 @@ export function createSetupRunner(onChange: () => void, unfinishedFile: string):
     await fs.writeFile(unfinishedFile, JSON.stringify([...unfinished])).catch(() => { /* best effort */ })
   }
 
-  const run = (scope: ServerScope): Promise<ActionOutcome> => {
+  const run = (scope: ServerScope, cli: boolean): Promise<ActionOutcome> => {
     if (running) return Promise.resolve({ ok: false, error: 'a setup is already running' })
-    running = runSetup(scope).finally(() => { running = null })
+    running = runSetup(scope, cli).finally(() => { running = null })
     return running
   }
 
-  const runSetup = async (scope: ServerScope): Promise<ActionOutcome> => {
+  const runSetup = async (scope: ServerScope, cli: boolean): Promise<ActionOutcome> => {
     const controller = new AbortController()
     abort = controller
     await mark(scope, true)
-    const plan = PLANS[scope].map((id) => STEPS[id] as StepDef)
+    const plan = shownSteps(scope, cli)
     const steps: DesktopSetupStep[] = plan.map((def) => ({ label: def.label, command: def.argv.join(' '), state: 'pending' }))
     const r: DesktopSetupRun = { scope, phase: 'running', steps, log: [] }
     current = r
@@ -436,8 +451,8 @@ export function localView(input: {
   }
   const choice = (scope: ServerScope): DesktopSetupChoice => ({
     scope,
-    commands: setupCommands(scope),
-    trusts: trustedTaps(scope),
+    commands: setupCommands(scope, cli),
+    trusts: trustedTaps(scope, cli),
     blocked: scope === 'cluster' && !clusterSupported
       ? 'unsupported'
       : !brew && (scope === 'cluster' || !cli) ? 'no-brew' : null,

@@ -11,7 +11,8 @@
  *     "(stopped)" or "(refused)", with the reason, once the probe comes back.
  *  2. Disconnect and Stop reach the bridge.
  *  3. Unreachable, on a Mac with only the host install: the failure on top,
- *     Try again, and the cluster's setup folded under the list.
+ *     no Back or Try again (the selected row is the way back), and the
+ *     cluster's setup folded under the list.
  *  4. Off the tailnet: the Tailscale banner shows while a remote server is
  *     saved (light and dark), not with only local servers saved, and a
  *     Connect that goes unanswered shows the real probe error with the
@@ -73,7 +74,7 @@ const STUB = `
     switchTo: (arg) => window.switchError
       ? (window.calls.push(['switchTo', arg]), Promise.resolve({ ok: false, error: window.switchError }))
       : ok('switchTo')(arg), addRemote: ok('addRemote'), remove: ok('remove'), disconnect: ok('disconnect'),
-    retry: ok('retry'), startLocal: ok('startLocal'), stopLocal: ok('stopLocal'), setupLocal: ok('setupLocal'),
+    back: ok('back'), startLocal: ok('startLocal'), stopLocal: ok('stopLocal'), setupLocal: ok('setupLocal'),
     cancelSetup: ok('cancelSetup'),
     localState: () => new Promise(() => {}),
     serverHealth: () => new Promise((r) => setTimeout(() => r({
@@ -111,7 +112,7 @@ try {
   check('one that refuses this device is marked (refused), with the reason',
     (await refused.textContent()) === '(refused)' && (await refused.getAttribute('title')).includes('refused to identify'))
   check('one that answers is not marked', await page.isHidden('.tag.health[data-url="https://up.ts.net"]'))
-  check('Back to that server, not Try again', (await page.textContent('#retry')).trim() === '← Back to Local containerless server')
+  check('Back to that server', (await page.textContent('#back')).trim() === '← Back to Local containerless server')
   check('on the tailnet, no banner', (await page.locator('.banner').count()) === 0)
   await page.screenshot({ path: path.join(SHOTS, 'servers-page-over.png'), fullPage: true })
 
@@ -127,7 +128,8 @@ try {
   console.log('3. unreachable, only the host install')
   await load(page, pages.unreachable)
   check('states the failure', (await page.textContent('h1')).includes('Could not connect'))
-  check('Try again', (await page.textContent('#retry')).trim() === 'Try again')
+  check('no Back or Try again: the selected row is the way back',
+    (await page.locator('#back').count()) === 0 && (await page.getByText('Try again').count()) === 0)
   check('the selected install is unchecked', (await page.locator('.check').count()) === 0)
   check('the selected install, though stopped, has Start and Disconnect but no Connect',
     await page.isVisible('#install-server button.start') && await page.isVisible('#install-server button.disconnect')

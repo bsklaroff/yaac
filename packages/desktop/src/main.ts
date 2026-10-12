@@ -441,9 +441,10 @@ async function readLocalServerState(): Promise<void> {
  * server it selects; otherwise the window reloads the selected server
  * after a start or restart. Stopping the selected server disconnects the
  * window, which moves to the Servers page; any other stop leaves the window
- * where it is, rendering the page again if it shows.
+ * where it is, rendering the page again if it shows. A setup runs the
+ * steps its confirmation listed, which `setupCli` decided.
  */
-async function serverAction(scoped: ScopedAction): Promise<DesktopServerOutcome> {
+async function serverAction(scoped: ScopedAction, setupCli = false): Promise<DesktopServerOutcome> {
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   const { scope, action } = scoped
   serverBusy = scoped
@@ -452,7 +453,7 @@ async function serverAction(scoped: ScopedAction): Promise<DesktopServerOutcome>
   const origin = installOrigin(localServers, scope)
   await authDaemonReady
   const remote = action === 'setup' || serversPage || await showingLocalServer() ? null : await readServerConfig()
-  const outcome = action === 'setup' ? await setup.run(scope) : await runServerAction({ scope, action }, runYaac)
+  const outcome = action === 'setup' ? await setup.run(scope, setupCli) : await runServerAction({ scope, action }, runYaac)
   if (remote) await restoreSelection(remote, serverSwitchDeps)
   serverBusy = null
   await refreshing
@@ -567,8 +568,9 @@ function handleFromServersPage<T>(
   })
 }
 
-// "Try again", or "Back" over a server. A failure renders the page afresh.
-handleFromServersPage('server:retry', async (): Promise<DesktopServerOutcome> => {
+// "Back" to the server the page was opened over. A failure renders the page
+// afresh, showing why.
+handleFromServersPage('server:back', async (): Promise<DesktopServerOutcome> => {
   const ok = await openWindow()
   return ok ? { ok: true } : { ok: false, error: 'still no server' }
 })
@@ -627,14 +629,16 @@ handleFromServersPage('server:setup', async (raw): Promise<DesktopServerOutcome>
   if (!scope) return { ok: false, error: 'invalid arguments' }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   if (localState().choices[scope].blocked === 'unsupported') return { ok: false, error: 'this Mac cannot run a local cluster' }
-  const { message, detail } = setupConfirmation(scope)
+  // Probed afresh, since the run's steps follow from it and the cached read can be a minute old.
+  const cli = await onPath('yaac')
+  const { message, detail } = setupConfirmation(scope, cli)
   // Cancel is the default: the page chooses when this appears, so a key
   // pressed for something else must not consent.
   const options = { type: 'question' as const, buttons: ['Cancel', 'Set up'], defaultId: 0, cancelId: 0, message, detail }
   const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
   if (response !== 1) return { ok: false, error: 'setup not started' }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
-  void serverAction({ scope, action: 'setup' })
+  void serverAction({ scope, action: 'setup' }, cli)
   return { ok: true }
 })
 handleFromServersPage('server:setup-cancel', (): Promise<DesktopServerOutcome> => {

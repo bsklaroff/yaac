@@ -71,7 +71,7 @@ describe('createSetupRunner', () => {
     })
     const { setup, changes } = runner()
 
-    const outcome = await setup.run('server')
+    const outcome = await setup.run('server', false)
 
     expect(outcome).toEqual({ ok: true, hostCheckFailures: '✗ claude: not on PATH\n    fix: npm install -g @anthropic-ai/claude-code' })
     expect(await called()).toEqual([
@@ -114,7 +114,7 @@ describe('createSetupRunner', () => {
     })
     const { setup } = runner()
 
-    expect(await setup.run('cluster'))
+    expect(await setup.run('cluster', false))
       .toEqual({ ok: false, error: 'yaac cluster install exited with code 3' })
     // Only the missing formula and the install itself ran.
     expect((await called()).filter((c) => !/ (list|--json)/.test(c) && c !== 'brew tap'))
@@ -143,7 +143,7 @@ describe('createSetupRunner', () => {
       'trust --tap --json=v1': 'echo "Error: Unknown command: trust" >&2; exit 1',
       'list --formula --versions yaac-cluster': 'echo yaac-cluster 1.0.0',
     })
-    expect(await relaunched.run('cluster')).toEqual({ ok: true })
+    expect(await relaunched.run('cluster', false)).toEqual({ ok: true })
     expect(relaunched.current()!.steps.map((s) => s.note)).toEqual([
       'nothing to install from it', 'already installed', 'nothing to install from it', 'nothing to install from it',
       'already installed', undefined,
@@ -154,13 +154,19 @@ describe('createSetupRunner', () => {
 
   it('points at brew.sh when Homebrew is missing, and needs none when there is nothing to install', async () => {
     const { setup } = runner()
-    expect(await setup.run('server'))
+    expect(await setup.run('server', false))
       .toEqual({ ok: false, error: 'Homebrew is not installed. Install it from https://brew.sh, then set up again.' })
     expect(setup.current()!.steps[0].state).toBe('failed')
 
     await fake('yaac', { 'server start': 'echo started', 'host check': 'echo all good' })
-    expect(await setup.run('server')).toEqual({ ok: true })
+    expect(await setup.run('server', false)).toEqual({ ok: true })
     expect(await called()).toEqual(['yaac server start', 'yaac host check'])
+    // A setup confirmed with the CLI on PATH lists only what it confirmed.
+    expect(await setup.run('server', true)).toEqual({ ok: true })
+    expect(setup.current()!.steps.map((s) => [s.command, s.state])).toEqual([
+      ['yaac server start', 'done'],
+      ['yaac host check', 'done'],
+    ])
   })
 
   it('finishes a step whose command exits while something it started still holds its output', async () => {
@@ -172,7 +178,7 @@ describe('createSetupRunner', () => {
     const { setup } = runner()
     const started = Date.now()
     try {
-      expect(await setup.run('server')).toEqual({ ok: true })
+      expect(await setup.run('server', true)).toEqual({ ok: true })
       expect(Date.now() - started).toBeLessThan(10_000)
       expect(setup.current()!.log).toContain('started')
     } finally {
@@ -181,11 +187,15 @@ describe('createSetupRunner', () => {
   })
 
   it('confirms a setup by naming its commands and the taps it trusts', () => {
-    const { message, detail } = setupConfirmation('cluster')
+    const { message, detail } = setupConfirmation('cluster', false)
     expect(message).toBe('Set up a local kubernetes cluster on this Mac?')
     expect(detail).toContain('trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
-    expect(detail).toContain('  brew tap libkrun/krun\n\n  brew install bsklaroff/yaac/yaac-cluster')
-    expect(setupConfirmation('server').detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
+    // One command per line.
+    expect(detail).toContain('already done:\n  brew trust bsklaroff/yaac\n  brew install bsklaroff/yaac/yaac-server\n')
+    expect(setupConfirmation('server', false).detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')
+    // With the CLI on PATH, starting the server trusts no tap.
+    expect(setupConfirmation('server', true).detail)
+      .toBe('These commands run, skipping any that are already done:\n  yaac server start\n  yaac host check')
   })
 
   it('cancels a long step, killing what it spawned even if it ignores SIGTERM, and refuses a second run meanwhile', async () => {
@@ -197,9 +207,9 @@ describe('createSetupRunner', () => {
     await fake('brew', { 'list --formula --versions yaac-cluster': 'echo yaac-cluster 1.0.0' })
     const { setup } = runner()
 
-    const running = setup.run('cluster')
+    const running = setup.run('cluster', false)
     while (!setup.current()?.log.includes('creating')) await new Promise((r) => setTimeout(r, 20))
-    expect(await setup.run('server')).toEqual({ ok: false, error: 'a setup is already running' })
+    expect(await setup.run('server', false)).toEqual({ ok: false, error: 'a setup is already running' })
     const started = Date.now()
     const cancelled = setup.cancel()
 
