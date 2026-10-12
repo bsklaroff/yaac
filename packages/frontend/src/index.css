@@ -423,9 +423,11 @@ select {
 }
 
 /*
- * Keep the mobile shell's chrome clear of the notch and the home indicator.
- * Applied to the shell's positioned container, so the screens stacked inside
- * it with `inset-0` land on its padding box and inherit the clearance.
+ * Keep the shell's chrome clear of the notch and the home indicator. Applied
+ * to the shell's container in both layouts: a notched phone in landscape is
+ * wider than the mobile breakpoint, so it gets the desktop layout. On the
+ * phone shell the screens stacked inside with `inset-0` land on its padding
+ * box and inherit the clearance. Every inset is 0 off a notched device.
  */
 .safe-area-inset {
   padding-top: env(safe-area-inset-top);

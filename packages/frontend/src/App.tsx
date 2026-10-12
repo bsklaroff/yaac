@@ -331,8 +331,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     // mounted when a phone rotates across the breakpoint. On desktop a
     // placeholder (welcome, or a project being added or removed) takes the
     // place of both sidebar and pane.
-    <div className={clsx('bg-shell', isMobile
-      ? 'safe-area-inset relative h-full overflow-hidden'
+    <div className={clsx('bg-shell safe-area-inset', isMobile
+      ? 'relative h-full overflow-hidden'
       : 'flex h-full')}
     >
       {isMobile ? (
