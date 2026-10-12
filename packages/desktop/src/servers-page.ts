@@ -5,13 +5,13 @@
  * Stop, and every other saved server, marked "(stopped)" when it does not
  * answer or "(refused)" when it will not identify this device. A row other
  * than the selected one connects, unless it is a stopped install, which
- * Start selects. The selected row comes first, checked while the window is
- * connected to it. It disconnects, and connects again only while it cannot
- * be reached; any other saved server can be removed. Below
- * the list are the setups of the installs this Mac lacks (local-setup.ts)
- * and a form that adds a server by origin. While Tailscale seems down, a
- * banner says so, since the tailnet is the only way to a server on another
- * machine (server-switch.ts).
+ * Start selects. Rows run from the most recently selected server down. The
+ * selected row is checked while the window is connected to it. It
+ * disconnects, and connects again only while it cannot be reached; any
+ * other saved server can be removed. Below the list are the setups of the
+ * installs this Mac lacks (local-setup.ts) and a form that adds a server by
+ * origin. While Tailscale seems down, a banner says so, since the tailnet
+ * is the only way to a server on another machine (server-switch.ts).
  *
  * The window shows it when no server is reachable, with the failure on top;
  * on a Mac with nothing set up it leads with the setups instead. The SPA's
@@ -191,13 +191,19 @@ export function serversPageHtml(state: ServersPageState): string {
   const scopes = (['server', 'cluster'] as const).filter((s) => local.installs[s] !== null)
   const installed = scopes.filter((s) => local.installs[s] !== 'missing')
   const missing = scopes.filter((s) => local.installs[s] === 'missing')
-  const localOrigins = installed.map((s) => local.origins[s])
-  const rows = [
-    ...installed.map((s) => ({ url: local.origins[s], html: installRowHtml(state, s) })),
-    ...targets.saved.filter((url) => !localOrigins.includes(url)).map((url) => ({ url, html: remoteRowHtml(state, url) })),
+  /*
+   * Rows follow `saved`, which a selection reorders to put its origin first,
+   * so the most recently used server leads. An install whose origin is not
+   * saved goes last.
+   */
+  const installAt = (url: string): ServerScope | undefined => installed.find((s) => local.origins[s] === url)
+  const ordered = [
+    ...targets.saved.map((url) => {
+      const scope = installAt(url)
+      return scope ? installRowHtml(state, scope) : remoteRowHtml(state, url)
+    }),
+    ...installed.filter((s) => !targets.saved.some((url) => url === local.origins[s])).map((s) => installRowHtml(state, s)),
   ]
-  const first = (row: { url: string | null }): number => Number(row.url !== null && row.url === targets.current)
-  const ordered = rows.sort((a, b) => first(b) - first(a)).map((r) => r.html)
   // Back names the server it returns to: an install by name, any other by origin.
   const current = installed.find((s) => local.origins[s] === targets.current)
   const back = `← Back to ${current ? SETUP_COPY[current].title : targets.current ?? 'the server'}`
@@ -324,8 +330,7 @@ export function serversPageHtml(state: ServersPageState): string {
 
       <h2>Add a server</h2>
       <p class="note">
-        A yaac server origin: <code>https://host.ts.net</code> for one served on
-        your tailnet, or <code>http://127.0.0.1:8787</code> for one on this machine.
+        The origin of a yaac server served on your tailnet: <code>https://host.ts.net</code>.
       </p>
       <form id="add">
         <input name="url" placeholder="https://host.ts.net" />

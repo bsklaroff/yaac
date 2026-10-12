@@ -50,12 +50,21 @@ describe('serversPageHtml', () => {
     expect(html).toContain('Check that the server is running, then connect again.')
   })
 
-  it('offers one Connect row per saved server, the selected one first, and removes any other', () => {
-    const html = serversPageHtml({ ...STATE, targets: { ...STATE.targets, saved: ['https://b.ts.net', HOST] } })
+  it('offers one Connect row per saved server, most recently selected first, and removes any other', () => {
+    const html = serversPageHtml(STATE)
     // The selected row gets one too while it is unreachable: it is the retry.
     expect(html.match(/class="connect" data-url=/g)).toHaveLength(2)
     expect(html.match(/class="disconnect"/g)).toHaveLength(1)
     expect(html.indexOf(`data-url="${HOST}"`)).toBeLessThan(html.indexOf('data-url="https://b.ts.net"'))
+    // A remote selected more recently than a local install leads it; an install whose origin is not saved goes last.
+    const recent = serversPageHtml({
+      ...STATE,
+      targets: { current: 'https://b.ts.net', saved: ['https://b.ts.net', HOST] },
+      local: view({ server: HOST_RUNNING, cluster: CLUSTER_RUNNING }),
+    })
+    const at = (needle: string): number => recent.indexOf(needle)
+    expect(at('<span class="origin">https://b.ts.net</span>')).toBeLessThan(at('id="install-server"'))
+    expect(at('id="install-server"')).toBeLessThan(at('id="install-cluster"'))
     // It is checked only while the window is connected to it.
     expect(html).not.toContain('class="check"')
     expect(html.match(/class="remove" data-url=/g)).toHaveLength(1)

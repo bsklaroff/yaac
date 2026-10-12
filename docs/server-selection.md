@@ -167,12 +167,15 @@ loaded, each saved origin is probed in parallel and marked "(stopped)" when
 it does not answer, or "(refused)" when it answers but will not identify
 this device (a tagged tailnet device, or an origin for the wrong access
 mode, docs/remote-hosting.md), with the server's reason as its tooltip:
-starting the server would not fix that. The selected row comes first,
-with a green check while the window is connected to it, and has
+starting the server would not fix that. Rows follow `saved`, where every
+selection moves its origin to the front, so the most recently selected
+server comes first whether it is local or remote. The selected row has a
+green check while the window is connected to it, and has
 **Disconnect**, which deselects it as `yaac remote disconnect` does, and
 stopping the selected install disconnects the window the same way a dead
 server would. Below the list are the setups of the installs this Mac lacks,
-and a form that accepts a new origin.
+and a form that accepts a new origin, for a server on another machine (this
+Mac's installs list themselves).
 
 A server on another machine is reached only over the tailnet, so while no
 interface holds a Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48)
