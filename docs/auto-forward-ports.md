@@ -7,8 +7,8 @@ pod, the webapp offers to forward it, for that workspace only or for the
 whole project, without editing config or restarting.
 
 It is k8s-only. Under `containerless`, listeners are already host ports, so
-`unforwardedPorts` is always empty and the routes below return
-`NOT_SUPPORTED` (docs/containerless-driver.md "Ports").
+`unforwardedPorts` is always empty and the routes below (including stopping
+a forward) return `NOT_SUPPORTED` (docs/containerless-driver.md "Ports").
 
 ## Data flow
 
@@ -67,6 +67,17 @@ anything is written. `forwardWorkspacePort` then:
 
 `POST /workspace/:id/dismiss-port` hides a port, with the same current-set
 check so the dismissed set cannot be grown arbitrarily.
+
+`POST /workspace/:id/unforward-port {containerPort}` is the reverse, for any
+forwarded port, config-declared or added here. It drops the mapping from
+this workspace's registry entry (a 409 if it is not there) and refreshes the
+status bar; clients release their listener on the next snapshot and cut its
+open connections, and a port still listening comes back as a suggestion.
+The project config is untouched, so a port declared there is forwarded
+again when the server restarts. The webapp offers it as an × on the
+desktop Preview button (or on each row of its port menu), in the preview
+pane's menu, and on a browser's port chips. It is hidden under
+`containerless`, where a forwarded port is the dev server's own host port.
 
 A forward during workspace create is safe: the registry merges the create's
 declarations with later ones on one entry, and allocating a host port and

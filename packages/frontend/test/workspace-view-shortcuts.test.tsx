@@ -189,6 +189,19 @@ describe('WorkspaceView: open-preview', () => {
     expect(useUiStore.getState().previewPort.s1).toBe(3000)
   })
 
+  it('moves an open pane off a port that stops being forwarded elsewhere', () => {
+    // Another window stopped 5173: only the snapshot says so.
+    useUiStore.setState({ previewPort: { s1: 5173 } })
+    act(() => useUiStore.getState().openPreview('s1', 5173))
+    renderView([port(3000), port(5173)])
+    expect(screen.getAllByText('Preview :5173').length).toBeGreaterThan(0)
+
+    cleanup()
+    renderView([port(3000)])
+    expect(screen.queryAllByText('Preview :5173')).toHaveLength(0)
+    expect(screen.getAllByText('Preview :3000').length).toBeGreaterThan(0)
+  })
+
   it('with no ports, opens nothing', () => {
     renderView()
     focusTerminal()

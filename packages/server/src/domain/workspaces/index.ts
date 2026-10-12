@@ -43,7 +43,7 @@ export {
   writeWorkspaceFile,
 } from './files'
 export { listWorkspaceGroups, resolveGroup } from './groups'
-export { dismissWorkspacePort, forwardWorkspacePort } from './forward-port'
+export { dismissWorkspacePort, forwardWorkspacePort, unforwardWorkspacePort } from './forward-port'
 export { listActiveWorkspaces } from './list'
 export { purgeProjectBytes } from './project-purge'
 export { moveProjectDirsToIds } from './project-dir-migration'

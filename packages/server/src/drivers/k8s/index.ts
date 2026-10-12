@@ -40,6 +40,7 @@ import {
   forwardWorkspacePort,
   getUnforwardedPorts,
   getWorkspacePorts,
+  removeWorkspaceForwarder,
 } from '#drivers/k8s/forwarders'
 import {
   SERVER_MAMA_PORT,
@@ -91,6 +92,7 @@ export function createK8sDriver(): WorkspaceDriver {
     unforwardedPorts: (workspaceId) => Promise.resolve(getUnforwardedPorts(workspaceId)),
     allowHost: (target, host, opts) => allowWorkspaceHost(target, host, opts),
     forwardPort: (target, port, opts) => forwardWorkspacePort(target, port, opts),
+    unforwardPort: (target, port) => removeWorkspaceForwarder(target.workspaceId, target.jobName, port),
     dismissPort: (workspaceId, port) => dismissWorkspacePort(workspaceId, port),
 
     listImageBuilds: () => listImageBuilds(),

@@ -89,6 +89,31 @@ describe('startForward', () => {
     expect(upgrade.path).toContain('port=5173')
   })
 
+  it('close cuts open connections and their tunnels, not just the listener', async () => {
+    let tunnelClosed!: Promise<void>
+    const server = await fakeServer({
+      onSocket: (ws) => {
+        tunnelClosed = new Promise((resolve) => ws.once('close', () => resolve()))
+        ws.on('message', (data: Buffer) => ws.send(data))
+      },
+    })
+    cleanups.push(server.close)
+    const handle = await startForward(
+      { baseUrl: server.baseUrl },
+      { session: 'sess-1', containerPort: 5173, hostPort: 0 },
+    )
+
+    // A long-lived connection (a keep-alive or HMR socket), still open.
+    const socket = net.connect(handle.hostPort, '127.0.0.1', () => socket.write('hi'))
+    await new Promise<void>((resolve) => socket.once('data', () => resolve()))
+    const socketClosed = new Promise<void>((resolve) => socket.once('close', () => resolve()))
+
+    handle.close()
+
+    await socketClosed
+    await tunnelClosed
+  })
+
   it('opens one WebSocket per accepted TCP connection', async () => {
     // Raw bytes, unframed: v1 multiplexes nothing.
     const server = await fakeServer()

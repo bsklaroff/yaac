@@ -211,6 +211,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/workspace/:id/blocked-hosts', request: `${W}/blocked-hosts`, access: 'reader', why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/workspace/:id/allow-host', request: `${W}/allow-host`, body: { host: 'example.com' }, access: 'owner', why: 'mediates no egress', k8s: [404, 503], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/workspace/:id/forward-port', request: `${W}/forward-port`, body: { containerPort: 3000 }, access: 'owner', why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/workspace/:id/unforward-port', request: `${W}/unforward-port`, body: { containerPort: 3000 }, access: 'owner', why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/workspace/:id/dismiss-port', request: `${W}/dismiss-port`, body: { containerPort: 3000 }, access: 'owner', why: 'relays no ports', k8s: [404, 503], containerless: UNSUPPORTED },
 
   // ── shortcuts: the caller's own ───────────────────────────────────────

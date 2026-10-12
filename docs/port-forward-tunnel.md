@@ -22,8 +22,10 @@ host port) and the server end of each connection.
 the workspace's lifetime and dropped by `deregisterWorkspace`. It runs before
 launch because the result is shown in the workspace's tmux status bar. The
 "forward this port" action (docs/auto-forward-ports.md) adds to the same
-registry. The result appears as `forwardedPorts` on the workspace list, which
-the webapp links to and client forwarders bind.
+registry, and "stop forwarding" removes from it. The result appears as
+`forwardedPorts` on the workspace list, which the webapp links to and client
+forwarders bind. A client drops a port that leaves the list, cutting its
+open connections too.
 
 Declaring also allocates: if two workspaces of a project both ask for 3000,
 the k8s driver gives the second the next free port. It cannot see what else

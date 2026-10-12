@@ -15,6 +15,7 @@ import {
   addWorkspaceForwarder,
   declareWorkspaceForwards,
   getWorkspacePorts,
+  removeWorkspaceForwarder,
   stopAllWorkspaceForwarders,
   stopWorkspaceForwarders,
 } from '#drivers/k8s/forwarders/port-forwarders'
@@ -206,5 +207,50 @@ describe('addWorkspaceForwarder', () => {
     const mapping = await addWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090)
 
     expect(getWorkspacePorts('sess-1')).toEqual([mapping])
+  })
+})
+
+describe('removeWorkspaceForwarder', () => {
+  beforeEach(() => {
+    mockExec.mockClear()
+    mockExec.mockResolvedValue({ stdout: '', stderr: '' })
+  })
+
+  it('drops one forward, frees its host port, announces it and restates the bar', async () => {
+    declareWorkspaceForwards('sess-1', [
+      { containerPort: 3000, hostPortStart: 3000 },
+      { containerPort: 8090, hostPortStart: 8090 },
+    ])
+    const announced = vi.fn()
+    onWorkspaceListChanged(announced)
+
+    expect(await removeWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 3000)).toBe(true)
+
+    expect(getWorkspacePorts('sess-1')).toEqual([{ containerPort: 8090, hostPort: 8090 }])
+    expect(announced).toHaveBeenCalled()
+    const bar = mockExec.mock.calls[0]?.[1] ?? ''
+    expect(bar).toContain(':8090->8090')
+    expect(bar).not.toContain(':3000->3000')
+    // Its host port can be promised again.
+    expect(declareWorkspaceForwards('sess-2', [{ containerPort: 3000, hostPortStart: 3000 }]))
+      .toEqual([{ containerPort: 3000, hostPort: 3000 }])
+  })
+
+  it('answers false for a port that is not forwarded, touching nothing', async () => {
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
+
+    expect(await removeWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 8090)).toBe(false)
+    expect(await removeWorkspaceForwarder('sess-9', 'yaac-proj-sess-9', 3000)).toBe(false)
+
+    expect(getWorkspacePorts('sess-1')).toEqual([{ containerPort: 3000, hostPort: 3000 }])
+    expect(mockExec).not.toHaveBeenCalled()
+  })
+
+  it('drops the forward even when the cosmetic status-bar refresh fails', async () => {
+    declareWorkspaceForwards('sess-1', [{ containerPort: 3000, hostPortStart: 3000 }])
+    mockExec.mockRejectedValue(new Error('pod is gone'))
+
+    expect(await removeWorkspaceForwarder('sess-1', 'yaac-proj-sess-1', 3000)).toBe(true)
+    expect(getWorkspacePorts('sess-1')).toEqual([])
   })
 })

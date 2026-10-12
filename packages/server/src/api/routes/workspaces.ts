@@ -9,6 +9,7 @@ import {
   deleteWorkspaceEntry,
   dismissWorkspacePort,
   forwardWorkspacePort,
+  unforwardWorkspacePort,
   getAcpStoredImage,
   getAgentSessionTranscript,
   getWorkspaceBlockedHosts,
@@ -765,6 +766,17 @@ export const workspaceApp = new Hono<IdentityEnv>()
         c.get('principal'), c.req.param('id'), containerPort, { persist: persist ?? false },
       )
       return c.json(mapping)
+    },
+  )
+  // Stop forwarding a port for this workspace (in memory; a config-declared
+  // port comes back when the server restarts).
+  .post(
+    '/:id/unforward-port',
+    zv('json', z.object({ containerPort: z.number().int().min(1).max(65535) })),
+    async (c) => {
+      requireDriverFeature('portRelay')
+      await unforwardWorkspacePort(c.get('principal'), c.req.param('id'), c.req.valid('json').containerPort)
+      return c.body(null, 204)
     },
   )
   // Hide a detected port (in memory; resets with the server). As with

@@ -650,6 +650,14 @@ export interface WorkspaceDriver {
     opts: { fanOutToProject: boolean },
   ): Promise<PortMapping>
   /**
+   * Stop offering one of a running workspace's forwarded ports, whether
+   * config-declared or added by `forwardPort`; returns whether it was
+   * offered. In memory: a config-declared port is offered again when the
+   * forwards are next declared from config (a server restart). A runtime
+   * without port relay refuses (the route answers `NOT_SUPPORTED` first).
+   */
+  unforwardPort(target: { workspaceId: string; jobName: string }, containerPort: number): Promise<boolean>
+  /**
    * Hide an unforwarded listener from the suggestions; returns whether it
    * was one. Only current listeners are accepted, so the set stays bounded.
    * In memory: a restart shows the port again.

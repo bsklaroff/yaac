@@ -6,7 +6,7 @@ vi.mock('#domain/projects/local-config', () => ({
 
 import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
 import { addPortForwardToProjectConfig } from '#domain/projects/local-config'
-import { dismissWorkspacePort, forwardWorkspacePort } from '#domain/workspaces/forward-port'
+import { dismissWorkspacePort, forwardWorkspacePort, unforwardWorkspacePort } from '#domain/workspaces/forward-port'
 import { ServerError } from '@yaac/shared/errors'
 import type { PortMapping } from '@yaac/shared/types'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
@@ -109,6 +109,45 @@ describe('forwardWorkspacePort', () => {
 
     await expect(forwardWorkspacePort(local, 'sid-1', 8090, { persist: false }))
       .rejects.toThrow(/not an unforwarded listener/)
+  })
+})
+
+describe('unforwardWorkspacePort', () => {
+  const mockUnforward = vi.fn<(t: { workspaceId: string; jobName: string }, port: number) => Promise<boolean>>()
+
+  beforeEach(() => {
+    mockUnforward.mockReset().mockResolvedValue(true)
+    installFakeWorkspaceDriver({
+      find: () => Promise.resolve(HANDLE),
+      unforwardPort: mockUnforward,
+    })
+  })
+
+  it('stops the resolved workspace’s forward, leaving the project config alone', async () => {
+    await unforwardWorkspacePort(local, 'sid-1', 3000)
+
+    expect(mockUnforward).toHaveBeenCalledExactlyOnceWith(
+      { workspaceId: 'sid-1', jobName: 'yaac-proj-sid-1' },
+      3000,
+    )
+    expect(mockPersist).not.toHaveBeenCalled()
+  })
+
+  it('refuses a port the workspace is not forwarding', async () => {
+    mockUnforward.mockResolvedValue(false)
+
+    await expect(unforwardWorkspacePort(local, 'sid-1', 3000)).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(unforwardWorkspacePort(local, 'sid-1', 3000)).rejects.toThrow(/not forwarded/)
+  })
+
+  it('never reaches the runtime for a workspace that is not running', async () => {
+    installFakeWorkspaceDriver({
+      find: () => Promise.resolve(undefined),
+      unforwardPort: mockUnforward,
+    })
+
+    await expect(unforwardWorkspacePort(local, 'gone', 3000)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    expect(mockUnforward).not.toHaveBeenCalled()
   })
 })
 
