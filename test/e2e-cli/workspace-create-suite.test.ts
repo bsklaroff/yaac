@@ -887,6 +887,31 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(again.status).toBe(409)
     }, 60_000)
 
+    it('stops forwarding a port, closing the client listener and suggesting it again', async () => {
+      const mapping = (await kitchenSession()).forwardedPorts.find((p) => p.containerPort === detectedPort)
+      expect(mapping).toBeDefined()
+      const unforward = (): Promise<Response> => fetch(`${base}/api/workspace/${workspaceId}/unforward-port`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ containerPort: detectedPort }),
+      })
+
+      expect((await unforward()).status).toBe(204)
+      const session = await kitchenSession()
+      expect(session.forwardedPorts).not.toContainEqual(mapping)
+      // Still listening in the pod, so it is offered for forwarding again.
+      await waitForUnforwarded(detectedPort)
+      // The client forwarder follows the snapshot and releases the port.
+      await vi.waitFor(() => new Promise<void>((resolve, reject) => {
+        const socket = net.connect(mapping!.hostPort, '127.0.0.1')
+        socket.once('connect', () => { socket.destroy(); reject(new Error('still listening')) })
+        socket.once('error', () => { socket.destroy(); resolve() })
+      }), { timeout: 20_000, interval: 250 })
+
+      // No longer forwarded, so a repeat is rejected.
+      expect((await unforward()).status).toBe(409)
+    }, 60_000)
+
     it('rejects forwarding a port with no detected listener', async () => {
       const res = await fetch(`${base}/api/workspace/${workspaceId}/forward-port`, {
         method: 'POST',

@@ -10,7 +10,8 @@
  * two workspaces asking for 3000 get different answers.
  *
  * A workspace's entry merges the create/restore batch with any single-port
- * additions (`addWorkspaceForwarder`).
+ * additions (`addWorkspaceForwarder`) and removals
+ * (`removeWorkspaceForwarder`).
  */
 
 import { k8sWorkspacePaths, podExec } from '#drivers/k8s/substrate'
@@ -152,4 +153,28 @@ export async function addWorkspaceForwarder(
     .catch(() => { /* cosmetic */ })
 
   return mapping
+}
+
+/**
+ * Stop offering one of a running workspace's forwards (the webapp's "stop
+ * forwarding" action) and refresh the tmux status bar; a failed refresh is
+ * ignored. Returns whether the port was offered. Clients drop their
+ * listener on the next snapshot, and the detector suggests the port again
+ * while something still listens on it.
+ */
+export async function removeWorkspaceForwarder(
+  workspaceId: string,
+  jobName: string,
+  containerPort: number,
+): Promise<boolean> {
+  const entry = forwarders.get(workspaceId)
+  const i = entry?.findIndex((p) => p.containerPort === containerPort) ?? -1
+  if (!entry || i < 0) return false
+  entry.splice(i, 1)
+  notifyWorkspaceListChanged()
+
+  await refreshStatusRight(jobName, workspaceId)
+    .catch(() => { /* cosmetic */ })
+
+  return true
 }

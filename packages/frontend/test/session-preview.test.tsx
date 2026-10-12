@@ -47,8 +47,8 @@ describe('WorkspacePreview (Electron)', () => {
 
   it('shows a waiting state until the port is forwarded', () => {
     setElectron(true)
-    render(<WorkspacePreview workspaceId="abc" ports={[]} currentPort={5173} onSwitchPort={() => {}} />)
-    expect(screen.getByText(/Waiting for the dev server on port 5173/)).toBeTruthy()
+    render(<WorkspacePreview workspaceId="abc" ports={[]} currentPort={undefined} onSwitchPort={() => {}} />)
+    expect(screen.getByText(/Waiting for the dev server/)).toBeTruthy()
   })
 
   it('opens the current address in the system browser', () => {

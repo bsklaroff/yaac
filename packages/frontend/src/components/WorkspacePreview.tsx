@@ -40,7 +40,8 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
 /**
  * A per-workspace embedded browser pane showing a dev server in the
  * workspace through a forwarded port, with navigation controls, an address
- * bar and a menu (home, copy URL, responsive widths, hard reload, devtools).
+ * bar and a menu (home, copy URL, responsive widths, hard reload, devtools,
+ * stop forwarding).
  *
  * The <webview> is managed imperatively through a ref, because letting React
  * reconcile it would reload the page on every parent render. Electron only;
@@ -51,17 +52,21 @@ export function WorkspacePreview({
   ports,
   currentPort,
   onSwitchPort,
+  onStopForwarding,
 }: {
   workspaceId: string
   /** Forwarded ports available to preview for the workspace. */
   ports: PortMapping[]
-  /** Which container port the pane currently shows. */
+  /** Which container port the pane shows: one of `ports`, or undefined
+   *  while none is forwarded. */
   currentPort: number | undefined
   /** Switch the pane to another forwarded port (the toolbar dropdown). */
   onSwitchPort: (containerPort: number) => void
+  /** Stop forwarding the shown port; omitted where there is no forward to
+   *  stop. */
+  onStopForwarding?: (containerPort: number) => void
 }): JSX.Element {
-  const shownPort = currentPort ?? ports[0]?.containerPort
-  const mapping = ports.find((p) => p.containerPort === shownPort)
+  const mapping = ports.find((p) => p.containerPort === currentPort)
   const hostPort = mapping?.hostPort
   const url = hostPort !== undefined ? previewUrl(hostPort) : null
   const electron = isElectron()
@@ -186,7 +191,7 @@ export function WorkspacePreview({
         </button>
         {ports.length > 1 && (
           <select
-            value={shownPort}
+            value={currentPort}
             onChange={(e) => onSwitchPort(Number(e.target.value))}
             aria-label="Preview port"
             className="shrink-0 rounded bg-bg px-1 py-0.5 font-mono text-[11px] text-text-dim outline-none"
@@ -258,6 +263,14 @@ export function WorkspacePreview({
                 <Menu.Item className={MENU_ITEM} onClick={openDevTools}>
                   <DevToolsIcon size={14} /> Open DevTools
                 </Menu.Item>
+                {onStopForwarding && mapping && (
+                  <>
+                    <div className="my-1 h-px bg-border" />
+                    <Menu.Item className={MENU_ITEM} onClick={() => onStopForwarding(mapping.containerPort)}>
+                      <CloseIcon size={13} /> Stop forwarding :{mapping.containerPort}
+                    </Menu.Item>
+                  </>
+                )}
               </Menu.Popup>
             </Menu.Positioner>
           </Menu.Portal>
@@ -276,7 +289,7 @@ export function WorkspacePreview({
         {hostPort === undefined ? (
           <PreviewOverlay>
             <LoadingIcon size={18} className="animate-spin text-text-faint" />
-            <span>Waiting for the dev server{shownPort ? ` on port ${shownPort}` : ''}…</span>
+            <span>Waiting for the dev server…</span>
           </PreviewOverlay>
         ) : failed ? (
           <PreviewOverlay>

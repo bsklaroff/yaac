@@ -37,6 +37,27 @@ export async function forwardWorkspacePort(
 }
 
 /**
+ * Stop forwarding one of a running workspace's ports (the webapp's "stop
+ * forwarding" action), for this workspace only: the project config is left
+ * alone, so a port declared there is forwarded again after a server
+ * restart. A port that is not forwarded is a CONFLICT.
+ */
+export async function unforwardWorkspacePort(
+  principal: Actor,
+  idOrName: string,
+  containerPort: number,
+): Promise<void> {
+  const target = await resolveWorkspaceContainer(idOrName, { requireRunning: true, owner: principal })
+  const { workspaceId, jobName } = target
+  if (!(await workspaceDriver().unforwardPort({ workspaceId, jobName }, containerPort))) {
+    throw new ServerError(
+      'CONFLICT',
+      `port ${containerPort} is not forwarded in session ${workspaceId.slice(0, 8)}`,
+    )
+  }
+}
+
+/**
  * Hide a suggested port (the webapp's dismiss action). Only a currently
  * unforwarded listener is accepted, with the same CONFLICT as
  * `forwardWorkspacePort`. In memory only.

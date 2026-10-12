@@ -31,6 +31,9 @@ export interface ForwardSpec {
 export interface ForwardHandle {
   /** The port actually bound (useful when `spec.hostPort` was 0). */
   readonly hostPort: number
+  /** Stop listening and cut every open connection, so a stopped forward
+   *  stops reaching the workspace at once rather than when its last
+   *  keep-alive or websocket closes. */
   close(): void
 }
 
@@ -99,7 +102,10 @@ export function startForward(
 ): Promise<ForwardHandle> {
   const { bindHost = '127.0.0.1', ...events } = opts
   return new Promise((resolve, reject) => {
+    const open = new Set<net.Socket>()
     const server = net.createServer((socket) => {
+      open.add(socket)
+      socket.once('close', () => open.delete(socket))
       events.onConnection?.()
       bridge(socket, target, spec, events)
     })
@@ -108,7 +114,10 @@ export function startForward(
       const addr = server.address()
       resolve({
         hostPort: typeof addr === 'object' && addr ? addr.port : spec.hostPort,
-        close: () => server.close(),
+        close: () => {
+          server.close()
+          for (const socket of open) socket.destroy()
+        },
       })
     })
   })

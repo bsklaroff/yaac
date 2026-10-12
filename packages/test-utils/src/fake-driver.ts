@@ -145,6 +145,7 @@ function defaultRuntime(): WorkspaceDriver {
     unforwardedPorts: () => Promise.resolve([]),
     allowHost: () => Promise.resolve(),
     forwardPort: (_t, containerPort) => Promise.resolve({ containerPort, hostPort: containerPort }),
+    unforwardPort: () => Promise.resolve(false),
     // By default no port has an unforwarded listener.
     dismissPort: () => false,
     listImageBuilds: () => [],

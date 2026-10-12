@@ -21,6 +21,7 @@ export {
 export {
   declareWorkspaceForwards,
   getWorkspacePorts,
+  removeWorkspaceForwarder,
   stopAllWorkspaceForwarders,
   stopWorkspaceForwarders,
 } from './port-forwarders'

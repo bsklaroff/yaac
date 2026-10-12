@@ -10,7 +10,7 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
-import { isPreviewTarget, previewLabel } from '#lib/preview'
+import { PREVIEW_TARGET, isPreviewTarget, previewLabel } from '#lib/preview'
 import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
   isFilesTarget,
@@ -37,7 +37,9 @@ import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
-import { ForwardedPortLinks, portLinkHref, portLinkLabel } from '#components/ForwardedPortLinks'
+import {
+  ForwardedPortLinks, StopForwardButton, portLinkHref, portLinkLabel,
+} from '#components/ForwardedPortLinks'
 import { api } from '#lib/api'
 import { usePressDrag } from '#lib/usePressDrag'
 import { useKeptPanes } from '#lib/useKeptPanes'
@@ -145,7 +147,16 @@ export function WorkspaceView({
   const embedPreview = isElectron()
   const previewPorts = useLocalPorts(sid, workspace?.forwardedPorts ?? [])
   const chipPorts = embedPreview ? [] : previewPorts
-  const previewPortForWorkspace = sid ? previewPortMap[sid] : undefined
+  // The preview's port: the one picked, while it is still forwarded, else
+  // the first forwarded port. A port can stop being forwarded from another
+  // window, so the pane follows the snapshot rather than the pick alone.
+  const pickedPreviewPort = sid ? previewPortMap[sid] : undefined
+  const previewPortForWorkspace = previewPorts.some((p) => p.containerPort === pickedPreviewPort)
+    ? pickedPreviewPort
+    : previewPorts[0]?.containerPort
+  // Under containerless a forwarded port is the dev server's own host port,
+  // so there is no forward to stop.
+  const canUnforward = snapshot?.driver !== 'containerless'
   // With several ports, the header's Preview button (and Alt-P) offers a
   // choice of port. The shortcut opens that menu from wherever focus is, and
   // a dismissed menu hands focus back there.
@@ -267,6 +278,20 @@ export function WorkspaceView({
     const st = useUiStore.getState()
     st.setWorkspaceLayout(id, removeTarget(layoutOf(st.layouts, id), target))
     forget(`${id}|${target}`)
+  }
+  // Stop forwarding one of the selected workspace's ports. Stopping the last
+  // one closes the preview pane, which would otherwise wait on a port the
+  // user just withdrew. A failure shows in the header until dismissed.
+  const [stopError, setStopError] = useState<{ id: string; message: string } | null>(null)
+  const stopForwarding = (id: string, containerPort: number): void => {
+    const last = previewPorts.length === 1
+    setStopError(null)
+    api.workspace[':id']['unforward-port'].$post({ param: { id }, json: { containerPort } })
+      .then(() => { if (last) dropPane(id, PREVIEW_TARGET) })
+      .catch((e: unknown) => setStopError({
+        id,
+        message: `Couldn’t stop forwarding :${containerPort}: ${e instanceof Error ? e.message : String(e)}`,
+      }))
   }
   const closePane = (target: string): void => {
     if (!sid) return
@@ -475,20 +500,36 @@ export function WorkspaceView({
                   trigger={previewMenuTrigger}
                   returnFocus={previewMenuReturn}
                   onPick={(p) => openPreview(workspace.workspaceId, p)}
+                  onStop={canUnforward ? (p) => stopForwarding(workspace.workspaceId, p) : undefined}
                 />
               ) : embedPreview && previewPorts.length > 0 && (
-                <button
-                  onClick={() => openPreview(workspace.workspaceId, previewPorts[0].containerPort)}
-                  title={`Open preview (${previewPorts.map(portLinkLabel).join(', ')})`}
-                  aria-label="Open preview"
-                  className={PREVIEW_BUTTON}
-                >
-                  <PreviewIcon size={11} />
-                  Preview
-                </button>
+                <span className="group flex shrink-0 items-center rounded transition hover:bg-surface-2">
+                  <button
+                    onClick={() => openPreview(workspace.workspaceId, previewPorts[0].containerPort)}
+                    title={`Open preview (${portLinkLabel(previewPorts[0])})`}
+                    aria-label="Open preview"
+                    className={PREVIEW_BUTTON}
+                  >
+                    <PreviewIcon size={11} />
+                    Preview
+                    <span className="font-mono">:{previewPorts[0].containerPort}</span>
+                  </button>
+                  {canUnforward && (
+                    <StopForwardButton
+                      containerPort={previewPorts[0].containerPort}
+                      iconSize={11}
+                      onStop={(p) => stopForwarding(workspace.workspaceId, p)}
+                    />
+                  )}
+                </span>
               )}
               {chipPorts.length > 0 && (
-                <ForwardedPortLinks ports={chipPorts} iconSize={11} className="hover:bg-surface-2" />
+                <ForwardedPortLinks
+                  ports={chipPorts}
+                  iconSize={11}
+                  className="hover:bg-surface-2"
+                  onStop={canUnforward ? (p) => stopForwarding(workspace.workspaceId, p) : undefined}
+                />
               )}
             </>
           )}
@@ -508,6 +549,17 @@ export function WorkspaceView({
               iconSize={12}
               className="hover:bg-danger/25"
             />
+          )}
+          {stopError?.id === workspace.workspaceId && (
+            <button
+              onClick={() => setStopError(null)}
+              title="Dismiss"
+              className="flex min-w-0 shrink items-center gap-1 rounded bg-danger/15 px-1.5 py-0.5 text-[11px]
+                text-danger transition hover:bg-danger/25"
+            >
+              <span className="truncate">{stopError.message}</span>
+              <CloseIcon size={9} className="shrink-0" />
+            </button>
           )}
           {workspace.blockedHosts.length > 0 && (
             <BlockedHostsBadge hosts={workspace.blockedHosts} workspaceId={workspace.workspaceId} iconSize={12} className="hover:bg-danger/25" />
@@ -653,6 +705,7 @@ export function WorkspaceView({
                     ports={previewPorts}
                     currentPort={previewPortForWorkspace}
                     onSwitchPort={(p) => setPreviewPort(id, p)}
+                    onStopForwarding={canUnforward ? (p) => stopForwarding(id, p) : undefined}
                   />
                 </div>
               ) : chat !== undefined ? (
@@ -810,7 +863,8 @@ const PREVIEW_BUTTON = 'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 tex
 
 /**
  * The header's Preview button for a workspace with several forwarded ports:
- * a menu of them, whose pick opens the preview on that port. A pick leaves
+ * a menu of them, whose pick opens the preview on that port and whose ×
+ * (with `onStop`) stops forwarding it. A pick leaves
  * focus with the pane it opened; a dismissal returns it to `returnFocus`
  * when set (the menu was opened by shortcut), else to the button.
  */
@@ -819,11 +873,13 @@ function PreviewPortMenu({
   trigger,
   returnFocus,
   onPick,
+  onStop,
 }: {
   ports: WorkspaceListEntry['forwardedPorts']
   trigger: RefObject<HTMLButtonElement | null>
   returnFocus: RefObject<HTMLElement | null>
   onPick: (containerPort: number) => void
+  onStop?: (containerPort: number) => void
 }): JSX.Element {
   const picked = useRef(false)
   return (
@@ -853,10 +909,11 @@ function PreviewPortMenu({
             {ports.map((p) => (
               <Menu.Item
                 key={p.containerPort}
-                className={MENU_ITEM}
+                className={clsx('group', MENU_ITEM)}
                 onClick={() => { picked.current = true; onPick(p.containerPort) }}
               >
-                <span className="font-mono">:{p.containerPort}</span>
+                <span className="flex-1 font-mono">:{p.containerPort}</span>
+                {onStop && <StopForwardButton containerPort={p.containerPort} iconSize={13} onStop={onStop} />}
               </Menu.Item>
             ))}
           </Menu.Popup>

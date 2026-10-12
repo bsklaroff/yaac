@@ -84,6 +84,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     forwardedPorts: (workspaceId) => Promise.resolve(workspacePorts(workspaceId)),
     unforwardedPorts: () => Promise.resolve([]),
     forwardPort: () => unsupported('forwarding a port'),
+    unforwardPort: () => unsupported('stopping a forward'),
     dismissPort: () => false,
     declareForwards: (_workspaceId, forwards) =>
       forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
