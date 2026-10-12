@@ -108,9 +108,12 @@ with everything typed into it.
   link, and every `window.open` or `target=_blank`, opens in Safari, as do
   forwarded-port links. Subframes are left to the page's CSP.
 - **Layout.** The page pads itself for the notch and home indicator
-  (`viewport-fit=cover`, docs/mobile-layout.md), so the web view ignores the
-  safe area and its scroll view adds no insets, and it does not bounce,
-  since the page never scrolls.
+  (`viewport-fit=cover`, docs/mobile-layout.md) in portrait and landscape,
+  so the web view ignores the safe area and its scroll view adds no insets,
+  and it does not bounce, since the page never scrolls. SwiftUI reports no
+  safe area to a view that ignores it, so the web view reports the window's
+  instead; without that the page's insets are zero and its header sits under
+  the status bar.
 - **Lifecycle.** iOS suspends a backgrounded app and drops its sockets; the
   SPA reconnects them on `visibilitychange` (`reconnectingSocket`). A page
   whose process iOS killed under memory pressure is reloaded. The default

@@ -31,7 +31,8 @@ struct WebView: UIViewRepresentable {
    * SPA keeps its theme, selection and mobile screen. The page pads itself
    * for the notch and home indicator (`viewport-fit=cover`), so the scroll
    * view must not inset it again, and the page never scrolls, so it does not
-   * bounce either.
+   * bounce either. Because the page sets `viewport-fit=cover`, WebKit passes
+   * the view's own `safeAreaInsets` to it as `env(safe-area-inset-*)`.
    */
   func makeUIView(context: Context) -> WKWebView {
     let config = WKWebViewConfiguration()
@@ -42,7 +43,7 @@ struct WebView: UIViewRepresentable {
     )
     config.userContentController.add(context.coordinator, name: "yaac")
 
-    let web = WKWebView(frame: .zero, configuration: config)
+    let web = FullScreenWebView(frame: .zero, configuration: config)
     web.navigationDelegate = context.coordinator
     web.uiDelegate = context.coordinator
     web.isOpaque = false
@@ -143,5 +144,23 @@ struct WebView: UIViewRepresentable {
       let isDefault = port == 0 || (scheme == "https" && port == 443) || (scheme == "http" && port == 80)
       return "\(scheme)://\(host.lowercased())\(isDefault ? "" : ":\(port)")"
     }
+  }
+}
+
+/**
+ * A web view that reports the window's safe area as its own. SwiftUI gives a
+ * representable under `.ignoresSafeArea()` zero insets, which would reach
+ * the page as zero `env(safe-area-inset-*)` and put its header under the
+ * status bar. The view always fills the window, so the window's insets are
+ * the page's.
+ */
+private final class FullScreenWebView: WKWebView {
+  override var safeAreaInsets: UIEdgeInsets { window?.safeAreaInsets ?? .zero }
+
+  /// WebKit rereads the insets when told they changed, and they do on
+  /// joining a window.
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    safeAreaInsetsDidChange()
   }
 }
