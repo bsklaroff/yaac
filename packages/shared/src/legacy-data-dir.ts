@@ -3,8 +3,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { env } from '#env'
-import { clientDataDir, clientLocalPath, hostDataDir, installTmpDir, resetHostDataDir } from '#paths'
-import { readJsonFile, writeJsonFile } from '#json-file'
+import { clientDataDir, hostDataDir, installTmpDir, resetHostDataDir } from '#paths'
+import { writeJsonFile } from '#json-file'
 import { readInstallRecord } from '#install-record'
 import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock } from '#server-lock-file'
 import { rewriteToolRecordPaths } from '#tool-records'
@@ -164,10 +164,10 @@ async function prepareProject(dir: string): Promise<void> {
 }
 
 /**
- * Rename `~/.yaac` to `to`, then drop the install record `server.json`
- * mirrors for it, or the next read of `~/.yaac`'s record would lift it back
- * and recreate the dir. Returns whether it moved. A failed rename leaves
- * `~/.yaac` in use, with a warning unless another process moved it first.
+ * Rename `~/.yaac` to `to`. Returns whether it moved. A failed rename
+ * leaves `~/.yaac` in use, with a warning unless another process moved it
+ * first. `legacyDriver` has already read `~/.yaac`'s record, which retired
+ * any copy of it in `server.json`, so nothing lifts it back into `~/.yaac`.
  */
 async function relocate(to: string): Promise<boolean> {
   try {
@@ -177,11 +177,6 @@ async function relocate(to: string): Promise<boolean> {
       console.error(`[yaac] could not move ${legacyDir()} to ${to}, so it stays in use: ${String(err)}`)
     }
     return false
-  }
-  const file = clientLocalPath('server.json')
-  const raw = await readJsonFile(file)
-  if (raw !== 'absent' && raw !== null) {
-    await writeJsonFile(file, { url: raw.url ?? '', enabled: raw.enabled ?? false, saved: raw.saved ?? [] })
   }
   console.error(`[yaac] moved ${legacyDir()} to ${to}`)
   return true

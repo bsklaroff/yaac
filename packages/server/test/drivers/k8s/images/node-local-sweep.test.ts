@@ -19,7 +19,7 @@ vi.mock('#drivers/k8s/container/registry', () => ({
 
 import { reapNodeLocal } from '#drivers/k8s/images'
 import { buildNodeLocalSweepScript } from '#drivers/k8s/images/node-local-sweep'
-import { LABEL_DATA_DIR_HASH, LABEL_WORKSPACE_ID, dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { LABEL_INSTALL_ID, LABEL_WORKSPACE_ID, installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 interface PodManifest {
@@ -55,13 +55,13 @@ function stageNodes(names: string[], podHostPaths: string[] = []): void {
     metadata: {
       name: 'workspace-pod',
       namespace: k8sNamespace(),
-      labels: { [LABEL_DATA_DIR_HASH]: dataDirHash(), [LABEL_WORKSPACE_ID]: 'w1' },
+      labels: { [LABEL_INSTALL_ID]: installId(), [LABEL_WORKSPACE_ID]: 'w1' },
     },
     spec: { volumes: podHostPaths.map((p) => ({ hostPath: { path: p } })) },
   })
 }
 
-const NODE_TREE = `/var/lib/yaac/node/${dataDirHash()}`
+const NODE_TREE = `/var/lib/yaac/node/${installId()}`
 
 beforeEach(() => {
   podsFinish('Succeeded')
@@ -74,7 +74,7 @@ describe('reapNodeLocal', () => {
     stageNodes(['n1', 'n2'], [
       `${NODE_TREE}/projects/demo/.cached-packages`,
       `${NODE_TREE}/shared-images/${LIVE}/gen-1`,
-      `/var/lib/yaac/global/${dataDirHash()}/projects/elsewhere`,
+      `/var/lib/yaac/global/${installId()}/projects/elsewhere`,
     ])
     await reapNodeLocal({ projectIds: new Set([LIVE]), workspaceIds: new Set(['a', 'b']) })
 
@@ -106,10 +106,10 @@ describe('reapNodeLocal', () => {
 
   it('first deletes the sweep pods a previous server life left behind, by this install\'s labels', async () => {
     stageNodes(['n1'])
-    const labels = { app: 'yaac-node-local-sweep', 'yaac.sweep-data-dir-hash': dataDirHash() }
+    const labels = { app: 'yaac-node-local-sweep', 'yaac.install-id': installId() }
     fakeCluster.seed(
       { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'stray', namespace: k8sNamespace(), labels } },
-      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'other-install', namespace: k8sNamespace(), labels: { ...labels, 'yaac.sweep-data-dir-hash': 'x' } } },
+      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'other-install', namespace: k8sNamespace(), labels: { ...labels, 'yaac.install-id': 'x' } } },
     )
     await reapNodeLocal(NOTHING)
     // The label delete sweeps leftover pods before any pod is applied.

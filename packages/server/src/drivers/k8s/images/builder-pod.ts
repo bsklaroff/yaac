@@ -30,7 +30,7 @@ import { Readable } from 'node:stream'
 import { registryAuthFile, registryHost } from '#drivers/k8s/container'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#lib/build-context'
 import {
-  LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_ID,
   LABEL_ROLE,
   NESTED_ENGINE_CAPS,
   NESTED_GRAPHROOT_PATH,
@@ -39,7 +39,7 @@ import {
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
   applyObject,
-  dataDirHash,
+  installId,
   deleteObject,
   deleteObjects,
   ensureKubernetes,
@@ -165,7 +165,7 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
       name,
       namespace: k8sNamespace(),
       labels: {
-        [LABEL_DATA_DIR_HASH]: dataDirHash(),
+        [LABEL_INSTALL_ID]: installId(),
         [LABEL_ROLE]: ROLE_BUILDER,
       },
       annotations: sentryTmpfsAnnotations(NESTED_GRAPHROOT_VOLUME, BUILDER_GRAPHROOT_TMPFS_BYTES),
@@ -643,6 +643,6 @@ async function runLayerBuild(
 export async function deleteLeakedBuilderPods(): Promise<void> {
   await deleteObjects('v1', 'Pod', {
     namespace: k8sNamespace(),
-    labelSelector: `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
+    labelSelector: `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_INSTALL_ID}=${installId()}`,
   })
 }

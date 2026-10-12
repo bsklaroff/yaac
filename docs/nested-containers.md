@@ -131,7 +131,7 @@ same node share one copy.
 
 `store-writer.ts` owns it. A **generation** is a complete store at
 `<node-local root>/shared-images/<project id>/gen-<stamp>/` (on the node,
-`/var/lib/yaac/node/<install hash>/…`; see docs/server-in-cluster.md). A
+`/var/lib/yaac/node/<install id>/…`; see docs/server-in-cluster.md). A
 node-side pod writes it and marks it complete with a `.yaac-store-done`
 file written last. It lives outside the project tree because that pod
 writes it as root, and the server's uid could not delete it on project

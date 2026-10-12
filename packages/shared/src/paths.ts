@@ -97,10 +97,10 @@ export function hostDataDir(): string {
 }
 
 /**
- * The install's data dir. It identifies the install (it is hashed into the
- * cluster label) and, on a host, holds the three tier folders below. In the
- * server pod the tiers are separate mounts and nothing exists at this path.
- * Build storage paths on a tier root, not on this.
+ * The install's data dir. On a host it holds the install record and the
+ * three tier folders below. In the server pod the tiers are separate mounts
+ * and nothing exists at this path. Build storage paths on a tier root, not
+ * on this.
  */
 export function getDataDir(): string {
   return installDataDir || hostDataDir()

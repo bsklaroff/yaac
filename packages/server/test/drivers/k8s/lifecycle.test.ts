@@ -52,6 +52,8 @@ import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#dr
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import { ensureMainRegistry } from '#drivers/k8s/cluster'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
+import { installId, k8sNamespace } from '#drivers/k8s/substrate'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 let reported: { triggers: string[]; workspaces: RuntimeHandle[][] }
 
@@ -124,6 +126,35 @@ describe('startK8sDriver', () => {
     // A server without a working cluster still serves projects and auth, so a
     // failed bootstrap must not fail the attach.
     expect(order).toContain('attached')
+  })
+
+  it('labels what an older install left with its install id before the leaked-builder sweep and the watches', async () => {
+    vi.stubEnv('YAAC_LEGACY_DATA_DIR_HASH', '0123456789abcdef')
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'builder-1', namespace: k8sNamespace(), labels: { 'yaac.role': 'builder', 'yaac.data-dir-hash': '0123456789abcdef' } },
+    })
+    vi.mocked(deleteLeakedBuilderPods).mockImplementationOnce(() => {
+      order.push(`bootstrap:${fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Pod', 'builder-1')?.metadata.labels['yaac.install-id'] ?? 'unlabelled'}`)
+      return Promise.resolve()
+    })
+
+    await startK8sDriver(sinks())
+
+    expect(order).toContain(`bootstrap:${installId()}`)
+    vi.unstubAllEnvs()
+  })
+
+  it('fails the start rather than watch with a relabel undone, which would read live workspaces as gone', async () => {
+    vi.stubEnv('YAAC_LEGACY_DATA_DIR_HASH', '0123456789abcdef')
+    fakeCluster.intercept((c) => { if (c.verb === 'list' && c.kind === 'Job') throw apiError(403, 'forbidden') })
+
+    await expect(startK8sDriver(sinks())).rejects.toThrow(/forbidden/)
+
+    expect(order).not.toContain('recover')
+    expect(order).not.toContain('cache.start')
+    expect(order).not.toContain('attached')
+    vi.unstubAllEnvs()
   })
 
   it('still bootstraps the rest when the leaked builder pods cannot be deleted', async () => {

@@ -15,12 +15,12 @@
  *  - SERVER-LOCAL is the RWO claim `yaac-server-local`, mounted by the
  *    server pod alone at `POD_SERVER_LOCAL_ROOT`. No workspace pod may
  *    mount it, and the resolver refuses a path under it.
- *  - NODE-LOCAL is a hostPath on the node, `NODE_LOCAL_NODE_ROOT/<hash>`
- *    (hashed so two installs on one cluster — the real one and every e2e
- *    namespace — never share a node directory), mounted by the server pod
+ *  - NODE-LOCAL is a hostPath on the node, `NODE_LOCAL_NODE_ROOT/<install
+ *    id>` (so two installs on one cluster, the real one and every e2e
+ *    namespace, never share a node directory), mounted by the server pod
  *    at `POD_NODE_LOCAL_ROOT` and by workspace pods per directory.
  *
- * The pod paths carry no hash: a pod belongs to one install.
+ * The pod paths carry no install id: a pod belongs to one install.
  */
 
 export const GLOBAL_CLAIM_NAME = 'yaac-global'
@@ -49,8 +49,9 @@ export const LABEL_INSTALL_NAMESPACE = 'yaac.install-namespace'
  */
 export const LABEL_CLAIM = 'yaac.claim'
 /**
- * Label carrying `install.json`'s `installId` on the server Deployment and
- * on every volume a byo install provisions. It identifies the install; the
- * data-dir hash only identifies the path it was installed from.
+ * Label carrying `install.json`'s `installId` (`installId()`) on every
+ * object an install creates. Selectors pair it with a discriminator
+ * (`yaac.workspace-id`, `yaac.role`, `app`, `yaac.claim`), since every
+ * kind of object carries it.
  */
 export const LABEL_INSTALL_ID = 'yaac.install-id'

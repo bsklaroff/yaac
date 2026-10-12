@@ -36,7 +36,7 @@ vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
 }))
 
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
-import { dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 beforeEach(() => {
@@ -51,9 +51,9 @@ describe('deleteLeakedBuilderPods', () => {
     const pod = (name: string, labels: Record<string, string>) =>
       ({ apiVersion: 'v1', kind: 'Pod', metadata: { name, namespace: k8sNamespace(), labels } })
     fakeCluster.seed(
-      pod('leaked', { 'yaac.role': 'builder', 'yaac.data-dir-hash': dataDirHash() }),
-      pod('other-install', { 'yaac.role': 'builder', 'yaac.data-dir-hash': 'x' }),
-      pod('workspace', { 'yaac.data-dir-hash': dataDirHash() }),
+      pod('leaked', { 'yaac.role': 'builder', 'yaac.install-id': installId() }),
+      pod('other-install', { 'yaac.role': 'builder', 'yaac.install-id': 'x' }),
+      pod('workspace', { 'yaac.install-id': installId() }),
     )
     await deleteLeakedBuilderPods()
     expect(fakeCluster.objects('Pod').map((p) => p.metadata.name).sort()).toEqual(['other-install', 'workspace'])

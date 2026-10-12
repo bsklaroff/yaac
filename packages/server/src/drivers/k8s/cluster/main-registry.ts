@@ -28,7 +28,9 @@
 import crypto from 'node:crypto'
 import {
   applyObject,
-  dataDirHash,
+  LABEL_INSTALL_ID,
+  installId,
+  installNameKey,
   execFileAsync,
   readObject,
   LABEL_ROLE,
@@ -49,7 +51,6 @@ import {
   registryReachable,
 } from '#drivers/k8s/container'
 import {
-  LABEL_REGISTRY_DATA_DIR_HASH,
   LABEL_REGISTRY_SERVES,
   REGISTRY_UPSTREAM_IMAGE,
   writeNodeHostsToml,
@@ -75,13 +76,13 @@ export const LABEL_MAIN_REGISTRY_NODE_WRITE = 'yaac.main-registry-node-write'
 function mainRegistryLabels(): Record<string, string> {
   return {
     app: MAIN_REGISTRY_APP_LABEL,
-    [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
+    [LABEL_INSTALL_ID]: installId(),
   }
 }
 
 /** The blob PVC's name, keyed by install so installs never share one. */
 export function mainRegistryPvcName(): string {
-  return `${REGISTRY_SERVICE_NAME}-storage-${dataDirHash()}`
+  return `${REGISTRY_SERVICE_NAME}-storage-${installNameKey()}`
 }
 
 /**

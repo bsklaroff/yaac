@@ -15,7 +15,8 @@
  */
 import path from 'node:path'
 import {
-  dataDirHash,
+  LABEL_INSTALL_ID,
+  installId,
   k8sNamespace,
   listObjects,
   nodeLocalNodePath,
@@ -32,11 +33,6 @@ const SWEEP_POD_PATH = '/node'
 /** `app` label of every sweep pod, used to delete strays. */
 const NODE_LOCAL_SWEEP_APP_LABEL = 'yaac-node-local-sweep'
 
-/** Ties sweep pods to this install without making them visible to the
- *  workspace reaper (which filters on `yaac.workspace-id`). */
-export const LABEL_SWEEP_DATA_DIR_HASH = 'yaac.sweep-data-dir-hash'
-
-
 /** Deadline for one node's sweep: a walk over one tree and some `rm -rf`s. */
 const NODE_LOCAL_SWEEP_TIMEOUT_MS = 5 * 60_000
 
@@ -44,7 +40,7 @@ const NODE_LOCAL_SWEEP_TIMEOUT_MS = 5 * 60_000
 const NODE_LOCAL_SWEEP_SLACK_MS = 10_000
 
 function sweepLabels(): Record<string, string> {
-  return { app: NODE_LOCAL_SWEEP_APP_LABEL, [LABEL_SWEEP_DATA_DIR_HASH]: dataDirHash() }
+  return { app: NODE_LOCAL_SWEEP_APP_LABEL, [LABEL_INSTALL_ID]: installId() }
 }
 
 /**

@@ -1,5 +1,5 @@
 import {
-  LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_ID,
   LABEL_MODE,
   LABEL_NESTED,
   LABEL_NPM_CACHE,
@@ -7,7 +7,7 @@ import {
   LABEL_PROJECT_ID,
   LABEL_TOOL,
   buildPodJobManifest,
-  dataDirHash,
+  installId,
   k8sNamespace,
   k8sWorkspacePaths,
   applyObject,
@@ -257,7 +257,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const labels: Record<string, string> = {
     [LABEL_PROJECT_ID]: spec.projectId,
     ...workspaceIdLabels(spec.workspaceId),
-    [LABEL_DATA_DIR_HASH]: dataDirHash(),
+    [LABEL_INSTALL_ID]: installId(),
     [LABEL_TOOL]: spec.tool,
     // Only acp pods are labelled; the status watcher reads a missing label
     // as tui.

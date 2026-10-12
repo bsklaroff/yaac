@@ -5,7 +5,7 @@ const mockLog = vi.hoisted(() => vi.fn())
 vi.mock('#log', () => ({ serverLog: mockLog }))
 
 import {
-  LABEL_DATA_DIR_HASH,
+  LABEL_INSTALL_ID,
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
   LABEL_TOOL,
@@ -17,11 +17,12 @@ import {
   workspaceIdFromJobName,
   workspaceJobName,
   workspaceIdLabels,
+  workspacePodSelector,
   type PodInfo,
 } from '#drivers/k8s/substrate'
 // Internal, for fixtures only.
 import { JOB_NAME_LABEL } from '#drivers/k8s/substrate/pods'
-import { dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 
 /** Answer every list with `items`, which may be malformed on purpose. */
 function serve(items: unknown[]): void {
@@ -69,7 +70,7 @@ function rawPod(overrides: {
         ...workspaceIdLabels('s1'),
         [LABEL_PROJECT_ID]: 'id-demo',
         [LABEL_TOOL]: 'codex',
-        [LABEL_DATA_DIR_HASH]: dataDirHash(),
+        [LABEL_INSTALL_ID]: installId(),
       },
       creationTimestamp: overrides.creationTimestamp ?? '2026-06-01T00:00:00Z',
       ...(overrides.deletionTimestamp ? { deletionTimestamp: overrides.deletionTimestamp } : {}),
@@ -89,7 +90,7 @@ describe('listWorkspacePods', () => {
       return { apiVersion: 'v1', kind: 'Pod', ...raw, metadata: { ...raw.metadata, name, namespace: k8sNamespace() } }
     }
     const foreign = pod('other-install', 'demo')
-    foreign.metadata.labels[LABEL_DATA_DIR_HASH] = 'someone-else'
+    foreign.metadata.labels[LABEL_INSTALL_ID] = 'someone-else'
     fakeCluster.seed(pod('a', 'demo'), pod('b', 'proj-a'), foreign)
     expect((await listWorkspacePods()).map((p) => p.podName).sort()).toEqual(['a', 'b'])
     expect((await listWorkspacePods('proj-a')).map((p) => p.podName)).toEqual(['b'])
@@ -211,6 +212,15 @@ describe('listWorkspacePods', () => {
 
 })
 
+describe('workspacePodSelector', () => {
+  it('pairs the install id with the workspace id, since every kind of object carries the install id', () => {
+    // The proxy, registries, builders and sweeps all carry the install
+    // id too, so the install key alone would select them.
+    expect(workspacePodSelector()).toBe(`${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID}`)
+    expect(workspacePodSelector('p1')).toBe(`${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID},${LABEL_PROJECT_ID}=p1`)
+  })
+})
+
 describe('findWorkspacePod', () => {
   function pod(overrides: Partial<PodInfo> = {}): PodInfo {
     return {
@@ -252,7 +262,7 @@ describe('findWorkspacePod', () => {
 })
 
 describe('listWorkspaceJobs', () => {
-  it('queries jobs scoped by data-dir-hash + session-id labels and maps rows', async () => {
+  it('queries jobs scoped by install-id + workspace-id labels and maps rows', async () => {
     serve([{
       metadata: {
         name: 'yaac-demo-s1',
@@ -262,7 +272,7 @@ describe('listWorkspaceJobs', () => {
     }])
     const jobs = await listWorkspaceJobs()
     expect(fakeCluster.callsOf('list', 'Job')).toEqual([expect.objectContaining({
-      namespace: k8sNamespace(), labelSelector: `yaac.data-dir-hash=${dataDirHash()},yaac.workspace-id`,
+      namespace: k8sNamespace(), labelSelector: `yaac.install-id=${installId()},yaac.workspace-id`,
     })])
     expect(jobs).toEqual([{
       jobName: 'yaac-demo-s1',

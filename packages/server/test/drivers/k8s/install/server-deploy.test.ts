@@ -32,7 +32,6 @@ const mockKubectl = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...(await importOriginal<typeof apiModule>()),
   k8sNamespace: () => 'test-ns',
-  dataDirHash: () => 'ddh16',
   execFileAsync: mockKubectl,
 }))
 
@@ -192,7 +191,6 @@ function deploy(
     fronting: kindFronting(),
     identity: processIdentity(),
     storage: { kind: 'static' },
-    installId: 'install-1',
     ...opts,
   })
 }
@@ -317,7 +315,7 @@ describe('deployServerWorkload', () => {
     expect(pod.volumes.find((v) => v.name === 'server-local')?.persistentVolumeClaim).toEqual({ claimName: 'yaac-server-local' })
     expect(mountOf('server-local')).toBe('/yaac/server-local')
     expect(pod.volumes.find((v) => v.name === 'node-local')?.hostPath)
-      .toEqual({ path: '/var/lib/yaac/node/ddh16', type: 'DirectoryOrCreate' })
+      .toEqual({ path: '/var/lib/yaac/node/test-install', type: 'DirectoryOrCreate' })
     expect(mountOf('node-local')).toBe('/yaac/node-local')
     expect(pod.volumes.some((v) => v.hostPath?.path.startsWith(tmpDir))).toBe(false)
     // The claims (PV then PVC per tier) are applied before the Deployment.
@@ -335,7 +333,7 @@ describe('deployServerWorkload', () => {
     expect(await readInstallRecord()).toMatchObject({ driver: 'k8s' })
     // Labelled with its install, which a later install compares.
     expect(applied('Deployment').find((d) => d.metadata?.name === SERVER_APP_NAME)?.metadata?.labels)
-      .toMatchObject({ 'yaac.install-id': 'install-1' })
+      .toMatchObject({ 'yaac.install-id': 'test-install' })
   })
 
   it('hands the pod what it can no longer read off a host, and no host-side shim', async () => {
@@ -355,9 +353,11 @@ describe('deployServerWorkload', () => {
     // interfaces and the ingress policy restricts access.
     expect(env.YAAC_BIND_ADDR).toBe('0.0.0.0')
     expect(env.YAAC_SERVER_PORT).toBe(String(SERVER_POD_PORT))
-    // The same data dir path, so dataDirHash() and labels match. The pod
-    // only uses it as an identifier; it mounts the three roots below.
-    expect(env.YAAC_DATA_DIR).toBe(tmpDir)
+    // The install id names and labels everything the pod writes; it
+    // reads no data dir path, and mounts the three roots below instead.
+    expect(env.YAAC_INSTALL_ID).toBe('test-install')
+    expect(env.YAAC_DATA_DIR).toBeUndefined()
+    expect(env.YAAC_LEGACY_DATA_DIR_HASH).toBeUndefined()
     expect(env.YAAC_GLOBAL_ROOT).toBe('/yaac/global')
     expect(env.YAAC_SERVER_LOCAL_ROOT).toBe('/yaac/server-local')
     expect(env.YAAC_NODE_LOCAL_ROOT).toBe('/yaac/node-local')

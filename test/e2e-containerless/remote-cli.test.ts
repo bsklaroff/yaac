@@ -132,14 +132,13 @@ describe('yaac remote (real CLI + shared server)', () => {
     })
 
     it('the install driver survives `remote unset`, so a k8s install stays refused', async () => {
-      // `driver` lives in the data dir's install.json, with a copy in
-      // server.json for an older yaac, which reads only that.
+      // `driver` lives in the data dir's install.json alone, so forgetting
+      // every server (which deletes server.json) keeps it.
       await resetSelection()
       expect((await runYaac(testEnv.env, 'remote', 'unset')).exitCode).toBe(0)
-      for (const file of [recordPath(), configPath()]) {
-        const raw = JSON.parse(await fs.readFile(file, 'utf8')) as { driver?: string }
-        expect(raw.driver, file).toBe('containerless')
-      }
+      const raw = JSON.parse(await fs.readFile(recordPath(), 'utf8')) as { driver?: string }
+      expect(raw.driver).toBe('containerless')
+      await expect(fs.access(configPath())).rejects.toThrow()
       await resetSelection()
     })
 

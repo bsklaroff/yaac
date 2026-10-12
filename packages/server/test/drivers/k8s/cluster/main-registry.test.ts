@@ -44,7 +44,7 @@ import { LABEL_REGISTRY_SERVES, REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/clu
 import { ENVOY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/netd'
 import { registryAuthFile } from '#drivers/k8s/container'
 import { _resetRegistryGrantKeyForTests, mintRegistryGrant } from '#drivers/k8s/container/registry-grant'
-import { dataDirHash } from '#drivers/k8s/substrate'
+import { installId } from '#drivers/k8s/substrate'
 import { invalidateRegistryEndpoint, registryReachable } from '#drivers/k8s/container/registry'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
@@ -249,7 +249,7 @@ describe('ensureMainRegistry', () => {
     const pvc = appliedOfKind('PersistentVolumeClaim')
     expect(pvc.metadata).toMatchObject({ name: mainRegistryPvcName(), namespace: 'yaac' })
     // Keyed by install, so coexisting installs never share a blob store.
-    expect(pvc.metadata.name).toContain(dataDirHash())
+    expect(pvc.metadata.name).toContain(installId())
     expect(pvc.spec).toEqual({
       // One replica + Recreate means one mounter; RWX needs a file-backed
       // storage class most clusters lack.

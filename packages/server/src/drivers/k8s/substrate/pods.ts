@@ -1,5 +1,7 @@
 import { z } from 'zod'
-import { dataDirHash, k8sNamespace, listObjects } from './api'
+import { k8sNamespace, listObjects } from './api'
+import { installId } from './install-id'
+import { LABEL_INSTALL_ID } from './storage-constants'
 import { serverLog } from '#log'
 
 // Label keys attached to every workspace Job and its Pod.
@@ -16,7 +18,6 @@ export const LABEL_PROJECT_ID = 'yaac.project-id'
  * podSelector for workspace pods matches on it.
  */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
-export const LABEL_DATA_DIR_HASH = 'yaac.data-dir-hash'
 export const LABEL_TOOL = 'yaac.tool'
 /**
  * The workspace's agent mode (`AgentMode`). Set only for `acp`; a pod
@@ -257,7 +258,7 @@ export async function listWorkspacePods(projectFilter?: string): Promise<PodInfo
 /** The label selector `listWorkspacePods` and the pod watcher share. */
 export function workspacePodSelector(projectFilter?: string): string {
   return [
-    `${LABEL_DATA_DIR_HASH}=${dataDirHash()}`,
+    `${LABEL_INSTALL_ID}=${installId()}`,
     `${LABEL_WORKSPACE_ID}`,
     ...(projectFilter ? [`${LABEL_PROJECT_ID}=${projectFilter}`] : []),
   ].join(',')
@@ -296,5 +297,5 @@ export async function listWorkspaceJobs(): Promise<JobInfo[]> {
 
 /** The label selector `listWorkspaceJobs` and the Jobs informer share. */
 export function workspaceJobSelector(): string {
-  return `${LABEL_DATA_DIR_HASH}=${dataDirHash()},${LABEL_WORKSPACE_ID}`
+  return `${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID}`
 }

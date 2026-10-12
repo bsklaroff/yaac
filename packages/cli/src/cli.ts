@@ -33,6 +33,7 @@ import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#comm
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
+import { bindInstall } from '@yaac/server/drivers/k8s/substrate/install-id'
 import { FAKE_AUTH_KINDS } from '@yaac/shared/types'
 import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
 import { clusterDataDir, readInstallRecord, recordedDriver } from '@yaac/shared/install-record'
@@ -304,12 +305,17 @@ server
   })
 
 // Every `yaac cluster` command acts on the cluster install's data dir
-// (`clusterDataDir`), while clients keep the shared `server.json`.
+// (`clusterDataDir`), while clients keep the shared `server.json`, and for
+// the install that data dir records.
 const cluster = program
   .command('cluster')
   .description('Manage the kubernetes cluster yaac runs workspaces on, and its server (data dir ~/.yaac-cluster)')
   .hook('preAction', async () => {
     useInstallDataDir(await clusterDataDir())
+    const record = await readInstallRecord()
+    if (record?.installId) {
+      bindInstall(record.installId, { hash: record.legacyDataDirHash, names: record.legacyNames })
+    }
   })
 
 cluster

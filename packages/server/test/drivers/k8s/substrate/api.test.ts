@@ -1,5 +1,5 @@
 import type * as childProcess from 'node:child_process'
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 // execFile is the one process boundary api.ts still crosses.
@@ -16,7 +16,6 @@ import {
   apiStatus,
   applyObject,
   createObject,
-  dataDirHash,
   deleteObject,
   deleteObjects,
   ensureKubernetes,
@@ -28,7 +27,6 @@ import {
   patchObject,
   readObject,
 } from '#drivers/k8s/substrate'
-import { getDataDir, setDataDir } from '@yaac/shared/paths'
 
 const cm = (name: string, labels: Record<string, string> = {}, data: Record<string, string> = {}) => ({
   apiVersion: 'v1', kind: 'ConfigMap', metadata: { name, namespace: 'yaac', labels }, data,
@@ -48,27 +46,6 @@ describe('k8sNamespace', () => {
     expect(k8sNamespace()).toBe('yaac')
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc')
     expect(k8sNamespace()).toBe('yaac-test-abc')
-  })
-})
-
-describe('dataDirHash', () => {
-  let originalDataDir: string
-
-  beforeEach(() => {
-    originalDataDir = getDataDir()
-  })
-
-  afterEach(() => {
-    setDataDir(originalDataDir)
-  })
-
-  it('is a label-safe hash, stable per data dir and distinct across dirs', () => {
-    expect(dataDirHash()).toMatch(/^[0-9a-f]{16}$/)
-    setDataDir('/tmp/yaac-hash-a')
-    const a = dataDirHash()
-    expect(dataDirHash()).toBe(a)
-    setDataDir('/tmp/yaac-hash-b')
-    expect(dataDirHash()).not.toBe(a)
   })
 })
 

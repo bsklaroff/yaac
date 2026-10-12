@@ -3,7 +3,8 @@ import {
   LABEL_PROJECT_ID,
   LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_INFRA,
-  dataDirHash,
+  LABEL_INSTALL_ID,
+  installId,
   applyObject,
   deleteObjects,
   k8sNamespace,
@@ -21,9 +22,6 @@ import { serverLog } from '#log'
 
 /** `app` label value shared by every per-project registry pod. */
 export const REGISTRY_APP_LABEL = 'yaac-registry'
-/** Ties registry objects to this install without making them visible to
- *  the workspace reaper and listings (which use `yaac.data-dir-hash`). */
-export const LABEL_REGISTRY_DATA_DIR_HASH = 'yaac.registry-data-dir-hash'
 /** Label on the one-shot node-write pods (value: the pod's kind), so the
  *  stray sweep never selects the registry's own pod. */
 export const LABEL_NODE_WRITE = 'yaac.node-write'
@@ -109,7 +107,7 @@ function registryLabels(projectId: string): Record<string, string> {
   return {
     app: REGISTRY_APP_LABEL,
     [LABEL_PROJECT_ID]: projectId,
-    [LABEL_REGISTRY_DATA_DIR_HASH]: dataDirHash(),
+    [LABEL_INSTALL_ID]: installId(),
   }
 }
 
@@ -120,7 +118,7 @@ function registryPodSelector(projectId: string): Record<string, string> {
 
 /** Label selector matching every registry object of this install. */
 function installRegistrySelector(): string {
-  return `app=${REGISTRY_APP_LABEL},${LABEL_REGISTRY_DATA_DIR_HASH}=${dataDirHash()}`
+  return `app=${REGISTRY_APP_LABEL},${LABEL_INSTALL_ID}=${installId()}`
 }
 
 /** Selector for this project's registry objects in this install only (the

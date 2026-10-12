@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@yaac/shared/paths'
@@ -24,6 +25,11 @@ for (const key of [
 ] as const) {
   delete process.env[key]
 }
+
+// Every k8s object a file's process creates carries this install id, which
+// keeps it apart from the hosting install's and other files'.
+// `createYaacTestEnv` mints a fresh one for each server it sets up.
+process.env.YAAC_INSTALL_ID = `test-${crypto.randomBytes(4).toString('hex')}`
 
 // Keep incidental writes (e.g. serverLog()) out of the real ~/.yaac. Tests
 // that need their own data dir call setDataDir().

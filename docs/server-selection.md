@@ -58,10 +58,11 @@ also registers when a server is already running, so a server started with
 - `saved`: every server configured and not since removed, so a client can
   switch back. There is one selection at a time.
 
-What kind of install a data dir is lives in its `install.json`, so
-forgetting servers never loses it. For an older `yaac`, which reads it only
-here, `server.json` also carries a copy of the client data dir's record, and
-`yaac remote unset` keeps the file while it does (docs/legacy-compat-shims.md).
+Nothing else: what kind of install a data dir is lives in its
+`install.json`, so forgetting servers (`yaac remote unset` deletes the file)
+never loses it, and a moved data dir takes its record with it. A
+`server.json` an older `yaac` wrote a copy of the record into is cleaned on
+the first read (docs/legacy-compat-shims.md).
 
 ## What `install.json` holds
 

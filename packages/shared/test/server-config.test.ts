@@ -13,7 +13,7 @@ import {
   withServerSelected,
   writeServerConfig,
 } from '#server-config'
-import { readInstallRecord } from '#install-record'
+import { readInstallRecord, recordInstall } from '#install-record'
 import { clientLocalRoot, setDataDir } from '#paths'
 
 describe('server config store', () => {
@@ -83,24 +83,15 @@ describe('server config store', () => {
     expect(await fs.readFile(serverConfigPath(), 'utf8')).not.toContain('token')
   })
 
-  it('lifts a legacy install record into install.json, and keeps a copy here for an older yaac', async () => {
-    // An older `yaac` reads the record only from server.json: losing
-    // `driver` here would let it start a host server on a k8s data dir.
-    for (const rewrite of [
-      async () => writeServerConfig(withServerSelected(await readServerConfig(), 'https://b.ts.net')),
-      clearServerConfig,
-    ]) {
-      await fs.rm(path.join(dir, 'install.json'), { force: true })
-      await fs.mkdir(clientLocalRoot(), { recursive: true })
-      await fs.writeFile(serverConfigPath(), JSON.stringify({
-        url: 'https://a.ts.net', enabled: true, saved: [], driver: 'k8s', installId: 'i-1',
-      }))
-      await rewrite()
-      expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
-      expect(JSON.parse(await fs.readFile(serverConfigPath(), 'utf8'))).toMatchObject({ driver: 'k8s', installId: 'i-1' })
-    }
-    // Forgetting keeps the file while it carries the record.
-    expect(await readServerConfig()).toEqual({ url: '', enabled: false, saved: [] })
+  it('holds only the selection: a record is never written here, and forgetting removes the file', async () => {
+    await recordInstall({ driver: 'k8s', installId: 'i-1' })
+    await writeServerConfig(withServerSelected(await readServerConfig(), 'https://b.ts.net'))
+    expect(JSON.parse(await fs.readFile(serverConfigPath(), 'utf8'))).toEqual({
+      url: 'https://b.ts.net', enabled: true, saved: [{ url: 'https://b.ts.net' }],
+    })
+    await clearServerConfig()
+    await expect(fs.access(serverConfigPath())).rejects.toThrow()
+    expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
   })
 })
 

@@ -8,16 +8,15 @@
  * Only the CLI applies the Deployment; a server that rolled itself could
  * get stuck in a state it cannot roll back from.
  *
- * The pod mounts the three storage tiers (storage.ts) at fixed pod paths.
- * `YAAC_DATA_DIR` still names the host's data dir, so `dataDirHash()` and
- * every label match the host's.
+ * The pod mounts the three storage tiers (storage.ts) at fixed pod paths,
+ * and is told the install id (`YAAC_INSTALL_ID`) that every label and name
+ * it writes carries.
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
   GLOBAL_CLAIM_NAME,
-  LABEL_DATA_DIR_HASH,
   LABEL_INSTALL_ID,
   LABEL_INSTALL_NAMESPACE,
   POD_GLOBAL_ROOT,
@@ -28,7 +27,6 @@ import {
   SERVER_LOCAL_CLAIM_NAME,
   SERVER_POD_PORT,
   SERVER_SA_NAME,
-  dataDirHash,
   applyObject,
   deleteObject,
   k8sNamespace,
@@ -36,7 +34,10 @@ import {
   patchObject,
   readObject,
   waitForRollout,
+  installId,
   installSecurityContext,
+  legacyDataDirHash,
+  legacyNameKey,
   nodeLocalNodePath,
   processIdentity,
   type InstallIdentity,
@@ -57,9 +58,7 @@ import {
 } from '#drivers/k8s/image-engine'
 import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
-// The data dir is passed to the pod as an identity, not for storage.
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { getDataDir, globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath } from '@yaac/shared/paths'
+import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
 import { isLockLive, isSameHostLock } from '@yaac/shared/server-lock-file'
 import {
@@ -121,7 +120,7 @@ export async function ensureServerImage(
 
 /** Server pod labels, including the install identity. */
 function serverPodLabels(): Record<string, string> {
-  return { app: SERVER_APP_NAME, [LABEL_DATA_DIR_HASH]: dataDirHash() }
+  return { app: SERVER_APP_NAME, [LABEL_INSTALL_ID]: installId() }
 }
 
 /**
@@ -237,9 +236,9 @@ interface ServerEnvOptions {
 }
 
 /**
- * The server pod's environment. `YAAC_DATA_DIR` is the host's path, so the
- * install's identity is unchanged; the three root variables are where the
- * storage tiers are mounted (docs/server-in-cluster.md "Storage
+ * The server pod's environment. `YAAC_INSTALL_ID` is the install's
+ * identity; the three root variables are where the storage tiers are
+ * mounted, so the pod never reads a data dir path (docs/server-in-cluster.md "Storage
  * claims"). `YAAC_IN_CLUSTER` makes the registry client dial the
  * registry's Service directly.
  *
@@ -253,7 +252,7 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     // The ingress NetworkPolicy restricts access instead of a loopback bind.
     { name: 'YAAC_BIND_ADDR', value: '0.0.0.0' },
     { name: 'YAAC_SERVER_PORT', value: String(SERVER_POD_PORT) },
-    { name: 'YAAC_DATA_DIR', value: getDataDir() },
+    { name: 'YAAC_INSTALL_ID', value: installId() },
     { name: 'YAAC_GLOBAL_ROOT', value: POD_GLOBAL_ROOT },
     { name: 'YAAC_SERVER_LOCAL_ROOT', value: POD_SERVER_LOCAL_ROOT },
     { name: 'YAAC_NODE_LOCAL_ROOT', value: POD_NODE_LOCAL_ROOT },
@@ -262,6 +261,8 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
     ['YAAC_IMAGE_PREFIX', testEnv.imagePrefix],
+    ['YAAC_LEGACY_DATA_DIR_HASH', legacyDataDirHash()],
+    ['YAAC_LEGACY_NAMES', legacyNameKey() ? '1' : undefined],
     // The access mode the server checks against the one it recorded.
     ['YAAC_ACCESS_MODE', hosting.accessMode],
     ['YAAC_ACCESS_OWNER', opts.owner],
@@ -318,7 +319,7 @@ function torSocksUrlForPod(hostAddr?: string): string {
 export function buildServerDeploymentManifest(
   imageRef: string,
   identity: InstallIdentity,
-  envOpts: ServerEnvOptions & { installId?: string } = {},
+  envOpts: ServerEnvOptions = {},
 ): Record<string, unknown> {
   return {
     apiVersion: 'apps/v1',
@@ -326,7 +327,7 @@ export function buildServerDeploymentManifest(
     metadata: {
       name: SERVER_APP_NAME,
       namespace: k8sNamespace(),
-      labels: { app: SERVER_APP_NAME, ...(envOpts.installId ? { [LABEL_INSTALL_ID]: envOpts.installId } : {}) },
+      labels: { app: SERVER_APP_NAME, [LABEL_INSTALL_ID]: installId() },
     },
     spec: {
       replicas: 1,
@@ -401,7 +402,7 @@ async function ensureServerDeployment(
   imageRef: string,
   fronting: ServerFronting,
   identity: InstallIdentity,
-  envOpts: ServerEnvOptions & { installId?: string } = {},
+  envOpts: ServerEnvOptions = {},
 ): Promise<string> {
   await applyObject(buildServerServiceAccountManifest())
   await applyObject(buildServerClusterRoleManifest())
@@ -492,8 +493,6 @@ export async function deployServerWorkload(
     fronting: ServerFronting
     /** The uid and gid install decided this install's pods run as. */
     identity: InstallIdentity
-    /** Who this install is (`install.json`'s `installId`). */
-    installId: string
     /** Static volumes (kind) or storage classes (byo) for the claims. */
     storage: { kind: 'static' } | { kind: 'classes'; rwx: string; rwo: string }
     log: (message: string) => void
@@ -514,7 +513,7 @@ export async function deployServerWorkload(
       serverLocalHostPath: serverLocalRoot(),
       nodeLocalHostPath: nodeLocalRoot(),
     }
-    : { ...opts.storage, identity: opts.identity, installId: opts.installId, binderImage: imageRef }
+    : { ...opts.storage, identity: opts.identity, binderImage: imageRef }
   await ensureStorageClaims({ shape, log: opts.log })
   opts.log(`Deploying the yaac server (${imageRef})...`)
   // Pass opts whole: every `ServerEnvOptions` field is optional, so a

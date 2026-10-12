@@ -191,7 +191,7 @@ import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
 import { wideEgress } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
-import { dataDirHash, k8sNamespace } from '#drivers/k8s/substrate'
+import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import type { ImageLayerName } from '@yaac/shared/types'
 
@@ -532,7 +532,7 @@ describe('ensureImage', () => {
     expect(pod.metadata.name).toMatch(/^yaac-builder-[0-9a-f]{8}-[0-9a-f]{4}$/)
     expect(pod.metadata.namespace).toBe(k8sNamespace())
     expect(pod.metadata.labels).toEqual({
-      'yaac.data-dir-hash': dataDirHash(),
+      'yaac.install-id': installId(),
       'yaac.role': 'builder',
     })
     expect(pod.spec.runtimeClassName).toBe('gvisor')

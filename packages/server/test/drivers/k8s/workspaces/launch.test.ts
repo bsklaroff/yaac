@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { PRE_STOP_GRACE_SECONDS, dataDirHash } from '#drivers/k8s/substrate'
+import { PRE_STOP_GRACE_SECONDS, installId } from '#drivers/k8s/substrate'
 
 vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof streamRelayModule>()),
@@ -61,7 +61,7 @@ import {
 
 // Mount sources depend on each path's tier, so paths must be real tier paths.
 setDataDir('/data/yaac')
-const NODE_ROOT = `/var/lib/yaac/node/${dataDirHash()}`
+const NODE_ROOT = `/var/lib/yaac/node/${installId()}`
 
 const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const INTENT = {
@@ -243,7 +243,7 @@ describe('launchWorkspace', () => {
     expect(job.metadata.labels).toMatchObject({
       'yaac.project-id': PROJECT_ID,
       'yaac.workspace-id': 's1',
-      'yaac.data-dir-hash': dataDirHash(),
+      'yaac.install-id': installId(),
       'yaac.tool': 'claude',
     })
     // Absent means tui.

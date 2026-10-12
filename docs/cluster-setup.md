@@ -246,7 +246,7 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    over `global/` again) bind static hostPath volumes onto the data dir's
    `global/` and `server-local/` folders, and a hostPath resolves on the node, so this mount is what makes
    the volume the host's bytes (docs/server-in-cluster.md "Storage
-   claims"). And `<dataDir>/node-local` at `/var/lib/yaac/node/<hash>`,
+   claims"). And `<dataDir>/node-local` at `/var/lib/yaac/node/<install id>`,
    holding the node-local tier (package caches, image stores, opencode
    working copies). On kind that tier is therefore host disk and survives a
    cluster delete. Both mounts are on every node, and the second is per
@@ -871,3 +871,21 @@ caches all survive. A later `yaac cluster install` re-creates the cluster,
 re-binds the same folders, and re-pushes images as needed. The podman
 machine and its image store are left alone, since they are the build
 engine, not the cluster.
+
+## Moving an install
+
+An install is identified in the cluster by its install id (the `installId`
+in its data dir's `install.json`), never by the data dir's path, so a data
+dir can move:
+
+- **byo.** Nothing in the cluster is named after the path. Move the data dir
+  (`mv`), then re-run `yaac cluster install` with the same flags, pointing
+  `YAAC_DATA_DIR` at the new path unless it is the default.
+- **kind.** Storage is tied to the path: the static volumes and the
+  node-local extraMount point into the data dir, and kind fixes both when
+  it creates the cluster. So the move rebuilds the cluster without losing
+  data: `yaac cluster delete` (running workspaces are lost), `mv`, then
+  `yaac cluster install`, which creates a cluster whose volumes and
+  extraMount point at the new path, under the same install id. The
+  `$HOME → $HOME` mount means a destination outside `$HOME` does not resolve
+  on the node.

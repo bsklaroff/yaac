@@ -72,9 +72,9 @@ suite to run that collection too.
 
 ## 5. E2e node-local trees leak inside the kind node
 
-Each install's node-local tree is `/var/lib/yaac/node/<hash>`
-(`nodeLocalNodePath`), and only the real install's hash is bind-mounted to the
-host by kind's extraMount. Each e2e run's server has its own data-dir hash, so
+Each install's node-local tree is `/var/lib/yaac/node/<install id>`
+(`nodeLocalNodePath`), and only the real install's is bind-mounted to the
+host by kind's extraMount. Each e2e run's server has its own install id, so
 its tree lands in the node container's own `/var`. The global setup's teardown
 deletes the run's namespaces and PVs but never that directory. A one-shot node
 pod in the teardown could delete it.

@@ -1,10 +1,6 @@
 import { execFile, type ExecFileOptions } from 'node:child_process'
-import crypto from 'node:crypto'
 import { promisify } from 'node:util'
 import { ApiException, HttpMethod, PatchStrategy, type KubernetesObject } from '@kubernetes/client-node'
-// Used as the install's identity, not for storage (see dataDirHash).
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { getDataDir } from '@yaac/shared/paths'
 import { testEnv } from '@yaac/shared/env'
 import { getObjectApi, getVersionApi } from './client'
 
@@ -37,15 +33,6 @@ export function execFileAsync(
  */
 export function k8sNamespace(): string {
   return testEnv.k8sNamespace
-}
-
-/**
- * Hash of the data dir, used as a label value to scope queries to this
- * install (label values cannot contain `/`). Hashes the install root rather
- * than a storage tier so it stays stable if storage locations change.
- */
-export function dataDirHash(): string {
-  return crypto.createHash('sha256').update(getDataDir()).digest('hex').slice(0, 16)
 }
 
 /** The field manager every yaac write is recorded under. */

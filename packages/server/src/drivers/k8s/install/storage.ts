@@ -18,21 +18,21 @@
  *
  * Every volume is `Retain`, so deleting a claim or namespace keeps the
  * data. PVs are cluster-scoped and shared by several installs, so static PV
- * names carry `dataDirHash()`; class volumes are matched by install id.
+ * names carry the install id; class volumes are matched by its label.
  */
 import fs from 'node:fs/promises'
 import {
   CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
   LABEL_CLAIM,
-  LABEL_DATA_DIR_HASH,
   LABEL_INSTALL_ID,
   LABEL_INSTALL_NAMESPACE,
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   applyObject,
-  dataDirHash,
   deleteObjects,
+  installId,
+  installNameKey,
   k8sNamespace,
   listObjects,
   patchObject,
@@ -76,29 +76,30 @@ export type StorageShape =
     rwo: string
     /** Who each volume root is made to belong to. */
     identity: InstallIdentity
-    /** Which install the volumes are (`install.json`'s `installId`). */
-    installId: string
     /** An image in the cluster registry with `sh`, `stat` and `chown` —
      *  the binder pod's. */
     binderImage: string
   }
 
-/** The PV a static claim binds: `<claim>-<install hash>`, cluster-scoped. */
+/**
+ * The PV a static claim binds: `<claim>-<install id>`, cluster-scoped. A
+ * kind cluster from before install ids keeps its volumes' legacy names
+ * (`installNameKey`), since a bound claim's volume cannot change.
+ */
 function staticVolumeName(claimName: string): string {
-  return `${claimName}-${dataDirHash()}`
+  return `${claimName}-${installNameKey()}`
 }
 
 /**
  * Labels on a storage object. Re-adoption finds a Released class volume by
  * `LABEL_CLAIM` and `LABEL_INSTALL_ID`, since the provisioner names it.
  */
-function storageLabels(claimName: string, installId?: string): Record<string, string> {
+function storageLabels(claimName: string): Record<string, string> {
   return {
     app: SERVER_APP_NAME,
     [LABEL_INSTALL_NAMESPACE]: k8sNamespace(),
-    [LABEL_DATA_DIR_HASH]: dataDirHash(),
+    [LABEL_INSTALL_ID]: installId(),
     [LABEL_CLAIM]: claimName,
-    ...(installId ? { [LABEL_INSTALL_ID]: installId } : {}),
   }
 }
 
@@ -207,6 +208,8 @@ async function ensureStaticClaims(
           + '`yaac cluster install`.',
         )
       }
+      // Keep the labels current: only install writes volumes.
+      await patchObject(volumeRef(wanted), { metadata: { labels: storageLabels(claim.claimName) } })
       continue
     }
     await applyObject(buildStaticPvManifest(claim, hostPath))
@@ -243,15 +246,15 @@ async function ensureClassClaims(
       }
       continue
     }
-    const adopted = await readoptVolume(claim, className, shape.installId, log)
+    const adopted = await readoptVolume(claim, className, log)
     await applyObject(buildPvcManifest(claim, adopted
       ? { storageClassName: adopted.storageClassName, volumeName: adopted.name, storage: adopted.storage }
       : { storageClassName: className, storage: CLASS_CAPACITY[claim.accessMode] }))
   }
   await runBinder(shape, log)
   await waitForBound([GLOBAL, SERVER_LOCAL], log)
-  for (const [claim] of pairs) await pinVolume(claim, shape.installId)
-  await ensureCheckoutsClaim(shape.installId, log)
+  for (const [claim] of pairs) await pinVolume(claim)
+  await ensureCheckoutsClaim(log)
 }
 
 /**
@@ -262,7 +265,7 @@ async function ensureClassClaims(
  * global volume, whose CSI block cannot change, so an existing copy is
  * already right.
  */
-async function ensureCheckoutsClaim(installId: string, log: (message: string) => void): Promise<void> {
+async function ensureCheckoutsClaim(log: (message: string) => void): Promise<void> {
   const globalVolume = (await readClaim(GLOBAL_CLAIM_NAME))?.spec?.volumeName
   const source = globalVolume ? await readVolume(globalVolume) : null
   const csi = source?.spec?.csi
@@ -275,7 +278,7 @@ async function ensureCheckoutsClaim(installId: string, log: (message: string) =>
   await applyObject({
     apiVersion: 'v1',
     kind: 'PersistentVolume',
-    metadata: { name, labels: storageLabels(CHECKOUTS_CLAIM_NAME, installId) },
+    metadata: { name, labels: storageLabels(CHECKOUTS_CLAIM_NAME) },
     spec: {
       capacity: { storage: source?.spec?.capacity?.storage ?? NOMINAL_CAPACITY },
       accessModes: [CHECKOUTS.accessMode],
@@ -340,34 +343,35 @@ function checkoutsVolumeHandle(driver: string, handle: string): string {
  * one. Returns what the claim must name, or undefined if there is none.
  *
  * Throws when this install's volume is in a different class, or when a
- * volume from the same data-dir path belongs to a different install id
- * (another machine, or a lost `install.json`); the latter is only adopted
- * when the user relabels it.
+ * loose volume for the claim belongs to another install id. The server
+ * Deployment's name is fixed, so a namespace holds one install, and such a
+ * volume is an earlier install's (a lost `install.json`); it is only
+ * adopted when the user relabels it.
  */
 async function readoptVolume(
   claim: ClaimShape,
   className: string,
-  installId: string,
   log: (message: string) => void,
 ): Promise<{ name: string; storageClassName: string; storage: string } | undefined> {
+  const id = installId()
   const volumes = await listObjects<RawPv>('v1', 'PersistentVolume', {
     labelSelector: `${LABEL_CLAIM}=${claim.claimName},${LABEL_INSTALL_NAMESPACE}=${k8sNamespace()}`,
   })
   const loose = volumes.filter((v) =>
     v.status?.phase === 'Released' || v.status?.phase === 'Available')
-  const pv = loose.find((v) => v.metadata?.labels?.[LABEL_INSTALL_ID] === installId)
+  const pv = loose.find((v) => v.metadata?.labels?.[LABEL_INSTALL_ID] === id)
   const name = pv?.metadata?.name
   if (!pv || !name) {
-    const foreign = loose.find((v) => v.metadata?.labels?.[LABEL_DATA_DIR_HASH] === dataDirHash())
+    const foreign = loose[0]
     if (foreign) {
       const other = foreign.metadata?.name ?? '?'
       throw new Error(
-        `the volume ${other} was left in namespace ${k8sNamespace()} for ${claim.claimName} by an install `
-        + 'from this same data-dir path, but not by this one (its install id is '
-        + `${foreign.metadata?.labels?.[LABEL_INSTALL_ID] ?? 'unset'}, this install's is ${installId}). `
+        `the volume ${other} was left in namespace ${k8sNamespace()} for ${claim.claimName} by an earlier `
+        + `install (its install id is ${foreign.metadata?.labels?.[LABEL_INSTALL_ID] ?? 'unset'}, this `
+        + `install's is ${id}). `
         + 'It holds that install\'s database and credentials, so it is not adopted by default. '
-        + `To adopt it on purpose:\n  kubectl label pv ${other} ${LABEL_INSTALL_ID}=${installId} --overwrite\n`
-        + `To leave it be and provision a fresh volume:\n  kubectl label pv ${other} ${LABEL_DATA_DIR_HASH}-`,
+        + `To adopt it on purpose:\n  kubectl label pv ${other} ${LABEL_INSTALL_ID}=${id} --overwrite\n`
+        + `To leave it be and provision a fresh volume:\n  kubectl label pv ${other} ${LABEL_CLAIM}-`,
       )
     }
     return undefined
@@ -465,7 +469,7 @@ async function runBinder(
         image: shape.binderImage,
         imagePullPolicy: 'IfNotPresent',
         command: [
-          'sh', '-c', BINDER_SCRIPT, '--', String(shape.identity.uid), String(shape.identity.gid), shape.installId,
+          'sh', '-c', BINDER_SCRIPT, '--', String(shape.identity.uid), String(shape.identity.gid), installId(),
         ],
         volumeMounts: [
           { name: 'global', mountPath: '/claims/global' },
@@ -486,7 +490,7 @@ async function runBinder(
   if (foreign.length > 0) {
     throw new Error(
       `${foreign.map(([, root, other]) => `${root} already holds ${other ? `the install ${other}'s` : 'someone else\'s'} data`)
-        .join(', and ')}, not this install's (${shape.installId}), so nothing was written to it. A class `
+        .join(', and ')}, not this install's (${installId()}), so nothing was written to it. A class `
       + 'that gives every claim the same directory — a fixed `subDir` or base path — cannot host two '
       + 'installs: use a class that provisions a directory per volume. If it IS this install\'s data and '
       + 'its record was lost, restore the install.json that names that install id instead.',
@@ -539,13 +543,13 @@ async function waitForBound(claims: ClaimShape[], log: (message: string) => void
  * and on the RWX volume add the NFS coherence mount option. Mount options
  * are read at each mount, so later pods get them.
  */
-async function pinVolume(claim: ClaimShape, installId: string): Promise<void> {
+async function pinVolume(claim: ClaimShape): Promise<void> {
   const pvc = await readClaim(claim.claimName)
   const volume = pvc?.spec?.volumeName
   if (!volume) return
   const pv = await readVolume(volume)
   await patchObject(volumeRef(volume), {
-    metadata: { labels: storageLabels(claim.claimName, installId) },
+    metadata: { labels: storageLabels(claim.claimName) },
     spec: {
       persistentVolumeReclaimPolicy: 'Retain',
       ...(claim.accessMode === 'ReadWriteMany'
