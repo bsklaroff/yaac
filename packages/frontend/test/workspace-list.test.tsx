@@ -489,6 +489,80 @@ describe('WorkspaceList', () => {
       await waitFor(() => expect(stoppedSection.textContent).toMatch(/Stopped\s*2/))
     })
 
+    it('opens to show the open workspace, once each time its row lands there', async () => {
+      // A reload, or a switch back to this server, restores a selection that
+      // has since stopped.
+      stoppedRows.push(stoppedEntry('gone'))
+      useUiStore.setState({ selectedWorkspaceId: 'gone' })
+      const rerender = renderList([entry({ workspaceId: 'a', title: 'Live one' })], {
+        project: { stoppedCount: 1, unseenDeaths: 0 },
+      })
+      const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
+      expect(await within(stoppedSection).findByText('Stopped gone')).toBeTruthy()
+
+      // Collapsed by hand, it stays collapsed.
+      fireEvent.click(screen.getByRole('button', { name: /Stopped\s*1/ }))
+      expect(within(stoppedSection).queryByText('Stopped gone')).toBeNull()
+
+      // A grouped workspace selected in a collapsed group opens the group.
+      const groups = [group(), group({ groupId: 'g2', name: 'Beta' })]
+      useUiStore.setState({ collapsedGroups: ['g1', 'g2'] })
+      act(() => useUiStore.getState().selectWorkspace('b'))
+      const live = (groupId: string): WorkspaceListEntry[] => [
+        entry({ workspaceId: 'a', title: 'Live one', groupId: 'g2' }),
+        entry({ workspaceId: 'b', title: 'Filed one', groupId }),
+      ]
+      rerender(live('g1'), { groups, project: { stoppedCount: 1, unseenDeaths: 0 } })
+      expect(within(screen.getByRole('group', { name: 'Release' })).getByText('Filed one')).toBeTruthy()
+      expect(useUiStore.getState().collapsedGroups).toEqual(['g2'])
+
+      // Re-filed into another collapsed group, it opens that one and leaves
+      // the one it left as the user set it.
+      fireEvent.click(screen.getByRole('button', { name: /Release/ }))
+      rerender(live('g2'), { groups, project: { stoppedCount: 1, unseenDeaths: 0 } })
+      expect(within(screen.getByRole('group', { name: 'Beta' })).getByText('Filed one')).toBeTruthy()
+      expect(useUiStore.getState().collapsedGroups).toEqual(['g1'])
+
+      // Restored onto it after it stopped: its row is in the Stopped section,
+      // which opens.
+      stoppedRows.unshift(stoppedEntry('b', { title: 'Stopped b' }))
+      rerender(live('g2').slice(0, 1), { groups, project: { stoppedCount: 2, unseenDeaths: 0 } })
+      expect(await within(stoppedSection).findByText('Stopped b')).toBeTruthy()
+      expect(useUiStore.getState().stoppedExpanded).toBe(true)
+    })
+
+    it('pins an open workspace from a page not loaded yet to its top, until that page loads', async () => {
+      stoppedRows.push(...many(60))
+      useUiStore.setState({ selectedWorkspaceId: 's055' })
+      const rerender = renderList([], { project: { stoppedCount: 60, unseenDeaths: 0 } })
+      const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
+      await within(stoppedSection).findByText('Stopped s049')
+      const titles = (): string[] => within(stoppedSection).getAllByText(/^Stopped s\d+$/).map((el) => el.textContent ?? '')
+      expect(titles().slice(0, 2)).toEqual(['Stopped s055', 'Stopped s000'])
+      const lookups = (): number => stoppedQueries().filter((q) => q.includes('workspace=s055')).length
+
+      // Another workspace stops: the pin holds through the refetch.
+      stoppedRows.unshift(stoppedEntry('s900'))
+      rerender([], { project: { stoppedCount: 61, unseenDeaths: 0 } })
+      expect(titles()[0]).toBe('Stopped s055')
+      expect(await within(stoppedSection).findByText('Stopped s900')).toBeTruthy()
+      expect(titles().slice(0, 2)).toEqual(['Stopped s055', 'Stopped s900'])
+
+      // Collapsed by hand, it stays collapsed through the next stop.
+      fireEvent.click(screen.getByRole('button', { name: /Stopped\s*61/ }))
+      const before = lookups()
+      stoppedRows.unshift(stoppedEntry('s901'))
+      rerender([], { project: { stoppedCount: 62, unseenDeaths: 0 } })
+      await waitFor(() => expect(lookups()).toBeGreaterThan(before))
+      expect(useUiStore.getState().stoppedExpanded).toBe(false)
+
+      fireEvent.click(screen.getByRole('button', { name: /Stopped\s*62/ }))
+      await within(stoppedSection).findByText('Stopped s901')
+      scrollToEnd()
+      await within(stoppedSection).findByText('Stopped s059')
+      expect(titles()).toEqual(stoppedRows.map((r) => r.title))
+    })
+
     it('marks every death seen from its menu', async () => {
       stoppedRows.push(stoppedEntry('dead', { deathReason: 'oom', seen: false }))
       server.route('POST /api/workspace/mark-all-deaths-seen', undefined)
@@ -565,14 +639,41 @@ describe('WorkspaceList', () => {
       fireEvent.change(search, { target: { value: 'claude' } })
       expect(await within(await screen.findByRole('group', { name: 'Open workspace' })).findByText('Stopped s55')).toBeTruthy()
 
-      // The server matches it, so it is not pinned while its page is unloaded,
-      // and shows once in the list when that page loads.
+      // The server matches it, so it leaves "Open workspace" for the top of
+      // the Stopped results while its page is unloaded, and shows once, in
+      // place, when that page loads.
       fireEvent.change(search, { target: { value: 'parser' } })
       await waitFor(() => expect(screen.queryByRole('group', { name: 'Open workspace' })).toBeNull())
-      expect(await screen.findByText('Stopped s0')).toBeTruthy()
-      expect(screen.queryByText('Stopped s55')).toBeNull()
+      const results = screen.getByRole('group', { name: 'Stopped workspaces' })
+      await within(results).findByText('Stopped s0')
+      expect(within(results).getAllByText(/^Stopped s\d+$/)[0].textContent).toBe('Stopped s55')
       scrollToEnd()
       expect(await screen.findAllByText('Stopped s55')).toHaveLength(1)
+    })
+
+    it('leaves the saved Stopped section alone while a search or filter moves a stopped group member there', async () => {
+      stoppedRows.push(stoppedEntry('ghost', { groupId: 'g1' }))
+      useUiStore.setState({ selectedWorkspaceId: 'ghost', stoppedShownGroups: ['g1'] })
+      renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
+        groups: [group({ stoppedCount: 1 })],
+        project: { stoppedCount: 1, unseenDeaths: 0 },
+      })
+      expect(await within(screen.getByRole('group', { name: 'Release' })).findByText('Stopped ghost')).toBeTruthy()
+      await waitFor(() => expect(stoppedQueries().some((q) => q.includes('workspace=ghost'))).toBe(true))
+
+      const search = screen.getByRole('textbox', { name: 'Search workspaces' })
+      fireEvent.change(search, { target: { value: 'zz' } })
+      await waitFor(() => expect(stoppedQueries().at(-1)).toContain('q=zz'))
+      fireEvent.change(search, { target: { value: '' } })
+      expect(await within(screen.getByRole('group', { name: 'Release' })).findByText('Stopped ghost')).toBeTruthy()
+      expect(useUiStore.getState().stoppedExpanded).toBe(false)
+
+      // A filter leaving the Stopped list out pins it as "Open in pane" instead.
+      act(() => useUiStore.getState().setSidebarStatuses(['running']))
+      expect(await within(await screen.findByRole('group', { name: 'Open workspace' })).findByText('Stopped ghost')).toBeTruthy()
+      act(() => useUiStore.getState().setSidebarStatuses([]))
+      expect(await within(screen.getByRole('group', { name: 'Release' })).findByText('Stopped ghost')).toBeTruthy()
+      expect(useUiStore.getState().stoppedExpanded).toBe(false)
     })
 
     it('spins until the stopped results settle, dropping a superseded request', async () => {
