@@ -658,6 +658,16 @@ export interface PortMapping {
   hostPort: number
 }
 
+/**
+ * A forward the desktop app holds at a local port other than the host port
+ * the server offers, because another process on this machine has that one
+ * (docs/port-forward-tunnel.md).
+ */
+export interface LocalPortRemap extends PortMapping {
+  workspaceId: string
+  localPort: number
+}
+
 // --- auth/list ---
 
 /**

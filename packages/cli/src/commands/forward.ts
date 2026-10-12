@@ -14,7 +14,8 @@ import type { ForwardSpec } from '@yaac/shared/port-tunnel'
  * docs/port-forward-tunnel.md.
  *
  * The server's offer is followed over `/events`, so ports that come and go
- * while this runs are picked up.
+ * while this runs are picked up. An offered port something else here holds
+ * is forwarded at the next free port, and the line announcing it says so.
  */
 
 export interface ForwardOptions {
@@ -97,9 +98,12 @@ export async function forward(
     { baseUrl: target.baseUrl },
     {
       bindHost: options.bind,
-      onChange: (spec, state) => {
-        const arrow = `${options.bind ?? '127.0.0.1'}:${spec.hostPort} -> ${spec.session.slice(0, 8)}:${spec.containerPort}`
-        console.log(state === 'up' ? `forwarding ${arrow}` : `dropped ${arrow}`)
+      // A port named with --port is bound as named or not at all.
+      fallback: !explicit,
+      onChange: (f, state) => {
+        const arrow = `${options.bind ?? '127.0.0.1'}:${f.localPort} -> ${f.session.slice(0, 8)}:${f.containerPort}`
+        const moved = f.localPort === f.hostPort ? '' : ` (port ${f.hostPort} is in use here)`
+        console.log(state === 'up' ? `forwarding ${arrow}${moved}` : `dropped ${arrow}`)
       },
       onBindError: (spec, message) => {
         console.error(`cannot bind port ${spec.hostPort}: ${message}`)
