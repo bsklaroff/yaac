@@ -21,7 +21,7 @@ import type {
   DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep, TrustedTap,
 } from '@yaac/shared/types'
 import {
-  ACTION_TIMEOUT_MS, failedChecks, installState, READ_TIMEOUT_MS,
+  ACTION_TIMEOUT_MS, failedChecks, installOrigin, installState, READ_TIMEOUT_MS,
   type ActionOutcome, type LocalServers, type ScopedAction, type ServerScope,
 } from '#server-control'
 
@@ -416,7 +416,7 @@ export function createSetupRunner(onChange: () => void, unfinishedFile: string):
 export const CLUSTER_SUPPORTED = process.platform === 'darwin' && process.arch === 'arm64'
 
 /**
- * This Mac's installs and setups, as the tray, the picker and the SPA show
+ * This Mac's installs and setups, as the tray and the Servers page show
  * them. An install whose setup never finished and that is not running
  * reads as missing, so it is offered for setup again.
  */
@@ -446,6 +446,7 @@ export function localView(input: {
     cli,
     brew,
     installs: { server: state('server'), cluster: state('cluster') },
+    origins: { server: installOrigin(local, 'server'), cluster: installOrigin(local, 'cluster') },
     busy,
     setup,
     choices: { server: choice('server'), cluster: choice('cluster') },

@@ -406,9 +406,9 @@ export function resolveVacantSelection(args: {
   return rowIds[0] ?? null
 }
 
-/** Sections of the settings modal (left-nav entries). 'server' shows only in the desktop shell. */
+/** Sections of the settings modal (left-nav entries). */
 export type SettingsSection =
-  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile' | 'server'
+  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
 
 /**
  * What the create dialog was opened for. `editId` edits that queued entry;

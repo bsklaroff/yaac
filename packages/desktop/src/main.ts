@@ -2,21 +2,21 @@
  * Electron entry point: untested glue over the sibling modules, which hold
  * the logic.
  *
- * The shell is a client of whatever server `server.json` names. The tray,
- * the picker and the SPA's Server settings also set up, start, stop and
- * restart this machine's servers through `brew` and the `yaac` CLI
- * (local-setup.ts, server-control.ts), but only when asked: Close hides to
- * the tray, and Quit exits the shell and its auth daemon and leaves the
- * server running. With no server reachable the window shows the picker
- * (connect-page.ts). While running it follows `/events` to show waiting
- * workspaces (dock badge, tray, notifications) and to hold the workspaces'
- * port forwards.
+ * The shell is a client of whatever server `server.json` names. Which one
+ * is chosen on its own Servers page (servers-page.ts), shown when no server
+ * is reachable and opened on request from the SPA or the tray. That page and
+ * the tray also set up, start, stop and restart this machine's servers
+ * through `brew` and the `yaac` CLI (local-setup.ts, server-control.ts), but
+ * only when asked: Close hides to the tray, and Quit exits the shell and its
+ * auth daemon and leaves the server running. While running it follows
+ * `/events` to show waiting workspaces (dock badge, tray, notifications) and
+ * to hold the workspaces' port forwards.
  */
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray,
-  utilityProcess, type IpcMainInvokeEvent,
+  utilityProcess,
 } from 'electron'
 import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import {
@@ -28,18 +28,18 @@ import { AttentionMonitor, badgeText, notificationFor } from '#attention'
 import { startEventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
-import { connectPageUrl } from '#connect-page'
 import { CLUSTER_SUPPORTED, createSetupRunner, localView, onPath, setupConfirmation } from '#local-setup'
 import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
+import { serversPageUrl } from '#servers-page'
 import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
 import {
-  createRunYaac, installState, mayControlLocalServers, parseScope, readLocalServer, runServerAction, trayServerItems,
+  createRunYaac, installOrigin, installState, parseScope, readLocalServer, runServerAction, trayServerItems,
   type LocalServers, type ScopedAction, type ServerScope,
 } from '#server-control'
 import {
-  addServerRemote, applyServerSwitch, getServerTargets, parseServerSelection, removeServer, restoreSelection,
-  type ServerSwitchDeps,
+  addServerRemote, applyServerSwitch, disconnect, getServerTargets, parseServerSelection, removeServer,
+  restoreSelection, serverHealth, type ServerSwitchDeps,
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
@@ -76,20 +76,25 @@ let forwarder: DesktopForwarder | null = null
 // One monitor per server, kept across WS reconnects so ongoing waits don't
 // re-notify. Replaced on a server switch.
 let attention = new AttentionMonitor()
-// True while the window shows the picker. Re-showing such a window re-runs
-// the boot flow, since the user may have fixed things from a terminal.
-let onConnectPage = false
+/*
+ * Set while the window shows the Servers page: why no server is reachable,
+ * or else the URL of the server page it was opened over. Re-showing an
+ * unreachable window re-runs the boot flow, since the user may have fixed
+ * things from a terminal.
+ */
+let serversPage: { error: LaunchError } | { over: string } | null = null
 let waiting = 0
 // This machine's servers as the tray last read them, and the action under way.
 let localServers: LocalServers = { server: null, cluster: null }
 let brewFound = false
-let lastLocalRead = 0
 let serverBusy: ScopedAction | null = null
 let refreshing: Promise<void> | null = null
 // The tray menu as last built, so a change that leaves it alone keeps it open.
 let trayMenuKey = ''
 /** Counts server actions, so a status read can tell one overlapped it. */
 let actionEpoch = 0
+/** The Servers page's calls still awaiting a reply, other than its reads. */
+let pageCallsInFlight = 0
 
 const resolveTarget = resolveServerTarget
 
@@ -102,8 +107,6 @@ const runYaac = createRunYaac()
 const setup = createSetupRunner(() => updateTray(), path.join(app.getPath('userData'), 'unfinished-setups.json'))
 // A `brew upgrade` or a server started from a terminal shows up within this.
 const LOCAL_SERVER_POLL_MS = 60_000
-// A renderer asking for this Mac's state gets a read at most this old.
-const LOCAL_STATE_FRESH_MS = 5000
 
 function localState(): DesktopLocalState {
   return localView({
@@ -190,8 +193,10 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 /**
- * Run the boot flow and load the server's origin, or the picker when no
- * server will accept this device. Returns whether a server was loaded.
+ * Run the boot flow and load the server's origin, or the Servers page when
+ * no server will accept this device. Returns whether a server was loaded.
+ * Leaving the Servers page for the server it was opened over returns to
+ * the page it covered, whose events are still running.
  */
 async function openWindow(): Promise<boolean> {
   if (!win || win.isDestroyed()) win = await createWindow()
@@ -209,15 +214,19 @@ async function openWindow(): Promise<boolean> {
     rendererBaseUrl: env.desktopRendererUrl,
   })
   if (!result.ok) {
-    await showConnectPage(w, result.error)
+    await showUnreachable(w, result.error)
     return false
   }
+  const over = serversPage && 'over' in serversPage && isSameOriginNavigation(serversPage.over, result.url) ? serversPage.over : null
   try {
-    await w.loadURL(result.url)
-    onConnectPage = false
-    // Started only once a server is reachable, so the picker doesn't spin a
-    // reconnect loop.
-    startEvents()
+    await w.loadURL(over ?? result.url)
+    serversPage = null
+    // Started only once a server is reachable, so the Servers page doesn't
+    // spin a reconnect loop.
+    if (!over) startEvents()
+    // A landing often follows a start from a terminal; read it now, so the
+    // Servers page opens on current state.
+    void refreshLocalServer()
     return true
   } catch (err) {
     dialog.showErrorBox('Could not open yaac', err instanceof Error ? err.message : String(err))
@@ -226,47 +235,70 @@ async function openWindow(): Promise<boolean> {
 }
 
 /**
- * Show the picker. Events, forwards and the badge are cleared first so
- * nothing claims state from a server the shell cannot reach.
+ * Show the Servers page because no server is reachable. Events, forwards
+ * and the badge are cleared first so nothing claims state from a server the
+ * shell cannot reach.
  */
-async function showConnectPage(w: BrowserWindow, error: LaunchError): Promise<void> {
-  onConnectPage = true
+async function showUnreachable(w: BrowserWindow, error: LaunchError): Promise<void> {
+  serversPage = { error }
   events?.stop()
   events = null
   forwarder?.stop()
   forwarder = null
   attention = new AttentionMonitor()
   applyAttention(0, [], [])
-  const targets = await getServerTargets(serverSwitchDeps)
-  await refreshLocalServer()
-  await w.loadURL(connectPageUrl({ error, targets, local: localState() }))
-    .catch((err: unknown) => {
-      dialog.showErrorBox(error.title, err instanceof Error ? err.message : String(err))
-    })
+  await renderServersPage(w)
 }
 
 /**
- * Show one setup on its own, from the tray. The page stays until the setup
- * lands the window on its server or the user goes back; events and
- * forwards for the selected server keep running underneath.
+ * Open the Servers page on request, from the SPA or the tray, with one
+ * setup opened if `setup` names it. The page stays until the user goes back
+ * or picks a server; events and forwards for the selected server keep
+ * running underneath.
  */
-async function showSetupPage(scope: ServerScope): Promise<void> {
+async function openServersPage(setup?: ServerScope): Promise<void> {
   if (!win || win.isDestroyed()) win = await createWindow()
-  const w = win
-  w.show()
-  w.focus()
-  onConnectPage = false
-  const targets = await getServerTargets(serverSwitchDeps)
-  await w.loadURL(connectPageUrl({ error: { title: 'Set up yaac on this Mac' }, targets, local: localState(), setup: scope }))
-    .catch(() => { /* superseded by the next load */ })
+  win.show()
+  win.focus()
+  serversPage ??= { over: win.webContents.getURL() }
+  await renderServersPage(win, setup)
+}
+
+/**
+ * Render the Servers page afresh. It renders from the last read of this
+ * Mac's installs, so it shows at once even though a read runs the CLI
+ * twice, then reads them again in the background and renders once more if
+ * that changed anything while the page still shows. It leaves alone a page
+ * with a call or server action under way, since the reply to it, an error
+ * included, goes to the page that made it; the action itself moves the
+ * window or renders the page again when it ends. Only before the first
+ * read is there nothing to render from, so that one is waited for.
+ */
+async function renderServersPage(w: BrowserWindow, setup?: ServerScope): Promise<void> {
+  const page = serversPage
+  const load = async (): Promise<string> => {
+    const error = page && 'error' in page ? page.error : undefined
+    const local = localState()
+    const targets = await getServerTargets(serverSwitchDeps)
+    await w.loadURL(serversPageUrl({ error, targets, local, setup }))
+      .catch(() => { /* superseded by the next load */ })
+    return JSON.stringify(local)
+  }
+  if (!localServers.server && !localServers.cluster) await refreshLocalServer()
+  const shown = await load()
+  void refreshLocalServer().then(async () => {
+    const still = serversPage === page && !w.isDestroyed() && w.webContents.getURL().startsWith('data:')
+    const idle = !serverBusy && pageCallsInFlight === 0
+    if (still && idle && JSON.stringify(localState()) !== shown) await load()
+  })
 }
 
 function showWindow(): void {
   if (win && !win.isDestroyed()) {
     win.show()
     win.focus()
-    // The user may have started a server since the picker was shown.
-    if (onConnectPage) void openWindow()
+    // The user may have started a server since the page was shown.
+    if (serversPage && 'error' in serversPage) void openWindow()
     return
   }
   // The window was destroyed (e.g. a renderer crash).
@@ -298,12 +330,13 @@ function updateTray(): void {
     enabled: item.action !== undefined,
     click: () => {
       const action = item.action
-      if (action?.action === 'setup') void showSetupPage(action.scope)
+      if (action?.action === 'setup') void openServersPage(action.scope)
       else if (action) void trayServerAction(action)
     },
   }))
   const menu = Menu.buildFromTemplate([
     { label: 'Open yaac', click: () => showWindow() },
+    { label: 'Servers…', click: () => void openServersPage() },
     { type: 'separator' },
     {
       label: waiting > 0 ? `${waiting} waiting for input` : 'No workspaces waiting',
@@ -332,7 +365,6 @@ function refreshLocalServer(): Promise<void> {
 async function readLocalServerState(): Promise<void> {
   if (serverBusy) return
   const epoch = actionEpoch
-  lastLocalRead = Date.now()
   // The login-shell PATH is what finds `yaac` and `brew`.
   await authDaemonReady
   const [server, cluster, brew] = await Promise.all([
@@ -352,9 +384,11 @@ async function readLocalServerState(): Promise<void> {
  * Set up, start, stop or restart one of this machine's servers. A start
  * selects it (a restart only when no other server is selected), so a window
  * showing a remote server puts that selection back and stays where it is.
- * A setup lands on the server it made wherever the window was. Otherwise
- * the window reloads the selected server after a start or restart, and
- * moves to the picker after a stop if it was showing that server.
+ * A setup, and a start or restart from the Servers page, lands on the
+ * server it selects; otherwise the window reloads the selected server
+ * after a start or restart. Stopping the selected server disconnects the
+ * window, which moves to the Servers page; any other stop leaves the window
+ * where it is, rendering the page again if it shows.
  */
 async function serverAction(scoped: ScopedAction): Promise<DesktopServerOutcome> {
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
@@ -362,15 +396,20 @@ async function serverAction(scoped: ScopedAction): Promise<DesktopServerOutcome>
   serverBusy = scoped
   actionEpoch++
   updateTray()
+  const origin = installOrigin(localServers, scope)
   await authDaemonReady
-  const remote = action === 'setup' || onConnectPage || await showingLocalServer() ? null : await readServerConfig()
+  const remote = action === 'setup' || serversPage || await showingLocalServer() ? null : await readServerConfig()
   const outcome = action === 'setup' ? await setup.run(scope) : await runServerAction({ scope, action }, runYaac)
   if (remote) await restoreSelection(remote, serverSwitchDeps)
   serverBusy = null
   await refreshing
   await refreshLocalServer()
   if (!outcome.ok) return outcome
-  if (!remote && (action !== 'stop' || await showingLocalServer())) setImmediate(() => void openWindow())
+  if (action === 'stop') {
+    const cfg = await readServerConfig()
+    if (cfg && cfg.url === origin) setImmediate(() => void openWindow())
+    else if (serversPage) setImmediate(() => void openServersPage())
+  } else if (!remote) setImmediate(() => void openWindow())
   if (outcome.hostCheckFailures) {
     void dialog.showMessageBox({
       type: 'warning',
@@ -430,7 +469,7 @@ function startEvents(): void {
 
 /**
  * After a server switch: reset the badge and attention monitor, then re-run
- * the boot flow to load the new origin (or the picker if it fails).
+ * the boot flow to load the new origin (or the Servers page if it fails).
  */
 function relandOnNewServer(): void {
   attention = new AttentionMonitor()
@@ -438,8 +477,8 @@ function relandOnNewServer(): void {
   void openWindow()
 }
 
-// Server picker IPC. Handlers reply before relanding, which destroys the
-// calling page.
+// The Servers page's IPC. Handlers reply before relanding, which destroys
+// the calling page.
 const serverSwitchDeps: ServerSwitchDeps = {
   readServerConfig,
   writeServerConfig,
@@ -447,62 +486,90 @@ const serverSwitchDeps: ServerSwitchDeps = {
   probeServer,
   normalizeUrl: normalizeServerUrl,
 }
-ipcMain.handle('server:targets', () => getServerTargets(serverSwitchDeps))
-// The picker's "Try again". A failure re-renders the picker with fresh rows.
-ipcMain.handle('server:retry', async () => {
+
+/**
+ * Answer `channel` for the Servers page alone: the main window's top frame
+ * showing a `data:` page, which only the shell loads, since the window
+ * follows no navigation a page starts off its origin. No server's page may
+ * switch servers or drive this Mac's, so a remote server cannot move the
+ * machine onto one it chooses, nor a port forwarded onto loopback pass for
+ * one of this Mac's servers. Calls other than `reads` count as in flight
+ * until they reply (`renderServersPage`).
+ */
+function handleFromServersPage<T>(
+  channel: string, listener: (raw: unknown) => Promise<T>, opts: { reads?: boolean } = {},
+): void {
+  ipcMain.handle(channel, (e, raw: unknown) => {
+    let fromPage = false
+    try {
+      const frame = e.senderFrame
+      fromPage = e.sender === win?.webContents && frame?.parent === null && frame.url.startsWith('data:')
+    } catch {
+      // The frame is gone.
+    }
+    if (!fromPage) throw new Error('only the Servers page can change servers')
+    if (opts.reads) return listener(raw)
+    pageCallsInFlight++
+    return listener(raw).finally(() => { pageCallsInFlight-- })
+  })
+}
+
+// "Try again", or "Back" over a server. A failure renders the page afresh.
+handleFromServersPage('server:retry', async (): Promise<DesktopServerOutcome> => {
   const ok = await openWindow()
   return ok ? { ok: true } : { ok: false, error: 'still no server' }
 })
-ipcMain.handle('server:switch', async (_e, raw: unknown) => {
+handleFromServersPage('server:switch', async (raw): Promise<DesktopServerOutcome> => {
   const sel = parseServerSelection(raw)
   if (!sel) return { ok: false, error: 'invalid selection' }
   const outcome = await applyServerSwitch(sel, serverSwitchDeps)
   if (outcome.ok) setImmediate(() => relandOnNewServer())
   return outcome
 })
-/**
- * Whether an IPC call comes from a page allowed to drive this Mac's
- * servers: the main window's top frame, showing the picker or one of this
- * Mac's running servers. Checked against the frame's URL when the call
- * arrives, since that is what is showing, and against a read of the
- * installs at most LOCAL_STATE_FRESH_MS old: a server stopped from a
- * terminal frees its port for a forward to take.
- */
-async function fromLocalPage(e: IpcMainInvokeEvent): Promise<boolean> {
-  if (Date.now() - lastLocalRead > LOCAL_STATE_FRESH_MS) await refreshLocalServer()
-  try {
-    const frame = e.senderFrame
-    return e.sender === win?.webContents && frame?.parent === null && mayControlLocalServers(frame.url, localServers)
-  } catch {
-    // The frame is gone.
-    return false
+handleFromServersPage('server:add-remote', async (url): Promise<DesktopServerOutcome> => {
+  if (typeof url !== 'string') return { ok: false, error: 'invalid arguments' }
+  const outcome = await addServerRemote(url, serverSwitchDeps)
+  if (outcome.ok) setImmediate(() => relandOnNewServer())
+  return outcome
+})
+// Leaves the machine with no server, so the window lands on this page again.
+handleFromServersPage('server:disconnect', async (): Promise<DesktopServerOutcome> => {
+  const outcome = await disconnect(serverSwitchDeps)
+  if (outcome.ok) setImmediate(() => relandOnNewServer())
+  return outcome
+})
+// Removal never touches the selected server, so the page renders again.
+handleFromServersPage('server:remove', async (raw): Promise<DesktopServerOutcome> => {
+  const sel = parseServerSelection(raw)
+  if (!sel) return { ok: false, error: 'invalid selection' }
+  const options = {
+    type: 'question' as const, buttons: ['Cancel', 'Remove'], defaultId: 0, cancelId: 0,
+    message: `Remove ${sel.url}?`,
+    detail: 'It leaves this machine\'s server list, for the app and the yaac CLI alike. The server itself keeps '
+      + 'running; add it again to reconnect.',
   }
-}
-const NOT_LOCAL: DesktopServerOutcome = { ok: false, error: 'only this Mac\'s own pages can drive its servers' }
-
-// Start and stop buttons in the picker and the SPA. The reply comes back
-// before the window lands, which replaces the calling page.
-ipcMain.handle('server:start-local', async (e, raw: unknown) => {
-  if (!await fromLocalPage(e)) return NOT_LOCAL
+  const { response } = await (win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options))
+  const outcome = response === 1 ? await removeServer(sel, serverSwitchDeps) : { ok: true as const }
+  if (outcome.ok) setImmediate(() => void openServersPage())
+  return outcome
+})
+// Start and stop buttons. The reply comes back before the window moves on.
+handleFromServersPage('server:start-local', async (raw): Promise<DesktopServerOutcome> => {
   const scope = parseScope(raw)
   return scope ? serverAction({ scope, action: 'start' }) : { ok: false, error: 'invalid arguments' }
 })
-ipcMain.handle('server:stop-local', async (e, raw: unknown) => {
-  if (!await fromLocalPage(e)) return NOT_LOCAL
+handleFromServersPage('server:stop-local', async (raw): Promise<DesktopServerOutcome> => {
   const scope = parseScope(raw)
   return scope ? serverAction({ scope, action: 'stop' }) : { ok: false, error: 'invalid arguments' }
 })
-// This Mac's installs and setup, which the picker and the SPA poll. A
-// refusal is a rejection, so the SPA leaves its "This Mac" area out.
-ipcMain.handle('server:local', async (e) => {
-  if (!await fromLocalPage(e)) throw new Error(NOT_LOCAL.error)
-  return localState()
-})
+// Which saved servers are down or refuse this device, asked once as the page loads.
+handleFromServersPage('server:health', () => serverHealth(serverSwitchDeps), { reads: true })
+// This Mac's installs and setup, which the page polls.
+handleFromServersPage('server:local', () => Promise.resolve(localState()), { reads: true })
 // A setup runs only once the user confirms it in a native dialog, then in
-// the background: the reply comes once it has begun, renderers follow it
+// the background: the reply comes once it has begun, the page follows it
 // through `server:local`, and it lands the window when it ends.
-ipcMain.handle('server:setup', async (e, raw: unknown): Promise<DesktopServerOutcome> => {
-  if (!await fromLocalPage(e)) return NOT_LOCAL
+handleFromServersPage('server:setup', async (raw): Promise<DesktopServerOutcome> => {
   const scope = parseScope(raw)
   if (!scope) return { ok: false, error: 'invalid arguments' }
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
@@ -517,22 +584,9 @@ ipcMain.handle('server:setup', async (e, raw: unknown): Promise<DesktopServerOut
   void serverAction({ scope, action: 'setup' })
   return { ok: true }
 })
-ipcMain.handle('server:setup-cancel', async (e) => {
-  if (!await fromLocalPage(e)) return NOT_LOCAL
+handleFromServersPage('server:setup-cancel', (): Promise<DesktopServerOutcome> => {
   void setup.cancel()
-  return { ok: true }
-})
-// Removal never touches the selected server, so the window stays put.
-ipcMain.handle('server:remove', async (_e, raw: unknown) => {
-  const sel = parseServerSelection(raw)
-  if (!sel) return { ok: false, error: 'invalid selection' }
-  return removeServer(sel, serverSwitchDeps)
-})
-ipcMain.handle('server:add-remote', async (_e, url: unknown) => {
-  if (typeof url !== 'string') return { ok: false, error: 'invalid arguments' }
-  const outcome = await addServerRemote(url, serverSwitchDeps)
-  if (outcome.ok) setImmediate(() => relandOnNewServer())
-  return outcome
+  return Promise.resolve({ ok: true })
 })
 
 // Window controls from WindowControls.tsx, via the preload bridge.
@@ -552,6 +606,11 @@ ipcMain.on('window:toggle-maximize', (_e, altKey: unknown) => {
   else win.maximize()
 })
 ipcMain.on('window:close', () => win?.close())
+// The SPA's Servers button and server badge, which can only be clicked in
+// a focused window, so a page cannot use it to raise a hidden one.
+ipcMain.on('window:show-servers', (e) => {
+  if (e.sender === win?.webContents && win.isFocused()) void openServersPage()
+})
 ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
 })
@@ -574,7 +633,7 @@ app.on('web-contents-created', (_event, contents) => {
 
 async function boot(): Promise<void> {
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()))
-  // A failed boot still shows the picker, so the shell keeps running.
+  // A failed boot still shows the Servers page, so the shell keeps running.
   await openWindow()
   createTray()
 }

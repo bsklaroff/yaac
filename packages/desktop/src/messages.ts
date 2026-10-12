@@ -1,7 +1,7 @@
 /**
  * User-facing text for the desktop shell: the boot splash (a data: URL, so
  * no bundled assets or renderer build exist at all), and the shape a
- * failure takes on its way to the picker (`#connect-page`). Pure — main.ts
+ * failure takes on its way to the Servers page (`#servers-page`). Pure — main.ts
  * feeds the splash into loadURL.
  */
 

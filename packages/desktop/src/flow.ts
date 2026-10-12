@@ -3,8 +3,8 @@
  * answers `GET /whoami` for this device, and return its origin for the
  * window to load. After that the window is a plain browser on that origin.
  *
- * An unreachable server becomes a failure the window renders as a server
- * picker (connect-page.ts), which can start this machine's server.
+ * An unreachable server becomes a failure the window renders on its
+ * Servers page (servers-page.ts), which can start this machine's server.
  */
 import {
   getApiClient, isLoopbackOrigin, type ApiClientOptions, type ServerTarget,

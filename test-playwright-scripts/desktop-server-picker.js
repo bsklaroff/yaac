@@ -1,20 +1,28 @@
 /*
- * Verifies the Electron shell's server picker end to end: the main process,
+ * Verifies the Electron shell's Servers page end to end: the main process,
  * the preload bridge and the window together (docs/server-selection.md).
- * Every server is an origin in `server.json`.
+ * Every server is an origin in `server.json`. The script's own server is an
+ * install in its data dir, which the shell reads through the `yaac` on PATH,
+ * so it always shows as the "Local containerless server" row; the remote-row
+ * cases use a saved origin with no install behind it.
  *
- *  1. No `server.json`: the window is the picker, titled "No yaac server
- *     selected", with no rows and no "Local server".
- *  1b. Registering a server from a terminal, then "Try again", lands the
- *     window (the only way out of an empty picker besides relaunching).
+ *  1. No `server.json`, the server running: the window is the Servers page,
+ *     titled "No yaac server selected", with the install's row (its origin,
+ *     Running, Connect and Stop) and no other rows.
+ *  1b. Connect on that row, whose origin is not saved, adds it again and
+ *     lands the window.
  *  2. Adding an origin nothing answers at shows an inline failure and
  *     writes nothing.
  *  3. Adding the real server's origin loads the SPA.
- *  4. With the server stopped, a relaunch shows the picker with a row for
- *     the unreachable origin.
- *  5. With the server started, Connect on that row lands (Connect on the
- *     selected row is the retry).
- *  6. Settings → Server in the SPA lists that origin and no local row.
+ *  4. With the server stopped and a dead remote saved too, a relaunch shows
+ *     the failure above the install's row (selected, Stopped, Start and
+ *     Disconnect, no Connect) and the remote's row, marked "(stopped)" once
+ *     its probe fails.
+ *  5. With the server started from a terminal, Try again lands.
+ *  6. The SPA's Servers button (rail, above Settings) opens the page over
+ *     the server: "Servers" with Back, the install's row selected with
+ *     Disconnect and Stop and no Connect, and Back returns to the URL the
+ *     SPA was on.
  *
  * Uses its own throwaway data dir and server, so it never touches your
  * install; export YAAC_SERVER_PORT to keep that server off the default port.
@@ -103,12 +111,12 @@ async function launch(electron) {
   })
   const win = await app.firstWindow()
   win.on('pageerror', (err) => console.error(`    [page error] ${err.message}`))
-  // The window goes through a splash to the picker or the SPA.
+  // The window goes through a splash to the Servers page or the SPA.
   await win.waitForLoadState('domcontentloaded')
   return { app, win }
 }
 
-/** Wait until the window is showing the picker (not the splash). */
+/** Wait until the window is showing the Servers page (not the splash). */
 const waitForPicker = (win) => until(win, () => document.querySelector('#add') !== null, null, 30_000)
 
 /** Wait until the window has landed on a served SPA at `origin`. */
@@ -149,41 +157,47 @@ async function main() {
   yaac('server', 'start')
   const origin = serverOrigin()
   console.log(`  server at ${origin} (data dir ${DATA_DIR})`)
-  // 1. A shell with nothing selected.
-  console.log('\n1. no server selected → the picker is the whole window')
+  const row = '#install-server'
+  const rowButtons = async (win) =>
+    (await win.locator(`${row} button`).allTextContents()).map((t) => t.trim()).join(', ')
+
+  // 1. A shell with nothing selected, beside a running install.
+  console.log('\n1. no server selected → the Servers page is the whole window')
   fs.rmSync(CONFIG, { force: true })
   let { app, win } = await launch(electron)
   await waitForPicker(win)
   const heading = await win.textContent('h1')
   check('titled "No yaac server selected"', /No yaac server selected/.test(heading), heading)
-  check('no server rows', (await win.locator('button.connect').count()) === 0)
-  const bodyText = await win.textContent('body')
-  check('no "Local server" anywhere', !bodyText.includes('Local server'))
-  check('says nothing is configured', bodyText.includes('No servers configured yet.'))
+  await until(win, (sel) => document.querySelector(sel) !== null, row, 30_000)
+  const installText = await win.textContent(row)
+  check('lists the install by name and origin', installText.includes(`Local containerless server (${origin})`), installText.trim())
+  check('as running, not selected', /Running/.test(installText) && !/selected/.test(installText))
+  check('with Connect and Stop', (await rowButtons(win)) === 'Connect, Stop', await rowButtons(win))
+  check('and no other rows', (await win.locator('.origin').count()) === 0)
   await shot(win, '1-nothing-selected')
 
-  // 1b. A server registered from a terminal shows up only after "Try again".
-  console.log('\n1b. `yaac server start` in a terminal, then Try again → lands')
-  yaac('server', 'start')
-  await win.click('#retry')
+  // 1b. The install's origin is not saved, so its Connect adds it again.
+  console.log('\n1b. Connect on the unsaved install → adds it and lands')
+  await win.click(`${row} button.connect`)
   await waitForApp(win, origin)
-  check('Try again landed the window', (await win.evaluate(() => location.origin)) === origin)
-  await shot(win, '1b-retry-landed')
+  check('Connect landed the window', (await win.evaluate(() => location.origin)) === origin)
+  check('and saved and selected the origin', JSON.parse(fs.readFileSync(CONFIG, 'utf8')).url === origin)
+  await shot(win, '1b-connect-landed')
 
-  // Back to the empty picker for the add-form cases.
+  // Back to an empty server.json for the add-form cases.
   fs.rmSync(CONFIG, { force: true })
   await closeApp(app)
   ;({ app, win } = await launch(electron))
   await waitForPicker(win)
 
   // 2. An origin nothing answers at is refused inline, and writes nothing.
-  console.log('\n2. adding a dead origin → inline rejection, still on the picker')
+  console.log('\n2. adding a dead origin → inline rejection, still on the Servers page')
   await win.fill('input[name="url"]', 'http://127.0.0.1:1')
   await win.click('button.add')
   await until(win, () => /cannot reach/i.test(document.getElementById('status')?.textContent ?? ''), null, 30_000)
   const rejection = await win.textContent('#status')
   check('the failure is shown', /cannot reach/i.test(rejection), rejection.trim())
-  check('still on the picker', (await win.locator('#add').count()) === 1)
+  check('still on the Servers page', (await win.locator('#add').count()) === 1)
   check('nothing was written', !fs.existsSync(CONFIG))
   await shot(win, '2-dead-origin')
 
@@ -197,40 +211,50 @@ async function main() {
   await shot(win, '3-landed')
   await closeApp(app)
 
-  // 4. With the server down, a relaunch shows the picker naming that origin.
-  console.log('\n4. server stopped → relaunch shows the picker, naming the origin')
+  // 4. With the server down, a relaunch shows the page naming that origin.
+  console.log('\n4. server stopped → relaunch shows the failure, the install row and a dead remote')
   yaac('server', 'stop')
+  const dead = 'http://127.0.0.1:1'
+  const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'))
+  fs.writeFileSync(CONFIG, JSON.stringify({ ...cfg, saved: [...cfg.saved, { url: dead }] }))
   ;({ app, win } = await launch(electron))
   await waitForPicker(win)
   const downHeading = await win.textContent('h1')
   check('names the origin it could not reach', downHeading.includes(origin), downHeading)
-  check('offers a row for it', (await win.locator(`button.connect[data-url="${origin}"]`).count()) === 1)
-  check('marks it selected', (await win.textContent('body')).includes('selected'))
+  await until(win, (sel) => /Stopped/.test(document.querySelector(sel)?.textContent ?? ''), row, 30_000)
+  const downRow = await win.textContent(row)
+  check('the install row is selected and stopped', /selected/.test(downRow) && /Stopped/.test(downRow), downRow.trim())
+  check('with Disconnect and Start, and no Connect', (await rowButtons(win)) === 'Disconnect, Start', await rowButtons(win))
+  check('the dead remote has its own row', (await win.locator(`button.connect[data-url="${dead}"]`).count()) === 1)
+  const deadTag = `.tag.health[data-url="${dead}"]`
+  await until(win, (sel) => document.querySelector(sel)?.hidden === false, deadTag, 15_000)
+  check('marked "(stopped)"', (await win.textContent(deadTag)) === '(stopped)')
   await shot(win, '4-unreachable')
 
-  // 5. Connect on the selected-but-unreachable row is the retry.
-  console.log('\n5. server restarted → Connect on that row lands')
+  // 5. A server started from a terminal shows up on Try again.
+  console.log('\n5. `yaac server start` in a terminal, then Try again → lands')
   yaac('server', 'start')
-  await win.click(`button.connect[data-url="${origin}"]`)
+  await win.click('#retry')
   await waitForApp(win, origin)
-  check('landed from the picker', (await win.evaluate(() => location.origin)) === origin)
+  check('Try again landed the window', (await win.evaluate(() => location.origin)) === origin)
   await shot(win, '5-reconnected')
 
-  // 6. The SPA's own picker agrees.
-  console.log('\n6. Settings → Server lists the origin and no local row')
-  const settings = win.locator('button[aria-label="Settings"], button[title="Settings"]').first()
-  if (await settings.count()) {
-    await settings.click()
-    const server = win.getByText('Server', { exact: true }).first()
-    if (await server.count()) await server.click()
-    await win.waitForTimeout(500)
-    const settingsText = await win.textContent('body')
-    check('lists the origin', settingsText.includes(origin))
-    check('no "Local server" row', !settingsText.includes('Local server'))
-    await shot(win, '6-settings')
-  } else {
-    console.log('    (settings button not found — check by hand)')
-  }
+  // 6. The rail's Servers button opens the same page over the server.
+  console.log('\n6. the Servers button opens the page over the SPA, and Back returns')
+  const spaUrl = await win.evaluate(() => location.href)
+  await win.click('button[aria-label="Servers"]')
+  await waitForPicker(win)
+  check('titled "Servers"', (await win.textContent('h1')).trim() === 'Servers')
+  check('offers Back', (await win.textContent('#retry')).trim() === 'Back')
+  // The page renders from the last read of the installs, and again once a fresh one differs.
+  await until(win, (sel) => /Running/.test(document.querySelector(sel)?.textContent ?? ''), row, 30_000)
+  const overRow = await win.textContent(row)
+  check('the install row is selected and running', /selected/.test(overRow) && /Running/.test(overRow), overRow.trim())
+  check('with Disconnect and Stop, and no Connect', (await rowButtons(win)) === 'Disconnect, Stop', await rowButtons(win))
+  await shot(win, '6-servers-page')
+  await win.click('#retry')
+  await waitForApp(win, origin)
+  check('Back returns to the page the SPA was on', (await win.evaluate(() => location.href)) === spaUrl)
 
   await closeApp(app)
 }

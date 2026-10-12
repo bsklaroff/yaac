@@ -1,17 +1,15 @@
 // @vitest-environment jsdom
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
-import { ServerBadge, serverLabel } from '#components/ServerBadge'
-import { useUiStore } from '#lib/store'
+import { ServerBadge, ServersButton, serverLabel } from '#components/ServerBadge'
 
 const inject = (bridge: unknown): void => {
-  ;(window as unknown as { yaacServer?: unknown }).yaacServer = bridge
+  ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = bridge
 }
 
 afterEach(() => {
   cleanup()
-  delete (window as unknown as { yaacServer?: unknown }).yaacServer
-  useUiStore.setState({ settingsOpen: false, settingsSection: 'general' })
+  delete (window as unknown as { yaacWindow?: unknown }).yaacWindow
 })
 
 describe('serverLabel', () => {
@@ -26,20 +24,32 @@ describe('serverLabel', () => {
 })
 
 describe('ServerBadge', () => {
-  it('renders nothing without the desktop bridge', () => {
-    const { container } = render(<ServerBadge />)
-    expect(container.innerHTML).toBe('')
+  it('renders nothing outside the desktop shell, or in an app without the Servers page', () => {
+    expect(render(<ServerBadge />).container.innerHTML).toBe('')
+    inject({ close() {} })
+    expect(render(<ServerBadge />).container.innerHTML).toBe('')
   })
 
-  it('names the attached origin and opens server settings', () => {
-    inject({ targets() {}, switchTo() {}, addRemote() {} })
+  it('names the attached origin and opens the shell\'s Servers page', () => {
+    const showServers = vi.fn()
+    inject({ showServers })
     render(<ServerBadge />)
-    const chit = screen.getByRole('button', { name: 'Open server settings' })
+    const chit = screen.getByRole('button', { name: 'Choose a server' })
     expect(chit.textContent).toBe(serverLabel(window.location.origin))
     expect(chit.title).toContain(window.location.origin)
 
     fireEvent.click(chit)
-    expect(useUiStore.getState().settingsOpen).toBe(true)
-    expect(useUiStore.getState().settingsSection).toBe('server')
+    expect(showServers).toHaveBeenCalledOnce()
+  })
+})
+
+describe('ServersButton', () => {
+  it('opens the shell\'s Servers page, and renders nothing without it', () => {
+    expect(render(<ServersButton />).container.innerHTML).toBe('')
+    const showServers = vi.fn()
+    inject({ showServers })
+    render(<ServersButton />)
+    fireEvent.click(screen.getByRole('button', { name: 'Servers' }))
+    expect(showServers).toHaveBeenCalledOnce()
   })
 })

@@ -1,14 +1,15 @@
 /**
- * The shell's server picker: list, switch between, add and remove servers.
- * All of them edit the shared `~/.yaac-client/server.json`, so a switch here also
- * moves the CLI, like `yaac remote connect`. A server on this machine is
+ * The Servers page's server list: switch between, add, remove and
+ * disconnect from servers. All of them edit the shared
+ * `~/.yaac-client/server.json`, so a switch here also moves the CLI, like
+ * `yaac remote connect/disconnect`. A server on this machine is
  * registered there by `yaac server start` like any other, so every row is
  * an origin.
  *
- * The renderer is web content from the server, so its IPC payloads are
- * re-validated here (`parseServerSelection`).
+ * The page's IPC payloads are re-validated here (`parseServerSelection`)
+ * like any renderer's.
  */
-import type { ServerConfig } from '@yaac/shared/server-config'
+import { IdentityRejectedError, type ServerConfig } from '@yaac/shared/server-config'
 import type { DesktopServerOutcome, DesktopServerSelection, DesktopServerTargets } from '@yaac/shared/types'
 
 export interface ServerSwitchDeps {
@@ -24,7 +25,7 @@ export interface ServerSwitchDeps {
   normalizeUrl(raw: string): string
 }
 
-/** Validate a renderer-supplied selection; anything malformed → null. */
+/** Validate a page-supplied selection; anything malformed → null. */
 export function parseServerSelection(raw: unknown): DesktopServerSelection | null {
   if (!raw || typeof raw !== 'object') return null
   const sel = raw as Record<string, unknown>
@@ -40,10 +41,32 @@ export async function getServerTargets(deps: ServerSwitchDeps): Promise<DesktopS
 }
 
 /**
+ * Why a saved server cannot be connected to: it does not answer, or it
+ * answers but will not identify this device (a tagged tailnet device, or an
+ * origin for the wrong access mode), which starting it would not fix.
+ */
+export type ServerHealth = { kind: 'stopped' } | { kind: 'refused', reason: string }
+
+/**
+ * Each saved server that cannot be connected to, and why, probed in
+ * parallel as the Servers page opens. A server that can is absent.
+ */
+export async function serverHealth(deps: ServerSwitchDeps): Promise<Record<string, ServerHealth>> {
+  const urls = (await deps.readServerConfig())?.saved.map((s) => s.url) ?? []
+  const health = await Promise.all(urls.map((url) => deps.probeServer(url).then(
+    () => null,
+    (err: unknown): ServerHealth => err instanceof IdentityRejectedError
+      ? { kind: 'refused', reason: err.message }
+      : { kind: 'stopped' },
+  )))
+  return Object.fromEntries(urls.flatMap((url, i) => health[i] ? [[url, health[i]]] : []))
+}
+
+/**
  * Point the machine at `sel`. The server is probed before the config is
  * written, so a dead server, or one that won't identify this device, returns
  * an error and nothing changes. The already-selected server is probed too:
- * on the disconnected page, Connect on that row is the retry.
+ * when it is unreachable, Connect on its row is the retry.
  */
 export async function applyServerSwitch(
   sel: DesktopServerSelection,
@@ -95,6 +118,17 @@ export async function removeServer(
     return { ok: false, error: 'switch to another server before removing this one' }
   }
   await deps.writeServerConfig({ ...cfg, saved: cfg.saved.filter((s) => s.url !== sel.url) })
+  return { ok: true }
+}
+
+/**
+ * Deselect the selected server without forgetting it, as `yaac remote
+ * disconnect` does, so the machine has no server until one is picked or started.
+ */
+export async function disconnect(deps: ServerSwitchDeps): Promise<DesktopServerOutcome> {
+  const cfg = await deps.readServerConfig()
+  if (!cfg || cfg.url === '') return { ok: false, error: 'no server is selected' }
+  await deps.writeServerConfig({ ...cfg, url: '' })
   return { ok: true }
 }
 

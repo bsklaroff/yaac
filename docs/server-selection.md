@@ -57,7 +57,7 @@ also registers when a server is already running, so a server started with
 - `saved`: every server configured and not since removed, so a client can
   switch back.
 
-The CLI edits it the way the desktop app's picker does: `yaac remote add`
+The CLI edits it the way the desktop app's Servers page does: `yaac remote add`
 saves and selects a server, `connect` selects a saved one, `disconnect`
 deselects without forgetting, `list` shows them, and `remove` forgets one
 other than the selected server. Both clients probe a server before
@@ -116,7 +116,7 @@ No yaac server selected.
 ```
 
 No client starts a server to recover. The CLI reports and exits; the desktop
-shows its picker, which offers a start only when the user asks for one.
+shows its Servers page, which offers a start only when the user asks for one.
 Every start goes through the CLI, which keeps a client from spawning a host
 process next to a Deployment.
 
@@ -136,32 +136,53 @@ so it has no build to compare, and any server serves it a matching SPA.
 
 The shell reads `server.json`, calls `/whoami` (checking both reachability
 and that the server will identify this device), and loads the origin. It
-never reads a lock. It sets up, starts, stops and restarts this machine's
-servers only when the user asks, from the tray, the picker or Settings →
-Server, and always by running `brew` and `yaac server start|stop|restart`
-or `yaac cluster install|start|stop` (packages/desktop/README.md, "This
-machine's servers" and "Setup"). A setup ends the way the terminal's
-commands do: `yaac server start` or the first `yaac cluster install`
-registers and selects the new origin, and the shell lands on it. Only the
-picker and pages from a running install's recorded origin may ask for any
-of this. Any other page, a remote server's or one on a port the app
-forwards for it, gets the server-switching bridge but not this Mac's
+never reads a lock.
+
+Which server the app uses is chosen on the shell's own **Servers page**, not
+in the SPA: the SPA is served by a server, so a server list inside it would
+vanish exactly when no server answers. The page is an HTML string on a
+`data:` URL, like the boot splash, so it needs no renderer bundle. The
+window shows it in three cases, all the same page:
+
+- no server is reachable (nothing selected, server down, or device not
+  identified): it states the failure verbatim above the list, with Try
+  again, instead of an error dialog over a blank window;
+- a Mac with no `yaac`, or with no install and nothing selected: it leads
+  with the two installs to set up;
+- the user opens it, from the SPA's Servers button in the rail, the server
+  badge in the sidebar header, or the tray: it covers the server's page,
+  whose events and forwards keep running, and Back returns to the page it
+  covered.
+
+It is one list of servers. This Mac's installs are named **Local
+containerless server** and **Local Kubernetes cluster**, with their origins
+in parentheses (the tray names them the same way), each with a Start or
+Stop; every other saved origin has Connect and Remove. Once the page has
+loaded, each saved origin is probed in parallel and marked "(stopped)" when
+it does not answer, or "(refused)" when it answers but will not identify
+this device (a tagged tailnet device, or an origin for the wrong access
+mode, docs/remote-hosting.md), with the server's reason as its tooltip:
+starting the server would not fix that. The selected row has
+**Disconnect**, which deselects it as `yaac remote disconnect` does, and
+stopping the selected install disconnects the window the same way a dead
+server would. Below the list are the setups of the installs this Mac lacks,
+and a form that accepts a new origin.
+
+It sets up, starts and stops this machine's servers only when the user asks,
+always by running `brew` and `yaac server start|stop|restart` or `yaac
+cluster install|start|stop` (packages/desktop/README.md, "This machine's
+servers" and "Setup"). A setup ends the way the terminal's commands do:
+`yaac server start` or the first `yaac cluster install` registers and
+selects the new origin, and the shell lands on it.
+
+Only that page may change servers or drive this Mac's: the main process
+answers its bridge for the main window's top frame showing a `data:` page,
+which only the shell loads. A server's page can only ask the shell to show
+it. So a remote server cannot move the machine onto a server it chooses,
+and a port the app forwards onto loopback cannot pass for one of this Mac's
 servers.
 
-When no server is reachable (nothing selected, server down, or device not
-identified), the window shows a **picker** instead of an error dialog: with
-no server there is no SPA, and a dialog over a blank window leaves nothing to
-click. The picker is an HTML string on a `data:` URL, like the boot splash,
-so it needs no renderer bundle. It shows the failure verbatim, lists saved
-origins with Connect buttons, and accepts a new origin. On a Mac with no
-`yaac`, or with no install and nothing selected, it leads with the two
-installs to set up instead. It uses the same
-preload bridge as the SPA's Settings → Server section, so both reach the same
-main-process handlers, which re-validate input.
-
 Connect on the already-selected origin is a real retry, not a no-op. That is
-how the picker reaches a server that has come back up.
-
-Settings → Server can also remove a saved origin. The connected one is
-refused, since dropping it would leave the window on a server the machine no
-longer names; switch away first.
+how the page reaches a server that has come back up. Remove asks first in a
+native dialog, and refuses the selected origin, since dropping it would
+leave the window on a server the machine no longer names; switch away first.
