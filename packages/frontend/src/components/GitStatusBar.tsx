@@ -1,4 +1,5 @@
 import type { JSX } from 'react'
+import clsx from 'clsx'
 import { ServerError } from '@yaac/shared/errors'
 import { useUiStore } from '#lib/store'
 import { BranchIcon } from '#lib/icons'
@@ -7,6 +8,14 @@ import { lineTotals } from '#lib/gitStatus'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
 import type { BranchComparison } from '@yaac/shared/types'
+
+/**
+ * On desktop the strip tucks up under the borderless workspace bar. On mobile
+ * that bar ends in a border, so the strip gets room of its own and centers
+ * its text between the border and the tab strip.
+ */
+const BAR = 'flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 md:-mt-1.5 '
+  + 'max-md:h-7 max-md:items-center'
 
 /**
  * Strip above a workspace's panes saying how far HEAD is ahead of and behind
@@ -32,7 +41,7 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
   // A stopped workspace has nothing to say.
   if (isError) {
     return (
-      <div className="flex h-5 shrink-0 items-start px-2 text-[11px] leading-4 text-warning md:-mt-1.5">
+      <div className={clsx(BAR, 'text-warning')}>
         {!(error instanceof ServerError && error.code === 'CONFLICT') && (
           <span className="truncate" title={error.message}>Git status unavailable: {error.message}</span>
         )}
@@ -40,7 +49,7 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
     )
   }
   return (
-    <div className="flex h-5 shrink-0 items-start gap-2 px-2 text-[11px] leading-4 text-text-dim md:-mt-1.5">
+    <div className={clsx(BAR, 'gap-2 text-text-dim')}>
       {data?.branch && (
         <span className="min-w-0 truncate">
           {describe(data.branch, data.comparison)}
