@@ -440,21 +440,6 @@ describe('cleanupWorkspaceDetached', () => {
     const logged = mockServerLog.mock.calls.map(([m]) => m).join('\n')
     expect(logged).not.toContain('cause=')
   })
-
-  it('preserveDeletedRecord reports no stop, leaving the recorded cause intact', async () => {
-    // Resuming a recorded teardown (whose terminating mark was lost) must not
-    // re-report, which would overwrite the real cause.
-    await cleanupWorkspaceDetached({
-      jobName: 'yaac-p-s-resume',
-      projectId: PROJ_A,
-      workspaceId: 's-resume',
-      preserveDeletedRecord: true,
-    })
-
-    expect(stopsReported()).toEqual([])
-    // The idempotent teardown still runs; that is how it is resumed.
-    await vi.waitFor(() => { expect(spawnedScript()).toBeDefined() })
-  })
 })
 
 describe('teardownForRestart', () => {

@@ -22,14 +22,13 @@ describe('desiredWorkspaces', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('answers the live workspaces and the ids already recorded as stopped', async () => {
+  it('answers the live workspaces, not the stopped ones', async () => {
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'live-1' })
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'gone-1' })
     await recordWorkspaceStopped(PROJ, 'gone-1')
 
     const desired = await desiredWorkspaces()
     expect(desired.live.map((w) => w.workspaceId)).toEqual(['live-1'])
-    expect(desired.stopped).toEqual([`${PROJ}/gone-1`])
   })
 
   // `ran` is what separates an interrupted create from a workspace with real

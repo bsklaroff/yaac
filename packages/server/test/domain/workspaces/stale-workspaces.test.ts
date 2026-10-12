@@ -58,19 +58,16 @@ const stopsReported = (): Array<[string, string, unknown]> => appliedEvents
  *  (registered in the real provisioning registry). */
 interface DesiredSetup {
   live: Array<{ projectId: string; workspaceId: string; ran: boolean }>
-  stopped: string[]
   provisioning: string[]
 }
-let lastDesired: DesiredSetup = { live: [], stopped: [], provisioning: [] }
+let lastDesired: DesiredSetup = { live: [], provisioning: [] }
 const setDesired = (d: Partial<DesiredSetup>): void => {
-  lastDesired = { live: [], stopped: [], provisioning: [], ...d }
+  lastDesired = { live: [], provisioning: [], ...d }
   clearAllProvisioningForTests()
   for (const workspaceId of lastDesired.provisioning) {
     registerProvisioning({ workspaceId, projectId: 'proj', tool: 'claude', kind: 'create' })
   }
-  vi.mocked(desiredWorkspaces).mockResolvedValue({
-    live: lastDesired.live, stopped: lastDesired.stopped,
-  })
+  vi.mocked(desiredWorkspaces).mockResolvedValue({ live: lastDesired.live })
 }
 const mockLog = vi.mocked(serverLog)
 
@@ -213,9 +210,10 @@ describe('reconcileStaleWorkspaces', () => {
     expect(loggedLines()).toBe('')
   })
 
-  it('reaps an out-of-band terminating pod past grace that we did not mark', async () => {
-    // Terminating, not marked by us, and no stop row: an external delete
-    // stuck past grace. Re-issue the teardown with the out-of-band cause.
+  it('reaps a terminating pod past grace that we did not mark', async () => {
+    // Terminating and not marked by us: an external delete, or ours with
+    // the mark lost, stuck past grace. Re-issue the teardown with the
+    // out-of-band cause, which the row keeps only if nothing stopped it.
     mockWorkspaces.mockResolvedValue([{ ...pod('term-1'), terminating: true }])
 
     await reconcileStaleWorkspaces(view)
@@ -227,7 +225,7 @@ describe('reconcileStaleWorkspaces', () => {
         cause: { reason: 'orphaned', detail: 'pod deleted out-of-band' },
       }),
     )
-    expect(loggedLines()).toContain('terminating out-of-band past grace')
+    expect(loggedLines()).toContain('terminating past grace: out-of-band delete')
   })
 
   it('keeps a terminating pod past grace while its create is still provisioning', async () => {
@@ -241,9 +239,9 @@ describe('reconcileStaleWorkspaces', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  // Every sweep needs the desired set; without it a user delete would be
-  // labelled out-of-band and nothing would be exempt. Reaping on a guess
-  // destroys uncommitted work, so the step fails and the next pass retries.
+  // A pass reads the desired set before reaping anything. Reaping on a
+  // guess destroys uncommitted work, so the step fails and the next pass
+  // retries.
   it('fails without reaping when the desired set cannot be read', async () => {
     mockWorkspaces.mockResolvedValue([{ ...pod('term-unknown'), terminating: true }])
     vi.mocked(desiredWorkspaces).mockRejectedValue(new Error('db is gone'))
@@ -252,30 +250,6 @@ describe('reconcileStaleWorkspaces', () => {
 
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(stopsReported()).toEqual([])
-  })
-
-  it('does NOT mislabel a yaac-deleted terminating pod whose mark was lost', async () => {
-    // Same pod state as the out-of-band case (the in-memory mark was lost to
-    // a restart or TTL), but the row's stoppedAt proves yaac issued the
-    // delete. Resume teardown without restamping the cause.
-    mockWorkspaces.mockResolvedValue([{ ...pod('term-ours'), terminating: true }])
-    setDesired({ stopped: ['proj/term-ours'] })
-
-    await reconcileStaleWorkspaces(view)
-
-    expect(mockCleanup).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceId: 'term-ours',
-        jobName: 'yaac-proj-term-ours',
-        preserveDeletedRecord: true,
-      }),
-    )
-    // No out-of-band cause is passed.
-    expect(mockCleanup).toHaveBeenCalledTimes(1)
-    expect(mockCleanup.mock.calls[0][0]).not.toHaveProperty('cause')
-    const log = loggedLines()
-    expect(log).toContain('resuming teardown session=term-ours')
-    expect(log).not.toContain('out-of-band')
   })
 
   it('does NOT re-reap a terminating pod whose teardown we already issued', async () => {

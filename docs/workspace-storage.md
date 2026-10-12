@@ -81,6 +81,12 @@ workspace. See "Agent workspaces" below.
 `deathDetail`. That is how the UI tells "you stopped it" from "it ran out of
 memory".
 
+A stop is written only to a live row, so the first stop recorded stands until
+a restart clears it. A reaper pass can probe a workspace while a user stop is
+killing it, find tmux gone, and tear it down again with `agent-exited`; the
+user's stop must not be relabelled a death. A teardown resumed after a lost
+terminating mark keeps its recorded cause the same way.
+
 ## Reads
 
 The base branch is written separately, once the checkout resolves it. The

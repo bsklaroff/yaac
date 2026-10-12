@@ -13,7 +13,6 @@ import {
   getProjectWorkspaceRows,
   getWorkspaceRow,
   countStoppedWorkspaces,
-  listStoppedWorkspaceIds,
   listStoppedWorkspaceRows,
   listWorkspaceRows,
   recordDeathSeen,
@@ -142,20 +141,6 @@ describe('session store', () => {
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.stoppedAt).toBeUndefined()
     })
 
-    it('stores a reaper-supplied cause and drops it on a plain delete', async () => {
-      await create('sid-1')
-      await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'oom', detail: 'exit code 137' })
-      expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')).toMatchObject({
-        deathReason: 'oom',
-        deathDetail: 'exit code 137',
-      })
-
-      await recordWorkspaceStopped(PROJ, 'sid-1')
-      const row = (await getProjectWorkspaceRows(PROJ)).get('sid-1')
-      expect(row?.deathReason).toBeUndefined()
-      expect(row?.deathDetail).toBeUndefined()
-    })
-
     it('tracks whether the user has seen the death, re-flagging on a re-death', async () => {
       await create('sid-1')
       await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'crashed' })
@@ -164,6 +149,7 @@ describe('session store', () => {
       await recordDeathSeen(PROJ, 'sid-1')
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.deathSeen).toBe(true)
 
+      await clearWorkspaceStopped(PROJ, 'sid-1')
       await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'evicted' })
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.deathSeen).toBe(false)
     })
@@ -289,16 +275,6 @@ describe('session store', () => {
       expect(await getWorkspaceRow(PROJ, 'sid-1')).toMatchObject({ workspaceId: 'sid-1' })
       expect(await getWorkspaceRow(OTHER, 'sid-1')).toBeUndefined()
       expect(await getWorkspaceRow(PROJ, 'nope')).toBeUndefined()
-    })
-  })
-
-  describe('listStoppedWorkspaceIds', () => {
-    it('returns only sessions with a recorded deletion, keyed by project', async () => {
-      await create('live')
-      await create('dead')
-      await recordWorkspaceStopped(PROJ, 'dead')
-
-      expect(await listStoppedWorkspaceIds()).toEqual(new Set([`${PROJ}/dead`]))
     })
   })
 

@@ -1,4 +1,4 @@
-import { listLiveWorkspaceRows, listStoppedWorkspaceIds } from './workspace-store'
+import { listLiveWorkspaceRows } from './workspace-store'
 
 /**
  * The workspaces the server has recorded, which the stale reaper compares
@@ -10,9 +10,6 @@ import { listLiveWorkspaceRows, listStoppedWorkspaceIds } from './workspace-stor
  */
 export interface DesiredWorkspaces {
   live: DesiredWorkspace[]
-  /** `<projectId>/<workspaceId>` of workspaces recorded as stopped, which
-   *  tells a teardown yaac issued apart from an unexpected one. */
-  stopped: string[]
 }
 
 export interface DesiredWorkspace {
@@ -24,9 +21,5 @@ export interface DesiredWorkspace {
 }
 
 export async function desiredWorkspaces(): Promise<DesiredWorkspaces> {
-  const [live, stopped] = await Promise.all([
-    listLiveWorkspaceRows(),
-    listStoppedWorkspaceIds(),
-  ])
-  return { live, stopped: [...stopped] }
+  return { live: await listLiveWorkspaceRows() }
 }

@@ -95,7 +95,8 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
 
   // Pods terminating past the grace window with no in-memory mark: an
   // external delete, or ours with the mark lost (server restart, TTL).
-  // Re-issuing the idempotent teardown resumes either.
+  // Re-issuing the idempotent teardown resumes either. The `orphaned` cause
+  // lands only on a live row; one yaac stopped keeps its recorded stop.
   const stuckTerminating: Array<{ jobName: string; projectId: string; workspaceId: string }> = []
   for (const p of terminating) {
     if (!p.terminating || !p.projectId || !p.workspaceId) continue
@@ -105,18 +106,6 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
     if (ageMs < graceMs) continue
     stuckTerminating.push({ jobName: p.jobName, projectId: p.projectId, workspaceId: p.workspaceId })
-  }
-
-  // A row with a recorded stop means yaac issued the delete: resume it but
-  // keep the recorded cause. Only pods with no such record are out-of-band.
-  const ourStuck: typeof stuckTerminating = []
-  const externalStuck: typeof stuckTerminating = []
-  if (stuckTerminating.length > 0) {
-    const recorded = new Set(desired.stopped)
-    for (const t of stuckTerminating) {
-      if (recorded.has(`${t.projectId}/${t.workspaceId}`)) ourStuck.push(t)
-      else externalStuck.push(t)
-    }
   }
 
   // Live rows with no pod (a create killed before launch) are recorded as
@@ -176,11 +165,10 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
       cause: { reason: 'never-started' as const },
     })),
     ...orphanTargets.map((o) => ({ ...o, cause: { reason: 'orphaned' as const } })),
-    ...externalStuck.map((t) => ({
+    ...stuckTerminating.map((t) => ({
       ...t,
       cause: { reason: 'orphaned' as const, detail: 'pod deleted out-of-band' },
     })),
-    ...ourStuck.map((t) => ({ ...t, preserveDeletedRecord: true as const })),
   ]
   if (targets.length === 0) return
 
@@ -198,11 +186,8 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   for (const o of orphanTargets) {
     serverLog(`[server] stale-reaper: reaping session=${o.workspaceId} job=${o.jobName} (orphan Job, no backing pod)`)
   }
-  for (const t of externalStuck) {
-    serverLog(`[server] stale-reaper: reaping session=${t.workspaceId} job=${t.jobName} (terminating out-of-band past grace)`)
-  }
-  for (const t of ourStuck) {
-    serverLog(`[server] stale-reaper: resuming teardown session=${t.workspaceId} job=${t.jobName} (terminating mark lost; yaac-issued delete)`)
+  for (const t of stuckTerminating) {
+    serverLog(`[server] stale-reaper: reaping session=${t.workspaceId} job=${t.jobName} (terminating past grace: out-of-band delete, or a teardown whose mark was lost)`)
   }
 
   await Promise.all(targets.map((t) =>

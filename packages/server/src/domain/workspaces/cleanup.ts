@@ -137,11 +137,10 @@ async function beginTeardown(params: {
   projectId: string
   workspaceId: string
   cause?: WorkspaceDeathCause
-  recordStop: boolean
 }): Promise<TeardownTarget> {
   const { jobName, projectId, workspaceId, cause } = params
   markWorkspaceTerminating(workspaceId)
-  if (params.recordStop) await recordStop(projectId, workspaceId, cause)
+  await recordStop(projectId, workspaceId, cause)
   forgetLiveness(projectId, workspaceId)
   evictWorkspaceStatus(projectId, workspaceId)
   return { projectId, workspaceId, unitName: jobName }
@@ -164,7 +163,7 @@ export async function cleanupWorkspace(params: {
   cause?: WorkspaceDeathCause
 }): Promise<boolean> {
   const { projectId, workspaceId } = params
-  const target = await beginTeardown({ ...params, recordStop: true })
+  const target = await beginTeardown(params)
   const runtimeGone = await workspaceDriver().destroy(target)
 
   // Remove the workspace's mount sources only if the runtime is confirmed
@@ -195,12 +194,8 @@ export async function cleanupWorkspaceDetached(params: {
   workspaceId: string
   /** Why the workspace died, when a reaper is tearing it down. */
   cause?: WorkspaceDeathCause
-  /** Skip recording the stop, keeping the recorded cause. Set when resuming
-   *  an already-recorded teardown (e.g. the stale reaper after a server
-   *  restart), which would otherwise overwrite the real cause. */
-  preserveDeletedRecord?: boolean
 }): Promise<void> {
-  const { jobName, projectId, workspaceId, cause, preserveDeletedRecord } = params
+  const { jobName, projectId, workspaceId, cause } = params
 
   // Register before the first await so a restart always waits for it.
   let settle: () => void = () => undefined
@@ -211,12 +206,16 @@ export async function cleanupWorkspaceDetached(params: {
   })
   try {
     // The detached script's output is discarded, so log the teardown here.
+    // The cause lands on the row only if no stop is recorded yet.
     serverLog(
       `[server] session teardown: session=${workspaceId} job=${jobName} project=${projectId}`
-      + (cause ? ` cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}` : ''),
+      + (cause
+        ? ` reported cause=${cause.reason}${cause.detail ? ` (${cause.detail})` : ''}`
+          + ', kept only if no stop is recorded yet'
+        : ''),
     )
 
-    const target = await beginTeardown({ ...params, recordStop: !preserveDeletedRecord })
+    const target = await beginTeardown(params)
     const runtime = workspaceDriver()
 
     // Forwards and egress registration are in-process state a shell script
