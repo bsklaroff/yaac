@@ -35,11 +35,11 @@ never stops a server.
 
 ## Shell behavior
 
-- **Tray.** Closing the window hides it; the shell stays in the tray (Open,
-  a waiting-count line, this machine's servers, Quit). Quit exits the shell
-  and its auth daemon; the servers keep running. Reopening (tray click or
-  Dock activate) repeats the connect flow, so it notices a server that came
-  back. A failed connect does not quit either.
+- **Tray.** Closing the window hides it; the shell stays in the tray (Servers…,
+  this machine's servers, Quit). Quit exits the shell and its auth daemon;
+  the servers keep running. Reopening (tray click or Dock activate) repeats
+  the connect flow, so it notices a server that came back. A failed connect
+  does not quit either.
 - **This machine's servers.** A Mac can run two installs side by side
   (docs/server-selection.md "Two installs on one machine"): the host server
   and a cluster's. The tray reads `yaac server status --json` and `yaac
@@ -143,8 +143,8 @@ never stops a server.
   back up.
 - **Attention signals.** The main process follows the server's `/api/events`
   WebSocket, re-resolving the server on every reconnect so it follows a
-  change of selection. Workspaces waiting for input show as a dock badge, the
-  tray line, and one OS notification each time a workspace starts waiting
+  change of selection. Workspaces waiting for input show as a dock badge and
+  one OS notification each time a workspace starts waiting
   (`waitingSinceMs`). A reconnect or the first snapshot after launch does not
   re-notify.
 - **Port forwarding.** The shell binds each workspace's forwarded ports on
@@ -258,7 +258,8 @@ Also check in the desktop app:
 - holding k in vim in a terminal pane repeats the key with no accent popup,
   from the first launch;
 - a forwarded-port link opens in the system browser;
-- close hides to the tray, and tray Open brings the window back;
+- close hides to the tray, and a tray click (which also opens the menu) or
+  the Dock icon brings the window back;
 - a waiting workspace badges the dock and notifies once, and clicking the
   notification focuses the window;
 - Quit leaves the server running;
