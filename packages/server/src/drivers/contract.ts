@@ -753,8 +753,7 @@ export interface WorkspaceDriver {
   /**
    * OAuth tokens the egress path captured from a workspace's refresh, which
    * the owner's store may not have yet, keyed by the owner whose credential
-   * rotated. Captures from a proxy older than owner keys are under `''`.
-   * Empty if none.
+   * rotated. Empty if none.
    */
   refreshedCredentials(): Record<string, RefreshedToolCredentials>
   /** Start the workspace. A caller may relaunch after tearing down a

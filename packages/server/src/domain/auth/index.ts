@@ -26,7 +26,6 @@ export {
   seedProjectToolHome,
   syncToolCredentials,
 } from './credential-sync'
-export { importToolCredentialFiles } from './import-files'
 export { listAuth } from './list'
 export { catalogModel, defaultModelFor, isCatalogModel, modelDisplayName, modelEfforts, modelsForTool } from './models'
 export { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from './runtime-push'

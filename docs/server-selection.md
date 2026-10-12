@@ -67,8 +67,8 @@ never becomes the selection.
 Nothing else: what kind of install a data dir is lives in its
 `install.json`, so forgetting servers never loses it, and a moved data dir
 takes its record with it. A `server.json` an older `yaac` wrote a copy of
-the record into is cleaned on the first read, and `enabled` is still written
-for older clients (docs/legacy-compat-shims.md).
+the record into is cleaned on the first read, and a legacy `enabled: false`
+still reads as nothing selected (docs/legacy-compat-shims.md).
 
 ## What `install.json` holds
 

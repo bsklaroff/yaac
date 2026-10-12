@@ -29,17 +29,9 @@ import {
 const NS = 'yaac'
 let kubectlBin = ''
 
-/** kubectl against the test API server; JSON in, JSON out. */
-function kubectl(args: string[], input?: object): unknown {
-  const out = execFileSync(kubectlBin, args, {
-    encoding: 'utf8',
-    input: input ? JSON.stringify(input) : '',
-  })
-  return out.trim().startsWith('{') ? JSON.parse(out) : out
-}
-
+/** An object as stored, read with kubectl against the test API server. */
 const stored = <T>(kind: string, name: string): T =>
-  kubectl(['get', kind, name, '-n', NS, '-o', 'json', '--show-managed-fields']) as T
+  JSON.parse(execFileSync(kubectlBin, ['get', kind, name, '-n', NS, '-o', 'json'], { encoding: 'utf8' })) as T
 const ref = (kind: string, name: string, apiVersion = 'v1') => ({ apiVersion, kind, name, namespace: NS })
 const configMap = (name: string, data: Record<string, string>, labels?: Record<string, string>) => ({
   apiVersion: 'v1', kind: 'ConfigMap', metadata: { name, namespace: NS, ...(labels ? { labels } : {}) }, data,
@@ -93,43 +85,6 @@ describe('object writes and reads', () => {
 
     await patchObject(ref('ConfigMap', 'prune'), { metadata: { labels: { claimed: null } } })
     expect(stored<{ metadata: { labels?: object } }>('configmap', 'prune').metadata.labels).toBeUndefined()
-  })
-
-  // An install made before yaac used server-side apply has every field
-  // owned by `kubectl-client-side-apply`. Unadopted, a key yaac stops
-  // sending (a signed-out credential) would stay forever.
-  it('adopts an older client-side apply, so a dropped key or env var is pruned at once', async () => {
-    const b64 = (s: string) => Buffer.from(s).toString('base64')
-    const secret = (keys: string[]) => ({
-      apiVersion: 'v1', kind: 'Secret', type: 'Opaque',
-      metadata: { name: 'creds', namespace: NS },
-      data: Object.fromEntries(keys.map((k) => [k, b64(k)])),
-    })
-    kubectl(['apply', '-f', '-'], secret(['claude.json', 'pi.json']))
-    await applyObject(secret(['claude.json']))
-    const s = stored<{
-      data: object
-      metadata: { annotations?: Record<string, string>; managedFields: Array<{ manager: string }> }
-    }>('secret', 'creds')
-    expect(Object.keys(s.data)).toEqual(['claude.json'])
-    expect(s.metadata.managedFields.map((f) => f.manager)).not.toContain('kubectl-client-side-apply')
-    expect(s.metadata.annotations?.['kubectl.kubernetes.io/last-applied-configuration']).toBeUndefined()
-
-    const deployment = (env: string[]) => ({
-      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'server', namespace: NS },
-      spec: {
-        selector: { matchLabels: { app: 'server' } },
-        template: {
-          metadata: { labels: { app: 'server' } },
-          spec: { containers: [{ name: 'c', image: 'x', env: env.map((name) => ({ name, value: '1' })) }] },
-        },
-      },
-    })
-    kubectl(['apply', '-f', '-'], deployment(['KEEP', 'YAAC_USE_TOR']))
-    await applyObject(deployment(['KEEP']))
-    const d = stored<{ spec: { template: { spec: { containers: Array<{ env: Array<{ name: string }> }> } } } }>(
-      'deployment', 'server')
-    expect(d.spec.template.spec.containers[0].env.map((e) => e.name)).toEqual(['KEEP'])
   })
 
   // The spare claim's compare-and-swap: a merge patch carrying a stale

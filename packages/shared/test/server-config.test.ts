@@ -64,14 +64,15 @@ describe('server config store', () => {
     ])
   })
 
-  it('reads a legacy `enabled: false` as nothing selected, keeping the server saved', async () => {
+  it('reads a legacy `enabled: false` as nothing selected, and the next write drops it', async () => {
     await fs.mkdir(clientLocalRoot(), { recursive: true })
     await fs.writeFile(serverConfigPath(), JSON.stringify({
       url: 'https://a.ts.net', enabled: false, saved: [{ url: 'https://b.ts.net' }],
     }))
-    expect(await readServerConfig()).toEqual({
-      url: '', saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }],
-    })
+    const cfg = await readServerConfig()
+    expect(cfg).toEqual({ url: '', saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }] })
+    await writeServerConfig(cfg!)
+    expect(JSON.parse(await fs.readFile(serverConfigPath(), 'utf8'))).toEqual(cfg)
   })
 
   it('reads a file that still carries tokens, and the next write drops them', async () => {
@@ -86,15 +87,15 @@ describe('server config store', () => {
     expect(await fs.readFile(serverConfigPath(), 'utf8')).not.toContain('token')
   })
 
-  it('holds only the selection, plus `enabled` for older clients: a record is never written here', async () => {
+  it('holds only the selection: a record is never written here', async () => {
     await recordInstall({ driver: 'k8s', installId: 'i-1' })
     await writeServerConfig(withServerSelected(await readServerConfig(), 'https://b.ts.net'))
     const raw = async (): Promise<unknown> => JSON.parse(await fs.readFile(serverConfigPath(), 'utf8'))
     expect(await raw()).toEqual({
-      url: 'https://b.ts.net', enabled: true, saved: [{ url: 'https://b.ts.net' }],
+      url: 'https://b.ts.net', saved: [{ url: 'https://b.ts.net' }],
     })
     await writeServerConfig({ url: '', saved: [{ url: 'https://b.ts.net' }] })
-    expect(await raw()).toEqual({ url: '', enabled: false, saved: [{ url: 'https://b.ts.net' }] })
+    expect(await raw()).toEqual({ url: '', saved: [{ url: 'https://b.ts.net' }] })
     expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
   })
 })

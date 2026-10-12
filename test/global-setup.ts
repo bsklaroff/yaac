@@ -66,11 +66,9 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
   } catch { /* kubectl or cluster absent — nothing to sweep */ }
   // ClusterRoles/Bindings, PVs and StorageClasses. Filter on the install
   // namespace label so the developer's real install is left alone.
-  // `yaac-netd` matches only the cluster RBAC an older netd was granted
-  // (docs/legacy-compat-shims.md).
   try {
     const { stdout } = await execFileAsync('kubectl', [
-      'get', 'clusterrole,clusterrolebinding,pv,storageclass', '-l', 'app in (yaac-netd,yaac-server)',
+      'get', 'clusterrole,clusterrolebinding,pv,storageclass', '-l', 'app=yaac-server',
       '-o', "jsonpath={range .items[*]}{.kind}/{.metadata.name}{'\\t'}{.metadata.labels.yaac\\.install-namespace}{'\\n'}{end}",
     ], { timeout: 10_000 })
     const leaked = stdout

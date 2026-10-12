@@ -919,7 +919,7 @@ describe('agentDriver', () => {
     expect(await capabilities('opencode')).toMatchObject({ _meta: { 'opencode/child-session-updates': true } })
   })
 
-  it("follows codex's and pi's own state reports, inferring the start pi does not report", async () => {
+  it("follows codex's and pi's own state reports", async () => {
     const streams = new Map([['codex', new FakeStream()], ['pi', new FakeStream()]])
     tmuxWindows = 'codex\npi\n'
     const seen: AgentObservation[] = []
@@ -936,7 +936,6 @@ describe('agentDriver', () => {
       seen.flatMap((o) => (o.kind === 'status' && o.handle === handle ? [o.status] : []))
     const codex = streams.get('codex')!
     const pi = streams.get('pi')!
-    const piEvents = collect(acpConversation('demo', 'wt-1', 'acp-pi')!)
     codex.feed(helloLine(false))
     pi.feed(helloLine(false))
     await vi.waitFor(() => expect([of('codex').at(-1), of('pi').at(-1)]).toEqual(['waiting', 'waiting']))
@@ -949,43 +948,12 @@ describe('agentDriver', () => {
     codex.feed(threadStatus('idle'))
     await vi.waitFor(() => expect(of('codex').at(-1)).toBe('waiting'))
 
-    // Metadata and plain text are not work: pi-acp sends text outside any
-    // run (an extension's `notify`), and no end report would follow it. An
-    // extension-started run's first tool call is, and its settle ends it.
-    pi.feed(updateLine('acp-pi', { sessionUpdate: 'available_commands_update', availableCommands: [] }))
-    pi.feed(updateLine('acp-pi', {
-      sessionUpdate: 'agent_message_chunk',
-      content: { type: 'text', text: 'build finished' },
-      _meta: { piAcp: { notify: { level: 'info' } } },
-    }))
-    await new Promise((r) => setTimeout(r, 20))
-    expect(of('pi').at(-1)).toBe('waiting')
-    const toolCall = (id: string): string =>
-      updateLine('acp-pi', { sessionUpdate: 'tool_call', toolCallId: id, title: 'read', kind: 'read', status: 'pending' })
-    pi.feed(toolCall('t1'))
+    // pi-acp reports a run an extension starts, and its settle.
+    const piRunning = (running: boolean): string =>
+      updateLine('acp-pi', { sessionUpdate: 'session_info_update', _meta: { piAcp: { queueDepth: 0, running } } })
+    pi.feed(piRunning(true))
     await vi.waitFor(() => expect(of('pi').at(-1)).toBe('running'))
-    // pi-acp steers only into a turn it started, and would fail a prompt
-    // sent mid-run, so the message waits for the settle.
-    await agentDriver('acp').deliverPrompt(session, 'pi', 'and then this')
-    await vi.waitFor(() => expect(pi.sent().some((m) => m.method === '_session/steering')).toBe(true))
-    const steer = pi.sent().find((m) => m.method === '_session/steering')!
-    pi.feed(`${JSON.stringify({ jsonrpc: '2.0', id: steer.id, result: { outcome: 'promptRequired' } })}\n`)
-    await new Promise((r) => setTimeout(r, 20))
-    expect(pi.sent().some((m) => m.method === 'session/prompt')).toBe(false)
-    pi.feed(updateLine('acp-pi', { sessionUpdate: 'session_info_update', _meta: { piAcp: { queueDepth: 0, running: false } } }))
-    await vi.waitFor(() => expect(pi.sent().some((m) => m.method === 'session/prompt')).toBe(true))
-    // The held prompt starts as the run ends, so the pane sees two turns.
-    const prompt = pi.sent().find((m) => m.method === 'session/prompt')!
-    pi.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)
-    await vi.waitFor(() => expect(piEvents.map((e) => e.type))
-      .toEqual(['turn-start', 'turn-end', 'turn-start', 'turn-end']))
-    expect(of('pi').at(-1)).toBe('waiting')
-
-    // Stop clears an inferred start at once, since no end report may follow.
-    pi.feed(toolCall('t2'))
-    await vi.waitFor(() => expect(of('pi').at(-1)).toBe('running'))
-    acpConversation('demo', 'wt-1', 'acp-pi')!.cancel()
-    expect(pi.sent().some((m) => m.method === 'session/cancel')).toBe(true)
+    pi.feed(piRunning(false))
     await vi.waitFor(() => expect(of('pi').at(-1)).toBe('waiting'))
   })
 

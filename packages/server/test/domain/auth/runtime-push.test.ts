@@ -182,7 +182,7 @@ describe('adoptRefreshedToolCredentials', () => {
     expect(synced).toEqual([])
   })
 
-  it('takes each owner key\'s captures into that user\'s store, and a pre-owner proxy\'s into the built-in user\'s', async () => {
+  it('takes each owner key\'s captures into that user\'s store', async () => {
     const bob = await seeTailnetUser('bob@example.com', 'Bob')
     await saveClaude(claudeBundle())
     await saveClaude(claudeBundle({ accessToken: 'bob' }), bob)
@@ -195,8 +195,8 @@ describe('adoptRefreshedToolCredentials', () => {
     expect(await storedClaude(bob)).toMatchObject({ claudeAiOauth: bobs })
     expect(await storedClaude()).toMatchObject({ claudeAiOauth: claudeBundle() })
 
-    const legacy = claudeBundle({ accessToken: 'legacy', expiresAt: BASE_EXPIRY + 2 })
-    await adoptRefreshedToolCredentials({ '': { claude: legacy } })
-    expect(await storedClaude()).toMatchObject({ claudeAiOauth: legacy })
+    const mine = claudeBundle({ accessToken: 'mine', expiresAt: BASE_EXPIRY + 2 })
+    await adoptRefreshedToolCredentials({ install: { claude: mine } })
+    expect(await storedClaude()).toMatchObject({ claudeAiOauth: mine })
   })
 })

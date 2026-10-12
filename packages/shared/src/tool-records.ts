@@ -4,7 +4,7 @@ import path from 'node:path'
 
 /**
  * Legacy: repoint the absolute paths agent tools record about a host
- * (containerless) workspace when the project dir holding it moves
+ * (containerless) workspace when the data dir holding it moves
  * (docs/legacy-compat-shims.md). pi, opencode and codex record the
  * checkout as a conversation's cwd and refuse to resume it from another
  * one: pi in its session headers, opencode in its database, codex in its

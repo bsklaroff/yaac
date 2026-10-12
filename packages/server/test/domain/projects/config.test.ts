@@ -206,14 +206,6 @@ describe('resolveProjectConfig', () => {
     })
   })
 
-  describe('egress allowlists', () => {
-    it('refuses the allowlist keys, which are a project setting', async () => {
-      for (const key of ['addAllowedUrls', 'setAllowedUrls']) {
-        await expect(roundTrip({ [key]: ['a.com'] })).rejects.toThrow(`${key} is not read here`)
-      }
-    })
-  })
-
   describe('npmCache', () => {
     it('round-trips the boolean and rejects anything else', async () => {
       expect(await roundTrip({ npmCache: false })).toEqual({ npmCache: false })

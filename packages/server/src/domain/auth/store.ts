@@ -25,10 +25,9 @@ import {
  */
 
 /**
- * The runtime owner key of the built-in user, which owned the install's one
- * credential set before credentials were per user. Every other user's key is
- * its id (docs/legacy-compat-shims.md "The built-in user's credentials keep
- * the `install` key").
+ * The runtime owner key of the built-in user; every other user's key is its
+ * id. Running workspaces' egress registrations name this key, so changing it
+ * cuts them off from their credentials until they are recreated.
  */
 const BUILT_IN_OWNER_KEY = 'install'
 
@@ -38,13 +37,9 @@ export function credentialOwnerKey(userId: string): string {
   return userId === BUILT_IN_USER_ID ? BUILT_IN_OWNER_KEY : userId
 }
 
-/**
- * The user an owner key names. `''` is where a proxy older than owner keys
- * left its captures, which were the built-in user's
- * (docs/legacy-compat-shims.md).
- */
+/** The user an owner key names. */
 export function ownerOfCredentialKey(key: string): string {
-  return key === BUILT_IN_OWNER_KEY || key === '' ? BUILT_IN_USER_ID : key
+  return key === BUILT_IN_OWNER_KEY ? BUILT_IN_USER_ID : key
 }
 
 /** The ids of a user's projects, whose tool homes hold that user's

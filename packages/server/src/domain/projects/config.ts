@@ -115,11 +115,6 @@ export function parseProjectConfig(raw: string): YaacConfig {
   const obj = parsed as Record<string, unknown>
 
   for (const key of Object.keys(obj)) {
-    // The allowlist is a project setting (docs/legacy-compat-shims.md
-    // "Moving the egress allowlist out of yaac-config.json").
-    if (key === 'addAllowedUrls' || key === 'setAllowedUrls') {
-      throw new Error(`yaac-config.json: ${key} is not read here; edit the egress allowlist in Settings → Project Config`)
-    }
     if (!KNOWN_KEYS.has(key)) console.warn(`yaac-config.json: unknown field "${key}"`)
   }
 

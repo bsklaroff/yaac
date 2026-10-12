@@ -50,13 +50,6 @@ class YaacCluster < Formula
 
       The cluster's server is managed with `yaac cluster start|stop|status`,
       beside the host server's `yaac server …`.
-
-      An install of the old `yaac` formula upgrades to this one, which keeps
-      every tool it had. If you run only the containerless driver
-      (`yaac server start`), keep the CLI and drop the cluster tools with:
-
-        brew install bsklaroff/yaac/yaac-server
-        brew uninstall bsklaroff/yaac/yaac-cluster
     EOS
   end
 

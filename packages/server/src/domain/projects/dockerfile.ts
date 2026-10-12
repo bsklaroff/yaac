@@ -7,11 +7,8 @@ import {
   projectBuildDir,
   userBuildDir,
 } from '#lib/build-dirs'
-import { serverLocalPath } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import { authorizeProject, type Actor } from '#domain/access'
-import { BUILT_IN_USER_ID } from '#db'
-import { serverLog } from '#log'
 
 /** Per-project layered/standalone Dockerfile (config/build/Dockerfile.yaac). */
 function projectDockerfilePath(projectId: string): string {
@@ -80,27 +77,4 @@ export async function writeUserDockerfile(userId: string, content: string): Prom
   }
   await fs.mkdir(path.dirname(filePath), { recursive: true })
   await fs.writeFile(filePath, content)
-}
-
-/**
- * Give the install-wide `server-local/build/` of a single-user install to
- * the built-in user, whose projects it built (docs/legacy-compat-shims.md
- * "Moving the user build dir to the built-in user"). Run on every start,
- * before the server admits requests; a no-op once moved.
- */
-export async function moveLegacyUserBuildDir(): Promise<void> {
-  const legacy = serverLocalPath('build')
-  const target = userBuildDir(BUILT_IN_USER_ID)
-  if (!await exists(legacy)) return
-  if (await exists(target)) {
-    serverLog(`[server] both ${legacy} and ${target} exist; ${target} is used, `
-      + `and ${legacy} is stale and can be deleted`)
-    return
-  }
-  await fs.mkdir(path.dirname(target), { recursive: true })
-  await fs.rename(legacy, target)
-}
-
-async function exists(p: string): Promise<boolean> {
-  return fs.access(p).then(() => true, () => false)
 }

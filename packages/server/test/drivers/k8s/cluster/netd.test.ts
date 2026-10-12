@@ -93,25 +93,6 @@ describe('ensureNetd', () => {
     )
   })
 
-  it('drops the cluster RBAC an older netd of this install left, after the rollout', async () => {
-    const legacy = (kind: string, ns: string) => ({
-      apiVersion: 'rbac.authorization.k8s.io/v1',
-      kind,
-      metadata: { name: `yaac-netd-${ns}`, labels: { app: 'yaac-netd', 'yaac.install-namespace': ns } },
-    })
-    fakeCluster.seed(
-      legacy('ClusterRole', 'test-ns'), legacy('ClusterRoleBinding', 'test-ns'), legacy('ClusterRole', 'other-ns'),
-    )
-    // The pods being replaced keep their watch until the rollout is done.
-    fakeCluster.intercept((call) => {
-      if (call.verb === 'delete') expect(mockExecFile).toHaveBeenCalled()
-    })
-    await ensureNetd()
-
-    expect(fakeCluster.objects('ClusterRole').map((o) => o.metadata.name)).toEqual(['yaac-netd-other-ns'])
-    expect(fakeCluster.objects('ClusterRoleBinding')).toEqual([])
-  })
-
   it('resolves both images from the registry and never builds one', async () => {
     await ensureNetd()
 

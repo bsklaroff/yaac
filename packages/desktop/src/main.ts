@@ -33,7 +33,7 @@ import { CLUSTER_SUPPORTED, createSetupRunner, localView, onPath, setupConfirmat
 import { appMenuTemplate } from '#menu'
 import { splashUrl, type LaunchError } from '#messages'
 import { serversPageUrl } from '#servers-page'
-import { adoptLoginShellPath, createAuthDaemonRunner, stopLegacyAuthDaemon } from '#server-process'
+import { adoptLoginShellPath, createAuthDaemonRunner } from '#server-process'
 import {
   createRunYaac, installOrigin, installState, parseScope, readLocalServer, runServerAction, trayServerItems,
   type LocalServers, type ScopedAction, type ServerScope,
@@ -106,7 +106,7 @@ const resolveTarget = resolveServerTarget
 
 const distDir = path.dirname(fileURLToPath(import.meta.url))
 const PRELOAD = path.join(distDir, 'preload.cjs')
-const authDaemonReady = Promise.all([adoptLoginShellPath(), stopLegacyAuthDaemon()])
+const authDaemonReady = adoptLoginShellPath()
 const authDaemon = createAuthDaemonRunner((baseUrl) => utilityProcess.fork(
   path.join(distDir, 'auth-daemon.js'), [baseUrl], { serviceName: 'yaac auth daemon' },
 ))

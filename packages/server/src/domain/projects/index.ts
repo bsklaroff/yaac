@@ -15,7 +15,6 @@ export { serveHostedRepo, setDefaultBranchGuard } from './hosted'
 export {
   addAllowedHostToProject,
   getProjectAllowlist,
-  importConfigAllowlists,
   setProjectAllowlist,
 } from './allowlist'
 export { getProjectBranches } from './branches'
@@ -61,7 +60,6 @@ export {
   resolveProjectConfigWithSource,
 } from './detail'
 export {
-  moveLegacyUserBuildDir,
   readProjectDockerfile,
   readUserDockerfile,
   writeProjectDockerfile,

@@ -1,9 +1,8 @@
 # Homebrew tap source
 
 Source for the `bsklaroff/homebrew-yaac` tap. `Formula/` and `Casks/` are
-copied verbatim into the tap's directories of the same names, and
-`formula_renames.json` into its root; they live here so packaging changes are
-reviewed with the code they package.
+copied verbatim into the tap's directories of the same names; they live here
+so packaging changes are reviewed with the code they package.
 
 End-user install (macOS, arm64):
 
@@ -60,9 +59,6 @@ next newer tap version or removed by `brew uninstall --cask`.
   `yaac-krunkit` on macOS/arm64. It fetches the same tarball as
   `yaac-server` only so the two share a version, and `brew upgrade` carries
   a change to its dependencies with each release.
-  - `formula_renames.json` maps the old `yaac` formula to it, so
-    `brew upgrade` moves an existing `yaac` install here with every
-    dependency it had (docs/legacy-compat-shims.md).
 - **`Formula/yaac-libkrun.rb`** (temporary) is upstream libkrun v1.19.4 plus a
   one-line backport (upstream d33afa5) that forces `LinuxComplete` virtiofs
   semantics. krunkit 1.3.x always asks for `Simplified`, and podman cannot
@@ -128,7 +124,6 @@ Delete both temporary formulas, and point `yaac-cluster.rb` back at
    ```sh
    rsync -a --delete homebrew/Formula/ <tap>/Formula/
    rsync -a --delete homebrew/Casks/ <tap>/Casks/
-   cp homebrew/formula_renames.json <tap>/
    ```
 
 ## Creating the tap (one-time)

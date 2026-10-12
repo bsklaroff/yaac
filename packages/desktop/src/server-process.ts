@@ -13,8 +13,6 @@
  * `yaac` are then found where the user's terminal finds them.
  */
 import { execFile } from 'node:child_process'
-import fs from 'node:fs/promises'
-import { clientLocalPath } from '@yaac/shared/paths'
 import type { ServerTarget } from '@yaac/shared/server-api'
 
 /** Brackets PATH in the shell's output, which an rc file may print into. */
@@ -47,34 +45,6 @@ export function adoptLoginShellPath(execImpl: typeof execFile = execFile): Promi
       resolve()
     })
   })
-}
-
-/**
- * Stop the detached auth daemon an older CLI or app left running, and
- * remove the lock naming it (docs/legacy-compat-shims.md). Left alive, it
- * and this app's daemon would take each other's socket on the server
- * forever. The pid is signalled only if it still runs `auth server run`, in
- * case it has been reused.
- */
-export async function stopLegacyAuthDaemon(
-  lockPath = clientLocalPath('.auth-daemon.lock'),
-  execImpl: typeof execFile = execFile,
-): Promise<void> {
-  let pid: unknown
-  try {
-    pid = (JSON.parse(await fs.readFile(lockPath, 'utf8')) as { pid?: unknown }).pid
-  } catch {
-    return
-  }
-  await fs.rm(lockPath, { force: true })
-  if (typeof pid !== 'number' || pid === process.pid) return
-  const command = await new Promise<string>((resolve) => {
-    execImpl('ps', ['-o', 'command=', '-p', String(pid)], (err, stdout) => resolve(err ? '' : stdout))
-  })
-  if (!command.includes('auth server run')) return
-  try {
-    process.kill(pid, 'SIGTERM')
-  } catch { /* already gone */ }
 }
 
 /** The part of Electron's UtilityProcess the runner uses. */

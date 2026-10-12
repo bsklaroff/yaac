@@ -7,7 +7,6 @@ import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, setToolCre
 import { buildFakeClaudeOAuthBundle } from '#domain/projects/fake-auth'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
-  PLACEHOLDER_API_KEY,
   PLACEHOLDER_GH_TOKEN,
   PLACEHOLDER_OPENCODE_API_KEY,
   PLACEHOLDER_PI_API_KEY,
@@ -60,9 +59,8 @@ describe('seedFakeAuth', () => {
     expect(parsed.claudeAiOauth.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
   })
 
-  it('seeds opencode and pi as OpenRouter api-keys holding their own placeholders, over an older fake', async () => {
-    // A fake from before each tool had its own placeholder is still a fake.
-    await setToolCredential(ME, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: PLACEHOLDER_API_KEY })
+  it('seeds opencode and pi as OpenRouter api-keys holding their own placeholders, again over its own fake', async () => {
+    await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'], BUILT_IN_USER_ID)
     await seedFakeAuth(['opencode-openrouter', 'pi-openrouter'], BUILT_IN_USER_ID)
 
     for (const [creds, placeholder] of [

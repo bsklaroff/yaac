@@ -31,7 +31,6 @@ import {
   serverLocalRoot,
   clientLocalRoot,
   clientLocalPath,
-  credentialsDir,
   globalPath,
   globalProjectPath,
   nodeLocalProjectPath,
@@ -226,8 +225,6 @@ describe('storage tiers', () => {
   it('joins per tier', () => {
     setDataDir('/tmp/yaac-test')
     expect(globalPath('run', 'proxy-data')).toBe('/tmp/yaac-test/global/run/proxy-data')
-    // The importer reads the pre-database credential files from here.
-    expect(credentialsDir()).toBe('/tmp/yaac-test/server-local/.credentials')
     expect(globalProjectPath('my-repo', 'repo')).toBe('/tmp/yaac-test/global/projects/my-repo/repo')
     expect(nodeLocalProjectPath(PROJECT_ID, 'x')).toBe(`/tmp/yaac-test/node-local/projects/${PROJECT_ID}/x`)
     expect(serverLocalPath('db')).toBe('/tmp/yaac-test/server-local/db')

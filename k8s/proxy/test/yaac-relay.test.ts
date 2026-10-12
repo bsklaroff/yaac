@@ -5,9 +5,8 @@ const RELAY = 'http://yaac-server-mama.ns.svc.cluster.local:8788/api/workspace/m
 const REPO = '/api/workspace/git/0a0a0a0a-0000-4000-8000-000000000001.git'
 
 describe('relayTarget', () => {
-  it('relays yaac-mama, its legacy path, and a hosted remote\'s smart-HTTP paths, and nothing else', () => {
+  it('relays yaac-mama and a hosted remote\'s smart-HTTP paths, and nothing else', () => {
     expect(relayTarget('/api/workspace/mama', RELAY)).toBe(RELAY)
-    expect(relayTarget('/cmd', RELAY)).toBe(RELAY)
     // A git request keeps its own path and query on the listener's origin.
     expect(relayTarget(`${REPO}/info/refs?service=git-receive-pack`, RELAY))
       .toBe(`http://yaac-server-mama.ns.svc.cluster.local:8788${REPO}/info/refs?service=git-receive-pack`)
@@ -23,6 +22,7 @@ describe('relayTarget', () => {
     expect(relayTarget('/api/workspace/list', RELAY)).toBeNull()
     expect(relayTarget('/api/workspace/git/../../project/list/info/refs', RELAY)).toBeNull()
     expect(relayTarget('/api/workspace/git/../info/refs', RELAY)).toBeNull()
+    expect(relayTarget('/cmd', RELAY)).toBeNull()
     expect(relayTarget('/', RELAY)).toBeNull()
   })
 })

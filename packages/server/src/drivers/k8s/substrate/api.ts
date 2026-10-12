@@ -57,62 +57,15 @@ function header(ref: ObjectRef): KubernetesObject {
 /**
  * Server-side apply `manifest` as yaac's field manager, forcing ownership
  * of any field it sends. A field yaac stops sending is removed only if
- * yaac's apply owned it: a field first set by client-side `kubectl apply`
- * or by a merge patch stays. An atomic list (e.g. a NetworkPolicy's
- * `spec.ingress`) is replaced whole.
+ * yaac's apply owned it: a field set by a merge patch stays. An atomic list
+ * (e.g. a NetworkPolicy's `spec.ingress`) is replaced whole.
  */
 export async function applyObject(manifest: object): Promise<void> {
-  const apply = async () => await getObjectApi().send(HttpMethod.PATCH, manifest, 'read', {
+  await getObjectApi().send(HttpMethod.PATCH, manifest, 'read', {
     query: { fieldManager: FIELD_MANAGER, force: 'true' },
     body: manifest,
     contentType: PatchStrategy.ServerSideApply,
-  }) as AppliedObject
-  if (await adoptClientSideFields(manifest, await apply())) await apply()
-}
-
-/** The parts of an applied object `adoptClientSideFields` reads. */
-interface AppliedObject {
-  metadata?: {
-    annotations?: Record<string, string>
-    managedFields?: Array<{ manager?: string; operation?: string; fieldsV1?: object }>
-  }
-}
-
-const CLIENT_SIDE_MANAGER = 'kubectl-client-side-apply'
-const LAST_APPLIED_ANNOTATION = 'kubectl.kubernetes.io/last-applied-configuration'
-
-/**
- * Hand the fields an older install's client-side `kubectl apply` owns to
- * yaac's apply, so a field yaac no longer sends is pruned instead of
- * staying co-owned forever, and drop the stale last-applied annotation
- * (on a Secret, a frozen copy of old data). This is what
- * `kubectl apply --server-side` does when it migrates an object. True when
- * it rewrote anything, so the caller re-applies to prune now.
- * docs/legacy-compat-shims.md.
- */
-async function adoptClientSideFields(spec: KubernetesObject, applied: AppliedObject): Promise<boolean> {
-  const entries = applied.metadata?.managedFields ?? []
-  const legacy = entries.find((e) => e.manager === CLIENT_SIDE_MANAGER)
-  if (!legacy) return false
-  const ours = entries.find((e) => e.manager === FIELD_MANAGER && e.operation === 'Apply')
-  const merged = ours
-    ? entries
-      .filter((e) => e !== legacy)
-      .map((e) => (e === ours ? { ...e, fieldsV1: mergeFields(e.fieldsV1 ?? {}, legacy.fieldsV1 ?? {}) } : e))
-    : entries.map((e) => (e === legacy ? { ...e, manager: FIELD_MANAGER, operation: 'Apply' } : e))
-  const ops: object[] = [{ op: 'replace', path: '/metadata/managedFields', value: merged }]
-  if (applied.metadata?.annotations?.[LAST_APPLIED_ANNOTATION] !== undefined) {
-    ops.push({ op: 'remove', path: `/metadata/annotations/${LAST_APPLIED_ANNOTATION.replace('/', '~1')}` })
-  }
-  await getObjectApi().send(HttpMethod.PATCH, spec, 'read', { body: ops, contentType: PatchStrategy.JsonPatch })
-  return true
-}
-
-/** Union of two managedFields field sets (nested `f:`/`k:` key trees). */
-function mergeFields(a: object, b: object): object {
-  const out: Record<string, object> = { ...(a as Record<string, object>) }
-  for (const [k, v] of Object.entries(b as Record<string, object>)) out[k] = k in out ? mergeFields(out[k], v) : v
-  return out
+  })
 }
 
 /** Create `manifest`; fails with 409 if the object exists. */

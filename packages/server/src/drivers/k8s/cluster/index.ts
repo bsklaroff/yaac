@@ -42,7 +42,6 @@ export {
 } from './project-registry'
 export {
   ensureBuilderRoleGuard,
-  deleteSlugNamedProjectSecrets,
   ensureCaConfigMap,
   ensureNamespace,
   ensureProxyAuthSecret,

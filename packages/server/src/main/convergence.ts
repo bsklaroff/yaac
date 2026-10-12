@@ -4,9 +4,8 @@ import { acpLaunchModel } from '#runtime/agents'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#runtime/ports'
 import { getProjectRow, getWorkspaceRow, recordedConversationHandles } from '#db'
-import { importConfigAllowlists, resolveProjectConfig } from '#domain/projects'
+import { resolveProjectConfig } from '#domain/projects'
 import { reseedPlaceholderToolHomes } from '#domain/auth'
-import { moveProjectDirsToIds } from '#domain/workspaces'
 import { serverLog } from '#log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
@@ -82,21 +81,11 @@ export async function attachConvergence(opts: {
     workspacesChanged: (workspaces: RuntimeHandle[]) => manager.sync(workspaces),
     // A restart loses the in-memory forwarder registry while running
     // workspaces still advertise their ports in tmux `status-right`.
-    // Rebuild forwarders before anything watches. Slug-named project dirs
-    // are moved first, since that stops every workspace, then config
-    // allowlists are imported, since a config holding one does not parse.
-    // Tool homes are re-seeded with sentinels before any new workspace
-    // mounts them.
+    // Rebuild forwarders before anything watches. Tool homes are re-seeded
+    // with sentinels before any new workspace mounts them.
     recover: async () => {
       await reseedPlaceholderToolHomes()
         .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${String(err)}`))
-      try {
-        await moveProjectDirsToIds()
-      } catch (err) {
-        serverLog(`[server] moving project dirs to their ids failed: ${String(err)}`)
-      }
-      await importConfigAllowlists()
-        .catch((err: unknown) => serverLog(`[server] importing config allowlists failed: ${String(err)}`))
       try {
         await restoreAllWorkspaceForwarders(
           (projectId: string) => resolveProjectConfig(projectId).then((c) => c ?? undefined),

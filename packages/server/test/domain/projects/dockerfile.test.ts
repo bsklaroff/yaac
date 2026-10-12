@@ -4,7 +4,6 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getDataDir, getProjectsDir, projectConfigDir } from '@yaac/shared/project-paths'
 import {
-  moveLegacyUserBuildDir,
   readProjectDockerfile,
   readUserDockerfile,
   writeProjectDockerfile,
@@ -106,32 +105,5 @@ describe('writeUserDockerfile', () => {
     await writeUserDockerfile(BUILT_IN_USER_ID, '')
     expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe('')
     await expect(fs.access(userDockerfilePath())).rejects.toThrow()
-  })
-})
-
-describe('moveLegacyUserBuildDir', () => {
-  const legacyDir = (): string => path.join(getDataDir(), 'server-local', 'build')
-
-  it('gives a single-user install\'s build dir to the built-in user, once', async () => {
-    await fs.mkdir(path.join(legacyDir(), 'nvim'), { recursive: true })
-    await fs.writeFile(path.join(legacyDir(), USER_DOCKERFILE), LAYERED)
-    await fs.writeFile(path.join(legacyDir(), 'nvim', 'init.lua'), '-- x\n')
-
-    await moveLegacyUserBuildDir()
-    await moveLegacyUserBuildDir()
-
-    expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe(LAYERED)
-    expect(await fs.readFile(path.join(path.dirname(userDockerfilePath()), 'nvim', 'init.lua'), 'utf8')).toBe('-- x\n')
-    await expect(fs.access(legacyDir())).rejects.toThrow()
-  })
-
-  it('leaves a built-in user\'s existing build dir alone', async () => {
-    await writeUserDockerfile(BUILT_IN_USER_ID, LAYERED)
-    await fs.mkdir(legacyDir(), { recursive: true })
-    await fs.writeFile(path.join(legacyDir(), USER_DOCKERFILE), 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n')
-
-    await moveLegacyUserBuildDir()
-
-    expect(await readUserDockerfile(BUILT_IN_USER_ID)).toBe(LAYERED)
   })
 })

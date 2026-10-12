@@ -58,18 +58,6 @@ export interface AcpAdapterProfile {
   /** `_meta` sent in `initialize`'s client capabilities: the adapter's own
    *  opt-ins, such as how it reports subagents. */
   capabilitiesMeta?: Record<string, unknown>
-  /**
-   * The adapter reports a run's end but not the start of one it began on its
-   * own (`agentRunningReport`), so a work update while idle stands in for
-   * that start. Only safe where an end report always follows.
-   */
-  infersRunStart?: boolean
-  /**
-   * A message cannot reach a run the agent started on its own: neither a
-   * steer nor a `session/prompt` is taken, so the conversation holds it
-   * until the run ends.
-   */
-  refusesPromptMidRun?: boolean
 }
 
 /** The model to name for an ACP conversation. For pi, the provider decides
@@ -182,9 +170,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    *
    * An extension can start a run (`sendMessage` with `triggerTurn`). The
    * pi-acp patch adopts it, reporting its start and queueing prompts behind
-   * it. An older pi-acp reports only its end and fails a `session/prompt`
-   * sent during it, so `infersRunStart` and `refusesPromptMidRun` stay for
-   * workspaces still on one (docs/legacy-compat-shims.md).
+   * it.
    */
   pi: {
     argv: [ACP_ADAPTERS.pi.binary],
@@ -193,8 +179,6 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modelVia: 'set_config_option',
     forwardAsksUnderBypass: true,
     steers: true,
-    infersRunStart: true,
-    refusesPromptMidRun: true,
   },
 }
 
