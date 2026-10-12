@@ -110,6 +110,15 @@ export function imageStoreDir(projectId: string): string {
   return nodeLocalPath('shared-images', projectId)
 }
 
+/**
+ * SERVER-LOCAL: a yaac-hosted project's remote, a bare repository only the
+ * server opens (docs/hosted-projects.md). Outside the GLOBAL tree so no
+ * workspace pod can mount it; workspaces push through the server.
+ */
+export function hostedRepoDir(projectId: string): string {
+  return serverLocalPath('hosted-repos', `${projectId}.git`)
+}
+
 /** GLOBAL: the project's main clone. Its `.git` is mounted read-only into
  *  every workspace pod, whose checkout borrows its objects. */
 export function repoDir(projectId: string): string {

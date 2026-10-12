@@ -86,7 +86,7 @@ would never remove it.
 
 ## The proxy relays yaac-mama's old `/cmd` path
 
-`relayMamaRequest` in `k8s/proxy/main.ts` (`LEGACY_MAMA_PATH`) relays a POST
+`relayTarget` in `k8s/proxy/yaac-relay.ts` (`LEGACY_MAMA_PATH`) relays a POST
 to `http://yaac.internal/cmd` like one to `/api/workspace/mama`. That is
 where a workspace's `yaac-mama` script POSTed before the proxy relayed calls
 to the server (the body is the same envelope), and a workspace keeps the

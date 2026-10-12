@@ -7,6 +7,7 @@ import {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectDefaultBranchGuard,
   setProjectEgressAllowlist,
   setProjectGitCredential,
 } from '#db/project-store'
@@ -47,6 +48,8 @@ describe('recordProject', () => {
       gitCredentialId: null,
       knownHostsEntry: null,
       egressAllowlist: { hosts: [], defaults: true },
+      hosted: false,
+      guardDefaultBranch: true,
     })
   })
 
@@ -136,6 +139,8 @@ describe('listProjectRows', () => {
         gitCredentialId: null,
         knownHostsEntry: null,
         egressAllowlist: { hosts: [], defaults: true },
+        hosted: false,
+        guardDefaultBranch: true,
       },
     ])
   })
@@ -243,5 +248,26 @@ describe('setProjectEgressAllowlist', () => {
     expect(await getProjectRow(APP)).toMatchObject({ egressAllowlist: { hosts: ['b.com'], defaults: false } })
     expect(await setProjectEgressAllowlist('0a0a0a0a-0000-4000-8000-0000000000ff', { hosts: [], defaults: true }))
       .toBe(false)
+  })
+})
+
+describe('setProjectDefaultBranchGuard', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('records a hosted project with the guard on, toggles it, and reports an unknown projectId', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'http://yaac.internal/x.git', addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
+    expect(await getProjectRow(APP)).toMatchObject({ hosted: true, guardDefaultBranch: true })
+
+    expect(await setProjectDefaultBranchGuard(APP, false)).toBe(true)
+    expect(await getProjectRow(APP)).toMatchObject({ guardDefaultBranch: false })
+    expect(await setProjectDefaultBranchGuard('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
   })
 })

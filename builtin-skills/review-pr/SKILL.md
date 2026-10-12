@@ -14,6 +14,11 @@ Your output is the **PR thread**, not a reply here. You review; you never fix
 Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source) and
 [`yaac-mama`](../yaac-mama/SKILL.md) (the self-stop at the end).
 
+**First, check the project is on GitHub.** If `git config --get
+remote.origin.url` starts with `http://yaac.internal/`, yaac hosts this
+project's remote, which has no pull requests. Tell the user this skill does
+not apply there, and stop.
+
 ## Which PR
 
 The argument is the PR number. Without one, take the current branch's PR

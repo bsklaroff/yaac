@@ -1,9 +1,12 @@
-import { useState, type JSX } from 'react'
+import { useState, type FormEvent, type JSX } from 'react'
+import clsx from 'clsx'
 import { Dialog } from '@base-ui/react/dialog'
 import { useQueryClient } from '@tanstack/react-query'
 import { GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey } from '#components/GitCredentialPicker'
 import { AddIcon } from '#lib/icons'
-import { addProjectInBackground } from '#lib/projectOps'
+import { addProjectInBackground, createProjectInBackground } from '#lib/projectOps'
+import { BUTTON } from '#components/ui/button'
+import { projectNameFor } from '@yaac/shared/project-name'
 import { Modal } from '#components/ui/Modal'
 import { useUiStore } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
@@ -38,9 +41,10 @@ export function NewProjectButton(
 
 /**
  * The add-project dialog: clone a git repo with a credential chosen in
- * `GitCredentialPicker`. Submitting closes the form and runs the clone in the
- * background (#lib/projectOps). Host keys that SSH adds trusted show once no
- * form is open.
+ * `GitCredentialPicker`, or create an empty project whose remote yaac hosts
+ * (docs/hosted-projects.md). Submitting closes the form and runs the add in
+ * the background (#lib/projectOps). Host keys that SSH adds trusted show
+ * once no form is open.
  */
 export function AddProjectDialog(): JSX.Element {
   const form = useUiStore((s) => s.addProjectForm)
@@ -62,10 +66,37 @@ export function AddProjectDialog(): JSX.Element {
       <Dialog.Title className="text-sm font-semibold">Add project</Dialog.Title>
       {form !== null ? (
         <>
-          <Dialog.Description className="mt-1 text-xs text-text-dim">
-            Clone a git repo as a new project, with the credential its git authenticates with.
-          </Dialog.Description>
-          <CloneForm key={form.remoteUrl} initialUrl={form.remoteUrl} onDone={close} />
+          <div role="radiogroup" aria-label="Source" className="mt-3 flex w-fit rounded-md border border-border bg-bg p-0.5">
+            {([['Clone a repository', { remoteUrl: '' }], ['New project', { name: '' }]] as const).map(([label, blank]) => (
+              <button
+                key={label}
+                type="button"
+                role="radio"
+                aria-checked={('name' in form) === ('name' in blank)}
+                onClick={() => { if (('name' in form) !== ('name' in blank)) setAddProjectForm(blank) }}
+                className={clsx('rounded px-2 py-0.5 text-[11px] transition',
+                  ('name' in form) === ('name' in blank) ? 'bg-surface-3 text-text' : 'text-text-faint hover:text-text')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {'name' in form ? (
+            <>
+              <Dialog.Description className="mt-3 text-xs text-text-dim">
+                Start an empty project. yaac hosts its git repository, so it needs no credential;
+                clone it to your machine with <code>yaac project clone</code>.
+              </Dialog.Description>
+              <CreateForm key={form.name} initialName={form.name} onDone={close} />
+            </>
+          ) : (
+            <>
+              <Dialog.Description className="mt-3 text-xs text-text-dim">
+                Clone a git repo as a new project, with the credential its git authenticates with.
+              </Dialog.Description>
+              <CloneForm key={form.remoteUrl} initialUrl={form.remoteUrl} onDone={close} />
+            </>
+          )}
         </>
       ) : (
         <div className="mt-4 flex flex-col gap-3">
@@ -118,5 +149,39 @@ function CloneForm({ initialUrl, onDone }: { initialUrl: string; onDone: () => v
         onCancel={onDone}
       />
     </div>
+  )
+}
+
+function CreateForm({ initialName, onDone }: { initialName: string; onDone: () => void }): JSX.Element {
+  const [name, setName] = useState(initialName)
+  const projectName = projectNameFor(name.trim())
+
+  const create = (e: FormEvent): void => {
+    e.preventDefault()
+    createProjectInBackground(name.trim())
+    onDone()
+  }
+
+  return (
+    <form onSubmit={create} className="mt-4 flex flex-col gap-3">
+      <input
+        aria-label="Project name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        autoFocus
+        placeholder="my-project"
+        className="rounded-md border border-border bg-bg px-3 py-2 font-mono text-xs text-text outline-none
+          focus:border-border-strong"
+      />
+      {name.trim() !== '' && projectName !== name.trim() && (
+        <p className="text-[11px] text-text-faint">
+          {projectName === '' ? 'Use at least one letter or digit.' : <>Named <code>{projectName}</code>.</>}
+        </p>
+      )}
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onDone} className={BUTTON}>Cancel</button>
+        <button type="submit" disabled={projectName === ''} className={BUTTON}>Create</button>
+      </div>
+    </form>
   )
 }

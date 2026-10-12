@@ -222,7 +222,9 @@ discovers one from its cwd.
 The URL a fetch goes to, the credential matched to it, and the `repoUrl` the
 k8s proxy uses to limit the project's https credential to one host and to
 gate the ssh agent all come from `projectRemoteUrl(projectId)` in
-`#domain/projects`, which reads the project row. `fetchOrigin` fetches by
+`#domain/projects`, which reads the project row. For a project the server
+hosts, the server's own fetch reads the bare repository from disk instead
+(`projectFetchUrl`, docs/hosted-projects.md). `fetchOrigin` fetches by
 explicit URL and refspec, never by the remote name `origin`, so a
 repository's `remote.origin.*` cannot change where a fetch goes or which
 token it sends. Each clone's `remote.origin.url` is written from the row,

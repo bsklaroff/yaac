@@ -122,6 +122,12 @@ export const projects = snakeCase.table('projects', {
   /** Which hosts the project's workspaces may reach through the egress
    *  proxy (docs/workspace-egress.md). */
   egressAllowlist: jsonb().$type<EgressAllowlist>().notNull().default({ hosts: [], defaults: true }),
+  /** Whether the server hosts the remote itself (docs/hosted-projects.md).
+   *  Such a project has no git credential and needs none. */
+  hosted: boolean().notNull().default(false),
+  /** For a hosted project: refuse pushes that delete or rewind the default
+   *  branch. */
+  guardDefaultBranch: boolean().notNull().default(true),
 })
 
 /**

@@ -1,7 +1,8 @@
 // Public interface of the sealed projects folder (`#domain/projects`): a
 // project's rows and its files on disk. That covers the clone and its
-// branches, both config layers, the egress allowlist, the Dockerfile and
-// build-dir files, the git credentials, and the project lifecycle verbs.
+// branches, the remote of a project the server hosts, both config layers,
+// the egress allowlist, the Dockerfile and build-dir files, the git
+// credentials, and the project lifecycle verbs.
 // Nothing below this layer reads project state; a driver that needs a
 // project's config is handed it (`PassContext.projectConfig`, a launch
 // intent).
@@ -9,7 +10,8 @@
 // Adding a name here widens the interface and requires a unit test in
 // packages/server/test/domain/projects/.
 
-export { addProject, registerStagedProject } from './add'
+export { addProject, createHostedProject, registerStagedProject } from './add'
+export { serveHostedRepo, setDefaultBranchGuard } from './hosted'
 export {
   addAllowedHostToProject,
   getProjectAllowlist,

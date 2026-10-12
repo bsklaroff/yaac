@@ -18,19 +18,23 @@ import type * as gitModule from '#domain/git'
 import {
   addHttpsCredential,
   addProject,
+  createHostedProject,
   generateSshCredential,
   registerStagedProject,
   resolveProjectCredential,
 } from '#domain/projects'
-import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows, setToolCredential } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows, recordProject, setToolCredential } from '#db'
 import {
   claudeDir,
   getProjectsDir,
+  hostedRepoDir,
   repoDir,
   projectClaudeCredentialsFile,
   projectCodexAuthFile,
 } from '@yaac/shared/project-paths'
 import { PLACEHOLDER_ACCESS_TOKEN } from '@yaac/shared/tool-auth'
+import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
+import { git } from '@yaac/test-utils/git'
 
 const mockClone = vi.mocked(cloneRepo)
 
@@ -205,6 +209,53 @@ describe('addProject', () => {
 
     await expect(addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)).rejects.toThrow()
     expect(await projectDirs()).toEqual([])
+    expect(await listProjectRows()).toEqual([])
+  })
+})
+
+describe('createHostedProject', () => {
+  beforeEach(async () => {
+    const real = await vi.importActual<typeof gitModule>('#domain/git')
+    mockClone.mockImplementation(real.cloneRepo)
+  })
+
+  it('makes an empty hosted remote, clones it as the main clone, and records a project that needs no credential', async () => {
+    const project = await createHostedProject('  My App! ', BUILT_IN_USER_ID)
+
+    expect(project.id).toMatch(UUID)
+    expect(project.name).toBe('my-app')
+    expect(project.remoteUrl).toBe(hostedRemoteUrl(project.id))
+    expect(await getProjectRow(project.id)).toMatchObject({
+      ...project,
+      hosted: true,
+      guardDefaultBranch: true,
+      gitCredentialId: null,
+    })
+    expect(await resolveProjectCredential(project.id)).toEqual({ kind: 'hosted' })
+
+    // The main clone is a clone of the bare remote, from the path on disk.
+    expect(mockClone).toHaveBeenCalledWith(hostedRepoDir(project.id), repoDir(project.id), { kind: 'hosted' })
+    expect((await git(hostedRepoDir(project.id), ['rev-parse', '--is-bare-repository'])).trim()).toBe('true')
+    expect((await git(repoDir(project.id), ['symbolic-ref', '--short', 'HEAD'])).trim()).toBe('main')
+    await expect(fs.access(claudeDir(project.id))).resolves.toBeUndefined()
+  })
+
+  it('refuses a name with nothing usable in it, or one another project has', async () => {
+    await expect(createHostedProject('!!!', BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
+    expect(await projectDirs()).toEqual([])
+
+    // The name is a hosted project's only handle, so it must name one.
+    await recordProject({ id: STAGED, name: 'widgets', remoteUrl: 'https://github.com/acme/widgets.git', addedAt: '' }, BUILT_IN_USER_ID)
+    await expect(createHostedProject('Widgets', BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'CONFLICT' })
+    expect(await listProjectRows()).toHaveLength(1)
+  })
+
+  it('rolls back both the project dir and the remote when setup fails', async () => {
+    mockClone.mockRejectedValueOnce(new Error('disk full'))
+
+    await expect(createHostedProject('app', BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'INTERNAL' })
+    expect(await projectDirs()).toEqual([])
+    expect(await fs.readdir(path.dirname(hostedRepoDir('x')))).toEqual([])
     expect(await listProjectRows()).toEqual([])
   })
 })

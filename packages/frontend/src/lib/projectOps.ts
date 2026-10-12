@@ -2,6 +2,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
+import { projectNameFor } from '@yaac/shared/project-name'
 
 /*
  * Project add and remove run in the background: a clone can take minutes and
@@ -33,6 +34,19 @@ export function addProjectInBackground(
       useUiStore.getState().patchProjectOp(id, { doneId: project.id })
       if (knownHostsEntry !== null) useUiStore.getState().pushTrustedHostKey({ projectName: name, entry: knownHostsEntry })
     },
+    (e: unknown) => useUiStore.getState().patchProjectOp(id, { error: e instanceof Error ? e.message : String(e) }),
+  )
+}
+
+/** Create an empty project whose remote yaac hosts, shown as an add in
+ *  progress like `addProjectInBackground`. */
+export function createProjectInBackground(name: string): void {
+  const id = `adding-${nextAddKey++}`
+  const state = useUiStore.getState()
+  state.putProjectOp({ id, kind: 'add', name: projectNameFor(name) || name, remoteUrl: '', hosted: true })
+  state.setActiveProject(id)
+  api.project.create.$post({ json: { name } }).then(
+    (project) => useUiStore.getState().patchProjectOp(id, { doneId: project.id }),
     (e: unknown) => useUiStore.getState().patchProjectOp(id, { error: e instanceof Error ? e.message : String(e) }),
   )
 }

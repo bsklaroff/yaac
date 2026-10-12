@@ -431,13 +431,20 @@ export interface CreateWorkspaceDialogOpts {
  * snapshot agrees (`settleProjectOps`), so the rail never flickers between
  * the request finishing and the snapshot listing the change.
  */
+/** Which add-project form is open: clone a remote, or create a project
+ *  whose remote yaac hosts. */
+export type AddProjectForm = { remoteUrl: string } | { name: string }
+
 export interface ProjectOp {
   /** For a remove, the project's id. For an add, a client key, since the
    *  server assigns the id. Selectable as `activeProjectId`. */
   id: string
   kind: 'add' | 'remove'
   name: string
+  /** Empty for a project whose remote yaac hosts. */
   remoteUrl: string
+  /** An add that creates a hosted project rather than cloning one. */
+  hosted?: boolean
   /** The project's id, once the request has succeeded. */
   doneId?: string
   error?: string
@@ -621,10 +628,11 @@ interface UiState {
   createWorkspaceDialog: CreateWorkspaceDialogOpts | null
   openCreateWorkspace: (opts: CreateWorkspaceDialogOpts) => void
   closeCreateWorkspace: () => void
-  /** The add-project dialog's clone form when open, with the remote to
-   *  prefill. Mounted once in App like the create dialog. */
-  addProjectForm: { remoteUrl: string } | null
-  setAddProjectForm: (form: { remoteUrl: string } | null) => void
+  /** The add-project dialog when open: the clone form with the remote to
+   *  prefill, or the new-project form with the name to prefill. Mounted once
+   *  in App like the create dialog. */
+  addProjectForm: AddProjectForm | null
+  setAddProjectForm: (form: AddProjectForm | null) => void
   /** Host keys from finished SSH adds. The dialog shows them once no form is
    *  open, so a key never replaces a form being filled in. */
   trustedHostKeys: TrustedHostKey[]

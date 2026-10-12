@@ -1,4 +1,4 @@
-import { projectConfigDir } from '@yaac/shared/project-paths'
+import { hostedRepoDir, projectConfigDir } from '@yaac/shared/project-paths'
 import { getProjectRow, listProjectRows } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { loadProjectConfig } from './config'
@@ -10,6 +10,7 @@ export interface ProjectDetail {
   name: string
   remoteUrl: string
   addedAt: string
+  hosted: boolean
   workspaceCount: number
 }
 
@@ -17,7 +18,7 @@ export interface ProjectConfigResult {
   config: YaacConfig | null
 }
 
-async function loadProjectMeta(projectId: string): Promise<ProjectMeta> {
+async function loadProjectMeta(projectId: string): Promise<ProjectMeta & { hosted: boolean }> {
   const meta = await getProjectRow(projectId)
   if (!meta) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   return meta
@@ -68,6 +69,13 @@ export async function projectRemoteUrl(projectId: string): Promise<string> {
   return (await loadProjectMeta(projectId)).remoteUrl
 }
 
+/** Where the server's own git fetches the project from: the row's URL, or
+ *  for a hosted project the bare repository on disk. */
+export async function projectFetchUrl(projectId: string): Promise<string> {
+  const meta = await loadProjectMeta(projectId)
+  return meta.hosted ? hostedRepoDir(projectId) : meta.remoteUrl
+}
+
 /**
  * The project's config from its config directory, like
  * `resolveProjectConfig` but throwing NOT_FOUND for an unknown project.
@@ -90,6 +98,7 @@ export async function getProjectDetail(projectId: string): Promise<ProjectDetail
     name: meta.name,
     remoteUrl: meta.remoteUrl,
     addedAt: meta.addedAt,
+    hosted: meta.hosted,
     workspaceCount: workspaceCount[projectId] ?? 0,
   }
 }

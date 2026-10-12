@@ -66,6 +66,7 @@ import { findRulesForHost, hostNeedsDynamicMitm, isHostAllowed } from './injecti
 import { errorReply, type TokenReply } from './oauth-swap'
 import { ObservedState } from './observed-state'
 import { generateCA, handleMitm, handleTunnel, type CA, type MitmContext } from './mitm'
+import { MAMA_MAGIC_HOST, MAMA_PATH, relayHeaders, relayTarget } from './yaac-relay'
 
 // Control API: the health probe. All input from the server arrives as
 // objects (object-watch.ts).
@@ -96,18 +97,6 @@ if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_H
   process.exit(1)
 }
 
-/**
- * Hostname and path the in-workspace `yaac-mama` script POSTs to. It reaches
- * the transparent HTTP listener like any external name, and the proxy routes
- * on the Host header. Keep in sync with workspace-bin/yaac-mama.
- */
-const MAMA_MAGIC_HOST = 'yaac.internal'
-const MAMA_PATH = '/api/workspace/mama'
-/**
- * Where a yaac-mama script from before the relay POSTs the same envelope.
- * Legacy compat: see docs/legacy-compat-shims.md.
- */
-const LEGACY_MAMA_PATH = '/cmd'
 /**
  * How long a relayed call may wait on the server before the caller gets a
  * 504. Under the script's `--max-time`, so that 504 is what the caller sees.
@@ -611,28 +600,24 @@ const transparentHttpsServer = net.createServer((socket) => {
 type IdentifiedSocket = net.Socket & { yaacWorkspaceId?: string }
 
 /**
- * Relay a yaac-mama call to the server's mama listener, naming the workspace
- * the source pod IP resolved to and authenticating as the proxy. Runs before
- * the allowlist check, so it always works.
+ * Relay a workspace's call to `yaac.internal` (yaac-mama, or a hosted git
+ * remote) to the server's mama listener, naming the workspace the source pod
+ * IP resolved to and authenticating as the proxy. Runs before the allowlist
+ * check, so it always works.
  */
 function relayMamaRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   workspaceId: string,
 ): void {
-  if (req.url !== MAMA_PATH && req.url !== LEGACY_MAMA_PATH) {
+  const target = relayTarget(req.url ?? '/', MAMA_RELAY_URL!)
+  if (target === null) {
     res.writeHead(404, { 'Content-Type': 'text/plain' })
     res.end(`yaac-mama answers at http://${MAMA_MAGIC_HOST}${MAMA_PATH}`)
     return
   }
-  const headers: http.OutgoingHttpHeaders = {
-    'authorization': `Bearer ${PROXY_AUTH_SECRET}`,
-    'x-yaac-workspace-id': workspaceId,
-  }
-  for (const name of ['content-type', 'content-length']) {
-    if (req.headers[name] !== undefined) headers[name] = req.headers[name]
-  }
-  const upstream = http.request(MAMA_RELAY_URL!, { method: req.method, headers }, (upstreamRes) => {
+  const headers = relayHeaders(req.headers, workspaceId, PROXY_AUTH_SECRET!)
+  const upstream = http.request(target, { method: req.method, headers }, (upstreamRes) => {
     res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers)
     upstreamRes.pipe(res)
   })
@@ -654,7 +639,9 @@ function relayMamaRequest(
   req.pipe(upstream)
 }
 
-const internalHttpServer = http.createServer((req, res) => {
+// No cap on a request's total time, so a long upload (a push to a hosted
+// remote, docs/hosted-projects.md) is not cut at Node's five-minute default.
+const internalHttpServer = http.createServer({ requestTimeout: 0 }, (req, res) => {
   const socket = req.socket as IdentifiedSocket
   const workspaceId = socket.yaacWorkspaceId
   if (!workspaceId) {

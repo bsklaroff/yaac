@@ -25,7 +25,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, unseenDeaths: 0, createDefaults: {}, gitCredential: null })
+  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, unseenDeaths: 0, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -68,6 +68,30 @@ describe('ProjectSettings', () => {
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'id-beta' } })
     expect(screen.getByText('git@gitlab.com:o/beta.git').previousElementSibling?.textContent).toBe('SSH')
+  })
+
+  it('shows a hosted project\'s clone command instead of a remote, and turns its default-branch guard off', async () => {
+    useUiStore.setState({ activeProjectId: 'id-gamma' })
+    snapshot.mockReturnValue({
+      driver: 'containerless',
+      projects: [{ ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }],
+    })
+    const server = mockFetch({
+      'GET /api/project/id-gamma/env': { vars: [] },
+      'GET /api/project/id-gamma/config': { config: null },
+      'PUT /api/project/id-gamma/default-branch-guard': () => undefined,
+    })
+    renderWithClient(<ProjectSettings />)
+
+    expect(screen.getByText('HOSTED BY YAAC')).toBeTruthy()
+    expect(screen.queryByText('http://yaac.internal/api/workspace/git/id-gamma.git')).toBeNull()
+    expect(screen.getByText(`git clone ${window.location.origin}/api/project/id-gamma/git gamma`)).toBeTruthy()
+
+    const guard = screen.getByRole<HTMLInputElement>('checkbox', { name: /Protect the default branch/ })
+    expect(guard.checked).toBe(true)
+    fireEvent.click(guard)
+    await waitFor(() => expect(server.called('PUT /api/project/id-gamma/default-branch-guard').map((c) => c.body))
+      .toEqual([{ enabled: false }]))
   })
 
   it('lists the project\'s variables, adds a secret with its proxy rule, and deletes one', async () => {

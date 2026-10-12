@@ -14,6 +14,7 @@ import {
   readBlobAt,
   remoteBranchExists,
   resolveRemoteRef,
+  setOriginHead,
 } from '#domain/git'
 import { git } from '@yaac/test-utils/git'
 
@@ -82,6 +83,24 @@ describe('getDefaultBranch', () => {
     await git(tmpDir, ['init', '-q', '--bare', '-b', 'trunk', remote])
     const main = path.join(tmpDir, 'main')
     await cloneRepo(remote, main, null)
+    expect(await getDefaultBranch(main)).toBe('trunk')
+  })
+})
+
+describe('setOriginHead', () => {
+  it('names the default an empty clone could not learn, once origin has it', async () => {
+    const remote = path.join(tmpDir, 'filled-later.git')
+    await git(tmpDir, ['init', '-q', '--bare', '-b', 'main', remote])
+    const main = path.join(tmpDir, 'main-later')
+    await cloneRepo(remote, main, null)
+    const work = path.join(tmpDir, 'work-later')
+    await git(tmpDir, ['clone', '-q', remote, work])
+    await git(work, ['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'one'])
+    await git(work, ['push', '-q', 'origin', 'HEAD:trunk'])
+    await fetchOrigin(main, remote, null)
+
+    expect(await getDefaultBranch(main)).toBe('main')
+    await setOriginHead(main, 'trunk')
     expect(await getDefaultBranch(main)).toBe('trunk')
   })
 })

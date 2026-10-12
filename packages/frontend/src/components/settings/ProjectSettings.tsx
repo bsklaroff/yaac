@@ -4,6 +4,7 @@ import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
+import { HostedRemote } from '#components/settings/HostedRemote'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
@@ -79,11 +80,23 @@ export function ProjectSettings(): JSX.Element {
             </select>
             <p className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px]">
               <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 font-medium text-text-dim">
-                {remoteKind(selected.remoteUrl).toUpperCase()}
+                {selected.hosted ? 'HOSTED BY YAAC' : remoteKind(selected.remoteUrl).toUpperCase()}
               </span>
-              <span title={selected.remoteUrl} className="truncate font-mono text-text-faint">{selected.remoteUrl}</span>
+              {!selected.hosted && (
+                <span title={selected.remoteUrl} className="truncate font-mono text-text-faint">{selected.remoteUrl}</span>
+              )}
             </p>
           </div>
+
+          {selected.hosted && <div className="mt-6">
+            <HostedRemote
+              key={`hosted:${projectId}`}
+              projectId={projectId}
+              name={selected.name}
+              guardDefaultBranch={selected.guardDefaultBranch}
+              readOnly={readOnly}
+            />
+          </div>}
 
           {!mediatedEgress && (
             <div role="note" className="mt-6 flex gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-text-dim">

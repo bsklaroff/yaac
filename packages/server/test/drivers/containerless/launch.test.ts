@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
+import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 import { agentBinDirs } from '@yaac/shared/tool-install'
 import { substrateFixture } from '@yaac/test-utils/fake-driver'
 import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
@@ -346,6 +347,25 @@ describe('launchWorkspace', () => {
     expect(await fsp.readFile(creds, 'utf8'))
       .toBe('https://x-access-token:ghp_a%2Fb%2Bc%25d@github.com\n')
     expect((await fsp.stat(creds)).mode & 0o777).toBe(0o600)
+  })
+
+  it('sends a hosted remote to the server, as the workspace', async () => {
+    // The checkout's origin names the remote as a pod sees it; the
+    // workspace's gitconfig turns that into the server's loopback origin and
+    // sends its yaac-mama token there, and nowhere else.
+    await launchWorkspace(spec({
+      gitCredential: { kind: 'hosted', origin: 'http://127.0.0.1:9999', token: 'tok' },
+    }))
+    const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
+    const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: path.join(home, '.gitconfig'), GIT_CONFIG_NOSYSTEM: '1' }
+    const remote = hostedRemoteUrl('p1')
+    expect((await execFileAsync('git', ['ls-remote', '--get-url', remote], { env: gitEnv })).stdout.trim())
+      .toBe('http://127.0.0.1:9999/api/workspace/git/p1.git')
+    expect((await execFileAsync('git', ['config', '--get-urlmatch', 'http.extraHeader', 'http://127.0.0.1:9999/api/workspace/git/p1.git'], { env: gitEnv })).stdout.trim())
+      .toBe('Authorization: Bearer tok')
+    await expect(execFileAsync('git', ['config', '--get-urlmatch', 'http.extraHeader', 'http://127.0.0.1:9999/api/workspace/mama'], { env: gitEnv }))
+      .rejects.toThrow()
+    expect((await fsp.stat(path.join(home, '.gitconfig'))).mode & 0o777).toBe(0o600)
   })
 
   it('holds an SSH key in a per-workspace agent, never in the workspace', async () => {

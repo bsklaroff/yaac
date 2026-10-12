@@ -98,8 +98,15 @@ export const ROUTE_MATRIX: RouteCase[] = [
   // Both create a project the caller then owns.
   { method: 'POST', path: '/api/project/add', body: { url: 'not a url' }, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'POST', path: '/api/project/register', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
+  { method: 'POST', path: '/api/project/create', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'GET', path: '/api/project/:projectId', request: P, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:projectId', request: P, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/default-branch-guard', request: `${P}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  // A hosted project's remote, for the user's own git; a push is the
+  // owner's.
+  { method: 'GET', path: '/api/project/:projectId/git/info/refs', request: `${P}/git/info/refs`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/project/:projectId/git/git-upload-pack', request: `${P}/git/git-upload-pack`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/project/:projectId/git/git-receive-pack', request: `${P}/git/git-receive-pack`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/git-credential', request: `${P}/git-credential`, body: { credentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/config', request: `${P}/config`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/config/raw', request: `${P}/config/raw`, access: 'reader', k8s: MISSING, containerless: MISSING },
@@ -165,6 +172,14 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/mama', body: { command: 'list' }, access: 'public',
     why: 'the egress proxy relays a pod\'s yaac-mama calls to a listener of their own',
     k8s: UNSUPPORTED, containerless: 401 },
+  // A hosted project's remote as a workspace reaches it, identified like
+  // yaac-mama.
+  { method: 'GET', path: '/api/workspace/git/:repo/info/refs', request: `/api/workspace/git/${ID.project}.git/info/refs`, access: 'public',
+    why: 'the egress proxy relays a pod\'s git to the yaac-mama listener', k8s: UNSUPPORTED, containerless: 401 },
+  { method: 'POST', path: '/api/workspace/git/:repo/git-upload-pack', request: `/api/workspace/git/${ID.project}.git/git-upload-pack`, access: 'public',
+    why: 'the egress proxy relays a pod\'s git to the yaac-mama listener', k8s: UNSUPPORTED, containerless: 401 },
+  { method: 'POST', path: '/api/workspace/git/:repo/git-receive-pack', request: `/api/workspace/git/${ID.project}.git/git-receive-pack`, access: 'public',
+    why: 'the egress proxy relays a pod\'s git to the yaac-mama listener', k8s: UNSUPPORTED, containerless: 401 },
   { method: 'POST', path: '/api/workspace/queue/create', body: { project: ID.project, parent: ID.workspace, prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/update', body: { id: ID.queued, prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/discard', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },

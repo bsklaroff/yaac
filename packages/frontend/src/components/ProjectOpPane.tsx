@@ -17,25 +17,30 @@ export function ProjectOpPane({ op }: { op: ProjectOp }): JSX.Element {
         <>
           <div className="flex items-center gap-2 text-sm text-text">
             <LoadingIcon size={15} className="animate-spin text-text-dim" />
-            {adding ? 'Adding' : 'Removing'} {op.name}
+            {adding ? (op.hosted === true ? 'Creating' : 'Adding') : 'Removing'} {op.name}
           </div>
-          <p className="max-w-md break-all font-mono text-xs text-text-faint">{op.remoteUrl}</p>
+          {op.remoteUrl !== '' && <p className="max-w-md break-all font-mono text-xs text-text-faint">{op.remoteUrl}</p>}
           <p className="max-w-md text-xs text-text-faint">
             {adding
-              ? 'Cloning the repository. A large repo can take a few minutes.'
+              ? op.hosted === true
+                ? 'Creating its git repository.'
+                : 'Cloning the repository. A large repo can take a few minutes.'
               : 'Stopping its workspaces and deleting its files.'}
           </p>
         </>
       ) : (
         <>
           <p className="text-sm font-medium text-danger">
-            Couldn&apos;t {adding ? 'add' : 'remove'} {op.name}
+            Couldn&apos;t {adding ? (op.hosted === true ? 'create' : 'add') : 'remove'} {op.name}
           </p>
           <p className="max-w-md text-xs text-text-faint">{op.error}</p>
           <div className="mt-1 flex items-center gap-2">
             {adding && (
               <button
-                onClick={() => { dropProjectOp(op.id); setAddProjectForm({ remoteUrl: op.remoteUrl }) }}
+                onClick={() => {
+                  dropProjectOp(op.id)
+                  setAddProjectForm(op.hosted === true ? { name: op.name } : { remoteUrl: op.remoteUrl })
+                }}
                 className={BUTTON}
               >
                 Try again

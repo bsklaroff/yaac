@@ -1404,6 +1404,77 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
   }, 120_000)
 
+  // A project yaac hosts (docs/hosted-projects.md): made empty with no
+  // credential, pushed to by a workspace's own git through the server as
+  // that workspace, seen by its sibling without a fetch, refused to another
+  // project's workspace, and cloned by the user.
+  it('hosts a new project\'s remote: a workspace pushes through the server and its sibling sees it', async () => {
+    const created = await runYaac(cliEnv(), 'project', 'create', 'cl-hosted')
+    expect(created.exitCode, created.stderr).toBe(0)
+    const hostedId = (await (await fetch(`${origin()}/api/project/cl-hosted`)).json() as { id: string }).id
+
+    const create = async (): Promise<string> => {
+      const res = await fetch(`${origin()}/api/workspace/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'cl-hosted', tool: 'claude', mode: 'tui' }),
+      })
+      expect(res.status).toBe(200)
+      return (await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})).workspaceId
+    }
+    const pusher = await create()
+    const sibling = await create()
+    try {
+      const checkout = (id: string): string => path.join(testEnv.dataDir, 'global', 'projects', hostedId, 'workspaces', id)
+      // The workspace's own git, configured as its launch configured it.
+      const wsGit = async (id: string, ...args: string[]): Promise<string> => (await execFileAsync('git', args, {
+        cwd: checkout(id),
+        env: {
+          ...process.env,
+          HOME: workspaceHome(hostedId, id),
+          GIT_CONFIG_GLOBAL: await workspaceEnvVar(id, 'GIT_CONFIG_GLOBAL'),
+          GIT_TERMINAL_PROMPT: '0',
+        },
+      })).stdout
+      // Origin names the remote as a pod would; the gitconfig sends it to
+      // this server.
+      expect((await wsGit(pusher, 'config', 'remote.origin.url')).trim())
+        .toBe(`http://yaac.internal/api/workspace/git/${hostedId}.git`)
+      expect((await wsGit(pusher, 'remote', 'get-url', 'origin')).trim())
+        .toBe(`${origin()}/api/workspace/git/${hostedId}.git`)
+
+      await fs.writeFile(path.join(checkout(pusher), 'hello.txt'), 'hello\n')
+      await wsGit(pusher, 'add', 'hello.txt')
+      await wsGit(pusher, 'commit', '-q', '-m', 'hello')
+      await wsGit(pusher, 'push', '-q', 'origin', 'HEAD:main')
+      const tip = (await wsGit(pusher, 'rev-parse', 'HEAD')).trim()
+
+      // The push lands in the main clone and fans out to running workspaces.
+      await vi.waitFor(async () => {
+        expect((await wsGit(sibling, 'rev-parse', 'refs/remotes/origin/main')).trim()).toBe(tip)
+      }, { timeout: 30_000, interval: 250 })
+
+      // The guard is on by default: a rewrite of main is refused.
+      await wsGit(pusher, 'commit', '-q', '--amend', '-m', 'rewritten')
+      await expect(wsGit(pusher, 'push', '-q', '--force', 'origin', 'HEAD:main')).rejects.toThrow(/cannot be force-pushed/)
+
+      // Another project's workspace, with its own valid token, is refused.
+      const other = await paneEnv(workspaceId)
+      const refused = await fetch(`${origin()}/api/workspace/git/${hostedId}.git/info/refs?service=git-upload-pack`, {
+        headers: { authorization: `Bearer ${other.YAAC_MAMA_TOKEN}` },
+      })
+      expect(refused.status).toBe(403)
+
+      // The user clones it to this machine.
+      const local = path.join(testEnv.scratchDir, 'hosted-local')
+      expect((await runYaac(cliEnv(), 'project', 'clone', 'cl-hosted', local)).exitCode).toBe(0)
+      expect(await fs.readFile(path.join(local, 'hello.txt'), 'utf8')).toBe('hello\n')
+    } finally {
+      await runYaac(serverEnv, 'workspace', 'stop', pusher)
+      await runYaac(serverEnv, 'workspace', 'stop', sibling)
+    }
+  }, 180_000)
+
   /**
    * The permission mode a TUI agent reports: claude's prompt hook sets a
    * pane option, which the server records. Checked through the

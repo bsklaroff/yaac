@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
@@ -66,6 +67,7 @@ import { streamProvisioned } from '#routes/provisioned-stream'
 import { requireDriverFeature, type IdentityEnv } from '#http'
 import { authorizeProject, workspacePrincipal } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
+import { serveHostedRepo } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -91,19 +93,36 @@ const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional(
 // success, so a failure keeps the draft.
 const draftId = z.string().min(1).optional()
 
-/** The calling workspace a `yaac-mama` request is answered for. */
+/** The calling workspace a `yaac-mama` or hosted-git request is answered
+ *  for. */
 type MamaCaller = { workspaceId: string; projectId: string }
 
+type IdentifyCaller = (bearer: string, header: (name: string) => string | undefined)
+  => Promise<MamaCaller | undefined>
+
 /**
- * The `yaac-mama` endpoint. Both ways in end in `runMamaCommand`, which holds
- * the command allowlist; they differ only in how the caller is identified.
+ * The endpoints a workspace calls: `yaac-mama`, and the remote of a project
+ * the server hosts (docs/hosted-projects.md). Both ways in share these;
+ * they differ only in how the caller is identified.
+ *
+ * `yaac-mama` ends in `runMamaCommand`, which holds the command allowlist.
  * Answers are JSON, except a file (`fetch`'s git bundle, `history`'s
  * transcripts, database or one file), sent as the body with the workspace it
  * is about in `x-yaac-workspace-id` (and a conversation in
  * `x-yaac-conversation-id`).
  */
-function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => string | undefined)
-  => Promise<MamaCaller | undefined>) {
+function mamaRoute(identifyCaller: IdentifyCaller) {
+  const callerOf = async (c: Context): Promise<MamaCaller> => {
+    const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
+    const caller = await identifyCaller(bearer, (name) => c.req.header(name))
+    if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama credential')
+    return caller
+  }
+  const hostedGit = (pathInfo: string) => async (c: Context): Promise<Response> => {
+    const caller = await callerOf(c)
+    const projectId = (c.req.param('repo') ?? '').replace(/\.git$/, '')
+    return serveHostedRepo(projectId, c.req.raw, pathInfo, { kind: 'workspace', projectId: caller.projectId })
+  }
   return new Hono().post(
     '/mama',
     // Bounds what is parsed; the envelope below is far smaller.
@@ -114,10 +133,7 @@ function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => st
       body: z.string().max(MAX_PROMPT_LENGTH).optional(),
     })),
     async (c) => {
-      const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
-      const caller = await identifyCaller(bearer, (name) => c.req.header(name))
-      if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama credential')
-
+      const caller = await callerOf(c)
       const { command, args, body } = c.req.valid('json')
       // Take the caller's tool from the runtime, not the request, which could
       // claim any.
@@ -140,11 +156,15 @@ function mamaRoute(identifyCaller: (bearer: string, header: (name: string) => st
       })
     },
   )
+    .get('/git/:repo/info/refs', hostedGit('/info/refs'))
+    .post('/git/:repo/git-upload-pack', hostedGit('/git-upload-pack'))
+    .post('/git/:repo/git-receive-pack', hostedGit('/git-receive-pack'))
 }
 
 /**
  * Containerless workspaces call the API directly, identified by the bearer
- * token minted at create, so a request cannot claim to be another workspace.
+ * token minted at create (their gitconfig sends it to a hosted remote), so
+ * a request cannot claim to be another workspace.
  * This sits on top of the normal identity gate, which sees a loopback caller.
  * k8s workspaces get no token, which would put a server credential inside
  * the sandbox; their calls arrive through `mamaRelayApp`.

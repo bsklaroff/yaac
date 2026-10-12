@@ -1043,6 +1043,45 @@ describe('write routes', () => {
     })
   })
 
+  // A project whose remote the server hosts (docs/hosted-projects.md):
+  // created through the route, read by a workspace through the relay
+  // listener exactly as the egress proxy sends it, and guarded by a setting.
+  describe('hosted projects', () => {
+    const relayGit = async (projectId: string, workspaceId: string, bearer = 'proxy-secret'): Promise<Response> =>
+      await buildMamaRelayApp((b) => Promise.resolve(b === 'proxy-secret'))
+        .request(`/api/workspace/git/${projectId}.git/info/refs?service=git-upload-pack`, {
+          headers: { 'authorization': `Bearer ${bearer}`, 'x-yaac-workspace-id': workspaceId },
+        })
+
+    it('creates one, and serves its remote to its own workspaces only', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const created = await client.project.create.$post({ json: { name: 'Fresh' } })
+      expect(created.status).toBe(200)
+      const project = await created.json()
+      expect(project.name).toBe('fresh')
+      expect(await getProjectRow(project.id)).toMatchObject({ hosted: true, guardDefaultBranch: true })
+
+      await recordWorkspaceCreated({ projectId: project.id, workspaceId: 'sess-h' })
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-other' })
+      const own = await relayGit(project.id, 'sess-h')
+      expect(own.status).toBe(200)
+      expect(own.headers.get('content-type')).toBe('application/x-git-upload-pack-advertisement')
+      expect(await own.text()).toContain('# service=git-upload-pack')
+      expect((await relayGit(project.id, 'sess-other')).status).toBe(403)
+      expect((await relayGit(project.id, 'sess-h', 'guess')).status).toBe(401)
+    })
+
+    it('turns the default-branch guard off and on, for a hosted project only', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const project = await (await client.project.create.$post({ json: { name: 'guarded' } })).json()
+      const guard = client.project[':projectId']['default-branch-guard']
+
+      expect((await guard.$put({ param: { projectId: project.id }, json: { enabled: false } })).status).toBe(204)
+      expect((await getProjectRow(project.id))?.guardDefaultBranch).toBe(false)
+      expect((await guard.$put({ param: { projectId: DEMO }, json: { enabled: false } })).status).toBe(400)
+    })
+  })
+
   // Sidebar groups through the routes. Changes must show on the snapshot,
   // and a stale group id must fail rather than file a workspace where
   // nothing lists it.

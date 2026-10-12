@@ -23,6 +23,7 @@ import {
 import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
+import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -144,6 +145,10 @@ describe('assignProjectCredential', () => {
     await expect(assignProjectCredential(local, WEB, bobs.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect((await listCredentialSummaries(BUILT_IN_USER_ID)).map((c) => [c.name, c.projects]))
       .toEqual([['gh', [WEB]], ['deploy', [SVC]]])
+
+    // A remote yaac hosts takes no credential.
+    await recordProject({ id: API, name: 'api', remoteUrl: hostedRemoteUrl(API), addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
+    await expect(assignProjectCredential(local, API, token.id)).rejects.toThrow(/needs no git credential/)
   })
 })
 
@@ -163,6 +168,9 @@ describe('resolveProjectCredential', () => {
     })
     expect(await resolveProjectCredential(BARE)).toBeNull()
     expect(await resolveProjectCredential(NOPE)).toBeNull()
+    // A remote yaac hosts is always usable, with no credential row.
+    await recordProject({ id: API, name: 'api', remoteUrl: hostedRemoteUrl(API), addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
+    expect(await resolveProjectCredential(API)).toEqual({ kind: 'hosted' })
 
     // Changing the remote drops the host key, and so the credential, until
     // the key is assigned again.

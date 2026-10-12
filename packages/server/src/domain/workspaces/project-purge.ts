@@ -1,15 +1,16 @@
 import fs from 'node:fs/promises'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeHandle } from '#drivers/contract'
-import { projectDir } from '@yaac/shared/project-paths'
+import { hostedRepoDir, projectDir } from '@yaac/shared/project-paths'
 import { cleanupWorkspaceDetached } from './cleanup'
 
 /**
  * Delete everything a project has on disk and on the substrate: live
- * workspaces, driver-held state (push registry, node-local trees) and the
- * global tree. The bytes half of `project remove` (rows are deleted in
- * `project-teardown.ts`). Best-effort throughout; the driver's id-keyed
- * sweeps collect whatever a failure leaves.
+ * workspaces, driver-held state (push registry, node-local trees), the
+ * global tree, and a hosted project's remote. The bytes half of `project
+ * remove` (rows are deleted in `project-teardown.ts`). Best-effort
+ * throughout; the driver's id-keyed sweeps collect whatever a failure
+ * leaves.
  */
 export async function purgeProjectBytes(projectId: string): Promise<void> {
   let pods: RuntimeHandle[] = []
@@ -42,4 +43,7 @@ export async function purgeProjectBytes(projectId: string): Promise<void> {
   // Safe after the teardowns above: `rm` does not follow links, and no pod
   // is left to swap one in mid-walk.
   await fs.rm(projectDir(projectId), { recursive: true, force: true })
+  // A hosted project's remote is its only authoritative copy; the remove
+  // confirmation says so.
+  await fs.rm(hostedRepoDir(projectId), { recursive: true, force: true })
 }

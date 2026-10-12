@@ -22,6 +22,10 @@ named credential and assigns it; a project is always added with one.
 `yaac auth fake github` seeds `fake-github`, a placeholder token that a parent
 yaac's proxy swaps for its real one (for yaac running inside a yaac workspace).
 
+A project whose remote yaac hosts (docs/hosted-projects.md) has no
+credential and needs none. The server reads its remote from disk, and a
+workspace reaches it as itself, so its credential resolves to `hosted`.
+
 ## The model
 
 A `git_credentials` row holds its owner, a name (unique per owner), a kind,

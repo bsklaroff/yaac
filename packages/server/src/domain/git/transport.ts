@@ -22,11 +22,14 @@ import { gitSshAgentSock } from './agent'
  *
  * The ssh form holds no private key: signing goes through the in-process
  * agent (`agent.ts`). The public key pins ssh to one identity, and the host
- * key verifies the remote.
+ * key verifies the remote. The hosted form is a remote the server keeps
+ * itself (`hosted.ts`), which the server reads from disk and a workspace
+ * reaches as itself, so it carries no secret.
  */
 export type ResolvedGitCredential =
   | { kind: 'https'; token: string }
   | { kind: 'ssh'; id: string; publicKey: string; knownHostsEntry: string }
+  | { kind: 'hosted' }
 
 export function injectTokenIntoUrl(url: string, token: string): string {
   const parsed = new URL(url)

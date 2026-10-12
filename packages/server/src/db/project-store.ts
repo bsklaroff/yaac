@@ -14,7 +14,7 @@ import type { AgentTool, EgressAllowlist, ProjectMeta, ToolCreateDefaults } from
 /** Record a project, owned by `owner` if new; a known id keeps its
  *  owner. */
 export async function recordProject(
-  meta: ProjectMeta,
+  meta: ProjectMeta & { hosted?: boolean },
   owner: string,
   gitCredential?: { id: string; knownHostsEntry: string | null },
 ): Promise<void> {
@@ -68,6 +68,9 @@ export interface ProjectRow extends ProjectMeta {
    *  after the remote changes until the key is assigned again. */
   knownHostsEntry: string | null
   egressAllowlist: EgressAllowlist
+  /** Whether the server hosts the remote (docs/hosted-projects.md). */
+  hosted: boolean
+  guardDefaultBranch: boolean
 }
 
 function toProjectRow(
@@ -95,6 +98,16 @@ export async function setProjectEgressAllowlist(
   const db = await getDb()
   const rows = await db.update(projects).set({ egressAllowlist })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  return rows.length > 0
+}
+
+/** Turn a hosted project's default-branch guard on or off. False when
+ *  there is no such project. */
+export async function setProjectDefaultBranchGuard(projectId: string, enabled: boolean): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ guardDefaultBranch: enabled })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  notifyWorkspaceListChanged()
   return rows.length > 0
 }
 

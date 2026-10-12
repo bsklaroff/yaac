@@ -371,7 +371,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     '',
   ].join('\n')
   const gitconfigPath = gitconfigPathFor(home)
-  await fs.writeFile(gitconfigPath, gitconfig)
+  // Owner-only, since a hosted remote's token is in it.
+  await fs.writeFile(gitconfigPath, gitconfig, { mode: 0o600 })
+  await fs.chmod(gitconfigPath, 0o600)
   // After the caller's entries, so none can disable ssh host verification.
   Object.assign(env, gitAuth.env)
   // Set explicitly and last, so an inherited `GIT_CONFIG_GLOBAL` cannot make

@@ -15,6 +15,7 @@ const list = (...gitCredentials: GitCredentialSummary[]): AuthListResult => ({ g
 
 const AUTH_LIST = 'GET /api/auth/list'
 const ADD = 'POST /api/project/add'
+const CREATE = 'POST /api/project/create'
 const NEW_TOKEN = 'POST /api/auth/git/credentials'
 const NEW_KEY = 'POST /api/auth/git/ssh-keys'
 
@@ -150,5 +151,36 @@ describe('NewProjectButton', () => {
     expect(server.called(ADD).map((c) => c.body)).toEqual([retried, retried])
     // No host key to show: the dialog stays closed.
     expect(screen.queryByLabelText('Repository URL')).toBeNull()
+  })
+
+  it('creates an empty project yaac hosts from a name, and a failed create retries into the name form', async () => {
+    let creates = 0
+    server.route(CREATE, () => (creates++ === 0
+      ? serverError('INTERNAL', 'Failed to create the repository: disk full', 500)
+      : { id: 'id-my-app', name: 'my-app', remoteUrl: 'http://yaac.internal/api/workspace/git/id-my-app.git', addedAt: '' }))
+    renderWithClient(<Harness />)
+    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'New project' }))
+    expect(screen.queryByLabelText('Repository URL')).toBeNull()
+
+    // The name the server will derive shows before the project exists.
+    const create = screen.getByRole<HTMLButtonElement>('button', { name: 'Create' })
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: '!!!' } })
+    expect(screen.getByText('Use at least one letter or digit.')).toBeTruthy()
+    expect(create.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'My App' } })
+    expect(screen.getByText('my-app')).toBeTruthy()
+
+    fireEvent.click(create)
+    expect(await screen.findByText("Couldn't create my-app")).toBeTruthy()
+    expect(server.called(CREATE).map((c) => c.body)).toEqual([{ name: 'My App' }])
+    expect(server.called(ADD)).toHaveLength(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(screen.getByLabelText<HTMLInputElement>('Project name').value).toBe('my-app')
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(useUiStore.getState().projectOps[0]?.doneId).toBe('id-my-app'))
+    snapshotLists('id-my-app')
+    expect(useUiStore.getState().activeProjectId).toBe('id-my-app')
   })
 })

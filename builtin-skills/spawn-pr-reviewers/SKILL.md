@@ -16,6 +16,11 @@ Built on [`yaac-watch-prs`](../yaac-watch-prs/SKILL.md) (the event source),
 [`review-pr`](../review-pr/SKILL.md) — which is what a reviewer workspace
 actually runs, so your prompt supplies the *aim*, not the procedure.
 
+**First, check the project is on GitHub.** If `git config --get
+remote.origin.url` starts with `http://yaac.internal/`, yaac hosts this
+project's remote, which has no pull requests. Tell the user this skill does
+not apply there, and stop.
+
 ## The reviewer argument
 
 One **required argument** names the agent: `<model>` (you resolve the tool),

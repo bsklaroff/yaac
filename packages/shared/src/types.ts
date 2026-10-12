@@ -1252,8 +1252,13 @@ export interface ProjectSummary {
    *  `resolveToolCreateDefaults`). */
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
   /** The project's git credential. Without one it can't create
-   *  workspaces. */
+   *  workspaces, unless the project is hosted, which needs none. */
   gitCredential: { id: string; name: string } | null
+  /** Whether the server hosts the remote (docs/hosted-projects.md). */
+  hosted: boolean
+  /** For a hosted project, whether pushes may not delete or rewind the
+   *  default branch. */
+  guardDefaultBranch: boolean
 }
 
 /**

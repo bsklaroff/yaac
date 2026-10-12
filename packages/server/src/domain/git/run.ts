@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { serverLocalPath } from '@yaac/shared/paths'
@@ -49,9 +49,7 @@ const PINS = [
  */
 export async function runGit(target: GitTarget, args: string[], opts: GitRunOptions = {}): Promise<string> {
   const env = gitEnv(opts.env)
-  let cwd = serverLocalPath('run', 'git-cwd')
-  await fs.mkdir(cwd, { recursive: true, mode: 0o700 })
-  env.GIT_CEILING_DIRECTORIES = path.dirname(cwd)
+  let cwd = await emptyCwd(env)
   if (target.kind === 'private') {
     env.GIT_DIR = target.gitDir
     if (target.workTree !== undefined) {
@@ -64,6 +62,26 @@ export async function runGit(target: GitTarget, args: string[], opts: GitRunOpti
   const pins = [...PINS]
   if (opts.remoteUrl !== undefined) pins.push(`protocol.${transportOf(opts.remoteUrl)}.allow=always`)
   return execGit([...pins.flatMap((p) => ['-c', p]), ...args], cwd, env)
+}
+
+/**
+ * Start git with no repository and the same pins as `runGit`, for a caller
+ * that streams its stdin and stdout (`serveGitHttp`). `extraEnv` is added
+ * to the server's env.
+ */
+export async function spawnGit(args: string[], extraEnv: NodeJS.ProcessEnv): Promise<ChildProcessWithoutNullStreams> {
+  const env = { ...gitEnv(), ...extraEnv }
+  const cwd = await emptyCwd(env)
+  return spawn('git', [...PINS.flatMap((p) => ['-c', p]), ...args], { cwd, env })
+}
+
+/** The empty server-private dir a call without a work tree runs in, with
+ *  `env` set so git never searches above it for a repository. */
+async function emptyCwd(env: NodeJS.ProcessEnv): Promise<string> {
+  const cwd = serverLocalPath('run', 'git-cwd')
+  await fs.mkdir(cwd, { recursive: true, mode: 0o700 })
+  env.GIT_CEILING_DIRECTORIES = path.dirname(cwd)
+  return cwd
 }
 
 /** The git transport a remote URL uses, for `protocol.<name>.allow`. */
