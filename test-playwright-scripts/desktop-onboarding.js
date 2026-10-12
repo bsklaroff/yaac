@@ -1,6 +1,6 @@
 /*
  * Verifies the Electron shell's first-run onboarding end to end: the
- * picker's setup choices, a setup run in the background with its progress,
+ * Servers page's setup choices, a setup run in the background with its progress,
  * a cancel, and the landing on the new server (packages/desktop/README.md,
  * "Setup").
  *
@@ -11,20 +11,19 @@
  * install is real: `yaac server start` starts a server in a throwaway data
  * dir, and the window lands on it.
  *
- *  1. The picker leads with both setups, each with its commands. The
+ *  1. The Servers page leads with both setups, each with its commands. The
  *     cluster one is enabled only on macOS arm64.
  *  2. "Copy commands" copies.
  *  3. A containerless setup whose brew install hangs shows its steps and
  *     output, and Cancel stops it and marks the step cancelled.
  *  4. Run again: the trust step is skipped as done, the install runs, the
  *     server starts, and the window lands on its origin.
- *  5. The SPA's Settings → Server shows that server running, with a Stop,
- *     and the cluster setup (or why this machine cannot run it).
- *  6. A page from a server off loopback (a stand-in on this machine's LAN
- *     address) cannot set up, start, stop, cancel or read this Mac's
- *     servers through the bridge, nor can a loopback page that is not one
- *     of this Mac's installs (a stand-in for a port the app forwards for a
- *     remote server), which the remote page moves the window to.
+ *  5. The SPA's Servers button opens the Servers page, which shows that
+ *     server running, with a Stop, and the cluster setup (or why this
+ *     machine cannot run it).
+ *  6. A server's page (a stand-in on loopback, as a port the app forwards
+ *     for a remote server would be) cannot switch servers, nor set up,
+ *     start, stop, cancel or read this Mac's servers through the bridge.
  *  7. Quitting during a setup asks first, then cancels it: the hanging
  *     `yaac server start`'s child is gone once the app has exited.
  *
@@ -154,11 +153,11 @@ async function main() {
   })
   const dialogs = () => app.evaluate(() => globalThis.dialogs)
   try {
-    console.log('1. no yaac on PATH → the picker leads with both setups')
+    console.log('1. no yaac on PATH → the Servers page leads with both setups')
     await until(win, () => document.querySelector('#choice-server') !== null, null, 30_000)
     const body = await win.textContent('body')
-    check('offers the containerless setup', body.includes('This Mac (containerless)'))
-    check('offers the cluster setup', body.includes('Local Kubernetes cluster (kind)'))
+    check('offers the containerless setup', body.includes('Local containerless server'))
+    check('offers the cluster setup', body.includes('Local Kubernetes cluster'))
     check('shows the containerless commands',
       (await win.textContent('#commands-server')).includes('brew install bsklaroff/yaac/yaac-server'))
     check('shows the cluster commands', (await win.textContent('#commands-cluster')).includes('yaac cluster install'))
@@ -203,28 +202,23 @@ async function main() {
     check('trusted the tap once', calls.filter((c) => c === 'brew trust bsklaroff/yaac').length === 1, calls.join(', '))
     await shot(win, '4-landed')
 
-    console.log('\n5. Settings → Server shows this Mac\'s installs')
-    const settings = win.locator('button[aria-label="Settings"], button[title="Settings"]').first()
+    console.log('\n5. the Servers button shows this Mac\'s installs')
+    const serversButton = win.locator('button[aria-label="Servers"]')
     // The SPA may still be rendering just after the landing.
-    await settings.waitFor({ timeout: 15_000 }).catch(() => {})
-    if (await settings.count()) {
-      await settings.click()
-      const server = win.getByText('Server', { exact: true }).first()
-      if (await server.count()) await server.click()
-      await until(win, () => document.body.textContent.includes('Containerless server'), null, 15_000)
-      const text = await win.textContent('body')
-      check('lists the containerless server as running', /Containerless server\s*Running/.test(text))
-      check('offers to stop it', (await win.getByRole('button', { name: 'Stop' }).count()) === 1)
-      check(supported ? 'offers the cluster setup' : 'says the cluster needs Apple silicon',
-        supported ? (await win.getByRole('button', { name: 'Set up…' }).count()) === 1 : text.includes('needs macOS on Apple silicon'))
-      await shot(win, '5-settings')
-    } else {
-      console.log('    (settings button not found — check by hand)')
-    }
+    await serversButton.waitFor({ timeout: 15_000 })
+    await serversButton.click()
+    await until(win, () => document.querySelector('#add') !== null, null, 15_000)
+    const text = await win.textContent('#install-server')
+    check('lists the containerless server as running', /Local containerless server \(http[^)]*\)\s*selected\s*Running/.test(text), text.trim())
+    check('offers to stop it', (await win.locator('button.stop[data-scope="server"]').count()) === 1)
+    const cluster = await win.textContent('#install-cluster')
+    check(supported ? 'offers the cluster setup' : 'says the cluster needs Apple silicon',
+      supported ? cluster.includes('Set up…') : cluster.includes('needs macOS on Apple silicon'))
+    await shot(win, '5-servers-page')
 
-    console.log('\n6. pages that are not this Mac\'s installs cannot drive its servers')
-    // Serves a page that calls every local-server method and reports what came back.
-    const prober = () => http.createServer((req, res) => {
+    console.log('\n6. a server\'s page cannot change servers or drive this Mac\'s')
+    // Serves a page that calls every bridge method and reports what came back.
+    const prober = http.createServer((req, res) => {
       const json = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body))
       if (req.url === '/api/health') return json({ ok: true, buildId: 'remote' })
       if (req.url === '/api/whoami') return json({ kind: 'local', userId: 'remote' })
@@ -232,7 +226,9 @@ async function main() {
         (async () => {
           const b = window.yaacServer, out = {}
           const calls = { setup: () => b.setupLocal('server'), stop: () => b.stopLocal('server'),
-            start: () => b.startLocal('server'), cancel: () => b.cancelSetup(), state: () => b.localState() }
+            start: () => b.startLocal('server'), cancel: () => b.cancelSetup(), state: () => b.localState(),
+            switch: () => b.switchTo({ url: location.origin }), add: () => b.addRemote(location.origin),
+            remove: () => b.remove({ url: location.origin }), health: () => b.serverHealth() }
           for (const [k, f] of Object.entries(calls)) {
             try { out[k] = await f() } catch { out[k] = 'rejected' }
           }
@@ -240,51 +236,38 @@ async function main() {
         })()
       </script>`)
     })
-    const listen = async (server, host) => {
-      await new Promise((r) => server.listen(0, host, r))
-      return `http://${host}:${server.address().port}`
-    }
-    const refusedAll = async (where) => {
-      await until(win, (o) => location.origin === o && document.title.startsWith('{'), where, 30_000)
-      const out = JSON.parse(await win.title())
-      const refused = ['setup', 'stop', 'start', 'cancel'].every((k) => out[k]?.ok === false && /own pages/.test(out[k].error))
-      check(`a page at ${where} was refused setup, stop, start and cancel`, refused, JSON.stringify(out))
-      check(`and could not read this Mac's state`, out.state === 'rejected')
-    }
-    const lan = Object.values(os.networkInterfaces()).flat().find((a) => a.family === 'IPv4' && !a.internal)?.address
-    const remote = prober()
-    const forwarded = prober()
     try {
-      const forwardedOrigin = await listen(forwarded, '127.0.0.1')
+      await new Promise((r) => prober.listen(0, '127.0.0.1', r))
+      const proberOrigin = `http://127.0.0.1:${prober.address().port}`
       const brewCalls = fs.readFileSync(CALLS, 'utf8')
       const dialogCount = (await dialogs()).length
-      if (lan) {
-        const remoteOrigin = await listen(remote, lan)
-        await win.evaluate((url) => window.yaacServer.addRemote(url), remoteOrigin)
-        await refusedAll(remoteOrigin)
-      } else {
-        console.log('    (no non-loopback address here — the direct remote case is skipped)')
-      }
-      // The page now showing moves the window to a loopback port it controls.
-      await win.evaluate((url) => window.yaacServer.addRemote(url), forwardedOrigin)
-      await refusedAll(forwardedOrigin)
+      await win.evaluate((url) => window.yaacServer.addRemote(url), proberOrigin)
+      await until(win, (o) => location.origin === o && document.title.startsWith('{'), proberOrigin, 30_000)
+      const out = JSON.parse(await win.title())
+      check('every call was refused', Object.values(out).every((v) => v === 'rejected'), JSON.stringify(out))
       check('no command ran and no confirmation showed',
         fs.readFileSync(CALLS, 'utf8') === brewCalls && (await dialogs()).length === dialogCount)
       const status = JSON.parse(execFileSync('node', [CLI, 'server', 'status', '--json'], { env: ENV, encoding: 'utf8' }))
       check('this Mac\'s server is still running', status.running === true)
     } finally {
-      remote.close()
-      forwarded.close()
+      prober.close()
     }
 
     console.log('\n7. Quit during a setup → asks, cancels it, then quits')
+    // A server's page can still ask for the Servers page.
+    const showServers = async () => {
+      await win.evaluate(() => window.yaacWindow.showServers())
+      await until(win, () => document.querySelector('#add') !== null, null, 15_000)
+    }
+    await showServers()
     await win.evaluate((url) => window.yaacServer.switchTo({ url }), origin)
     await until(win, (o) => location.origin === o, origin, 30_000)
+    await showServers()
     // This time `yaac server start` hangs.
     fs.rmSync(SLEEP_PID, { force: true })
     fs.writeFileSync(SLOW, '')
     const begun = await win.evaluate(() => window.yaacServer.setupLocal('server'))
-    check('a loopback page may start a setup', begun.ok === true, JSON.stringify(begun))
+    check('the Servers page may start a setup', begun.ok === true, JSON.stringify(begun))
     for (const end = Date.now() + 30_000; !fs.existsSync(SLEEP_PID); await new Promise((r) => setTimeout(r, 200))) {
       if (Date.now() > end) throw new Error('the install never started')
     }

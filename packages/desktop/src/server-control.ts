@@ -1,5 +1,5 @@
 /**
- * This machine's servers, as the tray and the connect page drive them. A
+ * This machine's servers, as the tray and the Servers page drive them. A
  * Mac can have two installs side by side (docs/server-selection.md): the
  * host server (`yaac server status|start|stop|restart`) and a cluster
  * install's Deployment (`yaac cluster status|start|stop`). Both are driven
@@ -11,6 +11,7 @@
  * (docs/containerless-driver.md), so a stop never stops an agent either.
  */
 import { execFile } from 'node:child_process'
+import { SETUP_COPY } from '@yaac/shared/setup-copy'
 import type {
   DesktopInstallState, DesktopLocalScope, DesktopLocalState, DesktopSetupRun, LocalServerStatus,
 } from '@yaac/shared/types'
@@ -23,7 +24,7 @@ export interface YaacResult {
 
 /**
  * Run `yaac <args>`, killing it after `timeoutMs`; a timeout is a failed
- * result, so a hung CLI can never wedge the tray or blank the picker.
+ * result, so a hung CLI can never wedge the tray or blank the Servers page.
  * Rejects only when `yaac` cannot be spawned at all.
  */
 export type RunYaac = (args: string[], timeoutMs: number) => Promise<YaacResult>
@@ -48,26 +49,6 @@ export function createRunYaac(execImpl: typeof execFile = execFile): RunYaac {
 
 /** Which install: the host server or the cluster's (`yaac server …` / `yaac cluster …`). */
 export type ServerScope = DesktopLocalScope
-
-/**
- * Whether the page at `url` may read and drive this Mac's servers: the
- * shell's own picker (a `data:` page), or a page from the origin one of
- * this Mac's installs registered, while that install's server runs. Any
- * other origin may not, loopback included: a port the app forwards for a
- * remote server is on loopback too, and while an install is stopped such a
- * forward could take its port.
- */
-export function mayControlLocalServers(url: string, local: LocalServers): boolean {
-  if (url.startsWith('data:')) return true
-  let origin: string
-  try {
-    origin = new URL(url).origin
-  } catch {
-    return false
-  }
-  return [local.server, local.cluster]
-    .some((read) => read?.kind === 'status' && read.status.running === true && read.status.origin === origin)
-}
 
 /** A renderer-supplied scope, or null for anything else. */
 export function parseScope(raw: unknown): ServerScope | null {
@@ -116,6 +97,17 @@ export function hostStatus(local: LocalServers): LocalServerStatus | null {
   return local.server?.kind === 'status' && local.server.status.driver !== 'k8s' ? local.server.status : null
 }
 
+/** The origin an install's server last registered at, as its status reports it. */
+export function installOrigin(local: LocalServers, scope: ServerScope): string | null {
+  return (scope === 'server' ? hostStatus(local) : clusterStatus(local))?.origin ?? null
+}
+
+/** An install's name, with its origin once it has one: "Local containerless server (http://…)". */
+export function installLabel(view: DesktopLocalState, scope: ServerScope): string {
+  const origin = view.origins[scope]
+  return origin ? `${SETUP_COPY[scope].title} (${origin})` : SETUP_COPY[scope].title
+}
+
 /**
  * One install's state. An install exists once its driver is recorded: the
  * host's by its first `yaac server start`, a cluster's by `yaac cluster
@@ -149,18 +141,16 @@ export interface TrayServerItem {
   action?: ScopedAction
 }
 
-const NOUN: Record<ServerScope, string> = { server: 'this Mac\'s server', cluster: 'this Mac\'s cluster server' }
 const BUSY: Record<LocalAction, string> = { start: 'Starting', stop: 'Stopping', restart: 'Restarting', setup: 'Setting up' }
 const VERB: Record<ServerAction, string> = { start: 'Start', stop: 'Stop', restart: 'Restart' }
-const SETUP: Record<ServerScope, string> = { server: 'Set up a server on this Mac…', cluster: 'Set up a cluster on this Mac…' }
 
-function line(scope: ServerScope, state: string): TrayServerItem {
-  const noun = NOUN[scope]
-  return { label: `${noun[0].toUpperCase()}${noun.slice(1)}: ${state}` }
+/** "local containerless server", as the middle of a sentence. */
+function noun(scope: ServerScope): string {
+  return `l${SETUP_COPY[scope].title.slice(1)}`
 }
 
 function act(scope: ServerScope, action: ServerAction, suffix = ''): TrayServerItem {
-  return { label: `${VERB[action]} ${NOUN[scope]}${suffix}`, action: { scope, action } }
+  return { label: `${VERB[action]} ${noun(scope)}${suffix}`, action: { scope, action } }
 }
 
 /** "Step 3 of 6: …" for the step a setup is on. */
@@ -171,8 +161,7 @@ function setupProgress(run: DesktopSetupRun): string | null {
 
 /**
  * The tray's server lines: for each install a state label and at most one
- * action. They always name this Mac's servers, since the window may be on a
- * remote one. A missing install offers its setup, unless this Mac cannot
+ * action, named as the Servers page names them. A missing install offers its setup, unless this Mac cannot
  * run it. A host server on a different build than the installed CLI (after
  * `brew upgrade`) offers a restart instead of a stop. A cluster's server is
  * updated by `yaac cluster install`, which rebuilds its image, so the tray
@@ -182,11 +171,14 @@ export function trayServerItems(view: DesktopLocalState): TrayServerItem[] {
   const { busy, setup } = view
   if (busy) {
     const progress = busy.action === 'setup' && setup ? setupProgress(setup) : null
-    return [{ label: `${BUSY[busy.action]} ${NOUN[busy.scope]}…` }, ...progress ? [{ label: progress }] : []]
+    return [{ label: `${BUSY[busy.action]} ${noun(busy.scope)}…` }, ...progress ? [{ label: progress }] : []]
   }
   const items: TrayServerItem[] = view.cli ? [] : [{ label: 'No yaac CLI on PATH' }]
+  const line = (scope: ServerScope, state: string): TrayServerItem => ({ label: `${installLabel(view, scope)}: ${state}` })
   const offerSetup = (scope: ServerScope): void => {
-    if (view.choices[scope].blocked !== 'unsupported') items.push({ label: SETUP[scope], action: { scope, action: 'setup' } })
+    if (view.choices[scope].blocked !== 'unsupported') {
+      items.push({ label: `Set up a ${noun(scope)}…`, action: { scope, action: 'setup' } })
+    }
   }
   switch (view.installs.server) {
     case 'missing': offerSetup('server'); break
@@ -200,11 +192,11 @@ export function trayServerItems(view: DesktopLocalState): TrayServerItem[] {
     case 'missing': offerSetup('cluster'); break
     // An older `yaac` has no `cluster status`, so this asks for an update.
     case 'unavailable': items.push(line('cluster', 'status unavailable')); break
-    case 'elsewhere': items.push({ label: 'This Mac\'s cluster server runs on its cluster' }); break
+    case 'elsewhere': items.push(line('cluster', 'runs on its cluster')); break
     case 'stopped': items.push(line('cluster', 'stopped'), act('cluster', 'start')); break
     case 'running': items.push(line('cluster', 'running'), act('cluster', 'stop')); break
     case 'outdated':
-      items.push({ label: 'Update this Mac\'s cluster server with `yaac cluster install`' }, act('cluster', 'stop'))
+      items.push({ label: `Update the ${noun('cluster')} with \`yaac cluster install\`` }, act('cluster', 'stop'))
       break
     default: break
   }

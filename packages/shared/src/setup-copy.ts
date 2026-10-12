@@ -1,7 +1,7 @@
 /**
- * Wording shared by the desktop shell's setup pages and the SPA: what each
- * kind of install means for the agents it runs, so the choice between them
- * and the containerless workspace badge say the same thing
+ * Wording shared by the desktop shell and the SPA: what each kind of install
+ * is called and means for the agents it runs, so the shell's Servers page,
+ * its tray and the containerless workspace badge say the same thing
  * (docs/containerless-driver.md).
  */
 import type { TrustedTap } from '#types'
@@ -16,13 +16,13 @@ export const CONTAINERLESS_REACH = [
 
 export const SETUP_COPY: Record<'server' | 'cluster', { title: string; summary: string; reach?: string[] }> = {
   server: {
-    title: 'This Mac (containerless)',
+    title: 'Local containerless server',
     summary: 'Each workspace is its own checkout on this Mac, with no sandbox, and the permission mode defaults '
       + 'to accept-edits. Install the agent CLIs you want yourself (yaac host check names them). Quick to set up.',
     reach: CONTAINERLESS_REACH,
   },
   cluster: {
-    title: 'Local Kubernetes cluster (kind)',
+    title: 'Local Kubernetes cluster',
     summary: 'Each workspace is a gVisor-sandboxed pod behind an egress proxy that holds the real credentials. '
       + 'It needs a podman VM, several GB of disk and memory, and some minutes to install. Macs with Apple '
       + 'silicon only.',

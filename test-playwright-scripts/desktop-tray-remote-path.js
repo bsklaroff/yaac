@@ -4,7 +4,7 @@
  * throwaway containerless install:
  *
  *  A. A window showing a REMOTE server stays on it. Tray Start, tray
- *     "Restart this Mac's server to update" (offered after dist/.build-id is
+ *     "Restart local containerless server to update" (offered after dist/.build-id is
  *     rewritten, as a `brew upgrade` would) and tray Stop each act on this
  *     Mac's server, while server.json's selection and the window stay on
  *     the remote origin.
@@ -115,9 +115,9 @@ async function partA() {
     await waitFor('window on the remote', onRemote)
     await win.screenshot({ path: path.join(SHOTS, 'remote-1-on-remote.png') })
 
-    await waitTray(pid, "Start this Mac's server")
-    clickTray(pid, "Start this Mac's server")
-    await waitTray(pid, "Stop this Mac's server", 90_000)
+    await waitTray(pid, "Start local containerless server")
+    clickTray(pid, "Start local containerless server")
+    await waitTray(pid, "Stop local containerless server", 90_000)
     await sleep(2000)
     check('tray Start starts this Mac\'s server', serverStatus().running === true)
     check('after Start, server.json still selects the remote', selectionKept(), JSON.stringify(serverJson()))
@@ -126,16 +126,16 @@ async function partA() {
 
     const newBuildId = crypto.randomBytes(32).toString('hex')
     fs.writeFileSync(BUILD_ID_FILE, `${newBuildId}\n`)
-    await waitTray(pid, "Restart this Mac's server to update")
-    clickTray(pid, "Restart this Mac's server to update")
-    await waitTray(pid, "Stop this Mac's server", 90_000)
+    await waitTray(pid, "Restart local containerless server to update")
+    clickTray(pid, "Restart local containerless server to update")
+    await waitTray(pid, "Stop local containerless server", 90_000)
     await sleep(2000)
     check('tray Restart runs the new build', serverStatus().serverBuildId === newBuildId)
     check('after Restart, server.json still selects the remote', selectionKept(), JSON.stringify(serverJson()))
     check('after Restart, the window stays on the remote', onRemote(), win.url())
 
-    clickTray(pid, "Stop this Mac's server")
-    await waitTray(pid, "Start this Mac's server", 90_000)
+    clickTray(pid, "Stop local containerless server")
+    await waitTray(pid, "Start local containerless server", 90_000)
     await sleep(2000)
     check('after Stop, the window stays on the remote', onRemote() && selectionKept(), win.url())
     await win.screenshot({ path: path.join(SHOTS, 'remote-2-after-actions.png') })
@@ -181,13 +181,13 @@ async function partB() {
   try {
     pid = await finderLaunch(shell, `${DATA_DIR}-ui-b2`)
     try {
-      await waitTray(pid, "This Mac's server: stopped")
+      await waitTray(pid, "Start local containerless server")
       check('a Finder launch finds yaac in Homebrew\'s bin', true)
-      clickTray(pid, "Start this Mac's server")
-      await waitTray(pid, "Stop this Mac's server", 90_000)
+      clickTray(pid, "Start local containerless server")
+      await waitTray(pid, "Stop local containerless server", 90_000)
       check('and its Start runs it under Homebrew\'s node', serverStatus().running === true)
-      clickTray(pid, "Stop this Mac's server")
-      await waitTray(pid, "Start this Mac's server", 90_000)
+      clickTray(pid, "Stop local containerless server")
+      await waitTray(pid, "Start local containerless server", 90_000)
     } finally {
       await quit(pid)
     }

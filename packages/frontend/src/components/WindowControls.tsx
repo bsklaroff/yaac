@@ -9,6 +9,8 @@ interface YaacWindow {
   toggleMaximize: (altKey?: boolean) => void
   close: () => void
   openExternal: (url: string) => void
+  /** Show the shell's Servers page; absent from an app older than it. */
+  showServers?: () => void
 }
 
 /** The bridge, or undefined in a browser / before the preload loads. */

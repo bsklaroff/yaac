@@ -12,23 +12,28 @@ contextBridge.exposeInMainWorld('yaacWindow', {
   close: () => ipcRenderer.send('window:close'),
   // Open a URL in the system browser (the preview's "open external" action).
   openExternal: (url: string) => ipcRenderer.send('window:open-external', url),
+  // Show the shell's Servers page (the SPA's Servers button and server badge).
+  showServers: () => ipcRenderer.send('window:show-servers'),
 })
 
-// The server picker (Settings → Server, shown only when this bridge exists).
-// The main process re-validates every payload (server-switch.ts).
+// The Servers page's bridge (servers-page.ts). The main process answers it
+// for that page alone and re-validates every payload (server-switch.ts).
 contextBridge.exposeInMainWorld('yaacServer', {
-  targets: () => ipcRenderer.invoke('server:targets'),
   switchTo: (selection: unknown) => ipcRenderer.invoke('server:switch', selection),
   addRemote: (url: string) => ipcRenderer.invoke('server:add-remote', url),
   remove: (selection: unknown) => ipcRenderer.invoke('server:remove', selection),
-  // Re-run the boot flow against the current `server.json`, so the static
-  // picker page can pick up a server started from a terminal.
+  // Deselect the selected server (`yaac remote disconnect`).
+  disconnect: () => ipcRenderer.invoke('server:disconnect'),
+  // The saved servers that do not answer or refuse this device, and why.
+  serverHealth: () => ipcRenderer.invoke('server:health'),
+  // Re-run the boot flow against the current `server.json`: "Try again", or
+  // "Back" to the server the page was opened over.
   retry: () => ipcRenderer.invoke('server:retry'),
   // Start or stop one of this machine's servers (`yaac server start`, or
   // `yaac cluster start` for scope 'cluster'); a start lands on it.
   startLocal: (scope: unknown) => ipcRenderer.invoke('server:start-local', scope),
   stopLocal: (scope: unknown) => ipcRenderer.invoke('server:stop-local', scope),
-  // This machine's installs and the setup under way (local-setup.ts).
+  // This Mac's installs and the setup under way (local-setup.ts).
   localState: () => ipcRenderer.invoke('server:local'),
   // Run one of the main process's fixed setups, named by its scope alone.
   setupLocal: (scope: unknown) => ipcRenderer.invoke('server:setup', scope),

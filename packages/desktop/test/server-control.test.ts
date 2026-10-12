@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { DesktopSetupRun, LocalServerStatus } from '@yaac/shared/types'
 import { localView } from '#local-setup'
 import {
-  ACTION_TIMEOUT_MS, createRunYaac, mayControlLocalServers, readLocalServer, READ_TIMEOUT_MS, runServerAction,
+  ACTION_TIMEOUT_MS, createRunYaac, readLocalServer, READ_TIMEOUT_MS, runServerAction,
   trayServerItems,
   type LocalServers, type RunYaac, type YaacResult,
 } from '#server-control'
@@ -70,25 +70,25 @@ describe('readLocalServer', () => {
 describe('trayServerItems', () => {
   const status = (s: Partial<LocalServerStatus>) => ({ kind: 'status' as const, status: { ...STATUS, ...s } })
   /** A cluster status as `yaac cluster status --json` reports one. */
-  const kind = (s: Partial<LocalServerStatus> = {}) => status({ driver: 'k8s', ...s })
+  const kind = (s: Partial<LocalServerStatus> = {}) => status({ driver: 'k8s', origin: 'http://127.0.0.1:8790', ...s })
   const NO_INSTALL = status({ driver: null, running: false, serverBuildId: null })
   const tray = (local: LocalServers, more: Partial<Parameters<typeof localView>[0]> = {}) =>
     trayServerItems(localView({ local, busy: null, setup: null, unfinished: [], brew: true, clusterSupported: true, ...more }))
   const items = (s: Partial<LocalServerStatus>) => tray({ server: status(s), cluster: NO_INSTALL }).slice(0, -1)
-  const hostStop = { label: 'Stop this Mac\'s server', action: { scope: 'server', action: 'stop' } }
-  const clusterStop = { label: 'Stop this Mac\'s cluster server', action: { scope: 'cluster', action: 'stop' } }
-  const setUpHost = { label: 'Set up a server on this Mac…', action: { scope: 'server', action: 'setup' } }
-  const setUpCluster = { label: 'Set up a cluster on this Mac…', action: { scope: 'cluster', action: 'setup' } }
+  const hostStop = { label: 'Stop local containerless server', action: { scope: 'server', action: 'stop' } }
+  const clusterStop = { label: 'Stop local Kubernetes cluster', action: { scope: 'cluster', action: 'stop' } }
+  const setUpHost = { label: 'Set up a local containerless server…', action: { scope: 'server', action: 'setup' } }
+  const setUpCluster = { label: 'Set up a local Kubernetes cluster…', action: { scope: 'cluster', action: 'setup' } }
 
   it('offers one action per state, and a restart when the host server is on another build', () => {
     expect(items({ running: false, serverBuildId: null })).toEqual([
-      { label: 'This Mac\'s server: stopped' },
-      { label: 'Start this Mac\'s server', action: { scope: 'server', action: 'start' } },
+      { label: 'Local containerless server (http://127.0.0.1:8787): stopped' },
+      { label: 'Start local containerless server', action: { scope: 'server', action: 'start' } },
     ])
-    expect(items({})).toEqual([{ label: 'This Mac\'s server: running' }, hostStop])
+    expect(items({})).toEqual([{ label: 'Local containerless server (http://127.0.0.1:8787): running' }, hostStop])
     expect(items({ serverBuildId: 'old' })).toEqual([
-      { label: 'This Mac\'s server: running an older build' },
-      { label: 'Restart this Mac\'s server to update', action: { scope: 'server', action: 'restart' } },
+      { label: 'Local containerless server (http://127.0.0.1:8787): running an older build' },
+      { label: 'Restart local containerless server to update', action: { scope: 'server', action: 'restart' } },
     ])
   })
 
@@ -104,33 +104,33 @@ describe('trayServerItems', () => {
   it('offers setup again for an install whose setup never finished, until it runs', () => {
     const halfInstalled = { server: status({}), cluster: kind({ running: false, serverBuildId: null }) }
     expect(tray(halfInstalled, { unfinished: ['cluster'] }))
-      .toEqual([{ label: 'This Mac\'s server: running' }, hostStop, setUpCluster])
+      .toEqual([{ label: 'Local containerless server (http://127.0.0.1:8787): running' }, hostStop, setUpCluster])
     expect(tray({ ...halfInstalled, cluster: kind() }, { unfinished: ['cluster'] }).slice(-1)).toEqual([clusterStop])
   })
 
   it('lists a cluster install\'s server beside the host one, updated only by `cluster install`', () => {
     const host = status({ running: false, serverBuildId: null })
     expect(tray({ server: host, cluster: kind({ running: false, serverBuildId: null }) })).toEqual([
-      { label: 'This Mac\'s server: stopped' },
-      { label: 'Start this Mac\'s server', action: { scope: 'server', action: 'start' } },
-      { label: 'This Mac\'s cluster server: stopped' },
-      { label: 'Start this Mac\'s cluster server', action: { scope: 'cluster', action: 'start' } },
+      { label: 'Local containerless server (http://127.0.0.1:8787): stopped' },
+      { label: 'Start local containerless server', action: { scope: 'server', action: 'start' } },
+      { label: 'Local Kubernetes cluster (http://127.0.0.1:8790): stopped' },
+      { label: 'Start local Kubernetes cluster', action: { scope: 'cluster', action: 'start' } },
     ])
     // A restart rolls the same image, so only cluster install updates it.
     expect(tray({ server: null, cluster: kind({ serverBuildId: 'old' }) })).toEqual([
-      { label: 'Update this Mac\'s cluster server with `yaac cluster install`' }, clusterStop,
+      { label: 'Update the local Kubernetes cluster with `yaac cluster install`' }, clusterStop,
     ])
     expect(tray({ server: null, cluster: kind({ running: null, serverBuildId: null }) }))
-      .toEqual([{ label: 'This Mac\'s cluster server runs on its cluster' }])
+      .toEqual([{ label: 'Local Kubernetes cluster (http://127.0.0.1:8790): runs on its cluster' }])
     // A ~/.yaac that is itself the cluster install shows once, as the cluster.
     expect(tray({ server: kind(), cluster: kind() })).toEqual([
-      { label: 'This Mac\'s cluster server: running' }, clusterStop,
+      { label: 'Local Kubernetes cluster (http://127.0.0.1:8790): running' }, clusterStop,
     ])
   })
 
   it('shows no action while one runs, with a setup\'s step, or when the server cannot be driven from here', () => {
     expect(tray({ server: status({}), cluster: kind() }, { busy: { scope: 'cluster', action: 'restart' } }))
-      .toEqual([{ label: 'Restarting this Mac\'s cluster server…' }])
+      .toEqual([{ label: 'Restarting local Kubernetes cluster…' }])
     const setup: DesktopSetupRun = {
       scope: 'cluster',
       phase: 'running',
@@ -141,42 +141,13 @@ describe('trayServerItems', () => {
       ],
     }
     expect(tray({ server: NO_INSTALL, cluster: NO_INSTALL }, { busy: { scope: 'cluster', action: 'setup' }, setup }))
-      .toEqual([{ label: 'Setting up this Mac\'s cluster server…' }, { label: 'Step 2 of 2: Install the cluster' }])
+      .toEqual([{ label: 'Setting up local Kubernetes cluster…' }, { label: 'Step 2 of 2: Install the cluster' }])
     expect(tray({ server: { kind: 'error', message: 'x' }, cluster: { kind: 'error', message: 'x' } }))
-      .toEqual([{ label: 'This Mac\'s server: status unavailable' }, { label: 'This Mac\'s cluster server: status unavailable' }])
+      .toEqual([{ label: 'Local containerless server: status unavailable' }, { label: 'Local Kubernetes cluster: status unavailable' }])
     // An older yaac without `cluster status` still shows the host server.
     expect(tray({ server: status({}), cluster: { kind: 'error', message: 'unknown command' } }))
-      .toEqual([{ label: 'This Mac\'s server: running' }, hostStop, { label: 'This Mac\'s cluster server: status unavailable' }])
+      .toEqual([{ label: 'Local containerless server (http://127.0.0.1:8787): running' }, hostStop, { label: 'Local Kubernetes cluster: status unavailable' }])
     expect(tray({ server: null, cluster: null })).toEqual([])
-  })
-})
-
-describe('mayControlLocalServers', () => {
-  const read = (s: Partial<LocalServerStatus>) => ({ kind: 'status' as const, status: { ...STATUS, ...s } })
-  const local: LocalServers = {
-    server: read({}),
-    cluster: read({ driver: 'k8s', origin: 'http://127.0.0.1:8790' }),
-  }
-
-  it('admits the shell\'s own picker and the pages of this Mac\'s running installs', () => {
-    for (const url of ['data:text/html;charset=utf-8,%3C!doctype', 'http://127.0.0.1:8787/', 'http://127.0.0.1:8790/w/abc']) {
-      expect(mayControlLocalServers(url, local)).toBe(true)
-    }
-    // An install in tailnet mode registers its https origin.
-    expect(mayControlLocalServers('https://mac.tail1234.ts.net/', { ...local, server: read({ origin: 'https://mac.tail1234.ts.net' }) }))
-      .toBe(true)
-  })
-
-  it('refuses every other origin, loopback included, and an install that is not running', () => {
-    // A port forwarded for a remote server is on loopback too.
-    for (const url of ['http://127.0.0.1:9456/', 'http://localhost:8787/', 'https://srv.tail1234.ts.net/', 'http://10.42.44.100:9455/', 'about:blank', '']) {
-      expect(mayControlLocalServers(url, local)).toBe(false)
-    }
-    // While it is stopped, a forward could take its port.
-    expect(mayControlLocalServers('http://127.0.0.1:8787/', { ...local, server: read({ running: false }) })).toBe(false)
-    // An older yaac reports no origin.
-    expect(mayControlLocalServers('http://127.0.0.1:8787/', { server: read({ origin: null }), cluster: null })).toBe(false)
-    expect(mayControlLocalServers('http://127.0.0.1:8787/', { server: { kind: 'no-cli' }, cluster: null })).toBe(false)
   })
 })
 

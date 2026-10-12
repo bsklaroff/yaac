@@ -10,8 +10,9 @@ import {
 
 /**
  * `yaac remote …`: pick which server this machine's clients talk to
- * (docs/server-selection.md). The commands mirror the desktop app's server
- * picker, and both edit the same machine-wide `~/.yaac-client/server.json`.
+ * (docs/server-selection.md). The commands mirror the desktop app's
+ * Servers page, and both edit the same machine-wide
+ * `~/.yaac-client/server.json`.
  * A server on this machine is saved the same way: `yaac server start` and
  * `yaac cluster install` register theirs here. With nothing selected,
  * clients have no server; there is no fallback to a local one.
@@ -28,7 +29,7 @@ export async function remoteList(): Promise<void> {
   if (cfg.url === '') console.log('No server selected. Pick one with: yaac remote connect <url>')
 }
 
-/** Save a new server and select it, like the picker's Add. */
+/** Save a new server and select it, like the Servers page's Add. */
 export async function remoteAdd(url: string): Promise<void> {
   await probeAndSelect(normalizeServerUrl(url))
 }
@@ -55,7 +56,7 @@ export async function remoteDisconnect(): Promise<void> {
 }
 
 /**
- * Forget a saved server, like the picker's remove. The selected one is
+ * Forget a saved server, like the Servers page's Remove. The selected one is
  * refused, so the selection always names a saved server.
  */
 export async function remoteRemove(url: string): Promise<void> {

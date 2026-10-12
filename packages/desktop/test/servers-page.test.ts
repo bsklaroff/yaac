@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 import type { DesktopLocalState, DesktopSetupRun } from '@yaac/shared/types'
-import { connectPageHtml, connectPageUrl, type ConnectPageState } from '#connect-page'
+import { serversPageHtml, serversPageUrl, type ServersPageState } from '#servers-page'
 import { localView } from '#local-setup'
 import type { LocalServers, LocalServerState } from '#server-control'
 
@@ -13,6 +13,12 @@ const NONE = {
 const STOPPED: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'containerless' } }
 const CLUSTER_STOPPED: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'k8s' } }
 const NO_CLI: LocalServers = { server: { kind: 'no-cli' }, cluster: { kind: 'no-cli' } }
+const HOST = 'http://127.0.0.1:8787'
+const CLUSTER = 'http://127.0.0.1:8790'
+const HOST_RUNNING: LocalServerState = {
+  kind: 'status', status: { ...NONE.status, driver: 'containerless', running: true, serverBuildId: 'b1', origin: HOST },
+}
+const CLUSTER_RUNNING: LocalServerState = { kind: 'status', status: { ...HOST_RUNNING.status, driver: 'k8s', origin: CLUSTER } }
 
 function view(local: LocalServers, more: Partial<Parameters<typeof localView>[0]> = {}): DesktopLocalState {
   return localView({ local, busy: null, setup: null, unfinished: [], brew: true, clusterSupported: true, ...more })
@@ -22,7 +28,7 @@ const NOTHING_READ = view({ server: null, cluster: null })
 /** A stopped host server, and no cluster install. */
 const HOST_STOPPED = view({ server: STOPPED, cluster: NONE })
 
-const STATE: ConnectPageState = {
+const STATE: ServersPageState = {
   error: {
     title: 'Could not connect to http://127.0.0.1:8787',
     detail: 'cannot reach the yaac server at http://127.0.0.1:8787 (fetch failed)',
@@ -35,29 +41,41 @@ const STATE: ConnectPageState = {
   local: NOTHING_READ,
 }
 
-describe('connectPageHtml', () => {
+describe('serversPageHtml', () => {
   it('states the failure: title, verbatim detail, and hint', () => {
-    const html = connectPageHtml(STATE)
+    const html = serversPageHtml(STATE)
     expect(html).toContain('Could not connect to http://127.0.0.1:8787')
     expect(html).toContain('cannot reach the yaac server at http://127.0.0.1:8787 (fetch failed)')
     expect(html).toContain('Check that the server is running, then connect again.')
   })
 
-  it('offers one Connect row per saved server, marking the selected one', () => {
-    const html = connectPageHtml(STATE)
-    // The selected row gets a button too: it is the retry.
+  it('offers one Connect row per saved server, marking the selected one, and removes any other', () => {
+    const html = serversPageHtml(STATE)
+    // The selected row gets one too while it is unreachable: it is the retry.
     expect(html.match(/class="connect" data-url=/g)).toHaveLength(2)
+    expect(html.match(/class="disconnect"/g)).toHaveLength(1)
     expect(html).toContain('data-url="http://127.0.0.1:8787"')
     expect(html).toContain('data-url="https://b.ts.net"')
     expect(html).toContain('selected')
+    expect(html.match(/class="remove" data-url=/g)).toHaveLength(1)
+    expect(html).toContain('class="remove" data-url="https://b.ts.net"')
   })
 
-  it('has no local-server row — a server here is named by its origin', () => {
-    expect(connectPageHtml(STATE)).not.toContain('Local server')
+  it('opened over a server, has no failure to state, a way back, and a disconnect', () => {
+    const html = serversPageHtml({ targets: STATE.targets, local: view({ server: HOST_RUNNING, cluster: NONE }) })
+    expect(html).toContain('<h1>Servers</h1>')
+    expect(html).toContain('>Back</button>')
+    expect(html).not.toContain('Try again')
+    // The connected server's row only disconnects; the other connects and removes.
+    expect(html).toContain('<button class="disconnect">Disconnect</button>')
+    expect(html.match(/class="connect" data-url=/g)).toHaveLength(1)
+    expect(html).toContain('class="connect" data-url="https://b.ts.net"')
+    expect(html).toContain('id="add"')
+    expect(serversPageHtml(STATE)).toContain('>Try again</button>')
   })
 
   it('says so, and still takes a new server, when nothing is configured', () => {
-    const html = connectPageHtml({
+    const html = serversPageHtml({
       error: { title: 'No yaac server selected' },
       targets: { current: null, saved: [] },
       local: NOTHING_READ,
@@ -71,18 +89,19 @@ describe('connectPageHtml', () => {
     expect(html).not.toContain('name="token"')
   })
 
-  it('drives the preload bridge the SPA uses, not its own IPC', () => {
-    const html = connectPageHtml(STATE)
+  it('drives the preload bridge, not IPC of its own', () => {
+    const html = serversPageHtml(STATE)
     expect(html).toContain('window.yaacServer')
     expect(html).toContain('bridge.switchTo({ url:')
     expect(html).toContain('bridge.addRemote(url)')
+    expect(html).toContain('bridge.disconnect()')
     // The native traffic lights are hidden, so the page provides its own.
     expect(html).toContain('window.yaacWindow.close()')
     expect(html).toContain('-webkit-app-region: drag')
   })
 
   it('escapes server-supplied text rather than letting it close a tag', () => {
-    const html = connectPageHtml({
+    const html = serversPageHtml({
       error: { title: 'x', detail: '<img src=x onerror="alert(1)">' },
       targets: { current: null, saved: ['https://evil"><script>alert(1)</script>'] },
       local: NOTHING_READ,
@@ -92,34 +111,59 @@ describe('connectPageHtml', () => {
     expect(html).toContain('&lt;img src=x')
   })
 
-  it('offers to start each of this machine\'s servers that is stopped', () => {
-    const stopped = connectPageHtml({ ...STATE, local: HOST_STOPPED })
-    expect(stopped).toContain('data-scope="server">Start a server on this Mac')
-    expect(stopped).toContain('each in its own checkout')
-    expect(stopped).not.toContain('data-scope="cluster"')
+  it('lists this Mac\'s installs by name and origin, each with a Start or Stop', () => {
+    const html = serversPageHtml({ ...STATE, local: view({ server: HOST_RUNNING, cluster: CLUSTER_RUNNING }) })
+    // The selected host server's row, which stops even though the window uses it.
+    expect(html).toMatch(new RegExp('<span class="name">Local containerless server \\(http://127\\.0\\.0\\.1:8787\\)</span>'
+      + '\\s*<span class="tag">selected</span>\\s*<span class="tag">Running</span>\\s*'
+      + '<button class="connect" data-url="http://127.0.0.1:8787">Connect</button><button class="disconnect">Disconnect</button>'
+      + '<button class="stop" data-scope="server">Stop</button>'))
+    // Listed once, as the install rather than a bare origin.
+    expect(html).not.toContain(`<span class="origin">${HOST}</span>`)
+    // The cluster's origin is not saved (removed with `yaac remote remove`), so Connect adds it again.
+    expect(html).toMatch(new RegExp('Local Kubernetes cluster \\(http://127\\.0\\.0\\.1:8790\\)</span>\\s*<span class="tag">Running</span>\\s*'
+      + `<button class="connect" data-url="${CLUSTER}" data-add>Connect</button><button class="stop" data-scope="cluster">`))
+    expect(html).toContain('<span class="origin">https://b.ts.net</span>')
+
+    // A stopped install has no Connect, since a start selects it, though a selected one still disconnects.
+    const selectedStopped: LocalServerState = { kind: 'status', status: { ...HOST_RUNNING.status, running: false } }
+    expect(serversPageHtml({ ...STATE, local: view({ server: selectedStopped, cluster: NONE }) })).toMatch(
+      /<span class="tag">Stopped<\/span>\s*<button class="disconnect">Disconnect<\/button><button class="start" data-scope="server">/)
+    const stopped = serversPageHtml({ ...STATE, local: HOST_STOPPED })
+    expect(stopped).toMatch(/Local containerless server<\/span>\s*<span class="tag">Stopped<\/span>\s*<button class="start" data-scope="server">Start<\/button>\s*<\/li>/)
+    // An install this Mac lacks offers its setup, folded away, under the list.
+    expect(stopped).toContain('<h2>Set up on this Mac</h2>')
+    expect(stopped).toMatch(/Local Kubernetes cluster<\/span>\s*<span class="tag">Not set up/)
+    expect(stopped).toContain('<details class="choice" id="choice-cluster">')
+    expect(stopped).not.toContain('id="choice-server"')
     // A scaled-down cluster install starts back up as pods, beside the host server.
-    const both = connectPageHtml({ ...STATE, local: view({ server: STOPPED, cluster: CLUSTER_STOPPED }) })
-    expect(both).toContain('data-scope="server"')
-    expect(both).toContain('data-scope="cluster">Start this Mac\'s cluster server')
-    expect(both).toContain('kind cluster')
-    // A ~/.yaac that is itself the cluster install offers only the cluster.
-    const legacy = connectPageHtml({ ...STATE, local: view({ server: CLUSTER_STOPPED, cluster: CLUSTER_STOPPED }) })
-    expect(legacy).not.toContain('data-scope="server"')
-    expect(legacy).toContain('data-scope="cluster"')
-    const running: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'containerless', running: true } }
-    for (const server of [running, null, { kind: 'error', message: 'x' } as const]) {
-      expect(connectPageHtml({ ...STATE, local: view({ server, cluster: NONE }) })).not.toContain('class="start"')
-    }
+    const both = serversPageHtml({ ...STATE, local: view({ server: STOPPED, cluster: CLUSTER_STOPPED }) })
+    expect(both).toContain('<button class="start" data-scope="server">')
+    expect(both).toContain('<button class="start" data-scope="cluster">')
+    expect(both).not.toContain('Set up on this Mac')
+    // A ~/.yaac that is itself the cluster install lists only the cluster.
+    const legacy = serversPageHtml({ ...STATE, local: view({ server: CLUSTER_STOPPED, cluster: CLUSTER_STOPPED }) })
+    expect(legacy).not.toContain('id="install-server"')
+    expect(legacy).toContain('<button class="start" data-scope="cluster">')
+    const erred = serversPageHtml({ ...STATE, local: view({ server: { kind: 'error', message: 'x' }, cluster: NONE }) })
+    expect(erred).toMatch(/<span class="tag">Status unavailable<\/span>\s*<\/li>/)
+    // While an action runs it says so in place of the state.
+    expect(serversPageHtml({ ...STATE, local: { ...HOST_STOPPED, busy: { scope: 'server', action: 'start' } } }))
+      .toContain('<span class="tag">Starting…</span>')
+    // Nothing read yet: only the saved servers.
+    expect(serversPageHtml(STATE)).not.toContain('id="install-')
   })
 
   it('leads with both setups when there is no CLI, or no install and no server selected', () => {
     const unselected = { ...STATE, targets: { current: null, saved: [] } }
     for (const state of [{ ...STATE, local: view(NO_CLI) }, { ...unselected, local: view({ server: NONE, cluster: NONE }) }]) {
-      const html = connectPageHtml(state)
+      const html = serversPageHtml(state)
       expect(html).toContain('Pick where workspaces run')
-      expect(html).toContain('This Mac (containerless)')
+      expect(html).toContain('<details class="choice" id="choice-server" open>')
+      expect(html).toContain('<details class="choice" id="choice-cluster" open>')
+      expect(html).toContain('Local containerless server')
       expect(html).toContain('the permission mode defaults to accept-edits')
-      expect(html).toContain('Local Kubernetes cluster (kind)')
+      expect(html).toContain('Local Kubernetes cluster')
       expect(html).toContain('gVisor-sandboxed pod')
       // What a containerless agent can reach, in the badge's words, and which taps each run trusts.
       expect(html).toContain('<li>its network access is unfiltered</li>')
@@ -137,65 +181,69 @@ describe('connectPageHtml', () => {
       expect(html).not.toContain('class="start"')
     }
     // With no saved server either, it is a welcome rather than an error.
-    const welcome = connectPageHtml({ ...unselected, local: view(NO_CLI) })
+    const welcome = serversPageHtml({ ...unselected, local: view(NO_CLI) })
     expect(welcome).toContain('<h1>Set up yaac</h1>')
     expect(welcome).not.toContain('Could not connect')
     expect(welcome).not.toContain('<h2>Servers</h2>')
     expect(welcome).toContain('id="add"')
-    expect(connectPageHtml({ ...STATE, local: view(NO_CLI) })).toContain('Could not connect to http://127.0.0.1:8787')
-    // A selected server that is down is not a fresh Mac: no setup.
-    expect(connectPageHtml({ ...STATE, local: view({ server: NONE, cluster: NONE }) })).not.toContain('class="setup"')
+    expect(serversPageHtml({ ...STATE, local: view(NO_CLI) })).toContain('Could not connect to http://127.0.0.1:8787')
+    // A selected server that is down is not a fresh Mac: its setups stay folded.
+    const down = serversPageHtml({ ...STATE, local: view({ server: NONE, cluster: NONE }) })
+    expect(down).toContain('<details class="choice" id="choice-server">')
+    expect(down).not.toContain('Pick where workspaces run')
     // A Mac with one install is not a fresh Mac either.
-    expect(connectPageHtml({ ...unselected, local: view({ server: STOPPED, cluster: NONE }) })).not.toContain('class="setup"')
+    expect(serversPageHtml({ ...unselected, local: view({ server: STOPPED, cluster: NONE }) }))
+      .toContain('<details class="choice" id="choice-cluster">')
   })
 
   it('says what a setup lacks, and turns its button off', () => {
-    const html = connectPageHtml({ ...STATE, local: view(NO_CLI, { brew: false, clusterSupported: false }) })
+    const html = serversPageHtml({ ...STATE, local: view(NO_CLI, { brew: false, clusterSupported: false }) })
     expect(html).toContain('<button class="setup" data-scope="server" disabled data-blocked>')
     expect(html).toContain('Homebrew is not installed')
     expect(html).toContain('href="https://brew.sh"')
     expect(html).toContain('<button class="setup" data-scope="cluster" disabled data-blocked>')
     expect(html).toContain('it needs macOS on Apple silicon')
     // With the CLI there, the containerless setup needs no Homebrew.
-    const cli = connectPageHtml({ ...STATE, targets: { current: null, saved: [] }, local: view({ server: NONE, cluster: NONE }, { brew: false }) })
+    const cli = serversPageHtml({ ...STATE, targets: { current: null, saved: [] }, local: view({ server: NONE, cluster: NONE }, { brew: false }) })
     expect(cli).toContain('<button class="setup" data-scope="server">')
     expect(cli).toContain('<button class="setup" data-scope="cluster" disabled data-blocked>')
   })
 
-  it('shows one setup alone when the tray asks for it, with a way back', () => {
-    const html = connectPageHtml({
-      error: { title: 'Set up yaac on this Mac' }, targets: STATE.targets, local: HOST_STOPPED, setup: 'cluster',
-    })
-    expect(html).toContain('id="choice-cluster"')
-    expect(html).not.toContain('id="choice-server"')
-    expect(html).toContain('>Back</button>')
-    expect(html).not.toContain('id="add"')
-    expect(html).not.toContain('class="connect"')
+  it('opens the setup the tray asks for', () => {
+    const local = view({ server: NONE, cluster: NONE })
+    const html = serversPageHtml({ targets: STATE.targets, local, setup: 'cluster' })
+    expect(html).toContain('<details class="choice" id="choice-cluster" open>')
+    expect(html).toContain('<details class="choice" id="choice-server">')
+    expect(html).toContain('class="connect"')
   })
 })
 
-describe('connectPageUrl', () => {
+describe('serversPageUrl', () => {
   it('is a data: URL whose decoded body is the page', () => {
-    const url = connectPageUrl(STATE)
+    const url = serversPageUrl(STATE)
     expect(url.startsWith('data:text/html;charset=utf-8,')).toBe(true)
     const decoded = decodeURIComponent(url.slice('data:text/html;charset=utf-8,'.length))
-    expect(decoded).toBe(connectPageHtml(STATE))
+    expect(decoded).toBe(serversPageHtml(STATE))
   })
 })
 
 /** The page's inline script, run against jsdom and a stub preload bridge. */
-describe('connectPageHtml (running in a document)', () => {
+describe('serversPageHtml (running in a document)', () => {
   interface Calls {
-    switchTo: unknown[]; addRemote: unknown[][]; closed: number; retried: number; started: unknown[]
-    setups: unknown[]; cancels: number
+    switchTo: unknown[]; addRemote: unknown[][]; removed: unknown[]; disconnects: number; closed: number; retried: number
+    started: unknown[]; stopped: unknown[]; setups: unknown[]; cancels: number
   }
 
   /** What the bridge's `localState` answers, which a test changes as a setup moves on. */
   let polled: DesktopLocalState = NOTHING_READ
+  /** What the bridge's `serverHealth` answers. */
+  let health: Record<string, unknown> = {}
 
-  function mount(state: ConnectPageState, outcome: unknown = { ok: false, error: 'cannot reach it' }) {
+  function mount(state: ServersPageState, outcome: unknown = { ok: false, error: 'cannot reach it' }) {
     polled = state.local
-    const calls: Calls = { switchTo: [], addRemote: [], closed: 0, retried: 0, started: [], setups: [], cancels: 0 }
+    const calls: Calls = {
+      switchTo: [], addRemote: [], removed: [], disconnects: 0, closed: 0, retried: 0, started: [], stopped: [], setups: [], cancels: 0,
+    }
     const w = window as unknown as Record<string, unknown>
     w.yaacServer = {
       switchTo: (sel: unknown) => {
@@ -206,6 +254,14 @@ describe('connectPageHtml (running in a document)', () => {
         calls.addRemote.push([url])
         return Promise.resolve(outcome)
       },
+      remove: (sel: unknown) => {
+        calls.removed.push(sel)
+        return Promise.resolve(outcome)
+      },
+      disconnect: () => {
+        calls.disconnects += 1
+        return Promise.resolve(outcome)
+      },
       retry: () => {
         calls.retried += 1
         return Promise.resolve({ ok: true })
@@ -214,6 +270,11 @@ describe('connectPageHtml (running in a document)', () => {
         calls.started.push(scope)
         return Promise.resolve(outcome)
       },
+      stopLocal: (scope: unknown) => {
+        calls.stopped.push(scope)
+        return Promise.resolve(outcome)
+      },
+      serverHealth: () => Promise.resolve(health),
       localState: () => Promise.resolve(polled),
       setupLocal: (scope: unknown) => {
         calls.setups.push(scope)
@@ -233,8 +294,8 @@ describe('connectPageHtml (running in a document)', () => {
    * Put the page's markup in the document and run its inline script. Not
    * `document.write`, which would replace the window holding the stub bridge.
    */
-  function render(state: ConnectPageState): void {
-    const parsed = new DOMParser().parseFromString(connectPageHtml(state), 'text/html')
+  function render(state: ServersPageState): void {
+    const parsed = new DOMParser().parseFromString(serversPageHtml(state), 'text/html')
     document.body.innerHTML = parsed.body.innerHTML
     const code = parsed.querySelector('script')?.textContent ?? ''
     expect(code).not.toBe('')
@@ -277,7 +338,7 @@ describe('connectPageHtml (running in a document)', () => {
     expect(calls.addRemote).toEqual([['https://new.ts.net']])
   })
 
-  it('Try again re-runs the flow, which is the only exit from a zero-row picker', async () => {
+  it('Try again re-runs the flow, which is the only exit from a page with no rows', async () => {
     const calls = mount({
       error: { title: 'No yaac server selected' },
       targets: { current: null, saved: [] },
@@ -287,6 +348,61 @@ describe('connectPageHtml (running in a document)', () => {
     await settle()
     expect(calls.retried).toBe(1)
     expect(document.getElementById('status')?.textContent).toContain('Connecting…')
+  })
+
+  it('marks each saved server that does not answer or refuses this device, once the page has loaded', async () => {
+    const reason = 'https://b.ts.net refused to identify this device: this device is a tagged device'
+    health = { 'http://127.0.0.1:8787': { kind: 'stopped' }, 'https://b.ts.net': { kind: 'refused', reason } }
+    mount(STATE)
+    const tag = (url: string) => document.querySelector<HTMLElement>(`.tag.health[data-url="${url}"]`)!
+    // Hidden until the probes come back.
+    expect(tag('https://b.ts.net').hidden).toBe(true)
+    await settle()
+    expect(tag('http://127.0.0.1:8787').textContent).toBe('(stopped)')
+    expect(tag('http://127.0.0.1:8787').title).toBe('')
+    expect(tag('https://b.ts.net').hidden).toBe(false)
+    expect(tag('https://b.ts.net').textContent).toBe('(refused)')
+    expect(tag('https://b.ts.net').title).toBe(reason)
+
+    health = {}
+    mount(STATE)
+    await settle()
+    expect(tag('https://b.ts.net').hidden).toBe(true)
+  })
+
+  it('Remove sends the row\'s origin, and shows a refusal inline', async () => {
+    const calls = mount(STATE, { ok: false, error: 'unknown server' })
+    document.querySelector<HTMLButtonElement>('button.remove')!.click()
+    expect(document.getElementById('status')?.textContent).toBe('Removing…')
+    await settle()
+    expect(calls.removed).toEqual([{ url: 'https://b.ts.net' }])
+    expect(document.getElementById('status')?.textContent).toBe('unknown server')
+  })
+
+  it('Disconnect deselects the server, and shows a refusal inline', async () => {
+    const calls = mount(STATE, { ok: false, error: 'no server is selected' })
+    document.querySelector<HTMLButtonElement>('button.disconnect')!.click()
+    expect(document.getElementById('status')?.textContent).toBe('Disconnecting…')
+    await settle()
+    expect(calls.disconnects).toBe(1)
+    expect(document.getElementById('status')?.textContent).toBe('no server is selected')
+  })
+
+  it('Connect on an install whose origin is not saved adds it again, rather than switching', async () => {
+    const calls = mount({ ...STATE, local: view({ server: NONE, cluster: CLUSTER_RUNNING }) })
+    document.querySelector<HTMLButtonElement>(`button.connect[data-url="${CLUSTER}"]`)!.click()
+    await settle()
+    expect(calls.addRemote).toEqual([[CLUSTER]])
+    expect(calls.switchTo).toEqual([])
+  })
+
+  it('a stop button stops its server', async () => {
+    const running: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'containerless', running: true, serverBuildId: 'b1' } }
+    const calls = mount({ ...STATE, local: view({ server: running, cluster: NONE }) }, { ok: true })
+    document.querySelector<HTMLButtonElement>('button.stop[data-scope="server"]')!.click()
+    await settle()
+    expect(calls.stopped).toEqual(['server'])
+    expect(document.getElementById('status')?.textContent).toBe('Stopping the server…')
   })
 
   it('each start button starts its server, and shows a refusal inline', async () => {
@@ -326,8 +442,9 @@ describe('connectPageHtml (running in a document)', () => {
     expect(document.getElementById('run-title')?.textContent).toBe('Setting up…')
     const steps = [...document.querySelectorAll('#run-steps li')].map((li) => li.textContent)
     expect(steps).toEqual(['– Trust the yaac tap (already trusted)', '… Install the cluster'])
-    // Inside the card of the setup that runs.
+    // Inside the card of the setup that runs, unfolded.
     expect(runEl.parentElement?.id).toBe('choice-cluster')
+    expect((runEl.parentElement as HTMLDetailsElement).open).toBe(true)
     expect(document.getElementById('run-log')?.textContent).toContain('Creating the podman machine <img src=x>')
     expect(document.querySelector('#run img')).toBeNull()
     // One setup or server action at a time.
@@ -358,7 +475,7 @@ describe('connectPageHtml (running in a document)', () => {
     mount({ ...STATE, local: view(NO_CLI, { setup: failed }) })
     await settle()
     expect(document.getElementById('run')!.hidden).toBe(false)
-    mount({ ...STATE, local: view({ server: STOPPED, cluster: NONE }, { setup: failed }) })
+    mount({ ...STATE, local: view({ server: STOPPED, cluster: CLUSTER_STOPPED }, { setup: failed }) })
     await settle()
     expect(document.getElementById('run')!.hidden).toBe(true)
   })

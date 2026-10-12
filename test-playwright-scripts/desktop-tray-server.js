@@ -3,18 +3,18 @@
  * server (packages/desktop/README.md, "This machine's server"), against a
  * packaged build and a throwaway containerless install:
  *
- *  1. With no server, the picker offers "Start a server on this Mac" and the
- *     tray says "This Mac's server: stopped". Clicking Start lands the window on the new
+ *  1. With no server, the Servers page offers Start on the local
+ *     containerless server's row and the tray says it is stopped. Clicking Start lands the window on the new
  *     server, and the tray then offers Stop.
  *  2. A workspace is created (its agent is a fake `claude` that sleeps, as in
  *     test/e2e-containerless/workspace-suite.test.ts) and shows in the SPA.
- *  3. Tray Stop stops the server and the window falls back to the picker,
+ *  3. Tray Stop stops the server and the window falls back to the Servers page,
  *     while the workspace's agent process keeps running.
  *  4. Tray Start brings the server back, the window lands, and the workspace
  *     is listed as running again.
  *  5. A new build of the CLI (dist/.build-id rewritten, which is what
  *     `pnpm build` or `brew upgrade` changes) makes the tray offer "Restart
- *     this Mac's server to update", and after it the server runs the new build.
+ *     local containerless server to update", and after it the server runs the new build.
  *  6. Quitting the app leaves the server running.
  *
  * The tray is driven through System Events, so the terminal running this
@@ -165,17 +165,17 @@ try {
   const win = await app.firstWindow()
   const shot = (name) => win.screenshot({ path: path.join(SHOTS, `tray-${name}.png`) })
 
-  // 1. First run: the picker and the tray both offer a start.
-  await win.waitForSelector('#start-local', { timeout: 30_000 })
+  // 1. First run: the Servers page and the tray both offer a start.
+  await win.waitForSelector('button.start[data-scope="server"]', { timeout: 30_000 })
   await shot('1-first-run')
-  check('picker offers Start a server on this Mac', true)
-  await waitTray(pid, "Start this Mac's server")
-  check('tray says the server is stopped', trayItems(pid).includes("This Mac's server: stopped"))
-  await win.click('#start-local')
+  check('the Servers page offers Start', true)
+  await waitTray(pid, "Start local containerless server")
+  check('tray says the server is stopped', trayItems(pid).some((l) => /^Local containerless server.*: stopped$/.test(l)))
+  await win.click('button.start[data-scope="server"]')
   await waitFor('window on the server', () => win.url().startsWith('http://127.0.0.1:'))
   await shot('1-landed')
   check('Start lands the window on the new server', serverStatus().running === true)
-  await waitTray(pid, "Stop this Mac's server")
+  await waitTray(pid, "Stop local containerless server")
   check('tray then offers Stop', true)
 
   // 2. A workspace, shown in the SPA.
@@ -191,17 +191,17 @@ try {
   await shot('2-workspace')
   check(`workspace ${workspaceId} runs, agent pid ${agentPid}`, alive(agentPid))
 
-  // 3. Tray Stop: the server goes, the agent stays, the window shows the picker.
-  clickTray(pid, "Stop this Mac's server")
-  await waitFor('the picker', () => win.url().startsWith('data:'))
-  await win.waitForSelector('#start-local')
+  // 3. Tray Stop: the server goes, the agent stays, the window shows the Servers page.
+  clickTray(pid, "Stop local containerless server")
+  await waitFor('the Servers page', () => win.url().startsWith('data:'))
+  await win.waitForSelector('button.start[data-scope="server"]')
   await shot('3-stopped')
   check('Stop stops the server', serverStatus().running === false)
   check('the agent survives the stop', alive(agentPid))
-  await waitTray(pid, "Start this Mac's server")
+  await waitTray(pid, "Start local containerless server")
 
   // 4. Tray Start: the server and the workspace come back.
-  clickTray(pid, "Start this Mac's server")
+  clickTray(pid, "Start local containerless server")
   await waitFor('window on the server', () => win.url().startsWith('http://127.0.0.1:'))
   await waitFor('the workspace listed again', () => yaac('workspace', 'list').includes(workspaceId))
   await waitFor('the workspace in the SPA', async () => (await win.content()).includes('tray-demo'))
@@ -211,10 +211,10 @@ try {
   // 5. A newer CLI build: the tray offers a restart that runs it.
   const newBuildId = crypto.randomBytes(32).toString('hex')
   fs.writeFileSync(BUILD_ID_FILE, `${newBuildId}\n`)
-  await waitTray(pid, "Restart this Mac's server to update")
-  check('tray offers a restart to update', trayItems(pid).includes("This Mac's server: running an older build"))
-  clickTray(pid, "Restart this Mac's server to update")
-  await waitTray(pid, "Stop this Mac's server", 90_000)
+  await waitTray(pid, "Restart local containerless server to update")
+  check('tray offers a restart to update', trayItems(pid).some((l) => /^Local containerless server.*: running an older build$/.test(l)))
+  clickTray(pid, "Restart local containerless server to update")
+  await waitTray(pid, "Stop local containerless server", 90_000)
   check('the restarted server runs the new build', serverStatus().serverBuildId === newBuildId)
 
   // 6. Quit leaves the server running.

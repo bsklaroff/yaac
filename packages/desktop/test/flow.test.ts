@@ -55,8 +55,8 @@ describe('runFlow', () => {
     expect(ensure).toHaveBeenCalledWith(REMOTE)
   })
 
-  it('nothing selected → the picker failure, with no server ever contacted', async () => {
-    // The hint points at the picker, not a terminal.
+  it('nothing selected → the Servers page failure, with no server ever contacted', async () => {
+    // The hint points at the Servers page, not a terminal.
     const { deps, ensure } = fakeDeps({
       resolve: [new Error(
         'No yaac server selected.\n'
@@ -99,7 +99,7 @@ describe('runFlow', () => {
         detail: 'cannot reach the yaac server at http://127.0.0.1:8787',
       },
     })
-    // A server on this machine: the hint points at the picker's and the
+    // A server on this machine: the hint points at the Servers page's and the
     // tray's Start.
     if (!result.ok) {
       expect(result.error.hint).toMatch(/Start it below or from the yaac menu-bar icon/)

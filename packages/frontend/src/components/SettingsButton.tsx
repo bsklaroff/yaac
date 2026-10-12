@@ -12,7 +12,6 @@ import {
   KeyboardIcon,
   KeyIcon,
   ProjectConfigIcon,
-  ServerIcon,
   SettingsIcon,
 } from '#lib/icons'
 import { api } from '#lib/api'
@@ -24,8 +23,6 @@ import { deviceTimeZone } from '#lib/time'
 import { CredentialsPane } from '#components/settings/Credentials'
 import { Field } from '#components/settings/Field'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
-import { ServerSettings } from '#components/settings/ServerSettings'
-import { serverBridge } from '#lib/desktopServer'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
@@ -42,22 +39,15 @@ const THEMES: { value: ThemePref; label: string }[] = [
 
 const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon }[] = [
   { key: 'general', label: 'General', Icon: GeneralIcon },
-  { key: 'server', label: 'Server', Icon: ServerIcon },
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
   { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
 ]
 
-/**
- * The nav sections this environment can use. The server section needs the
- * desktop shell (it switches servers); the user Dockerfile needs a server
- * that builds images.
- */
+/** The nav sections this server can use: the user Dockerfile needs one that builds images. */
 function visibleSections(buildsImages: boolean): typeof SECTIONS {
-  return SECTIONS.filter((s) =>
-    (s.key !== 'server' || serverBridge())
-    && (s.key !== 'userDockerfile' || buildsImages))
+  return SECTIONS.filter((s) => s.key !== 'userDockerfile' || buildsImages)
 }
 
 /**
@@ -197,8 +187,6 @@ export function SettingsButton(
               <TimeZoneField />
             </section>
           )}
-
-          {section === 'server' && <ServerSettings />}
 
           {section === 'shortcuts' && <ShortcutsPane />}
 

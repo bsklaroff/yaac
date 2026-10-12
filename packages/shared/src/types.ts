@@ -1509,7 +1509,7 @@ export type ServerEvent =
   | { type: 'snapshot'; data: ServerSnapshot }
 
 /**
- * Desktop-shell server picker, over the preload bridge (`window.yaacServer`).
+ * The desktop shell's Servers page, over its preload bridge (`window.yaacServer`).
  */
 export interface DesktopServerSelection {
   url: string
@@ -1616,6 +1616,8 @@ export interface DesktopLocalState {
   brew: boolean
   /** null until read, and for a host data dir that is itself the cluster install. */
   installs: Record<DesktopLocalScope, DesktopInstallState | null>
+  /** The origin each install's server last registered at; null before it ever did. */
+  origins: Record<DesktopLocalScope, string | null>
   busy: { scope: DesktopLocalScope; action: 'setup' | 'start' | 'stop' | 'restart' } | null
   /** The setup under way, or the last one to finish. */
   setup: DesktopSetupRun | null

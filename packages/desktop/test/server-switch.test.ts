@@ -2,13 +2,15 @@ import { describe, it, expect, vi, type Mock } from 'vitest'
 import {
   addServerRemote,
   applyServerSwitch,
+  disconnect,
   getServerTargets,
   parseServerSelection,
   removeServer,
   restoreSelection,
+  serverHealth,
   type ServerSwitchDeps,
 } from '#server-switch'
-import type { ServerConfig } from '@yaac/shared/server-config'
+import { IdentityRejectedError, type ServerConfig } from '@yaac/shared/server-config'
 
 const CFG: ServerConfig = {
   url: 'https://a.ts.net',
@@ -193,5 +195,32 @@ describe('restoreSelection', () => {
       await restoreSelection(CFG, deps)
       expect(deps.writeServerConfig).not.toHaveBeenCalled()
     }
+  })
+})
+
+describe('serverHealth', () => {
+  it('says which saved servers do not answer and which refuse this device, and why', async () => {
+    const deps = makeDeps({ ...CFG, saved: [...CFG.saved, { url: 'https://c.ts.net' }] })
+    deps.probeServer.mockImplementation((origin) => origin === 'https://b.ts.net'
+      ? Promise.reject(new Error('cannot reach https://b.ts.net: fetch failed'))
+      : origin === 'https://c.ts.net'
+        ? Promise.reject(new IdentityRejectedError('https://c.ts.net refused to identify this device'))
+        : Promise.resolve({ buildId: 'b', principal: { kind: 'local', userId: 'u1' } }))
+    expect(await serverHealth(deps)).toEqual({
+      'https://b.ts.net': { kind: 'stopped' },
+      'https://c.ts.net': { kind: 'refused', reason: 'https://c.ts.net refused to identify this device' },
+    })
+    expect(await serverHealth(makeDeps(null))).toEqual({})
+  })
+})
+
+describe('disconnect', () => {
+  it('deselects the selected server and keeps every saved one, and refuses when none is selected', async () => {
+    const deps = makeDeps(CFG)
+    expect(await disconnect(deps)).toEqual({ ok: true })
+    expect(deps.writeServerConfig).toHaveBeenCalledWith({ ...CFG, url: '' })
+    const off = makeDeps({ ...CFG, url: '' })
+    expect(await disconnect(off)).toEqual({ ok: false, error: 'no server is selected' })
+    expect(off.writeServerConfig).not.toHaveBeenCalled()
   })
 })

@@ -15,8 +15,8 @@ the existing `bsklaroff/homebrew-yaac` tap.
 Most people installing yaac want one of two things:
 
 1. **Run workspaces on this Mac with the containerless driver.**
-2. **Connect to a k8s server someone runs elsewhere**, added in the app's
-   server picker.
+2. **Connect to a k8s server someone runs elsewhere**, added on the app's
+   Servers page.
 
 Neither needs a local cluster, so neither should need podman, kind, the
 `libkrun/krun` tap, or the from-source Rust builds of the tap's patched
@@ -66,7 +66,7 @@ Packaging exists but produces only a local, unsigned build
   daemon and runs it in a `utilityProcess` that dies with the app; node-pty
   ships outside the asar. It is the only auth daemon on a machine:
   `yaac auth update` signs in in-process.
-- The tray and the connect page start, stop and restart this machine's
+- The tray and the Servers page start, stop and restart this machine's
   servers through the `yaac` CLI, and offer a restart when the host server
   runs a different build than the installed CLI, and set up a missing
   install (packages/desktop/README.md, "This machine's servers" and
@@ -166,7 +166,7 @@ can drag `yaac.app` into `/Applications` without brew. It is notarized, so
 it opens, but it gets no CLI, and nothing updates the app.
 
 Without the CLI the app still works fully as a client of a remote server:
-the picker, the window, notifications, port forwards and the auth daemon
+the Servers page, the window, notifications, port forwards and the auth daemon
 are all the app's own. For a server on this Mac, the app sets one up
 through Homebrew (packages/desktop/README.md, "Setup").
 
@@ -207,7 +207,7 @@ but brew's record goes stale:
 Verify on a clean Mac with Homebrew 6+: the two-line install succeeds
 without the `libkrun/krun` tap, then both paths work from the app alone:
 starting and stopping a containerless server from the tray, and adding a
-remote server in the picker. Then add `yaac-cluster` with its `libkrun/krun`
+remote server on the Servers page. Then add `yaac-cluster` with its `libkrun/krun`
 steps and check that `yaac cluster install` and `yaac cluster check` pass.
 
 ## Release flow
