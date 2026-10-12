@@ -172,19 +172,20 @@ preview pane uses it.
 ## Client setup
 
 ```sh
-yaac remote set https://srv.<tailnet>.ts.net   # prints who the server says you are
+yaac remote add https://srv.<tailnet>.ts.net   # prints who the server says you are
 yaac workspace list                             # talks to the server
 ```
 
-`yaac remote off` deselects the remote without forgetting it, `yaac remote
-on` selects it again, and `yaac remote status` shows the configuration.
+`yaac remote list` shows the saved servers, `yaac remote connect <url>`
+switches between them, and `yaac remote disconnect` deselects the remote
+without forgetting it.
 With nothing selected, a client reaches no server, not even one on the same
 machine (docs/server-selection.md).
 
 The device must be logged in to the tailnet as a user. A **tagged** device
 (enrolled under an ACL tag rather than a person) has no user, so `serve`
 adds no identity and the server refuses its requests, as it does Funnel
-traffic. `yaac remote set` reports this.
+traffic. `yaac remote add` reports this.
 
 On a phone, just open the server's origin. To revoke a lost device, remove
 it from the tailnet in the Tailscale admin console; nothing on the server

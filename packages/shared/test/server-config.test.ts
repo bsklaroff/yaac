@@ -3,7 +3,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import {
-  clearServerConfig,
   IdentityRejectedError,
   normalizeServerUrl,
   probeServer,
@@ -32,7 +31,6 @@ describe('server config store', () => {
   it('round-trips the config at mode 0600', async () => {
     const cfg = {
       url: 'https://srv.ts.net',
-      enabled: true,
       saved: [{ url: 'https://srv.ts.net' }],
     }
     await writeServerConfig(cfg)
@@ -41,28 +39,23 @@ describe('server config store', () => {
     expect(stat.mode & 0o777).toBe(0o600)
   })
 
-  it('returns null when absent, cleared, or malformed', async () => {
+  it('returns null when absent or malformed', async () => {
     expect(await readServerConfig()).toBeNull()
 
-    await writeServerConfig({ url: 'https://x', enabled: false, saved: [] })
-    await clearServerConfig()
-    expect(await readServerConfig()).toBeNull()
-    await clearServerConfig() // idempotent
-
+    await fs.mkdir(clientLocalRoot(), { recursive: true })
     await fs.writeFile(serverConfigPath(), 'not json')
     expect(await readServerConfig()).toBeNull()
-    await fs.writeFile(serverConfigPath(), JSON.stringify({ url: 'x' }))
+    await fs.writeFile(serverConfigPath(), JSON.stringify({ saved: [] }))
     expect(await readServerConfig()).toBeNull()
   })
 
   it('folds the active remote into saved and drops malformed saved entries', async () => {
     await fs.mkdir(clientLocalRoot(), { recursive: true })
-    await fs.writeFile(serverConfigPath(), JSON.stringify({ url: 'https://old.ts.net', enabled: true }))
+    await fs.writeFile(serverConfigPath(), JSON.stringify({ url: 'https://old.ts.net' }))
     expect((await readServerConfig())?.saved).toEqual([{ url: 'https://old.ts.net' }])
 
     await fs.writeFile(serverConfigPath(), JSON.stringify({
       url: 'https://a.ts.net',
-      enabled: false,
       saved: [{ url: 'https://b.ts.net' }, { host: 'c' }, 'junk'],
     }))
     expect((await readServerConfig())?.saved).toEqual([
@@ -71,26 +64,37 @@ describe('server config store', () => {
     ])
   })
 
+  it('reads a legacy `enabled: false` as nothing selected, keeping the server saved', async () => {
+    await fs.mkdir(clientLocalRoot(), { recursive: true })
+    await fs.writeFile(serverConfigPath(), JSON.stringify({
+      url: 'https://a.ts.net', enabled: false, saved: [{ url: 'https://b.ts.net' }],
+    }))
+    expect(await readServerConfig()).toEqual({
+      url: '', saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }],
+    })
+  })
+
   it('reads a file that still carries tokens, and the next write drops them', async () => {
     await fs.mkdir(clientLocalRoot(), { recursive: true })
     await fs.writeFile(serverConfigPath(), JSON.stringify({
-      url: 'https://a.ts.net', token: 'ta', enabled: true,
+      url: 'https://a.ts.net', token: 'ta',
       saved: [{ url: 'https://a.ts.net', token: 'ta' }],
     }))
     const cfg = await readServerConfig()
-    expect(cfg).toEqual({ url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }] })
+    expect(cfg).toEqual({ url: 'https://a.ts.net', saved: [{ url: 'https://a.ts.net' }] })
     await writeServerConfig(cfg!)
     expect(await fs.readFile(serverConfigPath(), 'utf8')).not.toContain('token')
   })
 
-  it('holds only the selection: a record is never written here, and forgetting removes the file', async () => {
+  it('holds only the selection, plus `enabled` for older clients: a record is never written here', async () => {
     await recordInstall({ driver: 'k8s', installId: 'i-1' })
     await writeServerConfig(withServerSelected(await readServerConfig(), 'https://b.ts.net'))
-    expect(JSON.parse(await fs.readFile(serverConfigPath(), 'utf8'))).toEqual({
+    const raw = async (): Promise<unknown> => JSON.parse(await fs.readFile(serverConfigPath(), 'utf8'))
+    expect(await raw()).toEqual({
       url: 'https://b.ts.net', enabled: true, saved: [{ url: 'https://b.ts.net' }],
     })
-    await clearServerConfig()
-    await expect(fs.access(serverConfigPath())).rejects.toThrow()
+    await writeServerConfig({ url: '', saved: [{ url: 'https://b.ts.net' }] })
+    expect(await raw()).toEqual({ url: '', enabled: false, saved: [{ url: 'https://b.ts.net' }] })
     expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1' })
   })
 })
@@ -109,12 +113,11 @@ describe('registerServer', () => {
   })
 
   it('selects the origin and records the driver, keeping the other saved servers and the install record', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', enabled: false, saved: [] })
+    await writeServerConfig({ url: '', saved: [{ url: 'https://srv.ts.net' }] })
     await fs.writeFile(path.join(dir, 'install.json'), JSON.stringify({ driver: 'containerless', installId: 'i-1' }))
     await registerServer('http://127.0.0.1:8787', 'k8s')
     expect(await readServerConfig()).toEqual({
       url: 'http://127.0.0.1:8787',
-      enabled: true,
       saved: [{ url: 'http://127.0.0.1:8787' }, { url: 'https://srv.ts.net' }],
     })
     expect(await readInstallRecord()).toEqual({ driver: 'k8s', installId: 'i-1', origin: 'http://127.0.0.1:8787' })
@@ -123,19 +126,19 @@ describe('registerServer', () => {
   it('on a restart or re-install, leaves a selection of another server alone unless the origin is new', async () => {
     const host = 'http://127.0.0.1:8787'
     const cluster = 'http://127.0.0.1:8790'
-    await writeServerConfig({ url: host, enabled: true, saved: [{ url: host }, { url: cluster }] })
+    await writeServerConfig({ url: host, saved: [{ url: host }, { url: cluster }] })
     await registerServer(cluster, 'k8s', { keepSelection: true })
-    expect(await readServerConfig()).toMatchObject({ url: host, enabled: true })
+    expect(await readServerConfig()).toMatchObject({ url: host })
     // A first install's origin is new, so it is selected.
     await registerServer('https://srv.ts.net', 'k8s', { keepSelection: true })
     expect(await readServerConfig()).toMatchObject({ url: 'https://srv.ts.net' })
     // With nothing selected, a restart selects its server.
-    await writeServerConfig({ url: host, enabled: false, saved: [{ url: host }, { url: cluster }] })
+    await writeServerConfig({ url: '', saved: [{ url: host }, { url: cluster }] })
     await registerServer(cluster, 'k8s', { keepSelection: true })
-    expect(await readServerConfig()).toMatchObject({ url: cluster, enabled: true })
+    expect(await readServerConfig()).toMatchObject({ url: cluster })
     // A start always selects.
     await registerServer(host, 'containerless')
-    expect(await readServerConfig()).toMatchObject({ url: host, enabled: true })
+    expect(await readServerConfig()).toMatchObject({ url: host })
   })
 })
 
@@ -143,7 +146,6 @@ describe('withServerSelected', () => {
   it('starts a fresh config from null', () => {
     expect(withServerSelected(null, 'https://a.ts.net')).toEqual({
       url: 'https://a.ts.net',
-      enabled: true,
       saved: [{ url: 'https://a.ts.net' }],
     })
   })
@@ -151,12 +153,10 @@ describe('withServerSelected', () => {
   it('keeps other saved remotes and moves a re-set one to the front', () => {
     const existing = {
       url: 'https://a.ts.net',
-      enabled: false,
       saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }],
     }
     expect(withServerSelected(existing, 'https://b.ts.net')).toEqual({
       url: 'https://b.ts.net',
-      enabled: true,
       saved: [{ url: 'https://b.ts.net' }, { url: 'https://a.ts.net' }],
     })
   })

@@ -329,7 +329,7 @@ describe('deployServerWorkload', () => {
     // The published origin is selected in `server.json` so clients find
     // it, and the data dir is recorded as k8s, so a host start refuses it.
     expect(origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
-    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true })
+    expect(await readServerConfig()).toMatchObject({ url: origin })
     expect(await readInstallRecord()).toMatchObject({ driver: 'k8s' })
     // Labelled with its install, which a later install compares.
     expect(applied('Deployment').find((d) => d.metadata?.name === SERVER_APP_NAME)?.metadata?.labels)
@@ -510,7 +510,7 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_ALLOWED_HOSTS).toBe('yaac.tail1234.ts.net')
     expect(env.YAAC_ACCESS_MODE).toBe('tailnet')
     expect(vi.mocked(globalThis.fetch).mock.calls.some(([u]) => (u as string).startsWith(origin))).toBe(true)
-    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true })
+    expect(await readServerConfig()).toMatchObject({ url: origin })
   })
 
   it('hands --owner to the server, and fails on the reason a server refusing its access mode gives', async () => {
@@ -578,7 +578,7 @@ describe('deployServerWorkload', () => {
 
     expect(log.mock.calls.flat().join('\n'))
       .toMatch(/WARNING: .*refused to identify this device: tailscale serve sent no user identity/)
-    expect(await readServerConfig()).toMatchObject({ url: origin, enabled: true })
+    expect(await readServerConfig()).toMatchObject({ url: origin })
   })
 
   it('stops the pod that is there before it deploys', async () => {

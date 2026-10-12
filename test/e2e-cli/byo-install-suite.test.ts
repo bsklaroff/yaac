@@ -150,10 +150,10 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     expect(whoami.status).toBe(401)
     expect(await whoami.text()).toMatch(/tagged device/)
 
-    // ...which `yaac remote set` reports in the server's own words.
-    const set = await runYaac(installEnv({ YAAC_DATA_DIR: path.join(scratch, 'tagged') }), 'remote', 'set', origin)
-    expect(set.exitCode).toBe(1)
-    expect(set.stderr).toMatch(/refused to identify this device[\s\S]*tagged device/)
+    // ...which `yaac remote add` reports in the server's own words.
+    const add = await runYaac(installEnv({ YAAC_DATA_DIR: path.join(scratch, 'tagged') }), 'remote', 'add', origin)
+    expect(add.exitCode).toBe(1)
+    expect(add.stderr).toMatch(/refused to identify this device[\s\S]*tagged device/)
 
     // Recorded as a byo install, keyed by the cluster's uid; the context
     // is only a hint.
@@ -210,7 +210,7 @@ describe('yaac cluster install --byo, on kind-byo', () => {
   })
 
   it('creates a workspace through the installed server, with a terminal and a forward that work', async () => {
-    expect((await runYaac(userEnv, 'remote', 'set', forward.origin)).exitCode).toBe(0)
+    expect((await runYaac(userEnv, 'remote', 'add', forward.origin)).exitCode).toBe(0)
     // The install's volumes are Retain, so projects from earlier runs may
     // still exist, and would make the name ambiguous.
     const earlier = await (await api('/project/list')).json() as Array<{ id: string; name: string }>

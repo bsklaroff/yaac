@@ -89,10 +89,11 @@ yaac auth
                                 claude-oauth, opencode-openrouter, pi-openrouter, github
 
 yaac remote                     Which server this machine's clients use
-  set <url>                     Select a server (checks it identifies this device)
-  off | on                      Deselect / reselect it without forgetting it
-  unset                         Forget every saved server
-  status                        Show the selected server and saved ones
+  list                          Show the saved servers, the selected one marked *
+  add <url>                     Save and select a server (checks it identifies this device)
+  connect <url>                 Select a saved server (checks it the same way)
+  disconnect                    Deselect the server without forgetting it
+  remove <url>                  Forget a saved server other than the selected one
 ```
 
 In a workspace's tmux session: `Ctrl-B D` detaches, `Ctrl-B C` opens a new

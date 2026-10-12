@@ -463,6 +463,30 @@ containerless-only user how to drop the cluster tools afterwards.
   the split is still in use. `formula_renames.json` can stay indefinitely: it
   costs nothing, and lets an install that skipped many releases migrate.
 
+## `server.json`'s `enabled` key
+
+`server.json` marks nothing selected with an empty `url`. Older clients
+kept `url` and set `enabled: false` instead, and read a file without a
+boolean `enabled` as no config at all. Both sides are bridged in
+`packages/shared/src/server-config.ts`: `readServerConfig` reads
+`enabled: false` as an empty `url`, keeping the old `url` in `saved`, and
+`writeServerConfig` still writes `enabled: url !== ''`.
+
+- **What it reads and writes.** The `enabled` key of
+  `~/.yaac-client/server.json`. Older clients write `enabled: false` with
+  `url` kept: the CLI's `remote off`, and the desktop's switch-back after a
+  server action and its remove, which carry the key forward.
+- **What breaks silently if it goes too early.** Without the read side, a
+  server an older client deselected is selected again, and commands reach
+  a server the user turned off. Without the write side, an older client
+  sees no config, and its next write (a desktop Add or switch, `server
+  start`, `cluster install|start`) replaces the file with only its own
+  server: every other saved server is lost, and a `cluster start` takes
+  the selection from a remote server.
+- **When it is safe to remove.** Once no older CLI or desktop build is in
+  use, and no `server.json` holds `enabled: false` beside a non-empty
+  `url`. The two sides can go together.
+
 ## Retiring the install record from `server.json`
 
 A data dir's install record lives in `<dataDir>/install.json`. Older

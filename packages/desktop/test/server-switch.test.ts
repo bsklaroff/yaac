@@ -12,7 +12,6 @@ import type { ServerConfig } from '@yaac/shared/server-config'
 
 const CFG: ServerConfig = {
   url: 'https://a.ts.net',
-  enabled: true,
   saved: [
     { url: 'https://a.ts.net' },
     { url: 'https://b.ts.net' },
@@ -29,7 +28,6 @@ function makeDeps(cfg: ServerConfig | null): Omit<ServerSwitchDeps, 'writeServer
     // A minimal copy of withServerSelected's contract.
     select: (existing, url) => ({
       url,
-      enabled: true,
       saved: [{ url }, ...(existing?.saved ?? []).filter((s) => s.url !== url)],
     }),
     probeServer: vi.fn().mockResolvedValue({ buildId: 'b' }),
@@ -65,25 +63,20 @@ describe('getServerTargets', () => {
   })
 
   it('reports nothing selected when the config is deselected, keeping the rows', async () => {
-    expect(await getServerTargets(makeDeps({ ...CFG, enabled: false }))).toEqual({
+    expect(await getServerTargets(makeDeps({ ...CFG, url: '' }))).toEqual({
       current: null,
       saved: ['https://a.ts.net', 'https://b.ts.net'],
     })
-  })
-
-  it('reports nothing selected for a config with no selection', async () => {
-    const cleared: ServerConfig = { url: '', enabled: false, saved: [] }
-    expect(await getServerTargets(makeDeps(cleared))).toEqual({ current: null, saved: [] })
   })
 })
 
 describe('applyServerSwitch', () => {
   it('probes a saved server, then selects it', async () => {
-    const deps = makeDeps({ ...CFG, enabled: false })
+    const deps = makeDeps({ ...CFG, url: '' })
     expect(await applyServerSwitch({ url: 'https://b.ts.net' }, deps)).toEqual({ ok: true })
     expect(deps.probeServer).toHaveBeenCalledWith('https://b.ts.net')
     const written = deps.writeServerConfig.mock.calls[0][0]
-    expect(written).toMatchObject({ url: 'https://b.ts.net', enabled: true })
+    expect(written).toMatchObject({ url: 'https://b.ts.net' })
     expect(written.saved).toContainEqual({ url: 'https://a.ts.net' })
   })
 
@@ -118,7 +111,6 @@ describe('addServerRemote', () => {
     expect(deps.probeServer).toHaveBeenCalledWith('https://c.ts.net')
     expect(deps.writeServerConfig).toHaveBeenCalledWith(expect.objectContaining({
       url: 'https://c.ts.net',
-      enabled: true,
     }))
   })
 
@@ -151,7 +143,7 @@ describe('removeServer', () => {
     const deps = makeDeps(CFG)
     expect(await removeServer({ url: 'https://b.ts.net' }, deps)).toEqual({ ok: true })
     expect(deps.writeServerConfig).toHaveBeenCalledWith({
-      url: 'https://a.ts.net', enabled: true, saved: [{ url: 'https://a.ts.net' }],
+      url: 'https://a.ts.net', saved: [{ url: 'https://a.ts.net' }],
     })
   })
 
@@ -162,11 +154,11 @@ describe('removeServer', () => {
     expect(deps.writeServerConfig).not.toHaveBeenCalled()
   })
 
-  it('clears the remembered url when forgetting a deselected server', async () => {
-    const deps = makeDeps({ ...CFG, enabled: false })
+  it('forgets any saved server while none is selected', async () => {
+    const deps = makeDeps({ ...CFG, url: '' })
     expect(await removeServer({ url: 'https://a.ts.net' }, deps)).toEqual({ ok: true })
     expect(deps.writeServerConfig).toHaveBeenCalledWith({
-      url: '', enabled: false, saved: [{ url: 'https://b.ts.net' }],
+      url: '', saved: [{ url: 'https://b.ts.net' }],
     })
   })
 
@@ -189,12 +181,11 @@ describe('restoreSelection', () => {
   it('puts back the remote selection a `yaac server start` replaced, keeping what it saved', async () => {
     const started: ServerConfig = {
       url: 'http://127.0.0.1:8787',
-      enabled: true,
       saved: [{ url: 'http://127.0.0.1:8787' }, ...CFG.saved],
     }
     const deps = makeDeps(started)
     await restoreSelection(CFG, deps)
-    expect(deps.writeServerConfig).toHaveBeenCalledWith({ ...started, url: CFG.url, enabled: true })
+    expect(deps.writeServerConfig).toHaveBeenCalledWith({ ...started, url: CFG.url })
   })
   it('writes nothing when the selection is unchanged, or nothing is configured', async () => {
     for (const cfg of [CFG, null]) {

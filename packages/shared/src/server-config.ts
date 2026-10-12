@@ -8,11 +8,11 @@ import type { DriverKind, Principal } from '#types'
  * Which yaac server this machine's clients talk to
  * (`~/.yaac-client/server.json`, 0600).
  *
- * `url` is the selected server; `enabled` deselects it without forgetting
- * it; `saved` lists every server configured and not since removed, so
- * clients can switch back. Both `yaac server start` and `yaac cluster
- * install` register their server here (`registerServer`), so clients
- * always reach a server by its origin. The file holds no credential: the
+ * `url` is the selected server, or `''` for none; `saved` lists every
+ * server configured and not since removed, so clients can switch back.
+ * Both `yaac server start` and `yaac cluster install` register their
+ * server here (`registerServer`), so clients always reach a server by its
+ * origin. The file holds no credential: the
  * server identifies the caller from the request (docs/remote-hosting.md,
  * docs/server-selection.md). What kind of install a data dir is lives in
  * its own `install.json` (`#install-record`), never here.
@@ -23,7 +23,6 @@ export interface SavedServer {
 
 export interface ServerConfig {
   url: string
-  enabled: boolean
   saved: SavedServer[]
 }
 
@@ -34,7 +33,8 @@ export function serverConfigPath(): string {
 
 /**
  * Null for an absent or malformed file. The selected server is always
- * included in `saved`. Unknown fields are dropped.
+ * included in `saved`. Unknown fields are dropped, and a legacy
+ * `enabled: false` reads as nothing selected (docs/legacy-compat-shims.md).
  */
 export async function readServerConfig(): Promise<ServerConfig | null> {
   await retireServerJsonRecord()
@@ -43,29 +43,27 @@ export async function readServerConfig(): Promise<ServerConfig | null> {
     const parsed: unknown = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const cfg = parsed as Record<string, unknown>
-    if (typeof cfg.url !== 'string' || typeof cfg.enabled !== 'boolean') return null
+    if (typeof cfg.url !== 'string') return null
     const saved = (Array.isArray(cfg.saved) ? cfg.saved : [])
       .filter((s: unknown): s is SavedServer =>
         !!s && typeof s === 'object' && typeof (s as Record<string, unknown>).url === 'string')
       .map((s) => ({ url: s.url }))
-    // An empty url means nothing is selected.
     if (cfg.url !== '' && !saved.some((s) => s.url === cfg.url)) {
       saved.unshift({ url: cfg.url })
     }
-    return { url: cfg.url, enabled: cfg.enabled, saved }
+    return { url: cfg.enabled === false ? '' : cfg.url, saved }
   } catch {
     return null
   }
 }
 
-/** Persist atomically at 0600, like everything client-local. */
+/**
+ * Persist atomically at 0600, like everything client-local. `enabled` is
+ * written only so an older client, which requires it, can still read the
+ * file (docs/legacy-compat-shims.md).
+ */
 export async function writeServerConfig(cfg: ServerConfig): Promise<void> {
-  await writeJsonFile(serverConfigPath(), cfg)
-}
-
-/** Forget every configured server (`yaac remote unset`). */
-export async function clearServerConfig(): Promise<void> {
-  await fs.rm(serverConfigPath(), { force: true })
+  await writeJsonFile(serverConfigPath(), { ...cfg, enabled: cfg.url !== '' })
 }
 
 /**
@@ -95,7 +93,7 @@ export function normalizeServerUrl(raw: string): string {
  */
 export function withServerSelected(existing: ServerConfig | null, url: string): ServerConfig {
   const others = (existing?.saved ?? []).filter((s) => s.url !== url)
-  return { url, enabled: true, saved: [{ url }, ...others] }
+  return { url, saved: [{ url }, ...others] }
 }
 
 const PROBE_TIMEOUT_MS = 5000
@@ -153,7 +151,7 @@ export async function registerServer(
 ): Promise<void> {
   await recordInstall({ driver, origin })
   const cfg = await readServerConfig()
-  const elsewhere = !!cfg?.enabled && cfg.url !== '' && cfg.url !== origin
+  const elsewhere = !!cfg && cfg.url !== '' && cfg.url !== origin
   if (opts.keepSelection && elsewhere && cfg.saved.some((s) => s.url === origin)) return
   await writeServerConfig(withServerSelected(cfg, origin))
 }

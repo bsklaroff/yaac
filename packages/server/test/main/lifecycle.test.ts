@@ -126,7 +126,6 @@ describe('startServer registration', () => {
       expect(stderr.join('\n')).toContain('already running')
       expect(await readServerConfig()).toEqual({
         url: `http://127.0.0.1:${server.port}`,
-        enabled: true,
         saved: [{ url: `http://127.0.0.1:${server.port}` }],
       })
       expect(await readInstallRecord()).toEqual({ driver: 'containerless', origin: `http://127.0.0.1:${server.port}` })
@@ -139,7 +138,7 @@ describe('startServer registration', () => {
   it('refuses to start on a k8s install rather than registering a second server', async () => {
     vi.stubEnv('YAAC_BUILD_ID', 'test-build')
     await recordInstall({ driver: 'k8s' })
-    await writeServerConfig({ url: 'http://127.0.0.1:9999', enabled: true, saved: [] })
+    await writeServerConfig({ url: 'http://127.0.0.1:9999', saved: [] })
     await expect(startServer()).rejects.toThrow(/yaac cluster start/)
     // The refusal left the selection unchanged.
     expect(await readServerConfig()).toMatchObject({ url: 'http://127.0.0.1:9999' })

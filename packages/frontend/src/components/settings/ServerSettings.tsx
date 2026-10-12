@@ -10,7 +10,7 @@ import type { DesktopServerSelection, DesktopServerTargets, Principal } from '@y
  * Desktop-only server picker. Lists the servers this machine has
  * configured, adds one by origin, and forgets any but the connected one.
  * Switching rewrites `~/.yaac-client/server.json` (the same selection
- * `yaac remote set/on` writes, so the CLI follows), then the shell reloads
+ * `yaac remote connect` writes, so the CLI follows), then the shell reloads
  * the window on the new origin, unloading this page.
  */
 export function ServerSettings(): JSX.Element {
