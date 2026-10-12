@@ -1412,12 +1412,19 @@ describe('WorkspaceChat focus', () => {
   afterEach(() => {
     cleanup()
     flushChatDrafts()
+    vi.unstubAllGlobals()
     document.body.replaceChildren()
   })
 
   it('focuses the box when shown', () => {
     show()
     expect(document.activeElement).toBe(box())
+  })
+
+  it('leaves the box unfocused on a phone, where focus raises the keyboard', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener() {}, removeEventListener() {} }))
+    show()
+    expect(document.activeElement).not.toBe(box())
   })
 
   it('leaves focus in an open dialog', () => {

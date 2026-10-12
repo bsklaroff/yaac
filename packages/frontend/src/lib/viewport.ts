@@ -11,14 +11,28 @@ import { useEffect, useSyncExternalStore } from 'react'
  */
 export const MOBILE_QUERY = '(max-width: 767px)'
 
-function query(): MediaQueryList | null {
+/** A device whose only pointer is a finger: a phone in any orientation, or
+ *  a tablet. It excludes touch laptops, whose primary pointer hovers. */
+const TOUCH_ONLY_QUERY = '(hover: none) and (pointer: coarse)'
+
+function query(media = MOBILE_QUERY): MediaQueryList | null {
   if (typeof window === 'undefined' || !window.matchMedia) return null
-  return window.matchMedia(MOBILE_QUERY)
+  return window.matchMedia(media)
 }
 
 /** One-time read, for tests and non-React callers. */
 export function isMobileViewport(): boolean {
   return query()?.matches ?? false
+}
+
+/**
+ * Whether focusing a text control may raise a soft keyboard, which covers
+ * most of a pane. Panes skip focusing themselves on open when it may, and
+ * focus only on a tap. That follows the input device as well as the width:
+ * a landscape phone or a tablet gets the desktop layout, keyboard and all.
+ */
+export function focusRaisesKeyboard(): boolean {
+  return isMobileViewport() || (query(TOUCH_ONLY_QUERY)?.matches ?? false)
 }
 
 function subscribe(onChange: () => void): () => void {

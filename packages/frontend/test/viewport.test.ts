@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { MOBILE_QUERY, isMobileViewport, useIsMobile, useVisualViewportHeight } from '#lib/viewport'
+import { MOBILE_QUERY, focusRaisesKeyboard, isMobileViewport, useIsMobile, useVisualViewportHeight } from '#lib/viewport'
 
 /** A controllable matchMedia: `set()` flips the match and notifies listeners,
  *  the way a real resize or rotation would. */
@@ -32,6 +32,20 @@ afterEach(() => {
   window.matchMedia = realMatchMedia
   document.documentElement.style.removeProperty('--app-height')
   document.documentElement.style.removeProperty('--app-top')
+})
+
+/** A pane skips focusing itself on a phone-sized viewport, and on a
+ *  touch-only device past the breakpoint (a landscape phone, a tablet). */
+describe('focusRaisesKeyboard', () => {
+  it('answers for a narrow viewport or a touch-only device, not a wide one with a mouse', () => {
+    for (const [narrow, touchOnly, raises] of [[true, false, true], [false, true, true], [false, false, false]]) {
+      window.matchMedia = ((q: string) => ({ matches: q === MOBILE_QUERY ? narrow : touchOnly })) as unknown as typeof window.matchMedia
+      expect(focusRaisesKeyboard()).toBe(raises)
+    }
+    // @ts-expect-error — deleting a DOM global to model an old/odd environment
+    delete window.matchMedia
+    expect(focusRaisesKeyboard()).toBe(false)
+  })
 })
 
 describe('useIsMobile', () => {

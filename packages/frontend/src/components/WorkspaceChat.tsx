@@ -16,6 +16,7 @@ import { FileLinksContext, type FileLinks } from '#components/Markdown'
 import { PermissionModeMenu } from '#components/PermissionModeMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
+import { focusRaisesKeyboard } from '#lib/viewport'
 import {
   AttachImageIcon, CloseIcon, CondenseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, UncondenseIcon, WidenIcon,
 } from '#lib/icons'
@@ -210,7 +211,7 @@ export function WorkspaceChat({
   }, [])
 
   useEffect(() => {
-    if (!visible || dialogHoldsFocus()) return
+    if (!visible || dialogHoldsFocus() || focusRaisesKeyboard()) return
     inputRef.current?.focus()
   }, [visible, view])
 

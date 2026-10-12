@@ -25,6 +25,7 @@ import { CHANGES_POLL_MS, useWorkspaceChanges, useWorkspaceFiles } from '#lib/us
 import { useDiffFind, type DiffMatch } from '#lib/useDiffFind'
 import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
+import { focusRaisesKeyboard } from '#lib/viewport'
 import {
   CHANGES_TARGET,
   FILES_TARGET,
@@ -216,7 +217,8 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
 
   // The open-files and open-changes shortcuts (Alt-E, Alt-G) set
   // findPending; the pane focuses its filter in response, making Alt-E, a
-  // few letters, Enter a quick-open.
+  // few letters, Enter a quick-open. Not where focus would raise a soft
+  // keyboard (focusRaisesKeyboard).
   const findPending = useUiStore((s) => s.findPending === target)
   const setFindPending = useUiStore((s) => s.setFindPending)
   const findRef = useRef<HTMLInputElement | null>(null)
@@ -233,6 +235,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   useEffect(() => {
     if (!findPending || !findRef.current) return
     setFindPending(null)
+    if (focusRaisesKeyboard()) return
     findRef.current.focus()
     findRef.current.select()
   }, [findPending, data, setFindPending])
