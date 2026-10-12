@@ -39,6 +39,7 @@ const STATE: ServersPageState = {
     saved: ['http://127.0.0.1:8787', 'https://b.ts.net'],
   },
   local: NOTHING_READ,
+  tailnet: true,
 }
 
 describe('serversPageHtml', () => {
@@ -62,7 +63,7 @@ describe('serversPageHtml', () => {
   })
 
   it('opened over a server, has no failure to state, a way back, and a disconnect', () => {
-    const html = serversPageHtml({ targets: STATE.targets, local: view({ server: HOST_RUNNING, cluster: NONE }) })
+    const html = serversPageHtml({ targets: STATE.targets, local: view({ server: HOST_RUNNING, cluster: NONE }), tailnet: true })
     expect(html).toContain('<h1>Servers</h1>')
     expect(html).toContain('>Back</button>')
     expect(html).not.toContain('Try again')
@@ -79,6 +80,7 @@ describe('serversPageHtml', () => {
       error: { title: 'No yaac server selected' },
       targets: { current: null, saved: [] },
       local: NOTHING_READ,
+      tailnet: true,
     })
     expect(html).toContain('No servers configured yet.')
     expect(html).not.toContain('class="connect"')
@@ -105,6 +107,7 @@ describe('serversPageHtml', () => {
       error: { title: 'x', detail: '<img src=x onerror="alert(1)">' },
       targets: { current: null, saved: ['https://evil"><script>alert(1)</script>'] },
       local: NOTHING_READ,
+      tailnet: true,
     })
     expect(html).not.toContain('<img src=x')
     expect(html).not.toContain('<script>alert(1)</script>')
@@ -209,9 +212,18 @@ describe('serversPageHtml', () => {
     expect(cli).toContain('<button class="setup" data-scope="cluster" disabled data-blocked>')
   })
 
+  it('off the tailnet, warns if any remote server is saved, and still lets it be connected to', () => {
+    const html = serversPageHtml({ ...STATE, tailnet: false })
+    expect(html).toContain('<p class="banner">Tailscale does not seem to be running on this Mac.')
+    expect(html).toContain('<button class="connect" data-url="https://b.ts.net">Connect</button>')
+    expect(serversPageHtml(STATE)).not.toContain('class="banner"')
+    const localOnly = { current: STATE.targets.current, saved: [HOST] }
+    expect(serversPageHtml({ ...STATE, targets: localOnly, tailnet: false })).not.toContain('class="banner"')
+  })
+
   it('opens the setup the tray asks for', () => {
     const local = view({ server: NONE, cluster: NONE })
-    const html = serversPageHtml({ targets: STATE.targets, local, setup: 'cluster' })
+    const html = serversPageHtml({ targets: STATE.targets, local, setup: 'cluster', tailnet: true })
     expect(html).toContain('<details class="choice" id="choice-cluster" open>')
     expect(html).toContain('<details class="choice" id="choice-server">')
     expect(html).toContain('class="connect"')
@@ -343,6 +355,7 @@ describe('serversPageHtml (running in a document)', () => {
       error: { title: 'No yaac server selected' },
       targets: { current: null, saved: [] },
       local: NOTHING_READ,
+      tailnet: true,
     })
     document.getElementById('retry')?.click()
     await settle()
@@ -500,6 +513,7 @@ describe('serversPageHtml (running in a document)', () => {
       error: { title: 'x' },
       targets: { current: null, saved: ['https://evil"><img src=x onerror=alert(1)>'] },
       local: NOTHING_READ,
+      tailnet: true,
     })
     expect(document.querySelector('img')).toBeNull()
     expect(document.querySelector('.origin')?.textContent)

@@ -8,7 +8,15 @@
  *
  * The page's IPC payloads are re-validated here (`parseServerSelection`)
  * like any renderer's.
+ *
+ * Any server not on this machine is reached over the tailnet, through
+ * `tailscale serve`, so while Tailscale seems down the page warns, and a
+ * failed probe of such a server says Tailscale is the likely cause. It is
+ * still probed: the interface check can be wrong (`onTailnet`), and the
+ * probe is the real answer.
  */
+import type { NetworkInterfaceInfo } from 'node:os'
+import { isLoopbackOrigin } from '@yaac/shared/server-api'
 import { IdentityRejectedError, type ServerConfig } from '@yaac/shared/server-config'
 import type { DesktopServerOutcome, DesktopServerSelection, DesktopServerTargets } from '@yaac/shared/types'
 
@@ -23,6 +31,38 @@ export interface ServerSwitchDeps {
   probeServer(origin: string): Promise<unknown>
   /** @yaac/shared normalizeServerUrl — throws on a non-origin URL. */
   normalizeUrl(raw: string): string
+  /** `onTailnet` over this machine's interfaces, read at each call. */
+  tailnetUp(): boolean
+}
+
+export const TAILSCALE_DOWN = 'Tailscale does not seem to be running on this Mac; start it to reach a remote server.'
+
+/**
+ * Whether this machine seems to be on its tailnet: some interface holds a
+ * Tailscale address, in 100.64.0.0/10 or fd7a:115c:a1e0::/48. The tunnel
+ * takes them away when Tailscale stops or logs out, so this answers for the
+ * Mac app and the `tailscaled` daemon alike, with no CLI that may be off
+ * PATH. It is a hint: a Headscale tailnet may use other ranges, and other
+ * VPNs may use these.
+ */
+export function onTailnet(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>): boolean {
+  return Object.values(interfaces).some((addrs) => addrs?.some(({ family, address }) => {
+    if (family === 'IPv6') return address.toLowerCase().startsWith('fd7a:115c:a1e0:')
+    const [a, b] = address.split('.').map(Number)
+    return a === 100 && b >= 64 && b < 128
+  }))
+}
+
+/**
+ * A failed probe's message, naming Tailscale when the probe got no answer
+ * from a remote server (`probeServer` gives such a failure a `cause`) and
+ * this machine seems off its tailnet. A refusal or an HTTP error status did
+ * get one, so it stands alone.
+ */
+function probeError(origin: string, err: unknown, deps: ServerSwitchDeps): string {
+  if (!(err instanceof Error)) return String(err)
+  const unanswered = err.cause !== undefined && !isLoopbackOrigin(origin) && !deps.tailnetUp()
+  return unanswered ? `${err.message}. ${TAILSCALE_DOWN}` : err.message
 }
 
 /** Validate a page-supplied selection; anything malformed → null. */
@@ -78,7 +118,7 @@ export async function applyServerSwitch(
   try {
     await deps.probeServer(saved.url)
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    return { ok: false, error: probeError(saved.url, err, deps) }
   }
   await deps.writeServerConfig(deps.select(cfg, saved.url))
   return { ok: true }
@@ -98,7 +138,7 @@ export async function addServerRemote(
   try {
     await deps.probeServer(origin)
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    return { ok: false, error: probeError(origin, err, deps) }
   }
   await deps.writeServerConfig(deps.select(await deps.readServerConfig(), origin))
   return { ok: true }

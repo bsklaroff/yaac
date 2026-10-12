@@ -25,7 +25,8 @@ its server badge and the tray's **Servers…** open it over the server's page,
 with Back to return. It lists the saved servers (Connect, Remove, and
 "(stopped)" or "(refused)" beside any that does not answer or will not
 identify this device), adds one by origin, and
-lists this Mac's installs.
+lists this Mac's installs. While Tailscale seems not to be running, a banner
+says so, and a remote server that does not answer names Tailscale as the cause.
 
 **The shell sets up, starts and stops this machine's servers only when
 asked**, from the tray or the Servers page, by running `brew` and the
@@ -276,6 +277,10 @@ The Servers page:
   still listed.
 - Add an origin that does not answer: the error shows inline and the page
   stays. A saved origin whose server is down shows "(stopped)".
+- With a remote server saved, stop Tailscale and open the page: a banner
+  says Tailscale does not seem to be running, and Connect on the remote
+  row fails naming Tailscale; start Tailscale and open the page again: the
+  banner is gone.
 - With a server running, click the rail's Servers button: the page shows
   with Back, and Back returns to the workspace that was open.
 

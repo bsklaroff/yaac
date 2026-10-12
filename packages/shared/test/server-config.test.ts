@@ -183,6 +183,8 @@ describe('probeServer', () => {
     const unreachable = await probeServer('https://down.ts.net').catch((e: unknown) => e)
     expect(String(unreachable)).toMatch(/cannot reach/)
     expect(unreachable).not.toBeInstanceOf(IdentityRejectedError)
+    // The cause marks a request that got no answer, unlike an HTTP error status.
+    expect((unreachable as Error).cause).toEqual(new Error('ECONNREFUSED'))
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(Response.json({}, { status: 500 })))
     await expect(probeServer('https://srv.ts.net')).rejects.toThrow(/HTTP 500/)

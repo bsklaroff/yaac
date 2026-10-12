@@ -115,14 +115,16 @@ export class IdentityRejectedError extends Error {
  * Check that the origin answers /health and that /whoami identifies this
  * device (/health is public, so only /whoami proves access). Returns the
  * build id, for skew warnings, and the caller's principal. Throws
- * `IdentityRejectedError` when the server refuses to identify the caller.
+ * `IdentityRejectedError` when the server refuses to identify the caller,
+ * and an error with a `cause` (the fetch failure) when the request got no
+ * answer at all; an HTTP error status means it did get one.
  */
 export async function probeServer(origin: string): Promise<{ buildId: string; principal: Principal }> {
   let health: Response
   try {
     health = await fetch(`${origin}/api/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
   } catch (err) {
-    throw new Error(`cannot reach ${origin}: ${err instanceof Error ? err.message : String(err)}`)
+    throw new Error(`cannot reach ${origin}: ${err instanceof Error ? err.message : String(err)}`, { cause: err })
   }
   if (!health.ok) throw new Error(`${origin}/api/health returned HTTP ${health.status}`)
   const { buildId } = await health.json() as { ok: boolean; buildId: string }
