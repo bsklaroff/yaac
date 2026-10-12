@@ -15,14 +15,18 @@
  *     writes nothing.
  *  3. Adding the real server's origin loads the SPA.
  *  4. With the server stopped and a dead remote saved too, a relaunch shows
- *     the failure above the install's row (selected, Stopped, Start and
- *     Disconnect, no Connect) and the remote's row, marked "(stopped)" once
- *     its probe fails.
+ *     the failure above the install's row (first, unchecked, Stopped, Start
+ *     and Disconnect, no Connect) and the remote's row, marked "(stopped)"
+ *     once its probe fails.
  *  5. With the server started from a terminal, Try again lands.
  *  6. The SPA's Servers button (rail, above Settings) opens the page over
- *     the server: "Servers" with Back, the install's row selected with
- *     Disconnect and Stop and no Connect, and Back returns to the URL the
- *     SPA was on.
+ *     the server, in a view that fills the window and follows a resize:
+ *     "Servers" with "← Back to Local containerless server", the install's
+ *     row first and checked with Disconnect and Stop and no Connect, and
+ *     Back uncovers the SPA where it was without reloading it.
+ *
+ * The Servers page renders in its own view laid over the window's page, so
+ * the script reads it from that view's page, not the window's.
  *
  * Uses its own throwaway data dir and server, so it never touches your
  * install; export YAAC_SERVER_PORT to keep that server off the default port.
@@ -101,7 +105,7 @@ function electronPath() {
   return path.join(pkg, 'dist', rel)
 }
 
-/** Launch the shell against DATA_DIR and hand back its first window. */
+/** Launch the shell against DATA_DIR and hand back its window's own page. */
 async function launch(electron) {
   const app = await electron.launch({
     executablePath: electronPath(),
@@ -111,17 +115,37 @@ async function launch(electron) {
   })
   const win = await app.firstWindow()
   win.on('pageerror', (err) => console.error(`    [page error] ${err.message}`))
-  // The window goes through a splash to the Servers page or the SPA.
   await win.waitForLoadState('domcontentloaded')
   return { app, win }
 }
 
-/** Wait until the window is showing the Servers page (not the splash). */
-const waitForPicker = (win) => until(win, () => document.querySelector('#add') !== null, null, 30_000)
+/** The Servers page's view, once it shows its page. */
+async function waitForPicker(app) {
+  for (const end = Date.now() + 30_000; ; await new Promise((r) => setTimeout(r, 250))) {
+    for (const page of app.windows()) {
+      if (await page.evaluate(() => document.querySelector('#add') !== null).catch(() => false)) {
+        page.on('pageerror', (err) => console.error(`    [page error] ${err.message}`))
+        return page
+      }
+    }
+    if (Date.now() > end) throw new Error('timed out waiting for the Servers page')
+  }
+}
 
-/** Wait until the window has landed on a served SPA at `origin`. */
-const waitForApp = (win, origin) =>
-  until(win, (o) => location.origin === o && document.querySelector('#add') === null, origin, 60_000)
+/** The window's child views beyond its own page: the Servers page's, while it shows. */
+const overlays = (app) => app.evaluate(({ BrowserWindow }) => {
+  const w = BrowserWindow.getAllWindows()[0]
+  const { width, height } = w.getContentBounds()
+  return { content: { width, height }, views: w.contentView.children.map((v) => v.getBounds()) }
+})
+
+/** Wait until the window has landed on a served SPA at `origin`, with nothing over it. */
+async function waitForApp(app, win, origin) {
+  await until(win, (o) => location.origin === o, origin, 60_000)
+  for (const end = Date.now() + 10_000; (await overlays(app)).views.length > 0; await new Promise((r) => setTimeout(r, 250))) {
+    if (Date.now() > end) throw new Error('the Servers page stayed over the SPA')
+  }
+}
 
 /**
  * Quit the shell. It is a tray app that keeps running when its window
@@ -158,28 +182,28 @@ async function main() {
   const origin = serverOrigin()
   console.log(`  server at ${origin} (data dir ${DATA_DIR})`)
   const row = '#install-server'
-  const rowButtons = async (win) =>
-    (await win.locator(`${row} button`).allTextContents()).map((t) => t.trim()).join(', ')
+  const rowButtons = async (page) =>
+    (await page.locator(`${row} button`).allTextContents()).map((t) => t.trim()).join(', ')
 
   // 1. A shell with nothing selected, beside a running install.
   console.log('\n1. no server selected → the Servers page is the whole window')
   fs.rmSync(CONFIG, { force: true })
   let { app, win } = await launch(electron)
-  await waitForPicker(win)
-  const heading = await win.textContent('h1')
+  let page = await waitForPicker(app)
+  const heading = await page.textContent('h1')
   check('titled "No yaac server selected"', /No yaac server selected/.test(heading), heading)
-  await until(win, (sel) => document.querySelector(sel) !== null, row, 30_000)
-  const installText = await win.textContent(row)
+  await until(page, (sel) => document.querySelector(sel) !== null, row, 30_000)
+  const installText = await page.textContent(row)
   check('lists the install by name and origin', installText.includes(`Local containerless server (${origin})`), installText.trim())
-  check('as running, not selected', /Running/.test(installText) && !/selected/.test(installText))
-  check('with Connect and Stop', (await rowButtons(win)) === 'Connect, Stop', await rowButtons(win))
-  check('and no other rows', (await win.locator('.origin').count()) === 0)
-  await shot(win, '1-nothing-selected')
+  check('as running, not checked', /Running/.test(installText) && (await page.locator('.check').count()) === 0)
+  check('with Connect and Stop', (await rowButtons(page)) === 'Connect, Stop', await rowButtons(page))
+  check('and no other rows', (await page.locator('.origin').count()) === 0)
+  await shot(page, '1-nothing-selected')
 
   // 1b. The install's origin is not saved, so its Connect adds it again.
   console.log('\n1b. Connect on the unsaved install → adds it and lands')
-  await win.click(`${row} button.connect`)
-  await waitForApp(win, origin)
+  await page.click(`${row} button.connect`)
+  await waitForApp(app, win, origin)
   check('Connect landed the window', (await win.evaluate(() => location.origin)) === origin)
   check('and saved and selected the origin', JSON.parse(fs.readFileSync(CONFIG, 'utf8')).url === origin)
   await shot(win, '1b-connect-landed')
@@ -188,24 +212,24 @@ async function main() {
   fs.rmSync(CONFIG, { force: true })
   await closeApp(app)
   ;({ app, win } = await launch(electron))
-  await waitForPicker(win)
+  page = await waitForPicker(app)
 
   // 2. An origin nothing answers at is refused inline, and writes nothing.
   console.log('\n2. adding a dead origin → inline rejection, still on the Servers page')
-  await win.fill('input[name="url"]', 'http://127.0.0.1:1')
-  await win.click('button.add')
-  await until(win, () => /cannot reach/i.test(document.getElementById('status')?.textContent ?? ''), null, 30_000)
-  const rejection = await win.textContent('#status')
+  await page.fill('input[name="url"]', 'http://127.0.0.1:1')
+  await page.click('button.add')
+  await until(page, () => /cannot reach/i.test(document.getElementById('status')?.textContent ?? ''), null, 30_000)
+  const rejection = await page.textContent('#status')
   check('the failure is shown', /cannot reach/i.test(rejection), rejection.trim())
-  check('still on the Servers page', (await win.locator('#add').count()) === 1)
+  check('still on the Servers page', (await page.locator('#add').count()) === 1)
   check('nothing was written', !fs.existsSync(CONFIG))
-  await shot(win, '2-dead-origin')
+  await shot(page, '2-dead-origin')
 
   // 3. The real origin lands the window on the SPA.
   console.log('\n3. adding the real origin → the shell relands')
-  await win.fill('input[name="url"]', origin)
-  await win.click('button.add')
-  await waitForApp(win, origin)
+  await page.fill('input[name="url"]', origin)
+  await page.click('button.add')
+  await waitForApp(app, win, origin)
   check('window is on the server origin', (await win.evaluate(() => location.origin)) === origin)
   check('the selection was persisted', JSON.parse(fs.readFileSync(CONFIG, 'utf8')).url === origin)
   await shot(win, '3-landed')
@@ -218,42 +242,56 @@ async function main() {
   const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'))
   fs.writeFileSync(CONFIG, JSON.stringify({ ...cfg, saved: [...cfg.saved, { url: dead }] }))
   ;({ app, win } = await launch(electron))
-  await waitForPicker(win)
-  const downHeading = await win.textContent('h1')
+  page = await waitForPicker(app)
+  const downHeading = await page.textContent('h1')
   check('names the origin it could not reach', downHeading.includes(origin), downHeading)
-  await until(win, (sel) => /Stopped/.test(document.querySelector(sel)?.textContent ?? ''), row, 30_000)
-  const downRow = await win.textContent(row)
-  check('the install row is selected and stopped', /selected/.test(downRow) && /Stopped/.test(downRow), downRow.trim())
-  check('with Disconnect and Start, and no Connect', (await rowButtons(win)) === 'Disconnect, Start', await rowButtons(win))
-  check('the dead remote has its own row', (await win.locator(`button.connect[data-url="${dead}"]`).count()) === 1)
+  await until(page, (sel) => /Stopped/.test(document.querySelector(sel)?.textContent ?? ''), row, 30_000)
+  const downRow = await page.textContent(row)
+  check('the install row is stopped, first, and unchecked',
+    /Stopped/.test(downRow) && (await page.getAttribute('.rows .row', 'id')) === 'install-server'
+    && (await page.locator('.check').count()) === 0, downRow.trim())
+  check('with Disconnect and Start, and no Connect', (await rowButtons(page)) === 'Disconnect, Start', await rowButtons(page))
+  check('the dead remote has its own row', (await page.locator(`button.connect[data-url="${dead}"]`).count()) === 1)
   const deadTag = `.tag.health[data-url="${dead}"]`
-  await until(win, (sel) => document.querySelector(sel)?.hidden === false, deadTag, 15_000)
-  check('marked "(stopped)"', (await win.textContent(deadTag)) === '(stopped)')
-  await shot(win, '4-unreachable')
+  await until(page, (sel) => document.querySelector(sel)?.hidden === false, deadTag, 15_000)
+  check('marked "(stopped)"', (await page.textContent(deadTag)) === '(stopped)')
+  await shot(page, '4-unreachable')
 
   // 5. A server started from a terminal shows up on Try again.
   console.log('\n5. `yaac server start` in a terminal, then Try again → lands')
   yaac('server', 'start')
-  await win.click('#retry')
-  await waitForApp(win, origin)
+  await page.click('#retry')
+  await waitForApp(app, win, origin)
   check('Try again landed the window', (await win.evaluate(() => location.origin)) === origin)
   await shot(win, '5-reconnected')
 
   // 6. The rail's Servers button opens the same page over the server.
-  console.log('\n6. the Servers button opens the page over the SPA, and Back returns')
+  console.log('\n6. the Servers button opens the page over the SPA, and Back uncovers it')
   const spaUrl = await win.evaluate(() => location.href)
+  // Survives only if Back does not reload the SPA.
+  await win.evaluate(() => { window.__notReloaded = true })
   await win.click('button[aria-label="Servers"]')
-  await waitForPicker(win)
-  check('titled "Servers"', (await win.textContent('h1')).trim() === 'Servers')
-  check('offers Back', (await win.textContent('#retry')).trim() === 'Back')
+  page = await waitForPicker(app)
+  const fits = ({ content, views }) => views.length === 1
+    && views[0].x === 0 && views[0].y === 0 && views[0].width === content.width && views[0].height === content.height
+  check('in one view that fills the window', fits(await overlays(app)), JSON.stringify(await overlays(app)))
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1000, 700))
+  await new Promise((r) => setTimeout(r, 300))
+  check('and follows a resize', fits(await overlays(app)), JSON.stringify(await overlays(app)))
+  check('titled "Servers"', (await page.textContent('h1')).trim() === 'Servers')
+  const back = (await page.textContent('#retry')).trim()
+  check('Back names the server', back === '← Back to Local containerless server', back)
   // The page renders from the last read of the installs, and again once a fresh one differs.
-  await until(win, (sel) => /Running/.test(document.querySelector(sel)?.textContent ?? ''), row, 30_000)
-  const overRow = await win.textContent(row)
-  check('the install row is selected and running', /selected/.test(overRow) && /Running/.test(overRow), overRow.trim())
-  check('with Disconnect and Stop, and no Connect', (await rowButtons(win)) === 'Disconnect, Stop', await rowButtons(win))
-  await shot(win, '6-servers-page')
-  await win.click('#retry')
-  await waitForApp(win, origin)
+  await until(page, (sel) => /Running/.test(document.querySelector(sel)?.textContent ?? ''), row, 30_000)
+  const overRow = await page.textContent(row)
+  check('the install row is first, checked and running',
+    (await page.getAttribute('.rows .row', 'id')) === 'install-server'
+    && (await page.locator(`${row} .check`).count()) === 1 && /Running/.test(overRow), overRow.trim())
+  check('with Disconnect and Stop, and no Connect', (await rowButtons(page)) === 'Disconnect, Stop', await rowButtons(page))
+  await shot(page, '6-servers-page')
+  await page.click('#retry')
+  await waitForApp(app, win, origin)
+  check('Back did not reload the SPA', await win.evaluate(() => window.__notReloaded === true))
   check('Back returns to the page the SPA was on', (await win.evaluate(() => location.href)) === spaUrl)
 
   await closeApp(app)

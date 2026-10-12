@@ -102,11 +102,6 @@ export function installOrigin(local: LocalServers, scope: ServerScope): string |
   return (scope === 'server' ? hostStatus(local) : clusterStatus(local))?.origin ?? null
 }
 
-/** An install's name, with its origin once it has one: "Local containerless server (http://…)". */
-export function installLabel(view: DesktopLocalState, scope: ServerScope): string {
-  const origin = view.origins[scope]
-  return origin ? `${SETUP_COPY[scope].title} (${origin})` : SETUP_COPY[scope].title
-}
 
 /**
  * One install's state. An install exists once its driver is recorded: the
@@ -174,7 +169,7 @@ export function trayServerItems(view: DesktopLocalState): TrayServerItem[] {
     return [{ label: `${BUSY[busy.action]} ${noun(busy.scope)}…` }, ...progress ? [{ label: progress }] : []]
   }
   const items: TrayServerItem[] = view.cli ? [] : [{ label: 'No yaac CLI on PATH' }]
-  const line = (scope: ServerScope, state: string): TrayServerItem => ({ label: `${installLabel(view, scope)}: ${state}` })
+  const line = (scope: ServerScope, state: string): TrayServerItem => ({ label: `${SETUP_COPY[scope].title}: ${state}` })
   const offerSetup = (scope: ServerScope): void => {
     if (view.choices[scope].blocked !== 'unsupported') {
       items.push({ label: `Set up a ${noun(scope)}…`, action: { scope, action: 'setup' } })

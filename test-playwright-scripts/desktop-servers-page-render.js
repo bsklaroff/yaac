@@ -5,7 +5,8 @@
  *
  *  1. Opened over a connected local server: the local installs are rows
  *     named "Local containerless server (origin)" and "Local Kubernetes
- *     cluster (origin)", the selected one with Disconnect and Stop, and
+ *     cluster (origin)", the selected one first and checked, with Disconnect
+ *     and Stop, Back named for it, and
  *     saved remotes that do not answer or refuse this device are marked
  *     "(stopped)" or "(refused)", with the reason, once the probe comes back.
  *  2. Disconnect and Stop reach the bridge.
@@ -95,11 +96,12 @@ try {
   await load(page, pages.over)
   const host = await page.textContent('#install-server')
   check('the host install is named with its origin', host.includes('Local containerless server (http://127.0.0.1:8787)'), host.trim())
-  check('it is selected, with Disconnect and Stop',
-    await page.isVisible('#install-server button.disconnect') && await page.isVisible('#install-server button.stop'))
+  check('it is first and checked, with Disconnect and Stop',
+    (await page.getAttribute('.rows .row', 'id')) === 'install-server' && await page.isVisible('#install-server .check')
+    && await page.isVisible('#install-server button.disconnect') && await page.isVisible('#install-server button.stop'))
   const cluster = await page.textContent('#install-cluster')
   check('the cluster install is named with its origin, with Start',
-    cluster.includes('Local Kubernetes cluster (http://127.0.0.1:8790)') && await page.isVisible('#install-cluster button.start'),
+    cluster.includes('Local kubernetes cluster (http://127.0.0.1:8790)') && await page.isVisible('#install-cluster button.start'),
     cluster.trim())
   check('the local origin is not listed a second time', (await page.locator('.origin', { hasText: '127.0.0.1:8787' }).count()) === 0)
   await page.waitForSelector('.tag.health[data-url="https://dead.ts.net"]:not([hidden])', { timeout: 5000 })
@@ -109,7 +111,7 @@ try {
   check('one that refuses this device is marked (refused), with the reason',
     (await refused.textContent()) === '(refused)' && (await refused.getAttribute('title')).includes('refused to identify'))
   check('one that answers is not marked', await page.isHidden('.tag.health[data-url="https://up.ts.net"]'))
-  check('Back, not Try again', (await page.textContent('#retry')).trim() === 'Back')
+  check('Back to that server, not Try again', (await page.textContent('#retry')).trim() === '← Back to Local containerless server')
   check('on the tailnet, no banner', (await page.locator('.banner').count()) === 0)
   await page.screenshot({ path: path.join(SHOTS, 'servers-page-over.png'), fullPage: true })
 
@@ -126,6 +128,7 @@ try {
   await load(page, pages.unreachable)
   check('states the failure', (await page.textContent('h1')).includes('Could not connect'))
   check('Try again', (await page.textContent('#retry')).trim() === 'Try again')
+  check('the selected install is unchecked', (await page.locator('.check').count()) === 0)
   check('the selected install, though stopped, has Start and Disconnect but no Connect',
     await page.isVisible('#install-server button.start') && await page.isVisible('#install-server button.disconnect')
     && await page.isHidden('#install-server button.connect'))

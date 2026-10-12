@@ -22,7 +22,7 @@ export const SETUP_COPY: Record<'server' | 'cluster', { title: string; summary: 
     reach: CONTAINERLESS_REACH,
   },
   cluster: {
-    title: 'Local Kubernetes cluster',
+    title: 'Local kubernetes cluster',
     summary: 'Each workspace is a gVisor-sandboxed pod behind an egress proxy that holds the real credentials. '
       + 'It needs a podman VM, several GB of disk and memory, and some minutes to install. Macs with Apple '
       + 'silicon only.',
