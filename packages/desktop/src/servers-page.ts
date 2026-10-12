@@ -8,7 +8,9 @@
  * Start selects. The selected row disconnects, and connects again only
  * while it cannot be reached; any other saved server can be removed. Below
  * the list are the setups of the installs this Mac lacks (local-setup.ts)
- * and a form that adds a server by origin.
+ * and a form that adds a server by origin. While Tailscale seems down, a
+ * banner says so, since the tailnet is the only way to a server on another
+ * machine (server-switch.ts).
  *
  * The window shows it when no server is reachable, with the failure on top;
  * on a Mac with nothing set up it leads with the setups instead. The SPA's
@@ -26,6 +28,7 @@
  * so a server that does not answer never holds the page up.
  */
 import { SETUP_COPY, trustSentence } from '@yaac/shared/setup-copy'
+import { isLoopbackOrigin } from '@yaac/shared/server-api'
 import type { DesktopInstallState, DesktopLocalState, DesktopServerTargets } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
 import { installLabel, type ServerScope } from '#server-control'
@@ -38,6 +41,8 @@ export interface ServersPageState {
   local: DesktopLocalState
   /** A setup to show opened, as the tray's "Set up…" asks. */
   setup?: ServerScope
+  /** Whether this Mac is on its tailnet (`onTailnet`). */
+  tailnet: boolean
 }
 
 const STATE_TEXT: Record<DesktopInstallState, string> = {
@@ -179,8 +184,12 @@ export function serversPageHtml(state: ServersPageState): string {
     ...installed.map((s) => installRowHtml(state, s)),
     ...targets.saved.filter((url) => !localOrigins.includes(url)).map((url) => remoteRowHtml(state, url)),
   ]
+  // Shown only to a Mac with a remote server saved, since one without needs no tailnet.
+  const banner = !state.tailnet && targets.saved.some((url) => !isLoopbackOrigin(url)) ? `
+      <p class="banner">Tailscale does not seem to be running on this Mac. Remote servers are
+        reached over your tailnet, so connecting to one will likely fail until you start it.</p>` : ''
   const servers = fresh ? '' : `
-      <h2>Servers</h2>
+      <h2>Servers</h2>${banner}
       ${rows.length > 0 ? `<ul class="rows">${rows.join('')}</ul>` : '<p class="empty">No servers configured yet.</p>'}
       ${installed.length > 0 ? '<p class="note">Local servers keep running when the app quits.</p>' : ''}`
 
@@ -248,6 +257,8 @@ export function serversPageHtml(state: ServersPageState): string {
       ul.note { margin: 2px 0 4px; padding-left: 18px; }
       .actions { display: flex; gap: 6px; margin: 8px 0 0; }
       .blocked { margin-top: 6px; color: light-dark(#b3261e, #f2a49d); }
+      .banner { margin: 0 0 8px; padding: 8px 10px; border-radius: 7px; line-height: 1.5;
+                background: light-dark(#fdf3d7, #3a2f12); color: light-dark(#6b4e00, #f0d58a); }
       pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
             background: light-dark(#f2f2f2, #111); border-radius: 5px; padding: 7px 9px;
             margin: 8px 0 0; white-space: pre-wrap; word-break: break-all; user-select: text; }

@@ -12,6 +12,7 @@
  * `/events` to show waiting workspaces (dock badge, tray, notifications) and
  * to hold the workspaces' port forwards.
  */
+import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -38,7 +39,7 @@ import {
   type LocalServers, type ScopedAction, type ServerScope,
 } from '#server-control'
 import {
-  addServerRemote, applyServerSwitch, disconnect, getServerTargets, parseServerSelection, removeServer,
+  addServerRemote, applyServerSwitch, disconnect, getServerTargets, onTailnet, parseServerSelection, removeServer,
   restoreSelection, serverHealth, type ServerSwitchDeps,
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
@@ -268,28 +269,30 @@ async function openServersPage(setup?: ServerScope): Promise<void> {
  * Render the Servers page afresh. It renders from the last read of this
  * Mac's installs, so it shows at once even though a read runs the CLI
  * twice, then reads them again in the background and renders once more if
- * that changed anything while the page still shows. It leaves alone a page
- * with a call or server action under way, since the reply to it, an error
- * included, goes to the page that made it; the action itself moves the
- * window or renders the page again when it ends. Only before the first
- * read is there nothing to render from, so that one is waited for.
+ * that, or whether Tailscale is up, changed while the page still shows. It
+ * leaves alone a page with a call or server action under way, since the
+ * reply to it, an error included, goes to the page that made it; the action
+ * itself moves the window or renders the page again when it ends. Only
+ * before the first read is there nothing to render from, so that one is
+ * waited for.
  */
 async function renderServersPage(w: BrowserWindow, setup?: ServerScope): Promise<void> {
   const page = serversPage
+  const machine = (): { local: DesktopLocalState, tailnet: boolean } => ({ local: localState(), tailnet: serverSwitchDeps.tailnetUp() })
   const load = async (): Promise<string> => {
     const error = page && 'error' in page ? page.error : undefined
-    const local = localState()
+    const shown = machine()
     const targets = await getServerTargets(serverSwitchDeps)
-    await w.loadURL(serversPageUrl({ error, targets, local, setup }))
+    await w.loadURL(serversPageUrl({ error, targets, setup, ...shown }))
       .catch(() => { /* superseded by the next load */ })
-    return JSON.stringify(local)
+    return JSON.stringify(shown)
   }
   if (!localServers.server && !localServers.cluster) await refreshLocalServer()
   const shown = await load()
   void refreshLocalServer().then(async () => {
     const still = serversPage === page && !w.isDestroyed() && w.webContents.getURL().startsWith('data:')
     const idle = !serverBusy && pageCallsInFlight === 0
-    if (still && idle && JSON.stringify(localState()) !== shown) await load()
+    if (still && idle && JSON.stringify(machine()) !== shown) await load()
   })
 }
 
@@ -485,6 +488,7 @@ const serverSwitchDeps: ServerSwitchDeps = {
   select: withServerSelected,
   probeServer,
   normalizeUrl: normalizeServerUrl,
+  tailnetUp: () => onTailnet(networkInterfaces()),
 }
 
 /**

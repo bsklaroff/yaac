@@ -4,12 +4,15 @@ import {
   applyServerSwitch,
   disconnect,
   getServerTargets,
+  onTailnet,
   parseServerSelection,
   removeServer,
   restoreSelection,
   serverHealth,
+  TAILSCALE_DOWN,
   type ServerSwitchDeps,
 } from '#server-switch'
+import type { NetworkInterfaceInfo } from 'node:os'
 import { IdentityRejectedError, type ServerConfig } from '@yaac/shared/server-config'
 
 const CFG: ServerConfig = {
@@ -38,8 +41,23 @@ function makeDeps(cfg: ServerConfig | null): Omit<ServerSwitchDeps, 'writeServer
       if (u.pathname !== '/' || u.search || u.hash) throw new Error(`server URL must be a bare origin (no path/query/fragment): ${raw}`)
       return u.origin
     },
+    tailnetUp: () => true,
   }
 }
+
+describe('onTailnet', () => {
+  const nic = (address: string): NetworkInterfaceInfo => ({
+    address, family: address.includes(':') ? 'IPv6' : 'IPv4', netmask: '', mac: '', internal: false, cidr: null,
+  } as NetworkInterfaceInfo)
+  it('holds while any interface has a Tailscale address, IPv4 or IPv6', () => {
+    const lan = { lo0: [nic('127.0.0.1'), nic('::1')], en0: [nic('192.168.1.20'), nic('fe80::1')] }
+    expect(onTailnet(lan)).toBe(false)
+    expect(onTailnet({ ...lan, utun4: [nic('100.101.102.103')] })).toBe(true)
+    expect(onTailnet({ ...lan, utun4: [nic('FD7A:115C:A1E0::1')] })).toBe(true)
+    // Either side of 100.64.0.0/10 is not Tailscale's.
+    expect(onTailnet({ en1: [nic('100.63.0.1'), nic('100.128.0.1')], utun0: undefined })).toBe(false)
+  })
+})
 
 describe('parseServerSelection', () => {
   it('accepts a url and rejects everything else', () => {
@@ -98,6 +116,26 @@ describe('applyServerSwitch', () => {
     expect(deps.writeServerConfig).not.toHaveBeenCalled()
   })
 
+  it('off the tailnet, still probes a remote server, and names Tailscale only when it went unanswered', async () => {
+    const saved = [...CFG.saved, { url: 'http://127.0.0.1:8787' }, { url: 'https://c.ts.net' }, { url: 'https://d.ts.net' }]
+    const deps = { ...makeDeps({ ...CFG, saved }), tailnetUp: () => false }
+    expect(await applyServerSwitch({ url: 'https://b.ts.net' }, deps)).toEqual({ ok: true })
+    deps.probeServer.mockImplementation((origin) => Promise.reject(origin === 'https://c.ts.net'
+      ? new IdentityRejectedError('https://c.ts.net refused to identify this device')
+      : origin === 'https://d.ts.net'
+        ? new Error('https://d.ts.net/api/health returned HTTP 502')
+        : new Error(`cannot reach ${origin}`, { cause: new Error('fetch failed') })))
+    expect(await applyServerSwitch({ url: 'https://b.ts.net' }, deps))
+      .toEqual({ ok: false, error: `cannot reach https://b.ts.net. ${TAILSCALE_DOWN}` })
+    // A refusal or an HTTP status was an answer, and a local server needs no tailnet.
+    expect(await applyServerSwitch({ url: 'https://c.ts.net' }, deps))
+      .toEqual({ ok: false, error: 'https://c.ts.net refused to identify this device' })
+    expect(await applyServerSwitch({ url: 'https://d.ts.net' }, deps))
+      .toEqual({ ok: false, error: 'https://d.ts.net/api/health returned HTTP 502' })
+    expect(await applyServerSwitch({ url: 'http://127.0.0.1:8787' }, deps))
+      .toEqual({ ok: false, error: 'cannot reach http://127.0.0.1:8787' })
+  })
+
   it('an unknown origin is rejected', async () => {
     const deps = makeDeps(CFG)
     expect(await applyServerSwitch({ url: 'https://nope.ts.net' }, deps))
@@ -122,6 +160,14 @@ describe('addServerRemote', () => {
     expect(deps.writeServerConfig).toHaveBeenCalledWith(expect.objectContaining({
       url: 'http://127.0.0.1:8787',
     }))
+  })
+
+  it('off the tailnet, names Tailscale when a remote origin does not answer', async () => {
+    const deps = { ...makeDeps(null), tailnetUp: () => false }
+    deps.probeServer.mockRejectedValue(new Error('cannot reach https://c.ts.net', { cause: new Error('fetch failed') }))
+    expect(await addServerRemote('https://c.ts.net', deps))
+      .toEqual({ ok: false, error: `cannot reach https://c.ts.net. ${TAILSCALE_DOWN}` })
+    expect(deps.writeServerConfig).not.toHaveBeenCalled()
   })
 
   it('rejects a non-origin URL before any probe', async () => {

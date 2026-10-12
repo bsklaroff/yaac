@@ -168,6 +168,15 @@ stopping the selected install disconnects the window the same way a dead
 server would. Below the list are the setups of the installs this Mac lacks,
 and a form that accepts a new origin.
 
+A server on another machine is reached only over the tailnet, so while no
+interface holds a Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48)
+the page warns that Tailscale does not seem to be running, and a switch to
+or an add of a non-loopback origin whose probe goes unanswered names
+Tailscale as the likely cause. Reading the interfaces rather than asking
+the `tailscale` CLI covers the Mac app, whose CLI is usually off PATH, and
+the brew daemon alike. It is only a hint, so it never stops a probe: a
+Headscale tailnet may use other ranges, and other VPNs may use these.
+
 It sets up, starts and stops this machine's servers only when the user asks,
 always by running `brew` and `yaac server start|stop|restart` or `yaac
 cluster install|start|stop` (packages/desktop/README.md, "This machine's
