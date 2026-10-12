@@ -217,6 +217,7 @@ The desktop app is not part of `pnpm build` and is not in the npm package.
 ```sh
 pnpm desktop:package   # tsup, then electron-builder (unsigned .app in dist-app/)
 pnpm desktop:install   # the above, then copy into /Applications
+pnpm desktop:release   # the .dmg the Homebrew cask downloads (signed, notarized app)
 ```
 
 The app carries no server and no Node of its own. Everything but
@@ -228,7 +229,16 @@ from the `yaac` on PATH.
 
 `scripts/install-app.ts` installs with `ditto`, because a copy that follows
 symlinks breaks the Electron framework's `Versions/Current` links and
-crashes the GPU process at launch. The app is unsigned and not notarized.
+crashes the GPU process at launch.
+
+Local builds are unsigned. `scripts/release-app.ts` overrides the config on
+the command line to sign with the Developer ID identity named in `CSC_NAME`
+(electron-builder's default hardened runtime and entitlements), notarize with
+the `APPLE_*` credentials electron-builder reads, and build a `.dmg` named for
+the root package.json version. It fails, deleting the `.dmg`, unless the app
+comes out with a stapled ticket, since electron-builder skips notarization
+with only a warning when credentials are missing. The release flow is in
+homebrew/README.md.
 
 ## Known limitations
 

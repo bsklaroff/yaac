@@ -125,7 +125,7 @@ export async function queryClaudePlanUsage(
 // ── Codex (ChatGPT) subscription usage ─────────────────────────────────
 
 /**
- * The endpoint behind Codex CLI's `/status` rate-limit readout in ChatGPT
+ * The endpoint behind Codex's `/status` rate-limit readout in ChatGPT
  * auth mode. Takes the OAuth access token as a Bearer plus the
  * `ChatGPT-Account-Id` header; unavailable with api-key auth.
  */

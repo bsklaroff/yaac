@@ -2,7 +2,7 @@
 
 yaac runs many agent sessions in parallel, each in its own workspace: a git
 clone of your project with one or more agents working in it. It supports
-Claude Code, Codex CLI, OpenCode, and Pi.
+Claude Code, Codex, OpenCode, and Pi.
 
 A workspace runs on one of two drivers, decided by how you start the server:
 
@@ -28,13 +28,14 @@ you can switch between.
 
 ```sh
 brew trust bsklaroff/yaac
-brew install bsklaroff/yaac/yaac-server
-yaac server start && yaac host check   # containerless
+brew install --cask bsklaroff/yaac/yaac-desktop
 ```
 
-For the kubernetes driver, add the local cluster's tools, including a
-patched `krunkit`/`libkrun` pair
-([why](docs/cluster-setup.md#macos-the-podman-machine)):
+This installs the desktop app and the `yaac` CLI it runs (the `yaac-server`
+formula). For the CLI alone, `brew install bsklaroff/yaac/yaac-server`.
+
+To run a local kubernetes cluster, add its tools, including a patched
+`krunkit`/`libkrun` pair ([why](docs/cluster-setup.md#macos-the-podman-machine)):
 
 ```sh
 brew trust libkrun/krun
@@ -48,19 +49,13 @@ To install from source on macOS or Linux, see
 
 ## Getting started
 
-Build and install the macOS desktop app, then open yaac from /Applications:
-
-```sh
-# Skip these two lines if you installed from source
-brew install pnpm
-git clone https://github.com/bsklaroff/yaac.git && cd yaac
-
-pnpm install && pnpm desktop:install
-```
-
-The app connects to the server you started above, lives in the tray (closing
-the window hides it), and forwards workspace ports to this machine
-([packages/desktop/README.md](packages/desktop/README.md)). In the app:
+Open yaac from /Applications. With no server yet, the window shows its
+Servers page, which sets one up locally (containerless, or a kind cluster) or
+adds a remote one.
+The app lives in the tray (closing the window hides it), starts and stops
+this machine's servers, and forwards workspace ports to this machine
+([packages/desktop/README.md](packages/desktop/README.md)). From a source
+install, build the app with `pnpm desktop:install`. In the app:
 
 1. **Settings → Credentials → Agent tools:** sign in to Claude Code, Codex,
    OpenCode, or Pi.

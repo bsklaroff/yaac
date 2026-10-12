@@ -16,7 +16,13 @@ mac:
   target:
     - dir
   icon: build/icon.png
-  # Unsigned for a local double-clickable build; signing + notarization + .dmg
-  # are a fast-follow.
+  # Unsigned for a local build. `pnpm desktop:release` (scripts/release-app.ts)
+  # overrides this to sign and notarize the app, inside the .dmg the cask
+  # downloads.
   identity: null
   category: public.app-category.developer-tools
+# Brew upgrades the app, which has no updater, so there is no update feed to
+# publish, and the release .dmg is uploaded by hand (homebrew/README.md).
+# Without this, a GH_TOKEN in the environment makes electron-builder assume a
+# GitHub feed and write update metadata for it.
+publish: null
