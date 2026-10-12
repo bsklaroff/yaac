@@ -16,6 +16,14 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <title>yaac</title>
+    <!-- Safari's Add to Home Screen: a full-screen app with the yaac icon,
+         drawn under a translucent status bar, which the shell's safe-area
+         padding keeps clear. Vite emits the icon under /assets, the only
+         path besides / that the server serves without an identity. -->
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="yaac" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <!-- Set the theme before first paint so a forced light/dark choice never
          flashes the other palette. Mirrors the themePref entry in lib/store.ts;
          'system' (the default) then follows the prefers-color-scheme media

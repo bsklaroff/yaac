@@ -22,6 +22,7 @@ import {
 import { deviceTimeZone } from '#lib/time'
 import { CredentialsPane } from '#components/settings/Credentials'
 import { Field } from '#components/settings/Field'
+import { PhoneLinkField } from '#components/settings/PhoneLink'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
@@ -185,6 +186,7 @@ export function SettingsButton(
               </Field>
               <GitIdentityField />
               <TimeZoneField />
+              <PhoneLinkField />
             </section>
           )}
 

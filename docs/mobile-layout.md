@@ -97,7 +97,9 @@ state object, so the stored screen survives.
 **Projects** is a list of named rows. The rail's 40px chips only work beside
 what they scope; alone they would be a column of unlabelled letters. Rows use
 the same identity color (`lib/projectIdentity.ts`), and `NewProjectButton`
-and `SettingsButton` render as rows (`variant="row"`).
+and `SettingsButton` render as rows (`variant="row"`). So does
+`ServersButton` inside the iPhone app (ios/README.md), naming the connected
+server, since the sidebar's server badge has no place on a phone.
 
 **Workspaces** reuses the desktop sidebar's `WorkspaceList` as is, so list
 order matches the Alt+K/J cycle order. It sits under a mobile header with the

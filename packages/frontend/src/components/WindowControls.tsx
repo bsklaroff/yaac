@@ -3,12 +3,16 @@ import clsx from 'clsx'
 import { IS_MAC } from '#lib/platform'
 import type { LocalPortRemap } from '@yaac/shared/types'
 
-/** The window-control bridge the Electron preload exposes on `window`. */
+/**
+ * The bridge a native shell exposes on `window`: the Electron preload, or
+ * the iPhone app (ios/Yaac/WebView.swift), which has no window to drive and
+ * provides only `showServers` and `openExternal`.
+ */
 interface YaacWindow {
-  minimize: () => void
+  minimize?: () => void
   /** altKey selects the macOS Option-click zoom (maximize) instead of full screen. */
-  toggleMaximize: (altKey?: boolean) => void
-  close: () => void
+  toggleMaximize?: (altKey?: boolean) => void
+  close?: () => void
   openExternal: (url: string) => void
   /** Show the shell's Servers page; absent from an app older than it. */
   showServers?: () => void
@@ -42,7 +46,7 @@ export function WindowControls({ className }: { className?: string }): JSX.Eleme
         aria-label="Close window"
         title="Close"
         className={clsx(DOT, 'group-hover/wc:bg-[#ff5f57]')}
-        onClick={() => windowApi()?.close()}
+        onClick={() => windowApi()?.close?.()}
       >
         ✕
       </button>
@@ -51,7 +55,7 @@ export function WindowControls({ className }: { className?: string }): JSX.Eleme
         aria-label="Minimize window"
         title="Minimize"
         className={clsx(DOT, 'group-hover/wc:bg-[#febc2e]')}
-        onClick={() => windowApi()?.minimize()}
+        onClick={() => windowApi()?.minimize?.()}
       >
         –
       </button>
@@ -60,7 +64,7 @@ export function WindowControls({ className }: { className?: string }): JSX.Eleme
         aria-label="Zoom window"
         title={IS_MAC ? 'Full screen (⌥ to zoom)' : 'Zoom'}
         className={clsx(DOT, 'group-hover/wc:bg-[#28c840]')}
-        onClick={(e) => windowApi()?.toggleMaximize(e.altKey)}
+        onClick={(e) => windowApi()?.toggleMaximize?.(e.altKey)}
       >
         +
       </button>

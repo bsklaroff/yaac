@@ -18,7 +18,8 @@ LAPTOP (on the tailnet, logged in as a tailnet user)
   desktop app       ── the webapp, plus its auth daemon's outbound WS ─► server
                        (runs the webapp's tool sign-ins locally)
 
-PHONE: browser only. Full webapp, but no tool sign-in (that needs a laptop).
+PHONE: browser or the iPhone app (ios/README.md). Full webapp, but no tool
+       sign-in (that needs a laptop).
 ```
 
 No client holds a credential. The server works out who is calling from the
@@ -187,7 +188,9 @@ The device must be logged in to the tailnet as a user. A **tagged** device
 adds no identity and the server refuses its requests, as it does Funnel
 traffic. `yaac remote add` reports this.
 
-On a phone, just open the server's origin. To revoke a lost device, remove
+On a phone, open the server's origin in a browser, or scan the QR code in
+the webapp's Settings → General with the iPhone app (ios/README.md), which
+keeps a list of servers to switch between. To revoke a lost device, remove
 it from the tailnet in the Tailscale admin console; nothing on the server
 changes.
 
