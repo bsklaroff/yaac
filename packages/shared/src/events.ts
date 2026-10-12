@@ -5,7 +5,7 @@ import type { ServerSnapshot } from '#types'
 
 /**
  * A long-lived `/events` subscription for node clients: the desktop shell's
- * tray badge, notifications and port forwards, and `yaac forward`. The
+ * dock badge, notifications and port forwards, and `yaac forward`. The
  * target is re-resolved on every reconnect, so switching servers takes
  * effect on the next connection.
  */

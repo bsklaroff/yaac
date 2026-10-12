@@ -9,7 +9,7 @@
  * through `brew` and the `yaac` CLI (local-setup.ts, server-control.ts), but
  * only when asked: Close hides to the tray, and Quit exits the shell and its
  * auth daemon and leaves the server running. While running it follows
- * `/events` to show waiting workspaces (dock badge, tray, notifications) and
+ * `/events` to show waiting workspaces (dock badge, notifications) and
  * to hold the workspaces' port forwards.
  */
 import { networkInterfaces } from 'node:os'
@@ -84,7 +84,6 @@ let attention = new AttentionMonitor()
  * things from a terminal.
  */
 let serversPage: { error: LaunchError } | { over: string } | null = null
-let waiting = 0
 // This machine's servers as the tray last read them, and the action under way.
 let localServers: LocalServers = { server: null, cluster: null }
 let brewFound = false
@@ -325,7 +324,7 @@ function updateTray(): void {
   if (!tray) return
   const items = trayServerItems(localState())
   // Rebuilding swaps the tray's menu, which empties it if it is open.
-  const key = JSON.stringify({ items, waiting })
+  const key = JSON.stringify(items)
   if (key === trayMenuKey) return
   trayMenuKey = key
   const serverItems = items.map((item) => ({
@@ -338,13 +337,7 @@ function updateTray(): void {
     },
   }))
   const menu = Menu.buildFromTemplate([
-    { label: 'Open yaac', click: () => showWindow() },
     { label: 'Servers…', click: () => void openServersPage() },
-    { type: 'separator' },
-    {
-      label: waiting > 0 ? `${waiting} waiting for input` : 'No workspaces waiting',
-      enabled: false,
-    },
     { type: 'separator' },
     ...serverItems,
     ...(serverItems.length > 0 ? [{ type: 'separator' as const }] : []),
@@ -442,10 +435,6 @@ function applyAttention(
   projects: ProjectSummary[],
 ): void {
   if (process.platform === 'darwin') app.dock?.setBadge(badgeText(waitingCount))
-  if (waiting !== waitingCount) {
-    waiting = waitingCount
-    updateTray()
-  }
   if (!Notification.isSupported()) return
   for (const s of toNotify) {
     const n = new Notification(notificationFor(s, projects))

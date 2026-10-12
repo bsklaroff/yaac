@@ -338,7 +338,7 @@ export class AcpConversation {
   get status(): AgentStatus | undefined {
     if (!this.statusKnown) return undefined
     // A turn blocked on an ask is busy but stopped on the user, which is
-    // exactly when the sidebar, chime and tray badge should say so.
+    // exactly when the sidebar, chime and dock badge should say so.
     if (this.isAwaitingPermission) return 'asking'
     if (this.isBusy) return 'running'
     return this.backgroundWork === true ? 'background' : 'waiting'

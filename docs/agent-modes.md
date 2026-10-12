@@ -437,7 +437,7 @@ in before it is served, under what is left of the transcript cap.
 whose background shells, monitors or background subagents are still live
 reports `background` rather than `waiting`: that work will usually wake the
 agent, so nothing needs a person yet, and the sidebar shows a slow-breathing
-marker instead of the unread dot (the chime and tray badge stay quiet too).
+marker instead of the unread dot (the chime and dock badge stay quiet too).
 The source is claude's `background_tasks_changed`, which lists every live
 background task; ambient tasks are not counted, as the SDK asks of activity
 indicators. claude reports a finished task gone just before its
