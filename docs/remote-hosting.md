@@ -147,29 +147,6 @@ nothing to do. On a shared one, add an ACL grant that lets only the intended
 users reach that device (or its tag) on port 443. That grant is the whole
 access list.
 
-**Optional: reach forwarded dev-server ports from other tailnet devices.**
-The server offers port mappings but binds no ports itself
-(docs/port-forward-tunnel.md). Run a forwarder on the server machine and
-tell the webapp which address it binds:
-
-```sh
-export YAAC_FORWARD_BIND=<the server's tailnet IP>   # from `tailscale ip -4`
-yaac server restart --tailnet srv.<tailnet>.ts.net   # containerless
-yaac cluster install --tailnet [<host>]              # k8s: install copies it into the Deployment
-yaac forward --bind <the server's tailnet IP>        # holds the listeners
-```
-
-A forwarded port `19500` is then `http://srv.<tailnet>.ts.net:19500/` from
-any tailnet device, and the webapp's port chips link there. Any tailnet
-device can reach it (it bypasses `serve`, so no identity check applies), and
-it works only while `yaac forward` runs, so give that a systemd unit too.
-
-Alternatively, a client holds the listeners and gets its own
-`localhost:19500`: `yaac forward` on a laptop tunnels over the same
-identified WebSocket, so only the server's HTTPS port needs to be reachable.
-The desktop app does this automatically once attached to the remote, and its
-preview pane uses it.
-
 ## Client setup
 
 ```sh
@@ -211,6 +188,13 @@ against a local or remote server:
   they work only while the desktop app runs on the machine with the
   browser. In a plain browser without it, sign in with `yaac auth update`
   or paste a token.
+- **Dev-server previews**: the desktop app and the iPhone app (ios/README.md)
+  each forward a workspace's port to their own loopback, over a WebSocket
+  through `serve` that only the workspace's owner may open, and show it in
+  their preview. Only the server's HTTPS port needs to be reachable. `yaac
+  forward` does the same for a browser on a laptop, at `localhost:<port>`.
+  The webapp in a plain browser offers no preview
+  (docs/port-forward-tunnel.md).
 - **Git credentials**: managed in the webapp and assigned per project. An
   SSH key is generated and stored encrypted by the server; you register its
   public half with the git host (docs/git-credentials.md).
@@ -296,8 +280,7 @@ Things to keep in mind:
 
   The port check matters because some pages share the server's hostname
   and run untrusted repo code: a workspace's forwarded dev server (at
-  `127.0.0.1:<port>` or `srv.<tailnet>.ts.net:19500`) and the desktop
-  preview pane. Refusing `OPTIONS` stops a cross-origin page from adding a
+  `127.0.0.1:<port>`) and the desktop preview pane. Refusing `OPTIONS` stops a cross-origin page from adding a
   custom header such as a forged `Tailscale-User-Login` or
   `X-Forwarded-Proto`, since that needs a CORS preflight.
 - **A yaac server inside a workspace (`YAAC_WORKSPACE_ID` set) treats any

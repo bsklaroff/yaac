@@ -1,12 +1,12 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
 import { IS_MAC } from '#lib/platform'
-import type { LocalPortRemap } from '@yaac/shared/types'
+import type { LocalPortRemap, PortMapping } from '@yaac/shared/types'
 
 /**
  * The bridge a native shell exposes on `window`: the Electron preload, or
  * the iPhone app (ios/Yaac/WebView.swift), which has no window to drive and
- * provides only `showServers` and `openExternal`.
+ * provides only `showServers`, `openExternal` and `openPreview`.
  */
 interface YaacWindow {
   minimize?: () => void
@@ -22,6 +22,12 @@ interface YaacWindow {
    * Absent from an app older than it.
    */
   onForwardRemaps?: (cb: (remaps: LocalPortRemap[]) => void) => () => void
+  /**
+   * Preview a workspace's forwarded port in the shell's own view, which
+   * forwards it to the shell's loopback: the iPhone app's (ios/README.md
+   * "Previews"). The desktop app previews in a pane instead.
+   */
+  openPreview?: (workspaceId: string, port: PortMapping) => void
 }
 
 /** The bridge, or undefined in a browser / before the preload loads. */

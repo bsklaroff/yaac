@@ -266,9 +266,6 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     ['YAAC_ACCESS_MODE', hosting.accessMode],
     ['YAAC_ACCESS_OWNER', opts.owner],
     ['YAAC_ALLOWED_HOSTS', hosting.allowedHosts.join(',')],
-    // Display address for forwarded ports; a remote-hosting install sets
-    // it (e.g. a tailnet IP matching `yaac forward --bind`).
-    ['YAAC_FORWARD_BIND', env.forwardBind === '127.0.0.1' ? undefined : env.forwardBind],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
     ['YAAC_HOST_TOR_SOCKS_URL', env.useTor ? torSocksUrlForPod(opts.torHostAddr) : undefined],
     // Datapath settings the server applies on every start.

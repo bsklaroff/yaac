@@ -11,7 +11,6 @@ import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { serverLog } from '#log'
-import { env } from '@yaac/shared/env'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
@@ -60,7 +59,6 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     ...usage,
-    forwardBindHost: env.forwardBind,
   }
 }
 

@@ -1518,9 +1518,6 @@ export interface ServerSnapshot {
   /** Each user's Codex (ChatGPT) plan usage, by user id. Null until the
    *  first refresh, or without a ChatGPT (OAuth) sign-in. */
   codexPlanUsage: Record<string, PlanUsageResult | null>
-  /** The host port-forward listeners bind (`YAAC_FORWARD_BIND`), so the UI
-   *  can state it; it may differ from the page origin. */
-  forwardBindHost: string
 }
 
 /** Messages the server pushes over `/events`. */

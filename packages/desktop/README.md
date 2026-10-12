@@ -261,7 +261,7 @@ Also check in the desktop app:
 - a terminal attaches, and Cmd-C/V work in it;
 - holding k in vim in a terminal pane repeats the key with no accent popup,
   from the first launch;
-- a forwarded-port link opens in the system browser;
+- the preview pane's "Open in browser" opens the system browser;
 - close hides to the tray, and a tray click (which also opens the menu) or
   the Dock icon brings the window back;
 - a waiting workspace badges the dock and notifies once, and clicking the

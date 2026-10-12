@@ -37,9 +37,8 @@ import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
-import {
-  ForwardedPortLinks, StopForwardButton, portLinkHref, portLinkLabel,
-} from '#components/ForwardedPortLinks'
+import { StopForwardButton } from '#components/StopForwardButton'
+import { windowApi } from '#components/WindowControls'
 import { api } from '#lib/api'
 import { usePressDrag } from '#lib/usePressDrag'
 import { useKeptPanes } from '#lib/useKeptPanes'
@@ -57,6 +56,7 @@ import {
   type PaneLayout,
 } from '#lib/layout'
 import type {
+  PortMapping,
   ProvisioningWorkspaceEntry,
   ServerSnapshot,
   WorkspaceTerminalEntry,
@@ -142,11 +142,14 @@ export function WorkspaceView({
   // Project-wide, but shown here since it breaks git in this workspace too.
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
 
-  // Forwarded ports open in the embedded preview in the desktop app, and as
-  // external-link chips in a browser.
+  // Forwarded ports open in a preview: a pane in the desktop app, or a
+  // native view in the iPhone app. Each forwards the port to its own
+  // loopback; a browser cannot, so it offers no preview
+  // (docs/port-forward-tunnel.md).
   const embedPreview = isElectron()
-  const previewPorts = useLocalPorts(sid, workspace?.forwardedPorts ?? [])
-  const chipPorts = embedPreview ? [] : previewPorts
+  const nativePreview = windowApi()?.openPreview
+  const localPorts = useLocalPorts(sid, workspace?.forwardedPorts ?? [])
+  const previewPorts = embedPreview || nativePreview ? localPorts : []
   // The preview's port: the one picked, while it is still forwarded, else
   // the first forwarded port. A port can stop being forwarded from another
   // window, so the pane follows the snapshot rather than the pick alone.
@@ -160,7 +163,7 @@ export function WorkspaceView({
   // With several ports, the header's Preview button (and Alt-P) offers a
   // choice of port. The shortcut opens that menu from wherever focus is, and
   // a dismissed menu hands focus back there.
-  const pickPreviewPort = embedPreview && !isMobile && previewPorts.length > 1
+  const pickPreviewPort = !isMobile && previewPorts.length > 1
   const previewMenuTrigger = useRef<HTMLButtonElement>(null)
   const previewMenuReturn = useRef<HTMLElement | null>(null)
 
@@ -193,17 +196,19 @@ export function WorkspaceView({
   }, [])
 
   // Keep the layout's panes in line with the workspace's windows and
-  // conversations.
+  // conversations. Layouts are saved, so outside the desktop app this also
+  // drops a preview pane one restored, which could never load there.
   useEffect(() => {
     if (!sid || !workspace?.terminals) return
-    const next = syncPaneLayout(layout, workspace, workspace.terminals.map((t) => t.target))
+    let next = syncPaneLayout(layout, workspace, workspace.terminals.map((t) => t.target))
+    if (!embedPreview && paneTargets(next).includes(PREVIEW_TARGET)) next = removeTarget(next, PREVIEW_TARGET)
     if (next !== layout) setWorkspaceLayout(sid, next)
     const pending = pendingFocus.current
     if (pending?.sid === sid && paneTargets(next).includes(pending.target)) {
       pendingFocus.current = null
       useUiStore.getState().focusTerminal(sid, pending.target)
     }
-  }, [sid, workspace, layout, setWorkspaceLayout])
+  }, [sid, workspace, layout, setWorkspaceLayout, embedPreview])
 
   // Tabs mode shows all panes as one tab strip; the column layout is kept so
   // switching back to tiles restores it.
@@ -293,6 +298,15 @@ export function WorkspaceView({
         message: `Couldn’t stop forwarding :${containerPort}: ${e instanceof Error ? e.message : String(e)}`,
       }))
   }
+  /** Open the preview on `containerPort`, else on the port it last showed. */
+  const showPreview = (id: string, containerPort?: number): void => {
+    if (!nativePreview) {
+      openPreview(id, containerPort)
+      return
+    }
+    const port = previewPorts.find((p) => p.containerPort === (containerPort ?? previewPortForWorkspace))
+    if (port) nativePreview(id, port)
+  }
   const closePane = (target: string): void => {
     if (!sid) return
     if (!isFileTarget(target)) {
@@ -312,7 +326,7 @@ export function WorkspaceView({
     openPreview: previewPorts.length === 0 ? null : () => {
       if (!sid) return
       if (!pickPreviewPort) {
-        openPreview(sid, previewPorts.length === 1 ? previewPorts[0].containerPort : undefined)
+        showPreview(sid, previewPorts.length === 1 ? previewPorts[0].containerPort : undefined)
         return
       }
       // A click with no pointer opens the menu as a keypress would, with its
@@ -499,14 +513,14 @@ export function WorkspaceView({
                   ports={previewPorts}
                   trigger={previewMenuTrigger}
                   returnFocus={previewMenuReturn}
-                  onPick={(p) => openPreview(workspace.workspaceId, p)}
+                  onPick={(p) => showPreview(workspace.workspaceId, p)}
                   onStop={canUnforward ? (p) => stopForwarding(workspace.workspaceId, p) : undefined}
                 />
-              ) : embedPreview && previewPorts.length > 0 && (
+              ) : previewPorts.length > 0 && (
                 <span className="group flex shrink-0 items-center rounded transition hover:bg-surface-2">
                   <button
-                    onClick={() => openPreview(workspace.workspaceId, previewPorts[0].containerPort)}
-                    title={`Open preview (${portLinkLabel(previewPorts[0])})`}
+                    onClick={() => showPreview(workspace.workspaceId, previewPorts[0].containerPort)}
+                    title={`Open preview (${portLabel(previewPorts[0])})`}
                     aria-label="Open preview"
                     className={PREVIEW_BUTTON}
                   >
@@ -523,21 +537,12 @@ export function WorkspaceView({
                   )}
                 </span>
               )}
-              {chipPorts.length > 0 && (
-                <ForwardedPortLinks
-                  ports={chipPorts}
-                  iconSize={11}
-                  className="hover:bg-surface-2"
-                  onStop={canUnforward ? (p) => stopForwarding(workspace.workspaceId, p) : undefined}
-                />
-              )}
             </>
           )}
           {workspace.unforwardedPorts.length > 0 && (
             <UnforwardedPortsBadge
               ports={workspace.unforwardedPorts}
               workspaceId={workspace.workspaceId}
-              exposeHost={snapshot?.forwardBindHost ?? '127.0.0.1'}
               iconSize={11}
               className="hover:bg-surface-3"
             />
@@ -567,12 +572,11 @@ export function WorkspaceView({
           {isMobile && (
             <PaneOverflowMenu
               tool={workspace.tool}
-              chipPorts={chipPorts}
-              previewPorts={embedPreview ? previewPorts : []}
+              previewPorts={previewPorts}
               onNewShell={openShell}
               onOpenChanges={() => openChanges(workspace.workspaceId)}
               onOpenFiles={() => openFiles(workspace.workspaceId)}
-              onOpenPreview={(p) => openPreview(workspace.workspaceId, p)}
+              onOpenPreview={(p) => showPreview(workspace.workspaceId, p)}
             />
           )}
         </header>
@@ -858,6 +862,11 @@ export function paneBarClass(isMobile: boolean): string {
     : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
 }
 
+/** A port's label: the host port, plus the container port when it differs. */
+function portLabel(p: PortMapping): string {
+  return p.hostPort === p.containerPort ? `:${p.hostPort}` : `:${p.hostPort}→${p.containerPort}`
+}
+
 const PREVIEW_BUTTON = 'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] '
   + 'text-text-dim transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2'
 
@@ -892,7 +901,7 @@ function PreviewPortMenu({
     >
       <Menu.Trigger
         ref={trigger}
-        title={`Open preview (${ports.map(portLinkLabel).join(', ')})`}
+        title={`Open preview (${ports.map(portLabel).join(', ')})`}
         aria-label="Open preview"
         className={PREVIEW_BUTTON}
       >
@@ -929,7 +938,6 @@ function PreviewPortMenu({
  */
 function PaneOverflowMenu({
   tool,
-  chipPorts,
   previewPorts,
   onNewShell,
   onOpenChanges,
@@ -937,9 +945,7 @@ function PaneOverflowMenu({
   onOpenPreview,
 }: {
   tool: WorkspaceListEntry['tool']
-  /** Forwarded ports shown as external links (browser only). */
-  chipPorts: WorkspaceListEntry['forwardedPorts']
-  /** Forwarded ports for the embedded preview pane (Electron only). */
+  /** Forwarded ports to preview (empty in a browser). */
   previewPorts: WorkspaceListEntry['forwardedPorts']
   onNewShell: () => void
   onOpenChanges: () => void
@@ -977,17 +983,6 @@ function PaneOverflowMenu({
               <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview(p.containerPort)}>
                 <PreviewIcon size={14} />
                 {previewLabel(previewPorts.length > 1 ? p.containerPort : undefined)}
-              </Menu.Item>
-            ))}
-            {/* window.open from a click, which popup blockers allow. */}
-            {chipPorts.map((p) => (
-              <Menu.Item
-                key={`${p.hostPort}:${p.containerPort}`}
-                className={ITEM}
-                onClick={() => window.open(portLinkHref(window.location.hostname, p), '_blank', 'noopener')}
-              >
-                <PreviewIcon size={14} />
-                <span className="font-mono">{portLinkLabel(p)}</span>
               </Menu.Item>
             ))}
             <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{TOOL_LABEL[tool]}</div>

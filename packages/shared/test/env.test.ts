@@ -286,20 +286,6 @@ describe('env (configuration)', () => {
       expect(env.secret).toBeUndefined()
     })
   })
-
-  describe('forwardBind', () => {
-    it('defaults to loopback', () => {
-      vi.stubEnv('YAAC_FORWARD_BIND', undefined)
-      expect(env.forwardBind).toBe('127.0.0.1')
-      vi.stubEnv('YAAC_FORWARD_BIND', '  ')
-      expect(env.forwardBind).toBe('127.0.0.1')
-    })
-
-    it('returns the trimmed configured address', () => {
-      vi.stubEnv('YAAC_FORWARD_BIND', ' 100.64.0.7 ')
-      expect(env.forwardBind).toBe('100.64.0.7')
-    })
-  })
 })
 
 describe('testEnv (test-harness hooks)', () => {

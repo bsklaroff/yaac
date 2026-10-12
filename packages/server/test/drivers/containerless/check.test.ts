@@ -101,7 +101,7 @@ describe('runHostCheck', () => {
     mockOnPath.mockImplementation((bin: string) =>
       Promise.resolve(bin !== 'lsof' && bin !== 'socat'))
     const results = await runHostCheck()
-    // Workspaces run without either, minus port links and ACP mode.
+    // Workspaces run without either, minus port detection and ACP mode.
     expect(byName(results, 'lsof')?.status).toBe('warn')
     expect(byName(results, 'socat')?.status).toBe('warn')
     expect(results.some((r) => r.status === 'fail')).toBe(false)

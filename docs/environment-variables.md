@@ -8,7 +8,6 @@ All yaac variables are read, with their defaults and validation, in
 | `YAAC_DATA_DIR` | `~/.yaac-server` | Data directory. Client state goes in the sibling `<dir>-client`. Unset, the host server uses `~/.yaac-server`, a cluster install (`yaac cluster …`) `~/.yaac-cluster`, and clients `~/.yaac-client`; set, every command uses this one dir. |
 | `YAAC_SERVER_PORT` | `8787` | Port the server listens on at `127.0.0.1` (the next free one if taken; `0` for any). Under k8s it is fixed when kind creates the cluster, `8790` by default; the host server skips 8790 when it increments. One exported value applies to both installs, so set it per command when you run both. |
 | `YAAC_SERVER_URL` | _(unset)_ | Server to use, overriding the selection in `server.json`. |
-| `YAAC_FORWARD_BIND` | `127.0.0.1` | Address the app says forwarded ports are at. Match it with `yaac forward --bind`. |
 | `YAAC_SECRET` / `YAAC_SECRETS` | _(unset)_ | Encryption key(s) for stored secrets (below). |
 | `YAAC_USE_TOR` | `false` | Route the server's git and ssh through Tor, and under k8s every workspace's egress too. Off when unset, empty, `0` or `false`. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | Tor SOCKS endpoint. |

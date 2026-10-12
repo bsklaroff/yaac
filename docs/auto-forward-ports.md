@@ -75,20 +75,14 @@ status bar; clients release their listener on the next snapshot and cut its
 open connections, and a port still listening comes back as a suggestion.
 The project config is untouched, so a port declared there is forwarded
 again when the server restarts. The webapp offers it as an × on the
-desktop Preview button (or on each row of its port menu), in the preview
-pane's menu, and on a browser's port chips. It is hidden under
-`containerless`, where a forwarded port is the dev server's own host port.
+Preview button (or on each row of its port menu) and in the desktop
+preview pane's menu. It is hidden under `containerless`, where a forwarded
+port is the dev server's own host port.
 
 A forward during workspace create is safe: the registry merges the create's
 declarations with later ones on one entry, and allocating a host port and
 recording it is one synchronous step, so concurrent requests for a port
 produce one forward.
-
-The badge popover shows the exposure host from `forwardBindHost` on the
-snapshot (`YAAC_FORWARD_BIND`: loopback locally, the tailnet IP on a remote
-host), not the page origin, because the page may be reached under another
-name (for example over an SSH tunnel). This is what the user consents to;
-`yaac forward --bind` is what actually binds that address.
 
 ## Security model
 
@@ -101,8 +95,9 @@ and forwards are capped per workspace (`MAX_FORWARDS_PER_SESSION`, below
 streamd's concurrent-stream limit).
 
 An agent can still start a plausible-looking listener and hope for a click.
-That is why `persist: true` is a separate, clearly labeled action and the
-popover shows the exposure host. Forwarding is by port number, not process,
+That is why `persist: true` is a separate, clearly labeled action, and why
+a forward reaches nothing until a client forwards it
+(docs/port-forward-tunnel.md). Forwarding is by port number, not process,
 so the agent could rebind the port between detection and forward; this is
 accepted as low severity, and config-declared forwards behave the same way.
 

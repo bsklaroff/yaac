@@ -210,3 +210,39 @@ describe('WorkspaceView: open-preview', () => {
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
   })
 })
+
+describe('WorkspaceView: preview outside the desktop app', () => {
+  const ports: PortMapping[] = [{ containerPort: 3000, hostPort: 3000 }, { containerPort: 5173, hostPort: 15173 }]
+  afterEach(() => { delete (window as unknown as { yaacWindow?: unknown }).yaacWindow })
+
+  it('hands the picked port to the iPhone app instead of opening a pane', async () => {
+    const openPreview = vi.fn()
+    ;(window as unknown as { yaacWindow: unknown }).yaacWindow = { openExternal: vi.fn(), openPreview }
+    renderView(ports)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: ':5173' }))
+    expect(openPreview).toHaveBeenCalledWith('s1', { containerPort: 5173, hostPort: 15173 })
+
+    // Alt+P with several ports opens the same menu; with one it goes straight there.
+    cleanup()
+    renderView([ports[0]])
+    fireEvent.keyDown(window, { code: 'KeyP', key: 'p', altKey: true })
+    expect(openPreview).toHaveBeenLastCalledWith('s1', ports[0])
+    expect(tabsOf()).not.toContain('preview')
+  })
+
+  it('drops a preview pane a saved layout restores, which could never load here', () => {
+    useUiStore.setState({ layouts: { s1: [{ tabs: ['agent', 'preview'], active: 'preview' }] } })
+    renderView(ports)
+    expect(tabsOf()).toEqual(['agent'])
+  })
+
+  it('offers no preview in a browser, which cannot reach a forward', () => {
+    renderView(ports)
+    fireEvent.keyDown(window, { code: 'KeyP', key: 'p', altKey: true })
+    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
+    expect(screen.queryByRole('link')).toBeNull()
+    expect(tabsOf()).not.toContain('preview')
+  })
+})

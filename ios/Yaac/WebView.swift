@@ -6,10 +6,11 @@ import WebKit
  * the server identifies this phone through `tailscale serve` exactly as it
  * does Safari, so nothing here holds a credential.
  *
- * The page gets one bridge, `window.yaacWindow`, with the two calls the SPA
+ * The page gets one bridge, `window.yaacWindow`, with the three calls the SPA
  * makes of a native shell (`windowApi()` in
  * packages/frontend/src/components/WindowControls.tsx): show the server
- * list, and open a link in Safari. Like the desktop shell's, it cannot change
+ * list, open a link in Safari, and preview a workspace's forwarded port
+ * (`PreviewView`). Like the desktop shell's, it cannot change
  * which server the app is on, so a server cannot move the app to one it
  * chooses. Navigation away from the origin opens in Safari instead.
  */
@@ -21,6 +22,12 @@ struct WebView: UIViewRepresentable {
     window.yaacWindow = {
       showServers: () => window.webkit.messageHandlers.yaac.postMessage({ op: 'showServers' }),
       openExternal: (url) => window.webkit.messageHandlers.yaac.postMessage({ op: 'openExternal', url: String(url) }),
+      openPreview: (workspaceId, port) => window.webkit.messageHandlers.yaac.postMessage({
+        op: 'openPreview',
+        workspaceId: String(workspaceId),
+        containerPort: Number(port.containerPort),
+        hostPort: Number(port.hostPort),
+      }),
     }
     """
 
@@ -85,6 +92,12 @@ struct WebView: UIViewRepresentable {
         store.showingServers = true
       case "openExternal":
         if let text = body["url"] as? String, let url = URL(string: text) { Self.openInSafari(url) }
+      case "openPreview":
+        guard let workspaceId = body["workspaceId"] as? String,
+              let containerPort = body["containerPort"] as? Int, (1...65535).contains(containerPort),
+              let hostPort = body["hostPort"] as? Int, (1...65535).contains(hostPort)
+        else { return }
+        store.preview = Preview(workspaceId: workspaceId, containerPort: containerPort, hostPort: hostPort)
       default:
         break
       }

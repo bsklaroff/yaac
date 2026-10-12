@@ -2,10 +2,8 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { POPUP, MENU_ITEM } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
-import { isElectron } from '#lib/platform'
 import { windowApi } from '#components/WindowControls'
 import { previewUrl, normalizePreviewNav } from '#lib/preview'
-import { portLinkHref } from '#components/ForwardedPortLinks'
 import {
   NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
   MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
@@ -44,8 +42,8 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
  * stop forwarding).
  *
  * The <webview> is managed imperatively through a ref, because letting React
- * reconcile it would reload the page on every parent render. Electron only;
- * a browser shows a link instead.
+ * reconcile it would reload the page on every parent render. Electron only:
+ * the iPhone app previews in a native view, and a browser has no preview.
  */
 export function WorkspacePreview({
   workspaceId,
@@ -69,7 +67,6 @@ export function WorkspacePreview({
   const mapping = ports.find((p) => p.containerPort === currentPort)
   const hostPort = mapping?.hostPort
   const url = hostPort !== undefined ? previewUrl(hostPort) : null
-  const electron = isElectron()
 
   const hostRef = useRef<HTMLDivElement>(null)
   const wvRef = useRef<PreviewWebview | null>(null)
@@ -84,7 +81,6 @@ export function WorkspacePreview({
 
   // Create the webview once per workspace; wire its navigation events.
   useEffect(() => {
-    if (!electron) return
     const host = hostRef.current
     if (!host) return
     const wv = document.createElement('webview') as unknown as PreviewWebview
@@ -127,7 +123,7 @@ export function WorkspacePreview({
       wv.remove()
       wvRef.current = null
     }
-  }, [electron, workspaceId])
+  }, [workspaceId])
 
   // Point the webview at the current forwarded port when it (re)appears.
   useEffect(() => {
@@ -151,26 +147,6 @@ export function WorkspacePreview({
     const dest = normalizePreviewNav(editing ?? '', hostPort)
     if (dest) void wvRef.current?.loadURL?.(dest)
     setEditing(null)
-  }
-
-  // In a browser, offer the same link as the header's port chips.
-  if (!electron) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-        <PreviewIcon size={22} className="text-text-faint" />
-        <p className="text-xs text-text-dim">The embedded preview is available in the desktop app.</p>
-        {mapping && (
-          <a
-            href={portLinkHref(window.location.hostname, mapping)}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded bg-surface-2 px-2 py-1 font-mono text-[11px] text-text-dim transition hover:text-text"
-          >
-            Open {window.location.hostname}:{mapping.hostPort}
-          </a>
-        )}
-      </div>
-    )
   }
 
   const iconBtn = 'flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim '

@@ -34,6 +34,9 @@ struct RootView: View {
         WebView(origin: origin, store: store)
           .id(origin)
           .ignoresSafeArea()
+          .fullScreenCover(item: $store.preview) { preview in
+            PreviewView(origin: origin, preview: preview) { store.preview = nil }
+          }
       } else {
         ServersView(store: store)
       }

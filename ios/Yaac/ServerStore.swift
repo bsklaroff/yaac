@@ -32,6 +32,8 @@ final class ServerStore {
   var offered: String?
   /// The list is open over the connected server's page.
   var showingServers = false
+  /// A forwarded port shown full screen over the connected server's page.
+  var preview: Preview?
   /// The launch probe has not answered yet.
   private(set) var launching = true
   /// A connect is in flight.
@@ -90,6 +92,7 @@ final class ServerStore {
     failure = nil
     connected = origin
     showingServers = false
+    preview = nil
     if offered == origin { offered = nil }
   }
 
@@ -108,6 +111,7 @@ final class ServerStore {
     connected = nil
     failure = nil
     showingServers = false
+    preview = nil
     persist()
   }
 
@@ -116,6 +120,7 @@ final class ServerStore {
     guard connected == origin else { return }
     connected = nil
     showingServers = false
+    preview = nil
     failure = "Could not connect to \(origin): \(Self.describe(error))"
   }
 

@@ -30,7 +30,6 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   gitAuthFailures: {},
   imageBuilds: [],
   planUsage: {},
-  forwardBindHost: '127.0.0.1',
   codexPlanUsage: {},
 })
 

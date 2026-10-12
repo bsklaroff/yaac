@@ -32,7 +32,7 @@ Decisions (confirmed with the user):
 - The user names the variable per entry. There is no `YAAC_*` naming
   convention.
 - Port number only. No URL variable, because the host part differs across
-  setups (remote hosting, SSH tunnels, `forwardBindHost`).
+  setups (remote hosting, SSH tunnels).
 
 ### Where the value comes from
 
