@@ -146,17 +146,17 @@ describe('resolveServerTarget', () => {
   })
 
   it('the env hatch wins over a selected server', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
+    await writeServerConfig({ url: 'https://srv.ts.net', saved: [] })
     vi.stubEnv('YAAC_SERVER_URL', 'http://127.0.0.1:1234/')
     expect(await resolveServerTarget())
       .toEqual({ baseUrl: 'http://127.0.0.1:1234' })
   })
 
   it('resolves the selected server, wherever it runs', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
+    await writeServerConfig({ url: 'https://srv.ts.net', saved: [] })
     expect(await resolveServerTarget()).toEqual({ baseUrl: 'https://srv.ts.net' })
     // A loopback origin takes the same path.
-    await writeServerConfig({ url: 'http://127.0.0.1:8787', enabled: true, saved: [] })
+    await writeServerConfig({ url: 'http://127.0.0.1:8787', saved: [] })
     expect(await resolveServerTarget())
       .toEqual({ baseUrl: 'http://127.0.0.1:8787' })
   })
@@ -164,13 +164,13 @@ describe('resolveServerTarget', () => {
   it('a deselected server resolves nothing — there is no fallback to look for one', async () => {
     // With nothing selected the answer is "none" even if a local server is
     // running; clients do not read the lock.
-    await writeServerConfig({ url: 'https://srv.ts.net', enabled: false, saved: [] })
+    await writeServerConfig({ url: '', saved: [{ url: 'https://srv.ts.net' }] })
     await expect(resolveServerTarget()).rejects.toThrow(/No yaac server selected/)
   })
 
   it('with no config at all, names all three ways to get one', async () => {
     await expect(resolveServerTarget()).rejects.toThrow(
-      /yaac server start.*yaac cluster install.*yaac cluster start.*yaac remote set/s,
+      /yaac server start.*yaac cluster install.*yaac cluster start.*yaac remote connect/s,
     )
   })
 })

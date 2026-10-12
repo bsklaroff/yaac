@@ -117,7 +117,7 @@ may fail** before you create a workspace. After that, use it from
 your own machine, logged in to the same tailnet:
 
 ```sh
-yaac remote set https://yaac.<tailnet>.ts.net
+yaac remote add https://yaac.<tailnet>.ts.net
 ```
 
 For `kubectl` from your machine, copy `~yaac/.kube/config` from the

@@ -59,7 +59,7 @@ function encodedWordBytes(encoding: string, text: string): number[] {
  * Decode an identity header for display and logging. Non-ASCII values arrive
  * as one or more space-separated RFC 2047 encoded words, decoded together
  * with the whitespace between them dropped. Control characters are always
- * removed, since the value goes into request logs and `yaac remote set`
+ * removed, since the value goes into request logs and `yaac remote add`
  * output.
  */
 function decodeIdentityHeader(value: string): string {

@@ -12,7 +12,7 @@ import {
 
 /**
  * The server-selection commands, against one shared server. `yaac remote
- * set` points at the server's loopback origin, which takes the same code
+ * add` points at the server's loopback origin, which takes the same code
  * path as a remote one (docs/server-selection.md). Tailnet identity is
  * covered by the api tier and unit tests instead.
  *
@@ -51,15 +51,15 @@ describe('yaac remote (real CLI + shared server)', () => {
   }
 
   describe('yaac remote', () => {
-    it('set → commands reach the server it names', async () => {
+    it('add → commands reach the server it names', async () => {
       await resetSelection()
       await fs.rm(configPath(), { force: true })
       expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(1)
 
-      const set = await runYaac(testEnv.env, 'remote', 'set', origin())
-      expect(set.exitCode, set.stderr).toBe(0)
+      const add = await runYaac(testEnv.env, 'remote', 'add', origin())
+      expect(add.exitCode, add.stderr).toBe(0)
       // A loopback caller is local, so there is no tailnet user to name.
-      expect(set.stdout.trim()).toBe(`Server selected: ${origin()}`)
+      expect(add.stdout.trim()).toBe(`Server selected: ${origin()}`)
       expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
 
       await resetSelection()
@@ -77,69 +77,74 @@ describe('yaac remote (real CLI + shared server)', () => {
       expect(start.exitCode, start.stderr).toBe(0)
       expect(start.stderr).toMatch(/already running/)
 
-      const status = await runYaac(testEnv.env, 'remote', 'status')
-      expect(status.stdout).toContain(origin())
-      expect(status.stdout).toMatch(/selected\s+yes/)
+      const list = await runYaac(testEnv.env, 'remote', 'list')
+      expect(list.stdout).toContain(`* ${origin()}`)
       expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
 
       await resetSelection()
     })
 
-    it('status shows the selection; unset forgets it', async () => {
+    it('list marks the selection; remove forgets a server but not the install record', async () => {
       await resetSelection()
-      const status = await runYaac(testEnv.env, 'remote', 'status')
-      expect(status.exitCode).toBe(0)
-      expect(status.stdout).toContain(origin())
-      expect(status.stdout).toMatch(/selected\s+yes/)
+      const list = await runYaac(testEnv.env, 'remote', 'list')
+      expect(list.exitCode).toBe(0)
+      expect(list.stdout).toContain(`* ${origin()}`)
 
-      const unset = await runYaac(testEnv.env, 'remote', 'unset')
-      expect(unset.exitCode).toBe(0)
-      const after = await runYaac(testEnv.env, 'remote', 'status')
-      expect(after.stdout).toMatch(/No server configured/)
+      const refused = await runYaac(testEnv.env, 'remote', 'remove', origin())
+      expect(refused.exitCode).toBe(1)
+      expect(refused.stderr).toMatch(/selected server/)
+
+      expect((await runYaac(testEnv.env, 'remote', 'disconnect')).exitCode).toBe(0)
+      const removed = await runYaac(testEnv.env, 'remote', 'remove', origin())
+      expect(removed.exitCode, removed.stderr).toBe(0)
+      expect((await runYaac(testEnv.env, 'remote', 'list')).stdout).toMatch(/No servers saved/)
+      const unknown = await runYaac(testEnv.env, 'remote', 'remove', origin())
+      expect(unknown.exitCode).toBe(1)
+      expect(unknown.stderr).toMatch(/Unknown server/)
       const stranded = await runYaac(testEnv.env, 'project', 'list')
       expect(stranded.exitCode).toBe(1)
       expect(stranded.stderr).toMatch(/No yaac server selected/)
+      // `driver` lives in the data dir's install.json alone, so forgetting
+      // every server keeps it, and a k8s install stays refused.
+      const raw = JSON.parse(await fs.readFile(recordPath(), 'utf8')) as { driver?: string }
+      expect(raw.driver).toBe('containerless')
 
       await resetSelection()
     })
 
-    it('on / off deselect and reselect without re-entering the server', async () => {
+    it('disconnect / connect deselect and reselect a saved server', async () => {
       await resetSelection()
 
-      const off = await runYaac(testEnv.env, 'remote', 'off')
+      const off = await runYaac(testEnv.env, 'remote', 'disconnect')
       expect(off.exitCode).toBe(0)
       expect(off.stdout).toMatch(/No server selected/)
-      expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/selected\s+no/)
+      const list = await runYaac(testEnv.env, 'remote', 'list')
+      expect(list.stdout).toContain(`  ${origin()}`)
+      expect(list.stdout).toMatch(/No server selected/)
       // No local fallback when deselected.
       expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(1)
 
-      const on = await runYaac(testEnv.env, 'remote', 'on')
-      expect(on.exitCode).toBe(0)
-      expect((await runYaac(testEnv.env, 'remote', 'status')).stdout).toMatch(/selected\s+yes/)
+      // Only a saved server can be connected to.
+      const unknown = await runYaac(testEnv.env, 'remote', 'connect', 'http://127.0.0.1:1')
+      expect(unknown.exitCode).toBe(1)
+      expect(unknown.stderr).toMatch(/yaac remote add http:\/\/127\.0\.0\.1:1/)
+
+      const on = await runYaac(testEnv.env, 'remote', 'connect', origin())
+      expect(on.exitCode, on.stderr).toBe(0)
+      expect((await runYaac(testEnv.env, 'remote', 'list')).stdout).toContain(`* ${origin()}`)
       expect((await runYaac(testEnv.env, 'project', 'list')).exitCode).toBe(0)
 
       await resetSelection()
     })
 
-    it('set fails fast on an unreachable URL and persists nothing', async () => {
+    it('add fails fast on an unreachable URL and persists nothing', async () => {
       await resetSelection()
-      const res = await runYaac(testEnv.env, 'remote', 'set', 'http://127.0.0.1:1')
+      const res = await runYaac(testEnv.env, 'remote', 'add', 'http://127.0.0.1:1')
       expect(res.exitCode).toBe(1)
       expect(res.stderr).toMatch(/cannot reach http:\/\/127\.0\.0\.1:1/)
-      const status = await runYaac(testEnv.env, 'remote', 'status')
-      expect(status.stdout).toContain(origin())
-      expect(status.stdout).not.toContain('127.0.0.1:1\n')
-    })
-
-    it('the install driver survives `remote unset`, so a k8s install stays refused', async () => {
-      // `driver` lives in the data dir's install.json alone, so forgetting
-      // every server (which deletes server.json) keeps it.
-      await resetSelection()
-      expect((await runYaac(testEnv.env, 'remote', 'unset')).exitCode).toBe(0)
-      const raw = JSON.parse(await fs.readFile(recordPath(), 'utf8')) as { driver?: string }
-      expect(raw.driver).toBe('containerless')
-      await expect(fs.access(configPath())).rejects.toThrow()
-      await resetSelection()
+      const list = await runYaac(testEnv.env, 'remote', 'list')
+      expect(list.stdout).toContain(`* ${origin()}`)
+      expect(list.stdout).not.toContain('127.0.0.1:1\n')
     })
 
     // A loopback origin can still be another machine's server, reached
@@ -156,7 +161,7 @@ describe('yaac remote (real CLI + shared server)', () => {
       try {
         const { port } = remote.address() as { port: number }
         const url = `http://127.0.0.1:${port}`
-        await fs.writeFile(configPath(), JSON.stringify({ url, enabled: true, saved: [{ url }] }))
+        await fs.writeFile(configPath(), JSON.stringify({ url, saved: [{ url }] }))
         await fs.writeFile(recordPath(), JSON.stringify({ driver: 'k8s' }))
         // An invalid --nodes stops the install before it touches a
         // cluster, so reaching its message proves the refusal was skipped.

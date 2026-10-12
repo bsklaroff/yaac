@@ -69,7 +69,7 @@ describe('assertHostServerAllowed', () => {
   it('refuses even when the selection points at a server on another machine', async () => {
     // The record describes this data dir, whatever server is selected.
     await record('k8s')
-    await writeServerConfig({ url: 'https://elsewhere.ts.net', enabled: true, saved: [] })
+    await writeServerConfig({ url: 'https://elsewhere.ts.net', saved: [] })
     await expect(assertHostServerAllowed()).rejects.toThrow(/yaac cluster start/)
   })
 

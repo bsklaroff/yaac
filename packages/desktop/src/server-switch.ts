@@ -1,7 +1,7 @@
 /**
  * The shell's server picker: list, switch between, add and remove servers.
  * All of them edit the shared `~/.yaac-client/server.json`, so a switch here also
- * moves the CLI, like `yaac remote set/on`. A server on this machine is
+ * moves the CLI, like `yaac remote connect`. A server on this machine is
  * registered there by `yaac server start` like any other, so every row is
  * an origin.
  *
@@ -34,7 +34,7 @@ export function parseServerSelection(raw: unknown): DesktopServerSelection | nul
 export async function getServerTargets(deps: ServerSwitchDeps): Promise<DesktopServerTargets> {
   const cfg = await deps.readServerConfig()
   return {
-    current: cfg?.enabled && cfg.url !== '' ? cfg.url : null,
+    current: cfg && cfg.url !== '' ? cfg.url : null,
     saved: cfg?.saved.map((s) => s.url) ?? [],
   }
 }
@@ -61,7 +61,7 @@ export async function applyServerSwitch(
   return { ok: true }
 }
 
-/** Validate, probe, and select a brand-new server (the desktop `yaac remote set`). */
+/** Validate, probe, and select a brand-new server (the desktop `yaac remote add`). */
 export async function addServerRemote(
   rawUrl: string,
   deps: ServerSwitchDeps,
@@ -91,12 +91,10 @@ export async function removeServer(
 ): Promise<DesktopServerOutcome> {
   const cfg = await deps.readServerConfig()
   if (!cfg?.saved.some((s) => s.url === sel.url)) return { ok: false, error: `unknown server: ${sel.url}` }
-  if (cfg.enabled && cfg.url === sel.url) {
+  if (cfg.url === sel.url) {
     return { ok: false, error: 'switch to another server before removing this one' }
   }
-  const saved = cfg.saved.filter((s) => s.url !== sel.url)
-  // A deselected config's url is still remembered; forgetting it clears it.
-  await deps.writeServerConfig({ ...cfg, saved, ...(cfg.url === sel.url ? { url: '' } : {}) })
+  await deps.writeServerConfig({ ...cfg, saved: cfg.saved.filter((s) => s.url !== sel.url) })
   return { ok: true }
 }
 
@@ -107,6 +105,6 @@ export async function removeServer(
  */
 export async function restoreSelection(before: ServerConfig, deps: ServerSwitchDeps): Promise<void> {
   const cfg = await deps.readServerConfig()
-  if (!cfg || (cfg.url === before.url && cfg.enabled === before.enabled)) return
-  await deps.writeServerConfig({ ...cfg, url: before.url, enabled: before.enabled })
+  if (!cfg || cfg.url === before.url) return
+  await deps.writeServerConfig({ ...cfg, url: before.url })
 }

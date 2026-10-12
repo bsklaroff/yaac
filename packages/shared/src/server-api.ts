@@ -129,7 +129,7 @@ export async function resolveServerTarget(): Promise<ServerTarget> {
   if (envUrl) return { baseUrl: envUrl.replace(/\/+$/, '') }
 
   const cfg = await readServerConfig()
-  if (cfg?.enabled && cfg.url !== '') return { baseUrl: cfg.url }
+  if (cfg && cfg.url !== '') return { baseUrl: cfg.url }
   throw new Error(NO_SERVER_SELECTED)
 }
 
@@ -141,7 +141,7 @@ export const NO_SERVER_SELECTED =
   'No yaac server selected.\n'
   + '    Start one on this machine with `yaac server start` (or, for a cluster, '
   + '`yaac cluster install` once and then `yaac cluster start`),\n'
-  + '    or point at one with `yaac remote set <url>`.'
+  + '    or connect to one with `yaac remote connect <url>` (`yaac remote list` shows them).'
 
 /** Print the error's message and exit 1. */
 export function exitOnApiError(err: unknown): never {

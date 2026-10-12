@@ -145,7 +145,7 @@ failed `egress` gate means workspace egress is not locked down. After that,
 use it from your own machine, logged in to the same tailnet:
 
 ```sh
-yaac remote set https://yaac.<tailnet>.ts.net
+yaac remote add https://yaac.<tailnet>.ts.net
 ```
 
 After Tailscale SSH is on, `ssh ubuntu@yaac-install-host` reaches the

@@ -57,7 +57,7 @@ beforeEach(async () => {
   await fs.mkdir(path.dirname(clientLocalPath('server.json')), { recursive: true })
   // A pre-install.json host install: its record exists only as server.json's mirror.
   await fs.writeFile(clientLocalPath('server.json'), JSON.stringify({
-    url: 'http://127.0.0.1:8787', enabled: true, saved: [{ url: 'http://127.0.0.1:8787' }],
+    url: 'http://127.0.0.1:8787', saved: [{ url: 'http://127.0.0.1:8787' }],
     driver: 'containerless', origin: 'http://127.0.0.1:8787',
   }))
 })
@@ -92,7 +92,7 @@ describe('moveLegacyHostDataDir', () => {
     expect(await fs.readdir(path.join(project(current()), 'claude', 'projects'))).toEqual(['-workspace'])
     expect(hostDataDir()).toBe(current())
     expect(JSON.parse(await fs.readFile(clientLocalPath('server.json'), 'utf8'))).toEqual({
-      url: 'http://127.0.0.1:8787', enabled: true, saved: [{ url: 'http://127.0.0.1:8787' }],
+      url: 'http://127.0.0.1:8787', saved: [{ url: 'http://127.0.0.1:8787' }],
     })
     expect(await readInstallRecord(legacy())).toBeNull()
     expect(await exists(legacy())).toBe(false)

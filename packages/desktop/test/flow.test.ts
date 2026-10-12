@@ -61,7 +61,7 @@ describe('runFlow', () => {
       resolve: [new Error(
         'No yaac server selected.\n'
         + '    Start one on this machine with `yaac server start`,\n'
-        + '    or point at one with `yaac remote set <url>`.',
+        + '    or connect to one with `yaac remote connect <url>` (`yaac remote list` shows them).',
       )],
     })
     const result = await runFlow(deps)
@@ -74,7 +74,7 @@ describe('runFlow', () => {
     // commands the resolver names survive, un-indented.
     expect(result.error.detail).not.toMatch(/^No yaac server selected/)
     expect(result.error.detail).toMatch(/^Start one on this machine/)
-    expect(result.error.detail).toContain('yaac remote set <url>')
+    expect(result.error.detail).toContain('yaac remote connect <url>')
     expect(result.error.hint).toMatch(/Pick a server below/)
     // Nothing resolved, so there is no target to point the daemon at.
     expect(ensure).not.toHaveBeenCalled()

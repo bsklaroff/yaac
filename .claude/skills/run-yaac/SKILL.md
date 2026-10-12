@@ -86,7 +86,7 @@ rm -rf "$YAAC_DATA_DIR" "$YAAC_DATA_DIR-client"
 ## Check the server
 
 ```bash
-yaac remote status                    # the origin this install's clients dial
+yaac remote list                      # the origin this install's clients dial (*)
 curl -s <that origin>/health          # {"ok":true,"buildId":…,"ready":true,"driver":…}
 ```
 

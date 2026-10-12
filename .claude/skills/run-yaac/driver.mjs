@@ -79,7 +79,7 @@ function readSelectedServer() {
   } catch {
     throw new Error(`no ${file} — is a server registered? try: yaac server start`)
   }
-  if (!cfg.enabled) throw new Error(`no server selected in ${file} — try: yaac remote on`)
+  if (!cfg.url || cfg.enabled === false) throw new Error(`no server selected in ${file} — try: yaac remote list`)
   return cfg
 }
 

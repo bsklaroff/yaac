@@ -1,80 +1,87 @@
 import { readBuildId } from '@yaac/shared/build-id'
 import { describeBuildSkew } from '@yaac/shared/server-api'
 import {
-  clearServerConfig,
   normalizeServerUrl,
   probeServer,
   readServerConfig,
   withServerSelected,
   writeServerConfig,
-  type ServerConfig,
 } from '@yaac/shared/server-config'
 
 /**
  * `yaac remote …`: pick which server this machine's clients talk to
- * (docs/server-selection.md).
- *
- * The selection is machine-wide (`~/.yaac-client/server.json`). A local
- * server is selected the same way: `yaac server start` and `yaac cluster
- * install` register theirs here. With nothing selected, clients have no
- * server; there is no fallback to a local one.
+ * (docs/server-selection.md). The commands mirror the desktop app's server
+ * picker, and both edit the same machine-wide `~/.yaac-client/server.json`.
+ * A server on this machine is saved the same way: `yaac server start` and
+ * `yaac cluster install` register theirs here. With nothing selected,
+ * clients have no server; there is no fallback to a local one.
  */
+
+/** Print every saved server, marking the selected one. */
+export async function remoteList(): Promise<void> {
+  const cfg = await readServerConfig()
+  if (!cfg || cfg.saved.length === 0) {
+    console.log('No servers saved. Add one with: yaac remote add <url>')
+    return
+  }
+  for (const { url } of cfg.saved) console.log(`${url === cfg.url ? '*' : ' '} ${url}`)
+  if (cfg.url === '') console.log('No server selected. Pick one with: yaac remote connect <url>')
+}
+
+/** Save a new server and select it, like the picker's Add. */
+export async function remoteAdd(url: string): Promise<void> {
+  await probeAndSelect(normalizeServerUrl(url))
+}
 
 /**
- * Select a server after `probeServer` checks /health and /whoami. A build
- * mismatch only warns, since client and server upgrade independently.
- * Previously configured servers stay in the `saved` list.
+ * Select a saved server. The selected one is probed too, so connecting to
+ * it again is how to check it still answers.
  */
-export async function remoteSet(url: string): Promise<void> {
+export async function remoteConnect(url: string): Promise<void> {
   const origin = normalizeServerUrl(url)
-  const { buildId, principal } = await probeServer(origin)
+  if (!(await readServerConfig())?.saved.some((s) => s.url === origin)) {
+    throw new Error(`Unknown server: ${origin}. Add it with: yaac remote add ${origin}`)
+  }
+  await probeAndSelect(origin)
+}
 
+export async function remoteDisconnect(): Promise<void> {
+  const cfg = await readServerConfig()
+  if (cfg && cfg.url !== '') await writeServerConfig({ ...cfg, url: '' })
+  console.log(
+    'No server selected — commands will not reach one until you run '
+    + '`yaac remote connect <url>` or `yaac server start`.',
+  )
+}
+
+/**
+ * Forget a saved server, like the picker's remove. The selected one is
+ * refused, so the selection always names a saved server.
+ */
+export async function remoteRemove(url: string): Promise<void> {
+  const origin = normalizeServerUrl(url)
+  const cfg = await readServerConfig()
+  if (!cfg?.saved.some((s) => s.url === origin)) throw new Error(`Unknown server: ${origin}`)
+  if (cfg.url === origin) {
+    throw new Error(
+      `${origin} is the selected server. Run \`yaac remote disconnect\` or connect to another one first.`,
+    )
+  }
+  await writeServerConfig({ ...cfg, saved: cfg.saved.filter((s) => s.url !== origin) })
+  console.log(`Server removed: ${origin}`)
+}
+
+/**
+ * Select `origin` once `probeServer` has checked /health and /whoami, so a
+ * dead server never becomes the selection. A build mismatch only warns,
+ * since client and server upgrade independently.
+ */
+async function probeAndSelect(origin: string): Promise<void> {
+  const { buildId, principal } = await probeServer(origin)
   const skew = describeBuildSkew(buildId, await readBuildId(), origin)
   if (skew) console.error(skew)
 
   await writeServerConfig(withServerSelected(await readServerConfig(), origin))
   const as = principal.kind === 'tailnet' ? ` (as ${principal.login})` : ''
   console.log(`Server selected: ${origin}${as}`)
-}
-
-export async function remoteUnset(): Promise<void> {
-  await clearServerConfig()
-  console.log('Servers forgotten — no server is selected.')
-}
-
-export async function remoteOn(): Promise<void> {
-  const cfg = await requireConfigured()
-  await writeServerConfig({ ...cfg, enabled: true })
-  console.log(`Server selected: ${cfg.url}`)
-}
-
-export async function remoteOff(): Promise<void> {
-  const cfg = await requireConfigured()
-  await writeServerConfig({ ...cfg, enabled: false })
-  console.log(
-    'No server selected — commands will not reach one until you run '
-    + '`yaac remote on` or `yaac server start`.',
-  )
-}
-
-export async function remoteStatus(): Promise<void> {
-  const cfg = await readServerConfig()
-  if (!cfg || cfg.url === '') {
-    console.log('No server configured. Select one with: yaac remote set <url>')
-    return
-  }
-  console.log(`url      ${cfg.url}`)
-  console.log(`selected ${cfg.enabled ? 'yes' : 'no'}`)
-  const others = cfg.saved.filter((s) => s.url !== cfg.url)
-  if (others.length > 0) {
-    console.log(`saved    ${others.map((s) => s.url).join(', ')}`)
-  }
-}
-
-async function requireConfigured(): Promise<ServerConfig> {
-  const cfg = await readServerConfig()
-  if (!cfg || cfg.url === '') {
-    throw new Error('No server configured. Select one with: yaac remote set <url>')
-  }
-  return cfg
 }

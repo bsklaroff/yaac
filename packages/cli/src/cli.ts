@@ -29,7 +29,7 @@ import { authList } from '#commands/auth-list'
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { configGitIdentity } from '#commands/config-git-identity'
 import { authFake } from '#commands/auth-fake'
-import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
+import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
 import { env } from '@yaac/shared/env'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
@@ -593,33 +593,35 @@ program
 
 const remote = program
   .command('remote')
-  .description('Point this CLI at a remote yaac server')
+  .description('Choose which yaac server this machine\'s clients talk to')
 
 remote
-  .command('set')
-  .description('Configure and enable the remote server (verifies it is reachable and identifies this device)')
+  .command('list')
+  .description('List the saved servers, marking the selected one with *')
+  .action(remoteList)
+
+remote
+  .command('add')
+  .description('Save a server and select it (verifies it is reachable and identifies this device)')
   .argument('<url>', 'Server origin, e.g. https://srv.tailnet.ts.net')
-  .action(remoteSet)
+  .action(remoteAdd)
 
 remote
-  .command('unset')
-  .description('Forget the remote (commands target the local server again)')
-  .action(remoteUnset)
+  .command('connect')
+  .description('Select a saved server (verifies it is reachable and identifies this device)')
+  .argument('<url>', 'A saved server origin, as `yaac remote list` prints it')
+  .action(remoteConnect)
 
 remote
-  .command('on')
-  .description('Re-enable the configured remote')
-  .action(remoteOn)
+  .command('disconnect')
+  .description('Deselect the server, keeping it saved')
+  .action(remoteDisconnect)
 
 remote
-  .command('off')
-  .description('Disable the remote without forgetting it')
-  .action(remoteOff)
-
-remote
-  .command('status')
-  .description('Show the configured remote (masked token) and whether it is enabled')
-  .action(remoteStatus)
+  .command('remove')
+  .description('Forget a saved server (the selected one is refused)')
+  .argument('<url>', 'A saved server origin, as `yaac remote list` prints it')
+  .action(remoteRemove)
 
 const auth = program
   .command('auth')

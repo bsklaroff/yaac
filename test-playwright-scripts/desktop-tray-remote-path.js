@@ -101,11 +101,11 @@ const waitTray = (pid, label, timeoutMs) => waitFor(`tray "${label}"`, () => tra
 /** The selection is still the remote, and the loopback origin is saved beside it. */
 function selectionKept() {
   const cfg = serverJson()
-  return cfg.url === REMOTE && cfg.enabled === true
+  return cfg.url === REMOTE
 }
 
 async function partA() {
-  yaac('remote', 'set', REMOTE)
+  yaac('remote', 'add', REMOTE)
   const { _electron: electron } = requirePlaywright()
   const app = await electron.launch({ executablePath: APP, args: [`--user-data-dir=${DATA_DIR}-ui-a`], env: ENV })
   const pid = app.process().pid

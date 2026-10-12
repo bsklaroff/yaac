@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { remoteSet, remoteUnset, remoteOn, remoteOff, remoteStatus } from '#commands/remote'
+import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
 import { readServerConfig, writeServerConfig } from '@yaac/shared/server-config'
 import { setDataDir } from '@yaac/shared/paths'
 
@@ -30,20 +30,19 @@ describe('yaac remote commands', () => {
 
   const LOCAL = { kind: 'local' }
 
-  describe('remoteSet', () => {
-    it('verifies health and identity, then persists an enabled remote, saying who it is', async () => {
+  describe('remoteAdd', () => {
+    it('verifies health and identity, then saves and selects it, saying who it is', async () => {
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'cli-build' }))
         .mockResolvedValueOnce(Response.json({ kind: 'tailnet', login: 'alice@example.com', name: 'Alice' }))
       vi.stubGlobal('fetch', fetchMock)
 
-      await remoteSet('https://srv.ts.net/')
+      await remoteAdd('https://srv.ts.net/')
 
       expect(fetchMock.mock.calls.map(([u]) => u as string))
         .toEqual(['https://srv.ts.net/api/health', 'https://srv.ts.net/api/whoami'])
       expect(await readServerConfig()).toEqual({
         url: 'https://srv.ts.net',
-        enabled: true,
         saved: [{ url: 'https://srv.ts.net' }],
       })
       expect(logSpy).toHaveBeenCalledWith('Server selected: https://srv.ts.net (as alice@example.com)')
@@ -53,18 +52,16 @@ describe('yaac remote commands', () => {
     it('keeps previously set remotes in the saved list', async () => {
       await writeServerConfig({
         url: 'https://old.ts.net',
-        enabled: true,
         saved: [{ url: 'https://old.ts.net' }],
       })
       vi.stubGlobal('fetch', vi.fn()
         .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'cli-build' }))
         .mockResolvedValueOnce(Response.json(LOCAL)))
 
-      await remoteSet('https://new.ts.net')
+      await remoteAdd('https://new.ts.net')
 
       expect(await readServerConfig()).toEqual({
         url: 'https://new.ts.net',
-        enabled: true,
         saved: [{ url: 'https://new.ts.net' }, { url: 'https://old.ts.net' }],
       })
     })
@@ -74,15 +71,15 @@ describe('yaac remote commands', () => {
         .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'server-build' }))
         .mockResolvedValueOnce(Response.json(LOCAL)))
 
-      await remoteSet('https://srv.ts.net')
+      await remoteAdd('https://srv.ts.net')
 
       expect(errorSpy).toHaveBeenCalledWith(expect.stringMatching(/differs from this CLI/))
-      expect((await readServerConfig())?.enabled).toBe(true)
+      expect((await readServerConfig())?.url).toBe('https://srv.ts.net')
     })
 
     it('fails without persisting when the server is unreachable', async () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
-      await expect(remoteSet('https://down.ts.net'))
+      await expect(remoteAdd('https://down.ts.net'))
         .rejects.toThrow(/cannot reach https:\/\/down\.ts\.net/)
       expect(await readServerConfig()).toBeNull()
     })
@@ -98,7 +95,7 @@ describe('yaac remote commands', () => {
             message: 'tailscale serve sent no user identity: this device is a tagged device',
           },
         }, { status: 401 })))
-      await expect(remoteSet('https://srv.ts.net'))
+      await expect(remoteAdd('https://srv.ts.net'))
         .rejects.toThrow(/refused to identify this device: tailscale serve sent no user identity.*tagged device/)
       expect(await readServerConfig()).toBeNull()
     })
@@ -106,52 +103,105 @@ describe('yaac remote commands', () => {
     it('rejects a non-origin URL before any network call', async () => {
       const fetchMock = vi.fn()
       vi.stubGlobal('fetch', fetchMock)
-      await expect(remoteSet('https://srv.ts.net/path')).rejects.toThrow(/bare origin/)
+      await expect(remoteAdd('https://srv.ts.net/path')).rejects.toThrow(/bare origin/)
       expect(fetchMock).not.toHaveBeenCalled()
     })
   })
 
-  it('remoteOff / remoteOn toggle without losing the server', async () => {
-    const saved = [{ url: 'https://srv.ts.net' }]
-    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved })
-    await remoteOff()
-    expect(await readServerConfig()).toEqual({ url: 'https://srv.ts.net', enabled: false, saved })
-    await remoteOn()
-    expect(await readServerConfig()).toEqual({ url: 'https://srv.ts.net', enabled: true, saved })
-  })
+  /** Answer the next /health + /whoami probe as a reachable, local server. */
+  function stubReachable(): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ ok: true, buildId: 'cli-build' }))
+      .mockResolvedValueOnce(Response.json(LOCAL))
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
 
-  it('remoteOn / remoteOff without a configured remote throw guidance', async () => {
-    await expect(remoteOn()).rejects.toThrow(/yaac remote set/)
-    await expect(remoteOff()).rejects.toThrow(/yaac remote set/)
-  })
+  describe('remoteConnect', () => {
+    it('probes a saved server, then selects it, keeping the rest saved', async () => {
+      const saved = [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }]
+      await writeServerConfig({ url: '', saved })
+      const fetchMock = stubReachable()
 
-  it('remoteUnset clears the config', async () => {
-    await writeServerConfig({ url: 'https://srv.ts.net', enabled: true, saved: [] })
-    await remoteUnset()
-    expect(await readServerConfig()).toBeNull()
-  })
+      await remoteConnect('https://b.ts.net/')
 
-  it('remoteStatus prints the selection, and other saved remotes when there are any', async () => {
-    await writeServerConfig({ url: 'https://a.ts.net', enabled: true, saved: [] })
-    await remoteStatus()
-    let printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
-    expect(printed).toContain('https://a.ts.net')
-    expect(printed).toMatch(/selected\s+yes/)
-    expect(printed).not.toMatch(/^saved/m) // no other saved remotes → no line
-
-    logSpy.mockClear()
-    await writeServerConfig({
-      url: 'https://a.ts.net',
-      enabled: true,
-      saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }],
+      expect(fetchMock).toHaveBeenCalledWith('https://b.ts.net/api/health', expect.anything())
+      expect(await readServerConfig()).toEqual({
+        url: 'https://b.ts.net',
+        saved: [{ url: 'https://b.ts.net' }, { url: 'https://a.ts.net' }],
+      })
+      expect(logSpy).toHaveBeenCalledWith('Server selected: https://b.ts.net')
     })
-    await remoteStatus()
-    printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')
-    expect(printed).toMatch(/saved\s+https:\/\/b\.ts\.net/)
+
+    it('refuses a server that is not saved, pointing at add, without probing', async () => {
+      await writeServerConfig({ url: 'https://a.ts.net', saved: [] })
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+      await expect(remoteConnect('https://b.ts.net')).rejects.toThrow(/yaac remote add https:\/\/b\.ts\.net/)
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect((await readServerConfig())?.url).toBe('https://a.ts.net')
+    })
+
+    it('leaves the selection alone when the saved server does not answer', async () => {
+      await writeServerConfig({ url: '', saved: [{ url: 'https://a.ts.net' }] })
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
+      await expect(remoteConnect('https://a.ts.net')).rejects.toThrow(/cannot reach/)
+      expect((await readServerConfig())?.url).toBe('')
+    })
   })
 
-  it('remoteStatus without a remote prints setup guidance', async () => {
-    await remoteStatus()
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/yaac remote set/))
+  describe('remoteDisconnect', () => {
+    it('deselects without forgetting, and is a no-op with nothing configured', async () => {
+      await remoteDisconnect()
+      expect(await readServerConfig()).toBeNull()
+
+      const saved = [{ url: 'https://a.ts.net' }]
+      await writeServerConfig({ url: 'https://a.ts.net', saved })
+      await remoteDisconnect()
+      expect(await readServerConfig()).toEqual({ url: '', saved })
+      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/yaac remote connect/))
+    })
+  })
+
+  describe('remoteList', () => {
+    it('marks the selected server, and says when none is', async () => {
+      await writeServerConfig({ url: 'https://a.ts.net', saved: [{ url: 'https://a.ts.net' }, { url: 'https://b.ts.net' }] })
+      await remoteList()
+      expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0])))
+        .toEqual(['* https://a.ts.net', '  https://b.ts.net'])
+
+      logSpy.mockClear()
+      await remoteDisconnect()
+      logSpy.mockClear()
+      await remoteList()
+      expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0]))).toEqual([
+        '  https://a.ts.net',
+        '  https://b.ts.net',
+        'No server selected. Pick one with: yaac remote connect <url>',
+      ])
+    })
+
+    it('with nothing saved, prints setup guidance', async () => {
+      await remoteList()
+      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/yaac remote add <url>/))
+    })
+  })
+
+  describe('remoteRemove', () => {
+    it('forgets a saved server, refusing the selected one and an unknown one', async () => {
+      const a = { url: 'https://a.ts.net' }
+      const b = { url: 'https://b.ts.net' }
+      await writeServerConfig({ url: a.url, saved: [a, b] })
+
+      await expect(remoteRemove(a.url)).rejects.toThrow(/selected server.*yaac remote disconnect/)
+      await expect(remoteRemove('https://c.ts.net')).rejects.toThrow(/Unknown server/)
+      expect(await readServerConfig()).toEqual({ url: a.url, saved: [a, b] })
+
+      await remoteRemove('https://b.ts.net/')
+      expect(await readServerConfig()).toEqual({ url: a.url, saved: [a] })
+      await remoteDisconnect()
+      await remoteRemove(a.url)
+      expect(await readServerConfig()).toEqual({ url: '', saved: [] })
+    })
   })
 })

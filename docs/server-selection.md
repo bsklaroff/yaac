@@ -49,20 +49,26 @@ also registers when a server is already running, so a server started with
 ## What `server.json` holds
 
 ```json
-{ "url": "http://127.0.0.1:8787", "enabled": true,
-  "saved": [ { "url": "…" } ] }
+{ "url": "http://127.0.0.1:8787", "saved": [ { "url": "…" } ] }
 ```
 
-- `url`: the selected server. `enabled: false` deselects it without
-  forgetting it.
+- `url`: the selected server, or `""` for none. There is one selection at a
+  time.
 - `saved`: every server configured and not since removed, so a client can
-  switch back. There is one selection at a time.
+  switch back.
+
+The CLI edits it the way the desktop app's picker does: `yaac remote add`
+saves and selects a server, `connect` selects a saved one, `disconnect`
+deselects without forgetting, `list` shows them, and `remove` forgets one
+other than the selected server. Both clients probe a server before
+selecting it, so a server that is down or will not identify this device
+never becomes the selection.
 
 Nothing else: what kind of install a data dir is lives in its
-`install.json`, so forgetting servers (`yaac remote unset` deletes the file)
-never loses it, and a moved data dir takes its record with it. A
-`server.json` an older `yaac` wrote a copy of the record into is cleaned on
-the first read (docs/legacy-compat-shims.md).
+`install.json`, so forgetting servers never loses it, and a moved data dir
+takes its record with it. A `server.json` an older `yaac` wrote a copy of
+the record into is cleaned on the first read, and `enabled` is still written
+for older clients (docs/legacy-compat-shims.md).
 
 ## What `install.json` holds
 
@@ -73,7 +79,7 @@ registered at, and for a cluster also `installId`, `clusterUid`,
 status --json` report the origin, and the desktop shell lets only pages
 from a running install's origin drive this Mac's servers. It describes the data dir ("is there a host server to start, or a
 Deployment to update?"), which does not change when the selection points
-elsewhere, so `yaac remote set https://elsewhere` cannot allow a host
+elsewhere, so `yaac remote connect https://elsewhere` cannot allow a host
 `yaac server start` on a k8s install. `recordedDriver` reads `driver`, and
 `assertHostServerAllowed` refuses on it. A remote server's driver is not
 recorded; its snapshot reports it.
@@ -100,13 +106,13 @@ install of either kind. The test harness works this way.
 
 ## Nothing selected
 
-`yaac remote off` (or a fresh install) leaves nothing selected, and every
+`yaac remote disconnect` (or a fresh install) leaves nothing selected, and every
 client says:
 
 ```
 No yaac server selected.
     Start one on this machine with `yaac server start` (or, for a cluster, `yaac cluster install` once and then `yaac cluster start`),
-    or point at one with `yaac remote set <url>`.
+    or connect to one with `yaac remote connect <url>` (`yaac remote list` shows them).
 ```
 
 No client starts a server to recover. The CLI reports and exits; the desktop

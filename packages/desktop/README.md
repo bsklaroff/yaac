@@ -224,8 +224,6 @@ crashes the GPU process at launch. The app is unsigned and not notarized.
 
 ## Known limitations
 
-- The app can add and switch servers but not forget one; `yaac remote unset`
-  forgets them all.
 - The SPA's manual Light/Dark override recolors the page but not the native
   window background. The default System theme is correct.
 
@@ -233,8 +231,8 @@ crashes the GPU process at launch. The app is unsigned and not notarized.
 
 | | server on this machine | server elsewhere |
 |---|---|---|
-| webapp | `yaac server start`, then open the origin `yaac remote status` shows | `yaac remote set <url>`, then open that origin from a tailnet device logged in as a user |
-| desktop | `yaac server start`, then `pnpm desktop:dev` lands on the loopback origin with no interaction | `yaac remote set …`, then it lands on `https://…`; from a tagged device it lands on the picker showing the server's refusal |
+| webapp | `yaac server start`, then open the origin `yaac remote list` marks | `yaac remote add <url>`, then open that origin from a tailnet device logged in as a user |
+| desktop | `yaac server start`, then `pnpm desktop:dev` lands on the loopback origin with no interaction | `yaac remote add …`, then it lands on `https://…`; from a tagged device it lands on the picker showing the server's refusal |
 
 Also check in the desktop app:
 
@@ -267,7 +265,7 @@ The picker:
 - `yaac server stop`, relaunch: "Could not connect to http://127.0.0.1:…"
   above a row for that origin and **Start a server on this Mac**. Click it:
   the app loads, and the tray says "Server running".
-- `yaac remote off`, relaunch: "No yaac server selected", with the saved rows
+- `yaac remote disconnect`, relaunch: "No yaac server selected", with the saved rows
   still listed.
 - Add an origin that does not answer: the error shows inline and the picker
   stays.
