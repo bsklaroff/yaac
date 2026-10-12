@@ -370,6 +370,41 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(output).toContain('--group <name>')
   }, 120_000)
 
+  // A project yaac hosts (docs/hosted-projects.md): its pods reach the
+  // remote at yaac.internal, which the proxy relays to the server's mama
+  // listener like a yaac-mama call, naming the pod. The server lets a pod
+  // push to its own project's remote and refuses every other project's.
+  it('relays a pod\'s git to its hosted remote, and refuses another project\'s pod', async () => {
+    const created = await runYaac(serverEnv, 'project', 'create', 'mama-hosted')
+    expect(created.exitCode, created.stderr).toBe(0)
+    const hostedId = /\(([0-9a-f-]{36})\)/.exec(created.stdout)?.[1] ?? ''
+    expect(hostedId).not.toBe('')
+    const made = await runYaac(serverEnv, 'workspace', 'create', 'mama-hosted')
+    expect(made.exitCode, made.stderr).toBe(0)
+    const [pod] = await listWorkspacePods(hostedId)
+    try {
+      const pushed = await execInJob(pod.jobName, ['sh', '-c',
+        'cd /workspace && git commit -q --allow-empty -m first && git push -q origin HEAD:main 2>&1 && git rev-parse HEAD'],
+      { timeout: 120_000 })
+      const tip = pushed.stdout.trim().split('\n').pop() ?? ''
+      // The push lands in the main clone, which the server fetches at once.
+      const mainClone = path.join(testEnv.dataDir, 'global', 'projects', hostedId, 'repo')
+      for (let i = 0; i < 60; i += 1) {
+        if ((await git(mainClone, ['rev-parse', 'refs/remotes/origin/main']).catch(() => '')).trim() === tip) break
+        await sleep(500)
+      }
+      expect((await git(mainClone, ['rev-parse', 'refs/remotes/origin/main'])).trim()).toBe(tip)
+
+      // A pod of another project is refused, by the server, as itself.
+      const { stdout } = await execInJob(jobA, ['sh', '-c',
+        `git ls-remote http://yaac.internal/api/workspace/git/${hostedId}.git 2>&1; echo "EXIT:$?"`])
+      expect(stdout).toMatch(/403/)
+      expect(stdout).not.toContain('EXIT:0')
+    } finally {
+      await runYaac(serverEnv, 'workspace', 'stop', pod.workspaceId)
+    }
+  }, 300_000)
+
   // The destructive cases run last.
 
   it('stops the sibling it spawned, and the stop is a stop and not a delete', async () => {

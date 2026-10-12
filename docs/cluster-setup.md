@@ -410,7 +410,9 @@ A byo install also follows four rules:
   need per-architecture images published each release.
 - **Backups are the operator's.** Snapshot the `yaac-global` and
   `yaac-server-local` volumes with the provider's tools (`yaac-checkouts`
-  is a second view of the first).
+  is a second view of the first). The second holds the database and the
+  only copy of every project whose remote yaac hosts
+  (docs/hosted-projects.md).
 
 **Gates.** These run in order before anything is built or applied, and
 before the podman setup, so a refusal changes nothing:

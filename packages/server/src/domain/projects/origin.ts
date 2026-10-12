@@ -6,7 +6,7 @@ import { buildOriginRefreshExec } from '#runtime/agents'
 import { repoDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { resolveProjectCredential } from './credentials'
-import { projectRemoteUrl } from './detail'
+import { projectFetchUrl } from './detail'
 
 /**
  * Keeps every workspace's `origin/*` current (docs/server-git.md). Each
@@ -45,7 +45,7 @@ export async function fetchProjectOrigin(projectId: string, opts: { unlessWithin
   if (opts.unlessWithinMs !== undefined && now - (lastFetchMs.get(projectId) ?? 0) < opts.unlessWithinMs) return
   lastFetchMs.set(projectId, now)
   const repo = repoDir(projectId)
-  const fetched = fetchOrigin(repo, await projectRemoteUrl(projectId), await resolveProjectCredential(projectId))
+  const fetched = fetchOrigin(repo, await projectFetchUrl(projectId), await resolveProjectCredential(projectId))
   // Once per fetch; concurrent callers share one.
   if (!followedUp.has(fetched)) {
     followedUp.add(fetched)

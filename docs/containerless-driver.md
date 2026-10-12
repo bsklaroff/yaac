@@ -331,6 +331,12 @@ file the launch wrote, since an inherited value would hide it, including
 identity and trusted directories. The workspace's SSH command omits the Tor
 options the server's own git uses; see "Egress control" below.
 
+A project the server hosts (docs/hosted-projects.md) needs no secret of its
+own. The workspace's gitconfig rewrites the remote's `yaac.internal` URL to
+the server's loopback origin, and sends the workspace's yaac-mama token
+there as a bearer header. The token is in that file, so the launch writes
+it owner-only.
+
 ## `yaac-mama`: how a workspace reaches its server
 
 `yaac-mama` lets an agent run a small subset of the yaac CLI against its own

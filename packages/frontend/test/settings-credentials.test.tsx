@@ -335,10 +335,12 @@ describe('Settings → Credentials → git', () => {
   }
   /** A project keyed by `id-<name>`, so the rows show the name, not the key. */
   const project = (name: string, remoteUrl: string, gitCredential: ProjectSummary['gitCredential']): ProjectSummary =>
-    ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, unseenDeaths: 0, createDefaults: {}, gitCredential })
+    ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, unseenDeaths: 0, createDefaults: {}, gitCredential, hosted: false, guardDefaultBranch: true })
   const ALPHA = project('alpha', 'https://github.com/o/alpha.git', { id: 'c-token', name: 'alpha-token' })
   const BETA = project('beta', 'git@gitlab.com:o/beta.git', null)
   const GAMMA = project('gamma', 'https://github.com/o/gamma', null)
+  // yaac hosts its remote, so it needs no credential.
+  const DELTA = { ...project('delta', 'http://yaac.internal/api/workspace/git/id-delta.git', null), hosted: true }
 
   /** A project's row, by name — under its credential, or in the unassigned
    *  list. */
@@ -364,7 +366,7 @@ describe('Settings → Credentials → git', () => {
 
   beforeEach(() => {
     authList = { ...CLAUDE_CONFIGURED, gitCredentials: [TOKEN, KEY] }
-    snapshot.mockReturnValue({ driver: 'k8s', projects: [ALPHA, BETA, GAMMA] })
+    snapshot.mockReturnValue({ driver: 'k8s', projects: [ALPHA, BETA, GAMMA, DELTA] })
   })
 
   it('lists credentials with their projects, and assigns one to a project that has none', async () => {
@@ -397,6 +399,7 @@ describe('Settings → Credentials → git', () => {
       .toEqual(['Choose a git credential…', 'alpha-token', 'New HTTPS token…'])
     fireEvent.change(within(projectRow('gamma')).getByLabelText('Git credential'), { target: { value: 'new' } })
     expect(within(projectRow('gamma')).getByLabelText<HTMLInputElement>('Credential name').value).toBe('gamma-token')
+    expect(projectRow('delta')).toBeNull()
 
     // Assigning trusts the host key, which is shown under the credential.
     server.route('PUT /api/project/id-beta/git-credential', { knownHostsEntry: 'gitlab.com ssh-ed25519 HOSTKEY' })

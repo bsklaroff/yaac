@@ -130,7 +130,7 @@ export function useInstallDataDir(dir: string): void {
  *    GLOBAL checkpoint). `<dataDir>/node-local` on a host; a node hostPath
  *    in the cluster.
  *  - SERVER-LOCAL: the server process only (DB, lock, log, credentials,
- *    secret key). `<dataDir>/server-local` on a host; the RWO claim
+ *    secret key, hosted git remotes). `<dataDir>/server-local` on a host; the RWO claim
  *    `yaac-server-local` in the cluster. No workspace pod mounts it.
  *  - CLIENT-LOCAL: processes on the user's machine only (CLI, auth daemon,
  *    desktop app, `yaac cluster install`). A sibling of the client data

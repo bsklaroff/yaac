@@ -26,6 +26,12 @@ description.
 
 Never use `git -C`, always just use `git` commands from the working directory.
 
+**First, check the project is on GitHub.** If `git config --get
+remote.origin.url` starts with `http://yaac.internal/`, yaac hosts this
+project's remote, which has no pull requests. Tell the user this skill does
+not apply there, and stop. To land the work, rebase onto the default branch
+and push to it instead.
+
 ## When this branch sits on top of another PR
 
 A workspace is usually cut from `main`, but the work in it often isn't: a

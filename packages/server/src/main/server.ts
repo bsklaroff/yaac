@@ -88,9 +88,10 @@ function errorResponse(err: Error, c: Context): Response {
 }
 
 /**
- * The app on the k8s driver's yaac-mama relay listener: that one route,
- * which authenticates the egress proxy itself, so none of the API's gates
- * apply (docs/workspace-egress.md).
+ * The app on the k8s driver's yaac-mama relay listener: the routes a
+ * workspace calls (yaac-mama and a hosted remote), which authenticate the
+ * egress proxy themselves, so none of the API's gates apply
+ * (docs/workspace-egress.md).
  */
 export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<boolean>) {
   const app = new Hono()

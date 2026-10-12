@@ -143,6 +143,14 @@ export function torCoverageWarning(driver: DriverKind): string | undefined {
 type ServeFetch = Parameters<typeof serve>[0]['fetch']
 
 /**
+ * No cap on how long a request may take: a push to a hosted remote
+ * (docs/hosted-projects.md) can upload for longer than Node's five-minute
+ * default. `headersTimeout` still bounds a request that never finishes its
+ * headers.
+ */
+const LONG_UPLOADS = { requestTimeout: 0 }
+
+/**
  * Bind the HTTP server on `env.bindAddr` (loopback by default), starting
  * at `startPort` and moving up past ports in use. The bound port is
  * returned and recorded in the lock file. `startPort` 0 asks the OS for an
@@ -171,7 +179,7 @@ function bindServer(
         noServer: true,
         perMessageDeflate: { threshold: 512, zlibDeflateOptions: { level: 6 } },
       })
-      const s = serve({ fetch, port, hostname, websocket: { server: wss } }, (info) => {
+      const s = serve({ fetch, port, hostname, websocket: { server: wss }, serverOptions: LONG_UPLOADS }, (info) => {
         resolve({ server: s, port: info.port })
       })
       s.once('error', reject)
@@ -530,6 +538,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     fetch: buildMamaRelayApp(relay.authenticate).fetch,
     port: relay.port,
     hostname: env.bindAddr,
+    serverOptions: LONG_UPLOADS,
   })
   relayServer?.on('error', (err: Error) => serverLog(`[server] yaac-mama relay listener failed: ${String(err)}`))
 

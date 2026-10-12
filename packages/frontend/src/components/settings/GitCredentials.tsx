@@ -61,7 +61,7 @@ export function GitCredentials(): JSX.Element {
     await refresh()
   }
 
-  const unassigned = projects.filter((p) => p.gitCredential === null)
+  const unassigned = projects.filter((p) => p.gitCredential === null && !p.hosted)
 
   return (
     <>

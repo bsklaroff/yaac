@@ -53,6 +53,16 @@ export async function getDefaultBranch(repoPath: string): Promise<string> {
   return (await runGit(repo(repoPath), ['symbolic-ref', '--short', 'HEAD'])).trim()
 }
 
+/**
+ * Point the main clone's `origin/HEAD` at `origin/<branch>`, which
+ * `getDefaultBranch` reads. A clone sets it from the remote, but a clone of
+ * an empty remote cannot, so a hosted remote's default is copied in after
+ * each push (docs/hosted-projects.md).
+ */
+export async function setOriginHead(repoPath: string, branch: string): Promise<void> {
+  await runGit(repo(repoPath), ['symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${branch}`])
+}
+
 /** True when `refs/remotes/origin/<branch>` exists in the repo. */
 export async function remoteBranchExists(repoPath: string, branch: string): Promise<boolean> {
   try {
@@ -174,17 +184,20 @@ export function fetchOrigin(
  */
 export function maintainRepo(repoPath: string): Promise<void> {
   return fetchOriginMutex(repoPath, async () => {
-    await runGit(repo(repoPath), [
-      '-c', 'gc.auto=6700',
-      '-c', 'gc.autoDetach=false',
-      '-c', 'gc.pruneExpire=never',
-      '-c', 'gc.reflogExpire=never',
-      '-c', 'gc.reflogExpireUnreachable=never',
-      '-c', 'gc.worktreePruneExpire=never',
-      'gc', '--auto', '--quiet',
-    ])
+    await runGit(repo(repoPath), NEVER_PRUNE_GC)
   })
 }
+
+/** `gc --auto` that never deletes an object; see `maintainRepo`. */
+export const NEVER_PRUNE_GC = [
+  '-c', 'gc.auto=6700',
+  '-c', 'gc.autoDetach=false',
+  '-c', 'gc.pruneExpire=never',
+  '-c', 'gc.reflogExpire=never',
+  '-c', 'gc.reflogExpireUnreachable=never',
+  '-c', 'gc.worktreePruneExpire=never',
+  'gc', '--auto', '--quiet',
+]
 
 /**
  * When `origin/<branch>` was last fetched, into the main clone or the
@@ -210,7 +223,7 @@ export async function lastFetchedAtMs(
 
 /** Never-prune keys for the main clone's real config, read by git run there
  *  without the server's pins. */
-const NEVER_PRUNE_KEYS = ['gc.pruneExpire', 'gc.reflogExpire', 'gc.reflogExpireUnreachable']
+export const NEVER_PRUNE_KEYS = ['gc.pruneExpire', 'gc.reflogExpire', 'gc.reflogExpireUnreachable']
 
 /** `<sha> <refname>` for every main-clone ref under `prefixes`, plus the
  *  target of the symbolic `origin/HEAD`. */

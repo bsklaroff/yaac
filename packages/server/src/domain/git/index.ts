@@ -5,6 +5,8 @@
 //  - `repo.ts` operates on a project's main clone and creates the checkouts
 //    that borrow from it;
 //  - `run.ts` starts every git process, with hooks and transports pinned;
+//  - `hosted.ts` creates and serves the bare repository of a project whose
+//    remote the server hosts;
 //  - `peer-bundle.ts` reads a checkout's git without running git, through
 //    the `peer-reader.ts` child process.
 //
@@ -34,5 +36,7 @@ export {
   readBlobAt,
   remoteBranchExists,
   resolveRemoteRef,
+  setOriginHead,
 } from './repo'
 export { bundleCheckout } from './peer-bundle'
+export { initHostedRepo, serveGitHttp } from './hosted'

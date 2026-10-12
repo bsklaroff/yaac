@@ -86,6 +86,8 @@ There are two access levels:
   prompt, cancel and answer permission asks) and `/forward/attach` (a
   tunnel into the workspace's listeners, and so into a nested yaac's full
   API). The attaches are classed by what they grant, not by their method.
+  A push to a project's hosted remote is a write, so it is the owner's; a
+  clone or fetch of it is a read (docs/hosted-projects.md).
 
 `authorizeProject(actor, projectId)` is the check verbs make: every
 workspace-scoped verb resolves its workspace's project and asks it. A

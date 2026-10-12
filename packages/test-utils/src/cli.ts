@@ -296,6 +296,8 @@ export interface RunYaacOptions {
    * the answer, so there is no race. Stdin closes after the last send.
    */
   stdinOnPrompt?: Array<{ when: RegExp; send: string }>
+  /** Working directory (default: the test process's). */
+  cwd?: string
 }
 
 /**
@@ -315,6 +317,7 @@ export async function runYaac(
   const wantsStdin = opts.stdin !== undefined || opts.stdinOnPrompt !== undefined
   const child = spawn(process.execPath, [ENTRY, ...args], {
     env,
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     stdio: [wantsStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   })
   if (opts.stdin !== undefined) child.stdin?.end(opts.stdin)

@@ -309,6 +309,12 @@ proxy, and the workspace traffic it forwards, to the API
 alone decides what a command may do (`runMamaCommand`); the proxy checks
 nothing about it.
 
+The same relay carries a pod's git to the remote of a project the server
+hosts, at `http://yaac.internal/api/workspace/git/<project id>.git`
+(docs/hosted-projects.md). The proxy forwards only those smart-HTTP paths,
+with the headers git needs (`yaac-relay.ts`). The server checks that the
+named workspace belongs to that project.
+
 ## Which pods are redirected
 
 netd has exactly **one** rule, recomputed on every relevant watch event: a

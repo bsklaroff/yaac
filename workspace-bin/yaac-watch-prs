@@ -69,6 +69,14 @@ if [ -z "$workdir" ]; then
   [ -n "$workdir" ] || workdir=/workspace
 fi
 cd "$workdir" || exit 1
+# A remote yaac hosts (docs/hosted-projects.md) is not on GitHub and has no
+# PRs, so say that rather than let gh fail on an unknown host. The stored URL,
+# since a containerless workspace's gitconfig rewrites it for `get-url`.
+case $(git config --get remote.origin.url 2>/dev/null) in
+  http://yaac.internal/*)
+    echo "yaac-watch-prs: this project's remote is hosted by yaac, which has no pull requests" >&2
+    exit 1 ;;
+esac
 
 # Default event set depends on scope: a single PR can't be "opened", so watch
 # its comments and commits; across all PRs the useful default is new PRs.

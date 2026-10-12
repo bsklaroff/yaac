@@ -247,11 +247,15 @@ export interface WorkspaceSubstrate {
  * Only given to a driver without mediated egress, whose workspace must hold
  * the real credential (docs/containerless-driver.md). The SSH variant is the
  * OpenSSH private key `ssh-add -` reads; containerless loads it into a
- * per-workspace ssh-agent so the workspace never holds a copy.
+ * per-workspace ssh-agent so the workspace never holds a copy. The hosted
+ * variant is for a remote the server hosts (docs/hosted-projects.md): the
+ * server's loopback origin and the workspace's yaac-mama token, which is
+ * its identity there.
  */
 export type WorkspaceGitCredential =
   | { kind: 'https'; host: string; token: string }
   | { kind: 'ssh'; privateKey: string }
+  | { kind: 'hosted'; origin: string; token: string }
 
 /**
  * A workspace to launch, in substrate-neutral terms. `env` and `mounts` are

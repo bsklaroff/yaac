@@ -36,5 +36,7 @@ export async function listProjects(
     ...(meta.lastBranch !== undefined ? { lastBranch: meta.lastBranch } : {}),
     createDefaults: meta.createDefaults,
     gitCredential: credentials.get(meta.id) ?? null,
+    hosted: meta.hosted,
+    guardDefaultBranch: meta.guardDefaultBranch,
   }))
 }

@@ -6,6 +6,8 @@ import { AGENT_MODES, PERMISSION_MODES } from '@yaac/shared/types'
 import type { ServerAccessOptions } from '@yaac/server/main/lifecycle'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
+import { projectCreate } from '#commands/project-create'
+import { projectClone } from '#commands/project-clone'
 import { groupCreate, groupDelete, groupList, groupMove } from '#commands/group'
 import { workspaceCreate } from '#commands/workspace-create'
 import { workspaceList } from '#commands/workspace-list'
@@ -445,6 +447,19 @@ project
   .argument('<remote-url>', 'Git remote URL')
   .argument('<credential>', 'Name of the git credential to clone with and assign (see `yaac auth list`)')
   .action(projectAdd)
+
+project
+  .command('create')
+  .description('Create an empty project whose git remote yaac hosts')
+  .argument('<name>', 'Project name')
+  .action(projectCreate)
+
+project
+  .command('clone')
+  .description('Clone a yaac-hosted project\'s git remote to this machine')
+  .argument('<project>', 'Project name or id')
+  .argument('[dir]', 'Directory to clone into (default: the project name)')
+  .action(projectClone)
 
 const group = program
   .command('group')

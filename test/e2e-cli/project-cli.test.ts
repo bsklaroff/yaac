@@ -5,10 +5,11 @@ import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv, type Spa
 import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
 import { makeServerApiClient } from '@yaac/test-utils/api'
 import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
+import { git } from '@yaac/test-utils/git'
 
 /**
- * e2e coverage for `yaac project` (list/add) and `yaac config`, sharing one
- * test env and server across the file.
+ * e2e coverage for `yaac project` (list/add/create/clone) and `yaac
+ * config`, sharing one test env and server across the file.
  *
  * Tests run in declaration order over one data dir, so order matters:
  *  - The empty-state `project list` test runs first.
@@ -112,6 +113,39 @@ describe('yaac project (real CLI + real server)', () => {
     // No workspaces started, so 0 sessions each.
     expect(stdout).toMatch(new RegExp(`repo-alpha\\s+${alpha.slice(0, 8)}\\s+https://github.com/test-org/repo-alpha.git\\s+0`))
     expect(stdout).toMatch(new RegExp(`repo-beta\\s+${beta.slice(0, 8)}\\s+https://github.com/test-org/repo-beta.git\\s+0`))
+  })
+
+  it('project create makes an empty hosted project, which project clone clones for pushing', async () => {
+    const created = await runYaac(testEnv.env, 'project', 'create', 'Hosted Demo')
+    expect(created.exitCode).toBe(0)
+    expect(created.stdout).toContain('Project "hosted-demo"')
+    expect(created.stdout).toContain('yaac project clone hosted-demo')
+
+    // Into a named directory, then pushed to like any remote.
+    const dir = path.join(testEnv.scratchDir, 'hosted-named')
+    const cloned = await runYaac(testEnv.env, 'project', 'clone', 'hosted-demo', dir)
+    expect(cloned.exitCode).toBe(0)
+    await git(dir, ['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'first'])
+    await git(dir, ['push', '-q', 'origin', 'HEAD:main'])
+
+    // Into the project's name by default, with what was pushed.
+    const parent = path.join(testEnv.scratchDir, 'hosted-default')
+    await fs.mkdir(parent)
+    expect((await runYaac(testEnv.env, 'project', 'clone', 'hosted-demo', { cwd: parent })).exitCode).toBe(0)
+    expect(await git(path.join(parent, 'hosted-demo'), ['log', '--format=%s'])).toBe('first\n')
+
+    const list = await runYaac(testEnv.env, 'project', 'list')
+    expect(list.stdout).toMatch(/hosted-demo\s+\S+\s+\(hosted by yaac\)\s+0/)
+  })
+
+  it('project create refuses an unusable name, and project clone a project yaac does not host', async () => {
+    const bad = await runYaac(testEnv.env, 'project', 'create', '!!!')
+    expect(bad.exitCode).not.toBe(0)
+    expect(bad.stderr).toContain('not a usable project name')
+
+    const notHosted = await runYaac(testEnv.env, 'project', 'clone', 'repo-alpha', path.join(testEnv.scratchDir, 'nope'))
+    expect(notHosted.exitCode).not.toBe(0)
+    expect(notHosted.stderr).toContain('is not hosted by yaac')
   })
 })
 

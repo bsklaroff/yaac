@@ -1,9 +1,11 @@
 import { Hono } from 'hono'
+import type { Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import {
   addProject,
   assignProjectCredential,
+  createHostedProject,
   getProjectAllowlist,
   getProjectBranches,
   getProjectDetail,
@@ -21,6 +23,8 @@ import {
   writeProjectDockerfile,
   resolveProjectEnv,
   resolveProjectId,
+  serveHostedRepo,
+  setDefaultBranchGuard,
 } from '#domain/projects'
 import { removeProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
@@ -59,6 +63,11 @@ async function syncRunningWorkspaces(projectId: string, applied: string): Promis
   }
 }
 
+async function serveUserGit(c: Context<IdentityEnv>, pathInfo: string): Promise<Response> {
+  const projectId = await resolveProjectId(c.req.param('projectId') ?? '')
+  return serveHostedRepo(projectId, c.req.raw, pathInfo, { kind: 'user', principal: c.get('principal') })
+}
+
 export const projectApp = new Hono<IdentityEnv>()
   .get('/list', async (c) => c.json(await listProjects()))
   .post(
@@ -74,6 +83,12 @@ export const projectApp = new Hono<IdentityEnv>()
       await pushCredentialsToRuntime()
       return c.json(result)
     },
+  )
+  // An empty project whose remote the server hosts (docs/hosted-projects.md).
+  .post(
+    '/create',
+    zv('json', z.object({ name: z.string().min(1).max(200) })),
+    async (c) => c.json(await createHostedProject(c.req.valid('json').name, c.get('principal').userId)),
   )
   // Record a project whose checkout is already staged in the data dir,
   // without cloning. Tests use this to add a local repo.
@@ -97,6 +112,21 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.json(result)
     },
   )
+  // A hosted project's default-branch guard (docs/hosted-projects.md).
+  .put(
+    '/:projectId/default-branch-guard',
+    zv('json', z.object({ enabled: z.boolean() })),
+    async (c) => {
+      await setDefaultBranchGuard(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').enabled)
+      return c.body(null, 204)
+    },
+  )
+  // A hosted project's remote, for the user's own git: `git clone
+  // <origin>/api/project/<id>/git`. Workspaces reach it through their own
+  // route (#routes/workspaces).
+  .get('/:projectId/git/info/refs', async (c) => serveUserGit(c, '/info/refs'))
+  .post('/:projectId/git/git-upload-pack', async (c) => serveUserGit(c, '/git-upload-pack'))
+  .post('/:projectId/git/git-receive-pack', async (c) => serveUserGit(c, '/git-receive-pack'))
   .delete('/:projectId', async (c) => {
     await removeProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)

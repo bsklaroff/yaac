@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { formatSshCommand } from '@yaac/shared/git'
+import { HOSTED_REMOTE_PREFIX } from '@yaac/shared/hosted-git'
 import { killPids, runHost, runHostWithInput, spawnSshAgent } from './host'
 import type { WorkspaceGitCredential } from '#drivers/contract'
 
@@ -17,6 +18,11 @@ import type { WorkspaceGitCredential } from '#drivers/contract'
  * SSH gets a per-workspace ssh-agent. The private key is piped to `ssh-add`
  * and never written to disk; only the public key is, to pin the identity.
  * Host keys are checked against the project's known_hosts, as in a pod.
+ *
+ * A hosted remote (docs/hosted-projects.md) is the server itself. The
+ * checkout's `origin` names it at `yaac.internal`, as a pod sees it, so the
+ * gitconfig rewrites that prefix to the server's loopback origin and sends
+ * the workspace's yaac-mama token with every request to it.
  *
  * Unlike the server's own git, this is not routed through Tor: nothing else
  * the workspace does is.
@@ -58,6 +64,19 @@ export async function realizeGitAuth(params: {
   await fs.rm(store, { force: true })
 
   if (credential === undefined) return { gitconfig: [], env: {} }
+
+  if (credential.kind === 'hosted') {
+    const base = `${credential.origin}${new URL(HOSTED_REMOTE_PREFIX).pathname}`
+    return {
+      gitconfig: [
+        `[url "${base}"]`,
+        `\tinsteadOf = ${HOSTED_REMOTE_PREFIX}`,
+        `[http "${base}"]`,
+        `\textraHeader = Authorization: Bearer ${credential.token}`,
+      ],
+      env: {},
+    }
+  }
 
   if (credential.kind === 'https') {
     await fs.writeFile(store, `${credentialStoreLine(credential)}\n`, { mode: 0o600 })

@@ -103,6 +103,7 @@ export {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectDefaultBranchGuard,
   setProjectEgressAllowlist,
   setProjectGitCredential,
   type ProjectRow,

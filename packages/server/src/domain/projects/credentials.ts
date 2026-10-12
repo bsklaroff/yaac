@@ -211,6 +211,9 @@ export async function assignProjectCredential(
   const row = await getProjectRow(projectId)
   if (!row) throw new ServerError('NOT_FOUND', `Project "${projectId}" not found`)
   await authorizeProject(principal, projectId)
+  if (row.hosted) {
+    throw new ServerError('VALIDATION', `"${row.name}" is hosted by yaac, so it needs no git credential.`)
+  }
   const { knownHostsEntry } = await resolveCredentialForRemote(row.owner, credentialId, row.remoteUrl)
   await setProjectGitCredential(projectId, credentialId, knownHostsEntry)
   return { knownHostsEntry }
@@ -246,9 +249,10 @@ export async function projectCredentialNames(
 }
 
 /** The project's git credential, resolved for git; null when it has none
- *  it can use. */
+ *  it can use. A hosted project's is always `hosted`. */
 export async function resolveProjectCredential(projectId: string): Promise<ResolvedGitCredential | null> {
   const row = await getProjectRow(projectId)
+  if (row?.hosted === true) return { kind: 'hosted' }
   if (row?.gitCredentialId == null) return null
   const cred = await getGitCredential(row.gitCredentialId)
   if (!usableAssignment(row, cred)) return null

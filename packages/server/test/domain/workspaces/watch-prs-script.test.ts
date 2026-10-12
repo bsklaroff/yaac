@@ -174,6 +174,23 @@ describe('yaac-watch-prs script', () => {
     expect((await fs.readFile(path.join(fixtures, 'gh-cwd'), 'utf8')).trim()).toBe(repo)
   })
 
+  // A remote yaac hosts has no PRs, so it says so instead of polling.
+  it('refuses a checkout whose remote yaac hosts, without calling gh', async () => {
+    const repo = await fs.mkdtemp(path.join(tmpDir, 'hosted-'))
+    expect(spawnSync('git', ['init', repo], { stdio: 'ignore' }).status).toBe(0)
+    expect(spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'http://yaac.internal/api/workspace/git/p.git']).status).toBe(0)
+    // As a containerless workspace's gitconfig has it, which `get-url` would
+    // apply.
+    expect(spawnSync('git', ['-C', repo, 'config', 'url.http://127.0.0.1:1/api/workspace/git/.insteadOf',
+      'http://yaac.internal/api/workspace/git/']).status).toBe(0)
+
+    const { stdout, stderr, code } = await run(['--once'], { YAAC_WATCH_PRS_WORKDIR: repo })
+    expect(code).toBe(1)
+    expect(stdout).toBe('')
+    expect(stderr).toContain('hosted by yaac')
+    await expect(fs.access(path.join(fixtures, 'gh-cwd'))).rejects.toThrow()
+  })
+
   // Outside any repo (e.g. a Monitor command run from `/` in a pod), it
   // falls back to /workspace.
   it.skipIf(spawnSync('sh', ['-c', 'test -d /workspace']).status !== 0)(

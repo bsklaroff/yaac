@@ -735,20 +735,22 @@ export async function createWorkspace(
   // (docs/remote-hosting.md).
   const projectEnv = await resolveProjectEnv(projectId)
 
-  // Without a git credential the agent could neither fetch nor push.
-  const parsedRemote = parseGitRemote(remoteUrl)
+  // Without a git credential the agent could neither fetch nor push. A
+  // hosted remote is the server itself, so it has no host to check.
+  const remoteHost = projectRow.hosted ? null : parseGitRemote(remoteUrl).host
   const credential = await resolveProjectCredential(projectId)
   if (!credential) throw missingCredentialError(projectRow.name)
 
   // Fail now rather than let the agent hit a confusing proxy 403 on fetch.
-  // Containerless has no proxy, so nothing to check.
+  // Containerless has no proxy, so nothing to check, and the proxy relays
+  // a hosted remote before it reads the allowlist.
   const allowlist = projectRow.egressAllowlist
   const allowedHosts = resolveAllowedHosts(allowlist)
-  if (runtime.kind !== 'containerless' && allowedHosts[0] !== '*'
-    && !allowedHosts.some((pattern) => hostMatchesPattern(parsedRemote.host, pattern))) {
+  if (runtime.kind !== 'containerless' && remoteHost !== null && allowedHosts[0] !== '*'
+    && !allowedHosts.some((pattern) => hostMatchesPattern(remoteHost, pattern))) {
     throw new ServerError(
       'VALIDATION',
-      `Project remote host "${parsedRemote.host}" is not in the egress allowlist. `
+      `Project remote host "${remoteHost}" is not in the egress allowlist. `
       + 'Add it in Settings \u2192 Project Config.',
     )
   }
@@ -908,10 +910,10 @@ export async function createWorkspace(
         await fetchProjectOrigin(projectId)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        if (isGitAuthError(msg)) {
+        if (remoteHost !== null && isGitAuthError(msg)) {
           throw new ServerError(
             'VALIDATION',
-            `git authentication failed for ${parsedRemote.host} — the project's credential was `
+            `git authentication failed for ${remoteHost} — the project's credential was `
             + 'rejected (expired or revoked?). Assign it a new one in Settings → Git credentials, '
             + 'then retry.',
           )
@@ -1121,7 +1123,9 @@ export async function createWorkspace(
 
   // Without a proxy (which identifies a pod by its IP), `yaac-mama` calls the
   // server directly and authenticates with a token minted here
-  // (docs/containerless-driver.md).
+  // (docs/containerless-driver.md). The same token is the workspace's
+  // credential for a hosted remote.
+  let mama: { token: string; origin: string | undefined } | undefined
   if (!mediatedEgress && !options.prewarm) {
     const mamaToken = crypto.randomBytes(32).toString('hex')
     await setWorkspaceMamaTokenHash(
@@ -1132,9 +1136,11 @@ export async function createWorkspace(
     env.push(`YAAC_MAMA_TOKEN=${mamaToken}`)
     secretEnvKeys.push('YAAC_MAMA_TOKEN')
     // Fixed at launch: if the server later moves to another port, yaac-mama
-    // breaks until the workspace restarts.
+    // and a hosted remote break until the workspace restarts.
     const lock = await readLock()
-    if (lock) env.push(`YAAC_MAMA_URL=http://127.0.0.1:${lock.port}`)
+    const origin = lock ? `http://127.0.0.1:${lock.port}` : undefined
+    if (origin !== undefined) env.push(`YAAC_MAMA_URL=${origin}`)
+    mama = { token: mamaToken, origin }
   }
 
   if (timeZone !== null && !projectSets('TZ')) env.push(`TZ=${timeZone}`)
@@ -1192,8 +1198,8 @@ export async function createWorkspace(
   const userWiresGithubToken = env.some((e) => e.startsWith('GH_TOKEN='))
     || projectEnv.secrets.GH_TOKEN !== undefined
     || projectEnv.secrets.GITHUB_TOKEN !== undefined
-  if (credential.kind === 'https'
-    && ghApiHostForGitHost(parsedRemote.host) !== null
+  if (credential.kind === 'https' && remoteHost !== null
+    && ghApiHostForGitHost(remoteHost) !== null
     && !userWiresGithubToken) {
     env.push(`GH_TOKEN=${mediatedEgress ? PLACEHOLDER_GH_TOKEN : credential.token}`)
     secretEnvKeys.push('GH_TOKEN')
@@ -1316,9 +1322,13 @@ export async function createWorkspace(
   // credential: the checkout's `origin` URL carries no token.
   let gitCredential: WorkspaceGitCredential | undefined
   if (!mediatedEgress) {
-    gitCredential = credential.kind === 'https'
-      ? { kind: 'https', host: parsedRemote.host, token: credential.token }
-      : { kind: 'ssh', privateKey: await sshKeyMaterial(credential.id) }
+    if (credential.kind === 'https' && remoteHost !== null) {
+      gitCredential = { kind: 'https', host: remoteHost, token: credential.token }
+    } else if (credential.kind === 'ssh') {
+      gitCredential = { kind: 'ssh', privateKey: await sshKeyMaterial(credential.id) }
+    } else if (credential.kind === 'hosted' && mama?.origin !== undefined) {
+      gitCredential = { kind: 'hosted', origin: mama.origin, token: mama.token }
+    }
   }
 
   const spec: WorkspaceSpec = {

@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import crypto from 'node:crypto'
-import { ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
-import { cloneRepo, isGitAuthError } from '#domain/git'
+import { ensureDataDir, projectDir, repoDir, claudeDir, hostedRepoDir } from '@yaac/shared/project-paths'
+import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
+import { cloneRepo, initHostedRepo, isGitAuthError } from '#domain/git'
 import { parseGitRemote, resolveCredentialForRemote } from './credentials'
-import { getProjectRow, getToolCredential, recordProject } from '#db'
+import { getProjectRow, getToolCredential, listProjectRows, recordProject } from '#db'
 import {
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
@@ -50,37 +52,76 @@ export async function addProject(
   const parsed = validateGitRemoteUrl(remoteUrl)
   const name = projectNameFor(parsed.path)
   if (!name) throw new ServerError('VALIDATION', `no project name can be derived from "${parsed.path}"`)
-  const projectId = crypto.randomUUID()
-  const dir = projectDir(projectId)
 
   await ensureDataDir()
-
   const { credential, knownHostsEntry } = await resolveCredentialForRemote(owner, gitCredentialId, remoteUrl)
 
-  await fs.mkdir(dir, { recursive: true })
-
-  try {
-    await cloneRepo(remoteUrl, repoDir(projectId), credential)
-  } catch (err) {
-    await fs.rm(dir, { recursive: true, force: true })
-    const message = err instanceof Error ? err.message : String(err)
-    if (isGitAuthError(message)) {
-      throw new ServerError(
-        'VALIDATION',
-        `git authentication failed for ${parsed.host} — the credential was rejected `
-        + '(a revoked token, or a key not yet registered with the host?).',
-      )
+  const project = await setUpProject(name, owner, { gitCredential: { id: gitCredentialId, knownHostsEntry } }, async (projectId) => {
+    try {
+      await cloneRepo(remoteUrl, repoDir(projectId), credential)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (isGitAuthError(message)) {
+        throw new ServerError(
+          'VALIDATION',
+          `git authentication failed for ${parsed.host} — the credential was rejected `
+          + '(a revoked token, or a key not yet registered with the host?).',
+        )
+      }
+      throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
     }
-    throw new ServerError('INTERNAL', `Failed to clone: ${message}`)
-  }
+    return remoteUrl
+  })
+  return { project, knownHostsEntry }
+}
 
-  const meta: ProjectMeta = {
-    id: projectId,
-    name,
-    remoteUrl,
-    addedAt: new Date().toISOString(),
+/**
+ * Create an empty project whose remote the server hosts
+ * (docs/hosted-projects.md). Its main clone is cloned from the hosted bare
+ * repository like any other remote, so everything downstream runs as for a
+ * cloned project.
+ */
+export async function createHostedProject(rawName: string, owner: string): Promise<ProjectMeta> {
+  const name = projectNameFor(rawName.trim())
+  if (!name) throw new ServerError('VALIDATION', `"${rawName}" is not a usable project name`)
+  // Its name is a hosted project's only handle (`yaac project clone`, the
+  // remove confirmation), so it must name one project.
+  if ((await listProjectRows()).some((r) => r.name === name)) {
+    throw new ServerError('CONFLICT', `a project named "${name}" already exists`)
   }
+  await ensureDataDir()
+  return setUpProject(name, owner, { hosted: true }, async (projectId) => {
+    const hosted = hostedRepoDir(projectId)
+    try {
+      await fs.mkdir(path.dirname(hosted), { recursive: true })
+      await initHostedRepo(hosted)
+      await cloneRepo(hosted, repoDir(projectId), { kind: 'hosted' })
+    } catch (err) {
+      throw new ServerError('INTERNAL', `Failed to create the repository: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    return hostedRemoteUrl(projectId)
+  })
+}
+
+/**
+ * What both ways of adding a project share: a new id, the project dir,
+ * `makeRepo` to fill its main clone (returning the remote URL to record),
+ * the tool-auth placeholders, and the row. A failure removes the project
+ * dir and any hosted remote, since files without a row couldn't be listed,
+ * removed or re-added.
+ */
+async function setUpProject(
+  name: string,
+  owner: string,
+  record: { hosted?: boolean; gitCredential?: { id: string; knownHostsEntry: string | null } },
+  makeRepo: (projectId: string) => Promise<string>,
+): Promise<ProjectMeta> {
+  const projectId = crypto.randomUUID()
+  const dir = projectDir(projectId)
+  await fs.mkdir(dir, { recursive: true })
   try {
+    const remoteUrl = await makeRepo(projectId)
+    const meta: ProjectMeta = { id: projectId, name, remoteUrl, addedAt: new Date().toISOString() }
     await fs.mkdir(claudeDir(projectId), { recursive: true })
 
     const claudeCreds = await getToolCredential(owner, 'claude')
@@ -93,15 +134,13 @@ export async function addProject(
       await writeProjectCodexPlaceholder(projectId, codexCreds.codexOauth)
     }
 
-    await recordProject(meta, owner, { id: gitCredentialId, knownHostsEntry })
+    await recordProject({ ...meta, hosted: record.hosted === true }, owner, record.gitCredential)
+    return meta
   } catch (err) {
-    // A directory without a row couldn't be listed, removed or re-added, so
-    // clean it up.
     await fs.rm(dir, { recursive: true, force: true })
+    await fs.rm(hostedRepoDir(projectId), { recursive: true, force: true })
     throw err
   }
-
-  return { project: meta, knownHostsEntry }
 }
 
 /**
