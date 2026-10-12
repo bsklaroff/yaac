@@ -492,8 +492,14 @@ interface UiState {
   openChanges: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
-  /** Open or focus one file's editor pane (see `placeFile`). */
-  openFile: (workspaceId: string, path: string) => void
+  /** Open or focus one file's editor pane (see `placeFile`), with the
+   *  cursor on `line` when given. */
+  openFile: (workspaceId: string, path: string, line?: number) => void
+  /** The line an `openFile` asked for, by `fileKey`, until that file's
+   *  editor has its text and moves the cursor there. `focus` is what had
+   *  focus at the click: the editor takes focus only if it still does, so a
+   *  file that loads late never takes keystrokes meant for somewhere else. */
+  revealLine: { key: string; line: number; focus: Element | null } | null
   /** Open files with unsaved text, by `fileKey`. Drives the tab's dirty dot
    *  and the page's unload warning. */
   dirtyFiles: Record<string, true>
@@ -966,15 +972,17 @@ export const useUiStore = create<UiState>((set) => ({
     }
   }),
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
-  openFile: (workspaceId, path) => set((s) => {
+  openFile: (workspaceId, path, line) => set((s) => {
     const target = fileTarget(path)
     const placed = placeFile(layoutOf(s.layouts, workspaceId), target, s.activeTabs[workspaceId])
     return {
       layouts: { ...s.layouts, [workspaceId]: withActive(placed, target) },
       activeTabs: { ...s.activeTabs, [workspaceId]: target },
       focusNonce: s.focusNonce + 1,
+      revealLine: line === undefined ? null : { key: fileKey(workspaceId, path), line, focus: document.activeElement },
     }
   }),
+  revealLine: null,
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarWidth: (px) => set((s) => {
     const width = clampSidebarWidth(px)

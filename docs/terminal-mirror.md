@@ -45,10 +45,10 @@ fullscreen pi on a click anywhere on the call.
 in the checkout clickable, with Cmd-click on macOS and Ctrl-click elsewhere;
 a plain click stays the app's, and the click forwarder never sends a
 modified click to it. A path counts only if it names a file in the
-checkout's listing (fetched at most every 15 s); an absolute path counts by
-its longest suffix in the listing, since the checkout's absolute location
-differs by driver. A file opens in the webapp's editor, at its top: the
-editor takes no line number.
+checkout's listing (fetched at most every 15 s); an absolute path counts
+only under the listing's `root`, where the workspace sees the checkout,
+since that differs by driver. A file opens in the webapp's editor, at the line of a
+trailing `:line[:col]`.
 
 ## The control client
 

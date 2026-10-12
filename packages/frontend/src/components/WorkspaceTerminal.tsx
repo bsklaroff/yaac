@@ -164,8 +164,8 @@ export function WorkspaceTerminal({
     const disposeLinks = installTerminalLinks(term, {
       isMac: IS_MAC,
       // The status bar's changes poll keeps the listing current.
-      listPaths: () => Promise.resolve(queryClient.getQueryData<WorkspaceFiles>(filesKey(workspaceId))?.paths ?? []),
-      openFile: (path) => useUiStore.getState().openFile(workspaceId, path),
+      listFiles: () => Promise.resolve(queryClient.getQueryData<WorkspaceFiles>(filesKey(workspaceId))),
+      openFile: (path, line) => useUiStore.getState().openFile(workspaceId, path, line),
     })
     fit.fit()
     termRef.current = term

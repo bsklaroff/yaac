@@ -3,6 +3,7 @@ import type { WorkspaceFiles } from '@yaac/shared/types'
 import {
   FileConflict,
   buildTree,
+  fileLinksIn,
   fileTabLabels,
   fileTarget,
   fileTargetPath,
@@ -16,7 +17,7 @@ import {
 import { singleColumn, type PaneLayout } from '#lib/layout'
 
 const listing = (over: Partial<WorkspaceFiles> = {}): WorkspaceFiles => ({
-  version: 'v', paths: [], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false, ...over,
+  version: 'v', root: '/workspace', paths: [], symlinks: {}, ignored: [], emptyDirs: [], conflicted: [], truncated: false, ...over,
 })
 
 /** A tree as nested names — folders as `name/` with their children. */
@@ -90,6 +91,26 @@ describe('filterPaths', () => {
   it('caps the result', () => {
     const many = Array.from({ length: 500 }, (_, i) => `f${i}.ts`)
     expect(filterPaths(many, 'f', 200)).toHaveLength(200)
+  })
+})
+
+describe('fileLinksIn', () => {
+  it('finds paths of checkout files, however the line prints them', () => {
+    const line = [
+      'Edited packages/server/src/main.ts:12:3,', // line and column, punctuation
+      '(./README.md)', // ./ and brackets
+      '/workspace/packages/server/src/main.ts:7.', // absolute, under the checkout's root
+      '/usr/lib/node_modules/x/README.md', // absolute, outside the checkout
+      'src/main.ts', // not a checkout-relative path
+      'notes.txt', // not in the checkout
+      'v1.2', 'a/b', // path-shaped, not files
+    ].join(' ')
+    const links = fileLinksIn(line, { root: '/workspace', paths: new Set(['packages/server/src/main.ts', 'README.md']) })
+    expect(links.map((l) => [line.slice(l.start, l.end), l.path, l.line])).toEqual([
+      ['packages/server/src/main.ts', 'packages/server/src/main.ts', 12],
+      ['./README.md', 'README.md', undefined],
+      ['/workspace/packages/server/src/main.ts', 'packages/server/src/main.ts', 7],
+    ])
   })
 })
 

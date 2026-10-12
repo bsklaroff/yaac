@@ -12,6 +12,7 @@ import {
 import { useComposerMenu } from '#components/ComposerMenu'
 import { useConversationFind } from '#components/ConversationFind'
 import { EffortMenu } from '#components/EffortMenu'
+import { FileLinksContext, type FileLinks } from '#components/Markdown'
 import { PermissionModeMenu } from '#components/PermissionModeMenu'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
@@ -19,6 +20,7 @@ import {
   AttachImageIcon, CloseIcon, CondenseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, UncondenseIcon, WidenIcon,
 } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
+import { useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
 
@@ -39,6 +41,10 @@ import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shar
  * since the agent takes messages only on its main thread.
  *
  * Cmd/Ctrl-F searches whichever view is shown (`useConversationFind`).
+ *
+ * Paths of checkout files in the transcript open the file pane
+ * (`FileLinksContext`), matched against the listing `GitStatusBar` keeps
+ * current.
  */
 
 /** The text parts of a `user` event, for comparing against a draft. */
@@ -101,6 +107,16 @@ export function WorkspaceChat({
   )
   const reconciledRef = useRef(false)
   const groups = useMemo(() => groupEvents(events), [events])
+  const listing = useWorkspaceFiles(workspaceId)
+  /** Keyed on the fields links read, so a listing change elsewhere (its
+   *  ignored entries) does not re-render every link in the transcript. */
+  const root = listing?.root
+  const paths = listing?.paths
+  const fileLinks = useMemo((): FileLinks | null => root !== undefined && paths ? {
+    root,
+    paths: new Set(paths),
+    open: ({ path, line }) => useUiStore.getState().openFile(workspaceId, path, line),
+  } : null, [root, paths, workspaceId])
   /** The subagent or task being viewed instead of the conversation. One
    *  the stream no longer has (a restarted agent) falls back to it. */
   const [opened, setOpened] = useState<ActivityTarget | undefined>()
@@ -325,54 +341,56 @@ export function WorkspaceChat({
             {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
           </div>
         )}
-        <div className={column}>
-          {subagent !== undefined ? (
-            <>
-              <SubagentPrompt task={subagent.task} />
-              <AcpTranscript
+        <FileLinksContext.Provider value={fileLinks}>
+          <div className={column}>
+            {subagent !== undefined ? (
+              <>
+                <SubagentPrompt task={subagent.task} />
+                <AcpTranscript
+                  workspaceId={workspaceId}
+                  groups={threadGroups}
+                  found={found}
+                  busy={subagent.state === 'running'}
+                  live
+                  condensed={condensed}
+                  onAnswerPermission={answerPermission}
+                  onOpenSubagent={(id) => open({ kind: 'subagent', id })}
+                />
+                {subagent.state === 'running' && !awaitingPermission(threadGroups) && <Working />}
+              </>
+            ) : task !== undefined ? (
+              <TaskView
                 workspaceId={workspaceId}
-                groups={threadGroups}
-                found={found}
-                busy={subagent.state === 'running'}
+                task={task}
+                {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
+                streamed={taskCall.output}
+                {...(taskOutput !== undefined ? { output: taskOutput } : {})}
                 live
-                condensed={condensed}
-                onAnswerPermission={answerPermission}
-                onOpenSubagent={(id) => open({ kind: 'subagent', id })}
+                {...(task.outputFile !== undefined
+                  ? { onRefresh: () => send({ type: 'task-output', taskId: task.id }) }
+                  : {})}
               />
-              {subagent.state === 'running' && !awaitingPermission(threadGroups) && <Working />}
-            </>
-          ) : task !== undefined ? (
-            <TaskView
-              workspaceId={workspaceId}
-              task={task}
-              {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
-              streamed={taskCall.output}
-              {...(taskOutput !== undefined ? { output: taskOutput } : {})}
-              live
-              {...(task.outputFile !== undefined
-                ? { onRefresh: () => send({ type: 'task-output', taskId: task.id }) }
-                : {})}
-            />
-          ) : (
-            <>
-              <AcpTranscript
-                workspaceId={workspaceId}
-                groups={groups}
-                found={found}
-                busy={busy}
-                live
-                condensed={condensed}
-                onAnswerPermission={answerPermission}
-                onOpenSubagent={(id) => open({ kind: 'subagent', id })}
-                onOpenTask={(id) => open({ kind: 'task', id })}
-              />
-              {busy && !awaitingPermission(groups) && <Working />}
-              {queued.map((q) => (
-                <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
-              ))}
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                <AcpTranscript
+                  workspaceId={workspaceId}
+                  groups={groups}
+                  found={found}
+                  busy={busy}
+                  live
+                  condensed={condensed}
+                  onAnswerPermission={answerPermission}
+                  onOpenSubagent={(id) => open({ kind: 'subagent', id })}
+                  onOpenTask={(id) => open({ kind: 'task', id })}
+                />
+                {busy && !awaitingPermission(groups) && <Working />}
+                {queued.map((q) => (
+                  <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
+                ))}
+              </>
+            )}
+          </div>
+        </FileLinksContext.Provider>
       </div>
 
       <ChatBottomBar

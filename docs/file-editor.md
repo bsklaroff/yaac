@@ -103,6 +103,9 @@ The same run says how far HEAD is from the branch the base was found on
 (`rev-list --left-right --count <ref>...HEAD`), so the status bar follows
 the agent across a branch rename, and, when asked, lists the checkout:
 
+- `root` is the driver's `workspaceDir`: where the workspace itself sees
+  the checkout (`/workspace` in a pod, a host path otherwise), so a file
+  link can read an absolute path the agent printed.
 - `paths` is `ls-files -s` on the private index right after `add -A`: every
   file git does not ignore, deleted ones already gone, with no second walk.
   Git applies `.gitignore`, so there is no JS reimplementation. A symlink is
@@ -137,8 +140,8 @@ far HEAD is ahead of and behind it, then the total changed lines
 (`+52 −3`), which open the Changes pane. Both come from the
 changes answer (`branch`, `comparison`, `files`), polled every 10 seconds
 while the workspace is on screen. The bar also asks for `listing=paths`, so
-the explorer's tree and the terminal's file links are ready before the
-explorer opens.
+the explorer's tree and the terminal's and chat pane's file links are ready
+before the explorer opens.
 
 It never fetches, so `behind` is only as fresh as the checkout's `origin/*`
 (which the server keeps within minutes of origin, docs/server-git.md). The
@@ -335,6 +338,14 @@ The editor is CodeMirror via `ui/CodeEditor`. Its language comes from
 also uses, and its theme uses the app's CSS variables and the same `tok-*`
 colors as the diff. The pane stays mounted while hidden, like a terminal, so
 undo history, cursor and unsaved text survive.
+
+`openFile` takes an optional line, from a file link in a terminal or the
+chat pane. The store holds it as `revealLine` until that file's editor has
+its text, which then puts the cursor at the line's start, scrolls it to the
+middle, and clears it; a line past the end lands on the last, and an
+`openFile` without a line clears a pending one. The editor takes focus only
+if what had it at the click still does: a file that loads late must not
+take keystrokes the user has since started typing somewhere else.
 
 - **Text size** is one store value, `editorFontSize` (default 12px, saved in
   localStorage), shared by file panes and settings editors. Change it with

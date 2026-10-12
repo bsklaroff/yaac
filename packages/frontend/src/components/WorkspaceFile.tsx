@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { POPUP } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { useQuery } from '@tanstack/react-query'
-import type { EditorView } from '@uiw/react-codemirror'
+import { EditorView } from '@uiw/react-codemirror'
 import { openSearchPanel } from '@codemirror/search'
 import { ServerError } from '@yaac/shared/errors'
 import { mediaType } from '@yaac/shared/media-types'
@@ -316,6 +316,23 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const viewRef = useRef<EditorView | null>(null)
   const openFind = (): void => { if (viewRef.current) openSearchPanel(viewRef.current) }
 
+  // Put the cursor on the line a link asked for, centered, once the editor
+  // holds the text: now if it does, else when it is created. Focus follows
+  // only if nothing else has taken it since the click (see `revealLine`).
+  const reveal = useUiStore((s) => (s.revealLine?.key === key ? s.revealLine : undefined))
+  const revealPending = (view: EditorView): void => {
+    const want = useUiStore.getState().revealLine
+    if (want?.key !== key) return
+    const { doc } = view.state
+    const line = doc.line(Math.min(Math.max(want.line, 1), doc.lines))
+    view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) })
+    if (document.activeElement === want.focus) view.focus()
+    useUiStore.setState({ revealLine: null })
+  }
+  useEffect(() => {
+    if (reveal && viewRef.current) revealPending(viewRef.current)
+  }, [reveal])
+
   // The file's changes since the diff base, and the diff mode showing them.
   // A hidden pane keeps its last answer without polling.
   const { data: changes } = useWorkspaceChanges(workspaceId, { poll: visible && CHANGES_POLL_MS })
@@ -455,7 +472,10 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
             bare
             fontSize={fontSize}
             extensions={extensions}
-            onCreateEditor={(view) => { viewRef.current = view }}
+            onCreateEditor={(view) => {
+              viewRef.current = view
+              revealPending(view)
+            }}
           />
         )
     }
