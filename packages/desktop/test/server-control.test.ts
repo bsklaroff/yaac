@@ -76,18 +76,18 @@ describe('trayServerItems', () => {
     trayServerItems(localView({ local, busy: null, setup: null, unfinished: [], brew: true, clusterSupported: true, ...more }))
   const items = (s: Partial<LocalServerStatus>) => tray({ server: status(s), cluster: NO_INSTALL }).slice(0, -1)
   const hostStop = { label: 'Stop local containerless server', action: { scope: 'server', action: 'stop' } }
-  const clusterStop = { label: 'Stop local Kubernetes cluster', action: { scope: 'cluster', action: 'stop' } }
+  const clusterStop = { label: 'Stop local kubernetes cluster', action: { scope: 'cluster', action: 'stop' } }
   const setUpHost = { label: 'Set up a local containerless server…', action: { scope: 'server', action: 'setup' } }
-  const setUpCluster = { label: 'Set up a local Kubernetes cluster…', action: { scope: 'cluster', action: 'setup' } }
+  const setUpCluster = { label: 'Set up a local kubernetes cluster…', action: { scope: 'cluster', action: 'setup' } }
 
   it('offers one action per state, and a restart when the host server is on another build', () => {
     expect(items({ running: false, serverBuildId: null })).toEqual([
-      { label: 'Local containerless server (http://127.0.0.1:8787): stopped' },
+      { label: 'Local containerless server: stopped' },
       { label: 'Start local containerless server', action: { scope: 'server', action: 'start' } },
     ])
-    expect(items({})).toEqual([{ label: 'Local containerless server (http://127.0.0.1:8787): running' }, hostStop])
+    expect(items({})).toEqual([{ label: 'Local containerless server: running' }, hostStop])
     expect(items({ serverBuildId: 'old' })).toEqual([
-      { label: 'Local containerless server (http://127.0.0.1:8787): running an older build' },
+      { label: 'Local containerless server: running an older build' },
       { label: 'Restart local containerless server to update', action: { scope: 'server', action: 'restart' } },
     ])
   })
@@ -104,33 +104,33 @@ describe('trayServerItems', () => {
   it('offers setup again for an install whose setup never finished, until it runs', () => {
     const halfInstalled = { server: status({}), cluster: kind({ running: false, serverBuildId: null }) }
     expect(tray(halfInstalled, { unfinished: ['cluster'] }))
-      .toEqual([{ label: 'Local containerless server (http://127.0.0.1:8787): running' }, hostStop, setUpCluster])
+      .toEqual([{ label: 'Local containerless server: running' }, hostStop, setUpCluster])
     expect(tray({ ...halfInstalled, cluster: kind() }, { unfinished: ['cluster'] }).slice(-1)).toEqual([clusterStop])
   })
 
   it('lists a cluster install\'s server beside the host one, updated only by `cluster install`', () => {
     const host = status({ running: false, serverBuildId: null })
     expect(tray({ server: host, cluster: kind({ running: false, serverBuildId: null }) })).toEqual([
-      { label: 'Local containerless server (http://127.0.0.1:8787): stopped' },
+      { label: 'Local containerless server: stopped' },
       { label: 'Start local containerless server', action: { scope: 'server', action: 'start' } },
-      { label: 'Local Kubernetes cluster (http://127.0.0.1:8790): stopped' },
-      { label: 'Start local Kubernetes cluster', action: { scope: 'cluster', action: 'start' } },
+      { label: 'Local kubernetes cluster: stopped' },
+      { label: 'Start local kubernetes cluster', action: { scope: 'cluster', action: 'start' } },
     ])
     // A restart rolls the same image, so only cluster install updates it.
     expect(tray({ server: null, cluster: kind({ serverBuildId: 'old' }) })).toEqual([
-      { label: 'Update the local Kubernetes cluster with `yaac cluster install`' }, clusterStop,
+      { label: 'Update the local kubernetes cluster with `yaac cluster install`' }, clusterStop,
     ])
     expect(tray({ server: null, cluster: kind({ running: null, serverBuildId: null }) }))
-      .toEqual([{ label: 'Local Kubernetes cluster (http://127.0.0.1:8790): runs on its cluster' }])
+      .toEqual([{ label: 'Local kubernetes cluster: runs on its cluster' }])
     // A ~/.yaac that is itself the cluster install shows once, as the cluster.
     expect(tray({ server: kind(), cluster: kind() })).toEqual([
-      { label: 'Local Kubernetes cluster (http://127.0.0.1:8790): running' }, clusterStop,
+      { label: 'Local kubernetes cluster: running' }, clusterStop,
     ])
   })
 
   it('shows no action while one runs, with a setup\'s step, or when the server cannot be driven from here', () => {
     expect(tray({ server: status({}), cluster: kind() }, { busy: { scope: 'cluster', action: 'restart' } }))
-      .toEqual([{ label: 'Restarting local Kubernetes cluster…' }])
+      .toEqual([{ label: 'Restarting local kubernetes cluster…' }])
     const setup: DesktopSetupRun = {
       scope: 'cluster',
       phase: 'running',
@@ -141,12 +141,12 @@ describe('trayServerItems', () => {
       ],
     }
     expect(tray({ server: NO_INSTALL, cluster: NO_INSTALL }, { busy: { scope: 'cluster', action: 'setup' }, setup }))
-      .toEqual([{ label: 'Setting up local Kubernetes cluster…' }, { label: 'Step 2 of 2: Install the cluster' }])
+      .toEqual([{ label: 'Setting up local kubernetes cluster…' }, { label: 'Step 2 of 2: Install the cluster' }])
     expect(tray({ server: { kind: 'error', message: 'x' }, cluster: { kind: 'error', message: 'x' } }))
-      .toEqual([{ label: 'Local containerless server: status unavailable' }, { label: 'Local Kubernetes cluster: status unavailable' }])
+      .toEqual([{ label: 'Local containerless server: status unavailable' }, { label: 'Local kubernetes cluster: status unavailable' }])
     // An older yaac without `cluster status` still shows the host server.
     expect(tray({ server: status({}), cluster: { kind: 'error', message: 'unknown command' } }))
-      .toEqual([{ label: 'Local containerless server (http://127.0.0.1:8787): running' }, hostStop, { label: 'Local Kubernetes cluster: status unavailable' }])
+      .toEqual([{ label: 'Local containerless server: running' }, hostStop, { label: 'Local kubernetes cluster: status unavailable' }])
     expect(tray({ server: null, cluster: null })).toEqual([])
   })
 })

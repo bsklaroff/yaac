@@ -50,22 +50,27 @@ describe('serversPageHtml', () => {
     expect(html).toContain('Check that the server is running, then connect again.')
   })
 
-  it('offers one Connect row per saved server, marking the selected one, and removes any other', () => {
-    const html = serversPageHtml(STATE)
+  it('offers one Connect row per saved server, the selected one first, and removes any other', () => {
+    const html = serversPageHtml({ ...STATE, targets: { ...STATE.targets, saved: ['https://b.ts.net', HOST] } })
     // The selected row gets one too while it is unreachable: it is the retry.
     expect(html.match(/class="connect" data-url=/g)).toHaveLength(2)
     expect(html.match(/class="disconnect"/g)).toHaveLength(1)
-    expect(html).toContain('data-url="http://127.0.0.1:8787"')
-    expect(html).toContain('data-url="https://b.ts.net"')
-    expect(html).toContain('selected')
+    expect(html.indexOf(`data-url="${HOST}"`)).toBeLessThan(html.indexOf('data-url="https://b.ts.net"'))
+    // It is checked only while the window is connected to it.
+    expect(html).not.toContain('class="check"')
     expect(html.match(/class="remove" data-url=/g)).toHaveLength(1)
     expect(html).toContain('class="remove" data-url="https://b.ts.net"')
   })
 
-  it('opened over a server, has no failure to state, a way back, and a disconnect', () => {
+  it('opened over a server, has no failure to state, a way back named for it, and a disconnect', () => {
     const html = serversPageHtml({ targets: STATE.targets, local: view({ server: HOST_RUNNING, cluster: NONE }), tailnet: true })
     expect(html).toContain('<h1>Servers</h1>')
-    expect(html).toContain('>Back</button>')
+    expect(html).toContain('>← Back to Local containerless server</button>')
+    expect(html).toMatch(/<span class="check" title="Connected">✓<\/span>\s*<span class="name">Local containerless server/)
+    // A remote server is named by its origin.
+    const remote = { current: 'https://b.ts.net', saved: STATE.targets.saved }
+    expect(serversPageHtml({ targets: remote, local: NOTHING_READ, tailnet: true }))
+      .toMatch(/>← Back to https:\/\/b\.ts\.net<\/button>[\s\S]*class="check"[^<]*<\/span>\s*<span class="origin">https:\/\/b\.ts\.net/)
     expect(html).not.toContain('Try again')
     // The connected server's row only disconnects; the other connects and removes.
     expect(html).toContain('<button class="disconnect">Disconnect</button>')
@@ -118,13 +123,13 @@ describe('serversPageHtml', () => {
     const html = serversPageHtml({ ...STATE, local: view({ server: HOST_RUNNING, cluster: CLUSTER_RUNNING }) })
     // The selected host server's row, which stops even though the window uses it.
     expect(html).toMatch(new RegExp('<span class="name">Local containerless server \\(http://127\\.0\\.0\\.1:8787\\)</span>'
-      + '\\s*<span class="tag">selected</span>\\s*<span class="tag">Running</span>\\s*'
+      + '\\s*<span class="tag">Running</span>\\s*'
       + '<button class="connect" data-url="http://127.0.0.1:8787">Connect</button><button class="disconnect">Disconnect</button>'
       + '<button class="stop" data-scope="server">Stop</button>'))
     // Listed once, as the install rather than a bare origin.
     expect(html).not.toContain(`<span class="origin">${HOST}</span>`)
     // The cluster's origin is not saved (removed with `yaac remote remove`), so Connect adds it again.
-    expect(html).toMatch(new RegExp('Local Kubernetes cluster \\(http://127\\.0\\.0\\.1:8790\\)</span>\\s*<span class="tag">Running</span>\\s*'
+    expect(html).toMatch(new RegExp('Local kubernetes cluster \\(http://127\\.0\\.0\\.1:8790\\)</span>\\s*<span class="tag">Running</span>\\s*'
       + `<button class="connect" data-url="${CLUSTER}" data-add>Connect</button><button class="stop" data-scope="cluster">`))
     expect(html).toContain('<span class="origin">https://b.ts.net</span>')
 
@@ -136,7 +141,7 @@ describe('serversPageHtml', () => {
     expect(stopped).toMatch(/Local containerless server<\/span>\s*<span class="tag">Stopped<\/span>\s*<button class="start" data-scope="server">Start<\/button>\s*<\/li>/)
     // An install this Mac lacks offers its setup, folded away, under the list.
     expect(stopped).toContain('<h2>Set up on this Mac</h2>')
-    expect(stopped).toMatch(/Local Kubernetes cluster<\/span>\s*<span class="tag">Not set up/)
+    expect(stopped).toMatch(/Local kubernetes cluster<\/span>\s*<span class="tag">Not set up/)
     expect(stopped).toContain('<details class="choice" id="choice-cluster">')
     expect(stopped).not.toContain('id="choice-server"')
     // A scaled-down cluster install starts back up as pods, beside the host server.
@@ -166,7 +171,7 @@ describe('serversPageHtml', () => {
       expect(html).toContain('<details class="choice" id="choice-cluster" open>')
       expect(html).toContain('Local containerless server')
       expect(html).toContain('the permission mode defaults to accept-edits')
-      expect(html).toContain('Local Kubernetes cluster')
+      expect(html).toContain('Local kubernetes cluster')
       expect(html).toContain('gVisor-sandboxed pod')
       // What a containerless agent can reach, in the badge's words, and which taps each run trusts.
       expect(html).toContain('<li>its network access is unfiltered</li>')

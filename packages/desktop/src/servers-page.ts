@@ -1,12 +1,13 @@
 /**
  * The Servers page: the shell's one page for choosing which server the app
  * uses. One list holds this Mac's two installs, named "Local containerless
- * server" and "Local Kubernetes cluster" with their origins and a Start or
+ * server" and "Local kubernetes cluster" with their origins and a Start or
  * Stop, and every other saved server, marked "(stopped)" when it does not
  * answer or "(refused)" when it will not identify this device. A row other
  * than the selected one connects, unless it is a stopped install, which
- * Start selects. The selected row disconnects, and connects again only
- * while it cannot be reached; any other saved server can be removed. Below
+ * Start selects. The selected row comes first, checked while the window is
+ * connected to it. It disconnects, and connects again only while it cannot
+ * be reached; any other saved server can be removed. Below
  * the list are the setups of the installs this Mac lacks (local-setup.ts)
  * and a form that adds a server by origin. While Tailscale seems down, a
  * banner says so, since the tailnet is the only way to a server on another
@@ -15,8 +16,8 @@
  * The window shows it when no server is reachable, with the failure on top;
  * on a Mac with nothing set up it leads with the setups instead. The SPA's
  * Servers button and server badge, and the tray, open it over a connected
- * server, with a way back. It lives in the shell because the SPA is served
- * by the server, so without one there is no SPA.
+ * server, with a button back to it that names it. It lives in the shell
+ * because the SPA is served by the server, so without one there is no SPA.
  *
  * Like the boot splash (messages.ts), it is an HTML string loaded from a
  * `data:` URL, and its buttons use the preload's `window.yaacServer`
@@ -31,7 +32,7 @@ import { SETUP_COPY, trustSentence } from '@yaac/shared/setup-copy'
 import { isLoopbackOrigin } from '@yaac/shared/server-api'
 import type { DesktopInstallState, DesktopLocalState, DesktopServerTargets } from '@yaac/shared/types'
 import type { LaunchError } from '#messages'
-import { installLabel, type ServerScope } from '#server-control'
+import type { ServerScope } from '#server-control'
 
 export interface ServersPageState {
   /** Why the window has no server; absent when the page is opened over one. */
@@ -110,6 +111,17 @@ function connectButtons(url: string, selected: boolean, unreachable: boolean): s
   ].join('')
 }
 
+/** An install's name, with its origin once it has one: "Local containerless server (http://…)". */
+function installLabel(view: DesktopLocalState, scope: ServerScope): string {
+  const origin = view.origins[scope]
+  return origin ? `${SETUP_COPY[scope].title} (${origin})` : SETUP_COPY[scope].title
+}
+
+/** The check on the row of the server the window is connected to. */
+function checkHtml(state: ServersPageState, selected: boolean): string {
+  return selected && !state.error ? '<span class="check" title="Connected">✓</span>' : ''
+}
+
 /** One of this Mac's installs in the server list, with its state and a Start or Stop. */
 function installRowHtml(state: ServersPageState, scope: ServerScope): string {
   const { local, targets } = state
@@ -136,8 +148,8 @@ function installRowHtml(state: ServersPageState, scope: ServerScope): string {
       : ''
   return `
         <li class="row" id="install-${scope}">
+          ${checkHtml(state, selected)}
           <span class="name">${escapeHtml(installLabel(local, scope))}</span>
-          ${selected ? '<span class="tag">selected</span>' : ''}
           <span class="tag">${busy ?? STATE_TEXT[install]}</span>
           ${connect}${control}
         </li>`
@@ -149,9 +161,9 @@ function remoteRowHtml(state: ServersPageState, url: string): string {
   const attr = `data-url="${escapeHtml(url)}"`
   return `
         <li class="row">
+          ${checkHtml(state, selected)}
           <span class="origin">${escapeHtml(url)}</span>
           <span class="tag health" ${attr} hidden></span>
-          ${selected ? '<span class="tag">selected</span>' : ''}
           ${connectButtons(url, selected, state.error !== undefined)}
           ${selected ? '' : `<button class="remove" ${attr} title="Remove">✕</button>`}
         </li>`
@@ -181,16 +193,21 @@ export function serversPageHtml(state: ServersPageState): string {
   const missing = scopes.filter((s) => local.installs[s] === 'missing')
   const localOrigins = installed.map((s) => local.origins[s])
   const rows = [
-    ...installed.map((s) => installRowHtml(state, s)),
-    ...targets.saved.filter((url) => !localOrigins.includes(url)).map((url) => remoteRowHtml(state, url)),
+    ...installed.map((s) => ({ url: local.origins[s], html: installRowHtml(state, s) })),
+    ...targets.saved.filter((url) => !localOrigins.includes(url)).map((url) => ({ url, html: remoteRowHtml(state, url) })),
   ]
+  const first = (row: { url: string | null }): number => Number(row.url !== null && row.url === targets.current)
+  const ordered = rows.sort((a, b) => first(b) - first(a)).map((r) => r.html)
+  // Back names the server it returns to: an install by name, any other by origin.
+  const current = installed.find((s) => local.origins[s] === targets.current)
+  const back = `← Back to ${current ? SETUP_COPY[current].title : targets.current ?? 'the server'}`
   // Shown only to a Mac with a remote server saved, since one without needs no tailnet.
   const banner = !state.tailnet && targets.saved.some((url) => !isLoopbackOrigin(url)) ? `
       <p class="banner">Tailscale does not seem to be running on this Mac. Remote servers are
         reached over your tailnet, so connecting to one will likely fail until you start it.</p>` : ''
   const servers = fresh ? '' : `
       <h2>Servers</h2>${banner}
-      ${rows.length > 0 ? `<ul class="rows">${rows.join('')}</ul>` : '<p class="empty">No servers configured yet.</p>'}
+      ${ordered.length > 0 ? `<ul class="rows">${ordered.join('')}</ul>` : '<p class="empty">No servers configured yet.</p>'}
       ${installed.length > 0 ? '<p class="note">Local servers keep running when the app quits.</p>' : ''}`
 
   const setups = missing.length === 0 ? '' : `
@@ -242,6 +259,7 @@ export function serversPageHtml(state: ServersPageState): string {
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* An install's name wraps rather than hide its origin. */
       .name { overflow-wrap: anywhere; }
+      .check { color: light-dark(#1e8e3e, #5cc97b); font-weight: 700; }
       .tag { font-size: 11px; color: light-dark(#888, #888); white-space: nowrap; }
       .row button { flex-shrink: 0; }
       button {
@@ -291,7 +309,7 @@ export function serversPageHtml(state: ServersPageState): string {
       <h1>${escapeHtml(heading.title)}</h1>
       ${heading.detail ? `<p class="detail">${escapeHtml(heading.detail)}</p>` : ''}
       ${heading.hint ? `<p class="hint">${escapeHtml(heading.hint)}</p>` : ''}
-      <p><button id="retry">${error ? 'Try again' : 'Back'}</button></p>
+      <p><button id="retry">${error ? 'Try again' : escapeHtml(back)}</button></p>
       ${servers}
 
       ${setups}

@@ -22,7 +22,8 @@ docs/server-selection.md "The desktop shell"). When no server is selected
 or the selected one cannot be reached, the whole window is that page,
 showing the error. The SPA's Servers button (in the rail, above Settings),
 its server badge and the tray's **Servers…** open it over the server's page,
-with Back to return. It lists the saved servers (Connect, Remove, and
+in a view laid on top of it, with "Back to" that server to uncover it
+without a reload. It lists the saved servers (Connect, Remove, and
 "(stopped)" or "(refused)" beside any that does not answer or will not
 identify this device), adds one by origin, and
 lists this Mac's installs. While Tailscale seems not to be running, a banner
@@ -45,9 +46,8 @@ never stops a server.
   and a cluster's. The tray reads `yaac server status --json` and `yaac
   cluster status --json` (every minute and each time its menu opens) and
   shows one action for each install there is. It names them as the
-  Servers page does, **Local containerless server** and **Local Kubernetes
-  cluster**, each with its origin in parentheses once it has registered
-  one (`installLabel`):
+  Servers page does, **Local containerless server** and **Local kubernetes
+  cluster**, though without the origin the page adds in parentheses:
   - **Start local containerless server** when the host server is stopped.
     It runs `yaac server start`, which selects that server, and the window
     lands on it. The CLI's refusals show in a dialog.
@@ -57,12 +57,12 @@ never stops a server.
   - **Restart local containerless server to update** in place of Stop when
     the server runs a different build than the installed CLI, as after
     `brew upgrade`.
-  - **Start / Stop local Kubernetes cluster** for a cluster install, by
+  - **Start / Stop local kubernetes cluster** for a cluster install, by
     `yaac cluster start|stop`. Its server is updated by `yaac cluster
     install`, which rebuilds its image, so the tray names that command
     rather than offering a restart. A `--byo` install's lock is on its
     cluster, so the tray cannot see it and offers no action.
-  - **Set up a local containerless server / Kubernetes cluster…** for an install this Mac
+  - **Set up a local containerless server / kubernetes cluster…** for an install this Mac
     does not have yet, and both when there is no `yaac` at all. It opens
     the Servers page with that setup unfolded (below). While a setup runs,
     the tray shows its current step.
@@ -81,7 +81,8 @@ never stops a server.
   check` and lists any failures, which in practice name the agent CLI to
   install. A start, like a setup, lands the window on the server it
   selects. Stopping the selected server disconnects the window; any other
-  stop renders the page again. The selected row also has **Disconnect**,
+  stop renders the page again. The selected row comes first, checked
+  while the window is connected to it, and also has **Disconnect**,
   which deselects it as `yaac remote disconnect` does, leaving the window on the
   Servers page with nothing selected.
 - **Setup.** With no `yaac` CLI, or with one but no install and no server
@@ -89,7 +90,7 @@ never stops a server.
   (`src/servers-page.ts`): **Local containerless server**, with no sandbox,
   so an agent reaches everything your account can (listed in the same
   words as the SPA's containerless badge, from `@yaac/shared/setup-copy`),
-  and **Local Kubernetes cluster** (kind), gVisor-sandboxed pods behind
+  and **Local kubernetes cluster** (kind), gVisor-sandboxed pods behind
   the egress proxy, which needs a podman VM, several GB of disk and memory,
   and an Apple silicon Mac (it is disabled elsewhere). Each shows its
   commands to copy, says which Homebrew taps it trusts (`libkrun/krun` is
@@ -293,7 +294,8 @@ The Servers page:
   row fails naming Tailscale; start Tailscale and open the page again: the
   banner is gone.
 - With a server running, click the rail's Servers button: the page shows
-  with Back, and Back returns to the workspace that was open.
+  that server's row first with a green check and "← Back to" it, which
+  returns to the workspace that was open without any loading screen.
 
 `test-playwright-scripts/desktop-server-picker.js` drives these against a real
 Electron build, and `test-playwright-scripts/desktop-onboarding.js` drives a

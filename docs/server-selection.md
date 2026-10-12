@@ -151,18 +151,24 @@ window shows it in three cases, all the same page:
   with the two installs to set up;
 - the user opens it, from the SPA's Servers button in the rail, the server
   badge in the sidebar header, or the tray: it covers the server's page,
-  whose events and forwards keep running, and Back returns to the page it
-  covered.
+  whose events and forwards keep running, and "Back to" that server
+  uncovers it as it was, without reloading it.
+
+The page renders in its own view laid over the window's page rather than
+replacing it, so going back is only removing that view; a reload would
+show the SPA's loading screens on the way. Only that view's `data:` page
+gets answers from the shell's server-changing bridge.
 
 It is one list of servers. This Mac's installs are named **Local
-containerless server** and **Local Kubernetes cluster**, with their origins
-in parentheses (the tray names them the same way), each with a Start or
+containerless server** and **Local kubernetes cluster**, with their origins
+in parentheses (the tray uses the names alone), each with a Start or
 Stop; every other saved origin has Connect and Remove. Once the page has
 loaded, each saved origin is probed in parallel and marked "(stopped)" when
 it does not answer, or "(refused)" when it answers but will not identify
 this device (a tagged tailnet device, or an origin for the wrong access
 mode, docs/remote-hosting.md), with the server's reason as its tooltip:
-starting the server would not fix that. The selected row has
+starting the server would not fix that. The selected row comes first,
+with a green check while the window is connected to it, and has
 **Disconnect**, which deselects it as `yaac remote disconnect` does, and
 stopping the selected install disconnects the window the same way a dead
 server would. Below the list are the setups of the installs this Mac lacks,

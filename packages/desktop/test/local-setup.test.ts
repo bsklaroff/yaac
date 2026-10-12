@@ -182,7 +182,7 @@ describe('createSetupRunner', () => {
 
   it('confirms a setup by naming its commands and the taps it trusts', () => {
     const { message, detail } = setupConfirmation('cluster')
-    expect(message).toBe('Set up a local Kubernetes cluster on this Mac?')
+    expect(message).toBe('Set up a local kubernetes cluster on this Mac?')
     expect(detail).toContain('trusts the Homebrew taps bsklaroff/yaac and libkrun/krun (third-party, not yaac\'s)')
     expect(detail).toContain('  brew tap libkrun/krun\n\n  brew install bsklaroff/yaac/yaac-cluster')
     expect(setupConfirmation('server').detail).toContain('trusts the Homebrew tap bsklaroff/yaac, which')

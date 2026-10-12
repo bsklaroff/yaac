@@ -17,7 +17,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray,
-  utilityProcess,
+  utilityProcess, WebContentsView,
 } from 'electron'
 import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import {
@@ -78,12 +78,18 @@ let forwarder: DesktopForwarder | null = null
 // re-notify. Replaced on a server switch.
 let attention = new AttentionMonitor()
 /*
- * Set while the window shows the Servers page: why no server is reachable,
- * or else the URL of the server page it was opened over. Re-showing an
- * unreachable window re-runs the boot flow, since the user may have fixed
- * things from a terminal.
+ * Set while the window shows the Servers page, with why no server is
+ * reachable, or without when it was opened over a server's page.
+ * Re-showing an unreachable window re-runs the boot flow, since the user
+ * may have fixed things from a terminal.
  */
-let serversPage: { error: LaunchError } | { over: string } | null = null
+let serversPage: { error?: LaunchError } | null = null
+/*
+ * The view the Servers page renders in, laid over the window's own page.
+ * Going back to the server the page was opened over removes it, so the
+ * SPA underneath never reloads.
+ */
+let pageView: { view: WebContentsView, close: () => void } | null = null
 // This machine's servers as the tray last read them, and the action under way.
 let localServers: LocalServers = { server: null, cluster: null }
 let brewFound = false
@@ -99,6 +105,7 @@ let pageCallsInFlight = 0
 const resolveTarget = resolveServerTarget
 
 const distDir = path.dirname(fileURLToPath(import.meta.url))
+const PRELOAD = path.join(distDir, 'preload.cjs')
 const authDaemonReady = Promise.all([adoptLoginShellPath(), stopLegacyAuthDaemon()])
 const authDaemon = createAuthDaemonRunner((baseUrl) => utilityProcess.fork(
   path.join(distDir, 'auth-daemon.js'), [baseUrl], { serviceName: 'yaac auth daemon' },
@@ -144,7 +151,7 @@ async function createWindow(): Promise<BrowserWindow> {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      preload: path.join(distDir, 'preload.cjs'),
+      preload: PRELOAD,
       // The attention chime plays on a background event, not a user gesture.
       autoplayPolicy: 'no-user-gesture-required',
       // For the workspace preview. Guests are hardened and pinned to loopback
@@ -174,12 +181,12 @@ async function createWindow(): Promise<BrowserWindow> {
     w.setBackgroundColor(backgroundColorFor(nativeTheme.shouldUseDarkColors))
   }
   nativeTheme.on('updated', onThemeChange)
-  w.on('closed', () => nativeTheme.removeListener('updated', onThemeChange))
-  // target="_blank" links open in the system browser.
-  w.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) void shell.openExternal(url)
-    return { action: 'deny' }
+  w.on('closed', () => {
+    nativeTheme.removeListener('updated', onThemeChange)
+    pageView?.close()
   })
+  // target="_blank" links open in the system browser.
+  w.webContents.setWindowOpenHandler(openInBrowser)
   // Close hides to the tray; only an explicit Quit destroys the window.
   w.on('close', (e) => {
     // getNormalBounds() is the windowed geometry even when maximized.
@@ -192,11 +199,56 @@ async function createWindow(): Promise<BrowserWindow> {
   return w
 }
 
+function openInBrowser({ url }: { url: string }): { action: 'deny' } {
+  if (/^https?:/.test(url)) void shell.openExternal(url)
+  return { action: 'deny' }
+}
+
+/**
+ * The Servers page's view over `w`, added if it is not there yet. It has
+ * the window's preload, and every link it follows opens in the browser.
+ */
+function showPageView(w: BrowserWindow): WebContentsView {
+  if (pageView) return pageView.view
+  const view = new WebContentsView({
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: PRELOAD },
+  })
+  view.setBackgroundColor(backgroundColorFor(nativeTheme.shouldUseDarkColors))
+  const fit = (): void => {
+    const { width, height } = w.getContentBounds()
+    view.setBounds({ x: 0, y: 0, width, height })
+  }
+  fit()
+  w.contentView.on('bounds-changed', fit)
+  view.webContents.setWindowOpenHandler(openInBrowser)
+  view.webContents.on('will-navigate', (e, url) => {
+    e.preventDefault()
+    openInBrowser({ url })
+  })
+  w.contentView.addChildView(view)
+  view.webContents.focus()
+  pageView = {
+    view,
+    close: () => {
+      pageView = null
+      if (!w.isDestroyed()) {
+        w.contentView.removeListener('bounds-changed', fit)
+        w.contentView.removeChildView(view)
+        w.webContents.focus()
+      }
+      view.webContents.close()
+    },
+  }
+  return view
+}
+
 /**
  * Run the boot flow and load the server's origin, or the Servers page when
  * no server will accept this device. Returns whether a server was loaded.
- * Leaving the Servers page for the server it was opened over returns to
- * the page it covered, whose events are still running.
+ * Leaving the Servers page for the server it was opened over only closes
+ * the page, uncovering that server's page with its events still running.
+ * While the Servers page shows, the flow's progress goes to the page's own
+ * status line rather than a splash, which would replace the covered page.
  */
 async function openWindow(): Promise<boolean> {
   if (!win || win.isDestroyed()) win = await createWindow()
@@ -209,7 +261,7 @@ async function openWindow(): Promise<boolean> {
     },
     probeIdentity: () => probeIdentity(),
     onStatus: (text) => {
-      void w.loadURL(splashUrl(text)).catch(() => { /* superseded by the next load */ })
+      if (!pageView) void w.loadURL(splashUrl(text)).catch(() => { /* superseded by the next load */ })
     },
     rendererBaseUrl: env.desktopRendererUrl,
   })
@@ -217,13 +269,14 @@ async function openWindow(): Promise<boolean> {
     await showUnreachable(w, result.error)
     return false
   }
-  const over = serversPage && 'over' in serversPage && isSameOriginNavigation(serversPage.over, result.url) ? serversPage.over : null
+  const back = serversPage !== null && !serversPage.error && isSameOriginNavigation(w.webContents.getURL(), result.url)
   try {
-    await w.loadURL(over ?? result.url)
+    if (!back) await w.loadURL(result.url)
     serversPage = null
+    pageView?.close()
     // Started only once a server is reachable, so the Servers page doesn't
     // spin a reconnect loop.
-    if (!over) startEvents()
+    if (!back) startEvents()
     // A landing often follows a start from a terminal; read it now, so the
     // Servers page opens on current state.
     void refreshLocalServer()
@@ -236,8 +289,8 @@ async function openWindow(): Promise<boolean> {
 
 /**
  * Show the Servers page because no server is reachable. Events, forwards
- * and the badge are cleared first so nothing claims state from a server the
- * shell cannot reach.
+ * and the badge are cleared first, and the page it covers emptied, so
+ * nothing claims state from a server the shell cannot reach.
  */
 async function showUnreachable(w: BrowserWindow, error: LaunchError): Promise<void> {
   serversPage = { error }
@@ -248,6 +301,9 @@ async function showUnreachable(w: BrowserWindow, error: LaunchError): Promise<vo
   attention = new AttentionMonitor()
   applyAttention(0, [], [])
   await renderServersPage(w)
+  if (!w.webContents.getURL().startsWith('data:')) {
+    await w.loadURL(splashUrl('')).catch(() => { /* superseded by the next load */ })
+  }
 }
 
 /**
@@ -260,7 +316,7 @@ async function openServersPage(setup?: ServerScope): Promise<void> {
   if (!win || win.isDestroyed()) win = await createWindow()
   win.show()
   win.focus()
-  serversPage ??= { over: win.webContents.getURL() }
+  serversPage ??= {}
   await renderServersPage(win, setup)
 }
 
@@ -273,23 +329,24 @@ async function openServersPage(setup?: ServerScope): Promise<void> {
  * reply to it, an error included, goes to the page that made it; the action
  * itself moves the window or renders the page again when it ends. Only
  * before the first read is there nothing to render from, so that one is
- * waited for.
+ * waited for. A page the window has left by the time the reads return,
+ * as when a start lands it meanwhile, is not shown.
  */
 async function renderServersPage(w: BrowserWindow, setup?: ServerScope): Promise<void> {
   const page = serversPage
   const machine = (): { local: DesktopLocalState, tailnet: boolean } => ({ local: localState(), tailnet: serverSwitchDeps.tailnetUp() })
   const load = async (): Promise<string> => {
-    const error = page && 'error' in page ? page.error : undefined
     const shown = machine()
     const targets = await getServerTargets(serverSwitchDeps)
-    await w.loadURL(serversPageUrl({ error, targets, setup, ...shown }))
+    if (serversPage !== page) return ''
+    await showPageView(w).webContents.loadURL(serversPageUrl({ error: page?.error, targets, setup, ...shown }))
       .catch(() => { /* superseded by the next load */ })
     return JSON.stringify(shown)
   }
   if (!localServers.server && !localServers.cluster) await refreshLocalServer()
   const shown = await load()
   void refreshLocalServer().then(async () => {
-    const still = serversPage === page && !w.isDestroyed() && w.webContents.getURL().startsWith('data:')
+    const still = serversPage === page && pageView !== null
     const idle = !serverBusy && pageCallsInFlight === 0
     if (still && idle && JSON.stringify(machine()) !== shown) await load()
   })
@@ -300,7 +357,7 @@ function showWindow(): void {
     win.show()
     win.focus()
     // The user may have started a server since the page was shown.
-    if (serversPage && 'error' in serversPage) void openWindow()
+    if (serversPage?.error) void openWindow()
     return
   }
   // The window was destroyed (e.g. a renderer crash).
@@ -481,9 +538,9 @@ const serverSwitchDeps: ServerSwitchDeps = {
 }
 
 /**
- * Answer `channel` for the Servers page alone: the main window's top frame
- * showing a `data:` page, which only the shell loads, since the window
- * follows no navigation a page starts off its origin. No server's page may
+ * Answer `channel` for the Servers page alone: the top frame of its view
+ * showing a `data:` page, which only the shell loads, since the view
+ * follows no navigation. No server's page may
  * switch servers or drive this Mac's, so a remote server cannot move the
  * machine onto one it chooses, nor a port forwarded onto loopback pass for
  * one of this Mac's servers. Calls other than `reads` count as in flight
@@ -496,7 +553,7 @@ function handleFromServersPage<T>(
     let fromPage = false
     try {
       const frame = e.senderFrame
-      fromPage = e.sender === win?.webContents && frame?.parent === null && frame.url.startsWith('data:')
+      fromPage = e.sender === pageView?.view.webContents && frame?.parent === null && frame.url.startsWith('data:')
     } catch {
       // The frame is gone.
     }

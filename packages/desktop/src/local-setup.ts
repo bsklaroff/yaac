@@ -153,7 +153,7 @@ function trustedTaps(scope: ServerScope): TrustedTap[] {
  */
 export function setupConfirmation(scope: ServerScope): { message: string, detail: string } {
   return {
-    message: scope === 'server' ? 'Set up a containerless server on this Mac?' : 'Set up a local Kubernetes cluster on this Mac?',
+    message: scope === 'server' ? 'Set up a containerless server on this Mac?' : 'Set up a local kubernetes cluster on this Mac?',
     detail: [
       trustSentence(trustedTaps(scope)),
       'These commands run, skipping any that are already done:',

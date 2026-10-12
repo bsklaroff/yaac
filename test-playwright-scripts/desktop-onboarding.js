@@ -27,6 +27,10 @@
  *  7. Quitting during a setup asks first, then cancels it: the hanging
  *     `yaac server start`'s child is gone once the app has exited.
  *
+ * The Servers page renders in its own view laid over the window's page, so
+ * the script drives it through that view's page and the SPA through the
+ * window's.
+ *
  * The native confirmation before each setup is answered from the main
  * process (declined once, then accepted), since Playwright cannot click a
  * native dialog.
@@ -124,6 +128,16 @@ async function closeApp(app) {
   }
 }
 
+/** The Servers page's view, once it shows its page. */
+async function waitForPicker(app) {
+  for (const end = Date.now() + 30_000; ; await new Promise((r) => setTimeout(r, 250))) {
+    for (const page of app.windows()) {
+      if (await page.evaluate(() => document.querySelector('#add') !== null).catch(() => false)) return page
+    }
+    if (Date.now() > end) throw new Error('timed out waiting for the Servers page')
+  }
+}
+
 async function shot(win, name) {
   await win.screenshot({ path: path.join(SHOTS, `desktop-onboarding-${name}.png`) })
   console.log(`    screenshot -> ${SHOTS}/desktop-onboarding-${name}.png`)
@@ -154,47 +168,49 @@ async function main() {
   const dialogs = () => app.evaluate(() => globalThis.dialogs)
   try {
     console.log('1. no yaac on PATH → the Servers page leads with both setups')
-    await until(win, () => document.querySelector('#choice-server') !== null, null, 30_000)
-    const body = await win.textContent('body')
+    let page = await waitForPicker(app)
+    page.on('pageerror', (err) => console.error(`    [page error] ${err.message}`))
+    await until(page, () => document.querySelector('#choice-server') !== null, null, 30_000)
+    const body = await page.textContent('body')
     check('offers the containerless setup', body.includes('Local containerless server'))
-    check('offers the cluster setup', body.includes('Local Kubernetes cluster'))
+    check('offers the cluster setup', body.includes('Local kubernetes cluster'))
     check('shows the containerless commands',
-      (await win.textContent('#commands-server')).includes('brew install bsklaroff/yaac/yaac-server'))
-    check('shows the cluster commands', (await win.textContent('#commands-cluster')).includes('yaac cluster install'))
-    const clusterOn = !(await win.isDisabled('button.setup[data-scope="cluster"]'))
+      (await page.textContent('#commands-server')).includes('brew install bsklaroff/yaac/yaac-server'))
+    check('shows the cluster commands', (await page.textContent('#commands-cluster')).includes('yaac cluster install'))
+    const clusterOn = !(await page.isDisabled('button.setup[data-scope="cluster"]'))
     const supported = process.platform === 'darwin' && process.arch === 'arm64'
     check(`the cluster setup is ${supported ? 'enabled' : 'disabled'} here`, clusterOn === supported)
-    await shot(win, '1-choices')
+    await shot(page, '1-choices')
 
     console.log('\n2. Copy commands')
-    await win.click('button.copy[data-scope="server"]')
-    await until(win, () => document.getElementById('status')?.textContent === 'Copied.', null, 5000)
+    await page.click('button.copy[data-scope="server"]')
+    await until(page, () => document.getElementById('status')?.textContent === 'Copied.', null, 5000)
     const copied = await app.evaluate(({ clipboard }) => clipboard.readText())
     check('the clipboard holds the commands', copied.startsWith('brew trust bsklaroff/yaac'), copied)
 
     console.log('\n3. a declined confirmation runs nothing; a hanging brew install → progress, then Cancel')
     await app.evaluate(() => { globalThis.answer = 0 })
-    await win.click('button.setup[data-scope="server"]')
-    await until(win, () => /not started/.test(document.getElementById('status')?.textContent ?? ''), null, 10_000)
+    await page.click('button.setup[data-scope="server"]')
+    await until(page, () => /not started/.test(document.getElementById('status')?.textContent ?? ''), null, 10_000)
     const asked = (await dialogs())[0] ?? ''
     check('the confirmation names the tap it trusts', asked.includes('trusts the Homebrew tap bsklaroff/yaac'), asked)
     check('declining ran no command', !fs.existsSync(CALLS))
     await app.evaluate(() => { globalThis.answer = 1 })
     fs.writeFileSync(SLOW, '')
-    await win.click('button.setup[data-scope="server"]')
-    await until(win, () => /Fetching/.test(document.getElementById('run-log')?.textContent ?? ''), null, 30_000)
-    check('the trust step ran', (await stepStates(win))[0].startsWith('done'), (await stepStates(win))[0])
-    check('the install step is running', (await stepStates(win))[1].startsWith('running'))
-    check('the other setup is off meanwhile', await win.isDisabled('button.setup[data-scope="server"]'))
-    await shot(win, '3-running')
-    await win.click('#run-cancel')
-    await until(win, () => document.getElementById('run-title')?.textContent === 'Setup cancelled', null, 15_000)
-    check('the install step is cancelled', (await stepStates(win))[1].startsWith('cancelled'))
-    await shot(win, '3-cancelled')
+    await page.click('button.setup[data-scope="server"]')
+    await until(page, () => /Fetching/.test(document.getElementById('run-log')?.textContent ?? ''), null, 30_000)
+    check('the trust step ran', (await stepStates(page))[0].startsWith('done'), (await stepStates(page))[0])
+    check('the install step is running', (await stepStates(page))[1].startsWith('running'))
+    check('the other setup is off meanwhile', await page.isDisabled('button.setup[data-scope="server"]'))
+    await shot(page, '3-running')
+    await page.click('#run-cancel')
+    await until(page, () => document.getElementById('run-title')?.textContent === 'Setup cancelled', null, 15_000)
+    check('the install step is cancelled', (await stepStates(page))[1].startsWith('cancelled'))
+    await shot(page, '3-cancelled')
 
     console.log('\n4. run again → skips the trust, installs, starts, lands')
     fs.rmSync(SLOW)
-    await win.click('button.setup[data-scope="server"]')
+    await page.click('button.setup[data-scope="server"]')
     await until(win, () => location.protocol === 'http:', null, 120_000)
     const origin = JSON.parse(fs.readFileSync(path.join(CLIENT_DIR, 'server.json'), 'utf8')).url
     check('landed on the new server', (await win.evaluate(() => location.origin)) === origin, origin)
@@ -207,14 +223,15 @@ async function main() {
     // The SPA may still be rendering just after the landing.
     await serversButton.waitFor({ timeout: 15_000 })
     await serversButton.click()
-    await until(win, () => document.querySelector('#add') !== null, null, 15_000)
-    const text = await win.textContent('#install-server')
-    check('lists the containerless server as running', /Local containerless server \(http[^)]*\)\s*selected\s*Running/.test(text), text.trim())
-    check('offers to stop it', (await win.locator('button.stop[data-scope="server"]').count()) === 1)
-    const cluster = await win.textContent('#install-cluster')
+    page = await waitForPicker(app)
+    const text = await page.textContent('#install-server')
+    check('lists the containerless server as connected and running',
+      /✓\s*Local containerless server \(http[^)]*\)\s*Running/.test(text), text.trim())
+    check('offers to stop it', (await page.locator('button.stop[data-scope="server"]').count()) === 1)
+    const cluster = await page.textContent('#install-cluster')
     check(supported ? 'offers the cluster setup' : 'says the cluster needs Apple silicon',
       supported ? cluster.includes('Set up…') : cluster.includes('needs macOS on Apple silicon'))
-    await shot(win, '5-servers-page')
+    await shot(page, '5-servers-page')
 
     console.log('\n6. a server\'s page cannot change servers or drive this Mac\'s')
     // Serves a page that calls every bridge method and reports what came back.
@@ -241,7 +258,7 @@ async function main() {
       const proberOrigin = `http://127.0.0.1:${prober.address().port}`
       const brewCalls = fs.readFileSync(CALLS, 'utf8')
       const dialogCount = (await dialogs()).length
-      await win.evaluate((url) => window.yaacServer.addRemote(url), proberOrigin)
+      await page.evaluate((url) => window.yaacServer.addRemote(url), proberOrigin)
       await until(win, (o) => location.origin === o && document.title.startsWith('{'), proberOrigin, 30_000)
       const out = JSON.parse(await win.title())
       check('every call was refused', Object.values(out).every((v) => v === 'rejected'), JSON.stringify(out))
@@ -257,16 +274,16 @@ async function main() {
     // A server's page can still ask for the Servers page.
     const showServers = async () => {
       await win.evaluate(() => window.yaacWindow.showServers())
-      await until(win, () => document.querySelector('#add') !== null, null, 15_000)
+      return waitForPicker(app)
     }
-    await showServers()
-    await win.evaluate((url) => window.yaacServer.switchTo({ url }), origin)
+    page = await showServers()
+    await page.evaluate((url) => window.yaacServer.switchTo({ url }), origin)
     await until(win, (o) => location.origin === o, origin, 30_000)
-    await showServers()
+    page = await showServers()
     // This time `yaac server start` hangs.
     fs.rmSync(SLEEP_PID, { force: true })
     fs.writeFileSync(SLOW, '')
-    const begun = await win.evaluate(() => window.yaacServer.setupLocal('server'))
+    const begun = await page.evaluate(() => window.yaacServer.setupLocal('server'))
     check('the Servers page may start a setup', begun.ok === true, JSON.stringify(begun))
     for (const end = Date.now() + 30_000; !fs.existsSync(SLEEP_PID); await new Promise((r) => setTimeout(r, 200))) {
       if (Date.now() > end) throw new Error('the install never started')
@@ -277,7 +294,7 @@ async function main() {
     await app.evaluate(({ app: electronApp }) => electronApp.quit())
     await new Promise((r) => setTimeout(r, 1000))
     check('Quit asks first', /setup is still running/.test((await dialogs()).at(-1)), (await dialogs()).at(-1))
-    check('"Keep running" keeps the setup', (await win.evaluate(() => window.yaacServer.localState())).setup.phase === 'running')
+    check('"Keep running" keeps the setup', (await page.evaluate(() => window.yaacServer.localState())).setup.phase === 'running')
     await app.evaluate(() => { globalThis.answer = 1 })
     const exited = new Promise((r) => app.process().once('exit', r))
     await app.evaluate(({ app: electronApp }) => electronApp.quit())
