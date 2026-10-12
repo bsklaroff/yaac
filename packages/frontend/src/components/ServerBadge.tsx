@@ -12,14 +12,15 @@ export function serverLabel(origin: string): string {
 }
 
 /*
- * The SPA's two ways into the desktop shell's Servers page, where the app's
- * server is chosen. It belongs to the shell, so the server list stays
- * reachable when no server answers. Neither renders outside the shell, where
- * a tab is tied to the origin that served it.
+ * The SPA's two ways into a native shell's server list (the desktop app's
+ * Servers page, or the iPhone app's), where the app's server is chosen. It
+ * belongs to the shell, so the server list stays reachable when no server
+ * answers. Neither renders outside a shell, where a tab is tied to the
+ * origin that served it.
  */
 
 /**
- * Sidebar-header badge naming the connected server. The desktop app has no
+ * Sidebar-header badge naming the connected server. The native apps have no
  * address bar, and the window is loaded from the server, so
  * `location.origin` names it.
  */
@@ -45,10 +46,30 @@ export function ServerBadge(): JSX.Element | null {
   )
 }
 
-/** The rail's Servers button, above Settings. */
-export function ServersButton(): JSX.Element | null {
+/**
+ * The Servers button above Settings: 'rail' is the desktop rail's 40px chip;
+ * 'row' is the mobile project screen's full-width row, which also names the
+ * server, since the phone layout has no sidebar badge.
+ */
+export function ServersButton({ variant = 'rail' }: { variant?: 'rail' | 'row' } = {}): JSX.Element | null {
   const showServers = windowApi()?.showServers
   if (!showServers) return null
+  if (variant === 'row') {
+    return (
+      <button
+        onClick={() => showServers()}
+        aria-label="Servers"
+        className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm text-text-dim transition
+          active:bg-surface-2"
+      >
+        <ServerIcon size={18} className="shrink-0" />
+        <span>Servers</span>
+        <span className="min-w-0 flex-1 truncate text-right text-xs text-text-faint">
+          {serverLabel(window.location.origin)}
+        </span>
+      </button>
+    )
+  }
   return (
     <button
       onClick={() => showServers()}

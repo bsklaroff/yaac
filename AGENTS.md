@@ -50,6 +50,7 @@ array target, so `.tsx` would break).
 | `packages/shared` (`@yaac/shared`) | wire types + cross-cutting utils | nothing (type-only from others OK) |
 | `packages/test-utils` (`@yaac/test-utils`) | shared test helpers + fixtures | server, shared |
 | `k8s/proxy` (`yaac-proxy-sidecar`) | egress proxy sidecar | self only |
+| `ios/` (not a pnpm package) | the iPhone app: a server switcher around the webapp (ios/README.md), built with Xcode on a Mac | nothing |
 
 Boundaries are enforced by pnpm strict `node_modules` (an undeclared package
 won't resolve) plus eslint import-restriction zones scoped to `src/**`

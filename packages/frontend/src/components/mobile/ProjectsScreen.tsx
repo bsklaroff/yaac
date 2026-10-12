@@ -2,6 +2,7 @@ import type { JSX } from 'react'
 import { ChevronIcon, LoadingIcon, WarningIcon } from '#lib/icons'
 import { MobileHeader } from '#components/mobile/MobileHeader'
 import { NewProjectButton } from '#components/NewProjectButton'
+import { ServersButton } from '#components/ServerBadge'
 import { SettingsButton } from '#components/SettingsButton'
 import { UserSwitcher } from '#components/UserSwitcher'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -13,7 +14,8 @@ import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
  * The root mobile screen: a list of named project rows (the desktop rail's
- * letter chips need hover to show names), plus add-project and settings rows.
+ * letter chips need hover to show names), plus add-project, servers (in a
+ * native shell) and settings rows.
  * A project being added or removed (`ops`) shows a spinner or a warning, as
  * on the rail; with no projects at all it shows the welcome, or for a
  * teammate's empty list a plain empty state.
@@ -97,6 +99,7 @@ export function ProjectsScreen({
           <UserSwitcher variant="row" />
           {/* The welcome has its own Add project button. */}
           {!welcome && <NewProjectButton variant="row" />}
+          <ServersButton variant="row" />
           <SettingsButton variant="row" />
         </div>
       </div>

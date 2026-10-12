@@ -52,4 +52,14 @@ describe('ServersButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Servers' }))
     expect(showServers).toHaveBeenCalledOnce()
   })
+
+  it('as the phone layout\'s row, also names the server', () => {
+    const showServers = vi.fn()
+    inject({ showServers })
+    render(<ServersButton variant="row" />)
+    const row = screen.getByRole('button', { name: 'Servers' })
+    expect(row.textContent).toBe(`Servers${serverLabel(window.location.origin)}`)
+    fireEvent.click(row)
+    expect(showServers).toHaveBeenCalledOnce()
+  })
 })
