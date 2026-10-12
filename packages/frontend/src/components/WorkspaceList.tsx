@@ -309,6 +309,7 @@ export function WorkspaceList({
   const setStoppedExpanded = useUiStore((s) => s.setStoppedExpanded)
   const stoppedShownGroups = useUiStore((s) => s.stoppedShownGroups)
   const collapsedGroups = useUiStore((s) => s.collapsedGroups)
+  const setGroupCollapsed = useUiStore((s) => s.setGroupCollapsed)
   const statuses = useUiStore((s) => s.sidebarStatuses)
   const selectedId = useUiStore((s) => s.selectedWorkspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
@@ -369,20 +370,48 @@ export function WorkspaceList({
   const ownedDeaths = groups.filter((g) => owning.has(g.groupId)).reduce((n, g) => n + g.unseenDeaths, 0)
 
   // The open workspace, in whichever form it is listed. A plain stopped one
-  // is looked up only while narrowed, under the same key App uses, and
-  // whether the Stopped list's search matches it is the server's answer.
+  // is looked up once the snapshot is in (`project`), under the same key App
+  // uses, so this costs no fetch, and whether the Stopped list's search
+  // matches it is the server's answer.
   const selectedLive = workspaces.find((w) => w.workspaceId === selectedId)
   const selectedProvisioning = provisioning.find((p) => p.workspaceId === selectedId)
   const selectedHeld = held.find((h) => h.workspaceId === selectedId)
   const version = String(project?.stoppedCount ?? 0)
   const selectedStopped = useStoppedEntry(projectId, selectedId, {
-    enabled: narrowed && !selectedLive && !selectedProvisioning && !selectedHeld,
+    enabled: project !== undefined && !selectedLive && !selectedProvisioning && !selectedHeld,
     version,
   }).entry
   const stoppedMatch = useStoppedMatch(projectId, selectedId, serverQuery, {
     enabled: searching && stoppedShown && selectedStopped !== undefined,
     version,
   })
+
+  // Open the section holding the open workspace's row, its group or the
+  // Stopped section, so the pane never shows a workspace whose row is folded
+  // away (say one that stopped while another server was in view). This runs
+  // when the row lands somewhere new, not on every render, so a section the
+  // user collapses afterwards stays collapsed. Under a search or filter a
+  // stopped selection is already on screen, held open in the Stopped list or
+  // pinned as "Open in pane", so nothing is opened or recorded: a ghost row
+  // the narrowing moved there returns to its group once it clears.
+  const selectedRow = selectedLive ?? selectedProvisioning ?? selectedHeld
+  const revealTarget = selectedRow?.groupId !== undefined ? `group:${selectedRow.groupId}`
+    : selectedStopped && !owning.has(selectedStopped.groupId ?? '') ? 'stopped' : null
+  const revealed = useRef<string | null>(null)
+  useEffect(() => {
+    const key = `${selectedId ?? ''} ${revealTarget ?? ''}`
+    if (revealed.current === key || (revealTarget === 'stopped' && narrowed)) return
+    revealed.current = key
+    if (revealTarget === 'stopped') setStoppedExpanded(true)
+    else if (revealTarget !== null) setGroupCollapsed(revealTarget.slice('group:'.length), false)
+  }, [selectedId, revealTarget, narrowed, setStoppedExpanded, setGroupCollapsed])
+  // A stopped selection the Stopped section lists, but on a page not loaded
+  // yet, is pinned to the section's top until its page loads. A search's
+  // placeholder rows are another query's, so it waits for its own.
+  const pinned = revealTarget === 'stopped' && stoppedOpen && stopped.total !== undefined
+    && (!searching || (stoppedMatch === true && !stopped.settling))
+    && !stopped.entries.some((e) => e.workspaceId === selectedId) ? selectedStopped : undefined
+  const stoppedList = pinned ? { ...stopped, entries: [pinned, ...stopped.entries] } : stopped
 
   // So a stop from a row's menu can select the next row.
   const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
@@ -665,7 +694,7 @@ export function WorkspaceList({
               unseenDeaths={Math.max(0, (project?.unseenDeaths ?? 0) - ownedDeaths)}
               expanded={stoppedOpen}
               {...(stoppedHeldOpen ? {} : { onExpandedChange: setStoppedExpanded })}
-              list={stopped}
+              list={stoppedList}
             />
           )}
         </div>

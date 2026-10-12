@@ -166,7 +166,8 @@ export function stoppedSectionCount(
  * project finds nothing, since the pane's read-only state follows the
  * project being viewed. `pending` while that first fetch runs with nothing
  * to show. `version` refetches it when the project's stops change (it may
- * have been restarted and stopped again).
+ * have been restarted and stopped again), keeping the previous answer
+ * meanwhile.
  */
 export function useStoppedEntry(
   projectId: string | null,
@@ -183,7 +184,11 @@ export function useStoppedEntry(
       query: { project: projectId ?? '', workspace: workspaceId ?? '' },
     })).entries[0] ?? null,
     enabled,
-    placeholderData: () => cachedEntry(queryClient, projectId ?? '', workspaceId ?? ''),
+    // The same workspace's previous answer stands while a new version
+    // loads, so a stop elsewhere doesn't blank it.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === projectId && prevQuery.queryKey[2] === workspaceId
+      ? prev
+      : undefined) ?? cachedEntry(queryClient, projectId ?? '', workspaceId ?? ''),
   })
   if (!enabled) return { entry: undefined, pending: false }
   return { entry: data ?? optimistic, pending: isLoading && optimistic === undefined }
