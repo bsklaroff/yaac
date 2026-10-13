@@ -9,6 +9,7 @@ import {
   deleteWorkspaceAgentSessions,
   listUncapturedStoppedSessions,
   listWorkspaceAgentSessions,
+  openingPrompt,
   recordAgentSessions,
 } from '#db/agent-session-store'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
@@ -156,6 +157,33 @@ describe('recordedConversationHandles', () => {
       { handle: '%0', agentSessionId: 'conv-a' },
       { handle: '%2', agentSessionId: 'conv-c' },
     ])
+  })
+})
+
+describe('openingPrompt', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  // A first conversation that captured nothing (a chat tab left blank, or a
+  // claimed spare's warm-time conversation) must not hide a later one's.
+  it('is the earliest message any conversation opened with', async () => {
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', agentSessionId: 'conv-blank' },
+      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'port the lexer' },
+      { tool: 'claude', agentSessionId: 'conv-b', firstPrompt: 'a side question' },
+    ])
+
+    expect(openingPrompt(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1'))).toBe('port the lexer')
+    expect(openingPrompt([])).toBeUndefined()
   })
 })
 

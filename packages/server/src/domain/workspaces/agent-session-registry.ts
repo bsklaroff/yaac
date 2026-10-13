@@ -2,6 +2,7 @@ import { catalogModel, modelEfforts } from '#domain/auth'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { isWorkspaceTerminating, liveAgents } from '#runtime/status'
 import {
+  acpConversation,
   acpRecord,
   getAgentSessionFirstMessage,
   getCodexRolloutSettings,
@@ -20,6 +21,7 @@ import {
   listWorkspaceAgentSessions,
 } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
+import { claiming } from './prewarm'
 import { recordedTranscript } from './agent-session-paths'
 import { serverLog } from '#log'
 import type { AgentSessionLinkRow, CapturedSession, DiscoveredSession, WorkspaceRow } from '#db'
@@ -39,13 +41,17 @@ import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
  *
  * Runs on the reconciler tick so `workspace list` and restart see the record
  * even with no client watching. Stopped and stopping workspaces are skipped:
- * their active set is frozen, and it is what restart resumes. So are spares:
- * a spare's warm-time agent is not the claimant's conversation, and
- * recording it would make a later restart resume the wrong one.
+ * their active set is frozen, and it is what restart resumes. So are spares,
+ * and spares mid-claim: a spare's warm-time agent is not the claimant's
+ * conversation, and recording it would make a later restart resume the wrong
+ * one. A claim that respawns the agent ends that conversation, which stays
+ * registered until its stream is seen closing, so under acp the claim's
+ * hand-over runs the first pass itself once the new conversation is named.
  */
 export async function reconcileAgentSessions(view: RuntimeSnapshot): Promise<void> {
   const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed
-    && !p.terminating && p.projectId && p.workspaceId && !isWorkspaceTerminating(p.workspaceId))
+    && !claiming.has(p.jobName) && !p.terminating && p.projectId && p.workspaceId
+    && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (pod) => {
     try {
       await reconcileWorkspaceAgentSessions(pod.projectId, pod.workspaceId, pod.mode, pod.jobName)
@@ -89,10 +95,18 @@ export async function reconcileWorkspaceAgentSessions(
   // Skip agents that have not named their conversation yet (ACP handshake in
   // flight, codex/opencode before the first turn); recording them by handle
   // would create a phantom row the real one could never replace.
+  //
+  // Also skip an unrecorded acp conversation whose stream is gone, until it
+  // reattaches. The live set keeps naming an ended one until the window's
+  // next agent attaches, so without this a claimed spare's warm-time
+  // conversation, ended by the claim's respawn, could be recorded as the
+  // workspace's first if the hand-over gave up waiting.
   const live = await Promise.all(observed.flatMap((a) => {
     const agentSessionId = a.agentSessionId
     if (agentSessionId === undefined) return []
     const recorded = links.find((l) => l.tool === a.tool && l.agentSessionId === agentSessionId)
+    if (recorded === undefined && mode === 'acp'
+      && acpConversation(projectId, workspaceId, agentSessionId) === undefined) return []
     return [describe(projectId, workspaceId, mode, jobName, a, agentSessionId, recorded)]
   }))
   if (live.length > 0) {

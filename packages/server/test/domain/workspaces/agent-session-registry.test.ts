@@ -14,8 +14,11 @@ import {
 import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { applyWorkspaceEvent } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
+import { claiming } from '#domain/workspaces/prewarm'
 import { getWorkspaceRow, recordWorkspaceCreated, recordWorkspaceLife, setWorkspacePermissionMode } from '#db/workspace-store'
 import { _resetCodexRolloutReadsForTests } from '#runtime/agents/codex'
+import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
+import type { AcpConversation } from '#runtime/agents/acp-client'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '@yaac/test-utils/fake-driver'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import type { LiveAgent } from '#runtime/agents'
@@ -46,6 +49,7 @@ describe('reconcileAgentSessions', () => {
     _resetPromptCaptureForTests()
     _resetReportedModesForTests()
     _resetCodexRolloutReadsForTests()
+    _resetAcpRegistryForTests()
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
     await recordWorkspaceLife(DEMO_PROJECT_ID, 'wt-1')
   })
@@ -65,6 +69,11 @@ describe('reconcileAgentSessions', () => {
   const live = (agents: LiveAgent[]): void => {
     setWorkspaceStreamHealth(DEMO_PROJECT_ID, 'wt-1', true)
     setLiveAgents(DEMO_PROJECT_ID, 'wt-1', agents)
+  }
+
+  /** Mark an acp conversation's stream as connected, as its driver does. */
+  const connected = (handle: string, agentSessionId: string): void => {
+    registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle, agentSessionId }, {} as AcpConversation)
   }
 
   /** Write a claude transcript opening with `firstMessage`; return a pane
@@ -268,12 +277,19 @@ describe('reconcileAgentSessions', () => {
       '',
     ].join('\n'))
     // claude's adapter reports its picker's model name; the row stores the
-    // matching catalog id. A second conversation has no id yet and is not
-    // recorded.
+    // matching catalog id. A second conversation has no id yet, and a third
+    // is still named though its stream is gone (a respawned spare's warm
+    // conversation): neither is recorded.
     live([
       { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1', model: 'opus[1m]', modelName: 'Opus 5.5' },
       { handle: 'claude-2', tool: 'claude' },
+      { handle: 'claude-3', tool: 'claude', agentSessionId: 'acp-ended' },
     ])
+    // Nor is acp-1 while its stream is down (a reconnect, or a server
+    // restart before the reattach); it is recorded once the stream attaches.
+    await sweep({ mode: 'acp' })
+    expect(await rows()).toEqual([])
+    connected('claude', 'acp-1')
     await sweep({ mode: 'acp' })
 
     // The handle is the acpd window a restart uses to find the conversation.
@@ -282,6 +298,27 @@ describe('reconcileAgentSessions', () => {
     expect(link).toMatchObject({ mode: 'acp', firstPrompt: 'ship the thing', model: 'claude-opus-5-5' })
     expect(link?.transcriptPath).toBeUndefined()
     expect(link?.lastActiveAt).toBeInstanceOf(Date)
+
+    // A recorded conversation whose stream drops stays active until the
+    // live set stops naming it.
+    _resetAcpRegistryForTests()
+    await sweep({ mode: 'acp' })
+    expect(await rows()).toEqual([['acp-1', true, 'claude']])
+  })
+
+  // A claim that respawns the agent ends the warm conversation, which stays
+  // registered until its stream is seen closing. The hand-over records the
+  // claimant's conversation itself.
+  it('records nothing for a spare mid-claim', async () => {
+    live([{ handle: 'claude', tool: 'claude', agentSessionId: 'acp-warm' }])
+    connected('claude', 'acp-warm')
+    claiming.add('yaac-demo-wt-1')
+    try {
+      await sweep({ mode: 'acp' })
+    } finally {
+      claiming.delete('yaac-demo-wt-1')
+    }
+    expect(await rows()).toEqual([])
   })
 
   it('fails the step without reporting anything when the cluster is unreachable', async () => {

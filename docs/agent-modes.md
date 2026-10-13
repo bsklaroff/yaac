@@ -533,8 +533,13 @@ runs while it warms and a claim usually finds the conversation already named.
 A respawn (a claim switching tool, model or posture, or a spare moved to a
 new base tip) replaces the agent, and its old conversation stays registered
 until its stream is seen closing. So the hand-over reads the window's pane
-pid and waits only for a conversation attached to that process. Either way
-the placeholder hides the spare so it is never listed twice. A spare's
+pid and waits only for a conversation attached to that process. The sweep
+skips a spare mid-claim, leaving that first pass to the hand-over, and
+records a new acp conversation only while its stream is connected: the live
+set keeps naming an ended conversation until the window's next agent
+attaches, and recording it would put a never-prompted conversation first.
+A conversation skipped for a dropped stream is recorded once it reattaches.
+Either way the placeholder hides the spare so it is never listed twice. A spare's
 conversation has no row until it is claimed, so a reattach after a server
 restart takes its id from the pane option `@yaac-acp-session`, which the
 connection sets to `<pane pid>:<id>` when `session/new` answers; the pid

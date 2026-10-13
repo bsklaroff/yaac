@@ -468,10 +468,9 @@ export async function deleteWorkspaceAgentSessions(
 }
 
 /**
- * A workspace's first conversation, whose tool the workspace runs and whose
- * opening message labels it. Create records it just after the workspace row,
- * so it can be missing (briefly, or for good if the create died); callers
- * handle undefined.
+ * A workspace's first conversation, whose tool the workspace runs. Create
+ * records it just after the workspace row, so it can be missing (briefly, or
+ * for good if the create died); callers handle undefined.
  */
 export async function firstAgentSession(
   projectId: string,
@@ -481,16 +480,12 @@ export async function firstAgentSession(
   return first
 }
 
-/** The first conversation of each named workspace, keyed `<projectId>/<id>`, in
- *  one query for listings. */
-export async function firstAgentSessionsFor(
-  workspaces: Array<{ projectId: string; workspaceId: string }>,
-): Promise<Map<string, AgentSessionLinkRow>> {
-  const byWorkspace = await getAgentSessionsFor(workspaces)
-  const firsts = new Map<string, AgentSessionLinkRow>()
-  for (const [k, links] of byWorkspace) {
-    const first = links[0]
-    if (first !== undefined) firsts.set(k, first)
-  }
-  return firsts
+/**
+ * The message that labels a workspace: the opening message of its first
+ * conversation, in ordinal order (`links`), that captured one. The first
+ * conversation can have none, e.g. a chat tab left blank while the user
+ * typed in another one.
+ */
+export function openingPrompt(links: AgentSessionLinkRow[]): string | undefined {
+  return links.find((l) => l.firstPrompt !== undefined)?.firstPrompt
 }
