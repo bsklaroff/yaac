@@ -151,3 +151,25 @@ describe('workspace death read-marks', () => {
     expect(res.status).toBe(400)
   })
 })
+
+describe('workspace waiting read-marks', () => {
+  // Nothing watches this workspace, so it reads as waiting in a spell with
+  // no stamp, which a mark names as 0.
+  it('marks the spell the request names, and 404s a workspace with no row', async () => {
+    await recordWorkspaceCreated({ projectId: ONE, workspaceId: 'waiting-1' })
+    const waitingSinceMs = 0
+
+    const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+    const res = await client.workspace['mark-waiting-seen'].$post({
+      json: { projectId: ONE, workspaceId: 'waiting-1', waitingSinceMs },
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ marked: true })
+    expect((await listWorkspaceRows(ONE)).find((r) => r.workspaceId === 'waiting-1')?.waitingSeen).toBe(true)
+
+    const ghost = await client.workspace['mark-waiting-seen'].$post({
+      json: { projectId: ONE, workspaceId: 'ghost', waitingSinceMs },
+    })
+    expect(ghost.status).toBe(404)
+  })
+})

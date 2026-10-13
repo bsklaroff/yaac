@@ -161,6 +161,12 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
  * Every stop sets `stoppedAt`; `deathReason`/`deathDetail` are set only when
  * the stale reaper (not the user) stopped it. `deathSeen` records whether the
  * user viewed that detail (the "Stopped workspaces" dot).
+ *
+ * `waitingSeen` records whether the user has viewed the workspace's current
+ * waiting spell, so the sidebar's unread dot is shared by every client. It is
+ * cleared when the workspace goes back to work rather than keyed on the
+ * spell's start, since spell starts are server memory and restamp on a
+ * server restart.
  */
 export const workspaces = snakeCase.table('workspaces', {
   projectId: uuid().notNull(),
@@ -182,6 +188,7 @@ export const workspaces = snakeCase.table('workspaces', {
   deathReason: text().$type<WorkspaceDeathReason>(),
   deathDetail: text(),
   deathSeen: boolean().notNull().default(false),
+  waitingSeen: boolean().notNull().default(false),
   /**
    * An unclaimed prewarmed spare: a checkout and runtime not yet handed to
    * anyone. Listings and the reaper's desired set exclude it; a claim clears

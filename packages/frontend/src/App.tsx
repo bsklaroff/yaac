@@ -9,7 +9,7 @@ import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
 import { ownedBy, useReadOnly, useViewedUserId, whoamiQuery } from './lib/viewer'
 import {
-  mergeProvisioning, persistSelection, resolveVacantSelection,
+  isUnreadWaiting, mergeProvisioning, persistSelection, resolveVacantSelection,
   shortcutsSuspended, unreadWaitingByProject, useUiStore,
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
@@ -23,7 +23,7 @@ import { ProjectsScreen } from './components/mobile/ProjectsScreen'
 import { WorkspacesScreen } from './components/mobile/WorkspacesScreen'
 import { goBackScreen, useMobileHistory } from './lib/mobileHistory'
 import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
-import { newlyWaiting, waitingKeys } from '@yaac/shared/waiting'
+import { newlyWaiting, waitingKey, waitingKeys } from '@yaac/shared/waiting'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
 import { CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
@@ -122,9 +122,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const autoSelectWorkspace = useUiStore((s) => s.autoSelectWorkspace)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const mobileScreen = useUiStore((s) => s.mobileScreen)
-  const readWaiting = useUiStore((s) => s.readWaiting)
-  const markWaitingRead = useUiStore((s) => s.markWaitingRead)
-  const syncWaitingRead = useUiStore((s) => s.syncWaitingRead)
+  const markWaitingSeen = useUiStore((s) => s.markWaitingSeen)
   const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
   const projectOps = useUiStore((s) => s.projectOps)
   const settleProjectOps = useUiStore((s) => s.settleProjectOps)
@@ -292,23 +290,26 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
   }, [activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
-  // Viewing a waiting workspace marks its current waiting spell as read,
-  // whether it was selected while waiting or started waiting while open.
+  // Viewing a waiting workspace marks its spell read on the server, whether
+  // it was selected while waiting or started waiting while open. Only the
+  // owner marks. A spell whose mark failed or was refused (it had already
+  // ended) is not sent again this page load, so a write whose next snapshot
+  // shows it unread cannot loop; one the server accepted may be re-marked.
+  const markingSpells = useRef(new Set<string>())
   useEffect(() => {
-    if (!selectedWorkspaceId) return
+    if (!selectedWorkspaceId || readOnly) return
     const open = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
-    if (open?.status === 'waiting') markWaitingRead(selectedWorkspaceId, open.waitingSinceMs ?? 0)
-  }, [selectedWorkspaceId, workspaces, markWaitingRead])
-
-  // Drop read marks whose waiting spell has ended. Skipped until the first
-  // snapshot, since syncing against the empty fallback would wipe every
-  // restored mark on reload.
-  useEffect(() => {
-    if (!all) return
-    syncWaitingRead(all.workspaces
-      .filter((s) => s.status === 'waiting')
-      .map((s) => ({ workspaceId: s.workspaceId, waitingSinceMs: s.waitingSinceMs ?? 0 })))
-  }, [all, syncWaitingRead])
+    if (!open || !isUnreadWaiting(open)) return
+    const spell = waitingKey(open)
+    if (markingSpells.current.has(spell)) return
+    markingSpells.current.add(spell)
+    markWaitingSeen(open.workspaceId)
+    void api.workspace['mark-waiting-seen'].$post({
+      json: { projectId: open.projectId, workspaceId: open.workspaceId, waitingSinceMs: open.waitingSinceMs ?? 0 },
+    }).then(({ marked }) => {
+      if (marked) markingSpells.current.delete(spell)
+    }).catch(() => {})
+  }, [selectedWorkspaceId, readOnly, workspaces, markWaitingSeen])
 
   // Drop chat drafts for workspaces that no longer exist (same first-snapshot
   // guard as above). Provisioning ids count as live because a restarting
@@ -321,7 +322,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     ])
   }, [all, optimisticProvisioning, syncChatDrafts])
 
-  const attention = unreadWaitingByProject(workspaces, readWaiting, pendingDeleteIds)
+  const attention = unreadWaitingByProject(workspaces, pendingDeleteIds)
 
   // What replaces the sidebar and pane when there is no project to show.
   const placeholder = projectOp

@@ -53,8 +53,8 @@ export interface WorkspaceStatusEntry {
   liveAgents?: LiveAgent[]
   /**
    * Waiting-spell start for a workspace whose connection is up but whose
-   * agent is not classified yet (still booting), so clients keying unread
-   * marks on the spell have something to key on.
+   * agent is not classified yet (still booting), so clients keying alerts
+   * on the spell (the chime, desktop notifications) have something to key on.
    */
   attachedWaitingSinceMs?: number
 }
@@ -66,6 +66,7 @@ const terminals = new Map<string, WorkspaceTerminalEntry[]>()
 
 let liveAgentsListener: (() => void) | null = null
 let streamHealthLostListener: (() => void) | null = null
+let waitingEndedListener: ((projectId: string, workspaceId: string) => void) | null = null
 
 function key(projectId: string, workspaceId: string): string {
   return `${projectId}/${workspaceId}`
@@ -96,6 +97,18 @@ export function onLiveAgentsChanged(fn: () => void): void {
   liveAgentsListener = fn
 }
 
+/**
+ * Register the handler fired when the workspace's waiting spell ends, which
+ * makes its next one unread (`settleStatus` says when). A workspace with no
+ * entry reads as `waiting`, so an agent found mid-turn after a server
+ * restart fires this while one idle across it does not. Another
+ * conversation's turn does not fire it while the spell's own conversation
+ * still waits. Single listener.
+ */
+export function onWaitingEnded(fn: (projectId: string, workspaceId: string) => void): void {
+  waitingEndedListener = fn
+}
+
 function entry(k: string): WorkspaceStatusEntry {
   const existing = store.get(k)
   if (existing) return existing
@@ -113,6 +126,49 @@ function needsUser(status: AgentStatus | undefined): boolean {
   return status === 'waiting' || status === 'asking'
 }
 
+/**
+ * Start of the earliest classified conversation's waiting spell. Leaves out
+ * the attach-time stamp, which every first classification replaces, so a
+ * server restart does not read as a spell ending.
+ */
+function classifiedSpell(e: WorkspaceStatusEntry | undefined): number | undefined {
+  let earliest: number | undefined
+  for (const a of e?.agents.values() ?? []) {
+    if (!needsUser(a.status) || a.waitingSinceMs === undefined) continue
+    if (earliest === undefined || a.waitingSinceMs < earliest) earliest = a.waitingSinceMs
+  }
+  return earliest
+}
+
+/** What a write is compared against, to tell whether it ended a spell. */
+interface StatusMark {
+  status: AgentStatus
+  spell: number | undefined
+}
+
+function statusMark(projectId: string, workspaceId: string): StatusMark {
+  return {
+    status: readWorkspaceStatus(projectId, workspaceId),
+    spell: classifiedSpell(store.get(key(projectId, workspaceId))),
+  }
+}
+
+/**
+ * The workspace's status after a write, firing `onWaitingEnded` if the
+ * write ended its waiting spell. That is either the workspace going from
+ * needing the user to work, or its spell's start moving because the
+ * conversation that began it stopped waiting (it went to work or closed)
+ * while another still waits, whose reply nobody has necessarily seen.
+ */
+function settleStatus(projectId: string, workspaceId: string, before: StatusMark): AgentStatus {
+  const after = statusMark(projectId, workspaceId)
+  if ((needsUser(before.status) && !needsUser(after.status))
+    || (before.spell !== undefined && after.spell !== before.spell)) {
+    waitingEndedListener?.(projectId, workspaceId)
+  }
+  return after.status
+}
+
 /** Statuses from most to least pressing; the aggregate takes the first. */
 const STATUS_PRECEDENCE: readonly AgentStatus[] = ['asking', 'waiting', 'running', 'background']
 
@@ -128,19 +184,14 @@ export function readWorkspaceStatus(projectId: string, workspaceId: string): Age
 /**
  * Start of the workspace's current waiting spell (epoch ms), or undefined
  * while nothing needs the user. The earliest such conversation wins, so a
- * second agent going idle or asking does not reset a client's per-spell
- * read mark, and answering it does not bring back a spell already seen.
+ * second agent going idle or asking does not alert again, and answering it
+ * does not bring back a spell already alerted on.
  */
 export function readWorkspaceWaitingSince(projectId: string, workspaceId: string): number | undefined {
   const e = store.get(key(projectId, workspaceId))
   if (!e) return undefined
-  let earliest: number | undefined
-  for (const a of e.agents.values()) {
-    if (!needsUser(a.status) || a.waitingSinceMs === undefined) continue
-    if (earliest === undefined || a.waitingSinceMs < earliest) earliest = a.waitingSinceMs
-  }
   // Nothing classified yet: the spell started when the connection attached.
-  return earliest ?? (e.agents.size === 0 ? e.attachedWaitingSinceMs : undefined)
+  return classifiedSpell(e) ?? (e.agents.size === 0 ? e.attachedWaitingSinceMs : undefined)
 }
 
 /** One conversation's status, for the per-agent dot on its tab. */
@@ -183,7 +234,7 @@ export function setAgentStatus(
   status: AgentStatus,
 ): void {
   const k = key(projectId, workspaceId)
-  const before = readWorkspaceStatus(projectId, workspaceId)
+  const before = statusMark(projectId, workspaceId)
   const hadEntry = store.has(k)
   const wasHealthy = store.get(k)?.streamHealthy ?? false
   const e = entry(k)
@@ -209,8 +260,8 @@ export function setAgentStatus(
   const entryChanged = !prev
     || prev.status !== status
     || prev.waitingSinceMs !== waitingSinceMs
-  if (entryChanged || !hadEntry || !wasHealthy
-    || readWorkspaceStatus(projectId, workspaceId) !== before) {
+  const after = settleStatus(projectId, workspaceId, before)
+  if (entryChanged || !hadEntry || !wasHealthy || after !== before.status) {
     notifyWorkspaceListChanged()
   }
 }
@@ -221,7 +272,7 @@ export function setAgentStatus(
  */
 export function setLiveAgents(projectId: string, workspaceId: string, agents: LiveAgent[]): void {
   const k = key(projectId, workspaceId)
-  const before = readWorkspaceStatus(projectId, workspaceId)
+  const before = statusMark(projectId, workspaceId)
   const e = entry(k)
   const next = new Set(agents.map((a) => a.handle))
   const previous = e.liveAgents
@@ -238,7 +289,8 @@ export function setLiveAgents(projectId: string, workspaceId: string, agents: Li
   // (the registry joins against them), so a new ACP conversation becomes a
   // row without waiting for the resync.
   if (changed) liveAgentsListener?.()
-  if (changed || readWorkspaceStatus(projectId, workspaceId) !== before) notifyWorkspaceListChanged()
+  const after = settleStatus(projectId, workspaceId, before)
+  if (changed || after !== before.status) notifyWorkspaceListChanged()
 }
 
 /**
@@ -301,4 +353,5 @@ export function _resetWorkspaceStatusStoreForTests(): void {
   terminals.clear()
   liveAgentsListener = null
   streamHealthLostListener = null
+  waitingEndedListener = null
 }

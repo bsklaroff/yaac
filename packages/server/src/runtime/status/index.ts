@@ -30,6 +30,7 @@ export {
   liveAgents,
   onLiveAgentsChanged,
   onStreamHealthLost,
+  onWaitingEnded,
   readWorkspaceStatus,
   readWorkspaceWaitingSince,
 } from './status-store'

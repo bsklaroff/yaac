@@ -282,6 +282,24 @@ export async function recordDeathSeen(projectId: string, workspaceId: string): P
   notifyWorkspaceListChanged()
 }
 
+/** Mark a waiting workspace as viewed, clearing its unread dot on every
+ *  client. Notifies only when the flag flips, since every view sends one. */
+export async function recordWaitingSeen(projectId: string, workspaceId: string): Promise<void> {
+  const db = await getDb()
+  const flipped = await db.update(workspaces).set({ waitingSeen: true })
+    .where(and(key(projectId, workspaceId), eq(workspaces.waitingSeen, false)))
+    .returning({ workspaceId: workspaces.workspaceId })
+  if (flipped.length > 0) notifyWorkspaceListChanged()
+}
+
+/** Clear `waitingSeen` when the workspace stops needing the user. Only a set
+ *  flag is written, since this runs on every turn. */
+export async function recordWaitingUnseen(projectId: string, workspaceId: string): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ waitingSeen: false })
+    .where(and(key(projectId, workspaceId), eq(workspaces.waitingSeen, true)))
+}
+
 /**
  * Mark every recorded abnormal death in a project as seen ("mark all as
  * read"). Only rows that actually died are touched. Notifies, like

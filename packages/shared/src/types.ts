@@ -960,8 +960,12 @@ export interface WorkspaceListEntry {
   createdAt: string
   /** Epoch ms when the current waiting spell began; set only while
    *  `waiting`. The earliest waiting agent's time wins. Kept in server
-   *  memory, so it is absent after a server restart. */
+   *  memory, so a server restart starts a new spell. */
   waitingSinceMs?: number
+  /** The owner viewed its current waiting spell, so a `waiting` status is
+   *  already read. Stored on the workspace row, so
+   *  every client shows the same unread dot. */
+  waitingSeen?: true
   /** The first user message of the workspace's first agent session;
    *  survives a `/clear`. */
   prompt?: string

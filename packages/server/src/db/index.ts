@@ -135,6 +135,7 @@ export {
   listWorkspaceRows,
   recordAllDeathsSeen,
   recordDeathSeen,
+  recordWaitingSeen,
   restoreSpareWorkspace,
   findWorkspaceByMamaToken,
   setWorkspaceMamaTokenHash,
