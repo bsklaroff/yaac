@@ -1,9 +1,9 @@
 /**
- * `openDb` and `closeDb`, against a real PGlite in a temp data dir with the
- * checked-in migrations, so the data-dir path builder, single-flight open
- * and dangling-handle close are covered by the dir switches below. `getDb`
- * is used only to inspect what a call opened; `preferences` is the sample
- * table.
+ * `openDb`, `pingDb` and `closeDb`, against a real PGlite in a temp data
+ * dir with the checked-in migrations, so the data-dir path builder,
+ * single-flight open and dangling-handle close are covered by the dir
+ * switches below. `getDb` is used only to inspect what a call opened;
+ * `preferences` is the sample table.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { drizzle } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { openDb, getDb, closeDb, MigrationRefusal } from '#db/client'
+import { openDb, getDb, closeDb, MigrationRefusal, pingDb } from '#db/client'
 import { preferences } from '#db/schema'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 
@@ -201,6 +201,17 @@ describe('openDb', () => {
     const second = await getDb()
     expect(second).not.toBe(first)
     expect(await second.select({ key: preferences.key, value: preferences.value }).from(preferences)).toEqual([])
+  })
+})
+
+describe('pingDb', () => {
+  // A handle whose instance has gone (closed here, aborted in production)
+  // stays cached, so every later query fails; the ping must say so.
+  it('answers on a live handle and rejects once the instance is gone', async () => {
+    await freshDataDir()
+    await pingDb()
+    await (await getDb()).$client.close()
+    await expect(pingDb()).rejects.toThrow('PGlite is closed')
   })
 })
 

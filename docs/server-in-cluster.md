@@ -315,6 +315,11 @@ lost the lease exits rather than keep writing a database another server now
 owns. On hostPath storage nothing prevents two mounts, so this lease is
 PGlite's only single-writer guard.
 
+The server also exits when its database fails `SELECT 1`, or leaves it
+unanswered for a minute: a PGlite instance in that state answers nothing
+again, and the Deployment's restart is what recovers it. A stuck event loop
+stops that check too, and the Deployment has no liveness probe for it.
+
 ## The uid everything runs as
 
 gVisor has no user namespace, so a file on a claim appears with its real

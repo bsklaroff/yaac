@@ -6,7 +6,7 @@ import { restoreAllWorkspaceForwarders } from '#runtime/ports'
 import { getProjectRow, getWorkspaceRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { reseedPlaceholderToolHomes } from '#domain/auth'
-import { serverLog } from '#log'
+import { errorText, serverLog } from '#log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
 /**
@@ -85,13 +85,13 @@ export async function attachConvergence(opts: {
     // with sentinels before any new workspace mounts them.
     recover: async () => {
       await reseedPlaceholderToolHomes()
-        .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${String(err)}`))
+        .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${errorText(err)}`))
       try {
         await restoreAllWorkspaceForwarders(
           (projectId: string) => resolveProjectConfig(projectId).then((c) => c ?? undefined),
         )
       } catch (err) {
-        serverLog(`[server] restore forwarders failed: ${String(err)}`)
+        serverLog(`[server] restore forwarders failed: ${errorText(err)}`)
       }
     },
     attached: opts.onAttached,

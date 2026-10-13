@@ -399,6 +399,10 @@ recorded as a dead workspace, not dropped, so the stale reaper marks its row
 stopped. Recovery runs after the server starts answering, so early clients
 see workspaces appear.
 
+Nothing supervises a host server. When its database stops answering
+`SELECT 1` it exits rather than fail every request, and stays down until
+`yaac server start`; its workspaces keep running and are recovered then.
+
 Every command the server runs in a workspace (exec, stream, changes diff)
 gets the workspace's environment, not the server's, whose `YAAC_*` settings
 and host `HOME` would point it at the server user's config. After a restart

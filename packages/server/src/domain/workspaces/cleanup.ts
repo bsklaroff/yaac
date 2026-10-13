@@ -9,7 +9,7 @@ import {
   applyWorkspaceEvent,
   deleteSpareWorkspaceRow,
   listProjectRows,
-  listProjectWorkspaceIds,
+  listSpareWorkspaceIds,
 } from '#db'
 import {
   clearWorkspaceTerminating,
@@ -286,15 +286,9 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
  * flag is the only record that the checkout was never a user's workspace;
  * real workspaces are never touched.
  */
-async function gcOrphanSpares(
-  projectId: string,
-  liveWorkspaceIds: Set<string>,
-  sweepStartedAtMs: number,
-): Promise<void> {
-  const rows = await listProjectWorkspaceIds(projectId).catch(() => undefined)
-  if (rows === undefined) return
-  for (const [sid, spare] of rows) {
-    if (!spare || liveWorkspaceIds.has(sid)) continue
+async function gcOrphanSpares(liveWorkspaceIds: Set<string>, sweepStartedAtMs: number): Promise<void> {
+  for (const { projectId, workspaceId: sid } of await listSpareWorkspaceIds()) {
+    if (liveWorkspaceIds.has(sid)) continue
     if (await inUseBySweep(workspaceDir(projectId, sid), sid, sweepStartedAtMs)) continue
     // Keep the row if the delete failed, so the next sweep can retry.
     if (!await deleteWorkspaceState(projectId, sid)) continue
@@ -333,6 +327,10 @@ export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> 
 /**
  * Remove what workspaces that no longer exist left behind in the global
  * tier: dead spares' checkouts and `sessions/<id>` dirs. Runs every resync.
+ *
+ * Spares are found from their rows, never from directory names: a dir under
+ * `projects/` need not be a project id, and querying a uuid column with one
+ * is a database error on every pass.
  */
 export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promise<void> {
   // A create that stages dirs before its unit exists looks like an orphan.
@@ -340,11 +338,11 @@ export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promis
   const sweepStartedAtMs = Date.now()
   const live = await liveWorkspaceIds(view)
 
+  await gcOrphanSpares(live, sweepStartedAtMs)
+
   const projectIds = await fs.readdir(getProjectsDir()).catch((): string[] => [])
 
   for (const projectId of projectIds) {
-    await gcOrphanSpares(projectId, live, sweepStartedAtMs)
-
     // Per-workspace staging dirs (skills, workspace bin), one per id.
     const workspacesRoot = globalProjectPath(projectId, 'sessions')
     let workspaceEntries: string[] = []

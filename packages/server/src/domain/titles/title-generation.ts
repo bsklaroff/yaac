@@ -23,7 +23,7 @@ import {
   setWorkspaceTitle,
 } from '#db'
 import { shouldGenerateTitle, summarizeTitle } from './title-summarizer'
-import { serverLog } from '#log'
+import { errorText, serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 
 /** Keys already attempted this server run. */
@@ -69,7 +69,7 @@ async function generateOnce(
     const title = await summarizeTitle(prompt)
     if (title !== undefined) await write(title)
   } catch (err) {
-    serverLog(`[titles] ${label}: ${String(err)}`)
+    serverLog(`[titles] ${label}: ${errorText(err)}`)
   }
 }
 

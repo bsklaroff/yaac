@@ -11,7 +11,7 @@ import { BUILT_IN_USER_ID, forgetSeenUsers } from './user-store'
 /**
  * The server's on-disk PGlite database (embedded Postgres). `getDb` stays off
  * the barrel so other layers can't build their own queries; they get only
- * `openDb`/`closeDb` and the row functions.
+ * `openDb`/`closeDb`/`pingDb` and the row functions.
  *
  * PGlite is single-process, so only the server process may open it. The
  * proxy, auth-daemon and CLI share the data dir but never touch
@@ -162,6 +162,16 @@ export function getDb(): Promise<Db> {
     })
   }
   return cached.promise
+}
+
+/**
+ * Run a trivial query on the open handle. A failing statement leaves the
+ * handle usable, but one that cannot answer `SELECT 1` (its WASM instance
+ * aborted, say) will answer nothing until the process restarts, so the
+ * composition root exits when this rejects.
+ */
+export async function pingDb(): Promise<void> {
+  await (await getDb()).$client.query('SELECT 1')
 }
 
 /** Close the handle so PGlite checkpoints cleanly (dev-watch restarts, test

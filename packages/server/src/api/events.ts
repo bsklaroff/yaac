@@ -10,7 +10,7 @@ import { countStoppedWorkspaces } from '#db'
 import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
-import { serverLog } from '#log'
+import { errorText, serverLog } from '#log'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
@@ -131,7 +131,7 @@ export class EventHub {
     try {
       snapshot = await this.build()
     } catch (err) {
-      serverLog(`[server] events: snapshot build failed: ${String(err)}`)
+      serverLog(`[server] events: snapshot build failed: ${errorText(err)}`)
       return
     }
     const serialized = JSON.stringify({ type: 'snapshot', data: snapshot } satisfies ServerEvent)
@@ -145,7 +145,7 @@ export class EventHub {
       try {
         ws.send(serialized)
       } catch (err) {
-        serverLog(`[server] events: send failed, dropping conn: ${String(err)}`)
+        serverLog(`[server] events: send failed, dropping conn: ${errorText(err)}`)
         this.conns.delete(ws)
       }
     }
