@@ -7,12 +7,15 @@ import {
   type PiProvider,
 } from '@yaac/shared/tool-providers'
 import {
+  CLAUDE_1M_SUFFIX,
+  launchableModel,
   launchablePermissionMode,
   type AgentTool,
   type InitCommandSpec,
   type PermissionMode,
   type YaacConfig,
 } from '@yaac/shared/types'
+import { ServerError } from '@yaac/shared/errors'
 import { doubleQuoted, envJsonAssignment, shellEscape } from '#lib/shell'
 import { CODEX_TITLE_ITEMS, codexLaunchConfig } from './codex'
 
@@ -71,8 +74,10 @@ export interface AgentCmdSpec {
   piProvider?: PiProvider
   /** Model for the agent's `--model` flag: an id or alias for claude/codex
    *  (`opus`, `gpt-5.2-codex`), `provider/model` for opencode and pi.
-   *  Validated against MODEL_RE by the create route, so it can be embedded
-   *  bare in the single-quoted respawn-window wrapper. */
+   *  `launchCmd` refuses one `launchableModel` would change
+   *  (`assertLaunchableModel`), so it can be embedded bare in the
+   *  single-quoted respawn-window wrapper, bar claude's
+   *  `CLAUDE_1M_SUFFIX`, which `claudeModelArg` quotes. */
   model?: string
   /** Effort level, in the tool's words (docs/effort-levels.md). Shape-checked
    *  (`EFFORT_RE`), so it embeds bare like the model. Absent passes none. */
@@ -202,6 +207,27 @@ export function opencodeConfigArg(
   return envJsonAssignment('OPENCODE_CONFIG_CONTENT', config)
 }
 
+/**
+ * Refuse a model no launch of `tool` can carry (`launchableModel`). Both
+ * agent drivers' `launchCmd` call this, so a model from any source (a
+ * request, a queued child's parent, a restarted conversation's report) is
+ * checked once more before it reaches a shell.
+ */
+export function assertLaunchableModel(tool: AgentTool, model: string | undefined): void {
+  if (model !== undefined && launchableModel(tool, model) !== model) {
+    throw new ServerError('VALIDATION', `invalid model ${JSON.stringify(model)}`)
+  }
+}
+
+/**
+ * A claude model as a launch argument. A `CLAUDE_1M_SUFFIX` model is
+ * double-quoted, since a bare `[1m]` is a shell glob (zsh fails the command
+ * with "no matches found"); `MODEL_RE` keeps everything else bare-safe.
+ */
+export function claudeModelArg(model: string): string {
+  return model.endsWith(CLAUDE_1M_SUFFIX) ? doubleQuoted(model) : model
+}
+
 export function buildAgentCmd(spec: AgentCmdSpec): string {
   const { tool, workspaceId, piProvider, model, effort, resume } = spec
   const mode = postureFor(tool, spec.permissionMode)
@@ -312,7 +338,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // clipboard falls back to OSC 52, and a footer scrollback hint is lost.
   return [
     `env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode ${posture}`,
-    model ? `--model ${model}` : '',
+    model ? `--model ${claudeModelArg(model)}` : '',
     // Outranks the effort a `/effort` in another workspace saved to the
     // shared settings.
     effort !== undefined ? `--effort ${effort}` : '',

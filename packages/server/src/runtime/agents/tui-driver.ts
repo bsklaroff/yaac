@@ -40,7 +40,7 @@ import {
   splitAgentReport,
   type PaneSession,
 } from './agent-tools'
-import { buildAgentCmd, buildMessageCmd, buildPromptPasteBgCmd } from './agent-command'
+import { assertLaunchableModel, buildAgentCmd, buildMessageCmd, buildPromptPasteBgCmd } from './agent-command'
 import { workspaceDriver } from '#drivers/driver'
 import type {
   AgentConnectDeps,
@@ -280,6 +280,7 @@ export const tuiDriver: AgentDriver = {
   mode: 'tui',
 
   launchCmd(spec: AgentLaunchSpec): string {
+    assertLaunchableModel(spec.tool, spec.model)
     return buildAgentCmd({
       tool: spec.tool,
       workspaceId: spec.agentSessionId,

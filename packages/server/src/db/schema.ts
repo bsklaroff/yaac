@@ -296,10 +296,10 @@ export const agentSessions = snakeCase.table('agent_sessions', {
   lastActiveAt: timestamp({ withTimezone: true }),
   /**
    * The model the agent last reported, in the tool's own naming
-   * (`claude-opus-5`, `anthropic/claude-opus-4-8`). Display only; nothing
-   * relaunches with it. Overwritten on each report, since `/model` changes
-   * it. Seeded from the launch; null until known (see
-   * docs/workspace-storage.md for when each tool reports).
+   * (`claude-opus-5`, `anthropic/claude-opus-4-8`). Shown in the pane, and
+   * a restart relaunches the conversation on it. Overwritten on each
+   * report, since `/model` changes it. Seeded from the launch; null until
+   * known (see docs/workspace-storage.md for when each tool reports).
    */
   model: text(),
 }, (t) => [primaryKey({ columns: [t.projectId, t.tool, t.agentSessionId] })])

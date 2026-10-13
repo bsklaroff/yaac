@@ -13,7 +13,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { modelEfforts } from '#domain/auth'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
-import { effortFor } from '@yaac/shared/types'
+import { effortFor, launchableModel, type AgentTool } from '@yaac/shared/types'
 
 /**
  * Check a restart of a workspace id or prefix, running or stopped, and
@@ -67,25 +67,41 @@ export async function prepareRestart(
     if (active.length > 1) onProgress(`Restoring ${active.length} agent sessions...`)
 
     // Relaunch in the recorded permission mode (e.g. `plan` must not come
-    // back as `bypass`) and effort, and in the first conversation's agent
-    // mode (one per workspace), else the mode the workspace launched in. An
-    // `acp` launch whose handshake failed records no conversation.
-    // The recorded effort is checked against the model the first
-    // conversation last reported: one it lacks, or none recorded, relaunches
-    // at that model's default, since a launch naming none would take
-    // whatever the shared tool home holds.
-    const model = active[0]?.model ?? row.model
-    const effort = model !== undefined
-      ? effortFor(modelEfforts(tool, model), row.effort)
-      : row.effort
+    // back as `bypass`), and in the first conversation's agent mode (one per
+    // workspace), else the mode the workspace launched in. An `acp` launch
+    // whose handshake failed records no conversation.
+    //
+    // Each conversation relaunches on the model it last reported, since a
+    // launch naming none would take whatever the shared tool home holds. The
+    // row's model is the first agent's at launch, so only a first
+    // conversation on the launch tool falls back to it.
+    const resume = active.map((a, i) => {
+      const reported = a.model !== undefined ? launchableModel(a.tool, a.model) : undefined
+      const model = reported ?? (i === 0 && a.tool === tool ? row.model : undefined)
+      const effort = launchEffort(a.tool, model, row.effort, a.tool === tool)
+      return {
+        agentSessionId: a.agentSessionId,
+        tool: a.tool,
+        ...(model !== undefined ? { model } : {}),
+        ...(effort !== undefined ? { effort } : {}),
+      }
+    })
+    // What the row records: the launch tool's, so another tool's model never
+    // lands there for a later fallback to hand a conversation on this one.
+    // Also what a workspace with no conversation launches on.
+    const launch = resume.find((a) => a.tool === tool) ?? {
+      model: row.model,
+      effort: launchEffort(tool, row.model, row.effort, true),
+    }
 
     const result = await createWorkspace(projectId, {
       workspaceId,
       tool,
       mode: active[0]?.mode ?? row.mode,
-      resume: active,
+      resume,
       permissionMode: row.permissionMode,
-      ...(effort !== undefined ? { effort } : {}),
+      ...(launch.model !== undefined ? { model: launch.model } : {}),
+      ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
       onProgress,
     })
 
@@ -96,4 +112,21 @@ export async function prepareRestart(
     })
     return result
   })
+}
+
+/**
+ * The effort a conversation relaunches at: the recorded one where its model
+ * has that level, else the model's default (docs/effort-levels.md). The
+ * row's effort is in the launch tool's words, so a conversation on another
+ * tool takes it only once its model's levels confirm it.
+ */
+function launchEffort(
+  tool: AgentTool,
+  model: string | undefined,
+  recorded: string | undefined,
+  launchTool: boolean,
+): string | undefined {
+  const efforts = model !== undefined ? modelEfforts(tool, model) : undefined
+  if (efforts !== undefined) return effortFor(efforts, recorded)
+  return launchTool ? recorded : undefined
 }

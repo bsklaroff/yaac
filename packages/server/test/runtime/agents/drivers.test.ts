@@ -340,6 +340,19 @@ describe('agentDriver', () => {
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
     expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 node /)
     expect(withModel).not.toContain('--model')
+    // A 1M-context model is quoted, since a bare `[1m]` is a shell glob.
+    expect(agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5[1m]' }))
+      .toMatch(/^ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" node /)
+    // A model reaches here from a request, a queued child's parent or a
+    // restarted conversation's report, which anything in the workspace can
+    // set; every launch refuses one it cannot carry.
+    for (const mode of ['tui', 'acp'] as const) {
+      for (const model of ['x; touch /tmp/pwned; #', '-cx', 'a b', 'x[1m][1m]']) {
+        expect(() => agentDriver(mode).launchCmd({ ...spec, model }), `${mode} ${model}`).toThrow(/invalid model/)
+      }
+      // `[1m]` is claude's alone.
+      expect(() => agentDriver(mode).launchCmd({ ...spec, tool: 'codex', model: 'gpt-5.5[1m]' })).toThrow(/invalid model/)
+    }
   })
 
   it('offers a mode id only for postures create will let through', () => {
@@ -1894,28 +1907,48 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(reportedEfforts(seen)).toEqual(['low', 'high', 'low']))
   })
 
-  // A reattach runs no handshake, so the levels a pane may pick come from
-  // the record, and the level is left as the user last set it.
-  it("reads a reattached conversation's effort back from its record", async () => {
+  // A reattach runs no handshake, so the session's state comes from the
+  // record, as the user last left it: the levels and modes a pane may pick,
+  // and the model, reported upward so the row (and a restart) follows a
+  // switch made while no server was attached.
+  it("reads a reattached conversation's effort, modes and model back from its record", async () => {
     await record('acp-1', [
       lifeLine,
       { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
-      { jsonrpc: '2.0', id: 'h-1', result: { sessionId: 'acp-1', configOptions: [thoughtLevel('low')] } },
+      { jsonrpc: '2.0', id: 'h-1', result: {
+        sessionId: 'acp-1',
+        modes: { currentModeId: 'default', availableModes: [{ id: 'default' }, { id: 'acceptEdits' }, { id: 'plan' }] },
+        models: { currentModelId: 'opus', availableModels: [{ modelId: 'opus' }, { modelId: 'sonnet' }] },
+        configOptions: [thoughtLevel('low')],
+      } },
       { jsonrpc: '2.0', id: 'h-2', result: { configOptions: [thoughtLevel('high')] } },
+      // A switch whose reply names no model, then one the agent refused.
+      { jsonrpc: '2.0', id: 'm-1', method: 'session/set_config_option', params: { sessionId: 'acp-1', configId: 'model', value: 'sonnet' } },
+      { jsonrpc: '2.0', id: 'm-1', result: {} },
+      { jsonrpc: '2.0', id: 'm-2', method: 'session/set_config_option', params: { sessionId: 'acp-1', configId: 'model', value: 'haiku' } },
+      { jsonrpc: '2.0', id: 'm-2', error: { code: -32602, message: 'unknown model' } },
     ])
     const stream = new FakeStream()
-    tmuxWindows = 'pi\n'
-    connections.push(agentDriver('acp').connect(session, () => {}, {
+    tmuxWindows = 'claude\n'
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
-      recordedSessions: () => Promise.resolve([{ handle: 'pi', agentSessionId: 'acp-1' }]),
-      permissionMode: () => Promise.resolve('bypass'),
+      recordedSessions: () => Promise.resolve([{ handle: 'claude', agentSessionId: 'acp-1' }]),
+      permissionMode: () => Promise.resolve('manual'),
       effort: () => Promise.resolve('low'),
       log: () => {},
     }))
-    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
     stream.feed(helloLine(false))
-    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')!.efforts.current).toBe('high'))
-    expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(false)
+    const conversation = acpConversationByHandle('demo', 'wt-1', 'claude')!
+    await vi.waitFor(() => expect(conversation.efforts.current).toBe('high'))
+    expect(conversation.permissionModes).toEqual({ current: 'manual', available: ['accept-edits', 'manual', 'plan'] })
+    await vi.waitFor(() => expect(seen).toContainEqual({
+      kind: 'live-agents',
+      agents: [expect.objectContaining({ handle: 'claude', model: 'sonnet', reportedMode: 'default', reportedEffort: 'high' })],
+    }))
+    // Nothing is re-sent to a live adapter.
+    expect(stream.sent().some((m) => typeof m.method === 'string' && m.method.startsWith('session/'))).toBe(false)
   })
 
   it('forwards an adapter question under bypass when the adapter has no permissions to waive', async () => {

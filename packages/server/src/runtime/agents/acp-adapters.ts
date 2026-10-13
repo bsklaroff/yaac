@@ -12,7 +12,7 @@
 import { ACP_ADAPTERS, type AgentTool } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { envJsonAssignment } from '#lib/shell'
-import { opencodeConfigArg } from './agent-command'
+import { claudeModelArg, opencodeConfigArg } from './agent-command'
 import { CLAUDE_SESSION_META, CODEX_CAPABILITIES_META, OPENCODE_CAPABILITIES_META } from './acp-protocol'
 import { type AcpSessionProfile } from './acp-client'
 import type { AgentLaunchSpec } from './drivers'
@@ -56,7 +56,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    */
   claude: {
     argv: [ACP_ADAPTERS.claude.binary],
-    env: (spec) => (spec.model !== undefined ? [`ANTHROPIC_MODEL=${spec.model}`] : []),
+    env: (spec) => (spec.model !== undefined ? [`ANTHROPIC_MODEL=${claudeModelArg(spec.model)}`] : []),
     modeIds: {
       bypass: 'bypassPermissions',
       auto: 'auto',

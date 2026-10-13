@@ -329,7 +329,8 @@ bypass permissions" in one pane, does not change how another answers. The
 workspace row is used only when the adapter's mode names no posture
 (opencode's agents), and only by the connection that launched the
 conversation. A connection reads the row once when it connects, then follows
-each recorded `permission-mode-changed` (`setAcpPermissionMode`). A reattach reads its session's mode back from the acpd record;
+each recorded `permission-mode-changed` (`setAcpPermissionMode`). A reattach
+reads its session's mode, and the modes it offers, back from the acpd record;
 an ask arriving meanwhile waits. If the record names no posture, every ask is
 forwarded. A `bypass` conversation that enters plan mode shows its plan-exit
 ask in the pane, as the TUI would.

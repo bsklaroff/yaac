@@ -242,6 +242,20 @@ parse a transcript: its opening message and its **model**.
 A missing report leaves the stored value alone on both. The model is null only
 for a conversation launched without one that has never reported.
 
+A restart relaunches each conversation on its stored model, since a launch
+naming none takes whatever the project's shared tool home holds. A first
+conversation on the workspace's launch tool that never reported falls back to
+the workspace's launch model. A queued child of a running workspace inherits
+its first conversation's model the same way.
+
+Anything in the workspace can set the pane option a model arrives through, so
+a stored model is used only in the form `launchableModel` gives it: matching
+`MODEL_RE`, the shape a launch command can carry bare, once a bracketed suffix
+is dropped. claude's `[1m]` (1M context) is kept and the model double-quoted,
+since dropping it would put a long conversation back on a 200K context. Both
+agent drivers' `launchCmd` refuse any other model, so no source can put one
+into a launch.
+
 The model is pushed by the agent, so a switch shows up immediately. Under `acp`
 the adapter reports it (docs/agent-modes.md). Under `tui` each agent pane sets
 a second pane option, `@yaac-model`, through `workspace-bin/yaac-agent-report`,

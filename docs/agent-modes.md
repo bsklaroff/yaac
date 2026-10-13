@@ -522,7 +522,9 @@ opening message and last-active time are read from the record instead.
 
 The model comes from the adapter: the handshake reply names it (as a
 `models` block, a `configOptions` entry with `id: model`, or both), and later
-changes arrive as `config_option_update`. It is published on the live agent
+changes arrive as `config_option_update`. A reattach runs no handshake, so
+it reads the model back from acpd's record, which also holds any switch made
+while no connection was attached. It is published on the live agent
 set and stored as the catalog's id, matched by display name when the adapter
 uses its own id (claude's adapter may answer with a picker alias such as
 `opus`), so the sidebar label matches the create form. Mode changes

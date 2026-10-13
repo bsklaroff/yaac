@@ -19,7 +19,8 @@ import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
   ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, backgroundWorkReport, sessionEffort,
-  sessionModeId, sessionModels, sessionStateModeId, toContentList, type AcpEffort,
+  sessionModeId, sessionModel, sessionModels, sessionStateModeId, toContentList,
+  type AcpConfigOption, type AcpEffort, type AcpSessionModes,
 } from './acp-protocol'
 import { asRecord, asString } from '#lib/narrow'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
@@ -412,6 +413,13 @@ export interface AcpRecovery {
    *  handshake reply, each config-option reply, and each
    *  `config_option_update`. */
   effort?: AcpEffort
+  /** The model the record last shows (`sessionModel`), from the same
+   *  messages, or the one a successful model switch asked for when its
+   *  reply names none. */
+  model?: { id: string; name?: string }
+  /** The modes the session offers, from the handshake reply in either
+   *  shape. Only the offer is kept; the mode the reply names is `modeId`'s. */
+  offered?: { modes?: AcpSessionModes; configOptions?: AcpConfigOption[] }
 }
 
 /**
@@ -428,8 +436,9 @@ export interface AcpRecovery {
  *   `startedNewTurn`.
  * - An ask is pending if it has no recorded answer; the ask went to a
  *   connection that is gone and nothing replays it.
- * - The mode and effort are the last ones recorded, since the session may
- *   have changed either while disconnected.
+ * - The mode, effort and model are the last ones recorded, since the
+ *   session may have changed any of them while disconnected; the modes it
+ *   offers are the handshake's.
  *
  * acpd's exit line ends a life: what was running and asked dies with it.
  * No record means nothing running and nothing recorded.
@@ -444,10 +453,12 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
   // Keyed by string form for pairing, valued by the original id.
   const asks = new Map<string, string | number>()
   let modeId: string | undefined
-  // Requests whose reply moves the mode: a `set_mode` naming it, or a
-  // handshake whose reply reports it (undefined here).
-  const modeAsked = new Map<string, string | undefined>()
+  // Requests whose reply moves the state, by id: a handshake (whose reply
+  // reports it), a mode switch, or a model switch.
+  const asked = new Map<string, { handshake?: true; modeId?: string; model?: string }>()
   let effort: AcpEffort | undefined
+  let model: { id: string; name?: string } | undefined
+  let offered: AcpRecovery['offered']
   for (const line of raw.split('\n')) {
     const msg = parseLine(line)
     if (msg === undefined) continue
@@ -478,14 +489,25 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
         continue
       case ACP.sessionNew:
       case ACP.sessionLoad:
-      case ACP.sessionSetMode:
-        if (id !== undefined) modeAsked.set(String(id), asString(asRecord(msg.params)?.modeId))
+        if (id !== undefined) asked.set(String(id), { handshake: true })
         continue
+      case ACP.sessionSetMode: {
+        const set = asString(asRecord(msg.params)?.modeId)
+        if (id !== undefined) asked.set(String(id), set !== undefined ? { modeId: set } : {})
+        continue
+      }
+      case ACP.sessionSetConfigOption: {
+        const params = asRecord(msg.params)
+        const set = params?.configId === 'model' ? asString(params.value) : undefined
+        if (id !== undefined) asked.set(String(id), set !== undefined ? { model: set } : {})
+        continue
+      }
       case ACP.sessionUpdate: {
         const update = asRecord(asRecord(msg.params)?.update)
         if (update !== undefined) {
           modeId = sessionModeId(update) ?? modeId
           effort = sessionEffort(update) ?? effort
+          if (update.sessionUpdate === 'config_option_update') model = sessionModel(update) ?? model
         }
         break
       }
@@ -495,7 +517,21 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
     // Only a reply (no method) closes a turn, settles an ask or moves state;
     // an `error` means the request did nothing.
     if (msg.method !== undefined) continue
-    if (msg.error === undefined) effort = sessionEffort(msg.result) ?? effort
+    const ask = id !== undefined ? asked.get(String(id)) : undefined
+    if (id !== undefined) asked.delete(String(id))
+    if (msg.error === undefined) {
+      const result = asRecord(msg.result)
+      effort = sessionEffort(result) ?? effort
+      model = sessionModel(result) ?? (ask?.model !== undefined ? { id: ask.model } : model)
+      if (ask !== undefined) modeId = ask.modeId ?? sessionStateModeId(result) ?? modeId
+      if (ask?.handshake === true) {
+        const available = asRecord(result?.modes)?.availableModes
+        offered = {
+          ...(Array.isArray(available) ? { modes: { availableModes: available as AcpSessionModes['availableModes'] } } : {}),
+          ...(Array.isArray(result?.configOptions) ? { configOptions: result.configOptions as AcpConfigOption[] } : {}),
+        }
+      }
+    }
     if (id === undefined) continue
     if (id === pending) {
       pending = undefined
@@ -505,11 +541,6 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
     }
     if (steers.delete(id) && asRecord(msg.result)?.outcome === 'startedNewTurn') agentRunning = true
     asks.delete(String(id))
-    if (modeAsked.has(String(id))) {
-      const set = modeAsked.get(String(id))
-      modeAsked.delete(String(id))
-      if (msg.error === undefined) modeId = set ?? sessionStateModeId(msg.result) ?? modeId
-    }
   }
   return {
     inFlight: {
@@ -520,6 +551,8 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
     pendingPermissions: [...asks.values()],
     ...(modeId !== undefined ? { modeId } : {}),
     ...(effort !== undefined ? { effort } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(offered !== undefined ? { offered } : {}),
   }
 }
 

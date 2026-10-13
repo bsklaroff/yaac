@@ -51,6 +51,7 @@ import { normalizeTitle } from '@yaac/shared/titles'
 import {
   agentPermissionMode,
   MAX_PROMPT_LENGTH,
+  launchableModel,
   toolSupportsPermissionMode,
   type AgentMode,
   type AgentTool,
@@ -394,7 +395,10 @@ async function parentInfo(projectId: string, pointer: QueuedParent): Promise<Par
     firstAgentSession(projectId, workspaceId),
   ])
   const creating = inFlightCreate(workspaceId)
-  const model = first?.model ?? row?.model ?? creating?.model
+  // The conversation's model is as its agent reported it, which anything in
+  // the workspace can set, so only a launchable one is inherited.
+  const reported = first?.model !== undefined ? launchableModel(first.tool, first.model) : undefined
+  const model = reported ?? row?.model ?? creating?.model
   const mode = first?.mode ?? row?.mode
   const tool = first?.tool ?? creating?.tool
   const branch = row?.baseBranch ?? creating?.branch

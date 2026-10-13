@@ -318,8 +318,8 @@ export class AcpConversation {
   private sessionModes: AcpSessionModes | undefined
   /** The same facts as config options; opencode v2 sends only these. */
   private sessionConfig: AcpConfigOption[] | undefined
-  /** The model the session last reported; see `onModel`. Unknown after a
-   *  reattach until the adapter next reports it. */
+  /** The model the session last reported; see `onModel`. On a reattach,
+   *  read back from the record (`recover`). */
   private currentModel: string | undefined
   /** The model ids a new session last offered; see `whenModelOffered`. */
   private offeredModels: string[] | undefined
@@ -418,10 +418,10 @@ export class AcpConversation {
 
   /**
    * The posture this conversation is in and the ones a pane may switch it
-   * to: those with a session mode the adapter offers. When the offer is not
-   * known, every mapped posture is listed and the adapter's refusal reports
-   * the rest. A reattach runs no handshake, and every connection after a
-   * server restart is a reattach, so the unfiltered list is the usual case.
+   * to: those with a session mode the adapter offers. A reattach reads the
+   * offer back from the record; when it is not known (a record holding no
+   * handshake), every mapped posture is listed and the adapter's refusal
+   * reports the rest.
    * The list is empty unless it holds the current posture and another, since
    * a pane could otherwise leave a posture it can never return to (opencode
    * maps only `plan` to a mode).
@@ -860,15 +860,20 @@ export class AcpConversation {
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
         // Ready before recovery; a prompt still waits for it to classify
         // the turn (`prompt`), and asks for the posture to be recovered.
-        // A mode or effort the adapter reported during the read is newer
-        // and wins.
+        // A mode, effort or model the adapter reported during the read is
+        // newer and wins. The offered modes are merged after the mode, since
+        // the handshake's config options also name the mode it had then.
         const recovered = this.readRecovery()
-        this.postureRecovery = recovered.then(({ modeId }) => {
+        this.postureRecovery = recovered.then(({ modeId, offered }) => {
           if (this.currentModeId() === undefined) this.setModeId(modeId)
+          if (offered?.modes !== undefined) this.sessionModes = { ...offered.modes, ...this.sessionModes }
+          this.sessionConfig ??= offered?.configOptions
+          this.publishPermissionModes()
         }).finally(() => { this.postureRecovery = undefined })
         this.markReady()
-        void recovered.then(({ effort }) => {
+        void recovered.then(({ effort, model }) => {
           if (this.effortOption === undefined) this.setEffortOption(effort)
+          if (this.currentModel === undefined) this.setModel(model)
         })
         await this.postureRecovery
         this.recover(await recovered)
