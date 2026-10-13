@@ -69,6 +69,12 @@ interface Manifest {
         hostUsers?: boolean
         runtimeClassName?: string
         priorityClassName?: string
+        topologySpreadConstraints?: Array<{
+          maxSkew: number
+          topologyKey: string
+          whenUnsatisfiable: string
+          labelSelector: { matchLabels: Record<string, string> }
+        }>
         dnsPolicy?: string
         dnsConfig?: { nameservers: string[] }
         securityContext: { seccompProfile: { type: string }; fsGroup?: number }
@@ -200,6 +206,17 @@ describe('buildPodJobManifest', () => {
   it('puts session pods on the low-priority tier', () => {
     // Infra outranks workspaces, so a full node evicts a workspace first.
     expect(build().spec.template.spec.priorityClassName).toBe('yaac-workspace')
+  })
+
+  it('prefers spreading the install\'s workspaces across nodes, never blocking on it', () => {
+    // Selects every workspace of this install, so the count per node evens
+    // out across projects; ScheduleAnyway keeps a lopsided cluster schedulable.
+    expect(build().spec.template.spec.topologySpreadConstraints).toEqual([{
+      maxSkew: 1,
+      topologyKey: 'kubernetes.io/hostname',
+      whenUnsatisfiable: 'ScheduleAnyway',
+      labelSelector: { matchLabels: { 'yaac.install-id': 'test-install' } },
+    }])
   })
 
   it('parses env entries, preserving equals signs inside values and rendering each name once', () => {

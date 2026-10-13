@@ -729,7 +729,7 @@ status.
 
 ## What a workspace reserves
 
-Each workspace container requests **250m cpu, 1Gi memory and 2Gi
+Each workspace container requests **500m cpu, 2Gi memory and 2Gi
 ephemeral storage**, and is limited to **8 cores, 8Gi memory and 16Gi
 ephemeral storage**. A nested-containers workspace adds its podman
 graphroot volume's size to the storage limit, since kubelet charges it
@@ -739,6 +739,14 @@ to the storage request, the install it really holds, and one module dir's
 they sit well under the limits: the node is deliberately overcommitted, to
 fit many mostly-idle workspaces.
 
+On a cluster with several nodes, workspaces carry a soft topology spread
+constraint on the node hostname, so the scheduler places each one on the
+node holding the fewest of the install's workspaces. Without it the
+image-locality score piles a project's workspaces onto the node that
+already caches its image. The spread is a preference (`ScheduleAnyway`): a
+workspace never waits, and the autoscaler never adds a node, just to even
+out the count.
+
 Memory and disk are capped because they cannot be throttled, and one
 workspace must not take the node down. The cpu limit is for gVisor: runsc
 sizes the sandbox's virtual cpu count from the cpu quota
@@ -747,9 +755,9 @@ cpu. With no limit, every sandbox sees all host cores, and one
 syscall-heavy workspace (an e2e suite, say) starves the node. The limit is
 far above the request, so it does not throttle an interactive agent.
 
-In practice this caps concurrent workspaces at roughly `cores × 4` or `GB
-of memory`, whichever is lower, less the install's own infra. The npm
-cache's Verdaccio alone requests a full core, four workspaces' worth, so
+In practice this caps concurrent workspaces at roughly `cores × 2` or `GB
+of memory ÷ 2`, whichever is lower, less the install's own infra. The npm
+cache's Verdaccio alone requests a full core, two workspaces' worth, so
 that a burst of installs cannot starve the metadata parsing they wait on. A workspace that does not fit sits
 `Pending` with an `Insufficient cpu` (or memory) event rather than failing.
 

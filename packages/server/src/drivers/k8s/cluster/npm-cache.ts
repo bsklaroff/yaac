@@ -297,7 +297,7 @@ function buildNpmCacheManifests(
                 { name: 'VERDACCIO_PUBLIC_URL', value: npmCacheRegistryUrl() },
                 { name: 'NODE_OPTIONS', value: `--max-old-space-size=${VERDACCIO_MEMORY_MIB * 3 / 4}` },
               ],
-              // A full CPU's scheduling weight (four workspaces' requests), so
+              // A full CPU's scheduling weight (two workspaces' requests), so
               // a parse is not starved by the installs it serves; a starved
               // parse is what times out the probe. It is reserved from every
               // install's schedulable CPU (docs/cluster-setup.md).

@@ -2,6 +2,7 @@ import path from 'node:path'
 import { mergeEnvEntries } from '#lib/env-entries'
 import { runtimeClassSpec } from './gvisor'
 import { priorityClassSpec } from './priority-classes'
+import { LABEL_INSTALL_ID } from './storage-constants'
 
 /** ConfigMap (cluster-scoped to the yaac namespace) holding the proxy CA. */
 export const CA_CONFIGMAP_NAME = 'yaac-proxy-ca'
@@ -261,6 +262,26 @@ export interface PodJobParams {
 }
 
 /**
+ * Spread this install's workspaces evenly across the nodes that can run
+ * them. Requests sit well under real use (see docs/cluster-setup.md "What a
+ * workspace reserves"), so without this the scheduler's image-locality score
+ * piles every workspace of a project onto the node that already caches its
+ * image, until that node runs out of memory while another sits idle.
+ * `ScheduleAnyway` makes it a preference: a workspace never waits Pending,
+ * nor makes the autoscaler add a node, just to even out the count.
+ */
+function workspaceSpreadSpec(labels: Record<string, string>): Record<string, unknown> {
+  return {
+    topologySpreadConstraints: [{
+      maxSkew: 1,
+      topologyKey: 'kubernetes.io/hostname',
+      whenUnsatisfiable: 'ScheduleAnyway',
+      labelSelector: { matchLabels: { [LABEL_INSTALL_ID]: labels[LABEL_INSTALL_ID] } },
+    }],
+  }
+}
+
+/**
  * Build the Job manifest for one workspace: a single-pod Job
  * (`backoffLimit: 0`, `restartPolicy: Never`) with the caller's mounts and
  * the proxy CA. Pure, so the whole spec is unit-testable.
@@ -344,6 +365,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           restartPolicy: 'Never',
           terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
           ...priorityClassSpec(),
+          ...workspaceSpreadSpec(p.labels),
           // Untrusted workloads: no API credentials or service env vars.
           automountServiceAccountToken: false,
           enableServiceLinks: false,

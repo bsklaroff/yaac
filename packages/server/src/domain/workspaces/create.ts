@@ -269,11 +269,14 @@ export interface WorkspaceCreateResult {
  * ordinary developer hardware, so it lives here rather than in a driver.
  */
 const WORKSPACE_RESOURCES: WorkspaceResources = {
-  memoryRequestBytes: 1 * 1024 ** 3,
+  // An idle workspace already holds about 1 GiB, so the request covers that
+  // plus room to spike. Less, and a node fills with workspaces whose idle
+  // use alone nearly exhausts it, and one burst OOM-kills its neighbours.
+  memoryRequestBytes: 2 * 1024 ** 3,
   memoryLimitBytes: 8 * 1024 ** 3,
-  // Matches the 1Gi memory request at 4 GB/core, so cpu and memory cap
-  // concurrent workspaces at about the same count (32 on 8 cores/32 GB).
-  cpuRequestMillis: 250,
+  // Matches the 2Gi memory request at 4 GB/core, so cpu and memory cap
+  // concurrent workspaces at about the same count (16 on 8 cores/32 GB).
+  cpuRequestMillis: 500,
   // Half a 16-core machine: enough for heavy parallel work, but one
   // workspace cannot take the whole node.
   cpuLimitMillis: 8000,
