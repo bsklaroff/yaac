@@ -10,7 +10,7 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
-import { PREVIEW_TARGET, isPreviewTarget, previewLabel } from '#lib/preview'
+import { PREVIEW_TARGET, isPreviewTarget, portLabel, previewLabel } from '#lib/preview'
 import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
   isFilesTarget,
@@ -88,7 +88,7 @@ const MOBILE_EAGER_ATTACH_MAX = 2
 function paneName(
   target: string,
   terminals: WorkspaceTerminalEntry[] | undefined,
-  previewPort?: number,
+  previewPort?: PortMapping,
   workspace?: WorkspaceListEntry,
   fileLabels?: Record<string, string>,
 ): string {
@@ -385,7 +385,9 @@ export function WorkspaceView({
       : null
 
   const fileLabels = fileTabLabels(targets.filter(isFileTarget).map(fileTargetPath))
-  const tabName = (t: string): string => paneName(t, terminals, previewPortForWorkspace, workspace, fileLabels)
+  const tabName = (t: string): string => paneName(
+    t, terminals, previewPorts.find((p) => p.containerPort === previewPortForWorkspace), workspace, fileLabels,
+  )
 
   /** A tab in a column strip (tiles) or the single tab bar (tabs). */
   const renderTab = (
@@ -517,16 +519,25 @@ export function WorkspaceView({
                   onStop={canUnforward ? (p) => stopForwarding(workspace.workspaceId, p) : undefined}
                 />
               ) : previewPorts.length > 0 && (
-                <span className="group flex shrink-0 items-center rounded transition hover:bg-surface-2">
+                // The one control in the bar whose width varies. Below lg it
+                // drops its word, as its neighbors do, so the port shows; a
+                // remap still too long for the bar truncates, and the title
+                // names it in full.
+                <span className="group flex min-w-0 items-center rounded transition hover:bg-surface-2">
                   <button
                     onClick={() => showPreview(workspace.workspaceId, previewPorts[0].containerPort)}
                     title={`Open preview (${portLabel(previewPorts[0])})`}
                     aria-label="Open preview"
-                    className={PREVIEW_BUTTON}
+                    className={clsx(PREVIEW_BUTTON, 'min-w-0')}
                   >
-                    <PreviewIcon size={11} />
-                    Preview
-                    <span className="font-mono">:{previewPorts[0].containerPort}</span>
+                    <PreviewIcon size={11} className="shrink-0" />
+                    {/* One inline run, so the mono port sits on the label's
+                        baseline; leading-none keeps the mixed fonts from
+                        heightening the line. */}
+                    <span className="min-w-0 truncate">
+                      <span className="max-lg:sr-only">Preview </span>
+                      <span className="font-mono leading-none">{portLabel(previewPorts[0])}</span>
+                    </span>
                   </button>
                   {canUnforward && (
                     <StopForwardButton
@@ -862,12 +873,7 @@ export function paneBarClass(isMobile: boolean): string {
     : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
 }
 
-/** A port's label: the host port, plus the container port when it differs. */
-function portLabel(p: PortMapping): string {
-  return p.hostPort === p.containerPort ? `:${p.hostPort}` : `:${p.hostPort}→${p.containerPort}`
-}
-
-const PREVIEW_BUTTON = 'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] '
+const PREVIEW_BUTTON = 'flex items-center gap-1 rounded px-1 py-0.5 text-[11px] '
   + 'text-text-dim transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2'
 
 /**
@@ -903,7 +909,7 @@ function PreviewPortMenu({
         ref={trigger}
         title={`Open preview (${ports.map(portLabel).join(', ')})`}
         aria-label="Open preview"
-        className={PREVIEW_BUTTON}
+        className={clsx(PREVIEW_BUTTON, 'shrink-0')}
       >
         <PreviewIcon size={11} />
         Preview
@@ -921,7 +927,7 @@ function PreviewPortMenu({
                 className={clsx('group', MENU_ITEM)}
                 onClick={() => { picked.current = true; onPick(p.containerPort) }}
               >
-                <span className="flex-1 font-mono">:{p.containerPort}</span>
+                <span className="flex-1 font-mono">{portLabel(p)}</span>
                 {onStop && <StopForwardButton containerPort={p.containerPort} iconSize={13} onStop={onStop} />}
               </Menu.Item>
             ))}
@@ -982,7 +988,7 @@ function PaneOverflowMenu({
             {previewPorts.map((p) => (
               <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview(p.containerPort)}>
                 <PreviewIcon size={14} />
-                {previewLabel(previewPorts.length > 1 ? p.containerPort : undefined)}
+                {previewLabel(previewPorts.length > 1 ? p : undefined)}
               </Menu.Item>
             ))}
             <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{TOOL_LABEL[tool]}</div>

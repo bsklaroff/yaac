@@ -144,12 +144,13 @@ describe('WorkspaceView: open-preview', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('with several ports, offers them in a menu that returns focus where Alt+P was pressed', async () => {
-    renderView([port(3000), port(5173)])
+    // 3000 is reached here at another port, so its row shows both.
+    renderView([{ containerPort: 3000, hostPort: 3001 }, port(5173)])
     const terminal = focusTerminal()
 
     altP()
     const items = await screen.findAllByRole('menuitem')
-    expect(items.map((i) => i.textContent)).toEqual([':3000', ':5173'])
+    expect(items.map((i) => i.textContent)).toEqual([':3000→:3001', ':5173'])
     await waitFor(() => expect(document.activeElement).toBe(items[0]))
     fireEvent.keyDown(items[0], { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('menuitem')).toBeNull())
@@ -221,6 +222,7 @@ describe('WorkspaceView: preview outside the desktop app', () => {
     renderView(ports)
 
     fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    // The phone's own port is its preview's to show, so the row names the workspace's.
     fireEvent.click(await screen.findByRole('menuitem', { name: ':5173' }))
     expect(openPreview).toHaveBeenCalledWith('s1', { containerPort: 5173, hostPort: 15173 })
 

@@ -27,7 +27,9 @@ const ws = workspaces.find((w) => process.env.WORKSPACE
   ? w.workspaceId.startsWith(process.env.WORKSPACE)
   : w.forwardedPorts.length > 1 && w.agentSessions?.[0]?.mode === 'tui')
 if (!ws) throw new Error(`no running tui workspace in ${PROJECT} forwarding two or more ports`)
-const [first, second] = ws.forwardedPorts.map((p) => p.containerPort)
+const [first, second] = ws.forwardedPorts
+/* A port as the SPA labels it in the desktop app (`portLabel` in #lib/preview). */
+const label = (p) => p.hostPort === p.containerPort ? `:${p.containerPort}` : `:${p.containerPort}→:${p.hostPort}`
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
@@ -42,17 +44,17 @@ try {
   const xterm = page.locator('.xterm-helper-textarea').first()
   await xterm.waitFor({ state: 'attached', timeout: 20_000 })
   const items = page.getByRole('menuitem')
-  const tab = (port) => page.getByText(`Preview :${port}`, { exact: true }).first()
+  const tab = (port) => page.getByText(`Preview ${label(port)}`, { exact: true }).first()
 
   // (1) The button's menu.
   await page.getByRole('button', { name: 'Open preview' }).click()
   await items.first().waitFor({ state: 'visible' })
   const labels = await items.allTextContents()
   check('the Preview button lists every forwarded port',
-    labels.length === ws.forwardedPorts.length && labels.includes(`:${second}`), labels.join(' '))
-  await items.filter({ hasText: `:${second}` }).click()
+    labels.length === ws.forwardedPorts.length && labels.includes(label(second)), labels.join(' '))
+  await items.filter({ hasText: label(second) }).click()
   await tab(second).waitFor({ state: 'visible', timeout: 5000 })
-  check(`picking :${second} opens the preview on it`, await tab(second).isVisible())
+  check(`picking ${label(second)} opens the preview on it`, await tab(second).isVisible())
 
   // (2) Alt+P from the terminal, keyboard pick.
   await page.locator('.xterm-screen').first().click()
@@ -61,13 +63,13 @@ try {
   await items.first().waitFor({ state: 'visible' })
   check('Alt+P opens the port menu', await items.count() === ws.forwardedPorts.length)
   const highlight = page.locator('[role=menuitem][data-highlighted]')
-  check('its first port is highlighted', await highlight.textContent() === `:${first}`)
+  check('its first port is highlighted', await highlight.textContent() === label(first))
   await page.waitForTimeout(200)
   await page.screenshot({ path: `${SHOTS}/preview-port-menu.png`, clip: { x: 1000, y: 0, width: 400, height: 140 } })
   await page.keyboard.press('Enter')
   await tab(first).waitFor({ state: 'visible', timeout: 5000 })
-  check(`Enter switches the open pane to :${first}`, await tab(first).isVisible())
-  check('the pane did not duplicate', await page.getByText(/^Preview :\d+$/).count() === 1)
+  check(`Enter switches the open pane to ${label(first)}`, await tab(first).isVisible())
+  check('the pane did not duplicate', await page.getByText(/^Preview :\d+(→:\d+)?$/).count() === 1)
 
   // (3) Escape returns focus to the terminal.
   await page.locator('.xterm-screen').first().click()

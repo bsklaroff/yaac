@@ -111,11 +111,12 @@ The server never learns of the move; the client reports it:
 - **The desktop app** keeps a remap table (`DesktopForwarder.remaps`) and
   pushes it to the webapp over IPC (`onForwardRemaps` on the preload
   bridge). The webapp's `useLocalPorts` swaps each remapped forward's host
-  port for the local one, so the preview pane and its port labels reach
-  the workspace.
+  port for the local one, so the preview pane reaches the workspace and
+  its port labels read `:3000→:3001`.
 - **The iPhone app** binds a free port when the offered one is taken and
-  loads its preview from whichever it bound; the webapp never needs to
-  know.
+  loads its preview from whichever it bound. Nothing else on the phone can
+  use that port (see ios/README.md "Previews"), so the webapp never needs
+  to know, and labels the port with the workspace's alone.
 
 ## Containerless servers
 
