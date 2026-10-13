@@ -2,6 +2,7 @@ import { workspaceDriver } from '#drivers/driver'
 import {
   getAgentSessionsFor,
   listStoppedWorkspaceRows,
+  openingPrompt,
   type AgentSessionLinkRow,
   type StoppedRowCursor,
   type WorkspaceRow,
@@ -60,7 +61,7 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
   const entries = rows.map((r): StoppedWorkspaceEntry => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
     const first = links[0]
-    const prompt = first?.firstPrompt
+    const prompt = openingPrompt(links)
     return {
       workspaceId: r.workspaceId,
       projectId: r.projectId,

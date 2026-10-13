@@ -90,7 +90,16 @@ function stubPlatform(platform: NodeJS.Platform, arch: string): void {
   Object.defineProperty(process, 'arch', { value: arch, configurable: true })
 }
 
-interface Seeded { projectId: string; workspaceId: string; prompt?: string; title?: string; stopped?: boolean }
+interface Seeded {
+  projectId: string
+  workspaceId: string
+  prompt?: string
+  title?: string
+  stopped?: boolean
+  /** Open with a conversation that captured no message, as a chat tab left
+   *  blank does; the prompt then opens the second one. */
+  blankFirst?: boolean
+}
 
 function session(overrides: Partial<Seeded> = {}): Seeded {
   return { projectId: P, workspaceId: 's1', prompt: PROMPT, ...overrides }
@@ -100,11 +109,14 @@ function session(overrides: Partial<Seeded> = {}): Seeded {
  *  conversation with the opening message. */
 async function seed(...workspaces: Seeded[]): Promise<void> {
   const real = await vi.importActual<typeof storeModule>('#db/workspace-store')
-  for (const { projectId, workspaceId, prompt, title, stopped } of workspaces) {
+  for (const { projectId, workspaceId, prompt, title, stopped, blankFirst } of workspaces) {
     await applyWorkspaceEvent({ type: 'workspace-created', projectId, workspaceId })
     await applyWorkspaceEvent({
       type: 'sessions-launched', projectId, workspaceId,
-      sessions: [{ agentSessionId: `${workspaceId}-a`, tool: 'claude', firstPrompt: prompt }],
+      sessions: [
+        ...(blankFirst ? [{ agentSessionId: `${workspaceId}-blank`, tool: 'claude' as const }] : []),
+        { agentSessionId: `${workspaceId}-a`, tool: 'claude', firstPrompt: prompt },
+      ],
     })
     if (title !== undefined) await real.setWorkspaceTitle(projectId, workspaceId, title)
     if (stopped) await applyWorkspaceEvent({ type: 'workspace-stopped', projectId, workspaceId })
@@ -316,6 +328,15 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
     expect(mockExec).not.toHaveBeenCalled()
+  })
+
+  it('titles from a later conversation when the first opened with no message', async () => {
+    await seedCache()
+    await seed(session({ blankFirst: true }))
+    await reconcileGeneratedTitles()
+    await flush()
+    expect(payloadOf(inferences()[0])).toContain(PROMPT)
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE, { ifUntitled: true })
   })
 
   it('skips titled, promptless, and stopped workspaces, and prompts short enough to label themselves', async () => {

@@ -22,12 +22,12 @@
 export {
   deleteProjectAgentSessions,
   firstAgentSession,
-  firstAgentSessionsFor,
   getAgentSessionsFor,
   getProjectAgentSessions,
   listActiveAgentSessions,
   listUncapturedStoppedSessions,
   listWorkspaceAgentSessions,
+  openingPrompt,
   recordedConversationHandles,
   type AgentSessionLinkRow,
 } from './agent-session-store'

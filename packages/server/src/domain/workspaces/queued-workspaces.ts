@@ -38,6 +38,7 @@ import {
   insertQueuedWorkspace,
   listQueuedWorkspaceRows,
   listWorkspaceRows,
+  openingPrompt,
   releaseQueuedChildren,
   releaseQueuedWorkspace,
   updateQueuedWorkspace as updateQueuedWorkspaceRow,
@@ -217,13 +218,14 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
     .filter((w) => w.stoppedAt !== undefined && parents.has(`${w.projectId}/${w.workspaceId}`))
   const sessions = await getAgentSessionsFor(held)
   return held.map((w) => {
-    const first = sessions.get(`${w.projectId}/${w.workspaceId}`)?.[0]
+    const links = sessions.get(`${w.projectId}/${w.workspaceId}`) ?? []
+    const prompt = openingPrompt(links)
     return {
       workspaceId: w.workspaceId,
       projectId: w.projectId,
-      tool: first?.tool ?? 'claude',
+      tool: links[0]?.tool ?? 'claude',
       ...(w.title !== undefined ? { title: w.title } : {}),
-      ...(first?.firstPrompt !== undefined ? { prompt: first.firstPrompt } : {}),
+      ...(prompt !== undefined ? { prompt } : {}),
       ...(w.groupId !== undefined ? { groupId: w.groupId } : {}),
       stoppedAt: formatUtcTimestamp((w.stoppedAt ?? w.createdAt).getTime()),
       ...(w.deathReason !== undefined ? { deathReason: w.deathReason } : {}),

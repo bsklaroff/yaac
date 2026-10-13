@@ -1,8 +1,8 @@
 /**
  * Reconcile step that gives untitled live workspaces a model-generated title
- * summarizing their first user message. It is written to the same column as
- * a user rename, and only if the row is still untitled, so a rename made
- * while the model runs wins.
+ * summarizing their opening message (`openingPrompt`). It is written to the
+ * same column as a user rename, and only if the row is still untitled, so a
+ * rename made while the model runs wins.
  *
  * Drafts and queued entries without a user title are titled from their
  * prompt the same way; the write only lands if the prompt is unchanged.
@@ -13,10 +13,11 @@
  * run, which also stops regeneration after a user clears a generated title.
  */
 import {
-  firstAgentSessionsFor,
+  getAgentSessionsFor,
   listDraftWorkspaceRows,
   listQueuedWorkspaceRows,
   listWorkspaceRows,
+  openingPrompt,
   setDraftWorkspaceTitle,
   setQueuedWorkspaceTitle,
   setWorkspaceTitle,
@@ -35,10 +36,10 @@ export async function reconcileGeneratedTitles(): Promise<void> {
 
   const untitled = (await listWorkspaceRows())
     .filter((r) => r.stoppedAt === undefined && r.title === undefined)
-  const firsts = await firstAgentSessionsFor(untitled)
+  const sessions = await getAgentSessionsFor(untitled)
   for (const { projectId, workspaceId } of untitled) {
     const key = `${projectId}/${workspaceId}`
-    const prompt = firsts.get(key)?.firstPrompt
+    const prompt = openingPrompt(sessions.get(key) ?? [])
     if (prompt === undefined) continue
     void generateOnce(key, key, prompt, (t) => setWorkspaceTitle(projectId, workspaceId, t, { ifUntitled: true }))
   }
