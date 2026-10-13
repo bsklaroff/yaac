@@ -56,36 +56,18 @@ describe('optimistic deleted tracking', () => {
   })
 })
 
-describe('read-waiting tracking', () => {
-  it('markWaitingRead stores the spell timestamp, overwriting an older one', () => {
-    useUiStore.getState().markWaitingRead('a', 100)
-    useUiStore.getState().markWaitingRead('a', 100)
-    useUiStore.getState().markWaitingRead('b', 200)
-    useUiStore.getState().markWaitingRead('a', 300)
-    expect(useUiStore.getState().readWaiting).toEqual({ a: 300, b: 200 })
+describe('markWaitingSeen', () => {
+  it('shows the workspace as read in the held snapshot, leaving the others', () => {
+    const w = (workspaceId: string) => ({ workspaceId, status: 'waiting' }) as WorkspaceListEntry
+    useUiStore.setState({ snapshot: { workspaces: [w('a'), w('b')] } as unknown as ServerSnapshot })
+    useUiStore.getState().markWaitingSeen('a')
+    expect(useUiStore.getState().snapshot?.workspaces.map((x) => x.waitingSeen)).toEqual([true, undefined])
   })
 
-  it('syncWaitingRead drops marks whose spell is over', () => {
-    useUiStore.getState().markWaitingRead('a', 100)
-    useUiStore.getState().markWaitingRead('b', 200)
-    useUiStore.getState().markWaitingRead('c', 300)
-    // 'a' ran again (gone from the waiting set); 'b' is waiting anew with a
-    // fresh spell; 'c' is unchanged; 'd' was never read — must not be added.
-    useUiStore.getState().syncWaitingRead([
-      { workspaceId: 'b', waitingSinceMs: 250 },
-      { workspaceId: 'c', waitingSinceMs: 300 },
-      { workspaceId: 'd', waitingSinceMs: 400 },
-    ])
-    expect(useUiStore.getState().readWaiting).toEqual({ c: 300 })
-  })
-
-  it('syncWaitingRead keeps the same state when nothing changed', () => {
-    useUiStore.getState().markWaitingRead('a', 100)
+  it('is a no-op before the first snapshot', () => {
+    useUiStore.setState({ snapshot: undefined })
     const before = useUiStore.getState()
-    useUiStore.getState().syncWaitingRead([
-      { workspaceId: 'a', waitingSinceMs: 100 },
-      { workspaceId: 'other', waitingSinceMs: 500 },
-    ])
+    useUiStore.getState().markWaitingSeen('a')
     expect(useUiStore.getState()).toBe(before)
   })
 })
@@ -103,66 +85,47 @@ describe('isUnseenDeath', () => {
 })
 
 describe('isUnreadWaiting', () => {
-  it('flags a waiting session with no mark or a mark from an older spell', () => {
-    const s = { workspaceId: 'a', status: 'waiting' as const, waitingSinceMs: 200 }
-    expect(isUnreadWaiting(s, {})).toBe(true)
-    expect(isUnreadWaiting(s, { a: 100 })).toBe(true)
-    expect(isUnreadWaiting(s, { a: 200 })).toBe(false)
+  it('flags a waiting workspace the server has not marked seen', () => {
+    expect(isUnreadWaiting({ status: 'waiting' })).toBe(true)
+    expect(isUnreadWaiting({ status: 'waiting', waitingSeen: true })).toBe(false)
   })
 
-  it('never flags a running session', () => {
-    expect(isUnreadWaiting({ workspaceId: 'a', status: 'running' }, {})).toBe(false)
-  })
-
-  it('normalizes a missing waitingSinceMs to 0', () => {
-    const s = { workspaceId: 'a', status: 'waiting' as const }
-    expect(isUnreadWaiting(s, {})).toBe(true)
-    expect(isUnreadWaiting(s, { a: 0 })).toBe(false)
+  it('never flags a running workspace', () => {
+    expect(isUnreadWaiting({ status: 'running' })).toBe(false)
   })
 })
 
 describe('unreadWaitingByProject', () => {
-  const s = (workspaceId: string, projectId: string, status: ListedAgentStatus, waitingSinceMs?: number) =>
-    ({ workspaceId, projectId, status, waitingSinceMs })
+  const s = (workspaceId: string, projectId: string, status: ListedAgentStatus, waitingSeen?: true) =>
+    ({ workspaceId, projectId, status, ...(waitingSeen ? { waitingSeen } : {}) })
 
-  it('counts only unread waiting sessions, grouped by project', () => {
-    const sessions = [
-      s('w1', 'p1', 'waiting', 100),
-      s('w2', 'p1', 'waiting', 200),
+  it('counts only unread waiting workspaces, grouped by project', () => {
+    const workspaces = [
+      s('w1', 'p1', 'waiting'),
+      s('w2', 'p1', 'waiting', true),
       s('r1', 'p1', 'running'),
-      s('w3', 'p2', 'waiting', 300),
+      s('w3', 'p2', 'waiting'),
     ]
-    expect(unreadWaitingByProject(sessions, { w2: 200 })).toEqual({ p1: 1, p2: 1 })
+    expect(unreadWaitingByProject(workspaces)).toEqual({ p1: 1, p2: 1 })
   })
 
-  it('counts an asking session even once viewed, and no background one', () => {
-    const sessions = [{ ...s('a1', 'p1', 'waiting', 100), asking: true as const }, s('b1', 'p1', 'background')]
-    expect(unreadWaitingByProject(sessions, { a1: 100 })).toEqual({ p1: 1 })
+  it('counts an asking workspace even once viewed, and no background one', () => {
+    const workspaces = [{ ...s('a1', 'p1', 'waiting', true), asking: true as const }, s('b1', 'p1', 'background')]
+    expect(unreadWaitingByProject(workspaces)).toEqual({ p1: 1 })
   })
 
-  it('re-counts a session whose mark is from an earlier spell', () => {
-    const sessions = [s('w1', 'p1', 'waiting', 500)]
-    expect(unreadWaitingByProject(sessions, { w1: 100 })).toEqual({ p1: 1 })
+  it('omits projects with no unread waiting workspaces', () => {
+    const workspaces = [s('w1', 'p1', 'waiting', true), s('r1', 'p2', 'running')]
+    expect(unreadWaitingByProject(workspaces)).toEqual({})
   })
 
-  it('omits projects with no unread waiting sessions', () => {
-    const sessions = [s('w1', 'p1', 'waiting', 100), s('r1', 'p2', 'running')]
-    expect(unreadWaitingByProject(sessions, { w1: 100 })).toEqual({})
-  })
-
-  it('excludes sessions whose delete is in flight (pendingDeleteIds)', () => {
-    // A just-deleted session, not yet reflected in the snapshot, must not
-    // count on its way out.
-    const sessions = [s('w1', 'p1', 'waiting'), s('w2', 'p1', 'waiting', 200)]
-    expect(unreadWaitingByProject(sessions, {}, ['w1'])).toEqual({ p1: 1 })
-  })
-
-  it('excludes server-marked stopping sessions', () => {
-    const sessions = [
-      { workspaceId: 'w1', projectId: 'p1', status: 'waiting' as const, stopping: true },
-      s('w2', 'p1', 'waiting', 200),
+  it('excludes workspaces whose stop is in flight or that the server marks stopping', () => {
+    const workspaces = [
+      s('w1', 'p1', 'waiting'),
+      { ...s('w2', 'p1', 'waiting'), stopping: true },
+      s('w3', 'p1', 'waiting'),
     ]
-    expect(unreadWaitingByProject(sessions, {})).toEqual({ p1: 1 })
+    expect(unreadWaitingByProject(workspaces, ['w1'])).toEqual({ p1: 1 })
   })
 })
 

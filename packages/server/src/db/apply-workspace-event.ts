@@ -10,6 +10,7 @@ import {
   recordWorkspaceLife,
   recordWorkspaceResumed,
   recordWorkspaceStopped,
+  recordWaitingUnseen,
   setWorkspaceBaseBranch,
   setWorkspaceEffort,
   setWorkspacePermissionMode,
@@ -64,6 +65,9 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
       return
     case 'effort-changed':
       await setWorkspaceEffort(event.projectId, event.workspaceId, event.effort)
+      return
+    case 'waiting-ended':
+      await recordWaitingUnseen(event.projectId, event.workspaceId)
       return
     case 'workspace-stopped':
       await recordWorkspaceStopped(event.projectId, event.workspaceId, event.cause)

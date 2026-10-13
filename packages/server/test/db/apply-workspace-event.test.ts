@@ -5,6 +5,7 @@ import { applyWorkspaceEvent } from '#db/apply-workspace-event'
 import {
   clearWorkspaceStopped,
   getProjectWorkspaceRows,
+  recordWaitingSeen,
   recordWorkspaceCreated,
   setWorkspaceTitle,
 } from '#db/workspace-store'
@@ -100,6 +101,18 @@ describe('applyWorkspaceEvent', () => {
     expect(await effort()).toBe('low')
     await created('wt-e', { resume: true, permissionMode: 'bypass' })
     expect(await effort()).toBe('low')
+  })
+
+  // The sidebar's unread dot: going back to work makes the next waiting
+  // spell unread, and a workspace restart does not.
+  it('clears waitingSeen when waiting ends, and keeps it over a resume', async () => {
+    const seen = async (): Promise<boolean | undefined> => (await rowOf('wt-w'))?.waitingSeen
+    await created('wt-w')
+    await recordWaitingSeen(PROJ, 'wt-w')
+    await created('wt-w', { resume: true })
+    expect(await seen()).toBe(true)
+    await applyWorkspaceEvent({ type: 'waiting-ended', projectId: PROJ, workspaceId: 'wt-w' })
+    expect(await seen()).toBe(false)
   })
 
   // A workspace id is claimed once across all projects: otherwise a create

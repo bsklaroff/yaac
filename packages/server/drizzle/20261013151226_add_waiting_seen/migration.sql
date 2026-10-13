@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "waiting_seen" boolean DEFAULT false NOT NULL;

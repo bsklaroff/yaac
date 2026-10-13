@@ -1,9 +1,9 @@
 import { workspaceDriver } from '#drivers/driver'
-import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
+import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost, onWaitingEnded } from '#runtime/status'
 import { acpLaunchModel } from '#runtime/agents'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
-import { getProjectRow, getWorkspaceRow, recordedConversationHandles } from '#db'
+import { applyWorkspaceEvent, getProjectRow, getWorkspaceRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
@@ -74,6 +74,11 @@ export async function attachConvergence(opts: {
   // Once a driver connection drops, a healthy stream no longer implies
   // tmux is alive, so wake the stale reaper to run its own probes.
   onStreamHealthLost(() => fireChange('status-streams'))
+  // A workspace going back to work makes its next waiting spell unread.
+  onWaitingEnded((projectId, workspaceId) => {
+    applyWorkspaceEvent({ type: 'waiting-ended', projectId, workspaceId })
+      .catch((err: unknown) => serverLog(`[server] record waiting end failed: ${errorText(err)}`))
+  })
 
   await workspaceDriver().start({
     trigger: fireChange,

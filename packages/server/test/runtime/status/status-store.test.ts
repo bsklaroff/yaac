@@ -9,6 +9,7 @@ import {
   setLiveAgents,
   onLiveAgentsChanged,
   onStreamHealthLost,
+  onWaitingEnded,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
@@ -269,5 +270,82 @@ describe('onLiveAgentsChanged', () => {
     setAgentStatus('demo', 's1', 'claude-1', 'running')
     setAgentStatus('demo', 's1', 'claude-1', 'waiting')
     expect(listener).not.toHaveBeenCalled()
+  })
+})
+
+describe('onWaitingEnded', () => {
+  // Clears the row's `waitingSeen`. A workspace with no entry reads as
+  // waiting, so an agent first classified mid-turn (after a server restart)
+  // fires, and one first classified idle does not.
+  it('fires when the workspace goes from needing the user to work', () => {
+    const listener = vi.fn()
+    onWaitingEnded(listener)
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    expect(listener).not.toHaveBeenCalled()
+    setAgentStatus('demo', 's1', '%0', 'running')
+    setAgentStatus('demo', 's1', '%0', 'running')
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(listener).toHaveBeenCalledWith('demo', 's1')
+    setAgentStatus('demo', 's1', '%0', 'background')
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    expect(listener).toHaveBeenCalledTimes(1)
+    setAgentStatus('demo', 's2', '%0', 'running')
+    expect(listener).toHaveBeenLastCalledWith('demo', 's2')
+  })
+
+  // The workspace's spell goes on while one conversation still waits, so a
+  // second conversation's turn must not make it unread.
+  it('does not fire for one conversation working while another waits', () => {
+    const listener = vi.fn()
+    onWaitingEnded(listener)
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%1', 'waiting')
+    setAgentStatus('demo', 's1', '%1', 'running')
+    expect(listener).not.toHaveBeenCalled()
+    setAgentStatus('demo', 's1', '%0', 'running')
+    expect(listener).toHaveBeenCalledTimes(1)
+  })
+
+  // The seen conversation closing after another has finished leaves the
+  // workspace waiting, but on the other's reply, which nobody has seen.
+  it('fires when the spell\'s conversation closes while a later one waits', () => {
+    vi.useFakeTimers({ now: 1_000 })
+    const listener = vi.fn()
+    onWaitingEnded(listener)
+    setLiveAgents('demo', 's1', [{ handle: '%0', tool: 'claude' }, { handle: '%1', tool: 'claude' }])
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%1', 'running')
+    vi.setSystemTime(2_000)
+    setAgentStatus('demo', 's1', '%1', 'waiting')
+    expect(listener).not.toHaveBeenCalled()
+    setLiveAgents('demo', 's1', [{ handle: '%1', tool: 'claude' }])
+    expect(listener).toHaveBeenCalledTimes(1)
+    vi.useRealTimers()
+  })
+
+  // A first classification replaces the attach-time stamp, which is not a
+  // spell ending: an agent idle across a server restart stays read.
+  it('does not fire when an attached workspace is first classified waiting', () => {
+    vi.useFakeTimers({ now: 1_000 })
+    const listener = vi.fn()
+    onWaitingEnded(listener)
+    setWorkspaceStreamHealth('demo', 's1', true)
+    vi.setSystemTime(2_000)
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    expect(listener).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+
+  // The seen conversation closing while another works ends the spell too.
+  it('fires when the waiting conversation closes while another works', () => {
+    const listener = vi.fn()
+    onWaitingEnded(listener)
+    setLiveAgents('demo', 's1', [{ handle: '%0', tool: 'claude' }, { handle: '%1', tool: 'claude' }])
+    setAgentStatus('demo', 's1', '%0', 'waiting')
+    setAgentStatus('demo', 's1', '%1', 'running')
+    expect(listener).not.toHaveBeenCalled()
+    setLiveAgents('demo', 's1', [{ handle: '%1', tool: 'claude' }])
+    expect(listener).toHaveBeenCalledTimes(1)
+    expect(listener).toHaveBeenCalledWith('demo', 's1')
   })
 })

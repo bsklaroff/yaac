@@ -181,7 +181,6 @@ export function WorkspaceRow({
 }): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
-  const readWaiting = useUiStore((s) => s.readWaiting)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -198,7 +197,7 @@ export function WorkspaceRow({
   // No hover on touch: the actions menu is always shown and the marquee
   // never runs.
   const isMobile = useIsMobile()
-  const unread = isUnreadWaiting(workspace, readWaiting)
+  const unread = isUnreadWaiting(workspace)
   const stopping = isTerminating(workspace, pendingDeleteIds)
 
   const onConfirmDelete = (): void => {

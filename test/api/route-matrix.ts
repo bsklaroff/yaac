@@ -170,6 +170,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/restart', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: ID.workspace }, access: 'owner', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/mark-death-seen', body: { projectId: ID.project, workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/mark-waiting-seen', body: { projectId: ID.project, workspaceId: ID.workspace, waitingSinceMs: 0 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/mark-all-deaths-seen', body: { projectId: ID.project }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // The in-workspace command channel, authenticated by the calling
   // workspace's own credential rather than a user. Containerless answers 401

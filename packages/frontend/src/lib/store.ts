@@ -212,7 +212,6 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   // A restart keeps the workspace id, so its layout survives it.
   layouts: jsonRecord('yaac.layouts.v2', isPaneLayout),
   viewMode: oneOf('yaac.viewmode.v1', ['tiles', 'tabs']),
-  readWaiting: jsonRecord('yaac.readwaiting.v1', (v): v is number => typeof v === 'number'),
   pinnedUsageMetric: { key: 'yaac.pinnedusage.v1', parse: (raw) => raw || undefined, serialize: (v) => v },
   soundEnabled: flag('yaac.sound.v1'),
   chatDrafts: {
@@ -314,15 +313,12 @@ export function paneViewKey(workspaceId: string, pane: string): string {
 }
 
 /**
- * Whether a workspace is waiting and hasn't been viewed since it started
- * waiting. A read mark stores the waitingSinceMs it saw, so waiting again
- * later flags the workspace again. A missing waitingSinceMs counts as 0.
+ * Whether a workspace is waiting and its owner hasn't viewed it since its
+ * agents last started a turn. The server keeps `waitingSeen`, so every
+ * client agrees.
  */
-export function isUnreadWaiting(
-  workspace: Pick<WorkspaceListEntry, 'workspaceId' | 'status' | 'waitingSinceMs'>,
-  readWaiting: Record<string, number>,
-): boolean {
-  return workspace.status === 'waiting' && readWaiting[workspace.workspaceId] !== (workspace.waitingSinceMs ?? 0)
+export function isUnreadWaiting(workspace: Pick<WorkspaceListEntry, 'status' | 'waitingSeen'>): boolean {
+  return workspace.status === 'waiting' && workspace.waitingSeen !== true
 }
 
 /**
@@ -343,14 +339,13 @@ export function isUnseenDeath(
  * `pendingDeleteIds`) don't count.
  */
 export function unreadWaitingByProject(
-  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectId' | 'status' | 'waitingSinceMs' | 'stopping' | 'asking'>[],
-  readWaiting: Record<string, number>,
+  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectId' | 'status' | 'waitingSeen' | 'stopping' | 'asking'>[],
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {}
   for (const s of workspaces) {
     if (s.stopping || pendingDeleteIds.includes(s.workspaceId)) continue
-    if (s.asking || isUnreadWaiting(s, readWaiting)) {
+    if (s.asking || isUnreadWaiting(s)) {
       out[s.projectId] = (out[s.projectId] ?? 0) + 1
     }
   }
@@ -594,9 +589,6 @@ interface UiState {
   /** Just-stopped workspaces, shown in the stopped list until the server's
    *  list includes them. */
   optimisticStopped: StoppedWorkspaceEntry[]
-  /** Read marks: workspaceId → the waitingSinceMs the user viewed (see
-   *  isUnreadWaiting). Saved; syncWaitingRead drops stale marks. */
-  readWaiting: Record<string, number>
   /** Shortcut bindings (command id → chord): the defaults until the saved
    *  overrides load. */
   bindings: BindingMap
@@ -726,12 +718,9 @@ interface UiState {
   /** Drop an optimistic stopped entry, once the server's list has it or on
    *  restart. */
   removeOptimisticStopped: (workspaceId: string) => void
-  /** Mark a waiting workspace as viewed. Pass its waitingSinceMs (0 if
-   *  missing). */
-  markWaitingRead: (workspaceId: string, waitingSinceMs: number) => void
-  /** Drop read marks that no longer match a waiting workspace. Only keeps the
-   *  saved map from growing; isUnreadWaiting is correct without it. */
-  syncWaitingRead: (waiting: { workspaceId: string; waitingSinceMs: number }[]) => void
+  /** Show a workspace as read in the held snapshot, ahead of the server
+   *  recording it (`/workspace/mark-waiting-seen`). */
+  markWaitingSeen: (workspaceId: string) => void
 }
 
 /** Open a special pane as its own column (if not already open) and focus it. */
@@ -787,7 +776,6 @@ export const useUiStore = create<UiState>((set) => ({
   viewMode: defaultViewMode(),
   pinnedUsageMetric: null,
   chatDrafts: {},
-  readWaiting: {},
   stoppedExpanded: false,
   sidebarStatuses: [],
   // Every saved field's default goes above this line, so a loaded value wins.
@@ -1122,19 +1110,15 @@ export const useUiStore = create<UiState>((set) => ({
       ? { optimisticStopped: s.optimisticStopped.filter((e) => e.workspaceId !== workspaceId) }
       : s
   )),
-  markWaitingRead: (workspaceId, waitingSinceMs) => set((s) => (
-    s.readWaiting[workspaceId] === waitingSinceMs
-      ? s
-      : { readWaiting: { ...s.readWaiting, [workspaceId]: waitingSinceMs } }
-  )),
-  syncWaitingRead: (waiting) => set((s) => {
-    const current = new Map(waiting.map((w) => [w.workspaceId, w.waitingSinceMs]))
-    const kept: Record<string, number> = {}
-    for (const [id, since] of Object.entries(s.readWaiting)) {
-      if (current.get(id) === since) kept[id] = since
+  markWaitingSeen: (workspaceId) => set((s) => (
+    s.snapshot === undefined ? s : {
+      snapshot: {
+        ...s.snapshot,
+        workspaces: s.snapshot.workspaces.map((w) => (
+          w.workspaceId === workspaceId ? { ...w, waitingSeen: true as const } : w)),
+      },
     }
-    return Object.keys(kept).length === Object.keys(s.readWaiting).length ? s : { readWaiting: kept }
-  }),
+  )),
 }))
 
 // Save each persisted field as it changes, and mirror the selection into

@@ -26,6 +26,7 @@ export type WorkspaceEvent =
   | SessionsActive
   | PermissionModeChanged
   | EffortChanged
+  | WaitingEnded
   | WorkspaceStopped
 
 /**
@@ -225,6 +226,19 @@ export interface EffortChanged {
   projectId: string
   workspaceId: string
   effort: string
+}
+
+/**
+ * The workspace's waiting spell ended: it went back to work (including an
+ * agent found mid-turn after a server restart), or the conversation whose
+ * wait began the spell stopped waiting while another still waits. The
+ * spell it waits in next is new to the user, so the row's `waitingSeen`
+ * clears.
+ */
+export interface WaitingEnded {
+  type: 'waiting-ended'
+  projectId: string
+  workspaceId: string
 }
 
 

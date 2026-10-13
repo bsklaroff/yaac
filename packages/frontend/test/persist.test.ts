@@ -72,10 +72,6 @@ const CASES: { field: keyof typeof initial; key: string; value: unknown; stored:
       ['"a string"', undefined],
     ],
   },
-  {
-    field: 'readWaiting', key: 'yaac.readwaiting.v1', value: { a: 100, b: 200 }, stored: '{"a":100,"b":200}',
-    loads: [[JSON.stringify({ a: 100, b: 'nope', c: null }), { a: 100 }], ['["a","b"]', undefined]],
-  },
 ]
 
 describe.each(CASES)('$field', ({ field, key, value, stored, loads }) => {

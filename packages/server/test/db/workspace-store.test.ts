@@ -18,6 +18,7 @@ import {
   listProjectWorkspaceIds,
   listSpareWorkspaceIds,
   recordDeathSeen,
+  recordWaitingSeen,
   recordWorkspaceCreated,
   recordWorkspaceStopped,
   claimSpareWorkspace,
@@ -161,6 +162,19 @@ describe('session store', () => {
       await recordDeathSeen(PROJ, 'spare')
       await setWorkspaceTitle(PROJ, 'spare', 'nope')
       expect(await listWorkspaceRows()).toEqual([])
+    })
+  })
+
+  describe('recordWaitingSeen', () => {
+    it('marks the workspace read, and creates no row', async () => {
+      await create('sid-1')
+      const seen = async () => (await getProjectWorkspaceRows(PROJ)).get('sid-1')?.waitingSeen
+      expect(await seen()).toBe(false)
+      await recordWaitingSeen(PROJ, 'sid-1')
+      expect(await seen()).toBe(true)
+
+      await recordWaitingSeen(PROJ, 'spare')
+      expect((await listWorkspaceRows()).map((r) => r.workspaceId)).toEqual(['sid-1'])
     })
   })
 
