@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { constants as C, type Stats } from 'node:fs'
 import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
@@ -111,6 +111,7 @@ function fsFailure(err: unknown, rel: string): unknown {
     case 'ENOTEMPTY': return new ServerError('CONFLICT', `${rel} already exists`)
     case 'EISDIR': return new ServerError('VALIDATION', `${rel} is a folder`)
     case 'ELOOP': return new ServerError('VALIDATION', `${rel} is a symlink loop`)
+    case 'ENAMETOOLONG': return new ServerError('VALIDATION', `${rel}: name too long`)
     case 'EINVAL': return new ServerError('VALIDATION', `can't move ${rel} into itself`)
     case 'EACCES':
     case 'EPERM': return new ServerError('VALIDATION', `permission denied: ${rel}`)
@@ -161,10 +162,11 @@ async function readEditable(fh: FileHandle): Promise<Buffer | null> {
   return buf.subarray(0, at)
 }
 
-async function writeAll(fh: FileHandle, data: Buffer): Promise<void> {
+/** Write all of `data` at file offset `start`. */
+async function writeAll(fh: FileHandle, data: Uint8Array, start = 0): Promise<void> {
   let at = 0
   while (at < data.length) {
-    at += (await fh.write(data, at, data.length - at, at)).bytesWritten
+    at += (await fh.write(data, at, data.length - at, start + at)).bytesWritten
   }
 }
 
@@ -576,6 +578,101 @@ async function existingVersion(co: Checkout, rel: string): Promise<string> {
     }
     throw err
   }
+}
+
+/** Write a request body into `fh` from its start, returning its size. */
+async function writeBody(fh: FileHandle, body: ReadableStream<Uint8Array> | null): Promise<number> {
+  let size = 0
+  for await (const chunk of body ?? []) {
+    await writeAll(fh, chunk, size)
+    size += chunk.length
+  }
+  return size
+}
+
+/**
+ * Take a request body into a file in `dir` that is unlinked as soon as it
+ * is made, so the agent cannot reach or swap it and a crash leaves nothing
+ * behind. Read it back through the returned handle, which the caller closes.
+ */
+async function stageBody(dir: PinnedDir, body: ReadableStream<Uint8Array> | null): Promise<{ fh: FileHandle; size: number }> {
+  const tmp = dir.child(`.yaac-upload-${randomBytes(8).toString('hex')}`)
+  const fh = await fs.open(tmp, C.O_RDWR | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, 0o600)
+  try {
+    await fs.unlink(tmp)
+    return { fh, size: await writeBody(fh, body) }
+  } catch (err) {
+    await fh.close()
+    throw err
+  }
+}
+
+/**
+ * Write a file the webapp uploads, making any missing parent folders. A
+ * conflict if something is already there, unless `replace`.
+ *
+ * A new file is streamed into place as the request arrives, and removed if
+ * the upload fails partway. A replacement is staged in full first
+ * (`stageBody`), so a dropped upload leaves the original untouched. Only
+ * then, under the edit lock so two replaces never interleave, are the bytes
+ * copied into the target in place, as a save writes it: following a link
+ * while it stays inside, keeping the mode and inode.
+ */
+export async function uploadWorkspaceFile(
+  principal: Actor,
+  idOrName: string,
+  relPath: string,
+  body: ReadableStream<Uint8Array> | null,
+  replace: boolean,
+): Promise<{ path: string }> {
+  const co = await openCheckout(idOrName, principal)
+  const rel = checkPath(co, relPath)
+  const { dir, name } = await openParent(co, rel, true)
+  // O_EXCL never creates through a link, dangling or not.
+  const create = (): Promise<FileHandle> =>
+    fs.open(dir.child(name), C.O_WRONLY | C.O_CREAT | C.O_EXCL | C.O_NOFOLLOW, 0o666)
+  try {
+    if (!replace) {
+      const fh = await create().catch((err: unknown) => { throw fsFailure(err, rel) })
+      try {
+        await writeBody(fh, body)
+      } catch (err) {
+        await fs.unlink(dir.child(name)).catch(() => {})
+        throw err
+      } finally {
+        await fh.close()
+      }
+      return { path: rel }
+    }
+    const staged = await stageBody(dir, body)
+    try {
+      await mutate(co.workspaceId, async () => {
+        const fh = await create().catch((err: unknown) => {
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw fsFailure(err, rel)
+          return openFile(co, rel, C.O_WRONLY)
+        })
+        try {
+          // Truncated only once open, after the descriptor is known to be inside.
+          await fh.truncate(0)
+          const buf = Buffer.alloc(1 << 20)
+          for (let at = 0; at < staged.size;) {
+            const { bytesRead } = await staged.fh.read(buf, 0, buf.length, at)
+            if (bytesRead === 0) break
+            await writeAll(fh, buf.subarray(0, bytesRead), at)
+            at += bytesRead
+          }
+        } finally {
+          await fh.close()
+        }
+      })
+    } finally {
+      await staged.fh.close()
+    }
+  } finally {
+    await dir.close()
+  }
+  await reopenInWorkspace(co, rel)
+  return { path: rel }
 }
 
 /** Create a folder and any missing parents; a conflict if anything is

@@ -63,6 +63,7 @@ export {
   readWorkspaceFileAtRev,
   readWorkspaceMedia,
   renameWorkspaceEntry,
+  uploadWorkspaceFile,
   writeWorkspaceFile,
 } from './files'
 export { runMamaCommand } from './mama'

@@ -5,7 +5,7 @@ kinds of pane, all ordinary layout leaves next to terminals:
 
 - **`files`**: the explorer, one per workspace. A tree, a filter that doubles
   as quick-open, a "show ignored" toggle, git status colors, line counts
-  against the diff base, and create / rename / delete.
+  against the diff base, create / rename / delete, and uploads.
 - **`changes`**: the Changes pane, one per workspace: the workspace's review
   diff. It is the same component as the explorer (`WorkspaceFiles` with
   `changedOnly`), listing only the changed files, each with its diff.
@@ -53,6 +53,7 @@ macOS virtiofs, the same process user under containerless).
 | `GET /workspace/:id/file?path=&known=` | `{ path, version, size, binary, content? }` |
 | `GET /workspace/:id/raw?path=` | a media file's bytes (see "Media files"), honoring one `Range` |
 | `PUT /workspace/:id/file` | `{ path, content, baseVersion }` → `{ path, version, size }`, or 409 |
+| `PUT /workspace/:id/upload?path=&replace=` | streams the raw body into a file, making missing folders; 409 if taken, unless `replace=1` |
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
 | `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
@@ -225,7 +226,24 @@ A save never creates a file: a non-null `baseVersion` for a missing file is a
 file. Only `baseVersion: null` creates, with `O_CREAT | O_EXCL | O_NOFOLLOW`
 in the pinned parent (making missing folders), never through a link.
 
-Create, rename and delete do not touch git. Their effect shows in the colors
+### Uploads
+
+`upload` writes the request body to disk as it arrives, so a file of any
+size costs the server no memory (the server sets no request timeout, for
+long uploads). A new file is created the way a save creates one, with
+`O_CREAT | O_EXCL | O_NOFOLLOW` in the pinned parent, and removed if the
+upload fails partway; anything already there is a 409. With `replace=1` the
+body is staged first, in a file beside the target that is unlinked as soon
+as it is made, so the agent can never reach it and a crash leaves nothing
+behind. A dropped upload therefore leaves the original untouched. Once the
+body is complete, the server opens the target through the confined root
+(or creates it), truncates it only after the descriptor is verified, and
+copies the staged bytes in place under the edit mutex, so two replaces of
+one file never interleave. The file keeps its mode and inode, and the pod
+opens it afterwards as after a save. A new file's upload skips the mutex,
+so a long one never holds up a save.
+
+Create, rename, delete and upload do not touch git. Their effect shows in the colors
 and the changes, as `mv` or `rm` in a terminal would.
 
 ## Webapp
@@ -340,6 +358,16 @@ offer to compare with the fork branch again.
   first." if that fails. A delete cancels affected autosaves, confirms
   (counting a folder's files, noting a link goes without its target, listing
   unsaved panes), then closes those panes.
+- **Upload** files or a folder from the header (into the selected folder,
+  as New file does) or a folder's menu, or drop them on the explorer, which
+  tints the folder under the pointer: a file's row stands for its folder,
+  empty space for the root. A dropped folder is walked through
+  `webkitGetAsEntry`, keeping its empty folders, which the folder picker
+  cannot report. `#lib/upload` sends each file as its own request, four at
+  a time, under a progress line. Files already there are offered together
+  in one "Replace?" confirmation once the rest are done; other failures,
+  including dropped entries the browser cannot read (a broken link), show
+  above the tree without stopping the rest.
 
 ### Editor pane (`WorkspaceFile`)
 
