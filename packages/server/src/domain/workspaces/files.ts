@@ -295,6 +295,7 @@ export async function getWorkspaceChanges(
     branch: named || forkBranch || null,
     comparison,
     ...(listing && listing.version !== opts.known ? { listing } : {}),
+    readMs: reading.readMs,
   }
 }
 

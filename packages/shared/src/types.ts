@@ -1085,6 +1085,9 @@ export interface WorkspaceChanges extends WorkspaceDiff {
   /** The checkout's listing, when asked for and not already current at the
    *  caller (its `known` version). */
   listing?: WorkspaceFiles
+  /** How long the read behind this answer took in the workspace, so a
+   *  client polls a slow checkout less often. */
+  readMs: number
 }
 
 /** How far HEAD has diverged from the branch it is compared against.

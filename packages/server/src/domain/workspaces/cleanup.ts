@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
+import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
 import { inFlightWorkspaceIds, listProvisioning } from './provisioning'
 import {
@@ -143,6 +144,7 @@ async function beginTeardown(params: {
   await recordStop(projectId, workspaceId, cause)
   forgetLiveness(projectId, workspaceId)
   evictWorkspaceStatus(projectId, workspaceId)
+  forgetWorkspaceChanges(jobName)
   return { projectId, workspaceId, unitName: jobName }
 }
 

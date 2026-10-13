@@ -1,6 +1,7 @@
 // In-process tests for streamd: handshake auth, each stream kind, and the
 // framing codec, all over loopback sockets.
 import net from 'node:net'
+import { execFileSync } from 'node:child_process'
 import { describe, it, expect, afterEach } from 'vitest'
 // Untyped plain-JS modules (they run under bare node in the pod).
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -165,7 +166,34 @@ describe('exec streams', () => {
     const result = JSON.parse((await readAll(socket)).toString('utf8')) as Record<string, unknown>
     expect(result).toMatchObject({ signal: 'SIGKILL' })
   })
+
+  // A caller that gave up must not leave the command's children running.
+  it('kills the command\'s whole process group when the stream closes early', async () => {
+    const port = await startDaemon()
+    const { socket } = await handshake(port, {
+      token: TOKEN, kind: 'exec', cmd: ['sh', '-c', 'sleep 30 & wait'],
+    })
+    socket.resume()
+    let sleeper: number | undefined
+    for (let i = 0; i < 50 && sleeper === undefined; i++) {
+      await new Promise((r) => setTimeout(r, 50))
+      sleeper = sleepersOf(process.pid)[0]
+    }
+    expect(sleeper).toBeDefined()
+    socket.destroy()
+    const alive = (): boolean => { try { process.kill(sleeper!, 0); return true } catch { return false } }
+    for (let i = 0; i < 50 && alive(); i++) await new Promise((r) => setTimeout(r, 50))
+    expect(alive()).toBe(false)
+  })
 })
+
+/** The pids of `sleep` processes whose grandparent is `pid`. */
+function sleepersOf(pid: number): number[] {
+  const out = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], { encoding: 'utf8' })
+  const rows = out.trim().split('\n').map((l) => l.trim().split(/\s+/))
+  const shells = new Set(rows.filter(([, ppid]) => Number(ppid) === pid).map(([p]) => p))
+  return rows.filter(([, ppid, comm]) => shells.has(ppid) && comm === 'sleep').map(([p]) => Number(p))
+}
 
 describe('ctrl streams', () => {
   it('splices stdin/stdout raw and ends the stream on process exit', async () => {

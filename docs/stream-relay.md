@@ -56,7 +56,9 @@ starts with one JSON handshake line (`{token, kind, …params}`) and gets one
   (docs/agent-modes.md).
 - `exec {cmd}`: run a command once, reply with one JSON line
   `{exitCode, stdout, stderr}` (size-bounded), and close. This is what
-  `podExec` uses.
+  `podExec` uses. The command leads its own process group, and a stream the
+  client closes before it finishes (a timed-out exec) kills the whole
+  group, so nothing the command started keeps running.
 - `pty {cmd, cols, rows}`: run a command under a PTY. Both directions are
   framed as `[1B type][4B BE length][payload]` (codec shared with
   `@yaac/shared/stream-frames`): data, resize and signal frames in; data and

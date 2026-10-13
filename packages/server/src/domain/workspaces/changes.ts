@@ -24,6 +24,12 @@
  * The webapp polls it, so:
  *  - The private index lives at a stable path and is reused, keeping git's
  *    stat cache so each poll does not re-hash every file.
+ *  - Everything after `add -A` is a function of four trees (base, HEAD, the
+ *    agent's index, the working tree), and reading their objects is what
+ *    costs on a large changeset over a network filesystem. Each section is
+ *    cached beside the private index under the trees it was read from, and
+ *    the server holds each workspace's last reading, so a poll where only
+ *    a few files changed reads just those (see readWorkspaceChanges).
  *  - A failed run must not look like an empty one: the script prints a
  *    completion marker only after every command behind the file list
  *    succeeds, so a partial run is an error, not "No changes".
@@ -42,8 +48,8 @@ export const CHANGES_BASE_UNRESOLVED = 4
 
 /**
  * The changes script's exit code for "an earlier run is still going": one
- * whose exec timed out keeps running in the workspace and holds the private
- * index, so the caller should try again shortly.
+ * whose exec timed out can outlive it and hold the private index, so the
+ * caller should try again shortly.
  */
 export const CHANGES_BUSY = 7
 
@@ -80,6 +86,8 @@ export interface ChangesReading {
     /** `full` only: untracked folders, without the trailing slash. */
     untrackedDirs?: string[]
   }
+  /** How long the read took in the workspace. */
+  readMs: number
 }
 
 /** Where one workspace's diff is computed, as paths inside the workspace. */
@@ -104,6 +112,9 @@ const M_COMMITTED = '@@COMMITTED@@'
 const M_STAGED = '@@STAGED@@'
 const M_MODIFIED = '@@MODIFIED@@'
 const M_UNTRACKED = '@@UNTRACKED@@'
+/** The paths that changed since the working tree the server holds,
+ *  printed when some part of the reading was read only at them. */
+const M_CHANGED = '@@CHANGED@@'
 const M_NUMSTAT = '@@NUMSTAT@@'
 const M_NAMESTATUS = '@@NAMESTATUS@@'
 /** Always printed after name-status. The listing's sections follow it,
@@ -120,6 +131,15 @@ const nulEnd = `\\000${END}\\000`
  *  see parseChangesOutput. */
 const M_OK = '@@OK@@'
 const M_DIFF = '@@DIFF@@'
+/** Printed instead of the body when `git diff` could not finish it. */
+const M_NODIFF = '@@NODIFF@@'
+
+/** The most paths a delta reads; past this a full read is about as cheap. */
+const MAX_DELTA_PATHS = 300
+
+/** Body flags that keep one `diff --git` header per file, whatever the
+ *  user's config, so the body splits into per-file chunks. */
+const BODY_FLAGS = '--no-ext-diff --submodule=short'
 
 /**
  * Force-adds its arguments that still exist (a link counts, even broken),
@@ -144,8 +164,14 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
  *    when `$1` is empty. Tries `origin/<$2>`, local `<$2>`, then
  *    `@{upstream}`.
  *  - `$3`: `diff`, or `nodiff` to skip the diff body, so a caller that
- *    wants only the file list and counts does not pay to ship every line.
+ *    wants only the file list and counts does not pay to ship every line;
+ *    or `patch`, no body either, but the changed paths' body on a delta, to
+ *    keep the body the server holds current.
  *  - `$4`: empty, `paths` or `full`: which listing to print.
+ *  - `$5`-`$9`: the base, HEAD, agent and working trees of the reading the
+ *    server holds and its diff settings (`SETTINGS`), or empty; the base is
+ *    left empty when the server's base diff does not cover this run (it
+ *    wants a body the server lacks).
  *
  * `$2` is needed because after the agent renames and pushes its branch,
  * `@{upstream}` is that branch's own remote, so the merge base collapses to
@@ -153,7 +179,25 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
  * was never pushed.
  *
  * `REF` names the ref the base was found on and how far HEAD is behind and
- * ahead of it, for the status bar.
+ * ahead of it, for the status bar. `TREES` names HEAD, the agent's tree and
+ * the working tree's, and `SETTINGS` hashes what else decides git's diff
+ * output: `diff.*` config and every attributes source (`.gitattributes`
+ * files, `info/attributes`, `core.attributesFile`), since an attribute can
+ * make another file binary or run it through a textconv.
+ *
+ * Each section is kept in a file beside the private index under a first
+ * line naming the trees it was read from and the settings (`cached`):
+ * `.committed` (base, HEAD), `.staged` (HEAD, the agent's tree),
+ * `.unstaged` (modified and untracked: the agent's tree, the working tree),
+ * and `.lists` and `.body` (base, the working tree). A run that wants no
+ * body fills only `.lists`.
+ *
+ * `MODES <staged> <unstaged> <base>` then says how each part the server can
+ * hold is printed: `same` prints nothing, as the server's copy still
+ * applies; `delta` prints it read only at the `CHANGED` paths, those that
+ * differ between the held working tree and this one; `full` prints it all,
+ * from the files or from git. Staged has no delta, since editing a file
+ * never moves it. Nothing held counts once the settings differ.
  *
  * The listing's paths come from the private index after `add -A`, so they
  * cost no second walk: every file git does not ignore, links marked by
@@ -167,25 +211,28 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
  * against the empty tree, so all of it counts as added.
  *
  * Every command feeding the file list is status-checked, and `@@OK@@` is
- * printed only after all succeed. The diff body comes last and is
- * best-effort, bounded by `head -c`.
+ * printed only after all succeed. The diff body comes last, bounded by
+ * `head -c`. A `git diff` that fails before the cap (a textconv program
+ * that is missing) prints `NODIFF` instead, so the file list still stands
+ * and the failed body is neither cached nor shown as the whole diff.
  */
 function changesScript(loc: ChangesLocation): string {
+  const i = loc.indexFile
   return `cd ${loc.workspaceDir} 2>/dev/null || exit 3; `
   // One run at a time per workspace, even past the server's mutex: a run
-  // whose exec timed out keeps going in the workspace, holding the private
-  // index. The run lock holds its pid, made by an atomic `ln`. A live
-  // holder is waited for (its run warms the index) for up to 10 seconds,
-  // then the run gives up with CHANGES_BUSY. A dead holder's lock is
-  // cleared, and so is one over two minutes old, whose pid may since
-  // belong to an unrelated process.
-  + `lk=${loc.indexFile}.run; echo $$ > "$lk.$$"; w=0; `
+  // whose exec timed out may still be going in the workspace, holding the
+  // private index. The run lock holds its pid, made by an atomic `ln`. A
+  // live holder is waited for (its run warms the index) for up to 10
+  // seconds, then the run gives up with CHANGES_BUSY. A dead holder's lock
+  // is cleared, and so is one over two minutes old, whose pid may since
+  // belong to an unrelated process. A killed run still removes its lock.
+  + `lk=${i}.run; echo $$ > "$lk.$$"; w=0; `
   + 'while ! ln "$lk.$$" "$lk" 2>/dev/null; do '
   + 'p=$(cat "$lk" 2>/dev/null); '
   + 'if [ -n "$p" ] && kill -0 "$p" 2>/dev/null && [ -z "$(find "$lk" -mmin +2 2>/dev/null)" ]; then '
   + `w=$((w+1)); [ $w -le 50 ] || { rm -f "$lk.$$"; exit ${CHANGES_BUSY}; }; sleep 0.2; `
   + 'else rm -f "$lk"; fi; done; '
-  + 'rm -f "$lk.$$"; trap \'rm -f "$lk"\' EXIT; '
+  + 'rm -f "$lk.$$"; trap \'rm -f "$lk"\' EXIT; trap \'exit 143\' TERM; '
   // An unborn HEAD (an empty repo's checkout) reads as the empty tree.
   + 'e=$(git hash-object -t tree /dev/null) || exit 6; head=$(git rev-parse -q --verify HEAD) || head=$e; '
   + 'ref=; fork=1; '
@@ -204,19 +251,22 @@ function changesScript(loc: ChangesLocation): string {
   + 'printf "FORK %s\\n" "$fork"; '
   + '[ "$ref" != "@{upstream}" ] || ref=$(git rev-parse --abbrev-ref "@{upstream}"); '
   + '[ -z "$ref" ] || { n=$(git rev-list --left-right --count "$ref...HEAD" --) && printf "REF %s %s\\n" "$ref" "$n"; }; '
-  + `c=${loc.indexFile}.committed; key="$base $head"; `
-  + 'if [ "$(head -n 1 "$c" 2>/dev/null)" != "$key" ]; then '
-  + '{ echo "$key"; git diff --numstat "$base" "$head"; } > "$c.tmp" || exit 6; mv "$c.tmp" "$c"; fi; '
-  + `printf "${M_COMMITTED}\\n"; tail -n +2 "$c"; `
+  // `cached <file> <key> <command...>`: the command's output, kept in the
+  // file under the key line and the settings. Written through a `.tmp` of
+  // this run's own, so neither a killed run nor one still writing after
+  // its shell was killed leaves half an entry; a key line that does not
+  // match is a miss.
+  + 'cached() { f=$1; k="$2 $cf"; shift 2; [ "$(head -n 1 "$f" 2>/dev/null)" = "$k" ] '
+  + '|| { rm -f "$f".tmp.*; { echo "$k"; "$@"; } > "$f.tmp.$$" && mv "$f.tmp.$$" "$f"; } || return 1; tail -n +2 "$f"; }; '
   // The agent's index, copied (git swaps it in by rename, so a copy is
   // never half-written) and written as a tree. With a merge conflict it has
   // no tree, and its changes count as modified.
-  + `cp "$(git rev-parse --git-path index)" ${loc.indexFile}.agent 2>/dev/null `
-  + `&& agent=$(GIT_INDEX_FILE=${loc.indexFile}.agent git write-tree 2>/dev/null) `
+  + `cp "$(git rev-parse --git-path index)" ${i}.agent 2>/dev/null `
+  + `&& agent=$(GIT_INDEX_FILE=${i}.agent git write-tree 2>/dev/null) `
   + '|| agent=$(git rev-parse "$head^{tree}") || exit 6; '
   // The stable private index lets git's stat cache make `add -A`
   // incremental across polls.
-  + `export GIT_INDEX_FILE=${loc.indexFile}; `
+  + `export GIT_INDEX_FILE=${i}; `
   // A missing private index starts as a copy of the agent's, whose stat
   // data spares `add -A` hashing every file on a workspace's first poll.
   // It compares only mtime and size (`core.checkStat=minimal`): the server
@@ -227,32 +277,86 @@ function changesScript(loc: ChangesLocation): string {
   // diff and the listing only that entry. Anything else is a stale `.lock`
   // or a broken index a killed run left, which would fail every later poll:
   // clear both and retry once. The run lock means no live run holds them.
-  + `seed() { [ -f ${loc.indexFile} ] || cp ${loc.indexFile}.agent ${loc.indexFile} 2>/dev/null; }; `
+  + `seed() { [ -f ${i} ] || cp ${i}.agent ${i} 2>/dev/null; }; `
   + 'add() { git -c core.checkStat=minimal add -A --ignore-errors || [ $? -eq 1 ]; }; '
-  + `seed; add || { rm -f ${loc.indexFile} ${loc.indexFile}.lock; seed; add || exit 5; }; `
+  + `seed; add || { rm -f ${i} ${i}.lock; seed; add || exit 5; }; `
   // `add -A` skips a tracked file that matches .gitignore (one added with
   // `add -f`), which would then read as deleted. Force-add those the agent's
   // index tracks that are still on disk.
-  + `{ [ ! -f ${loc.indexFile}.agent ] || GIT_INDEX_FILE=${loc.indexFile}.agent git ls-files -z -c -i --exclude-standard `
+  + `{ [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -c -i --exclude-standard `
   + `| xargs -0 sh -c ${shSingleQuote(FORCE_ADD)} yaac-force-add; } || exit 5; `
   + 'work=$(git write-tree) || exit 5; '
-  + `printf "${M_STAGED}\\n"; git diff --numstat "$head" "$agent" || exit 6; `
-  + `printf "${M_MODIFIED}\\n"; git diff --numstat --no-renames --diff-filter=a "$agent" "$work" || exit 6; `
-  + `printf "${M_UNTRACKED}\\n"; git diff --name-only --no-renames --diff-filter=A "$agent" "$work" || exit 6; `
-  + `printf "${M_NUMSTAT}\\n"; git diff --cached --numstat "$base" || exit 6; `
-  + `printf "${M_NAMESTATUS}\\n"; git diff --cached --name-status "$base" || exit 6; `
+  + 'printf "TREES %s %s %s\\n" "$head" "$agent" "$work"; '
+  // The attributes files come from the private index, so their content
+  // costs no read of the working tree.
+  + 'cf=$({ git config --get-regexp \'^diff\\.\'; git ls-files -s -- \':(glob)**/.gitattributes\'; '
+  + 'cat "$(git rev-parse --git-path info/attributes)" '
+  + '"$(git config --path core.attributesFile || echo "${XDG_CONFIG_HOME:-$HOME/.config}/git/attributes")"; } 2>/dev/null '
+  + '| git hash-object --stdin) || exit 6; printf "SETTINGS %s\\n" "$cf"; '
+  + `printf "${M_COMMITTED}\\n"; cached ${i}.committed "$base $head" git diff --numstat "$base" "$head" || exit 6; `
+  + 'staged() { git diff --numstat "$head" "$agent"; }; '
+  + `unstaged() { printf "${M_MODIFIED}\\n" && git diff --numstat --no-renames --diff-filter=a "$agent" "$work" `
+  + `&& printf "${M_UNTRACKED}\\n" && git diff --name-only --no-renames --diff-filter=A "$agent" "$work"; }; `
+  + `lists() { printf "${M_NUMSTAT}\\n" && git diff --numstat "$base" "$work" `
+  + `&& printf "${M_NAMESTATUS}\\n" && git diff --name-status "$base" "$work"; }; `
+  // `capped <command...>`: its output up to the cap, failing when the
+  // command failed. Cut at the cap, git dies of SIGPIPE (141), or xargs
+  // reports its child killed (125); either is a whole answer.
+  + `capped() { rm -f ${i}.err; { "$@" 2>/dev/null || { r=$?; [ $r -eq 141 ] || [ $r -eq 125 ] || : > ${i}.err; }; } `
+  + `| head -c ${WORKSPACE_DIFF_CAP_BYTES}; [ ! -e ${i}.err ]; }; `
+  + `body() { capped git diff ${BODY_FLAGS} "$base" "$work"; }; `
+  + 'hit() { [ "$(head -n 1 "$1" 2>/dev/null)" = "$2 $cf" ]; }; '
+  // `pd`: run git on the changed paths, named literally.
+  + `pd() { xargs -0 git --literal-pathspecs "$@" < ${i}.paths; }; `
+  // The paths that differ between the held working tree and this one, read
+  // from the two trees alone (no file content), when there are few enough
+  // to be worth reading one by one.
+  + 'hb=$5; hh=$6; ha=$7; hw=$8; [ "$9" = "$cf" ] || { hb=; hh=; ha=; hw=; }; ch=; '
+  + `[ -n "$hw" ] && [ "$hw" != "$work" ] && git diff --name-status --no-renames "$hw" "$work" > ${i}.delta 2>/dev/null `
+  + `&& [ $(wc -l < ${i}.delta) -le ${MAX_DELTA_PATHS} ] `
+  + `&& git diff -z --name-only --no-renames "$hw" "$work" > ${i}.paths && [ $(wc -c < ${i}.paths) -le 32768 ] && ch=1; `
+  + 'sm=full; [ "$hh $ha" != "$head $agent" ] || sm=same; '
+  // Modified and untracked are read without rename pairing, so any changed
+  // path can be read on its own.
+  + 'um=full; if [ "$ha $hw" = "$agent $work" ]; then um=same; '
+  + `elif [ "$ha" = "$agent" ] && [ -n "$ch" ] && ! hit ${i}.unstaged "$agent $work"; then um=delta; fi; `
+  // The base diff can be patched when the base is the same and every
+  // changed path is an edit to a file the base has too. Rename pairing
+  // needs both sides of a rename in one diff, so an added, deleted or
+  // retyped path, or copy detection, takes the full read. Leaves `ns`, the
+  // paths' name-status.
+  + `bdelta() { [ "$hb" = "$base" ] && [ -n "$ch" ] && ! grep -qv '^M' ${i}.delta `
+  + '&& case $(git config diff.renames) in copy*) false;; esac '
+  + `&& ns=$(pd diff --name-status --no-renames "$base" "$work" --) && ! printf '%s\\n' "$ns" | grep -q '^[AT]'; }; `
+  + 'm=full; if [ "$hb $hw" = "$base $work" ]; then m=same; '
+  // The files win over a delta when they hold everything this run prints,
+  // but a `patch` run wants the delta's body.
+  + `elif ! { [ "$3" != patch ] && hit ${i}.lists "$base $work" && { [ "$3" = nodiff ] || hit ${i}.body "$base $work"; }; } `
+  + '&& bdelta; then m=delta; fi; '
+  + 'printf "MODES %s %s %s\\n" $sm $um $m; '
+  + `[ $um != delta ] && [ $m != delta ] || { printf "${M_CHANGED}\\n"; cut -f2- ${i}.delta; }; `
+  + `[ $sm = same ] || { printf "${M_STAGED}\\n"; cached ${i}.staged "$head $agent" staged || exit 6; }; `
+  + `case $um in delta) printf "${M_MODIFIED}\\n"; pd diff --numstat --no-renames --diff-filter=a "$agent" "$work" -- || exit 6; `
+  + `printf "${M_UNTRACKED}\\n"; pd diff --name-only --no-renames --diff-filter=A "$agent" "$work" -- || exit 6;; `
+  + `full) cached ${i}.unstaged "$agent $work" unstaged || exit 6;; esac; `
+  + `case $m in delta) printf "${M_NUMSTAT}\\n"; pd diff --numstat --no-renames "$base" "$work" -- || exit 6; `
+  + `printf "${M_NAMESTATUS}\\n%s\\n" "$ns";; `
+  + `full) cached ${i}.lists "$base $work" lists || exit 6;; esac; `
   + `printf "${M_LISTING}\\n"; `
   + 'if [ -n "$4" ]; then '
   + `printf "${M_PATHS}\\n"; git ls-files -z -s || exit 6; printf '${nulEnd}'; `
-  + `printf "${M_CONFLICTED}\\n"; { [ ! -f ${loc.indexFile}.agent ] `
-  + `|| GIT_INDEX_FILE=${loc.indexFile}.agent git ls-files -z -u; } || exit 6; printf '${nulEnd}'; `
+  + `printf "${M_CONFLICTED}\\n"; { [ ! -f ${i}.agent ] `
+  + `|| GIT_INDEX_FILE=${i}.agent git ls-files -z -u; } || exit 6; printf '${nulEnd}'; `
   + 'fi; '
   + 'if [ "$4" = full ]; then '
   + `printf "${M_IGNORED}\\n"; git ls-files -z --others --ignored --exclude-standard --directory || exit 6; printf '${nulEnd}'; `
   + `printf "${M_DIRS}\\n"; git ls-files -z --others --exclude-standard --directory || exit 6; printf '${nulEnd}'; `
   + 'fi; '
   + `printf "${M_OK}\\n"; `
-  + `[ "$3" = nodiff ] || { printf "${M_DIFF}\\n"; git diff --cached "$base" 2>/dev/null | head -c ${WORKSPACE_DIFF_CAP_BYTES}; }; `
+  + `case $m in delta) [ "$3" = nodiff ] || { capped pd diff ${BODY_FLAGS} --no-renames "$base" "$work" -- > ${i}.dbody `
+  + `&& { printf "${M_DIFF}\\n"; cat ${i}.dbody; } || printf "${M_NODIFF}\\n"; };; `
+  + `full) [ "$3" != diff ] || { cached ${i}.body "$base $work" body > /dev/null `
+  + `&& { printf "${M_DIFF}\\n"; tail -n +2 ${i}.body; } || printf "${M_NODIFF}\\n"; };; esac; `
   + 'exit 0'
 }
 
@@ -263,16 +367,17 @@ function shSingleQuote(s: string): string {
 }
 
 /**
- * Build the `exec` command tail:
- * `sh -c <script> yaac-changes <base> <defaultBase> <diff|nodiff> <listing>`.
- * Both branch names are passed as positionals, never interpolated into the
+ * Build the `exec` command tail: `sh -c <script> yaac-changes <base>
+ * <defaultBase> <diff|nodiff|patch> <listing> <held trees and settings>`. Both
+ * branch names are passed as positionals, never interpolated into the
  * script, so any value reaches git as one literal ref (and a bogus one
  * simply fails to resolve). Both empty selects the `@{upstream}` default.
  */
-export function buildChangesScript(loc: ChangesLocation, request: ChangesRequest): string {
+export function buildChangesScript(loc: ChangesLocation, request: ChangesRequest, held?: HeldReading): string {
   return `sh -c ${shSingleQuote(changesScript(loc))} yaac-changes `
     + [request.base, request.defaultBase].map((b) => shSingleQuote((b ?? '').trim())).join(' ')
-    + ` ${request.diff ? 'diff' : 'nodiff'} ${request.listing ?? "''"}`
+    + ` ${request.diff ? 'diff' : held?.body && held.base ? 'patch' : 'nodiff'} ${request.listing ?? "''"} `
+    + [held?.base, held?.head, held?.agent, held?.work, held?.settings].map((t) => shSingleQuote(t ?? '')).join(' ')
 }
 
 /** Map a git name-status letter to our ChangeStatus. */
@@ -350,13 +455,133 @@ function nulSection(raw: string, marker: string): string[] | null {
   return raw.slice(from, e === -1 ? undefined : e).split('\0').filter(Boolean)
 }
 
-/** Split the marker-delimited script output into its sections. */
-function section(raw: string, start: string, end?: string): string {
-  const s = raw.indexOf(start)
+/** A line holding one of the line-separated sections' markers. */
+const MARKER_LINE = new RegExp(`^(?:${[
+  M_COMMITTED, M_STAGED, M_MODIFIED, M_UNTRACKED, M_CHANGED, M_NUMSTAT, M_NAMESTATUS, M_LISTING,
+].join('|')})$`, 'gm')
+
+/** The lines after `marker` up to the next marker line; empty when it was
+ *  not printed. */
+function section(head: string, marker: string): string {
+  const s = head.indexOf(`\n${marker}\n`)
   if (s === -1) return ''
-  const from = s + start.length
-  const e = end ? raw.indexOf(end, from) : -1
-  return raw.slice(from, e === -1 ? undefined : e)
+  MARKER_LINE.lastIndex = s + marker.length + 2
+  return head.slice(MARKER_LINE.lastIndex, MARKER_LINE.exec(head)?.index)
+}
+
+type Counts = LineCounts & { binary: boolean }
+
+/** The base diff: numstat, name-status and the unified diff of the base
+ *  tree against the working tree, the costliest part of a reading. */
+interface BaseDiff {
+  numstat: Map<string, Counts>
+  nameStatus: NameStatusEntry[]
+  /** The unified diff, at most the in-workspace cap, `whole` unless a
+   *  file's part is missing or cut. Unset when no body was read. */
+  body?: { text: string; whole: boolean }
+}
+
+/**
+ * What the server holds of a workspace's last reading: every part a later
+ * run can reuse or patch rather than read again, and the trees it was read
+ * from (see readWorkspaceChanges). `committed` is left out, as the script
+ * reads it from its own cache.
+ */
+export interface HeldReading extends BaseDiff {
+  base: string
+  head: string
+  agent: string
+  work: string
+  settings: string
+  staged: Map<string, Counts>
+  modified: Map<string, Counts>
+  untracked: Set<string>
+}
+
+/** One file's part of a unified diff; `cut` when the cap ran through it. */
+interface Chunk { text: string; cut: boolean }
+
+/**
+ * A unified diff split into its files' parts, keyed by path. git prints the
+ * parts in name-status order, one `diff --git` header each, but two for a
+ * typechange (a deletion, then a creation). `cut` says the text stops at
+ * the cap, inside its last part.
+ */
+function chunksOf(files: NameStatusEntry[], text: string, cut: boolean): Map<string, Chunk> {
+  const parts = text ? text.split(/(?=^diff --git )/m) : []
+  const chunks = new Map<string, Chunk>()
+  let k = 0
+  for (const f of files) {
+    if (k >= parts.length) break
+    const n = f.status === 'typechange' ? 2 : 1
+    chunks.set(f.path, { text: parts.slice(k, k + n).join(''), cut: cut && k + n >= parts.length })
+    k += n
+  }
+  return chunks
+}
+
+/** Escapes git's C-style quoting of a path uses, besides octal bytes. */
+const QUOTED: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 }
+
+/** The bytes of a path as git prints it, unquoted: git orders paths by
+ *  these, while a quoted name starts with `"` and would sort first. */
+function pathBytes(p: string): Buffer {
+  if (!p.startsWith('"')) return Buffer.from(p)
+  const out: number[] = []
+  for (let k = 1; k < p.length - 1; k++) {
+    const oct = p[k] === '\\' ? /^[0-7]{3}/.exec(p.slice(k + 1)) : null
+    if (oct) {
+      out.push(parseInt(oct[0], 8))
+      k += 3
+    } else if (p[k] === '\\') {
+      k++
+      out.push(QUOTED[p[k]] ?? p.charCodeAt(k))
+    } else {
+      out.push(...Buffer.from(p[k]))
+    }
+  }
+  return Buffer.from(out)
+}
+
+/** The unified diff from per-file parts in file order, stopping at the
+ *  first file whose part is missing or cut, or once past the cap. */
+function joinChunks(files: NameStatusEntry[], chunks: Map<string, Chunk>): { text: string; whole: boolean } {
+  let text = ''
+  let bytes = 0
+  for (const [n, f] of files.entries()) {
+    const c = chunks.get(f.path)
+    if (!c) return { text, whole: false }
+    text += c.text
+    bytes += Buffer.byteLength(c.text)
+    if (c.cut || (bytes >= WORKSPACE_DIFF_CAP_BYTES && n < files.length - 1)) return { text, whole: false }
+  }
+  return { text, whole: true }
+}
+
+/** `held` without the `changed` entries, then with `read`'s. */
+function patched<T>(held: Map<string, T>, changed: Set<string>, read: Map<string, T>): Map<string, T> {
+  return new Map([...[...held].filter(([p]) => !changed.has(p)), ...read])
+}
+
+/**
+ * `held` with the paths a delta read replaced by what it read: their
+ * numstat, name-status rows and body parts. Every path is an edit to a file
+ * both trees and the base have, so no rename pairing changes and the other
+ * rows stand. Rows stay in git's order, which is byte order of the path. A
+ * delta read without a body leaves none.
+ */
+function splice(held: BaseDiff, changed: Set<string>, read: BaseDiff): BaseDiff {
+  const numstat = patched(held.numstat, changed, read.numstat)
+  const nameStatus = [...held.nameStatus.filter((e) => !changed.has(e.path)), ...read.nameStatus]
+    .sort((a, b) => Buffer.compare(pathBytes(a.path), pathBytes(b.path)))
+  let body: BaseDiff['body']
+  if (held.body && read.body) {
+    const chunks = chunksOf(held.nameStatus, held.body.text, !held.body.whole)
+    for (const p of changed) chunks.delete(p)
+    for (const [p, c] of chunksOf(read.nameStatus, read.body.text, !read.body.whole)) chunks.set(p, c)
+    body = joinChunks(nameStatus, chunks)
+  }
+  return { numstat, nameStatus, ...(body ? { body } : {}) }
 }
 
 /**
@@ -366,7 +591,18 @@ function section(raw: string, start: string, end?: string): string {
  * Throws when the `@@OK@@` marker is missing, since the run then failed
  * partway and an empty file list would falsely read as "No changes".
  */
-export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): ChangesReading {
+export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): Omit<ChangesReading, 'readMs'> {
+  return readRun(raw, undefined, maxDiffBytes).reading
+}
+
+/**
+ * `parseChangesOutput`, against the reading the run was offered (`held`),
+ * whose parts it reuses or patches as `MODES` says. Also returns what the
+ * reading came from, for the server to hold.
+ */
+function readRun(
+  raw: string, held: HeldReading | undefined, maxDiffBytes = MAX_DIFF_BYTES,
+): { reading: Omit<ChangesReading, 'readMs'>; next: HeldReading } {
   const ok = raw.indexOf(`${M_OK}\n`)
   if (ok === -1) {
     throw new Error('workspace changes: script produced no completion marker (partial or failed run)')
@@ -374,22 +610,48 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
   // Everything but the diff body comes before the marker; the body is file
   // content, so nothing else is looked for in it.
   const head = raw.slice(0, ok)
-  const baseMatch = /^BASE (.*)$/m.exec(head)
-  const base = baseMatch ? baseMatch[1].trim() : ''
+  const base = /^BASE (.*)$/m.exec(head)?.[1].trim() ?? ''
+  const [headTree = '', agent = '', work = ''] = /^TREES (.*)$/m.exec(head)?.[1].trim().split(' ') ?? []
+  const settings = /^SETTINGS (.*)$/m.exec(head)?.[1].trim() ?? ''
   // FORK 0: no fork point, diffed against HEAD, so commits are missing.
   const baseResolved = /^FORK 0$/m.exec(head) === null
+  const modes = /^MODES (\w+) (\w+) (\w+)$/m.exec(head)?.slice(1) ?? []
+  const [stagedMode, unstagedMode, baseMode] = modes
+  if (!held && modes.some((m) => m !== 'full')) {
+    throw new Error('workspace changes: the run reused a reading this server does not hold')
+  }
+  const changed = new Set(section(head, M_CHANGED).split('\n').filter(Boolean))
+
+  const staged = stagedMode === 'same' ? held!.staged : parseNumstat(section(head, M_STAGED))
+  let modified = parseNumstat(section(head, M_MODIFIED))
+  let untracked = new Set(section(head, M_UNTRACKED).split('\n').filter(Boolean))
+  if (unstagedMode === 'same') {
+    ({ modified, untracked } = held!)
+  } else if (unstagedMode === 'delta') {
+    modified = patched(held!.modified, changed, modified)
+    untracked = new Set([...[...held!.untracked].filter((p) => !changed.has(p)), ...untracked])
+  }
+
+  // The marker is printed only when the body was asked for and not held.
+  const d = raw.indexOf(`${M_DIFF}\n`, ok)
+  const text = d === -1 ? undefined : raw.slice(d + M_DIFF.length + 1).replace(/^\n/, '')
+  let diff: BaseDiff = held!
+  if (baseMode !== 'same') {
+    diff = {
+      numstat: parseNumstat(section(head, M_NUMSTAT)),
+      nameStatus: parseNameStatus(section(head, M_NAMESTATUS)),
+      ...(text !== undefined ? { body: { text, whole: Buffer.byteLength(text) < WORKSPACE_DIFF_CAP_BYTES } } : {}),
+    }
+    if (baseMode === 'delta') diff = splice(held!, changed, diff)
+  }
 
   const byStage: [ChangeStage, Map<string, LineCounts>][] = [
-    ['committed', parseNumstat(section(head, `${M_COMMITTED}\n`, M_STAGED))],
-    ['staged', parseNumstat(section(head, `${M_STAGED}\n`, M_MODIFIED))],
-    ['modified', parseNumstat(section(head, `${M_MODIFIED}\n`, M_UNTRACKED))],
+    ['committed', parseNumstat(section(head, M_COMMITTED))],
+    ['staged', staged],
+    ['modified', modified],
   ]
-  const untracked = new Set(section(head, `${M_UNTRACKED}\n`, M_NUMSTAT).split('\n').filter(Boolean))
-  const numstat = parseNumstat(section(head, `${M_NUMSTAT}\n`, M_NAMESTATUS))
-  const nameStatus = parseNameStatus(section(head, `${M_NAMESTATUS}\n`, M_LISTING))
-
-  const files: WorkspaceChange[] = nameStatus.map(({ path, status, oldPath }) => {
-    const { additions, deletions, binary } = numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
+  const files: WorkspaceChange[] = diff.nameStatus.map(({ path, status, oldPath }) => {
+    const { additions, deletions, binary } = diff.numstat.get(path) ?? { additions: 0, deletions: 0, binary: false }
     const stages: WorkspaceChange['stages'] = {}
     for (const [stage, counts] of byStage) {
       const c = counts.get(path)
@@ -401,23 +663,24 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
     return change
   })
 
-  // The marker is printed only when the body was asked for. Measure bytes,
-  // not UTF-16 code units: the script's `head -c` cap is in bytes, so
-  // comparing `.length` could report a diff the script already cut as
-  // `truncated: false`.
-  const rawDiff = raw.includes(`${M_DIFF}\n`, ok) ? section(raw.slice(ok), `${M_DIFF}\n`).replace(/^\n/, '') : undefined
-  const truncated = rawDiff !== undefined && Buffer.byteLength(rawDiff) > maxDiffBytes
-  const diff = truncated ? sliceUtf8(rawDiff, maxDiffBytes) : rawDiff
+  // Measure bytes, not UTF-16 code units: the script's `head -c` cap is in
+  // bytes, so comparing `.length` could report a diff the script already
+  // cut as `truncated: false`.
+  // A body that failed is shown as cut short to nothing, and not held.
+  const failed = raw.includes(`${M_NODIFF}\n`, ok)
+  const body = failed ? { text: '', whole: false } : diff.body
+  const truncated = body !== undefined && (!body.whole || Buffer.byteLength(body.text) > maxDiffBytes)
+  const shown = body && (truncated ? sliceUtf8(body.text, maxDiffBytes) : body.text)
 
   // `REF <ref> <behind>\t<ahead>`: rev-list counts the left side first.
   const refMatch = /^REF (\S+) (\d+)\s+(\d+)$/m.exec(head)
   const ref = refMatch ? { name: refMatch[1], behind: Number(refMatch[2]), ahead: Number(refMatch[3]) } : null
 
-  const staged = nulSection(head, M_PATHS)
+  const indexed = nulSection(head, M_PATHS)
   let listing: ChangesReading['listing']
-  if (staged) {
+  if (indexed) {
     // `<mode> <object> <stage>\t<path>`; a link's mode is 120000.
-    const entries = staged.map((e) => ({ mode: e.slice(0, 6), path: e.slice(e.indexOf('\t') + 1) }))
+    const entries = indexed.map((e) => ({ mode: e.slice(0, 6), path: e.slice(e.indexOf('\t') + 1) }))
     const ignored = nulSection(head, M_IGNORED)
     const dirs = nulSection(head, M_DIRS)
     listing = {
@@ -431,9 +694,12 @@ export function parseChangesOutput(raw: string, maxDiffBytes = MAX_DIFF_BYTES): 
   }
 
   return {
-    changes: { base, baseResolved, files, ...(diff !== undefined ? { diff } : {}), truncated },
-    ref,
-    ...(listing ? { listing } : {}),
+    reading: {
+      changes: { base, baseResolved, files, ...(shown !== undefined ? { diff: shown } : {}), truncated },
+      ref,
+      ...(listing ? { listing } : {}),
+    },
+    next: { base, head: headTree, agent, work, settings, staged, modified, untracked, ...diff },
   }
 }
 
@@ -524,22 +790,47 @@ function sliceUtf8(s: string, maxBytes: number): string {
   return buf.subarray(0, end).toString('utf8')
 }
 
+/** Per workspace, what its last read came from, and when a read last used
+ *  it. */
+const heldReadings = new Map<string, { held: HeldReading; usedAt: number }>()
+
+/** A held reading no read has used for this long is dropped. */
+const HELD_IDLE_MS = 5 * 60_000
+
+/** Drop what the server holds of a workspace's changes, on teardown. */
+export function forgetWorkspaceChanges(jobName: string): void {
+  heldReadings.delete(jobName)
+}
+
 /**
  * A running workspace's diff, and its listing when asked, read inside it.
  * Rejects with `WorkspaceExecError` on failure (`CHANGES_BASE_UNRESOLVED`
  * when a named base has no fork point); a transport failure passes through
  * untranslated. The private index sits at a stable path in the scratch dir,
  * so git's stat cache survives between polls.
+ *
+ * What each read came from is held and offered to the next one, its base
+ * diff only when that covers what the read asks for (a body, if wanted).
+ * The script then prints, per part, nothing or only the few files changed
+ * since, which are spliced in here. The in-workspace caches back this up
+ * after a server restart.
  */
 export function readWorkspaceChanges(jobName: string, request: ChangesRequest): Promise<ChangesReading> {
   const driver = workspaceDriver()
   const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
   return runChangesRead(jobName, request, async (req) => {
+    const started = Date.now()
+    for (const [name, h] of heldReadings) if (started - h.usedAt > HELD_IDLE_MS) heldReadings.delete(name)
+    const held = heldReadings.get(jobName)?.held
+    // A blank base tree tells the script the base diff is not on offer.
+    const offered = held && (!req.diff || held.body ? held : { ...held, base: '' })
     const { stdout } = await driver.exec(
       jobName,
-      buildChangesScript({ workspaceDir, indexFile: `${scratchDir}/yaac-changes.idx` }, req),
+      buildChangesScript({ workspaceDir, indexFile: `${scratchDir}/yaac-changes.idx` }, req, offered),
       { timeout: 20_000, maxAttempts: 2 },
     )
-    return parseChangesOutput(stdout)
+    const { reading, next } = readRun(stdout, offered)
+    heldReadings.set(jobName, { held: next, usedAt: Date.now() })
+    return { ...reading, readMs: Date.now() - started }
   })
 }
