@@ -239,12 +239,17 @@ stops a glide, and that touch's touchend is canceled so it is not also a tap.
 ## Chrome
 
 The viewport meta sets `viewport-fit=cover`, and the shell's container has
-`.safe-area-inset` in both layouts, so screens inside it clear the notch and
+`safe-area-inset` in both layouts, so screens inside it clear the notch and
 home indicator. Both layouts need it because a notched phone in landscape is
 wider than `md` and gets the desktop layout. The insets are transparent
 borders, not padding: the phone's screens are `absolute inset-0`, which an
 element's padding would not push in but its border does. Off a notched device
 every inset is 0.
+
+Dialogs are portaled to `<body>`, outside the shell, so `Modal`'s large
+variants clear the insets themselves: full screen they take the same
+transparent border (`max-md:safe-area-inset`, a Tailwind utility so it takes
+variants), and in the desktop shapes their margins grow by the insets.
 
 Below `md`, fixed-size dialogs go full screen. Settings' left nav becomes a
 scrolling row of chips, and the `inset-4` overlays (skills, image builds)

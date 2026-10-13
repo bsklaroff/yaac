@@ -428,10 +428,14 @@ select {
  * wider than the mobile breakpoint, so it gets the desktop layout. The insets
  * are transparent borders rather than padding because the phone shell's
  * screens are `absolute inset-0`, which places them on the padding box, inside
- * the border but over any padding. The shell's background still paints under
+ * the border but over any padding. The element's background still paints under
  * the border. Every inset is 0 off a notched device.
+ *
+ * A utility rather than a plain class so it takes variants: Modal's
+ * full-screen dialogs are portaled out of the shell and apply it as
+ * `max-md:safe-area-inset`, where it outranks their own desktop border.
  */
-.safe-area-inset {
+@utility safe-area-inset {
   border-style: solid;
   border-color: transparent;
   border-width: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
