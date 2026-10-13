@@ -124,6 +124,14 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
  * depend on their CLI's version. Then run `pnpm gen:providers`: the claude
  * catalog and every tool's effort levels are read from the pinned CLIs.
  *
+ * Before bumping codex to 0.162 or later, turn off its worktrees feature.
+ * From 0.162 the agent can create worktrees itself (`create_worktree`) in
+ * trusted projects, which yaac marks every checkout as. They go under
+ * `$CODEX_HOME/worktrees`, the project's shared codex home, so each one's
+ * install would land on the shared tier and outlive the workspace. Claude's
+ * worktrees are denied under k8s for the same reason
+ * (docs/workspace-storage.md).
+ *
  * `installScriptSha256` is the SHA-256 of the `install.sh` asset of codex's
  * release, which the auth daemon's Install button runs. Release assets can
  * be replaced in place, so the daemon refuses a script that does not match.

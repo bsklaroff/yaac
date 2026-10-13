@@ -49,14 +49,34 @@ export async function seedClaudeJson(
  * - Set `cleanupPeriodDays` to 100 years so claude never deletes transcripts
  *   yaac manages (docs/workspace-storage.md). 0 would disable transcripts
  *   entirely.
+ * - With `denyWorktrees`, deny claude's worktree isolation, since each
+ *   worktree would install its packages onto the shared tier
+ *   (docs/workspace-storage.md). The rules join any deny rules already
+ *   there.
  */
-export async function seedClaudeSettings(claudeHome: ConfinedRoot): Promise<void> {
+export async function seedClaudeSettings(claudeHome: ConfinedRoot, opts: { denyWorktrees: boolean }): Promise<void> {
   await claudeHome.locked('settings.json', async () => {
     const settings = await readJson(claudeHome, 'settings.json')
     settings.skipDangerousModePermissionPrompt = true
     settings.cleanupPeriodDays = 36500
+    if (opts.denyWorktrees) {
+      const permissions = asObject(settings.permissions)
+      const deny = Array.isArray(permissions.deny) ? permissions.deny as unknown[] : []
+      settings.permissions = { ...permissions, deny: [...new Set([...deny, ...WORKTREE_DENY_RULES])] }
+    }
     await claudeHome.writeAtomic('settings.json', JSON.stringify(settings, null, 2) + '\n')
   })
+}
+
+/** Claude's two ways into a worktree: entering one, and a subagent run in
+ *  one. A custom agent whose definition sets `isolation: worktree` passes
+ *  no `isolation` input, so neither rule matches it. */
+const WORKTREE_DENY_RULES = ['EnterWorktree', 'Agent(isolation:worktree)']
+
+function asObject(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
 }
 
 /**
@@ -67,10 +87,7 @@ export async function seedClaudeSettings(claudeHome: ConfinedRoot): Promise<void
 async function readJson(claudeHome: ConfinedRoot, rel: string): Promise<Record<string, unknown>> {
   try {
     const raw = await claudeHome.readFile(rel, { maxBytes: 1024 * 1024 })
-    const parsed: unknown = raw === null ? null : JSON.parse(raw.toString('utf8'))
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {}
+    return asObject(raw === null ? null : JSON.parse(raw.toString('utf8')))
   } catch {
     return {}
   }

@@ -156,6 +156,15 @@ describe('createCheckout', () => {
     await expect(git(sibling, ['config', 'core.hooksPath'])).rejects.toThrow()
   })
 
+  it('hides claude\'s worktrees from git', async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const wtPath = path.join(tmpDir, 'workspace')
+    await createCheckout(main, wtPath, { branch: 'agent/x', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
+    await git(wtPath, ['worktree', 'add', '-q', '-b', 'sub', path.join(wtPath, '.claude', 'worktrees', 'sub')])
+    expect(await git(wtPath, ['status', '--porcelain'])).toBe('')
+  })
+
   it('leaves nothing behind when it fails, and a retry checks out over a half-written tree', async () => {
     const main = path.join(tmpDir, 'main')
     await cloneRepo(sourceRepo, main, null)

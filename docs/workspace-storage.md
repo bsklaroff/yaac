@@ -667,3 +667,28 @@ volume claim is node disk with no quota.
 The module dirs stay in the checkout on the host's disk, and all workspaces of
 a project share one pnpm store under `.cached-packages`. That is safe because
 they are all processes on one kernel (docs/containerless-driver.md).
+
+### Claude's worktrees
+
+Claude puts the worktrees it makes (`EnterWorktree`, or a subagent run with
+worktree isolation) under `<checkout>/.claude/worktrees/`. Each one is a fresh
+checkout with no module dirs, so its agent installs packages into it. Under
+k8s that install lands on the shared tier: pnpm cannot hardlink from a store
+on tmpfs, so it copies tens of thousands of files onto the network filesystem,
+and a few at once slow every read in the pod
+(docs/nfs-checkout-performance.md). So under k8s `seedClaudeSettings` adds
+deny rules for both ways in (`EnterWorktree` and `Agent(isolation:worktree)`)
+to the project's claude settings. A custom agent whose definition sets
+`isolation: worktree` matches neither rule.
+
+Linking the workspace's module dirs into each worktree instead (claude's
+`worktree.symlinkDirectories`) is not safe. An install in the worktree then
+reconciles the workspace's own tree to the worktree's lockfile, and claude
+branches worktrees from the default branch, so that lockfile often differs.
+
+Under containerless worktrees stay allowed: the module dirs are on local disk
+and the project's pnpm store is shared, so a worktree's install is cheap.
+
+On both drivers `createCheckout` writes `.git/info/exclude` with
+`/.claude/worktrees/`, so worktrees do not show as untracked nested repos in
+the changes list, the explorer or the agent's `git status`.
