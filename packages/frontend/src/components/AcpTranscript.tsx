@@ -599,6 +599,10 @@ function useOpen(reveal: boolean, byDefault: boolean): [boolean, (open: boolean)
  * expand keep the caret's space so their icons line up with their
  * neighbours'. A `busy` row shows a spinner in the icon's place; `tint`
  * colors the icon instead of the faint default.
+ *
+ * A row with nothing to expand is `aria-disabled` rather than `disabled`:
+ * a browser delivers no click inside a disabled button, so the links in its
+ * label would go dead.
  */
 function DisclosureRow({
   open,
@@ -620,12 +624,13 @@ function DisclosureRow({
   return (
     <button
       type="button"
-      onClick={onToggle}
-      disabled={!expandable}
+      onClick={expandable ? onToggle : undefined}
+      aria-disabled={!expandable || undefined}
       aria-expanded={expandable ? open : undefined}
-      className="group -mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 py-1
-        text-left text-xs text-text-dim enabled:hover:bg-surface-2 enabled:hover:text-text
-        disabled:cursor-default"
+      className={clsx(
+        'group -mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-text-dim',
+        expandable ? 'hover:bg-surface-2 hover:text-text' : 'cursor-default',
+      )}
     >
       <ChevronIcon
         size={12}
@@ -637,7 +642,7 @@ function DisclosureRow({
       />
       {busy
         ? <LoadingIcon size={13} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
-        : <Icon size={13} className={clsx('shrink-0', tint ?? 'text-text-faint group-enabled:group-hover:text-text-dim')} />}
+        : <Icon size={13} className={clsx('shrink-0', tint ?? clsx('text-text-faint', expandable && 'group-hover:text-text-dim'))} />}
       {children}
     </button>
   )
@@ -735,7 +740,7 @@ export function ToolRow({
           ref={labelRef}
           className={clsx('truncate', description === undefined && call.kind === 'execute' && 'font-mono text-[11px]')}
         >
-          <Linked {...(located ? { about: located } : {})}>{label}</Linked>
+          <Linked web {...(located ? { about: located } : {})}>{label}</Linked>
         </span>
         {unnamed && (
           <span className="min-w-0 truncate font-mono text-[11px]">

@@ -57,23 +57,79 @@ export function FileLink({ file, children }: { file: FileRef; children: ReactNod
 }
 
 /**
- * `children` with the file paths in their text made into links. `about` is
- * the file the text is about, if known: a link to it that names no line
- * takes `about`'s (a Read call's title, whose line is in its location).
+ * Opens a web page in a new tab, which the desktop and iPhone apps hand to
+ * the system browser. A span for the same reasons as `FileLink`.
  */
-export function Linked({ children, about }: { children: ReactNode; about?: FileRef }): ReactNode {
+function WebLink({ url }: { url: string }): JSX.Element {
+  const open = (): void => void window.open(url, '_blank', 'noopener,noreferrer')
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      title={url}
+      onClick={(e) => {
+        e.stopPropagation()
+        open()
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') open()
+      }}
+      className={`${LINK_CLASS} cursor-pointer`}
+    >
+      {url}
+    </span>
+  )
+}
+
+/** An http(s) URL in plain text, less punctuation that may follow it. */
+const WEB_URL = /\bhttps?:\/\/[^\s'"`<>]*[^\s'"`<>.,;:!?\]}]/g
+
+/**
+ * The web URLs in `text`. A closing `)` stays only while it closes a `(` in
+ * the URL, as in GFM's autolinks (`wiki/Foo_(bar)`).
+ */
+function webLinksIn(text: string): Array<{ start: number; end: number; url: string }> {
+  return Array.from(text.matchAll(WEB_URL), (m) => {
+    let url = m[0]
+    while (url.endsWith(')') && url.split(')').length > url.split('(').length) url = url.slice(0, -1)
+    return { start: m.index, end: m.index + url.length, url }
+  })
+}
+
+/**
+ * `children` with the file paths in their text made into links, and with
+ * `web`, its URLs. Only text that is not markdown asks for URLs (a tool
+ * call's label): gfm links a markdown URL itself, so one left unlinked there
+ * is a link's label, which must not link again. `about` is the file the text
+ * is about, if known: a link to it that names no line takes `about`'s (a
+ * Read call's title, whose line is in its location).
+ */
+export function Linked({ children, about, web = false }: {
+  children: ReactNode
+  about?: FileRef
+  web?: boolean
+}): ReactNode {
   const links = useContext(FileLinksContext)
-  if (!links) return children
   return Children.map(children, (child) => {
     if (typeof child !== 'string') return child
-    const found = fileLinksIn(child, links)
+    const found = [
+      ...(web ? webLinksIn(child) : []),
+      ...(links ? fileLinksIn(child, links) : []),
+    ].sort((a, b) => a.start - b.start)
     if (found.length === 0) return child
     const out: ReactNode[] = []
     let at = 0
-    for (const { start, end, ...file } of found) {
-      const ref = file.line === undefined && file.path === about?.path ? about : file
-      out.push(child.slice(at, start), <FileLink key={start} file={ref}>{child.slice(start, end)}</FileLink>)
-      at = end
+    for (const link of found) {
+      // A path inside a URL is part of the URL.
+      if (link.start < at) continue
+      out.push(child.slice(at, link.start))
+      if ('url' in link) out.push(<WebLink key={link.start} url={link.url} />)
+      else {
+        const { start, end, ...file } = link
+        const ref = file.line === undefined && file.path === about?.path ? about : file
+        out.push(<FileLink key={start} file={ref}>{child.slice(start, end)}</FileLink>)
+      }
+      at = link.end
     }
     out.push(child.slice(at))
     return out

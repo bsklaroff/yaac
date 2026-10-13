@@ -416,6 +416,9 @@ function isShellCall(update: Record<string, unknown>, kind: string | undefined):
  * command makes it the shell call it is: titled by its command, with the
  * description the model gave it. A Monitor of a WebSocket has no command
  * and stays an `other` call titled "Monitor".
+ *
+ * opencode titles a fetch with the bare tool name (`webfetch`), so a fetch
+ * whose title does not name its URL is followed by it, for the pane to link.
  */
 function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | undefined {
   const toolCallId = asString(update.toolCallId)
@@ -434,7 +437,9 @@ function toToolCallPatch(update: Record<string, unknown>): AcpToolCallPatch | un
   const locations = toLocations(update.locations)
   const shell = isShellCall(update, kind)
   const description = asString(rawInput?.description)
-  const title = monitorCommand ?? asString(update.title)
+  const url = kind === 'fetch' ? asString(rawInput?.url) : undefined
+  const named = asString(update.title)
+  const title = monitorCommand ?? (url !== undefined && named?.includes(url) === false ? `${named} ${url}` : named)
   const meta = asRecord(update._meta)
   const output = asString(asRecord(meta?.terminal_output_delta ?? meta?.terminal_output)?.data)
   return {
