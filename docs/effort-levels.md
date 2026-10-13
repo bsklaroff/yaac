@@ -113,9 +113,11 @@ exist on the child's model; a named level the model lacks is refused before
 the detached create starts. `yaac-mama models` lists each model's levels and
 stars its default.
 
-A restart relaunches at the workspace row's effort, checked against the model
-the conversation last reported, so a level that model lacks becomes its
-default, as does a row with none (one created before effort existed). A spare warmed at another effort is respawned at the claimed one.
+A restart relaunches each conversation at the workspace row's effort, checked
+against the model that conversation relaunches on, so a level that model lacks
+becomes its default, as does a row with none (one created before effort
+existed). A conversation on another tool than the workspace's, whose model's
+levels are unknown, gets no level, since the row's is in another tool's words. A spare warmed at another effort is respawned at the claimed one.
 
 ## Storage
 
@@ -133,7 +135,8 @@ survived, like a model it would not take. The option's current value and
 choices are read from every message carrying session state (handshake
 replies, `set_config_option` replies, `config_option_update`), which also
 covers an adapter re-seeding effort after a model switch. A reattach runs no
-handshake, so it reads the last option back from acpd's record.
+handshake, so it reads the last option back from acpd's record, with the
+session's mode and model (`readAcpRecovery`).
 
 The pane gets an `effort` frame (current level, the adapter's levels and
 names for the current model) and answers with `{ type: 'effort', effort }`,

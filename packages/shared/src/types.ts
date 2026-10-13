@@ -49,6 +49,28 @@ export function normalizeTool(raw: string | undefined): AgentTool {
 export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/
 
 /**
+ * The suffix claude puts on a model id to run it with a 1M-token context
+ * (`claude-opus-5-5[1m]`). A restart keeps it on a claude model it relaunches,
+ * so the launch double-quotes such a model (`claudeModelArg`), since a bare
+ * `[1m]` is a shell glob.
+ */
+export const CLAUDE_1M_SUFFIX = '[1m]'
+
+/**
+ * `model` as a launch of `tool` can carry it, or undefined. It must match
+ * `MODEL_RE` once a bracketed suffix is dropped (codex-acp reports its effort
+ * as `[medium]`), except that a claude model keeps `CLAUDE_1M_SUFFIX`, since
+ * dropping it would put a long conversation back on a 200K context. A model
+ * an agent reported comes from a pane option anything in the workspace can
+ * set, so it passes through here before any launch names it.
+ */
+export function launchableModel(tool: AgentTool, model: string): string | undefined {
+  const long = tool === 'claude' && model.endsWith(CLAUDE_1M_SUFFIX)
+  const base = long ? model.slice(0, -CLAUDE_1M_SUFFIX.length) : model.replace(/\[[^\]]*\]$/, '')
+  return MODEL_RE.test(base) ? `${base}${long ? CLAUDE_1M_SUFFIX : ''}` : undefined
+}
+
+/**
  * An effort level, in the tool's own words (`high`, `xhigh`, opencode's
  * `default`). Embedded bare in launch commands like a model, so it is one
  * lowercase word (docs/effort-levels.md).

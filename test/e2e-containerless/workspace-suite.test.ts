@@ -1675,12 +1675,15 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
     // Restart twice with no turn between. A resume reports nothing, so the
     // launch must record the conversation itself for the second restart to
-    // find it. The title session must not take its place.
+    // find it. The title session must not take its place. Each resume keeps
+    // the model the workspace launched on.
+    const model = (await launches(prompted))[0]?.match(/ --model (\S+)$/)?.[1] ?? ''
+    expect(model).not.toBe('')
     for (const n of [2, 3]) {
       await restart(prompted)
       await vi.waitFor(async () => {
         expect((await launches(prompted))).toHaveLength(n)
-        expect((await launches(prompted)).at(-1)).toMatch(new RegExp(` resume ${thread}$`))
+        expect((await launches(prompted)).at(-1)).toMatch(new RegExp(` resume ${thread} --model ${model.replaceAll('.', '\\.')}$`))
         const active = await codexSessions(prompted)
         expect(active.map((s) => s.agentSessionId)).toEqual([thread])
         expect(active[0]?.status).toBeDefined()

@@ -154,6 +154,18 @@ describe('queueWorkspace', () => {
     expect(other.parentWorkspaceId).toBe('parent-1')
   })
 
+  // The parent's model is as its agent reported it, which anything in that
+  // workspace can set: an agent could otherwise queue a child that launches
+  // a command of its choosing.
+  it("inherits only a launchable model from the parent's conversation", async () => {
+    await workspace('hostile', { tool: 'claude', model: 'x; touch /tmp/pwned; #' })
+    expect((await queueWorkspace(local, PROJ, { parent: 'hostile', prompt: 'x' }, 'user')).model)
+      .toBe(FALLBACK_MODELS.claude)
+    await workspace('long', { tool: 'claude', model: 'claude-opus-5-5[1m]' })
+    expect((await queueWorkspace(local, PROJ, { parent: 'long', prompt: 'x' }, 'user')).model)
+      .toBe('claude-opus-5-5[1m]')
+  })
+
   it('stores a branch for a parent still provisioning and for one whose row predates it', async () => {
     // Mid-create there is no conversation yet, so the provisioning row
     // supplies the tool.

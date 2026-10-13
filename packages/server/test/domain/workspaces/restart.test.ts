@@ -53,6 +53,7 @@ import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import type { AgentTool, PermissionMode } from '@yaac/shared/types'
 import { BUILT_IN_USER_ID } from '#db'
+import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -177,9 +178,9 @@ describe('prepareRestart', () => {
     // Each conversation comes back in its own window, in order. No codex
     // conversation has the workspace-id pin, so `codex resume wt-1` would
     // find nothing and kill the window: it starts fresh. claude finds a
-    // conversation by its id.
+    // conversation by its id. The codex one keeps the model it launched on.
     const windows = respawn()!
-    expect(windows).toMatch(/respawn-window -k -t yaac:codex 'codex -C \/workspace [^']* --yolo'/)
+    expect(windows).toMatch(new RegExp(`respawn-window -k -t yaac:codex 'codex -C /workspace [^']* --yolo --model ${FALLBACK_MODELS.codex}'`))
     expect(windows).not.toContain('resume wt-1')
     expect(windows).toMatch(/new-window -d -t yaac -n claude-2 -c \/workspace '[^']* --resume conv-2'/)
     expect(progress).toEqual(expect.arrayContaining([
@@ -213,6 +214,83 @@ describe('prepareRestart', () => {
     expect(respawn()).toContain('--permission-mode plan')
     expect(respawn()).toContain('--effort low')
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2'))?.stoppedAt).toBeUndefined()
+  })
+
+  // A launch naming no model would take whatever the shared tool home holds.
+  // Each conversation resumes on its own model, at the row's effort where
+  // that model has it.
+  it('relaunches each conversation on the model it last reported', async () => {
+    await stoppedWorkspace('wt-6', { model: 'claude-opus-4-7', effort: 'max' })
+    // The first switched with `/model` to a 1M context; the third never
+    // reported.
+    await applyWorkspaceEvent({
+      type: 'sessions-launched',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'wt-6',
+      sessions: [
+        { tool: 'claude', agentSessionId: 'wt-6', mode: 'tui', model: 'claude-opus-5-5[1m]' },
+        { tool: 'codex', agentSessionId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
+        { tool: 'claude', agentSessionId: 'conv-3', mode: 'tui' },
+      ],
+    })
+
+    await restart('wt-6')
+
+    const windows = respawn()!
+    // Quoted, since a bare `[1m]` is a shell glob.
+    expect(windows).toMatch(/respawn-window -k -t yaac:claude '[^']* --model "claude-opus-5-5\[1m\]" --effort max --resume wt-6'/)
+    // gpt-5.5 has no `max`, so it takes its own default.
+    expect(windows).toMatch(/-n codex-2 [^']*'[^']*model_reasoning_effort=medium[^']* --model gpt-5\.5'/)
+    expect(windows).toMatch(/-n claude-3 [^']*'(?:(?!--model)[^'])* --effort max --resume conv-3'/)
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-6'))?.model).toBe('claude-opus-5-5[1m]')
+  })
+
+  // Anything in the workspace can set the pane option a model is reported
+  // through, so a value a launch could not carry bare is never relaunched.
+  it('refuses a reported model a launch could not carry, falling back to the row only for the founding tool', async () => {
+    await stoppedWorkspace('wt-7', { model: 'claude-opus-4-7' })
+    const hostile = ['--foo; touch /tmp/pwned', '-cx', 'a b', 'opus\n--x', 'x[1m][1m]']
+    await applyWorkspaceEvent({
+      type: 'sessions-launched',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'wt-7',
+      sessions: hostile.map((model, i) => ({
+        tool: 'claude' as const, agentSessionId: i === 0 ? 'wt-7' : `conv-${String(i)}`, mode: 'tui' as const, model,
+      })),
+    })
+
+    await restart('wt-7')
+
+    const windows = respawn()!
+    expect(windows).toMatch(/respawn-window -k -t yaac:claude '[^']* --model claude-opus-4-7 [^']*--resume wt-7'/)
+    expect(windows.match(/--model/g)).toHaveLength(1)
+    for (const fragment of ['--foo', 'pwned', '-cx', 'a b', '--x', '[1m]']) expect(windows).not.toContain(fragment)
+  })
+
+  // The row's model is the founding conversation's. Once that one has
+  // closed, the first active conversation may be another tool's, which must
+  // not launch on a claude model, nor put its own on the row for a later
+  // claude conversation to fall back to.
+  it("keeps the row's model and a first conversation on another tool apart", async () => {
+    await stoppedWorkspace('wt-8', { model: 'claude-opus-4-7', effort: 'max' })
+    await applyWorkspaceEvent({
+      type: 'sessions-launched',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'wt-8',
+      sessions: [
+        { tool: 'codex', agentSessionId: 'conv-cx', mode: 'tui' },
+        { tool: 'codex', agentSessionId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
+      ],
+    })
+
+    await restart('wt-8')
+
+    const windows = respawn()!
+    expect(windows).toMatch(/respawn-window -k -t yaac:claude 'codex (?:(?!--model)[^'])* resume conv-cx'/)
+    expect(windows).toMatch(/-n codex-2 [^']*'[^']* --model gpt-5\.5'/)
+    expect(windows).not.toContain('claude-opus-4-7')
+    expect(windows).not.toContain('model_reasoning_effort=max')
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-8'))?.model).toBe('claude-opus-4-7')
   })
 
   // Relaunching without the recorded posture would take the driver's

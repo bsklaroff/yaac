@@ -50,6 +50,7 @@ import {
   whenAcpConversation,
 } from './acp-registry'
 import { acpAdapterFor, acpModelIsProtocol } from './acp-adapters'
+import { assertLaunchableModel } from './agent-command'
 import type {
   AgentConnectDeps,
   AgentConnection,
@@ -542,6 +543,7 @@ export const acpDriver: AgentDriver = {
    * one answer across reconnects.
    */
   launchCmd(spec: AgentLaunchSpec): string {
+    assertLaunchableModel(spec.tool, spec.model)
     const adapter = acpAdapterFor(spec.tool)
     // Name the record for the conversation, not the window: window names are
     // slots that shift when a restart drops an earlier conversation, which

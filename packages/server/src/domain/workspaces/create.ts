@@ -184,10 +184,11 @@ export interface WorkspaceCreateOptions {
   /**
    * Resume an existing workspace (a restart): reuse its checkout if present,
    * and resume these conversations, in window order, each in its own tmux
-   * window (`agentWindowName`) so it loads its prior transcript. Empty
-   * resumes one conversation under the workspace id.
+   * window (`agentWindowName`) so it loads its prior transcript, on its own
+   * model and effort where it names them. Empty resumes one conversation
+   * under the workspace id, on `model` and `effort`.
    */
-  resume?: Array<{ agentSessionId: string; tool: AgentTool }>
+  resume?: LaunchedAgent[]
   /**
    * Provision a prewarmed spare, hidden from user-facing views until a later
    * `workspace create` claims it. Set only by the prewarm reconciler.
@@ -202,7 +203,8 @@ export interface WorkspaceCreateOptions {
   /**
    * Model override for the agent launch: a model id or alias for
    * claude/codex, `provider/model` for opencode and pi. The create route
-   * validates it. Not persisted: a restart uses the default model.
+   * validates it. Recorded on the workspace row. A resume names each
+   * conversation's in `resume` instead.
    */
   model?: string
   /**
@@ -223,9 +225,10 @@ export interface WorkspaceCreateOptions {
    */
   permissionMode?: PermissionMode
   /**
-   * The effort level the agents launch at, in the tool's words, already
-   * checked against the model. Restart passes the recorded one; absent
-   * launches with none.
+   * The effort level the agent launches at, in the tool's words, already
+   * checked against the model, and recorded on the workspace row. Absent
+   * launches with none. A resume names each conversation's in `resume`
+   * instead.
    */
   effort?: string
   /**
@@ -233,6 +236,15 @@ export interface WorkspaceCreateOptions {
    * them to the CLI as NDJSON events.
    */
   onProgress?: (message: string) => void
+}
+
+/** One agent window to bring up: the conversation, its tool, and the model
+ *  and effort it launches on. */
+interface LaunchedAgent {
+  agentSessionId: string
+  tool: AgentTool
+  model?: string
+  effort?: string
 }
 
 export interface WorkspaceCreateResult {
@@ -276,7 +288,7 @@ interface WorkspaceSetupParams {
   mode: AgentMode
   /** Conversations to bring up, in window order. The same list the rows were
    *  written from, so the DB never names one the agent did not open. */
-  launching: Array<{ agentSessionId: string; tool: AgentTool }>
+  launching: LaunchedAgent[]
   /** The project's init windows, resolved in createWorkspace. */
   initWindows: InitWindow[]
   /** pi only — provider whose default model drives `pi --model`. */
@@ -376,8 +388,8 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
         paths,
         permissionMode,
         ...(piProvider !== undefined ? { piProvider } : {}),
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        ...(options.effort !== undefined ? { effort: options.effort } : {}),
+        ...(a.model !== undefined ? { model: a.model } : {}),
+        ...(a.effort !== undefined ? { effort: a.effort } : {}),
       }),
     }
   })
@@ -772,10 +784,15 @@ export async function createWorkspace(
   // Decided here so they are recorded with the workspace row. The tool and
   // first prompt are read from the first conversation, so a workspace with
   // none could not be restarted; discovery only adds to this list.
-  const launching: Array<{ agentSessionId: string; tool: AgentTool }> =
+  const launching: LaunchedAgent[] =
     options.resume !== undefined && options.resume.length > 0
       ? options.resume
-      : [{ agentSessionId: workspaceId, tool }]
+      : [{
+        agentSessionId: workspaceId,
+        tool,
+        ...(options.model !== undefined ? { model: options.model } : {}),
+        ...(options.effort !== undefined ? { effort: options.effort } : {}),
+      }]
 
   // Record the row before provisioning anything, so no pod exists without
   // one (a rowless pod is invisible to titles, groups, restart and cannot be
@@ -850,9 +867,7 @@ export async function createWorkspace(
             ? { firstPrompt: options.initialPrompt }
             : {}),
           // Lets the pane show the model before the agent reports one.
-          ...(i === 0 && options.resume === undefined && options.model !== undefined
-            ? { model: options.model }
-            : {}),
+          ...(options.resume === undefined && a.model !== undefined ? { model: a.model } : {}),
         })),
       })
     }
