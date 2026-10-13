@@ -2,7 +2,9 @@
  * Verifies the webapp's side of the iPhone app (ios/README.md) at a 390px
  * phone viewport: with the bridge the app injects (`window.yaacWindow`
  * holding only `showServers` and `openExternal`), the projects screen's
- * Servers row appears and calls `showServers`, and no window controls do.
+ * Servers row and the workspaces screen's server badge appear and call
+ * `showServers`, and no window controls do. The badge check opens the first
+ * project, so it needs the server to have one.
  * Without the bridge, as in Safari, neither the Servers row nor the server
  * badge appears. Also checks that the page declares an apple-touch-icon
  * that loads, and that Settings → General shows no phone QR code on an http
@@ -35,6 +37,16 @@ try {
   await page.screenshot({ path: `${SHOTS}/ios-shell-projects.png` })
   await servers.click()
   check('bridge: Servers button calls showServers', (await page.evaluate(() => window.bridgeCalls)).includes('showServers'))
+
+  await page.evaluate(() => { window.bridgeCalls = [] })
+  await page.locator('button:has(> span.truncate)').first().click()
+  const badge = page.getByRole('button', { name: 'Choose a server' })
+  await badge.waitFor({ timeout: 5_000 })
+  check('bridge: workspaces screen shows the server badge', await badge.isVisible())
+  await page.screenshot({ path: `${SHOTS}/ios-shell-workspaces.png` })
+  await badge.click()
+  check('bridge: server badge calls showServers', (await page.evaluate(() => window.bridgeCalls)).includes('showServers'))
+  await page.getByLabel('Back to projects').click()
 
   const icon = await page.evaluate(async () => {
     const href = document.querySelector('link[rel="apple-touch-icon"]')?.href

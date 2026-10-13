@@ -20,7 +20,8 @@ export function serverLabel(origin: string): string {
  */
 
 /**
- * Sidebar-header badge naming the connected server. The native apps have no
+ * Status-row badge naming the connected server, in the desktop sidebar and
+ * on the phone layout's workspaces screen. The native apps have no
  * address bar, and the window is loaded from the server, so
  * `location.origin` names it.
  */
@@ -49,7 +50,7 @@ export function ServerBadge(): JSX.Element | null {
 /**
  * The Servers button above Settings: 'rail' is the desktop rail's 40px chip;
  * 'row' is the mobile project screen's full-width row, which also names the
- * server, since the phone layout has no sidebar badge.
+ * server, since that screen has no status row for the badge.
  */
 export function ServersButton({ variant = 'rail' }: { variant?: 'rail' | 'row' } = {}): JSX.Element | null {
   const showServers = windowApi()?.showServers

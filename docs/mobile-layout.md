@@ -99,11 +99,12 @@ what they scope; alone they would be a column of unlabelled letters. Rows use
 the same identity color (`lib/projectIdentity.ts`), and `NewProjectButton`
 and `SettingsButton` render as rows (`variant="row"`). So does
 `ServersButton` inside the iPhone app (ios/README.md), naming the connected
-server, since the sidebar's server badge has no place on a phone.
+server, since this screen has no status row for the server badge.
 
 **Workspaces** reuses the desktop sidebar's `WorkspaceList` as is, so list
 order matches the Alt+K/J cycle order. It sits under a mobile header with the
-project menu, skills and new-workspace. Touch has no hover, so below `md` each
+project menu, skills and new-workspace, over the sidebar's status row (usage,
+and the server badge inside the iPhone app). Touch has no hover, so below `md` each
 row's rename, group and delete actions are always shown and finger-sized, and
 the title's hover marquee is off. Dragging rows between groups is mouse-only
 (a preventDefault on pointerdown would fight scrolling); the group dialog's

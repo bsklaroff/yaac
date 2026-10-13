@@ -4,6 +4,7 @@ import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
 import { MobileHeader } from '#components/mobile/MobileHeader'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
+import { ServerBadge } from '#components/ServerBadge'
 import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { WorkspaceList } from '#components/WorkspaceList'
@@ -75,6 +76,7 @@ export function WorkspacesScreen({
       {/* Status badges; the row hides when all are empty. */}
       <div className="flex shrink-0 items-center gap-2 px-3 py-2 empty:hidden">
         <UsageBadge />
+        <ServerBadge />
         <ImageBuildIndicator projectId={projectId} />
         {projectId && gitAuthFailures.length > 0 && (
           <GitAuthFailureBadge
