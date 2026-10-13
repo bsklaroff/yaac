@@ -14,7 +14,6 @@ import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
 import { workspaceRestart } from '#commands/workspace-restart'
 import { workspaceAttach } from '#commands/workspace-attach'
-import { workspaceMonitor } from '#commands/workspace-monitor'
 import { forward } from '#commands/forward'
 import { workspaceAgents } from '#commands/workspace-agents'
 import { authUpdate } from '#commands/auth-update'
@@ -383,13 +382,6 @@ workspace
   .description('Open an interactive zsh shell in the workspace container')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .action((workspaceId: string) => workspaceAttach(workspaceId, 'shell'))
-
-workspace
-  .command('monitor')
-  .description('Poll and display running workspaces in real-time')
-  .argument('[project]', 'Filter by project name, id, or id prefix')
-  .option('-n, --interval <seconds>', 'Refresh interval in seconds', '5')
-  .action(workspaceMonitor)
 
 const config = program
   .command('config')

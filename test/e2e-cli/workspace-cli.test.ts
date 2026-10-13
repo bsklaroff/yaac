@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import WebSocket from 'ws'
-import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
+import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
 import type { SpawnedServer } from '@yaac/test-utils/api'
 import { createTestRepo, requireCluster } from '@yaac/test-utils/setup'
 import { addTestProject, requirePodman } from '#support/cluster'
@@ -105,32 +104,6 @@ function openWs(url: string, headers: Record<string, string> = {}): {
 }
 
 /**
- * Run `yaac workspace monitor <args>` (which re-renders forever) until its
- * first render, then kill it and return the output.
- */
-async function runMonitorUntilFirstRender(...args: string[]): Promise<string> {
-  const child: ChildProcess = spawn(process.execPath, [
-    TEST_CLI_ENTRY, 'workspace', 'monitor', ...args,
-  ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
-
-  let stdout = ''
-  let stderr = ''
-  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-  try {
-    await vi.waitFor(() => {
-      if (!stdout.includes('yaac workspace monitor') || !stdout.includes('No running workspaces')) {
-        throw new Error(`monitor never rendered.\nstdout: ${stdout}\nstderr: ${stderr}`)
-      }
-    }, { timeout: 30_000, interval: 100 })
-  } finally {
-    child.kill('SIGTERM')
-    await new Promise<void>((resolve) => child.once('exit', () => resolve()))
-  }
-  return stdout
-}
-
-/**
  * Empty-state tests: must run before any project is seeded, and write no
  * server state.
  */
@@ -150,13 +123,6 @@ describe('empty state (must run before any state is seeded)', () => {
     expect(exitCode).toBe(0)
     expect(stdout).toContain('No running workspaces')
     expect(stdout).toContain('yaac workspace create')
-  })
-
-  it('workspace monitor renders the header with the default interval and the empty session list', async () => {
-    const stdout = await runMonitorUntilFirstRender()
-    expect(stdout).toMatch(/yaac workspace monitor {2}\(every 5s/)
-    expect(stdout).toContain('Press Ctrl+C to exit')
-    expect(stdout).toContain('No running workspaces')
   })
 })
 
@@ -686,22 +652,6 @@ describe('with seeded projects', () => {
       expect(`${stdout}${stderr}`).toMatch(/not found/i)
     })
 
-  })
-
-  describe('yaac workspace monitor (real CLI + real server)', () => {
-    // `-n` is the short form of `--interval`.
-    it('filters by the [project] argument and honors -n <seconds>', async () => {
-      const repo = path.join(testEnv.scratchDir, 'proj-mon')
-      await createTestRepo(repo)
-      const prefix = (await addTestProject(server, repo)).slice(0, 8)
-
-      // The project by name, then by id prefix.
-      for (const ref of ['proj-mon', prefix]) {
-        const stdout = await runMonitorUntilFirstRender(ref, '-n', '1')
-        expect(stdout).toMatch(/\(every 1s/)
-        expect(stdout).toContain(`No running workspaces for project "${ref}"`)
-      }
-    })
   })
 
   /**

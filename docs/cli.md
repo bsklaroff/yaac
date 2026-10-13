@@ -62,8 +62,6 @@ yaac workspace
   agents <workspace-id>         List the workspace's agent sessions
   attach <workspace-id>         Attach to the workspace's tmux session
   shell <workspace-id>          Open a shell in the workspace
-  monitor [project]             Live table of running workspaces
-    -n, --interval <seconds>    Refresh interval (default 5)
 
 yaac group                      Named sidebar groups of workspaces
   create <project> <name>
