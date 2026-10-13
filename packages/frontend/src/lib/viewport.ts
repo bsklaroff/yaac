@@ -11,6 +11,10 @@ import { useEffect, useSyncExternalStore } from 'react'
  */
 export const MOBILE_QUERY = '(max-width: 767px)'
 
+/** The smallest text a phone-width text control may show: below it, iOS
+ *  zooms the page when the control takes focus (index.css). */
+export const PHONE_TEXT_PX = 16
+
 /** A device whose only pointer is a finger: a phone in any orientation, or
  *  a tablet. It excludes touch laptops, whose primary pointer hovers. */
 const TOUCH_ONLY_QUERY = '(hover: none) and (pointer: coarse)'

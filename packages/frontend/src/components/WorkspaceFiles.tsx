@@ -8,24 +8,26 @@ import { Menu } from '@base-ui/react/menu'
 import { Popover } from '@base-ui/react/popover'
 import { Tooltip } from '@base-ui/react/tooltip'
 import type { SymlinkTarget, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
-import { layoutOf, paneViewKey, useUiStore } from '#lib/store'
+import { DEFAULT_FONT_SIZE, layoutOf, paneViewKey, useUiStore } from '#lib/store'
 import { BranchPicker } from '#components/BranchPicker'
 import { DiffView } from '#components/DiffView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
 import { PathLabel } from '#components/ui/PathLabel'
+import { TextSizeMenu } from '#components/ui/TextSizeMenu'
 import { Tip, WithTip } from '#components/ui/Tooltip'
 import { parseUnifiedDiff, type ParsedFileDiff } from '#lib/diff'
 import { CHANGE_STAGES, ROW_STATUS, lineTotals, pathStatuses, stageTotals, type RowStatus } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
-import { chordMatches, findChord, formatChord } from '#lib/shortcuts'
+import { chordMatches, findChord, formatChord, textSizeStep } from '#lib/shortcuts'
 import { useProjectBranches } from '#lib/useProjectBranches'
 import { CHANGES_POLL_MS, useWorkspaceChanges, useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 import { useDiffFind, type DiffMatch } from '#lib/useDiffFind'
+import { usePinchSize } from '#lib/usePinchSize'
 import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
-import { focusRaisesKeyboard } from '#lib/viewport'
+import { PHONE_TEXT_PX, focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
 import {
   CHANGES_TARGET,
   FILES_TARGET,
@@ -125,7 +127,10 @@ function isStopped(err: unknown): boolean {
  * status colors, line counts against the diff base, and create / rename /
  * delete. As the Changes pane (`changedOnly`) it lists only the changed
  * files, as a tree or flat, each with its diff, which Cmd/Ctrl-F searches.
- * Unmounted off-screen; view state lives in the store.
+ * Unmounted off-screen; view state lives in the store. The list below the
+ * header scales with `filesFontSize` through CSS `zoom`, so icons, indents
+ * and diffs grow with the text; Cmd/Ctrl =/−/0, the "Aa" menu and a pinch
+ * over the list set it. A pinch anywhere else in the pane zooms the page.
  */
 export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly = false }: {
   workspaceId: string
@@ -146,6 +151,10 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const setPaneView = useUiStore((s) => s.setPaneView)
   const openFile = useUiStore((s) => s.openFile)
   const bindings = useUiStore((s) => s.bindings)
+  const fontSize = useUiStore((s) => s.filesFontSize)
+  const setFontSize = useUiStore((s) => s.setFilesFontSize)
+  const pinch = usePinchSize(fontSize, setFontSize)
+  const zoom = fontSize / DEFAULT_FONT_SIZE
   const expanded = useMemo(() => new Set(view?.expanded ?? []), [view?.expanded])
   const collapsed = useMemo(() => new Set(view?.collapsed ?? []), [view?.collapsed])
   const openDiffs = useMemo(() => new Set(view?.openDiffs ?? []), [view?.openDiffs])
@@ -275,6 +284,12 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   const onKeyDown = (e: KeyboardEvent): void => {
+    const size = textSizeStep(e)
+    if (size !== null) {
+      e.preventDefault()
+      setFontSize(size === 0 ? DEFAULT_FONT_SIZE : fontSize + size)
+      return
+    }
     if (!chordMatches(findChord(), e.nativeEvent)) return
     e.preventDefault()
     if (changedOnly) {
@@ -461,6 +476,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
     <div style={{ paddingLeft: indent(depth) }} className="py-0.5 pr-2">
       <InlineInput
         initial={initial}
+        zoom={zoom}
         onCommit={(v) => void commitEdit(v)}
         onCancel={() => { setEditing(null); setEditError(null) }}
       />
@@ -634,6 +650,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             </HeaderButton>
           </>
         )}
+        <TextSizeMenu size={fontSize} onChange={setFontSize} className="h-6 w-6" />
       </div>
     </Tooltip.Provider>
   )
@@ -687,7 +704,12 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
 
   return (
     // Focusable so Cmd/Ctrl-F reaches the filter after a click in the list.
-    <div ref={rootRef} tabIndex={-1} onKeyDown={onKeyDown} className="flex h-full flex-col bg-surface outline-none">
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      className="flex h-full flex-col bg-surface outline-none"
+    >
       {header}
       {changedOnly && (
         <ChangesStrip
@@ -725,7 +747,14 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
         </div>
       )}
       {changesNotice ?? (find && !changedOnly ? (
-        <div ref={matchesRef} role="listbox" aria-label="Matching files" className="min-h-0 flex-1 overflow-y-auto py-0.5">
+        <div
+          ref={matchesRef}
+          role="listbox"
+          aria-label="Matching files"
+          style={{ zoom }}
+          {...pinch}
+          className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-y-auto py-0.5"
+        >
           {matches.length === 0 && <p className="px-3 py-2 text-xs text-text-dim">No files match “{find}”</p>}
           {matches.map((path, i) => {
             const status = statuses.get(path)
@@ -764,7 +793,9 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             // folder target the root.
             onClick={(e) => { if (e.target === e.currentTarget) setSelected(null) }}
             onScroll={(e) => setPaneView(viewKey, { scroll: e.currentTarget.scrollTop })}
-            className="min-h-0 flex-1 overflow-y-auto py-0.5"
+            style={{ zoom }}
+            {...pinch}
+            className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-y-auto py-0.5"
           >
             {renderRows(flat ? flatRows() : tree.root.children.map((c) => rowOf(c, c.name, false)), 0, '')}
           </ContextMenu.Trigger>
@@ -1194,13 +1225,18 @@ function LazyRows({ workspaceId, parent, render }: {
   )
 }
 
-/** The inline name input: Enter commits, Escape cancels. */
-function InlineInput({ initial, onCommit, onCancel }: {
+/** The inline name input: Enter commits, Escape cancels. On phones its text
+ *  is at least PHONE_TEXT_PX after the list's `zoom`, which iOS counts toward
+ *  the size it zooms the page on focus below, and never smaller than the
+ *  rows' own `text-xs`. */
+function InlineInput({ initial, zoom, onCommit, onCancel }: {
   initial: string
+  zoom: number
   onCommit: (value: string) => void
   onCancel: () => void
 }): JSX.Element {
   const ref = useRef<HTMLInputElement>(null)
+  const mobile = useIsMobile()
   useEffect(() => {
     const el = ref.current
     if (!el) return
@@ -1215,6 +1251,7 @@ function InlineInput({ initial, onCommit, onCancel }: {
       defaultValue={initial}
       aria-label="Name"
       spellCheck={false}
+      style={mobile ? { fontSize: Math.max(PHONE_TEXT_PX / zoom, 12) } : undefined}
       onKeyDown={(e) => {
         if (e.key === 'Enter') onCommit(e.currentTarget.value)
         else if (e.key === 'Escape') {

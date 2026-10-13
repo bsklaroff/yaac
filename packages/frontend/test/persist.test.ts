@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  MAX_EDITOR_FONT_SIZE, MAX_SIDEBAR_WIDTH, MIN_EDITOR_FONT_SIZE, chatDraftKey, flushChatDrafts, loadPersisted,
+  MAX_FONT_SIZE, MAX_SIDEBAR_WIDTH, MIN_FONT_SIZE, chatDraftKey, flushChatDrafts, loadPersisted,
   loadSelection, persistSelection, useUiStore,
 } from '#lib/store'
 import { addColumn, singleColumn } from '#lib/layout'
@@ -40,7 +40,11 @@ const CASES: { field: keyof typeof initial; key: string; value: unknown; stored:
   },
   {
     field: 'editorFontSize', key: 'yaac.editorfontsize.v1', value: 15, stored: '15',
-    loads: [['400', MAX_EDITOR_FONT_SIZE], ['1', MIN_EDITOR_FONT_SIZE], ['big', undefined], [' ', undefined]],
+    loads: [['400', MAX_FONT_SIZE], ['1', MIN_FONT_SIZE], ['big', undefined], [' ', undefined]],
+  },
+  {
+    field: 'filesFontSize', key: 'yaac.filesfontsize.v1', value: 15, stored: '15',
+    loads: [['400', MAX_FONT_SIZE], ['1', MIN_FONT_SIZE]],
   },
   { field: 'viewMode', key: 'yaac.viewmode.v1', value: 'tabs', stored: 'tabs', loads: [['garbage', undefined]] },
   { field: 'mobileScreen', key: 'yaac.mobilescreen.v1', value: 'pane', stored: 'pane', loads: [['wat', undefined]] },
@@ -106,7 +110,7 @@ describe('saved fields', () => {
 
   it('setters clamp before saving', () => {
     useUiStore.getState().setEditorFontSize(100)
-    expect(localStorage.getItem('yaac.editorfontsize.v1')).toBe(String(MAX_EDITOR_FONT_SIZE))
+    expect(localStorage.getItem('yaac.editorfontsize.v1')).toBe(String(MAX_FONT_SIZE))
   })
 
   it('removes the pin key on null', () => {

@@ -11,9 +11,10 @@ const cm = vi.hoisted(() => ({ headless: false, view: null as EditorView | null,
 vi.mock('#components/ui/CodeEditor', async () => {
   const { EditorView } = await vi.importActual<typeof CodeMirror>('@uiw/react-codemirror')
   return {
-    CodeEditor: ({ value, onChange, extensions, onCreateEditor }: {
+    CodeEditor: ({ value, onChange, fontSize, extensions, onCreateEditor }: {
       value: string
       onChange: (v: string) => void
+      fontSize?: number
       extensions?: unknown[]
       onCreateEditor?: (view: EditorView) => void
     }) => (
@@ -26,6 +27,7 @@ vi.mock('#components/ui/CodeEditor', async () => {
         }}
         aria-label="editor"
         data-extensions={extensions?.length ?? 0}
+        data-font-size={fontSize}
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
@@ -160,10 +162,17 @@ async function mount(path = 'a.ts'): Promise<ReturnType<typeof render>> {
 }
 
 describe('WorkspaceFile', () => {
+  // A pinch over an image zooms the page, as it would anywhere; only the
+  // editor takes a pinch as a text size.
   it('shows a media file by its extension, reloads it when it changes, and says a binary file is not shown', async () => {
+    useUiStore.setState({ editorFontSize: 12 })
     await mount('img/shot.png')
     const img = screen.getByAltText<HTMLImageElement>('img/shot.png')
     expect(img.getAttribute('src')).toBe('/api/workspace/w1/raw?path=img%2Fshot.png&v=1')
+    fireEvent.touchStart(img, { touches: [{ clientX: 0, clientY: 0 }, { clientX: 100, clientY: 0 }] })
+    fireEvent.touchMove(img, { touches: [{ clientX: 0, clientY: 0 }, { clientX: 200, clientY: 0 }] })
+    expect(useUiStore.getState().editorFontSize).toBe(12)
+    expect(img.closest('.touch-pan-x')).toBeNull()
     disk = { content: 'two', version: 2 }
     await tick(POLL_MS)
     expect(screen.getByAltText('img/shot.png').getAttribute('src')).toBe('/api/workspace/w1/raw?path=img%2Fshot.png&v=2')
@@ -236,9 +245,29 @@ describe('WorkspaceFile', () => {
     expect(save()).toBeNull()
   })
 
-  it('sizes the text with Ctrl =/−/0 instead of zooming the page', async () => {
+  // A phone keeps the editor's own text at 16px, below which iOS zooms the
+  // page on focus, and scales the editor to the chosen size instead.
+  it('sizes the text with Ctrl =/−/0 or a pinch instead of zooming the page, on a phone by scaling', async () => {
     useUiStore.setState({ editorFontSize: 12 })
+    let phone = true
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: phone, media: q, addEventListener() {}, removeEventListener() {} }))
     await mount()
+    const scaled = (): string => editor().parentElement!.style.transform
+    expect(editor().dataset.fontSize).toBe('16')
+    expect(scaled()).toBe('scale(0.75)')
+    const touches = (...xs: number[]): { touches: { clientX: number; clientY: number }[] } => (
+      { touches: xs.map((clientX) => ({ clientX, clientY: 0 })) })
+    fireEvent.touchStart(editor(), touches(0, 100))
+    fireEvent.touchMove(editor(), touches(0, 200))
+    fireEvent.touchEnd(editor(), touches())
+    expect(useUiStore.getState().editorFontSize).toBe(24)
+    expect(scaled()).toBe('scale(1.5)')
+    phone = false
+    useUiStore.setState({ editorFontSize: 12 })
+    cleanup()
+    await mount()
+    expect(editor().dataset.fontSize).toBe('12')
+    expect(scaled()).toBe('')
     const key = (k: string): boolean => fireEvent.keyDown(editor(), { key: k, ctrlKey: true })
     expect(key('=')).toBe(false)
     expect(useUiStore.getState().editorFontSize).toBe(13)
@@ -462,16 +491,16 @@ describe('WorkspaceFile', () => {
     expect(screen.getByText('committed')).toBeTruthy()
     expect(screen.getByText('untracked')).toBeTruthy()
     expect(screen.queryByText('staged')).toBeNull()
-    // The plain mode fetches nothing and adds nothing.
+    // The plain mode fetches nothing and adds no diff extensions.
     expect(fileAt).toEqual([])
-    expect(editor().dataset.extensions).toBe('0')
+    const plain = Number(editor().dataset.extensions)
 
     fireEvent.click(screen.getByLabelText('Diff mode'))
     fireEvent.click(screen.getByText('Added and removed lines'))
     await tick(0)
     expect(useUiStore.getState().fileDiffMode).toBe('inline')
     expect(fileAt).toEqual([{ path: 'old.ts', rev: 'b'.repeat(40) }])
-    expect(Number(editor().dataset.extensions)).toBeGreaterThan(0)
+    expect(Number(editor().dataset.extensions)).toBeGreaterThan(plain)
   })
 
   it('puts the cursor on the line a link opened it at, whether or not the file was open', async () => {

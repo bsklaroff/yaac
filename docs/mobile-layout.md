@@ -199,7 +199,9 @@ way). It is one global rule because the failure is silent and a per-control
 utility would be forgotten. It beats Tailwind utilities because those are in
 `@layer utilities`, and unlayered rules outrank layers. It does not beat
 CodeMirror's own theme rules (unlayered and more specific), so an
-`EditorView.theme` that sets a content font size would bring the zoom back.
+`EditorView.theme` that sets a content font size would bring the zoom back. The
+file pane's text size on phones is a `transform: scale` over a 16px editor
+for this reason (docs/file-editor.md, "Text size").
 
 The same rule sets `min-width: 0`. A flex or grid item's minimum width is its
 intrinsic width, which just grew, so a row holding the input would stop

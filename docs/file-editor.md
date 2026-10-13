@@ -309,6 +309,17 @@ offer to compare with the fork branch again.
   of the old and new current match. Escape closes the bar and clears the
   marks; the query stays for the next Cmd/Ctrl-F while the pane is mounted
   (it is component state, so leaving the tab drops it).
+- **Text size** is `filesFontSize` (default 12px, saved in localStorage),
+  one value for the explorer and the Changes pane, separate from the
+  editor's. It scales the list under the header through CSS `zoom`, so
+  icons, indents and diffs grow with the text and a diff chunk's height
+  estimate holds in the list's own pixels. Set it with Cmd/Ctrl =/−/0 in the
+  pane, the header's "Aa" popover, or a two-finger pinch over the list
+  (`usePinchSize`). Only the list is `touch-action: pan-x pan-y`, so one
+  finger still scrolls it natively and a pinch there resizes the text,
+  while a pinch over the header, which does not scale, zooms the page. On
+  phones the rename input's text is at least 16px through the `zoom`, since
+  iOS counts `zoom` toward the size it zooms the page on focus below.
 - **Collapse / expand all folders** in the explorer collapses every folder
   while any is open, and expands them all once none is, except the folders
   listed on demand (ignored ones and folder links).
@@ -349,9 +360,15 @@ take keystrokes the user has since started typing somewhere else.
 - **Text size** is one store value, `editorFontSize` (default 12px, saved in
   localStorage), shared by file panes and settings editors. Change it with
   Cmd/Ctrl =/−/0 in the pane (matched on the character, so it works on any
-  keyboard layout, and sizes the text instead of zooming the page) or the
-  header's "Aa" popover. On phones, index.css pins editor text at 16px to
-  stop iOS focus-zoom, so the button is hidden.
+  keyboard layout, and sizes the text instead of zooming the page), the
+  header's "Aa" popover, or a two-finger pinch over the editor, as in the
+  explorer; a pinch over the header or a media preview zooms the page. On
+  phones, index.css pins editor text at 16px to stop iOS focus-zoom, so the
+  file pane draws its editor at 16px and scales it to the chosen size with a
+  `transform`. iOS judges focus-zoom by font size, which a transform leaves
+  alone and CSS `zoom` would not. The find bar mounts above the editor
+  (CodeMirror's `panels({ topContainer })`), outside that scale, so its
+  controls keep their size. The settings editors stay at 16px there.
 - **Changes.** The header shows the file's `+N −N` against the diff base and
   the stages its changes sit in. A diff mode (`fileDiffMode`, one saved
   store value for every file pane) shows them in the editor, through
