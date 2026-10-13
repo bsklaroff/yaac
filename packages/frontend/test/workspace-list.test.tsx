@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
 import type { JSX } from 'react'
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type {
@@ -9,6 +8,7 @@ import type {
   ProvisioningWorkspaceEntry,
   ProjectSummary,
   QueuedWorkspaceEntry,
+  ServerSnapshot,
   StoppedWorkspaceEntry,
   StoppedWorkspacePage,
   WorkspaceGroupSummary,
@@ -24,43 +24,22 @@ vi.mock('#lib/createWorkspace', () => ({
 vi.mock('#lib/stopWorkspaceFlow', () => ({ stopWorkspaceOptimistic: vi.fn() }))
 const provision = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
-// The stop dialog lists what is queued, off the snapshot.
-const snapshot = vi.hoisted(() => vi.fn())
-vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { WorkspaceList } from '#components/WorkspaceList'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, testQueryClient, type FetchCall, type FetchMock } from './harness'
+import { mockFetch, serverSnapshot, testQueryClient, type FetchCall, type FetchMock } from './harness'
+import { intersect, intersection } from './setup'
 
-/** The elements the Stopped lists' load-more markers are watching. */
-const watched = new Set<{ fire: () => void }>()
-
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-  // jsdom has no layout, so a test says when a marker scrolls into view.
-  globalThis.IntersectionObserver = class {
-    private readonly entry: { fire: () => void }
-    constructor(callback: (entries: { isIntersecting: boolean }[]) => void) {
-      this.entry = { fire: () => callback([{ isIntersecting: true }]) }
-    }
-    observe(): void { watched.add(this.entry) }
-    disconnect(): void { watched.delete(this.entry) }
-  } as unknown as typeof IntersectionObserver
-})
-
-/** Scroll every load-more marker into view. */
+/** Scroll every load-more marker into view: jsdom has no layout, so the
+ *  markers start out of view and a test says when they come in. */
 function scrollToEnd(): void {
-  act(() => { for (const w of [...watched]) w.fire() })
+  act(() => intersect())
 }
 
 const initial = useUiStore.getState()
 
-const SET_GROUP = 'POST /api/workspace/set-group'
+const GROUP_MOVE = 'POST /api/workspace/group/move'
 const GROUP_CREATE = 'POST /api/workspace/group/create'
 const GROUP_RENAME = 'POST /api/workspace/group/rename'
 const GROUP_PIN = 'POST /api/workspace/group/set-pinned'
@@ -111,19 +90,18 @@ const stoppedQueries = (): string[] =>
 let server: FetchMock
 /** The JSON bodies posted to a route so far. */
 const posted = (route: string): unknown[] => server.called(route).map((c) => c.body)
-/** A set-group body filing `workspaceId` under `groupId` (null: ungrouped). */
-const filed = (workspaceId: string, groupId: string | null): unknown => ({ projectId: 'proj', workspaceId, groupId })
+/** A group-move body filing `workspaceId` under `groupId` (null: ungrouped). */
+const filed = (workspaceId: string, groupId: string | null): unknown => ({ projectId: 'proj', workspaceId, group: groupId })
 
 beforeEach(() => {
   localStorage.clear()
   stoppedRows.length = 0
   laterPrompts.clear()
-  watched.clear()
-  snapshot.mockReturnValue(undefined)
+  intersection.startInView = false
   useUiStore.setState(initial, true)
   server = mockFetch({
     'GET /api/workspace/list-stopped': listStopped,
-    [SET_GROUP]: undefined,
+    [GROUP_MOVE]: { groupId: null, name: null },
     [GROUP_CREATE]: { groupId: 'g-new', name: 'Release' },
     [GROUP_RENAME]: undefined,
     [GROUP_PIN]: undefined,
@@ -137,7 +115,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  vi.unstubAllGlobals()
 })
 
 const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
@@ -198,6 +175,8 @@ interface ListOpts {
   queued?: QueuedWorkspaceEntry[]
   held?: HeldWorkspaceEntry[]
   drafts?: DraftWorkspaceEntry[]
+  /** The stop dialog lists what is queued, off the snapshot. */
+  snapshot?: ServerSnapshot
 }
 
 /** Render the list; the returned function re-renders the same instance with
@@ -206,7 +185,7 @@ function renderList(
   workspaces: WorkspaceListEntry[],
   opts: ListOpts = {},
 ): (workspaces: WorkspaceListEntry[], opts?: ListOpts) => void {
-  const client = testQueryClient()
+  const client = testQueryClient(undefined, opts.snapshot)
   const element = (w: WorkspaceListEntry[], o: ListOpts): JSX.Element => (
     <QueryClientProvider client={client}>
       <WorkspaceList
@@ -814,10 +793,11 @@ describe('WorkspaceList', () => {
   })
 
   it('confirms a stop, naming what it will start', async () => {
-    snapshot.mockReturnValue({ queuedWorkspaces: [queuedEntry('q1'), queuedEntry('q2', {
-      parentWorkspaceId: undefined, parentQueuedId: 'q1',
-    })] })
-    renderList([entry({ workspaceId: 'a', title: 'Fix parser' })])
+    renderList([entry({ workspaceId: 'a', title: 'Fix parser' })], {
+      snapshot: serverSnapshot({ queuedWorkspaces: [queuedEntry('q1'), queuedEntry('q2', {
+        parentWorkspaceId: undefined, parentQueuedId: 'q1',
+      })] }),
+    })
     await pickAction('Stop…')
     expect(await screen.findByText('Stop “Fix parser”?')).toBeTruthy()
     // Only the direct child starts with this stop; the chain below it waits.
@@ -1084,13 +1064,13 @@ describe('WorkspaceList', () => {
       })
       await pickAction('Move to group…')
       fireEvent.click(await screen.findByRole('button', { name: 'Release' }))
-      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1')]))
+      await waitFor(() => expect(posted(GROUP_MOVE)).toEqual([filed('a', 'g1')]))
 
       cleanup()
       renderList([entry({ workspaceId: 'a', title: 'Fix parser', groupId: 'g1' })], { groups: [group()] })
       await pickAction('Move to group…')
       fireEvent.click(await screen.findByRole('button', { name: 'Remove from group' }))
-      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1'), filed('a', null)]))
+      await waitFor(() => expect(posted(GROUP_MOVE)).toEqual([filed('a', 'g1'), filed('a', null)]))
     })
   })
 
@@ -1145,11 +1125,11 @@ describe('WorkspaceList', () => {
 
       press('Loose one', 10)
       dropAt(150)
-      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1')]))
+      await waitFor(() => expect(posted(GROUP_MOVE)).toEqual([filed('a', 'g1')]))
 
       press('Filed one', 150)
       dropAt(10)
-      await waitFor(() => expect(posted(SET_GROUP)).toEqual([filed('a', 'g1'), filed('b', null)]))
+      await waitFor(() => expect(posted(GROUP_MOVE)).toEqual([filed('a', 'g1'), filed('b', null)]))
     })
 
     it('leaves a press that never travels as a plain selection', () => {
@@ -1161,7 +1141,7 @@ describe('WorkspaceList', () => {
 
       press('Loose one', 10)
       dropAt(12) // inside the threshold
-      expect(posted(SET_GROUP)).toEqual([])
+      expect(posted(GROUP_MOVE)).toEqual([])
       expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
     })
 
@@ -1175,12 +1155,12 @@ describe('WorkspaceList', () => {
       press('Loose one', 10)
       fireEvent.pointerMove(window, { clientX: 10, clientY: 150 })
       fireEvent.pointerCancel(window, { clientX: 10, clientY: 150 })
-      expect(posted(SET_GROUP)).toEqual([])
+      expect(posted(GROUP_MOVE)).toEqual([])
 
       // The listeners were removed, so a later unrelated pointerup can't
       // replay the move.
       fireEvent.pointerUp(window, { clientX: 10, clientY: 150 })
-      expect(posted(SET_GROUP)).toEqual([])
+      expect(posted(GROUP_MOVE)).toEqual([])
     })
 
     it('ignores a drop back where the workspace started', () => {
@@ -1189,7 +1169,7 @@ describe('WorkspaceList', () => {
 
       press('Filed one', 150)
       dropAt(190)
-      expect(posted(SET_GROUP)).toEqual([])
+      expect(posted(GROUP_MOVE)).toEqual([])
     })
   })
 

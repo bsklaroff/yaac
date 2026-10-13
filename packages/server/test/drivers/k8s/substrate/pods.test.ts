@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const mockLog = vi.hoisted(() => vi.fn())
-vi.mock('#log', () => ({ serverLog: mockLog }))
+vi.mock('#lib/log', () => ({ serverLog: mockLog }))
 
 import {
   LABEL_INSTALL_ID,

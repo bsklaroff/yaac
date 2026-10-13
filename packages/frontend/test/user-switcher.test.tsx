@@ -1,20 +1,18 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type { ProjectSummary, ServerSnapshot, Whoami } from '@yaac/shared/types'
 
-const snapshot = vi.hoisted(() => vi.fn())
-vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { UserSwitcher } from '#components/UserSwitcher'
 import { useUiStore } from '#lib/store'
 import { ownedBy } from '#lib/viewer'
-import { mockFetch, renderWithClient, testQueryClient, TEST_WHOAMI } from './harness'
+import {
+  mockFetch, provisioningEntry, renderWithClient, serverSnapshot, testQueryClient, TEST_WHOAMI, workspaceEntry,
+} from './harness'
 
 const initial = useUiStore.getState()
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
   useUiStore.setState(initial, true)
 })
 
@@ -30,17 +28,17 @@ function renderSwitcher(driver: ServerSnapshot['driver'], whoami: Whoami = ME): 
   // Ada has two live workspaces across her projects, one restarting, one
   // stopping and one that failed to start: three count.
   const workspaces = [
-    { workspaceId: 'w1', projectId: 'ada-1' }, { workspaceId: 'w2', projectId: 'ada-2' },
-    { workspaceId: 'w3', projectId: 'ada-2', stopping: true },
+    workspaceEntry({ workspaceId: 'w1', projectId: 'ada-1' }), workspaceEntry({ workspaceId: 'w2', projectId: 'ada-2' }),
+    workspaceEntry({ workspaceId: 'w3', projectId: 'ada-2', stopping: true }),
   ]
   const provisioning = [
-    { workspaceId: 'w4', projectId: 'ada-1' },
-    { workspaceId: 'w5', projectId: 'ada-1', error: 'image build failed' },
+    provisioningEntry({ workspaceId: 'w4', projectId: 'ada-1' }),
+    provisioningEntry({ workspaceId: 'w5', projectId: 'ada-1', error: 'image build failed' }),
   ]
-  snapshot.mockReturnValue({ driver, workspaces, provisioning, projects: [project('mine', 'u-me'), project('ada-1', 'u-ada'), project('ada-2', 'u-ada')] })
+  const projects = [project('mine', 'u-me'), project('ada-1', 'u-ada'), project('ada-2', 'u-ada')]
   // Opening the menu refetches the users, so a teammate seen since load shows.
   mockFetch({ 'GET /api/whoami': whoami })
-  renderWithClient(<UserSwitcher />, testQueryClient(whoami))
+  renderWithClient(<UserSwitcher />, testQueryClient(whoami, serverSnapshot({ driver, workspaces, provisioning, projects })))
 }
 
 describe('ownedBy', () => {

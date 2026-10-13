@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm'
+import { MOUSE_ACTION_DOWN, MOUSE_ACTION_UP, MOUSE_BUTTON_WHEEL, type ReportCoords, xtermCore } from './xterm-internals'
 
 /**
  * Wheel pacing: stop a scroll gesture from queueing more scroll reports
@@ -38,114 +39,44 @@ const MAX_REPORTS_PER_FLUSH = 2
  *  keeps scrolling after the gesture ends. */
 const MAX_BACKLOG_REPORTS = 6
 
-/** One pacing step: how many reports to emit from a signed `pending`
- *  backlog (negative = scroll up) and how many to carry over. */
-export function paceStep(
-  pending: number,
-  maxPerFlush: number = MAX_REPORTS_PER_FLUSH,
-  maxBacklog: number = MAX_BACKLOG_REPORTS,
-): { emit: number; carry: number } {
-  const sign = pending < 0 ? -1 : 1
-  const emit = sign * Math.min(Math.abs(pending), maxPerFlush)
-  const rest = pending - emit
+/** A signed backlog of reports (negative = scroll up) clamped to the cap,
+ *  dropping the excess. */
+function clampBacklog(n: number): number {
   // `|| 0` turns -0 into 0.
-  const carry = sign * Math.min(Math.abs(rest), maxBacklog) || 0
-  return { emit: emit || 0, carry }
-}
-
-/** Add signed reports to the backlog, dropping any excess over the cap. */
-export function addToBacklog(
-  pending: number,
-  add: number,
-  maxBacklog: number = MAX_BACKLOG_REPORTS,
-): number {
-  const next = pending + add
-  const sign = next < 0 ? -1 : 1
-  return sign * Math.min(Math.abs(next), maxBacklog) || 0
+  return Math.sign(n) * Math.min(Math.abs(n), MAX_BACKLOG_REPORTS) || 0
 }
 
 /** Whether a wheel event is a mouse-wheel notch rather than part of a
  *  trackpad swipe: a line- or page-mode delta, or a pixel delta of at least
  *  50 (xterm's trackpad test in consumeWheelEvent), arriving at least
  *  NOTCH_MIN_GAP_MS after the previous wheel event. */
-export function isWheelNotch(ev: WheelEvent, msSincePrevious: number): boolean {
+function isWheelNotch(ev: WheelEvent, msSincePrevious: number): boolean {
   if (msSincePrevious < NOTCH_MIN_GAP_MS) return false
   // 0 is WheelEvent.DOM_DELTA_PIXEL.
   return ev.deltaMode !== 0 || Math.abs(ev.deltaY) >= 50
 }
 
-/** xterm's ICoreMouseEvent (see selection.ts). */
-type CoreMouseEvent = {
-  col: number
-  row: number
-  x: number
-  y: number
-  button: number
-  action: number
-  ctrl?: boolean
-  alt?: boolean
-  shift?: boolean
-}
-
-/** The private xterm internals the patch below reaches into. */
-type TerminalInternals = Terminal & {
-  _core?: {
-    screenElement?: HTMLElement
-    _mouseService?: {
-      getMouseReportCoords?: (
-        e: MouseEvent,
-        element: HTMLElement,
-      ) => { col: number; row: number; x: number; y: number } | undefined
-    }
-    coreMouseService?: {
-      areMouseEventsActive?: boolean
-      triggerMouseEvent?: (e: CoreMouseEvent) => boolean
-      consumeWheelEvent?: (e: WheelEvent, cellHeight?: number, dpr?: number) => number
-    }
-    _renderService?: {
-      dimensions?: { device?: { cell?: { height?: number } } }
-    }
-    _coreBrowserService?: { dpr?: number }
-  }
-}
-
-// xterm's CoreMouseButton / CoreMouseAction values, which are const enums
-// and not exported. Wheel-up is UP and wheel-down is DOWN.
-const MOUSE_BUTTON_WHEEL = 4
-const MOUSE_ACTION_UP = 0
-const MOUSE_ACTION_DOWN = 1
-
 /**
  * Install the pacer as xterm's custom wheel handler. While mouse reporting
  * is active, wheel events go into the backlog and xterm sends nothing
  * itself; otherwise they get stock handling. Reports go through xterm's own
- * CoreMouseService, as in patchClickForwarding.
- *
- * Uses private xterm internals, whose names the unit tests check. Returns a
- * disposer, or null if the internals have changed (stock behavior then).
- *
- * Call after `term.open()`.
+ * CoreMouseService, as in patchClickForwarding. Returns a disposer. Call
+ * after `term.open()`.
  */
-export function patchWheelPacing(term: Terminal): (() => void) | null {
-  const core = (term as TerminalInternals)._core
-  const screen = core?.screenElement
-  const mouse = core?._mouseService
-  const coreMouse = core?.coreMouseService
-  const render = core?._renderService
-  const browser = core?._coreBrowserService
-  if (
-    !screen || !mouse?.getMouseReportCoords || !coreMouse?.triggerMouseEvent
-    || !coreMouse.consumeWheelEvent || !render || !browser
-  ) return null
-  const getCoords = mouse.getMouseReportCoords.bind(mouse)
-  const trigger = coreMouse.triggerMouseEvent.bind(coreMouse)
-  const consume = coreMouse.consumeWheelEvent.bind(coreMouse)
+export function patchWheelPacing(term: Terminal): () => void {
+  const {
+    screenElement: screen,
+    _mouseService: mouse,
+    coreMouseService: coreMouse,
+    _renderService: render,
+    _coreBrowserService: browser,
+  } = xtermCore(term)
 
   let pending = 0
   let raf = 0
   let lastWheelAt = -Infinity
   // Position and modifiers of the last wheel event.
-  let at: { col: number; row: number; x: number; y: number } | null = null
+  let at: ReportCoords = { col: 0, row: 0, x: 0, y: 0 }
   let mods: { ctrl: boolean; alt: boolean; shift: boolean } = { ctrl: false, alt: false, shift: false }
 
   const flush = (): void => {
@@ -155,14 +86,11 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
       pending = 0
       return
     }
-    const { emit, carry } = paceStep(pending)
-    pending = carry
-    if (emit !== 0 && at) {
-      const action = emit < 0 ? MOUSE_ACTION_UP : MOUSE_ACTION_DOWN
-      for (let i = 0; i < Math.abs(emit); i++) {
-        // triggerMouseEvent mutates its argument, so pass a fresh object.
-        trigger({ ...at, button: MOUSE_BUTTON_WHEEL, action, ...mods })
-      }
+    const emit = Math.min(Math.abs(pending), MAX_REPORTS_PER_FLUSH)
+    const action = pending < 0 ? MOUSE_ACTION_UP : MOUSE_ACTION_DOWN
+    pending -= Math.sign(pending) * emit
+    for (let i = 0; i < emit; i++) {
+      coreMouse.triggerMouseEvent({ ...at, button: MOUSE_BUTTON_WHEEL, action, ...mods })
     }
     if (pending !== 0) raf = requestAnimationFrame(flush)
   }
@@ -173,14 +101,14 @@ export function patchWheelPacing(term: Terminal): (() => void) | null {
     const msSincePrevious = ev.timeStamp - lastWheelAt
     lastWheelAt = ev.timeStamp
     // consumeWheelEvent handles sensitivity and carries fractional lines.
-    const lines = consume(ev, render.dimensions?.device?.cell?.height, browser.dpr)
+    const lines = coreMouse.consumeWheelEvent(ev, render.dimensions.device.cell.height, browser.dpr)
     if (lines === 0) return false
-    const pos = getCoords(ev, screen)
+    const pos = mouse.getMouseReportCoords(ev, screen)
     if (!pos) return false
     at = pos
     mods = { ctrl: ev.ctrlKey, alt: ev.altKey, shift: ev.shiftKey }
     const reports = isWheelNotch(ev, msSincePrevious) ? REPORTS_PER_NOTCH : 1
-    pending = addToBacklog(pending, lines < 0 ? -reports : reports)
+    pending = clampBacklog(pending + (lines < 0 ? -reports : reports))
     if (raf === 0) raf = requestAnimationFrame(flush)
     return false
   })

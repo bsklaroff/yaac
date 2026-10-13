@@ -1,7 +1,6 @@
 /**
- * `listTerminals`, `createShellWindow`, `killWindowTerminal`. Nothing in
- * runtime/terminals is mocked. A listing is handed a fake tmux channel; the
- * driver's `exec` runs create and kill scripts in a real `sh`, with a stub
+ * `createShellWindow`, `killWindowTerminal`. Nothing in runtime/terminals is
+ * mocked. The driver's `exec` runs create and kill scripts in a real `sh`, with a stub
  * `tmux` on its PATH that lists `windows` and records the mutations.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
@@ -9,11 +8,9 @@ import { execFile } from 'node:child_process'
 import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createShellWindow, killWindowTerminal, listTerminals } from '#runtime/terminals'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
-
-const LIST_FORMAT = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"
 
 /** The stub's windows, as `<id> <name>` lines in index order. */
 let windows = ''
@@ -52,22 +49,6 @@ beforeEach(() => {
   windows = ''
   ran = []
   installFakeWorkspaceDriver({ exec })
-})
-
-describe('listTerminals', () => {
-  it('maps every window but the agent (lowest index), pipes in names and all', async () => {
-    const tmux = vi.fn((_args: string) => Promise.resolve('0|@0|claude\n1|@3|dev-server\n2|@5|a|b|c\n'))
-    expect(await listTerminals(tmux)).toEqual([
-      { target: 'window:@3', name: 'dev-server' },
-      { target: 'window:@5', name: 'a|b|c' },
-    ])
-    expect(tmux).toHaveBeenCalledWith(LIST_FORMAT)
-  })
-
-  it('is empty for a lone agent window and for garbage', async () => {
-    expect(await listTerminals(() => Promise.resolve('0|@0|claude\n'))).toEqual([])
-    expect(await listTerminals(() => Promise.resolve('no pipes here\n???\n'))).toEqual([])
-  })
 })
 
 describe('createShellWindow', () => {

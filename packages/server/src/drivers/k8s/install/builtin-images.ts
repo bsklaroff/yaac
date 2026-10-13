@@ -1,18 +1,8 @@
 import path from 'node:path'
-import {
-  buildImage,
-  ensureImageByTag,
-  gcHostImages,
-  resolveTrustedLayers,
-} from '#drivers/k8s/image-engine'
-import {
-  execFileAsync,
-  imageExists,
-  pushImageToRegistry,
-  reapOrphanedPodmanProcs,
-  registryHasTag,
-  registryRef,
-} from '#drivers/k8s/container'
+import { execFileAsync } from '#drivers/k8s/substrate'
+import { buildImage, ensureImageByTag, imageExists, pushImageToRegistry } from './host-images'
+import { reapOrphanedPodmanProcs } from './host-procs'
+import { gcHostImages } from './image-gc'
 import {
   BUILDER_LOCAL_TAG,
   BUILDER_UPSTREAM_IMAGE,
@@ -22,6 +12,9 @@ import {
   NGINX_UPSTREAM_IMAGE,
   REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
+  registryRef,
+  registryTagState,
+  resolveTrustedLayers,
   resolveNetdImageTag,
   resolveProxyImageTag,
   VERDACCIO_MIRROR_TAG,
@@ -60,7 +53,7 @@ interface BuiltinImageDeps {
 
 /** Build one yaac-shipped image if the registry lacks it, and push it. */
 async function buildShippedImage(localTag: string, contextDir: string): Promise<string> {
-  if (await registryHasTag(localTag)) return registryRef(localTag)
+  if (await registryTagState(localTag) === 'present') return registryRef(localTag)
   if (!await imageExists(localTag)) {
     await buildImage(localTag, path.join(contextDir, 'Dockerfile'), contextDir)
   }
@@ -91,7 +84,7 @@ export function assertMirrorArch(
  * show up as a pod crashlooping on `exec format error`.
  */
 async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<string> {
-  if (await registryHasTag(mirrorTag)) return registryRef(mirrorTag)
+  if (await registryTagState(mirrorTag) === 'present') return registryRef(mirrorTag)
   if (!await imageExists(mirrorTag)) {
     await execFileAsync('podman', ['pull', upstream], { timeout: 600_000 })
     const { stdout: arch } = await execFileAsync('podman', [
@@ -129,12 +122,11 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
     deps.log(`note: could not reap a previous install's podman processes: ${String(err)}`)
   })
 
-  const prefix = testEnv.imagePrefix ?? 'yaac'
-  const { base, tools, nestable } = await resolveTrustedLayers(prefix)
+  const { base, tools, nestable } = await resolveTrustedLayers()
 
   deps.log('Ensuring the workspace image chain (base → tools → nestable)...')
   for (const layer of [base, tools, nestable]) {
-    if (await registryHasTag(layer.tag)) {
+    if (await registryTagState(layer.tag) === 'present') {
       deps.log(`  ${layer.tag} — already in the registry`)
       continue
     }

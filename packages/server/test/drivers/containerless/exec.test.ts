@@ -4,7 +4,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
-import { CHANGES_BASE_UNRESOLVED, WorkspaceExecError } from '#drivers/contract'
+import { WorkspaceExecError } from '#drivers/contract'
 
 import type * as hostModule from '#drivers/containerless/host'
 
@@ -13,11 +13,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
 }))
-import {
-  awaitAgentTransport,
-  execInWorkspace,
-  getWorkspaceChanges,
-} from '#drivers/containerless/exec'
+import { awaitAgentTransport, execInWorkspace } from '#drivers/containerless/exec'
 import { containerlessJobName, workspaceHome } from '#drivers/containerless/paths'
 import {
   _resetRegistryForTests,
@@ -60,7 +56,7 @@ describe('execInWorkspace', () => {
     // After a restart, only the marker on disk is available.
     await writeMarker({
       projectId: 'demo', workspaceId: UUID, tool: 'opencode', mode: 'tui',
-      prewarm: false, createdAtMs: 1_000,
+      createdAtMs: 1_000,
       launchEnv: { CODEX_HOME: '/projects/demo/codex', PROJECT_SETTING: 'on' },
     })
     for (const m of await readMarkers()) restoreWorkspace(m, true, { reason: 'pod-stopped' })
@@ -106,28 +102,6 @@ describe('execInWorkspace', () => {
     const err: unknown = await execInWorkspace(JOB, 'tmux').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(Error)
     expect(err).not.toBeInstanceOf(WorkspaceExecError)
-  })
-})
-
-describe('getWorkspaceChanges', () => {
-  it('computes the diff with host git in the checkout, against its own index', async () => {
-    mockRunHost.mockResolvedValue({
-      stdout: 'BASE abc123\nFORK 1\n@@NUMSTAT@@\n@@NAMESTATUS@@\n@@LISTING@@\n@@OK@@\n@@DIFF@@\n',
-      stderr: '',
-    })
-    const { changes } = await getWorkspaceChanges(JOB, { diff: true })
-    expect(changes.base).toBe('abc123')
-    const [argv, opts] = mockRunHost.mock.calls[0] as [string[], { cwd: string }]
-    const script = argv[2]
-    // Runs directly in the server-made checkout the agent uses.
-    expect(script).toContain(workspaceDir('demo', UUID))
-    expect(opts.cwd).toBe(workspaceDir('demo', UUID))
-    // A stable private index, not the agent's, so git's stat cache makes
-    // each poll incremental.
-    expect(script).toContain('yaac-changes.idx')
-    expect(script).toContain(`exit ${String(CHANGES_BASE_UNRESOLVED)}`)
-    // The workspace's git config, not the server user's.
-    expect(ranWith().GIT_CONFIG_GLOBAL).toBe(path.join(workspaceHome('demo', UUID), '.gitconfig'))
   })
 })
 

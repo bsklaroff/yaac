@@ -1,7 +1,7 @@
 import { Children, createContext, memo, useContext, useMemo, type JSX, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { CodeView } from '#components/CodeView'
+import { CodeView } from '#components/DiffView'
 import { fileLinksIn, resolveFilePath, type CheckoutFiles, type FileRef } from '#lib/files'
 import { languageForFence, type HighlightLanguage } from '#lib/highlight'
 

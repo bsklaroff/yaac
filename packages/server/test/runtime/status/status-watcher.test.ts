@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 import {
   WorkspaceStatusWatcher,
@@ -7,7 +7,7 @@ import {
   type WatchedWorkspace,
 } from '#runtime/status/status-watcher'
 import type { RuntimeHandle, StreamChild } from '#drivers/contract'
-import { handleFixture } from '@yaac/test-utils/fake-driver'
+import { handleFixture } from '#test/support/fake-driver'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
 import {
   readWorkspaceStatus,

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 // The listing joins DB rows with the live runtimes, which are faked. It
 // never reads a transcript, which the prompt test checks by leaving one on
 // disk that the rows do not record.

@@ -7,7 +7,7 @@ import { BranchPicker } from '#components/BranchPicker'
 import { EmptyState } from '#components/ui/EmptyState'
 import { MasterDetail } from '#components/ui/MasterDetail'
 import { Modal } from '#components/ui/Modal'
-import { POPUP } from '#components/ui/menu'
+import { PopoverPopup } from '#components/ui/menu'
 import { api } from '#lib/api'
 import { useProjectBranches } from '#lib/useProjectBranches'
 import { useIsMobile } from '#lib/viewport'
@@ -205,24 +205,20 @@ export function SkillsButton({ projectId }: { projectId: string }): JSX.Element 
                 <span className="max-w-[180px] truncate font-mono">{effectiveBranch ?? '…'}</span>
                 <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
               </Popover.Trigger>
-              <Popover.Portal>
-                <Popover.Positioner side="bottom" align="start" sideOffset={6}>
-                  <Popover.Popup className={clsx('w-[240px]', POPUP)}>
-                    <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Skills branch</div>
-                    <BranchPicker
-                      branches={branchData?.branches ?? []}
-                      defaultBranch={defaultBranch}
-                      query={pickerQuery}
-                      onQueryChange={setPickerQuery}
-                      onSelect={pickBranch}
-                      showList
-                      placeholder={branchData ? 'filter branches…' : 'loading branches…'}
-                      ariaLabel="Skills branch"
-                      className="px-1 pb-1"
-                    />
-                  </Popover.Popup>
-                </Popover.Positioner>
-              </Popover.Portal>
+              <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[240px]">
+                <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Skills branch</div>
+                <BranchPicker
+                  branches={branchData?.branches ?? []}
+                  defaultBranch={defaultBranch}
+                  query={pickerQuery}
+                  onQueryChange={setPickerQuery}
+                  onSelect={pickBranch}
+                  showList
+                  placeholder={branchData ? 'filter branches…' : 'loading branches…'}
+                  ariaLabel="Skills branch"
+                  className="px-1 pb-1"
+                />
+              </PopoverPopup>
             </Popover.Root>
             {/* Agent selector: each tool reads skills from its own dirs. Anchored
                 right so the changing title count cannot move it. */}

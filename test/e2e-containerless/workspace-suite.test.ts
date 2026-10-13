@@ -7,17 +7,11 @@ import WebSocket from 'ws'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import {
-  TEST_CLI_ENTRY,
-  createYaacTestEnv,
-  spawnYaacServer,
-  runYaac,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { asTailnet, assignTestGitCredential, makeServerApiClient, signInTestTool } from '@yaac/test-utils/api'
+import { TEST_CLI_ENTRY, createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import { asTailnet, assignTestGitCredential, makeServerApiClient, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
-import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
+import { createTestRepo } from '@yaac/test-utils/setup'
+import { addTestProject } from '#support/cluster'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
 import {
   containerlessJobName,
@@ -1259,11 +1253,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       scopes: ['user:inference'],
       subscriptionType: 'pro',
     }
-    const { exitCode: authExit } = await runYaac(
-      { ...serverEnv, YAAC_E2E_CLAUDE_LOGIN: JSON.stringify(signedIn) },
-      'auth', 'update', { stdin: '2\n' },
-    )
-    expect(authExit).toBe(0)
+    await signInTestTool(server, 'claude', { kind: 'oauth', bundle: signedIn })
     expect(await readBundle(projectCreds)).toEqual(signedIn)
 
     // 2. The agent refreshes its own token in the project home; the

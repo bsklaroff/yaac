@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { YaacConfig } from '@yaac/shared/types'
+import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
 
-vi.mock('#drivers/k8s/image-engine/image-builder', () => ({ resolveImageChain: vi.fn() }))
+vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
+  ...(await importOriginal<typeof imageTagsModule>()),
+  resolveImageChain: vi.fn(),
+}))
 vi.mock('#drivers/k8s/images/build-coordinator', () => ({
   ensureImage: vi.fn(),
 }))
@@ -13,7 +17,7 @@ import {
   retryImageBuild,
   _resetImagePrewarmForTests,
 } from '#drivers/k8s/images/image-prewarm'
-import { resolveImageChain } from '#drivers/k8s/image-engine/image-builder'
+import { resolveImageChain } from '#drivers/k8s/cluster'
 import { ensureImage } from '#drivers/k8s/images/build-coordinator'
 import {
   attachImageBuildProject,
@@ -22,9 +26,9 @@ import {
   getImageBuild,
   hasBlockingFailure,
   registerImageBuild,
-} from '#drivers/k8s/image-engine/image-builds'
-import { _resetWorkspaceListChangedForTests } from '#notify'
-import { serverLog } from '#log'
+} from '#drivers/k8s/images/image-builds'
+import { _resetWorkspaceListChangedForTests } from '#lib/notify'
+import { serverLog } from '#lib/log'
 
 // The config reader the reconcile step is given in production.
 const mockResolveConfig = vi.fn<(projectId: string) => Promise<YaacConfig | undefined>>()
@@ -86,9 +90,9 @@ describe('reconcileImagePrewarm', () => {
     await flush()
 
     expect(mockEnsureImage).toHaveBeenCalledWith(
-      PLAIN, OWNER, undefined, false, false, { reason: 'prewarm' })
+      PLAIN, OWNER, { nestedContainers: false, reason: 'prewarm' })
     expect(mockEnsureImage).toHaveBeenCalledWith(
-      NESTED, OWNER, undefined, false, true, { reason: 'prewarm' })
+      NESTED, OWNER, { nestedContainers: true, reason: 'prewarm' })
   })
 
   it('skips a project whose prewarm is still in flight, then resumes', async () => {
@@ -152,14 +156,6 @@ describe('reconcileImagePrewarm', () => {
 
     expect(mockEnsureImage).not.toHaveBeenCalled()
   })
-
-  it('respects the test image prefix', async () => {
-    vi.stubEnv('YAAC_IMAGE_PREFIX', 'yaac-test')
-    await prewarmProjectImage(P, projects)
-    expect(mockResolveChain).toHaveBeenCalledWith(P, OWNER, 'yaac-test', false)
-    expect(mockEnsureImage).toHaveBeenCalledWith(
-      P, OWNER, 'yaac-test', false, false, { reason: 'prewarm' })
-  })
 })
 
 describe('retryImageBuild', () => {
@@ -203,8 +199,8 @@ describe('retryImageBuild', () => {
     expect(mockResolveConfig).toHaveBeenCalledWith(PROJ_B)
     // Each rebuild resolves its chain by the project's id.
     await flush()
-    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_A, OWNER, expect.any(String), false)
-    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_B, OWNER, expect.any(String), false)
+    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_A, OWNER, false)
+    expect(mockResolveChain).toHaveBeenCalledWith(PROJ_B, OWNER, false)
   })
 
   it('no-ops (and rebuilds nothing) for an unknown id or a running build', () => {

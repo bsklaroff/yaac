@@ -5,9 +5,9 @@
 // `src/` may import `#drivers/k8s/install`, and the CLI's commands may
 // import only this barrel from the driver.
 //
-// This folder may import `#drivers/k8s/cluster`, `substrate`, `container`
-// and `image-engine`, but none of them may import it, which keeps the
-// server free of a container-engine dependency
+// This folder may import `#drivers/k8s/cluster` and `substrate`, but
+// neither may import it. It alone drives the host's podman, which keeps
+// the server free of a container-engine dependency
 // (docs/trust-split-builds.md).
 //
 // Each name exported here needs a unit test in
@@ -18,8 +18,13 @@ export { buildBuiltinImages } from './builtin-images'
 export { runClusterCheck } from './check'
 export { ClusterDeleteError, kindClusterExists, runClusterDelete } from './delete'
 export { ensureGvisorRuntime } from './gvisor-installer'
+export { ensureImageByTag, imageExists, pushImageToRegistry } from './host-images'
+export { retireStaleGenerations } from './image-gc'
 export { runClusterInstall } from './install'
 export { foreignClusterRefusal } from './cluster-identity'
+// `yaac cluster` binds the install its data dir records before any call.
+export { bindInstall } from '#drivers/k8s/substrate'
+export { ensureRootfulPodmanHost } from './podman'
 export {
   clusterServerLogs,
   deployServerWorkload,

@@ -5,12 +5,12 @@ import type {
   ReconcileTrigger,
   RuntimeSnapshot,
 } from '#drivers/contract'
-import { defaultReconcileSteps } from '#domain/reconcile'
+import { defaultReconcileSteps } from '#main/reconcile-steps'
 import { listProjectRows } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { isWorkspaceTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
-import { errorText, serverLog } from '#log'
+import { errorText, serverLog } from '#lib/log'
 import type { YaacConfig } from '@yaac/shared/types'
 
 /**

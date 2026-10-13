@@ -3,9 +3,14 @@ import { Hono } from 'hono'
 
 // The log sink is a process boundary (stderr + an append to server.log).
 const mockServerLog = vi.hoisted(() => vi.fn())
-vi.mock('#log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
+vi.mock('#lib/log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
 
-import { denyBrowserCors, requestLogger } from '#http'
+import { denyBrowserCors, requestLogger } from '#api/http/auth'
+import { identify, type IdentityEnv } from '#api/http/web-auth'
+import { closeDb } from '#db'
+import { asTailnet } from '@yaac/test-utils/api'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import type { AccessMode } from '@yaac/shared/types'
 
 describe('denyBrowserCors', () => {
   function app(): Hono {
@@ -69,5 +74,29 @@ describe('requestLogger', () => {
     expect(line).toMatch(/^\[server\] POST \/echo 201 \d+ms$/)
     expect(line).not.toContain('hunter2')
     expect(line).not.toContain('super-secret')
+  })
+
+  it('names the tailnet user a request came from, and nobody for a local one', async () => {
+    // The log line is the audit trail of which person did what.
+    const app = (mode: AccessMode): Hono<IdentityEnv> => {
+      const a = new Hono<IdentityEnv>()
+      a.use('*', requestLogger())
+      a.use('*', identify(() => mode))
+      a.get('/x', (c) => c.text('ok'))
+      return a
+    }
+    const tmpDir = await createTempDataDir()
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
+    try {
+      await app('tailnet').request('/x', { headers: asTailnet('alice@example.com', 'srv.tailnet.ts.net') })
+      await app('local').request('/x')
+    } finally {
+      vi.unstubAllEnvs()
+      await closeDb()
+      await cleanupTempDir(tmpDir)
+    }
+    const [tailnet, local] = mockServerLog.mock.calls.map((c) => String(c[0]))
+    expect(tailnet).toMatch(/GET \/x 200 \d+ms alice@example\.com$/)
+    expect(local).toMatch(/GET \/x 200 \d+ms$/)
   })
 })

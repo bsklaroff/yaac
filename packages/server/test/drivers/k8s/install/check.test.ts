@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { apiError, fakeCluster, type FakeObject } from '@yaac/test-utils/k8s-stub'
 import type * as apiModule from '#drivers/k8s/substrate/api'
+import type * as registryModule from '#drivers/k8s/cluster/registry'
 
 // The process boundary (kubectl/podman children) and the install
 // namespace. Object reads and writes go to `fakeCluster`.
@@ -15,28 +16,25 @@ vi.mock('#drivers/k8s/cluster/builder-image', () => ({
   ensureBuilderImage: vi.fn().mockResolvedValue('localhost:5000/podman-stable:mirror'),
 }))
 
-vi.mock('#drivers/k8s/container/registry', () => ({
-  REGISTRY_NAMESPACE: 'yaac',
-  REGISTRY_SERVICE_NAME: 'yaac-registry',
-  REGISTRY_SERVICE_PORT: 5000,
+// The registry: it answers, and already holds the probe image, so the
+// probe push is a lookup.
+vi.mock('#drivers/k8s/cluster/registry', async (importOriginal) => ({
+  ...await importOriginal<typeof registryModule>(),
   registryEndpoint: vi.fn().mockResolvedValue('127.0.0.1:41234'),
   registryReachable: vi.fn().mockResolvedValue(true),
-  registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
-  registryRef: vi.fn((tag: string) => `yaac-registry.yaac.svc.cluster.local:5000/${tag}`),
-  registryHasTag: vi.fn().mockResolvedValue(true),
-  pushImageToRegistry: vi.fn().mockResolvedValue(
-    'yaac-registry.yaac.svc.cluster.local:5000/yaac-cluster-probe:busybox-1.36',
-  ),
+  registryTagState: vi.fn().mockResolvedValue('present'),
 }))
 
 import { runClusterCheck } from '#drivers/k8s/install'
 import type { CheckResult } from '@yaac/shared/types'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
-import { pushImageToRegistry, registryReachable } from '#drivers/k8s/container/registry'
+import { registryReachable, registryTagState } from '#drivers/k8s/cluster/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
+import { buildPriorityClassManifests } from '#drivers/k8s/substrate'
+// Setup values, not units under test.
 import {
-  buildPriorityClassManifests, buildRuntimeClassManifests, GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY,
-} from '#drivers/k8s/substrate'
+  buildRuntimeClassManifests, GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY,
+} from '#drivers/k8s/install/gvisor-runtime'
 import type { NodeTaint } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { globalRoot, serverLocalRoot } from '@yaac/shared/paths'
@@ -44,7 +42,7 @@ import { recordInstall } from '@yaac/shared/install-record'
 
 const NS = 'test-ns'
 const mockRun = vi.mocked(execFileAsync)
-const mockPush = vi.mocked(pushImageToRegistry)
+const mockTagState = vi.mocked(registryTagState)
 const mockReachable = vi.mocked(registryReachable)
 
 type RunMock = ReturnType<typeof vi.fn<
@@ -419,21 +417,21 @@ function byoGlobalVolume(): {
 
 interface Staged {
   run: RunMock
-  pushImage: typeof mockPush
+  /** The registry lookups the run made, the probe image's included. */
+  registryLookups: typeof mockTagState
 }
 
 /**
  * Install the process and registry fakes one check run needs (subprocess
- * runner, registry ping and push) and return their call records.
+ * runner, registry ping and tag lookups) and return their call records.
  */
 function stage(overrides: { run?: RunMock; registryReachable?: boolean } = {}): Staged {
   const run = overrides.run ?? happyRun()
   mockRun.mockClear()
-  mockPush.mockClear()
+  mockTagState.mockClear()
   mockRun.mockImplementation(run as never)
   mockReachable.mockResolvedValue(overrides.registryReachable ?? true)
-  mockPush.mockResolvedValue('localhost:5000/yaac-cluster-probe:busybox-1.36')
-  return { run, pushImage: mockPush }
+  return { run, registryLookups: mockTagState }
 }
 
 /** What the registry answers an anonymous upload; null for no answer. */
@@ -526,7 +524,7 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(true)
     expect(byName(results, 'datapath')?.detail).toContain('calico-node and yaac-netd ready')
 
-    expect(deps.pushImage).toHaveBeenCalledWith('yaac-cluster-probe:busybox-1.36')
+    expect(deps.registryLookups).toHaveBeenCalledWith('yaac-cluster-probe:busybox-1.36')
     const probePod = applied()
       .map((c) => c[0] as { kind: string; metadata?: { name?: string } })
       .find((m) => m.kind === 'Pod' && m.metadata?.name === 'yaac-cluster-check')
@@ -933,7 +931,7 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'egress')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'datapath')).toMatchObject({ status: 'skip' })
     expect(byName(results, 'nested-mount')).toMatchObject({ status: 'skip' })
-    expect(deps.pushImage).not.toHaveBeenCalled()
+    expect(deps.registryLookups).not.toHaveBeenCalled()
     // No probe object was applied (the namespace ensure may still have run).
     const appliedKinds = applied().map((c) => (c[0] as { kind: string }).kind)
     expect(appliedKinds).not.toContain('Pod')

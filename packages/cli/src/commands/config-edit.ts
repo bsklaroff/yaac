@@ -5,41 +5,37 @@ import { api, resolveProjectId } from '#commands/api'
 import { editFile } from '#commands/edit-file'
 
 /**
- * Edit server-side config files: fetch the content from the server, edit a
- * scratch copy in $EDITOR on this machine, and PUT the result back. Works
- * the same for a local or remote server. A failed save keeps the scratch
- * file so edits are not lost.
+ * Edit a server-side config file: edit a scratch copy of `content` in
+ * $EDITOR on this machine, then hand the result to `save`, which writes it
+ * back and returns what to print. Works the same for a local or remote
+ * server. A failed save keeps the scratch file so edits are not lost.
  */
-
-interface ScratchEdit {
-  text: string
-  tmpDir: string
-  tmpPath: string
-}
-
-/** Returns null (after printing) when the editor made no change. */
-async function editInScratch(filename: string, initial: string): Promise<ScratchEdit | null> {
+async function editRemote(
+  filename: string,
+  content: string,
+  save: (text: string) => Promise<string>,
+): Promise<void> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-edit-'))
   const tmpPath = path.join(tmpDir, filename)
-  await fs.writeFile(tmpPath, initial)
+  await fs.writeFile(tmpPath, content)
   await editFile(tmpPath)
   const text = await fs.readFile(tmpPath, 'utf8')
-  if (text === initial) {
+  if (text === content) {
     await fs.rm(tmpDir, { recursive: true, force: true })
     console.log('No changes.')
-    return null
+    return
   }
-  return { text, tmpDir, tmpPath }
-}
-
-async function discardScratch(edit: ScratchEdit): Promise<void> {
-  await fs.rm(edit.tmpDir, { recursive: true, force: true })
-}
-
-function failKeepingEdits(err: unknown, edit: ScratchEdit): void {
-  console.error(err instanceof Error ? err.message : String(err))
-  console.error(`Your edits are kept at ${edit.tmpPath}`)
-  process.exitCode = 1
+  let saved: string
+  try {
+    saved = await save(text)
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err))
+    console.error(`Your edits are kept at ${tmpPath}`)
+    process.exitCode = 1
+    return
+  }
+  await fs.rm(tmpDir, { recursive: true, force: true })
+  console.log(saved)
 }
 
 /**
@@ -50,72 +46,39 @@ function failKeepingEdits(err: unknown, edit: ScratchEdit): void {
 export async function configEditProject(project: string): Promise<void> {
   const projectId = await resolveProjectId(project)
   const { content } = await api.project[':projectId'].config.raw.$get({ param: { projectId } })
-  const edit = await editInScratch('yaac-config.json', content)
-  if (!edit) return
-
-  if (edit.text.trim() === '') {
-    await api.project[':projectId'].config.$delete({ param: { projectId } })
-    await discardScratch(edit)
-    console.log('Cleared project config — defaults apply.')
-    return
-  }
-
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(edit.text)
-  } catch (err) {
-    failKeepingEdits(
-      new Error(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`),
-      edit,
-    )
-    return
-  }
-  try {
-    await api.project[':projectId'].config.$put({ param: { projectId }, json: { config: parsed } })
-  } catch (err) {
-    failKeepingEdits(err, edit)
-    return
-  }
-  await discardScratch(edit)
-  console.log('Saved project config.')
+  await editRemote('yaac-config.json', content, async (text) => {
+    if (text.trim() === '') {
+      await api.project[':projectId'].config.$delete({ param: { projectId } })
+      return 'Cleared project config — defaults apply.'
+    }
+    let config: unknown
+    try {
+      config = JSON.parse(text)
+    } catch (err) {
+      throw new Error(`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    await api.project[':projectId'].config.$put({ param: { projectId }, json: { config } })
+    return 'Saved project config.'
+  })
 }
 
 /** `yaac config edit-dockerfile <project>`: the project's Dockerfile.yaac. */
 export async function configEditDockerfile(project: string): Promise<void> {
   const projectId = await resolveProjectId(project)
   const { content } = await api.project[':projectId'].dockerfile.$get({ param: { projectId } })
-  const edit = await editInScratch('Dockerfile.yaac', content)
-  if (!edit) return
-
-  try {
-    await api.project[':projectId'].dockerfile.$put({
-      param: { projectId },
-      json: { content: edit.text },
-    })
-  } catch (err) {
-    failKeepingEdits(err, edit)
-    return
-  }
-  await discardScratch(edit)
-  console.log(edit.text.trim() === ''
-    ? 'Cleared Dockerfile.yaac — the image reverts to the base stack on the next workspace create.'
-    : 'Saved Dockerfile.yaac — it applies to the next workspace created.')
+  await editRemote('Dockerfile.yaac', content, async (text) => {
+    await api.project[':projectId'].dockerfile.$put({ param: { projectId }, json: { content: text } })
+    return text.trim() === ''
+      ? 'Cleared Dockerfile.yaac — the image reverts to the base stack on the next workspace create.'
+      : 'Saved Dockerfile.yaac — it applies to the next workspace created.'
+  })
 }
 
 /** `yaac config edit-user-dockerfile`: the caller's own Dockerfile.user. */
 export async function configEditUserDockerfile(): Promise<void> {
   const { content } = await api.config['user-dockerfile'].$get()
-  const edit = await editInScratch('Dockerfile.user', content)
-  if (!edit) return
-
-  try {
-    await api.config['user-dockerfile'].$put({ json: { content: edit.text } })
-  } catch (err) {
-    failKeepingEdits(err, edit)
-    return
-  }
-  await discardScratch(edit)
-  console.log(edit.text.trim() === ''
-    ? 'Cleared the user Dockerfile.'
-    : 'Saved the user Dockerfile.')
+  await editRemote('Dockerfile.user', content, async (text) => {
+    await api.config['user-dockerfile'].$put({ json: { content: text } })
+    return text.trim() === '' ? 'Cleared the user Dockerfile.' : 'Saved the user Dockerfile.'
+  })
 }

@@ -5,6 +5,12 @@ import {
   ensureBuilderImage,
   ensureNamespace,
   nodeIpBlocks,
+  REGISTRY_NAMESPACE,
+  REGISTRY_SERVICE_NAME,
+  REGISTRY_SERVICE_PORT,
+  registryEndpoint,
+  registryHost,
+  registryReachable,
   servingNpmCacheUrl,
   vapAvailable,
 } from '#drivers/k8s/cluster'
@@ -16,8 +22,6 @@ import path from 'node:path'
 import {
   CHECKOUTS_CLAIM_NAME,
   GLOBAL_CLAIM_NAME,
-  GVISOR_NODE_LABEL,
-  WORKSPACE_POOL_KEY,
   LABEL_CLAIM,
   LABEL_INSTALL_ID,
   LABEL_NPM_CACHE,
@@ -56,6 +60,7 @@ import {
 import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode } from './cni-adopt'
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
+import { GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY } from './gvisor-runtime'
 import { deployedInstallIdentity } from './server-deploy'
 import { isNfsFamily } from './storage'
 import { YAAC_CLUSTER_INSTALL } from './arg-guards'
@@ -66,15 +71,7 @@ import {
   type PlatformNode,
 } from './byo-gates'
 import { readInstallRecord } from '@yaac/shared/install-record'
-import {
-  REGISTRY_NAMESPACE,
-  REGISTRY_SERVICE_NAME,
-  REGISTRY_SERVICE_PORT,
-  pushImageToRegistry,
-  registryEndpoint,
-  registryHost,
-  registryReachable,
-} from '#drivers/k8s/container'
+import { pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT, globalRoot, serverLocalRoot } from '@yaac/shared/paths'
 import type { CheckResult } from '@yaac/shared/types'
 
@@ -95,7 +92,7 @@ const KIND_SETUP_FIX = [
 /**
  * Settings of the kind node container that install applies and the
  * node-fixups check verifies. Node-level tuning that the installer
- * DaemonSet can apply lives in substrate/node-tuning.ts instead.
+ * DaemonSet can apply lives in node-tuning.ts instead.
  */
 export const NODE_PIDS_LIMIT = 32768
 /**
@@ -694,7 +691,7 @@ function installerFix(): string {
 /**
  * Warn-level check that the current gVisor installer revision is Ready on
  * every node it targets. Its readiness marker is written only after a pass
- * has installed runsc and written the node tuning (substrate/node-tuning.ts).
+ * has installed runsc and written the node tuning (node-tuning.ts).
  * A `DefaultTasksMax` that another drop-in overrides does not hold the
  * marker back; the installer only logs it. Names the nodes not Ready.
  */
@@ -761,7 +758,7 @@ async function registryGateResult(): Promise<CheckResult> {
     return {
       name: 'registry', status: 'fail',
       detail: `the in-cluster registry ${registryHost()} accepts anonymous writes — its write gate is missing`,
-      fix: 'An install that predates the gate rolled it. Re-apply it with:\n  yaac cluster install',
+      fix: 'Re-apply the gate with:\n  yaac cluster install',
     }
   }
   return {
@@ -1297,16 +1294,12 @@ interface GvisorScheduling {
 }
 
 async function gvisorRuntimeClass(): Promise<GvisorScheduling> {
-  try {
-    const rc = await readObject<{
-      scheduling?: { nodeSelector?: Record<string, string>; tolerations?: PodToleration[] }
-    }>({ apiVersion: 'node.k8s.io/v1', kind: 'RuntimeClass', name: RUNTIME_CLASS_GVISOR })
-    return {
-      nodeSelector: rc?.scheduling?.nodeSelector ?? {},
-      tolerations: rc?.scheduling?.tolerations ?? [],
-    }
-  } catch {
-    return { nodeSelector: {}, tolerations: [] }
+  const rc = await readObject<{
+    scheduling?: { nodeSelector?: Record<string, string>; tolerations?: PodToleration[] }
+  }>({ apiVersion: 'node.k8s.io/v1', kind: 'RuntimeClass', name: RUNTIME_CLASS_GVISOR })
+  return {
+    nodeSelector: rc?.scheduling?.nodeSelector ?? {},
+    tolerations: rc?.scheduling?.tolerations ?? [],
   }
 }
 

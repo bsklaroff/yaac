@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Hono } from 'hono'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // These routes only translate HTTP to one mediator call (404 for an unknown
 // id); build behavior is the runtime's, so the feed is faked and the tests
 // assert status codes and what reached the seam.
 import { imageApp } from '#routes/images'
-import { toErrorBody } from '#http'
+import { toErrorBody } from '#api/http/errors'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 import type { ProjectReaders } from '#drivers/contract'
 

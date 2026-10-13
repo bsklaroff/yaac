@@ -6,7 +6,6 @@ import {
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
   LABEL_TOOL,
-  buildPodJobManifest,
   installId,
   k8sNamespace,
   k8sWorkspacePaths,
@@ -18,8 +17,8 @@ import {
   workspaceIdLabels,
   workspaceJobName,
   type PodMount,
-  PRE_STOP_GRACE_SECONDS,
 } from '#drivers/k8s/substrate'
+import { PRE_STOP_GRACE_SECONDS, buildPodJobManifest } from './pod-job'
 import {
   ensureProjectRegistry,
   projectRegistryConfDropIn,

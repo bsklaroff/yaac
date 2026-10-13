@@ -128,7 +128,7 @@ and similar).
 
 The slowest link is usually the first one. A remote install serves the
 server straight over Tailscale (docs/remote-hosting.md), so the
-browser↔server WebSocket is the whole WAN path. Four things keep it cheap:
+browser↔server WebSocket is the whole WAN path. Three things keep it cheap:
 
 - **Compression.** Every WebSocket negotiates `permessage-deflate`
   (`server-run.ts`) with a 512-byte threshold, so small latency-critical
@@ -147,11 +147,6 @@ browser↔server WebSocket is the whole WAN path. Four things keep it cheap:
   batcher on a 4ms window. A single keypress is sent at once; key repeat,
   a paste delivered in pieces, and a TUI's mouse reports stop costing one
   WebSocket frame and TLS record each.
-- **Link measurement.** The PTY control channel's `ping` carries a client
-  timestamp that the `pong` echoes, so the webapp can time the round trip.
-  Each open pane probes every 10s and the samples go into one app-wide
-  store (`frontend/src/lib/link-quality.ts`). A ping with no timestamp
-  (the CLI's keepalive) still gets a plain pong.
 
 ## Failure model
 

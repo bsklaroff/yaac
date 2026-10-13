@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { access as fsAccess } from 'node:fs/promises'
 import { WorkspaceExecError } from '#drivers/contract'
-import { waitFor } from '#lib/wait-for'
+import { waitFor } from '@yaac/shared/wait-for'
 
 /**
  * This driver's process boundary: every host process it runs goes through

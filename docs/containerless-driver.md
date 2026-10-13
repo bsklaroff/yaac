@@ -79,9 +79,7 @@ The review diff is plain host `git` in the checkout. The checkout is its own
 clone whose only path-dependent git state is the alternates line pointing at
 the main clone's objects (docs/server-git.md). A pod mounts the main clone at
 the same path, and every launch on either driver rewrites the line
-(`buildCloneLinkExec`), so a stopped workspace can restart on either
-substrate. Stop the old substrate's workspaces before switching: neither
-server sees the other's, so neither would notice two agents in one checkout.
+(`buildCloneLinkExec`).
 
 ## Storage
 
@@ -199,7 +197,7 @@ instead:
 
 A new rollout or file-history dir stays a real file in the shared home until
 the next create moves it in. This isolates nothing; it keeps the layout the
-same on both drivers so an install can switch.
+same on both drivers.
 
 ## Builtin skills
 
@@ -219,10 +217,8 @@ per install, because a versioned global install moves on every upgrade; two
 installs sharing a data dir will disagree over skills only one ships.
 
 One function, `reconcileSharedSkillRoots`, handles both drivers and takes the
-target delivery as an argument, so each can undo the other after a switch.
-The link delivery replaces the empty dir a pod leaves at each mounted name.
-The mount delivery replaces a yaac link with an empty dir for the pod to
-mount over, and creates it itself so the server owns it (a kubelet-created
+target delivery as an argument. The mount delivery creates an empty dir for
+the pod to mount over itself, so the server owns it (a kubelet-created
 mountpoint is root-owned). Both claim only names this install ships, prune
 links for skills it no longer ships, and run on every create and restart.
 
@@ -530,5 +526,7 @@ prevent that:
 real containerless server. It needs no cluster or images and runs in
 parallel. A fake agent, placed where yaac installs the pinned one, stands in
 for real agents, since the tests cover launch, exec and recovery rather than
-agent behavior. The driver's unit tests mock `host.ts`, its whole process
-boundary.
+agent behavior. The project also runs the `test/e2e-cli` files whose commands
+need no workspace runtime (`auth-cli`, `project-cli`, `workspace-cli`), so
+they are checked where there is no cluster as well as in the k8s tier. The
+driver's unit tests mock `host.ts`, its whole process boundary.

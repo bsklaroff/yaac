@@ -22,7 +22,7 @@ import {
   setActiveClusterCache,
   type ClusterCache,
 } from '#drivers/k8s/substrate'
-import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
+import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#lib/notify'
 import type { PassContext } from '#drivers/contract'
 
 interface AppliedRegistration {

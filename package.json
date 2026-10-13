@@ -27,7 +27,7 @@
     "build:id": "tsx scripts/write-build-id.ts",
     "dev": "tsx packages/cli/src/cli.ts",
     "gc:test-images": "tsx scripts/gc-test-images.ts",
-    "kind-byo": "tsx packages/test-utils/src/kind-byo.ts",
+    "kind-byo": "tsx test/support/kind-byo.ts",
     "gen:providers": "tsx scripts/gen-tool-providers.ts",
     "watch": "tsx watch --clear-screen=false --include 'packages/**/src/**' --include 'packages/server/drizzle/**' --include 'dockerfiles/**' --include 'k8s/**' --include 'builtin-skills/**' --include 'workspace-bin/**' --include package.json --include 'packages/*/package.json' --include pnpm-lock.yaml --include tsup.config.ts --include 'packages/frontend/vite.config.ts' --exclude '**/node_modules/**' --exclude 'k8s/proxy/test/**' --exclude 'packages/desktop/**' scripts/dev-watch.ts",
     "lint": "tsc --noEmit && tsc --noEmit -p packages/frontend/tsconfig.json && eslint .",
@@ -35,6 +35,8 @@
     "test:unit": "vitest run --project 'unit:*'",
     "test:e2e": "vitest run --project e2e",
     "test:e2e-cli": "vitest run test/e2e-cli",
+    "test:e2e-byo": "vitest run --project e2e-byo",
+    "test:e2e-byo-install": "vitest run --project e2e-byo-install",
     "test:api": "vitest run --project 'api-*'",
     "test:api-k8s": "vitest run --project api-k8s",
     "test:api-containerless": "vitest run --project api-containerless",
@@ -91,5 +93,8 @@
     "typescript": "6.0.2",
     "typescript-eslint": "8.70.1",
     "vitest": "5.0.2"
+  },
+  "imports": {
+    "#support/*": "./test/support/*.js"
   }
 }

@@ -420,9 +420,8 @@ async function readLocalServerState(): Promise<void> {
   const epoch = actionEpoch
   // The login-shell PATH is what finds `yaac` and `brew`.
   await authDaemonReady
-  const [server, cluster, brew] = await Promise.all([
-    readLocalServer(runYaac, 'server'), readLocalServer(runYaac, 'cluster'), onPath('brew'),
-  ])
+  const [server, cluster] = await Promise.all([readLocalServer(runYaac, 'server'), readLocalServer(runYaac, 'cluster')])
+  const brew = onPath('brew')
   if (serverBusy || epoch !== actionEpoch) return
   localServers = { server, cluster }
   brewFound = brew
@@ -630,7 +629,7 @@ handleFromServersPage('server:setup', async (raw): Promise<DesktopServerOutcome>
   if (serverBusy) return { ok: false, error: 'a server action is already running' }
   if (localState().choices[scope].blocked === 'unsupported') return { ok: false, error: 'this Mac cannot run a local cluster' }
   // Probed afresh, since the run's steps follow from it and the cached read can be a minute old.
-  const cli = await onPath('yaac')
+  const cli = onPath('yaac')
   const { message, detail } = setupConfirmation(scope, cli)
   // Cancel is the default: the page chooses when this appears, so a key
   // pressed for something else must not consent.

@@ -1,58 +1,34 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import { authFake } from '#commands/auth-fake'
-import { getApiClient } from '@yaac/shared/server-api'
-import { ServerError } from '@yaac/shared/errors'
-import type * as serverApiModule from '@yaac/shared/server-api'
+import { startFakeApi, type FakeApi } from './fake-api'
 
-// authFake calls `getApiClient()` directly rather than the `api` singleton,
-// so mock the factory.
-vi.mock('@yaac/shared/server-api', async (importOriginal) => {
-  const actual = await importOriginal<typeof serverApiModule>()
-  return {
-    ...actual,
-    getApiClient: vi.fn(),
-  }
+let api: FakeApi
+
+beforeAll(async () => {
+  api = await startFakeApi()
+  vi.stubEnv('YAAC_SERVER_URL', api.url)
+  vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 
-function mockClient(post: ReturnType<typeof vi.fn>): void {
-  vi.mocked(getApiClient).mockReturnValue({
-    auth: { fake: { $post: post } },
-  } as unknown as ReturnType<typeof getApiClient>)
-}
+afterAll(async () => {
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+  await api.close()
+})
+
+beforeEach(() => {
+  api.reset()
+})
 
 describe('authFake', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    vi.spyOn(console, 'log').mockImplementation(() => {})
-  })
-
-  it('posts a single kind as a one-element array', async () => {
-    const post = vi.fn().mockResolvedValue(undefined)
-    mockClient(post)
-    await authFake(['claude-oauth'])
-    expect(post).toHaveBeenCalledWith({ json: { kinds: ['claude-oauth'] } })
-  })
-
-  it('posts every kind in one request', async () => {
-    const post = vi.fn().mockResolvedValue(undefined)
-    mockClient(post)
-    await authFake(['claude-oauth', 'opencode-openrouter', 'pi-openrouter'])
-    expect(post).toHaveBeenCalledTimes(1)
-    expect(post).toHaveBeenCalledWith({
-      json: { kinds: ['claude-oauth', 'opencode-openrouter', 'pi-openrouter'] },
-    })
-  })
-
-  it('de-dupes repeated kinds before posting', async () => {
-    const post = vi.fn().mockResolvedValue(undefined)
-    mockClient(post)
-    await authFake(['pi-openrouter', 'pi-openrouter', 'claude-oauth'])
-    expect(post).toHaveBeenCalledWith({ json: { kinds: ['pi-openrouter', 'claude-oauth'] } })
+  it('posts every kind in one request, each once', async () => {
+    api.on('POST /api/auth/fake', {})
+    await authFake(['pi-openrouter', 'claude-oauth', 'pi-openrouter'])
+    expect(api.requests.map((r) => r.body)).toEqual([{ kinds: ['pi-openrouter', 'claude-oauth'] }])
   })
 
   it('throws when the server returns an error response', async () => {
-    const post = vi.fn().mockRejectedValue(new ServerError('INTERNAL', 'server error'))
-    mockClient(post)
+    api.on('POST /api/auth/fake', { status: 500, json: { error: { code: 'INTERNAL', message: 'server error' } } })
     await expect(authFake(['pi-openrouter'])).rejects.toThrow('server error')
   })
 })

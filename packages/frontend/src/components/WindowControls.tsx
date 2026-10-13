@@ -1,40 +1,6 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { IS_MAC } from '#lib/platform'
-import type { LocalPortRemap, PortMapping } from '@yaac/shared/types'
-
-/**
- * The bridge a native shell exposes on `window`: the Electron preload, or
- * the iPhone app (ios/Yaac/WebView.swift), which has no window to drive and
- * provides only `showServers`, `openExternal` and `openPreview`.
- */
-interface YaacWindow {
-  minimize?: () => void
-  /** altKey selects the macOS Option-click zoom (maximize) instead of full screen. */
-  toggleMaximize?: (altKey?: boolean) => void
-  close?: () => void
-  openExternal: (url: string) => void
-  /** Show the shell's Servers page; absent from an app older than it. */
-  showServers?: () => void
-  /**
-   * Follow the forwards the app bound at a fallback local port: called with
-   * the current table, then on every change. Returns an unsubscribe.
-   * Absent from an app older than it.
-   */
-  onForwardRemaps?: (cb: (remaps: LocalPortRemap[]) => void) => () => void
-  /**
-   * Preview a workspace's forwarded port in the shell's own view, which
-   * forwards it to the shell's loopback: the iPhone app's (ios/README.md
-   * "Previews"). The desktop app previews in a pane instead.
-   */
-  openPreview?: (workspaceId: string, port: PortMapping) => void
-}
-
-/** The bridge, or undefined in a browser / before the preload loads. */
-export function windowApi(): YaacWindow | undefined {
-  if (typeof window === 'undefined') return undefined
-  return (window as unknown as { yaacWindow?: YaacWindow }).yaacWindow
-}
+import { IS_MAC, windowApi } from '#lib/platform'
 
 const DOT = 'no-drag flex h-3 w-3 items-center justify-center rounded-full bg-text-faint/45 '
   + 'text-[8px] font-bold leading-none text-black/0 transition-colors group-hover/wc:text-black/60'

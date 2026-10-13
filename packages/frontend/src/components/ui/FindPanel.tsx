@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import clsx from 'clsx'
 import { Tooltip } from '@base-ui/react/tooltip'
@@ -11,7 +11,7 @@ import {
 } from '@codemirror/search'
 import { IS_MAC } from '#lib/platform'
 import { Tip, WithTip } from '#components/ui/Tooltip'
-import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches } from '#lib/matchCount'
+import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches, type QuerySpec } from '#lib/matchCount'
 import {
   ChevronIcon, CloseIcon, MatchCaseIcon, NextMatchIcon, PrevMatchIcon, RegexIcon, ReplaceAllIcon, ReplaceIcon,
   SearchIcon, WholeWordIcon,
@@ -262,6 +262,104 @@ function FindBar({ view, query, matches, current, commit }: {
             </div>
           </>
         )}
+      </div>
+    </Tooltip.Provider>
+  )
+}
+
+/** A pane find bar's state; see `useFindQuery`. */
+export interface FindQuery {
+  isOpen: boolean
+  open: () => void
+  close: () => void
+  spec: QuerySpec
+  /** The query is non-empty and parses. */
+  valid: boolean
+  commit: (fields: Partial<QuerySpec>) => void
+  /** Set by every query change: the pane moves to the first match once the
+   *  new count lands, and clears it. */
+  jump: RefObject<boolean>
+  /** Bumped by each `open`, to refocus the query field. */
+  focusKey: number
+}
+
+const NO_QUERY: QuerySpec = { search: '', caseSensitive: false, literal: false, regexp: false, wholeWord: false }
+
+/**
+ * The state of a find bar over a pane's content (the Changes pane's diffs, a
+ * conversation): whether it is open, and its query, which closing keeps for
+ * the next open. The pane does its own counting; `PaneFindBar` draws it.
+ */
+export function useFindQuery(defaultOpen = false): FindQuery {
+  const [isOpen, setOpen] = useState(defaultOpen)
+  const [focusKey, setFocusKey] = useState(0)
+  const [spec, setSpec] = useState(NO_QUERY)
+  const valid = useMemo(() => new SearchQuery(spec).valid, [spec])
+  const jump = useRef(false)
+  return {
+    isOpen,
+    open: () => {
+      setOpen(true)
+      setFocusKey((n) => n + 1)
+    },
+    close: () => setOpen(false),
+    spec,
+    valid,
+    commit: (fields) => {
+      jump.current = true
+      setSpec((cur) => ({ ...cur, ...fields }))
+    },
+    jump,
+    focusKey,
+  }
+}
+
+/**
+ * The bar `useFindQuery` drives, across the top of its pane. Enter and
+ * Shift+Enter step; Escape closes without reaching the pane, where it may
+ * mean leaving the view.
+ */
+export function PaneFindBar({ find, matches, current, onStep, onClose }: {
+  find: FindQuery
+  matches: Matches
+  /** Index of the current match, or -1. */
+  current: number
+  onStep: (dir: 1 | -1) => void
+  onClose: () => void
+}): JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [find.focusKey])
+  const onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      onClose()
+    } else if (e.key === 'Enter' && e.target === inputRef.current) {
+      e.preventDefault()
+      onStep(e.shiftKey ? -1 : 1)
+    }
+  }
+  return (
+    <Tooltip.Provider>
+      <div
+        onKeyDown={onKeyDown}
+        className="grid shrink-0 grid-cols-[minmax(0,380px)_auto] items-center justify-start gap-x-1 border-b
+          border-hairline bg-surface px-1.5 py-1 font-sans text-[11px] text-text-dim"
+      >
+        <FindControls
+          inputRef={inputRef}
+          text={find.spec.search}
+          onText={(search) => find.commit({ search })}
+          query={{ ...find.spec, valid: find.valid }}
+          onToggle={find.commit}
+          matches={matches}
+          current={current + 1}
+          onPrev={() => onStep(-1)}
+          onNext={() => onStep(1)}
+          onClose={onClose}
+        />
       </div>
     </Tooltip.Provider>
   )

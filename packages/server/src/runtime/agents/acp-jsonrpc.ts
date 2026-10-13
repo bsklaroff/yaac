@@ -10,7 +10,7 @@
  */
 
 import crypto from 'node:crypto'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /** The duplex this peer speaks over (a streamd `ctrl` stream). */
 export interface JsonRpcTransport {

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
-import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { ServerError } from '@yaac/shared/errors'

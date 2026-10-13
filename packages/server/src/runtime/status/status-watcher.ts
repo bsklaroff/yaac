@@ -3,11 +3,11 @@ import { workspaceDriver } from '#drivers/driver'
 import {
   agentDriver,
   dropAcpQueues,
+  listTerminals,
   type AgentConnectDeps,
   type AgentObservation,
   type DrivenWorkspace,
 } from '#runtime/agents'
-import { listTerminals } from '#runtime/terminals'
 import {
   evictWorkspaceStatus,
   setAgentStatus,
@@ -15,7 +15,7 @@ import {
   setWorkspaceStreamHealth,
   setWorkspaceTerminals,
 } from './status-store'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 /**

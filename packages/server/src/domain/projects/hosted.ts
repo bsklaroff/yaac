@@ -4,7 +4,7 @@ import { getProjectRow, setProjectDefaultBranchGuard } from '#db'
 import { serveGitHttp, setOriginHead } from '#domain/git'
 import { isUuid } from '#lib/uuid'
 import { authorizeProject, type Actor } from '#domain/access'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { fetchProjectOrigin } from './origin'
 
 /**

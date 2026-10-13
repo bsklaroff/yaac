@@ -10,7 +10,7 @@ import {
 } from '#db/workspace-store'
 import { createWorkspaceGroup } from '#db/group-store'
 import { listWorkspaceAgentSessions } from '#db/agent-session-store'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const ELSEWHERE = '916a4314-2e8d-4811-8766-75eeedc5ae4a'

@@ -19,12 +19,6 @@ vi.mock('node:child_process', async (importOriginal) => ({
   },
 }))
 
-// Mock the forwarder registry, which holds live sockets.
-const mockStopForwarders = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/forwarders/port-forwarders', () => ({
-  stopWorkspaceForwarders: mockStopForwarders,
-}))
-
 // Mock salvage, which runs its own pods.
 const mockSalvage = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/images/image-promoter', () => ({ salvageJobImages: mockSalvage }))
@@ -46,6 +40,8 @@ import {
   detachedTeardownCommand,
   salvageWorkspaceImages,
 } from '#drivers/k8s/workspaces/teardown'
+import { declareWorkspaceForwards, getWorkspacePorts, stopAllWorkspaceForwarders } from '#drivers/k8s/workspaces'
+import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#lib/notify'
 import type { TeardownTarget } from '#drivers/contract'
 
 const PROJECT = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
@@ -93,7 +89,15 @@ beforeEach(() => {
   seedPod({ 'yaac.project-id': PROJECT })
   seedRegistration()
   fakeCluster.intercept((c) => { if (c.verb === 'delete') order.push(`delete ${c.kind}`) })
-  mockStopForwarders.mockReset().mockImplementation(() => { order.push('stop forwarders') })
+  // The workspace offers a forwarded port; dropping it is announced.
+  _resetWorkspaceListChangedForTests()
+  stopAllWorkspaceForwarders()
+  declareWorkspaceForwards('s1', [{ containerPort: 3000, hostPortStart: 3000 }])
+  let offered = true
+  onWorkspaceListChanged(() => {
+    if (offered && getWorkspacePorts('s1').length === 0) order.push('stop forwarders')
+    offered = getWorkspacePorts('s1').length > 0
+  })
   mockSalvage.mockReset().mockImplementation(() => {
     order.push('salvage')
     return Promise.resolve(true)
@@ -104,9 +108,14 @@ beforeEach(() => {
 
 describe('deregisterWorkspace', () => {
   it('drops the port forwards, then the egress registration object', async () => {
+    declareWorkspaceForwards('s2', [{ containerPort: 3000, hostPortStart: 3000 }])
     await deregisterWorkspace('s1')
 
-    expect(mockStopForwarders).toHaveBeenCalledWith('s1')
+    expect(getWorkspacePorts('s1')).toEqual([])
+    // Its host port is free for the next workspace; others keep theirs.
+    expect(getWorkspacePorts('s2')).toEqual([{ containerPort: 3000, hostPort: 3001 }])
+    expect(declareWorkspaceForwards('s3', [{ containerPort: 3000, hostPortStart: 3000 }]))
+      .toEqual([{ containerPort: 3000, hostPort: 3000 }])
     // Deleting the ConfigMap the proxy watches is the whole deregistration.
     expect(order).toEqual(['stop forwarders', 'delete ConfigMap'])
     expect(fakeCluster.get('ConfigMap', 'yaac-proxy-reg-s1')).toBeUndefined()
@@ -115,7 +124,7 @@ describe('deregisterWorkspace', () => {
   it('survives a cluster that fails the removal', async () => {
     fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
     await expect(deregisterWorkspace('s1')).resolves.toBeUndefined()
-    expect(mockStopForwarders).toHaveBeenCalledWith('s1')
+    expect(getWorkspacePorts('s1')).toEqual([])
   })
 })
 
@@ -182,7 +191,7 @@ describe('destroyWorkspace', () => {
 
       expect(jobDelete()).toEqual(expect.arrayContaining(['--cascade=foreground']))
       expect(fakeCluster.get('ConfigMap', 'yaac-proxy-reg-s1')).toBeDefined()
-      expect(mockStopForwarders).not.toHaveBeenCalled()
+      expect(getWorkspacePorts('s1')).toEqual([{ containerPort: 3000, hostPort: 3000 }])
     })
 
     it('still reports a unit it could not confirm gone', async () => {

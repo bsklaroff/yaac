@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type {
   AuthListResult, DraftWorkspaceEntry, QueuedWorkspaceEntry, WorkspaceListEntry,
@@ -19,16 +18,9 @@ import { CreateWorkspaceDialog } from '#components/CreateWorkspaceDialog'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { useUiStore } from '#lib/store'
 import type { ProjectBranches } from '#lib/useProjectBranches'
-import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, typeInto, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 const CLAUDE = {
   tool: 'claude' as const, kind: 'oauth' as const, keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z',
@@ -156,10 +148,6 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 /** Mount the trigger beside the one dialog it opens, as App does. */
 function mount(): void {
@@ -308,7 +296,7 @@ describe('CreateWorkspaceDialog', () => {
 
     // Sonnet has no max: its default instead. A pick it has then stays.
     const pickModel = (text: string): void => {
-      fireEvent.change(modelInput(), { target: { value: text } })
+      typeInto(modelInput(), text)
       fireEvent.keyDown(modelInput(), { key: 'Enter' })
     }
     pickModel('claude-sonnet')
@@ -333,13 +321,13 @@ describe('CreateWorkspaceDialog', () => {
   it('searches models by name or id, and Enter picks before it creates', async () => {
     await openReady()
 
-    fireEvent.change(modelInput(), { target: { value: 'sonnet' } })
+    typeInto(modelInput(), 'sonnet')
     expect(screen.getByText('Sonnet 5')).toBeTruthy()
     expect(screen.queryByText('Opus 5.5')).toBeNull()
     // Mid-edit text is a search, not a pick.
     expect(createButton().disabled).toBe(true)
 
-    fireEvent.change(modelInput(), { target: { value: 'claude-sonnet' } })
+    typeInto(modelInput(), 'claude-sonnet')
     fireEvent.keyDown(modelInput(), { key: 'Enter' })
     expect(modelInput().value).toBe('Sonnet 5')
     expect(sent(CREATE)).toHaveLength(0)
@@ -352,12 +340,12 @@ describe('CreateWorkspaceDialog', () => {
     await openReady()
     fireEvent.change(promptInput(), { target: { value: 'keep me' } })
 
-    fireEvent.change(modelInput(), { target: { value: 'sonnet' } })
+    typeInto(modelInput(), 'sonnet')
     expect(screen.getByText('Sonnet 5')).toBeTruthy()
     fireEvent.keyDown(modelInput(), { key: 'Escape' })
     expect(screen.queryByText('Sonnet 5')).toBeNull()
 
-    fireEvent.change(branchInput(), { target: { value: 're' } })
+    typeInto(branchInput(), 're')
     expect(screen.getByText('release/2.x')).toBeTruthy()
     fireEvent.keyDown(branchInput(), { key: 'Escape' })
     expect(screen.queryByText('release/2.x')).toBeNull()
@@ -380,7 +368,7 @@ describe('CreateWorkspaceDialog', () => {
       [modelInput, 'claude-next', 'Opus 5.5'],
       [branchInput, 'no-such-branch', 'main'],
     ] as const) {
-      fireEvent.change(input(), { target: { value: typed } })
+      typeInto(input(), typed)
       expect(screen.getByText('No matches')).toBeTruthy()
       // Enter has nothing to pick, and the unpicked text cannot create.
       fireEvent.keyDown(input(), { key: 'Enter' })
@@ -397,7 +385,7 @@ describe('CreateWorkspaceDialog', () => {
     await openReady()
     await waitFor(() => expect(branchInput().value).toBe('main'))
     // As in the model field, Enter picks the top match rather than creating.
-    fireEvent.change(branchInput(), { target: { value: 'de' } })
+    typeInto(branchInput(), 'de')
     expect(createButton().disabled).toBe(true)
     fireEvent.keyDown(branchInput(), { key: 'Enter' })
     expect(branchInput().value).toBe('dev')
@@ -581,7 +569,7 @@ describe('CreateWorkspaceDialog', () => {
     await openReady()
     await waitFor(() => expect(branchInput().value).toBe('main'))
 
-    fireEvent.change(branchInput(), { target: { value: 're' } })
+    typeInto(branchInput(), 're')
     // 'release/2.x' matches; 'dev' does not.
     expect(screen.getByText('release/2.x')).toBeTruthy()
     expect(screen.queryByText('dev')).toBeNull()

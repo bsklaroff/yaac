@@ -17,7 +17,7 @@ ARG NODE_VERSION=24.21.0
 ARG KUBECTL_VERSION=v1.37.1
 # Baked so auto-titles need no download, since a pod's $HOME does not
 # survive a roll. The builder passes LLAMA_CPP_TAG from
-# domain/titles/llama-cpp.ts.
+# domain/workspaces/llama-cpp.ts.
 ARG LLAMA_CPP_TAG=b11313
 
 # catatonit: node is PID 1 here and would never reap the orphans of the

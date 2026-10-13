@@ -110,8 +110,7 @@ export async function writeProjectClaudeCredentials(
  * Whether a bundle is a placeholder rather than a real credential. Checked
  * before adopting a project-local bundle as the host's, which would
  * otherwise overwrite a working credential. Placeholders come from projects
- * seeded for a proxied runtime, a data dir switched from k8s to
- * containerless, or a yaac-in-yaac install (see
+ * seeded for a proxied runtime, or a yaac-in-yaac install (see
  * `buildFakeClaudeOAuthBundle`). Only the access token is checked, since a
  * placeholder keeps the real non-secret fields.
  */

@@ -7,8 +7,10 @@ the sealed-folder barrels. `pnpm modularity --runtime-only` checks that the
 runtime import graph has no cycles (docs/modularity-metrics.md).
 
 ```
-main       composition root: startup, shutdown, the reconcile loop engine
-api        routes/, http/, events.ts (the /events snapshot hub)
+main       composition root: startup, shutdown, the reconcile loop and
+           its step list, the boot-time forwarder restore
+api        routes/, http/, events.ts (the /events snapshot hub),
+           ws-routes.ts (the WebSocket routes)
   ↓
 domain     reads rows, owns what a project and a workspace keep on disk,
            and drives the runtime
@@ -24,11 +26,10 @@ db           runtime       db: rows; owns the database outright
 import no layer back. Its eslint zone allows node builtins and
 `@yaac/shared` only, no npm packages: a single third-party import in `lib`
 would pull that package (for instance `@kubernetes/client-node`) into every
-layer's module graph.
-
-Two package-root modules are exempt from the layering: `#log`, and
-`#notify`, a dependency-free "something changed" channel. Anything may emit
-on `#notify`; only the api layer's snapshot hub listens.
+layer's module graph. It holds the two outbound channels every layer
+uses: `#lib/log`, and `#lib/notify`, a "something changed" signal.
+Anything may emit on `#lib/notify`; only the api layer's snapshot hub
+listens.
 
 Below domain there are two independent things, and neither reads the
 other: rows (`db`), and the runtime behind its contract (`runtime` and
@@ -38,23 +39,18 @@ other: rows (`db`), and the runtime behind its contract (`runtime` and
 
 `runtime/` holds what is the same on every substrate: tui/acp agent
 conduction, the status watchers and liveness policy, the PTY bridge, report
-assembly, and port-forward restore and tunnels. `drivers/` holds what
-differs:
+assembly, and port-forward tunnels. `drivers/` holds what differs:
 
 - `contract.ts`: the `WorkspaceDriver` interface and its vocabulary;
 - `driver.ts`: the registered instance (`setWorkspaceDriver` /
   `workspaceDriver`);
 - `k8s/`: one single-pod Job per workspace;
 - `containerless/`: one tmux server per workspace on the host
-  (docs/containerless-driver.md);
-- `shared/`: code both drivers need.
+  (docs/containerless-driver.md).
 
-Drivers cannot import each other, so code both need (such as the review
-diff's script and parser) goes in `drivers/shared`. The alternative would
-be duplicating it, or pushing substrate code up into `#lib` where every
-layer would inherit it. `shared/` may not import a driver, and nothing
-above the drivers may import `shared/`. Code belongs there only if both
-drivers call it and nothing else does.
+Drivers cannot import each other. What both would do the same way over
+the contract's own verbs belongs above it instead: the review diff, for
+instance, is one script the domain runs through `exec` on either driver.
 
 The composition root picks the driver once at startup, before anything
 can ask for one. The choice is the server's placement
@@ -80,7 +76,7 @@ of a driver can name it.
 
 Each driver is imported through one module: `#drivers/k8s` or
 `#drivers/containerless`, its assembly. Everything behind it is internal:
-the k8s driver's nine sealed folders and the containerless driver's flat
+the k8s driver's six sealed folders and the containerless driver's flat
 modules. `#drivers/<kind>/*` may be imported only from inside `drivers/`,
 and `main` imports only the assemblies. The CLI is the exception: it
 imports substrate administration through the package's `exports` map
@@ -132,22 +128,28 @@ happens a layer up, in `recordedTranscript`.
   placement runs), `convergence` (wires what the driver observes into the
   machinery: the per-workspace status watchers, which need a row lookup,
   and two trigger sources no substrate watch can see, a conversation
-  appearing and a driver connection dropping), `reconciler` (the pass
-  engine; its step list comes from domain), `server`, `lifecycle`.
+  appearing and a driver connection dropping), `restore-forwarders` (the
+  boot-time forwarder restore), `reconciler` (the pass engine) and
+  `reconcile-steps` (the ordered step list of one pass), `server`. The client side of
+  `yaac server start|stop|…` is the CLI's (`#commands/server-lifecycle`),
+  which talks to the server only through its lock and `/health`.
 - **`api/`**: `routes/` (translation only; policy lives below), `http/`
   (auth middleware, the token store, the error envelope, static SPA
-  serving), `events.ts` (the snapshot hub).
+  serving), `events.ts` (the snapshot hub), `ws-routes.ts` (the WebSocket
+  routes: the events stream, the auth-daemon relay, and the pty, forward
+  and acp attaches).
 - **`domain/`**: `workspaces/` (the lifecycle verbs: create, restart,
-  stop, cleanup, list, detail, resolve; plus the prewarm pool, spawn
-  policy, discovery sweeps, prompt capture, the provisioning registry, the
-  stale reaper, and checkout seeding), `projects/` (which projects exist
+  stop, cleanup, list, detail, resolve; plus the prewarm pool, discovery
+  sweeps, prompt capture, the provisioning registry, the stale reaper,
+  checkout seeding, each workspace's conversations on disk, generated
+  titles, `yaac-mama`'s commands and spawn policy, and the file editor's
+  reads and writes of a checkout), `projects/` (which projects exist
   and what each keeps on disk: the clone's branches, the two config
-  layers, git credentials, Dockerfiles and build files), `git/` (domain's
-  one process boundary onto git; docs/server-git.md), `agent-history/`
-  (each workspace's conversations on disk), `titles/`, `auth/`, `skills/`,
+  layers, which git credential it uses, Dockerfiles and build files), `git/`
+  (domain's one process boundary onto git; docs/server-git.md),
+  `auth/` (each user's tool sign-ins and git credentials), `skills/`,
   `access/` (who may act on what: the verbs that make a user-caused write
-  take the caller and `authorize` it), and `reconcile.ts` (the ordered
-  step list of one pass).
+  take the caller and `authorize` it).
 
   Config and credentials live in domain because writing them is policy: a
   saved allowed host or port forward applies to every future workspace of
@@ -159,47 +161,55 @@ happens a layer up, in `recordedTranscript`.
   `client.ts` (the PGlite handle) and `schema.ts` (the drizzle tables) are
   internal, off the barrel, so no other layer can name a table or build a
   query. The database driver packages are eslint-banned everywhere else.
-- **`runtime/`**: four sealed folders.
-  - `agents/`: the tui/acp drivers, acpd's JSON-RPC client, per-tool
-    launch commands, and per-tool transcript readers.
+- **`runtime/`**: three sealed folders.
+  - `agents/`: the tui/acp drivers over one control-mode connection,
+    per-tool launch commands and status classifiers, the acp pane bridge,
+    the Agent Client Protocol (one conversation over acpd's socket, and
+    acpd's record of it read back), where each tool keeps its history,
+    replayed as ACP events, and `sandbox-fs.ts` (how the server opens the
+    project dirs an agent can write to).
   - `status/`: the tmux control-mode watchers feeding the status store,
     liveness probes, workspace classification, and `observeWorkspaces`,
     which joins the driver's raw facts with what the watchers saw.
-  - `terminals/`: the PTY bridge, and listing, creating and killing a
-    workspace's tmux windows.
-  - `ports/`: the forwarder restore after a server restart, and the port
-    tunnel (docs/port-forward-tunnel.md).
+  - `terminals/`: the PTY bridge, listing, creating and killing a
+    workspace's tmux windows, and the port tunnel
+    (docs/port-forward-tunnel.md).
 
   All of it runs on whichever driver is registered, so the containerless
-  driver gets conduction, observation, attach, report assembly and restore
-  without reimplementing them. tmux is the process supervisor on both
+  driver gets conduction, observation, attach and report assembly without
+  reimplementing them. tmux is the process supervisor on both
   (docs/agent-modes.md).
 - **`drivers/`**: `contract.ts` (`WorkspaceDriver` and its vocabulary:
   `RuntimeHandle`, `AgentLiveness`, `RuntimeSnapshot`, the stream types
   `StreamChild` and `StreamPty`, `WorkspaceExecError`, the launch types
   `WorkspaceSpec`, `WorkspaceMount`, `SubstrateIntent` and the opaque
   `WorkspaceSubstrate` receipt, and the pass scheduling types),
-  `driver.ts`, `shared/`, `containerless/`, and `k8s/`.
+  `driver.ts`, `containerless/`, and `k8s/`.
 
-  `k8s/`'s barrel is its assembly (`createK8sDriver`) over eight sealed
-  folders: `cluster`, `egress`, `forwarders`, `images`, `image-engine`,
-  `workspaces` (launch, locate, claim, teardown, the pod-side changes diff,
-  image salvage, and the mapping from a pod to a `RuntimeHandle`),
-  `substrate` (client, informers, exec, pod specs, the per-pass
-  `TickSnapshot`, the datapath's names and ports) and `container` (podman,
-  the local registry client, the streaming child-process runner). Beside
-  them are only `lifecycle.ts` (attach and detach) and `steps.ts` (the
-  driver's reconcile steps). The assembly can be the barrel because the
-  contract sits below the folders: assembly → folders → contract.
+  `k8s/`'s barrel is its assembly (`createK8sDriver`) over five sealed
+  folders: `workspaces` (launch and the Job manifest, locate, claim,
+  teardown, image salvage, port forwards, the
+  node-local orphan sweep, the per-pass snapshot, and the mapping from a
+  pod to a `RuntimeHandle`), `images` (builder pods, the build coordinator
+  and its build rows, prewarm, node image stores, main registry GC),
+  `egress`, `cluster` (the in-cluster datapath, the main registry and its
+  client, and every image tag), and `substrate` (client, informers, exec,
+  pod-spec fragments, the streaming child-process runner, the datapath's
+  names and ports). Beside them are only `lifecycle.ts` (attach and
+  detach) and `steps.ts` (the driver's reconcile steps). The assembly can
+  be the barrel because the contract sits below the folders: assembly →
+  folders → contract.
 
-  A ninth folder, `install`, is outside that graph. It is what `yaac
+  A sixth folder, `install`, is outside that graph. It is what `yaac
   cluster install|check|delete` run: creating the cluster and its CNI,
-  re-applying node state a restart drops, building every image yaac ships,
-  and deploying the in-cluster pieces, all from the CLI's machine before
-  any server exists. An eslint zone bans `#drivers/k8s/install` everywhere
-  in the server, which keeps a container engine off every server code path
-  (docs/trust-split-builds.md). It imports `cluster` to read each shipped
-  image's identity, the name the server later looks it up by.
+  installing gVisor and the node tuning, re-applying node state a restart
+  drops, building every image yaac ships on the host's podman and pushing
+  it, and deploying the in-cluster pieces, all from the CLI's machine
+  before any server exists. An eslint zone bans `#drivers/k8s/install`
+  everywhere in the server, which keeps a container engine off every
+  server code path (docs/trust-split-builds.md). It imports `cluster` to
+  read each shipped image's identity, the name the server later looks it
+  up by.
 
   `contract.ts` and `driver.ts` import nothing but shared types, enforced
   by an eslint zone on those two files. So code reaching the runtime
@@ -255,7 +265,7 @@ Re-reporting must be safe, which the event types (`db/events.ts`) ensure:
 
 ## Pushing changes to clients
 
-Every store that `buildSnapshot` reads calls `#notify` where it changes,
+Every store that `buildSnapshot` reads calls `#lib/notify` where it changes,
 and the api layer's hub is the only listener. The hub coalesces a burst of
 notifications, rebuilds the snapshot, diffs it against what it last sent,
 and broadcasts only a change. Nothing else publishes: routes return
@@ -280,7 +290,7 @@ informer's relist makes. Besides the watch-cache events, the triggers are
 connections) and `proxy-refreshed` (a change to the object the proxy saves
 OAuth rotations into).
 
-`domain/reconcile.ts` lists the steps in order: the stale reaper first (so
+`main/reconcile-steps.ts` lists the steps in order: the stale reaper first (so
 the prewarm pool counts just-reaped workspaces), the queued-workspace
 backstop (a launch interrupted by a restart; `stopWorkspace` launches
 queued workspaces directly, so this only rides the resync), the prewarm
@@ -291,9 +301,9 @@ same pass.
 
 The driver contributes its own steps (its GCs and datapath repairs) in two
 groups: `prePool`, before the spare pool sizes itself, and `maintenance`,
-after the sweeps that read rows. Those are the only orderings domain cares
-about. What the driver's steps do and how they order among themselves is
-not named in `domain/reconcile.ts`.
+after the sweeps that read rows. Those are the only orderings the
+composition root sets. What the driver's steps do and how they order among
+themselves is not named in `main/reconcile-steps.ts`.
 
 Steps share one `RuntimeSnapshot`, created on first use in the pass, so
 every step sees the same instant. Its `workspaces()` and `strayUnits()`

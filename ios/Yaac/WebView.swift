@@ -8,7 +8,7 @@ import WebKit
  *
  * The page gets one bridge, `window.yaacWindow`, with the three calls the SPA
  * makes of a native shell (`windowApi()` in
- * packages/frontend/src/components/WindowControls.tsx): show the server
+ * packages/frontend/src/lib/platform.ts): show the server
  * list, open a link in Safari, and preview a workspace's forwarded port
  * (`PreviewView`). Like the desktop shell's, it cannot change
  * which server the app is on, so a server cannot move the app to one it

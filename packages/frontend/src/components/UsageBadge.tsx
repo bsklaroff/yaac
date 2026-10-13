@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { POPUP } from '#components/ui/menu'
+import { PopoverPopup } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { PinIcon, UsageIcon, TOOL_LABEL } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
@@ -181,42 +181,38 @@ export function UsageBadge(): JSX.Element | null {
         {pinned && <span className="font-normal opacity-80">{pillTag(pinned.limit, pinned.tool)}</span>}
         {Math.round(top.limit.percent)}%
       </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Positioner side="bottom" align="end" sideOffset={4}>
-          <Popover.Popup className={clsx('w-64', POPUP)}>
-            <div className="px-2 pb-0.5 pt-1">
-              <span className="text-[11px] font-medium text-text-faint">Plan usage</span>
+      <PopoverPopup side="bottom" align="end" sideOffset={4} className="w-64">
+        <div className="px-2 pb-0.5 pt-1">
+          <span className="text-[11px] font-medium text-text-faint">Plan usage</span>
+        </div>
+        {sections.map((section) => {
+          const plan = planLabel(section.subscriptionType, section.rateLimitTier)
+          return (
+            <div key={section.tool} className="pb-0.5">
+              <div className="flex items-baseline px-2 pt-1">
+                <span className="text-[11px] font-medium text-text-dim">{TOOL_LABEL[section.tool]}</span>
+                {plan && (
+                  <span className="ml-auto text-[11px] text-text-faint/70">{plan}</span>
+                )}
+              </div>
+              <ul className="flex flex-col gap-0.5 px-1 pb-1">
+                {section.limits.map((limit) => {
+                  const key = metricKey(section.tool, limit)
+                  return (
+                    <LimitRow
+                      key={key}
+                      limit={limit}
+                      tool={section.tool}
+                      pinned={pinned !== null && key === pinnedKey}
+                      onToggle={() => setPinnedUsageMetric(pinnedKey === key ? null : key)}
+                    />
+                  )
+                })}
+              </ul>
             </div>
-            {sections.map((section) => {
-              const plan = planLabel(section.subscriptionType, section.rateLimitTier)
-              return (
-                <div key={section.tool} className="pb-0.5">
-                  <div className="flex items-baseline px-2 pt-1">
-                    <span className="text-[11px] font-medium text-text-dim">{TOOL_LABEL[section.tool]}</span>
-                    {plan && (
-                      <span className="ml-auto text-[11px] text-text-faint/70">{plan}</span>
-                    )}
-                  </div>
-                  <ul className="flex flex-col gap-0.5 px-1 pb-1">
-                    {section.limits.map((limit) => {
-                      const key = metricKey(section.tool, limit)
-                      return (
-                        <LimitRow
-                          key={key}
-                          limit={limit}
-                          tool={section.tool}
-                          pinned={pinned !== null && key === pinnedKey}
-                          onToggle={() => setPinnedUsageMetric(pinnedKey === key ? null : key)}
-                        />
-                      )
-                    })}
-                  </ul>
-                </div>
-              )
-            })}
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
+          )
+        })}
+      </PopoverPopup>
     </Popover.Root>
   )
 }

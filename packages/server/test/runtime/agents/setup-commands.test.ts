@@ -1,126 +1,16 @@
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import {
-  buildCloneLinkExec,
-  buildOriginRefreshExec,
-  buildWindowsExec,
-  validateInitWindows,
-} from '#runtime/agents/setup-commands'
-import { cloneRepo, createCheckout, fetchOrigin } from '#domain/git'
-import { execFileAsync } from '#lib/shell'
-import { git } from '@yaac/test-utils/git'
+import { describe, it, expect } from 'vitest'
+import { buildWindowsExec } from '#runtime/agents/setup-commands'
+import { resolveInitWindows } from '#runtime/agents/agent-command'
 import { WORKSPACE_INIT_SCRIPT, workspaceBinDir } from '#domain/workspaces/workspace-bin'
 import { PROXY_CA_BUNDLE_PATH } from '#drivers/k8s/egress/proxy-client'
-import { AGENT_TOOLS } from '@yaac/shared/types'
 
-import { workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import { workspacePathsFixture } from '#test/support/fake-driver'
 
 // The container paths these commands are written against.
 const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
-
-/**
- * Runs the commands for real against a main clone and a checkout of it,
- * with the checkout's path as the workspace dir.
- */
-describe('clone refresh commands', () => {
-  let tmp: string
-  let source: string
-  let main: string
-  let wt: string
-  const run = (cmd: string): Promise<unknown> => execFileAsync('sh', ['-c', cmd])
-  const commit = async (repo: string, msg: string): Promise<void> => {
-    await git(repo, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', msg])
-  }
-  const tip = async (repo: string, ref: string): Promise<string> => (await git(repo, ['rev-parse', ref])).trim()
-
-  beforeAll(async () => {
-    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-refresh-'))
-    source = path.join(tmp, 'source')
-    await fs.mkdir(source)
-    await git(source, ['init', '-q', '-b', 'main'])
-    await commit(source, 'initial')
-    await git(source, ['checkout', '-q', '-b', 'forced'])
-    await commit(source, 'forced one')
-    await git(source, ['checkout', '-q', 'main'])
-    main = path.join(tmp, 'repo')
-    await cloneRepo(source, main, null)
-    wt = path.join(tmp, 'wt')
-    await createCheckout(main, wt, { branch: 'agent/x', baseBranch: 'main', remoteUrl: source })
-  })
-
-  afterAll(async () => {
-    await fs.rm(tmp, { recursive: true, force: true })
-  })
-
-  describe('buildCloneLinkExec', () => {
-    it('rewrites the alternates line to the main clone as the server sees it', async () => {
-      await fs.writeFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), '/yaac/global/elsewhere/.git/objects\n')
-      const cmd = buildCloneLinkExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: wt }))
-      await run(cmd)
-      expect(await fs.readFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), 'utf8'))
-        .toBe(`${path.join(main, '.git', 'objects')}\n`)
-      expect((await git(wt, ['status', '--porcelain'])).trim()).toBe('')
-      // It ends by warming the file cache with a detached status that takes
-      // no index lock the agent's git could collide with.
-      expect(cmd).toMatch(/&& \{ setsid git -C \S+ --no-optional-locks status --porcelain <\/dev\/null >\/dev\/null 2>&1 & \}$/)
-    })
-
-    it('fails when the alternates line cannot be written, warm-up or not', async () => {
-      const cmd = buildCloneLinkExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: path.join(tmp, 'missing') }))
-      await expect(run(cmd)).rejects.toThrow()
-    })
-  })
-
-  describe('buildOriginRefreshExec', () => {
-    it('fast-forwards origin/* from the main clone and moves nothing back', async () => {
-      const cmd = buildOriginRefreshExec(path.join(main, '.git'), workspacePathsFixture({ workspaceDir: wt }))
-      // Upstream: main moves on, a branch appears, `forced` is rewritten.
-      await commit(source, 'upstream')
-      await git(source, ['branch', 'fresh'])
-      await git(source, ['branch', '-f', 'forced', 'main'])
-      // The agent fetched `ahead` itself; the main clone has not.
-      await git(source, ['branch', 'ahead'])
-      await git(wt, ['fetch', '-q', source, 'refs/heads/ahead:refs/remotes/origin/ahead'])
-      await git(source, ['branch', '-f', 'ahead', 'main~1'])
-      const forcedBefore = await tip(wt, 'origin/forced')
-      await fs.writeFile(path.join(wt, '.git', 'FETCH_HEAD'), 'the agent\'s\n')
-      await fetchOrigin(main, source, null)
-      const objects = await git(wt, ['count-objects', '-v'])
-
-      await run(cmd)
-
-      expect(await tip(wt, 'origin/main')).toBe(await tip(source, 'main'))
-      expect(await tip(wt, 'origin/fresh')).toBe(await tip(source, 'fresh'))
-      // Not a fast-forward: left for the agent's own fetch.
-      expect(await tip(wt, 'origin/forced')).toBe(forcedBefore)
-      expect(await tip(wt, 'origin/ahead')).toBe(await tip(source, 'main'))
-      expect(await fs.readFile(path.join(wt, '.git', 'FETCH_HEAD'), 'utf8')).toBe('the agent\'s\n')
-      // No new objects: everything came through the alternate.
-      expect(await git(wt, ['count-objects', '-v'])).toBe(objects)
-    })
-  })
-})
-
-describe('validateInitWindows', () => {
-  it('resolves the configured windows', () => {
-    const wins = validateInitWindows({ initCommands: ['pnpm install'] })
-    expect(wins).toHaveLength(1)
-    expect(wins[0].name).toBe('init')
-  })
-
-  it('returns [] for a config without init commands', () => {
-    expect(validateInitWindows({})).toEqual([])
-  })
-
-  it.each(AGENT_TOOLS)('rejects a window named after the %s tool', (tool) => {
-    expect(() => validateInitWindows({
-      initCommands: [{ name: tool, commands: ['true'] }],
-    })).toThrow(/collides with an agent tool window/)
-  })
-})
 
 describe('buildWindowsExec', () => {
   it('with no init windows, only respawns the agent into the keepalive window', () => {
@@ -129,7 +19,7 @@ describe('buildWindowsExec', () => {
   })
 
   it('chains each init window before the agent respawn', () => {
-    const wins = validateInitWindows({ initCommands: ['pnpm install', 'pnpm dev'] })
+    const wins = resolveInitWindows({ initCommands: ['pnpm install', 'pnpm dev'] })
     const cmd = buildWindowsExec(wins, 'codex', [{ tool: 'codex', cmd: 'codex --yolo' }], PATHS)
     const [initPart, respawnPart] = cmd.split(' && tmux -S ')
     expect(initPart).toContain('new-window -d -t yaac -n init')

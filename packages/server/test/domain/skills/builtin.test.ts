@@ -9,6 +9,11 @@ import {
 } from '#domain/skills'
 // Test hook and policy constant used for setup, not under test.
 import { setBuiltinSkillsDir, TOOL_SKILL_ROOTS } from '#domain/skills/builtin'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 const SLUG = 'proj'
 
@@ -258,49 +263,6 @@ describe('reconcileSharedSkillRoots', () => {
         expect(await fs.readdir(entry)).toEqual([])
       }
     }
-  })
-
-  it('converts either delivery into the other, so an install can switch drivers', async () => {
-    const src = await install(['welcome', 'alpha'])
-    const claudeRoot = path.join(claudeDir(SLUG), 'skills')
-
-    // containerless → k8s: pods cannot resolve our links, so each becomes a
-    // mountpoint.
-    await reconcileSharedSkillRoots(src, SLUG, 'link')
-    expect(await reconcileSharedSkillRoots(src, SLUG, 'mountpoint')).toEqual(['alpha', 'welcome'])
-    for (const root of sharedSkillRoots(SLUG)) {
-      for (const name of ['alpha', 'welcome']) {
-        const st = await fs.lstat(path.join(root, name))
-        expect(st.isSymbolicLink()).toBe(false)
-        expect(st.isDirectory()).toBe(true)
-      }
-    }
-    // Every create re-runs this, so it must be idempotent.
-    await reconcileSharedSkillRoots(src, SLUG, 'mountpoint')
-
-    // k8s → containerless: the mountpoints become links again.
-    await reconcileSharedSkillRoots(src, SLUG, 'link')
-    expect(await fs.readFile(path.join(claudeRoot, 'welcome', 'SKILL.md'), 'utf8'))
-      .toContain('name: welcome')
-    expect(await fs.readlink(path.join(claudeRoot, 'alpha'))).toBe(path.join(src, 'alpha'))
-  })
-
-  it('reclaims a spent mountpoint only under a name it ships', async () => {
-    const root = path.join(claudeDir(SLUG), 'skills')
-    await fs.mkdir(root, { recursive: true })
-    // Mountpoints left by an older yaac: one for a shipped name, one for a
-    // retired skill.
-    await fs.mkdir(path.join(root, 'welcome'))
-    await fs.mkdir(path.join(root, 'yaac-spawn'))
-    // An empty dir the user made, under no shipped name.
-    await fs.mkdir(path.join(root, 'mine-to-be'))
-
-    const src = await install(['welcome'])
-    await reconcileSharedSkillRoots(src, SLUG, 'link')
-
-    expect(await fs.readlink(path.join(root, 'welcome'))).toBe(path.join(src, 'welcome'))
-    expect((await fs.lstat(path.join(root, 'yaac-spawn'))).isDirectory()).toBe(true)
-    expect((await fs.lstat(path.join(root, 'mine-to-be'))).isDirectory()).toBe(true)
   })
 })
 

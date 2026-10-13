@@ -24,7 +24,7 @@ import {
 import { rebranchSpare } from './spare-pool'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import { deleteSpareWorkspaceRow, getTimeZone, getWorkspaceRow, listProjectRows, type WorkspaceRow } from '#db'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { repoDir } from '@yaac/shared/project-paths'
 import { DEFAULT_AGENT_MODE } from '@yaac/shared/types'
 import { env } from '@yaac/shared/env'
@@ -140,7 +140,7 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
           ...(row.model !== undefined ? { model: row.model } : {}),
           permissionMode: row.permissionMode,
           ...(row.effort !== undefined ? { effort: row.effort } : {}),
-          mode: row.mode ?? spare.mode,
+          mode: row.mode,
         })
       }
       spareHeads.set(spare.workspaceId, target.tip)
@@ -155,9 +155,8 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
 /**
  * Spares warmed in a different agent mode than their project now creates in,
  * or in a zone other than the user's current one. Both are fixed at warm
- * time, so no claim takes them. A row with no mode (written before the
- * column) counts as stale. An unreadable row is logged and counts as not
- * stale.
+ * time, so no claim takes them. An unreadable row is logged and counts as
+ * not stale.
  */
 async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const spares = pods.filter((p) => p.prewarmed && p.projectId && !claiming.has(p.jobName))

@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, type JSX, type ReactNode } from 'react'
+import { Combobox } from '@base-ui/react/combobox'
 import clsx from 'clsx'
 
 /** One suggestion: what picking it yields, what it is shown and searched as,
@@ -43,8 +44,11 @@ export function suggestionId(listId: string, index: number): string {
 
 /**
  * A text input over a filtered suggestion list (branch pickers, the create
- * form's model and branch fields). The parent owns the query, the items and
- * what a selection does.
+ * form's model and branch fields, the provider picker), on Base UI's
+ * Combobox with the list rendered inline below the input. The parent owns
+ * the query, the items and what a selection does, so the combobox never
+ * holds a value, and only typing (not Base UI syncing the input to a pick)
+ * reaches `onQueryChange`.
  *
  * Filters with `filterSuggestions`. ↑/↓ move a highlight and Enter picks
  * it; with nothing highlighted Enter bubbles, so the create form can submit.
@@ -92,73 +96,77 @@ export function Typeahead({
   /** Escape was pressed with the list open — close it. */
   onDismiss?: () => void
 }): JSX.Element {
-  const [highlight, setHighlight] = useState(-1)
-  const listId = useId()
-  const needle = query.trim()
   const rows = filterSuggestions(items, query, limit)
   const shown = showList && rows.length > 0
-  const active = shown && highlight < rows.length ? highlight : -1
-
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>): void => {
-    if (e.key === 'Escape' && showList && onDismiss !== undefined) {
-      e.preventDefault()
-      e.stopPropagation()
-      onDismiss()
-      return
-    }
-    if (!shown) return
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      const step = e.key === 'ArrowDown' ? 1 : -1
-      setHighlight((h) => (Math.max(h, -1) + step + rows.length) % rows.length)
-    } else if (e.key === 'Enter' && active >= 0 && !e.nativeEvent.isComposing) {
-      // Keep the surrounding form from also submitting.
-      e.preventDefault()
-      e.stopPropagation()
-      onSelect(rows[active].value)
-    }
-  }
-
   return (
-    <>
+    <Combobox.Root<TypeaheadItem>
+      inline
+      open={shown}
+      value={null}
+      onValueChange={(item) => { if (item) onSelect(item.value) }}
+      inputValue={query}
+      onInputValueChange={(q, { reason }) => { if (reason === 'input-change') onQueryChange(q) }}
+      autoHighlight={autoHighlight}
+    >
       <div className={clsx('flex items-center', className)}>
         <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md border border-border bg-surface-1 px-2 py-1">
           {icon?.({ size: 12, className: 'shrink-0 text-text-faint' })}
-          <input
-            role="combobox"
+          <Combobox.Input
             aria-label={ariaLabel}
-            aria-autocomplete="list"
+            // An inline list always reads as expanded; this one can be hidden.
             aria-expanded={shown}
-            aria-controls={listId}
-            {...(active >= 0 ? { 'aria-activedescendant': suggestionId(listId, active) } : {})}
-            value={query}
             placeholder={placeholder}
-            onChange={(e) => {
-              onQueryChange(e.target.value)
-              setHighlight(autoHighlight ? 0 : -1)
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape' || !showList || onDismiss === undefined) return
+              e.preventDefault()
+              e.stopPropagation()
+              onDismiss()
             }}
-            onKeyDown={onKeyDown}
             onBlur={onBlur}
-            spellCheck={false}
             className="w-full min-w-0 bg-transparent font-mono text-xs text-text outline-none
               placeholder:text-text-faint"
           />
         </div>
       </div>
-      {showList && rows.length === 0 && needle !== '' && (
+      {showList && rows.length === 0 && query.trim() !== '' && (
         <div className="px-2 py-1 text-[11px] text-text-faint">No matches</div>
       )}
       {shown && (
-        <SuggestionList
-          id={listId}
-          rows={rows}
-          active={active}
-          onSelect={onSelect}
-          onHover={setHighlight}
-          icon={icon}
-          tag={tag}
-        />
+        <Combobox.List className="max-h-48 overflow-y-auto pb-1">
+          {rows.map((item) => (
+            <Combobox.Item
+              key={item.value}
+              value={item}
+              className={clsx(ROW, 'text-text-dim data-[highlighted]:bg-surface-3 data-[highlighted]:text-text')}
+            >
+              <RowContent item={item} icon={icon} tag={tag} />
+            </Combobox.Item>
+          ))}
+        </Combobox.List>
       )}
+    </Combobox.Root>
+  )
+}
+
+const ROW = 'flex w-full cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-left font-mono text-xs'
+
+/** A suggestion row's inside: glyph, label, faint detail, trailing tag. */
+function RowContent({ item, icon, tag }: {
+  item: TypeaheadItem
+  icon?: (props: { size: number; className: string }) => ReactNode
+  tag?: (item: TypeaheadItem) => ReactNode
+}): JSX.Element {
+  const t = tag?.(item)
+  return (
+    <>
+      {icon?.({ size: 11, className: 'shrink-0 text-text-faint' })}
+      {/* The label keeps its width; the detail truncates and pushes
+          the tag to the right edge. */}
+      <span className="min-w-0 break-words">{item.label}</span>
+      <span className="min-w-0 flex-1 truncate pl-2 text-right text-[10px] text-text-faint">
+        {item.detail}
+      </span>
+      {t && <span className="shrink-0 text-[10px] text-text-faint">{t}</span>}
     </>
   )
 }
@@ -208,19 +216,9 @@ export function SuggestionList({
           // mid-click.
           onMouseDown={(e) => e.preventDefault()}
           onMouseEnter={() => onHover(i)}
-          className={clsx(
-            'flex w-full cursor-pointer items-center gap-1.5 rounded px-2 py-1 text-left font-mono text-xs',
-            i === active ? 'bg-surface-3 text-text' : 'text-text-dim hover:bg-surface-3 hover:text-text',
-          )}
+          className={clsx(ROW, i === active ? 'bg-surface-3 text-text' : 'text-text-dim hover:bg-surface-3 hover:text-text')}
         >
-          {icon?.({ size: 11, className: 'shrink-0 text-text-faint' })}
-          {/* The label keeps its width; the detail truncates and pushes
-              the tag to the right edge. */}
-          <span className="min-w-0 break-words">{item.label}</span>
-          <span className="min-w-0 flex-1 truncate pl-2 text-right text-[10px] text-text-faint">
-            {item.detail}
-          </span>
-          {tag?.(item) && <span className="shrink-0 text-[10px] text-text-faint">{tag(item)}</span>}
+          <RowContent item={item} icon={icon} tag={tag} />
         </li>
       ))}
     </ul>

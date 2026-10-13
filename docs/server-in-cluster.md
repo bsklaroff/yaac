@@ -449,6 +449,9 @@ Things to know when reading a failure there:
   `.yaac-install` marker itself, since the file writes to those roots before
   its binder runs. The global setup refuses to run without kind-byo, with a
   stale ganesha image, or on a host whose uid is not 1000.
+  Both byo projects exist only in a run that names them (`pnpm
+  test:e2e-byo`, `pnpm test:e2e-byo-install`), so a bare `pnpm test` or a
+  path filter never picks them up.
 - `e2e-byo-install` has one file, `byo-install-suite`, which tests the
   installed kind-byo server itself, including re-adoption after a namespace
   delete. That delete removes the registry, so the project runs alone and

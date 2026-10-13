@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest'
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { projectBuildFilesApi, type BuildFileEntry } from '#lib/buildFilesApi'
 import { mockFetch, renderWithClient, serverError, type FetchCall } from './harness'
@@ -12,19 +11,7 @@ vi.mock('#components/ui/CodeEditor', () => ({
   ),
 }))
 
-// jsdom has no ResizeObserver; Base UI's dialog (FileEditor's expand) needs one.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 const ROUTE = '/api/project/demo/build-files'
 

@@ -3,7 +3,7 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web'
 import { serverLocalPath } from '@yaac/shared/paths'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { NEVER_PRUNE_GC, NEVER_PRUNE_KEYS } from './repo'
 import { runGit, spawnGit } from './run'
 

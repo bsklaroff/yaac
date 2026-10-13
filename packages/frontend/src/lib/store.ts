@@ -46,11 +46,9 @@ export type MobileScreen = 'projects' | 'workspaces' | 'pane'
  * persistSelection always writes the params.
  */
 export function defaultMobileScreen(): MobileScreen {
-  try {
-    const params = new URLSearchParams(window.location.search)
-    if (params.get('workspace')) return 'pane'
-    if (params.get('project')) return 'workspaces'
-  } catch { /* no window: fall through to the default */ }
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('workspace')) return 'pane'
+  if (params.get('project')) return 'workspaces'
   return 'projects'
 }
 
@@ -59,7 +57,7 @@ export function defaultMobileScreen(): MobileScreen {
 export type ViewMode = 'tiles' | 'tabs'
 
 /** The view mode of a first run, by viewport width. */
-export function defaultViewMode(viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1440): ViewMode {
+export function defaultViewMode(viewportWidth = window.innerWidth): ViewMode {
   return viewportWidth < 1024 ? 'tabs' : 'tiles'
 }
 
@@ -78,28 +76,22 @@ export interface PersistedSelection {
  * longer active.
  */
 export function loadSelection(): PersistedSelection {
+  const params = new URLSearchParams(window.location.search)
+  const projectId = params.get('project')
+  if (projectId) return { projectId, workspaceId: params.get('workspace') }
   try {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search)
-      const projectId = params.get('project')
-      if (projectId) return { projectId, workspaceId: params.get('workspace') }
-    }
-  } catch { /* fall through to localStorage */ }
-  try {
-    if (typeof localStorage !== 'undefined') {
-      const raw = localStorage.getItem(SELECTION_LS_KEY)
-      if (raw) {
-        const parsed: unknown = JSON.parse(raw)
-        if (parsed && typeof parsed === 'object') {
-          const p = parsed as Record<string, unknown>
-          return {
-            projectId: typeof p.projectId === 'string' ? p.projectId : null,
-            workspaceId: typeof p.workspaceId === 'string' ? p.workspaceId : null,
-          }
+    const raw = localStorage.getItem(SELECTION_LS_KEY)
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        const p = parsed as Record<string, unknown>
+        return {
+          projectId: typeof p.projectId === 'string' ? p.projectId : null,
+          workspaceId: typeof p.workspaceId === 'string' ? p.workspaceId : null,
         }
       }
     }
-  } catch { /* fall through to the empty default */ }
+  } catch { /* storage blocked (privacy settings) or unparseable: start empty */ }
   return { projectId: null, workspaceId: null }
 }
 
@@ -110,21 +102,17 @@ export function loadSelection(): PersistedSelection {
  */
 export function persistSelection(projectId: string | null, workspaceId: string | null): void {
   try {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(SELECTION_LS_KEY, JSON.stringify({ projectId, workspaceId }))
-    }
-  } catch { /* quota/serialization failures are non-fatal */ }
+    localStorage.setItem(SELECTION_LS_KEY, JSON.stringify({ projectId, workspaceId }))
+  } catch { /* storage blocked or over quota: the selection just isn't saved */ }
+  const url = new URL(window.location.href)
+  if (projectId) url.searchParams.set('project', projectId)
+  else url.searchParams.delete('project')
+  if (workspaceId) url.searchParams.set('workspace', workspaceId)
+  else url.searchParams.delete('workspace')
   try {
-    if (typeof window !== 'undefined' && window.history) {
-      const url = new URL(window.location.href)
-      if (projectId) url.searchParams.set('project', projectId)
-      else url.searchParams.delete('project')
-      if (workspaceId) url.searchParams.set('workspace', workspaceId)
-      else url.searchParams.delete('workspace')
-      // Keep the entry's state, where the mobile shell stores its screen.
-      window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
-    }
-  } catch { /* history failures are non-fatal */ }
+    // Keep the entry's state, where the mobile shell stores its screen.
+    window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+  } catch { /* Safari throws past 100 replaceState calls in 30s */ }
 }
 
 /** A chat draft's key: one per conversation, since a workspace can have
@@ -254,7 +242,7 @@ export function loadPersisted(): Partial<UiState> {
       const raw = localStorage.getItem(p.key)
       const value = raw === null ? undefined : p.parse(raw)
       if (value !== undefined) out[field] = value
-    } catch { /* no or unreadable storage: keep the default */ }
+    } catch { /* storage blocked (privacy settings) or unparseable: keep the default */ }
   }
   return out
 }
@@ -265,7 +253,7 @@ function savePersisted(field: keyof UiState, value: unknown): void {
     const raw = (p.serialize ?? String)(value)
     if (raw === null) localStorage.removeItem(p.key)
     else localStorage.setItem(p.key, raw)
-  } catch { /* non-fatal: the value just won't survive a reload */ }
+  } catch { /* storage blocked or over quota: the value won't survive a reload */ }
 }
 
 /**
@@ -1182,15 +1170,13 @@ useUiStore.subscribe((state, prev) => {
   draftTimer = setTimeout(flushChatDrafts, CHAT_DRAFT_PERSIST_MS)
 })
 
-if (typeof window !== 'undefined') {
-  // Warn before leaving with unsaved editor text.
-  window.addEventListener('beforeunload', (e) => {
-    if (Object.keys(useUiStore.getState().dirtyFiles).length > 0) e.preventDefault()
-  })
-  // Flush drafts on pagehide, and on a hidden visibilitychange, since some
-  // mobile and bfcache paths skip pagehide.
-  window.addEventListener('pagehide', flushChatDrafts)
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flushChatDrafts()
-  })
-}
+// Warn before leaving with unsaved editor text.
+window.addEventListener('beforeunload', (e) => {
+  if (Object.keys(useUiStore.getState().dirtyFiles).length > 0) e.preventDefault()
+})
+// Flush drafts on pagehide, and on a hidden visibilitychange, since some
+// mobile and bfcache paths skip pagehide.
+window.addEventListener('pagehide', flushChatDrafts)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushChatDrafts()
+})

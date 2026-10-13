@@ -8,6 +8,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { assertProjectExists } from './detail'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
 import { authorizeProject, type Actor } from '#domain/access'
+import { workspaceDriver } from '#drivers/driver'
 
 /**
  * A project's environment: variables its workspaces launch with, and secrets
@@ -16,7 +17,7 @@ import { authorizeProject, type Actor } from '#domain/access'
  * act on (a bad rule would otherwise be dropped silently inside the proxy).
  *
  * Secret values never leave here, except through {@link resolveProjectEnv}
- * for workspace create.
+ * for workspace create and {@link pushProjectSecrets} for the runtime.
  */
 
 /** A shell-legal variable name. */
@@ -165,4 +166,16 @@ export async function resolveProjectEnv(projectId: string): Promise<ResolvedProj
     secrets[row.name] = { value: row.value, rule: row.rule }
   }
   return { plain, secrets }
+}
+
+/**
+ * Hand the runtime a project's current secret values, which it injects per
+ * request, so running workspaces pick up an edit without a restart.
+ */
+export async function pushProjectSecrets(projectId: string): Promise<void> {
+  const { secrets } = await resolveProjectEnv(projectId)
+  await workspaceDriver().syncProjectSecrets(
+    projectId,
+    Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
+  )
 }

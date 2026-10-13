@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { PRE_STOP_GRACE_SECONDS, installId } from '#drivers/k8s/substrate'
+import { installId } from '#drivers/k8s/substrate'
+// A setup value, not a unit under test.
+import { PRE_STOP_GRACE_SECONDS } from '#drivers/k8s/workspaces/pod-job'
 
 vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof streamRelayModule>()),

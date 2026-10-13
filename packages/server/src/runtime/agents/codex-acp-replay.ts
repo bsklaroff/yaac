@@ -55,7 +55,9 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AcpRecordWriter } from './acp-log'
-import { ACP, asRecord, asString, unifiedDiffHunks } from './acp-protocol'
+import { ACP } from './acp-protocol'
+import { asRecord, asString } from '#lib/narrow'
+import { unifiedDiffHunks } from './unified-diff'
 import { jsonObjects, parseJson } from './jsonl'
 import type { AcpEvent } from '@yaac/shared/acp'
 

@@ -16,7 +16,7 @@ import {
   setWorkspaceStreamHealth,
 } from '#runtime/status/status-store'
 import { setDataDir } from '@yaac/shared/project-paths'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 
 // Every probe is one driver `exec` into the workspace, so only the driver

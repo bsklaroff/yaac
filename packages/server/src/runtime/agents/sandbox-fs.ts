@@ -1,31 +1,13 @@
 import { constants as C } from 'node:fs'
 import type { FileHandle } from 'node:fs/promises'
 import { projectDir } from '@yaac/shared/project-paths'
-import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
-import { openRoot, type ConfinedRoot, type LinkPolicy } from '#lib/confined-fs'
+import { workspacesSandboxed } from '#drivers/driver'
+import { openAgentDir, type ConfinedRoot } from '#lib/confined-fs'
 
-/**
- * How the server opens a project dir that agents can also write: a tool home
- * (`claude/`, `codex/`, `pi/`, `opencode-config/`) or a workspace's
- * conversation records (`acp/<workspaceId>/`).
- *
- * Under a sandboxing driver every pod of the project mounts these
- * read-write, so any link or FIFO below may be planted: they are opened
- * `no-links`, rooted at the mount root itself. Under containerless there is
- * nothing to defend and yaac itself links things in (history, builtin
- * skills), so they are opened `inside`, rooted at the project dir. With no
- * driver registered, the sandboxed answer is used.
- */
-export function sandboxLinkPolicy(): LinkPolicy {
-  return hasWorkspaceDriver() && workspaceDriver().kind === 'containerless' ? 'inside' : 'no-links'
-}
-
-/** `dir` of `projectId`'s project, opened as `sandboxLinkPolicy` says. Paths are
- *  taken relative to `dir` either way. */
+/** `dir` of `projectId`'s project, a dir agents can also write, opened as
+ *  this runtime requires (`openAgentDir`). */
 export function openSandboxDir(projectId: string, dir: string): Promise<ConfinedRoot> {
-  return sandboxLinkPolicy() === 'inside'
-    ? openRoot(projectDir(projectId), 'inside', { base: dir })
-    : openRoot(dir, 'no-links')
+  return openAgentDir(projectDir(projectId), dir, workspacesSandboxed())
 }
 
 /** A file in one of those dirs: the dir, and the path below it. */

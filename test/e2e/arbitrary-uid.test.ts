@@ -1,29 +1,28 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
 import path from 'node:path'
-import {
-  requirePodman,
-  requireCluster,
-  useTestNamespace,
-} from '@yaac/test-utils/setup'
+import { requireCluster, useTestNamespace } from '@yaac/test-utils/setup'
+import { requirePodman } from '#support/cluster'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
-import { waitForPod } from '@yaac/test-utils/test-pods'
+import { waitForPod } from '#support/test-pods'
 import { stageWorkspaceBin, workspaceBinDir, WORKSPACE_INIT_SCRIPT }
   from '@yaac/server/domain/workspaces/workspace-bin'
-import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
+import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
-import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
-import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/gvisor'
+import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster/registry'
+import { runtimeClassSpec } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { installSecurityContext } from '@yaac/server/drivers/k8s/substrate'
 // The nested tier's volume, path and caps, so this pod matches what
 // buildPodJobManifest emits.
 import {
   NESTED_ENGINE_CAPS,
-  NESTED_GRAPHROOT_ANNOTATIONS,
   NESTED_GRAPHROOT_PATH,
-  NESTED_GRAPHROOT_SIZELIMIT_BYTES,
   NESTED_GRAPHROOT_VOLUME,
 } from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import {
+  NESTED_GRAPHROOT_ANNOTATIONS,
+  NESTED_GRAPHROOT_SIZELIMIT_BYTES,
+} from '@yaac/server/drivers/k8s/workspaces/pod-job'
 import { applyObject, deleteObject, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
 import { kubectl } from '@yaac/test-utils/kubectl'
 
@@ -76,7 +75,7 @@ async function ok(script: string, timeout?: number): Promise<string> {
  */
 async function nestableImageRef(): Promise<string> {
   const { nestable } = await resolveTrustedLayers('yaac-test')
-  if (!await registryHasTag(nestable.tag)) {
+  if (await registryTagState(nestable.tag) !== 'present') {
     throw new Error(
       `${nestable.tag} is not in the local registry — did test/global-setup.ts run?`,
     )

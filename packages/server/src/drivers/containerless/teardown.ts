@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { imageStoreDir, nodeLocalPath, nodeLocalProjectPath } from '@yaac/shared/project-paths'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { shellQuote } from '#lib/shell'
-import { waitFor } from '#lib/wait-for'
+import { waitFor } from '@yaac/shared/wait-for'
 import { descendantPids, isSshAgentFor, killPids, livePids, runHost } from './host'
 import { tmuxAnswers } from './exec'
 import {
@@ -13,7 +13,6 @@ import {
 import {
   findWorkspace,
   forgetWorkspace,
-  markTerminating,
   removeMarker,
   sshAgentPidOf,
   tmuxPidOf,
@@ -41,7 +40,6 @@ export async function destroyWorkspace(
   const wasRunning = findWorkspace(workspaceId)?.running === true
   // Read before the marker is removed below.
   const agentPid = sshAgentPidOf(workspaceId)
-  markTerminating(workspaceId)
   const paths = containerlessWorkspacePaths(target.unitName)
   // Captured before the kill, and only for a workspace seen running: after a
   // reboot the recorded pid may be an unrelated process of the user's.

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectAllowlist } from '#domain/projects'
 import { allowWorkspaceHost } from '#domain/workspaces/allow-host'

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import { deleteScopedClaudeKeychainItem, claudeKeychainService } from '@yaac/shared/tool-auth-interactive'
 import { claudeDir, projectClaudeCredentialsFile, projectCodexAuthFile } from '@yaac/shared/project-paths'
 import { deleteToolCredential } from '#db'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { ownedProjectIds } from './store'
 import { AGENT_TOOLS, type AgentTool } from '@yaac/shared/types'
 

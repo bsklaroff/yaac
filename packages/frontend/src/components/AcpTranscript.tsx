@@ -1,11 +1,11 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
 import clsx from 'clsx'
-import { CodeView } from '#components/CodeView'
-import { DiffView } from '#components/DiffView'
+import { CodeView, DiffView } from '#components/DiffView'
 import { FileLink, FileLinksContext, Linked, Markdown } from '#components/Markdown'
+import { PathLabel } from '#components/ui/PathLabel'
 import { useImageSrc } from '#lib/attachments'
 import { codeLines, unfence } from '#lib/code'
-import { diffStats, diffTextPair, type DiffLine } from '#lib/diff'
+import { diffTextPair, type DiffLine } from '#lib/diff'
 import { fileLinksIn, resolveFilePath, type CheckoutFiles, type FileRef } from '#lib/files'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import {
@@ -472,17 +472,6 @@ function groupDiffs(diffs: AcpDiff[]): EditGroup[] {
   return groups
 }
 
-/** A path with the directory dimmed and the basename emphasized. */
-function PathLabel({ path }: { path: string }): JSX.Element {
-  const cut = path.lastIndexOf('/')
-  return (
-    <>
-      {cut !== -1 && <span className="text-text-faint">{path.slice(0, cut + 1)}</span>}
-      <span className="text-text-dim">{path.slice(cut + 1)}</span>
-    </>
-  )
-}
-
 /** The checkout file a call's location names, at its line. */
 function locatedFile(
   location: { path: string; line?: number } | undefined,
@@ -507,7 +496,9 @@ function EditGroupView({ group, showPath, location }: {
     <div>
       {showPath && (
         <div className="border-b border-hairline px-2.5 py-1 font-mono text-[10px]">
-          {file === undefined ? <PathLabel path={group.path} /> : <FileLink file={file}><PathLabel path={group.path} /></FileLink>}
+          {file === undefined
+            ? <PathLabel path={group.path} emphasis="dim" />
+            : <FileLink file={file}><PathLabel path={group.path} emphasis="dim" /></FileLink>}
         </div>
       )}
       {group.hunks.map((lines, i) => (
@@ -566,8 +557,6 @@ function useClipped(text: string): [RefObject<HTMLSpanElement | null>, boolean] 
     if (el === null) return
     const check = (): void => setClipped(el.scrollWidth > el.clientWidth)
     check()
-    // Absent under jsdom.
-    if (typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(check)
     observer.observe(el)
     return () => observer.disconnect()
@@ -717,16 +706,13 @@ export function ToolRow({
    *  arrives empty and gains content in later updates. */
   const [expanded, setExpanded] = useOpen(reveal, defaultOpen || edits.length > 0)
   const open = expanded && hasContent
-  const stats = useMemo(
-    () => edits.flatMap((g) => g.hunks).reduce(
-      (a, lines) => {
-        const s = diffStats(lines)
-        return { additions: a.additions + s.additions, deletions: a.deletions + s.deletions }
-      },
-      { additions: 0, deletions: 0 },
-    ),
-    [edits],
-  )
+  const stats = useMemo(() => {
+    const lines = edits.flatMap((g) => g.hunks.flat())
+    return {
+      additions: lines.filter((l) => l.kind === 'add').length,
+      deletions: lines.filter((l) => l.kind === 'del').length,
+    }
+  }, [edits])
   return (
     <div>
       <DisclosureRow
@@ -744,7 +730,7 @@ export function ToolRow({
         </span>
         {unnamed && (
           <span className="min-w-0 truncate font-mono text-[11px]">
-            <FileLink file={located}><PathLabel path={located.path} /></FileLink>
+            <FileLink file={located}><PathLabel path={located.path} emphasis="dim" /></FileLink>
           </span>
         )}
         {edits.length > 0 && (
@@ -1100,7 +1086,6 @@ function ActivityCard({
 export function AcpTranscript({
   workspaceId,
   groups,
-  className,
   busy = false,
   live = false,
   onAnswerPermission,
@@ -1111,7 +1096,6 @@ export function AcpTranscript({
 }: {
   workspaceId: string
   groups: Group[]
-  className?: string
   /** Hide all but the key messages behind expandable rows (see `condense`). */
   condensed?: boolean
   /** Whether a turn is in flight. Only then can an unfinished call of the
@@ -1158,7 +1142,7 @@ export function AcpTranscript({
     return asking.has(g.call.toolCallId) ? undefined : 'running'
   }
   return (
-    <div className={clsx('break-words text-sm', className)}>
+    <div className="break-words text-sm">
       {rows.map((g, i) => (
         <div
           key={g.kind === 'folded' ? `f${String(g.seq)}` : g.seq}

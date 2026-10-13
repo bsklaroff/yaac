@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull } from 'drizzle-orm'
 import { getDb } from './client'
 import { draftWorkspaces } from './schema'
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import type { DraftWorkspaceSettings } from '@yaac/shared/types'

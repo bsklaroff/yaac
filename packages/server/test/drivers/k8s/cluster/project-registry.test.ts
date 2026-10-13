@@ -6,6 +6,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { fakeRegistry } from '#test/support/fake-registry'
 
 /** Runs a real shell, which the child-process fake passes through. */
 const runSh = promisify(execFile)
@@ -30,16 +31,6 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-vi.mock('#drivers/k8s/container/registry', () => ({
-  registryHasTag: vi.fn().mockResolvedValue(false),
-  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
-  pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
-}))
-
-vi.mock('#drivers/k8s/container/runtime', () => ({
-  imageExists: vi.fn().mockResolvedValue(false),
-}))
-
 import {
   buildRegistryRetentionScript,
   ensureProjectRegistry,
@@ -47,7 +38,9 @@ import {
   projectRegistryConfDropIn,
   projectRegistryHost,
   reconcileProjectRegistryGc,
+  registryRef,
   removeProjectRegistry,
+  REGISTRY_MIRROR_TAG,
 } from '#drivers/k8s/cluster'
 // Setup values and test hooks, not units under test.
 import {
@@ -68,12 +61,6 @@ import {
 } from '#drivers/k8s/cluster/project-registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { LABEL_INSTALL_ID, installId } from '#drivers/k8s/substrate'
-import { pushImageToRegistry, registryHasTag } from '#drivers/k8s/container/registry'
-import { imageExists } from '#drivers/k8s/container/runtime'
-
-const mockHasTag = vi.mocked(registryHasTag)
-const mockPush = vi.mocked(pushImageToRegistry)
-const mockImageExists = vi.mocked(imageExists)
 
 const ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
 const registrySelector = (id: string): string =>
@@ -84,7 +71,7 @@ const registryLabels = (id: string): Record<string, string> => ({
 })
 
 const NODE_IP = '10.89.0.7'
-// Serves both the writer pod's node name and the InternalIP the real
+// Serves both the GC pod's node and the InternalIP the real
 // cluster-cidrs probe turns into the ingress policy's ipBlock.
 const NODE = {
   apiVersion: 'v1',
@@ -100,12 +87,12 @@ beforeEach(() => {
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   mockChild.mockReset()
   mockChild.mockResolvedValue({ stdout: '', stderr: '' })
-  mockHasTag.mockReset()
-  mockHasTag.mockResolvedValue(false)
-  mockPush.mockReset()
-  mockPush.mockImplementation((tag: string) => Promise.resolve(`localhost:5001/${tag}`))
-  mockImageExists.mockReset()
-  mockImageExists.mockResolvedValue(false)
+  fakeRegistry.install()
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 /** Every object applied, in order. */
@@ -161,11 +148,11 @@ describe('projectRegistryConfDropIn', () => {
 
 describe('ensureProjectRegistry', () => {
   beforeEach(() => {
-    mockHasTag.mockResolvedValue(true)
+    fakeRegistry.holdsAll = true
     stageLiveCluster()
   })
 
-  it('applies PVC, Deployment, Service, and all network policies, then waits and runs the hosts-writer pod', async () => {
+  it('applies PVC, Deployment, Service, and all network policies, then waits for the rollout', async () => {
     await ensureProjectRegistry(ID)
 
     const kinds = applied().map((m) => m.kind)
@@ -173,33 +160,12 @@ describe('ensureProjectRegistry', () => {
     // missing volume.
     expect(kinds).toEqual([
       'PersistentVolumeClaim', 'Deployment', 'Service',
-      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'Pod',
+      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
     ])
     expect(kubectlArgs()).toContainEqual([
       'rollout', 'status', `deployment/${projectRegistryName(ID)}`, '-n', 'test-ns', '--timeout=120s',
     ])
-    // hosts.toml is written by a one-shot pod pinned to the node, not by
-    // podman exec, since the server's engine need not host the node.
-    const pod = applied<{ kind: string; spec: { nodeName: string; containers: Array<{ command: string[] }> } }>()
-      .find((m) => m.kind === 'Pod')!
-    expect(pod.spec.nodeName).toBe('yaac-control-plane')
-    // nodeName skips the scheduler, but a NoExecute taint still evicts, so
-    // without this a tainted node would get no hosts.toml and could not pull.
-    expect((pod.spec as unknown as { tolerations: unknown }).tolerations)
-      .toEqual([{ operator: 'Exists' }])
-    const script = pod.spec.containers[0].command[2]
-    expect(script).toContain(`http://10.96.0.50:${PROJECT_REGISTRY_PORT}`)
     expect(otherChildren()).toEqual([])
-    // Leftover writer pods are swept by label first. The node-write label
-    // keeps the sweep off the registry's own pod.
-    expect(fakeCluster.callsOf('list', 'Pod')[0].labelSelector).toContain(`${LABEL_NODE_WRITE}=hosts`)
-    // The uniquely named writer pod is deleted before and after it runs.
-    const podDeletes = fakeCluster.callsOf('delete', 'Pod')
-    expect(podDeletes).toHaveLength(2)
-    for (const { name } of podDeletes) {
-      expect(name).toMatch(new RegExp(`^${projectRegistryName(ID)}-hosts-0-[0-9a-f]{8}$`))
-    }
-    expect(fakeCluster.objects('Pod')).toEqual([])
     // The Service (and so its ClusterIP) is never deleted.
     expect(fakeCluster.callsOf('delete', 'Service')).toEqual([])
   })
@@ -292,15 +258,7 @@ describe('ensureProjectRegistry', () => {
 
     releaseRollout()
     await Promise.all([first, second])
-    expect(applied()).toHaveLength(14)
-  })
-
-  it('surfaces a failed writer pod with its logs (session create must not proceed)', async () => {
-    fakeCluster.reset()
-    stageLiveCluster('Failed', 'read-only file system\n')
-
-    await expect(ensureProjectRegistry(ID))
-      .rejects.toThrow(/did not complete \(phase Failed\); logs: read-only file system/)
+    expect(applied()).toHaveLength(12)
   })
 
   it('runs the registry as untrusted-free infra off its own claim', async () => {
@@ -347,7 +305,7 @@ describe('ensureProjectRegistry', () => {
     expect(pod.priorityClassName).toBe('yaac-infra')
     expect(pod.hostUsers).toBeUndefined()
     expect(pod.securityContext).toBeUndefined()
-    expect(pod.containers[0].image).toMatch(/^localhost:5001\/yaac-registry2:/)
+    expect(pod.containers[0].image).toBe(registryRef(REGISTRY_MIRROR_TAG))
     expect(pod.containers[0].ports).toEqual([{ containerPort: PROJECT_REGISTRY_PORT }])
     expect(pod.volumes).toEqual([{
       name: 'storage',
@@ -359,17 +317,15 @@ describe('ensureProjectRegistry', () => {
     }
     expect(svc.spec.ports[0].port).toBe(PROJECT_REGISTRY_PORT)
     expect(svc.spec.ports[0].targetPort).toBe(PROJECT_REGISTRY_PORT)
-    // Only the serving pod is an endpoint: the hosts writer and GC pods share
-    // the registry's other labels (so its policies cover them), and a dial
-    // routed to one would hang.
+    // Only the serving pod is an endpoint: the GC pods share the registry's
+    // other labels (so its policies cover them), and a dial routed to one
+    // would hang.
     expect(svc.spec.selector)
       .toEqual({ app: REGISTRY_APP_LABEL, 'yaac.project-id': ID, [LABEL_REGISTRY_SERVES]: 'true' })
     const serving = (appliedKind('Deployment') as {
       spec: { template: { metadata: { labels: Record<string, string> } } }
     }).spec.template.metadata.labels
     expect(serving).toMatchObject(svc.spec.selector)
-    const writer = appliedKind('Pod') as { metadata: { labels: Record<string, string> } }
-    expect(writer.metadata.labels).not.toHaveProperty(LABEL_REGISTRY_SERVES)
   })
 
   it('fences the registry to its own project: sessions in, nothing out', async () => {
@@ -407,17 +363,14 @@ describe('ensureProjectRegistry', () => {
   it('takes the registry image from the local registry, never the host engine', async () => {
     // `yaac cluster install` mirrors the image. The server has no container
     // engine, so it only looks the mirror tag up.
-    mockHasTag.mockResolvedValue(true)
     await ensureProjectRegistry(ID)
     expect(REGISTRY_UPSTREAM_IMAGE).toBe(`docker.io/library/registry@${REGISTRY_IMAGE_DIGEST}`)
     expect(otherChildren()).toEqual([])
-    expect(mockPush).not.toHaveBeenCalled()
 
     vi.clearAllMocks()
     fakeCluster.reset()
     stageLiveCluster()
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
+    fakeRegistry.holdsAll = false
     await expect(ensureProjectRegistry(ID))
       .rejects.toThrow(/Registry image .* is missing.*yaac cluster install/s)
     expect(otherChildren()).toEqual([])
@@ -437,11 +390,9 @@ describe('ensureProjectRegistry', () => {
 
   it('fails fast instead of pulling when prebuilt images are required', async () => {
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
-    mockHasTag.mockResolvedValue(false)
-    mockImageExists.mockResolvedValue(false)
+    fakeRegistry.holdsAll = false
     await expect(ensureProjectRegistry(ID)).rejects.toThrow(/missing/)
     expect(otherChildren()).toEqual([])
-    vi.unstubAllEnvs()
   })
 })
 

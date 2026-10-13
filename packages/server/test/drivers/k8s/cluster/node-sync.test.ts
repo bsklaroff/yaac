@@ -1,18 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { fakeRegistry } from '#test/support/fake-registry'
 
-// The cluster (the fake behind client-node) is the boundary. The cluster
-// folder runs for real behind it, including the hosts.toml writer pods
-// `runOnEachNode` drives.
-
-// The registry client answers over HTTP, which a unit run does not have.
-vi.mock('#drivers/k8s/container/registry', () => ({
-  REGISTRY_NAMESPACE: 'yaac',
-  REGISTRY_SERVICE_NAME: 'yaac-registry',
-  REGISTRY_SERVICE_PORT: 5000,
-  registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
-  registryHasTag: vi.fn().mockResolvedValue(true),
-  registryRef: vi.fn((tag: string) => `yaac-registry.yaac.svc.cluster.local:5000/${tag}`),
-}))
+// The cluster (the fake behind client-node) and the registry (holding every
+// mirrored image) are the boundaries. The cluster folder runs for real
+// behind them, including the hosts.toml writer pods `runOnEachNode` drives.
 
 import { reconcileNodeSet } from '#drivers/k8s/cluster'
 // Test hooks, not units under test.
@@ -107,6 +98,8 @@ async function pass(): Promise<void> {
 
 beforeEach(() => {
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
+  fakeRegistry.install()
+  fakeRegistry.holdsAll = true
   _resetNodeSyncForTests()
   resetClusterCidrCache()
   nodes = { 'node-a': { ip: '10.0.1.5', uid: 'u-a', ready: true } }
@@ -114,21 +107,24 @@ beforeEach(() => {
   serveCluster()
 })
 
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+})
+
 describe('reconcileNodeSet', () => {
   it('admits a joining node at once, and writes its registry hosts once it is Ready', async () => {
     await pass()
     // Every node-address policy admits the node, and its containerd learns
-    // the main registry and each registry a project has (p2 has none).
+    // the main registry. Project registries are reached by ClusterIP, so
+    // none gets a hosts.toml.
     for (const policy of ['yaac-server-ingress', 'yaac-proxy-ingress', 'yaac-npm-cache-ingress', 'yaac-registry-ingress']) {
       expect(admittedNodes(policy), policy).toEqual(['10.0.1.5/32'])
     }
     expect(applied().map((m) => m.metadata.name)).toEqual(expect.arrayContaining([
       'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress',
     ]))
-    expect(hostsWrites()).toEqual([
-      'node-a yaac-registry.yaac.svc.cluster.local:5000',
-      expect.stringMatching(/^node-a .*p1.*:5000$/) as string,
-    ])
+    expect(hostsWrites()).toEqual(['node-a yaac-registry.yaac.svc.cluster.local:5000'])
 
     // Nothing changed: no writes at all.
     clearCalls()
@@ -143,11 +139,11 @@ describe('reconcileNodeSet', () => {
     expect(admittedNodes('yaac-server-ingress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
     expect(hostsWrites()).toEqual([])
 
-    // Ready: only the new node gets writer pods.
+    // Ready: only the new node gets a writer pod.
     nodes['node-b'].ready = true
     clearCalls()
     await pass()
-    expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-b', 'node-b'])
+    expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-b'])
     expect(applied().some((m) => m.kind === 'NetworkPolicy')).toBe(false)
   })
 
@@ -158,7 +154,7 @@ describe('reconcileNodeSet', () => {
     nodes['node-a'] = { ip: '10.0.1.5', uid: 'u-a2', ready: true }
     clearCalls()
     await pass()
-    expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-a', 'node-a'])
+    expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-a'])
   })
 
   it('never fails or holds up the pass for a node that cannot run pods, and retries it later', async () => {
@@ -171,6 +167,6 @@ describe('reconcileNodeSet', () => {
     failingNodes = new Set()
     clearCalls()
     await pass()
-    expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-b', 'node-b'])
+    expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-b'])
   })
 })

@@ -1,5 +1,4 @@
 import crypto from 'node:crypto'
-import readline from 'node:readline/promises'
 import { execFileSync } from 'node:child_process'
 import {
   claudeOAuthBundleSchema,
@@ -9,20 +8,7 @@ import {
   type ToolAuthKind,
   type ToolAuthPayload,
 } from '#types'
-import {
-  OPENCODE_DEFAULT_PROVIDER,
-  OPENCODE_PROVIDERS,
-  PI_DEFAULT_PROVIDER,
-  PI_PROVIDERS,
-  opencodeProviderInfo,
-  parseOpencodeProvider,
-  parsePiProvider,
-  piProviderInfo,
-  type OpencodeProvider,
-  type PiProvider,
-  type ToolProviderInfo,
-} from '#tool-providers'
-import { testEnv } from '#env'
+import type { OpencodeProvider, PiProvider } from '#tool-providers'
 
 /** A claude token starting with "sk-ant-oat" is OAuth; anything else is an api key. */
 export function detectAuthKind(tool: AgentTool, token: string): ToolAuthKind {
@@ -117,24 +103,29 @@ export function deleteScopedClaudeKeychainItem(service: string): void {
 }
 
 /**
- * A JWT's `exp` as unix epoch ms, or null if malformed or missing. Does not
- * verify the signature.
+ * A JWT's payload claims, or null if malformed. Does not verify the
+ * signature, so only for reading claims, never for trusting them.
  */
-export function decodeJwtExp(jwt: string): number | null {
+export function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
   try {
     const parts = jwt.split('.')
     if (parts.length !== 3) return null
     const payload: unknown = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
-    if (!payload || typeof payload !== 'object') return null
-    const exp = (payload as Record<string, unknown>).exp
-    if (typeof exp !== 'number') return null
-    return exp * 1000
+    return payload && typeof payload === 'object' ? payload as Record<string, unknown> : null
   } catch {
     return null
   }
 }
 
-const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
+/** A JWT's `exp` as unix epoch ms, or null if malformed or missing. */
+export function decodeJwtExp(jwt: string): number | null {
+  const exp = decodeJwtPayload(jwt)?.exp
+  return typeof exp === 'number' ? exp * 1000 : null
+}
+
+/** A Codex bundle's expiry when its access token has no decodable `exp`:
+ *  codex's proactive-refresh window, so the bundle still reads as live. */
+export const CODEX_DEFAULT_REFRESH_WINDOW_MS = 28 * 24 * 60 * 60 * 1000
 
 /**
  * Parse a Codex `auth.json` into an OAuth bundle. Null unless `auth_mode`
@@ -191,62 +182,6 @@ export interface ToolLoginResult {
   piProvider?: PiProvider
 }
 
-/**
- * Resolve an e2e provider hook. Unset means the tool's default; an unknown
- * value throws so a test never silently runs the wrong branch.
- */
-function hookProvider<T extends string>(
-  tool: 'opencode' | 'pi',
-  raw: string | undefined,
-  parse: (value: string | undefined) => T | undefined,
-  defaultId: T,
-): T {
-  if (raw === undefined || raw === '') return defaultId
-  const provider = parse(raw)
-  if (!provider) {
-    throw new Error(`${tool} provider hook names unknown provider "${raw}".`)
-  }
-  return provider
-}
-
-/**
- * The logins that need no vendor CLI: the e2e login hook (a JSON bundle for
- * claude/codex, a raw api key for opencode/pi) and the opencode/pi api-key
- * prompt. Returns null for claude/codex without a hook; those run the
- * vendor's browser sign-in (packages/cli/src/commands/auth-update.ts).
- */
-export async function runToolLogin(tool: AgentTool): Promise<ToolLoginResult | null> {
-  const hookRaw = testEnv.toolLoginHook(tool)
-  if (hookRaw) {
-    if (tool === 'claude') {
-      const bundle = claudeOAuthBundleSchema.parse(JSON.parse(hookRaw))
-      return { apiKey: bundle.accessToken, kind: 'oauth', claudeBundle: bundle }
-    }
-    if (tool === 'codex') {
-      const bundle = JSON.parse(hookRaw) as CodexOAuthBundle
-      return { apiKey: bundle.accessToken, kind: 'oauth', codexBundle: bundle }
-    }
-    if (tool === 'pi') {
-      return {
-        apiKey: hookRaw,
-        kind: 'api-key',
-        piProvider: hookProvider('pi', testEnv.piProviderHook, parsePiProvider, PI_DEFAULT_PROVIDER),
-      }
-    }
-    return {
-      apiKey: hookRaw,
-      kind: 'api-key',
-      opencodeProvider: hookProvider('opencode', testEnv.opencodeProviderHook, parseOpencodeProvider, OPENCODE_DEFAULT_PROVIDER),
-    }
-  }
-
-  if (tool === 'opencode' || tool === 'pi') {
-    return promptForApiKey(tool)
-  }
-
-  return null
-}
-
 /** Shape a login result into the `PUT /auth/:tool` body. */
 export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): ToolAuthPayload {
   if (tool === 'claude' && result.kind === 'oauth' && result.claudeBundle) {
@@ -274,55 +209,4 @@ export function buildAuthPayload(tool: AgentTool, result: ToolLoginResult): Tool
     }
   }
   return { kind: 'api-key', apiKey: result.apiKey }
-}
-
-/**
- * Ask which provider an opencode/pi api key is for. There are too many for
- * a numbered menu, so the user types an id; "?" lists them and Enter takes
- * the default. Re-prompts on an unknown id.
- */
-async function promptForProvider<T extends string>(
-  rl: readline.Interface,
-  tool: 'opencode' | 'pi',
-  list: readonly ToolProviderInfo[],
-  defaultId: T,
-): Promise<T> {
-  console.log(`Which ${tool} provider? Type its id, "?" to list all ${list.length}, or Enter for "${defaultId}".`)
-  for (;;) {
-    const answer = (await rl.question(`Provider [${defaultId}]: `)).trim()
-    if (!answer) return defaultId
-    if (answer === '?') {
-      for (const p of list) console.log(`  ${p.id}  —  ${p.label}`)
-      continue
-    }
-    const match = list.find((p) => p.id === answer)
-    if (match) return match.id as T
-    console.log(`Unknown provider "${answer}". Type "?" to see the full list.`)
-  }
-}
-
-/** Prompt the user to paste an API key, asking for the provider first on opencode/pi. */
-export async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  let opencodeProvider: OpencodeProvider | undefined
-  let piProvider: PiProvider | undefined
-  if (tool === 'opencode') {
-    opencodeProvider = await promptForProvider(rl, 'opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER)
-  }
-  if (tool === 'pi') {
-    piProvider = await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER)
-  }
-  const label =
-    tool === 'claude' ? 'Anthropic API key or OAuth token' :
-    tool === 'codex' ? 'OpenAI API key' :
-    tool === 'opencode' && opencodeProvider ? `${opencodeProviderInfo(opencodeProvider).label} API key` :
-    tool === 'pi' && piProvider ? `${piProviderInfo(piProvider).label} API key` :
-    'API key'
-  const key = (await rl.question(`Paste your ${label}: `)).trim()
-  rl.close()
-  if (!key) {
-    console.error('Key cannot be empty.')
-    process.exit(1)
-  }
-  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider }
 }

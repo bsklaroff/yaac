@@ -12,24 +12,12 @@ import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { kubectl } from '@yaac/test-utils/kubectl'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
-import { reapNodeLocal } from '@yaac/server/drivers/k8s/images'
+import { reapNodeLocal } from '@yaac/server/drivers/k8s/workspaces'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  setTestGitIdentity,
-  runYaac,
-  TEST_CLI_ENTRY,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { asTailnet, assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
-import {
-  requirePodman,
-  requireCluster,
-  execInJob,
-  cleanupWorkspaceJobs,
-} from '@yaac/test-utils/setup'
+import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
+import { asTailnet, assignTestGitCredential, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
+import { requireCluster } from '@yaac/test-utils/setup'
+import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster'
 import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
@@ -41,7 +29,7 @@ import {
   cleanupMocks,
   type MockLLM,
   type MockGit,
-} from '@yaac/test-utils/mock-remotes'
+} from '#support/mock-remotes'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
@@ -1731,7 +1719,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     afterAll(() => stopWorkspace(workspaceId))
 
     it('types the prompt into the agent pane and submits it, no attach needed', async () => {
-      // The server pastes and submits the prompt (buildPromptPasteCmd); the
+      // The server pastes and submits the prompt (buildPromptPasteBgCmd); the
       // mock's reply in the pane shows it was sent.
       await vi.waitFor(async () => {
         const { stdout: pane } = await execInJob(jobName, [

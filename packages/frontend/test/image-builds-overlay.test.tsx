@@ -1,19 +1,10 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient as render, serverError, TEST_USER_ID, type FetchMock } from './harness'
 import type { ImageBuildEntry, ServerSnapshot } from '@yaac/shared/types'
 
-// jsdom has no ResizeObserver; Base UI needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 const LOG = 'GET /api/image/builds/:id/log'
 const RETRY = 'POST /api/image/builds/:id/retry'
@@ -43,7 +34,6 @@ afterEach(() => {
   cleanup()
   useUiStore.setState({ snapshot: undefined })
   vi.useRealTimers()
-  vi.unstubAllGlobals()
 })
 
 function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {

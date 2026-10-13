@@ -8,7 +8,7 @@ import {
 import { cleanupWorkspaceDetached } from './cleanup'
 import { inFlightWorkspaceIds } from './provisioning'
 import { applyWorkspaceEvent, desiredWorkspaces } from '#db'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { testEnv } from '@yaac/shared/env'
 import type { StaleWorkspaceInfo } from '@yaac/shared/types'
 
@@ -151,48 +151,39 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
     }
   }
 
+  // Each with the reason it is reaped, logged since the detached teardown
+  // is silent.
   const targets = [
     ...stale.map((s) => ({
       jobName: s.jobName,
       projectId: s.projectId,
       workspaceId: s.workspaceId,
       cause: s.deathCause,
+      why: s.zombie
+        ? 'tmux gone, pod still running'
+        : `pod stopped: ${s.deathCause?.reason ?? 'unknown'}`
+          + (s.deathCause?.detail ? ` (${s.deathCause.detail})` : ''),
     })),
     ...placeholderStale.map((s) => ({
       jobName: s.jobName,
       projectId: s.projectId,
       workspaceId: s.workspaceId,
       cause: { reason: 'never-started' as const },
+      why: 'agent never started; placeholder pane past grace',
     })),
-    ...orphanTargets.map((o) => ({ ...o, cause: { reason: 'orphaned' as const } })),
+    ...orphanTargets.map((o) => ({
+      ...o, cause: { reason: 'orphaned' as const }, why: 'orphan Job, no backing pod',
+    })),
     ...stuckTerminating.map((t) => ({
       ...t,
       cause: { reason: 'orphaned' as const, detail: 'pod deleted out-of-band' },
+      why: 'terminating past grace: out-of-band delete, or a teardown whose mark was lost',
     })),
   ]
-  if (targets.length === 0) return
-
-  // Log each reap's reason; the detached teardown is silent.
-  for (const s of stale) {
-    const reason = s.zombie
-      ? 'tmux gone, pod still running'
-      : `pod stopped: ${s.deathCause?.reason ?? 'unknown'}`
-        + (s.deathCause?.detail ? ` (${s.deathCause.detail})` : '')
-    serverLog(`[server] stale-reaper: reaping session=${s.workspaceId} job=${s.jobName} (${reason})`)
-  }
-  for (const s of placeholderStale) {
-    serverLog(`[server] stale-reaper: reaping session=${s.workspaceId} job=${s.jobName} (agent never started; placeholder pane past grace)`)
-  }
-  for (const o of orphanTargets) {
-    serverLog(`[server] stale-reaper: reaping session=${o.workspaceId} job=${o.jobName} (orphan Job, no backing pod)`)
-  }
-  for (const t of stuckTerminating) {
-    serverLog(`[server] stale-reaper: reaping session=${t.workspaceId} job=${t.jobName} (terminating past grace: out-of-band delete, or a teardown whose mark was lost)`)
-  }
-
-  await Promise.all(targets.map((t) =>
-    cleanupWorkspaceDetached(t).catch((err: unknown) => {
+  await Promise.all(targets.map(({ why, ...t }) => {
+    serverLog(`[server] stale-reaper: reaping session=${t.workspaceId} job=${t.jobName} (${why})`)
+    return cleanupWorkspaceDetached(t).catch((err: unknown) => {
       serverLog(`[server] stale-reaper: teardown of session=${t.workspaceId} failed: ${String(err)}`)
-    }),
-  ))
+    })
+  }))
 }

@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces } from './schema'
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
 import { ServerError } from '@yaac/shared/errors'

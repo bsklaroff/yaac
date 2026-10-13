@@ -121,9 +121,8 @@ export interface AgentConnectDeps {
    */
   permissionMode?: () => Promise<PermissionMode | undefined>
   /**
-   * The model the workspace launched `tool` with, as `acp` tells it over the
-   * protocol. Read only when a fresh conversation finds no model parked,
-   * since a server restart between launch and handshake loses the park.
+   * The model the workspace launched `tool` with, which `acp` tells an
+   * adapter that takes it no other way, once, after `session/new`.
    */
   launchModel?: (tool: AgentTool) => Promise<string | undefined>
   /**

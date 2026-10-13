@@ -1,30 +1,19 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import { mkdirSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir, setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
-import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { createCheckout } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
-import {
-  createWorkspaceFolder,
-  deleteWorkspaceEntry,
-  getWorkspaceChanges,
-  listWorkspaceDir,
-  readWorkspaceFile,
-  readWorkspaceFileAtRev,
-  readWorkspaceMedia,
-  renameWorkspaceEntry,
-  writeWorkspaceFile,
-} from '#domain/workspaces'
+import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
-import { buildChangesScript, parseChangesOutput } from '#drivers/shared'
-import {
-  CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, WorkspaceExecError, type ChangesReading, type ChangesRequest,
-} from '#drivers/contract'
+import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY } from '#domain/workspaces/changes'
+import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
 import type { WorkspaceFiles } from '@yaac/shared/types'
 
@@ -112,26 +101,28 @@ beforeEach(() => {
       workspaceId: id, projectId: PROJECT, jobName: id,
       ...(id === 'stopped' ? { running: false, state: 'stopped' } : {}),
     })),
-    workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(PROJECT, jobName) }),
-    exec: async (_jobName, cmd, opts) => {
+    workspacePaths: hostPaths,
+    exec: async (jobName, cmd, opts) => {
       execs.push({ cmd, opts })
-      return execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 })
+      return hostExec(jobName, cmd)
     },
-    changes: hostChanges,
   })
 })
 
-/** The changes script run in a host shell, as the containerless driver does. */
-async function hostChanges(jobName: string, request: ChangesRequest): Promise<ChangesReading> {
-  const script = buildChangesScript({
-    workspaceDir: workspaceDir(PROJECT, jobName),
-    indexFile: path.join(tmp, `${jobName}.idx`),
-  }, request)
-  const { stdout } = await execFileAsync('sh', ['-c', script], { maxBuffer: 64 << 20 }).catch((err: unknown) => {
+/** Each workspace's paths on the host, with a scratch dir of its own for
+ *  the changes script's private index. */
+function hostPaths(jobName: string): ReturnType<WorkspaceDriver['workspacePaths']> {
+  const scratchDir = path.join(tmp, 'scratch', jobName)
+  mkdirSync(scratchDir, { recursive: true })
+  return workspacePathsFixture({ workspaceDir: workspaceDir(PROJECT, jobName), scratchDir })
+}
+
+/** A command run in a host shell, failing as a driver's exec does. */
+async function hostExec(_jobName: string, cmd: string): Promise<{ stdout: string; stderr: string }> {
+  return execFileAsync('sh', ['-c', cmd], { maxBuffer: 64 << 20 }).catch((err: unknown) => {
     const { code } = err as { code?: number }
     throw typeof code === 'number' ? new WorkspaceExecError(`exited ${code}`, code, '', '') : err
   })
-  return parseChangesOutput(stdout)
 }
 
 /** A `full` listing of a workspace, which the explorer asks for. */
@@ -203,22 +194,22 @@ describe('getWorkspaceChanges', () => {
     try {
       const honest = await listing('list')
       const crafted = ['../../outside/secret.txt', '/etc/passwd', '.git/config', './a.txt', '..', 'src/../..']
+      // Spliced into each NUL-separated section of the script's output:
+      // `ls-files -s` entries (mode 120000 is a link), conflicts, ignored
+      // entries and untracked folders.
+      const entry = (mode: string, p: string): string => `${mode} ${'0'.repeat(40)} 0\t${p}`
+      const splice = (out: string, marker: string, entries: string[]): string =>
+        out.replace(`${marker}\n`, `${marker}\n${entries.map((e) => `${e}\0`).join('')}`)
       installFakeWorkspaceDriver({
         find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
-        workspacePaths: (jobName) => workspacePathsFixture({ workspaceDir: workspaceDir(PROJECT, jobName) }),
-        changes: async (jobName, request) => {
-          const reading = await hostChanges(jobName, request)
-          const read = reading.listing!
-          return {
-            ...reading,
-            listing: {
-              paths: [...read.paths, ...crafted],
-              links: [...read.links, ...crafted, 'outdir/secret.txt'],
-              ignored: [...read.ignored!, ...crafted.map((p) => `${p}/`)],
-              untrackedDirs: [...read.untrackedDirs!, ...crafted],
-              conflicted: [...read.conflicted, ...crafted],
-            },
-          }
+        workspacePaths: hostPaths,
+        exec: async (jobName, cmd) => {
+          const { stdout, stderr } = await hostExec(jobName, cmd)
+          let out = splice(stdout, '@@PATHS@@', [...crafted, 'outdir/secret.txt'].map((p) => entry('120000', p)))
+          out = splice(out, '@@CONFLICTED@@', crafted.map((p) => entry('100644', p)))
+          out = splice(out, '@@IGNORED@@', crafted.map((p) => `${p}/`))
+          out = splice(out, '@@DIRS@@', crafted.map((p) => `${p}/`))
+          return { stdout: out, stderr }
         },
       })
       // Where each resolved path's folder really is, at the time of the
@@ -235,8 +226,11 @@ describe('getWorkspaceChanges', () => {
       try {
         const { version: _, ...out } = await listing('list')
         const { version: __, ...expected } = honest
+        // A link through a link out of the checkout is listed, but leads
+        // nowhere.
         expect(out).toEqual({
           ...expected,
+          paths: ['outdir/secret.txt', ...honest.paths],
           symlinks: { ...honest.symlinks, 'outdir/secret.txt': { target: null, dir: false } },
         })
         expect(resolvedFrom.filter((d) => d !== root && !d.startsWith(`${root}/`))).toEqual([])
@@ -368,20 +362,17 @@ describe('getWorkspaceChanges', () => {
   // the runtime's default base shows an empty diff. Diffing against the fork
   // branch keeps committed work visible until it merges.
   it('offers the recorded fork branch as the default base, and lets a picked one win', async () => {
-    const mockChanges = vi.fn(hostChanges)
-    installFakeWorkspaceDriver({
-      find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
-      changes: mockChanges,
-    })
-    await getWorkspaceChanges('gs', undefined, { diff: false, listing: 'paths' })
-    await getWorkspaceChanges('gs', 'agent/gs')
-    await getWorkspaceChanges('list', undefined, { diff: false })
-    expect(mockChanges.mock.calls).toEqual([
-      ['gs', { base: undefined, defaultBase: 'main', diff: false, listing: 'paths' }],
-      ['gs', { base: 'agent/gs', defaultBase: 'main', diff: true, listing: undefined }],
-      // Nothing records a fork branch for this one.
-      ['list', { base: undefined, defaultBase: undefined, diff: false, listing: undefined }],
-    ])
+    // The script's last line names its base, default base, diff and
+    // listing (`yaac-changes <base> <default> diff|nodiff <listing>`).
+    const asked = async (...args: Parameters<typeof getWorkspaceChanges>): Promise<string | undefined> => {
+      execs = []
+      await getWorkspaceChanges(...args)
+      return /yaac-changes .*$/.exec(execs[0]?.cmd ?? '')?.[0]
+    }
+    expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'main' nodiff paths")
+    expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'main' diff ''")
+    // Nothing records a fork branch for this one.
+    expect(await asked('list', undefined, { diff: false })).toBe("yaac-changes '' '' nodiff ''")
   })
 
   // With no explicit base, the recorded fork branch failed to resolve. That
@@ -391,7 +382,7 @@ describe('getWorkspaceChanges', () => {
     let failure = new WorkspaceExecError('command exited 4', CHANGES_BASE_UNRESOLVED, '', '')
     installFakeWorkspaceDriver({
       find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
-      changes: () => Promise.reject(failure),
+      exec: () => Promise.reject(failure),
     })
     await expect(getWorkspaceChanges('gs')).rejects.toBe(failure)
     failure = new WorkspaceExecError('command exited 3', 3, '', '')

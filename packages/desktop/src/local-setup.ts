@@ -15,7 +15,7 @@
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
-import path from 'node:path'
+import { findExecutable, pathDirs } from '@yaac/shared/executables'
 import { trustSentence } from '@yaac/shared/setup-copy'
 import type {
   DesktopLocalState, DesktopSetupChoice, DesktopSetupRun, DesktopSetupStep, TrustedTap,
@@ -175,15 +175,8 @@ export function setupConfirmation(scope: ServerScope, cli: boolean): { message: 
 }
 
 /** Whether `name` is an executable on PATH (the adopted login-shell one). */
-export async function onPath(name: string): Promise<boolean> {
-  // eslint-disable-next-line no-process-env -- the PATH every command here is spawned with
-  for (const dir of (process.env.PATH ?? '').split(':').filter((d) => d !== '')) {
-    try {
-      await fs.access(path.join(dir, name), fs.constants.X_OK)
-      return true
-    } catch { /* not in this dir */ }
-  }
-  return false
+export function onPath(name: string): boolean {
+  return findExecutable(name, pathDirs()) !== null
 }
 
 interface Exit {
@@ -280,7 +273,7 @@ function createProbes(signal: AbortSignal): Probes & { forget(): void } {
   }
   const read = (...argv: string[]): Promise<Exit> => exec(argv, { timeoutMs: PROBE_TIMEOUT_MS, signal })
   return {
-    onPath: (name) => once(`path:${name}`, () => onPath(name)),
+    onPath: (name) => once(`path:${name}`, () => Promise.resolve(onPath(name))),
     formula: (name) => once(`formula:${name}`, async () => {
       const r = await read('brew', 'list', '--formula', '--versions', name)
       return r.ok && r.out.trim() !== ''

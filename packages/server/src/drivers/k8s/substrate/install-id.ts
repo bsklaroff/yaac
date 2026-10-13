@@ -1,6 +1,6 @@
 /**
  * Which k8s install this process acts for. Kept apart from the API client,
- * so the CLI can bind it without loading `@kubernetes/client-node`.
+ * so the test setup can read it without loading `@kubernetes/client-node`.
  */
 import { env } from '@yaac/shared/env'
 

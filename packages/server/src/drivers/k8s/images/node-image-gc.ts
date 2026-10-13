@@ -14,9 +14,8 @@
  * makes large deletes fail.
  */
 import { LABEL_INSTALL_ID, installId, runOnEachNode } from '#drivers/k8s/substrate'
-import { REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster'
-import { registryHost, registryTagState } from '#drivers/k8s/container'
-import { serverLog } from '#log'
+import { REGISTRY_UPSTREAM_IMAGE, registryHost, registryTagState } from '#drivers/k8s/cluster'
+import { serverLog } from '#lib/log'
 
 /** `app` label of the prune pods, used to delete strays. */
 const NODE_IMAGE_GC_APP_LABEL = 'yaac-node-image-gc'

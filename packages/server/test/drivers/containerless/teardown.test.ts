@@ -51,7 +51,7 @@ let dataDir: string
 function registered(extra: { sshAgentPid?: number } = {}): void {
   rememberWorkspace({
     projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
-    prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, ...extra,
+    createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, ...extra,
   })
 }
 
@@ -186,7 +186,7 @@ describe('destroyWorkspace ssh-agent', () => {
     // the agent holding its key until reboot.
     restoreWorkspace({
       projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
-      prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, sshAgentPid: 777,
+      createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242, sshAgentPid: 777,
     }, false, { reason: 'agent-exited' })
 
     await destroyWorkspace(TARGET)

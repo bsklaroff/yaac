@@ -1,10 +1,8 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { PTY_KEYS, paneKey, registerPtyInput } from '#lib/ptyInput'
 
-afterEach(cleanup)
 
 describe('TerminalKeyBar', () => {
   it('types the keys a soft keyboard doesn’t have into the pane', () => {

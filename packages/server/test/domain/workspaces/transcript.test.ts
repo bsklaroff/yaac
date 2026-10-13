@@ -11,6 +11,11 @@ import { closeDb } from '#db/client'
 import { acpLogDir, agentHistoryDir, claudeDir, opencodeCheckpointDir } from '@yaac/shared/project-paths'
 import { getAcpStoredImage, getAgentSessionTranscript } from '#domain/workspaces/transcript'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 /**
  * Which file a conversation's history is read from. The readers run for

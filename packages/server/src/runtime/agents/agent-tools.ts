@@ -12,7 +12,8 @@
 import path from 'node:path'
 import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, agentSessionIdSchema } from '@yaac/shared/types'
 import type { AgentMode, AgentStatus, AgentTool, PermissionMode } from '@yaac/shared/types'
-import { acpAdapterFor, acpPermissionModeFor } from './acp-adapters'
+import { acpPermissionModeFor } from './acp-client'
+import { acpAdapterFor } from './acp-adapters'
 import { classifyClaudeTitle, claudePermissionMode, getFirstUserMessage } from './claude'
 import {
   CODEX_MODEL_FORMAT,

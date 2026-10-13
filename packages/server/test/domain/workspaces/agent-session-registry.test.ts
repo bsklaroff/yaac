@@ -19,7 +19,7 @@ import { getWorkspaceRow, recordWorkspaceCreated, recordWorkspaceLife, setWorksp
 import { _resetCodexRolloutReadsForTests } from '#runtime/agents/codex'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
 import type { AcpConversation } from '#runtime/agents/acp-client'
-import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import type { LiveAgent } from '#runtime/agents'
 import {

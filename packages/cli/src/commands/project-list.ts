@@ -1,4 +1,5 @@
 import { api } from '#commands/api'
+import { printTable } from '#commands/table'
 
 export async function projectList(): Promise<void> {
   const projects = await api.project.list.$get()
@@ -10,11 +11,8 @@ export async function projectList(): Promise<void> {
 
   // The id prefix tells apart projects that share a name; any command taking
   // a project accepts either.
-  console.log('')
-  console.log(`${'PROJECT'.padEnd(20)} ${'ID'.padEnd(10)} ${'REMOTE'.padEnd(50)} WORKSPACES`)
-  console.log(`${'-'.repeat(20)} ${'-'.repeat(10)} ${'-'.repeat(50)} ${'-'.repeat(10)}`)
-  for (const p of projects) {
-    console.log(`${p.name.padEnd(20)} ${p.id.slice(0, 8).padEnd(10)} ${(p.hosted ? '(hosted by yaac)' : p.remoteUrl).padEnd(50)} ${p.workspaceCount}`)
-  }
-  console.log('')
+  printTable(
+    [{ header: 'PROJECT' }, { header: 'ID' }, { header: 'REMOTE' }, { header: 'WORKSPACES' }],
+    projects.map((p) => [p.name, p.id.slice(0, 8), p.hosted ? '(hosted by yaac)' : p.remoteUrl, String(p.workspaceCount)]),
+  )
 }

@@ -129,7 +129,6 @@ export function _resetAcpRegistryForTests(): void {
   named.clear()
   panePids.clear()
   waiters.clear()
-  launchModels.clear()
   parkedQueues.clear()
 }
 
@@ -167,26 +166,4 @@ export function takeAcpQueue(projectId: string, workspaceId: string, agentSessio
   const queue = parkedQueues.get(key) ?? []
   parkedQueues.delete(key)
   return queue
-}
-
-/**
- * Launch models for adapters told their model over the protocol
- * (`modelVia: 'set_config_option'`), parked between building the launch
- * command and the handshake seconds later. Keyed by launch id: the
- * workspace id for a fresh conversation, the agent's id for a resumed one.
- *
- * Taken once: a reattach must not re-send it, since the user may have
- * changed the model. If the server restarts between launch and first
- * attach the override is lost and the driver logs it.
- */
-const launchModels = new Map<string, string>()
-
-export function stashAcpLaunchModel(launchId: string, model: string): void {
-  launchModels.set(launchId, model)
-}
-
-export function takeAcpLaunchModel(launchId: string): string | undefined {
-  const model = launchModels.get(launchId)
-  launchModels.delete(launchId)
-  return model
 }

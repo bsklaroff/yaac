@@ -4,7 +4,7 @@
  * chain to any depth.
  *
  * Settings are resolved when queued, so the sidebar shows exactly what will
- * launch. Launches go through `startWorkspace` without claiming a spare,
+ * launch. Launches go through `prepareStart` without claiming a spare,
  * since children already point at the new id. Only `stopWorkspace` releases
  * children; a workspace that died holds them until the user runs or discards
  * them.
@@ -17,11 +17,10 @@ import {
   listProvisioning,
   ProvisionStoppedError,
   removeProvisioning,
-  runProvisioned,
 } from './provisioning'
 import { resolveWorkspace } from './resolve'
-import { startWorkspace } from './start'
-import { agentPermissionMode } from './spawn-policy'
+import { prepareStart } from './start'
+import { toStoppedEntries } from './stopped-list'
 import { modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { getDefaultBranch } from '#domain/git'
@@ -31,14 +30,12 @@ import {
   failQueuedLaunch,
   finishQueuedLaunch,
   firstAgentSession,
-  getAgentSessionsFor,
   getProjectRow,
   getProjectWorkspaceRows,
   getQueuedWorkspaceRow,
   insertQueuedWorkspace,
   listQueuedWorkspaceRows,
   listWorkspaceRows,
-  openingPrompt,
   releaseQueuedChildren,
   releaseQueuedWorkspace,
   updateQueuedWorkspace as updateQueuedWorkspaceRow,
@@ -46,12 +43,13 @@ import {
   type QueuedWorkspaceRow,
   type QueuedWorkspaceSettings,
 } from '#db'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { normalizeTitle } from '@yaac/shared/titles'
 import {
+  agentPermissionMode,
   MAX_PROMPT_LENGTH,
   toolSupportsPermissionMode,
   type AgentMode,
@@ -216,22 +214,7 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
   const projectIds = [...new Set(waiting.map((r) => r.projectId))]
   const held = (await Promise.all(projectIds.map((projectId) => listWorkspaceRows(projectId)))).flat()
     .filter((w) => w.stoppedAt !== undefined && parents.has(`${w.projectId}/${w.workspaceId}`))
-  const sessions = await getAgentSessionsFor(held)
-  return held.map((w) => {
-    const links = sessions.get(`${w.projectId}/${w.workspaceId}`) ?? []
-    const prompt = openingPrompt(links)
-    return {
-      workspaceId: w.workspaceId,
-      projectId: w.projectId,
-      tool: links[0]?.tool ?? 'claude',
-      ...(w.title !== undefined ? { title: w.title } : {}),
-      ...(prompt !== undefined ? { prompt } : {}),
-      ...(w.groupId !== undefined ? { groupId: w.groupId } : {}),
-      stoppedAt: formatUtcTimestamp((w.stoppedAt ?? w.createdAt).getTime()),
-      ...(w.deathReason !== undefined ? { deathReason: w.deathReason } : {}),
-      ...(w.deathDetail !== undefined ? { deathDetail: w.deathDetail } : {}),
-    }
-  })
+  return await toStoppedEntries(held)
 }
 
 /**
@@ -294,7 +277,7 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
     try {
       // The server launches it: whoever queued or ran the entry was
       // authorized then.
-      await runProvisioned(workspaceId, (onProgress) => startWorkspace(systemPrincipal, {
+      const run = await prepareStart(systemPrincipal, {
         projectId: row.projectId,
         workspaceId,
         tool: row.tool,
@@ -309,7 +292,8 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
         rememberDefaults: false,
         // Children point at `workspaceId`; a spare has a different id.
         claimSpare: false,
-      }, onProgress))
+      })
+      await run()
       await finishQueuedLaunch(row.id, workspaceId)
     } catch (err) {
       // Show the error on the queued row only, not as a provisioning row. A

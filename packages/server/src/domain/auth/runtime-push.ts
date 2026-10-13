@@ -1,13 +1,9 @@
-import {
-  isPlaceholderClaudeBundle,
-  isPlaceholderCodexBundle,
-} from '@yaac/shared/tool-auth'
-import { getToolCredential, listToolCredentials } from '#db'
-import { runtimeGitCredentials } from '#domain/projects'
+import { listToolCredentials } from '#db'
 import { workspaceDriver } from '#drivers/driver'
-import { serverLog } from '#log'
-import { claudeBundleIsNewer, codexBundleIsNewer } from './credential-sync'
-import { credentialOwnerKey, ownerOfCredentialKey, saveClaudeOAuthBundle, saveCodexOAuthBundle } from './store'
+import { serverLog } from '#lib/log'
+import { runtimeGitCredentials } from './git-credentials'
+import { adoptNewest, OAUTH_TOOLS } from './oauth-tools'
+import { credentialOwnerKey, ownerOfCredentialKey } from './store'
 import type { CredentialBundle } from '#drivers/contract'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
@@ -75,38 +71,20 @@ export function pushCredentialsToRuntime(): Promise<Error | undefined> {
 }
 
 /**
- * Store credentials the runtime captured, where newer. A placeholder is
- * never adopted; an api-key or signed-out store is not overwritten; and a
- * compare-and-set skips the write if the store changed meanwhile (that
- * writer stored something at least as fresh). Each owner key's captures
- * go to that user's store.
+ * Store credentials the runtime captured, where newer (`adoptNewest`). Each
+ * owner key's captures go to that user's store.
  */
 export async function adoptRefreshedToolCredentials(
   refreshed: Record<string, RefreshedToolCredentials>,
 ): Promise<void> {
   let adopted = false
-  for (const [key, { claude, codex }] of Object.entries(refreshed)) {
+  for (const [key, captured] of Object.entries(refreshed)) {
     const owner = ownerOfCredentialKey(key)
-    if (claude && !isPlaceholderClaudeBundle(claude)) {
-      const stored = await getToolCredential(owner, 'claude')
-      if (stored?.kind === 'oauth' && claudeBundleIsNewer(claude, stored.claudeAiOauth)) {
-        const now = await getToolCredential(owner, 'claude')
-        if (now?.kind === 'oauth' && now.claudeAiOauth.accessToken === stored.claudeAiOauth.accessToken) {
-          await saveClaudeOAuthBundle(owner, claude)
-          serverLog('[server] adopted a Claude OAuth rotation the egress proxy captured')
-          adopted = true
-        }
-      }
-    }
-    if (codex && !isPlaceholderCodexBundle(codex)) {
-      const stored = await getToolCredential(owner, 'codex')
-      if (stored?.kind === 'oauth' && codexBundleIsNewer(codex, stored.codexOauth)) {
-        const now = await getToolCredential(owner, 'codex')
-        if (now?.kind === 'oauth' && now.codexOauth.accessToken === stored.codexOauth.accessToken) {
-          await saveCodexOAuthBundle(owner, codex)
-          serverLog('[server] adopted a Codex OAuth rotation the egress proxy captured')
-          adopted = true
-        }
+    for (const t of OAUTH_TOOLS) {
+      const candidate = captured[t.tool]
+      if (await adoptNewest(t, owner, () => Promise.resolve([candidate ?? null]))) {
+        serverLog(`[server] adopted a ${t.tool} OAuth rotation the egress proxy captured`)
+        adopted = true
       }
     }
   }

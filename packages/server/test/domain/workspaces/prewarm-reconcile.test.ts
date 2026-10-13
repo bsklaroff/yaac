@@ -39,7 +39,7 @@ import type { RuntimeHandle } from '#drivers/contract'
 import {
   installFakeWorkspaceDriver,
   snapshotFixture,
-} from '@yaac/test-utils/fake-driver'
+} from '#test/support/fake-driver'
 import { createWorkspace, resolveCreate, type CreateSetup } from '#domain/workspaces/create'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/workspaces/provisioning'
 import { cleanupWorkspace, deleteWorkspaceState } from '#domain/workspaces/cleanup'

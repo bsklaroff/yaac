@@ -7,13 +7,18 @@ import { acpLogDir, agentHistoryDir } from '@yaac/shared/project-paths'
 import { attachAcp } from '#runtime/agents/acp-bridge'
 import { AcpConversation, type AcpConversationDeps } from '#runtime/agents/acp-client'
 import { acpAdapterFor, type AcpAdapterProfile } from '#runtime/agents/acp-adapters'
-import { readAcpInFlight, readAcpPendingPermissions } from '#runtime/agents/acp-log'
+import { readAcpRecovery } from '#runtime/agents/acp-log'
 import {
   _resetAcpRegistryForTests,
   registerAcpConversation,
 } from '#runtime/agents/acp-registry'
 import type { JsonRpcTransport } from '#runtime/agents/acp-jsonrpc'
 import type { AcpServerMessage } from '@yaac/shared/acp'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 /**
  * These drive a real conversation over a fake transport, checking that a
@@ -97,8 +102,7 @@ function liveConversation(profile?: AcpAdapterProfile, extra: Partial<AcpConvers
     cwd: '/workspace',
     resumeSessionId: 'acp-1',
     ...(profile !== undefined ? { profile } : {}),
-    recoverInFlight: () => readAcpInFlight(record),
-    recoverPendingPermissions: () => readAcpPendingPermissions(record),
+    recover: () => readAcpRecovery(record),
     onSessionId: () => {},
     onStatus: () => {},
     onDown: () => {},
@@ -430,9 +434,9 @@ describe('attachAcp', () => {
     ]
     const ref = { projectId: 'demo', workspaceId: 'wt-1', agentSessionId: 'acp-1' }
     await record(life)
-    expect(await readAcpInFlight(ref)).toEqual({ prompt: false, agentRunning: true })
+    expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false, agentRunning: true })
     await record([...life, JSON.parse(threadStatus('idle')) as unknown])
-    expect(await readAcpInFlight(ref)).toEqual({ prompt: false, agentRunning: false })
+    expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false, agentRunning: false })
     // A report no idle followed is dropped, as live, by a refused prompt or a
     // Stop with no prompt running.
     const refused = [
@@ -440,9 +444,9 @@ describe('attachAcp', () => {
       { jsonrpc: '2.0', id: 'p1', error: { code: -32603, message: 'the session has ended' } },
     ]
     await record([...life, ...refused])
-    expect(await readAcpInFlight(ref)).toEqual({ prompt: false })
+    expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false })
     await record([...life, { jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: 'acp-1' } }])
-    expect(await readAcpInFlight(ref)).toEqual({ prompt: false })
+    expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false })
   })
 
   it('queues a mid-turn message for an adapter that cannot steer, shown to every pane until it runs', async () => {
@@ -823,8 +827,10 @@ describe('attachAcp', () => {
       options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }],
     })
     reattach(acpAdapterFor('claude'), {
-      recoverEffort: () => Promise.resolve({
-        configId: 'effort', current: 'high', options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }],
+      recover: () => Promise.resolve({
+        inFlight: { prompt: false },
+        pendingPermissions: [],
+        effort: { configId: 'effort', current: 'high', options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Max' }] },
       }),
       onEffort: (effort) => reported.push(effort),
     })

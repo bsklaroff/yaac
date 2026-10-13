@@ -3,9 +3,9 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { opencodeCheckpointDir, setDataDir } from '@yaac/shared/project-paths'
-import { opencodeTranscriptAsAcp, replayAcpLog } from '#runtime/agents'
+import { replayAcpLog, opencodeTranscriptAsAcp } from '#runtime/agents'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /*

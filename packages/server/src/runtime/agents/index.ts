@@ -1,8 +1,9 @@
 // Barrel for `#runtime/agents`: what yaac knows about each coding agent
-// (how it is launched in tmux, how the server talks to it, where it writes
-// its transcript, how busy/idle is read, how it announces conversations).
-// It knows nothing of workspace lifecycle, the DB or the status store, so
-// the volatile per-tool and per-protocol details stay contained here.
+// (how it is launched in tmux, how the server talks to it, how busy/idle is
+// read, how it announces conversations). It knows nothing of workspace
+// lifecycle, the DB or the status store, so the volatile per-tool and
+// per-mode details stay contained here, including the Agent Client Protocol
+// an `acp` conversation speaks and where each tool keeps its history.
 //
 // Two dispatch tables, which callers should reach for first:
 //
@@ -12,9 +13,9 @@
 //
 // Export something below only when it cannot be tool- or mode-agnostic.
 // Each export needs a unit test in packages/server/test/runtime/agents/.
-// Internal modules are covered through the exports: `jsonl.ts` via the
-// transcript readers, per-tool classifiers via `classifyAgentObservation`,
-// and the `acp-*` modules via their drivers.
+// Internal modules are covered through the exports: per-tool classifiers
+// and launch lines via `agentDriver`, and the `acp-*` modules via their
+// drivers.
 
 export {
   agentDriver,
@@ -24,30 +25,19 @@ export {
   type LiveAgent,
 } from './drivers'
 export { attachAcp } from './acp-bridge'
-// The webapp's terminals hold their own control-mode client.
-export { ControlModeClient, type ControlModeNotification } from './control-mode'
+// The webapp's terminals hold their own control-mode client; the status
+// watcher lists them over its own.
+export { ControlModeClient, listTerminals, type ControlModeNotification } from './control-mode'
 export { setAcpPermissionMode } from './acp-driver'
 export { acpLaunchModel } from './acp-adapters'
 // The status watcher discards a stopped workspace's queued messages.
 export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-registry'
-export { acpRecord, acpStoredImage, readAcpFirstPrompt, replayAcpLog } from './acp-log'
-// A tui conversation rendered as acp events, one translator per tool (see
-// each module's header).
-export { claudeSubagentThreads, claudeTranscriptAsAcp } from './claude-acp-replay'
-export { codexTranscriptAsAcp } from './codex-acp-replay'
-export { opencodeTranscriptAsAcp } from './opencode-acp-replay'
-export { piTranscriptAsAcp } from './pi-acp-replay'
-export type { AcpConversation } from './acp-client'
 export {
-  agentStatusFormat,
   agentWindowName,
-  agentWindowTool,
-  classifyAgentObservation,
   getAgentSessionFirstMessage,
   resolveAgentPermissionMode,
 } from './agent-tools'
 export {
-  buildAgentCmd,
   initWindowCommand,
   resolveInitWindows,
   tmuxCmd,
@@ -55,33 +45,25 @@ export {
   AgentLaunchDeadError,
   type InitWindow,
 } from './agent-command'
-// Where each tool keeps its transcript, and the project-relative form it is
-// stored in.
-export {
-  ACP_RECORD_NAME,
-  CLAUDE_POD_CWD,
-  CLAUDE_POD_REPO,
-  claudeProjectDirName,
-  conversationFiles,
-  locateTranscript,
-  OPENCODE_DB_NAME,
-  openConversationFile,
-  resolveProjectPath,
-  sessionIdFromPiLog,
-  sessionTranscriptPath,
-  transcriptLastActiveMs,
-  type ConversationFile,
-} from './transcripts'
-// codex's posture is read from its rollout rather than pushed on its pane;
-// rollout names and lineage also group a workspace's history.
-export { codexRolloutParent, codexRolloutThreadId, getCodexRolloutSettings } from './codex'
+// codex's posture is read from its rollout rather than pushed on its pane.
+export { getCodexRolloutSettings } from './codex'
 export { ensureAgentReporters } from './agent-reporters'
 export { ensureToolApiKeyConfig } from './tool-api-keys'
-// How the server reads and writes the project dirs an agent can write too.
-export { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
+export { buildWindowsExec } from './setup-commands'
+export { type AcpConversation } from './acp-client'
+export { acpRecord, acpStoredImage, readAcpFirstPrompt, replayAcpLog } from './acp-log'
+export { claudeSubagentThreads, claudeTranscriptAsAcp } from './claude-acp-replay'
+export { codexTranscriptAsAcp } from './codex-acp-replay'
+export { opencodeTranscriptAsAcp } from './opencode-acp-replay'
+export { piTranscriptAsAcp } from './pi-acp-replay'
+export { type SandboxFile, openSandboxDir, readSandboxFile } from './sandbox-fs'
 export {
-  buildCloneLinkExec,
-  buildOriginRefreshExec,
-  buildWindowsExec,
-  validateInitWindows,
-} from './setup-commands'
+  ACP_RECORD_NAME,
+  type ConversationFile,
+  conversationFiles,
+  locateTranscript,
+  openConversationFile,
+  resolveProjectPath,
+  sessionTranscriptPath,
+  transcriptLastActiveMs,
+} from './transcripts'

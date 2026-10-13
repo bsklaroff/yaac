@@ -1,5 +1,5 @@
 import type { MiddlewareHandler } from 'hono'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { IdentityEnv } from './web-auth'
 
 // CORS preflight refusal and the request log. The identity gate and the

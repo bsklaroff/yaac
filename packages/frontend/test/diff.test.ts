@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  parseUnifiedDiff, indexDiffsByPath, diffTextPair, diffStats,
-} from '#lib/diff'
+import { parseUnifiedDiff, diffTextPair } from '#lib/diff'
 
 const DIFF = [
   'diff --git a/src/app.ts b/src/app.ts',
@@ -59,15 +57,6 @@ describe('parseUnifiedDiff', () => {
   })
 })
 
-describe('indexDiffsByPath', () => {
-  it('keys parsed diffs by path', () => {
-    const map = indexDiffsByPath(DIFF)
-    expect(map.get('src/app.ts')?.lines.length).toBe(5)
-    expect(map.get('new.ts')?.binary).toBe(false)
-    expect(map.has('logo.png')).toBe(true)
-  })
-})
-
 /**
  * Diffs from an ACP edit tool call's before/after fragments. Unchanged lines
  * must render as context, not as a delete plus an add.
@@ -75,6 +64,14 @@ describe('indexDiffsByPath', () => {
 describe('diffTextPair', () => {
   const kinds = (oldText: string | undefined, newText: string): string =>
     diffTextPair(oldText, newText).map((l) => l.kind[0]).join('')
+
+  // A large edit with changes scattered through it still reads change by
+  // change rather than as one removed block and one added block.
+  it('interleaves hundreds of scattered changes in a thousand-line fragment', () => {
+    const before = Array.from({ length: 1000 }, (_, i) => `line ${String(i)}`)
+    const after = before.map((l, i) => (i % 2 === 0 ? `${l} changed` : l))
+    expect(kinds(`${before.join('\n')}\n`, `${after.join('\n')}\n`)).toBe('dac'.repeat(500))
+  })
 
   it('keeps common lines as context around a change', () => {
     const lines = diffTextPair('one\ntwo\nthree\n', 'one\nTWO\nthree\n')
@@ -112,7 +109,6 @@ describe('diffTextPair', () => {
 
   it('is empty for an unchanged pair only in the sense of having no +/−', () => {
     expect(kinds('same\nlines', 'same\nlines')).toBe('cc')
-    expect(diffStats(diffTextPair('same', 'same'))).toEqual({ additions: 0, deletions: 0 })
   })
 
   it('ignores the trailing newline that ends a fragment', () => {
@@ -124,28 +120,19 @@ describe('diffTextPair', () => {
   it('treats an empty side as no lines, not one blank one', () => {
     // `oldText: ''` is an empty file being filled, not a deleted blank line.
     expect(diffTextPair('', 'a\n')).toEqual([{ kind: 'add', text: 'a', oldNo: null, newNo: 1 }])
-    expect(diffStats(diffTextPair('', 'a\nb\n'))).toEqual({ additions: 2, deletions: 0 })
+    expect(kinds('', 'a\nb\n')).toBe('aa')
     expect(diffTextPair('', '')).toEqual([])
   })
 
   it('matches repeated lines by content, not by position', () => {
-    // Interning keeps identical lines equal, even far apart.
     expect(kinds('x\nsame\ny\nsame', 'x\nsame\nY\nsame')).toBe('ccdac')
+    expect(kinds('a\nb\nc', 'a\nB\nc\nd')).toBe('cdaca')
   })
 
-  it('falls back to a whole-side rewrite when the pair is too large to match', () => {
-    // Above the size cap, all old lines then all new lines.
-    const big = (n: number, tag: string): string =>
-      Array.from({ length: n }, (_, i) => `${tag}${i}`).join('\n')
-    const lines = diffTextPair(big(1200, 'a'), big(1200, 'b'))
-    expect(lines).toHaveLength(2400)
-    expect(lines[0]).toMatchObject({ kind: 'del', text: 'a0', oldNo: 1 })
-    expect(lines[1200]).toMatchObject({ kind: 'add', text: 'b0', newNo: 1 })
-  })
-})
-
-describe('diffStats', () => {
-  it('counts added and removed lines, ignoring context', () => {
-    expect(diffStats(diffTextPair('a\nb\nc', 'a\nB\nc\nd'))).toEqual({ additions: 2, deletions: 1 })
+  it('keeps every line of a rewrite too large to match closely', () => {
+    const big = (tag: string): string => Array.from({ length: 1200 }, (_, i) => `${tag}${String(i)}`).join('\n')
+    const lines = diffTextPair(big('a'), big('b'))
+    expect(lines.filter((l) => l.kind === 'del').map((l) => l.text)).toEqual(big('a').split('\n'))
+    expect(lines.filter((l) => l.kind === 'add').map((l) => l.text)).toEqual(big('b').split('\n'))
   })
 })

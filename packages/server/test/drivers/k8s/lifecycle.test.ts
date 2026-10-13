@@ -23,7 +23,6 @@ const cacheStub = {
 vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
   ...await importOriginal<typeof substrateModule>(),
   ClusterCache: class { constructor() { return cacheStub } },
-  invalidateRelayAddr: vi.fn(),
   setActiveClusterCache: vi.fn((c: unknown) => { order.push(c ? 'cache.registered' : 'cache.cleared') }),
 }))
 vi.mock('#drivers/k8s/cluster', () => ({
@@ -33,10 +32,6 @@ vi.mock('#drivers/k8s/cluster', () => ({
 vi.mock('#drivers/k8s/images', () => ({
   deleteLeakedBuilderPods: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
 }))
-vi.mock('#drivers/k8s/forwarders', () => ({
-  PortDetectorManager: class { sync = vi.fn(); stopAll = vi.fn() },
-  stopAllWorkspaceForwarders: vi.fn(() => { order.push('forwarders.released') }),
-}))
 vi.mock('#drivers/k8s/egress', () => ({
   proxyClient: {
     disconnect: vi.fn(() => { order.push('proxy.disconnect') }),
@@ -44,13 +39,15 @@ vi.mock('#drivers/k8s/egress', () => ({
   },
 }))
 vi.mock('#drivers/k8s/workspaces', () => ({
+  PortDetectorManager: class { sync = vi.fn(); stopAll = vi.fn() },
   runtimeHandleFromPod: (p: { workspaceId: string }) => ({ workspaceId: p.workspaceId }),
+  stopAllWorkspaceForwarders: vi.fn(() => { order.push('forwarders.released') }),
 }))
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import { ensureMainRegistry } from '#drivers/k8s/cluster'
-import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#notify'
+import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#lib/notify'
 import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 

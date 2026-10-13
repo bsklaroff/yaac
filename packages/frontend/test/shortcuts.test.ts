@@ -9,10 +9,7 @@ import {
   chordsEqual,
   cycleDeltaFor,
   formatChord,
-  formatCode,
-  isChord,
   isModifierCode,
-  isShortcutId,
   matchShortcut,
   mergeBindings,
   resolveCycleTarget,
@@ -55,15 +52,6 @@ describe('SHORTCUTS registry', () => {
     expect([...CYCLE_IDS].sort()).toEqual(
       ['next-terminal', 'next-workspace', 'prev-terminal', 'prev-workspace'],
     )
-  })
-})
-
-describe('isShortcutId', () => {
-  it('accepts known ids and rejects others', () => {
-    expect(isShortcutId('new-workspace')).toBe(true)
-    expect(isShortcutId('next-terminal')).toBe(true)
-    expect(isShortcutId('nope')).toBe(false)
-    expect(isShortcutId('')).toBe(false)
   })
 })
 
@@ -245,24 +233,19 @@ describe('validateChord', () => {
   })
 })
 
-describe('isChord', () => {
-  it('accepts a well-formed chord and rejects malformed values', () => {
-    expect(isChord(chord('KeyN'))).toBe(true)
-    expect(isChord(null)).toBe(false)
-    expect(isChord({ code: 'KeyN', alt: true })).toBe(false) // missing flags
-    expect(isChord({ code: 1, alt: true, ctrl: true, meta: true, shift: true })).toBe(false)
-  })
-})
-
 describe('mergeBindings', () => {
   it('overlays known ids and ignores unknown ids and malformed chords', () => {
     const merged = mergeBindings({
       'new-workspace': chord('KeyY'),
       'bogus-id': chord('KeyZ'),
-      'kill-terminal': { code: 'KeyW' }, // malformed — dropped
+      'kill-terminal': { code: 'KeyW' }, // missing flags: dropped
+      'new-shell': { code: 1, alt: true, ctrl: true, meta: true, shift: true },
+      'open-changes': null,
     })
     expect(merged['new-workspace']).toEqual(chord('KeyY'))
     expect(merged['kill-terminal']).toEqual(DEFAULT_BINDINGS['kill-terminal'])
+    expect(merged['new-shell']).toEqual(DEFAULT_BINDINGS['new-shell'])
+    expect(merged['open-changes']).toEqual(DEFAULT_BINDINGS['open-changes'])
     expect((merged as Record<string, unknown>)['bogus-id']).toBeUndefined()
   })
 
@@ -304,19 +287,6 @@ describe('mergeBindings', () => {
   })
 })
 
-describe('formatCode', () => {
-  it('humanizes letters, digits, arrows, and named keys', () => {
-    expect(formatCode('KeyN')).toBe('N')
-    expect(formatCode('Digit1')).toBe('1')
-    expect(formatCode('ArrowLeft')).toBe('←')
-    expect(formatCode('ArrowRight')).toBe('→')
-    expect(formatCode('Enter')).toBe('Enter')
-    expect(formatCode('Comma')).toBe(',')
-    expect(formatCode('Period')).toBe('.')
-    expect(formatCode('F5')).toBe('F5') // unknown → raw code
-  })
-})
-
 describe('formatChord', () => {
   it('renders modifier+key with +-separators off mac', () => {
     expect(formatChord(chord('KeyN'))).toBe('Alt+N')
@@ -324,6 +294,9 @@ describe('formatChord', () => {
     expect(formatChord(chord('KeyH', { shift: true }))).toBe('Alt+Shift+H')
     expect(formatChord(chord('Comma'))).toBe('Alt+,')
     expect(formatChord(chord('ArrowRight'))).toBe('Alt+→')
+    expect(formatChord(chord('Digit1'))).toBe('Alt+1')
+    expect(formatChord(chord('Enter'))).toBe('Alt+Enter')
+    expect(formatChord(chord('F5'))).toBe('Alt+F5')
   })
 
   it('uses the platform glyphs on mac', () => {

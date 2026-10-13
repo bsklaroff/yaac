@@ -2,20 +2,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ProxyClient } from '#drivers/k8s/egress/proxy-client'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { PROXY_APP_NAME, k8sNamespace } from '#drivers/k8s/substrate'
-import type * as imageBuilderModule from '#drivers/k8s/image-engine/image-builder'
-import type * as registryModule from '#drivers/k8s/container/registry'
+import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
+import type * as registryModule from '#drivers/k8s/cluster/registry'
 
 const mockContextHash = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/image-engine/image-builder', async (importOriginal) => ({
-  ...(await importOriginal<typeof imageBuilderModule>()),
+vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
+  ...(await importOriginal<typeof imageTagsModule>()),
   contextHash: mockContextHash,
 }))
 
-vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
+vi.mock('#drivers/k8s/cluster/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
   registryRef: (tag: string) => `localhost:5001/${tag}`,
-  registryHasTag: vi.fn(),
-  pushImageToRegistry: vi.fn(),
 }))
 
 /** Put the proxy Deployment in the fake cluster, or (null) leave none. */

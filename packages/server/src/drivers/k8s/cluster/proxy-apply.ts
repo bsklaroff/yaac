@@ -21,7 +21,7 @@ import {
   waitForRollout,
 } from '#drivers/k8s/substrate'
 import type { CredentialBundle } from '#drivers/contract'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,

@@ -4,18 +4,21 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   agentHistoryDir,
+  CLAUDE_POD_CWD,
   claudeDir,
   codexDir,
+  codexRolloutParent,
+  codexRolloutThreadId,
   opencodeCheckpointDir,
   projectDir,
   type AgentHistoryPart,
 } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema, type AgentMode, type AgentTool } from '@yaac/shared/types'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
+import { workspacesSandboxed } from '#drivers/driver'
 import { openRoot } from '#lib/confined-fs'
 import { acpRecord } from './acp-log'
-import { codexRolloutParent, codexRolloutThreadId } from './codex'
-import { openSandboxDir, sandboxLinkPolicy, type SandboxFile } from './sandbox-fs'
+import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
 
 /**
  * Where each tool's transcripts live on the host; the only place that knows
@@ -58,33 +61,6 @@ function transcriptRoots(projectId: string, workspaceId: string, tool: AgentTool
 }
 
 const under = (sub: string, rel: string): string => sub === '' ? rel : `${sub}/${rel}`
-
-/**
- * The directory claude files a conversation under for a cwd: every
- * non-alphanumeric character replaced with `-` (`/workspace` becomes
- * `-workspace`), and past 200 characters truncated and suffixed with a hash
- * of the whole path. Matches claude 2.1.286's project-dir function (string
- * hash `(h << 5) - h + c | 0`); a test pins it.
- */
-export function claudeProjectDirName(cwd: string): string {
-  const munged = cwd.replace(/[^a-zA-Z0-9]/g, '-')
-  if (munged.length <= 200) return munged
-  let hash = 0
-  for (let i = 0; i < cwd.length; i++) hash = ((hash << 5) - hash + cwd.charCodeAt(i)) | 0
-  return `${munged.slice(0, 200)}-${Math.abs(hash).toString(36)}`
-}
-
-/**
- * The cwd claude runs in inside a pod, and so the directory a workspace's
- * history keeps every conversation in. Checked first, so the common case is
- * one `stat`.
- */
-export const CLAUDE_POD_CWD = claudeProjectDirName('/workspace')
-
-/** The project's shared auto-memory dir in the shared `projects/`, named as
- *  claude would for a `/repo` cwd. It is mounted (or linked) over each workspace's own
- *  `memory` folder, since claude keys memory on the checkout's git root. */
-export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
 
 /**
  * Find a claude conversation's transcript by searching, since a
@@ -249,7 +225,7 @@ async function listPiJsonlFiles(projectId: string, workspaceId: string): Promise
  * pass the id via `--session-id`). The timestamp has no underscore, so the
  * id follows the first one. Undefined without that separator.
  */
-export function sessionIdFromPiLog(file: string): string | undefined {
+function sessionIdFromPiLog(file: string): string | undefined {
   const base = path.basename(file, '.jsonl')
   const sep = base.indexOf('_')
   if (sep < 0) return undefined
@@ -258,7 +234,7 @@ export function sessionIdFromPiLog(file: string): string | undefined {
 }
 
 /** A conversation's pi logs (oldest first), matched by id. */
-export async function piSessionLogs(
+async function piSessionLogs(
   projectId: string,
   workspaceId: string,
   agentSessionId: string,
@@ -323,7 +299,7 @@ type Candidate = Omit<ConversationFile, 'size' | 'mtimeMs'>
 export const ACP_RECORD_NAME = 'acpd.jsonl'
 
 /** The name opencode's database is handed out under. */
-export const OPENCODE_DB_NAME = 'opencode.db'
+const OPENCODE_DB_NAME = 'opencode.db'
 
 /**
  * Every file each of a workspace's conversations left on the host, keyed by
@@ -427,7 +403,7 @@ async function codexRollouts(projectId: string, workspaceId: string): Promise<Ro
   return Promise.all([...found].map(async ([thread, file]) => ({
     file,
     thread,
-    parent: file.rel.endsWith('.jsonl') ? await codexRolloutParent(file) : undefined,
+    parent: file.rel.endsWith('.jsonl') ? await codexRolloutParent(() => openSandboxFile(file)) : undefined,
   })))
 }
 
@@ -484,7 +460,7 @@ async function opencodeDatabase(projectId: string, workspaceId: string): Promise
 export async function openConversationFile(f: ConversationFile): Promise<FileHandle | null> {
   const plain = (): Promise<FileHandle | null> =>
     openRoot(f.file.dir, 'no-links').then((root) => root.open(f.file.rel, C.O_RDONLY)).catch(() => null)
-  if (f.sqlite !== true || sandboxLinkPolicy() !== 'inside') return plain()
+  if (f.sqlite !== true || workspacesSandboxed()) return plain()
   const live = path.join(f.file.dir, f.file.rel)
   const sidecar = (suffix: string): Promise<Stats | null> =>
     fs.lstat(`${live}${suffix}`).catch(() => null)

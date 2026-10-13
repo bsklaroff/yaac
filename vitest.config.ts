@@ -1,6 +1,6 @@
 import { configDefaults, defineConfig } from 'vitest/config'
 // A file path, like the setupFiles below.
-import { kindByoLayout } from './packages/test-utils/src/kind-byo-layout.js'
+import { kindByoLayout } from './test/support/kind-byo-layout.js'
 
 // Every project is inline (`extends: true`) so shared test policy
 // (timeouts, setupFiles, ordering) lives in this one file. Separate
@@ -21,10 +21,10 @@ const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
 const K8S_STUB_SETUP = './packages/test-utils/src/k8s-stub-setup.ts'
 // api/e2e only: deletes each file's test namespace when the file finishes,
 // so finished files' netd DaemonSets don't pile up on the single node.
-const CLUSTER_SETUP = [...SETUP, './packages/test-utils/src/cluster-setup.ts']
+const CLUSTER_SETUP = [...SETUP, './test/support/cluster-setup.ts']
 // api-containerless only: registers the real containerless driver in place
 // of the composition root.
-const CONTAINERLESS_SETUP = [...SETUP, './packages/test-utils/src/containerless-setup.ts']
+const CONTAINERLESS_SETUP = [...SETUP, './test/support/containerless-setup.ts']
 /**
  * The api files that need no cluster: the containerless column of the route
  * matrix, plus files that drive the Hono app in process over routes no
@@ -34,16 +34,24 @@ const CONTAINERLESS_SETUP = [...SETUP, './packages/test-utils/src/containerless-
  */
 const CONTAINERLESS_API = [
   'test/api/routes-containerless.test.ts',
-  'test/api/auth.test.ts',
-  'test/api/read-marks.test.ts',
+  'test/api/in-process-routes.test.ts',
   'test/api/server.test.ts',
-  'test/api/shortcuts.test.ts',
   'test/api/identity-flow.test.ts',
   'test/api/transcript-route.test.ts',
   // Driver-neutral: guards WebSocket compression pass-through, which a
   // dependency bump could break for every install, so it also runs where
   // there is no cluster.
   'test/api/websocket-compression.test.ts',
+]
+
+/**
+ * k8s e2e-cli files whose commands touch no workspace runtime, so the
+ * containerless tier runs them too.
+ */
+const DRIVER_NEUTRAL_CLI = [
+  'test/e2e-cli/auth-cli.test.ts',
+  'test/e2e-cli/project-cli.test.ts',
+  'test/e2e-cli/workspace-cli.test.ts',
 ]
 
 /** The k8s e2e files, run against the kind rig (`e2e`) and kind-byo (`e2e-byo`). */
@@ -64,6 +72,14 @@ const BYO_ENV = {
   // env lands, trusts them in-process — see byo-install-suite).
   NODE_EXTRA_CA_CERTS: kindByoLayout().stagingCa,
 }
+
+/**
+ * Whether this run names a kind-byo project (`--project e2e-byo`). Only
+ * then are they defined: their global setup refuses without `pnpm kind-byo
+ * up`, so a bare `vitest run`, or a path filter like `vitest run
+ * test/e2e-cli`, must not pick them up.
+ */
+const BYO_SELECTED = process.argv.some((arg) => arg.includes('e2e-byo'))
 
 /** JSON record of the last run; `pnpm test:failures`
  *  (scripts/test-failures.ts) prints the failures from it. */
@@ -104,16 +120,27 @@ export default defineConfig({
     projects: [
       // Co-located per-package unit tests. Names are `unit:<pkg>`.
       unitProject('packages/cli'),
-      // Oxc transforms JSX, so no react plugin is needed; jsdom is
-      // selected per file via `// @vitest-environment jsdom`.
-      unitProject('packages/frontend', {
+      // Oxc transforms JSX, so no react plugin is needed. The SPA only runs
+      // in a browser, so every file gets jsdom, plus the stand-ins in
+      // test/setup.ts for the browser APIs jsdom lacks.
+      {
+        extends: true as const,
         oxc: { jsx: { runtime: 'automatic' } },
-      }),
+        test: {
+          name: 'unit:frontend',
+          include: ['packages/frontend/test/**/*.test.{ts,tsx}'],
+          environment: 'jsdom',
+          unstubGlobals: true,
+          setupFiles: [...UNIT_SETUP, './packages/frontend/test/setup.ts'],
+          sequence: { groupOrder: 0 },
+        },
+      },
       unitProject('packages/desktop'),
       unitProject('packages/server'),
       unitProject('packages/shared'),
       unitProject('packages/auth-daemon'),
       unitProject('packages/test-utils'),
+      unitProject('test/support'),
       unitProject('k8s/proxy'),
       unitProject('k8s/netd'),
       // streamd (in-pod stream daemon), acpd (in-pod ACP supervisor) and
@@ -174,7 +201,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'e2e-containerless',
-          include: ['test/e2e-containerless/**/*.test.ts'],
+          include: ['test/e2e-containerless/**/*.test.ts', ...DRIVER_NEUTRAL_CLI],
           // As in api-containerless: spawn a host server.
           env: { YAAC_DRIVER: 'containerless' },
           // Not cluster-setup: there is no namespace to drop, and it would
@@ -182,7 +209,7 @@ export default defineConfig({
           setupFiles: SETUP,
           globalSetup: ['test/global-setup-containerless.ts'],
           // Each file holds the cross-worker server mutex
-          // (packages/test-utils/src/cli.ts) for its whole run, so more
+          // (test/support/cli.ts) for its whole run, so more
           // workers add no parallelism and only move the mutex wait into a
           // beforeAll, where it counts against the hook timeout.
           maxWorkers: 1,
@@ -209,31 +236,33 @@ export default defineConfig({
       // this"). Its data dir is the ambient one, so all test scratch sits
       // inside the NFS export. Run `pnpm kind-byo up` first; the global
       // setup refuses without it.
-      {
-        extends: true,
-        test: {
-          name: 'e2e-byo',
-          include: E2E_FILES,
-          exclude: [...configDefaults.exclude, ...BYO_INSTALL],
-          setupFiles: CLUSTER_SETUP,
-          globalSetup: ['test/global-setup.ts'],
-          env: BYO_ENV,
-          maxWorkers: 1,
-          sequence: { groupOrder: 1 },
+      ...(BYO_SELECTED ? [
+        {
+          extends: true,
+          test: {
+            name: 'e2e-byo',
+            include: E2E_FILES,
+            exclude: [...configDefaults.exclude, ...BYO_INSTALL],
+            setupFiles: CLUSTER_SETUP,
+            globalSetup: ['test/global-setup.ts'],
+            env: BYO_ENV,
+            maxWorkers: 1,
+            sequence: { groupOrder: 1 },
+          },
         },
-      },
-      {
-        extends: true,
-        test: {
-          name: 'e2e-byo-install',
-          include: BYO_INSTALL,
-          setupFiles: CLUSTER_SETUP,
-          globalSetup: ['test/global-setup.ts'],
-          env: BYO_ENV,
-          maxWorkers: 1,
-          sequence: { groupOrder: 2 },
+        {
+          extends: true,
+          test: {
+            name: 'e2e-byo-install',
+            include: BYO_INSTALL,
+            setupFiles: CLUSTER_SETUP,
+            globalSetup: ['test/global-setup.ts'],
+            env: BYO_ENV,
+            maxWorkers: 1,
+            sequence: { groupOrder: 2 },
+          },
         },
-      },
+      ] : []),
     ],
   },
 })

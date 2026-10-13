@@ -174,7 +174,7 @@ try {
   await mpage.getByRole('button', { name: 'Create', exact: true }).and(mpage.locator(':enabled')).waitFor({ timeout: 15_000 })
   await mbranch.tap()
   await mbranch.fill(defaultBranch.slice(0, 3))
-  await mpage.locator('ul li', { hasText: defaultBranch }).first().tap()
+  await mpage.getByRole('option', { name: defaultBranch }).first().tap()
   check('phone: a tapped branch suggestion is picked', (await mbranch.inputValue()) === defaultBranch,
     await mbranch.inputValue())
   await mpage.screenshot({ path: path.join(SHOTS, 'branch-typeahead-phone.png') })

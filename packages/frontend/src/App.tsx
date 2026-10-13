@@ -14,7 +14,7 @@ import {
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
-import { narrowRows } from './components/WorkspaceList'
+import { narrowRows, type ProjectScope } from './components/WorkspaceList'
 import { useStoppedEntry } from './lib/useStoppedWorkspaces'
 import { WorkspaceView } from './components/WorkspaceView'
 import { ReadOnlyWorkspace, type ReadOnlySubject } from './components/ReadOnlyWorkspace'
@@ -65,7 +65,7 @@ function App(): JSX.Element {
     if (waitingSpells.current === null) { waitingSpells.current = current; return }
     const fresh = newlyWaiting(waitingSpells.current, workspaces)
     waitingSpells.current = current
-    const watching = typeof document !== 'undefined' && document.hasFocus() ? selectedWorkspaceId : null
+    const watching = document.hasFocus() ? selectedWorkspaceId : null
     if (soundEnabled && fresh.some((w) => w.workspaceId !== watching)) playChime()
   }, [snapshot, me, soundEnabled, selectedWorkspaceId])
 
@@ -179,28 +179,35 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     else restoreActiveProject(projects[0].id)
   }, [all, viewedUserId, activeProjectId, projectOp, projects, workspaces, restoreActiveProject])
 
-  const scoped = workspaces.filter((s) => s.projectId === activeProjectId)
-  const scopedProvisioning = provisioning.filter((p) => p.projectId === activeProjectId)
-  const scopedGroups = (snapshot?.workspaceGroups ?? [])
-    .filter((g) => g.projectId === activeProjectId)
-  const scopedQueued = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectId === activeProjectId)
-  const scopedHeld = (snapshot?.heldWorkspaces ?? []).filter((h) => h.projectId === activeProjectId)
-  const scopedDrafts = (snapshot?.draftWorkspaces ?? []).filter((d) => d.projectId === activeProjectId)
+  const inProject = <T extends { projectId: string }>(rows: T[] | undefined): T[] =>
+    (rows ?? []).filter((r) => r.projectId === activeProjectId)
+  const activeProject = projects.find((p) => p.id === activeProjectId)
+  const scope: ProjectScope = {
+    projectId: activeProjectId,
+    project: activeProject,
+    workspaces: inProject(workspaces),
+    groups: inProject(snapshot?.workspaceGroups),
+    provisioning: inProject(provisioning),
+    queued: inProject(snapshot?.queuedWorkspaces),
+    held: inProject(snapshot?.heldWorkspaces),
+    drafts: inProject(snapshot?.draftWorkspaces),
+    gitAuthFailures: (activeProjectId && snapshot?.gitAuthFailures?.[activeProjectId]) || [],
+  }
 
   // Project-scoped shortcuts (next/prev workspace, new, stop). They listen
   // on window in the capture phase so xterm never forwards the chord to the
   // PTY, and live here rather than in Sidebar so they work with the sidebar
   // hidden. Terminal-scoped shortcuts belong to WorkspaceView. The ref lets
   // the one listener read the current render's state.
-  const rowIds = sidebarRowIds(scopedProvisioning, scoped, scopedGroups, pendingDeleteIds)
+  const rowIds = sidebarRowIds(scope.provisioning, scope.workspaces, scope.groups, pendingDeleteIds)
   // The cycle steps through the rows the sidebar search and status filter
   // leave on screen.
   const sidebarQuery = useUiStore((s) => s.sidebarQuery)
   const sidebarStatuses = useUiStore((s) => s.sidebarStatuses)
   const searched = narrowRows(sidebarQuery, sidebarStatuses, {
-    workspaces: scoped, provisioning: scopedProvisioning, queued: [], held: [], drafts: [],
+    workspaces: scope.workspaces, provisioning: scope.provisioning, queued: [], held: [], drafts: [],
   })
-  const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scopedGroups, pendingDeleteIds)
+  const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scope.groups, pendingDeleteIds)
   const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
   const newWorkspace = (): void => {
     if (activeProjectId && !readOnly) openCreateWorkspace({ projectId: activeProjectId, focus: 'prompt' })
@@ -255,7 +262,6 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // A selection that is neither live nor provisioning may be a stopped
   // workspace, which the pane shows read-only. Looked up once the snapshot
   // says it is not live.
-  const activeProject = projects.find((p) => p.id === activeProjectId)
   const live = selectedWorkspaceId !== null && (workspaces.some((w) => w.workspaceId === selectedWorkspaceId)
     || provisioning.some((p) => p.workspaceId === selectedWorkspaceId))
   const stoppedSelection = useStoppedEntry(activeProjectId, selectedWorkspaceId, {
@@ -317,8 +323,6 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
 
   const attention = unreadWaitingByProject(workspaces, readWaiting, pendingDeleteIds)
 
-  const projectRemoteUrl = projects.find((p) => p.id === activeProjectId)?.remoteUrl ?? ''
-  const scopedGitAuthFailures = (activeProjectId && snapshot?.gitAuthFailures?.[activeProjectId]) || []
   // What replaces the sidebar and pane when there is no project to show.
   const placeholder = projectOp
     ? <ProjectOpPane op={projectOp} />
@@ -364,20 +368,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
               <ProjectOpPane op={projectOp} />
             </>
           ) : (
-            <WorkspacesScreen
-              projectId={activeProjectId}
-              project={activeProject}
-              projectRemoteUrl={projectRemoteUrl}
-              workspaces={scoped}
-              groups={scopedGroups}
-              provisioning={scopedProvisioning}
-              queued={scopedQueued}
-              held={scopedHeld}
-              drafts={scopedDrafts}
-              connected={connected}
-              gitAuthFailures={scopedGitAuthFailures}
-              onBack={goBackScreen}
-            />
+            <WorkspacesScreen scope={scope} connected={connected} onBack={goBackScreen} />
           )}
         </MobileScreenLayer>
       ) : placeholder ? (
@@ -385,19 +376,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           {placeholder}
         </div>
       ) : sidebarOpen && (
-        <Sidebar
-          projectId={activeProjectId}
-          project={activeProject}
-          projectRemoteUrl={projectRemoteUrl}
-          workspaces={scoped}
-          groups={scopedGroups}
-          provisioning={scopedProvisioning}
-          queued={scopedQueued}
-          held={scopedHeld}
-          drafts={scopedDrafts}
-          connected={connected}
-          gitAuthFailures={scopedGitAuthFailures}
-        />
+        <Sidebar scope={scope} connected={connected} />
       )}
 
       {(isMobile || !placeholder) && <div
@@ -414,7 +393,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           <div className="relative h-full">
             {!readOnly && (
               <div inert={stoppedEntry !== undefined} className={clsx('h-full', stoppedEntry && 'invisible')}>
-                <WorkspaceView snapshot={snapshot} provisioning={scopedProvisioning} />
+                <WorkspaceView snapshot={snapshot} provisioning={scope.provisioning} />
               </div>
             )}
             {stoppedEntry && (

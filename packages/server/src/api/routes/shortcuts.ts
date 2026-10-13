@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
-import type { IdentityEnv } from '#http'
+import type { IdentityEnv } from '#api/http/web-auth'
 import { z } from 'zod'
 import { clearShortcutOverrides, getShortcutOverrides, setShortcutOverride } from '#db'
 

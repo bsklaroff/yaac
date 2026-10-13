@@ -1,6 +1,13 @@
 import { Fragment, useEffect, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { EmptyState } from '#components/ui/EmptyState'
+import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
+import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
+import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
+import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
+import { ServerBadge } from '#components/ServerBadge'
+import { SkillsButton } from '#components/SkillsButton'
+import { UsageBadge } from '#components/UsageBadge'
 import { agentLabel, workspaceModel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { CloseIcon, LoadingIcon, SearchIcon } from '#lib/icons'
@@ -13,6 +20,7 @@ import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
 import { useUiStore, type SidebarStatus } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
+  GitAuthFailure,
   HeldWorkspaceEntry,
   ProjectSummary,
   StoppedWorkspaceEntry,
@@ -93,6 +101,64 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
     seen: true,
     ...(h.groupId !== undefined ? { groupId: h.groupId } : {}),
   }
+}
+
+/**
+ * The active project's slice of the snapshot: what the workspace list and
+ * its header show, on the desktop sidebar and the mobile workspaces screen.
+ */
+export interface ProjectScope {
+  projectId: string | null
+  project: ProjectSummary | undefined
+  workspaces: WorkspaceListEntry[]
+  groups: WorkspaceGroupSummary[]
+  provisioning: ProvisioningWorkspaceEntry[]
+  /** Queued workspaces, and the stopped workspaces they still wait on. */
+  queued: QueuedWorkspaceEntry[]
+  held: HeldWorkspaceEntry[]
+  drafts: DraftWorkspaceEntry[]
+  /** Hosts that rejected the project's git credential (project-wide). */
+  gitAuthFailures: GitAuthFailure[]
+}
+
+/** The list header's title: the project's actions menu, or the app name
+ *  with no project. */
+export function ListTitle({ scope }: { scope: ProjectScope }): JSX.Element {
+  return scope.projectId
+    ? <ProjectActionsMenu projectId={scope.projectId} remoteUrl={scope.project?.remoteUrl ?? ''} />
+    : <span className="font-semibold tracking-tight">yaac</span>
+}
+
+/** The list header's actions: a reconnect notice, skills and new workspace. */
+export function ListActions({ projectId, connected }: { projectId: string | null; connected: boolean }): JSX.Element {
+  return (
+    <>
+      {!connected && <span className="text-xs text-amber-400 max-md:pr-1">reconnecting…</span>}
+      {projectId && <SkillsButton projectId={projectId} />}
+      {projectId && <NewWorkspaceButton projectId={projectId} />}
+    </>
+  )
+}
+
+/** The status badges over the list, in a row that hides when all are
+ *  empty. */
+export function ListBadges({ scope, className }: { scope: ProjectScope; className: string }): JSX.Element {
+  const { projectId, gitAuthFailures } = scope
+  return (
+    <div className={clsx('flex items-center gap-2 empty:hidden', className)}>
+      <UsageBadge />
+      <ServerBadge />
+      <ImageBuildIndicator projectId={projectId} />
+      {projectId && gitAuthFailures.length > 0 && (
+        <GitAuthFailureBadge
+          projectId={projectId}
+          failures={gitAuthFailures}
+          iconSize={11}
+          className="hover:bg-danger/25"
+        />
+      )}
+    </div>
+  )
 }
 
 /**
@@ -278,9 +344,9 @@ export function WorkspaceList({
   workspaces,
   groups,
   provisioning,
-  queued = [],
-  held = [],
-  drafts = [],
+  queued,
+  held,
+  drafts,
 }: {
   projectId: string | null
   /** The active project's stopped counts, from the snapshot. */
@@ -291,10 +357,10 @@ export function WorkspaceList({
   provisioning: ProvisioningWorkspaceEntry[]
   /** The active project's queued workspaces, and the stopped workspaces
    *  they wait on. */
-  queued?: QueuedWorkspaceEntry[]
-  held?: HeldWorkspaceEntry[]
+  queued: QueuedWorkspaceEntry[]
+  held: HeldWorkspaceEntry[]
   /** The active project's draft workspaces. */
-  drafts?: DraftWorkspaceEntry[]
+  drafts: DraftWorkspaceEntry[]
 }): JSX.Element {
   // Keeps stopping rows out of `rowIds`.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
@@ -485,7 +551,7 @@ export function WorkspaceList({
       if (over === undefined || over === item.from) return
       // Not optimistic: the next snapshot moves the row. If the group was
       // deleted mid-drag the server answers NOT_FOUND.
-      api.workspace['set-group'].$post({ json: { projectId: item.projectId, workspaceId: item.workspaceId, groupId: over } })
+      api.workspace.group.move.$post({ json: { projectId: item.projectId, workspaceId: item.workspaceId, group: over } })
         .catch((e: unknown) => console.error('group move failed', e))
     },
   })

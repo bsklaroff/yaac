@@ -9,7 +9,7 @@
  * e2e, where the global setup prebuilds every image.
  */
 import { ensureImage } from './build-coordinator'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { env, testEnv } from '@yaac/shared/env'
 import type { ProjectReaders } from '#drivers/contract'
 import {
@@ -17,8 +17,8 @@ import {
   getImageBuild,
   hasBlockingFailure,
   imageBuildProjectIds,
-  resolveImageChain,
-} from '#drivers/k8s/image-engine'
+} from './image-builds'
+import { resolveImageChain } from '#drivers/k8s/cluster'
 
 /** How long a failed build stops the sweep from retrying that chain.
  *  Retry in the webapp or a Dockerfile edit (new tag) lifts it at once;
@@ -43,14 +43,11 @@ export async function prewarmProjectImage(
 ): Promise<void> {
   const nestedContainers = (await projects.projectConfig(projectId))?.nestedContainers === true
   const owner = await projects.projectOwner(projectId)
-  const prefix = testEnv.imagePrefix ?? 'yaac'
 
-  const { layers } = await resolveImageChain(projectId, owner, prefix, nestedContainers)
+  const { layers } = await resolveImageChain(projectId, owner, nestedContainers)
   if (hasBlockingFailure(layers.map((l) => l.tag), FAILED_RETRY_MS)) return
 
-  await ensureImage(projectId, owner, testEnv.imagePrefix, false, nestedContainers, {
-    reason: 'prewarm',
-  })
+  await ensureImage(projectId, owner, { nestedContainers, reason: 'prewarm' })
 }
 
 /**

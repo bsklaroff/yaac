@@ -5,14 +5,7 @@ import path from 'node:path'
 import { createPublicKey, verify } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import {
-  encodeOpenSshPrivateKey,
-  generateSshKey,
-  publicKeyLine,
-  sshKeyFromSeed,
-  sshPublicKeyBlob,
-  sshSign,
-} from '#lib/ssh-key'
+import { encodeOpenSshPrivateKey, generateSshKey, sshSign } from '#lib/ssh-key'
 
 const execFileAsync = promisify(execFile)
 
@@ -35,7 +28,6 @@ describe('generateSshKey', () => {
     const key = generateSshKey('yaac git.example.com/*')
     expect(key.seed).toHaveLength(32)
     expect(key.publicKey).toMatch(/^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5[A-Za-z0-9+/=]+ yaac git\.example\.com\/\*$/)
-    expect(publicKeyLine(key.seed, 'yaac git.example.com/*')).toBe(key.publicKey)
     expect(generateSshKey('x').publicKey).not.toBe(generateSshKey('x').publicKey)
   })
 })
@@ -83,13 +75,9 @@ describe('sshSign', () => {
     expect(sig.subarray(4, 15).toString()).toBe('ssh-ed25519')
     expect(sig.readUInt32BE(15)).toBe(64)
     const raw = sig.subarray(19)
-    expect(verify(null, data, createPublicKey(sshKeyFromSeed(key.seed)), raw)).toBe(true)
-  })
-})
-
-describe('sshPublicKeyBlob', () => {
-  it('is the base64 field of the public line', () => {
-    const key = generateSshKey('c')
-    expect(sshPublicKeyBlob(key.seed).toString('base64')).toBe(key.publicKey.split(' ')[1])
+    // The public line's blob ends with the raw 32-byte point.
+    const point = Buffer.from(key.publicKey.split(' ')[1], 'base64').subarray(-32)
+    const pub = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: point.toString('base64url') }, format: 'jwk' })
+    expect(verify(null, data, pub, raw)).toBe(true)
   })
 })

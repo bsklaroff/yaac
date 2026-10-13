@@ -46,7 +46,6 @@ export function resetMobileHistory(): void {
  * current entry is replaced rather than pushed.
  */
 export function goBackScreen(): void {
-  if (typeof window === 'undefined') return
   if (depthOf(window.history.state) > 0) {
     window.history.back()
     return
@@ -74,7 +73,7 @@ export function useMobileHistory(enabled: boolean): void {
   const screen = useUiStore((s) => s.mobileScreen)
 
   useEffect(() => {
-    if (!enabled || typeof window === 'undefined') return
+    if (!enabled) return
     const onPop = (e: PopStateEvent): void => {
       useUiStore.getState().setMobileScreen(stampOf(e.state).yaacScreen ?? 'projects')
     }
@@ -86,7 +85,7 @@ export function useMobileHistory(enabled: boolean): void {
   }, [enabled])
 
   useEffect(() => {
-    if (!enabled || typeof window === 'undefined') return
+    if (!enabled) return
     const stepping = steppingBack
     steppingBack = false
     const stamp = stampOf(window.history.state)

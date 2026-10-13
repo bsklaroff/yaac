@@ -4,7 +4,8 @@ import crypto from 'node:crypto'
 import { ensureDataDir, projectDir, repoDir, claudeDir, hostedRepoDir } from '@yaac/shared/project-paths'
 import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 import { cloneRepo, initHostedRepo, isGitAuthError } from '#domain/git'
-import { parseGitRemote, resolveCredentialForRemote } from './credentials'
+import { parseGitRemote } from '@yaac/shared/git-remote'
+import { resolveCredentialForRemote } from './credentials'
 import { getProjectRow, getToolCredential, listProjectRows, recordProject } from '#db'
 import {
   writeProjectClaudePlaceholder,

@@ -13,7 +13,7 @@ import {
 } from '#db/project-store'
 import { insertGitCredential } from '#db/git-credential-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const APP = '0a0a0a0a-0000-4000-8000-000000000001'
 const P = '0a0a0a0a-0000-4000-8000-000000000002'

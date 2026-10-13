@@ -64,18 +64,16 @@ export async function resolveWorkspaceRecord(
   idOrPrefix: string,
 ): Promise<ResolvedWorkspaceRecord> {
   const id = await resolveWorkspaceId(idOrPrefix)
-  try {
-    const match = await workspaceDriver().find(id)
-    if (match) {
-      return {
-        projectId: match.projectId,
-        workspaceId: match.workspaceId,
-        jobName: match.jobName,
-        tool: match.tool,
-      }
+  // An unreachable substrate falls back to the row, since these callers
+  // read what a stopped workspace keeps too.
+  const match = await workspaceDriver().find(id).catch(() => undefined)
+  if (match) {
+    return {
+      projectId: match.projectId,
+      workspaceId: match.workspaceId,
+      jobName: match.jobName,
+      tool: match.tool,
     }
-  } catch {
-    // Substrate unreachable; fall back to the row.
   }
   const row = await findWorkspaceRow(id)
   if (row) return { projectId: row.projectId, workspaceId: row.workspaceId }
@@ -134,11 +132,36 @@ export async function resolveWorkspaceId(
   if (trimmed === '') throw new ServerError('VALIDATION', 'a workspace id is required')
   const resolved = await resolveWorkspace(trimmed, opts)
   if (resolved.ok) return resolved.workspaceId
-  if (resolved.reason === 'ambiguous') {
-    throw new ServerError(
-      'VALIDATION',
-      `Ambiguous workspace prefix: ${trimmed} matches more than one workspace — use a longer prefix`,
-    )
-  }
+  if (resolved.reason === 'ambiguous') throw unresolvedWorkspace(trimmed, 'ambiguous')
   return trimmed
+}
+
+/**
+ * `resolveWorkspace` within one project, throwing for an unknown id or an
+ * ambiguous prefix.
+ */
+export async function resolveProjectWorkspace(
+  idOrPrefix: string,
+  projectId: string,
+  opts: { provisioning?: boolean } = {},
+): Promise<string> {
+  const target = idOrPrefix.trim()
+  const resolved = await resolveWorkspace(target, { projectId, ...opts })
+  if (resolved.ok) return resolved.workspaceId
+  throw unresolvedWorkspace(target, resolved.reason, projectId)
+}
+
+/**
+ * The error for an id or prefix that names no single workspace (in project
+ * `scope`, if given). Unknown and ambiguous are told apart, since they need
+ * different fixes.
+ */
+function unresolvedWorkspace(target: string, reason: 'not-found' | 'ambiguous', scope?: string): ServerError {
+  const where = scope === undefined ? '' : ` in ${scope}`
+  return reason === 'ambiguous'
+    ? new ServerError(
+      'VALIDATION',
+      `Ambiguous workspace prefix${where}: ${target} matches more than one workspace — use a longer prefix`,
+    )
+    : new ServerError('NOT_FOUND', `no workspace '${target}'${where}`)
 }

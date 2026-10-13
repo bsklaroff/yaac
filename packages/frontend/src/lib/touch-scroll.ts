@@ -1,4 +1,5 @@
 import type { Terminal } from '@xterm/xterm'
+import { MOUSE_ACTION_DOWN, MOUSE_ACTION_UP, MOUSE_BUTTON_WHEEL, xtermCore } from './xterm-internals'
 
 /**
  * Touch scrolling: make a one-finger swipe over the terminal scroll it.
@@ -47,7 +48,7 @@ const MAX_GLIDE_FRAME_GAP_MS = 100
  *
  *  Positive `travelPx` is a finger moving down, which scrolls back, so the
  *  reports are negative (the wheel path's sign for scrolling back). */
-export function reportsForTravel(
+function reportsForTravel(
   travelPx: number,
   pxPerReport: number,
 ): { reports: number; rest: number } {
@@ -56,44 +57,6 @@ export function reportsForTravel(
   // `|| 0` turns -0 into 0.
   return { reports: -steps || 0, rest: travelPx - steps * pxPerReport }
 }
-
-/** xterm's ICoreMouseEvent (see selection.ts). */
-type CoreMouseEvent = {
-  col: number
-  row: number
-  x: number
-  y: number
-  button: number
-  action: number
-}
-
-/** The private xterm internals the patch below reaches into. */
-type TerminalInternals = Terminal & {
-  _core?: {
-    // The same pair patchClickForwarding uses.
-    element?: HTMLElement
-    screenElement?: HTMLElement
-    _mouseService?: {
-      getMouseReportCoords?: (
-        e: MouseEvent,
-        element: HTMLElement,
-      ) => { col: number; row: number; x: number; y: number } | undefined
-    }
-    coreMouseService?: {
-      areMouseEventsActive?: boolean
-      triggerMouseEvent?: (e: CoreMouseEvent) => boolean
-    }
-    _renderService?: {
-      dimensions?: { css?: { cell?: { height?: number } } }
-    }
-  }
-}
-
-// xterm's CoreMouseButton / CoreMouseAction values, which are const enums
-// and not exported. Wheel-up is UP and wheel-down is DOWN.
-const MOUSE_BUTTON_WHEEL = 4
-const MOUSE_ACTION_UP = 0
-const MOUSE_ACTION_DOWN = 1
 
 /** The finger's velocity (px/ms) at `now`, from a drag's samples. Zero if
  *  the finger had stopped before lifting. */
@@ -107,24 +70,15 @@ function releaseVelocity(samples: readonly { t: number; y: number }[], now: numb
   return Math.max(-MAX_FLICK_VELOCITY, Math.min(MAX_FLICK_VELOCITY, v))
 }
 
-/**
- * Install touch scrolling. Uses private xterm internals, whose names the
- * unit tests check. Returns a disposer, or null if the internals have
- * changed. Call after `term.open()`.
- */
-export function patchTouchScroll(term: Terminal): (() => void) | null {
-  const core = (term as TerminalInternals)._core
-  const el = core?.element
-  const screen = core?.screenElement
-  const mouse = core?._mouseService
-  const coreMouse = core?.coreMouseService
-  const render = core?._renderService
-  if (
-    !el || !screen || !mouse?.getMouseReportCoords || !coreMouse?.triggerMouseEvent || !render
-  ) return null
-  // Both methods use `this`, so bind them.
-  const getCoords = mouse.getMouseReportCoords.bind(mouse)
-  const trigger = coreMouse.triggerMouseEvent.bind(coreMouse)
+/** Install touch scrolling. Returns a disposer. Call after `term.open()`. */
+export function patchTouchScroll(term: Terminal): () => void {
+  const {
+    element: el,
+    screenElement: screen,
+    _mouseService: mouse,
+    coreMouseService: coreMouse,
+    _renderService: render,
+  } = xtermCore(term)
 
   /** The touch being followed; null between gestures and for multi-touch. */
   let touchId: number | null = null
@@ -140,7 +94,6 @@ export function patchTouchScroll(term: Terminal): (() => void) | null {
   /** Whether this gesture scrolls xterm's own scrollback (the app does not
    *  track the mouse) rather than reporting to the app. */
   let local = false
-  let warnedNoCellHeight = false
   /** Recent positions in the current direction, for the release velocity.
    *  Timed by the event's timeStamp, not by when it was handled. */
   let samples: { t: number; y: number }[] = []
@@ -160,12 +113,11 @@ export function patchTouchScroll(term: Terminal): (() => void) | null {
     }
     if (!coreMouse.areMouseEventsActive) return
     // getMouseReportCoords reads only clientX/clientY, which a Touch has.
-    const pos = getCoords(at as MouseEvent, screen)
+    const pos = mouse.getMouseReportCoords(at as MouseEvent, screen)
     if (!pos) return
     const action = reports < 0 ? MOUSE_ACTION_UP : MOUSE_ACTION_DOWN
     for (let i = 0; i < Math.abs(reports); i++) {
-      // triggerMouseEvent mutates its argument, so pass a fresh object.
-      trigger({ ...pos, button: MOUSE_BUTTON_WHEEL, action })
+      coreMouse.triggerMouseEvent({ ...pos, button: MOUSE_BUTTON_WHEEL, action })
     }
   }
 
@@ -234,17 +186,7 @@ export function patchTouchScroll(term: Terminal): (() => void) | null {
       // Travel within the slop doesn't scroll.
       lastY = t.clientY
       local = !coreMouse.areMouseEventsActive
-      const cell = render.dimensions?.css?.cell?.height ?? 0
-      pxPerReport = cell > 0 ? cell * (local ? 1 : LINES_PER_REPORT) : 0
-    }
-    // No cell height: xterm's internals changed below what the install
-    // check can see. Do nothing, but warn once.
-    if (pxPerReport === 0) {
-      if (!warnedNoCellHeight) {
-        warnedNoCellHeight = true
-        console.warn('xterm internals changed: no cell height, touch cannot scroll the pane')
-      }
-      return
+      pxPerReport = render.dimensions.css.cell.height * (local ? 1 : LINES_PER_REPORT)
     }
     // Claim the gesture: no page pan, and no click at the end that
     // patchClickForwarding would send to the TUI.

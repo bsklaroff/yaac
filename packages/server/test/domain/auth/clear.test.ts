@@ -11,11 +11,10 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }))
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { clearAuth, loadToolAuthEntry } from '#domain/auth'
+import { addHttpsCredential, clearAuth, listAuth, loadToolAuthEntry } from '#domain/auth'
 import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, seeTailnetUser, setToolCredential } from '#db'
 import { getDb } from '#db/client'
 import { gitCredentials, projects, toolCredentials } from '#db/schema'
-import { addHttpsCredential, listCredentialSummaries } from '#domain/projects'
 import { writeProjectClaudePlaceholder, writeProjectCodexPlaceholder } from '@yaac/shared/tool-auth'
 import { claudeKeychainService } from '@yaac/shared/tool-auth-interactive'
 import {
@@ -100,7 +99,7 @@ describe('clearAuth', () => {
     // it goes only when deleted on its own, once none does.
     await clearAuth(ME, 'all')
 
-    expect((await listCredentialSummaries(ME)).map((c) => c.name)).toEqual(['gh'])
+    expect((await listAuth(ME)).gitCredentials.map((c) => c.name)).toEqual(['gh'])
     for (const tool of ['claude', 'codex', 'opencode', 'pi'] as const) {
       expect(await loadToolAuthEntry(ME, tool)).toBeNull()
     }

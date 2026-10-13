@@ -1,199 +1,156 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
 import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import {
   configEditProject,
   configEditDockerfile,
   configEditUserDockerfile,
 } from '#commands/config-edit'
-import { editFile } from '#commands/edit-file'
-import { ServerError } from '@yaac/shared/errors'
+import { startFakeApi, type FakeApi } from './fake-api'
 
-vi.mock('#commands/edit-file', () => ({
-  editFile: vi.fn().mockResolvedValue(undefined),
-}))
+/**
+ * The config edit commands against a fake server and a stub $EDITOR, which
+ * overwrites the scratch file with what the case puts in `EDIT_WITH`, or
+ * leaves it alone when that is unset.
+ */
+let api: FakeApi
+let scratch: string
+let logged: string[]
+let errors: string[]
 
-// Mock the `api` singleton with one fn per route. Like the real one, each
-// resolves to the unwrapped body, or undefined for void writes.
-const h = vi.hoisted(() => ({
-  rawGet: vi.fn(),
-  configPut: vi.fn(),
-  configDelete: vi.fn(),
-  dockerGet: vi.fn(),
-  dockerPut: vi.fn(),
-  userGet: vi.fn(),
-  userPut: vi.fn(),
-}))
+beforeAll(async () => {
+  api = await startFakeApi()
+  scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-config-edit-'))
+  const editor = path.join(scratch, 'editor.sh')
+  await fs.writeFile(editor, '#!/bin/sh\n[ -n "$EDIT_WITH" ] && printf %s "$EDIT_WITH" > "$1"\nexit 0\n', { mode: 0o755 })
+  vi.stubEnv('YAAC_SERVER_URL', api.url)
+  vi.stubEnv('EDITOR', editor)
+})
 
-// The project the user named resolves to its id once, up front.
-vi.mock('#commands/api', () => ({
-  resolveProjectId: (project: string) => Promise.resolve(`id-${project}`),
-  api: {
-    project: {
-      ':projectId': {
-        config: { raw: { $get: h.rawGet }, $put: h.configPut, $delete: h.configDelete },
-        dockerfile: { $get: h.dockerGet, $put: h.dockerPut },
-      },
-    },
-    config: { 'user-dockerfile': { $get: h.userGet, $put: h.userPut } },
-  },
-}))
+afterAll(async () => {
+  vi.unstubAllEnvs()
+  await api.close()
+  await fs.rm(scratch, { recursive: true, force: true })
+})
 
-/** Make the mocked $EDITOR overwrite the scratch file with `text`. */
-function editorWrites(text: string): void {
-  vi.mocked(editFile).mockImplementation(async (filePath: string) => {
-    await fs.writeFile(filePath, text)
-  })
+beforeEach(() => {
+  api.reset()
+  logged = []
+  errors = []
+  vi.spyOn(console, 'log').mockImplementation((msg: unknown) => { logged.push(String(msg)) })
+  vi.spyOn(console, 'error').mockImplementation((msg: unknown) => { errors.push(String(msg)) })
+  vi.stubEnv('EDIT_WITH', '')
+  process.exitCode = undefined
+  // The project the user named resolves to its id once, up front.
+  api.on('GET /api/project/demo', { json: { id: 'id-demo', name: 'demo' } })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  process.exitCode = undefined
+})
+
+const editorWrites = (text: string): void => { vi.stubEnv('EDIT_WITH', text) }
+const sent = (route: string): unknown[] => api.requests.filter((r) => r.route === route).map((r) => r.body)
+
+/** The scratch file a failed save kept, read back, then removed. */
+async function keptEdits(): Promise<string> {
+  const line = errors.find((m) => m.startsWith('Your edits are kept at '))
+  expect(line).toBeDefined()
+  const kept = line!.replace('Your edits are kept at ', '')
+  const text = await fs.readFile(kept, 'utf8')
+  await fs.rm(path.dirname(kept), { recursive: true, force: true })
+  return text
 }
 
 describe('configEditProject', () => {
-  const { rawGet, configPut, configDelete } = h
+  const RAW = 'GET /api/project/id-demo/config/raw'
+  const PUT = 'PUT /api/project/id-demo/config'
+  const DELETE = 'DELETE /api/project/id-demo/config'
 
   beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(editFile).mockReset().mockResolvedValue(undefined)
-    process.exitCode = undefined
-    rawGet.mockResolvedValue({ content: '{\n  "env": {}\n}\n' })
-    configPut.mockResolvedValue(undefined)
-    configDelete.mockResolvedValue(undefined)
+    api.on(RAW, { json: { content: '{\n  "env": {}\n}\n' } })
+    api.on(PUT, {})
+    api.on(DELETE, {})
   })
 
-  afterEach(() => {
-    process.exitCode = undefined
-  })
-
-  it('fetches raw content, edits a scratch copy, and PUTs the parsed JSON', async () => {
+  it('fetches the raw content, edits a scratch copy, and PUTs the parsed JSON', async () => {
     editorWrites('{ "env": { "FOO": "1" } }')
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-
     await configEditProject('demo')
-
-    expect(rawGet).toHaveBeenCalledWith({ param: { projectId: 'id-demo' } })
-    const editedPath = vi.mocked(editFile).mock.calls[0][0]
-    expect(editedPath).toMatch(/yaac-config\.json$/)
-    expect(configPut).toHaveBeenCalledWith({
-      param: { projectId: 'id-demo' },
-      json: { config: { env: { FOO: '1' } } },
-    })
-    expect(logSpy).toHaveBeenCalledWith('Saved project config.')
-    logSpy.mockRestore()
+    expect(sent(PUT)).toEqual([{ config: { env: { FOO: '1' } } }])
+    expect(logged).toContain('Saved project config.')
   })
 
   it('makes no write when the editor leaves the content unchanged', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     await configEditProject('demo')
-    expect(configPut).not.toHaveBeenCalled()
-    expect(logSpy).toHaveBeenCalledWith('No changes.')
-    logSpy.mockRestore()
+    expect(sent(PUT)).toEqual([])
+    expect(logged).toContain('No changes.')
   })
 
   it('an emptied buffer clears the config via DELETE', async () => {
     editorWrites('\n')
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     await configEditProject('demo')
-    expect(configDelete).toHaveBeenCalledWith({ param: { projectId: 'id-demo' } })
-    expect(configPut).not.toHaveBeenCalled()
-    logSpy.mockRestore()
+    expect(sent(DELETE)).toHaveLength(1)
+    expect(sent(PUT)).toEqual([])
   })
 
   it('invalid JSON fails with exitCode 1 and keeps the scratch file', async () => {
     editorWrites('{ not json')
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-
     await configEditProject('demo')
-
     expect(process.exitCode).toBe(1)
-    expect(configPut).not.toHaveBeenCalled()
-    const messages = errorSpy.mock.calls.map((c) => String(c[0]))
-    expect(messages.some((m) => /Invalid JSON/.test(m))).toBe(true)
-    const keptPath = messages.find((m) => m.startsWith('Your edits are kept at '))
-    expect(keptPath).toBeDefined()
-    const tmpPath = (keptPath as string).replace('Your edits are kept at ', '')
-    expect(await fs.readFile(tmpPath, 'utf8')).toBe('{ not json')
-    await fs.rm(tmpPath, { force: true })
-    errorSpy.mockRestore()
+    expect(sent(PUT)).toEqual([])
+    expect(errors.some((m) => /Invalid JSON/.test(m))).toBe(true)
+    expect(await keptEdits()).toBe('{ not json')
   })
 
   it('a server validation failure keeps the scratch file too', async () => {
     editorWrites('{ "nestedContainers": "yes" }')
-    configPut.mockRejectedValue(
-      new ServerError('VALIDATION', 'nestedContainers must be a boolean'))
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-
+    api.on(PUT, { status: 400, json: { error: { code: 'VALIDATION', message: 'nestedContainers must be a boolean' } } })
     await configEditProject('demo')
-
     expect(process.exitCode).toBe(1)
-    const messages = errorSpy.mock.calls.map((c) => String(c[0]))
-    expect(messages.some((m) => /nestedContainers must be a boolean/.test(m))).toBe(true)
-    expect(messages.some((m) => m.startsWith('Your edits are kept at '))).toBe(true)
-    errorSpy.mockRestore()
+    expect(errors.some((m) => /nestedContainers must be a boolean/.test(m))).toBe(true)
+    expect(await keptEdits()).toBe('{ "nestedContainers": "yes" }')
   })
 
   it('propagates a NOT_FOUND before opening the editor', async () => {
-    rawGet.mockRejectedValue(new ServerError('NOT_FOUND', 'project nope not found'))
-    await expect(configEditProject('nope')).rejects.toThrow('project nope not found')
-    expect(editFile).not.toHaveBeenCalled()
+    await expect(configEditProject('nope')).rejects.toThrow('no route GET /api/project/nope')
+    expect(sent(RAW)).toEqual([])
   })
 })
 
 describe('configEditDockerfile', () => {
-  const { dockerGet: get, dockerPut: put } = h
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(editFile).mockReset().mockResolvedValue(undefined)
-    process.exitCode = undefined
-    get.mockResolvedValue({ content: '' })
-    put.mockResolvedValue(undefined)
-  })
-
   it('round-trips the edited content verbatim', async () => {
+    api.on('GET /api/project/id-demo/dockerfile', { json: { content: '' } })
+    api.on('PUT /api/project/id-demo/dockerfile', {})
     editorWrites('RUN true\n')
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-
     await configEditDockerfile('demo')
-
-    expect(get).toHaveBeenCalledWith({ param: { projectId: 'id-demo' } })
-    expect(put).toHaveBeenCalledWith({ param: { projectId: 'id-demo' }, json: { content: 'RUN true\n' } })
-    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/next workspace created/))
-    logSpy.mockRestore()
+    expect(sent('PUT /api/project/id-demo/dockerfile')).toEqual([{ content: 'RUN true\n' }])
+    expect(logged).toContainEqual(expect.stringMatching(/next workspace created/))
   })
 })
 
 describe('configEditUserDockerfile', () => {
-  const { userGet: get, userPut: put } = h
+  const PUT = 'PUT /api/config/user-dockerfile'
 
   beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(editFile).mockReset().mockResolvedValue(undefined)
-    process.exitCode = undefined
-    get.mockResolvedValue({ content: '' })
-    put.mockResolvedValue(undefined)
+    api.on('GET /api/config/user-dockerfile', { json: { content: '' } })
   })
 
   it('edits over the config route (server-host file, works remotely)', async () => {
+    api.on(PUT, {})
     editorWrites('ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN true\n')
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
-
     await configEditUserDockerfile()
-
-    expect(get).toHaveBeenCalled()
-    expect(put).toHaveBeenCalledWith({
-      json: { content: 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN true\n' },
-    })
-    logSpy.mockRestore()
+    expect(sent(PUT)).toEqual([{ content: 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN true\n' }])
+    expect(logged).toContain('Saved the user Dockerfile.')
   })
 
   it('a rejected (non-layered) Dockerfile keeps the scratch file', async () => {
+    api.on(PUT, { status: 400, json: { error: { code: 'VALIDATION', message: 'user Dockerfile must be layered' } } })
     editorWrites('FROM scratch\n')
-    put.mockRejectedValue(new ServerError('VALIDATION', 'user Dockerfile must be layered'))
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-
     await configEditUserDockerfile()
-
     expect(process.exitCode).toBe(1)
-    const messages = errorSpy.mock.calls.map((c) => String(c[0]))
-    expect(messages.some((m) => /must be layered/.test(m))).toBe(true)
-    expect(messages.some((m) => m.startsWith('Your edits are kept at '))).toBe(true)
-    errorSpy.mockRestore()
+    expect(errors.some((m) => /must be layered/.test(m))).toBe(true)
+    expect(await keptEdits()).toBe('FROM scratch\n')
   })
 })

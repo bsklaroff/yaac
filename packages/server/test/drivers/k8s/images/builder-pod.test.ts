@@ -4,8 +4,6 @@
  * build-coordinator.test.ts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as registryModule from '#drivers/k8s/container/registry'
-import type * as runtimeModule from '#drivers/k8s/container/runtime'
 
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
@@ -21,20 +19,6 @@ vi.mock('#drivers/k8s/cluster/proxy-apply', async (importOriginal) => ({
 }))
 import type * as proxyApplyModule from '#drivers/k8s/cluster/proxy-apply'
 
-const mockImageExists = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({
-  ...(await importOriginal<typeof runtimeModule>()),
-  imageExists: mockImageExists,
-}))
-
-const mockRegistryHasTag = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof registryModule>()),
-  registryHasTag: mockRegistryHasTag,
-  registryRef: (tag: string) => `localhost:5001/${tag}`,
-  pushImageToRegistry: vi.fn(),
-}))
-
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
@@ -42,8 +26,6 @@ import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 beforeEach(() => {
   vi.clearAllMocks()
   mockVapAvailable.mockResolvedValue(true)
-  mockRegistryHasTag.mockResolvedValue(true)
-  mockImageExists.mockResolvedValue(false)
 })
 
 describe('deleteLeakedBuilderPods', () => {

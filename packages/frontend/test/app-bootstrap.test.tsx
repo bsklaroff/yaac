@@ -1,13 +1,8 @@
-// @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { screen, cleanup, waitFor } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { screen, waitFor } from '@testing-library/react'
 import App from '#App'
 import { mockFetch, renderWithClient, serverError, testQueryClient } from './harness'
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 describe('App', () => {
   it('shows the server\'s reason when it will not identify this device', async () => {

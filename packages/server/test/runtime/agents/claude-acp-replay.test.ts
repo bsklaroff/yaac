@@ -4,6 +4,11 @@ import path from 'node:path'
 import os from 'node:os'
 import { createRequire } from 'node:module'
 import { claudeSubagentThreads, claudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 /**
  * A tui claude conversation replayed as ACP events. The translation is done

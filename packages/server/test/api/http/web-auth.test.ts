@@ -1,12 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest'
 import { Hono } from 'hono'
-import {
-  fetchSiteCheck,
-  hostHeaderCheck,
-  identify,
-  originHeaderCheck,
-  type IdentityEnv,
-} from '#http'
+import { fetchSiteCheck, hostHeaderCheck, identify, originHeaderCheck, type IdentityEnv } from '#api/http/web-auth'
 import { BUILT_IN_USER_ID, closeDb } from '#db'
 import { asTailnet } from '@yaac/test-utils/api'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'

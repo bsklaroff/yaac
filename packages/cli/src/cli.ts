@@ -3,7 +3,6 @@ import { Command, Argument, Option, type Help } from 'commander'
 import pkg from '../../../package.json' with { type: 'json' }
 import { exitOnApiError } from '@yaac/shared/server-api'
 import { AGENT_MODES, PERMISSION_MODES } from '@yaac/shared/types'
-import type { ServerAccessOptions } from '@yaac/server/main/lifecycle'
 import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { projectCreate } from '#commands/project-create'
@@ -21,161 +20,42 @@ import { workspaceAgents } from '#commands/workspace-agents'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
-/* eslint-disable no-restricted-syntax -- The repo bans dynamic import, but
-   here every `import()` defers a costly module graph. See the note below. */
-
-// `#commands/cluster-*`, `@yaac/server/main/*` and the k8s substrate are
-// imported inside the actions that need them. Each pulls in
-// `@kubernetes/client-node` (about 2s to load), which most commands never
-// use. Every static import here slows down every invocation.
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { configGitIdentity } from '#commands/config-git-identity'
 import { authFake } from '#commands/auth-fake'
 import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
+import {
+  clusterStatus,
+  serverLogs,
+  serverRestart,
+  serverStart,
+  serverStatus,
+  serverStop,
+  type ServerAccessOptions,
+  type ServerLogsOptions,
+} from '#commands/server-lifecycle'
 import { DEFAULT_SERVER_PORT } from '@yaac/shared/server-port'
-import { env } from '@yaac/shared/env'
-import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import { bindInstall } from '@yaac/server/drivers/k8s/substrate/install-id'
 import { FAKE_AUTH_KINDS } from '@yaac/shared/types'
-import { clusterArgError, type ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
-import { clusterDataDir, readInstallRecord, recordedDriver } from '@yaac/shared/install-record'
-// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- names the data dir in refusals; builds no path
-import { clientDataDir, getDataDir, useInstallDataDir } from '@yaac/shared/paths'
-import { registerServer } from '@yaac/shared/server-config'
-import { legacyHostDataDirHint, moveLegacyClusterDataDir, moveLegacyHostDataDir } from '@yaac/shared/legacy-data-dir'
-import type { LocalServerStatus } from '@yaac/shared/types'
+import { clusterDataDir } from '@yaac/shared/install-record'
+import { useInstallDataDir } from '@yaac/shared/paths'
+import type { ClusterInstallArgs } from '@yaac/server/drivers/k8s/install'
+import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/install/podman'
+/* eslint-disable no-restricted-syntax -- The repo bans dynamic import, but
+   here every `import()` defers a costly module graph. See the note below. */
 
-/**
- * Throw a `cluster install` invocation's flag error, if it has one. Runs
- * the guards (arg-guards.ts) early so a typo doesn't cost loading the
- * kubernetes client first.
- */
-function assertClusterInstallArgs(options: ClusterInstallArgs): void {
-  const message = clusterArgError(options)
-  if (message !== null) throw new Error(message)
-}
+// `#commands/cluster`, `#commands/host-check` and `@yaac/server/main/*` are
+// imported inside the actions that need them: each loads the server or
+// `@kubernetes/client-node` (about 2s), which most commands never use.
+// Every static import here slows down every invocation, so only type
+// imports may name the server, and the import-free podman module.
+// `scripts/check-cli-externals.ts` fails the build if one reaches the
+// kubernetes client.
 
-/**
- * Which substrate this machine's running server uses, from its auth-exempt
- * `/health`, or undefined when none answers. A `YAAC_DRIVER` in this shell
- * says nothing about the running server. The origin comes from `server.json`
- * like every other command, not from the lock's port, which for an
- * in-cluster server is the port inside its pod. A selected server at a
- * non-loopback origin is another machine's, so it is not asked.
- */
-async function runningServerDriver(): Promise<string | undefined> {
-  try {
-    const { resolveServerTarget, isLoopbackOrigin } = await import('@yaac/shared/server-api')
-    const target = await resolveServerTarget()
-    if (!isLoopbackOrigin(target.baseUrl)) return undefined
-    const res = await fetch(`${target.baseUrl}/api/health`, {
-      signal: AbortSignal.timeout(2_000),
-    })
-    if (!res.ok) return undefined
-    const body = await res.json() as { driver?: string | null }
-    return body.driver ?? undefined
-  } catch {
-    return undefined
-  }
-}
-
-/**
- * Refuse a host `yaac server <verb>` on a data dir that is a cluster
- * install: its server is a Deployment, which `yaac cluster <verb>` manages.
- */
-async function refuseHostVerbOnCluster(verb: string): Promise<void> {
-  if (await recordedDriver() !== 'k8s') return
-  throw new Error(
-    `The data dir ${getDataDir()} is a cluster install, whose server runs in the cluster: `
-    + `use \`yaac cluster ${verb}\`.`,
-  )
-}
-
-/**
- * Run `yaac cluster start|stop|restart|logs` against this install's server
- * Deployment (docs/server-in-cluster.md). A kind install's log is a file in
- * its data dir; a byo install's is on a volume this machine cannot see, so
- * it is read through the cluster. A start selects the server, as a host
- * `yaac server start` does; a restart leaves a selection of another server
- * alone.
- */
-async function runClusterServerVerb(
-  verb: 'start' | 'stop' | 'restart' | 'logs',
-  opts: { follow?: boolean; lines?: number } = {},
-): Promise<void> {
-  const record = await readInstallRecord()
-  if (record?.driver !== 'k8s') {
-    throw new Error(`There is no cluster install at ${getDataDir()}. Create one with \`yaac cluster install\`.`)
-  }
-  if (verb === 'logs' && !record.byo) {
-    const { serverLogs } = await import('@yaac/server/main/lifecycle')
-    await serverLogs(opts)
-    return
-  }
-  const install = await import('@yaac/server/drivers/k8s/install')
-  // Checked first, or another cluster would answer "no Deployment".
-  const refusal = await install.foreignClusterRefusal()
-  if (refusal) throw new Error(refusal)
-  if (!await install.serverDeploymentExists()) {
-    throw new Error('This install has no server Deployment yet. Deploy it with `yaac cluster install`.')
-  }
-  if (verb === 'logs') {
-    await install.clusterServerLogs(opts)
-    return
-  }
-  if (verb === 'stop') {
-    await install.stopClusterServer()
-    console.error('[yaac] server stopped (Deployment scaled to 0)')
-    return
-  }
-  const origin = verb === 'start'
-    ? await install.startClusterServer()
-    : await install.restartClusterServer()
-  await registerServer(origin, 'k8s', { keepSelection: verb === 'restart' })
-  console.error(`[yaac] server ${verb === 'start' ? 'started' : 'restarted'} at ${origin}`)
-}
-
-/** `yaac server status` and `yaac cluster status`, as text or JSON. */
-function printServerStatus(status: LocalServerStatus, json: boolean | undefined): void {
-  if (json) {
-    console.log(JSON.stringify(status))
-  } else if (status.running === null) {
-    console.log('unknown: a --byo install keeps its server lock on the cluster')
-  } else if (!status.running) {
-    console.log('not running')
-  } else if (status.serverBuildId === status.cliBuildId) {
-    console.log('running')
-  } else {
-    const update = status.driver === 'k8s' ? 'yaac cluster install' : 'yaac server restart'
-    console.log(`running a different build than this CLI; update it with: ${update}`)
-  }
-}
-
-/**
- * Refuse a `yaac cluster …` command on a containerless install. The recorded
- * driver decides: it is this install's, whatever server is selected, and a
- * loopback origin can still be a tunnel to another machine. Only with
- * nothing recorded on a data dir clients share (a bare `yaac server run`
- * registers nothing) is a local running server asked.
- */
-async function refuseClusterOnContainerless(): Promise<void> {
-  const recorded = await recordedDriver()
-  const running = recorded === undefined && getDataDir() === clientDataDir()
-    ? await runningServerDriver()
-    : undefined
-  if ((recorded ?? running) !== 'containerless') return
-  const where = running !== undefined
-    ? 'The running server uses the containerless driver'
-    : 'This install runs the containerless driver'
-  throw new Error(
-    `${where}: workspaces run on this host and there is no cluster to manage.`
-    + '\n    Run `yaac host check` to verify this machine instead.',
-  )
-}
-
-// On Linux, point every command (and kind, which inherits our env) at the
-// rootful podman engine via CONTAINER_HOST. No-op on macOS and nested.
-if (env.driver === 'k8s') ensureRootfulPodmanHost()
+// On Linux, point every command at the rootful podman engine through
+// CONTAINER_HOST. kind inherits it, and so do a host server's workspaces,
+// whose hand-run podman and kind then use the engine the cluster runs on.
+// No-op on macOS.
+ensureRootfulPodmanHost()
 
 /** commander's accumulator for a repeatable option. */
 function collect(value: string, previous: string[]): string[] {
@@ -252,87 +132,47 @@ server
   .description('Start the server in the background')
   .option('--tailnet <host>', TAILNET_HELP)
   .option('--owner <login>', OWNER_HELP)
-  .action(async (options: ServerAccessOptions) => {
-    await refuseHostVerbOnCluster('start')
-    const { startServer } = await import('@yaac/server/main/lifecycle')
-    await startServer(options)
-  })
+  .action((options: ServerAccessOptions) => serverStart(options))
 
 server
   .command('stop')
   .description('Stop the running server')
-  .action(async () => {
-    await refuseHostVerbOnCluster('stop')
-    const { stopServer } = await import('@yaac/server/main/lifecycle')
-    await stopServer()
-  })
+  .action(() => serverStop())
 
 server
   .command('restart')
   .description('Restart the server (stop, then start)')
   .option('--tailnet <host>', TAILNET_HELP)
   .option('--owner <login>', OWNER_HELP)
-  .action(async (options: ServerAccessOptions) => {
-    await refuseHostVerbOnCluster('restart')
-    const { restartServer } = await import('@yaac/server/main/lifecycle')
-    await restartServer(options)
-  })
+  .action((options: ServerAccessOptions) => serverRestart(options))
 
 server
   .command('status')
   .description('Show whether the server is running, and whether it runs the installed build')
   .option('--json', 'Print the status as JSON (what the desktop app reads)')
-  .action(async (options: { json?: boolean }) => {
-    const { serverStatus } = await import('@yaac/server/main/lifecycle')
-    const status = await serverStatus()
-    // JSON still answers, so the desktop app can tell this data dir is a cluster's.
-    if (status.driver === 'k8s' && !options.json) {
-      console.log('this data dir is a cluster install; see `yaac cluster status`')
-      return
-    }
-    printServerStatus(status, options.json)
-    const hint = options.json ? null : await legacyHostDataDirHint()
-    if (hint) console.error(`[yaac] ${hint}`)
-  })
+  .action(serverStatus)
 
 server
   .command('logs')
   .description('Print the server log (~/.yaac-server/server-local/server.log)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
-  .action(async (options: { follow?: boolean; lines?: number }) => {
-    await refuseHostVerbOnCluster('logs')
-    const { serverLogs } = await import('@yaac/server/main/lifecycle')
-    await serverLogs(options)
-  })
+  .action((options: ServerLogsOptions) => serverLogs(options))
 
 // Every `yaac cluster` command acts on the cluster install's data dir
-// (`clusterDataDir`), while clients keep the shared `server.json`, and for
-// the install that data dir records.
+// (`clusterDataDir`), while clients keep the shared `server.json`.
 const cluster = program
   .command('cluster')
   .description('Manage the kubernetes cluster yaac runs workspaces on, and its server (data dir ~/.yaac-cluster)')
   .hook('preAction', async () => {
     useInstallDataDir(await clusterDataDir())
-    const record = await readInstallRecord()
-    if (record?.installId) {
-      bindInstall(record.installId, { hash: record.legacyDataDirHash, names: record.legacyNames })
-    }
   })
 
 cluster
   .command('check')
   .description('Verify cluster prerequisites (kubectl, registry, hostPath wiring)')
   .action(async () => {
-    await refuseClusterOnContainerless()
-    // Refuse a kubeconfig context other than the cluster this install was
-    // recorded in, or every call would go there (see cluster-identity.ts).
-    // `install` checks for itself, after a kind install has had the chance
-    // to create its cluster.
-    const { foreignClusterRefusal } = await import('@yaac/server/drivers/k8s/install')
-    const refusal = await foreignClusterRefusal()
-    if (refusal !== null) throw new Error(refusal)
-    const { clusterCheck } = await import('#commands/cluster-check')
+    const { clusterCheck } = await import('#commands/cluster')
     await clusterCheck()
   })
 
@@ -348,14 +188,7 @@ cluster
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
   .action(async (options: ClusterInstallArgs) => {
-    await refuseClusterOnContainerless()
-    assertClusterInstallArgs(options)
-    const { kindClusterExists } = await import('@yaac/server/drivers/k8s/install')
-    if (!options.byo && await moveLegacyClusterDataDir((name) => kindClusterExists(name))) {
-      useInstallDataDir(await clusterDataDir())
-    }
-    await moveLegacyHostDataDir()
-    const { clusterInstall } = await import('#commands/cluster-install')
+    const { clusterInstall } = await import('#commands/cluster')
     await clusterInstall(options)
   })
 
@@ -367,57 +200,48 @@ cluster
   )
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (options: { yes?: boolean }) => {
-    await refuseClusterOnContainerless()
-    // No foreign-cluster guard: kind deletes its cluster by name, not via
-    // the current context, and byo refuses delete outright.
-    const { runClusterDelete } = await import('@yaac/server/drivers/k8s/install')
-    await runClusterDelete(options)
+    const { clusterDelete } = await import('#commands/cluster')
+    await clusterDelete(options)
   })
 
 cluster
   .command('start')
   .description('Start the cluster\'s server (scale its Deployment back up) and select it')
   .action(async () => {
-    await runClusterServerVerb('start')
+    const { clusterServerVerb } = await import('#commands/cluster')
+    await clusterServerVerb('start')
   })
 
 cluster
   .command('stop')
   .description('Stop the cluster\'s server (scale its Deployment to zero; workspaces keep running)')
   .action(async () => {
-    await runClusterServerVerb('stop')
+    const { clusterServerVerb } = await import('#commands/cluster')
+    await clusterServerVerb('stop')
   })
 
 cluster
   .command('restart')
   .description('Restart the cluster\'s server pod on the image it runs (`cluster install` updates it)')
   .action(async () => {
-    await runClusterServerVerb('restart')
+    const { clusterServerVerb } = await import('#commands/cluster')
+    await clusterServerVerb('restart')
   })
 
 cluster
   .command('status')
   .description('Show whether the cluster\'s server is running, and whether it runs the installed build')
   .option('--json', 'Print the status as JSON (what the desktop app reads)')
-  .action(async (options: { json?: boolean }) => {
-    const { serverStatus } = await import('@yaac/server/main/lifecycle')
-    const status = await serverStatus()
-    if (status.driver === 'k8s') {
-      printServerStatus(status, options.json)
-    } else if (options.json) {
-      console.log(JSON.stringify({ ...status, driver: null, running: false, serverBuildId: null, origin: null }))
-    } else {
-      console.log('no cluster install; create one with `yaac cluster install`')
-    }
-  })
+  .action(clusterStatus)
 
 cluster
   .command('logs')
   .description('Print the cluster\'s server log (read through the cluster on a --byo install)')
   .option('-f, --follow', 'Keep printing new lines as they are appended')
   .option('-n, --lines <n>', 'Print only the last N lines', (v) => Number.parseInt(v, 10))
-  .action(async (options: { follow?: boolean; lines?: number }) => {
-    await runClusterServerVerb('logs', options)
+  .action(async (options: ServerLogsOptions) => {
+    const { clusterServerVerb } = await import('#commands/cluster')
+    await clusterServerVerb('logs', options)
   })
 
 const host = program

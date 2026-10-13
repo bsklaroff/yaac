@@ -3,14 +3,8 @@ import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  runYaac,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { makeServerApiClient, signInTestTool } from '@yaac/test-utils/api'
+import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import { makeServerApiClient, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { CLAUDE_STUB, CODEX_STUB } from '@yaac/test-utils/fixtures'
 import type { AgentTool, ToolAuthSummary } from '@yaac/shared/types'
 
@@ -25,10 +19,9 @@ import type { AgentTool, ToolAuthSummary } from '@yaac/shared/types'
  * reset. What is stored is read back through `GET /auth/list`, masked to a
  * key's last four characters.
  *
- * The YAAC_E2E_*_LOGIN / YAAC_E2E_OPENCODE_PROVIDER hooks (runToolLogin in
- * packages/shared/src/tool-auth-interactive.ts) and the stub vendor CLIs of
- * YAAC_E2E_*_LOGIN_CLI are read by the CLI process, which runs the browser
- * sign-in itself, not the server, so they are passed per runYaac call.
+ * The stub vendor CLIs of YAAC_E2E_*_LOGIN_CLI are read by the CLI process,
+ * which runs the browser sign-in itself, not the server, so they are passed
+ * per runYaac call.
  */
 describe('yaac auth (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
@@ -281,23 +274,6 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(listed).toContain(publicKey)
     })
 
-    it('persists a Claude OAuth bundle end-to-end via the test-only login hook', async () => {
-      const bundle = {
-        accessToken: 'sk-ant-oat01-fake-access',
-        refreshToken: 'sk-ant-ort01-fake-refresh',
-        expiresAt: Date.now() + 60_000,
-        scopes: ['user:inference'],
-        subscriptionType: 'pro',
-      }
-
-      const env = { ...testEnv.env, YAAC_E2E_CLAUDE_LOGIN: JSON.stringify(bundle) }
-      const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '2\n' })
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('Claude Code credentials saved.')
-
-      expect(await stored('claude')).toMatchObject({ kind: 'oauth', keyPreview: '***cess' })
-    })
-
     it('signs Claude in in-process and seeds an unset git identity from git config', async () => {
       const identity = async (): Promise<unknown> =>
         (await (await makeServerApiClient(server).config['git-identity'].$get()).json()).identity
@@ -338,51 +314,40 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(res.stderr).toContain('Login was not completed.')
     })
 
-    it('persists an OpenCode (OpenRouter) api key via the test-only login hook', async () => {
-      // opencode is api-key-only, so the hook holds a raw key. With no
-      // provider override the credential defaults to openrouter.
-      const env = { ...testEnv.env, YAAC_E2E_OPENCODE_LOGIN: 'sk-or-v1-test-key' }
-      const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '4\n' })
+    /** `yaac auth update` for an api-key tool, answering its prompts. */
+    const pasteApiKey = (choice: string, provider: string, key: string): ReturnType<typeof runYaac> =>
+      runYaac(testEnv.env, 'auth', 'update', {
+        stdinOnPrompt: [
+          { when: /Choice \[1-5\]: /, send: `${choice}\n` },
+          { when: /Provider \[openrouter\]: /, send: `${provider}\n` },
+          { when: /Paste your .*API key: /, send: `${key}\n` },
+        ],
+      })
+
+    it('stores an OpenCode api key for the default provider when Enter takes it', async () => {
+      const { stdout, exitCode } = await pasteApiKey('4', '', 'sk-or-v1-test-key')
       expect(exitCode).toBe(0)
       expect(stdout).toContain('OpenCode credentials saved.')
 
       expect(await stored('opencode')).toMatchObject({ kind: 'api-key', opencodeProvider: 'openrouter', keyPreview: '***-key' })
     })
 
-    it('persists an OpenCode NeuralWatt api key when the provider hook is set', async () => {
-      const env = {
-        ...testEnv.env,
-        YAAC_E2E_OPENCODE_LOGIN: 'nw-test-key',
-        YAAC_E2E_OPENCODE_PROVIDER: 'neuralwatt',
-      }
-      const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '4\n' })
+    it('stores an OpenCode api key for the provider typed at the prompt', async () => {
+      const { stdout, exitCode } = await pasteApiKey('4', 'neuralwatt', 'nw-test-key')
       expect(exitCode).toBe(0)
       expect(stdout).toContain('OpenCode credentials saved.')
 
       expect(await stored('opencode')).toMatchObject({ kind: 'api-key', opencodeProvider: 'neuralwatt', keyPreview: '***-key' })
     })
 
-    it('persists a Pi (OpenRouter) api key via the test-only login hook', async () => {
-      // pi is api-key-only, so the hook holds a raw key. With no provider
-      // override the credential defaults to openrouter. Menu choice 5 is pi.
-      const env = { ...testEnv.env, YAAC_E2E_PI_LOGIN: 'sk-or-v1-pi-test-key' }
-      const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '5\n' })
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('Pi credentials saved.')
-
+    it('stores a Pi api key for the default provider, or the one typed', async () => {
+      const fallback = await pasteApiKey('5', '', 'sk-or-v1-pi-test-key')
+      expect(fallback.exitCode).toBe(0)
+      expect(fallback.stdout).toContain('Pi credentials saved.')
       expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'openrouter', keyPreview: '***-key' })
-    })
 
-    it('persists a Pi Anthropic api key when the provider hook is set', async () => {
-      const env = {
-        ...testEnv.env,
-        YAAC_E2E_PI_LOGIN: 'sk-ant-pi-test-key',
-        YAAC_E2E_PI_PROVIDER: 'anthropic',
-      }
-      const { stdout, exitCode } = await runYaac(env, 'auth', 'update', { stdin: '5\n' })
-      expect(exitCode).toBe(0)
-      expect(stdout).toContain('Pi credentials saved.')
-
+      const typed = await pasteApiKey('5', 'anthropic', 'sk-ant-pi-test-key')
+      expect(typed.exitCode).toBe(0)
       expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'anthropic', keyPreview: '***-key' })
     })
   })

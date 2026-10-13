@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { DeleteIcon } from '#lib/icons'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { removeProjectInBackground } from '#lib/projectOps'
 import { useReadOnly } from '#lib/viewer'
 import { useProjectName } from '#lib/projectIdentity'
@@ -31,19 +31,15 @@ export function ProjectActionsMenu({ projectId, remoteUrl }: {
           tracking-tight text-text outline-none transition hover:bg-surface-2 data-[popup-open]:bg-surface-2">
           <span className="truncate">{name}</span>
         </Menu.Trigger>
-        <Menu.Portal>
-          <Menu.Positioner side="bottom" align="start" sideOffset={6}>
-            <Menu.Popup className={clsx('min-w-[170px]', POPUP)}>
-              <Menu.Item
-                className={clsx(MENU_ITEM, 'text-danger data-[highlighted]:bg-[#c94a4a]/15 data-[highlighted]:text-danger')}
-                onClick={() => setConfirm(true)}
-              >
-                <DeleteIcon size={14} />
-                Remove project
-              </Menu.Item>
-            </Menu.Popup>
-          </Menu.Positioner>
-        </Menu.Portal>
+        <MenuPopup side="bottom" align="start" sideOffset={6} className="min-w-[170px]">
+          <Menu.Item
+            className={clsx(MENU_ITEM, 'text-danger data-[highlighted]:bg-[#c94a4a]/15 data-[highlighted]:text-danger')}
+            onClick={() => setConfirm(true)}
+          >
+            <DeleteIcon size={14} />
+            Remove project
+          </Menu.Item>
+        </MenuPopup>
       </Menu.Root>
 
       <ConfirmDialog

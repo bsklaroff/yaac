@@ -5,7 +5,7 @@
 Under the `k8s` driver the server is already an in-cluster Deployment
 (docs/server-in-cluster.md). Intent persists as database rows, and the
 server's reconcile loop (`main/reconciler.ts`, step list in
-`domain/reconcile.ts`) converges the cluster toward it from informer caches
+`main/reconcile-steps.ts`) converges the cluster toward it from informer caches
 (docs/event-driven-reconcile.md). Provisioning itself is still an
 imperative call stack (`domain/workspaces/create.ts` down to
 `launchWorkspace` in `drivers/k8s/workspaces/launch.ts`), and orphaned or

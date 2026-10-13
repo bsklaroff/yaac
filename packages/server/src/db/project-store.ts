@@ -1,7 +1,7 @@
 import { eq, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { projects, projectToolDefaults } from './schema'
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { nullsToUndefined } from '#lib/nulls'
 import type { AgentTool, EgressAllowlist, ProjectMeta, ToolCreateDefaults } from '@yaac/shared/types'
 

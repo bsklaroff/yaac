@@ -1,6 +1,7 @@
 /**
  * Fail the build when dist/cli.js imports an external package that is not
- * declared in the root package.json `dependencies`.
+ * declared in the root package.json `dependencies`, or when its static
+ * import graph reaches a package every command would pay to load.
  *
  * tsup bundles the @yaac/* packages but leaves npm deps external, so the
  * published CLI resolves them from the root manifest, while dev and tests
@@ -18,8 +19,35 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const metafilePath = path.join(repoRoot, 'dist', 'metafile-esm.json')
 
+/**
+ * Packages only some commands need, which load on every invocation once a
+ * static import reaches them (`@kubernetes/client-node` adds over a second
+ * to `yaac --version`). Commands that need them import lazily.
+ */
+const LAZY_ONLY = ['@kubernetes/client-node']
+
 interface Metafile {
-  outputs: Record<string, { imports: { path: string; external?: boolean }[] }>
+  outputs: Record<string, { imports: { path: string; kind?: string; external?: boolean }[] }>
+}
+
+/** The external packages `entry` loads before running anything: its static
+ *  imports, followed through the chunks they name. */
+function staticExternals(metafile: Metafile, entry: string): Set<string> {
+  const found = new Set<string>()
+  const seen = new Set<string>()
+  const queue = [entry]
+  while (queue.length > 0) {
+    const output = metafile.outputs[queue.pop()!]
+    for (const imp of output?.imports ?? []) {
+      if (imp.kind === 'dynamic-import') continue
+      if (imp.external) found.add(packageName(imp.path))
+      else if (!seen.has(imp.path)) {
+        seen.add(imp.path)
+        queue.push(imp.path)
+      }
+    }
+  }
+  return found
 }
 
 function packageName(specifier: string): string {
@@ -44,7 +72,17 @@ async function main(): Promise<void> {
     }
   }
 
+  const eager = [...staticExternals(metafile, 'dist/cli.js')].filter((name) => LAZY_ONLY.includes(name))
+
   await fs.rm(metafilePath)
+
+  if (eager.length > 0) {
+    console.error(
+      `dist/cli.js statically imports ${eager.join(', ')}, so every command loads it. `
+      + 'Import the module that needs it with `await import()` inside the command.',
+    )
+    process.exit(1)
+  }
 
   if (missing.size > 0) {
     console.error(

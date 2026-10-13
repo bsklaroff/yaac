@@ -1,14 +1,10 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach } from 'vitest'
-import { screen, cleanup } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { screen } from '@testing-library/react'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
 import { useUiStore } from '#lib/store'
 import { renderWithClient } from './harness'
 import type { ProvisioningWorkspaceEntry, ServerSnapshot } from '@yaac/shared/types'
 
-afterEach(() => {
-  cleanup()
-})
 
 const failed = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
   workspaceId: 'w1',

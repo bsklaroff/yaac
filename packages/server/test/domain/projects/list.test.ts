@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir } from '@yaac/shared/project-paths'

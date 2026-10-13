@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { POPUP, MENU_ITEM } from '#components/ui/menu'
+import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
-import { windowApi } from '#components/WindowControls'
+import { windowApi } from '#lib/platform'
 import { portLabel, previewUrl, normalizePreviewNav } from '#lib/preview'
 import {
   NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
@@ -212,44 +212,40 @@ export function WorkspacePreview({
           <Menu.Trigger aria-label="Preview menu" title="More" className={iconBtn}>
             <MoreIcon size={14} />
           </Menu.Trigger>
-          <Menu.Portal>
-            <Menu.Positioner side="bottom" align="end" sideOffset={6}>
-              <Menu.Popup className={clsx('min-w-[180px]', POPUP)}>
-                <Menu.Item className={MENU_ITEM} onClick={goHome}>
-                  <HomeIcon size={14} /> Home
-                </Menu.Item>
-                <Menu.Item className={MENU_ITEM} onClick={copyUrl}>
-                  <CopyIcon size={14} /> Copy URL
-                </Menu.Item>
+          <MenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[180px]">
+            <Menu.Item className={MENU_ITEM} onClick={goHome}>
+              <HomeIcon size={14} /> Home
+            </Menu.Item>
+            <Menu.Item className={MENU_ITEM} onClick={copyUrl}>
+              <CopyIcon size={14} /> Copy URL
+            </Menu.Item>
+            <div className="my-1 h-px bg-border" />
+            <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-text-faint">
+              Responsive
+            </div>
+            {DEVICE_PRESETS.map((p) => (
+              <Menu.Item key={p.label} className={MENU_ITEM} onClick={() => setDeviceWidth(p.width)}>
+                <p.Icon size={14} />
+                <span className="flex-1">{p.label}{p.width ? ` · ${p.width}` : ''}</span>
+                {deviceWidth === p.width && <CheckIcon size={13} />}
+              </Menu.Item>
+            ))}
+            <div className="my-1 h-px bg-border" />
+            <Menu.Item className={MENU_ITEM} onClick={hardReload}>
+              <ReloadIcon size={13} /> Reload ignoring cache
+            </Menu.Item>
+            <Menu.Item className={MENU_ITEM} onClick={openDevTools}>
+              <DevToolsIcon size={14} /> Open DevTools
+            </Menu.Item>
+            {onStopForwarding && mapping && (
+              <>
                 <div className="my-1 h-px bg-border" />
-                <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-text-faint">
-                  Responsive
-                </div>
-                {DEVICE_PRESETS.map((p) => (
-                  <Menu.Item key={p.label} className={MENU_ITEM} onClick={() => setDeviceWidth(p.width)}>
-                    <p.Icon size={14} />
-                    <span className="flex-1">{p.label}{p.width ? ` · ${p.width}` : ''}</span>
-                    {deviceWidth === p.width && <CheckIcon size={13} />}
-                  </Menu.Item>
-                ))}
-                <div className="my-1 h-px bg-border" />
-                <Menu.Item className={MENU_ITEM} onClick={hardReload}>
-                  <ReloadIcon size={13} /> Reload ignoring cache
+                <Menu.Item className={MENU_ITEM} onClick={() => onStopForwarding(mapping.containerPort)}>
+                  <CloseIcon size={13} /> Stop forwarding :{mapping.containerPort}
                 </Menu.Item>
-                <Menu.Item className={MENU_ITEM} onClick={openDevTools}>
-                  <DevToolsIcon size={14} /> Open DevTools
-                </Menu.Item>
-                {onStopForwarding && mapping && (
-                  <>
-                    <div className="my-1 h-px bg-border" />
-                    <Menu.Item className={MENU_ITEM} onClick={() => onStopForwarding(mapping.containerPort)}>
-                      <CloseIcon size={13} /> Stop forwarding :{mapping.containerPort}
-                    </Menu.Item>
-                  </>
-                )}
-              </Menu.Popup>
-            </Menu.Positioner>
-          </Menu.Portal>
+              </>
+            )}
+          </MenuPopup>
         </Menu.Root>
       </div>
 

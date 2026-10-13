@@ -127,8 +127,9 @@ Kernels >= 6.9 allow that mount in a user namespace, but loading Calico's
 BPF programs still needs CAP_BPF in the initial namespace, so rootful is
 required either way.
 
-`ensureRootfulPodmanHost` (`#drivers/k8s/container`, runtime.ts) sets
-`CONTAINER_HOST=unix:///run/podman/podman.sock` at CLI startup. kind
+`ensureRootfulPodmanHost` (`#drivers/k8s/install`, podman.ts) sets
+`CONTAINER_HOST=unix:///run/podman/podman.sock` at the start of every
+`yaac cluster` command that reaches the cluster. kind
 inherits it, so its podman provider uses the rootful engine, and every
 `podman build`/`push` targets the same store. A `CONTAINER_HOST` you set
 yourself is left alone.
@@ -354,7 +355,7 @@ host folder. The rest of the config (the containerd `config_path` patch,
 the kubelet swap patch, `disableDefaultCNI`) is cluster-wide.
 
 Host-side loops over the node list apply the kind node fixups and write
-both registries' `hosts.toml`. A node added later gets its `hosts.toml`
+the main registry's `hosts.toml`. A node added later gets its `hosts.toml`
 and is admitted by the node-address policies through the server's
 node-sync (see "Bring your own cluster"); DaemonSets (the gVisor
 installer, Calico, netd) cover it on their own.
@@ -490,15 +491,15 @@ every install on the cluster shares. The `Retain` volumes survive on
 purpose; it says how to remove them by install id.
 
 **A node that joins a running install is synced by the server.** Each
-node needs the registries' `hosts.toml` (or it cannot pull any yaac image,
-the gVisor installer's included) and its address in every policy that
-admits nodes (kubelet probes, containerd pulls, netd's Envoy). Install and
-the registries' ensures write both for the nodes that exist then. The
+node needs the main registry's `hosts.toml` (or it cannot pull any yaac
+image, the gVisor installer's included) and its address in every policy
+that admits nodes (kubelet probes, containerd pulls, netd's Envoy). Install
+and the registries' ensures write both for the nodes that exist then. The
 reconcile pass's `node-sync` step re-reads the node list on every resync
 (60s). When the address set has changed it re-applies the node-address
 policies (all but the builder's egress policy, which every build re-applies
-anyway). Separately, it writes the main and project registries' `hosts.toml`
-once to each node, keyed by node name and uid, as soon as the node is
+anyway). Separately, it writes the main registry's `hosts.toml` once to each
+node, keyed by node name and uid, as soon as the node is
 Ready. Those writes run in the background and a failed node is retried on
 a later pass, so a node that cannot run pods never stalls the reconcile
 loop.
@@ -640,7 +641,7 @@ eval "$(pnpm -s kind-byo env)"   # its data dir, kubeconfig, kind cluster name a
 pnpm kind-byo down   # delete the cluster; the data dir keeps the install's files
 ```
 
-A repo tool (`packages/test-utils/src/kind-byo.ts`), not a CLI mode. It
+A repo tool (`test/support/kind-byo.ts`), not a CLI mode. It
 creates a second kind cluster set up to look like a cloud one, then runs a
 real `yaac cluster install --byo` into it with the built CLI. The CLI does
 not know about it, which makes it a real test of the byo path. It is how

@@ -4,51 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import {
-  allowWorkspaceHost,
-  createWorkspaceFolder,
-  deleteWorkspaceEntry,
-  dismissWorkspacePort,
-  forwardWorkspacePort,
-  unforwardWorkspacePort,
-  getAcpStoredImage,
-  getAgentSessionTranscript,
-  getWorkspaceBlockedHosts,
-  getWorkspaceChanges,
-  getWorkspaceDetail,
-  listActiveWorkspaces,
-  listStoppedWorkspaces,
-  listWorkspaceDir,
-  listWorkspaceGroups,
-  readWorkspaceFile,
-  readWorkspaceFileAtRev,
-  readWorkspaceMedia,
-  dismissProvisioning,
-  registerProvisioning,
-  renameWorkspaceEntry,
-  resolveGroup,
-  resolveWorkspace,
-  resolveWorkspaceContainer,
-  resolveWorkspaceId,
-  resolveWorkspaceRecord,
-  resolveRestartTarget,
-  restartWorkspace,
-  runMamaCommand,
-  saveWorkspaceAttachment,
-  toAgentSessionEntry,
-  writeWorkspaceFile,
-} from '#domain/workspaces'
-import {
-  claimDraft,
-  discardDraftWorkspace,
-  discardQueuedWorkspace,
-  queueWorkspace,
-  runQueuedWorkspace,
-  saveDraftWorkspace,
-  startWorkspace,
-  stopWorkspace,
-  updateQueuedWorkspace,
-} from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, writeWorkspaceFile, runMamaCommand } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -62,9 +18,11 @@ import {
   setWorkspaceGroup,
   setWorkspaceGroupPinned,
   setWorkspaceTitle,
+  type WorkspaceRow,
 } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
-import { requireDriverFeature, type IdentityEnv } from '#http'
+import { requireDriverFeature } from '#api/http/driver-features'
+import type { IdentityEnv } from '#api/http/web-auth'
 import { authorizeProject, workspacePrincipal } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
 import { serveHostedRepo } from '#domain/projects'
@@ -93,12 +51,10 @@ const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional(
 // success, so a failure keeps the draft.
 const draftId = z.string().min(1).optional()
 
-/** The calling workspace a `yaac-mama` or hosted-git request is answered
- *  for. */
-type MamaCaller = { workspaceId: string; projectId: string }
-
+/** Finds the row of the calling workspace a `yaac-mama` or hosted-git
+ *  request is answered for. */
 type IdentifyCaller = (bearer: string, header: (name: string) => string | undefined)
-  => Promise<MamaCaller | undefined>
+  => Promise<WorkspaceRow | undefined>
 
 /**
  * The endpoints a workspace calls: `yaac-mama`, and the remote of a project
@@ -112,7 +68,7 @@ type IdentifyCaller = (bearer: string, header: (name: string) => string | undefi
  * `x-yaac-conversation-id`).
  */
 function mamaRoute(identifyCaller: IdentifyCaller) {
-  const callerOf = async (c: Context): Promise<MamaCaller> => {
+  const callerOf = async (c: Context): Promise<WorkspaceRow> => {
     const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
     const caller = await identifyCaller(bearer, (name) => c.req.header(name))
     if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama credential')
@@ -144,6 +100,8 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
           principal: await workspacePrincipal(caller.workspaceId, caller.projectId),
           projectId: caller.projectId,
           ...(handle?.declaredTool !== undefined ? { tool: handle.declaredTool } : {}),
+          permissionMode: caller.permissionMode,
+          mode: caller.mode,
         },
         { command, args: args ?? {}, body: body ?? '' },
       )
@@ -244,54 +202,36 @@ export const workspaceApp = new Hono<IdentityEnv>()
       if (body.workspaceId !== undefined && await findWorkspaceRow(workspaceId)) {
         throw new ServerError('CONFLICT', `workspace id ${workspaceId} is already in use`)
       }
-      // Claimed before the row is reserved, so a second run of one draft is
-      // refused outright instead of leaving a failed row.
+      // Claimed first, so a second run of one draft is refused outright.
       const draft = await claimDraft(c.get('principal'), body.project, body.draftId)
       // Without a title, keep the one its draft was shown under.
       const title = normalizeTitle(body.title ?? '') || draft.generatedTitle(body.prompt)
-      // Reserve the id before streaming, so a second create on an id still
-      // provisioning is refused. If the create fails before taking over the
-      // reservation (bad group or model), it is dropped rather than left
-      // failed; the error is already in the stream.
-      try {
-        registerProvisioning({
-          workspaceId,
-          projectId: body.project,
-          tool: body.tool ?? 'claude',
-          kind: 'create',
-          ...(title ? { title } : {}),
-          reserved: true,
-        })
-      } catch (err) {
+      // Checked and registered before streaming, so a bad setting or an id
+      // still provisioning is a plain error rather than a failed row.
+      const run = await prepareStart(c.get('principal'), {
+        projectId: body.project,
+        workspaceId,
+        ...(body.tool !== undefined ? { tool: body.tool } : {}),
+        ...(body.model !== undefined ? { model: body.model } : {}),
+        ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
+        ...(body.effort !== undefined ? { effort: body.effort } : {}),
+        ...(body.mode !== undefined ? { mode: body.mode } : {}),
+        ...(body.branch !== undefined ? { branch: body.branch } : {}),
+        ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
+        ...(title ? { title } : {}),
+        ...(body.group !== undefined ? { group: body.group } : {}),
+        // A user request, so its settings become the project's defaults.
+        rememberDefaults: true,
+        claimSpare: true,
+        draft: {
+          ...(body.draftId !== undefined ? { id: body.draftId } : {}),
+          ...(body.draftOnFailure === true ? { onFailure: true } : {}),
+        },
+      }).catch((err: unknown) => {
         draft.release()
         throw err
-      }
-      return streamProvisioned(c, workspaceId, (onProgress) => draft.run(async () => {
-        // Resolve first so a typo'd group doesn't leave a half-built workspace.
-        const groupId = body.group === undefined
-          ? undefined
-          : (await resolveGroup(body.project, body.group, { create: true })).groupId
-        return await startWorkspace(c.get('principal'), {
-          projectId: body.project,
-          workspaceId,
-          ...(body.tool !== undefined ? { tool: body.tool } : {}),
-          ...(body.model !== undefined ? { model: body.model } : {}),
-          ...(body.permissionMode !== undefined ? { permissionMode: body.permissionMode } : {}),
-          ...(body.effort !== undefined ? { effort: body.effort } : {}),
-          ...(body.mode !== undefined ? { mode: body.mode } : {}),
-          ...(body.branch !== undefined ? { branch: body.branch } : {}),
-          ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
-          ...(title ? { title } : {}),
-          ...(groupId !== undefined ? { groupId } : {}),
-          // A user request, so its settings become the project's defaults.
-          rememberDefaults: true,
-          claimSpare: true,
-          draft: {
-            ...(body.draftId !== undefined ? { id: body.draftId } : {}),
-            ...(body.draftOnFailure === true ? { onFailure: true } : {}),
-          },
-        }, onProgress)
-      }))
+      })
+      return streamProvisioned(c, (onProgress) => draft.run(() => run(onProgress)))
     },
   )
   .post(
@@ -303,24 +243,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // first conversation, else its row. No `gitUser`: the commit identity is a server
       // setting.
     })),
-    async (c) => {
-      const body = c.req.valid('json')
-      // Resolve the prefix first so the row, stream and restart all use the
-      // exact id.
-      const target = await resolveRestartTarget(c.get('principal'), body.workspaceId)
-      // Registered here rather than by restartWorkspace's own `ensure`, so a
-      // restart of a workspace already provisioning is a plain 409, and the
-      // row is filed under the workspace's group instead of the sidebar top.
-      registerProvisioning({
-        workspaceId: target.workspaceId,
-        projectId: target.projectId,
-        tool: target.tool,
-        kind: 'restart',
-        ...(target.groupId !== undefined ? { groupId: target.groupId } : {}),
-      })
-      return streamProvisioned(c, target.workspaceId, (onProgress) =>
-        restartWorkspace(c.get('principal'), target.workspaceId, { onProgress }))
-    },
+    // Checked and registered before streaming, so an unknown workspace or
+    // one already provisioning is a plain 404 or 409.
+    async (c) => streamProvisioned(c, await prepareRestart(c.get('principal'), c.req.valid('json').workspaceId)),
   )
   .post(
     '/stop',
@@ -502,9 +427,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  // File a workspace under a group given by name or id (`yaac group move`,
-  // `yaac-mama group move`). The sidebar uses `/set-group` instead, where a
-  // drag onto a since-deleted group must fail rather than recreate it by name.
+  // File a workspace under a group given by id or name (`yaac group move`,
+  // the sidebar). Only `create` makes a group a name matches none of, so a
+  // sidebar drag onto a since-deleted group fails rather than recreating it.
   .post(
     '/group/move',
     zv('json', z.object({
@@ -521,38 +446,13 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // Accept an id or unique prefix (what every surface prints). The
       // membership write matches exactly, so an unresolved prefix would
       // silently file nothing.
-      const found = await resolveWorkspace(workspaceId, { projectId })
-      if (!found.ok) {
-        // An ambiguous prefix is a validation error, not a missing workspace.
-        throw found.reason === 'ambiguous'
-          ? new ServerError(
-            'VALIDATION',
-            `Ambiguous workspace prefix in ${projectId}: ${workspaceId} — use a longer prefix`,
-          )
-          : new ServerError('NOT_FOUND', `No such workspace in ${projectId}: ${workspaceId}`)
-      }
-      const resolved = found.workspaceId
+      const resolved = await resolveProjectWorkspace(workspaceId, projectId)
       const target = group === null
         ? null
         : await resolveGroup(projectId, group, { create: create ?? false })
       await setWorkspaceGroup(projectId, resolved, target?.groupId ?? null)
       // Include the name, since the caller may have passed an id.
       return c.json({ groupId: target?.groupId ?? null, name: target?.name ?? null })
-    },
-  )
-  // File a workspace under a group by id, or ungroup it (null).
-  .post(
-    '/set-group',
-    zv('json', z.object({
-      projectId: projectRef,
-      workspaceId: z.string().min(1),
-      groupId: z.string().min(1).nullable(),
-    })),
-    async (c) => {
-      const { projectId, workspaceId, groupId } = c.req.valid('json')
-      await authorizeProject(c.get('principal'), projectId)
-      await setWorkspaceGroup(projectId, workspaceId, groupId)
-      return c.body(null, 204)
     },
   )
   // Drop a failed provisioning entry (successful ones clear themselves).

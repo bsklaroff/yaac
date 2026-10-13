@@ -2,17 +2,24 @@ import {
   claimSpareWorkspace,
   countWorkspaces,
   createRuntimeSnapshot,
+  declareWorkspaceForwards,
   deregisterWorkspace,
   destroyProjectSubstrate,
   destroyWorkspace,
   detachedTeardownCommand,
+  dialWorkspacePort,
+  dismissWorkspacePort,
   findWorkspace,
   findWorkspaceForTeardown,
-  getWorkspaceChanges,
+  forwardWorkspacePort,
+  getUnforwardedPorts,
+  getWorkspacePorts,
   launchWorkspace,
   listWorkspaces,
   prepareWorkspaceSubstrate,
+  reapNodeLocal,
   registerWorkspace,
+  removeWorkspaceForwarder,
   salvageWorkspaceImages,
 } from '#drivers/k8s/workspaces'
 import {
@@ -24,24 +31,12 @@ import {
 } from '#drivers/k8s/egress'
 import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
 import {
-  prepareWorkspaceImage,
-  reapNodeLocal,
-  retryImageBuild,
-} from '#drivers/k8s/images'
-import {
   dismissImageBuild,
   getImageBuildLog,
   listImageBuilds,
-} from '#drivers/k8s/image-engine'
-import {
-  declareWorkspaceForwards,
-  dialWorkspacePort,
-  dismissWorkspacePort,
-  forwardWorkspacePort,
-  getUnforwardedPorts,
-  getWorkspacePorts,
-  removeWorkspaceForwarder,
-} from '#drivers/k8s/forwarders'
+  prepareWorkspaceImage,
+  retryImageBuild,
+} from '#drivers/k8s/images'
 import {
   SERVER_MAMA_PORT,
   bootStreamd,
@@ -82,7 +77,6 @@ export function createK8sDriver(): WorkspaceDriver {
     findForTeardown: (workspaceId, opts) => findWorkspaceForTeardown(workspaceId, opts),
     list: (projectId, opts) => listWorkspaces(projectId, opts),
     count: () => countWorkspaces(),
-    changes: getWorkspaceChanges,
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => k8sReconcileSteps(),
 

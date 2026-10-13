@@ -2,15 +2,15 @@
 // SEALED_FOLDERS).
 //
 // This feature owns the in-cluster datapath (egress proxy, netd, the main
-// and per-project registries, the npm cache) and the tag or digest of every
-// image yaac ships. Building those images is `#drivers/k8s/install`'s job.
+// and per-project registries, the npm cache), the main registry's client
+// and write grants, and the tag or digest of every image yaac ships.
+// Building and pushing those images is `#drivers/k8s/install`'s job.
 //
 // Each name added here needs a unit test in
 // packages/server/test/drivers/k8s/cluster/.
 //
 // Not here, so their users avoid loading cluster code: the datapath's names
-// and ports (`#drivers/k8s/substrate`) and the main registry client
-// (`#drivers/k8s/container`). Only the registry workload is here.
+// and ports (`#drivers/k8s/substrate`).
 
 export {
   buildEgressWorldDenyNpManifest,
@@ -70,9 +70,34 @@ export {
   proxyRegistrationName,
 } from './proxy-manifests'
 export {
+  baseImageHash,
+  contextHash,
+  fileHash,
+  imagePrefix,
+  resolveImageChain,
+  resolveTrustedLayers,
+  stringHash,
+  toolsContentHash,
+  type ImageLayer,
+} from './image-tags'
+export {
   ensureMainRegistry,
   mainRegistryExec,
 } from './main-registry'
+export {
+  invalidateRegistryEndpoint,
+  missingPrebuiltImage,
+  prebuiltRef,
+  registryEndpoint,
+  registryHost,
+  registryReachable,
+  registryRef,
+  registryTagState,
+  REGISTRY_NAMESPACE,
+  REGISTRY_SERVICE_NAME,
+  REGISTRY_SERVICE_PORT,
+} from './registry'
+export { REGISTRY_GRANT_NAMESPACE, registryAuthFile } from './registry-grant'
 export {
   NGINX_MIRROR_TAG,
   NGINX_UPSTREAM_IMAGE,

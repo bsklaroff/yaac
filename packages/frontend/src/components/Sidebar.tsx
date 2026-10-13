@@ -1,29 +1,12 @@
 import type { JSX, KeyboardEvent, PointerEvent } from 'react'
 import { SidebarIcon } from '#lib/icons'
-import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
-import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
-import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
-import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
-import { ServerBadge } from '#components/ServerBadge'
-import { SkillsButton } from '#components/SkillsButton'
-import { UsageBadge } from '#components/UsageBadge'
-import { WorkspaceList } from '#components/WorkspaceList'
+import { ListActions, ListBadges, ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
 import {
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
   useUiStore,
 } from '#lib/store'
-import type {
-  ProjectSummary,
-  GitAuthFailure,
-  DraftWorkspaceEntry,
-  HeldWorkspaceEntry,
-  ProvisioningWorkspaceEntry,
-  QueuedWorkspaceEntry,
-  WorkspaceGroupSummary,
-  WorkspaceListEntry,
-} from '@yaac/shared/types'
 
 // The list body lives in WorkspaceList, shared with the mobile screen.
 // Re-exported for App's Alt+K/J row cycling and the tests.
@@ -111,39 +94,7 @@ function ResizeHandle(): JSX.Element {
  * The fixed `#root` (index.css) confines it too; the wrapper does not rely on
  * that.
  */
-export function Sidebar({
-  projectId,
-  project,
-  projectRemoteUrl,
-  workspaces,
-  groups,
-  provisioning,
-  queued,
-  held,
-  drafts,
-  connected,
-  gitAuthFailures,
-}: {
-  projectId: string | null
-  /** The active project's stopped counts, for the Stopped section. */
-  project?: Pick<ProjectSummary, 'stoppedCount' | 'unseenDeaths'>
-  /** Active project's git remote ('' until the snapshot loads), typed to
-   *  confirm project removal. */
-  projectRemoteUrl: string
-  workspaces: WorkspaceListEntry[]
-  /** The active project's sidebar groups. */
-  groups: WorkspaceGroupSummary[]
-  provisioning: ProvisioningWorkspaceEntry[]
-  /** The active project's queued workspaces, and the stopped workspaces they
-   *  still wait on. */
-  queued: QueuedWorkspaceEntry[]
-  held: HeldWorkspaceEntry[]
-  /** The active project's draft workspaces. */
-  drafts: DraftWorkspaceEntry[]
-  connected: boolean
-  /** The active project's rejected git credentials (project-wide flag). */
-  gitAuthFailures: GitAuthFailure[]
-}): JSX.Element {
+export function Sidebar({ scope, connected }: { scope: ProjectScope; connected: boolean }): JSX.Element {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const sidebarWidth = useUiStore((s) => s.sidebarWidth)
 
@@ -157,14 +108,10 @@ export function Sidebar({
         <div className="shrink-0">
           <div className="titlebar-drag flex h-11 items-center gap-2 pl-4 pr-2">
             <div className="no-drag flex min-w-0 flex-1 items-center">
-              {projectId
-                ? <ProjectActionsMenu projectId={projectId} remoteUrl={projectRemoteUrl} />
-                : <span className="font-semibold tracking-tight">yaac</span>}
+              <ListTitle scope={scope} />
             </div>
             <div className="flex shrink-0 items-center gap-2 no-drag">
-              {!connected && <span className="text-xs text-amber-400">reconnecting…</span>}
-              {projectId && <SkillsButton projectId={projectId} />}
-              {projectId && <NewWorkspaceButton projectId={projectId} />}
+              <ListActions projectId={scope.projectId} connected={connected} />
               <button
                 onClick={toggleSidebar}
                 title="Hide sidebar"
@@ -177,32 +124,11 @@ export function Sidebar({
             </div>
           </div>
           {/* Status chits get their own row so a long project name keeps the full
-              header width. Hidden when empty. */}
-          <div className="flex items-center gap-2 px-4 pb-2 empty:hidden">
-            <UsageBadge />
-            <ServerBadge />
-            <ImageBuildIndicator projectId={projectId} />
-            {projectId && gitAuthFailures.length > 0 && (
-              <GitAuthFailureBadge
-                projectId={projectId}
-                failures={gitAuthFailures}
-                iconSize={11}
-                className="hover:bg-danger/25"
-              />
-            )}
-          </div>
+              header width. */}
+          <ListBadges scope={scope} className="px-4 pb-2" />
         </div>
 
-        <WorkspaceList
-          projectId={projectId}
-          project={project}
-          workspaces={workspaces}
-          groups={groups}
-          provisioning={provisioning}
-          queued={queued}
-          held={held}
-          drafts={drafts}
-        />
+        <WorkspaceList {...scope} />
       </div>
 
       <ResizeHandle />

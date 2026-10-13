@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { QueryClient } from '@tanstack/react-query'
-import { screen, fireEvent, cleanup, waitFor, within, act } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import type { AuthListResult, GitCredentialSummary, ProjectSummary, ToolLoginView } from '@yaac/shared/types'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
@@ -14,13 +13,6 @@ import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { mockFetch, renderWithClient, serverError, testQueryClient, TEST_USER_ID, type FetchMock } from './harness'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 const CLAUDE_CONFIGURED: AuthListResult = {
   gitCredentials: [],
@@ -52,10 +44,6 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 function renderSettings(): void {
   client = testQueryClient()

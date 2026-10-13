@@ -30,30 +30,26 @@ import { workspaceDriver } from '#drivers/driver'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { acpLogDir } from '@yaac/shared/project-paths'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { shellQuote } from '#lib/shell'
 import { AcpConversation } from './acp-client'
-import { readAcpEffort, readAcpInFlight, readAcpModeId, readAcpPendingPermissions, type AcpRecordRef } from './acp-log'
+import { readAcpRecovery } from './acp-log'
+import { type JsonRpcTransport } from './acp-jsonrpc'
 import {
-  ControlModeClient,
+  BOOT_SUBSCRIPTION_PREFIX,
+  ControlModeConnection,
   PLACEHOLDER_FORMAT,
-  controlModeAttachArgv,
-  withTimeout,
-  type ControlModeNotification,
 } from './control-mode'
 import { agentWindowTool } from './agent-tools'
 import {
   dropAcpQueues,
   parkAcpQueue,
   registerAcpConversation,
-  stashAcpLaunchModel,
-  takeAcpLaunchModel,
   takeAcpQueue,
   unregisterAcpConversation,
   whenAcpConversation,
 } from './acp-registry'
-import { acpAdapterFor, acpLaunchModel, acpModelIsProtocol } from './acp-adapters'
-import type { JsonRpcTransport } from './acp-jsonrpc'
+import { acpAdapterFor, acpModelIsProtocol } from './acp-adapters'
 import type {
   AgentConnectDeps,
   AgentConnection,
@@ -103,9 +99,6 @@ export const MAX_FAST_ATTACH_ATTEMPTS = 10
 /** How long `deliverPrompt` waits for a conversation to finish its handshake
  *  before giving up. Generous: it covers an adapter's cold start. */
 const PROMPT_ATTACH_TIMEOUT_MS = 60_000
-
-/** For a placeholder pane, until acpd is respawned into it. */
-const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
 
 /**
  * Pane option holding `<pane pid>:<session id>` once a fresh conversation's
@@ -159,16 +152,12 @@ interface Attached {
 
 /**
  * One workspace's conversations, tracked through a tmux control-mode client
- * of its own: a window added or closed is pushed as a notification, and an
- * agent window still running create's placeholder is watched through a
- * subscription until acpd replaces it. Listing windows over the stream is
- * also the heartbeat, as in the TUI driver.
+ * of its own (`ControlModeConnection`): a window added or closed is pushed
+ * as a notification, and an agent window still running create's
+ * placeholder is watched through a subscription until acpd replaces it.
  */
-class AcpConnection implements AgentConnection {
+class AcpConnection extends ControlModeConnection {
   private readonly attached = new Map<string, Attached>()
-  private child: StreamChild | null = null
-  private client: ControlModeClient | null = null
-  private heartbeatTimer: NodeJS.Timeout | null = null
   /** Pending re-dials, by handle; see `ATTACH_RETRY_MS`. */
   private readonly retries = new Map<string, NodeJS.Timeout>()
   /** Consecutive attaches per handle that did not survive until the next
@@ -178,11 +167,6 @@ class AcpConnection implements AgentConnection {
   private readonly booting = new Set<string>()
   private syncing: Promise<void> | null = null
   private syncAgain = false
-  private done = false
-  private readonly heartbeatIntervalMs: number
-  private readonly commandTimeoutMs: number
-  private readonly log: (msg: string) => void
-  private readonly dial: (session: DrivenWorkspace, argv: string[]) => StreamChild
   private readonly recordedSessions: () => Promise<Array<{ handle: string; agentSessionId: string }>>
   private readonly readPermissionMode: () => Promise<PermissionMode | undefined>
   private readonly readLaunchModel: (tool: AgentTool) => Promise<string | undefined>
@@ -203,63 +187,26 @@ class AcpConnection implements AgentConnection {
    */
   permissionMode: PermissionMode | undefined
 
-  constructor(
-    readonly session: DrivenWorkspace,
-    private readonly sink: (obs: AgentObservation) => void,
-    deps: AgentConnectDeps,
-  ) {
-    this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
-    this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
-    this.log = deps.log ?? serverLog
-    this.dial = deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv))
+  constructor(session: DrivenWorkspace, sink: (obs: AgentObservation) => void, deps: AgentConnectDeps) {
+    super(session, sink, deps, 'acp-driver')
     this.recordedSessions = deps.recordedSessions ?? (() => Promise.resolve([]))
     this.readPermissionMode = deps.permissionMode ?? (() => Promise.resolve('bypass'))
     this.readLaunchModel = deps.launchModel ?? (() => Promise.resolve(undefined))
     this.readEffort = deps.effort ?? (() => Promise.resolve(undefined))
     openConnections.add(this)
-
-    let child: StreamChild
-    try {
-      child = this.dial(session, controlModeAttachArgv(workspaceDriver().workspacePaths(session.jobName)))
-    } catch (err) {
-      this.down(`spawn failed: ${String(err)}`)
-      return
-    }
-    this.child = child
-    const client = new ControlModeClient(
-      (data) => child.stdin?.write(data),
-      (n) => this.onNotification(n),
-    )
-    this.client = client
-    const decoder = new StringDecoder('utf8')
-    child.stdout?.on('data', (chunk) => {
-      if (!this.done) client.feed(typeof chunk === 'string' ? chunk : decoder.write(chunk))
-    })
-    child.stderr?.on('data', () => { /* no stderr on ctrl streams — exit logs */ })
-    child.on('error', (err) => this.down(`child error: ${String(err)}`))
-    child.on('exit', () => this.down('stream closed'))
-    void this.init().catch((err: unknown) => this.down(`init failed: ${String(err)}`))
+    this.start()
   }
 
-  private send(cmd: string): Promise<string> {
-    const client = this.client
-    if (!client) return Promise.reject(new Error('control stream is gone'))
-    return withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`)
-  }
-
-  private async init(): Promise<void> {
-    // Before any attach, so new conversations handshake with the posture
-    // and effort. An unreadable effort leaves the adapter's own.
+  /** Before any attach, so new conversations handshake with the posture
+   *  and effort. An unreadable effort leaves the adapter's own. */
+  protected async init(): Promise<void> {
     await this.loadPermissionMode()
     this.effort = await this.readEffort().catch(() => undefined)
-    await this.sync()
-    if (this.done) return
-    this.sink({ kind: 'up' })
-    this.sink({ kind: 'command-channel', send: (cmd) => this.send(cmd) })
-    this.heartbeatTimer = setInterval(() => {
-      if (this.permissionMode === undefined) void this.loadPermissionMode()
-      void this.sync().catch((err: unknown) => this.down(`heartbeat failed: ${String(err)}`))
-    }, this.heartbeatIntervalMs)
+  }
+
+  /** Until a read succeeds; see `permissionMode`. */
+  protected beforeHeartbeat(): void {
+    if (this.permissionMode === undefined) void this.loadPermissionMode()
   }
 
   /** A failed read leaves the posture unknown, so every ask is forwarded,
@@ -273,25 +220,13 @@ class AcpConnection implements AgentConnection {
     }
   }
 
-  private onNotification(n: ControlModeNotification): void {
-    if (this.done) return
-    if (n.kind === 'windows-changed') {
-      this.sink({ kind: 'windows-changed' })
-      void this.resync()
-    } else if (n.kind === 'subscription' && n.name.startsWith(BOOT_SUBSCRIPTION_PREFIX) && n.value === '0') {
-      // acpd replaced the placeholder.
-      this.booting.delete(n.paneId)
-      void this.resync()
-    }
+  /** acpd replaced the placeholder. */
+  protected onBooted(paneId: string): void {
+    this.booting.delete(paneId)
   }
 
-  /** Re-list off the hot path; the heartbeat detects a wedged stream. */
-  private async resync(): Promise<void> {
-    if (this.done) return
-    try {
-      await this.sync()
-    } catch { /* the heartbeat handles wedges */ }
-  }
+  /** acp panes carry only boot subscriptions. */
+  protected onSubscription(): void {}
 
   /**
    * Reconcile held conversations against the workspace's agent windows,
@@ -302,7 +237,7 @@ class AcpConnection implements AgentConnection {
    * would displace whichever client held the live handshake. A call during
    * a pass runs one more after it.
    */
-  private sync(): Promise<void> {
+  protected sync(): Promise<void> {
     if (this.syncing) {
       this.syncAgain = true
       return this.syncing
@@ -419,23 +354,7 @@ class AcpConnection implements AgentConnection {
     const entry: Attached = { handle, tool, child }
     const panePid = pane.pid !== '' ? { panePid: pane.pid } : {}
     this.attached.set(handle, entry)
-    // The launch-time model was parked under the launch id: the recorded id
-    // on a resume, the workspace id on a fresh create.
-    const launchId = resumeSessionId ?? this.session.workspaceId
     const profile = acpAdapterFor(tool)
-    // Only protocol-model adapters have one parked, and only the first
-    // attach takes it.
-    const launchModel = acpModelIsProtocol(profile)
-      ? takeAcpLaunchModel(launchId)
-      : undefined
-    // Nothing parked on a fresh conversation means the server restarted
-    // between launch and attach (a spare warming, say). Without a model the
-    // adapter runs its own default, for pi possibly a provider whose key the
-    // proxy does not swap, so take the workspace's recorded one instead.
-    const recoverLaunchModel = acpModelIsProtocol(profile) && launchModel === undefined
-      && resumeSessionId === undefined
-      ? () => this.readLaunchModel(tool)
-      : undefined
     // Messages the previous connection to this conversation still had queued.
     const queue = resumeSessionId === undefined
       ? []
@@ -452,16 +371,16 @@ class AcpConnection implements AgentConnection {
       permissionMode: () => this.permissionMode,
       effort: () => this.effort,
       profile,
-      ...(launchModel !== undefined ? { launchModel } : {}),
-      ...(recoverLaunchModel !== undefined ? { recoverLaunchModel } : {}),
+      // Without one the adapter runs its own default, for pi possibly a
+      // provider whose key the proxy does not swap.
+      ...(acpModelIsProtocol(profile) ? { launchModel: () => this.readLaunchModel(tool) } : {}),
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
         // Only a recorded conversation can be mid-turn on attach, and only
         // it has a record to read.
-        recoverInFlight: () => readAcpInFlight(this.record(resumeSessionId)),
-        recoverPendingPermissions: () => readAcpPendingPermissions(this.record(resumeSessionId)),
-        recoverModeId: () => readAcpModeId(this.record(resumeSessionId)),
-        recoverEffort: () => readAcpEffort(this.record(resumeSessionId)),
+        recover: () => readAcpRecovery({
+          projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId: resumeSessionId,
+        }),
       } : {}),
       onSessionId: (agentSessionId) => {
         // The agent mints the id, and it is later joined into paths and a
@@ -519,11 +438,6 @@ class AcpConnection implements AgentConnection {
     }, entry.conversation)
   }
 
-  /** The record acpd keeps for one of this workspace's conversations. */
-  private record(agentSessionId: string): AcpRecordRef {
-    return { projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId }
-  }
-
   /**
    * `keepQueue` is for a dropped connection: acpd keeps the agent, so the
    * conversation that replaces this one sends what was queued. A closed
@@ -568,32 +482,13 @@ class AcpConnection implements AgentConnection {
     }
   }
 
-  private down(reason: string): void {
-    if (this.done) return
-    this.teardown()
-    this.sink({ kind: 'down', reason })
-  }
-
-  private teardown(): void {
-    this.done = true
+  protected cleanup(): void {
     openConnections.delete(this)
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
-    this.heartbeatTimer = null
     for (const timer of this.retries.values()) clearTimeout(timer)
     this.retries.clear()
-    this.sink({ kind: 'command-channel', send: null })
-    this.client?.fail(new Error('stream torn down'))
-    this.client = null
-    this.child?.kill('SIGTERM')
-    this.child = null
     // The watcher reconnects after a `down`, so this parks like a dropped
     // conversation; only the watcher knows whether the workspace stopped.
     for (const entry of [...this.attached.values()]) this.detach(entry, 'connection closed', { keepQueue: true })
-  }
-
-  close(): void {
-    if (this.done) return
-    this.teardown()
   }
 }
 
@@ -631,14 +526,6 @@ export function setAcpPermissionMode(projectId: string, workspaceId: string, per
   }
 }
 
-/**
- * Park the model to send once the adapter handshakes, for adapters told
- * over the protocol (opencode, pi); a no-op for others.
- */
-function parkAcpLaunchModel(tool: AgentTool, launchId: string, model: string | undefined): void {
-  if (model !== undefined && acpModelIsProtocol(acpAdapterFor(tool))) stashAcpLaunchModel(launchId, model)
-}
-
 export const acpDriver: AgentDriver = {
   mode: 'acp',
 
@@ -656,9 +543,6 @@ export const acpDriver: AgentDriver = {
    */
   launchCmd(spec: AgentLaunchSpec): string {
     const adapter = acpAdapterFor(spec.tool)
-    // Park the model now, where the provider default is known; the
-    // handshake delivers it.
-    parkAcpLaunchModel(spec.tool, spec.agentSessionId, acpLaunchModel(spec))
     // Name the record for the conversation, not the window: window names are
     // slots that shift when a restart drops an earlier conversation, which
     // would mix histories. A fresh create starts under the workspace id and

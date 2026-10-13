@@ -210,11 +210,11 @@ export const workspaces = snakeCase.table('workspaces', {
   /**
    * The model and agent mode (`tui` / `acp`) its first agent launched with.
    * A spare claim matches a request against these: a match is handed over
-   * as-is, otherwise the agent is respawned or the spare skipped. Null when
-   * the launch recorded none.
+   * as-is, otherwise the agent is respawned or the spare skipped. `model`
+   * is null when the launch named none.
    */
   model: text(),
-  mode: text().$type<AgentMode>(),
+  mode: text().$type<AgentMode>().notNull().default('acp'),
   /**
    * The effort level its agents run at, in the tool's words. Set at create
    * or claim, then updated whenever the running agent reports a change, so a

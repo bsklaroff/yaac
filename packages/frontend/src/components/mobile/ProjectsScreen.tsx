@@ -1,13 +1,14 @@
 import type { JSX } from 'react'
-import { ChevronIcon, LoadingIcon, WarningIcon } from '#lib/icons'
+import { ChevronIcon } from '#lib/icons'
 import { MobileHeader } from '#components/mobile/MobileHeader'
 import { NewProjectButton } from '#components/NewProjectButton'
+import { listedProjects, ProjectChip } from '#components/ProjectRail'
 import { ServersButton } from '#components/ServerBadge'
 import { SettingsButton } from '#components/SettingsButton'
 import { UserSwitcher } from '#components/UserSwitcher'
 import { EmptyState } from '#components/ui/EmptyState'
 import { WelcomePane } from '#components/WelcomePane'
-import { identityColor, identityInitial } from '#lib/projectIdentity'
+import { identityColor } from '#lib/projectIdentity'
 import type { ProjectOp } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
 import type { ProjectSummary } from '@yaac/shared/types'
@@ -51,8 +52,7 @@ export function ProjectsScreen({
       <div className="flex-1 overflow-y-auto p-2">
         {welcome && <WelcomePane />}
         {empty && readOnly && <EmptyState compact className="py-12" title="No projects yet" />}
-        {[...projects, ...ops.filter((o) => o.kind === 'add')].map((p) => {
-          const op = ops.find((o) => o.id === p.id)
+        {listedProjects(projects, ops).map(({ op, ...p }) => {
           const color = identityColor(p.id)
           const waiting = op === undefined ? attentionByProject[p.id] ?? 0 : 0
           return (
@@ -62,20 +62,17 @@ export function ProjectsScreen({
               className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition
                 active:bg-surface-2"
             >
-              <span
+              <ProjectChip
+                name={p.name}
+                op={op}
+                iconSize={16}
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[15px] font-semibold"
                 // Same colors as the rail chip.
                 style={{
                   background: `color-mix(in oklab, ${color} 22%, var(--color-surface-2))`,
                   color: `color-mix(in oklab, ${color} 42%, var(--color-text))`,
                 }}
-              >
-                {op === undefined
-                  ? identityInitial(p.name)
-                  : op.error === undefined
-                    ? <LoadingIcon size={16} className="animate-spin" />
-                    : <WarningIcon size={16} className="text-danger" />}
-              </span>
+              />
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{p.name}</span>
               {waiting > 0 && (
                 <span

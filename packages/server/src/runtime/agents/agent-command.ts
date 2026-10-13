@@ -65,7 +65,7 @@ export function resolveInitWindows(config: YaacConfig): InitWindow[] {
 export interface AgentCmdSpec {
   tool: AgentTool
   workspaceId: string
-  resume?: boolean
+  resume: boolean
   /** pi only — provider whose default model is passed to `pi --model`
    *  when no explicit `model` override is given. */
   piProvider?: PiProvider
@@ -84,8 +84,8 @@ export interface AgentCmdSpec {
    */
   permissionMode: PermissionMode
   /** codex only — the workspace to run it in and launch it trusting
-   *  (`codexLaunchConfig`). The tui driver always passes it. */
-  paths?: Pick<WorkspacePaths, 'workspaceDir'>
+   *  (`codexLaunchConfig`). */
+  paths: Pick<WorkspacePaths, 'workspaceDir'>
 }
 
 /**
@@ -203,9 +203,8 @@ export function opencodeConfigArg(
 }
 
 export function buildAgentCmd(spec: AgentCmdSpec): string {
-  const { tool, workspaceId, piProvider, model, effort } = spec
+  const { tool, workspaceId, piProvider, model, effort, resume } = spec
   const mode = postureFor(tool, spec.permissionMode)
-  const resume = spec.resume ?? false
   if (tool === 'codex') {
     // codex postures are an approval policy plus a sandbox:
     //  - accept-edits: codex's default preset (workspace-write, on-request),
@@ -230,14 +229,14 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
     // screens (`codexLaunchConfig`).
     const config = [
       `tui.terminal_title=${JSON.stringify(CODEX_TITLE_ITEMS)}`,
-      ...codexLaunchConfig(spec.paths?.workspaceDir),
+      ...codexLaunchConfig(spec.paths.workspaceDir),
       ...(effort !== undefined ? [`model_reasoning_effort=${effort}`] : []),
     ]
     // Name the workspace with `-C`: a resume from a different cwd than the
     // one recorded stops on a "session or current directory?" screen.
     return [
       'codex',
-      spec.paths ? `-C ${spec.paths.workspaceDir}` : '',
+      `-C ${spec.paths.workspaceDir}`,
       ...config.map((c) => `-c ${doubleQuoted(c)}`),
       '--dangerously-bypass-hook-trust',
       posture,
@@ -322,7 +321,7 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
 }
 
 /**
- * In-workspace command that pastes an initial prompt into a fresh agent's
+ * Shell script that pastes an initial prompt into a fresh agent's
  * TUI and submits it. A prompt pasted while the TUI is starting is silently
  * lost (seen with claude in the create e2e suite), and no user is attached
  * to resend it, so:
@@ -338,18 +337,9 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
  *     finishing startup can drop the first one; a repeat on an empty input
  *     does nothing.
  *
- * Exits 1 when the paste never showed.
+ * Exits 1 when the paste never showed. `paneTarget` is any tmux target: a
+ * window (`yaac:claude`) or a pane id (`%3`).
  */
-export function buildPromptPasteCmd(
-  target: string,
-  prompt: string,
-  paths: WorkspacePaths,
-): string {
-  return `sh -c '${promptPasteScript(target, prompt, paths)}'`
-}
-
-/** The paste-and-submit shell script buildPromptPasteCmd wraps. `paneTarget`
- *  is any tmux target — a window (`yaac:claude`) or a pane id (`%3`). */
 function promptPasteScript(
   paneTarget: string,
   prompt: string,
@@ -671,9 +661,10 @@ function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: str
 export const OPENCODE_TUI_KEYBINDS = { 'prompt.stash': 'f9', 'prompt.stash.pop': 'f10' } as const
 
 /**
- * `buildPromptPasteCmd`, detached: write the script to a workspace-local
- * file and setsid it, so the exec returns at once instead of waiting through
- * the script's polling (5s+ on a fresh agent). The script survives the exec
+ * In-workspace command that runs `promptPasteScript` detached: write the
+ * script to a workspace-local file and setsid it, so the exec returns at
+ * once instead of waiting through the script's polling (5s+ on a fresh
+ * agent). The script survives the exec
  * stream closing and logs to `yaac-prompt.log` in the scratch dir. macOS has
  * no setsid, so a containerless host there detaches it with nohup.
  */

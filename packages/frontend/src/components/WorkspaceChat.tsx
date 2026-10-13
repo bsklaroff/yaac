@@ -1,25 +1,15 @@
-import {
-  useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type MouseEventHandler, type ReactNode,
-} from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
-import {
-  AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory, type Group,
-} from '#components/AcpTranscript'
-import {
-  ActivityBar, ActivityTitleBar, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
-} from '#components/AcpActivity'
+import { ActivityBar } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
-import { useConversationFind } from '#components/ConversationFind'
-import { EffortMenu } from '#components/EffortMenu'
+import { ChatBottomBar, ChatViewToggles, useChatColumn, useConversationView } from '#components/ConversationView'
 import { FileLinksContext, type FileLinks } from '#components/Markdown'
-import { PermissionModeMenu } from '#components/PermissionModeMenu'
+import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { focusRaisesKeyboard } from '#lib/viewport'
-import {
-  AttachImageIcon, CloseIcon, CondenseIcon, LoadingIcon, NarrowIcon, SendIcon, StopIcon, UncondenseIcon, WidenIcon,
-} from '#lib/icons'
+import { AttachImageIcon, CloseIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -32,16 +22,12 @@ import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shar
  * `visible` only decides focus. The draft lives in the ui store so it
  * survives the pane unmounting or a reload.
  *
- * Rendering is `AcpTranscript`'s job (shared with stopped workspaces). This
- * component owns the stream, the draft, the composer and scroll-follow; the
- * composer's completion menu is `useComposerMenu`'s.
- *
- * Like a TUI, the pane can switch from the conversation to one of the
- * subagents or background tasks the agent started (`AcpActivity`), and Esc
- * or Back returns. Those views put their title bar in the composer's place,
- * since the agent takes messages only on its main thread.
- *
- * Cmd/Ctrl-F searches whichever view is shown (`useConversationFind`).
+ * What it shows, including the subagents and background tasks it can
+ * switch to and the find bar, is `useConversationView`'s, shared with the
+ * read-only pane. This component owns the stream, the draft, the composer
+ * and scroll-follow; the composer's completion menu is `useComposerMenu`'s.
+ * A subagent's or task's title bar takes the composer's place, since the
+ * agent takes messages only on its main thread.
  *
  * Paths of checkout files in the transcript open the file pane
  * (`FileLinksContext`), matched against the listing `GitStatusBar` keeps
@@ -59,19 +45,15 @@ function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
 
-export function WorkspaceChat({
-  workspaceId,
-  agentSessionId,
-  visible = true,
-  focused = visible,
-}: {
+export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }: {
   workspaceId: string
   agentSessionId: string
-  visible?: boolean
+  visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
-  focused?: boolean
+  focused: boolean
 }): JSX.Element {
-  const { events, busy, queued, connected, send, taskOutputs, subagentTranscripts, permissionModes, efforts } = useAcpStream(workspaceId, agentSessionId)
+  const stream = useAcpStream(workspaceId, agentSessionId)
+  const { events, busy, queued, connected, send, taskOutputs, permissionModes, efforts } = stream
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const condensed = useUiStore((s) => s.chatCondensed)
@@ -107,7 +89,6 @@ export function WorkspaceChat({
     useUiStore.getState().chatDrafts[chatDraftKey(workspaceId, agentSessionId)]?.sent,
   )
   const reconciledRef = useRef(false)
-  const groups = useMemo(() => groupEvents(events), [events])
   const listing = useWorkspaceFiles(workspaceId)
   /** Keyed on the fields links read, so a listing change elsewhere (its
    *  ignored entries) does not re-render every link in the transcript. */
@@ -118,73 +99,35 @@ export function WorkspaceChat({
     paths: new Set(paths),
     open: ({ path, line }) => useUiStore.getState().openFile(workspaceId, path, line),
   } : null, [root, paths, workspaceId])
-  /** The subagent or task being viewed instead of the conversation. One
-   *  the stream no longer has (a restarted agent) falls back to it. */
-  const [opened, setOpened] = useState<ActivityTarget | undefined>()
-  const activity = useMemo(() => latestActivity(events), [events])
   const usage = useMemo(() => contextUsage(events), [events])
-  const subagent = opened?.kind === 'subagent' ? activity.subagents.get(opened.id) : undefined
-  const task = opened?.kind === 'task' ? activity.tasks.get(opened.id) : undefined
-  const view = subagent !== undefined || task !== undefined ? opened : undefined
-  /** A finished subagent the record shows without its thread (a
-   *  `session/load` replay leaves it out) is read from its own transcript. */
-  const ownThread = subagent !== undefined && events.some((e) => 'thread' in e && e.thread === subagent.id)
-  const wantsTranscript = subagent !== undefined && !ownThread && !active(subagent)
-  const transcript = wantsTranscript ? subagentTranscripts[subagent.id] : undefined
-  useEffect(() => {
-    if (wantsTranscript && connected && transcript === undefined) send({ type: 'subagent-transcript', subagentId: subagent.id })
-  }, [wantsTranscript, connected, transcript, subagent?.id])
-  const threadGroups = useMemo(() => {
-    if (subagent === undefined) return []
-    const after = (events[events.length - 1]?.seq ?? -1) + 1
-    const read = (transcript?.events ?? []).map((e, i) => ({ ...e, seq: after + i }))
-    return groupEvents([...events, ...read], subagent.id)
-  }, [events, subagent?.id, transcript])
-  /** The call that started the task, and what it streamed. */
-  const taskCall = useMemo(
-    () => (task?.toolCallId === undefined ? { output: '' } : callOf(events, task.toolCallId)),
-    [events, task?.toolCallId],
-  )
-  const taskOutput = task === undefined ? undefined : taskOutputs[task.id]
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const { bar: findBar, found } = useConversationFind({
-    groups: subagent !== undefined ? threadGroups : task !== undefined ? [] : groups,
+  const { view, open, activity, groups, findBar, body, titleBar } = useConversationView({
+    workspaceId,
+    events,
+    busy,
+    stream,
     scrollRef,
-    chord: focused,
-    onClose: () => inputRef.current?.focus(),
+    find: { chord: focused, onClose: () => inputRef.current?.focus() },
+    visible,
   })
 
   // Follow the tail only while the reader is already at it, so streaming
-  // never yanks someone who scrolled up.
+  // never yanks someone who scrolled up. Switching views starts the new one
+  // at its tail.
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
   }
   useLayoutEffect(() => {
+    pinnedRef.current = true
+  }, [view])
+  useLayoutEffect(() => {
     const el = scrollRef.current
     if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
-  }, [groups, threadGroups, view, taskOutput, condensed])
-
-  /** Show a subagent or task, or the conversation again; each starts at
-   *  its tail. */
-  const open = (target: ActivityTarget | undefined): void => {
-    pinnedRef.current = true
-    setOpened(target)
-  }
-
-  useEffect(() => {
-    if (!visible || view === undefined) return
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape' || dialogHoldsFocus()) return
-      pinnedRef.current = true
-      setOpened(undefined)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [visible, view])
+  }, [groups, view, taskOutputs, condensed])
 
   // Grow the textarea to fit the draft, up to its CSS max-height. Reset to
   // `auto` first so scrollHeight measures the content. Growing shrinks the
@@ -313,11 +256,6 @@ export function WorkspaceChat({
     switchModel: (modelId) => send({ type: 'model', modelId }),
   })
 
-  /** Answer a permission ask. Returns whether it was sent, so the card can
-   *  re-offer its buttons if the socket was down. */
-  const answerPermission = (requestId: string, optionId?: string): boolean =>
-    send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) })
-
   return (
     <div
       className="@container flex h-full w-full flex-col bg-bg"
@@ -344,52 +282,10 @@ export function WorkspaceChat({
         )}
         <FileLinksContext.Provider value={fileLinks}>
           <div className={column}>
-            {subagent !== undefined ? (
-              <>
-                <SubagentPrompt task={subagent.task} />
-                <AcpTranscript
-                  workspaceId={workspaceId}
-                  groups={threadGroups}
-                  found={found}
-                  busy={subagent.state === 'running'}
-                  live
-                  condensed={condensed}
-                  onAnswerPermission={answerPermission}
-                  onOpenSubagent={(id) => open({ kind: 'subagent', id })}
-                />
-                {subagent.state === 'running' && !awaitingPermission(threadGroups) && <Working />}
-              </>
-            ) : task !== undefined ? (
-              <TaskView
-                workspaceId={workspaceId}
-                task={task}
-                {...(taskCall.call !== undefined ? { call: taskCall.call } : {})}
-                streamed={taskCall.output}
-                {...(taskOutput !== undefined ? { output: taskOutput } : {})}
-                live
-                {...(task.outputFile !== undefined
-                  ? { onRefresh: () => send({ type: 'task-output', taskId: task.id }) }
-                  : {})}
-              />
-            ) : (
-              <>
-                <AcpTranscript
-                  workspaceId={workspaceId}
-                  groups={groups}
-                  found={found}
-                  busy={busy}
-                  live
-                  condensed={condensed}
-                  onAnswerPermission={answerPermission}
-                  onOpenSubagent={(id) => open({ kind: 'subagent', id })}
-                  onOpenTask={(id) => open({ kind: 'task', id })}
-                />
-                {busy && !awaitingPermission(groups) && <Working />}
-                {queued.map((q) => (
-                  <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
-                ))}
-              </>
-            )}
+            {body}
+            {view === undefined && queued.map((q) => (
+              <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
+            ))}
           </div>
         </FileLinksContext.Provider>
       </div>
@@ -418,28 +314,7 @@ export function WorkspaceChat({
           if (e.target === e.currentTarget) inputRef.current?.focus()
         }}
       >
-        {subagent !== undefined ? (
-          <ActivityTitleBar
-            category={SUBAGENT_CATEGORY}
-            title={subagent.name}
-            state={subagent.state}
-            live
-            onBack={() => open(undefined)}
-            controls={<ChatViewToggles />}
-          />
-        ) : task !== undefined ? (
-          <ActivityTitleBar
-            category={taskCategory(task)}
-            title={task.name}
-            state={task.state}
-            live
-            onBack={() => open(undefined)}
-          >
-            {active(task) && task.canStop === true && (
-              <StopTaskButton onStop={() => send({ type: 'stop-task', taskId: task.id })} />
-            )}
-          </ActivityTitleBar>
-        ) : (
+        {titleBar ?? (
           <>
             {images.length > 0 && (
               <div className="flex flex-wrap gap-1.5 px-3 pt-3">
@@ -495,7 +370,7 @@ export function WorkspaceChat({
               <ChatViewToggles />
               <div className="mr-auto flex items-center">
                 {permissionModes.current !== undefined && (
-                  <PermissionModeMenu
+                  <PermissionModeSelect
                     current={permissionModes.current}
                     available={permissionModes.available}
                     disabled={!connected}
@@ -503,7 +378,7 @@ export function WorkspaceChat({
                   />
                 )}
                 {efforts.current !== undefined && efforts.available.length > 0 && (
-                  <EffortMenu
+                  <EffortSelect
                     current={efforts.current}
                     available={efforts.available}
                     disabled={!connected}
@@ -552,98 +427,6 @@ export function WorkspaceChat({
           </>
         )}
       </ChatBottomBar>
-    </div>
-  )
-}
-
-/** The conversation and composer share one centered column, so lines stay
- *  readable in a wide pane, unless the user picks full width. The width
- *  toggle shows only in a pane wider than this cap plus the `px-4` padding
- *  (66rem), since in a narrower one both widths look the same. */
-const COLUMN = 'mx-auto w-full max-w-5xl'
-
-/** The column a chat pane's conversation sits in, per the saved width. */
-export function useChatColumn(): string {
-  return useUiStore((s) => s.chatFullWidth) ? 'w-full' : COLUMN
-}
-
-/**
- * The card under a chat pane's conversation, in its column: the composer,
- * or what takes its place (a subagent's or task's title bar, a stopped
- * workspace's actions). `above` stacks over the card, outside it.
- */
-export function ChatBottomBar({ above, onClick, children }: {
-  above?: ReactNode
-  onClick?: MouseEventHandler<HTMLDivElement>
-  children: ReactNode
-}): JSX.Element {
-  return (
-    <div className="px-4 pb-3">
-      <div className={useChatColumn()}>
-        {above}
-        <div
-          onClick={onClick}
-          className="rounded-xl border border-border bg-surface shadow-sm transition-colors
-            focus-within:border-border-strong"
-        >
-          {children}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-/** How each view toggle is drawn, minus its display. */
-const TOGGLE = 'rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text'
-
-/**
- * The saved view toggles every chat pane shares, live or read-only, in the
- * bar under the conversation: full width and condensed. The width toggle
- * needs an `@container` ancestor as wide as the pane.
- */
-export function ChatViewToggles(): JSX.Element {
-  const fullWidth = useUiStore((s) => s.chatFullWidth)
-  const setFullWidth = useUiStore((s) => s.setChatFullWidth)
-  const condensed = useUiStore((s) => s.chatCondensed)
-  const setCondensed = useUiStore((s) => s.setChatCondensed)
-  return (
-    <>
-      <button
-        type="button"
-        aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
-        title={fullWidth ? 'Center chat' : 'Full-width chat'}
-        onClick={() => setFullWidth(!fullWidth)}
-        className={clsx(TOGGLE, 'hidden items-center @min-[66rem]:flex')}
-      >
-        {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
-      </button>
-      <button
-        type="button"
-        aria-label={condensed ? 'Show every step' : 'Show key messages only'}
-        title={condensed ? 'Show every step' : 'Show key messages only'}
-        onClick={() => setCondensed(!condensed)}
-        className={clsx(TOGGLE, 'flex items-center')}
-      >
-        {condensed ? <UncondenseIcon size={16} /> : <CondenseIcon size={16} />}
-      </button>
-    </>
-  )
-}
-
-/** A thread waiting on a permission answer: running, but not "working…". */
-function awaitingPermission(groups: readonly Group[]): boolean {
-  return groups.some((g) => g.kind === 'permission' && g.decided === undefined)
-}
-
-/** Under a running thread, in place of a TUI's spinner. */
-function Working(): JSX.Element {
-  return (
-    <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
-      <LoadingIcon size={12} className="animate-spin" />
-      <span>
-        working
-        <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
-      </span>
     </div>
   )
 }

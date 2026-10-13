@@ -8,7 +8,6 @@ import {
   getGitIdentity,
   getShortcutOverrides,
   getTimeZone,
-  isSerializedChord,
   seeTailnetUser,
   setGitIdentity,
   setShortcutOverride,
@@ -38,20 +37,6 @@ beforeEach(async () => {
   const db = await getDb()
   await db.delete(shortcutOverrides)
   await db.delete(preferences)
-})
-
-describe('isSerializedChord', () => {
-  it('accepts a full chord', () => {
-    expect(isSerializedChord(chord('KeyG'))).toBe(true)
-  })
-
-  it('rejects partial or non-object values', () => {
-    expect(isSerializedChord({ code: 'KeyW' })).toBe(false) // missing modifiers
-    expect(isSerializedChord({ ...chord('KeyG'), alt: 'yes' })).toBe(false)
-    expect(isSerializedChord({ ...chord('KeyG'), code: 7 })).toBe(false)
-    expect(isSerializedChord(null)).toBe(false)
-    expect(isSerializedChord('KeyG')).toBe(false)
-  })
 })
 
 describe('getShortcutOverrides', () => {

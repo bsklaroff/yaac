@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { decodeJwtPayload } from '@yaac/shared/tool-auth-interactive'
 import type {
   ClaudeOAuthBundle,
   CodexOAuthBundle,
@@ -183,20 +184,6 @@ export function parseCodexPlanUsage(
   if (rl?.primary_window) limits.push(codexLimit('codex_primary', rl.primary_window))
   if (rl?.secondary_window) limits.push(codexLimit('codex_secondary', rl.secondary_window))
   return { subscriptionType: parsed.data.plan_type ?? null, limits }
-}
-
-/** Decode a JWT payload without verifying it (display claims only, never
- *  auth). Null if unparseable. */
-function decodeJwtPayload(jwt: string): Record<string, unknown> | null {
-  const parts = jwt.split('.')
-  if (parts.length < 2) return null
-  try {
-    const json = Buffer.from(parts[1], 'base64url').toString('utf8')
-    const parsed: unknown = JSON.parse(json)
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null
-  } catch {
-    return null
-  }
 }
 
 /** The `ChatGPT-Account-Id` header value: the bundle's stored id, else the

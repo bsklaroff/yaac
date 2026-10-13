@@ -1,16 +1,17 @@
 import {
-  GVISOR_INSTALLER_READY_FILE,
-  buildRuntimeClassManifests,
-  gvisorInstallScript,
-  gvisorInstallerHostMounts,
   applyObject,
   k8sNamespace,
   LABEL_INSTALL_NAMESPACE,
   listObjects,
   waitForRollout,
 } from '#drivers/k8s/substrate'
-import { invalidateRegistryEndpoint } from '#drivers/k8s/container'
-import { prebuiltRef } from '#drivers/k8s/image-engine'
+import { invalidateRegistryEndpoint, prebuiltRef } from '#drivers/k8s/cluster'
+import {
+  GVISOR_INSTALLER_READY_FILE,
+  buildRuntimeClassManifests,
+  gvisorInstallScript,
+  gvisorInstallerHostMounts,
+} from './gvisor-runtime'
 
 /**
  * `yaac-gvisor-install`: the privileged DaemonSet that installs the gVisor
@@ -20,12 +21,11 @@ import { prebuiltRef } from '#drivers/k8s/image-engine'
  * runsc handlers in containerd's config, restarts containerd, and labels
  * the node so the RuntimeClasses' `nodeSelector` lets sandboxed pods land
  * there. The script, node paths and label are defined in
- * `#drivers/k8s/substrate` (gvisor.ts); this module owns the Kubernetes
- * objects.
+ * gvisor-runtime.ts; this module owns the Kubernetes objects.
  *
  * As a DaemonSet it reaches nodes yaac has no shell on (managed pools) and
  * covers new or replaced nodes automatically. It also applies node tuning
- * (substrate/node-tuning.ts), so a restarted node gets its settings back.
+ * (node-tuning.ts), so a restarted node gets its settings back.
  * Infra pods use no RuntimeClass and run on runc.
  */
 
@@ -207,7 +207,7 @@ export async function ensureGvisorRuntime(): Promise<void> {
     timeoutMs: ROLLOUT_PER_NODE_MS * Math.max(1, nodes),
   })
   // A containerd restart kills port-forwards into the node, including the
-  // cached registry forward. Drop it, or `registryHasTag` would read the
+  // cached registry forward. Drop it, or `prebuiltRef` would read the
   // dead forward as a missing image.
   invalidateRegistryEndpoint()
   for (const manifest of buildRuntimeClassManifests()) {

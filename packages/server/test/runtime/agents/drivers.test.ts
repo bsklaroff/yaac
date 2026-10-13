@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir, codexDir } from '@yaac/shared/project-paths'
 import {
@@ -14,13 +14,13 @@ import {
 } from '#runtime/agents/drivers'
 // Imported so the test follows any change to the bound.
 import { MAX_FAST_ATTACH_ATTEMPTS, setAcpPermissionMode } from '#runtime/agents/acp-driver'
+import { OPENCODE_ACTIONS } from '#runtime/agents/agent-command'
 import {
   _resetAcpRegistryForTests,
   acpConversation,
   acpConversationByHandle,
-  takeAcpLaunchModel,
 } from '#runtime/agents/acp-registry'
-import { installFakeWorkspaceDriver, workspacePathsFixture } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
 import type { AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
@@ -28,9 +28,9 @@ import {
   AGENT_TOOLS,
   SUPPORTED_PERMISSION_MODES,
 } from '@yaac/shared/types'
-import { _ACP_PROFILES } from '#runtime/agents/acp-adapters'
+import { _ACP_PROFILES, acpLaunchModel } from '#runtime/agents/acp-adapters'
 import type { AgentTool, PermissionMode } from '@yaac/shared/types'
-import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
+import { PI_DEFAULT_PROVIDER, piProviderInfo, type PiProvider } from '@yaac/shared/tool-providers'
 
 /** A pi conversation's model when none is named: the provider's default. */
 const PI_DEFAULT_MODEL = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
@@ -41,6 +41,45 @@ const PI_DEFAULT_MODEL = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
  * dial and exec are mocked; tmux control mode, JSON-RPC and ACP handling run
  * for real.
  */
+
+interface OpencodeConfig {
+  model?: string
+  default_agent?: string
+  permissions?: Array<{ action: string; resource: string; effect: string }>
+}
+
+/** The config document an opencode launch carries in OPENCODE_CONFIG_CONTENT. */
+function opencodeConfigOf(cmd: string): OpencodeConfig {
+  const json = /OPENCODE_CONFIG_CONTENT="(\{.*?\})" /.exec(cmd)?.[1]
+  return JSON.parse((json ?? '{}').replace(/\\"/g, '"')) as OpencodeConfig
+}
+
+/**
+ * A tui conversation's launch line, as a create asks for one. `paths`
+ * overrides the in-pod workspace dir.
+ */
+function tuiLaunchCmd(o: {
+  tool: AgentTool
+  workspaceId: string
+  permissionMode: PermissionMode
+  resume?: boolean
+  model?: string
+  effort?: string
+  piProvider?: PiProvider
+  paths?: { workspaceDir: string }
+}): string {
+  return agentDriver('tui').launchCmd({
+    tool: o.tool,
+    agentSessionId: o.workspaceId,
+    resume: o.resume ?? false,
+    windowName: o.tool,
+    paths: { ...workspacePathsFixture(), ...o.paths },
+    permissionMode: o.permissionMode,
+    ...(o.model !== undefined ? { model: o.model } : {}),
+    ...(o.effort !== undefined ? { effort: o.effort } : {}),
+    ...(o.piProvider !== undefined ? { piProvider: o.piProvider } : {}),
+  })
+}
 
 const podExec = vi.fn<WorkspaceDriver['exec']>()
 
@@ -87,6 +126,8 @@ let tmuxWindows = ''
 const placeholders = new Set<string>()
 /** The last tmux client an acp connection dialed. */
 let lastTmux: FakeTmux | undefined
+/** Every `list-windows` answers with an error while set. */
+let failRelist = false
 /** Each listed window's pane pid; a respawn changes it. Default `100`. */
 const panePids = new Map<string, string>()
 /** Pane options set through `set-option -p`, by pane id. They survive a
@@ -105,11 +146,37 @@ class FakeTmux extends FakeStream {
       this.writes.push(data)
       const set = /^set-option -p -t (%\d+) @yaac-acp-session '(.*)'/.exec(data)
       if (set) paneOptions.set(set[1], set[2])
-      const body = data.startsWith('list-windows')
+      const relist = data.startsWith('list-windows')
+      const body = relist
         ? tmuxWindows.split('\n').filter((w) => w !== '')
           .map((w, i) => `${w}\t%${String(i)}\t${placeholders.has(w) ? '1' : '0'}`
             + `\t${panePids.get(w) ?? '100'}\t${paneOptions.get(`%${String(i)}`) ?? ''}\n`).join('')
         : ''
+      const banner = this.bannerSent ? '' : '%begin 0 0 0\n%end 0 0 0\n'
+      this.bannerSent = true
+      const reply = relist && failRelist
+        ? '%begin 1 1 1\nno server running\n%error 1 1 1\n'
+        : `%begin 1 1 1\n${body}%end 1 1 1\n`
+      queueMicrotask(() => this.feed(`${banner}${reply}`))
+    },
+  }
+}
+
+/**
+ * The workspace's tmux server as a tui connection's control-mode client sees
+ * it: it lists `panes` (`<pane id>\t<window name>`, none a placeholder or
+ * naming a conversation) and accepts every other command.
+ */
+class FakeTuiTmux extends FakeStream {
+  private bannerSent = false
+  constructor(private readonly panes: string[]) {
+    super()
+  }
+
+  override stdin = {
+    write: (data: string): void => {
+      this.writes.push(data)
+      const body = data.startsWith('list-panes') ? this.panes.map((p) => `${p}\t0\t\n`).join('') : ''
       const banner = this.bannerSent ? '' : '%begin 0 0 0\n%end 0 0 0\n'
       this.bannerSent = true
       queueMicrotask(() => this.feed(`${banner}%begin 1 1 1\n${body}%end 1 1 1\n`))
@@ -224,6 +291,7 @@ beforeEach(async () => {
   podExec.mockReset()
   podExec.mockResolvedValue({ stdout: '', stderr: '' })
   tmuxWindows = ''
+  failRelist = false
   placeholders.clear()
   panePids.clear()
   paneOptions.clear()
@@ -328,16 +396,80 @@ describe('agentDriver', () => {
 
     // All are embedded in a single-quoted respawn-window.
     for (const cmd of [codex, opencode, pi]) expect(cmd).not.toContain("'")
+  })
 
-    // A model told over the protocol is parked for the handshake to take,
-    // once, so a reattach never overrides one the user switched to. One
-    // taken at launch is not parked, or it would leak.
-    _resetAcpRegistryForTests()
-    spec('codex', { model: 'gpt-5.2-codex' })
-    expect(takeAcpLaunchModel('conv-1')).toBeUndefined()
-    spec('pi', { model: 'openrouter/moonshotai/kimi-k2.6' })
-    expect(takeAcpLaunchModel('conv-1')).toBe('openrouter/moonshotai/kimi-k2.6')
-    expect(takeAcpLaunchModel('conv-1')).toBeUndefined()
+  /**
+   * Titles observed from live tools. claude and codex show a Braille spinner
+   * (claude also the circle phases ◐◑, from 2.1.228) at the first character
+   * while a turn runs. Every state waiting on the user, including a
+   * permission dialog or codex's blinking "Action Required", has none. Until
+   * the tool sets a title, `#{pane_title}` is the hostname. opencode and pi
+   * draw their state in the pane, so tmux resolves it there and pushes a
+   * verdict.
+   *
+   * tmux evaluates the formats itself, so they are pinned exactly: small
+   * mistakes still parse but mean something else.
+   * test-playwright-scripts/verify-tmux-status-format.js checks the markers
+   * against a live tmux. opencode's progress strip needs 4+ cells so short
+   * runs in transcript text do not match.
+   */
+  const HOSTNAME = 'yaac-yaac-ee9cb586-74d3-4a1f-9d1f-482839b26d70-5tfxq'
+  const STATUS_CASES = {
+    claude: {
+      format: '#{pane_title}',
+      // The whole Braille block and all four circle phases.
+      running: ['⠐ Create marker', '⠋ Fix the bug', '⠀ edge', '⣿ edge', '◐ Review PR', '◑ Review PR', '◒ edge', '◓ edge'],
+      // Neighbouring geometric glyphs claude uses elsewhere, and a spinner
+      // anywhere but the first character.
+      waiting: ['✳ Create marker', '✳ Claude Code', HOSTNAME, '', '● Ran a command', '○ Pending',
+        '◆ Marker', '◔ Past the phases', '✳ Fix ⠋ rendering', '✳ Fix ◐ rendering', ' ⠋ lead', ' ◐ lead'],
+    },
+    codex: {
+      format: '#{pane_title}',
+      running: ['⠴ workdir', '⠋ yaac', '⠀ edge', '⣿ edge'],
+      waiting: ['workdir', '[ ! ] Action Required workdir', '[ . ] Action Required workdir', HOSTNAME, '',
+        'fix ⠋ rendering', ' ⠋ lead'],
+    },
+    opencode: {
+      format: '#{?#{||:#{C/ri:esc\\s+(again\\s+to\\s+)?interrupt},#{C/ri:[■⬝][■⬝][■⬝][■⬝]}},running,waiting}',
+      running: ['running'],
+      waiting: ['waiting'],
+    },
+    pi: {
+      format: '#{?#{||:#{C/ri:esc\\s+(to\\s+)?(interrupt|cancel|stop)},'
+        + '#{C/ri:\\b(thinking|working|generating|streaming|running)\\b}},running,waiting}',
+      running: [' running '],
+      waiting: ['waiting'],
+    },
+  } as const
+
+  // Each pane is watched in its own window's tool's terms, whatever the
+  // workspace's tool (otherwise a restart would forget a codex conversation
+  // in a claude workspace), and windows no agent runs in, init commands and
+  // scratch shells, get no status subscription.
+  it.each(Object.entries(STATUS_CASES))('watches a %s pane by its own format and classifies what it pushes', async (tool, { format, running, waiting }) => {
+    const windows = [tool, `${tool}-2`, `${tool}-10`, 'shell', 'dev', `${tool}-ish`, `my${tool}`, `${tool}-`]
+    const stream = new FakeTuiTmux(windows.map((w, i) => `%${String(i)}\t${w}`))
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('tui').connect(session, (o) => seen.push(o), {
+      dial: () => stream,
+      heartbeatIntervalMs: 60_000,
+      log: () => {},
+    }))
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
+
+    const subscriptions = stream.writes.flatMap((w) => {
+      const m = /^refresh-client -B 'status-(\d+):%\d+:(.*)'\n$/.exec(w)
+      return m ? [[m[1], m[2]]] : []
+    })
+    expect(subscriptions).toEqual([['0', format], ['1', format], ['2', format]])
+
+    const classified = (value: string): unknown => {
+      stream.feed(`%subscription-changed status-1 $0 @0 0 %1 : ${value}\n`)
+      return seen.at(-1)
+    }
+    for (const t of running) expect(classified(t), t).toEqual({ kind: 'status', handle: '%1', status: 'running' })
+    for (const t of waiting) expect(classified(t), t).toEqual({ kind: 'status', handle: '%1', status: 'waiting' })
   })
 
   it('observes a tui conversation through tmux control mode', async () => {
@@ -1581,18 +1713,16 @@ describe('agentDriver', () => {
     // so which api key the proxy injects).
     const stream = new FakeStream()
     tmuxWindows = 'pi\n'
-    // The launch knows the provider default; the handshake delivers it.
-    agentDriver('acp').launchCmd({
-      tool: 'pi',
-      agentSessionId: 'wt-1',
-      resume: false,
-      windowName: 'pi',
-      paths: workspacePathsFixture(),
-      permissionMode: 'bypass',
-    })
+    // The workspace's recorded model, read for the tool once the session
+    // is new.
+    const asked: string[] = []
     connections.push(agentDriver('acp').connect(session, () => {}, {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
+      launchModel: (tool) => {
+        asked.push(tool)
+        return Promise.resolve(acpLaunchModel({ tool }))
+      },
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
@@ -1608,6 +1738,7 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
     const setModel = stream.sent().find((m) => m.method === 'session/set_config_option')!
     expect(setModel.params).toEqual({ sessionId: 'pi-1', configId: 'model', value: PI_DEFAULT_MODEL })
+    expect(asked).toEqual(['pi'])
     expect(stream.sent().some((m) => m.method === 'session/set_model')).toBe(false)
     // pi's modes are thinking levels, so no mode is set.
     expect(stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
@@ -1622,37 +1753,6 @@ describe('agentDriver', () => {
     await vi.waitFor(() => expect(events.some((e) => e.type === 'error')).toBe(true))
     expect((events.find((e) => e.type === 'error') as { message: string }).message)
       .toContain(PI_DEFAULT_MODEL)
-  })
-
-  // The park is in memory: a server restart between a spare's launch and its
-  // warm handshake loses it, and pi's own default may use a provider whose
-  // key the proxy does not swap.
-  it("names the workspace's recorded model when a restart lost the launch's park", async () => {
-    const stream = new FakeStream()
-    tmuxWindows = 'pi\n'
-    const asked: string[] = []
-    connections.push(agentDriver('acp').connect(session, () => {}, {
-      dial: acpDial(() => stream),
-      permissionMode: () => Promise.resolve('bypass'),
-      launchModel: (tool) => {
-        asked.push(tool)
-        return Promise.resolve('openrouter/moonshotai/kimi-k2.6')
-      },
-      log: () => {},
-    }))
-    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
-    stream.feed(helloLine(true))
-    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
-    const init = stream.sent().find((m) => m.method === 'initialize')!
-    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
-    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
-    const created = stream.sent().find((m) => m.method === 'session/new')!
-    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'pi-1' } })}\n`)
-
-    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/set_config_option')).toBe(true))
-    expect(stream.sent().find((m) => m.method === 'session/set_config_option')!.params)
-      .toEqual({ sessionId: 'pi-1', configId: 'model', value: 'openrouter/moonshotai/kimi-k2.6' })
-    expect(asked).toEqual(['pi'])
   })
 
   // opencode answers `session/new` before its model catalog has loaded,
@@ -2079,6 +2179,21 @@ describe('agentDriver', () => {
     expect(resumed.queuedPrompts.map((q) => q.text)).toEqual(['then commit'])
     after.feed(helloLine(false))
     await vi.waitFor(() => expect(after.sent().some((m) => m.method === 'session/prompt')).toBe(true))
+  })
+
+  // tmux answering the probe while every re-list fails would leave the
+  // connection up with nothing attached; the heartbeat redials instead.
+  it('goes down when a heartbeat re-list fails though tmux answers', async () => {
+    tmuxWindows = 'claude\n'
+    const seen: AgentObservation[] = []
+    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
+      heartbeatIntervalMs: 50, commandTimeoutMs: 1_000, log: () => {}, dial: acpDial(() => new FakeStream()),
+    }))
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'up')).toBe(true))
+    failRelist = true
+    await vi.waitFor(() => expect(seen.find((o) => o.kind === 'down')).toMatchObject({
+      reason: expect.stringContaining('heartbeat failed') as string,
+    }), { timeout: 5_000 })
   })
 
   it('re-dials a window whose acpd has not bound its socket yet', async () => {
@@ -2574,6 +2689,270 @@ describe('agentDriver', () => {
       // And on opencode's stash stack, where its pop key brings it back.
       expect(await send('opencode', { draft, enterDialog: '△ Permission required' })).toMatchObject({
         status: 0, calls: ['send-keys f9', 'paste', 'send-keys Enter'], stack: [draft],
+      })
+    })
+  })
+
+  describe('tui launch lines', () => {
+    describe('codex tool', () => {
+      // The command without its `-c` settings (pinned by the argv case below).
+      const bare = (cmd: string): string => cmd.replace(/ -c "(?:[^"\\]|\\.)*"/g, '')
+
+      it('omits prompt arguments', () => {
+        const cmd = tuiLaunchCmd({ tool: 'codex', workspaceId: 'sess-1', permissionMode: 'bypass' })
+        expect(bare(cmd)).toBe('codex -C /workspace --dangerously-bypass-hook-trust --yolo')
+      })
+
+      it('resumes the conversation it is given', () => {
+        const cmd = tuiLaunchCmd({ tool: 'codex', workspaceId: 'sess-1', resume: true, permissionMode: 'bypass' })
+        expect(bare(cmd)).toBe('codex -C /workspace --dangerously-bypass-hook-trust --yolo resume sess-1')
+      })
+
+      it('runs codex in the workspace, trusts the repository, and opens no startup screen', () => {
+        // Run the command with `codex` replaced by an argv printer.
+        const cmd = tuiLaunchCmd({
+          tool: 'codex',
+          workspaceId: 'sess-1',
+          permissionMode: 'accept-edits',
+          paths: { workspaceDir: '/data/wt' },
+        })
+        const argv = execFileSync('sh', ['-c', cmd.replace(/^codex /, `printf '%s\\n' `)], {
+          env: { ...process.env, CODEX_HOME: '/must/not/expand' },
+        }).toString().trimEnd().split('\n')
+        expect(argv).toEqual([
+          // Explicit, so a resume never asks which directory to use.
+          '-C', '/data/wt',
+          // yaac learns of a `/model` change from the title's last segment.
+          '-c', 'tui.terminal_title=["activity","project-name","model"]',
+          // Otherwise an outdated codex opens an "Update available" screen.
+          '-c', 'check_for_update_on_startup=false',
+          // A shared background server would run yaac's hooks outside the pane.
+          '-c', 'features.daemon_auto_start=false',
+          // Trust the folder and run yaac's hooks without asking, so no startup
+          // screen swallows the pasted prompt.
+          '-c', 'projects={"/data/wt"={trust_level="trusted"}}',
+          '--dangerously-bypass-hook-trust',
+        ])
+      })
+
+      it('inserts --model when a model override is given', () => {
+        const cmd = tuiLaunchCmd({ tool: 'codex', workspaceId: 'sess-1', resume: false, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
+        expect(bare(cmd)).toBe('codex -C /workspace --dangerously-bypass-hook-trust --yolo --model gpt-5.2-codex')
+      })
+
+      it('places --model after the resume subcommand (codex resume parses it)', () => {
+        const cmd = tuiLaunchCmd({ tool: 'codex', workspaceId: 'abc', resume: true, model: 'gpt-5.2-codex', permissionMode: 'bypass' })
+        expect(cmd).toMatch(/ --yolo resume abc --model gpt-5\.2-codex$/)
+      })
+    })
+
+    describe('opencode tool', () => {
+      // The permission posture is in OPENCODE_CONFIG_CONTENT (tested below).
+      it('runs the TUI over a private server of its own', () => {
+        const cmd = tuiLaunchCmd({ tool: 'opencode', workspaceId: 'sess-1', permissionMode: 'bypass' })
+        expect(cmd).toMatch(/ opencode --standalone$/)
+      })
+
+      it('resumes a session by id', () => {
+        const cmd = tuiLaunchCmd({ tool: 'opencode', workspaceId: 'ses_1', resume: true, permissionMode: 'bypass' })
+        expect(cmd).toMatch(/^OPENCODE_CONFIG_CONTENT=.* opencode --standalone --session ses_1$/)
+      })
+
+      it('carries a provider/model override in the config, never as a flag', () => {
+        // The TUI has no --model flag and refuses unknown flags.
+        const cmd = tuiLaunchCmd({ tool: 'opencode', workspaceId: 'sess-1', resume: false, model: 'anthropic/claude-opus-4-8', permissionMode: 'bypass' })
+        expect(cmd).not.toContain('--model')
+        expect(opencodeConfigOf(cmd).model).toBe('anthropic/claude-opus-4-8')
+        // Its prompt stash ships unbound; a message to it needs keys for it.
+        expect(cmd).toContain('OPENCODE_CLI_CONFIG_CONTENT="{\\"keybinds\\":{\\"prompt.stash\\":\\"f9\\",\\"prompt.stash.pop\\":\\"f10\\"}}"')
+      })
+    })
+
+    describe('pi tool', () => {
+      const defaultModel = piProviderInfo(PI_DEFAULT_PROVIDER).defaultModel
+      const anthropicModel = piProviderInfo('anthropic').defaultModel
+
+      // pi's stderr goes through sed to drop the first "Warning: No project
+      // session found with id ..." line, including any leading color codes.
+      const wrapped = (piCmd: string) =>
+        `${piCmd} 2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: No project session found with id .*creating a new session with that id\\./{//d}" >&2)`
+
+      it('uses --approve, the default provider model, and --session-id when none is given', () => {
+        const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
+        expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${defaultModel} --session-id sess-1`))
+      })
+
+      it('uses the given provider default model', () => {
+        const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', permissionMode: 'bypass' })
+        expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`))
+      })
+
+      it('addresses the session by id when resuming (same command as create)', () => {
+        const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', resume: true, piProvider: 'anthropic', permissionMode: 'bypass' })
+        expect(cmd).toBe(wrapped(`pi --approve --tui-mode fullscreen --model ${anthropicModel} --session-id sess-1`))
+      })
+
+      it('prefers an explicit model override over the provider default', () => {
+        const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', resume: false, piProvider: 'anthropic', model: 'openai/gpt-5.2', permissionMode: 'bypass' })
+        expect(cmd).toBe(wrapped('pi --approve --tui-mode fullscreen --model openai/gpt-5.2 --session-id sess-1'))
+      })
+
+      it('filters the fresh-run warning without single quotes (survives respawn wrapper)', () => {
+        const cmd = tuiLaunchCmd({ tool: 'pi', workspaceId: 'sess-1', permissionMode: 'bypass' })
+        // No single quotes: the command is embedded in `respawn-window '<cmd>'`.
+        expect(cmd).not.toContain("'")
+        // Anchored at line start, and only the first match is deleted.
+        expect(cmd).toContain('2> >(sed -u -E "0,/^(\\x1b\\[[0-9;]*m)*Warning: ')
+        expect(cmd).toContain('creating a new session with that id\\./{//d}" >&2)')
+      })
+    })
+
+    describe('claude tool', () => {
+      // claude animates its title (the pane's status signal) only when `$TMUX`
+      // is unset, so every claude launch below must include `env -u TMUX`.
+      it('hides $TMUX so the title keeps animating, and omits prompt flags', () => {
+        const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', permissionMode: 'bypass' })
+        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --session-id sess-1')
+      })
+
+      it('swaps --session-id for --resume when resuming', () => {
+        const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', resume: true, permissionMode: 'bypass' })
+        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --resume sess-1')
+      })
+
+      it('inserts --model when a model override is given', () => {
+        const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', resume: false, model: 'claude-opus-4-8', permissionMode: 'bypass' })
+        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model claude-opus-4-8 --session-id sess-1')
+      })
+
+      it('combines a model override with resume', () => {
+        const cmd = tuiLaunchCmd({ tool: 'claude', workspaceId: 'sess-1', resume: true, model: 'opus', permissionMode: 'bypass' })
+        expect(cmd).toBe('env -u TMUX YAAC_TMUX="$TMUX" CLAUDE_CODE_NO_FLICKER=1 claude --permission-mode bypassPermissions --model opus --resume sess-1')
+      })
+    })
+
+    // Each tool expresses postures differently, so every (tool, posture) pair
+    // is asserted. `accept-edits` is codex's default, so it adds no flag.
+    describe('permission modes', () => {
+      const CASES: [AgentTool, PermissionMode, string][] = [
+        ['claude', 'bypass', 'claude --permission-mode bypassPermissions'],
+        ['claude', 'auto', 'claude --permission-mode auto'],
+        ['claude', 'accept-edits', 'claude --permission-mode acceptEdits'],
+        ['claude', 'plan', 'claude --permission-mode plan'],
+        ['claude', 'manual', 'claude --permission-mode manual'],
+        ['codex', 'bypass', ' --yolo'],
+        ['codex', 'auto', ' --approve-for-me'],
+        ['codex', 'accept-edits', 'codex'],
+        ['codex', 'plan', ' --sandbox read-only'],
+      ]
+
+      it.each(CASES)('%s in %s mode', (tool, permissionMode, expected) => {
+        expect(tuiLaunchCmd({ tool, workspaceId: 'sess-1', permissionMode })).toContain(expected)
+      })
+
+      // opencode's base policy starts with `* allow` and ignores unknown
+      // actions, so a misspelled rule silently allows everything. Hence exact
+      // assertions. There is no posture flag; the TUI would refuse one.
+      it('spells every opencode posture in rules opencode actually reads', () => {
+        const postureOf = (permissionMode: PermissionMode): OpencodeConfig => {
+          const cmd = tuiLaunchCmd({ tool: 'opencode', workspaceId: 's', permissionMode })
+          // Escaped double quotes only: the command is embedded in
+          // `respawn-window '<cmd>'`, and bare braces would be expanded by zsh.
+          expect(cmd).not.toContain("'")
+          expect(cmd).not.toContain('--auto')
+          expect(cmd).not.toContain('--agent')
+          return opencodeConfigOf(cmd)
+        }
+        const rule = (action: string, effect: string) => ({ action, resource: '*', effect })
+
+        // Bypass explicitly allows everything; the base policy would still ask
+        // for some things.
+        expect(postureOf('bypass')).toEqual({ permissions: [rule('*', 'allow')] })
+        // Manual asks before any action (wildcard first, to cover tools the base
+        // policy allows), then re-allows reads and restates the .env asks.
+        const askToAct = [
+          rule('*', 'ask'),
+          rule('read', 'allow'), rule('glob', 'allow'), rule('grep', 'allow'), rule('question', 'allow'),
+          { action: 'read', resource: '*.env', effect: 'ask' },
+          { action: 'read', resource: '*.env.*', effect: 'ask' },
+        ]
+        expect(postureOf('manual')).toEqual({ permissions: askToAct })
+        // Accept-edits also allows `edit` (which covers edit, write and patch).
+        expect(postureOf('accept-edits')).toEqual({ permissions: [...askToAct, rule('edit', 'allow')] })
+        // Plan uses opencode's plan agent, plus the same rules since that agent
+        // would otherwise run commands unprompted.
+        expect(postureOf('plan')).toEqual({ default_agent: 'plan', permissions: askToAct })
+      })
+
+      // opencode silently ignores unknown actions, so check every name against
+      // the pinned binary's list.
+      it('names only actions the pinned opencode binary knows', () => {
+        for (const mode of ['bypass', 'accept-edits', 'manual', 'plan'] as const) {
+          const cmd = tuiLaunchCmd({ tool: 'opencode', workspaceId: 's', permissionMode: mode })
+          for (const r of opencodeConfigOf(cmd).permissions ?? []) {
+            expect(OPENCODE_ACTIONS).toContain(r.action)
+          }
+        }
+      })
+
+      // Run through a real shell: config opencode cannot parse fails open.
+      it('delivers the opencode posture through the shell it is embedded in', () => {
+        const cmd = tuiLaunchCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'manual' })
+        const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
+        const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], { encoding: 'utf8' })
+        expect(JSON.parse(out) as OpencodeConfig).toEqual(opencodeConfigOf(cmd))
+      })
+
+      // A workspace row may name a posture the tool lacks. Each falls back to
+      // the loosest posture the tool has that is no looser than the row's.
+      it('falls back to the nearest posture a tool actually has', () => {
+        // pi has no permission system, so every posture is effectively bypass.
+        const piManual = tuiLaunchCmd({ tool: 'pi', workspaceId: 's', permissionMode: 'manual' })
+        expect(piManual).toBe(tuiLaunchCmd({ tool: 'pi', workspaceId: 's', permissionMode: 'bypass' }))
+        expect(piManual).toContain('pi --approve')
+        // opencode has no reviewer model, so `auto` becomes accept-edits.
+        expect(tuiLaunchCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'auto' }))
+          .toBe(tuiLaunchCmd({ tool: 'opencode', workspaceId: 's', permissionMode: 'accept-edits' }))
+        // The pinned codex has no `manual`, so it falls back to read-only (plan).
+        expect(tuiLaunchCmd({ tool: 'codex', workspaceId: 's', permissionMode: 'manual' }))
+          .toBe(tuiLaunchCmd({ tool: 'codex', workspaceId: 's', permissionMode: 'plan' }))
+        // An unknown posture gets the tool's strictest.
+        expect(tuiLaunchCmd({ tool: 'claude', workspaceId: 's', permissionMode: 'dontAsk' as PermissionMode }))
+          .toContain('--permission-mode plan')
+      })
+    })
+
+    // Every launch names its effort, since an in-session change is saved to
+    // the project's shared tool home and would otherwise carry into this one
+    // (docs/effort-levels.md).
+    describe('effort', () => {
+      const launch = (tool: AgentTool, extra: { model?: string; resume?: boolean } = {}): string =>
+        tuiLaunchCmd({ tool, workspaceId: 's', permissionMode: 'bypass', effort: 'high', ...extra })
+
+      it("passes each tool's own flag, and none when unset", () => {
+        expect(launch('claude', { resume: true })).toMatch(/ --effort high --resume s$/)
+        expect(launch('pi')).toContain(' --thinking high --session-id s')
+        // Before `resume`, so it binds to a resumed conversation too.
+        expect(launch('codex', { resume: true })).toMatch(/ -c "model_reasoning_effort=high" .*resume s/)
+        for (const tool of ['claude', 'codex', 'pi'] as const) {
+          expect(tuiLaunchCmd({ tool, workspaceId: 's', permissionMode: 'bypass' })).not.toMatch(/effort|thinking/)
+        }
+      })
+
+      // opencode takes a variant only on an agent, beside its model, and on
+      // both agents so a Tab keeps it; `default` is no variant at all.
+      it('gives opencode the variant on both agents through the shell it is embedded in', () => {
+        const cmd = launch('opencode', { model: 'openai/gpt-5' })
+        const env = /^(OPENCODE_CONFIG_CONTENT=\S+)/.exec(cmd)?.[1] ?? ''
+        const out = execFileSync('sh', ['-c', `${env} printenv OPENCODE_CONFIG_CONTENT`], { encoding: 'utf8' })
+        expect((JSON.parse(out) as { agent?: unknown }).agent).toEqual({
+          build: { model: 'openai/gpt-5', variant: 'high' },
+          plan: { model: 'openai/gpt-5', variant: 'high' },
+        })
+        const plain = tuiLaunchCmd({
+          tool: 'opencode', workspaceId: 's', permissionMode: 'bypass', model: 'openai/gpt-5', effort: 'default',
+        })
+        expect(plain).not.toContain('agent')
       })
     })
   })

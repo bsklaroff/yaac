@@ -1,23 +1,16 @@
-import { describe, it, expect } from 'vitest'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { beforeEach, describe, it, expect } from 'vitest'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { buildApp } from '#main/server'
 
 describe('GET /health', () => {
+  beforeEach(() => { installFakeWorkspaceDriver() })
+
   it('reports ok, the buildId, the access mode, and the driver', async () => {
-    installFakeWorkspaceDriver()
     const app = buildApp({ buildId: 'bid-1' })
     const res = await app.request('/api/health')
     expect(res.status).toBe(200)
     expect(await res.json())
       .toEqual({ ok: true, buildId: 'bid-1', ready: true, access: 'local', driver: 'k8s' })
-  })
-
-  it('reports a null driver rather than failing when none is registered', async () => {
-    // /health must answer even before a driver is registered.
-    const app = buildApp({ buildId: 'b' })
-    const res = await app.request('/api/health')
-    expect(res.status).toBe(200)
-    expect((await res.json() as { driver: string | null }).driver).toBeNull()
   })
 
   it('defaults ready to true when no isReady is injected (in-process tests)', async () => {

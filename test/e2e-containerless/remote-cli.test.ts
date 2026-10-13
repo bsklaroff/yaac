@@ -2,13 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  runYaac,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
+import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import type { SpawnedServer } from '@yaac/test-utils/api'
 
 /**
  * The server-selection commands, against one shared server. `yaac remote

@@ -22,14 +22,11 @@
  * A conversation's handle here is its tmux pane id (`%3`).
  */
 
-import { StringDecoder } from 'node:string_decoder'
-import { WorkspaceExecError, type StreamChild } from '#drivers/contract'
-import { serverLog } from '#log'
+import { WorkspaceExecError } from '#drivers/contract'
 import {
-  ControlModeClient,
+  BOOT_SUBSCRIPTION_PREFIX,
+  ControlModeConnection,
   PLACEHOLDER_FORMAT,
-  controlModeAttachArgv,
-  withTimeout,
   type ControlModeNotification,
 } from './control-mode'
 import {
@@ -62,8 +59,6 @@ const SUBSCRIPTION_PREFIX = 'status-'
 const REPORT_SUBSCRIPTION_PREFIX = 'report-'
 /** Per pane, for every pane: the conversation it holds. */
 const SESSION_SUBSCRIPTION_PREFIX = 'session-'
-/** For a placeholder pane, until an agent is respawned into it. */
-const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
 
 /**
  * The subscription name for one pane. Must be unique per pane:
@@ -75,9 +70,7 @@ function subscriptionName(prefix: string, paneId: string): string {
   return `${prefix}${paneId.replace('%', '')}`
 }
 
-class TuiConnection implements AgentConnection {
-  private child: StreamChild | null = null
-  private client: ControlModeClient | null = null
+class TuiConnection extends ControlModeConnection {
   /** Panes with a status subscription, each with its window's tool (panes
    *  in one workspace can run different tools). */
   private readonly subscribed = new Map<string, AgentTool>()
@@ -93,70 +86,10 @@ class TuiConnection implements AgentConnection {
   /** Every pane with a session subscription (agent windows and scratch
    *  shells), with the conversation it last named. */
   private readonly sessions = new Map<string, PaneSession | undefined>()
-  private heartbeatTimer: NodeJS.Timeout | null = null
-  private heartbeatInFlight = false
-  private done = false
-  private readonly heartbeatIntervalMs: number
-  private readonly commandTimeoutMs: number
-  private readonly log: (msg: string) => void
 
-  constructor(
-    private readonly session: DrivenWorkspace,
-    private readonly sink: (obs: AgentObservation) => void,
-    deps: AgentConnectDeps,
-  ) {
-    this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
-    this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
-    this.log = deps.log ?? serverLog
-
-    let child: StreamChild
-    try {
-      const paths = workspaceDriver().workspacePaths(session.jobName)
-      child = (deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv)))(
-        session, controlModeAttachArgv(paths),
-      )
-    } catch (err) {
-      this.down(`spawn failed: ${String(err)}`)
-      return
-    }
-    this.child = child
-
-    const client = new ControlModeClient(
-      (data) => child.stdin?.write(data),
-      (n) => this.onNotification(n),
-    )
-    this.client = client
-    // As in the ACP transport: chunks can split multi-byte characters (e.g.
-    // claude's Braille spinner), which would corrupt titles and flip a
-    // status classification.
-    const decoder = new StringDecoder('utf8')
-    child.stdout?.on('data', (chunk) => {
-      if (!this.done) client.feed(typeof chunk === 'string' ? chunk : decoder.write(chunk))
-    })
-    child.stderr?.on('data', () => { /* no stderr on ctrl streams — exit logs */ })
-    child.on('error', (err) => this.down(`child error: ${String(err)}`))
-    child.on('exit', () => this.down('stream closed'))
-
-    void this.init(client).catch((err: unknown) => this.down(`init failed: ${String(err)}`))
-  }
-
-  private send(cmd: string): Promise<string> {
-    const client = this.client
-    if (!client) return Promise.reject(new Error('control stream is gone'))
-    return withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`)
-  }
-
-  /**
-   * Post-attach setup over the stream: list agent panes and subscribe each.
-   * tmux pushes the current value at its next ~1s check; until then the
-   * attach itself proves tmux is up.
-   */
-  private async init(client: ControlModeClient): Promise<void> {
-    await this.syncPanes()
-    if (this.done) return
-    this.sink({ kind: 'up' })
-    this.sink({ kind: 'command-channel', send: (cmd) => withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`) })
-    this.heartbeatTimer = setInterval(() => void this.heartbeat(), this.heartbeatIntervalMs)
+  constructor(session: DrivenWorkspace, sink: (obs: AgentObservation) => void, deps: AgentConnectDeps) {
+    super(session, sink, deps, 'tui-driver')
+    this.start()
   }
 
   /**
@@ -171,9 +104,11 @@ class TuiConnection implements AgentConnection {
    *
    * Re-run on each heartbeat and window add/close. Already-subscribed panes
    * are skipped. A respawn announces nothing, so a placeholder pane is
-   * watched until the agent replaces it.
+   * watched until the agent replaces it. tmux pushes each subscription's
+   * value at its next ~1s check; until then the attach itself proves tmux
+   * is up.
    */
-  private async syncPanes(): Promise<void> {
+  protected async sync(): Promise<void> {
     // Tab-separated: names and paths can contain spaces, and the session
     // format strips tabs.
     const listed = await this.send(
@@ -235,7 +170,7 @@ class TuiConnection implements AgentConnection {
   /**
    * The live set: every agent pane, plus any other pane naming a
    * conversation, with its latest reports. Not published until an agent pane
-   * has been seen (see `syncPanes`).
+   * has been seen (see `sync`).
    */
   private publishAgents(): void {
     if (this.subscribed.size === 0) return
@@ -301,102 +236,33 @@ class TuiConnection implements AgentConnection {
     this.publishAgents()
   }
 
-  private onNotification(n: ControlModeNotification): void {
-    if (this.done) return
-    if (n.kind === 'exit') {
-      // tmux is detaching us; the child exit that follows runs teardown.
+  protected onSubscription(n: Extract<ControlModeNotification, { kind: 'subscription' }>): void {
+    if (n.name.startsWith(SESSION_SUBSCRIPTION_PREFIX)) {
+      this.onSession(n.paneId, n.value)
       return
     }
-    if (n.kind === 'windows-changed') {
-      // A window opened or closed; re-list off the hot path.
-      this.sink({ kind: 'windows-changed' })
-      void this.resync()
+    const tool = this.subscribed.get(n.paneId)
+    if (tool === undefined) return
+    if (n.name.startsWith(REPORT_SUBSCRIPTION_PREFIX)) {
+      const { model, mode, effort } = splitAgentReport(n.value)
+      this.onReport(n.paneId, mode, effort)
+      void this.onModel(n.paneId, tool, model)
       return
     }
-    if (n.kind === 'subscription') {
-      if (n.name.startsWith(BOOT_SUBSCRIPTION_PREFIX)) {
-        // An agent replaced the placeholder; list it as one.
-        if (n.value === '0') void this.resync()
-        return
-      }
-      if (n.name.startsWith(SESSION_SUBSCRIPTION_PREFIX)) {
-        this.onSession(n.paneId, n.value)
-        return
-      }
-      const tool = this.subscribed.get(n.paneId)
-      if (tool === undefined) return
-      if (n.name.startsWith(REPORT_SUBSCRIPTION_PREFIX)) {
-        const { model, mode, effort } = splitAgentReport(n.value)
-        this.onReport(n.paneId, mode, effort)
-        void this.onModel(n.paneId, tool, model)
-        return
-      }
-      if (!n.name.startsWith(SUBSCRIPTION_PREFIX)) return
-      this.sink({
-        kind: 'status',
-        handle: n.paneId,
-        status: classifyAgentObservation(tool, n.value),
-      })
-    }
-    // %output: never received, since connections attach no-output.
+    if (!n.name.startsWith(SUBSCRIPTION_PREFIX)) return
+    this.sink({
+      kind: 'status',
+      handle: n.paneId,
+      status: classifyAgentObservation(tool, n.value),
+    })
   }
 
-  /** Re-list panes, ignoring failures; the heartbeat detects a wedged
-   *  stream. */
-  private async resync(): Promise<void> {
-    if (this.done || !this.client) return
-    try {
-      await this.syncPanes()
-    } catch {
-      // The heartbeat handles wedges.
-    }
-  }
-
-  /**
-   * Wedge detector: a cheap command over the open stream whose reply proves
-   * the path to the tmux server; a missed deadline tears the stream down.
-   */
-  private async heartbeat(): Promise<void> {
-    if (this.done || this.heartbeatInFlight) return
-    this.heartbeatInFlight = true
-    try {
-      await this.send('display-message -p ok')
-      // Also refreshes the pane set, catching panes that came and went
-      // between window notifications or while the stream was down.
-      await this.resync()
-    } catch (err) {
-      this.down(`heartbeat failed: ${String(err)}`)
-    } finally {
-      this.heartbeatInFlight = false
-    }
-  }
-
-  private down(reason: string): void {
-    if (this.done) return
-    this.teardown()
-    this.sink({ kind: 'down', reason })
-  }
-
-  private teardown(): void {
-    this.done = true
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
-    this.heartbeatTimer = null
-    this.sink({ kind: 'command-channel', send: null })
-    this.client?.fail(new Error('stream torn down'))
-    this.client = null
-    this.child?.kill('SIGTERM')
-    this.child = null
+  protected cleanup(): void {
     this.subscribed.clear()
     this.models.clear()
     this.modelPushes.clear()
     this.modes.clear()
     this.sessions.clear()
-  }
-
-  close(): void {
-    if (this.done) return
-    this.log(`[server] tui-driver ${this.session.workspaceId}: closing`)
-    this.teardown()
   }
 }
 

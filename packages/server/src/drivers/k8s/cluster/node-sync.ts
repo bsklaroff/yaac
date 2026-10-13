@@ -1,5 +1,5 @@
 import { applyObject, listObjects } from '#drivers/k8s/substrate'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { nodeIpBlocks } from './cluster-cidrs'
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
 import { syncNpmCacheNodes } from './npm-cache'
@@ -9,7 +9,7 @@ import {
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
-import { applyProjectRegistryIngress, writeProjectRegistryHosts } from './project-registry'
+import { applyProjectRegistryIngress } from './project-registry'
 
 /**
  * Keeps per-node state current as nodes join, as they do when an autoscaler
@@ -19,10 +19,10 @@ import { applyProjectRegistryIngress, writeProjectRegistryHosts } from './projec
  *  - its address in every NetworkPolicy that admits nodes (kubelet probes,
  *    containerd pulls, netd's Envoy). These are re-applied whenever the
  *    address set changes, which takes no pod.
- *  - its containerd hosts.toml for the main and project registries, without
- *    which it cannot pull any yaac image (the gVisor installer's included).
- *    These are written once per node, keyed by name and uid so a replacement
- *    node on a reused address still gets them, and only once the node is
+ *  - its containerd hosts.toml for the main registry, without which it
+ *    cannot pull any yaac image (the gVisor installer's included). It is
+ *    written once per node, keyed by name and uid so a replacement
+ *    node on a reused address still gets it, and only once the node is
  *    Ready. The writes run in the background, so a node that cannot run a
  *    pod never holds up the reconcile pass; it is retried on later passes.
  */
@@ -65,16 +65,14 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
     .map((n) => ({ name: n.metadata?.name ?? '', key: `${n.metadata?.name ?? ''}/${n.metadata?.uid ?? ''}` }))
     .filter((n) => n.name && !hostsWritten.has(n.key))
   if (pending.length === 0) return
-  hostsRun = writeHostsTo(pending, projectIds).finally(() => { hostsRun = null })
+  hostsRun = writeHostsTo(pending).finally(() => { hostsRun = null })
 }
 
-/** Write every registry's hosts.toml to each node in turn; a failed node is retried on a later pass. */
-async function writeHostsTo(nodes: Array<{ name: string; key: string }>, projectIds: string[]): Promise<void> {
+/** Write the main registry's hosts.toml to each node in turn; a failed node is retried on a later pass. */
+async function writeHostsTo(nodes: Array<{ name: string; key: string }>): Promise<void> {
   for (const node of nodes) {
-    const only = new Set([node.name])
     try {
-      await writeMainRegistryHosts(only)
-      for (const projectId of projectIds) await writeProjectRegistryHosts(projectId, only)
+      await writeMainRegistryHosts(new Set([node.name]))
       hostsWritten.add(node.key)
     } catch (err) {
       serverLog(`[node-sync] registry hosts.toml on ${node.name} failed (retried next pass): ${String(err)}`)

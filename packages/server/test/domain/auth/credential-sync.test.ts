@@ -3,15 +3,13 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 
 import {
   harvestToolCredentials,
-  reseedPlaceholderToolHomes,
-  runtimeMediatesEgress,
   seedProjectToolHome,
   syncToolCredentials,
 } from '#domain/auth'
 import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, seeTailnetUser, setToolCredential } from '#db'
 import { getDb } from '#db/client'
 import { projects, toolCredentials } from '#db/schema'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectsDir, projectClaudeCredentialsFile, projectCodexAuthFile } from '@yaac/shared/project-paths'
 import {
@@ -102,15 +100,6 @@ const storedCodex = () => getToolCredential(OWNER, 'codex')
 async function seedProject(projectId: string, bundle: ClaudeOAuthBundle): Promise<void> {
   await writeProjectClaudeCredentials(projectId, bundle)
 }
-
-describe('runtimeMediatesEgress', () => {
-  it('is false only for the containerless runtime, and true with none registered', () => {
-    expect(runtimeMediatesEgress()).toBe(false)
-
-    installFakeWorkspaceDriver({ kind: 'k8s' })
-    expect(runtimeMediatesEgress()).toBe(true)
-  })
-})
 
 describe('harvestToolCredentials', () => {
   it('adopts a workspace-refreshed bundle for both tools, and leaves the store alone when nothing is newer', async () => {
@@ -270,13 +259,13 @@ describe('seedProjectToolHome', () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
     await storeClaude(claudeBundle())
     await storeCodex(codexBundle())
-    // Even over a real bundle left by an earlier containerless run.
+    // Even over a real bundle.
     await writeProjectClaudeCredentials(P.alpha, claudeBundle({
       accessToken: 'claude-access-real',
       expiresAt: BASE_EXPIRY + HOUR,
     }))
 
-    await seedProjectToolHome(P.alpha, OWNER, { mediatedEgress: true })
+    await seedProjectToolHome(P.alpha, OWNER)
 
     const claude = await readProjectClaudeBundle(P.alpha)
     expect(claude?.accessToken).toBe(PLACEHOLDER_ACCESS_TOKEN)
@@ -300,7 +289,7 @@ describe('seedProjectToolHome', () => {
 
     // On create, a stale host copy must not overwrite the project's newer
     // credential.
-    await seedProjectToolHome(P.alpha, OWNER, { mediatedEgress: false })
+    await seedProjectToolHome(P.alpha, OWNER)
 
     expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({ accessToken: 'claude-access-fresh' })
     expect(await readProjectCodexBundle(P.alpha)).toMatchObject({ accessToken: 'codex-access-fresh' })
@@ -316,16 +305,16 @@ describe('seedProjectToolHome', () => {
   it('seeds a project that has nothing, and one holding only a sentinel', async () => {
     await storeClaude(claudeBundle())
 
-    await seedProjectToolHome(P['fresh-project'], OWNER, { mediatedEgress: false })
+    await seedProjectToolHome(P['fresh-project'], OWNER)
     expect(await readProjectClaudeBundle(P['fresh-project'])).toMatchObject({
       accessToken: 'claude-access-host',
       refreshToken: 'claude-refresh-host',
     })
 
-    // A data dir switched from k8s to containerless: the placeholder must be
-    // replaced, or the agent authenticates with `yaac-ph-access`.
+    // A sentinel must be replaced, or the agent authenticates with
+    // `yaac-ph-access`.
     await writeProjectClaudePlaceholder(P.flipped, claudeBundle())
-    await seedProjectToolHome(P.flipped, OWNER, { mediatedEgress: false })
+    await seedProjectToolHome(P.flipped, OWNER)
     expect(await readProjectClaudeBundle(P.flipped)).toMatchObject({ accessToken: 'claude-access-host' })
   })
 
@@ -337,7 +326,7 @@ describe('seedProjectToolHome', () => {
       refreshToken: 'yaac-ph-refresh',
     }))
 
-    await seedProjectToolHome(P.chained, OWNER, { mediatedEgress: false })
+    await seedProjectToolHome(P.chained, OWNER)
 
     expect(await readProjectClaudeBundle(P.chained)).toMatchObject({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
@@ -399,25 +388,6 @@ describe('syncToolCredentials', () => {
     // out of pod-mounted files.
     expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({
       accessToken: PLACEHOLDER_ACCESS_TOKEN,
-    })
-  })
-})
-
-describe('reseedPlaceholderToolHomes', () => {
-  it('replaces real bundles with each owner\'s sentinels where egress is mediated, and is a no-op otherwise', async () => {
-    await storeClaude(claudeBundle())
-    // A data dir once served containerless holds real tokens in the files a
-    // pod would mount.
-    await seedProject(P.alpha, claudeBundle())
-
-    await reseedPlaceholderToolHomes()
-    expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({ accessToken: 'claude-access-host' })
-
-    installFakeWorkspaceDriver({ kind: 'k8s' })
-    await reseedPlaceholderToolHomes()
-    expect(await readProjectClaudeBundle(P.alpha)).toMatchObject({
-      accessToken: PLACEHOLDER_ACCESS_TOKEN,
-      expiresAt: BASE_EXPIRY,
     })
   })
 })

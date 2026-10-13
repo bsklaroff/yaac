@@ -54,11 +54,20 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
     after: query.cursor ? parseCursor(query.cursor) : undefined,
   })
 
-  const linksByWorkspace = await getAgentSessionsFor(rows.map((r) => ({
-    projectId: r.projectId,
-    workspaceId: r.workspaceId,
-  })))
-  const entries = rows.map((r): StoppedWorkspaceEntry => {
+  const entries = await toStoppedEntries(rows)
+  const last = rows.at(-1)
+  const more = query.limit !== undefined && last !== undefined && rows.length === query.limit
+  return {
+    entries,
+    total,
+    ...(more ? { nextCursor: `${stoppedAtOf(last).getTime()}:${last.workspaceId}` } : {}),
+  }
+}
+
+/** Stopped rows in wire form, with their conversations. */
+export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWorkspaceEntry[]> {
+  const linksByWorkspace = await getAgentSessionsFor(rows)
+  return rows.map((r) => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
     const first = links[0]
     const prompt = openingPrompt(links)
@@ -79,13 +88,6 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
     }
   })
-  const last = rows.at(-1)
-  const more = query.limit !== undefined && last !== undefined && rows.length === query.limit
-  return {
-    entries,
-    total,
-    ...(more ? { nextCursor: `${stoppedAtOf(last).getTime()}:${last.workspaceId}` } : {}),
-  }
 }
 
 /** Ids the runtime reports running; none when it is unreachable, since the

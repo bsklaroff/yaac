@@ -1,3 +1,5 @@
+import { diff } from '@codemirror/merge'
+
 /**
  * Diff lines for the panes, from two sources: a combined `git diff` (the
  * Changes pane) and a before/after text pair (an ACP edit tool
@@ -89,13 +91,6 @@ export function parseUnifiedDiff(diff: string): ParsedFileDiff[] {
   return files
 }
 
-/** Index parsed file diffs by path for quick lookup from the file list. */
-export function indexDiffsByPath(diff: string): Map<string, ParsedFileDiff> {
-  const map = new Map<string, ParsedFileDiff>()
-  for (const f of parseUnifiedDiff(diff)) map.set(f.path, f)
-  return map
-}
-
 /**
  * Split text into lines for diffing, ignoring a trailing newline. Empty text
  * has no lines, so replacing an empty file doesn't show a deleted blank line.
@@ -107,95 +102,41 @@ function splitLines(text: string): string[] {
   return lines
 }
 
-/**
- * Number each distinct line so the LCS table compares integers. Long,
- * near-identical lines (lockfiles, generated files) would otherwise make each
- * cell a slow string comparison, and `MAX_DIFF_CELLS` would not bound the
- * cost.
- */
-function internLines(a: string[], b: string[]): { a: Int32Array; b: Int32Array } {
-  const ids = new Map<string, number>()
-  const idOf = (line: string): number => {
-    const seen = ids.get(line)
-    if (seen !== undefined) return seen
-    ids.set(line, ids.size)
-    return ids.size - 1
-  }
-  return { a: Int32Array.from(a, idOf), b: Int32Array.from(b, idOf) }
-}
+/** Changed lines past which `diffTextPair` stops interleaving. */
+const DIFF_SCAN_LIMIT = 2_000
 
 /**
- * Above this many LCS cells, skip line matching and show the old block then
- * the new one. Edit blocks are usually small hunks, so this only happens on
- * something like a whole-file rewrite, where an interleaved diff adds little.
- */
-const MAX_DIFF_CELLS = 1_000_000
-
-/** Every line of one side as all adds or all deletes. Used when one side is
- *  missing or the pair is too large to match. */
-function wholeSide(text: string, kind: 'add' | 'del'): DiffLine[] {
-  return splitLines(text).map((line, i) => ({
-    kind,
-    text: line,
-    oldNo: kind === 'del' ? i + 1 : null,
-    newNo: kind === 'add' ? i + 1 : null,
-  }))
-}
-
-/**
- * Diff a before/after text pair into renderable lines, using a line-level
- * longest common subsequence.
+ * Diff a before/after text pair into renderable lines.
  *
  * An ACP edit tool call supplies two versions of a fragment (one hunk with
  * context, or a whole new file), not a unified diff. The line numbers are
  * therefore positions within the fragment, not file line numbers, which is
  * why the chat pane's diff view hides the gutter.
+ *
+ * Each distinct line is diffed as one character, so @codemirror/merge's
+ * character diff matches whole lines. Its scan limit bounds the cost of a
+ * large rewrite: past that many changed lines a pair is matched coarsely,
+ * as one removed block and one added block. Past 55,296 distinct lines the
+ * characters reach UTF-16 surrogates, so a fragment that size may pair
+ * unequal lines; no edit card is read at that size.
  */
 export function diffTextPair(oldText: string | undefined, newText: string): DiffLine[] {
-  if (oldText === undefined) return wholeSide(newText, 'add')
-  const a = splitLines(oldText)
+  const a = splitLines(oldText ?? '')
   const b = splitLines(newText)
-  if ((a.length + 1) * (b.length + 1) > MAX_DIFF_CELLS) {
-    return [...wholeSide(oldText, 'del'), ...wholeSide(newText, 'add')]
-  }
-
-  // lcs[i][j] = LCS length of a[i:] and b[j:], in a flat row-major table.
-  const { a: ia, b: ib } = internLines(a, b)
-  const width = b.length + 1
-  const lcs = new Int32Array((a.length + 1) * width)
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      lcs[i * width + j] = ia[i] === ib[j]
-        ? lcs[(i + 1) * width + j + 1] + 1
-        : Math.max(lcs[(i + 1) * width + j], lcs[i * width + j + 1])
-    }
-  }
-
+  const ids = new Map<string, string>()
+  const chars = (side: string[]): string => side.map((line) => {
+    let id = ids.get(line)
+    if (id === undefined) ids.set(line, (id = String.fromCharCode(ids.size)))
+    return id
+  }).join('')
   const lines: DiffLine[] = []
   let i = 0
   let j = 0
-  while (i < a.length && j < b.length) {
-    if (ia[i] === ib[j]) {
-      lines.push({ kind: 'context', text: a[i], oldNo: i + 1, newNo: j + 1 })
-      i++
-      j++
-    } else if (lcs[(i + 1) * width + j] >= lcs[i * width + j + 1]) {
-      lines.push({ kind: 'del', text: a[i], oldNo: i + 1, newNo: null })
-      i++
-    } else {
-      lines.push({ kind: 'add', text: b[j], oldNo: null, newNo: j + 1 })
-      j++
-    }
+  const end = { fromA: a.length, toA: a.length, toB: b.length }
+  for (const c of [...diff(chars(a), chars(b), { scanLimit: DIFF_SCAN_LIMIT }), end]) {
+    for (; i < c.fromA; i++, j++) lines.push({ kind: 'context', text: a[i], oldNo: i + 1, newNo: j + 1 })
+    for (; i < c.toA; i++) lines.push({ kind: 'del', text: a[i], oldNo: i + 1, newNo: null })
+    for (; j < c.toB; j++) lines.push({ kind: 'add', text: b[j], oldNo: null, newNo: j + 1 })
   }
-  for (; i < a.length; i++) lines.push({ kind: 'del', text: a[i], oldNo: i + 1, newNo: null })
-  for (; j < b.length; j++) lines.push({ kind: 'add', text: b[j], oldNo: null, newNo: j + 1 })
   return lines
-}
-
-/** The +N/−N line counts a file header shows. */
-export function diffStats(lines: DiffLine[]): { additions: number; deletions: number } {
-  return {
-    additions: lines.filter((l) => l.kind === 'add').length,
-    deletions: lines.filter((l) => l.kind === 'del').length,
-  }
 }

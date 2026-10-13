@@ -101,7 +101,7 @@ project that does not exist is `NOT_FOUND`, never open. A refusal is
   `resolveWorkspaceContainer`, which checks the workspace's row before
   asking the runtime, so a non-owner gets 403 whether or not it runs.
 - Routes that write rows directly through `#db` (titles, groups,
-  set-group, death-seen marks) call `authorizeProject` before the write,
+  group moves, death-seen marks) call `authorizeProject` before the write,
   and a provisioning entry is dismissed or stopped only by its project's
   owner.
 - A project's build files are read at `reader` and written at `owner`: the

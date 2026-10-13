@@ -7,20 +7,23 @@
  * attach their project and await the same promise.
  */
 import { BuilderPodLease, buildLayerInPod } from './builder-pod'
-import { registryHasTag } from '#drivers/k8s/container'
-import { serverLog } from '#log'
+import {
+  missingPrebuiltImage,
+  registryTagState,
+  resolveImageChain,
+  type ImageLayer,
+} from '#drivers/k8s/cluster'
+import { serverLog } from '#lib/log'
+import { testEnv } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'
 import {
   attachImageBuildProject,
   failImageBuild,
   finishImageBuild,
   type ImageBuildReason,
-  type ImageLayer,
   ingestImageBuildLine,
-  missingPrebuiltImage,
   registerImageBuild,
-  resolveImageChain,
-} from '#drivers/k8s/image-engine'
+} from './image-builds'
 
 interface BuildContext {
   projectId: string
@@ -116,6 +119,8 @@ async function runBuild(
 }
 
 interface EnsureImageOpts {
+  /** Include the nestable layer. */
+  nestedContainers?: boolean
   /** What triggered the build; shown in the webapp's build list. */
   reason?: ImageBuildReason
   /** Fired before each missing layer starts building (1-based index). */
@@ -136,21 +141,15 @@ interface EnsureImageOpts {
  *   on the layers above (`FROM ${BASE_IMAGE}`) or standalone.
  * Layer 3 (optional): yaac-user-<id> from the project owner's Dockerfile.user.
  *
- * @param imagePrefix - Image name prefix; tests use their own.
- * @param requirePrebuilt - Throw instead of building a missing layer. Used
- *   by e2e tests so parallel workers fail fast.
- * @param nestedContainers - Include the nestable layer.
+ * Under `YAAC_REQUIRE_PREBUILT_IMAGES` (the e2e suite) a missing layer
+ * throws instead of building, so parallel workers fail fast.
  */
 export async function ensureImage(
   projectId: string,
   owner: string,
-  imagePrefix?: string,
-  requirePrebuilt = false,
-  nestedContainers = false,
   opts: EnsureImageOpts = {},
 ): Promise<string> {
-  const prefix = imagePrefix ?? 'yaac'
-  const { layers, finalTag } = await resolveImageChain(projectId, owner, prefix, nestedContainers)
+  const { layers, finalTag } = await resolveImageChain(projectId, owner, opts.nestedContainers)
   const reason = opts.reason ?? 'session'
 
   // One builder pod per call, created only if a layer needs building.
@@ -161,18 +160,13 @@ export async function ensureImage(
       // is in flight, join it instead of checking.
       if (!inflightBuilds.has(layer.tag)) {
         if (realizedTags.has(layer.tag)) continue
-        if (await registryHasTag(layer.tag)) {
+        if (await registryTagState(layer.tag) === 'present') {
           realizedTags.add(layer.tag)
           continue
         }
       }
 
-      if (requirePrebuilt) {
-        throw new Error(
-          `Image ${layer.tag} is missing or stale. ` +
-          'Restart the test run so the global setup can rebuild it.',
-        )
-      }
+      if (testEnv.requirePrebuiltImages) throw missingPrebuiltImage(layer.name, layer.tag)
 
       opts.onLayerStart?.(i + 1, layers.length, layer.name)
       await buildLayerShared(layer, { projectId, reason, lease })

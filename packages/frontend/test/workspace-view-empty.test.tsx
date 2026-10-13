@@ -1,18 +1,10 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeAll } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import { screen, cleanup } from '@testing-library/react'
 import type { ServerSnapshot } from '@yaac/shared/types'
 import { WorkspaceView } from '#components/WorkspaceView'
 import { useUiStore } from '#lib/store'
 import { renderWithClient } from './harness'
 
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 const initial = useUiStore.getState()
 afterEach(() => {

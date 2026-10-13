@@ -1,9 +1,7 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import { EmptyState } from '#components/ui/EmptyState'
 
-afterEach(cleanup)
 
 const Dot = ({ size }: { size?: number }) => <svg data-testid="icon" width={size} />
 

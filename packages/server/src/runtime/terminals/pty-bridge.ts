@@ -3,7 +3,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { tmuxCmd } from '#runtime/agents'
 import { createOutputBatcher } from '@yaac/shared/batcher'
 import { attachMirroredPane } from './pane-mirror'
-import { parseControl, pongFor, type SocketLike } from './socket'
+import { parseControl, PONG, type SocketLike } from './socket'
 import type { WorkspacePaths } from '#drivers/contract'
 
 const DEFAULT_COLS = 80
@@ -208,7 +208,7 @@ function bridge(
     } else if (ctrl.type === 'signal' && ctrl.name) {
       ptyProc.kill(ctrl.name)
     } else if (ctrl.type === 'ping') {
-      sock.send(pongFor(ctrl))
+      sock.send(PONG)
     }
   })
 

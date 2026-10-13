@@ -2,20 +2,21 @@ import { execFile } from 'node:child_process'
 import type { TestProject } from 'vitest/node'
 import { promisify } from 'node:util'
 import path from 'node:path'
-import { contextHash, ensureImageByTag, resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
-import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
+import { contextHash, resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
+import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/install/podman'
+import { ensureImageByTag, pushImageToRegistry } from '@yaac/server/drivers/k8s/install/host-images'
 import {
   TRUSTED_PARENT_COMPRESSION,
   mirrorPinnedUpstreams,
 } from '@yaac/server/drivers/k8s/install/builtin-images'
-import { pushImageToRegistry, registryReachable } from '@yaac/server/drivers/k8s/container/registry'
+import { registryReachable } from '@yaac/server/drivers/k8s/cluster/registry'
 import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
-import { buildCliBundle } from '@yaac/test-utils/cli-bundle'
-import { buildTestServerImage, testServerImageTag } from '@yaac/test-utils/deployed-server'
+import { buildCliBundle } from '#support/cli-bundle'
+import { buildTestServerImage, testServerImageTag } from '#support/deployed-server'
 import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
-import { gcTestImages } from '@yaac/test-utils/test-images'
-import { requireKindByo } from '@yaac/test-utils/kind-byo'
-import { testBackend } from '@yaac/test-utils/kind-byo-layout'
+import { gcTestImages } from '#support/test-images'
+import { requireKindByo } from '#support/kind-byo'
+import { testBackend } from '#support/kind-byo-layout'
 
 const execFileAsync = promisify(execFile)
 

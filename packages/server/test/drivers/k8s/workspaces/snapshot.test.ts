@@ -1,62 +1,105 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-
-// Mock only the substrate's listings; everything above them runs for real.
-vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
-  ...(await importOriginal<typeof podsModule>()),
-  listWorkspacePods: vi.fn(),
-  listWorkspaceJobs: vi.fn(),
-}))
-
-import { listWorkspaceJobs, listWorkspacePods, type JobInfo, type PodInfo } from '#drivers/k8s/substrate/pods'
-import type * as podsModule from '#drivers/k8s/substrate/pods'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { createRuntimeSnapshot } from '#drivers/k8s/workspaces'
+import { installId, setActiveClusterCache, type ClusterCache, type PodInfo } from '#drivers/k8s/substrate'
 
-const mockPods = vi.mocked(listWorkspacePods)
-const mockJobs = vi.mocked(listWorkspaceJobs)
+const PROJECT = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+const CREATED = '2026-06-01T00:00:00Z'
 
-function pod(workspaceId: string): PodInfo {
+function labels(workspaceId: string): Record<string, string> {
   return {
-    podName: `yaac-p-${workspaceId}-x`,
-    jobName: `yaac-p-${workspaceId}`,
-    workspaceId,
-    projectId: 'p',
-    tool: 'claude',
-    phase: 'Running',
-    running: true,
-    terminating: false,
-    createdAtMs: 1_700_000_000_000,
-    labels: {},
+    'yaac.workspace-id': workspaceId,
+    'yaac.project-id': PROJECT,
+    'yaac.tool': 'claude',
+    'yaac.install-id': installId(),
   }
 }
 
-function job(workspaceId: string): JobInfo {
-  return { jobName: `yaac-p-${workspaceId}`, workspaceId, projectId: 'p', createdAtMs: 1_700_000_000_000 }
+/** A workspace's Job, and (unless it is a stray) its running pod. */
+function seedWorkspace(workspaceId: string, opts: { pod?: boolean } = {}): void {
+  const jobName = `yaac-demo-${workspaceId}`
+  fakeCluster.seed({
+    apiVersion: 'batch/v1', kind: 'Job',
+    metadata: { name: jobName, namespace: 'test-ns', labels: labels(workspaceId), creationTimestamp: CREATED },
+  })
+  if (opts.pod === false) return
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Pod',
+    metadata: {
+      name: `${jobName}-x1`, namespace: 'test-ns', creationTimestamp: CREATED,
+      labels: { ...labels(workspaceId), 'batch.kubernetes.io/job-name': jobName },
+    },
+    status: { phase: 'Running' },
+  })
+}
+
+/** A ClusterCache whose informers are all healthy, as the server publishes. */
+function healthyCache(): ClusterCache {
+  return {
+    healthy: () => true,
+    workspacePods: (): PodInfo[] => [{
+      podName: 'cached', workspaceId: 'cached', jobName: 'yaac-demo-cached', projectId: PROJECT, tool: 'claude',
+      phase: 'Running', running: true, terminating: false, createdAtMs: 1, labels: {},
+    }],
+    workspaceJobs: () => [],
+  } as unknown as ClusterCache
 }
 
 beforeEach(() => {
-  mockPods.mockReset().mockResolvedValue([pod('live')])
-  mockJobs.mockReset().mockResolvedValue([job('live'), job('stray')])
+  vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
+  seedWorkspace('live')
+  seedWorkspace('stray', { pod: false })
+})
+
+afterEach(() => {
+  setActiveClusterCache(null)
+  vi.unstubAllEnvs()
 })
 
 describe('createRuntimeSnapshot', () => {
-  it('answers workspaces and stray units from one memoized read per source', async () => {
+  it('answers workspaces and stray units from one lazy, memoized listing per kind', async () => {
     const snap = createRuntimeSnapshot(false)
-
+    // Creating a snapshot lists nothing.
+    expect(fakeCluster.calls).toEqual([])
     expect(snap.resync).toBe(false)
+    expect(createRuntimeSnapshot().resync).toBe(true)
+
     expect((await snap.workspaces()).map((w) => w.workspaceId)).toEqual(['live'])
     // A Job whose pod is gone is a stray unit; one with a live pod is not.
     expect(await snap.strayUnits()).toEqual([{
-      workspaceId: 'stray', unitName: 'yaac-p-stray', projectId: 'p', createdAtMs: 1_700_000_000_000,
+      workspaceId: 'stray', unitName: 'yaac-demo-stray', projectId: PROJECT, createdAtMs: Date.parse(CREATED),
     }])
     await snap.workspaces()
-    expect(mockPods).toHaveBeenCalledTimes(1)
-    expect(mockJobs).toHaveBeenCalledTimes(1)
+    await snap.strayUnits()
+    expect(fakeCluster.callsOf('list')).toHaveLength(2)
+    // Each fallback is scoped install-wide by install id.
+    expect(fakeCluster.callsOf('list', 'Pod')[0]).toMatchObject({
+      namespace: 'test-ns',
+      labelSelector: expect.stringMatching(/^yaac\.install-id=test-install,yaac\.workspace-id$/) as unknown,
+    })
+
+    // A new snapshot is a new point in time.
+    await createRuntimeSnapshot().workspaces()
+    expect(fakeCluster.callsOf('list', 'Pod')).toHaveLength(2)
   })
 
   // Destructive callers must not mistake a failed listing for an empty one.
-  it('rejects rather than resolving empty when a listing fails', async () => {
-    mockJobs.mockRejectedValue(new Error('apiserver down'))
+  it('rejects rather than resolving empty when a listing fails, for the whole snapshot', async () => {
+    fakeCluster.intercept((c) => { if (c.kind === 'Job') throw apiError(403, 'forbidden') })
+    const snap = createRuntimeSnapshot()
+    await expect(snap.strayUnits()).rejects.toThrow('403')
+    await expect(snap.strayUnits()).rejects.toThrow('403')
+    expect(fakeCluster.callsOf('list', 'Job')).toHaveLength(1)
+  })
 
-    await expect(createRuntimeSnapshot().strayUnits()).rejects.toThrow('apiserver down')
+  it('answers from a healthy active cluster cache, and lists live when it is unhealthy', async () => {
+    const cache = healthyCache()
+    setActiveClusterCache(cache)
+    expect((await createRuntimeSnapshot().workspaces()).map((w) => w.workspaceId)).toEqual(['cached'])
+    expect(fakeCluster.calls).toEqual([])
+
+    // A degraded watch must never read as "the object is gone".
+    vi.spyOn(cache, 'healthy').mockReturnValue(false)
+    expect((await createRuntimeSnapshot().workspaces()).map((w) => w.workspaceId)).toEqual(['live'])
   })
 })

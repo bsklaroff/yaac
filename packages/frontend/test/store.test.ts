@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { CHANGES_TARGET, FILES_TARGET } from '#lib/files'
 import {
   isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
@@ -562,24 +562,11 @@ describe('view mode (tiles vs tabs)', () => {
 })
 
 describe('theme preference', () => {
-  afterEach(() => {
-    delete (globalThis as Record<string, unknown>).localStorage
-  })
-
   it('setThemePref updates state and persists', () => {
-    const store = new Map<string, string>()
-    ;(globalThis as Record<string, unknown>).localStorage = {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => { store.set(k, String(v)) },
-    }
     useUiStore.getState().setThemePref('light')
     expect(useUiStore.getState().themePref).toBe('light')
-    expect(store.get('yaac.theme.v1')).toBe('light')
-    // applyThemeAttribute's DOM write is covered in theme.test.ts (jsdom).
-  })
-
-  it('defaults to system', () => {
-    expect(useUiStore.getState().themePref).toBe('system')
+    expect(localStorage.getItem('yaac.theme.v1')).toBe('light')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
   })
 })
 

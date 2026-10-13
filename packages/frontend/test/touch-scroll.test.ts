@@ -1,29 +1,8 @@
 import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
-import type { Terminal } from '@xterm/xterm'
-import { patchTouchScroll, reportsForTravel } from '#lib/touch-scroll'
-
-describe('reportsForTravel', () => {
-  it('earns one report per whole unit of travel, carrying the remainder', () => {
-    expect(reportsForTravel(0, 85)).toEqual({ reports: 0, rest: 0 })
-    expect(reportsForTravel(40, 85)).toEqual({ reports: 0, rest: 40 })
-    expect(reportsForTravel(85, 85)).toEqual({ reports: -1, rest: 0 })
-    expect(reportsForTravel(200, 85)).toEqual({ reports: -2, rest: 30 })
-  })
-
-  it('inverts the sign: a finger moving down scrolls back', () => {
-    // Positive travel (down the screen) pulls earlier content in, which is a
-    // wheel-up — the negative direction the report path uses.
-    expect(reportsForTravel(170, 85).reports).toBe(-2)
-    expect(reportsForTravel(-170, 85).reports).toBe(2)
-    expect(reportsForTravel(-200, 85)).toEqual({ reports: 2, rest: -30 })
-  })
-
-  it('earns nothing while the cell height is unmeasured', () => {
-    expect(reportsForTravel(500, 0)).toEqual({ reports: 0, rest: 500 })
-  })
-})
+import { patchTouchScroll } from '#lib/touch-scroll'
+import type { CoreMouseEvent } from '#lib/xterm-internals'
+import { fakeXterm } from './harness'
 
 describe('patchTouchScroll', () => {
   // The glide runs on animation frames and times the finger with the
@@ -36,20 +15,16 @@ describe('patchTouchScroll', () => {
     vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
   })
   afterEach(() => {
-    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
-  type Report = { col: number; row: number; button: number; action: number }
+  type Report = Pick<CoreMouseEvent, 'col' | 'row' | 'button' | 'action'>
 
-  /** A fake of exactly the internals the patch touches, plus a stand-in for
-   *  the element it binds to and a swipe driver. Cell height is 17, so a
-   *  report is earned every 85px of travel. */
-  function fakeTerm(
-    // `unknown` so a test can pass a reshaped dimensions object.
-    { dimensions = { css: { cell: { height: 17 } } } }: { dimensions?: unknown } = {},
-  ): {
-    term: Terminal
+  /** A terminal recording its reports and local scrolls, with a stand-in
+   *  for the element the patch binds to and a swipe driver. Cell height is
+   *  `cellHeight`, so a report is earned every 5 cells of travel. */
+  function fakeTerm(cellHeight = 17): {
+    term: ReturnType<typeof fakeXterm>
     reports: Report[]
     /** Lines passed to `term.scrollLines` (local scrolling). */
     scrolled: number[]
@@ -67,15 +42,6 @@ describe('patchTouchScroll', () => {
     const listeners = new Map<string, (e: TouchEvent) => void>()
     let mouseActive = true
     let prevented = 0
-    const coreMouseService = {
-      get areMouseEventsActive(): boolean {
-        return mouseActive
-      },
-      triggerMouseEvent: (e: Report): boolean => {
-        reports.push({ ...e })
-        return true
-      },
-    }
     const el = {
       addEventListener: (type: string, fn: (e: TouchEvent) => void): void => {
         listeners.set(type, fn)
@@ -84,18 +50,22 @@ describe('patchTouchScroll', () => {
         listeners.delete(type)
       },
     }
-    const term = {
-      _core: {
-        element: el,
-        screenElement: {},
-        _mouseService: {
-          getMouseReportCoords: () => ({ col: 3, row: 4, x: 30, y: 40 }),
+    const term = fakeXterm({
+      element: el as unknown as HTMLElement,
+      coreMouseService: {
+        get areMouseEventsActive(): boolean {
+          return mouseActive
         },
-        coreMouseService,
-        _renderService: { dimensions },
+        triggerMouseEvent: (e: CoreMouseEvent): boolean => {
+          reports.push({ ...e })
+          return true
+        },
+        consumeWheelEvent: () => 0,
       },
+      _renderService: { dimensions: { css: { cell: { height: cellHeight } }, device: { cell: { height: 0 } } } },
+    }, {
       scrollLines: (n: number): void => { scrolled.push(n) },
-    } as unknown as Terminal
+    })
 
     /** Drag `dy` pixels (positive = down the screen) in `steps` touchmoves,
      *  `msPerStep` apart, then hold still for `holdMs` before lifting. With no
@@ -144,7 +114,7 @@ describe('patchTouchScroll', () => {
 
   it('turns a swipe down into wheel-up reports at the touched cell', () => {
     const f = fakeTerm()
-    expect(patchTouchScroll(f.term)).not.toBeNull()
+    patchTouchScroll(f.term)
     f.swipe(200) // 200px / 85px-per-report → 2
     expect(f.reports).toHaveLength(2)
     expect(f.reports[0]).toMatchObject({ button: 4, action: 0, col: 3, row: 4 }) // WHEEL, UP
@@ -327,54 +297,22 @@ describe('patchTouchScroll', () => {
     const f = fakeTerm()
     const dispose = patchTouchScroll(f.term)
     f.swipe(200, { msPerStep: 10 })
-    dispose?.()
+    dispose()
     expect(vi.getTimerCount()).toBe(0)
     expect(f.listeners.size).toBe(0)
   })
 
-  it('reports failure without throwing when the internals are missing', () => {
-    expect(patchTouchScroll({} as Terminal)).toBeNull()
-    expect(patchTouchScroll({ _core: {} } as unknown as Terminal)).toBeNull()
-  })
-
-  it('says so once, and claims nothing, when the cell-height shape has moved', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* quiet */ })
-    // An xterm upgrade that reshapes dimensions: the install guard still
-    // passes (_renderService exists), so this warning is the only signal.
-    const f = fakeTerm({ dimensions: {} })
-    expect(patchTouchScroll(f.term)).not.toBeNull()
-    f.swipe(400)
+  it('scrolls nothing while the cell height is unmeasured', () => {
+    const f = fakeTerm(0)
+    patchTouchScroll(f.term)
     f.swipe(400)
     expect(f.reports).toHaveLength(0)
-    // Nothing is claimed: the browser handles the gesture, so a tap is still
-    // a tap.
-    expect(f.prevented).toBe(0)
-    expect(warn).toHaveBeenCalledTimes(1)
-    warn.mockRestore()
-  })
-
-  // Canary (as in selection.test.ts): the patch uses private xterm internals,
-  // so an upgrade that renames them must fail here instead of silently
-  // breaking touch scrolling.
-  it('still finds the private names in the shipped xterm bundle', () => {
-    const require = createRequire(import.meta.url)
-    const bundle = readFileSync(require.resolve('@xterm/xterm'), 'utf8')
-    expect(bundle).toContain('screenElement')
-    expect(bundle).toContain('_mouseService')
-    expect(bundle).toContain('getMouseReportCoords')
-    expect(bundle).toContain('coreMouseService')
-    expect(bundle).toContain('triggerMouseEvent')
-    expect(bundle).toContain('areMouseEventsActive')
-    expect(bundle).toContain('_renderService')
-    // Also check the shape under the service: the patch's guard only proves
-    // _renderService exists, so a reshaped `dimensions` would fail silently.
-    expect(bundle).toContain('dimensions.css.cell.height')
   })
 
   // The handler can only claim the gesture because CSS tells the browser not
   // to pan.
   it('the stylesheet still takes touch-action away from the terminal', () => {
-    const css = readFileSync(new URL('../src/index.css', import.meta.url), 'utf8')
+    const css = readFileSync(`${import.meta.dirname}/../src/index.css`, 'utf8')
     expect(css).toMatch(/\.xterm\s*\{[^}]*touch-action:\s*none/)
   })
 })

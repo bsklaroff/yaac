@@ -27,7 +27,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { Readable } from 'node:stream'
-import { registryAuthFile, registryHost } from '#drivers/k8s/container'
 import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#lib/build-context'
 import {
   LABEL_INSTALL_ID,
@@ -47,6 +46,7 @@ import {
   sentryTmpfsAnnotations,
   k8sNamespace,
   readObject,
+  runStreamingProcess,
 } from '#drivers/k8s/substrate'
 import {
   wideEgress,
@@ -54,10 +54,12 @@ import {
   ensureBuilderRoleGuard,
   ensureMainRegistry,
   nodeIpBlocks,
+  registryAuthFile,
+  registryHost,
+  stringHash,
+  type ImageLayer,
 } from '#drivers/k8s/cluster'
-import { runStreamingProcess } from '#drivers/k8s/container'
-import { serverLog, pipeToServerLog } from '#log'
-import { stringHash, type ImageLayer } from '#drivers/k8s/image-engine'
+import { serverLog, pipeToServerLog } from '#lib/log'
 
 interface EngineBuildContext {
   /** Project whose chain is being built (its id keys the step-cache repo). */
@@ -102,7 +104,7 @@ export const BUILDER_ACTIVE_DEADLINE_SECONDS = 4 * 3600
 
 /**
  * Per-step exec budgets (ms). All are idle timeouts (time since the step
- * last printed; see container/streaming-proc.ts) except the readiness wait,
+ * last printed; see substrate/streaming-proc.ts) except the readiness wait,
  * which is a total.
  */
 const BUILDER_READY_TIMEOUT_MS = 60_000
@@ -335,7 +337,7 @@ interface PodExecOptions {
   input?: NodeJS.ReadableStream
   onLog?: (line: string) => void
   logPrefix: string
-  /** Idle timeout (see container/streaming-proc.ts). */
+  /** Idle timeout (see substrate/streaming-proc.ts). */
   idleTimeoutMs: number
 }
 

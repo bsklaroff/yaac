@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv, type SpawnedServer } from '@yaac/test-utils/cli'
-import { createTestRepo, addTestProject } from '@yaac/test-utils/setup'
-import { makeServerApiClient } from '@yaac/test-utils/api'
+import { createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import { makeServerApiClient, type SpawnedServer } from '@yaac/test-utils/api'
+import { createTestRepo } from '@yaac/test-utils/setup'
+import { addTestProject } from '#support/cluster'
 import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import { git } from '@yaac/test-utils/git'
 
@@ -22,6 +23,9 @@ import { git } from '@yaac/test-utils/git'
 
 let testEnv: YaacTestEnv
 let server: SpawnedServer
+/** The file also runs in the containerless tier, whose server builds no
+ *  images, so its Dockerfile routes refuse (see the route matrix). */
+const buildsImages = process.env.YAAC_DRIVER !== 'containerless'
 
 beforeAll(async () => {
   testEnv = await createYaacTestEnv()
@@ -205,7 +209,7 @@ describe('yaac config (real CLI + real server)', () => {
     await expect(fs.access(configFile(id, 'yaac-config.json'))).rejects.toThrow()
   })
 
-  it('config edit-dockerfile writes Dockerfile.yaac verbatim via the server, named by id prefix', async () => {
+  it.skipIf(!buildsImages)('config edit-dockerfile writes Dockerfile.yaac verbatim via the server, named by id prefix', async () => {
     const id = await seedProject('demo-dockerfile')
 
     const editor = await writeStubEditor('dockerfile', 'RUN echo dockerfile-marker\n')
@@ -218,7 +222,7 @@ describe('yaac config (real CLI + real server)', () => {
     expect(await fs.readFile(configFile(id, 'build', 'Dockerfile.yaac'), 'utf8')).toBe('RUN echo dockerfile-marker\n')
   })
 
-  it('config edit-user-dockerfile saves a layered Dockerfile.user via the server', async () => {
+  it.skipIf(!buildsImages)('config edit-user-dockerfile saves a layered Dockerfile.user via the server', async () => {
     const layered = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user-marker\n'
     const editor = await writeStubEditor('user-dockerfile', layered)
     const { exitCode, stderr } = await runYaac(

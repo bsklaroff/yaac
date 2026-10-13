@@ -18,9 +18,8 @@ import type {
   WorkspaceChanges,
 } from '@yaac/shared/types'
 import { workspaceDriver } from '#drivers/driver'
-import {
-  CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, WorkspaceExecError, type ChangesReading,
-} from '#drivers/contract'
+import { WorkspaceExecError } from '#drivers/contract'
+import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, readWorkspaceChanges, type ChangesReading } from './changes'
 import { lastFetchedAtMs } from '#domain/git'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
@@ -28,9 +27,9 @@ import {
 } from '#lib/confined-fs'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { shellQuote } from '#lib/shell'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
-import { workspaceForkBranch } from './fork-branch'
+import { getWorkspaceRow } from '#db'
 import { checkoutBlobAt } from './checkout-git'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
 
@@ -242,10 +241,10 @@ async function findEmptyDirs(
  * diff against its base, how far HEAD is from the base branch, and, when
  * `listing` is asked for, every path for the explorer's tree.
  *
- * An explicit `base` wins; otherwise the default is the recorded fork
- * branch (`workspaceForkBranch`). Relying on `@{upstream}` instead would
- * show no changes once the agent pushes its branch, since the upstream then
- * points at HEAD. `diff: false` leaves the diff body out.
+ * An explicit `base` wins; otherwise the default is the branch the row
+ * records it forked from, else `@{upstream}`. The row comes first because
+ * the upstream moves to the pushed branch after `git push -u`, which would
+ * show no changes. `diff: false` leaves the diff body out.
  *
  * The listing is left out when `known` is its current version, so a poll
  * whose tree has not moved costs no transfer. An unresolvable explicit
@@ -259,13 +258,13 @@ export async function getWorkspaceChanges(
   opts: { diff?: boolean; listing?: 'paths' | 'full'; known?: string } = {},
 ): Promise<WorkspaceChanges> {
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
-  const forkBranch = await workspaceForkBranch(projectId, workspaceId)
+  const forkBranch = (await getWorkspaceRow(projectId, workspaceId))?.baseBranch
   // The runtime treats a blank `base` as unset.
   const named = base?.trim()
   let reading: ChangesReading
   try {
-    reading = await workspaceDriver().changes(jobName, {
-      base, defaultBase: forkBranch ?? undefined, diff: opts.diff ?? true, listing: opts.listing,
+    reading = await readWorkspaceChanges(jobName, {
+      base, defaultBase: forkBranch, diff: opts.diff ?? true, listing: opts.listing,
     })
   } catch (err) {
     if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {

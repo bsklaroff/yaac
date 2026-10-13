@@ -1,6 +1,6 @@
 import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { MENU_ITEM, MenuPopup, PopoverPopup, POPUP } from '#components/ui/menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ServerError } from '@yaac/shared/errors'
 import { ContextMenu } from '@base-ui/react/context-menu'
@@ -10,13 +10,13 @@ import { Tooltip } from '@base-ui/react/tooltip'
 import type { SymlinkTarget, WorkspaceChange, WorkspaceChanges } from '@yaac/shared/types'
 import { layoutOf, paneViewKey, useUiStore } from '#lib/store'
 import { BranchPicker } from '#components/BranchPicker'
-import { DiffView, type FindMark } from '#components/DiffView'
+import { DiffView } from '#components/DiffView'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { FindControls } from '#components/ui/FindPanel'
+import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
 import { PathLabel } from '#components/ui/PathLabel'
 import { Tip, WithTip } from '#components/ui/Tooltip'
-import { indexDiffsByPath, type ParsedFileDiff } from '#lib/diff'
+import { parseUnifiedDiff, type ParsedFileDiff } from '#lib/diff'
 import { CHANGE_STAGES, ROW_STATUS, lineTotals, pathStatuses, stageTotals, type RowStatus } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
 import { chordMatches, findChord, formatChord } from '#lib/shortcuts'
@@ -188,7 +188,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const changeByPath = useMemo(() => new Map(changed.map((c) => [c.path, c])), [changed])
   const statuses = useMemo(() => pathStatuses(changed, data?.conflicted ?? []), [changed, data?.conflicted])
   const diffMap = useMemo(
-    () => (changedOnly ? indexDiffsByPath(changes.data?.diff ?? '') : new Map<string, ParsedFileDiff>()),
+    () => new Map(changedOnly ? parseUnifiedDiff(changes.data?.diff ?? '').map((f) => [f.path, f]) : []),
     [changedOnly, changes.data?.diff],
   )
   // The Changes pane's filter matches paths (a rename's old one too) as
@@ -257,55 +257,28 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
       },
     })
   }
-  const finder = useDiffFind(searched, reveal)
-  // Each file's marks by line, kept across steps so a step re-renders only
+  const findQuery = useFindQuery()
+  const finder = useDiffFind(searched, findQuery, reveal)
+  // Each file's matches by line, kept across steps so a step re-renders only
   // the diffs of the old and new current match.
   const marks = useMemo(() => {
-    const byPath = new Map<string, Map<number, FindMark[]>>()
-    if (!finder.isOpen) return byPath
-    for (const { path, line, from, to } of finder.located) {
-      const lines = byPath.get(path) ?? new Map<number, FindMark[]>()
-      byPath.set(path, lines)
-      lines.set(line, [...lines.get(line) ?? [], { from, to, current: false }])
+    const byPath = new Map<string, Map<number, DiffMatch[]>>()
+    if (!findQuery.isOpen) return byPath
+    for (const m of finder.located) {
+      const lines = byPath.get(m.path) ?? new Map<number, DiffMatch[]>()
+      byPath.set(m.path, lines)
+      lines.set(m.line, [...lines.get(m.line) ?? [], m])
     }
     return byPath
-  }, [finder.isOpen, finder.located])
-  const currentMatch = finder.isOpen ? finder.located[finder.current] : undefined
-  const currentMarks = useMemo(() => {
-    const lines = currentMatch && marks.get(currentMatch.path)
-    if (!currentMatch || !lines) return undefined
-    const { line, from } = currentMatch
-    return new Map(lines).set(line, lines.get(line)!.map((m) => (m.from === from ? { ...m, current: true } : m)))
-  }, [marks, currentMatch])
-  const marksOf = (path: string): Map<number, FindMark[]> | undefined => (
-    path === currentMatch?.path ? currentMarks : marks.get(path)
-  )
+  }, [findQuery.isOpen, finder.located])
+  const currentMatch = findQuery.isOpen ? finder.located[finder.current] : undefined
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const findInputRef = useRef<HTMLInputElement | null>(null)
-  useEffect(() => {
-    if (!finder.focusKey) return
-    findInputRef.current?.focus()
-    findInputRef.current?.select()
-  }, [finder.focusKey])
-  const closeFind = (): void => {
-    finder.close()
-    rootRef.current?.focus()
-  }
-  const onFindKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') {
-      e.stopPropagation()
-      closeFind()
-    } else if (e.key === 'Enter' && e.target === findInputRef.current) {
-      e.preventDefault()
-      finder.step(e.shiftKey ? -1 : 1)
-    }
-  }
 
   const onKeyDown = (e: KeyboardEvent): void => {
     if (!chordMatches(findChord(), e.nativeEvent)) return
     e.preventDefault()
     if (changedOnly) {
-      finder.open()
+      findQuery.open()
     } else if (findRef.current) {
       findRef.current.focus()
       findRef.current.select()
@@ -543,7 +516,8 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
                   change={row.change}
                   diff={diffMap.get(row.path)}
                   unfetched={changes.data?.diff !== undefined ? undefined : changes.isError ? 'failed' : 'loading'}
-                  marks={marksOf(row.path)}
+                  marks={marks.get(row.path)}
+                  current={currentMatch?.path === row.path ? currentMatch : undefined}
                 />
               ),
             } : undefined}
@@ -620,7 +594,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
         </label>
         {changedOnly ? (
           <>
-            <HeaderButton label={`Find in diffs (${formatChord(findChord(), IS_MAC)})`} onClick={finder.open}>
+            <HeaderButton label={`Find in diffs (${formatChord(findChord(), IS_MAC)})`} onClick={findQuery.open}>
               <SearchIcon size={13} />
             </HeaderButton>
             <HeaderButton
@@ -724,27 +698,17 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
           files={visibleChanged}
         />
       )}
-      {changedOnly && finder.isOpen && (
-        <Tooltip.Provider>
-          <div
-            onKeyDown={onFindKeyDown}
-            className="grid shrink-0 grid-cols-[minmax(0,380px)_auto] items-center justify-start gap-x-1 border-b
-              border-hairline bg-surface px-1.5 py-1 font-sans text-[11px] text-text-dim"
-          >
-            <FindControls
-              inputRef={findInputRef}
-              text={finder.query.search}
-              onText={(search) => finder.commit({ search }, true)}
-              query={finder.query}
-              onToggle={(flags) => finder.commit(flags, true)}
-              matches={finder.matches}
-              current={finder.current + 1}
-              onPrev={() => finder.step(-1)}
-              onNext={() => finder.step(1)}
-              onClose={closeFind}
-            />
-          </div>
-        </Tooltip.Provider>
+      {changedOnly && findQuery.isOpen && (
+        <PaneFindBar
+          find={findQuery}
+          matches={finder.matches}
+          current={finder.current}
+          onStep={finder.step}
+          onClose={() => {
+            findQuery.close()
+            rootRef.current?.focus()
+          }}
+        />
       )}
       {actionError && (
         <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-error">
@@ -813,11 +777,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
       ))}
 
       <Menu.Root open={menu !== null} onOpenChange={(open) => { if (!open) setMenu(null) }}>
-        <Menu.Portal>
-          <Menu.Positioner anchor={menu?.anchor} side="bottom" align="end" sideOffset={4}>
-            <Menu.Popup className={clsx('min-w-[160px]', POPUP)}>{menu && menuItems(menu.row, Menu.Item)}</Menu.Popup>
-          </Menu.Positioner>
-        </Menu.Portal>
+        <MenuPopup anchor={menu?.anchor} side="bottom" align="end" sideOffset={4} className="min-w-[160px]">{menu && menuItems(menu.row, Menu.Item)}</MenuPopup>
       </Menu.Root>
 
       <ConfirmDialog
@@ -1012,12 +972,14 @@ function estimateChunkPx(lines: ParsedFileDiff['lines'], width: number): number 
  * while no Changes pane is open, so one is `loading` until the pane's own
  * fetch lands, unless that fetch `failed`.
  */
-const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks }: {
+const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks, current }: {
   change: WorkspaceChange
   diff: ParsedFileDiff | undefined
   unfetched?: 'loading' | 'failed'
   /** Find matches, by line index. */
-  marks?: Map<number, FindMark[]>
+  marks?: Map<number, DiffMatch[]>
+  /** The current find match, when in this diff. */
+  current?: DiffMatch
 }): JSX.Element {
   const chunks = useMemo(() => {
     const lines = diff && !diff.binary ? diff.lines : []
@@ -1038,9 +1000,9 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks }: 
           key={i}
           content={lines}
           estimate={(width) => estimateChunkPx(lines, width)}
-          force={[...chunkMarks[i]?.values() ?? []].some((ms) => ms.some((m) => m.current))}
+          force={current !== undefined && Math.floor(current.line / DIFF_CHUNK_LINES) === i}
         >
-          <DiffView lines={lines} language={language} marks={chunkMarks[i]} />
+          <DiffView lines={lines} language={language} marks={chunkMarks[i]} current={current} />
         </NearScreen>
       )) : (
         <div className="px-3 py-1.5 text-[11px] text-text-faint">
@@ -1079,8 +1041,7 @@ function observeNear(el: Element, onChange: (near: boolean) => void): () => void
  * `force`d, holding their height in the meantime so the scrollbar stays
  * true. That height is what they measured when last unmounted, as long as
  * neither `content` nor the width has changed since; otherwise `estimate`'s
- * answer for the current width. Without IntersectionObserver it always
- * renders.
+ * answer for the current width.
  */
 function NearScreen({ content, estimate, force = false, children }: {
   /** What the children show, compared by identity. */
@@ -1092,14 +1053,14 @@ function NearScreen({ content, estimate, force = false, children }: {
   const ref = useRef<HTMLDivElement | null>(null)
   const latestContent = useRef(content)
   const measured = useRef<{ content: unknown; width: number; px: number } | null>(null)
-  const [near, setNear] = useState(typeof IntersectionObserver === 'undefined')
+  const [near, setNear] = useState(false)
   const [width, setWidth] = useState<number | null>(null)
   useEffect(() => {
     latestContent.current = content
   })
   useEffect(() => {
     const el = ref.current
-    if (!el || typeof IntersectionObserver === 'undefined') return
+    if (!el) return
     const resize = new ResizeObserver(() => setWidth(el.offsetWidth))
     resize.observe(el)
     const stopNear = observeNear(el, (n) => {
@@ -1159,24 +1120,20 @@ function ChangesStrip({ workspaceId, projectId, baseBranch, data, files }: {
           <span className="max-w-[180px] truncate font-mono text-text-dim">{baseLabel}</span>
           <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
         </Popover.Trigger>
-        <Popover.Portal>
-          <Popover.Positioner side="bottom" align="start" sideOffset={6}>
-            <Popover.Popup className={clsx('w-[240px]', POPUP)}>
-              <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Diff base</div>
-              <BranchPicker
-                branches={branchData?.branches ?? []}
-                defaultBranch={baseBranch}
-                query={pickerQuery}
-                onQueryChange={setPickerQuery}
-                onSelect={pickBase}
-                showList
-                placeholder={branchData ? 'filter branches…' : 'loading branches…'}
-                ariaLabel="Base branch"
-                className="px-1 pb-1"
-              />
-            </Popover.Popup>
-          </Popover.Positioner>
-        </Popover.Portal>
+        <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[240px]">
+          <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Diff base</div>
+          <BranchPicker
+            branches={branchData?.branches ?? []}
+            defaultBranch={baseBranch}
+            query={pickerQuery}
+            onQueryChange={setPickerQuery}
+            onSelect={pickBase}
+            showList
+            placeholder={branchData ? 'filter branches…' : 'loading branches…'}
+            ariaLabel="Base branch"
+            className="px-1 pb-1"
+          />
+        </PopoverPopup>
       </Popover.Root>
       {files.length > 0 && (
         // Baseline-aligned: the counts are monospace, the labels are not.

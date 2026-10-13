@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { attachPty, type SocketLike } from '#runtime/terminals'
 import { DETACH_GRACE_MS } from '#runtime/terminals/pty-bridge'
 import { FLOOD_HIGH_WATER, MIRROR_IDLE_MS } from '#runtime/terminals/pane-mirror'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { BATCH_MS } from '@yaac/shared/batcher'
 import type { StreamChild, StreamPty, WorkspaceDriver } from '#drivers/contract'
 
@@ -421,14 +421,13 @@ describe('attachPty', () => {
     expect(sent()).toEqual(['refresh-client -C @1:70x25', 'refresh-client -C @1:100x30'])
     tmux.commands.length = 0
     const pinger = a
-    // Pings get timed pongs; a signal has no process to reach; junk is
-    // ignored.
+    // Pings get pongs; a signal has no process to reach; junk is ignored.
     tmux.commands.length = 0
-    pinger.emitMessage('{"type":"ping","t":1234.5}', false)
+    pinger.emitMessage('{"type":"ping"}', false)
     pinger.emitMessage('{"type":"ping"}', false)
     for (const junk of ['{"type":"signal","name":"SIGINT"}', 'not json', '{"type":"resize"}']) pinger.emitMessage(junk, false)
     await flush()
-    expect(pinger.sent.slice(-2)).toEqual(['{"type":"pong","t":1234.5}', '{"type":"pong"}'])
+    expect(pinger.sent.slice(-2)).toEqual(['{"type":"pong"}', '{"type":"pong"}'])
     expect(tmux.commands).toEqual([])
     a.emitClose()
     await flush()
@@ -654,14 +653,6 @@ describe('attachPty', () => {
 
     a.sock.emitMessage('{"type":"ping"}', false)
     expect(a.sock.sent).toContain('{"type":"pong"}')
-
-    // The pong echoes the ping's timestamp so the client can measure latency.
-    a.sock.emitMessage('{"type":"ping","t":1234.5}', false)
-    expect(a.sock.sent).toContain('{"type":"pong","t":1234.5}')
-    // A non-numeric stamp gets a bare pong.
-    a.sock.emitMessage('{"type":"ping","t":"soon"}', false)
-    a.sock.emitMessage('{"type":"ping","t":null}', false)
-    expect(a.sock.sent.filter((s) => s === '{"type":"pong"}')).toHaveLength(3)
 
     // Malformed or unknown frames are ignored.
     const before = { sent: a.sock.sent.length, killed: a.pty.killed.length }

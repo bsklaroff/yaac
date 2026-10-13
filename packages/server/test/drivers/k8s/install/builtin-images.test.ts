@@ -1,75 +1,122 @@
 /**
  * The image part of `yaac cluster install`: what it builds, mirrors and
- * skips. Only podman and the registry client are faked, so real tag
- * resolution runs and the tests assert the tags a workspace create looks up.
+ * skips, the orphaned podman processes it reaps first, and the host store
+ * sweep it ends with. Fakes stop at the process boundary: podman (`spawn`
+ * for builds and pushes, `execFile` for the rest), `ps`, `process.kill`,
+ * the registry (`fetch`) and the cluster (the grant key). Real tag
+ * resolution runs, so the tests assert the tags a workspace create looks up.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
-import type * as registryModule from '#drivers/k8s/container/registry'
-import type * as runtimeModule from '#drivers/k8s/container/runtime'
-import type * as hostProcsModule from '#drivers/k8s/container/host-procs'
-import type * as childProcessModule from 'node:child_process'
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { PassThrough } from 'node:stream'
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { fakeRegistry } from '#test/support/fake-registry'
 
-
-// Several modules promisify their own execFile for podman, so the mock sits
-// at node:child_process.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const mockExecFile = vi.hoisted(() => vi.fn<(file: string, args: string[]) => Promise<ExecResult>>())
-vi.mock('node:child_process', async (importOriginal) => ({
-  ...(await importOriginal<typeof childProcessModule>()),
+/** Every spawned podman command's argv, in order. */
+const spawned = vi.hoisted((): string[][] => [])
+/** The exit code a spawned podman command closes with. */
+const spawnExit = vi.hoisted(() => ({ code: (_args: string[]): number => 0 }))
+/** Process events in order, to check the reap precedes every build. */
+const events = vi.hoisted((): string[] => [])
+
+vi.mock('node:child_process', () => ({
+  exec: vi.fn(),
   execFile: (file: string, args: string[], opts: unknown, cb?: ExecCallback) => {
     const done = (typeof opts === 'function' ? opts : cb) as ExecCallback
     void mockExecFile(file, args).then((res) => done(null, res), (err: unknown) => done(err))
   },
-  spawn: vi.fn(() => ({ unref: () => {}, on: () => {} })),
+  spawn: (_file: string, args: string[]) => {
+    spawned.push(args)
+    events.push(`spawn ${args[0]}`)
+    const child = Object.assign(new EventEmitter(), {
+      pid: 7000 + spawned.length,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      exitCode: null,
+      signalCode: null,
+      kill: vi.fn(),
+    })
+    process.nextTick(() => child.emit('close', spawnExit.code(args)))
+    return child
+  },
 }))
 
-const mockImageExists = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({
-  ...(await importOriginal<typeof runtimeModule>()),
-  imageExists: mockImageExists,
-}))
-
-const mockRunTrackedPodman = vi.hoisted(() => vi.fn())
-const mockReap = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/container/host-procs', async (importOriginal) => ({
-  ...(await importOriginal<typeof hostProcsModule>()),
-  runTrackedPodman: mockRunTrackedPodman,
-  reapOrphanedPodmanProcs: mockReap,
-}))
-
-const mockRegistryHasTag = vi.hoisted(() => vi.fn())
-const mockPush = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof registryModule>()),
-  registryHasTag: mockRegistryHasTag,
-  registryRef: (tag: string) => `localhost:5001/${tag}`,
-  pushImageToRegistry: mockPush,
-}))
-
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { clientLocalPath } from '@yaac/shared/paths'
 import { buildBuiltinImages } from '#drivers/k8s/install'
-import { resolveTrustedLayers } from '#drivers/k8s/image-engine'
-// Setup values, not units under test.
+import { BUILDER_LOCAL_TAG, resolveTrustedLayers } from '#drivers/k8s/cluster'
+// Setup values and state-reset hooks, not units under test.
 import { TRUSTED_PARENT_COMPRESSION } from '#drivers/k8s/install/builtin-images'
-import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
+import { _clearTrackedPodmanProcsForTests } from '#drivers/k8s/install/host-procs'
+import { HOST_PRUNE_UNTIL } from '#drivers/k8s/install/image-gc'
+import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
+
+const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
 
 /** The tag of every `podman build` this run performed, in order. */
 const built = (): string[] =>
-  (mockRunTrackedPodman.mock.calls as Array<[string[], { tag: string }]>)
-    .filter(([args]) => args[0] === 'build')
-    .map(([, opts]) => opts.tag)
+  spawned.filter((a) => a[0] === 'build').map((a) => a[a.indexOf('-t') + 1])
 
-const pushed = (): string[] =>
-  (mockPush.mock.calls as Array<[string, unknown]>).map(([tag]) => tag)
+/** Each pushed local tag, with the compression it was pushed with. */
+const pushes = (): Array<{ tag: string; compression?: string }> =>
+  spawned.filter((a) => a[0] === 'push').map((a) => {
+    const c = a.indexOf('--compression-format')
+    return { tag: a.at(-2)!, ...(c >= 0 ? { compression: a[c + 1] } : {}) }
+  })
 
-beforeEach(() => {
-  vi.clearAllMocks()
-  mockExecFile.mockResolvedValue({ stdout: '', stderr: '' })
-  mockRunTrackedPodman.mockResolvedValue(undefined)
-  mockReap.mockResolvedValue(undefined)
-  mockPush.mockImplementation((tag: string) => Promise.resolve(`localhost:5001/${tag}`))
-  mockImageExists.mockResolvedValue(false)
-  mockRegistryHasTag.mockResolvedValue(false)
+const podmanCalls = (sub: string): string[][] =>
+  mockExecFile.mock.calls.filter(([f, a]) => f === 'podman' && a[0] === sub).map(([, a]) => a)
+
+/** What an interrupted install leaves for the next one to reap. */
+const statePath = (): string => clientLocalPath('host-podman.json')
+const readState = (): Array<{ pid: number; tag: string; verb: string }> =>
+  JSON.parse(fs.readFileSync(statePath(), 'utf8')) as Array<{ pid: number; tag: string; verb: string }>
+const writeState = (records: Array<{ pid: number; tag: string; verb: string }>): void => {
+  fs.writeFileSync(statePath(), JSON.stringify(records))
+}
+
+/**
+ * A host engine with nothing built: `image inspect` misses, `ps` finds no
+ * such process, and every other podman call succeeds with no output.
+ */
+function emptyEngine(file: string, args: string[]): Promise<ExecResult> {
+  if (file === 'podman' && args[0] === 'image' && args[1] === 'inspect' && !args.includes('--format')) {
+    return Promise.reject(new Error('no such image'))
+  }
+  if (file === 'ps') return Promise.reject(new Error('ps: no such process'))
+  return Promise.resolve({ stdout: '', stderr: '' })
+}
+
+let dataDir: string
+
+beforeEach(async () => {
+  dataDir = await createTempDataDir()
+  spawned.length = 0
+  events.length = 0
+  spawnExit.code = () => 0
+  _clearTrackedPodmanProcsForTests()
+  mockExecFile.mockReset()
+  mockExecFile.mockImplementation(emptyEngine)
+  fakeRegistry.install()
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Secret',
+    metadata: { name: 'yaac-registry-grant-key', namespace: 'yaac-registry-keys' },
+    data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
+  })
+  _resetRegistryGrantKeyForTests()
+})
+
+afterEach(async () => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
+  await cleanupTempDir(dataDir)
 })
 
 describe('buildBuiltinImages', () => {
@@ -82,9 +129,7 @@ describe('buildBuiltinImages', () => {
     expect(built().slice(0, 3)).toEqual([base.tag, tools.tag, nestable.tag])
     // Pushed with zstd, since builder pods pull these as parents.
     for (const layer of [base, tools, nestable]) {
-      expect(mockPush).toHaveBeenCalledWith(
-        layer.tag, { compressionFormat: TRUSTED_PARENT_COMPRESSION },
-      )
+      expect(pushes()).toContainEqual({ tag: layer.tag, compression: TRUSTED_PARENT_COMPRESSION })
     }
   })
 
@@ -96,43 +141,29 @@ describe('buildBuiltinImages', () => {
     expect(built().some((t) => t.startsWith('yaac-netd:'))).toBe(true)
     // Digest-pinned upstreams are pulled, retagged and pushed, so nodes
     // never pull from upstream.
-    const pulls = mockExecFile.mock.calls
-      .filter(([, a]) => a[0] === 'pull').map(([, a]) => a[1])
+    const pulls = podmanCalls('pull').map((a) => a[1])
     expect(pulls.some((r) => r.includes('library/registry@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('envoyproxy/envoy@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('podman/stable@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('curlimages/curl@sha256:'))).toBe(true)
-    const tags = mockExecFile.mock.calls.filter(([, a]) => a[0] === 'tag').map(([, a]) => a[2])
-    expect(tags).toContain(BUILDER_LOCAL_TAG)
-    expect(pushed()).toContain(BUILDER_LOCAL_TAG)
-  })
-
-  it('reaps a previous install\'s orphaned builds before deciding what is missing', async () => {
-    await buildBuiltinImages({ log: vi.fn() })
-    expect(mockReap).toHaveBeenCalledOnce()
-    expect(mockReap.mock.invocationCallOrder[0])
-      .toBeLessThan(mockRunTrackedPodman.mock.invocationCallOrder[0])
+    expect(podmanCalls('tag').map((a) => a[2])).toContain(BUILDER_LOCAL_TAG)
+    expect(pushes().map((p) => p.tag)).toContain(BUILDER_LOCAL_TAG)
   })
 
   it('is a no-op when the registry already holds every tag', async () => {
     // With content-hash tags, re-running install with no changes costs
     // only registry lookups.
-    mockRegistryHasTag.mockResolvedValue(true)
+    fakeRegistry.holdsAll = true
 
     await buildBuiltinImages({ log: vi.fn() })
 
-    expect(built()).toEqual([])
-    expect(mockPush).not.toHaveBeenCalled()
+    expect(spawned).toEqual([])
     // The mirrors skip on the same check.
-    expect(mockExecFile.mock.calls.some(([, a]) => a[0] === 'pull')).toBe(false)
+    expect(podmanCalls('pull')).toEqual([])
   })
 
   it('fails the install when a shipped image fails to build', async () => {
-    mockRegistryHasTag.mockResolvedValue(false)
-    mockRunTrackedPodman.mockImplementation((_args: string[], opts: { tag: string }) =>
-      opts.tag.startsWith('yaac-proxy:')
-        ? Promise.reject(new Error('podman build exited with code 1'))
-        : Promise.resolve(undefined))
+    spawnExit.code = (args) => args[0] === 'build' && args[2].startsWith('yaac-proxy:') ? 1 : 0
 
     await expect(buildBuiltinImages({ log: vi.fn() }))
       .rejects.toThrow('podman build exited with code 1')
@@ -144,13 +175,9 @@ describe('buildBuiltinImages', () => {
     const realArch = process.arch
     Object.defineProperty(process, 'arch', { value: 'x64', configurable: true })
     try {
-      mockExecFile.mockImplementation((_file: string, args: string[]) =>
-        Promise.resolve({
-          stdout: args.includes('inspect') && args.some((a) => a.includes('Architecture'))
-            ? 'arm64'
-            : '',
-          stderr: '',
-        }))
+      mockExecFile.mockImplementation((file, args) => args.includes('{{.Architecture}}')
+        ? Promise.resolve({ stdout: 'arm64', stderr: '' })
+        : emptyEngine(file, args))
       await expect(buildBuiltinImages({ log: vi.fn() }))
         .rejects.toThrow(/is a arm64 image but this host is amd64/)
     } finally {
@@ -158,18 +185,193 @@ describe('buildBuiltinImages', () => {
     }
   })
 
-  it('sweeps the host store, and finishes even when the sweep fails', async () => {
-    mockRegistryHasTag.mockResolvedValue(true)
-    // A failing image GC must not fail an otherwise complete install.
-    mockExecFile.mockImplementation((_cmd: string, args: string[]) =>
-      args[0] === 'image' && args[1] === 'ls'
+  describe('host store sweep', () => {
+    // Newest first, as `podman image ls --sort created` prints. Four
+    // yaac-base generations (two over the budget), one registry-staged yaac
+    // ref, three e2e-suite generations, three non-yaac tags, a dangling row
+    // and a blank row.
+    const LS_OUTPUT = [
+      'localhost/yaac-base|localhost/yaac-base:new1',
+      'localhost/yaac-base|localhost/yaac-base:new2',
+      'localhost/yaac-base|localhost/yaac-base:old1',
+      'localhost/yaac-base|localhost/yaac-base:old2',
+      'localhost:5001/yaac-user-demo|localhost:5001/yaac-user-demo:a',
+      'localhost/yaac-test-server|localhost/yaac-test-server:t1',
+      'localhost/yaac-test-server|localhost/yaac-test-server:t2',
+      'localhost/yaac-test-server|localhost/yaac-test-server:t3',
+      'docker.io/library/ubuntu|docker.io/library/ubuntu:26.04',
+      'docker.io/library/ubuntu|docker.io/library/ubuntu:24.04',
+      'docker.io/library/ubuntu|docker.io/library/ubuntu:22.04',
+      '<none>|<none>:<none>',
+      '',
+    ].join('\n')
+
+    beforeEach(() => {
+      fakeRegistry.holdsAll = true
+      mockExecFile.mockImplementation((file, args) => {
+        if (args[0] === 'image' && args[1] === 'ls') return Promise.resolve({ stdout: LS_OUTPUT, stderr: '' })
+        if (args[1] === 'prune') {
+          return Promise.resolve({ stdout: `${'a'.repeat(64)}\n${'b'.repeat(64)}\n`, stderr: '' })
+        }
+        return emptyEngine(file, args)
+      })
+    })
+
+    it('retires stale yaac generations, then prunes dangling images past the age floor', async () => {
+      const log = vi.fn()
+      await buildBuiltinImages({ log })
+
+      // No -f: a tag in use by a container or a running build must fail rmi
+      // and wait for the next sweep. The registry-staged ref is within
+      // budget, ubuntu is not a yaac repo, and yaac-test-* belongs to the
+      // e2e suite, which may be using it on another rig.
+      expect(podmanCalls('rmi')).toEqual([
+        ['rmi', 'localhost/yaac-base:old1'],
+        ['rmi', 'localhost/yaac-base:old2'],
+      ])
+      expect(podmanCalls('image').filter((a) => a[1] === 'prune')).toEqual([
+        ['image', 'prune', '-f', '--filter', `until=${HOST_PRUNE_UNTIL}`],
+      ])
+      expect(log).toHaveBeenCalledWith(
+        'Reclaimed 2 stale image tag(s) and 2 dangling image(s) from the host build store.',
+      )
+    })
+
+    it('finishes the install even when the sweep fails', async () => {
+      mockExecFile.mockImplementation((file, args) => args[0] === 'image' && args[1] === 'ls'
         ? Promise.reject(new Error('cannot connect to podman'))
-        : Promise.resolve({ stdout: '', stderr: '' }))
-    const log = vi.fn()
+        : emptyEngine(file, args))
+      const log = vi.fn()
 
-    await expect(buildBuiltinImages({ log })).resolves.toBeUndefined()
+      await expect(buildBuiltinImages({ log })).resolves.toBeUndefined()
 
-    expect(log.mock.calls.map((c) => String(c[0])).join('\n'))
-      .toMatch(/could not sweep the host image store/)
+      expect(log.mock.calls.map((c) => String(c[0])).join('\n'))
+        .toMatch(/could not sweep the host image store/)
+    })
+  })
+
+  describe('orphaned podman processes', () => {
+    /** `ps` sees `cmdline` at each pid listed; any other pid is gone. */
+    function psSees(cmdlines: Record<number, string | string[]>): void {
+      const seen = new Map(Object.entries(cmdlines).map(([pid, c]) => [pid, [c].flat()]))
+      mockExecFile.mockImplementation((file, args) => {
+        if (file !== 'ps') return emptyEngine(file, args)
+        events.push(`ps ${args[1]}`)
+        const lines = seen.get(args[1])
+        if (!lines) return Promise.reject(new Error('ps: no such process'))
+        // Each call consumes one answer; the last one sticks.
+        const line = lines.length > 1 ? lines.shift()! : lines[0]
+        return Promise.resolve({ stdout: `${line}\n`, stderr: '' })
+      })
+    }
+
+    /** Record kills; a pid dies on SIGTERM unless `survives` is set. */
+    function spyKill(survives = false): MockInstance<typeof process.kill> {
+      return vi.spyOn(process, 'kill').mockImplementation((pid: number, sig?: string | number) => {
+        if (sig === 0 && !survives) throw new Error('ESRCH')
+        if (sig !== 0) events.push(`kill ${pid} ${String(sig)}`)
+        return true
+      })
+    }
+
+    it('kills a previous install\'s surviving build before building, and clears the record', async () => {
+      writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
+      psSees({ 9001: 'podman build -t yaac-tools:abc /home/u/.yaac/dockerfiles' })
+      const kill = spyKill()
+
+      await buildBuiltinImages({ log: vi.fn() })
+
+      expect(kill).toHaveBeenCalledWith(9001, 'SIGTERM')
+      expect(kill).not.toHaveBeenCalledWith(9001, 'SIGKILL')
+      // Before the first build, which would fight the orphan for the
+      // image-store lock.
+      expect(events.indexOf('kill 9001 SIGTERM')).toBeLessThan(events.indexOf('spawn build'))
+      expect(readState()).toEqual([])
+    })
+
+    it('skips records whose pid could signal a process group', async () => {
+      // `process.kill(0)` signals our own process group and `process.kill(-n)`
+      // all of group n, so these must be rejected before `ps` runs.
+      fakeRegistry.holdsAll = true
+      writeState([
+        { pid: 0, tag: 'a:1', verb: 'build' },
+        { pid: -4242, tag: 'b:2', verb: 'build' },
+        { pid: NaN, tag: 'c:3', verb: 'build' },
+        { pid: 1.5, tag: 'd:4', verb: 'build' },
+      ])
+      psSees({})
+      const kill = spyKill()
+
+      await buildBuiltinImages({ log: vi.fn() })
+
+      expect(events.filter((e) => e.startsWith('ps'))).toEqual([])
+      expect(kill).not.toHaveBeenCalled()
+    })
+
+    it('leaves a reused pid alone when it is no longer our podman build', async () => {
+      fakeRegistry.holdsAll = true
+      writeState([
+        { pid: 9001, tag: 'yaac-tools:abc', verb: 'build' },
+        { pid: 9002, tag: 'yaac-base:def', verb: 'build' },
+      ])
+      // 9001 exited and the pid was handed to something else; 9002 is gone.
+      psSees({ 9001: 'vim notes.md' })
+      const kill = spyKill()
+
+      await buildBuiltinImages({ log: vi.fn() })
+
+      expect(kill).not.toHaveBeenCalled()
+      expect(readState()).toEqual([])
+    })
+
+    it('escalates to SIGKILL when the orphan ignores SIGTERM, keeping the record until then', async () => {
+      fakeRegistry.holdsAll = true
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
+      psSees({ 9001: 'podman build -t yaac-tools:abc .' })
+      const kill = spyKill(true)
+
+      const done = buildBuiltinImages({ log: vi.fn() })
+      // The record stays on disk through the grace period, so an install
+      // that dies mid-kill leaves it for the next one.
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(readState().map((r) => r.pid)).toEqual([9001])
+
+      // 25 chained 200ms polls, each scheduled as the previous resolves.
+      await vi.advanceTimersByTimeAsync(6000)
+      await done
+
+      expect(kill).toHaveBeenCalledWith(9001, 'SIGTERM')
+      expect(kill).toHaveBeenCalledWith(9001, 'SIGKILL')
+      expect(readState()).toEqual([])
+    })
+
+    it('does not SIGKILL a pid that stopped being ours during the grace period', async () => {
+      fakeRegistry.holdsAll = true
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
+      psSees({ 9001: ['podman build -t yaac-tools:abc .', 'psql -h localhost'] })
+      const kill = spyKill(true)
+
+      const done = buildBuiltinImages({ log: vi.fn() })
+      await vi.advanceTimersByTimeAsync(6000)
+      await done
+
+      expect(kill).toHaveBeenCalledWith(9001, 'SIGTERM')
+      expect(kill).not.toHaveBeenCalledWith(9001, 'SIGKILL')
+    })
+
+    it('starts no state file when there was none, and clears a torn one', async () => {
+      fakeRegistry.holdsAll = true
+      const kill = spyKill()
+      await buildBuiltinImages({ log: vi.fn() })
+      expect(fs.existsSync(statePath())).toBe(false)
+
+      fs.writeFileSync(statePath(), '[{"pid":90')
+      await buildBuiltinImages({ log: vi.fn() })
+      expect(kill).not.toHaveBeenCalled()
+      // Rewritten, so the garbage is not re-read on every install.
+      expect(readState()).toEqual([])
+    })
   })
 })

@@ -17,7 +17,7 @@ import {
   isWorkspaceTerminating,
   _clearTerminatingForTests,
 } from '#runtime/status/terminating'
-import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 
 const list = vi.fn<WorkspaceDriver['list']>()

@@ -4,9 +4,11 @@ import fs from 'node:fs/promises'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { projectDir } from '@yaac/shared/project-paths'
 import { BUILT_IN_USER_ID, closeDb, recordProject, upsertProjectEnvVar } from '#db'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import {
   listProjectEnv,
   parseSecretProxyRule,
+  pushProjectSecrets,
   removeProjectEnvVar,
   resolveProjectEnv,
   setProjectEnvVar,
@@ -177,5 +179,20 @@ describe('resolveProjectEnv', () => {
     await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'NO_RULE', value: 'v', secret: true })
 
     expect(await resolveProjectEnv(DEMO_PROJECT_ID)).toEqual({ plain: {}, secrets: {} })
+  })
+})
+
+describe('pushProjectSecrets', () => {
+  it('hands the runtime each usable secret value, and only those', async () => {
+    const pushed: Array<[string, Record<string, string>]> = []
+    installFakeWorkspaceDriver({
+      syncProjectSecrets: (projectId, values) => { pushed.push([projectId, values]); return Promise.resolve() },
+    })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'PLAIN', value: 'v' })
+    await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'SECRET', value: 'sekrit', secret: true, rule: RULE })
+    await upsertProjectEnvVar(DEMO_PROJECT_ID, { name: 'BLANK', value: '', secret: true, rule: RULE })
+
+    await pushProjectSecrets(DEMO_PROJECT_ID)
+    expect(pushed).toEqual([[DEMO_PROJECT_ID, { SECRET: 'sekrit' }]])
   })
 })

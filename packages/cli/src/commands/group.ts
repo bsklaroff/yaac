@@ -1,4 +1,5 @@
 import { api, projectNames, resolveProjectId } from '#commands/api'
+import { printTable } from '#commands/table'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { WorkspaceGroupSummary, WorkspaceListEntry } from '@yaac/shared/types'
 
@@ -132,22 +133,8 @@ function renderGroups(
     .map((g) => ({ ...g, project: projectNames.get(g.projectId) ?? g.projectId }))
     .sort((a, b) => a.project.localeCompare(b.project)
       || a.createdAt.localeCompare(b.createdAt))
-    .map((g) => ({
-      name: g.name,
-      project: g.project,
-      running: String(counts.get(g.groupId) ?? 0),
-      pinned: g.pinned ? 'yes' : '',
-      created: g.createdAt,
-    }))
-
-  const nameWidth = Math.max('GROUP'.length, ...rows.map((r) => r.name.length))
-  const projectWidth = Math.max('PROJECT'.length, ...rows.map((r) => r.project.length))
-
-  console.log('')
-  console.log(`${'GROUP'.padEnd(nameWidth)} ${'PROJECT'.padEnd(projectWidth)} ${'RUNNING'.padEnd(7)} ${'PINNED'.padEnd(6)} CREATED`)
-  console.log(`${'-'.repeat(nameWidth)} ${'-'.repeat(projectWidth)} ${'-'.repeat(7)} ${'-'.repeat(6)} ${'-'.repeat(19)}`)
-  for (const r of rows) {
-    console.log(`${r.name.padEnd(nameWidth)} ${r.project.padEnd(projectWidth)} ${r.running.padEnd(7)} ${r.pinned.padEnd(6)} ${r.created}`)
-  }
-  console.log('')
+  printTable(
+    [{ header: 'GROUP' }, { header: 'PROJECT' }, { header: 'RUNNING' }, { header: 'PINNED' }, { header: 'CREATED' }],
+    rows.map((g) => [g.name, g.project, String(counts.get(g.groupId) ?? 0), g.pinned ? 'yes' : '', g.createdAt]),
+  )
 }

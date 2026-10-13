@@ -3,7 +3,7 @@
 The webapp polls `/changes` every 3 seconds while the explorer, the Changes
 pane or a file is visible, and every 10 seconds for the status bar
 (docs/file-editor.md). Each poll runs the changes script
-(`#drivers/shared` `workspace-changes.ts`) in the workspace, under a 20s
+(`#domain/workspaces` `changes.ts`) in the workspace, under a 20s
 exec deadline. On a workspace whose branch has diverged a long way from its
 base, a run costs more than the deadline and every poll fails, so the status
 bar shows "Git status unavailable: stream read timeout". This plan caches
@@ -89,7 +89,7 @@ A poll where nothing changed then costs `add -A`, three `write-tree`s
 (~0.5s on the 558-file workspace) and two `cat`s. While the agent edits, the
 key changes on almost every poll, which step 3 addresses.
 
-Tests in `packages/server/test/drivers/shared/workspace-changes.test.ts`,
+Tests in `packages/server/test/domain/workspaces/changes.test.ts`,
 which runs the script against real repositories: a second run with nothing
 changed prints byte-identical output; editing, staging, committing or
 switching base each invalidates the right entries; a run killed mid-write

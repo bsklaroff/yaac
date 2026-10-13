@@ -1,4 +1,4 @@
-import type { AccessMode, AgentTool, DriverKind } from '#types'
+import type { AccessMode, AgentTool } from '#types'
 
 /**
  * The one place under `src/` that reads yaac's own environment variables
@@ -224,20 +224,6 @@ export const env = {
   },
 
   /**
-   * `YAAC_DRIVER` — which substrate this install runs workspaces on. The
-   * server does not use it to pick its driver; that follows from
-   * {@link inCluster} (`#main/driver-choice`). The CLI reads it, before any
-   * server exists, to decide whether to use the rootful podman engine.
-   * Defaults to `k8s`; any other unknown value throws.
-   */
-  get driver(): DriverKind {
-    const raw = (process.env.YAAC_DRIVER ?? '').trim()
-    if (raw === '') return 'k8s'
-    if (raw === 'k8s' || raw === 'containerless') return raw
-    throw new Error(`YAAC_DRIVER must be "k8s" or "containerless" (got "${raw}")`)
-  },
-
-  /**
    * `YAAC_SECRETS` — the keys the server encrypts stored secrets with, as
    * `"<version>:<secret>,<version>:<secret>"`. New writes use the first
    * entry; the rest still decrypt older rows, so rotating a key needs only
@@ -441,29 +427,6 @@ export const testEnv = {
    */
   get noTokenRefresh(): boolean {
     return process.env.YAAC_E2E_NO_TOKEN_REFRESH === '1'
-  },
-
-  /** `YAAC_E2E_OPENCODE_PROVIDER` — picks the opencode provider for e2e (defaults to openrouter). */
-  get opencodeProviderHook(): string | undefined {
-    return process.env.YAAC_E2E_OPENCODE_PROVIDER
-  },
-
-  /** `YAAC_E2E_PI_PROVIDER` — picks the pi provider for e2e (defaults to openrouter). */
-  get piProviderHook(): string | undefined {
-    return process.env.YAAC_E2E_PI_PROVIDER
-  },
-
-  /**
-   * `YAAC_E2E_{CLAUDE,CODEX,OPENCODE,PI}_LOGIN` — short-circuits the native
-   * tool login flow with a serialized OAuth bundle (claude/codex) or a raw api
-   * key (opencode/pi). Returns the raw payload for the given tool, or
-   * `undefined`.
-   */
-  toolLoginHook(tool: AgentTool): string | undefined {
-    if (tool === 'claude') return process.env.YAAC_E2E_CLAUDE_LOGIN
-    if (tool === 'codex') return process.env.YAAC_E2E_CODEX_LOGIN
-    if (tool === 'pi') return process.env.YAAC_E2E_PI_LOGIN
-    return process.env.YAAC_E2E_OPENCODE_LOGIN
   },
 
   /**

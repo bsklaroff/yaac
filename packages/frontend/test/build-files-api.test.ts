@@ -1,8 +1,7 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { encodeBase64, projectBuildFilesApi, userBuildFilesApi } from '#lib/buildFilesApi'
 import { mockFetch } from './harness'
 
-afterEach(() => vi.unstubAllGlobals())
 
 describe('encodeBase64', () => {
   it('encodes bytes, including multi-chunk inputs', () => {

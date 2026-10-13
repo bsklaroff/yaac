@@ -45,7 +45,7 @@ Forwards are declared in two places, both of which already produce the
    onto the same `env` array right after it. The agent's pane and every
    later tmux pane inherit it from the launch environment.
 2. **Server restart** (`restoreAllWorkspaceForwarders` in
-   `#runtime/ports`, `restore.ts`). The forwarder registry is in memory,
+   `main/restore-forwarders.ts`). The forwarder registry is in memory,
    so a restart re-declares every running workspace's forwards, and the
    k8s allocator may now hand out different numbers than at create. The
    launch env is fixed by then. `provisionForwarders` already execs into
@@ -93,7 +93,7 @@ writes `{containerPort, hostPortStart}` only.
 - `packages/server/test/domain/projects/config.test.ts`: `envVar`
   accepted, absent, non-string rejected, invalid name (`"FOO BAR"`,
   `"1FOO"`) rejected, `YAAC_`-prefixed rejected.
-- `packages/server/test/runtime/ports/restore.test.ts`: extend the
+- `packages/server/test/main/restore-forwarders.test.ts`: extend the
   existing `restoreAllWorkspaceForwarders` case so a config entry with
   `envVar` produces a `tmux set-environment` exec with the declared host
   port, and one without produces none.

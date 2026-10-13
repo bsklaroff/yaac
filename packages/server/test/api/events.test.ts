@@ -28,7 +28,7 @@ import {
   claimProvisioning, failProvisioning, registerProvisioning, removeProvisioning,
   clearAllProvisioningForTests,
 } from '#domain/workspaces/provisioning'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {

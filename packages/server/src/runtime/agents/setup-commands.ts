@@ -7,69 +7,10 @@
  * `workspace-bin/yaac-workspace-init`; only steps needing host coordination
  * are here.
  */
-import {
-  initWindowCommand,
-  resolveInitWindows,
-  tmuxCmd,
-  type InitWindow,
-} from './agent-command'
+import { initWindowCommand, tmuxCmd, type InitWindow } from './agent-command'
 import { agentWindowName, nameSessionCommand } from './agent-tools'
-import { shellEscape } from '#lib/shell'
-import { ServerError } from '@yaac/shared/errors'
-import { AGENT_TOOLS } from '@yaac/shared/types'
 import type { WorkspacePaths } from '#drivers/contract'
-import type { AgentTool, YaacConfig } from '@yaac/shared/types'
-
-/**
- * Point the checkout at the main clone's objects, then bring its `origin/*`
- * up to date from the main clone: one exec, on every launch and driver.
- *
- * The alternates line is the checkout's only path-dependent git state
- * (docs/server-git.md). It is always the main clone's objects dir as the
- * server sees it; pods mount the main clone at that same path. Rewriting it
- * every launch heals a checkout whose data dir moved.
- *
- * Last, a detached `git status` looks up every file once, so a pod's file
- * cache is warm before the agent's or the changes poll's first status
- * (docs/nfs-checkout-performance.md). `--no-optional-locks` keeps it from
- * taking the index lock the agent's own git needs.
- */
-export function buildCloneLinkExec(repoGitDir: string, paths: WorkspacePaths): string {
-  return `printf '%s\\n' '${shellEscape(`${repoGitDir}/objects`)}' > ${paths.workspaceDir}/.git/objects/info/alternates`
-    + ` && { ${buildOriginRefreshExec(repoGitDir, paths)}; }`
-    + ` && { setsid git -C ${paths.workspaceDir} --no-optional-locks status --porcelain </dev/null >/dev/null 2>&1 & }`
-}
-
-/**
- * Fast-forward the checkout's `origin/*` from the main clone on disk. The
- * objects are reachable via alternates, so there is no network or
- * credential use. Not forced (an agent-fetched ref ahead of the main clone
- * is kept), no `--prune`, and no FETCH_HEAD (the agent may be between its
- * own fetch and merge). Failures are ignored; the next refresh retries.
- */
-export function buildOriginRefreshExec(repoGitDir: string, paths: WorkspacePaths): string {
-  return `git -C ${paths.workspaceDir} fetch --quiet --no-tags --no-write-fetch-head `
-    + `'${shellEscape(repoGitDir)}' 'refs/remotes/origin/*:refs/remotes/origin/*' 2>/dev/null || true`
-}
-
-/**
- * Resolve and validate the project's init windows. Every tool name is
- * rejected as a window name, since a spare can be retooled at claim time
- * and a same-named init window would make the tmux target ambiguous. Runs
- * before anything is provisioned, so a bad config fails early.
- */
-export function validateInitWindows(config: YaacConfig): InitWindow[] {
-  const windows = resolveInitWindows(config)
-  for (const win of windows) {
-    if ((AGENT_TOOLS as readonly string[]).includes(win.name)) {
-      throw new ServerError(
-        'VALIDATION',
-        `initCommands window name "${win.name}" collides with an agent tool window`,
-      )
-    }
-  }
-  return windows
-}
+import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * Create the init-command windows and replace the keepalive placeholder

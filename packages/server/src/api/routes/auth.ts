@@ -1,24 +1,22 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
-import type { IdentityEnv } from '#http'
+import type { IdentityEnv } from '#api/http/web-auth'
 import { z } from 'zod'
 import { ServerError } from '@yaac/shared/errors'
 import {
+  addHttpsCredential,
   authAgentHub,
   clearAuth,
+  generateSshCredential,
   listAuth,
   pushCredentialsToRuntime,
-  requestPlanUsageRefresh,
-  signInTool,
-} from '#domain/auth'
-import {
-  addHttpsCredential,
-  generateSshCredential,
   removeCredential,
   renameCredential,
   replaceCredential,
+  requestPlanUsageRefresh,
   seedFakeAuth,
-} from '#domain/projects'
+  signInTool,
+} from '#domain/auth'
 import { AGENT_TOOLS, FAKE_AUTH_KINDS, toolAuthPayloadSchema } from '@yaac/shared/types'
 
 /**

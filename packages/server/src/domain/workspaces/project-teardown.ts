@@ -1,4 +1,8 @@
-import { purgeProjectBytes } from './project-purge'
+import fs from 'node:fs/promises'
+import { workspaceDriver } from '#drivers/driver'
+import type { RuntimeHandle } from '#drivers/contract'
+import { hostedRepoDir, projectDir } from '@yaac/shared/project-paths'
+import { cleanupWorkspaceDetached } from './cleanup'
 import {
   deleteProjectAgentSessions,
   deleteProjectDraftWorkspaces,
@@ -36,4 +40,46 @@ export async function removeProject(principal: Actor, projectId: string): Promis
   await deleteProjectDraftWorkspaces(projectId)
   await deleteProjectEnvVars(projectId)
   await deleteProjectRow(projectId)
+}
+
+/**
+ * Delete everything a project has on disk and on the substrate: live
+ * workspaces, driver-held state (push registry, node-local trees), the
+ * global tree, and a hosted project's remote. Best-effort throughout; the
+ * driver's id-keyed sweeps collect whatever a failure leaves.
+ */
+async function purgeProjectBytes(projectId: string): Promise<void> {
+  let pods: RuntimeHandle[] = []
+  try {
+    pods = await workspaceDriver().list(projectId)
+  } catch {
+    // Runtime unavailable: still remove the dirs.
+  }
+
+  for (const p of pods) {
+    try {
+      await cleanupWorkspaceDetached({
+        jobName: p.jobName,
+        projectId,
+        workspaceId: p.workspaceId,
+      })
+    } catch {
+      // Best-effort; continue with the next workspace.
+    }
+  }
+
+  // Node-local and driver-held bytes live where the workspaces ran, so only
+  // the driver can reach them.
+  try {
+    await workspaceDriver().destroyProjectSubstrate(projectId)
+  } catch {
+    // The id-keyed sweeps will collect it.
+  }
+
+  // Safe after the teardowns above: `rm` does not follow links, and no pod
+  // is left to swap one in mid-walk.
+  await fs.rm(projectDir(projectId), { recursive: true, force: true })
+  // A hosted project's remote is its only authoritative copy; the remove
+  // confirmation says so.
+  await fs.rm(hostedRepoDir(projectId), { recursive: true, force: true })
 }

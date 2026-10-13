@@ -32,7 +32,7 @@ export function generateSshKey(comment: string): GeneratedSshKey {
 }
 
 /** The `KeyObject` for a stored seed — what `crypto.sign` takes. */
-export function sshKeyFromSeed(seed: Buffer): crypto.KeyObject {
+function sshKeyFromSeed(seed: Buffer): crypto.KeyObject {
   if (seed.length !== SEED_BYTES) throw new Error(`ssh key seed must be ${SEED_BYTES} bytes`)
   return crypto.createPrivateKey({
     key: Buffer.concat([PKCS8_ED25519_PREFIX, seed]),
@@ -49,13 +49,13 @@ function publicPoint(seed: Buffer): Buffer {
 
 /** The public key in wire form: `string "ssh-ed25519", string point` — what
  *  an agent lists and what a client names in a sign request. */
-export function sshPublicKeyBlob(seed: Buffer): Buffer {
+function sshPublicKeyBlob(seed: Buffer): Buffer {
   return Buffer.concat([sshString(KEY_TYPE), sshString(publicPoint(seed))])
 }
 
 /** The one-line form of {@link sshPublicKeyBlob}, as `authorized_keys` and
  *  `.pub` files hold it. */
-export function publicKeyLine(seed: Buffer, comment: string): string {
+function publicKeyLine(seed: Buffer, comment: string): string {
   return `${KEY_TYPE} ${sshPublicKeyBlob(seed).toString('base64')} ${comment}`
 }
 

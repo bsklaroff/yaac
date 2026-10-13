@@ -1,10 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { randomUUID } from '#lib/uuid'
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 describe('randomUUID', () => {
-  afterEach(() => vi.unstubAllGlobals())
 
   it('delegates to native crypto.randomUUID in a secure context', () => {
     const native = vi.fn(() => '11111111-1111-4111-8111-111111111111')

@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { addHttpsCredential } from '#domain/projects'
 import { BUILT_IN_USER_ID, closeDb, seeTailnetUser, setToolCredential } from '#db'
-import { listAuth } from '#domain/auth'
+import { addHttpsCredential, listAuth } from '#domain/auth'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 
 describe('listAuth', () => {

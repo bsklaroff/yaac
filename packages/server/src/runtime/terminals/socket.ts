@@ -20,9 +20,6 @@ export interface ControlMessage {
   cols?: number
   rows?: number
   name?: string
-  /** Ping only: an opaque client stamp echoed in the pong so the client can
-   *  time the round trip. */
-  t?: number
 }
 
 /** Parse a text control frame. Returns null for anything unrecognized. */
@@ -39,16 +36,8 @@ export function parseControl(text: string): ControlMessage | null {
   return obj as ControlMessage
 }
 
-/**
- * The pong for a ping. Echoing the client's stamp lets it time the round
- * trip (the frontend's link-quality store); a bare ping (the CLI's
- * keepalive) gets a bare pong.
- */
-export function pongFor(ping: ControlMessage): string {
-  return typeof ping.t === 'number' && Number.isFinite(ping.t)
-    ? JSON.stringify({ type: 'pong', t: ping.t })
-    : '{"type":"pong"}'
-}
+/** The answer to a `ping`, the clients' keepalive. */
+export const PONG = '{"type":"pong"}'
 
 export function toBytes(data: string | Buffer | ArrayBuffer): Buffer {
   if (typeof data === 'string') return Buffer.from(data, 'utf8')

@@ -14,7 +14,7 @@ import {
   setWorkspaceEffort,
   setWorkspacePermissionMode,
 } from './workspace-store'
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import type { WorkspaceEvent, WorkspaceCreateFailed, WorkspaceCreated } from './events'
 
 /**

@@ -1,26 +1,14 @@
-import net from 'node:net'
-import { serve, upgradeWebSocket, type ServerType } from '@hono/node-server'
+import { serve, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
-import type { Context, MiddlewareHandler } from 'hono'
 import { buildApp, buildMamaRelayApp } from '#main/server'
-import type { IdentityEnv } from '#http'
-import { authorizeProject, type Actor } from '#domain/access'
-import {
-  authAgentHub,
-  pushCredentialsToRuntime,
-  refreshPlanUsage,
-  runtimeMediatesEgress,
-} from '#domain/auth'
-import { closeDb, findWorkspaceRow, listProjectRows, MigrationRefusal, openDb, pingDb } from '#db'
+import { pushCredentialsToRuntime, refreshPlanUsage } from '#domain/auth'
+import { closeDb, listProjectRows, MigrationRefusal, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
-import { EventHub, type WsLike } from '#api/events'
-import { resolveWorkspaceContainer } from '#domain/workspaces'
+import { EventHub } from '#api/events'
+import { registerWebSocketRoutes } from '#api/ws-routes'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
-import { coalesceCalls, onWorkspaceListChanged } from '#notify'
+import { coalesceCalls, onWorkspaceListChanged } from '#lib/notify'
 import { refreshClaudeBundledSkills } from '#domain/skills'
-import { attachPty, type SocketLike } from '#runtime/terminals'
-import { TUNNEL_DIAL_FAILED, attachPortTunnel } from '#runtime/ports'
-import { attachAcp } from '#runtime/agents'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
@@ -34,108 +22,19 @@ import { LEASE_HEARTBEAT_MS, isLockLive } from '@yaac/shared/server-lock-file'
 import { resolveServerPort, bindWithAutoIncrement } from '@yaac/shared/server-port'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
-import { setWorkspaceDriver, workspaceDriver } from '#drivers/driver'
-import { resolveProjectEnv } from '#domain/projects'
+import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
+import { pushProjectSecrets } from '#domain/projects'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 import { AccessModeRefusal, settleAccessMode } from '#main/access-mode'
-import { errorText, serverLog } from '#log'
+import { errorText, serverLog } from '#lib/log'
 import { env } from '@yaac/shared/env'
-import { agentSessionIdSchema, type AccessMode, type DriverKind } from '@yaac/shared/types'
-import { ServerError } from '@yaac/shared/errors'
+import type { AccessMode } from '@yaac/shared/types'
+import { preflightHostTor, torCoverageWarning } from '@yaac/shared/host-tor'
 
 export interface ServerRunOptions {
   port?: number
-}
-
-/**
- * The subset of the `ws` WebSocket (WSContext.raw) we use. `ws` is a
- * transitive dependency, so its types are not importable here.
- */
-interface RawWebSocket {
-  send(data: string | Uint8Array): void
-  close(code?: number, reason?: string): void
-  ping(): void
-  terminate(): void
-  readonly readyState: number
-  readonly bufferedAmount: number
-  on(event: 'message', cb: (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => void): void
-  on(event: 'close', cb: () => void): void
-  on(event: 'pong', cb: () => void): void
-}
-
-/** `WebSocket.OPEN` (the `ws` class constant is not importable here). */
-const WS_OPEN = 1
-
-/** The raw socket behind a Hono WebSocket context, which @hono/node-server
- *  always sets. */
-function rawOf(ws: { raw?: unknown }): RawWebSocket {
-  return ws.raw as RawWebSocket
-}
-
-/** A binary-capable socket for the PTY, forward and ACP bridges. */
-function socketOf(ws: { raw?: unknown }): SocketLike {
-  const raw = rawOf(ws)
-  return {
-    send: (data) => raw.send(data),
-    close: (code, reason) => raw.close(code, reason),
-    onMessage: (cb) => raw.on('message', (data, isBinary) =>
-      cb(Array.isArray(data) ? Buffer.concat(data) : data, isBinary)),
-    onClose: (cb) => raw.on('close', () => cb()),
-    bufferedAmount: () => raw.bufferedAmount,
-  }
-}
-
-/**
- * Heartbeat interval for the auth-agent socket. We ping the daemon and drop
- * the socket if a ping goes unanswered, so a dead daemon (host asleep,
- * network down) shows as disconnected instead of hanging sign-in ops.
- */
-const AGENT_HEARTBEAT_MS = 15_000
-
-// With YAAC_USE_TOR, the server's own git goes through a host Tor SOCKS
-// endpoint (default 127.0.0.1:9050). Fail at startup if it is unreachable
-// rather than on the first git operation.
-export async function preflightHostTor(): Promise<void> {
-  if (!env.useTor) return
-  const url = new URL(env.torSocksUrl)
-  const host = url.hostname
-  const port = parseInt(url.port || '9050', 10)
-  await new Promise<void>((resolve, reject) => {
-    const sock = net.connect({ host, port })
-    const timer = setTimeout(() => {
-      sock.destroy()
-      reject(new Error(`timeout connecting to ${host}:${port}`))
-    }, 2000)
-    sock.once('connect', () => { clearTimeout(timer); sock.destroy(); resolve() })
-    sock.once('error', (err) => { clearTimeout(timer); reject(err) })
-  }).catch((err: Error) => {
-    throw new Error(
-      `YAAC_USE_TOR is set but host Tor at ${url.href} is not reachable `
-      + `(${err.message}). Start Tor ('sudo systemctl start tor' on Linux, `
-      + `'brew services start tor' on macOS) or unset YAAC_USE_TOR.`,
-    )
-  })
-}
-
-/**
- * What `YAAC_USE_TOR` does not cover under the given driver, or undefined
- * when it covers everything.
- *
- * The server's own git is routed through Tor under either driver. Under
- * `k8s`, all workspace traffic is redirected into the egress proxy, which
- * dials through Tor. Containerless workspaces are plain host processes with
- * no proxy, and advisory env (`ALL_PROXY`, ssh ProxyCommand) fails open
- * (undici ignores it, raw sockets and DNS bypass it), so we warn instead.
- */
-export function torCoverageWarning(driver: DriverKind): string | undefined {
-  if (!env.useTor || driver !== 'containerless') return undefined
-  return 'YAAC_USE_TOR is set, but the containerless driver runs workspaces '
-    + 'directly on the host with no egress proxy, so agent traffic and '
-    + 'anything a workspace does itself will NOT go through Tor. Only the '
-    + "server's own git operations are routed through it. A cluster install "
-    + '(`yaac cluster install`) is what gives Tor-covered workspaces.'
 }
 
 // `FetchCallback` is not exported from the package entry, so derive it.
@@ -252,7 +151,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // The settled access mode, or why this start was refused.
   let access: AccessMode | { refused: string } | undefined
   // Rebuild, diff and push the snapshot on every store notification
-  // (see #notify). Bursts coalesce into one trailing rebuild.
+  // (see #lib/notify). Bursts coalesce into one trailing rebuild.
   onWorkspaceListChanged(coalesceCalls(() => { void hub.publishSnapshot() }, 150))
   // Plan usage has no push source upstream, so poll it, but only while a
   // client is connected. A landed result notifies on its own.
@@ -264,192 +163,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }, 5 * 60_000)
   const app = buildApp({ buildId, isReady: () => ready, access: () => access })
 
-  // WebSocket routes are registered here, not in buildApp, so buildApp's
-  // return type stays the plain Hono app the CLI's RPC client infers from.
-  app.get('/api/events', upgradeWebSocket(() => {
-    // Send through the raw `ws` socket: WSContext.send passes
-    // `compress: undefined`, which overrides ws's `compress: true` default
-    // and would leave snapshots uncompressed.
-    let conn: WsLike | null = null
-    return {
-      onOpen: (_evt, ws) => {
-        const raw = rawOf(ws)
-        // `ws` ignores sends on a closed socket, so removal relies on
-        // onClose/onError; the guard just skips sends while closing.
-        conn = {
-          send: (data: string) => { if (raw.readyState === WS_OPEN) raw.send(data) },
-        }
-        hub.add(conn)
-        void hub.sendSnapshotTo(conn).catch(
-          (err: unknown) => serverLog(`[server] events: initial snapshot failed: ${errorText(err)}`),
-        )
-      },
-      onClose: () => { if (conn) hub.remove(conn) },
-      onError: () => { if (conn) hub.remove(conn) },
-    }
-  }))
-
-  // Auth-daemon relay: the login broker on each user's machine keeps one
-  // outbound socket here, as that user; their sign-in routes forward ops
-  // over it.
-  app.get('/api/agent/auth', upgradeWebSocket((c) => {
-    const owner = (c as Context<IdentityEnv>).get('principal').userId
-    return {
-      onOpen: (_evt, ws) => {
-        const raw = rawOf(ws)
-        const sock = {
-          send: (data: string) => raw.send(data),
-          close: (code?: number, reason?: string) => raw.close(code, reason),
-        }
-        authAgentHub.setSocket(owner, sock)
-        raw.on('message', (data) => {
-          const text = Array.isArray(data)
-            ? Buffer.concat(data).toString('utf8')
-            : Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8')
-          authAgentHub.ingest(owner, text)
-        })
-        // Terminate if the previous ping got no pong. Starts true so a new
-        // socket survives the first tick; terminate() leads to
-        // handleDisconnect.
-        let alive = true
-        raw.on('pong', () => { alive = true })
-        const heartbeat = setInterval(() => {
-          if (!alive) {
-            raw.terminate()
-            return
-          }
-          alive = false
-          try {
-            raw.ping()
-          } catch { /* socket tore down between tick and ping */ }
-        }, AGENT_HEARTBEAT_MS)
-        heartbeat.unref?.()
-        raw.on('close', () => {
-          clearInterval(heartbeat)
-          authAgentHub.handleDisconnect(owner, sock)
-        })
-      },
-    }
-  }))
-
-  // Attaches name a workspace by exact id, so a missing id is refused
-  // before any lookup. The conversation id is validated because it is
-  // joined into a path downstream. Each grants execution in or a tunnel
-  // into the workspace, so only its owner may open one: checked against
-  // the workspace's row here, so a refusal is a 403 before the upgrade,
-  // and again by `ownedAttachTarget` once the socket opens.
-  const attachQuery = (opts: { session?: boolean } = {}): MiddlewareHandler<IdentityEnv> => async (c, next) => {
-    const id = c.req.query('id')
-    if (!id) throw new ServerError('VALIDATION', 'a workspace id is required')
-    if (opts.session && !agentSessionIdSchema.safeParse(c.req.query('session')).success) {
-      throw new ServerError('VALIDATION', 'a valid conversation id is required')
-    }
-    const row = await findWorkspaceRow(id)
-    if (row) await authorizeProject(c.get('principal'), row.projectId)
-    await next()
-  }
-
-  // The running workspace an attach opens, checked again against the unit
-  // it resolves to, so an id with no row at upgrade time is not let through.
-  const ownedAttachTarget = (principal: Actor, id: string) =>
-    resolveWorkspaceContainer(id, { requireRunning: true, exact: true, owner: principal })
-
-  // PTY bridge: one terminal per connection, attached to the workspace's
-  // tmux. Not under /workspace/ to avoid colliding with GET /workspace/:id.
-  app.get('/api/pty/attach', attachQuery(), upgradeWebSocket((c) => {
-    const principal = (c as Context<IdentityEnv>).get('principal')
-    const id = c.req.query('id') ?? ''
-    // attachPty validates these and spawns the PTY at the browser's size, so
-    // tmux and the client grid match from the first frame.
-    const query = {
-      target: c.req.query('target'),
-      cols: c.req.query('cols'),
-      rows: c.req.query('rows'),
-    }
-    return {
-      onOpen: (_evt, ws) => {
-        void (async () => {
-          let jobName: string
-          try {
-            const resolved = await ownedAttachTarget(principal, id)
-            jobName = resolved.jobName
-          } catch {
-            try {
-              ws.send(JSON.stringify({ type: 'error', message: 'session not found or not running' }))
-            } catch { /* socket already gone */ }
-            ws.close(1011, 'resolve failed')
-            return
-          }
-          attachPty(jobName, socketOf(ws), query)
-          serverLog(`[server] pty attach: session=${id} job=${jobName}`)
-        })()
-      },
-    }
-  }))
-
-  // Port-forward tunnel: one WebSocket per forwarded TCP connection. The
-  // server binds no host port on either driver; `yaac forward` or the
-  // desktop app listens on the user's machine and opens one of these per
-  // connection (docs/port-forward-tunnel.md).
-  app.get('/api/forward/attach', attachQuery(), upgradeWebSocket((c) => {
-    const principal = (c as Context<IdentityEnv>).get('principal')
-    const id = c.req.query('id') ?? ''
-    const port = Number(c.req.query('port'))
-    return {
-      onOpen: (_evt, ws) => {
-        void (async () => {
-          const fail = (message: string): void => {
-            ws.close(TUNNEL_DIAL_FAILED, message)
-          }
-          if (!Number.isInteger(port) || port < 1 || port > 65535) {
-            fail('bad port')
-            return
-          }
-          let workspaceId: string
-          try {
-            workspaceId = (await ownedAttachTarget(principal, id)).workspaceId
-          } catch (err) {
-            serverLog(`[server] forward tunnel to ${id.slice(0, 8)}:${String(port)} refused: `
-              + (err instanceof Error ? err.message : String(err)))
-            fail('session not found or not running')
-            return
-          }
-          attachPortTunnel(workspaceId, port, socketOf(ws))
-        })()
-      },
-    }
-  }))
-
-  // ACP bridge: one chat pane per connection, attached to the live
-  // `AcpConversation` held by the status watcher's driver. Frames are JSON
-  // events.
-  app.get('/api/acp/attach', attachQuery({ session: true }), upgradeWebSocket((c) => {
-    const principal = (c as Context<IdentityEnv>).get('principal')
-    const id = c.req.query('id') ?? ''
-    const agentSessionId = c.req.query('session') ?? ''
-    return {
-      onOpen: (_evt, ws) => {
-        void (async () => {
-          const fail = (message: string): void => {
-            try {
-              ws.send(JSON.stringify({ type: 'health', connected: false }))
-              ws.send(JSON.stringify({ type: 'error', message }))
-            } catch { /* socket already gone */ }
-            ws.close(1011, message)
-          }
-          let projectId: string
-          try {
-            projectId = (await ownedAttachTarget(principal, id)).projectId
-          } catch {
-            fail('session not found or not running')
-            return
-          }
-          attachAcp(projectId, id, agentSessionId, socketOf(ws))
-          serverLog(`[server] acp attach: session=${id} conversation=${agentSessionId}`)
-        })()
-      },
-    }
-  }))
+  registerWebSocketRoutes(app, hub)
 
   const startPort = resolveServerPort(opts.port)
   const { server, port } = await bindServer(app.fetch, startPort)
@@ -634,7 +348,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       // Egress-mediating drivers get the full credential set and every
       // project's secrets once per start. Without mediation the reconciler's
       // first pass runs the credential sync.
-      if (runtimeMediatesEgress()) {
+      if (workspacesSandboxed()) {
         void convergeRuntimeCredentials()
           .catch((err: unknown) => serverLog(`[server] credential push failed: ${errorText(err)}`))
       }
@@ -648,11 +362,7 @@ async function convergeRuntimeCredentials(): Promise<void> {
   await pushCredentialsToRuntime()
   for (const { id: projectId } of await listProjectRows()) {
     try {
-      const { secrets } = await resolveProjectEnv(projectId)
-      await workspaceDriver().syncProjectSecrets(
-        projectId,
-        Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
-      )
+      await pushProjectSecrets(projectId)
     } catch (err) {
       serverLog(`[server] secret push for project "${projectId}" failed: ${errorText(err)}`)
     }

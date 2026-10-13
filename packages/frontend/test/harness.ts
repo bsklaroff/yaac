@@ -1,10 +1,15 @@
 import { createElement, type ReactElement } from 'react'
 import { vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, type RenderResult } from '@testing-library/react'
+import { fireEvent, render, type RenderResult } from '@testing-library/react'
+import { useUiStore } from '#lib/store'
 import { whoamiQuery } from '#lib/viewer'
-import { countMatches, type QuerySpec } from '#lib/matchCount'
-import type { Whoami } from '@yaac/shared/types'
+import type { XtermCore } from '#lib/xterm-internals'
+import type { Terminal } from '@xterm/xterm'
+import type { AcpEvent } from '@yaac/shared/acp'
+import type {
+  AgentSessionEntry, ProvisioningWorkspaceEntry, ServerSnapshot, Whoami, WorkspaceListEntry,
+} from '@yaac/shared/types'
 
 /**
  * A stub of the global `fetch`, which is where the SPA meets the server:
@@ -13,7 +18,7 @@ import type { Whoami } from '@yaac/shared/types'
  * (the query string is not part of the key). A route's reply is a JSON body,
  * a `Response`, or a function of the request returning either (or a promise
  * of one). Unrouted requests answer 404 NOT_FOUND, so a forgotten route
- * fails loudly. Undo with `vi.unstubAllGlobals()`.
+ * fails loudly. Vitest unstubs it after each test.
  */
 
 export interface FetchCall {
@@ -81,33 +86,156 @@ export const TEST_WHOAMI: Whoami = {
 /** A query client configured like the app's (main.tsx): no retries, and no
  *  refetches the test did not cause. It already holds `whoami`, as the app's
  *  does by the time anything below the bootstrap renders; pass null to
- *  leave it for the test to answer. */
-export function testQueryClient(whoami: Whoami | null = TEST_WHOAMI): QueryClient {
+ *  leave it for the test to answer. A `snapshot` goes into the store the way
+ *  the events socket delivers one (`receiveSnapshot`), so `useSnapshot`
+ *  reads it. */
+export function testQueryClient(whoami: Whoami | null = TEST_WHOAMI, snapshot?: ServerSnapshot): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchOnWindowFocus: false } },
   })
   if (whoami) client.setQueryData(whoamiQuery.queryKey, whoami)
+  if (snapshot) useUiStore.getState().receiveSnapshot(snapshot)
   return client
 }
+
+/** A snapshot with nothing in it; `over` fills what a case is about. */
+export const serverSnapshot = (over: Partial<ServerSnapshot> = {}): ServerSnapshot => ({
+  driver: 'k8s',
+  workspaces: [],
+  workspaceGroups: [],
+  stale: [],
+  projects: [],
+  provisioning: [],
+  queuedWorkspaces: [],
+  heldWorkspaces: [],
+  draftWorkspaces: [],
+  gitAuthFailures: {},
+  imageBuilds: [],
+  planUsage: {},
+  codexPlanUsage: {},
+  ...over,
+})
 
 /** Render inside a fresh query client. */
 export function renderWithClient(ui: ReactElement, client = testQueryClient()): RenderResult {
   return render(createElement(QueryClientProvider, { client }, ui))
 }
 
-/** A regex that backtracks forever; `FakeWorker` never answers it. */
-export const HANGS = '(a|aa)+b'
+/*
+ * Fixture builders. Each returns a minimal valid row, with `over` setting
+ * whatever a case is about.
+ */
 
-/** jsdom has no Worker. Stub this in for `MatchCounter`'s: it runs the real
- *  `countMatches` a tick later, and never answers for HANGS. */
-export class FakeWorker {
-  onmessage: ((e: MessageEvent) => void) | null = null
-  private terminated = false
-  postMessage(msg: { id: number; doc: string; spec: QuerySpec; limit: number }): void {
-    if (msg.spec.search === HANGS) return
-    setTimeout(() => {
-      if (!this.terminated) this.onmessage?.({ data: { id: msg.id, matches: countMatches(msg.doc, msg.spec, msg.limit) } } as MessageEvent)
-    }, 0)
+/** A running workspace with no agents, ports or blocked hosts. */
+export const workspaceEntry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
+  workspaceId: 's1',
+  projectId: 'proj',
+  tool: 'claude',
+  status: 'running',
+  createdAt: '2026-08-10 00:00:00',
+  agentSessions: [],
+  blockedHosts: [],
+  forwardedPorts: [],
+  unforwardedPorts: [],
+  ...over,
+})
+
+/** A workspace being created. */
+export const provisioningEntry = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
+  workspaceId: 'p1',
+  projectId: 'proj',
+  tool: 'claude',
+  kind: 'create',
+  message: 'Starting…',
+  createdAt: '2026-01-01 00:00:00',
+  ...over,
+})
+
+/** A workspace's first, active agent conversation. */
+export const agentSession = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
+  agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over,
+})
+
+/** A user prompt in a conversation (or a subagent's `thread`). */
+export const userEvent = (seq: number, text: string, thread?: string): AcpEvent =>
+  ({ type: 'user', seq, ...(thread !== undefined ? { thread } : {}), content: [{ type: 'text', text }] })
+
+/** An agent message in a conversation (or a subagent's `thread`). */
+export const agentEvent = (seq: number, text: string, thread?: string): AcpEvent =>
+  ({ type: 'agent', seq, ...(thread !== undefined ? { thread } : {}), content: [{ type: 'text', text }] })
+
+/** A WebSocket a test opens, feeds and closes by hand. Stub it in with
+ *  `vi.stubGlobal('WebSocket', FakeSocket)`. */
+export class FakeSocket {
+  static instances: FakeSocket[] = []
+  static readonly CONNECTING = 0
+  static readonly OPEN = 1
+  /** The socket opened last. */
+  static latest(): FakeSocket {
+    return FakeSocket.instances[FakeSocket.instances.length - 1]
   }
-  terminate(): void { this.terminated = true }
+
+  readyState = FakeSocket.CONNECTING
+  binaryType = 'blob'
+  sent: string[] = []
+  onopen: (() => void) | null = null
+  onmessage: ((e: { data: unknown }) => void) | null = null
+  onclose: (() => void) | null = null
+  onerror: (() => void) | null = null
+
+  constructor(readonly url: string) {
+    FakeSocket.instances.push(this)
+  }
+
+  send(data: string): void {
+    this.sent.push(data)
+  }
+
+  close(): void {
+    this.readyState = 3
+    this.onclose?.()
+  }
+
+  /** Complete the handshake. */
+  open(): void {
+    this.readyState = FakeSocket.OPEN
+    this.onopen?.()
+  }
+
+  /** Deliver a server frame: a string as is, anything else as JSON. */
+  deliver(msg: unknown): void {
+    this.onmessage?.({ data: typeof msg === 'string' ? msg : JSON.stringify(msg) })
+  }
+}
+
+/**
+ * An opened xterm Terminal as #lib/xterm-internals sees it: every private
+ * member `xtermCore` checks, with `core` replacing whole services and `term`
+ * adding the public members the code under test calls.
+ */
+export function fakeXterm(core: Partial<XtermCore> = {}, term: object = {}): Terminal {
+  const el = document.createElement('div')
+  return {
+    ...term,
+    _core: {
+      element: el,
+      screenElement: el,
+      _selectionService: { shouldForceSelection: () => false, clearSelection: () => {}, disable: () => {} },
+      coreService: { triggerDataEvent: () => {} },
+      _mouseService: { getMouseReportCoords: () => ({ col: 3, row: 4, x: 30, y: 40 }) },
+      coreMouseService: { areMouseEventsActive: true, triggerMouseEvent: () => true, consumeWheelEvent: () => 0 },
+      _renderService: { dimensions: { css: { cell: { height: 17 } }, device: { cell: { height: 34 } } } },
+      _coreBrowserService: { dpr: 2 },
+      ...core,
+    },
+  } as unknown as Terminal
+}
+
+/**
+ * Type `text` into an input as a keystroke would. `fireEvent.change` reads
+ * as autofill to Base UI's Combobox, which then skips what it does for typing
+ * (highlighting the first match); an input event with an `inputType` does not.
+ */
+export function typeInto(input: HTMLElement, text: string): void {
+  fireEvent.input(input, { target: { value: text }, inputType: 'insertText' })
 }

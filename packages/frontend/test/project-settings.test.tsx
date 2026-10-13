@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type { ProjectEnvVar, ProjectSummary } from '@yaac/shared/types'
@@ -9,16 +8,15 @@ vi.mock('#components/ui/CodeEditor', () => ({
     <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
   ),
 }))
-const snapshot = vi.hoisted(() => vi.fn())
-vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
 import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
+import {
+  mockFetch, renderWithClient, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock,
+} from './harness'
 
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
   useUiStore.setState({ viewedUserId: null })
 })
 
@@ -31,7 +29,7 @@ const project = (name: string, remoteUrl: string): ProjectSummary =>
  *  env routes keep `vars` in memory. */
 function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
   useUiStore.setState({ activeProjectId: 'id-alpha' })
-  snapshot.mockReturnValue({
+  const snapshot = serverSnapshot({
     driver: 'containerless',
     projects: [project('alpha', 'https://github.com/o/alpha.git'), project('beta', 'git@gitlab.com:o/beta.git')],
   })
@@ -51,7 +49,7 @@ function renderAlpha(vars: ProjectEnvVar[] = []): FetchMock {
     'GET /api/project/id-beta/env': { vars: [] },
     'GET /api/project/id-beta/config': { config: null },
   })
-  renderWithClient(<ProjectSettings />)
+  renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
   return server
 }
 
@@ -72,7 +70,7 @@ describe('ProjectSettings', () => {
 
   it('shows a hosted project\'s clone command instead of a remote, and turns its default-branch guard off', async () => {
     useUiStore.setState({ activeProjectId: 'id-gamma' })
-    snapshot.mockReturnValue({
+    const snapshot = serverSnapshot({
       driver: 'containerless',
       projects: [{ ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }],
     })
@@ -81,7 +79,7 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-gamma/config': { config: null },
       'PUT /api/project/id-gamma/default-branch-guard': () => undefined,
     })
-    renderWithClient(<ProjectSettings />)
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
 
     expect(screen.getByText('HOSTED BY YAAC')).toBeTruthy()
     expect(screen.queryByText('http://yaac.internal/api/workspace/git/id-gamma.git')).toBeNull()
@@ -125,7 +123,7 @@ describe('ProjectSettings', () => {
   it('shows a teammate\'s project read-only', async () => {
     // The caller is TEST_USER_ID; Ada's projects are what the switcher shows.
     useUiStore.setState({ activeProjectId: 'id-hers', viewedUserId: 'u-ada' })
-    snapshot.mockReturnValue({
+    const snapshot = serverSnapshot({
       driver: 'k8s',
       projects: [
         { ...project('hers', 'https://github.com/a/hers.git'), owner: 'u-ada' },
@@ -142,7 +140,7 @@ describe('ProjectSettings', () => {
       'GET /api/project/id-hers/build-files': { files: [{ path: 'init.lua', size: 3, binary: false }] },
       'GET /api/project/id-hers/build-files/file': { path: 'init.lua', size: 3, binary: false, content: 'x=1' },
     })
-    renderWithClient(<ProjectSettings />)
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
 
     // Only the viewed user's projects are offered.
     expect([...screen.getByRole<HTMLSelectElement>('combobox').options].map((o) => o.value)).toEqual(['id-hers'])

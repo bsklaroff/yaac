@@ -1,6 +1,6 @@
 import { isAbsent, k8sErrorSummary, listObjects } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /**
  * CIDR literals for the network policies and netd. NetworkPolicy can only

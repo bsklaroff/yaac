@@ -174,8 +174,8 @@ since it may have been recorded before a tool update.
 ### A spawned workspace's posture
 
 `yaac-mama create`, `yaac-mama queue` and `yaac-mama edit-queued`
-(docs/queued-workspaces.md) resolve the posture with `agentPermissionMode` in
-the spawn policy instead. It treats the **caller's** posture (read from the
+(docs/queued-workspaces.md) resolve the posture with `agentPermissionMode`
+(`@yaac/shared/types`) instead. It treats the **caller's** posture (read from the
 caller's row, never from the request) as a ceiling: a sibling may run at
 most as permissively as its parent, in the order `bypass > auto >
 accept-edits > manual > plan = read-only`. Otherwise an agent left in `plan`

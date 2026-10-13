@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { ServerError } from '@yaac/shared/errors'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { AgentKind, AgentOp, AgentTool2 } from '@yaac/shared/auth-agent-protocol'
 import type { ToolInstallView, ToolLoginView } from '@yaac/shared/types'
 

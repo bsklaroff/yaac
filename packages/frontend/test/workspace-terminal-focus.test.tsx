@@ -1,47 +1,21 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeAll, vi } from 'vitest'
-import { render as rtlRender, cleanup } from '@testing-library/react'
-import { QueryClientProvider } from '@tanstack/react-query'
-import type { ReactElement, ReactNode } from 'react'
+import { describe, it, expect, vi } from 'vitest'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { MOBILE_QUERY } from '#lib/viewport'
-import { testQueryClient } from './harness'
-
-/** A terminal reads the workspace's listing from the query cache. */
-const render = (ui: ReactElement): ReturnType<typeof rtlRender> => {
-  const client = testQueryClient()
-  return rtlRender(ui, {
-    wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
-  })
-}
+import { renderWithClient } from './harness'
 
 /**
- * Where a terminal pane's focus goes when it is the pane to focus. jsdom
- * lacks what xterm and the attach loop reach for on mount, so those are
- * stubbed; the socket never opens, which focus does not depend on.
+ * Where a terminal pane's focus goes when it is the pane to focus. The
+ * socket connects a tick after mount, so these synchronous cases never open
+ * one; focus does not depend on it.
  */
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class { observe(): void {} unobserve(): void {} disconnect(): void {} }
-  // eslint-disable-next-line @typescript-eslint/unbound-method -- only checked for presence
-  window.matchMedia ??= (() => ({
-    matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
-  })) as never
-  globalThis.WebSocket = class { send(): void {} close(): void {} addEventListener(): void {} } as never
-})
 
 function xtermInput(): Element | null {
   return document.querySelector('textarea[aria-label="Terminal input"]')
 }
 
 describe('WorkspaceTerminal focus', () => {
-  afterEach(() => {
-    cleanup()
-    vi.unstubAllGlobals()
-    document.body.replaceChildren()
-  })
-
   it('focuses the terminal when it is the pane to focus', () => {
-    render(<WorkspaceTerminal workspaceId="w1" focusKey={1} />)
+    renderWithClient(<WorkspaceTerminal workspaceId="w1" target="agent" visible focusKey={1} />)
     expect(document.activeElement).toBe(xtermInput())
   })
 
@@ -49,7 +23,7 @@ describe('WorkspaceTerminal focus', () => {
     vi.stubGlobal('matchMedia', (q: string) => ({
       matches: q === MOBILE_QUERY, media: q, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {},
     }))
-    render(<WorkspaceTerminal workspaceId="w1" focusKey={1} />)
+    renderWithClient(<WorkspaceTerminal workspaceId="w1" target="agent" visible focusKey={1} />)
     expect(xtermInput()).toBeTruthy()
     expect(document.activeElement).not.toBe(xtermInput())
   })
@@ -63,8 +37,8 @@ describe('WorkspaceTerminal focus', () => {
     document.body.append(dialog)
     prompt.focus()
 
-    const { rerender } = render(<WorkspaceTerminal workspaceId="w1" focusKey={1} />)
-    rerender(<WorkspaceTerminal workspaceId="w1" focusKey={2} />)
+    renderWithClient(<WorkspaceTerminal workspaceId="w1" target="agent" visible focusKey={1} />)
     expect(document.activeElement).toBe(prompt)
+    dialog.remove()
   })
 })

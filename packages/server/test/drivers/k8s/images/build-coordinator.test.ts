@@ -12,7 +12,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
-import type * as imageBuilderModule from '#drivers/k8s/image-engine/image-builder'
+import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
 import type * as mainRegistryModule from '#drivers/k8s/cluster/main-registry'
 
 /**
@@ -117,23 +117,12 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-// Only chain resolution and the host build are faked; context collection
-// and .containerignore handling run for real, since builder-pod uses them.
-vi.mock('#drivers/k8s/image-engine/image-builder', async (importOriginal) => ({
-  ...(await importOriginal<typeof imageBuilderModule>()),
-  buildImage: vi.fn(),
+// Only chain resolution is faked, so a test names its layers directly;
+// context collection and .containerignore handling run for real, since
+// builder-pod uses them.
+vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
+  ...(await importOriginal<typeof imageTagsModule>()),
   resolveImageChain: vi.fn(),
-}))
-
-vi.mock('#drivers/k8s/container/runtime', () => ({
-  imageExists: vi.fn().mockResolvedValue(false),
-}))
-
-vi.mock('#drivers/k8s/container/registry', () => ({
-  pushImageToRegistry: vi.fn(),
-  registryHasTag: vi.fn().mockResolvedValue(false),
-  registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
-  registryRef: vi.fn((tag: string) => `yaac-registry.yaac.svc.cluster.local:5000/${tag}`),
 }))
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
@@ -149,7 +138,7 @@ vi.mock('#drivers/k8s/cluster/main-registry', async (importOriginal) => ({
 
 // serverLog is silenced, but line splitting is kept: in-pod build output
 // reaches the build registry through it.
-vi.mock('#log', () => ({
+vi.mock('#lib/log', () => ({
   serverLog: vi.fn(),
   pipeToServerLog: (
     stream: NodeJS.ReadableStream | null,
@@ -171,10 +160,10 @@ vi.mock('#log', () => ({
 
 import { ensureImage } from '#drivers/k8s/images/build-coordinator'
 import { _clearBuildCoordinatorForTests } from '#drivers/k8s/images/build-coordinator'
-import { buildImage, resolveImageChain, type ImageLayer } from '#drivers/k8s/image-engine/image-builder'
-import { imageExists } from '#drivers/k8s/container/runtime'
-import { pushImageToRegistry, registryHasTag } from '#drivers/k8s/container/registry'
-import { clearAllImageBuildsForTests, listImageBuilds } from '#drivers/k8s/image-engine/image-builds'
+import { resolveImageChain, type ImageLayer } from '#drivers/k8s/cluster'
+import { listImageBuilds } from '#drivers/k8s/images'
+import { clearAllImageBuildsForTests } from '#drivers/k8s/images/image-builds'
+import { fakeRegistry } from '#test/support/fake-registry'
 // Setup values, not units under test.
 import {
   BUILDER_ACTIVE_DEADLINE_SECONDS,
@@ -190,16 +179,12 @@ import {
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
 import { wideEgress } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
-import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/container/registry-grant'
+import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
 import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import type { ImageLayerName } from '@yaac/shared/types'
 
-const mockBuildImage = vi.mocked(buildImage)
 const mockResolveChain = vi.mocked(resolveImageChain)
-const mockImageExists = vi.mocked(imageExists)
-const mockPush = vi.mocked(pushImageToRegistry)
-const mockHasTag = vi.mocked(registryHasTag)
 
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
 
@@ -341,10 +326,10 @@ beforeEach(() => {
     die(signal)
     return true
   }) as typeof process.kill)
-  mockImageExists.mockResolvedValue(false)
   // Only the pinned podman-stable mirror is in the registry, so
   // `ensureBuilderImage` resolves without pulling or pushing.
-  mockHasTag.mockImplementation((tag: string) => Promise.resolve(tag === BUILDER_LOCAL_TAG))
+  fakeRegistry.install()
+  fakeRegistry.tags.add(BUILDER_LOCAL_TAG)
   mockEnsureMainRegistry.mockResolvedValue(undefined)
   execState.calls.length = 0
   execState.error = null
@@ -362,6 +347,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
   vi.useRealTimers()
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   for (const dir of tmpDirs.splice(0)) {
     await fs.rm(dir, { recursive: true, force: true })
   }
@@ -392,8 +378,8 @@ describe('ensureImage', () => {
     }))
     const nextBuild = holdInPodBuilds()
 
-    const a = ensureImage(PROJ_A, OWNER, undefined, false, false, { reason: 'prewarm' })
-    const b = ensureImage(PROJ_B, OWNER, undefined, false, false, { reason: 'prewarm' })
+    const a = ensureImage(PROJ_A, OWNER, { reason: 'prewarm' })
+    const b = ensureImage(PROJ_B, OWNER, { reason: 'prewarm' })
 
     // Both chains wait on one shared build and attach to its single entry.
     // Which project registered first is a race, so compare ids as a set.
@@ -456,19 +442,18 @@ describe('ensureImage', () => {
     const first = await podLayer({ tag: 't:1', buildArgs: undefined })
     const second = await podLayer({ tag: 't:2', name: 'user', buildArgs: undefined })
     chain([first, second])
-    mockHasTag.mockImplementation((tag: string) =>
-      Promise.resolve(tag === 't:1' || tag === BUILDER_LOCAL_TAG))
+    fakeRegistry.tags.add('t:1')
 
     await ensureImage(PROJ, OWNER)
     // Only the absent layer built; both tags were probed once.
     expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
-    expect(mockHasTag.mock.calls.filter(([tag]) => tag === 't:1')).toHaveLength(1)
+    expect(fakeRegistry.lookups.filter((tag) => tag === 't:1')).toHaveLength(1)
 
     // Content-hash tags never change, so neither tag is re-checked.
-    mockHasTag.mockClear()
+    fakeRegistry.lookups.length = 0
     fakeCluster.calls = []
     await ensureImage(PROJ, OWNER)
-    expect(mockHasTag.mock.calls.filter(([tag]) => tag === 't:1' || tag === 't:2')).toEqual([])
+    expect(fakeRegistry.lookups.filter((tag) => tag === 't:1' || tag === 't:2')).toEqual([])
     expect(appliedKinds()).not.toContain('Pod')
   })
 
@@ -478,15 +463,16 @@ describe('ensureImage', () => {
       await podLayer({ tag: 't:2', name: 'user', buildArgs: undefined }),
     ])
     const starts: string[] = []
-    await ensureImage(PROJ, OWNER, undefined, false, false, {
+    await ensureImage(PROJ, OWNER, {
       onLayerStart: (i, total, name) => starts.push(`${i}/${total} ${name}`),
     })
     expect(starts).toEqual(['1/2 project', '2/2 user'])
   })
 
   it('throws under requirePrebuilt without building or registering', async () => {
+    vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
     chain([layer('t:1')])
-    await expect(ensureImage(PROJ, OWNER, undefined, true)).rejects.toThrow('missing or stale')
+    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(/t:1 is missing.*Restart the test run/s)
     expect(appliedKinds()).not.toContain('Pod')
     expect(listImageBuilds()).toEqual([])
   })
@@ -515,13 +501,9 @@ describe('ensureImage', () => {
     chain([tools, project])
     // The yaac-shipped parent is already in the registry, where the pod
     // pulls it from. Only the pod pushes; this process pushes nothing.
-    mockHasTag.mockImplementation((tag: string) =>
-      Promise.resolve(tag === tools.tag || tag === BUILDER_LOCAL_TAG))
+    fakeRegistry.tags.add(tools.tag)
 
     await ensureImage(PROJ, OWNER)
-
-    expect(mockBuildImage).not.toHaveBeenCalled()
-    expect(mockPush).not.toHaveBeenCalled()
 
     expect(mockEnsureMainRegistry).toHaveBeenCalled()
     expect(appliedKinds()).toEqual(expect.arrayContaining([
@@ -632,7 +614,6 @@ describe('ensureImage', () => {
     const scripts = remoteCommands().map((argv) => argv.join(' '))
     expect(scripts.some((s) => s.includes('podman pull'))).toBe(false)
     expect(scripts.some((s) => s.includes('--build-arg HTTP_PROXY=http://proxy:8080'))).toBe(true)
-    expect(mockPush).not.toHaveBeenCalled()
     // The Dockerfile is always sent, ignore file or not.
     expect(tarLists[0]).toContain('Dockerfile.yaac')
   })
@@ -667,17 +648,15 @@ describe('ensureImage', () => {
     ])
   })
 
-  it('consults the registry for untrusted tags, never the host store', async () => {
+  it('consults the registry for untrusted tags', async () => {
     const tools = layer('yaac-tools:t1', 'tools')
     const project = await podLayer()
     chain([tools, project])
-    mockImageExists.mockResolvedValue(true)
-    mockHasTag.mockResolvedValue(true) // project tag already in the registry
+    fakeRegistry.tags.add(tools.tag).add(project.tag)
 
     await ensureImage(PROJ, OWNER)
-    expect(mockHasTag).toHaveBeenCalledWith(project.tag)
+    expect(fakeRegistry.lookups).toContain(project.tag)
     expect(appliedKinds()).not.toContain('Pod')
-    expect(mockPush).not.toHaveBeenCalled()
   })
 
   it('sandboxes any non-whitelisted layer name', async () => {
@@ -685,7 +664,6 @@ describe('ensureImage', () => {
     chain([await podLayer({ name: 'some-future-layer' as ImageLayerName, buildArgs: undefined })])
     await ensureImage(PROJ, OWNER)
     expect(appliedKinds()).toContain('Pod')
-    expect(mockBuildImage).not.toHaveBeenCalled()
   })
 
   it('fails closed when the ValidatingAdmissionPolicy API is unavailable', async () => {

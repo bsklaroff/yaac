@@ -15,14 +15,9 @@ export const MOBILE_QUERY = '(max-width: 767px)'
  *  a tablet. It excludes touch laptops, whose primary pointer hovers. */
 const TOUCH_ONLY_QUERY = '(hover: none) and (pointer: coarse)'
 
-function query(media = MOBILE_QUERY): MediaQueryList | null {
-  if (typeof window === 'undefined' || !window.matchMedia) return null
-  return window.matchMedia(media)
-}
-
 /** One-time read, for tests and non-React callers. */
 export function isMobileViewport(): boolean {
-  return query()?.matches ?? false
+  return window.matchMedia(MOBILE_QUERY).matches
 }
 
 /**
@@ -32,19 +27,18 @@ export function isMobileViewport(): boolean {
  * a landscape phone or a tablet gets the desktop layout, keyboard and all.
  */
 export function focusRaisesKeyboard(): boolean {
-  return isMobileViewport() || (query(TOUCH_ONLY_QUERY)?.matches ?? false)
+  return isMobileViewport() || window.matchMedia(TOUCH_ONLY_QUERY).matches
 }
 
 function subscribe(onChange: () => void): () => void {
-  const mq = query()
-  if (!mq) return () => { /* no matchMedia — the snapshot never changes */ }
+  const mq = window.matchMedia(MOBILE_QUERY)
   mq.addEventListener('change', onChange)
   return () => mq.removeEventListener('change', onChange)
 }
 
 /** Whether the viewport is phone-sized, tracked live across resize/rotation. */
 export function useIsMobile(): boolean {
-  return useSyncExternalStore(subscribe, isMobileViewport, () => false)
+  return useSyncExternalStore(subscribe, isMobileViewport)
 }
 
 /** Above this scale, the visual viewport is pinch-zoomed. A browser may leave
@@ -70,9 +64,8 @@ const ZOOMED_SCALE = 1.01
  */
 export function useVisualViewportHeight(enabled: boolean): void {
   useEffect(() => {
-    const root = typeof document !== 'undefined' ? document.documentElement : null
-    const vv = typeof window !== 'undefined' ? window.visualViewport : null
-    if (!root) return
+    const root = document.documentElement
+    const vv = window.visualViewport
     const clear = (): void => {
       root.style.removeProperty('--app-height')
       root.style.removeProperty('--app-top')

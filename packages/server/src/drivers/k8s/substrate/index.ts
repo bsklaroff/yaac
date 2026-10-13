@@ -19,19 +19,6 @@ export {
 export type { WorkspaceDeltaSource } from './cluster-cache'
 export { containerExec } from './exec'
 export {
-  GVISOR_INSTALLER_READY_FILE,
-  GVISOR_NODE_LABEL,
-  gvisorNodeLabels,
-  RUNTIME_CLASS_GVISOR,
-  RUNTIME_CLASS_GVISOR_NESTED,
-  buildRuntimeClassManifests,
-  gvisorInstallScript,
-  gvisorInstallerHostMounts,
-  WORKSPACE_POOL_KEY,
-  runtimeClassSpec,
-} from './gvisor'
-export { NODE_TASKSMAX_LIVE, NODE_TUNING_SYSCTLS } from './node-tuning'
-export {
   apiStatus,
   applyObject,
   createObject,
@@ -65,17 +52,20 @@ export {
   NESTED_ENGINE_CAPS,
   NESTED_GRAPHROOT_PATH,
   NESTED_GRAPHROOT_VOLUME,
+  SSH_AGENT_MOUNT,
   SSH_AGENT_SOCKET_PATH,
-  PRE_STOP_GRACE_SECONDS,
-  buildPodJobManifest,
+  RUNTIME_CLASS_GVISOR,
+  RUNTIME_CLASS_GVISOR_NESTED,
+  runtimeClassSpec,
   sentryTmpfsAnnotations,
   installSecurityContext,
   processIdentity,
 } from './pod-spec'
-export type { InstallIdentity, PodMount } from './pod-spec'
+export type { InstallIdentity, MountSource, PodMount } from './pod-spec'
 export {
   PRIORITY_CLASS_BUILDER,
   PRIORITY_CLASS_INFRA,
+  PRIORITY_CLASS_WORKSPACE,
   buildPriorityClassManifests,
   ensurePriorityClasses,
 } from './priority-classes'
@@ -177,6 +167,6 @@ export {
   readProxyAuthSecret,
   waitForStreamd,
 } from './stream-relay'
+export { runStreamingProcess } from './streaming-proc'
 export { formatTaint, untoleratedTaints } from './taints'
 export type { NodeTaint, PodToleration } from './taints'
-export { createTickSnapshot } from './tick-snapshot'

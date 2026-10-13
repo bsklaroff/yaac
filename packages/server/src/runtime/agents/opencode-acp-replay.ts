@@ -47,12 +47,14 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ServerError } from '@yaac/shared/errors'
 import { opencodeCheckpointDir } from '@yaac/shared/project-paths'
+import { workspacesSandboxed } from '#drivers/driver'
 import { ConfinedPathError } from '#lib/confined-fs'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { AcpRecordWriter, MAX_ACP_RECORD_BYTES } from './acp-log'
-import { ACP, asRecord, asString } from './acp-protocol'
+import { ACP } from './acp-protocol'
+import { asRecord, asString } from '#lib/narrow'
 import { jsonObjects, parseJson } from './jsonl'
-import { readSandboxFile, sandboxLinkPolicy } from './sandbox-fs'
+import { readSandboxFile } from './sandbox-fs'
 import { conversationFiles } from './transcripts'
 import type { AcpEvent } from '@yaac/shared/acp'
 
@@ -80,9 +82,9 @@ export async function opencodeTranscriptAsAcp(
   agentSessionId: string,
 ): Promise<AcpEvent[]> {
   if (!SESSION_ID.test(agentSessionId)) return []
-  const rows = sandboxLinkPolicy() === 'inside'
-    ? await databaseRows(projectId, workspaceId, agentSessionId)
-    : await exportRows(projectId, workspaceId, agentSessionId)
+  const rows = workspacesSandboxed()
+    ? await exportRows(projectId, workspaceId, agentSessionId)
+    : await databaseRows(projectId, workspaceId, agentSessionId)
   return synthesizeAcpRecord(rows, agentSessionId).replay()
 }
 

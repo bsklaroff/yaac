@@ -22,7 +22,7 @@ import {
   proxyOutputSelector,
   type ProxyState,
 } from './proxy-objects'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**

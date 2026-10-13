@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
-import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { CheckIcon, FilterIcon } from '#lib/icons'
 import { SIDEBAR_STATUSES, useUiStore, type SidebarStatus } from '#lib/store'
 
@@ -37,34 +37,30 @@ export function StatusFilterMenu(): JSX.Element {
         <FilterIcon size={13} />
         {statuses.length > 0 && <span>{statuses.length}</span>}
       </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner side="bottom" align="end" sideOffset={4}>
-          <Menu.Popup className={clsx('min-w-[160px]', POPUP)}>
-            {SIDEBAR_STATUSES.map((status) => (
-              <Menu.CheckboxItem
-                key={status}
-                checked={statuses.includes(status)}
-                onCheckedChange={(on) => toggle(status, on)}
-                className={MENU_ITEM}
-              >
-                <span className="w-3 shrink-0">
-                  <Menu.CheckboxItemIndicator><CheckIcon size={12} /></Menu.CheckboxItemIndicator>
-                </span>
-                <span className="text-text">{LABELS[status]}</span>
-              </Menu.CheckboxItem>
-            ))}
-            {statuses.length > 0 && (
-              <>
-                <Menu.Separator className="my-1 h-px bg-border" />
-                <Menu.Item className={MENU_ITEM} onClick={() => setStatuses([])}>
-                  <span className="w-3 shrink-0" />
-                  Show all
-                </Menu.Item>
-              </>
-            )}
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
+      <MenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[160px]">
+        {SIDEBAR_STATUSES.map((status) => (
+          <Menu.CheckboxItem
+            key={status}
+            checked={statuses.includes(status)}
+            onCheckedChange={(on) => toggle(status, on)}
+            className={MENU_ITEM}
+          >
+            <span className="w-3 shrink-0">
+              <Menu.CheckboxItemIndicator><CheckIcon size={12} /></Menu.CheckboxItemIndicator>
+            </span>
+            <span className="text-text">{LABELS[status]}</span>
+          </Menu.CheckboxItem>
+        ))}
+        {statuses.length > 0 && (
+          <>
+            <Menu.Separator className="my-1 h-px bg-border" />
+            <Menu.Item className={MENU_ITEM} onClick={() => setStatuses([])}>
+              <span className="w-3 shrink-0" />
+              Show all
+            </Menu.Item>
+          </>
+        )}
+      </MenuPopup>
     </Menu.Root>
   )
 }

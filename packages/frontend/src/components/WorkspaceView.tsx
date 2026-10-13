@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode, type RefObject } from 'react'
 import clsx from 'clsx'
-import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
 import { layoutOf, useUiStore } from '#lib/store'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
+import { ErrorBoundary } from '#components/ErrorBoundary'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import { useLocalPorts } from '#lib/useLocalPorts'
 import { WorkspaceChat } from '#components/WorkspaceChat'
@@ -18,7 +19,7 @@ import {
 import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
 import { defaultPaneTarget, isAgentPane, isSpecialPane, syncPaneLayout } from '#lib/panes'
 import { agentLabel } from '#lib/agentLabel'
-import { isElectron } from '#lib/platform'
+import { isElectron, windowApi } from '#lib/platform'
 import { goBackScreen } from '#lib/mobileHistory'
 import { useIsMobile } from '#lib/viewport'
 import { WorkspaceTitle } from '#components/WorkspaceTitle'
@@ -38,7 +39,6 @@ import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { GitStatusBar } from '#components/GitStatusBar'
 import { StopForwardButton } from '#components/StopForwardButton'
-import { windowApi } from '#components/WindowControls'
 import { api } from '#lib/api'
 import { usePressDrag } from '#lib/usePressDrag'
 import { useKeptPanes } from '#lib/useKeptPanes'
@@ -469,23 +469,19 @@ export function WorkspaceView({
           />
           <ContainerlessBadge />
           {!isMobile && (
-            <button
-              onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
-              title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-              className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
-                text-text-dim transition hover:bg-surface-2 hover:text-text"
-            >
-              {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
-              <span className="max-lg:sr-only">{tiled ? 'Tab view' : 'Tile view'}</span>
-            </button>
-          )}
-          {!isMobile && (
             <>
+              <button
+                onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
+                title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
+                className={BAR_BUTTON}
+              >
+                {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
+                <span className="max-lg:sr-only">{tiled ? 'Tab view' : 'Tile view'}</span>
+              </button>
               <button
                 onClick={openShell}
                 title="New shell"
-                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
-                  text-text-dim transition hover:bg-surface-2 hover:text-text"
+                className={BAR_BUTTON}
               >
                 <AddIcon size={13} />
                 <span className="max-lg:sr-only">New Shell</span>
@@ -494,8 +490,7 @@ export function WorkspaceView({
                 onClick={() => openFiles(workspace.workspaceId)}
                 title="Browse files"
                 aria-label="Browse files"
-                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
-                  text-text-dim transition hover:bg-surface-2 hover:text-text"
+                className={BAR_BUTTON}
               >
                 <FilesIcon size={13} />
                 Files
@@ -504,8 +499,7 @@ export function WorkspaceView({
                 onClick={() => openChanges(workspace.workspaceId)}
                 title="Show changes"
                 aria-label="Show changes"
-                className="flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px]
-                  text-text-dim transition hover:bg-surface-2 hover:text-text"
+                className={BAR_BUTTON}
               >
                 <ChangesIcon size={13} />
                 Changes
@@ -752,13 +746,17 @@ export function WorkspaceView({
                 </div>
               ) : (
                 <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
-                  <WorkspaceTerminal
-                    key={`${key}:${terminalNonces[id] ?? 0}`}
-                    workspaceId={id}
-                    target={target}
-                    visible={onScreen}
-                    focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
-                  />
+                  {/* Its own boundary: a terminal that fails to mount (an
+                      xterm internal it reaches for has moved) takes down
+                      this pane, not the app. */}
+                  <ErrorBoundary key={`${key}:${terminalNonces[id] ?? 0}`}>
+                    <WorkspaceTerminal
+                      workspaceId={id}
+                      target={target}
+                      visible={onScreen}
+                      focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
+                    />
+                  </ErrorBoundary>
                   {target === 'agent' && (
                     <TuiTranscriptSearch
                       workspaceId={id}
@@ -873,6 +871,10 @@ export function paneBarClass(isMobile: boolean): string {
     : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
 }
 
+/** The workspace bar's labeled buttons: view mode, new shell, files, changes. */
+const BAR_BUTTON = 'flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] '
+  + 'text-text-dim transition hover:bg-surface-2 hover:text-text'
+
 const PREVIEW_BUTTON = 'flex items-center gap-1 rounded px-1 py-0.5 text-[11px] '
   + 'text-text-dim transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2'
 
@@ -915,25 +917,24 @@ function PreviewPortMenu({
         Preview
         <ChevronIcon size={10} className="rotate-90" />
       </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner side="bottom" align="start" sideOffset={4}>
-          <Menu.Popup
-            finalFocus={() => !picked.current && (returnFocus.current?.isConnected ? returnFocus.current : true)}
-            className={clsx('min-w-[120px]', POPUP)}
+      <MenuPopup
+        side="bottom"
+        align="start"
+        sideOffset={4}
+        finalFocus={() => !picked.current && (returnFocus.current?.isConnected ? returnFocus.current : true)}
+        className="min-w-[120px]"
+      >
+        {ports.map((p) => (
+          <Menu.Item
+            key={p.containerPort}
+            className={clsx('group', MENU_ITEM)}
+            onClick={() => { picked.current = true; onPick(p.containerPort) }}
           >
-            {ports.map((p) => (
-              <Menu.Item
-                key={p.containerPort}
-                className={clsx('group', MENU_ITEM)}
-                onClick={() => { picked.current = true; onPick(p.containerPort) }}
-              >
-                <span className="flex-1 font-mono">{portLabel(p)}</span>
-                {onStop && <StopForwardButton containerPort={p.containerPort} iconSize={13} onStop={onStop} />}
-              </Menu.Item>
-            ))}
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
+            <span className="flex-1 font-mono">{portLabel(p)}</span>
+            {onStop && <StopForwardButton containerPort={p.containerPort} iconSize={13} onStop={onStop} />}
+          </Menu.Item>
+        ))}
+      </MenuPopup>
     </Menu.Root>
   )
 }
@@ -958,8 +959,8 @@ function PaneOverflowMenu({
   onOpenFiles: () => void
   onOpenPreview: (containerPort: number) => void
 }): JSX.Element {
-  const ITEM = 'flex w-full cursor-default items-center gap-2 rounded-md px-2 py-2 text-xs '
-    + 'text-text-dim outline-none data-[highlighted]:bg-surface-3 data-[highlighted]:text-text'
+  // Taller rows than other menus: this one is for touch.
+  const ITEM = clsx(MENU_ITEM, 'py-2!')
   return (
     <Menu.Root>
       <Menu.Trigger
@@ -970,31 +971,27 @@ function PaneOverflowMenu({
       >
         <MoreIcon size={18} />
       </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner side="bottom" align="end" sideOffset={6}>
-          <Menu.Popup className={clsx('min-w-[200px]', POPUP)}>
-            <Menu.Item className={ITEM} onClick={onNewShell}>
-              <AddIcon size={14} />
-              New shell
-            </Menu.Item>
-            <Menu.Item className={ITEM} onClick={onOpenChanges}>
-              <ChangesIcon size={14} />
-              Review changes
-            </Menu.Item>
-            <Menu.Item className={ITEM} onClick={onOpenFiles}>
-              <FilesIcon size={14} />
-              Browse files
-            </Menu.Item>
-            {previewPorts.map((p) => (
-              <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview(p.containerPort)}>
-                <PreviewIcon size={14} />
-                {previewLabel(previewPorts.length > 1 ? p : undefined)}
-              </Menu.Item>
-            ))}
-            <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{TOOL_LABEL[tool]}</div>
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
+      <MenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px]">
+        <Menu.Item className={ITEM} onClick={onNewShell}>
+          <AddIcon size={14} />
+          New shell
+        </Menu.Item>
+        <Menu.Item className={ITEM} onClick={onOpenChanges}>
+          <ChangesIcon size={14} />
+          Review changes
+        </Menu.Item>
+        <Menu.Item className={ITEM} onClick={onOpenFiles}>
+          <FilesIcon size={14} />
+          Browse files
+        </Menu.Item>
+        {previewPorts.map((p) => (
+          <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview(p.containerPort)}>
+            <PreviewIcon size={14} />
+            {previewLabel(previewPorts.length > 1 ? p : undefined)}
+          </Menu.Item>
+        ))}
+        <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{TOOL_LABEL[tool]}</div>
+      </MenuPopup>
     </Menu.Root>
   )
 }

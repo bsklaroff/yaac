@@ -7,7 +7,7 @@ import { authorizeProject, type Actor } from '#domain/access'
 import { findWorkspaceRow } from '#db'
 import { harvestToolCredentials } from '#domain/auth'
 import { getProjectRow } from '#db'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 
 export interface StoppedWorkspaceInfo {

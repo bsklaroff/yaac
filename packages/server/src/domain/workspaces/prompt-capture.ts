@@ -1,4 +1,5 @@
-import { getAgentSessionFirstMessage, type SandboxFile } from '#runtime/agents'
+import { getAgentSessionFirstMessage } from '#runtime/agents'
+import type { SandboxFile } from '#runtime/agents'
 import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
 import type { AgentTool } from '@yaac/shared/types'
 

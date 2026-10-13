@@ -23,7 +23,7 @@ import {
 import { captureFirstPrompt } from './prompt-capture'
 import { claiming } from './prewarm'
 import { recordedTranscript } from './agent-session-paths'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { AgentSessionLinkRow, CapturedSession, DiscoveredSession, WorkspaceRow } from '#db'
 import type { LiveAgent } from '#runtime/agents'
 import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'

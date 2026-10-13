@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act, cleanup } from '@testing-library/react'
-import { MOBILE_QUERY, focusRaisesKeyboard, isMobileViewport, useIsMobile, useVisualViewportHeight } from '#lib/viewport'
+import { MOBILE_QUERY, focusRaisesKeyboard, useIsMobile, useVisualViewportHeight } from '#lib/viewport'
 
 /** A controllable matchMedia: `set()` flips the match and notifies listeners,
  *  the way a real resize or rotation would. */
@@ -42,9 +41,6 @@ describe('focusRaisesKeyboard', () => {
       window.matchMedia = ((q: string) => ({ matches: q === MOBILE_QUERY ? narrow : touchOnly })) as unknown as typeof window.matchMedia
       expect(focusRaisesKeyboard()).toBe(raises)
     }
-    // @ts-expect-error — deleting a DOM global to model an old/odd environment
-    delete window.matchMedia
-    expect(focusRaisesKeyboard()).toBe(false)
   })
 })
 
@@ -66,14 +62,6 @@ describe('useIsMobile', () => {
     stubMatchMedia(true)
     const { result } = renderHook(() => useIsMobile())
     expect(result.current).toBe(true)
-  })
-
-  it('falls back to desktop where matchMedia is missing', () => {
-    // @ts-expect-error — deleting a DOM global to model an old/odd environment
-    delete window.matchMedia
-    expect(isMobileViewport()).toBe(false)
-    const { result } = renderHook(() => useIsMobile())
-    expect(result.current).toBe(false)
   })
 
   it('drops its listener on unmount', () => {

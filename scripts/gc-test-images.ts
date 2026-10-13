@@ -5,8 +5,8 @@
  * sets `YAAC_TEST_SHARED_ENGINE=1` because several test rigs build into one
  * engine. Run it only while none of them has a run in flight.
  */
-import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import { gcTestImages } from '@yaac/test-utils/test-images'
+import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/install/podman'
+import { gcTestImages } from '#support/test-images'
 
 ensureRootfulPodmanHost()
 const retired = await gcTestImages()

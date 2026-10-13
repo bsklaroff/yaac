@@ -406,30 +406,6 @@ describe('testEnv (test-harness hooks)', () => {
     })
   })
 
-  describe('opencodeProviderHook', () => {
-    it('is undefined when unset, returns the value when set', () => {
-      vi.stubEnv('YAAC_E2E_OPENCODE_PROVIDER', undefined)
-      expect(testEnv.opencodeProviderHook).toBeUndefined()
-      vi.stubEnv('YAAC_E2E_OPENCODE_PROVIDER', 'neuralwatt')
-      expect(testEnv.opencodeProviderHook).toBe('neuralwatt')
-    })
-  })
-
-  describe('toolLoginHook', () => {
-    it('reads the per-tool login env var', () => {
-      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN', '{"accessToken":"c"}')
-      vi.stubEnv('YAAC_E2E_CODEX_LOGIN', '{"accessToken":"x"}')
-      vi.stubEnv('YAAC_E2E_OPENCODE_LOGIN', 'sk-or-key')
-      expect(testEnv.toolLoginHook('claude')).toBe('{"accessToken":"c"}')
-      expect(testEnv.toolLoginHook('codex')).toBe('{"accessToken":"x"}')
-      expect(testEnv.toolLoginHook('opencode')).toBe('sk-or-key')
-    })
-
-    it('is undefined when the tool hook is unset', () => {
-      vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN', undefined)
-      expect(testEnv.toolLoginHook('claude')).toBeUndefined()
-    })
-  })
   describe('toolLoginCliHook', () => {
     it('parses a JSON argv array and rejects malformed or non-argv values', () => {
       vi.stubEnv('YAAC_E2E_CLAUDE_LOGIN_CLI', undefined)

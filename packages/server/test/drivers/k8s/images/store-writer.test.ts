@@ -11,6 +11,7 @@
  * an interrupted one, and none at all.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { fakeRegistry } from '#test/support/fake-registry'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
@@ -18,11 +19,6 @@ import path from 'node:path'
 
 const execFileAsync = promisify(execFile)
 
-vi.mock('#drivers/k8s/container/registry', () => ({
-  registryHasTag: vi.fn().mockResolvedValue(true),
-  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
-  pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
-}))
 
 
 import {
@@ -59,10 +55,15 @@ beforeEach(async () => {
     if (c.verb === 'apply' && c.kind === 'Pod') c.body = { ...c.body, status: { phase: 'Succeeded' } }
   })
   _resetImageStoreForTests()
+  // Every mirrored image the pods run is in the main registry.
+  fakeRegistry.install()
+  fakeRegistry.holdsAll = true
   tmpDataDir = await createTempDataDir()
 })
 
 afterEach(async () => {
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
   await cleanupTempDir(tmpDataDir)
 })
 

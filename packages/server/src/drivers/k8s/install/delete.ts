@@ -7,10 +7,10 @@ import {
   RUNTIME_CLASS_GVISOR_NESTED,
   buildPriorityClassManifests,
   execFileAsync,
-  gvisorNodeLabels,
   k8sNamespace,
 } from '#drivers/k8s/substrate'
-import { REGISTRY_GRANT_NAMESPACE, REGISTRY_NAMESPACE } from '#drivers/k8s/container'
+import { gvisorNodeLabels } from './gvisor-runtime'
+import { REGISTRY_GRANT_NAMESPACE, REGISTRY_NAMESPACE } from '#drivers/k8s/cluster'
 import { readInstallRecord } from '@yaac/shared/install-record'
 import { env } from '@yaac/shared/env'
 

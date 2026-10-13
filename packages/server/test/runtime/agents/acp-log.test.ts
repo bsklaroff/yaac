@@ -1,10 +1,10 @@
-import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, afterEach, beforeAll, afterAll, beforeEach } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import {
   readAcpFirstPrompt,
-  readAcpPendingPermissions,
+  readAcpRecovery,
   replayAcpLog,
   tailAcpLog,
   MAX_ACP_RECORD_BYTES,
@@ -12,6 +12,11 @@ import {
 } from '#runtime/agents/acp-log'
 import { acpLogDir, setDataDir } from '@yaac/shared/project-paths'
 import type { AcpEventInit } from '@yaac/shared/acp'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 /**
  * The log acpd writes is a conversation's history and what a pane renders.
@@ -366,7 +371,7 @@ describe('readAcpFirstPrompt', () => {
  * How a reconnecting server learns the agent is waiting on a permission
  * answer. acpd does not replay asks, so the log is the only record.
  */
-describe('readAcpPendingPermissions', () => {
+describe('readAcpRecovery', () => {
   const write = async (lines: string[]): Promise<AcpRecordRef> => {
     const { file, ref } = await record()
     await fs.writeFile(file, lines.join('\n') + '\n')
@@ -376,19 +381,19 @@ describe('readAcpPendingPermissions', () => {
   it('returns an unanswered ask with the id the agent used, type included', async () => {
     // JSON-RPC matches ids by value and type, so 42 must not become "42".
     const file = await write([life('l1'), prompt('go'), ask(42)])
-    expect(await readAcpPendingPermissions(file)).toEqual([42])
+    expect((await readAcpRecovery(file)).pendingPermissions).toEqual([42])
 
     const strung = await write([life('l1'), ask('req-9')])
-    expect(await readAcpPendingPermissions(strung)).toEqual(['req-9'])
+    expect((await readAcpRecovery(strung)).pendingPermissions).toEqual(['req-9'])
   })
 
   it('answers empty once the ask has been settled, or when there was never one', async () => {
     const settled = await write([life('l1'), ask(1), answer(1, 'allow')])
-    expect(await readAcpPendingPermissions(settled)).toEqual([])
+    expect((await readAcpRecovery(settled)).pendingPermissions).toEqual([])
 
     const quiet = await write([life('l1'), prompt('go')])
-    expect(await readAcpPendingPermissions(quiet)).toEqual([])
-    expect(await readAcpPendingPermissions((await record()).ref)).toEqual([])
+    expect((await readAcpRecovery(quiet)).pendingPermissions).toEqual([])
+    expect((await readAcpRecovery((await record()).ref)).pendingPermissions).toEqual([])
   })
 
   it('forgets asks the agent died holding, which nobody can answer any more', async () => {
@@ -398,12 +403,12 @@ describe('readAcpPendingPermissions', () => {
       ask(1),
       line({ jsonrpc: '2.0', method: '_acpd/exit', params: { code: 1, signal: null } }),
     ])
-    expect(await readAcpPendingPermissions(file)).toEqual([])
+    expect((await readAcpRecovery(file)).pendingPermissions).toEqual([])
   })
 
   it('reports every ask of a batch the agent is holding at once', async () => {
     const file = await write([life('l1'), ask(1), ask(2), ask(3), answer(2, 'allow')])
-    expect(await readAcpPendingPermissions(file)).toEqual([1, 3])
+    expect((await readAcpRecovery(file)).pendingPermissions).toEqual([1, 3])
   })
 })
 

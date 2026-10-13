@@ -2,10 +2,10 @@
 #
 # Two pieces of wiring yaac needs and cannot add to a running cluster:
 #   1. containerd `config_path`, so the node reads per-registry `hosts.toml`
-#      files out of /etc/containerd/certs.d. Both yaac registries — the main
-#      one and the per-project ones — are in-cluster Services, which the node
-#      cannot resolve by cluster DNS; one-shot pods hostPath-mount that
-#      directory and write each registry's live ClusterIP into it.
+#      files out of /etc/containerd/certs.d. yaac's main registry is an
+#      in-cluster Service, which the node cannot resolve by cluster DNS;
+#      one-shot pods hostPath-mount that directory and write its live
+#      ClusterIP into it.
 #   2. extraMounts: your home directory, visible to the node at the same
 #      path — the storage claims (`yaac-global`, `yaac-server-local`,
 #      `yaac-checkouts`) bind static hostPath PVs into the data dir, which

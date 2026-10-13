@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { act, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import type { WorkspaceChanges, WorkspaceFiles as WorkspaceFilesData } from '@yaac/shared/types'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
@@ -10,7 +9,8 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { IS_MAC } from '#lib/platform'
 import { MAX_COUNTED } from '#lib/matchCount'
 import { paneViewKey, useUiStore } from '#lib/store'
-import { FakeWorker, mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
+import { intersect, intersection, observedElements } from './setup'
 
 /**
  * The Changes pane and the status bar's way into it: the files changed
@@ -76,14 +76,6 @@ let server: FetchMock
 const basesAsked = (): (string | undefined)[] =>
   server.called(CHANGES).map((c) => c.query.get('base') ?? undefined)
 
-beforeAll(() => {
-  // jsdom has no ResizeObserver; Base UI's popover positioner needs one.
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 /** The changes route's answer: `payload`, without its diff body under
  *  `diff=0`, plus the listing when asked for one the caller does not
@@ -103,7 +95,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
   useUiStore.setState({ paneView: {}, changesBase: {}, layouts: {}, activeTabs: {}, findPending: null })
 })
 
@@ -266,25 +257,19 @@ describe('WorkspaceFiles changes, at scale', () => {
   // until then.
   it('mounts a diff only when it comes near the screen', async () => {
     useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS })
-    const observed: { el: Element; notify: (near: boolean) => void }[] = []
-    vi.stubGlobal('IntersectionObserver', class {
-      constructor(private readonly cb: IntersectionObserverCallback) {}
-      observe(el: Element): void {
-        observed.push({ el, notify: (near) => this.cb([{ target: el, isIntersecting: near } as unknown as IntersectionObserverEntry], this as never) })
-      }
-      unobserve(): void {}
-    })
+    intersection.startInView = false
     renderChanges()
     await waitFor(() => expect(screen.getByTitle('src/app.ts')).toBeTruthy())
-    await waitFor(() => expect(observed).toHaveLength(2))
+    await waitFor(() => expect(observedElements()).toHaveLength(2))
+    const [first] = observedElements()
     expect(screen.queryByText('needle1')).toBeNull()
     // app.ts's diff is a hunk header and four lines, 16.5px each.
-    expect((observed[0].el as HTMLElement).style.height).toBe(`${5 * 16.5}px`)
+    expect((first as HTMLElement).style.height).toBe(`${5 * 16.5}px`)
 
-    act(() => observed[0].notify(true))
+    act(() => intersect(true, [first]))
     expect(screen.getByText('needle1')).toBeTruthy()
     expect(screen.queryByText('alpha')).toBeNull()
-    act(() => observed[0].notify(false))
+    act(() => intersect(false, [first]))
     expect(screen.queryByText('needle1')).toBeNull()
   })
 
@@ -322,7 +307,6 @@ describe('WorkspaceFiles changes, at scale', () => {
   // unfolding what a match sits in.
   // A phone skips the focus, which would raise the soft keyboard.
   it('focuses its filter when opened, except on a phone, and finds across the diffs on Cmd/Ctrl-F', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
     const scrolled: Element[] = []
     Element.prototype.scrollIntoView = function (this: Element) { scrolled.push(this) }
     useUiStore.getState().setPaneView(CHANGES_VIEW, { flat: false, collapsed: ['src'], openDiffs: ['src/app.ts'] })
@@ -380,7 +364,6 @@ describe('WorkspaceFiles changes, find at scale', () => {
   // The editor's count stops at MAX_COUNTED; stepping here walks the
   // counted matches, so the Changes pane counts them all.
   it('steps to every match, past the editor count cap', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
     // Never near the screen, so only the chunk holding the current match
     // mounts.
     vi.stubGlobal('IntersectionObserver', class {

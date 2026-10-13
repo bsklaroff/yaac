@@ -11,9 +11,9 @@
 
 import { workspaceDriver } from '#drivers/driver'
 import { ControlModeClient, type ControlModeNotification } from '#runtime/agents'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { createOutputBatcher, type OutputBatcher } from '@yaac/shared/batcher'
-import { parseControl, pongFor, toBytes, type SocketLike } from './socket'
+import { parseControl, PONG, toBytes, type SocketLike } from './socket'
 import type { StreamChild } from '#drivers/contract'
 
 /** History lines a snapshot carries above the screen. Older history stays
@@ -393,7 +393,7 @@ class WorkspaceMirror {
       viewer.size = { cols: Math.trunc(ctrl.cols), rows: Math.trunc(ctrl.rows) }
       void this.applySize(viewer).catch(() => {})
     } else if (ctrl.type === 'ping') {
-      viewer.sendNow(pongFor(ctrl))
+      viewer.sendNow(PONG)
     }
     // `signal` targets a PTY's process; a mirrored pane has none here.
   }
