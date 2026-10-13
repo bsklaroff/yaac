@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   PREVIEW_TARGET,
   isPreviewTarget,
@@ -17,8 +17,12 @@ describe('isPreviewTarget', () => {
 })
 
 describe('previewLabel', () => {
-  it('labels with the port when present', () => {
-    expect(previewLabel(5173)).toBe('Preview :5173')
+  it('labels with the workspace port, adding a differing local port only in the desktop app', () => {
+    expect(previewLabel({ containerPort: 5173, hostPort: 5173 })).toBe('Preview :5173')
+    expect(previewLabel({ containerPort: 5173, hostPort: 5174 })).toBe('Preview :5173')
+    vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 Chrome/130.0 Electron/33.0.0')
+    expect(previewLabel({ containerPort: 5173, hostPort: 5174 })).toBe('Preview :5173→:5174')
+    vi.restoreAllMocks()
   })
   it('falls back to a bare label with no port', () => {
     expect(previewLabel(undefined)).toBe('Preview')

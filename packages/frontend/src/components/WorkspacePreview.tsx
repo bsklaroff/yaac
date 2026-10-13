@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { POPUP, MENU_ITEM } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
 import { windowApi } from '#components/WindowControls'
-import { previewUrl, normalizePreviewNav } from '#lib/preview'
+import { portLabel, previewUrl, normalizePreviewNav } from '#lib/preview'
 import {
   NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
   MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
@@ -173,7 +173,7 @@ export function WorkspacePreview({
             className="shrink-0 rounded bg-bg px-1 py-0.5 font-mono text-[11px] text-text-dim outline-none"
           >
             {ports.map((p) => (
-              <option key={p.containerPort} value={p.containerPort}>:{p.containerPort}</option>
+              <option key={p.containerPort} value={p.containerPort}>{portLabel(p)}</option>
             ))}
           </select>
         )}

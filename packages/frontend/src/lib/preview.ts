@@ -1,3 +1,6 @@
+import { isElectron } from '#lib/platform'
+import type { PortMapping } from '@yaac/shared/types'
+
 /**
  * The preview pane shares the layout with terminals. A workspace has at most
  * one, under the `preview` target; which forwarded port it shows is kept in
@@ -12,9 +15,20 @@ export function isPreviewTarget(target: string): boolean {
   return target === PREVIEW_TARGET
 }
 
+/**
+ * A forwarded port's label: the workspace's port, then in the desktop app
+ * the local one it holds when that differs (`:3000→:3001`,
+ * docs/port-forward-tunnel.md). The iPhone app holds a port only while its
+ * own preview is open and labels that preview itself, so here it gets the
+ * workspace port alone.
+ */
+export function portLabel(p: PortMapping): string {
+  return isElectron() && p.hostPort !== p.containerPort ? `:${p.containerPort}→:${p.hostPort}` : `:${p.containerPort}`
+}
+
 /** Pane/tab label for the preview, e.g. "Preview :5173" (bare when no port). */
-export function previewLabel(port: number | undefined): string {
-  return port === undefined ? 'Preview' : `Preview :${port}`
+export function previewLabel(port: PortMapping | undefined): string {
+  return port === undefined ? 'Preview' : `Preview ${portLabel(port)}`
 }
 
 /**
