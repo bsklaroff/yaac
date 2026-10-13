@@ -419,16 +419,25 @@ notification a user message of `<task-notification>` markup. (The adapter
 replays subagents itself only to an AIR client.) So between the
 `session/load` request and its reply, the projection rebuilds what it can
 from the launching calls. An `Agent` call is its subagent, with its prompt
-as the task and, in the foreground, its hand-back report as the summary. A
-background `Bash` or `Monitor` result names its task id. A notification
-moves the subagent or task it names and is shown as the run it began,
-woken by that work. It must be one whole block naming something the replay
-rebuilt (a monitor's event names only its task id); anything else, such as
-a user quoting the markup, stays an ordinary message. Consecutive
-notifications wake one run. At the reply, what the replay rebuilt and left
-running is settled as stopped, since it died with the agent life before;
-nothing else is touched. A mid-run notification replays the same way, so
-after a reload it gets a caption too.
+as the task and, in the foreground, its hand-back report as the summary;
+its result names the agent id that a notification may name it by instead.
+A `Bash` result for a command that went to the background, whether started
+there or moved by the user, by its timeout, or to deliver a message, names
+its task id, as does a `Monitor` result. A notification moves the
+subagents or tasks it names and is shown as the run it began, woken by
+that work. One block names several when it reports what a previous session
+left unfinished, and a monitor's expiry is an event with no status that
+stops it. A `TaskStop` result stops the task it names, since that sends no
+notification. A notification must be one whole block naming something the
+replay rebuilt (a monitor's event names only its task id), or one whose
+output file is in this conversation's own tasks dir: a subagent's own
+background work, which claude may notify the conversation of but which the
+replay cannot rebuild, captioned with the name its summary quotes.
+Anything else, such as a user quoting the markup, stays an ordinary
+message. Consecutive notifications wake one run. At the reply, what the
+replay rebuilt and left running is settled as stopped, since it died with
+the agent life before; nothing else is touched. A mid-run notification
+replays the same way, so after a reload it gets a caption too.
 
 A tui claude transcript is rendered through the same replay: its synthesized
 record opens with a `session/load` request but has no reply, because the
