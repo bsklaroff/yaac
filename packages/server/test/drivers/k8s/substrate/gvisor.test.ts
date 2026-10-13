@@ -136,13 +136,13 @@ describe('gvisorInstallScript', () => {
     expect(script.indexOf('mv "$1.sha512" "$dest.sha512"'))
       .toBeLessThan(script.indexOf('mv "$1" "$dest"'))
 
-    // Both binaries are fetched first, and runsc (which the version check
-    // reads) is installed last, so a pass that dies midway is not mistaken
-    // for converged.
-    expect(script).toContain('for f in containerd-shim-runsc-v1 runsc; do fetch "$f"; done')
-    expect(script).toMatch(/for f in containerd-shim-runsc-v1 runsc; do\n\s+#/)
-    expect(script).not.toContain('for f in runsc containerd-shim-runsc-v1')
-    expect(script).toContain('mv "$bin/$f.yaac-new" "$bin/$f"')
+    // runsc (which the version check reads) is moved in after the sidecars
+    // and shim, so a pass that dies midway is not mistaken for converged.
+    const sidecars = script.indexOf('mv "$new/gvisor-bin" "$bin/gvisor-bin"')
+    expect(sidecars).toBeGreaterThan(-1)
+    expect(script.indexOf('for f in containerd-shim-runsc-v1 runsc; do mv "$new/$f" "$bin/$f"; done'))
+      .toBeGreaterThan(sidecars)
+    expect(script).toContain('    install_release\n    changed=1\n  fi\n  prune_cache\n')
     expect(script).toContain(`bin='/host${NODE_BIN_DIR}'`)
 
     // Handler flag files: systrap, host-uds for hostPath unix sockets, suid,
@@ -230,6 +230,80 @@ describe('gvisorInstallScript', () => {
       `trap 'rm -f "$ready"; if [ "$held" = 1 ]; then rm -rf "$lock"; fi' EXIT`)
     expect(script).toMatch(
       /while :; do\n {2}take_lock\n {2}tune_pass\n {2}install_pass\n {2}drop_lock\n {2}: > "\$ready"/)
+  })
+
+  it('upgrades a node from the separate-binary layout, recovers an interrupted pass and prunes the cache', async () => {
+    // Run the real fetch, install_release and prune_cache against a stub
+    // release server: curl copies from a directory holding a tarball shaped
+    // like gVisor's.
+    const script = gvisorInstallScript()
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-gvisor-release-'))
+    try {
+      const [srv, src, bin, cache] = ['srv', 'src', 'bin', 'cache'].map((d) => path.join(dir, d))
+      await fs.mkdir(path.join(src, 'gvisor-bin'), { recursive: true })
+      for (const f of ['runsc', 'containerd-shim-runsc-v1', 'gvisor-bin/gvisor_sentry']) {
+        await fs.writeFile(path.join(src, f), `#!/bin/sh\necho ${f} new\n`, { mode: 0o755 })
+      }
+      await fs.mkdir(srv)
+      await runSh('sh', ['-c', `tar -cjf '${srv}/gvisor.tar.bz2' -C '${src}' . && cd '${srv}' && sha512sum gvisor.tar.bz2 > gvisor.tar.bz2.sha512`])
+
+      // A node as releases before the tarball left it: separate runsc and
+      // shim binaries, no gvisor-bin/, and a cache of those binaries. A
+      // waiter's install lock sits beside them.
+      await fs.mkdir(bin)
+      for (const f of ['runsc', 'containerd-shim-runsc-v1']) {
+        await fs.writeFile(path.join(bin, f), 'old')
+        await fs.mkdir(path.join(cache, 'v0', 'x86_64'), { recursive: true })
+        await fs.writeFile(path.join(cache, 'v0', 'x86_64', f), 'old')
+        await fs.writeFile(path.join(cache, 'v0', 'x86_64', `${f}.sha512`), '')
+      }
+      await fs.mkdir(path.join(cache, 'state'))
+      await fs.writeFile(path.join(cache, 'state', 'installed-v0'), '')
+      await fs.mkdir(path.join(cache, '.install-lock'))
+      await fs.writeFile(path.join(cache, '.install-lock', 'taken-at'), '1')
+
+      const install = (): Promise<{ stdout: string }> => runSh('sh', ['-c', [
+        'set -eu',
+        `bin='${bin}' cache='${cache}' version=v1 arch=x86_64 base=http://release`,
+        `curl() { echo "GET $2"; cp "${srv}/\${2##*/}" "$4"; }`,
+        shellFunction(script, 'fetch') + '\n}',
+        shellFunction(script, 'install_release') + '\n}',
+        shellFunction(script, 'prune_cache') + '\n}',
+        'install_release',
+        'prune_cache',
+      ].join('\n')])
+      const expectInstalled = async (): Promise<void> => {
+        expect((await runSh(path.join(bin, 'runsc'), [])).stdout).toBe('runsc new\n')
+        expect((await runSh(path.join(bin, 'containerd-shim-runsc-v1'), [])).stdout)
+          .toBe('containerd-shim-runsc-v1 new\n')
+        expect(await fs.readdir(path.join(bin, 'gvisor-bin'))).toEqual(['gvisor_sentry'])
+        // No staging dir or old sidecars are left in the node's PATH dir.
+        expect((await fs.readdir(bin)).sort()).toEqual(['containerd-shim-runsc-v1', 'gvisor-bin', 'runsc'])
+      }
+
+      expect((await install()).stdout).toContain('GET http://release/x86_64/gvisor.tar.bz2')
+      await expectInstalled()
+      // The older release leaves the cache. The install markers and the
+      // lock stay: deleting the lock mid-pass would let a second pass in.
+      expect((await fs.readdir(cache)).sort()).toEqual(['.install-lock', 'state', 'v1'])
+      expect(await fs.readdir(path.join(cache, 'state'))).toEqual(['installed-v0'])
+      expect(await fs.readFile(path.join(cache, '.install-lock', 'taken-at'), 'utf8')).toBe('1')
+
+      // A verified cache hit downloads nothing.
+      expect((await install()).stdout).not.toContain('GET')
+
+      // A pass that died between the two gvisor-bin moves left a staging
+      // dir and the old sidecars aside, with no gvisor-bin/ at all. A rerun
+      // from a corrupted cache downloads again and cleans both up.
+      await fs.rename(path.join(bin, 'gvisor-bin'), path.join(bin, 'gvisor-bin.yaac-old'))
+      await fs.writeFile(path.join(bin, 'gvisor-bin.yaac-old', 'stale'), '')
+      await fs.mkdir(path.join(bin, '.yaac-gvisor-new', 'gvisor-bin'), { recursive: true })
+      await fs.appendFile(path.join(cache, 'v1', 'x86_64', 'gvisor.tar.bz2'), 'x')
+      expect((await install()).stdout).toContain('GET http://release/x86_64/gvisor.tar.bz2')
+      await expectInstalled()
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('lifts the pending taint after labelling the node, removing only that taint', async () => {

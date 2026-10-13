@@ -6,6 +6,7 @@ import {
   applyObject,
   k8sNamespace,
   LABEL_INSTALL_NAMESPACE,
+  listObjects,
   waitForRollout,
 } from '#drivers/k8s/substrate'
 import { invalidateRegistryEndpoint } from '#drivers/k8s/container'
@@ -178,6 +179,14 @@ function buildGvisorInstallerDaemonSetManifest(image: string): Record<string, un
 }
 
 /**
+ * How long one node's pass may take in a rollout: a ~160 MB release
+ * download, a single-threaded bunzip2 of ~330 MB (about 40 s), and a
+ * containerd restart. A bump rolls one node at a time, so the rollout wait
+ * allows this much per node.
+ */
+const ROLLOUT_PER_NODE_MS = 300_000
+
+/**
  * Set up gVisor on the cluster: the installer DaemonSet on every node, then
  * (after its rollout, so labeled nodes exist) the RuntimeClasses.
  *
@@ -190,8 +199,12 @@ export async function ensureGvisorRuntime(): Promise<void> {
   await applyObject(buildGvisorInstallerClusterRoleManifest())
   await applyObject(buildGvisorInstallerClusterRoleBindingManifest())
   await applyObject(buildGvisorInstallerDaemonSetManifest(image))
+  // The DaemonSet tolerates every taint, so it rolls through every node.
+  const nodes = (await listObjects('v1', 'Node')).length
   await waitForRollout({
-    workload: `daemonset/${GVISOR_INSTALLER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000,
+    workload: `daemonset/${GVISOR_INSTALLER_APP_NAME}`,
+    namespace: k8sNamespace(),
+    timeoutMs: ROLLOUT_PER_NODE_MS * Math.max(1, nodes),
   })
   // A containerd restart kills port-forwards into the node, including the
   // cached registry forward. Drop it, or `registryHasTag` would read the

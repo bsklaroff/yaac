@@ -183,7 +183,7 @@ describe('ensureGvisorRuntime', () => {
       expect.anything(),
     )
     expect(fakeCluster.calls.slice(0, callsBeforeRollout).map((c) => c.kind))
-      .toEqual(['ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'DaemonSet'])
+      .toEqual(['ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'DaemonSet', 'Node'])
 
     // Restarting containerd kills port-forwards. The registry forward is
     // dropped after the rollout so the next lookup reconnects instead of
@@ -204,11 +204,19 @@ describe('ensureGvisorRuntime', () => {
     }
   })
 
-  it('installs on every node', async () => {
+  it('installs on every node, waiting longer for a rollout through more of them', async () => {
+    // A bump rolls one node at a time, and each extracts the release, so
+    // the wait scales with the node count.
+    fakeCluster.seed(...['n1', 'n2', 'n3'].map((name) => ({ apiVersion: 'v1', kind: 'Node', metadata: { name } })))
     await ensureGvisorRuntime()
     const spec = (ofKind('DaemonSet')[0].spec as { template: { spec: Record<string, unknown> } })
       .template.spec
     expect(spec).not.toHaveProperty('nodeSelector')
+    expect(mockExec).toHaveBeenCalledWith(
+      'kubectl',
+      ['rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`, '-n', 'test-ns', '--timeout=900s'],
+      expect.anything(),
+    )
   })
 
   it('takes the installer image from the registry, never the host engine', async () => {

@@ -823,8 +823,8 @@ const GVISOR_PROBE_POD_NAME = 'yaac-cluster-check-gvisor'
 /** A function because the namespace must not be read at import time. */
 function gvisorFix(): string {
   return 'Install the gVisor runtime with: yaac cluster install\n'
-    + '(applies the yaac-gvisor-install DaemonSet, which drops pinned runsc + '
-    + 'containerd-shim-runsc-v1 on every node, registers the runsc handlers in '
+    + '(applies the yaac-gvisor-install DaemonSet, which drops a pinned runsc, '
+    + 'its shim and its sidecars on every node, registers the runsc handlers in '
     + 'its containerd and labels it, plus the gvisor/gvisor-nested '
     + 'RuntimeClasses that schedule on that label)\n'
     + `Inspect it with: kubectl -n ${k8sNamespace()} logs -l app=yaac-gvisor-install`
