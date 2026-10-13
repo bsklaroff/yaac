@@ -66,7 +66,7 @@ describe('ensureAgentReporters', () => {
   }
 
   it('keeps its hooks when another create seeds claude settings at the same time', async () => {
-    await Promise.all([ensureAgentReporters(await roots()), seedClaudeSettings((await roots()).claude)])
+    await Promise.all([ensureAgentReporters(await roots()), seedClaudeSettings((await roots()).claude, { denyWorktrees: true })])
     const claudeSettings = path.join(homes.claudeDir, 'settings.json')
     const settings = JSON.parse(await fs.readFile(claudeSettings, 'utf8')) as Record<string, unknown>
     expect(settings.cleanupPeriodDays).toBe(36500)
@@ -75,7 +75,7 @@ describe('ensureAgentReporters', () => {
 
   it('puts each reporter where its tool loads it from, beside what is already there', async () => {
     const claudeSettings = path.join(homes.claudeDir, 'settings.json')
-    await seedClaudeSettings((await roots()).claude)
+    await seedClaudeSettings((await roots()).claude, { denyWorktrees: true })
     const settings = JSON.parse(await fs.readFile(claudeSettings, 'utf8')) as Record<string, unknown>
     await fs.writeFile(claudeSettings, JSON.stringify({
       ...settings,

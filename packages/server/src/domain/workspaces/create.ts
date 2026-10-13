@@ -1033,7 +1033,7 @@ export async function createWorkspace(
       claudeHome,
       mediatedEgress ? ['/workspace'] : await withResolved([wtDir]),
     )
-    await seedClaudeSettings(claudeHome)
+    await seedClaudeSettings(claudeHome, { denyWorktrees: runtime.kind !== 'containerless' })
     const piHome = await openSandboxDir(projectId, pi)
     const opencodeConfigHome = await openSandboxDir(projectId, opencodeConfig)
     // Hook up the reporters that publish each agent's conversation, model and

@@ -439,15 +439,24 @@ describe('createWorkspace', () => {
     expect(typeof config.lastOnboardingVersion).toBe('string')
     expect(await fs.readFile(target, 'utf8')).toBe('not yours')
     expect((await fs.lstat(path.join(home, 'settings.json'))).isFile()).toBe(true)
-    // Transcripts are kept for 100 years rather than claude's 30 days.
-    expect(await readJson('settings.json')).toMatchObject({ skipDangerousModePermissionPrompt: true, cleanupPeriodDays: 36500 })
+    // Transcripts are kept for 100 years rather than claude's 30 days, and
+    // worktrees, whose installs would land on the shared tier, are denied.
+    const worktreeDeny = ['EnterWorktree', 'Agent(isolation:worktree)']
+    expect(await readJson('settings.json')).toMatchObject({
+      skipDangerousModePermissionPrompt: true, cleanupPeriodDays: 36500, permissions: { deny: worktreeDeny },
+    })
 
     // An unreadable config starts over; settings keep their own keys.
     await fs.writeFile(path.join(home, '.claude.json'), 'not json{')
-    await fs.writeFile(path.join(home, 'settings.json'), JSON.stringify({ theme: 'dark', cleanupPeriodDays: 30 }))
+    await fs.writeFile(path.join(home, 'settings.json'), JSON.stringify({
+      theme: 'dark', cleanupPeriodDays: 30, permissions: { allow: ['Bash(ls)'], deny: ['Bash(rm *)', 'EnterWorktree'] },
+    }))
     await createWorkspace(DEMO_PROJECT_ID, { mode: 'tui' })
     expect(await readJson('.claude.json')).toMatchObject({ hasCompletedOnboarding: true })
-    expect(await readJson('settings.json')).toMatchObject({ theme: 'dark', cleanupPeriodDays: 36500 })
+    expect(await readJson('settings.json')).toMatchObject({
+      theme: 'dark', cleanupPeriodDays: 36500,
+      permissions: { allow: ['Bash(ls)'], deny: ['Bash(rm *)', ...worktreeDeny] },
+    })
   })
 
   it('trusts each containerless checkout where it is, keeping every root when creates run at once', async () => {
@@ -463,6 +472,9 @@ describe('createWorkspace', () => {
       expect(config.projects[await fs.realpath(workspaceDir(DEMO_PROJECT_ID, workspaceId))]).toEqual({ hasTrustDialogAccepted: true })
     }
     expect(config.projects['/workspace']).toBeUndefined()
+    // A worktree's own install is cheap on local disk, so worktrees stay.
+    const settings = JSON.parse(await fs.readFile(path.join(claudeDir(DEMO_PROJECT_ID), 'settings.json'), 'utf8')) as object
+    expect(settings).not.toHaveProperty('permissions')
   })
 
   it('stages the helper commands each launch, mounting each read-only onto /usr/local/bin', async () => {
