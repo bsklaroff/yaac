@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, onTestFinished, vi } from 'vitest'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
@@ -59,6 +59,11 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * Within a describe, tests run in declaration order and some depend on it:
  * the claude round trip needs the live agent, the status-watcher test then
  * replaces it with a sleep, and the node_modules test stops the workspace.
+ *
+ * Every workspace is stopped once the cases that read it are done. A
+ * workspace's memory request (docs/cluster-setup.md "What a workspace
+ * reserves") lets a 16 GB node schedule only a handful at once, and the
+ * rest would sit Pending.
  *
  * Not covered here: nestedContainers (nested-containers.test.ts), and a
  * full opencode turn through the mock LLM.
@@ -297,6 +302,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     return { jobName: (await findWorkspacePod(name)).jobName, stdout }
   }
 
+  /** `yaac workspace stop`, freeing the workspace's requests for later cases.
+   *  An empty id (its create never finished) is a no-op. */
+  async function stopWorkspace(workspaceId: string): Promise<void> {
+    if (!workspaceId) return
+    const { stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'stop', workspaceId)
+    if (exitCode !== 0) throw new Error(`workspace stop failed (exit ${exitCode}):\n${stderr}`)
+  }
 
   /**
    * Run `yaac forward` as a long-lived child, with a wait for its
@@ -1355,6 +1367,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         yaacConfig: { ephemeralModulesPaths: [], npmCache: false },
       })
       const workspaceId = randomUUID()
+      onTestFinished(() => stopWorkspace(workspaceId))
 
       const sub = collectSnapshots(server!.lock.port)
       await sub.opened
@@ -1407,6 +1420,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
   describe('codex session', () => {
     let jobName = ''
+    let workspaceId = ''
 
     beforeAll(async () => {
       const projectPath = await setupProject('codex-demo')
@@ -1415,7 +1429,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await fs.mkdir(path.join(projectPath, 'codex'), { recursive: true })
       const created = await createWorkspace('codex-demo', '--tool', 'codex')
       jobName = created.jobName
+      workspaceId = (await findWorkspacePod('codex-demo')).workspaceId
     }, 240_000)
+
+    afterAll(() => stopWorkspace(workspaceId))
 
     it('mounts shared Claude and Codex state', async () => {
       const pod = await findWorkspacePod('codex-demo')
@@ -1526,13 +1543,17 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
   describe('opencode session', () => {
     let jobName = ''
+    let workspaceId = ''
     let projectPath = ''
 
     beforeAll(async () => {
       projectPath = await setupProject('oc-demo')
       const created = await createWorkspace('oc-demo', '--tool', 'opencode')
       jobName = created.jobName
+      workspaceId = (await findWorkspacePod('oc-demo')).workspaceId
     }, 240_000)
+
+    afterAll(() => stopWorkspace(workspaceId))
 
     it('boots opencode and answers a session probe from inside the container', async () => {
       // Wait for the TUI's prompt box: some opencode releases never draw
@@ -1600,7 +1621,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // checkpoint is the durable one (docs/workspace-storage.md). A stop
       // must checkpoint the database and empty the node copy; a restart
       // must restore from the checkpoint, ignoring anything on the node.
-      const { workspaceId, projectId } = await findWorkspacePod('oc-demo')
+      const { projectId } = await findWorkspacePod('oc-demo')
       const node = await podNode(workspaceId)
       // A row to look for after the round trip.
       const { stdout: created } = await execInJob(jobName, [
@@ -1676,6 +1697,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
   describe('create-time overrides (--prompt, --model, --effort, --branch)', () => {
     const NAME = 'overridden'
     let jobName = ''
+    let workspaceId = ''
     let createStdout = ''
     const marker = 'summarize the pinned issues'
 
@@ -1702,8 +1724,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         '--permission-mode', 'accept-edits', '--branch', 'dev',
       )
       jobName = created.jobName
+      workspaceId = (await findWorkspacePod(NAME)).workspaceId
       createStdout = created.stdout
     }, 240_000)
+
+    afterAll(() => stopWorkspace(workspaceId))
 
     it('types the prompt into the agent pane and submits it, no attach needed', async () => {
       // The server pastes and submits the prompt (buildPromptPasteCmd); the
@@ -1983,7 +2008,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         await createWorkspace(
           NAME, '--tool', tool, '--mode', 'acp', '--permission-mode', posture,
         )
-        const job = (await findWorkspacePod(NAME, older)).jobName
+        const { jobName: job, workspaceId: adapterWorkspace } = await findWorkspacePod(NAME, older)
+        onTestFinished(() => stopWorkspace(adapterWorkspace))
         const { stdout: startCmd } = await execInJob(job, [
           'sh', '-c',
           `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:${tool} "#{pane_start_command}"`,
