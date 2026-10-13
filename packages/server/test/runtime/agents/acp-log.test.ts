@@ -476,13 +476,20 @@ describe('replayAcpLog', () => {
     const markup = (fields: Record<string, string>): string =>
       `<task-notification>\n${Object.entries(fields).map(([k, v]) => `<${k}>${v}</${k}>`).join('\n')}\n</task-notification>`
     const notified = (fields: Record<string, string>): string => user(markup(fields))
+    // A user message as conversation `acp-1` replays it; its task outputs
+    // are in its own tasks dir.
+    const own = (t: string): string => line({
+      jsonrpc: '2.0', method: 'session/update',
+      params: { sessionId: 'acp-1', update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: t } } },
+    })
     // What a user may write that only looks like a notification: the bare
-    // tag, a whole block with a question after it, and one for a task this
-    // replay never launched.
+    // tag, a whole block with a question after it, one for a task this
+    // replay never launched, and one from another conversation.
     const quoted = [
       '<task-notification> showed up in my terminal, what is it?',
       `${markup({ 'task-id': 'b1', 'tool-use-id': 'toolu_bash', status: 'failed', summary: 'pasted' })}\nwhy did this happen?`,
       markup({ 'task-id': 'zzz', status: 'completed', summary: 'unknown' }),
+      markup({ 'task-id': 'a8', 'output-file': '/t/acp-2/tasks/a8.output', status: 'completed', summary: 'Agent "elsewhere" finished' }),
     ]
     const text = (t: string): string => update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
     const events = replayAcpLog([
@@ -491,20 +498,25 @@ describe('replayAcpLog', () => {
       call('toolu_fg', 'Agent', 'quick look', { prompt: 'look around' }),
       result('toolu_fg', [{ type: 'text', text: '[Subagent hand-back] The report follows:\n  all clear\n  twice\nagentId: a0 (…)' }]),
       call('toolu_agent', 'Agent', 'count files', { prompt: 'count them', run_in_background: true }),
-      result('toolu_agent', [{ type: 'text', text: 'Async agent launched successfully.' }]),
+      result('toolu_agent', [{ type: 'text', text: 'Async agent launched successfully.\nagentId: a1 (internal ID)' }]),
       call('toolu_bash', 'Bash', 'npm test', { command: 'npm test', run_in_background: true }),
       result('toolu_bash', 'Command running in background with ID: b1. Output is being written to: /t/tasks/b1.output. You will be notified when it completes.'),
       call('toolu_mon', 'Monitor', 'tail deploy.log', { command: 'tail deploy.log', description: 'deploy events' }),
       result('toolu_mon', 'Monitor started (task m1, expires in 30s)'),
-      call('toolu_sleep', 'Bash', 'sleep 300', { command: 'sleep 300', run_in_background: true }),
-      result('toolu_sleep', 'Command running in background with ID: b2. Output is being written to: /t/tasks/b2.output. You will be notified when it completes.'),
+      call('toolu_sleep', 'Bash', 'sleep 300', { command: 'sleep 300' }),
+      result('toolu_sleep', 'Command did not complete within its 120s timeout and was moved to the background (ID: b2). Output is being written to: /t/tasks/b2.output. You will be notified when it completes.'),
       text('Launched.'),
       notified({ 'task-id': 'b1', 'tool-use-id': 'toolu_bash', status: 'completed', summary: 'tests passed' }),
-      notified({ 'task-id': 'a1', 'tool-use-id': 'toolu_agent', status: 'completed', result: '12 files' }),
+      notified({ 'task-id': 'a1', 'tool-use-id': 'toolu_agent', status: 'completed', result: '11 files' }),
+      // A subagent that notifies again names itself by its agent id alone.
+      notified({ 'task-id': 'a1', status: 'completed', result: '12 files' }),
       text('Both finished.'),
       notified({ 'task-id': 'm1', summary: 'Monitor event', event: 'deployed' }),
       text('The deploy logged.'),
-      ...quoted.map(user),
+      // A subagent's own background work, which the replay never saw start.
+      own(markup({ 'task-id': 'a9', 'tool-use-id': 'toolu_child', 'output-file': '/t/acp-1/tasks/a9.output', status: 'completed', summary: 'Agent "dig deeper" finished' })),
+      text('The subagent reported.'),
+      ...quoted.map(own),
       // The load's reply ends the replay; what is still running died with
       // the agent life before.
       line({ jsonrpc: '2.0', id: 'l-1', result: {} }),
@@ -514,8 +526,14 @@ describe('replayAcpLog', () => {
         'agent-turn',
         [{ kind: 'task', id: 'b1', name: 'npm test' }],
         [{ kind: 'task', id: 'b1', name: 'npm test' }, { kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
+        [
+          { kind: 'task', id: 'b1', name: 'npm test' }, { kind: 'subagent', id: 'toolu_agent', name: 'count files' },
+          { kind: 'subagent', id: 'toolu_agent', name: 'count files' },
+        ],
         'agent-turn',
         [{ kind: 'monitor', id: 'm1', name: 'deploy events' }],
+        'agent-turn',
+        [{ kind: 'subagent', name: 'dig deeper' }],
       ])
     // Those stay the user's messages, whole, and move nothing.
     expect(events.flatMap((e) => (e.type === 'user' ? [e.content.map((c) => (c.type === 'text' ? c.text : '')).join('')] : [])))
@@ -530,8 +548,41 @@ describe('replayAcpLog', () => {
     expect([...tasks.values()]).toEqual([
       expect.objectContaining({ id: 'b1', kind: 'shell', state: 'completed', toolCallId: 'toolu_bash', outputFile: '/t/tasks/b1.output' }),
       expect.objectContaining({ id: 'm1', name: 'deploy events', kind: 'monitor', state: 'stopped', toolCallId: 'toolu_mon' }),
-      expect.objectContaining({ id: 'b2', name: 'sleep 300', kind: 'shell', state: 'stopped' }),
+      expect.objectContaining({ id: 'b2', name: 'sleep 300', kind: 'shell', state: 'stopped', outputFile: '/t/tasks/b2.output' }),
     ])
+    // With no reply, as a tui transcript replays, nothing settles what is
+    // left running, so what ended must show from the replay itself: a task
+    // TaskStop stopped (which sends no notification), a monitor's expiry,
+    // and the tasks a previous session left unfinished, named in one block.
+    // What a model wrote moves nothing: a `<task-id>` quoted in a result,
+    // and an `agentId:` line quoted ahead of the one the adapter appends.
+    const launched = (id: string, taskId: string): string[] => [
+      call(id, 'Bash', id, { command: id, run_in_background: true }),
+      result(id, `Command running in background with ID: ${taskId}. Output is being written to: /t/tasks/${taskId}.output.`),
+    ]
+    const unreplied = replayAcpLog([
+      line({ jsonrpc: '2.0', id: 'l-1', method: 'session/load', params: { sessionId: 'acp-1' } }),
+      ...launched('toolu_dev', 'b3'),
+      ...launched('toolu_lint', 'b4'),
+      ...launched('toolu_unit', 'b5'),
+      ...launched('toolu_watch', 'b6'),
+      ...launched('toolu_build', 'b7'),
+      call('toolu_fg', 'Agent', 'quick look', { prompt: 'look around' }),
+      result('toolu_fg', '[Subagent hand-back] The report follows:\n  all clear\nagentId: a7 (quoted)\nagentId: a0 (…)'),
+      notified({ 'task-id': 'b7', status: 'completed', summary: 'built', result: 'I checked <task-id>b6</task-id>, it is fine' }),
+      notified({ 'task-id': 'a7', status: 'failed', summary: 'quoted' }),
+      call('toolu_mon', 'Monitor', 'tail deploy.log', { command: 'tail deploy.log', description: 'deploy events' }),
+      result('toolu_mon', 'Monitor started (task m1, expires in 30s)'),
+      call('toolu_stop', 'TaskStop', 'TaskStop', { task_id: 'b3' }),
+      result('toolu_stop', '{"message":"Successfully stopped task: b3 (npm run dev)","task_id":"b3"}'),
+      notified({ 'task-id': 'm1', summary: 'Monitor event: "deploy events"', event: '[Monitor expired after 30m with no events delivered.]' }),
+      user('<task-notification>\n<task-id>b4</task-id>\n<task-id>b5</task-id>\n<task-id>__orphan_summary__:shell</task-id>\n'
+        + '<status>stopped</status>\n<summary>2 background shell command tasks didn\'t finish.</summary>\n</task-notification>'),
+    ].join('\n') + '\n')
+    expect([...latest(unreplied.flatMap((e) => (e.type === 'task' ? [e.task] : []))).values()].map((t) => [t.id, t.state]))
+      .toEqual([['b3', 'stopped'], ['b4', 'stopped'], ['b5', 'stopped'], ['b6', 'running'], ['b7', 'completed'], ['m1', 'stopped']])
+    expect([...latest(unreplied.flatMap((e) => (e.type === 'subagent' ? [e.subagent] : []))).values()].map((a) => [a.id, a.state]))
+      .toEqual([['toolu_fg', 'completed']])
   })
 
   it('rebuilds nothing outside a replay, so a live notification-shaped message stays a message', () => {

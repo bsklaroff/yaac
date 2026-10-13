@@ -192,13 +192,18 @@ const CLAUDE_SUBAGENT_STATES: Record<string, AcpSubagentState> = {
 }
 
 /** The output file a claude background command's result names
- *  (`…Output is being written to: <path>. You will be notified…`), if it
- *  is that task's. */
+ *  (`…Output is being written to: <path>.`), if it is that task's. */
 function outputFileOf(call: AcpToolCall, taskId: string): string | undefined {
   const text = (call.content ?? []).map((c) => (c.type === 'text' ? c.text : '')).join('')
-  const path = /Output is being written to: (\S+)\. You will be notified/.exec(text)?.[1]
+  const path = /Output is being written to: (\S+)\./.exec(text)?.[1]
   return path?.endsWith(`/tasks/${taskId}.output`) === true ? path : undefined
 }
+
+/** The task id in a claude Bash result for a command that went to the
+ *  background, in each wording claude uses: started there (`Command running
+ *  in background with ID: <id>.`), or moved there by the user, by its
+ *  timeout, or to deliver a message (`… with ID: <id>.`, `… (ID: <id>)`). */
+const BACKGROUNDED = /^Command [^.]*(?:with ID: |\(ID: )(\w+)/
 
 /** One whole task notification as claude replays it, and nothing else. */
 const NOTIFICATION_BLOCK = /^<task-notification>\n(?:(?!<\/?task-notification>)[\s\S])*\n<\/task-notification>\s*$/
@@ -554,6 +559,10 @@ export class AcpProjection {
   /** The subagents and tasks a replay rebuilt, which only it may settle. */
   private readonly replayedSubagents = new Set<string>()
   private readonly replayedTasks = new Set<string>()
+  /** A replayed subagent's Agent call, by the agent id its result names.
+   *  A notification names the subagent by that id alone when it has no
+   *  tool use id, or that of the SendMessage that resumed it. */
+  private readonly replayedAgentIds = new Map<string, string>()
   /** claude tasks a subagent started. Their notifications go to it. */
   private readonly subagentOwned = new Set<string>()
   /**
@@ -684,7 +693,7 @@ export class AcpProjection {
     }
     const thread = this.threadOf(params) ?? parentToolUseId
     if (update !== undefined) {
-      const replayed = this.replayedWake(update, thread)
+      const replayed = this.replayedWake(update, thread, asString(asRecord(params)?.sessionId))
       if (replayed !== undefined) return [...out, ...replayed]
       // Only a notification starts a run inside a held prompt; output after
       // any other result (a steer aborting the cycle it interrupts) goes on.
@@ -850,7 +859,8 @@ export class AcpProjection {
    * report subagents and background tasks live (`applyClaudeSdk`), so they
    * are rebuilt from the calls that launched them: an Agent call is its
    * subagent, and a background command's or monitor's result names its
-   * task. Only inside a replay (`openLoad`): live, the task messages report
+   * task. A TaskStop result names the task it stopped, which sends no
+   * notification. Only inside a replay (`openLoad`): live, the task messages report
    * them. A subagent's own messages are in a transcript of their own
    * (`claudeSubagentThreads`).
    */
@@ -862,6 +872,9 @@ export class AcpProjection {
     const ended = call.status === 'completed' || call.status === 'failed'
     if (tool === 'Agent') {
       if (raw?.run_in_background === true) this.replayedBackground.add(id)
+      // The adapter appends this line, so a report quoting one comes first.
+      const agentId = [...output.matchAll(/\nagentId: (\w+)/g)].at(-1)?.[1]
+      if (agentId !== undefined) this.replayedAgentIds.set(agentId, id)
       const known = this.subagents.get(id)
       const ends = ended && !this.replayedBackground.has(id)
       if (known !== undefined && !ends) return []
@@ -873,12 +886,17 @@ export class AcpProjection {
         ...(report !== undefined ? { summary: report } : {}),
       })]
     }
+    if (tool === 'TaskStop') {
+      const taskId = /^\{"message":"Successfully stopped task: (\w+)/.exec(output)?.[1] ?? ''
+      const task = this.replayedTasks.has(taskId) ? this.tasks.get(taskId) : undefined
+      return task?.state === 'running' ? [this.setTask({ ...task, state: 'stopped' })] : []
+    }
     if (tool !== 'Bash' && tool !== 'Monitor') return []
     if (raw !== undefined && Object.keys(raw).length > 0) this.replayedInputs.set(id, raw)
     if (!ended) return []
     const input = this.replayedInputs.get(id)
     this.replayedInputs.delete(id)
-    const taskId = tool === 'Bash' ? /^Command running in background with ID: (\S+)\./.exec(output)?.[1]
+    const taskId = tool === 'Bash' ? BACKGROUNDED.exec(output)?.[1]
       : /^Monitor started \(task (\S+?),/.exec(output)?.[1]
     if (taskId === undefined || this.tasks.has(taskId)) return []
     this.replayedTasks.add(taskId)
@@ -896,49 +914,73 @@ export class AcpProjection {
 
   /**
    * A replay's task notifications come back as user messages of
-   * `<task-notification>` markup. One that is a single whole block naming a
-   * subagent or task the replay rebuilt (`replayedLaunch`) moves it and is
-   * shown as the run it began, woken by that work; several in a row woke one
-   * run. Anything else, such as a user quoting the markup, stays a message.
+   * `<task-notification>` markup. One that is a single whole block naming
+   * subagents or tasks the replay rebuilt (`replayedLaunch`) moves them and
+   * is shown as the run it began, woken by that work; several in a row woke
+   * one run. A block names several tasks when it reports those a previous
+   * session left unfinished. A block whose output file is in this
+   * conversation's own tasks dir is shown the same way: a subagent's own
+   * background work, which claude may notify this conversation of, and
+   * which the replay cannot rebuild since a subagent launched it. Anything
+   * else, such as a user quoting the markup, stays a message.
    */
-  private replayedWake(update: Record<string, unknown>, thread: string | undefined): AcpEventInit[] | undefined {
+  private replayedWake(
+    update: Record<string, unknown>,
+    thread: string | undefined,
+    sessionId: string | undefined,
+  ): AcpEventInit[] | undefined {
     const text = update.sessionUpdate === 'user_message_chunk' ? asString(asRecord(update.content)?.text) : undefined
     const block = this.loadRequest !== undefined && thread === undefined && text !== undefined
       && NOTIFICATION_BLOCK.test(text)
     const field = (tag: string): string | undefined =>
       block ? new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(text)?.[1] : undefined
+    // Only the ids that open the block: the fields after them hold text a
+    // model wrote, which may quote a `<task-id>` of its own.
+    const ids = block ? /^<task-notification>\n((?:<task-id>[^<]*<\/task-id>\n)+)/.exec(text)?.[1] : undefined
+    const taskIds = [...(ids ?? '').matchAll(/<task-id>([^<]*)<\/task-id>/g)].map((m) => m[1] ?? '')
     const toolUseId = field('tool-use-id') ?? ''
-    const taskId = field('task-id') ?? ''
-    const subagent = this.replayedSubagents.has(toolUseId) ? this.subagents.get(toolUseId) : undefined
-    const task = this.replayedTasks.has(taskId) ? this.tasks.get(taskId) : undefined
     const status = field('status') ?? ''
-    let moved: AcpEventInit
-    let cause: AcpWake
-    if (subagent !== undefined) {
-      const result = field('result')
-      moved = this.setSubagent({
-        ...subagent,
-        state: CLAUDE_SUBAGENT_STATES[status] ?? subagent.state,
-        ...(result !== undefined ? { summary: result } : {}),
-      })
-      cause = { kind: 'subagent', id: subagent.id, name: subagent.name }
-    } else if (task !== undefined) {
-      const summary = field('summary')
-      const outputFile = field('output-file')
-      moved = this.setTask({
-        ...task,
-        state: CLAUDE_TASK_STATES[status] ?? task.state,
-        ...(summary !== undefined ? { summary } : {}),
-        ...(outputFile !== undefined ? { outputFile } : {}),
-      })
-      cause = { kind: task.kind === 'monitor' ? 'monitor' : 'task', id: task.id, name: task.name }
-    } else {
+    const summary = field('summary')
+    const outputFile = field('output-file')
+    const moved: AcpEventInit[] = []
+    const causes: AcpWake[] = []
+    for (const taskId of taskIds) {
+      const subagentId = this.replayedSubagents.has(toolUseId) ? toolUseId : this.replayedAgentIds.get(taskId)
+      const subagent = subagentId !== undefined ? this.subagents.get(subagentId) : undefined
+      const task = this.replayedTasks.has(taskId) ? this.tasks.get(taskId) : undefined
+      if (subagent !== undefined) {
+        const result = field('result')
+        moved.push(this.setSubagent({
+          ...subagent,
+          state: CLAUDE_SUBAGENT_STATES[status] ?? subagent.state,
+          ...(result !== undefined ? { summary: result } : {}),
+        }))
+        causes.push({ kind: 'subagent', id: subagent.id, name: subagent.name })
+      } else if (task !== undefined) {
+        // A monitor's expiry is an event of its own, with no status.
+        const expired = field('event')?.startsWith('[Monitor expired ') === true
+        moved.push(this.setTask({
+          ...task,
+          state: expired ? 'stopped' : CLAUDE_TASK_STATES[status] ?? task.state,
+          ...(summary !== undefined ? { summary } : {}),
+          ...(outputFile !== undefined ? { outputFile } : {}),
+        }))
+        causes.push({ kind: task.kind === 'monitor' ? 'monitor' : 'task', id: task.id, name: task.name })
+      }
+    }
+    const own = sessionId !== undefined && taskIds.length === 1
+      && outputFile?.endsWith(`/${sessionId}/tasks/${taskIds[0]}.output`) === true
+    if (causes.length === 0 && own) {
+      const name = /^[^"]*"(.+)"/.exec(summary ?? '')?.[1]
+      causes.push({ kind: summary?.startsWith('Agent ') === true ? 'subagent' : 'task', ...(name !== undefined ? { name } : {}) })
+    }
+    if (causes.length === 0) {
       this.replayedCauses = undefined
       return undefined
     }
     const first = this.replayedCauses === undefined
-    this.replayedCauses = [...(this.replayedCauses ?? []), cause]
-    return [...(first ? [{ type: 'agent-turn' as const }] : []), moved, { type: 'woken', causes: this.replayedCauses }]
+    this.replayedCauses = [...(this.replayedCauses ?? []), ...causes]
+    return [...(first ? [{ type: 'agent-turn' as const }] : []), ...moved, { type: 'woken', causes: this.replayedCauses }]
   }
 
   /** Note the `session/load` request a record holds; see `closeLoad`. */
