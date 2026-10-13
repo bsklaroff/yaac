@@ -314,6 +314,42 @@ describe('readAcpFirstPrompt', () => {
     expect(await readAcpFirstPrompt(ref)).toBe('why is "this" red?')
   })
 
+  it('finds an opening message behind long model-list lines, up to the record cap', async () => {
+    // opencode's adapter writes its model list before the first prompt, one
+    // line of it longer than a single 64 KiB read. The prompt's check mark
+    // is placed across a read boundary, so a decoder that did not span reads
+    // would show it as U+FFFD.
+    const { file, ref } = await record()
+    const models = (n: number, count: number): string => line({
+      jsonrpc: '2.0',
+      id: `m-${String(n)}`,
+      result: { models: { availableModels: Array.from({ length: count }, (_, i) => ({
+        modelId: `openrouter/vendor-${String(n)}/model-${String(i)}`,
+        name: `Model ${String(i)} ${'é'.repeat(20)}`,
+      })) } },
+    })
+    const head = [life('life-1'), models(1, 900), models(2, 100)].join('\n') + '\n'
+    const before = Buffer.byteLength(head + prompt('').split('""')[0] + '"')
+    expect(before).toBeGreaterThan(64 * 1024)
+    const boundary = Math.ceil((before + 1) / (64 * 1024)) * 64 * 1024
+    const text = 'a'.repeat(boundary - 1 - before) + '✓ ship it'
+    await fs.writeFile(file, head + [prompt(text), prompt('a later one')].join('\n') + '\n')
+
+    expect(await readAcpFirstPrompt(ref)).toBe(text)
+
+    // A half-written opening message cut after an escaped quote answers
+    // nothing, so a later pass retries rather than recording a wrong text.
+    const partial = prompt('why is "this" red?')
+    await fs.writeFile(file, head + partial.slice(0, partial.indexOf('\\"') + 2))
+    expect(await readAcpFirstPrompt(ref)).toBeUndefined()
+
+    // Nothing past the cap is read, as with the other record readers.
+    await fs.writeFile(file, head)
+    await fs.truncate(file, MAX_ACP_RECORD_BYTES)
+    await fs.appendFile(file, '\n' + prompt('too late') + '\n')
+    expect(await readAcpFirstPrompt(ref)).toBeUndefined()
+  })
+
   it('answers undefined for a record with no prompt, or none at all', async () => {
     const { file, ref } = await record()
     await fs.writeFile(file, update({
