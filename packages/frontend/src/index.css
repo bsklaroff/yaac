@@ -429,7 +429,11 @@ select {
  * are transparent borders rather than padding because the phone shell's
  * screens are `absolute inset-0`, which places them on the padding box, inside
  * the border but over any padding. The element's background still paints under
- * the border. Every inset is 0 off a notched device.
+ * the border. The top inset gives back 6px: everything that takes it starts
+ * with at least that much empty edge (the mobile top bars are 48px tall around
+ * 36px controls, and the full-screen dialogs are padded), so that edge may sit
+ * in the safe area while the controls start at its line. Every inset is 0 off
+ * a notched device.
  *
  * A utility rather than a plain class so it takes variants: Modal's
  * full-screen dialogs are portaled out of the shell and apply it as
@@ -438,7 +442,7 @@ select {
 @utility safe-area-inset {
   border-style: solid;
   border-color: transparent;
-  border-width: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  border-width: max(0px, env(safe-area-inset-top) - 6px) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 /* Set on <body> while the sidebar's resize handle is being dragged: the whole

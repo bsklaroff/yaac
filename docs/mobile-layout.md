@@ -243,8 +243,11 @@ The viewport meta sets `viewport-fit=cover`, and the shell's container has
 home indicator. Both layouts need it because a notched phone in landscape is
 wider than `md` and gets the desktop layout. The insets are transparent
 borders, not padding: the phone's screens are `absolute inset-0`, which an
-element's padding would not push in but its border does. Off a notched device
-every inset is 0.
+element's padding would not push in but its border does. The top border is
+6px short of the inset: the mobile top bars are 48px tall around 36px
+controls, and the full-screen dialogs below are padded, so their empty top
+edge may sit in the safe area while their controls start at its line. Off a
+notched device every inset is 0.
 
 Dialogs are portaled to `<body>`, outside the shell, so `Modal`'s large
 variants clear the insets themselves: full screen they take the same
