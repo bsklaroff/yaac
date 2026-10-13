@@ -363,11 +363,11 @@ describe('getWorkspaceChanges', () => {
   // branch keeps committed work visible until it merges.
   it('offers the recorded fork branch as the default base, and lets a picked one win', async () => {
     // The script's last line names its base, default base, diff and
-    // listing (`yaac-changes <base> <default> diff|nodiff <listing>`).
+    // listing (`yaac-changes <base> <default> diff|nodiff <listing> ...`).
     const asked = async (...args: Parameters<typeof getWorkspaceChanges>): Promise<string | undefined> => {
       execs = []
       await getWorkspaceChanges(...args)
-      return /yaac-changes .*$/.exec(execs[0]?.cmd ?? '')?.[0]
+      return /yaac-changes '[^']*' '[^']*' \S+ \S+/.exec(execs[0]?.cmd ?? '')?.[0]
     }
     expect(await asked('gs', undefined, { diff: false, listing: 'paths' })).toBe("yaac-changes '' 'main' nodiff paths")
     expect(await asked('gs', 'agent/gs')).toBe("yaac-changes 'agent/gs' 'main' diff ''")

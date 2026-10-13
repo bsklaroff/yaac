@@ -37,6 +37,7 @@ const LISTING: WorkspaceFilesData = {
 const PAYLOAD: WorkspaceChanges = {
   base: 'abc1234def',
   baseResolved: true,
+  readMs: 0,
   branch: 'main',
   comparison: null,
   files: [

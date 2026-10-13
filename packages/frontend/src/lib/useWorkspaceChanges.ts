@@ -108,7 +108,10 @@ export function useWorkspaceChanges(
       return rest
     },
     enabled: poll !== false,
-    refetchInterval: poll,
+    // No faster than three times the last read took, so a slow checkout is
+    // not kept busy answering one poll after another, but never past 30
+    // seconds: a slow read is usually the cold one, and the next is fast.
+    refetchInterval: poll === false ? false : (q) => Math.max(poll, Math.min(30_000, 3 * (q.state.data?.readMs ?? 0))),
     staleTime: 1500,
     // A new base keeps the old answer on screen until its own lands.
     placeholderData: keepPreviousData,

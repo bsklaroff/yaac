@@ -7,6 +7,7 @@ import {
   CHANGES_BASE_UNRESOLVED,
   parseChangesOutput,
   buildChangesScript as buildScript,
+  forgetWorkspaceChanges,
   readWorkspaceChanges,
   runChangesRead,
   type ChangesLocation,
@@ -31,6 +32,57 @@ const buildChangesScript = (
 /** The diff part of a parsed run. */
 const parse = (raw: string, maxDiffBytes?: number): ReturnType<typeof parseChangesOutput>['changes'] =>
   parseChangesOutput(raw, maxDiffBytes).changes
+
+// The script tests run the exact script with `sh -c` against scratch repos,
+// as streamd does, to catch shell bugs that string assertions miss. Only
+// the two in-pod paths are redirected.
+
+const tmpDirs: string[] = []
+afterEach(() => {
+  while (tmpDirs.length) fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true })
+})
+
+const GIT_ENV = {
+  GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
+  GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+}
+const git = (repo: string, ...args: string[]): string =>
+  execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
+
+/**
+ * A repo on `main` with one commit, plus an index path outside it (as in
+ * the pod), so `git add -A` does not stage the index itself.
+ */
+function scratchRepo(): { repo: string; idx: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-changes-'))
+  tmpDirs.push(root)
+  const repo = path.join(root, 'workspace')
+  fs.mkdirSync(repo)
+  git(repo, 'init', '-q', '-b', 'main')
+  fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'base')
+  return { repo, idx: path.join(root, 'scratch.idx') }
+}
+
+function runPodScript(
+  repo: string, idx: string, base?: string, defaultBase?: string, diff = true, listing?: 'paths' | 'full',
+): { stdout: string; code: number } {
+  const cmd = buildChangesScript(base, defaultBase, diff, listing)
+    .replace('cd /workspace ', `cd ${repo} `)
+    .replaceAll('/tmp/yaac-changes.idx', idx)
+  try {
+    return {
+      stdout: execFileSync('sh', ['-c', cmd], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...GIT_ENV },
+      }),
+      code: 0,
+    }
+  } catch (err) {
+    const e = err as { status?: number; stdout?: string }
+    return { stdout: e.stdout ?? '', code: e.status ?? 1 }
+  }
+}
 
 describe('parseChangesOutput', () => {
   const raw = [
@@ -224,7 +276,7 @@ describe('buildChangesScript', () => {
     expect(s).toContain('"origin/$2"')       // default fork-branch present but unused
     expect(s).toContain('add -A --ignore-errors')
     expect(s).toContain('GIT_INDEX_FILE')
-    expect(s.endsWith("yaac-changes '' '' diff ''")).toBe(true)
+    expect(s.endsWith("yaac-changes '' '' diff '' '' '' '' '' ''")).toBe(true)
   })
 
   // An unpushed branch has no origin/<b>; falling through to HEAD would
@@ -246,10 +298,10 @@ describe('buildChangesScript', () => {
   // The completion marker prints only after every file-list command passed.
   it('checks each file-list command and marks completion', () => {
     const s = buildChangesScript()
-    expect(s).toContain('--numstat "$base" || exit 6')
-    expect(s).toContain('--name-status "$base" || exit 6')
-    expect(s.indexOf('@@OK@@')).toBeGreaterThan(s.indexOf('--name-status'))
-    expect(s.indexOf('@@OK@@')).toBeLessThan(s.indexOf('@@DIFF@@'))
+    expect(s).toContain('cached /tmp/yaac-changes.idx.lists "$base $work" lists || exit 6')
+    expect(s).toContain('cached /tmp/yaac-changes.idx.unstaged "$agent $work" unstaged || exit 6')
+    expect(s.indexOf('@@OK@@')).toBeGreaterThan(s.indexOf('lists || exit 6'))
+    expect(s.lastIndexOf('@@OK@@')).toBeLessThan(s.lastIndexOf('@@DIFF@@'))
   })
 
   it('reports whether a fork point was found and bounds the diff pod-side', () => {
@@ -262,38 +314,38 @@ describe('buildChangesScript', () => {
   it('passes an explicit base as the pod sh $1 positional (diffed against origin/$1)', () => {
     const s = buildChangesScript('dev')
     expect(s).toContain('"origin/$1"')       // the ref is derived from $1, never interpolated
-    expect(s.endsWith("yaac-changes 'dev' '' diff ''")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' '' diff '' '' '' '' '' ''")).toBe(true)
     expect(s).not.toContain('origin/dev')    // the branch name is never spliced into the script body
   })
 
   it('passes the fork branch as the $2 default positional (graceful origin/$2 path)', () => {
     const s = buildChangesScript(undefined, 'main')
     expect(s).toContain('"origin/$2"')       // the default ref is derived from $2, never interpolated
-    expect(s.endsWith("yaac-changes '' 'main' diff ''")).toBe(true)
+    expect(s.endsWith("yaac-changes '' 'main' diff '' '' '' '' '' ''")).toBe(true)
     expect(s).not.toContain('origin/main')   // the branch name is never spliced into the script body
   })
 
   it('leaves the diff body out when asked, keeping the file list', () => {
     const s = buildChangesScript('dev', 'main', false)
-    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff ''")).toBe(true)
-    expect(s).toContain('[ "$3" = nodiff ] || {')
+    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff '' '' '' '' '' ''")).toBe(true)
+    expect(s).toContain('[ "$3" != diff ] || { cached')
   })
 
   it('carries both an explicit base ($1) and a fork-branch default ($2)', () => {
     const s = buildChangesScript('dev', 'main')
-    expect(s.endsWith("yaac-changes 'dev' 'main' diff ''")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' ''")).toBe(true)
   })
 
   it('single-quotes both branches so shell metacharacters cannot break out of the token', () => {
     for (const evil of ['x; rm -rf /', '$(touch pwn)', '`id`', 'a && b', '| tee x']) {
-      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' '' diff ''")).toBe(true)
-      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "' diff ''")).toBe(true)
+      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' '' diff '' '' '' '' '' ''")).toBe(true)
+      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "' diff '' '' '' '' '' ''")).toBe(true)
     }
   })
 
   it('escapes embedded single quotes in either branch', () => {
-    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' '' diff ''")).toBe(true)
-    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b' diff ''")).toBe(true)
+    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' '' diff '' '' '' '' '' ''")).toBe(true)
+    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b' diff '' '' '' '' '' ''")).toBe(true)
   })
 
   it('keeps the script body byte-identical regardless of the branches', () => {
@@ -303,59 +355,8 @@ describe('buildChangesScript', () => {
   })
 
   it('trims surrounding whitespace from both branches', () => {
-    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main' diff ''")).toBe(true)
+    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' ''")).toBe(true)
   })
-
-  // The tests below run the exact script with `sh -c` against scratch repos,
-  // as streamd does, to catch shell bugs that string assertions miss. Only
-  // the two in-pod paths are redirected.
-
-  const tmpDirs: string[] = []
-  afterEach(() => {
-    while (tmpDirs.length) fs.rmSync(tmpDirs.pop()!, { recursive: true, force: true })
-  })
-
-  const GIT_ENV = {
-    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
-    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
-  }
-  const git = (repo: string, ...args: string[]): string =>
-    execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
-
-  /**
-   * A repo on `main` with one commit, plus an index path outside it (as in
-   * the pod), so `git add -A` does not stage the index itself.
-   */
-  function scratchRepo(): { repo: string; idx: string } {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-changes-'))
-    tmpDirs.push(root)
-    const repo = path.join(root, 'workspace')
-    fs.mkdirSync(repo)
-    git(repo, 'init', '-q', '-b', 'main')
-    fs.writeFileSync(path.join(repo, 'base.txt'), 'base\n')
-    git(repo, 'add', '-A')
-    git(repo, 'commit', '-qm', 'base')
-    return { repo, idx: path.join(root, 'scratch.idx') }
-  }
-
-  function runPodScript(
-    repo: string, idx: string, base?: string, defaultBase?: string, diff = true, listing?: 'paths' | 'full',
-  ): { stdout: string; code: number } {
-    const cmd = buildChangesScript(base, defaultBase, diff, listing)
-      .replace('cd /workspace ', `cd ${repo} `)
-      .replaceAll('/tmp/yaac-changes.idx', idx)
-    try {
-      return {
-        stdout: execFileSync('sh', ['-c', cmd], {
-          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...GIT_ENV },
-        }),
-        code: 0,
-      }
-    } catch (err) {
-      const e = err as { status?: number; stdout?: string }
-      return { stdout: e.stdout ?? '', code: e.status ?? 1 }
-    }
-  }
 
   // Falling through to HEAD would hide every commit.
   it('resolves a fork branch that exists only locally, keeping committed work visible', () => {
@@ -432,7 +433,7 @@ describe('buildChangesScript', () => {
 
     expect(stagesOf()).toEqual({ 'one.txt': { committed: { additions: 1, deletions: 0 } } })
     const cached = fs.readFileSync(`${idx}.committed`, 'utf8')
-    expect(cached.split('\n')[0]).toBe(`${git(repo, 'merge-base', 'main', 'HEAD').trim()} ${git(repo, 'rev-parse', 'HEAD').trim()}`)
+    expect(cached.split('\n')[0]).toMatch(new RegExp(`^${git(repo, 'merge-base', 'main', 'HEAD').trim()} ${git(repo, 'rev-parse', 'HEAD').trim()} `))
 
     fs.writeFileSync(path.join(repo, 'one.txt'), 'one\ntwo\n')
     git(repo, 'commit', '-qam', 'two')
@@ -655,6 +656,89 @@ describe('buildChangesScript', () => {
     expect(parse(recovered.stdout).files.map((f) => f.path)).toEqual(['b.txt'])
     expect(fs.existsSync(`${idx}.lock`)).toBe(false)
   })
+
+  // A name that looks like a marker stays a name, and a diff git could not
+  // finish is neither read nor cached as whole, while the list still stands.
+  it('reads marker-like names and fails a body git could not finish', () => {
+    const { repo, idx } = scratchRepo()
+    fs.writeFileSync(path.join(repo, '@@notes.md'), 'n\n')
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
+    const { stdout, code } = runPodScript(repo, idx, 'main')
+    expect(code).toBe(0)
+    expect(parse(stdout).files.map((f) => [f.path, Object.keys(f.stages)])).toEqual([
+      ['@@notes.md', ['untracked']], ['b.txt', ['untracked']],
+    ])
+
+    const body = fs.readFileSync(`${idx}.body`, 'utf8')
+    fs.writeFileSync(path.join(repo, '.gitattributes'), 'b.txt diff=broken\n')
+    git(repo, 'config', 'diff.broken.textconv', 'false')
+    const failed = runPodScript(repo, idx, 'main')
+    expect(failed.code).toBe(0)
+    expect(parse(failed.stdout)).toMatchObject({ diff: '', truncated: true })
+    expect(parse(failed.stdout).files.map((f) => f.path)).toEqual(['.gitattributes', '@@notes.md', 'b.txt'])
+    expect(fs.readFileSync(`${idx}.body`, 'utf8')).toBe(body)
+  })
+
+  // Each section is kept under the trees it was read from, so a poll where
+  // nothing moved reads files, and each kind of change misses only the
+  // entries that depend on what it moved.
+  it('caches each section under the trees it was read from', () => {
+    const { repo, idx } = scratchRepo()
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'a')
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\n')
+    const keys = (): Record<string, string | undefined> => Object.fromEntries(
+      ['committed', 'staged', 'unstaged', 'lists', 'body'].map((k) => [k, fs.existsSync(`${idx}.${k}`)
+        ? fs.readFileSync(`${idx}.${k}`, 'utf8').split('\n')[0] : undefined]))
+    const run = (base = 'main', diff = true): string => {
+      const { stdout, code } = runPodScript(repo, idx, base, undefined, diff)
+      expect(code).toBe(0)
+      return stdout
+    }
+
+    // A nodiff run leaves the body for a run that asks for one.
+    const bare = run('main', false)
+    expect(keys().body).toBeUndefined()
+    const first = run()
+    expect(first).not.toBe(bare)
+    const k1 = keys()
+    expect(Object.values(k1).every(Boolean)).toBe(true)
+    expect(run()).toBe(first)
+
+    // A run killed mid-write leaves only its `.tmp`; a key that does not
+    // match is a miss, never read as the entry.
+    fs.writeFileSync(`${idx}.lists.tmp`, 'half')
+    fs.writeFileSync(`${idx}.body`, 'stale key\nstale body')
+    expect(run()).toBe(first)
+
+    fs.writeFileSync(path.join(repo, 'b.txt'), 'b\nb2\n')
+    expect(parse(run()).diff).toContain('+b2')
+    const k2 = keys()
+    expect([k2.committed, k2.staged]).toEqual([k1.committed, k1.staged])
+    expect([k2.unstaged, k2.lists, k2.body].some((k, n) => k === [k1.unstaged, k1.lists, k1.body][n])).toBe(false)
+
+    // Staging moves only the agent's tree; committing what was staged
+    // moves only HEAD. The working tree, and so the base diff, stays put.
+    git(repo, 'add', 'b.txt')
+    const staged = parse(run()).files.find((f) => f.path === 'b.txt')
+    expect(staged?.stages).toEqual({ staged: { additions: 2, deletions: 0 } })
+    const k3 = keys()
+    expect([k3.staged, k3.unstaged].some((k, n) => k === [k2.staged, k2.unstaged][n])).toBe(false)
+    expect([k3.committed, k3.lists, k3.body]).toEqual([k2.committed, k2.lists, k2.body])
+    git(repo, 'commit', '-qm', 'b')
+    expect(parse(run()).files.find((f) => f.path === 'b.txt')?.stages).toEqual({ committed: { additions: 2, deletions: 0 } })
+    const k4 = keys()
+    expect([k4.committed, k4.staged].some((k, n) => k === [k3.committed, k3.staged][n])).toBe(false)
+    expect([k4.unstaged, k4.lists, k4.body]).toEqual([k3.unstaged, k3.lists, k3.body])
+
+    // Another base misses everything read against the base.
+    expect(parse(run('agent/x')).files).toEqual([])
+    const k5 = keys()
+    expect([k5.staged, k5.unstaged]).toEqual([k4.staged, k4.unstaged])
+    expect([k5.committed, k5.lists, k5.body].some((k, n) => k === [k4.committed, k4.lists, k4.body][n])).toBe(false)
+  })
 })
 
 describe('runChangesRead', () => {
@@ -663,6 +747,7 @@ describe('runChangesRead', () => {
     changes: { base: 'b', baseResolved: true, files: [], diff: 'body', truncated: true },
     ref: null,
     listing: { paths: ['a'], links: [], conflicted: [], ignored: ['x/'], untrackedDirs: ['d'] },
+    readMs: 1,
   }
 
   /** A `read` that holds every call until `release`, logging each request
@@ -743,25 +828,139 @@ describe('runChangesRead', () => {
 
 describe('readWorkspaceChanges', () => {
   const exec = vi.fn<WorkspaceDriver['exec']>()
+  afterEach(() => {
+    exec.mockReset()
+    for (const name of ['yaac-proj-abc', 'big']) forgetWorkspaceChanges(name)
+  })
 
-  it('runs the script in the workspace against a private index in its scratch dir, and parses it', async () => {
+  /** A driver whose workspace is `repo`, running the script for real; each
+   *  run's output is kept in `outputs`. */
+  function realWorkspace(repo: string, scratchDir: string): string[] {
+    const outputs: string[] = []
     installFakeWorkspaceDriver({
       exec,
-      workspacePaths: () => workspacePathsFixture({ workspaceDir: '/data/wt', scratchDir: '/data/scratch' }),
+      workspacePaths: () => workspacePathsFixture({ workspaceDir: repo, scratchDir }),
     })
-    exec.mockResolvedValue({
-      stdout: 'BASE cafe1234\nFORK 1\n@@NUMSTAT@@\n2\t1\tsrc/x.ts\n@@NAMESTATUS@@\nM\tsrc/x.ts\n@@LISTING@@\n@@OK@@\n@@DIFF@@\n',
-      stderr: '',
+    exec.mockImplementation((_job, cmd) => {
+      const stdout = execFileSync('sh', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
+      outputs.push(stdout)
+      return Promise.resolve({ stdout, stderr: '' })
     })
-    const out = await readWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true })
-    const [jobName, cmd, opts] = exec.mock.calls[0] ?? []
-    expect(jobName).toBe('yaac-proj-abc')
-    expect(cmd).toBe(buildScript({ workspaceDir: '/data/wt', indexFile: '/data/scratch/yaac-changes.idx' }, { base: 'dev', diff: true }))
-    expect(opts).toEqual({ timeout: 20_000, maxAttempts: 2 })
-    expect(out.changes.base).toBe('cafe1234')
-    expect(out.changes.files).toEqual([
-      { path: 'src/x.ts', status: 'modified', additions: 2, deletions: 1, binary: false, stages: {} },
-    ])
+    return outputs
+  }
+
+  // The server holds what each read came from, so a poll where nothing
+  // moved reads none of it, and an edit to a few files reads just those.
+  // `MODES` says how the staged, unstaged and base parts were read. Each
+  // answer must match what a read from scratch gives; anything that could
+  // change rename pairing, or a new base, reads the base diff again.
+  it('reads only what changed since the reading it holds, answering as a full read would', async () => {
+    const { repo, idx } = scratchRepo()
+    const file = (n: number): string => path.join(repo, `src/f${String(n).padStart(2, '0')}.txt`)
+    fs.mkdirSync(path.join(repo, 'src'))
+    for (let n = 0; n < 40; n++) fs.writeFileSync(file(n), `line ${n}\n`.repeat(20))
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'files')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    for (let n = 0; n < 20; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
+    git(repo, 'mv', 'src/f39.txt', 'moved.txt')
+    fs.writeFileSync(path.join(repo, 'added.txt'), 'new\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'work')
+    // Uncommitted work on top: edits, and files the agent never added.
+    for (let n = 20; n < 30; n++) fs.appendFileSync(file(n), `edit ${n}\n`)
+    for (let n = 0; n < 5; n++) fs.writeFileSync(path.join(repo, `new${n}.txt`), `n${n}\n`)
+    const outputs = realWorkspace(repo, path.dirname(idx))
+    const request: ChangesRequest = { defaultBase: 'main', diff: true }
+    const read = async (r = request): Promise<{ reading: ChangesReading; modes: string }> => {
+      const reading = await readWorkspaceChanges('big', r)
+      return { reading, modes: /^MODES (.*)$/m.exec(outputs.at(-1)!)![1] }
+    }
+    /** What a server holding nothing reads, its in-workspace caches cleared. */
+    const fresh = async (r = request): Promise<ChangesReading['changes']> => {
+      forgetWorkspaceChanges('big')
+      for (const k of ['staged', 'unstaged', 'lists', 'body']) fs.rmSync(`${idx}.${k}`, { force: true })
+      return (await read(r)).reading.changes
+    }
+    /** Read, expecting `modes`, then check against a read from scratch. */
+    const expectRead = async (modes: string, r = request): Promise<ChangesReading> => {
+      const got = await read(r)
+      expect(got.modes).toBe(modes)
+      expect(got.reading.changes).toEqual(await fresh(r))
+      return got.reading
+    }
+
+    const first = await read()
+    expect(first.modes).toBe('full full full')
+    expect(first.reading.changes.files).toHaveLength(37)
+    expect(first.reading.readMs).toBeGreaterThanOrEqual(0)
+    const same = await read()
+    expect(same.modes).toBe('same same same')
+    expect(outputs.at(-1)).not.toContain('@@DIFF@@')
+    expect(same.reading.changes).toEqual(first.reading.changes)
+
+    // An edit, a file the base diff did not have, and one put back as the
+    // base had it: each part reads only those three.
+    fs.appendFileSync(file(3), 'more\n')
+    fs.appendFileSync(file(35), 'now changed\n')
+    fs.writeFileSync(file(7), 'line 7\n'.repeat(20))
+    await read()
+    expect(outputs.at(-1)!.match(/^diff --git/gm)).toHaveLength(2)
+    fs.appendFileSync(file(3), 'again\n')
+    const delta = await expectRead('same delta delta')
+    const paths = delta.changes.files.map((f) => f.path)
+    expect(paths).toContain('src/f35.txt')
+    expect(paths).not.toContain('src/f07.txt')
+
+    // A nodiff delta still patches the held body, so the next read wanting
+    // one need not read it in full.
+    await read()
+    fs.appendFileSync(file(4), 'more\n')
+    expect((await read({ ...request, diff: false })).modes).toBe('same delta delta')
+    fs.appendFileSync(file(5), 'more\n')
+    await expectRead('same delta delta')
+
+    // An added file's edit could pair it with a deleted one, and so could
+    // a new or deleted file; the uncommitted parts read them as a delta all
+    // the same, having no rename pairing.
+    for (const change of [
+      () => fs.appendFileSync(path.join(repo, 'added.txt'), 'more\n'),
+      () => fs.writeFileSync(path.join(repo, 'untracked.txt'), 'u\n'),
+      () => fs.appendFileSync(path.join(repo, 'new2.txt'), 'more\n'),
+      () => fs.rmSync(path.join(repo, 'new3.txt')),
+    ]) {
+      await read()
+      change()
+      await expectRead('same delta full')
+    }
+
+    // A typechange prints two body parts for its one row, and a quoted
+    // name sorts by its bytes; an edit elsewhere must keep both in place.
+    // A mode change is an edit like any other.
+    await read()
+    fs.rmSync(file(10))
+    fs.symlinkSync('../moved.txt', file(10))
+    fs.writeFileSync(path.join(repo, 'src/café.txt'), 'c\n')
+    await expectRead('same delta full')
+    fs.appendFileSync(file(1), 'more\n')
+    await expectRead('same delta delta')
+    fs.chmodSync(file(2), 0o755)
+    await expectRead('same delta delta')
+
+    // An attribute can turn another file binary, which no path-by-path
+    // read would see.
+    await read()
+    fs.writeFileSync(path.join(repo, '.gitattributes'), 'src/f01.txt -diff\n')
+    const attributed = await expectRead('full full full')
+    expect(attributed.changes.files.find((f) => f.path === 'src/f01.txt')?.binary).toBe(true)
+
+    // Staging moves the agent's tree, so both uncommitted parts read in
+    // full; the working tree, and so the base diff, has not moved.
+    await read()
+    git(repo, 'add', 'src/f21.txt')
+    await expectRead('full full same')
+    await read()
+    expect((await read({ ...request, base: 'agent/x' })).modes).toBe('same same full')
   })
 
   // Callers map the exit code (a bad base is a 400), and a transport failure

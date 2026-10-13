@@ -64,13 +64,24 @@ function isArgv(cmd) {
   return Array.isArray(cmd) && cmd.length > 0 && cmd.every((c) => typeof c === 'string')
 }
 
-/** Kill a piped child gently, then hard after the grace. */
-function killChild(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return
-  child.kill('SIGTERM')
-  const hard = setTimeout(() => child.kill('SIGKILL'), CHILD_KILL_GRACE_MS)
+/**
+ * Kill a piped child gently, then hard after the grace. With `group`, the
+ * child leads its own process group and the whole group is signalled, even
+ * once the child itself has exited, so nothing it started outlives it.
+ */
+function killChild(child, { group = false } = {}) {
+  const kill = (signal) => {
+    try {
+      if (group) process.kill(-child.pid, signal)
+      else child.kill(signal)
+    } catch { /* already gone */ }
+  }
+  if (!group && (child.exitCode !== null || child.signalCode !== null)) return
+  if (group && child.pid === undefined) return
+  kill('SIGTERM')
+  const hard = setTimeout(() => kill('SIGKILL'), CHILD_KILL_GRACE_MS)
   hard.unref()
-  child.once('exit', () => clearTimeout(hard))
+  if (!group) child.once('exit', () => clearTimeout(hard))
 }
 
 function handleTcp(socket, params, leftover) {
@@ -110,9 +121,14 @@ function handleCtrl(socket, params, leftover) {
   return { ok: true }
 }
 
+/**
+ * The command runs in its own process group, killed whole when the stream
+ * closes before it finishes: a caller that gave up (a timed-out changes
+ * read) must not leave a script's children running and holding its locks.
+ */
 function handleExec(socket, params) {
   if (!isArgv(params.cmd)) return { ok: false, error: 'exec: cmd must be a non-empty argv array' }
-  const child = spawn(params.cmd[0], params.cmd.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(params.cmd[0], params.cmd.slice(1), { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
   let stdout = ''
   let stderr = ''
   let truncated = false
@@ -132,7 +148,9 @@ function handleExec(socket, params) {
       exitCode: 127, spawnFailed: true, stdout: '', stderr: String(err.message),
     }) + '\n')
   })
+  let finished = false
   child.on('close', (code, signal) => {
+    finished = true
     const exitCode = code ?? 1
     socket.end(JSON.stringify({
       exitCode,
@@ -142,8 +160,11 @@ function handleExec(socket, params) {
       ...(truncated ? { truncated: true } : {}),
     }) + '\n')
   })
-  socket.on('close', () => killChild(child))
-  socket.on('error', () => killChild(child))
+  // A client never half-closes an exec stream, so its EOF means it left.
+  const abandon = () => { if (!finished) killChild(child, { group: true }) }
+  socket.on('end', abandon)
+  socket.on('close', abandon)
+  socket.on('error', abandon)
   return { ok: true }
 }
 

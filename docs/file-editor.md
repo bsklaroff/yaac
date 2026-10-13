@@ -57,7 +57,7 @@ macOS virtiofs, the same process user under containerless).
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
 | `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
-| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, baseResolved, files, diff, truncated, branch, comparison, listing? }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
+| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, baseResolved, files, diff, truncated, branch, comparison, listing?, readMs }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
 | `GET /workspace/:id/file-at?path=&rev=` | `{ exists, content }`: the file at commit `rev` (a full object id), `content` null when binary or over 1 MiB |
 
 ### Changes
@@ -84,9 +84,9 @@ of the agent's, so a workspace's first poll reuses its stat data rather than
 hashing every file, and `add -A` compares only mtime and size, since the
 server writes a new checkout's index and a pod sees other inode numbers.
 
-A run whose exec timed out keeps going inside the workspace, holding the
-private index. So each run takes a lock file of its own holding its pid: a
-later run waits up to 10 seconds for a live holder and then answers
+Each run takes a lock file holding its pid, since a run whose exec timed
+out could still hold the private index (streamd kills it, a host shell may
+not): a later run waits up to 10 seconds for a live holder and then answers
 `RUNTIME_UNAVAILABLE` (503), and clears the lock of a holder that is gone or
 over two minutes old. It also reads which **stages** each
 file's changes sit in: `committed` (base → HEAD), `staged` (HEAD → the
@@ -96,9 +96,40 @@ index). Each is a tree-to-tree diff, so the working tree is walked once, by
 `add -A`, however many stages are read. The agent's index becomes a tree
 from a scratch copy, so the real one is never written or locked; with a
 merge conflict it has no tree, and its changes count as `modified`.
-`committed` is cached in the scratch dir by base and HEAD, since it changes
-only when one moves. Each stage is its own diff, so their counts need not
-sum to the file's totals.
+Each stage is its own diff, so their counts need not sum to the file's
+totals.
+
+On a large changeset over a network filesystem, reading git objects is what
+a run costs; the walks are cheap. Everything after `add -A` is a function
+of four trees (base, HEAD, the agent's tree, the working tree), so each
+section is cached in the scratch dir under the trees it was read from:
+`committed` by base and HEAD, `staged` by HEAD and the agent's tree,
+`modified` and `untracked` by the agent's tree and the working tree, and the
+base diff (numstat and name-status, and separately the body, which only a
+run asking for it fills) by base and working tree. Every key also carries
+a hash of the other inputs to git's diff output, `diff.*` config and every
+attributes source, since one attribute can make another file binary; when
+it moves, nothing cached or held counts. The server also holds
+what each workspace's last read came from and passes those trees to the
+next run, which says per part (`MODES <staged> <unstaged> <base>`) whether
+the server's copy still applies (`same`), was read only at the paths that
+differ between the held working tree and this one (`delta`, spliced in by
+the server), or was read in full. So one edited file costs one file's diff
+however large the changeset. `staged` never needs a delta, since editing a
+file does not move it. `modified` and `untracked` are read without rename
+pairing, so any changed path can be read on its own. The base diff pairs
+renames, which needs both sides of a rename in one diff, so it takes a
+delta only when every changed path is an edit to a file the base has too;
+an added, deleted or retyped path, or `diff.renames=copies`, reads it in
+full. More than 300 changed paths reads every part in full. A poll that
+wants no body still has a delta print its paths' body when the server holds
+one, so the body stays current for the next poll that does. A `git diff`
+that fails before the body's cap (a textconv program that is missing) is
+neither cached nor held: the answer keeps its file list and shows the body
+as truncated to nothing. A held reading
+is dropped after five minutes unread and on teardown; the scratch-dir files
+carry a workspace across a server restart. Each answer says how long its
+read took (`readMs`), and the webapp polls no faster than three times that.
 
 The same run says how far HEAD is from the branch the base was found on
 (`rev-list --left-right --count <ref>...HEAD`), so the status bar follows

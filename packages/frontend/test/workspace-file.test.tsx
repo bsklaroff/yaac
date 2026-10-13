@@ -475,6 +475,7 @@ describe('WorkspaceFile', () => {
     changes = {
       base: 'b'.repeat(40),
       baseResolved: true,
+      readMs: 0,
       branch: 'main',
       comparison: null,
       files: [{
