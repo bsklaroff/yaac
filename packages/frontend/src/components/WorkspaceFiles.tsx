@@ -1,4 +1,7 @@
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
+import {
+  Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type ChangeEvent, type DragEvent, type JSX, type KeyboardEvent, type ReactNode,
+} from 'react'
 import clsx from 'clsx'
 import { MENU_ITEM, MenuPopup, PopoverPopup, POPUP } from '#components/ui/menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -28,6 +31,7 @@ import { usePinchSize } from '#lib/usePinchSize'
 import { IS_MAC } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
 import { PHONE_TEXT_PX, focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
+import { droppedUploads, pickedUploads, sendUploads, type Upload } from '#lib/upload'
 import {
   CHANGES_TARGET,
   FILES_TARGET,
@@ -51,7 +55,8 @@ import {
 import {
   BranchIcon, ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
   FileImageIcon, FileJsonIcon, FileShellIcon, FileTextIcon, FlatListIcon, FolderIcon, FolderOpenIcon, HideIcon,
-  LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon, WarningIcon,
+  LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon,
+  UploadFilesIcon, UploadFolderIcon, WarningIcon,
 } from '#lib/icons'
 
 /** The most matches the filter lists. */
@@ -110,6 +115,13 @@ function rowOf(node: TreeNode, path: string, ignored: boolean): Row {
 
 const parentOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf('/')))
 const join = (parent: string, name: string): string => (parent ? `${parent}/${name}` : name)
+/** The folder a row stands for when creating or uploading into it: itself
+ *  if a real folder (not a link), else none. */
+const folderOf = (row: Row): string | null => (row.dir && !row.symlink ? row.path : null)
+/** The folder a drag over `target` would upload into, from the row under it. */
+const dropFolder = (target: EventTarget): string =>
+  (target instanceof Element ? target.closest<HTMLElement>('[data-drop-folder]')?.dataset.dropFolder : undefined) ?? ''
+const isFileDrag = (e: DragEvent): boolean => e.dataTransfer.types.includes('Files')
 const errMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 type Editing =
@@ -124,13 +136,14 @@ function isStopped(err: unknown): boolean {
 /**
  * The file explorer (docs/file-editor.md): a tree from one gitignore-aware
  * listing, a filter that doubles as quick-open, a "show ignored" toggle, git
- * status colors, line counts against the diff base, and create / rename /
- * delete. As the Changes pane (`changedOnly`) it lists only the changed
- * files, as a tree or flat, each with its diff, which Cmd/Ctrl-F searches.
- * Unmounted off-screen; view state lives in the store. The list below the
- * header scales with `filesFontSize` through CSS `zoom`, so icons, indents
- * and diffs grow with the text; Cmd/Ctrl =/−/0, the "Aa" menu and a pinch
- * over the list set it. A pinch anywhere else in the pane zooms the page.
+ * status colors, line counts against the diff base, create / rename /
+ * delete, and uploads. As the Changes pane (`changedOnly`) it lists only the
+ * changed files, as a tree or flat, each with its diff, which Cmd/Ctrl-F
+ * searches. Unmounted off-screen; view state lives in the store. The list
+ * below the header scales with `filesFontSize` through CSS `zoom`, so icons,
+ * indents and diffs grow with the text; Cmd/Ctrl =/−/0, the "Aa" menu and a
+ * pinch over the list set it. A pinch anywhere else in the pane zooms the
+ * page.
  */
 export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly = false }: {
   workspaceId: string
@@ -320,6 +333,13 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const [confirmDelete, setConfirmDelete] = useState<Row | null>(null)
   const [menu, setMenu] = useState<{ row: Row | null; anchor: Element } | null>(null)
   const [contextRow, setContextRow] = useState<Row | null>(null)
+  const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null)
+  const [replacing, setReplacing] = useState<{ parent: string; uploads: Upload[] } | null>(null)
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const filesInput = useRef<HTMLInputElement | null>(null)
+  const folderInput = useRef<HTMLInputElement | null>(null)
+  /** The folder the open file picker uploads into. */
+  const pickParent = useRef('')
 
   const startEdit = (next: Editing): void => {
     setEditError(null)
@@ -400,6 +420,57 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
     }
   }
 
+  /** Upload into `parent`, opening it so the result shows. Uploads may
+   *  overlap, so the progress line counts across all of them. Files already
+   *  there are offered for replacing once the rest are done. */
+  const upload = async (parent: string, uploads: Upload[], replace = false): Promise<void> => {
+    if (uploads.length === 0) return
+    setActionError(null)
+    setUploading((u) => ({ done: u?.done ?? 0, total: (u?.total ?? 0) + uploads.length }))
+    const { taken, failed } = await sendUploads(workspaceId, parent, uploads, replace, () => {
+      setUploading((u) => u && { ...u, done: u.done + 1 })
+    })
+    setUploading((u) => (u && u.done < u.total ? u : null))
+    const opened = new Set(useUiStore.getState().paneView[viewKey]?.expanded ?? [])
+    const segments = parent ? parent.split('/') : []
+    segments.forEach((_, i) => opened.add(segments.slice(0, i + 1).join('/')))
+    setExpanded(opened)
+    refresh()
+    if (failed.length) {
+      setActionError(`Couldn’t upload ${failed.length === 1 ? failed[0] : `${failed.length} files. ${failed[0]}`}`)
+    }
+    if (taken.length) setReplacing({ parent, uploads: taken })
+  }
+  const openPicker = (input: HTMLInputElement | null, parent: string): void => {
+    pickParent.current = parent
+    input?.click()
+  }
+  const onPicked = (e: ChangeEvent<HTMLInputElement>): void => {
+    const uploads = e.target.files ? pickedUploads(e.target.files) : []
+    // Cleared so picking the same files again still fires a change.
+    e.target.value = ''
+    void upload(pickParent.current, uploads)
+  }
+  const onDrop = (e: DragEvent): void => {
+    if (!isFileDrag(e)) return
+    e.preventDefault()
+    setDropTarget(null)
+    const parent = dropFolder(e.target)
+    void droppedUploads(e.dataTransfer).then((uploads) => upload(parent, uploads))
+  }
+
+  const replaceText = ({ parent, uploads }: { parent: string; uploads: Upload[] }): { title: string; description: string } => {
+    const paths = uploads.map((u) => join(parent, u.path))
+    if (paths.length === 1) {
+      return { title: `Replace “${paths[0]}”?`, description: 'It already exists. Replacing it overwrites its contents.' }
+    }
+    const more = paths.length > 5 ? `, and ${paths.length - 5} more` : ''
+    return {
+      title: `Replace ${paths.length} existing files?`,
+      description: `${paths.slice(0, 5).join(', ')}${more} already exist. Replacing them overwrites their contents.`,
+    }
+  }
+
   const deleteText = (row: Row): { title: string; description: string } => {
     const dirty = useUiStore.getState().dirtyFiles
     const unsaved = openUnder(row.path).filter((p) => dirty[fileKey(workspaceId, p)])
@@ -416,7 +487,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   }
 
   const menuItems = (row: Row | null, Item: typeof Menu.Item): ReactNode => {
-    const folder = row === null ? '' : row.dir && !row.symlink ? row.path : null
+    const folder = row === null ? '' : folderOf(row)
     return (
       <>
         {folder !== null && (
@@ -427,6 +498,16 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             <Item className={MENU_ITEM} onClick={() => startEdit({ kind: 'folder', parent: folder })}>
               <NewFolderIcon size={13} /> New folder
             </Item>
+            {!changedOnly && (
+              <>
+                <Item className={MENU_ITEM} onClick={() => openPicker(filesInput.current, folder)}>
+                  <UploadFilesIcon size={13} /> Upload files…
+                </Item>
+                <Item className={MENU_ITEM} onClick={() => openPicker(folderInput.current, folder)}>
+                  <UploadFolderIcon size={13} /> Upload folder…
+                </Item>
+              </>
+            )}
           </>
         )}
         {row !== null && (
@@ -516,6 +597,7 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             open={isOpen(row.path)}
             selected={selected?.path === row.path}
             renaming={editing?.kind === 'rename' && editing.path === row.path}
+            dropping={dropTarget !== null && dropTarget === folderOf(row)}
             renameInput={input(row.name, depth)}
             onClick={() => {
               setSelected(row)
@@ -642,6 +724,12 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             <HeaderButton label="New folder" onClick={() => startEdit({ kind: 'folder', parent: createParent() })}>
               <NewFolderIcon size={13} />
             </HeaderButton>
+            <HeaderButton label="Upload files" onClick={() => openPicker(filesInput.current, createParent())}>
+              <UploadFilesIcon size={13} />
+            </HeaderButton>
+            <HeaderButton label="Upload folder" onClick={() => openPicker(folderInput.current, createParent())}>
+              <UploadFolderIcon size={13} />
+            </HeaderButton>
             <HeaderButton
               label={anyFolderOpen ? 'Collapse all folders' : 'Expand all folders'}
               onClick={() => setExpanded(anyFolderOpen ? new Set() : new Set(expandable))}
@@ -704,13 +792,29 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
 
   return (
     // Focusable so Cmd/Ctrl-F reaches the filter after a click in the list.
+    // Files dropped on the explorer upload into the folder under the pointer.
     <div
       ref={rootRef}
       tabIndex={-1}
       onKeyDown={onKeyDown}
-      className="flex h-full flex-col bg-surface outline-none"
+      onDragOver={changedOnly ? undefined : (e) => {
+        if (!isFileDrag(e)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+        setDropTarget(dropFolder(e.target))
+      }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null) }}
+      onDrop={changedOnly ? undefined : onDrop}
+      className={clsx('flex h-full flex-col bg-surface outline-none',
+        dropTarget === '' && 'ring-1 ring-inset ring-accent/60')}
     >
       {header}
+      {!changedOnly && (
+        <>
+          <input ref={filesInput} type="file" multiple hidden onChange={onPicked} />
+          <input ref={folderInput} type="file" hidden onChange={onPicked} {...{ webkitdirectory: '' }} />
+        </>
+      )}
       {changedOnly && (
         <ChangesStrip
           workspaceId={workspaceId}
@@ -731,6 +835,12 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
             rootRef.current?.focus()
           }}
         />
+      )}
+      {uploading && (
+        <div role="status" className="flex shrink-0 items-center gap-1.5 border-b border-hairline px-2 py-1 text-[11px] text-text-dim">
+          <LoadingIcon size={11} className="animate-spin" />
+          Uploading {uploading.done} of {uploading.total}…
+        </div>
       )}
       {actionError && (
         <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-error">
@@ -817,6 +927,17 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
         {...(confirmDelete ? deleteText(confirmDelete) : { title: '', description: '' })}
         onConfirm={() => { if (confirmDelete) void doDelete(confirmDelete) }}
       />
+      <ConfirmDialog
+        open={replacing !== null}
+        onOpenChange={(open) => { if (!open) setReplacing(null) }}
+        {...(replacing ? replaceText(replacing) : { title: '', description: '' })}
+        confirmLabel="Replace"
+        onConfirm={() => {
+          if (!replacing) return
+          setReplacing(null)
+          void upload(replacing.parent, replacing.uploads, true)
+        }}
+      />
     </div>
   )
 }
@@ -859,13 +980,15 @@ function StageBadges({ change, conflicted }: { change?: WorkspaceChange; conflic
 }
 
 function TreeRowView({
-  row, depth, open, selected, renaming, renameInput, onClick, onContextMenu, onMore, diff, children,
+  row, depth, open, selected, renaming, dropping = false, renameInput, onClick, onContextMenu, onMore, diff, children,
 }: {
   row: Row
   depth: number
   open: boolean
   selected: boolean
   renaming: boolean
+  /** Files dragged over the explorer would upload into this folder. */
+  dropping?: boolean
   renameInput: JSX.Element
   onClick: () => void
   onContextMenu: () => void
@@ -889,8 +1012,9 @@ function TreeRowView({
     <>
       {renaming ? renameInput : (
         <div
-          className={clsx('group/row relative flex items-center', selected && 'bg-surface-2')}
+          className={clsx('group/row relative flex items-center', selected && 'bg-surface-2', dropping && 'bg-accent/15')}
           onContextMenu={onContextMenu}
+          data-drop-folder={folderOf(row) ?? parentOf(row.path)}
         >
           <Main
             onClick={diff ? diff.toggle : onClick}

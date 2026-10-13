@@ -10,7 +10,7 @@ import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { createCheckout } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
-import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, writeWorkspaceFile } from '#domain/workspaces'
+import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
 import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY } from '#domain/workspaces/changes'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
@@ -734,6 +734,91 @@ describe('writeWorkspaceFile', () => {
   it('refuses to create through a dangling link', async () => {
     expect((await refusal(writeWorkspaceFile(local, 'write', 'dangle', 'x', null))).code).toBe('VALIDATION')
     expect(await fs.readlink(path.join(dir, 'dangle'))).toBe('nowhere')
+  })
+})
+
+describe('uploadWorkspaceFile', () => {
+  let dir: string
+  const read = (rel: string): Promise<string> => fs.readFile(path.join(dir, rel), 'utf8')
+  /** A request body arriving in `parts`, failing after them if `cut`. */
+  const body = (parts: string[], cut = false): ReadableStream<Uint8Array> => {
+    const left = [...parts]
+    return new ReadableStream({
+      pull(c) {
+        const next = left.shift()
+        if (next !== undefined) c.enqueue(new TextEncoder().encode(next))
+        else if (cut) c.error(new Error('connection reset'))
+        else c.close()
+      },
+    })
+  }
+  beforeAll(async () => {
+    dir = await makeCheckout('upload')
+    await write(dir, 'sub/t.txt', 'target\n')
+    await fs.symlink('sub/t.txt', path.join(dir, 'link.txt'))
+    await fs.symlink(path.relative(dir, path.join(outside, 'secret.txt')), path.join(dir, 'up'))
+    await fs.symlink(path.relative(dir, outside), path.join(dir, 'away'))
+  })
+
+  it('streams a new file into missing folders, and an empty body makes an empty file', async () => {
+    expect(await uploadWorkspaceFile(local, 'upload', 'in/deep/f.bin', body(['one ', 'two ', 'three']), false))
+      .toEqual({ path: 'in/deep/f.bin' })
+    expect(await read('in/deep/f.bin')).toBe('one two three')
+    await uploadWorkspaceFile(local, 'upload', 'empty', null, false)
+    expect(await read('empty')).toBe('')
+    expect(execs).toEqual([])
+  })
+
+  it('conflicts with what is there unless replacing, which writes in place through a link', async () => {
+    expect(await refusal(uploadWorkspaceFile(local, 'upload', 'a.txt', body(['x']), false)))
+      .toEqual({ code: 'CONFLICT', message: 'a.txt already exists' })
+    expect(await read('a.txt')).toBe('alpha\n')
+    const before = await fs.stat(path.join(dir, 'sub/t.txt'))
+    await uploadWorkspaceFile(local, 'upload', 'link.txt', body(['new']), true)
+    expect(await read('sub/t.txt')).toBe('new')
+    expect((await fs.stat(path.join(dir, 'sub/t.txt'))).ino).toBe(before.ino)
+    expect((await fs.lstat(path.join(dir, 'link.txt'))).isSymbolicLink()).toBe(true)
+    // The pod opens the replaced file, as after a save.
+    expect(execs).toHaveLength(1)
+    expect(execs[0].cmd).toMatch(/ yaac 'link\.txt'$/)
+    // Replacing a missing file creates it.
+    await uploadWorkspaceFile(local, 'upload', 'fresh.txt', body(['f']), true)
+    expect(await read('fresh.txt')).toBe('f')
+    expect((await refusal(uploadWorkspaceFile(local, 'upload', 'sub', body(['x']), true))).code).toBe('VALIDATION')
+  })
+
+  it('removes a new file whose upload fails, and leaves a file it would replace untouched', async () => {
+    await expect(uploadWorkspaceFile(local, 'upload', 'cut/new.txt', body(['part'], true), false)).rejects.toThrow('connection reset')
+    await expect(fs.lstat(path.join(dir, 'cut/new.txt'))).rejects.toThrow()
+    await expect(uploadWorkspaceFile(local, 'upload', 'b.txt', body(['part'], true), true)).rejects.toThrow('connection reset')
+    expect(await read('b.txt')).toBe('bravo\n')
+    // The staged copy was never reachable by name, so nothing is left over.
+    expect((await fs.readdir(dir)).filter((n) => n.startsWith('.yaac-upload-'))).toEqual([])
+  })
+
+  it('never interleaves two replaces of one file', async () => {
+    const big = (c: string): string[] => Array.from({ length: 64 }, () => c.repeat(16 * 1024))
+    await Promise.all(['x', 'y'].map((c) => uploadWorkspaceFile(local, 'upload', 'd.txt', body(big(c)), true)))
+    expect(await read('d.txt')).toMatch(/^(x{1048576}|y{1048576})$/)
+  })
+
+  it('refuses an overlong name readably', async () => {
+    expect(await refusal(uploadWorkspaceFile(local, 'upload', `${'a'.repeat(300)}.txt`, body(['x']), false)))
+      .toEqual({ code: 'VALIDATION', message: `${'a'.repeat(300)}.txt: name too long` })
+  })
+
+  it('refuses .git and every way out, replacing or not', async () => {
+    for (const replace of [false, true]) {
+      for (const bad of ['.git/hooks/pre-commit', 'away/planted.txt', '../escape']) {
+        expect((await refusal(uploadWorkspaceFile(local, 'upload', bad, body(['p']), replace))).code).toBe('VALIDATION')
+      }
+    }
+    // A link that leads out is in a new file's way, and never replaced.
+    expect((await refusal(uploadWorkspaceFile(local, 'upload', 'up', body(['p']), false))).code).toBe('CONFLICT')
+    expect((await refusal(uploadWorkspaceFile(local, 'upload', 'up', body(['p']), true))).code).toBe('VALIDATION')
+    expect(await fs.readdir(outside)).toEqual(['secret.txt'])
+    expect(await fs.readFile(path.join(outside, 'secret.txt'), 'utf8')).toBe('secret\n')
+    await expect(fs.stat(path.join(dir, '.git/hooks/pre-commit'))).rejects.toThrow()
   })
 })
 
