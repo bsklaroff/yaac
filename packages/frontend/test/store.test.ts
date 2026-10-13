@@ -4,7 +4,9 @@ import {
   isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
   resolveVacantSelection, unreadWaitingByProject, useUiStore,
 } from '#lib/store'
-import type { ListedAgentStatus, ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import type {
+  ListedAgentStatus, ProvisioningWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
+} from '@yaac/shared/types'
 import { PREVIEW_TARGET } from '#lib/preview'
 
 const initial = useUiStore.getState()
@@ -202,6 +204,11 @@ describe('resolveVacantSelection', () => {
     expect(resolveVacantSelection(args({
       selectedWorkspaceId: 'req', claims, rowIds: ['w1', 'spare'],
     }))).toBe('spare')
+    // Once the create's row goes, the pane looks its id up as a stopped
+    // workspace. The claim is followed without waiting on that lookup.
+    expect(resolveVacantSelection(args({
+      selectedWorkspaceId: 'req', claims, rowIds: ['w1', 'spare'], stopped: true,
+    }))).toBe('spare')
     // A project switch is not the create resolving, so take the top row.
     expect(resolveVacantSelection(args({
       previousProjectId: 'p0', selectedWorkspaceId: 'req', claims,
@@ -347,24 +354,32 @@ describe('settleProjectOps', () => {
   })
 })
 
-describe('reconcileSnapshot', () => {
+describe('receiveSnapshot', () => {
   const prov = (workspaceId: string, over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({
     workspaceId, projectId: 'p', tool: 'claude', kind: 'create', message: 'Starting…',
     createdAt: '2026-01-01 00:00:00', ...over,
   })
   const live = (workspaceId: string) => ({ workspaceId }) as WorkspaceListEntry
+  const snap = (workspaces: WorkspaceListEntry[], provisioning: ProvisioningWorkspaceEntry[] = []) =>
+    ({ workspaces, provisioning }) as ServerSnapshot
 
-  it('folds a snapshot into the stops, provisioning rows and claims it settles', () => {
+  it('stores the snapshot with the stops, provisioning rows and claims it settles', () => {
     const s = useUiStore.getState()
     s.beginDelete('stopping')
     s.beginDelete('gone')
     for (const id of ['listed', 'provisioning', 'pending']) s.addOptimisticProvisioning(prov(id))
     s.recordClaim('failed', 'spare-1')
     s.recordClaim('listed', 'spare-2')
-    s.reconcileSnapshot({
-      workspaces: [live('stopping'), live('listed')],
-      provisioning: [prov('provisioning', { claimedId: 'spare-3' }), prov('failed', { error: 'boom' })],
-    })
+    const snapshot = snap(
+      [live('stopping'), live('listed')],
+      [prov('provisioning', { claimedId: 'spare-3' }), prov('failed', { error: 'boom' })],
+    )
+    // Subscribers see the snapshot and what it settles in the same update.
+    const seen: unknown[] = []
+    const unsubscribe = useUiStore.subscribe((st) => seen.push([st.snapshot, st.optimisticProvisioning.length]))
+    s.receiveSnapshot(snapshot)
+    unsubscribe()
+    expect(seen).toEqual([[snapshot, 1]])
     const after = useUiStore.getState()
     // A stop stays tracked while the workspace is listed.
     expect(after.pendingDeleteIds).toEqual(['stopping'])
@@ -374,19 +389,34 @@ describe('reconcileSnapshot', () => {
     expect(after.claims).toEqual({ provisioning: 'spare-3' })
   })
 
+  it('drops a create\'s row once the spare it claimed is listed, whichever is learned first', () => {
+    const s = useUiStore.getState()
+    s.addOptimisticProvisioning(prov('early'))
+    s.addOptimisticProvisioning(prov('late'))
+    s.recordClaim('early', 'spare-1')
+    s.receiveSnapshot(snap([live('spare-1'), live('spare-2')]))
+    expect(useUiStore.getState().optimisticProvisioning.map((e) => e.workspaceId)).toEqual(['late'])
+    s.recordClaim('late', 'spare-2')
+    expect(useUiStore.getState().optimisticProvisioning).toEqual([])
+    expect(useUiStore.getState().claims).toEqual({ early: 'spare-1', late: 'spare-2' })
+  })
+
   it('does not mark a stop for a workspace the last snapshot no longer lists', () => {
-    useUiStore.getState().reconcileSnapshot({ workspaces: [live('a')], provisioning: [] })
+    useUiStore.getState().receiveSnapshot(snap([live('a')]))
     useUiStore.getState().beginDelete('died-meanwhile')
     useUiStore.getState().beginDelete('a')
     expect(useUiStore.getState().pendingDeleteIds).toEqual(['a'])
   })
 
-  it('keeps state identity when nothing changes', () => {
+  it('keeps the optimistic state\'s identity when the snapshot settles nothing', () => {
     useUiStore.getState().addOptimisticProvisioning(prov('pending'))
-    useUiStore.getState().reconcileSnapshot({ workspaces: [], provisioning: [] })
+    useUiStore.getState().receiveSnapshot(snap([]))
     const before = useUiStore.getState()
-    useUiStore.getState().reconcileSnapshot({ workspaces: [], provisioning: [] })
-    expect(useUiStore.getState()).toBe(before)
+    useUiStore.getState().receiveSnapshot(snap([]))
+    const after = useUiStore.getState()
+    expect(after.optimisticProvisioning).toBe(before.optimisticProvisioning)
+    expect(after.claims).toBe(before.claims)
+    expect(after.pendingDeleteIds).toBe(before.pendingDeleteIds)
   })
 })
 

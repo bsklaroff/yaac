@@ -1,19 +1,14 @@
 import { useEffect, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
 import type { ServerEvent } from '@yaac/shared/types'
 import { reconnectingSocket } from '#lib/reconnect'
 import { useUiStore } from '#lib/store'
 
-export const SNAPSHOT_KEY = ['snapshot'] as const
-
 /**
- * Subscribe to the server's `/events` WebSocket and write each `snapshot`
- * frame into the React Query cache, first folding it into the store's
- * optimistic state (`reconcileSnapshot`). See `reconnectingSocket` for the
+ * Subscribe to the server's `/events` WebSocket and hand each `snapshot`
+ * frame to the store (`receiveSnapshot`). See `reconnectingSocket` for the
  * reconnect policy. Returns whether the socket is connected.
  */
 export function useEvents(enabled: boolean): { connected: boolean } {
-  const queryClient = useQueryClient()
   const [connected, setConnected] = useState(false)
 
   useEffect(() => {
@@ -29,14 +24,13 @@ export function useEvents(enabled: boolean): { connected: boolean } {
           return false
         }
         if (parsed.type !== 'snapshot') return false
-        useUiStore.getState().reconcileSnapshot(parsed.data)
-        queryClient.setQueryData(SNAPSHOT_KEY, parsed.data)
+        useUiStore.getState().receiveSnapshot(parsed.data)
         return true
       },
       close: () => setConnected(false),
     })
     return () => sock.close()
-  }, [enabled, queryClient])
+  }, [enabled])
 
   return { connected }
 }

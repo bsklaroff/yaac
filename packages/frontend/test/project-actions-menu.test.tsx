@@ -5,8 +5,8 @@ import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ProjectOpPane } from '#components/ProjectOpPane'
 import { useUiStore } from '#lib/store'
-import { SNAPSHOT_KEY } from '#lib/useEvents'
-import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
+import type { ServerSnapshot } from '@yaac/shared/types'
 
 // jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
 beforeAll(() => {
@@ -43,9 +43,8 @@ function Harness(): JSX.Element {
 /** Render the menu, labeled with the project's name, and click through to
  *  the remove-confirm dialog. */
 async function openConfirm(): Promise<void> {
-  const client = testQueryClient()
-  client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: ID, name: 'widgets' }] })
-  renderWithClient(<Harness />, client)
+  useUiStore.setState({ snapshot: { projects: [{ id: ID, name: 'widgets' }] } as ServerSnapshot })
+  renderWithClient(<Harness />)
   fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
   fireEvent.click(await screen.findByText('Remove project'))
   await screen.findByText('Removes "widgets" and all its workspaces. This can\'t be undone.')

@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { replaceEqualDeep } from '@tanstack/react-query'
 import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
 import { PREVIEW_TARGET } from '#lib/preview'
 import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
@@ -374,7 +375,9 @@ export function unreadWaitingByProject(
  * A selection the pane shows as a stopped workspace (`stopped`) has not
  * vanished. Both select the top row, except:
  *   - a create that claimed a prewarmed spare (`claims`) follows the spare's
- *     id once it is listed;
+ *     id once it is listed. This comes before the stopped check: a create's
+ *     id is never a stopped workspace, but the pane looks it up as one once
+ *     its row goes, and waiting on that lookup would leave the pane empty;
  *   - a selection whose provision is still in flight (`inFlight`) waits,
  *     since a snapshot can briefly miss both its row and its workspace.
  *
@@ -394,15 +397,15 @@ export function resolveVacantSelection(args: {
 }): string | null {
   const { previousProjectId, activeProjectId, selectedWorkspaceId, rowIds, claims, inFlight } = args
   if (!activeProjectId) return null
-  if (selectedWorkspaceId && (rowIds.includes(selectedWorkspaceId) || args.stopped === true)) return null
-  const vanished = selectedWorkspaceId !== null
+  if (selectedWorkspaceId && rowIds.includes(selectedWorkspaceId)) return null
   const switchedProject = previousProjectId !== null && previousProjectId !== activeProjectId
-  if (!vanished && !switchedProject) return null
-  if (vanished && !switchedProject) {
+  if (selectedWorkspaceId === null) return switchedProject ? rowIds[0] ?? null : null
+  if (!switchedProject) {
     const claimed = claims[selectedWorkspaceId]
     if (claimed !== undefined) return rowIds.includes(claimed) ? claimed : null
-    if (inFlight.includes(selectedWorkspaceId)) return null
   }
+  if (args.stopped === true) return null
+  if (!switchedProject && inFlight.includes(selectedWorkspaceId)) return null
   return rowIds[0] ?? null
 }
 
@@ -457,8 +460,11 @@ export interface TrustedHostKey {
   entry: string
 }
 
-/** Client-side UI state. Server state lives in the snapshot. */
+/** Client-side UI state, and the server snapshot it is reconciled against. */
 interface UiState {
+  /** The server's last snapshot (every user's); undefined until the first
+   *  frame arrives over `/events`. Read it through `useSnapshot`. */
+  snapshot: ServerSnapshot | undefined
   /** The user whose projects the rail and sidebar show, picked in the user
    *  switcher or by opening a link into their project; null is the caller
    *  (see #lib/viewer). */
@@ -576,8 +582,8 @@ interface UiState {
    *  handled. */
   findPending: string | null
   setFindPending: (target: string | null) => void
-  /** Optimistic provisioning rows, shown until a snapshot lists the id
-   *  (`reconcileSnapshot`). */
+  /** Optimistic provisioning rows, shown until a snapshot lists the id, or
+   *  the prewarmed spare it claimed (`receiveSnapshot`, `recordClaim`). */
   optimisticProvisioning: ProvisioningWorkspaceEntry[]
   /** Create id → the prewarmed spare it claimed, from the snapshot row
    *  (`claimedId`) or the create's result. Lets the selection follow the
@@ -592,9 +598,6 @@ interface UiState {
   /** Workspaces whose stop was confirmed, shown as stopping until the
    *  snapshot drops them. */
   pendingDeleteIds: string[]
-  /** The workspaces the last snapshot listed (`reconcileSnapshot`); null
-   *  before the first. */
-  liveWorkspaceIds: ReadonlySet<string> | null
   /** Just-stopped workspaces, shown in the stopped list until the server's
    *  list includes them. */
   optimisticStopped: StoppedWorkspaceEntry[]
@@ -690,13 +693,14 @@ interface UiState {
   /** Drop an optimistic row, e.g. on dismiss. */
   removeOptimisticProvisioning: (workspaceId: string) => void
   /**
-   * Fold a snapshot from the server into the optimistic state: stop
-   * tracking stops of workspaces it no longer lists, drop optimistic
-   * provisioning rows it now has (as a workspace or its own row), and record
-   * or forget prewarm claims (`claims`): a claim is forgotten when its create
-   * failed or listed under its own id.
+   * Store a snapshot from the server and fold it into the optimistic state:
+   * stop tracking stops of workspaces it no longer lists, drop optimistic
+   * provisioning rows it now has (as a workspace, its own row, or the spare
+   * it claimed), and record or forget prewarm claims (`claims`): a claim is
+   * forgotten when its create failed or listed under its own id. Unchanged
+   * parts of the snapshot keep their identity, so memos over them hold.
    */
-  reconcileSnapshot: (snapshot: Pick<ServerSnapshot, 'workspaces' | 'provisioning'>) => void
+  receiveSnapshot: (snapshot: ServerSnapshot) => void
   setActiveProject: (projectId: string | null) => void
   /** Like `setActiveProject`, for when App picks a project itself. Leaves
    *  the mobile screen alone (see MobileScreen). */
@@ -765,6 +769,7 @@ export function shortcutsSuspended(state: Pick<UiState, 'recordingShortcut' | 'c
 }
 
 export const useUiStore = create<UiState>((set) => ({
+  snapshot: undefined,
   viewedUserId: null,
   viewUser: (userId, projectId) => set({
     viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, sidebarQuery: '',
@@ -800,7 +805,6 @@ export const useUiStore = create<UiState>((set) => ({
   dirtyFiles: {},
   optimisticProvisioning: [],
   pendingDeleteIds: [],
-  liveWorkspaceIds: null,
   optimisticStopped: [],
   bindings: DEFAULT_BINDINGS,
   setBindings: (bindings) => set({ bindings }),
@@ -881,7 +885,7 @@ export const useUiStore = create<UiState>((set) => ({
       ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.workspaceId !== workspaceId) }
       : s
   )),
-  reconcileSnapshot: (snapshot) => set((s) => {
+  receiveSnapshot: (snapshot) => set((s) => {
     const live = new Set(snapshot.workspaces.map((w) => w.workspaceId))
     const known = new Set([...live, ...snapshot.provisioning.map((p) => p.workspaceId)])
     const claims = { ...s.claims }
@@ -891,18 +895,18 @@ export const useUiStore = create<UiState>((set) => ({
     }
     for (const id of live) delete claims[id]
     const pendingDeleteIds = s.pendingDeleteIds.filter((id) => live.has(id))
-    const optimisticProvisioning = s.optimisticProvisioning.filter((e) => !known.has(e.workspaceId))
+    const optimisticProvisioning = s.optimisticProvisioning.filter((e) => {
+      const claimed = claims[e.workspaceId]
+      return !known.has(e.workspaceId) && (claimed === undefined || !live.has(claimed))
+    })
     const sameClaims = Object.keys(claims).length === Object.keys(s.claims).length
       && Object.entries(claims).every(([k, v]) => s.claims[k] === v)
-    const sameLive = s.liveWorkspaceIds !== null && s.liveWorkspaceIds.size === live.size
-      && [...live].every((id) => s.liveWorkspaceIds?.has(id))
-    const patch = {
-      ...(sameLive ? {} : { liveWorkspaceIds: live }),
+    return {
+      snapshot: replaceEqualDeep(s.snapshot, snapshot),
       ...(sameClaims ? {} : { claims }),
       ...(pendingDeleteIds.length === s.pendingDeleteIds.length ? {} : { pendingDeleteIds }),
       ...(optimisticProvisioning.length === s.optimisticProvisioning.length ? {} : { optimisticProvisioning }),
     }
-    return Object.keys(patch).length === 0 ? s : patch
   }),
   claims: {},
   forgetClaim: (workspaceId) => set((s) => {
@@ -920,9 +924,14 @@ export const useUiStore = create<UiState>((set) => ({
             : s.inFlightProvisions.filter((id) => id !== workspaceId),
         }
   )),
-  recordClaim: (workspaceId, claimedId) => set((s) => (
-    s.claims[workspaceId] === claimedId ? s : { claims: { ...s.claims, [workspaceId]: claimedId } }
-  )),
+  recordClaim: (workspaceId, claimedId) => set((s) => {
+    if (s.claims[workspaceId] === claimedId) return s
+    const listed = s.snapshot?.workspaces.some((w) => w.workspaceId === claimedId) === true
+    return {
+      claims: { ...s.claims, [workspaceId]: claimedId },
+      ...(listed ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.workspaceId !== workspaceId) } : {}),
+    }
+  }),
   // Switching projects clears the selection. On mobile it shows the
   // project's workspace list, or the project list when cleared.
   setActiveProject: (projectId) => set({
@@ -1098,7 +1107,8 @@ export const useUiStore = create<UiState>((set) => ({
     }
   }),
   beginDelete: (workspaceId) => set((s) => (
-    s.pendingDeleteIds.includes(workspaceId) || s.liveWorkspaceIds?.has(workspaceId) === false
+    s.pendingDeleteIds.includes(workspaceId)
+      || (s.snapshot !== undefined && !s.snapshot.workspaces.some((w) => w.workspaceId === workspaceId))
       ? s
       : { pendingDeleteIds: [...s.pendingDeleteIds, workspaceId] }
   )),
