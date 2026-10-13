@@ -262,8 +262,10 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
      kubelet alone used 1.5–2 cores on a busy node. On a cluster yaac did
      not create this is a node-pool setting.
 4. **The gVisor runtime and node tuning**, via the `yaac-gvisor-install`
-   DaemonSet. On every node, a privileged pod installs a pinned `runsc` and
-   `containerd-shim-runsc-v1`, registers two runsc handlers in containerd
+   DaemonSet. On every node, a privileged pod installs a pinned `runsc`,
+   `containerd-shim-runsc-v1` and the `gvisor-bin/` sidecar binaries runsc
+   starts every sandbox from (all from the release's
+   `gvisor.tar.bz2`), registers two runsc handlers in containerd
    (`runsc` and `runsc-nested`, each with its own
    `/etc/containerd/runsc*.toml`), restarts containerd, and labels the node
    `yaac.gvisor=true`. Both handlers set `allow-suid` so the image's

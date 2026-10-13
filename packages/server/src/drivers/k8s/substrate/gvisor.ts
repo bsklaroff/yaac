@@ -19,10 +19,12 @@ import type { PodToleration } from './taints'
  * (drivers/k8s/install/gvisor-installer.ts) runs the script on every node.
  */
 
-/** Pinned gVisor release installed on every node (runsc + shim together). */
-export const GVISOR_VERSION = '20260706.0'
+/** Pinned gVisor release installed on every node (runsc, its shim and its
+ *  sidecar binaries together). */
+export const GVISOR_VERSION = '20261005.0'
 
-/** Release-artifact directory (each file has a `.sha512` sibling). */
+/** Release-artifact directory: one `<arch>/gvisor.tar.bz2` per arch, with a
+ *  `.sha512` sibling. */
 export const GVISOR_RELEASE_BASE =
   `https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}`
 
@@ -125,7 +127,8 @@ export const REGISTRY_CONFIG_MARKER = '# yaac-registry-config-path'
 const GVISOR_INSTALLER_INTERVAL_S = 600
 
 /** Age at which a waiter breaks the node's install lock. Longer than any
- *  real pass (a ~60 MB download plus a containerd restart). */
+ *  real pass (a ~160 MB download, a ~330 MB bunzip2 extraction and a
+ *  containerd restart). */
 export const GVISOR_INSTALL_LOCK_TIMEOUT_S = 900
 
 /**
@@ -286,9 +289,10 @@ export function buildRuntimeClassManifests(): Array<Record<string, unknown>> {
  * kind and real nodes alike. Each pass first applies node tuning
  * (node-tuning.ts), then installs gVisor. It re-runs on pod start and on a
  * timer, so every step is idempotent:
- *  - runsc and its shim are installed only when `runsc --version` is not
- *    the pinned release, and downloaded only when the node cache lacks a
- *    checksum-verified copy;
+ *  - the release (runsc, its shim, and the `gvisor-bin/` sidecars runsc
+ *    starts every sandbox from) is installed only when `runsc --version`
+ *    is not the pinned release, and downloaded only when the node cache
+ *    lacks a checksum-verified copy;
  *  - flag files and containerd blocks are compared before writing;
  *  - containerd must read registry hosts from `certs.d`. A config that
  *    already includes it is kept; one with no registry table gets the
@@ -299,11 +303,13 @@ export function buildRuntimeClassManifests(): Array<Record<string, unknown>> {
  *    interrupted pass restarts again. Drift in the live containerd is
  *    caught by cluster check's sentry probe, not here.
  *
- * Releases are checksum-verified on download and on every cache hit.
- * Passes take a node-local lock because two installs can share a node (e.g.
- * an e2e run), and interleaved passes could append duplicate TOML tables
- * that stop containerd from starting. Installs sharing a node must pin the
- * same GVISOR_VERSION, or each would restart containerd on every pass.
+ * Releases are checksum-verified on download and on every cache hit, and
+ * every other release is dropped from the cache once the pinned one is
+ * installed. Passes take a node-local lock because two installs can share a
+ * node (e.g. an e2e run), and interleaved passes could append duplicate TOML
+ * tables that stop containerd from starting. Installs sharing a node must
+ * pin the same GVISOR_VERSION, or each would re-download its release and
+ * restart containerd on every pass.
  *
  * The runtime and registry config go on every node, since infra pods pull
  * yaac images too, but a node labelled `yaac.workspaces=false` has the
@@ -386,10 +392,8 @@ export function gvisorInstallScript(): string {
     '  echo "yaac-gvisor: downloading pinned $1 $version ($arch)"',
     '  mkdir -p "$(dirname "$dest")"',
     '  # Stage INSIDE the cache directory so the move below is a',
-    '  # same-filesystem rename, and therefore atomic. Staging in the',
-    '  # container filesystem would make it a cross-device copy, which busybox',
-    '  # creates at its final 0755 mode from the first byte — an interrupted',
-    '  # one would leave an executable partial file behind.',
+    '  # same-filesystem rename, and therefore atomic: an interrupted',
+    '  # cross-device copy would leave a partial file at the cached path.',
     '  tmp="$(dirname "$dest")/.tmp-$$"',
     '  rm -rf "$tmp"',
     '  mkdir -p "$tmp"',
@@ -399,13 +403,40 @@ export function gvisorInstallScript(): string {
     '  # so verification has to happen here, under that name.',
     '  curl -fsSL "$base/$arch/$1.sha512" -o "$1.sha512"',
     '  sha512sum -c "$1.sha512" >/dev/null',
-    '  chmod 0755 "$1"',
-    '  # Checksum first: the binary\'s presence is what a later pass keys on,',
+    '  # Checksum first: the artifact\'s presence is what a later pass keys on,',
     '  # so it must never be the file that lands without its proof.',
     '  mv "$1.sha512" "$dest.sha512"',
     '  mv "$1" "$dest"',
     '  cd /',
     '  rm -rf "$tmp"',
+    '}',
+    '',
+    '# Install the pinned release: runsc, its shim, and the gvisor-bin/',
+    '# sidecars runsc refuses to start a sandbox without. It is unpacked',
+    '# beside the targets so every move is a rename: a live shim or sandbox',
+    '# holds the old inodes, so an in-place write would fail "text file busy".',
+    '# runsc, the binary install_pass checks, goes LAST, so a pass that dies',
+    '# midway never leaves a node answering "converged" over an old shim or',
+    '# old sidecars, which no later pass would look at again.',
+    'install_release() {',
+    '  fetch gvisor.tar.bz2',
+    '  new="$bin/.yaac-gvisor-new"',
+    '  rm -rf "$new"',
+    '  mkdir -p "$new"',
+    '  tar -xjf "$cache/$version/$arch/gvisor.tar.bz2" -C "$new"',
+    '  rm -rf "$bin/gvisor-bin.yaac-old"',
+    '  if [ -d "$bin/gvisor-bin" ]; then mv "$bin/gvisor-bin" "$bin/gvisor-bin.yaac-old"; fi',
+    '  mv "$new/gvisor-bin" "$bin/gvisor-bin"',
+    '  for f in containerd-shim-runsc-v1 runsc; do mv "$new/$f" "$bin/$f"; done',
+    '  rm -rf "$new" "$bin/gvisor-bin.yaac-old"',
+    '}',
+    '',
+    '# Drop every other release from the cache. Only called once the pinned',
+    '# release is installed, so the cache never loses the one in use.',
+    'prune_cache() {',
+    '  for d in "$cache"/*; do',
+    '    case "${d##*/}" in "$version"|state) ;; *) rm -rf "$d" ;; esac',
+    '  done',
     '}',
     '',
     '# Write $2 to $1 only when it differs, via a temp file + rename. Exits',
@@ -470,20 +501,10 @@ export function gvisorInstallScript(): string {
     '  changed=0',
     '',
     '  if ! "$bin/runsc" --version 2>/dev/null | grep -qF "release-$version"; then',
-    '    # Both fetched before either is installed, and runsc — the binary the',
-    '    # check above reads — installed LAST. A pass that dies in between must',
-    '    # not leave a node whose runsc answers "converged" over an old shim,',
-    '    # which no later pass would look at again.',
-    '    for f in containerd-shim-runsc-v1 runsc; do fetch "$f"; done',
-    '    for f in containerd-shim-runsc-v1 runsc; do',
-    '      # Copy to a temp name then rename: a live shim holds the old inode,',
-    '      # so an in-place copy would fail "text file busy"; rename is atomic.',
-    '      cp "$cache/$version/$arch/$f" "$bin/$f.yaac-new"',
-    '      chmod 0755 "$bin/$f.yaac-new"',
-    '      mv "$bin/$f.yaac-new" "$bin/$f"',
-    '    done',
+    '    install_release',
     '    changed=1',
     '  fi',
+    '  prune_cache',
     '',
     `  if write_if_changed ${q(host(NODE_RUNSC_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor'))}; then changed=1; fi`,
     `  if write_if_changed ${q(host(NODE_RUNSC_NESTED_CONFIG_PATH))} ${q(runscShimConfigToml('gvisor-nested'))}; then changed=1; fi`,
