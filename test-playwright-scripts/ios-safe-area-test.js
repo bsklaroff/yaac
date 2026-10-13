@@ -5,7 +5,8 @@
  * left/right 47, bottom 21). Insets are injected with CDP's
  * Emulation.setSafeAreaInsetsOverride, so `env()` itself resolves non-zero;
  * nothing in the page is patched. Checks that the visible content stays
- * inside the safe area and that the env() values actually reached the page.
+ * inside the safe area, the shell's own children included (the phone shell's
+ * absolutely positioned screens), and that the env() values reached the page.
  * Screenshots go to $SCREENSHOT_DIR (default /tmp/yaac-shots).
  *
  * Needs a running server (see lib.js):
@@ -40,8 +41,8 @@ try {
       el.remove()
       const shell = document.querySelector('.safe-area-inset')
       const ss = shell && getComputedStyle(shell)
-      /* Every visible, non-empty leaf box: what the user sees or taps. */
-      const boxes = [...document.querySelectorAll('#root button, #root a, #root input, #root textarea, #root h1, #root h2, #root span, #root svg')]
+      /* The shell's children and every visible, non-empty leaf box. */
+      const boxes = [...document.querySelectorAll('.safe-area-inset > *, #root button, #root a, #root input, #root textarea, #root h1, #root h2, #root span, #root svg')]
         .filter((e) => {
           const st = getComputedStyle(e)
           const r = e.getBoundingClientRect()
@@ -50,7 +51,7 @@ try {
         .map((e) => e.getBoundingClientRect())
       return {
         env,
-        shellPadding: ss && { top: ss.paddingTop, right: ss.paddingRight, bottom: ss.paddingBottom, left: ss.paddingLeft },
+        shellInset: ss && { top: ss.borderTopWidth, right: ss.borderRightWidth, bottom: ss.borderBottomWidth, left: ss.borderLeftWidth },
         extent: {
           top: Math.min(...boxes.map((r) => r.top)),
           left: Math.min(...boxes.map((r) => r.left)),

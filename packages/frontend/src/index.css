@@ -425,15 +425,16 @@ select {
 /*
  * Keep the shell's chrome clear of the notch and the home indicator. Applied
  * to the shell's container in both layouts: a notched phone in landscape is
- * wider than the mobile breakpoint, so it gets the desktop layout. On the
- * phone shell the screens stacked inside with `inset-0` land on its padding
- * box and inherit the clearance. Every inset is 0 off a notched device.
+ * wider than the mobile breakpoint, so it gets the desktop layout. The insets
+ * are transparent borders rather than padding because the phone shell's
+ * screens are `absolute inset-0`, which places them on the padding box, inside
+ * the border but over any padding. The shell's background still paints under
+ * the border. Every inset is 0 off a notched device.
  */
 .safe-area-inset {
-  padding-top: env(safe-area-inset-top);
-  padding-right: env(safe-area-inset-right);
-  padding-bottom: env(safe-area-inset-bottom);
-  padding-left: env(safe-area-inset-left);
+  border-style: solid;
+  border-color: transparent;
+  border-width: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 /* Set on <body> while the sidebar's resize handle is being dragged: the whole
