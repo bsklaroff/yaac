@@ -155,10 +155,10 @@ happens a layer up, in `recordedTranscript`.
   it live.
 - **`db/`**: the workspace, agent-session and project stores, preferences,
   token persistence, `desired-workspaces` (what the reaper compares
-  against), `openDb`/`closeDb`, and the event handling below. `client.ts`
-  (the PGlite handle) and `schema.ts` (the drizzle tables) are internal,
-  off the barrel, so no other layer can name a table or build a query. The
-  database driver packages are eslint-banned everywhere else.
+  against), `openDb`/`closeDb`/`pingDb`, and the event handling below.
+  `client.ts` (the PGlite handle) and `schema.ts` (the drizzle tables) are
+  internal, off the barrel, so no other layer can name a table or build a
+  query. The database driver packages are eslint-banned everywhere else.
 - **`runtime/`**: four sealed folders.
   - `agents/`: the tui/acp drivers, acpd's JSON-RPC client, per-tool
     launch commands, and per-tool transcript readers.

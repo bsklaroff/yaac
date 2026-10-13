@@ -164,7 +164,7 @@ async function moveIn(home: ConfinedRoot, rel: string, dest: string): Promise<vo
  * converges first.
  */
 async function siblingConversations(projectId: string, workspaceId: string): Promise<Set<string>> {
-  const siblings = [...(await listProjectWorkspaceIds(projectId)).keys()].filter((id) => id !== workspaceId)
+  const siblings = (await listProjectWorkspaceIds(projectId)).filter((id) => id !== workspaceId)
   const links = await getProjectAgentSessions(projectId, siblings)
   return new Set([...links.values()].flat().map((r) => r.agentSessionId))
 }

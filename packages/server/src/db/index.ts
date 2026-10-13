@@ -5,12 +5,12 @@
 // secrets.
 //
 // The handle (`client.ts`) and schema (`schema.ts`) stay off this barrel so
-// no other layer can build its own queries; only `openDb`/`closeDb` and the
-// `MigrationRefusal` that `openDb` can throw are exported, for the
-// composition root. Observed facts enter only as a `WorkspaceEvent`
-// through `applyWorkspaceEvent`, which decides which rows change. User
-// intent (a title, a group, a preference) is written through the plain
-// functions below.
+// no other layer can build its own queries; only `openDb`/`closeDb`, the
+// `MigrationRefusal` that `openDb` can throw, and the `pingDb` liveness
+// check are exported, for the composition root. Observed facts enter only
+// as a `WorkspaceEvent` through `applyWorkspaceEvent`, which decides which
+// rows change. User intent (a title, a group, a preference) is written
+// through the plain functions below.
 //
 // Secrets (project env-var values, git and tool credentials) are encrypted
 // on write and decrypted on read here (better-auth's `symmetricEncrypt`,
@@ -43,7 +43,7 @@ export {
   setWorkspaceGroup,
   setWorkspaceGroupPinned,
 } from './group-store'
-export { closeDb, MigrationRefusal, openDb } from './client'
+export { closeDb, MigrationRefusal, openDb, pingDb } from './client'
 export {
   deleteDraftWorkspace,
   deleteProjectDraftWorkspaces,
@@ -132,6 +132,7 @@ export {
   getProjectWorkspaceRows,
   getWorkspaceRow,
   listProjectWorkspaceIds,
+  listSpareWorkspaceIds,
   listStoppedWorkspaceRows,
   listWorkspaceRows,
   recordAllDeathsSeen,

@@ -20,6 +20,20 @@ export function serverLog(message: string): void {
 }
 
 /**
+ * `String(err)` followed by each error in its `cause` chain. A wrapping
+ * error names only what was attempted: drizzle's `DrizzleQueryError` says
+ * which query failed and keeps the database's reason in `cause`.
+ */
+export function errorText(err: unknown): string {
+  let text = String(err)
+  // Bounded, since a cause chain can loop.
+  for (let e = err, depth = 0; e instanceof Error && e.cause instanceof Error && depth < 5; e = e.cause, depth++) {
+    text += `\n  caused by: ${String(e.cause)}`
+  }
+  return text
+}
+
+/**
  * Forward a child process's output stream to `serverLog` line by line, with
  * `prefix`, so subprocess output (e.g. `podman build`) is kept when the
  * server runs detached. `onLine` also receives each line, for callers with

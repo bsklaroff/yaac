@@ -23,6 +23,7 @@ import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import type { AccessMode, Whoami } from '@yaac/shared/types'
 import { listUsers } from '#db'
+import { errorText, serverLog } from '#log'
 
 export interface ServerAppDeps {
   buildId: string
@@ -82,8 +83,11 @@ export function buildApp(deps: ServerAppDeps) {
   return app
 }
 
+/** The wire form of a thrown error. An unexpected one is logged with its
+ *  cause, which the response's message leaves out. */
 function errorResponse(err: Error, c: Context): Response {
   const { status, body } = toErrorBody(err)
+  if (status === 500) serverLog(`[server] ${c.req.method} ${c.req.path} failed: ${errorText(err)}`)
   return c.json(body, status as 400 | 401 | 404 | 409 | 500 | 503)
 }
 

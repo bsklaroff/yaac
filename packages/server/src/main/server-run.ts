@@ -11,7 +11,7 @@ import {
   refreshPlanUsage,
   runtimeMediatesEgress,
 } from '#domain/auth'
-import { closeDb, findWorkspaceRow, listProjectRows, MigrationRefusal, openDb } from '#db'
+import { closeDb, findWorkspaceRow, listProjectRows, MigrationRefusal, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub, type WsLike } from '#api/events'
 import { resolveWorkspaceContainer } from '#domain/workspaces'
@@ -40,7 +40,7 @@ import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 import { AccessModeRefusal, settleAccessMode } from '#main/access-mode'
-import { serverLog } from '#log'
+import { errorText, serverLog } from '#log'
 import { env } from '@yaac/shared/env'
 import { agentSessionIdSchema, type AccessMode, type DriverKind } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
@@ -259,7 +259,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   const planUsageTimer = setInterval(() => {
     if (hub.size === 0) return
     void refreshPlanUsage().catch(
-      (err: unknown) => serverLog(`[server] plan-usage refresh failed: ${String(err)}`),
+      (err: unknown) => serverLog(`[server] plan-usage refresh failed: ${errorText(err)}`),
     )
   }, 5 * 60_000)
   const app = buildApp({ buildId, isReady: () => ready, access: () => access })
@@ -281,7 +281,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         }
         hub.add(conn)
         void hub.sendSnapshotTo(conn).catch(
-          (err: unknown) => serverLog(`[server] events: initial snapshot failed: ${String(err)}`),
+          (err: unknown) => serverLog(`[server] events: initial snapshot failed: ${errorText(err)}`),
         )
       },
       onClose: () => { if (conn) hub.remove(conn) },
@@ -480,7 +480,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       process.exit(1)
     }).catch((err: unknown) => {
       // A failed renewal is not a lost lease; the next tick retries.
-      serverLog(`[server] lease renewal failed: ${String(err)}`)
+      serverLog(`[server] lease renewal failed: ${errorText(err)}`)
     })
   }, LEASE_HEARTBEAT_MS)
   leaseTimer.unref?.()
@@ -504,7 +504,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       refuse(err.message)
       return
     }
-    serverLog(`[server] db init failed: ${String(err)}`)
+    serverLog(`[server] db init failed: ${errorText(err)}`)
     await new Promise<void>((resolve) => server.close(() => resolve()))
     await removeLock(lease.instance)
     process.exit(1)
@@ -533,7 +533,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     hostname: env.bindAddr,
     serverOptions: LONG_UPLOADS,
   })
-  relayServer?.on('error', (err: Error) => serverLog(`[server] yaac-mama relay listener failed: ${String(err)}`))
+  relayServer?.on('error', (err: Error) => serverLog(`[server] yaac-mama relay listener failed: ${errorText(err)}`))
 
   const torPrefix = env.useTor ? '(using tor) ' : ''
   serverLog(`[server] ${torPrefix}listening on ${env.bindAddr}:${port} lock=${serverLockPath()}`)
@@ -544,11 +544,33 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   const abortCtrl = new AbortController()
   let loopDone: Promise<void> | null = null
   let shuttingDown = false
+  // A database that fails `SELECT 1`, or leaves it unanswered for a minute,
+  // will not answer again, and the server would fail every request until
+  // restarted. Exit instead: under k8s the Deployment restarts the pod; a
+  // host server stays down until `yaac server start`.
+  const exitOnDeadDb = async (err: unknown): Promise<void> => {
+    if (shuttingDown) return
+    shuttingDown = true
+    serverLog(`[server] the database stopped answering — exiting: ${errorText(err)}`)
+    await removeLock(lease.instance)
+    process.exit(1)
+  }
+  let pinging = false
+  const dbWatch = setInterval(() => {
+    if (pinging) {
+      void exitOnDeadDb(new Error('SELECT 1 got no answer within a minute'))
+      return
+    }
+    pinging = true
+    pingDb().then(() => { pinging = false }, exitOnDeadDb)
+  }, 60_000)
+  dbWatch.unref()
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     serverLog(`[server] ${signal} — shutting down`)
     abortCtrl.abort()
+    clearInterval(dbWatch)
     clearInterval(planUsageTimer)
     clearInterval(leaseTimer)
     // Stop pushing snapshots; clients are about to disconnect.
@@ -559,13 +581,13 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     try {
       stopConvergence()
     } catch (err) {
-      serverLog(`[server] stop convergence failed: ${String(err)}`)
+      serverLog(`[server] stop convergence failed: ${errorText(err)}`)
     }
     if (loopDone) {
       // Bounded like server.close(): a reap tick retrying under load could
       // otherwise outlast `yaac server stop`'s wait.
       await Promise.race([
-        loopDone.catch((err) => serverLog(`[server] loop exit error: ${String(err)}`)),
+        loopDone.catch((err) => serverLog(`[server] loop exit error: ${errorText(err)}`)),
         new Promise<void>((resolve) => setTimeout(resolve, 3000)),
       ])
     }
@@ -574,7 +596,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     try {
       releaseConvergence()
     } catch (err) {
-      serverLog(`[server] release convergence failed: ${String(err)}`)
+      serverLog(`[server] release convergence failed: ${errorText(err)}`)
     }
 
     // close() drains in-flight requests. Bounded to 3s so a wedged request
@@ -586,11 +608,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       }))),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
-    await stopGitSshAgent().catch((err: unknown) => serverLog(`[server] ssh-agent stop failed: ${String(err)}`))
+    await stopGitSshAgent().catch((err: unknown) => serverLog(`[server] ssh-agent stop failed: ${errorText(err)}`))
     // Checkpoint so PGlite reopens cleanly. Bounded; WAL replay covers a
     // wedged close.
     await Promise.race([
-      closeDb().catch((err: unknown) => serverLog(`[server] db close failed: ${String(err)}`)),
+      closeDb().catch((err: unknown) => serverLog(`[server] db close failed: ${errorText(err)}`)),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     // Pass our lease so a slow shutdown cannot remove a successor's lock.
@@ -614,7 +636,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       // first pass runs the credential sync.
       if (runtimeMediatesEgress()) {
         void convergeRuntimeCredentials()
-          .catch((err: unknown) => serverLog(`[server] credential push failed: ${String(err)}`))
+          .catch((err: unknown) => serverLog(`[server] credential push failed: ${errorText(err)}`))
       }
     },
   })
@@ -632,7 +654,7 @@ async function convergeRuntimeCredentials(): Promise<void> {
         Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
       )
     } catch (err) {
-      serverLog(`[server] secret push for project "${projectId}" failed: ${String(err)}`)
+      serverLog(`[server] secret push for project "${projectId}" failed: ${errorText(err)}`)
     }
   }
 }

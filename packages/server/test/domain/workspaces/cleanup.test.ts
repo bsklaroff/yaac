@@ -63,6 +63,7 @@ import type { NodeLocalLiveSet, RuntimeSnapshot } from '#drivers/contract'
 import { BUILT_IN_USER_ID, applyWorkspaceEvent, closeDb, listProjectRows, listProjectWorkspaceIds } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
+import { getDb } from '#db/client'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import {
   handleFixture,
@@ -582,6 +583,17 @@ async function seedWorkspacesDir(projectId: string, sid: string): Promise<string
   return dir
 }
 
+/** Statements the database has rolled back, each failed one included. */
+async function rollbacks(): Promise<number> {
+  const pg = (await getDb()).$client
+  await pg.query('select pg_stat_force_next_flush()')
+  await pg.query('select 1')
+  const { rows } = await pg.query<{ n: string }>(
+    'select xact_rollback as n from pg_stat_database where datname = current_database()',
+  )
+  return Number(rows[0].n)
+}
+
 describe('gcOrphanEphemeralModuleDirs', () => {
   beforeEach(setUpSweep)
   afterEach(tearDownSweep)
@@ -602,8 +614,13 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   })
 
   // Only a dead spare's checkout is disposable; a stopped workspace's is
-  // kept.
+  // kept. The spare's project has no row, as when a create races the
+  // project's removal. A dir under projects/ that is no project id (an
+  // older install's slug) is swept on disk only, and the sweep raises no
+  // database error: PGlite before 0.5.9 broke for good after ~3,000 of
+  // those.
   it('collects a dead spare, and keeps a stopped workspace', async () => {
+    const slugSession = await seedWorkspacesDir('demo', 'dead-2')
     await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'stopped-1' })
     await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'spare-1', spare: true })
     // Both checkouts are stale, so only the spare flag tells them apart.
@@ -614,12 +631,15 @@ describe('gcOrphanEphemeralModuleDirs', () => {
       return dir
     }))
     seeRunning([handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })])
+    const before = await rollbacks()
 
     await gcOrphanEphemeralModuleDirs(view)
 
+    expect(await rollbacks()).toBe(before)
     await expect(fs.access(stoppedCheckout)).resolves.toBeUndefined()
     await expect(fs.access(spareCheckout)).rejects.toThrow()
-    expect([...(await listProjectWorkspaceIds(PROJ_A)).keys()]).toEqual(['stopped-1'])
+    await expect(fs.access(slugSession)).rejects.toThrow()
+    expect(await listProjectWorkspaceIds(PROJ_A)).toEqual(['stopped-1'])
   })
 
   it('spares a session the process is still provisioning', async () => {

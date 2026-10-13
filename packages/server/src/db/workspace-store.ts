@@ -187,7 +187,7 @@ export async function deleteSpareWorkspaceRow(
  * `permissionMode` to decide if the running agent can be handed over, so the
  * failed claim's values must not remain. Deleting the row instead would make
  * the spare unreapable, since the sweep finds dead spares through
- * `listProjectWorkspaceIds`.
+ * `listSpareWorkspaceIds`.
  *
  * Also deletes the conversations the claim recorded. Otherwise a later claim
  * for a different tool would inherit an active ordinal-0 conversation (where
@@ -546,7 +546,7 @@ export async function setWorkspaceEffort(
  *
  * Unclaimed spares must be excluded: the reaper tears down anything here
  * without a workspace runtime. Spares have their own sweep
- * (`listProjectWorkspaceIds`).
+ * (`listSpareWorkspaceIds`).
  */
 export async function listLiveWorkspaceRows(): Promise<Array<{
   projectId: string
@@ -580,21 +580,29 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
   }))
 }
 
-/**
- * Every workspace id of a project, mapped to whether it is an unclaimed
- * spare. The orphan sweep uses this to delete dead spares' checkouts: on disk
- * a reaped spare and a stopped workspace look the same, and deleting the
- * wrong one loses the user's uncommitted work.
- *
- * One query for the whole project, since PGlite runs on the event loop and a
- * query per candidate would stall terminal relaying.
- */
-export async function listProjectWorkspaceIds(projectId: string): Promise<Map<string, boolean>> {
+/** Every workspace id of a project, spares included. */
+export async function listProjectWorkspaceIds(projectId: string): Promise<string[]> {
   const db = await getDb()
-  const rows = await db.select({ workspaceId: workspaces.workspaceId, spare: workspaces.spare })
+  const rows = await db.select({ workspaceId: workspaces.workspaceId })
     .from(workspaces)
     .where(eq(workspaces.projectId, projectId))
-  return new Map(rows.map((r) => [r.workspaceId, r.spare]))
+  return rows.map((r) => r.workspaceId)
+}
+
+/**
+ * Every unclaimed spare, whatever its project (one whose project was removed
+ * mid-create included). The orphan sweep uses this to delete dead spares'
+ * checkouts: on disk a reaped spare and a stopped workspace look the same,
+ * and deleting the wrong one loses the user's uncommitted work.
+ *
+ * One query, since PGlite runs on the event loop and a query per project
+ * would stall terminal relaying.
+ */
+export async function listSpareWorkspaceIds(): Promise<Array<{ projectId: string; workspaceId: string }>> {
+  const db = await getDb()
+  return db.select({ projectId: workspaces.projectId, workspaceId: workspaces.workspaceId })
+    .from(workspaces)
+    .where(eq(workspaces.spare, true))
 }
 
 /**

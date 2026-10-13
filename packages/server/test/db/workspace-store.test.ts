@@ -15,6 +15,8 @@ import {
   countStoppedWorkspaces,
   listStoppedWorkspaceRows,
   listWorkspaceRows,
+  listProjectWorkspaceIds,
+  listSpareWorkspaceIds,
   recordDeathSeen,
   recordWorkspaceCreated,
   recordWorkspaceStopped,
@@ -362,6 +364,29 @@ describe('session store', () => {
       expect(await findWorkspaceRow('spare-1')).toBeUndefined()
       expect(await findWorkspaceRow('nope')).toBeUndefined()
       expect(await findWorkspaceRow('')).toBeUndefined()
+    })
+  })
+
+  describe('listProjectWorkspaceIds', () => {
+    it('lists one project\'s ids, spares included', async () => {
+      await create('sid-1')
+      await create('spare-1', { spare: true })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'zzz' })
+
+      expect((await listProjectWorkspaceIds(PROJ)).sort()).toEqual(['sid-1', 'spare-1'])
+    })
+  })
+
+  describe('listSpareWorkspaceIds', () => {
+    it('lists unclaimed spares across projects and nothing else', async () => {
+      await create('sid-1')
+      await create('spare-1', { spare: true })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'spare-2', spare: true })
+
+      expect((await listSpareWorkspaceIds()).sort((a, b) => a.workspaceId.localeCompare(b.workspaceId))).toEqual([
+        { projectId: PROJ, workspaceId: 'spare-1' },
+        { projectId: OTHER, workspaceId: 'spare-2' },
+      ])
     })
   })
 })

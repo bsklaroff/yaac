@@ -10,7 +10,7 @@ import { listProjectRows } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
 import { isWorkspaceTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
-import { serverLog } from '#log'
+import { errorText, serverLog } from '#log'
 import type { YaacConfig } from '@yaac/shared/types'
 
 /**
@@ -129,7 +129,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
           await step.run(ctx)
           if (step.every !== undefined) lastRun.set(step.name, startedAt)
         } catch (err) {
-          serverLog(`[server] reconcile step ${step.name} failed: ${String(err)}`)
+          serverLog(`[server] reconcile step ${step.name} failed: ${errorText(err)}`)
         }
       }
     }
