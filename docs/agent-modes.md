@@ -552,9 +552,9 @@ Either way the placeholder hides the spare so it is never listed twice. A spare'
 conversation has no row until it is claimed, so a reattach after a server
 restart takes its id from the pane option `@yaac-acp-session`, which the
 connection sets to `<pane pid>:<id>` when `session/new` answers; the pid
-check discards the value once a respawn replaces the process. A restart
-before the handshake loses the launch model parked in memory, so a fresh
-conversation with none parked takes the workspace row's model instead.
+check discards the value once a respawn replaces the process. An adapter
+told its model over the protocol gets the workspace row's model, read once
+`session/new` answers, so a restart before the handshake loses nothing.
 
 The connection finds conversations through a tmux control-mode client of its
 own, as the `tui` driver does: tmux pushes a window add or close, and a

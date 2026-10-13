@@ -3,4 +3,4 @@
  * containerless workspace runs the host's own tools in a checkout, so there
  * are no images, registry, or cluster to prepare.
  */
-export { buildCliBundle as setup } from '@yaac/test-utils/cli-bundle'
+export { buildCliBundle as setup } from '#support/cli-bundle'

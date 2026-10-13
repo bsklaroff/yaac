@@ -17,6 +17,9 @@
 import { decideSpawn, type SpawnRequest } from './spawn-policy'
 import { listActiveWorkspaces } from './list'
 import { listWorkspaceGroups, resolveGroup } from './groups'
+import { queueWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
+import { resolveProjectWorkspace, resolveWorkspaceContainer } from './resolve'
+import { stopWorkspace } from './stop'
 import {
   getProjectRow,
   getProjectWorkspaceRows,
@@ -29,9 +32,6 @@ import {
   setWorkspaceTitle,
   type QueuedWorkspaceRow,
 } from '#db'
-import { resolveWorkspace, resolveWorkspaceContainer } from './resolve'
-import { stopWorkspace } from './stop'
-import { queueWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
 import { ServerError } from '@yaac/shared/errors'
 import { stripControlChars } from '@yaac/shared/ansi'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
@@ -79,6 +79,11 @@ export interface MamaCaller {
   /** The tool it runs, if known; used in the spawned workspace's tool
    *  precedence. */
   tool?: AgentTool
+  /** Its recorded permission mode, the most anything it starts or messages
+   *  may run in. */
+  permissionMode: PermissionMode
+  /** Its agent mode, the default for a workspace it starts. */
+  mode: AgentMode
 }
 
 /** One command as received, not yet validated. */
@@ -319,25 +324,18 @@ function flatten(text: string, max: number): string {
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`
 }
 
-/**
- * Start a sibling workspace in the caller's project. `decideSpawn` makes the
- * decisions; this supplies the caller's permission mode from its row.
- */
+/** Start a sibling workspace in the caller's project (`decideSpawn`). */
 async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const callerRow = await getWorkspaceRow(caller.projectId, caller.workspaceId)
-  // Without a row there is no permission mode to cap the spawn at.
-  if (!callerRow) return { ok: false, error: 'this workspace has no recorded permission mode' }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
 
   const decision = await decideSpawn({
-    requestId: `mama:${caller.workspaceId}`,
     principal: caller.principal,
     callerWorkspaceId: caller.workspaceId,
     callerProjectId: caller.projectId,
     ...(caller.tool !== undefined ? { callerTool: caller.tool } : {}),
-    callerPermissionMode: callerRow.permissionMode,
-    ...(callerRow.mode !== undefined ? { callerMode: callerRow.mode } : {}),
+    callerPermissionMode: caller.permissionMode,
+    callerMode: caller.mode,
     prompt: request.body,
     ...settings.settings,
   })
@@ -353,8 +351,6 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
  * from the parent; the permission mode is capped at the caller's own.
  */
 async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const callerRow = await getWorkspaceRow(caller.projectId, caller.workspaceId)
-  if (!callerRow) return { ok: false, error: 'this workspace has no recorded permission mode' }
   const parent = request.args['parent-workspace']?.trim() ?? ''
   if (parent === '') return { ok: false, error: 'queue needs --parent-workspace' }
   const settings = createSettings(request.args)
@@ -363,7 +359,7 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
     parent,
     prompt: request.body,
     ...queueFields(settings.settings),
-  }, { ceiling: callerRow.permissionMode })
+  }, { ceiling: caller.permissionMode })
   // The id alone, so `a=$(yaac-mama queue …)` can chain the next one after it.
   return { ok: true, output: entry.id }
 }
@@ -375,8 +371,6 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
  * user gave an entry.
  */
 async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const callerRow = await getWorkspaceRow(caller.projectId, caller.workspaceId)
-  if (!callerRow) return { ok: false, error: 'this workspace has no recorded permission mode' }
   const target = request.args.queued?.trim() ?? ''
   if (target === '') return { ok: false, error: 'edit-queued needs a queued workspace id' }
   const picked = pickOne(await listQueuedWorkspaceRows(caller.projectId), target, 'queued workspace')
@@ -392,7 +386,7 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   if (Object.keys(patch).length === 0) {
     return { ok: false, error: 'edit-queued needs a new prompt or an option to change' }
   }
-  const entry = await updateQueuedWorkspace(caller.principal, picked.entry.id, patch, { ceiling: callerRow.permissionMode })
+  const entry = await updateQueuedWorkspace(caller.principal, picked.entry.id, patch, { ceiling: caller.permissionMode })
   return {
     ok: true,
     output: `Updated queued workspace ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `
@@ -426,20 +420,15 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
   // Bound for a terminal whatever the agent's mode, so stripped here once.
   const body = stripControlChars(request.body)
   if (body.trim() === '') return { ok: false, error: 'send needs a message' }
-  const found = await resolveWorkspace(workspace, { projectId: caller.projectId })
-  if (!found.ok) return { ok: false, error: workspaceError(workspace, found.reason) }
-  const { workspaceId } = found
+  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   const short = workspaceId.slice(0, 8)
   if (workspaceId === caller.workspaceId) return { ok: false, error: 'send cannot message this workspace itself' }
 
-  const [callerRow, targetRow] = await Promise.all([
-    getWorkspaceRow(caller.projectId, caller.workspaceId),
-    getWorkspaceRow(caller.projectId, workspaceId),
-  ])
-  const ceiling = callerRow?.permissionMode
-  if (ceiling === undefined || !isRankedPermissionMode(ceiling)) {
-    return { ok: false, error: 'this workspace has no recorded permission mode' }
+  const ceiling = caller.permissionMode
+  if (!isRankedPermissionMode(ceiling)) {
+    return { ok: false, error: `this workspace's recorded permission mode '${ceiling}' is not one this server knows` }
   }
+  const targetRow = await getWorkspaceRow(caller.projectId, workspaceId)
 
   const running = await resolveWorkspaceContainer(workspaceId, { requireRunning: true, exact: true })
     .catch((err: unknown) => {
@@ -576,9 +565,7 @@ function queueFields({ uiMode, ...rest }: CreateSettings): Partial<QueueRequest>
 
 /** Retitle a workspace, by default the caller itself. */
 async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const target = await resolveTargetWorkspace(caller, request.args.workspace)
-  if (!target.ok) return target
-  const workspaceId = target.workspaceId
+  const workspaceId = await resolveTargetWorkspace(caller, request.args.workspace)
 
   const title = request.body.trim()
   if (title === '') return { ok: false, error: 'rename needs a title' }
@@ -649,22 +636,9 @@ async function resolveTargetWorkspace(
   caller: MamaCaller,
   workspace: string | undefined,
   opts: { provisioning?: boolean } = {},
-): Promise<{ ok: true; workspaceId: string } | { ok: false; error: string }> {
-  const target = workspace === undefined || workspace.trim() === ''
-    ? caller.workspaceId
-    : workspace.trim()
-  const resolved = await resolveWorkspace(target, { projectId: caller.projectId, ...opts })
-  return resolved.ok
-    ? resolved
-    : { ok: false, error: workspaceError(target, resolved.reason) }
-}
-
-/** Distinct messages for an unknown id and an ambiguous prefix, since
- *  they need different fixes. */
-function workspaceError(target: string, reason: 'not-found' | 'ambiguous'): string {
-  return reason === 'ambiguous'
-    ? `'${target}' matches more than one workspace in this project — use a longer prefix`
-    : `no workspace '${target}' in this project`
+): Promise<string> {
+  const target = workspace === undefined || workspace.trim() === '' ? caller.workspaceId : workspace
+  return await resolveProjectWorkspace(target, caller.projectId, opts)
 }
 
 /**
@@ -674,24 +648,23 @@ function workspaceError(target: string, reason: 'not-found' | 'ambiguous'): stri
  */
 async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   // A sibling still being created may have no row yet.
-  const target = await resolveTargetWorkspace(caller, request.args.workspace, { provisioning: true })
-  if (!target.ok) return target
+  const workspaceId = await resolveTargetWorkspace(caller, request.args.workspace, { provisioning: true })
 
   let stopped: { provisioning?: true }
   try {
-    stopped = await stopWorkspace(caller.principal, target.workspaceId)
+    stopped = await stopWorkspace(caller.principal, workspaceId)
   } catch (err) {
     // The id resolved against rows, so NOT_FOUND here means not running.
     if (err instanceof ServerError && err.code === 'NOT_FOUND') {
-      return { ok: false, error: `workspace ${target.workspaceId.slice(0, 8)} is not running` }
+      return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} is not running` }
     }
     throw err
   }
   return {
     ok: true,
     output: stopped.provisioning === true
-      ? `Stopped ${target.workspaceId.slice(0, 8)} while it was starting.`
-      : `Stopped ${target.workspaceId.slice(0, 8)}. Its checkout is kept — `
+      ? `Stopped ${workspaceId.slice(0, 8)} while it was starting.`
+      : `Stopped ${workspaceId.slice(0, 8)}. Its checkout is kept — `
         + 'the user can restart it from the yaac webapp.',
   }
 }
@@ -715,11 +688,7 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   if (workspace === undefined || workspace.trim() === '') {
     return { ok: false, error: 'group move needs a workspace id' }
   }
-  const found = await resolveWorkspace(workspace, { projectId: caller.projectId })
-  if (!found.ok) {
-    return { ok: false, error: workspaceError(workspace.trim(), found.reason) }
-  }
-  const workspaceId = found.workspaceId
+  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
 
   const target = request.body.trim()
   // No group (or `--`) means ungrouped.
@@ -743,9 +712,7 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
 async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'fetch needs a workspace id' }
-  const found = await resolveWorkspace(workspace, { projectId: caller.projectId })
-  if (!found.ok) return { ok: false, error: workspaceError(workspace, found.reason) }
-  const { workspaceId } = found
+  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   try {
     const bundle = await bundleCheckout(workspaceDir(caller.projectId, workspaceId), repoDir(caller.projectId))
     return { ok: true, body: bundle, contentType: 'application/x-git-bundle', workspaceId }
@@ -770,9 +737,7 @@ async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<
 async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'history needs a workspace id' }
-  const found = await resolveWorkspace(workspace, { projectId: caller.projectId })
-  if (!found.ok) return { ok: false, error: workspaceError(workspace, found.reason) }
-  const { workspaceId } = found
+  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   // Pick the conversation before gathering files, which reads every one's.
   let rows = await listWorkspaceAgentSessions(caller.projectId, workspaceId)
 

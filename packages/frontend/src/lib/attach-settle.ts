@@ -9,14 +9,14 @@
  * only the final frame.
  *
  * The gate settles once, on the earliest of:
- *  - quiet: `quietMs` with no output after some output arrived;
- *  - cap: `capMs` after the first output, since animated startup screens
+ *  - quiet: SETTLE_QUIET_MS with no output after some output arrived;
+ *  - cap: SETTLE_CAP_MS after the first output, since animated startup screens
  *    (spinners) never go quiet;
  *  - close after open: the disconnect notice must be visible;
- *  - fallback: `fallbackMs` after open, so a terminal is never left hidden.
+ *  - fallback: SETTLE_FALLBACK_MS after open, so a terminal is never left hidden.
  * A close before open stays hidden while the reconnect loop retries.
  *
- * Quiet and cap also require `hasContent()` when given: on a cold workspace
+ * Quiet and cap also require `hasContent()`: on a cold workspace
  * the first burst may be a snapshot of a still-blank pane, and revealing a
  * blank screen would make the agent's first paint pop. The next output
  * re-arms the quiet timer, and the fallback reveals regardless.
@@ -26,12 +26,6 @@ export const SETTLE_QUIET_MS = 200
 export const SETTLE_CAP_MS = 700
 export const SETTLE_FALLBACK_MS = 3000
 
-export interface SettleTimings {
-  quietMs: number
-  capMs: number
-  fallbackMs: number
-}
-
 export interface SettleGate {
   /** Socket opened: arm the fallback timer. */
   onOpen(): void
@@ -39,8 +33,6 @@ export interface SettleGate {
   onData(): void
   /** Socket closed: settle if it had opened, so the disconnect notice shows. */
   onClose(): void
-  /** Whether the gate has settled (the terminal is revealed). */
-  settled(): boolean
   /** Cancel pending timers without settling (component unmount). */
   dispose(): void
 }
@@ -49,13 +41,8 @@ export interface SettleGate {
  *  that, so only the first attach of a mounted terminal is hidden. */
 export function createSettleGate(
   onSettle: () => void,
-  opts: { hasContent?: () => boolean; timings?: SettleTimings } = {},
+  hasContent: () => boolean,
 ): SettleGate {
-  const timings = opts.timings ?? {
-    quietMs: SETTLE_QUIET_MS,
-    capMs: SETTLE_CAP_MS,
-    fallbackMs: SETTLE_FALLBACK_MS,
-  }
   let done = false
   let opened = false
   let sawData = false
@@ -78,7 +65,7 @@ export function createSettleGate(
 
   const settleIfContent = (): void => {
     if (done) return
-    if (opts.hasContent && !opts.hasContent()) return
+    if (!hasContent()) return
     settle()
   }
 
@@ -87,23 +74,20 @@ export function createSettleGate(
       if (done) return
       opened = true
       clearTimeout(fallbackTimer)
-      fallbackTimer = setTimeout(settle, timings.fallbackMs)
+      fallbackTimer = setTimeout(settle, SETTLE_FALLBACK_MS)
     },
     onData(): void {
       if (done) return
       if (!sawData) {
         sawData = true
-        capTimer = setTimeout(settleIfContent, timings.capMs)
+        capTimer = setTimeout(settleIfContent, SETTLE_CAP_MS)
       }
       clearTimeout(quietTimer)
-      quietTimer = setTimeout(settleIfContent, timings.quietMs)
+      quietTimer = setTimeout(settleIfContent, SETTLE_QUIET_MS)
     },
     onClose(): void {
       if (done) return
       if (opened) settle()
-    },
-    settled(): boolean {
-      return done
     },
     dispose(): void {
       done = true

@@ -4,8 +4,8 @@ import { gitCredentials, projects } from './schema'
 import { secretConfig } from './secret-key'
 import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto'
 import { ServerError } from '@yaac/shared/errors'
-import { serverLog } from '#log'
-import { notifyWorkspaceListChanged } from '#notify'
+import { serverLog } from '#lib/log'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 
 /**
  * Named git credentials, encrypted at rest (docs/git-credentials.md) with the

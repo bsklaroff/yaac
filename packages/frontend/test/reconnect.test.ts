@@ -1,43 +1,6 @@
-// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import {
-  INITIAL_RECONNECT_DELAY_MS, MAX_RECONNECT_DELAY_MS, nextReconnectDelay, reconnectingSocket,
-} from '#lib/reconnect'
-
-describe('nextReconnectDelay', () => {
-  it('doubles from the initial delay up to the cap, and stays there', () => {
-    let delay = INITIAL_RECONNECT_DELAY_MS
-    const seen = [delay]
-    for (let i = 0; i < 10; i++) seen.push(delay = nextReconnectDelay(delay))
-    expect(seen.slice(0, 6)).toEqual([500, 1000, 2000, 4000, 8000, MAX_RECONNECT_DELAY_MS])
-    expect(delay).toBe(MAX_RECONNECT_DELAY_MS)
-  })
-})
-
-/** A WebSocket the test opens, feeds and closes by hand. */
-class FakeSocket {
-  static instances: FakeSocket[] = []
-  static readonly CONNECTING = 0
-  static readonly OPEN = 1
-  readyState = 0
-  binaryType = 'blob'
-  onopen: (() => void) | null = null
-  onmessage: ((e: { data: unknown }) => void) | null = null
-  onclose: (() => void) | null = null
-  onerror: (() => void) | null = null
-  constructor(readonly url: string) { FakeSocket.instances.push(this) }
-  send(): void {}
-  close(): void { this.readyState = 3; this.onclose?.() }
-  /** Accept, send one frame, and close. */
-  frameThenClose(data: unknown): void {
-    this.readyState = 1
-    this.onopen?.()
-    this.onmessage?.({ data })
-    this.close()
-  }
-}
-
-const latest = (): FakeSocket => FakeSocket.instances[FakeSocket.instances.length - 1]
+import { reconnectingSocket } from '#lib/reconnect'
+import { FakeSocket } from './harness'
 
 beforeEach(() => {
   FakeSocket.instances = []
@@ -47,8 +10,15 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  vi.unstubAllGlobals()
 })
+
+/** Accept, send one frame, and close. */
+function frameThenClose(data: string): void {
+  const sock = FakeSocket.latest()
+  sock.open()
+  sock.deliver(data)
+  sock.close()
+}
 
 /** Time from a drop until the next attempt. */
 function retryDelay(): number {
@@ -66,11 +36,17 @@ describe('reconnectingSocket', () => {
     const sock = reconnectingSocket(() => '/api/x', { message: (d) => d === 'hello' })
     const delays: number[] = []
     for (let i = 0; i < 4; i++) {
-      latest().frameThenClose('health: down')
+      frameThenClose('health: down')
       delays.push(retryDelay())
     }
     expect(delays).toEqual([500, 1000, 2000, 4000])
-    latest().frameThenClose('hello')
+    // Doubling stops at the ceiling.
+    for (let i = 0; i < 3; i++) {
+      frameThenClose('health: down')
+      delays.push(retryDelay())
+    }
+    expect(delays.slice(4)).toEqual([8000, 10_000, 10_000])
+    frameThenClose('hello')
     expect(retryDelay()).toBe(500)
     sock.close()
   })
@@ -78,15 +54,15 @@ describe('reconnectingSocket', () => {
   it('reconnects at once when the network returns, and not at all once closed', () => {
     const sock = reconnectingSocket(() => '/api/x', { message: () => false })
     for (let i = 0; i < 4; i++) {
-      latest().frameThenClose('nope')
+      frameThenClose('nope')
       retryDelay()
     }
-    latest().close()
+    FakeSocket.latest().close()
     const before = FakeSocket.instances.length
     window.dispatchEvent(new Event('online'))
     expect(FakeSocket.instances).toHaveLength(before + 1)
     sock.close()
-    vi.advanceTimersByTime(MAX_RECONNECT_DELAY_MS * 2)
+    vi.advanceTimersByTime(60_000)
     window.dispatchEvent(new Event('online'))
     expect(FakeSocket.instances).toHaveLength(before + 1)
   })

@@ -19,7 +19,7 @@ import {
 } from '#db/queued-workspace-store'
 import { deleteProjectWorkspaces, recordWorkspaceCreated } from '#db/workspace-store'
 import { deleteWorkspaceGroup } from '#db/group-store'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 

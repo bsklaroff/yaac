@@ -6,7 +6,7 @@ import {
   type KubernetesObject,
 } from '@kubernetes/client-node'
 import { getKubeConfig } from './client'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /**
  * Watch-fed cache of one resource kind, mapped to a yaac type. client-node's

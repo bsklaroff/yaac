@@ -12,7 +12,6 @@ import type {
   RefreshedToolCredentials,
   SecretProxyRule,
   ToolCredentialBundle,
-  WorkspaceDiff,
   WorkspaceDeathCause,
   YaacConfig,
 } from '@yaac/shared/types'
@@ -180,12 +179,11 @@ export interface CredentialBundle extends ToolCredentialBundle {
  * anything; absent means a directory). The k8s driver's manifest assignment
  * catches drift from the Kubernetes type.
  */
-export type HostPathKind = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
+type HostPathKind = 'Directory' | 'DirectoryOrCreate' | 'File' | 'FileOrCreate' | ''
 
-export type MountSource =
+type MountSource =
   | { kind: 'hostPath'; path: string; type?: HostPathKind }
-  | { kind: 'pvc'; claimName: string; subPath?: string }
-  | { kind: 'emptyDir'; sizeLimit?: number }
+  | { kind: 'emptyDir' }
 
 /** One path made visible inside a workspace, and where it comes from. */
 export interface WorkspaceMount {
@@ -334,55 +332,6 @@ export class WorkspaceExecError extends Error {
 }
 
 /**
- * The `changes` exit code for "no diff base": the ref does not resolve in
- * the checkout or shares no history with it. Every driver uses exactly this
- * code for that failure. The caller decides whose fault it is: an explicit
- * `base` is the user's mistake; the default base failing is ours.
- */
-export const CHANGES_BASE_UNRESOLVED = 4
-
-/**
- * The `changes` exit code for "an earlier run is still going": one whose
- * exec timed out keeps running in the workspace and holds the private
- * index, so the caller should try again shortly.
- */
-export const CHANGES_BUSY = 7
-
-/**
- * What `changes` reads besides the diff. `listing` asks for the checkout's
- * paths too: `paths` comes from the index the diff already built, while
- * `full` adds the ignored entries and untracked folders, which walk the
- * working tree again.
- */
-export interface ChangesRequest {
-  base?: string
-  /** The branch the workspace forked from, used when `base` is unset. */
-  defaultBase?: string
-  /** Include the unified diff body. */
-  diff: boolean
-  listing?: 'paths' | 'full'
-}
-
-/** A `changes` answer, before the domain adds what it reads on the server. */
-export interface ChangesReading {
-  changes: WorkspaceDiff
-  /** The ref the base was found on (`origin/main`, `main`) and HEAD's
-   *  distance from it; null when no fork point was found. */
-  ref: { name: string; ahead: number; behind: number } | null
-  listing?: {
-    /** Every file in the working tree that git does not ignore. */
-    paths: string[]
-    /** The entries of `paths` that are symlinks. */
-    links: string[]
-    conflicted: string[]
-    /** `full` only: ignored files, and wholly ignored folders as `dir/`. */
-    ignored?: string[]
-    /** `full` only: untracked folders, without the trailing slash. */
-    untrackedDirs?: string[]
-  }
-}
-
-/**
  * A `child_process`-shaped stream into a workspace, used by the agent
  * drivers (tmux control mode for `tui`, acpd's JSON-RPC for `acp`). A real
  * local child satisfies it as-is.
@@ -421,7 +370,7 @@ export const MEDIATOR_TRIGGERS = [
 ] as const
 
 /** Typed so a renamed trigger breaks compilation at its raise sites. */
-export type MediatorTrigger = typeof MEDIATOR_TRIGGERS[number]
+type MediatorTrigger = typeof MEDIATOR_TRIGGERS[number]
 
 export type ReconcileTrigger = MediatorTrigger | (string & {})
 
@@ -590,10 +539,6 @@ export interface WorkspaceDriver {
   list(projectId?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
   /** Live counts per project, spares excluded. Empty when unreachable. */
   count(): Promise<Record<string, number>>
-  /** A running workspace's diff, and its listing when asked, read inside
-   *  it. Rejects with `WorkspaceExecError` on failure
-   *  (`CHANGES_BASE_UNRESOLVED` when a named base has no fork point). */
-  changes(jobName: string, request: ChangesRequest): Promise<ChangesReading>
   /** A fresh view for one reconcile pass (or a direct caller outside one). */
   snapshot(resync?: boolean): RuntimeSnapshot
   /** The driver's own upkeep steps for the reconcile pass. */
@@ -846,7 +791,7 @@ export interface WorkspaceDriver {
 }
 
 /** See `WorkspaceDriver.mamaRelay`. */
-export interface MamaRelay {
+interface MamaRelay {
   port: number
   authenticate: (bearer: string) => Promise<boolean>
 }

@@ -1,8 +1,8 @@
 // Public interface of the sealed projects folder (`#domain/projects`): a
 // project's rows and its files on disk. That covers the clone and its
 // branches, the remote of a project the server hosts, both config layers,
-// the egress allowlist, the Dockerfile and build-dir files, the git
-// credentials, and the project lifecycle verbs.
+// the egress allowlist, the Dockerfile and build-dir files, which of its
+// owner's git credentials it uses, and the project lifecycle verbs.
 // Nothing below this layer reads project state; a driver that needs a
 // project's config is handed it (`PassContext.projectConfig`, a launch
 // intent).
@@ -34,22 +34,15 @@ export { dismissImageBuild, retryImageBuild } from './images'
 export {
   listProjectEnv,
   parseSecretProxyRule,
+  pushProjectSecrets,
   removeProjectEnvVar,
   resolveProjectEnv,
   setProjectEnvVar,
 } from './env'
 export {
-  addHttpsCredential,
   assignProjectCredential,
-  generateSshCredential,
-  listCredentialSummaries,
   missingCredentialError,
-  parseGitRemote,
-  removeCredential,
-  renameCredential,
-  replaceCredential,
   resolveProjectCredential,
-  runtimeGitCredentials,
   sshKeyMaterial,
 } from './credentials'
 export {
@@ -65,7 +58,6 @@ export {
   writeProjectDockerfile,
   writeUserDockerfile,
 } from './dockerfile'
-export { seedFakeAuth } from './fake-auth'
 export { listProjects } from './list'
 export {
   addPortForwardToProjectConfig,

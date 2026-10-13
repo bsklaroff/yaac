@@ -52,6 +52,16 @@ describe('buildApp', () => {
     expect(await res.json()).toEqual([])
   })
 
+  it('answers the reads the CLI relies on with their empty shapes', async () => {
+    const client = makeTestApiClient(buildApp({ buildId: 'test-build-id' }))
+    const auth = await client.auth.list.$get()
+    expect(auth.status).toBe(200)
+    expect(await auth.json()).toEqual({ gitCredentials: [], toolAuth: [] })
+    const listed = await client.workspace.list.$get({ query: { project: 'missing' } })
+    expect(listed.status).toBe(404)
+    expect(await listed.json()).toMatchObject({ error: { code: 'NOT_FOUND' } })
+  })
+
   it('unknown routes return uniform 404 NOT_FOUND', async () => {
     const app = buildApp({ buildId: 'test-build-id' })
     // The typed client can't reach an unknown route.

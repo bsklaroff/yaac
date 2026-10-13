@@ -1,20 +1,10 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient as render, serverError, type FetchMock } from './harness'
 
-// jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
-// Without vitest globals there is no auto-cleanup, so unmount explicitly.
 let server: FetchMock
 beforeEach(() => {
   server = mockFetch({ 'POST /api/workspace/sess-1/allow-host': {} })
@@ -22,7 +12,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
   useUiStore.setState({ viewedUserId: null })
 })
 

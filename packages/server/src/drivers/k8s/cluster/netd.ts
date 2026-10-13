@@ -13,7 +13,8 @@ import {
   applyObject,
   waitForRollout,
 } from '#drivers/k8s/substrate'
-import { contextHash, prebuiltRef } from '#drivers/k8s/image-engine'
+import { contextHash } from './image-tags'
+import { prebuiltRef } from './registry'
 import { NETD_DIR } from '@yaac/shared/project-paths'
 import { env, testEnv } from '@yaac/shared/env'
 import { clusterPodCidrs } from './cluster-cidrs'

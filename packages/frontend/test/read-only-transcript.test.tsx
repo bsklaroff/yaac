@@ -1,13 +1,14 @@
-// @vitest-environment jsdom
 import type { JSX } from 'react'
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { screen, fireEvent, cleanup } from '@testing-library/react'
 import type { AcpEvent } from '@yaac/shared/acp'
-import type { AgentSessionEntry } from '@yaac/shared/types'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
+import {
+  agentEvent as said, agentSession, mockFetch, renderWithClient, serverError, testQueryClient, userEvent as asked,
+  type FetchMock,
+} from './harness'
 
 /**
  * The read-only pane's conversation view. The server is answered at
@@ -20,30 +21,12 @@ import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMo
 
 const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
 
-const session = (over: Partial<AgentSessionEntry> = {}): AgentSessionEntry => ({
-  agentSessionId: 'c1',
-  tool: 'claude',
-  mode: 'tui',
-  ordinal: 0,
-  active: true,
-  ...over,
-})
-
-const said = (seq: number, text: string): AcpEvent =>
-  ({ type: 'agent', seq, content: [{ type: 'text', text }] })
-
-const asked = (seq: number, text: string): AcpEvent =>
-  ({ type: 'user', seq, content: [{ type: 'text', text }] })
+const session: typeof agentSession = (over) => agentSession({ mode: 'tui', ...over })
 
 let server: FetchMock
 beforeEach(() => {
   useUiStore.setState({ chatCondensed: false })
   server = mockFetch({ [TRANSCRIPT]: { events: [asked(0, 'what changed?'), said(1, 'the router')] } })
-})
-
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
 })
 
 /** Answer conversation c1's transcript with these events. */
@@ -212,7 +195,7 @@ describe('ReadOnlyTranscript', () => {
         thread: 's1',
         call: { toolCallId: 't8', title: 'grep router', kind: 'search', status: 'completed' },
       },
-      { type: 'agent', seq: 4, thread: 's1', content: [{ type: 'text', text: 'in src/router.ts' }] },
+      said(4, 'in src/router.ts', 's1'),
       {
         type: 'tool',
         seq: 1,
@@ -236,6 +219,7 @@ describe('ReadOnlyTranscript', () => {
     fireEvent.click(screen.getByRole('button', { name: /Back/ }))
     fireEvent.click(screen.getByRole('button', { name: /dev server/ }))
     expect(screen.getByText('npm run dev', { selector: 'pre' })).toBeTruthy()
+    expect(screen.queryByText(/no messages/)).toBeNull()
   })
 
   it('shows a decided ask as the decision, the same as a live pane would', async () => {

@@ -108,7 +108,7 @@ attempt. The launched workspace uses that title.
 
 ## Launching
 
-A launch goes through `startWorkspace`, the same path as the create route and
+A launch goes through `prepareStart`, the same path as the create route and
 `yaac-mama create`, with `rememberDefaults` and `claimSpare` off. It shows a
 normal provisioning row, headed by the entry's title (or its generated one),
 and delivers the prompt like any create.

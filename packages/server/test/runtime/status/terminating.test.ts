@@ -7,7 +7,7 @@ import {
   markWorkspaceTerminating,
   pruneTerminating,
 } from '#runtime/status/terminating'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 afterEach(() => {
   _clearTerminatingForTests()

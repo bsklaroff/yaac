@@ -1,19 +1,10 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { SettingsButton } from '#components/SettingsButton'
 import { useUiStore } from '#lib/store'
 import { DEFAULT_BINDINGS, mergeBindings } from '#lib/shortcuts'
 import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
 
-// jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 beforeEach(() => {
   useUiStore.setState({
@@ -25,10 +16,6 @@ beforeEach(() => {
   })
 })
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 /** Open the settings modal and switch to the Shortcuts section, against a
  *  server that accepts every shortcut save. */

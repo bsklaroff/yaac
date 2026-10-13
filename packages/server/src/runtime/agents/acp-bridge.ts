@@ -19,7 +19,7 @@ import { acpConversation } from './acp-registry'
 import { tailAcpLog } from './acp-log'
 import { claudeSubagentThreads } from './claude-acp-replay'
 import { sessionTranscriptPath } from './transcripts'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
 import type { AcpClientMessage, AcpEventInit, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
 

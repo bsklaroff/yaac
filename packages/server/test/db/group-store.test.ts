@@ -13,7 +13,7 @@ import {
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { getQueuedWorkspaceRow, insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace, listDraftWorkspaceRows } from '#db/draft-workspace-store'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'

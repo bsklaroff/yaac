@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
 import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
-import { removeAgentHistory } from '#domain/agent-history'
+import { removeAgentHistory } from './history'
 import { inFlightWorkspaceIds, listProvisioning } from './provisioning'
 import {
   applyWorkspaceEvent,
@@ -29,9 +29,9 @@ import { openRoot } from '#lib/confined-fs'
 import { shellQuote } from '#lib/shell'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
 import type { RuntimeSnapshot, TeardownTarget } from '#drivers/contract'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
-import { waitFor } from '#lib/wait-for'
+import { waitFor } from '@yaac/shared/wait-for'
 
 /**
  * Record the stop. A teardown carries on if the write fails: a lost stop
@@ -158,9 +158,6 @@ export async function cleanupWorkspace(params: {
   jobName: string
   projectId: string
   workspaceId: string
-  /** Why the workspace died, when a reaper is tearing it down. Shown in the
-   *  deleted-workspace view. */
-  cause?: WorkspaceDeathCause
 }): Promise<boolean> {
   const { projectId, workspaceId } = params
   const target = await beginTeardown(params)

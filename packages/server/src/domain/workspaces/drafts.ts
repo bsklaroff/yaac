@@ -3,8 +3,8 @@
  * user chose to keep. Nothing runs from a draft; creating or queueing from
  * it discards it.
  */
-import { notifyWorkspaceListChanged } from '#notify'
-import { serverLog } from '#log'
+import { notifyWorkspaceListChanged } from '#lib/notify'
+import { serverLog } from '#lib/log'
 import {
   deleteDraftWorkspace,
   getProjectRow,

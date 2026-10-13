@@ -1,15 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import {
-  requirePodman,
-  requireCluster,
-  useTestNamespace,
-  createTempDataDir,
-  cleanupTempDir,
-  TEST_IMAGE_PREFIX,
-} from '@yaac/test-utils/setup'
+import { requireCluster, useTestNamespace, createTempDataDir, cleanupTempDir, TEST_IMAGE_PREFIX } from '@yaac/test-utils/setup'
+import { requirePodman } from '#support/cluster'
 import { projectBuildDir, userBuildDir } from '@yaac/server/lib/build-dirs'
 import { writeBuildFile } from '@yaac/server/domain/projects/build-files'
 import { ensureImage } from '@yaac/server/drivers/k8s/images/build-coordinator'
@@ -18,30 +12,29 @@ import {
   BUILDER_ROLE_GUARD_NAME,
   SERVER_SA_NAME,
 } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import { resolveImageChain } from '@yaac/server/drivers/k8s/image-engine/image-builder'
-import { imageExists } from '@yaac/server/drivers/k8s/container/runtime'
+import { resolveImageChain } from '@yaac/server/drivers/k8s/cluster/image-tags'
+import { imageExists } from '@yaac/server/drivers/k8s/install/host-images'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
   registryEndpoint,
-  registryHasTag,
   registryHost,
   registryReachable,
   registryRef,
   registryTagState,
-} from '@yaac/server/drivers/k8s/container/registry'
-import { registryGrant } from '@yaac/server/drivers/k8s/container/registry-grant'
+} from '@yaac/server/drivers/k8s/cluster/registry'
+import { registryGrant } from '@yaac/server/drivers/k8s/cluster/registry-grant'
 import {
   MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
 } from '@yaac/server/drivers/k8s/cluster/main-registry'
 import { LABEL_REGISTRY_SERVES } from '@yaac/server/drivers/k8s/cluster/project-registry'
-import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/gvisor'
+import { RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/pod-spec'
 import { runPodToCompletion } from '@yaac/server/drivers/k8s/substrate/one-shot-pods'
 import { applyObject, deleteObject, k8sNamespace, listObjects, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { _resetK8sClientForTests } from '@yaac/server/drivers/k8s/substrate/client'
 import { kubectl } from '@yaac/test-utils/kubectl'
-import { getImageBuildLog, listImageBuilds } from '@yaac/server/drivers/k8s/image-engine/image-builds'
+import { getImageBuildLog, listImageBuilds } from '@yaac/server/drivers/k8s/images/image-builds'
 import {
   buildServerClusterRoleBindingManifest,
   buildServerClusterRoleManifest,
@@ -153,6 +146,8 @@ describe('trust-split builds', () => {
   beforeAll(async () => {
     await requirePodman()
     await requireCluster()
+    // The image chain names its repos by this prefix, as the e2e servers do.
+    vi.stubEnv('YAAC_IMAGE_PREFIX', TEST_IMAGE_PREFIX)
     restoreNamespace = useTestNamespace()
     // `useTestNamespace` only sets the name; the server's bootstrap would
     // normally create it.
@@ -351,15 +346,15 @@ describe('trust-split builds', () => {
   it('builds untrusted layers in builder pods with cross-pod step cache', async () => {
     // First build: a new project layer.
     await writeProjectDockerfile(DOCKERFILE_V1)
-    const chain1 = await resolveImageChain(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX)
+    const chain1 = await resolveImageChain(PROJECT_ID, OWNER)
     const projectTag1 = chain1.layers.find((l) => l.name === 'project')?.tag
     expect(projectTag1).toBeTruthy()
 
     // As the server's SA, the only identity the guard admits.
-    const final1 = await asServerIdentity(() => ensureImage(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX))
+    const final1 = await asServerIdentity(() => ensureImage(PROJECT_ID, OWNER))
     expect(final1).toBe(projectTag1)
     // The image is in the registry only, not the host store.
-    expect(await registryHasTag(projectTag1!)).toBe(true)
+    expect(await registryTagState(projectTag1!)).toBe('present')
     expect(await imageExists(projectTag1!)).toBe(false)
     expect(buildLogFor(projectTag1!)).toContain('STEP')
 
@@ -371,17 +366,17 @@ describe('trust-split builds', () => {
     await fs.writeFile(path.join(userBuildDir(OWNER), 'Dockerfile.user'), DOCKERFILE_USER)
     // The COPY source for Dockerfile.user.
     await writeBuildFile(userBuildDir(OWNER), 'nvim/note.txt', Buffer.from(`copied-${NONCE}\n`))
-    const chain2 = await resolveImageChain(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX)
+    const chain2 = await resolveImageChain(PROJECT_ID, OWNER)
     const projectTag2 = chain2.layers.find((l) => l.name === 'project')?.tag
     const userTag = chain2.layers.find((l) => l.name === 'user')?.tag
     expect(projectTag2).toBeTruthy()
     expect(projectTag2).not.toBe(projectTag1)
     expect(userTag).toBeTruthy()
 
-    const final2 = await asServerIdentity(() => ensureImage(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX))
+    const final2 = await asServerIdentity(() => ensureImage(PROJECT_ID, OWNER))
     expect(final2).toBe(userTag)
-    expect(await registryHasTag(projectTag2!)).toBe(true)
-    expect(await registryHasTag(userTag!)).toBe(true)
+    expect(await registryTagState(projectTag2!)).toBe('present')
+    expect(await registryTagState(userTag!)).toBe('present')
 
     expect(buildLogFor(projectTag2!)).toContain('Using cache')
 
@@ -414,7 +409,7 @@ describe('trust-split builds', () => {
     // Support files are part of the content hash, so an edit re-tags the
     // user layer (checked by resolution alone).
     await writeBuildFile(userBuildDir(OWNER), 'nvim/note.txt', Buffer.from(`edited-${NONCE}\n`))
-    const chain3 = await resolveImageChain(PROJECT_ID, OWNER, TEST_IMAGE_PREFIX)
+    const chain3 = await resolveImageChain(PROJECT_ID, OWNER)
     const userTag3 = chain3.layers.find((l) => l.name === 'user')?.tag
     expect(userTag3).toBeTruthy()
     expect(userTag3).not.toBe(userTag)

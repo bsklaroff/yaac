@@ -16,13 +16,12 @@ vi.mock('#domain/git', async (importOriginal) => ({
 import { cloneRepo } from '#domain/git'
 import type * as gitModule from '#domain/git'
 import {
-  addHttpsCredential,
   addProject,
   createHostedProject,
-  generateSshCredential,
   registerStagedProject,
   resolveProjectCredential,
 } from '#domain/projects'
+import { addHttpsCredential, generateSshCredential } from '#domain/auth'
 import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows, recordProject, setToolCredential } from '#db'
 import {
   claudeDir,

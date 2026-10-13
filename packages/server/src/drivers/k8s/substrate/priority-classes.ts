@@ -28,11 +28,6 @@ const PRIORITY_VALUE_INFRA = 1_000_000
 const PRIORITY_VALUE_BUILDER = 100_000
 const PRIORITY_VALUE_WORKSPACE = 1_000
 
-/** Priority class for workspace pods. */
-export function priorityClassSpec(): { priorityClassName?: string } {
-  return { priorityClassName: PRIORITY_CLASS_WORKSPACE }
-}
-
 /**
  * The PriorityClasses yaac pods use. They are cluster-scoped and shared by
  * every install on the cluster (including e2e namespaces), so they carry no

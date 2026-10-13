@@ -11,6 +11,7 @@ import {
   findForTeardown,
   findWorkspace,
   listWorkspaces,
+  observeLiveness,
   readMarkers,
   rememberWorkspace,
   restoreWorkspace,
@@ -28,7 +29,7 @@ let dataDir: string
 function marker(workspaceId: string, over: Partial<WorkspaceMarker> = {}): WorkspaceMarker {
   return {
     projectId: 'demo', workspaceId, tool: 'claude', mode: 'tui',
-    prewarm: false, createdAtMs: 1_000, launchEnv: {}, ...over,
+    createdAtMs: 1_000, launchEnv: {}, ...over,
   }
 }
 
@@ -53,21 +54,15 @@ describe('findWorkspace', () => {
     expect(findWorkspace(containerlessJobName('demo', A))).toBeUndefined()
     expect(findWorkspace('')).toBeUndefined()
   })
-
-  it('passes over an unclaimed spare, which is not a workspace', () => {
-    rememberWorkspace(marker(A, { prewarm: true }))
-    expect(findWorkspace(A)).toBeUndefined()
-  })
 })
 
 describe('findForTeardown', () => {
-  it('hands back the unit name a stop has to address, a spare only when asked', () => {
-    rememberWorkspace(marker(A, { prewarm: true }))
-    expect(findForTeardown(A, { spares: true })).toEqual({
+  it('hands back the unit name a stop has to address', () => {
+    rememberWorkspace(marker(A))
+    expect(findForTeardown(A)).toEqual({
       projectId: 'demo', workspaceId: A, unitName: containerlessJobName('demo', A),
     })
-    expect(findForTeardown(A)).toBeUndefined()
-    expect(findForTeardown(A.slice(0, 8), { spares: true })).toBeUndefined()
+    expect(findForTeardown(A.slice(0, 8))).toBeUndefined()
   })
 })
 
@@ -90,7 +85,7 @@ describe('listWorkspaces', () => {
     // An install that has never had a project.
     expect(listWorkspaces()).toEqual([])
 
-    await writeMarker(marker(A, { tmuxPid: 4242, sshAgentPid: 777, declaredTool: 'codex' }))
+    await writeMarker(marker(A, { tmuxPid: 4242, sshAgentPid: 777, tool: 'codex' }))
     await writeMarker(marker(B, { projectId: 'other' }))
     await restart()
     expect(listWorkspaces().map((w) => w.workspaceId).sort()).toEqual([B, A].sort())
@@ -115,9 +110,10 @@ describe('listWorkspaces', () => {
 })
 
 describe('countWorkspaces', () => {
-  it('excludes spares, which are not anyone\'s workspace yet', () => {
+  it('counts each project\'s running workspaces', () => {
     rememberWorkspace(marker(A))
-    rememberWorkspace(marker(B, { prewarm: true }))
+    rememberWorkspace(marker(B))
+    observeLiveness(B, false, { reason: 'pod-stopped' })
     expect(countWorkspaces()).toEqual({ demo: 1 })
   })
 })

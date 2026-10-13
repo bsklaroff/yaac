@@ -1,4 +1,4 @@
-import { listCredentialSummaries } from '#domain/projects'
+import { listCredentialSummaries } from './git-credentials'
 import { defaultModelFor, modelsForTool } from './models'
 import { loadToolAuthEntry } from './store'
 import type {

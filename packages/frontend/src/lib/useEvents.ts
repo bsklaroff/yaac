@@ -16,15 +16,8 @@ export function useEvents(enabled: boolean): { connected: boolean } {
     const sock = reconnectingSocket(() => '/api/events', {
       open: () => setConnected(true),
       message: (data) => {
-        if (typeof data !== 'string') return false
-        let parsed: ServerEvent
-        try {
-          parsed = JSON.parse(data) as ServerEvent
-        } catch {
-          return false
-        }
-        if (parsed.type !== 'snapshot') return false
-        useUiStore.getState().receiveSnapshot(parsed.data)
+        const { data: snapshot } = JSON.parse(data as string) as ServerEvent
+        useUiStore.getState().receiveSnapshot(snapshot)
         return true
       },
       close: () => setConnected(false),

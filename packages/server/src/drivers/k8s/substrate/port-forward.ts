@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
  * Long-lived `kubectl port-forward` children, keyed by purpose: one child
  * per key per process, shared by all callers and respawned after it dies.
  * It reaches an in-cluster port using only apiserver access. The host-side
- * main registry client (container/registry.ts) uses it. The local port is
+ * main registry client (cluster/registry.ts) uses it. The local port is
  * always ephemeral, so installs on one machine never collide.
  */
 

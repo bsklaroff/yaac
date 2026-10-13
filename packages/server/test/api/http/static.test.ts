@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { Hono } from 'hono'
-import { registerStaticRoutes } from '#http'
+import { registerStaticRoutes } from '#api/http/static'
 
 /** What a browser computes for an inline <script> body it is offered a hash for. */
 function sriHash(body: string): string {

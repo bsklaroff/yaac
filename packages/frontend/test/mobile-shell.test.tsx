@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, renderHook, screen, act, cleanup, fireEvent } from '@testing-library/react'
 import { MobileScreenLayer } from '#components/mobile/MobileScreenLayer'

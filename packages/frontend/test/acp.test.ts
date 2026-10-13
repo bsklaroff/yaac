@@ -1,17 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { mergeEvents } from '#lib/acp'
 import { groupEvents } from '#components/AcpTranscript'
 import type { AcpEvent } from '@yaac/shared/acp'
+import { agentEvent as agent, userEvent as user } from './harness'
 
-/**
- * De-duplicating a reconnect's replay, and grouping streamed chunks into
- * messages.
- */
+/** Grouping streamed chunks into messages. */
 
-const agent = (seq: number, text: string): AcpEvent =>
-  ({ type: 'agent', seq, content: [{ type: 'text', text }] })
-const user = (seq: number, text: string): AcpEvent =>
-  ({ type: 'user', seq, content: [{ type: 'text', text }] })
 const tool = (seq: number, id: string, status: 'pending' | 'completed', title = 'Read a.ts'): AcpEvent =>
   ({ type: 'tool', seq, call: { toolCallId: id, title, kind: 'read', status } })
 const ask = (seq: number, requestId = '5'): AcpEvent => ({
@@ -26,38 +19,6 @@ const ask = (seq: number, requestId = '5'): AcpEvent => ({
 })
 const resolved = (seq: number, optionId: string, requestId = '5'): AcpEvent =>
   ({ type: 'permission-resolved', seq, requestId, outcome: 'selected', optionId })
-
-describe('mergeEvents', () => {
-  it('appends new events in sequence order', () => {
-    const merged = mergeEvents([agent(0, 'a')], [agent(1, 'b'), agent(2, 'c')])
-    expect(merged.map((e) => e.seq)).toEqual([0, 1, 2])
-  })
-
-  it('de-duplicates a reconnect replay instead of doubling the conversation', () => {
-    // A reattach replays the whole log, which must merge, not duplicate.
-    const held = [user(0, 'hi'), agent(1, 'hello')]
-    const replayed = [user(0, 'hi'), agent(1, 'hello'), agent(2, 'more')]
-    const merged = mergeEvents(held, replayed)
-    expect(merged.map((e) => e.seq)).toEqual([0, 1, 2])
-  })
-
-  it('orders out-of-order arrivals by seq, not by arrival', () => {
-    const merged = mergeEvents([agent(5, 'e')], [agent(1, 'a'), agent(3, 'c')])
-    expect(merged.map((e) => e.seq)).toEqual([1, 3, 5])
-  })
-
-  it('lets a replayed event supersede the one already held', () => {
-    // Same seq, newer payload: the server is authoritative.
-    const merged = mergeEvents([tool(0, 't1', 'pending')], [tool(0, 't1', 'completed')])
-    expect(merged).toHaveLength(1)
-    expect(merged[0]).toMatchObject({ call: { status: 'completed' } })
-  })
-
-  it('is a no-op for an empty batch', () => {
-    const held = [agent(0, 'a')]
-    expect(mergeEvents(held, [])).toBe(held)
-  })
-})
 
 describe('groupEvents', () => {
   it('coalesces consecutive chunks of one kind into a single message', () => {

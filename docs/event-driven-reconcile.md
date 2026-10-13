@@ -11,7 +11,7 @@ one-shot commands) use the stream relay instead; see
 ## Reconciler (`main/reconciler.ts`)
 
 Each reconcile step names the triggers that should run it. The step list is
-`defaultReconcileSteps()` in `domain/reconcile.ts`, plus the steps the driver
+`defaultReconcileSteps()` in `main/reconcile-steps.ts`, plus the steps the driver
 adds. Two lanes mark the pass dirty, and one executor runs passes one at a
 time:
 
@@ -94,8 +94,8 @@ snapshot. The cache is also a process-wide singleton
 (`setActiveClusterCache`) that the display path and steps read. It is null in
 unit tests, which fall back to one-shot live lists.
 
-`tick-snapshot.ts` gives each pass one point-in-time view. Each getter is
-memoized per pass. It answers from the cache when that informer is healthy,
+`createRuntimeSnapshot` (workspaces/snapshot.ts) gives each pass one
+point-in-time view. Each read is memoized per pass. It answers from the cache when that informer is healthy,
 and otherwise does a live list. That fallback is what keeps
 destructive steps safe: the stale reaper never acts on a cache known to be
 behind, and its slower sweeps wait far longer than any watch lag.

@@ -1,3 +1,4 @@
+import type { FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import {
   PACKAGE_ROOT,
@@ -272,4 +273,84 @@ export function workspaceAttachmentsDir(projectId: string, workspaceId: string):
   return path.join(workspaceStateDir(projectId, workspaceId), 'attachments')
 }
 
+/**
+ * The directory claude files a conversation under for a cwd: every
+ * non-alphanumeric character replaced with `-` (`/workspace` becomes
+ * `-workspace`), and past 200 characters truncated and suffixed with a hash
+ * of the whole path. Matches claude 2.1.286's project-dir function (string
+ * hash `(h << 5) - h + c | 0`); a test pins it.
+ */
+export function claudeProjectDirName(cwd: string): string {
+  const munged = cwd.replace(/[^a-zA-Z0-9]/g, '-')
+  if (munged.length <= 200) return munged
+  let hash = 0
+  for (let i = 0; i < cwd.length; i++) hash = ((hash << 5) - hash + cwd.charCodeAt(i)) | 0
+  return `${munged.slice(0, 200)}-${Math.abs(hash).toString(36)}`
+}
 
+/**
+ * The cwd claude runs in inside a pod, and so the directory a workspace's
+ * history keeps every conversation in.
+ */
+export const CLAUDE_POD_CWD = claudeProjectDirName('/workspace')
+
+/** The project's shared auto-memory dir in the shared `projects/`, named as
+ *  claude would for a `/repo` cwd. It is mounted (or linked) over each
+ *  workspace's own `memory` folder, since claude keys memory on the
+ *  checkout's git root. */
+export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
+
+/**
+ * The thread id from a codex rollout's filename,
+ * `rollout-<YYYY-MM-DDTHH-MM-SS>-<thread id>.jsonl` (also `.jsonl.zst`;
+ * codex-cli 0.159.3). Undefined for other files.
+ */
+export function codexRolloutThreadId(fileName: string): string | undefined {
+  return /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+?)\.jsonl(\.zst)?$/.exec(fileName)?.[1]
+}
+
+/** How much of a rollout's head to read for its first line (`session_meta`
+ *  holds ~20 KB of base instructions in 0.159.3). */
+const ROLLOUT_META_BYTES = 256 * 1024
+
+/**
+ * The thread a codex rollout descends from, or undefined for a root (or a
+ * rollout `open` cannot open). A `spawn_agent` child names its parent as
+ * `parent_thread_id` in its `session_meta` source (found wherever it nests,
+ * since only the field name is pinned); a `/fork` names its origin as
+ * `forked_from_id`. Only the first line has these, and a child may never
+ * fire a hook, so this is the only link to its parent.
+ */
+export async function codexRolloutParent(open: () => Promise<FileHandle | null>): Promise<string | undefined> {
+  let handle: FileHandle | null = null
+  try {
+    handle = await open()
+    if (handle === null) return undefined
+    const buf = Buffer.alloc(ROLLOUT_META_BYTES)
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0)
+    const text = buf.subarray(0, bytesRead).toString('utf8')
+    const eol = text.indexOf('\n')
+    const entry = JSON.parse(eol < 0 ? text : text.slice(0, eol)) as {
+      type?: unknown
+      payload?: { forked_from_id?: unknown; source?: unknown }
+    }
+    if (entry.type !== 'session_meta') return undefined
+    const parent = spawnParent(entry.payload?.source) ?? entry.payload?.forked_from_id
+    return typeof parent === 'string' && parent !== '' ? parent : undefined
+  } catch {
+    return undefined
+  } finally {
+    await handle?.close()
+  }
+}
+
+function spawnParent(source: unknown): unknown {
+  if (source === null || typeof source !== 'object') return undefined
+  const own = (source as { parent_thread_id?: unknown }).parent_thread_id
+  if (own !== undefined) return own
+  for (const value of Object.values(source)) {
+    const found = spawnParent(value)
+    if (found !== undefined) return found
+  }
+  return undefined
+}

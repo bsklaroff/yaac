@@ -43,20 +43,20 @@ import {
   type InstallIdentity,
   type ObjectRef,
 } from '#drivers/k8s/substrate'
-import { waitFor } from '#lib/wait-for'
+import { waitFor } from '@yaac/shared/wait-for'
 import { ensureStorageClaims, type StorageShape } from './storage'
 import {
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
+  contextHash,
+  imagePrefix,
   nodeIpBlocks,
+  registryRef,
+  registryTagState,
+  stringHash,
 } from '#drivers/k8s/cluster'
 import { liveFronting, type RemoteHosting, type ServerFronting } from './server-fronting'
-import {
-  contextHash,
-  ensureImageByTag,
-  stringHash,
-} from '#drivers/k8s/image-engine'
-import { pushImageToRegistry, registryHasTag, registryRef } from '#drivers/k8s/container'
+import { ensureImageByTag, pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath } from '@yaac/shared/paths'
 import { readLock } from '@yaac/shared/lock'
@@ -88,7 +88,7 @@ function serverDockerfile(context = serverImageContext()): string {
  */
 export async function resolveServerImageTag(
   context = serverImageContext(),
-  prefix = testEnv.imagePrefix ?? 'yaac',
+  prefix = imagePrefix(),
 ): Promise<string> {
   return `${prefix}-server:${stringHash(await contextHash(context))}`
 }
@@ -100,10 +100,10 @@ export async function resolveServerImageTag(
  */
 export async function ensureServerImage(
   context = serverImageContext(),
-  prefix = testEnv.imagePrefix ?? 'yaac',
+  prefix = imagePrefix(),
 ): Promise<string> {
   const tag = await resolveServerImageTag(context, prefix)
-  if (await registryHasTag(tag)) return registryRef(tag)
+  if (await registryTagState(tag) === 'present') return registryRef(tag)
   const dockerfile = serverDockerfile(context)
   try {
     await fs.access(dockerfile)
@@ -255,7 +255,6 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     { name: 'YAAC_GLOBAL_ROOT', value: POD_GLOBAL_ROOT },
     { name: 'YAAC_SERVER_LOCAL_ROOT', value: POD_SERVER_LOCAL_ROOT },
     { name: 'YAAC_NODE_LOCAL_ROOT', value: POD_NODE_LOCAL_ROOT },
-    { name: 'YAAC_DRIVER', value: 'k8s' },
   ]
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],

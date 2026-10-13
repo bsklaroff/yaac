@@ -20,12 +20,12 @@
 
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
-import { claudeDir, codexDir, opencodeConfigDir, piDir, repoDir } from '@yaac/shared/project-paths'
+import { claudeDir, codexDir, opencodeConfigDir, piDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
 import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
 import { getDefaultBranch, listTreeSubdirs, readBlobAt, remoteBranchExists } from '#domain/git'
-import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
-import { openSandboxDir } from '#runtime/agents'
+import { workspacesSandboxed } from '#drivers/driver'
+import { openAgentDir, openRoot, type ConfinedRoot } from '#lib/confined-fs'
 import { getClaudeBundledSkills } from './claude-bundled'
 import { builtinSkillsDir, isBuiltinSkillLink } from './builtin'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from './parse'
@@ -53,14 +53,14 @@ const MAX_SKILL_MD_BYTES = 256 * 1024
 
 /**
  * A confined host directory to read skills under: tool homes opened with
- * `openSandboxDir` (no links where a sandbox can write, so a planted
+ * `openAgentDir` (no links where a sandbox can write, so a planted
  * `SKILL.md` link can't expose server files), and the install and checkout
  * dirs as `inside`. Null when missing (no skills).
  */
 type HostRoot = ConfinedRoot | null
 
 function toolHome(projectId: string, dir: string): Promise<HostRoot> {
-  return openSandboxDir(projectId, dir).catch(() => null)
+  return openAgentDir(projectDir(projectId), dir, workspacesSandboxed()).catch(() => null)
 }
 
 function hostDir(dir: string): Promise<HostRoot> {

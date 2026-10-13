@@ -34,7 +34,7 @@ import { PROJECT_REGISTRY_PORT, projectRegistryClusterIp } from '#drivers/k8s/cl
 import { ensureBuilderImage } from '#drivers/k8s/cluster'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /** In-pod mount point of the store (Dockerfile.nestable's
  *  `additionalimagestores`). The image ships it empty, so a workspace with

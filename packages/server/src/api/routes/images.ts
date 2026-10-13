@@ -2,7 +2,8 @@ import { Hono } from 'hono'
 import { ServerError } from '@yaac/shared/errors'
 import { workspaceDriver } from '#drivers/driver'
 import { dismissImageBuild, retryImageBuild } from '#domain/projects'
-import { requireDriverFeature, type IdentityEnv } from '#http'
+import { requireDriverFeature } from '#api/http/driver-features'
+import type { IdentityEnv } from '#api/http/web-auth'
 
 /**
  * Image-build registry routes. The `/events` snapshot carries build metadata;

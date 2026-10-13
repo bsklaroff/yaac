@@ -1,20 +1,9 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { useUiStore } from '#lib/store'
 
-// jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
-// Without vitest globals there is no auto-cleanup, so unmount explicitly.
-afterEach(cleanup)
 
 const FAILURES = [{ host: 'github.com', status: 401, atMs: 1751700000000 }]
 

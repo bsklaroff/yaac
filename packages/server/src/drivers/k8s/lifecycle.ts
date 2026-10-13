@@ -6,15 +6,15 @@ import {
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
 import { ensureMainRegistry } from '#drivers/k8s/cluster'
-import {
-  PortDetectorManager,
-  stopAllWorkspaceForwarders,
-} from '#drivers/k8s/forwarders'
 import { proxyClient } from '#drivers/k8s/egress'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
-import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
-import { notifyWorkspaceListChanged } from '#notify'
-import { serverLog } from '#log'
+import {
+  PortDetectorManager,
+  runtimeHandleFromPod,
+  stopAllWorkspaceForwarders,
+} from '#drivers/k8s/workspaces'
+import { notifyWorkspaceListChanged } from '#lib/notify'
+import { serverLog } from '#lib/log'
 import {
   MEDIATOR_TRIGGERS,
   type DriverSinks,

@@ -6,21 +6,9 @@ import { promisify } from 'node:util'
 // Test infrastructure: re-exported below so tests can ASSERT against the
 // install root. Not a storage path — tests that write pick a tier helper.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { setDataDir, getDataDir, clientLocalRoot, ensureDataDir, projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
-import { cloneRepo } from '@yaac/server/domain/git'
-import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/container/runtime'
-import { deleteObjects, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
-import { installId } from '@yaac/server/drivers/k8s/substrate/install-id'
-import { LABEL_WORKSPACE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
-import { LABEL_INSTALL_ID } from '@yaac/server/drivers/k8s/substrate/storage-constants'
-import type { SpawnedServer } from '#cli'
-import { registerTestProject } from '#api'
-import { PROXY_APP_NAME, PROXY_PORT } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
-import type { ProxyClientConfig } from '@yaac/server/drivers/k8s/egress/proxy-client'
-import { startKubectlForward, type KubectlForward } from '#kubectl-forward'
+import { setDataDir, getDataDir, clientLocalRoot, ensureDataDir } from '@yaac/shared/project-paths'
 import { e2eMkdtemp, removeScratchTree, testTmpBase } from '#tmp'
 import { git } from '#git'
-import { kubectl } from '#kubectl'
 
 const execFileAsync = promisify(execFile)
 
@@ -54,7 +42,6 @@ const TEST_RUN_ID = crypto.randomBytes(4).toString('hex')
  */
 export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
 
-
 /**
  * Point this process's k8s helpers at the test namespace, the one a server
  * spawned with `createYaacTestEnv().env` uses. Returns a restore function.
@@ -66,71 +53,6 @@ export function useTestNamespace(): () => void {
     if (prev === undefined) delete process.env.YAAC_K8S_NAMESPACE
     else process.env.YAAC_K8S_NAMESPACE = prev
   }
-}
-
-/**
- * Proxy sidecar config for e2e tests, using the prebuilt test image.
- *
- * The real server reaches the proxy's control API through its Service. These
- * tests run on the host, so `controlOrigin` is a `kubectl port-forward`,
- * started lazily because the proxy Deployment doesn't exist until
- * `ensureRunning` applies it.
- */
-export const TEST_PROXY_CONFIG: ProxyClientConfig = {
-  image: 'yaac-test-proxy',
-  controlOrigin: () => testProxyControlOrigin(),
-}
-
-let proxyControlForward: Promise<KubectlForward> | null = null
-
-/** The port-forwarded proxy control origin (see TEST_PROXY_CONFIG). */
-async function testProxyControlOrigin(): Promise<string> {
-  proxyControlForward ??= startKubectlForward({
-    namespace: k8sNamespace(),
-    target: `deployment/${PROXY_APP_NAME}`,
-    remotePort: PROXY_PORT,
-  })
-  return (await proxyControlForward).origin
-}
-
-/**
- * Run a command inside a workspace Job's pod
- * (`kubectl exec -n <ns> job/<jobName> -- <args>`). No shell quoting needed.
- */
-export async function execInJob(
-  jobName: string,
-  args: string[],
-  opts: { timeout?: number } = {},
-): Promise<{ stdout: string; stderr: string }> {
-  return kubectl(['exec', '-n', k8sNamespace(), `job/${jobName}`, '--', ...args], opts)
-}
-
-/**
- * Delete every workspace Job/pod this test's install created (selected by
- * its install id label, since tests in a file share a namespace) and
- * wait, with a bound, for them to go.
- *
- * Waiting here keeps a slow pod teardown from eating into the next file's
- * setup budget, since e2e files run one at a time. The bound keeps a wedged
- * pod from hanging the suite.
- */
-export async function cleanupWorkspaceJobs(timeoutMs = 120_000): Promise<void> {
-  const selector = `${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID}`
-  try {
-    // Delete without waiting, then wait for them all, so terminations
-    // overlap. The selector keeps the proxy pod, which has the same
-    // install id, out.
-    await deleteObjects('batch/v1', 'Job', { namespace: k8sNamespace(), labelSelector: selector })
-    await deleteObjects('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: selector })
-  } catch {
-    return // cluster unreachable — nothing to clean, and nothing to wait for
-  }
-
-  // A pod still there at the bound is left; the cluster finishes it.
-  await execFileAsync('kubectl', [
-    'wait', '--for=delete', 'pods', '-n', k8sNamespace(), '-l', selector,
-    `--timeout=${String(Math.ceil(timeoutMs / 1000))}s`,
-  ]).catch(() => {})
 }
 
 /**
@@ -175,45 +97,6 @@ export async function createTestRepo(dir: string): Promise<string> {
   return dir
 }
 
-/**
- * Whether podman is available, via `podman info` (which checks the engine
- * is actually reachable).
- */
-export async function podmanAvailable(): Promise<boolean> {
-  try {
-    await execFileAsync('podman', ['info', '--format', 'json'])
-    return true
-  } catch {
-    return false
-  }
-}
-
-let _podmanAlive = false
-
-/**
- * Throw if podman is not available, so tests fail rather than silently
- * pass. Only success is cached.
- */
-export async function requirePodman(): Promise<void> {
-  if (_podmanAlive) return
-  ensureRootfulPodmanHost()
-  if (await podmanAvailable()) { _podmanAlive = true; return }
-  throw new Error('Podman is not available. Start it with: podman machine start')
-}
-
-/**
- * Whether a k8s cluster is reachable (`kubectl version` with a short
- * timeout).
- */
-export async function clusterAvailable(): Promise<boolean> {
-  try {
-    await execFileAsync('kubectl', ['version', '--output', 'json'], { timeout: 10_000 })
-    return true
-  } catch {
-    return false
-  }
-}
-
 let _clusterAlive = false
 
 /**
@@ -222,36 +105,16 @@ let _clusterAlive = false
  */
 export async function requireCluster(): Promise<void> {
   if (_clusterAlive) return
-  if (await clusterAvailable()) { _clusterAlive = true; return }
+  try {
+    await execFileAsync('kubectl', ['version', '--output', 'json'], { timeout: 10_000 })
+    _clusterAlive = true
+    return
+  } catch { /* reported below */ }
   throw new Error(
     'Kubernetes cluster is not reachable. yaac e2e tests need kubectl '
     + 'pointed at a local cluster — run "yaac cluster check" for setup '
     + 'instructions.',
   )
-}
-
-/**
- * Add a local test repo as a project on `server`, named after the repo's
- * directory: clone it into the data dir, then register it, skipping the URL
- * checks `project add` does. Returns the project's id.
- *
- * `remoteUrl` is what the project row records. It defaults to a
- * GitHub-shaped URL for the name, which nothing dials under
- * YAAC_E2E_SKIP_FETCH. `headers` name the caller who owns it
- * (`asTailnet`), the built-in user by default.
- */
-export async function addTestProject(
-  server: SpawnedServer,
-  localRepoPath: string,
-  opts: { remoteUrl?: string; headers?: Record<string, string> } = {},
-): Promise<string> {
-  const name = path.basename(localRepoPath)
-  const projectId = crypto.randomUUID()
-  await fs.mkdir(projectDir(projectId), { recursive: true })
-  await cloneRepo(localRepoPath, repoDir(projectId), null)
-  await fs.mkdir(claudeDir(projectId), { recursive: true })
-  await registerTestProject(server, projectId, name, opts.remoteUrl ?? `https://github.com/test-org/${name}.git`, opts.headers)
-  return projectId
 }
 
 /** The current yaac data dir (for assertions). */

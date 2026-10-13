@@ -59,7 +59,7 @@ function installExitHook(): void {
   }
 }
 
-export interface KubectlForwardSpec {
+interface KubectlForwardSpec {
   namespace: string
   /** kubectl target, e.g. `deployment/yaac-server`. */
   target: string

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { workspaceDriver } from '#drivers/driver'
 import { loadToolAuthEntry, signInTool } from '#domain/auth'
 import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, seeTailnetUser } from '#db'

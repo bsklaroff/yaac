@@ -7,7 +7,8 @@ import { git } from '@yaac/test-utils/git'
 import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { credentialOwnerKey } from '@yaac/server/domain/auth'
-import { addHttpsCredential, assignProjectCredential, listCredentialSummaries } from '@yaac/server/domain/projects/credentials'
+import { addHttpsCredential, listCredentialSummaries } from '@yaac/server/domain/auth/git-credentials'
+import { assignProjectCredential } from '@yaac/server/domain/projects/credentials'
 import { getToolCredential, setToolCredential } from '@yaac/server/db/tool-credential-store'
 import { seeTailnetUser } from '@yaac/server/db/user-store'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
@@ -23,7 +24,6 @@ import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import type * as sessionCreateModule from '@yaac/server/domain/workspaces/create'
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
-import type * as sessionRestartModule from '@yaac/server/domain/workspaces/restart'
 import type * as projectRemoveModule from '@yaac/server/domain/workspaces/project-teardown'
 import type * as cliResolveModule from '@yaac/auth-daemon/cli-resolve'
 import type { ProjectMeta, ClaudeOAuthBundle } from '@yaac/shared/types'
@@ -43,11 +43,6 @@ vi.mock('@yaac/server/domain/workspaces/create', async () => {
 vi.mock('@yaac/server/domain/workspaces/stop', () => ({
   stopWorkspace: vi.fn(),
 } satisfies Partial<typeof sessionDeleteModule>))
-
-vi.mock('@yaac/server/domain/workspaces/restart', async () => ({
-  ...await vi.importActual<typeof sessionRestartModule>('@yaac/server/domain/workspaces/restart'),
-  restartWorkspace: vi.fn(),
-} satisfies Partial<typeof sessionRestartModule>))
 
 vi.mock('@yaac/server/domain/projects/add', async () => {
   const actual = await vi.importActual<typeof projectAddModule>('@yaac/server/domain/projects/add')
@@ -73,7 +68,6 @@ vi.mock('@yaac/auth-daemon/cli-resolve', async () => {
 
 import { createWorkspace } from '@yaac/server/domain/workspaces/create'
 import { stopWorkspace } from '@yaac/server/domain/workspaces/stop'
-import { restartWorkspace } from '@yaac/server/domain/workspaces/restart'
 import { addProject } from '@yaac/server/domain/projects/add'
 import { removeProject } from '@yaac/server/domain/workspaces/project-teardown'
 import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/domain/workspaces/provisioning'
@@ -150,7 +144,6 @@ function installLoopbackAgent(): () => void {
 
 const mockCreateWorkspace = vi.mocked(createWorkspace)
 const mockDeleteSession = vi.mocked(stopWorkspace)
-const mockRestartSession = vi.mocked(restartWorkspace)
 const mockAddProject = vi.mocked(addProject)
 const mockRemoveProject = vi.mocked(removeProject)
 
@@ -917,14 +910,13 @@ describe('write routes', () => {
         method: 'POST', body: JSON.stringify({ workspaceId: 'nope' }),
       }))
       expect(res.status).toBe(404)
-      expect(mockRestartSession).not.toHaveBeenCalled()
+      expect(mockCreateWorkspace).not.toHaveBeenCalled()
     })
 
-    it('streams progress and a result event from restartWorkspace, by the resolved id', async () => {
+    it('streams progress and a result event from the relaunch, by the resolved id', async () => {
       await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-x' })
-      mockRestartSession.mockImplementation((_principal, _id, opts) => {
-        opts?.onProgress?.('Stopping session job yaac-demo-sess-x...')
-        opts?.onProgress?.('Reusing existing workspace at /wt/sess-x')
+      mockCreateWorkspace.mockImplementation((_projectId, opts) => {
+        opts.onProgress?.('Reusing existing workspace at /wt/sess-x')
         return Promise.resolve({
           workspaceId: 'sess-x',
           jobName: 'yaac-demo-sess-x',
@@ -944,7 +936,6 @@ describe('write routes', () => {
       expect(res.headers.get('content-type')).toBe('application/x-ndjson')
       const events = (await res.text()).trim().split('\n').map((line) => JSON.parse(line) as unknown)
       expect(events).toEqual([
-        { type: 'progress', message: 'Stopping session job yaac-demo-sess-x...' },
         { type: 'progress', message: 'Reusing existing workspace at /wt/sess-x' },
         {
           type: 'result',
@@ -959,13 +950,14 @@ describe('write routes', () => {
           },
         },
       ])
-      expect(mockRestartSession).toHaveBeenCalledWith(local, 'sess-x', expect.objectContaining({
+      expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({
+        workspaceId: 'sess-x', resume: [],
       }))
     })
 
-    it('emits a terminal error event when restartWorkspace throws', async () => {
+    it('emits a terminal error event when the relaunch throws', async () => {
       await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-y' })
-      mockRestartSession.mockRejectedValue(new ServerError('INTERNAL', 'image pull failed'))
+      mockCreateWorkspace.mockRejectedValue(new ServerError('INTERNAL', 'image pull failed'))
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.restart.$post({ json: { workspaceId: 'sess-y' } })
       expect(res.status).toBe(200)
@@ -983,7 +975,7 @@ describe('write routes', () => {
         method: 'POST', body: JSON.stringify({ workspaceId: 'sess-z' }),
       }))
       expect(res.status).toBe(409)
-      expect(mockRestartSession).not.toHaveBeenCalled()
+      expect(mockCreateWorkspace).not.toHaveBeenCalled()
     })
   })
 
@@ -1133,21 +1125,21 @@ describe('write routes', () => {
       await seed('sess-a', 'sess-b')
       const groupId = await createGroup('sess-a')
 
-      await client().workspace['set-group'].$post({
-        json: { projectId: DEMO, workspaceId: 'sess-b', groupId },
+      await client().workspace.group.move.$post({
+        json: { projectId: DEMO, workspaceId: 'sess-b', group: groupId },
       })
       expect((await getProjectWorkspaceRows(DEMO)).get('sess-b')?.groupId).toBe(groupId)
 
-      await client().workspace['set-group'].$post({
-        json: { projectId: DEMO, workspaceId: 'sess-b', groupId: null },
+      await client().workspace.group.move.$post({
+        json: { projectId: DEMO, workspaceId: 'sess-b', group: null },
       })
       expect((await getProjectWorkspaceRows(DEMO)).get('sess-b')?.groupId).toBeUndefined()
 
       // A drop onto a group another client has already deleted.
       const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/workspace/set-group', rawInit({
+      const res = await app.request('/api/workspace/group/move', rawInit({
         method: 'POST',
-        body: JSON.stringify({ projectId: DEMO, workspaceId: 'sess-b', groupId: 'gone' }),
+        body: JSON.stringify({ projectId: DEMO, workspaceId: 'sess-b', group: 'gone' }),
       }))
       expect(res.status).toBe(404)
     })

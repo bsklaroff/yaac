@@ -5,7 +5,7 @@ import { hostMatchesPattern, resolveAllowedHosts } from '#lib/allowed-hosts'
 import { buildStatusRight } from '#lib/status-right'
 import { mergeEnvEntries } from '#lib/env-entries'
 import { testEnv } from '@yaac/shared/env'
-import { workspaceDriver } from '#drivers/driver'
+import { workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import type {
   RuntimeHandle,
   TeardownTarget,
@@ -19,6 +19,8 @@ import {
   acpLogDir,
   agentHistoryDir,
   type AgentHistoryPart,
+  CLAUDE_POD_CWD,
+  CLAUDE_POD_REPO,
   claudeDir,
   codexDir,
   opencodeCheckpointDir,
@@ -39,7 +41,9 @@ import {
   CONTAINER_OPENCODE_DATA,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { fetchProjectOrigin, missingCredentialError, parseGitRemote, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
+import { buildCloneLinkExec } from '@yaac/shared/git'
+import { parseGitRemote } from '@yaac/shared/git-remote'
+import { fetchProjectOrigin, missingCredentialError, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -57,25 +61,9 @@ import {
   remoteBranchExists,
   writeKnownHostsFile,
 } from '#domain/git'
-import { serverLog } from '#log'
-import {
-  agentDriver,
-  AgentLaunchDeadError,
-  agentWindowName,
-  CLAUDE_POD_CWD,
-  CLAUDE_POD_REPO,
-  buildCloneLinkExec,
-  buildWindowsExec,
-  ensureAgentReporters,
-  ensureToolApiKeyConfig,
-  openSandboxDir,
-  tmuxCmd,
-  validateInitWindows,
-  verifyAgentWindowAlive,
-  whenAcpConversation,
-  type AcpConversation,
-  type InitWindow,
-} from '#runtime/agents'
+import { serverLog } from '#lib/log'
+import type { AcpConversation } from '#runtime/agents'
+import { agentDriver, AgentLaunchDeadError, agentWindowName, buildWindowsExec, ensureAgentReporters, ensureToolApiKeyConfig, resolveInitWindows, tmuxCmd, verifyAgentWindowAlive, whenAcpConversation, type InitWindow, openSandboxDir } from '#runtime/agents'
 import {
   applyWorkspaceEvent,
   getGitIdentity,
@@ -95,7 +83,7 @@ import {
 import {
   builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts, reconcileSharedSkillRoots,
 } from '#domain/skills'
-import { convergeAgentHistory } from '#domain/agent-history'
+import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
 import { reconcileWorkspaceAgentSessions } from './agent-session-registry'
 import {
@@ -106,7 +94,7 @@ import {
   stageWorkspaceBin,
 } from './workspace-bin'
 import { ServerError } from '@yaac/shared/errors'
-import { waitFor } from '#lib/wait-for'
+import { waitFor } from '@yaac/shared/wait-for'
 import {
   AGENT_CLIS,
   DEFAULT_AGENT_MODE,
@@ -180,10 +168,9 @@ function emit(message: string, options: WorkspaceCreateOptions): void {
 }
 
 export interface WorkspaceCreateOptions {
-  /** Pre-generated workspace ID (resume uses it to know the job name). */
-  workspaceId?: string
-  /** Agent tool to run inside the container (default: 'claude'). */
-  tool?: AgentTool
+  workspaceId: string
+  /** The agent tool of the first window. */
+  tool: AgentTool
   /**
    * Which protocol drives the agent. `acp` runs the tool's ACP adapter under
    * acpd and the webapp renders a chat pane instead of a terminal.
@@ -195,18 +182,12 @@ export interface WorkspaceCreateOptions {
    */
   branch?: string
   /**
-   * Resume an existing workspace: reuse the workspace at
-   * `workspaceDir(projectId, workspaceId)` if present and launch the agent
-   * with `--resume` so it loads the prior transcript. Requires `workspaceId`.
+   * Resume an existing workspace (a restart): reuse its checkout if present,
+   * and resume these conversations, in window order, each in its own tmux
+   * window (`agentWindowName`) so it loads its prior transcript. Empty
+   * resumes one conversation under the workspace id.
    */
-  resume?: boolean
-  /**
-   * Agent sessions to resume, in window order (restart passes the stopped
-   * workspace's active set). Each gets its own tmux window
-   * (`agentWindowName`). Empty (the default) starts one fresh conversation
-   * whose id is the workspace id.
-   */
-  resumeAgentSessions?: Array<{ agentSessionId: string; tool: AgentTool }>
+  resume?: Array<{ agentSessionId: string; tool: AgentTool }>
   /**
    * Provision a prewarmed spare, hidden from user-facing views until a later
    * `workspace create` claims it. Set only by the prewarm reconciler.
@@ -296,7 +277,7 @@ interface WorkspaceSetupParams {
   /** Conversations to bring up, in window order. The same list the rows were
    *  written from, so the DB never names one the agent did not open. */
   launching: Array<{ agentSessionId: string; tool: AgentTool }>
-  /** Pre-validated init windows (validateInitWindows ran in createWorkspace). */
+  /** The project's init windows, resolved in createWorkspace. */
   initWindows: InitWindow[]
   /** pi only — provider whose default model drives `pi --model`. */
   piProvider?: PiProvider
@@ -357,7 +338,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
 
   // Link the checkout to the main clone's objects and update its `origin/*`,
   // on every launch, so the agent starts current.
-  await runtime.exec(jobName, buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths))
+  await runtime.exec(jobName, buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir))
 
   // yaac-workspace-init starts the in-pod engine in the background. Wait for
   // it so a broken engine fails the create with a clear error.
@@ -381,7 +362,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // kills the window); such a conversation starts fresh instead.
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => {
-    const resume = options.resume === true
+    const resume = options.resume !== undefined
       && !(SELF_NAMING_TOOLS.includes(a.tool) && a.agentSessionId === workspaceId)
     return {
       tool: a.tool,
@@ -423,7 +404,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
         workspaceId,
         projectId,
         tool,
-        kind: options.resume === true ? 'restart' : 'create',
+        kind: options.resume !== undefined ? 'restart' : 'create',
         error: runtime.kind === 'containerless'
           ? `${message}. Check that "${tool}" runs on this host `
             + `(yaac runs its own install of ${AGENT_CLIS[tool].package}@${AGENT_CLIS[tool].version}).`
@@ -539,7 +520,7 @@ async function awaitConversation(
 export function failedCreateCollectsCheckout(
   options: Pick<WorkspaceCreateOptions, 'resume' | 'prewarm'>,
 ): boolean {
-  return options.prewarm !== true && options.resume !== true
+  return options.prewarm !== true && options.resume === undefined
 }
 
 /**
@@ -555,7 +536,7 @@ async function reportCreateFailed(
     type: 'workspace-create-failed',
     projectId,
     workspaceId,
-    resume: options.resume,
+    resume: options.resume !== undefined,
   }).catch(() => {
     // Best-effort: the reaper also handles a row whose pod never arrived.
   })
@@ -693,25 +674,14 @@ export async function createWorkspace(
   projectId: string,
   options: WorkspaceCreateOptions,
 ): Promise<WorkspaceCreateResult> {
-  try {
-    await fs.access(projectDir(projectId))
-  } catch {
-    throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  }
-
-  if (options.resume && !options.workspaceId) {
-    throw new ServerError('VALIDATION', 'resume requires a workspaceId')
-  }
-
-  const tool: AgentTool = options.tool ?? 'claude'
+  const { workspaceId, tool } = options
   const runtime = workspaceDriver()
-  // With mediated egress the workspace holds only placeholder credentials
-  // that the proxy swaps; without it, it must hold the real secrets.
-  const mediatedEgress = runtime.kind !== 'containerless'
-  // Whether per-workspace mounts can sit over the shared tool homes. Without
-  // a mount namespace, skills and history are linked into the shared homes
-  // instead (#domain/skills, #domain/agent-history).
-  const layersToolHomes = runtime.kind !== 'containerless'
+  // Sandboxed, the workspace holds only placeholder credentials that the
+  // proxy swaps, and per-workspace mounts sit over the shared tool homes.
+  // Otherwise it must hold the real secrets, and skills and history are
+  // linked into the shared homes instead (#domain/skills, and history.ts
+  // here).
+  const sandboxed = workspacesSandboxed()
 
   await runtime.ensureRuntimeReachable()
 
@@ -768,8 +738,7 @@ export async function createWorkspace(
     )
   }
 
-  // Validate before provisioning anything.
-  const initWindows = validateInitWindows(config)
+  const initWindows = resolveInitWindows(config)
 
   const { mode } = options
   // Check this runtime can run the tool in this mode (a host installs the
@@ -784,7 +753,7 @@ export async function createWorkspace(
   const permissionMode = launchPermissionMode({
     tool,
     driver: runtime.kind,
-    resume: options.resume === true,
+    resume: options.resume !== undefined,
     ...(options.permissionMode !== undefined ? { requested: options.permissionMode } : {}),
   })
   // Warn: containerless has no sandbox, so bypass acts as the user on this
@@ -796,17 +765,16 @@ export async function createWorkspace(
     )
   }
 
-  const workspaceId = options.workspaceId ?? crypto.randomUUID()
   // A resume reuses its checkout as it stands.
-  const refBranch = options.resume === true
+  const refBranch = options.resume !== undefined
     ? undefined
     : options.branch ?? await getDefaultBranch(repo)
   // Decided here so they are recorded with the workspace row. The tool and
   // first prompt are read from the first conversation, so a workspace with
   // none could not be restarted; discovery only adds to this list.
   const launching: Array<{ agentSessionId: string; tool: AgentTool }> =
-    options.resumeAgentSessions !== undefined && options.resumeAgentSessions.length > 0
-      ? options.resumeAgentSessions
+    options.resume !== undefined && options.resume.length > 0
+      ? options.resume
       : [{ agentSessionId: workspaceId, tool }]
 
   // Record the row before provisioning anything, so no pod exists without
@@ -832,7 +800,7 @@ export async function createWorkspace(
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.effort !== undefined ? { effort: options.effort } : {}),
     ...(timeZone !== null ? { timeZone } : {}),
-    resume: options.resume,
+    resume: options.resume !== undefined,
     ...(options.prewarm === true ? { spare: true } : {}),
   })
 
@@ -865,7 +833,7 @@ export async function createWorkspace(
     // Record the conversations now rather than leave them to discovery. A
     // fresh acp create cannot: the agent mints the id in `session/new`, and
     // the registry records it then. A resumed acp workspace already has ids.
-    if (mode === 'tui' || (launching.length > 0 && options.resumeAgentSessions !== undefined)) {
+    if (mode === 'tui' || options.resume !== undefined) {
       // Under acp the handle (window name) is known now and must be recorded,
       // or the restart's acpd handshake starts a new conversation. A tui pane
       // id is unknown until the pane exists; the registry fills it in.
@@ -882,7 +850,7 @@ export async function createWorkspace(
             ? { firstPrompt: options.initialPrompt }
             : {}),
           // Lets the pane show the model before the agent reports one.
-          ...(i === 0 && options.resume !== true && options.model !== undefined
+          ...(i === 0 && options.resume === undefined && options.model !== undefined
             ? { model: options.model }
             : {}),
         })),
@@ -925,7 +893,7 @@ export async function createWorkspace(
       }
     }
 
-    if (options.resume && await fs.access(path.join(wtDir, '.git')).then(() => true, () => false)) {
+    if (options.resume !== undefined && await fs.access(path.join(wtDir, '.git')).then(() => true, () => false)) {
       emit(`Reusing existing workspace at ${wtDir}`, options)
       return
     }
@@ -998,7 +966,7 @@ export async function createWorkspace(
     await fs.mkdir(pi, { recursive: true })
     // Put every tool's history for this workspace in the layout this driver
     // uses (mounted over the tool homes, or linked into them).
-    await convergeAgentHistory(projectId, workspaceId, { layers: layersToolHomes })
+    await convergeAgentHistory(projectId, workspaceId, { layers: sandboxed })
     // acpd's conversation records. Kept under the project dir (which
     // teardown does not prune) so the server can read them after the pod is
     // gone. Only `acp` workspaces get the dir and mount.
@@ -1021,7 +989,7 @@ export async function createWorkspace(
     // they hold placeholders the proxy swaps; without it, the real
     // credentials (docs/containerless-driver.md), merged so a token a running
     // workspace refreshed is not overwritten (#domain/auth).
-    await seedProjectToolHome(projectId, owner, { mediatedEgress })
+    await seedProjectToolHome(projectId, owner)
 
     // Seed every tool's config (a retooled spare needs it too). Claude gets
     // onboarding state so it skips the first-run wizard and login, and its
@@ -1031,7 +999,7 @@ export async function createWorkspace(
     const claudeHome = await openSandboxDir(projectId, claude)
     await seedClaudeJson(
       claudeHome,
-      mediatedEgress ? ['/workspace'] : await withResolved([wtDir]),
+      sandboxed ? ['/workspace'] : await withResolved([wtDir]),
     )
     await seedClaudeSettings(claudeHome, { denyWorktrees: runtime.kind !== 'containerless' })
     const piHome = await openSandboxDir(projectId, pi)
@@ -1066,7 +1034,7 @@ export async function createWorkspace(
     // read-only into each tool's skills root; containerless links them into
     // the project's shared skills roots instead.
     const builtinSkillsStaging = path.join(workspaceStateDir(projectId, workspaceId), 'builtin-skills')
-    const builtinSkillNames = layersToolHomes
+    const builtinSkillNames = sandboxed
       ? await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
       : await reconcileSharedSkillRoots(builtinSkillsDir(), projectId, 'link')
 
@@ -1074,14 +1042,7 @@ export async function createWorkspace(
     // like the skills.
     const workspaceBinStaging = path.join(workspaceStateDir(projectId, workspaceId), 'bin')
     const workspaceBinNames = await stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging)
-    // Without the init script the pod has no git identity, tmux or streamd.
-    if (!workspaceBinNames.includes(WORKSPACE_INIT_SCRIPT)) {
-      throw new ServerError(
-        'INTERNAL',
-        `workspace-bin staging is missing ${WORKSPACE_INIT_SCRIPT} — broken yaac install?`,
-      )
-    }
-    if (layersToolHomes && builtinSkillNames.length > 0) {
+    if (sandboxed && builtinSkillNames.length > 0) {
       // Pre-create the skills roots and per-skill mountpoints server-owned;
       // the kubelet would create them root-owned, blocking the agent's own
       // skills and a later containerless run. Best-effort: the skills mount
@@ -1129,7 +1090,7 @@ export async function createWorkspace(
   // (docs/containerless-driver.md). The same token is the workspace's
   // credential for a hosted remote.
   let mama: { token: string; origin: string | undefined } | undefined
-  if (!mediatedEgress && !options.prewarm) {
+  if (!sandboxed && !options.prewarm) {
     const mamaToken = crypto.randomBytes(32).toString('hex')
     await setWorkspaceMamaTokenHash(
       projectId,
@@ -1154,7 +1115,7 @@ export async function createWorkspace(
 
   // Proxied secrets: a placeholder with mediated egress, else the value.
   for (const [name, { value }] of Object.entries(projectEnv.secrets)) {
-    env.push(`${name}=${mediatedEgress ? 'placeholder' : value}`)
+    env.push(`${name}=${sandboxed ? 'placeholder' : value}`)
     secretEnvKeys.push(name)
   }
 
@@ -1164,7 +1125,7 @@ export async function createWorkspace(
   // workspace's tool (see k8s/proxy/injection.ts); without it they are the
   // real keys.
   const apiKeyFor = (real: string, placeholder = PLACEHOLDER_API_KEY): string =>
-    mediatedEgress ? placeholder : real
+    sandboxed ? placeholder : real
   if (toolAuthByTool.claude?.kind === 'api-key') {
     env.push(`ANTHROPIC_API_KEY=${apiKeyFor(toolAuthByTool.claude.apiKey)}`)
     secretEnvKeys.push('ANTHROPIC_API_KEY')
@@ -1204,7 +1165,7 @@ export async function createWorkspace(
   if (credential.kind === 'https' && remoteHost !== null
     && ghApiHostForGitHost(remoteHost) !== null
     && !userWiresGithubToken) {
-    env.push(`GH_TOKEN=${mediatedEgress ? PLACEHOLDER_GH_TOKEN : credential.token}`)
+    env.push(`GH_TOKEN=${sandboxed ? PLACEHOLDER_GH_TOKEN : credential.token}`)
     secretEnvKeys.push('GH_TOKEN')
   }
 
@@ -1293,7 +1254,7 @@ export async function createWorkspace(
     // The rest sit inside the shared tool homes, so they are layered over
     // them, with claude's shared project memory put back on top. Without
     // layering, convergeAgentHistory links them instead.
-    ...(layersToolHomes
+    ...(sandboxed
       ? [
         { source: { kind: 'hostPath' as const, path: history('claude') }, mountPath: `${CLAUDE_CONTAINER_HOME}/projects` },
         {
@@ -1317,14 +1278,14 @@ export async function createWorkspace(
     })),
     // Server-staged skills and helper commands. Without layering the skills
     // are already linked in.
-    ...(layersToolHomes ? builtinSkillMounts(builtinSkillsStaging, builtinSkillNames) : []),
+    ...(sandboxed ? builtinSkillMounts(builtinSkillsStaging, builtinSkillNames) : []),
     ...workspaceBinMounts(workspaceBinStaging, workspaceBinNames),
   ]
 
   // Without a proxy to inject auth, the workspace's git needs the real
   // credential: the checkout's `origin` URL carries no token.
   let gitCredential: WorkspaceGitCredential | undefined
-  if (!mediatedEgress) {
+  if (!sandboxed) {
     if (credential.kind === 'https' && remoteHost !== null) {
       gitCredential = { kind: 'https', host: remoteHost, token: credential.token }
     } else if (credential.kind === 'ssh') {

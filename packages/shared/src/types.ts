@@ -279,6 +279,53 @@ export function nearestPermissionMode(
   return SUPPORTED_PERMISSION_MODES[tool].find((m) => !morePermissive(m, mode))
 }
 
+/** The ranking as shown in refusals: `bypass > … > plan = read-only`. */
+const PERMISSION_HIERARCHY = PERMISSION_MODES.map((m, i) =>
+  i === 0 ? m : `${morePermissive(PERMISSION_MODES[i - 1], m) ? '>' : '='} ${m}`).join(' ')
+
+/**
+ * The permission mode for a workspace an agent creates or queues: the one it
+ * named, else the inherited one (the queue parent's, or the caller's), never
+ * more permissive than the caller's.
+ *
+ * A named mode above the ceiling or unsupported by the tool is refused. An
+ * inherited one steps down to the nearest supported mode within both limits.
+ */
+export function agentPermissionMode(
+  tool: AgentTool,
+  ceiling: PermissionMode,
+  requested: PermissionMode | undefined,
+  inherited: PermissionMode = ceiling,
+): { ok: true; permissionMode: PermissionMode } | { ok: false; error: string } {
+  // A row from another build may hold an unknown mode, which cannot be
+  // compared safely.
+  if (!isRankedPermissionMode(ceiling)) {
+    return { ok: false, error: `this workspace's recorded permission mode '${ceiling}' is not one this server knows` }
+  }
+  if (requested !== undefined) {
+    // Otherwise an agent in `plan` could escape it via a sibling.
+    if (morePermissive(requested, ceiling)) {
+      return {
+        ok: false,
+        error: `permission mode '${requested}' is more permissive than this workspace's own `
+          + `('${ceiling}'); a workspace it starts may be granted at most that `
+          + `(${PERMISSION_HIERARCHY})`,
+      }
+    }
+    return toolSupportsPermissionMode(tool, requested)
+      ? { ok: true, permissionMode: requested }
+      : { ok: false, error: `${tool} has no '${requested}' permission mode` }
+  }
+  const cap = isRankedPermissionMode(inherited) && morePermissive(ceiling, inherited) ? inherited : ceiling
+  const stepped = nearestPermissionMode(tool, cap)
+  return stepped !== undefined
+    ? { ok: true, permissionMode: stepped }
+    : {
+      ok: false,
+      error: `${tool} has no permission mode at or below this workspace's own ('${ceiling}')`,
+    }
+}
+
 /**
  * What to launch `tool` in for a posture it may lack (from another build, a
  * restart, or a remembered choice): the nearest no looser, else the tool's
@@ -368,7 +415,7 @@ export type ToolAuthKind = 'api-key' | 'oauth'
 /**
  * Credential kinds `yaac auth fake` can seed: a placeholder credential, never
  * a real secret, so an inner yaac authenticates through the outer yaac's
- * proxy (see packages/server/src/domain/projects/fake-auth.ts). Shared by the
+ * proxy (see packages/server/src/domain/auth/fake-auth.ts). Shared by the
  * CLI's choices and the server route's validator.
  */
 export const FAKE_AUTH_KINDS = [

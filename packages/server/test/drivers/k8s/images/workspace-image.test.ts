@@ -29,13 +29,13 @@ describe('prepareWorkspaceImage', () => {
     await prepareWorkspaceImage({ projectId: DEMO, owner: OWNER, nestedContainers: true })
 
     expect(mockEnsureImage).toHaveBeenCalledWith(
-      DEMO, OWNER, undefined, false, true, expect.objectContaining({ reason: 'session' }),
+      DEMO, OWNER, expect.objectContaining({ nestedContainers: true, reason: 'session' }),
     )
   })
 
   it('narrates the build to the caller, layer by layer', async () => {
     mockEnsureImage.mockImplementation((
-      _project: unknown, _owner: unknown, _prefix: unknown, _prebuilt: unknown, _nested: unknown,
+      _project: unknown, _owner: unknown,
       opts: { onLayerStart: (i: number, total: number, layer: string) => void },
     ) => {
       opts.onLayerStart(1, 2, 'base')

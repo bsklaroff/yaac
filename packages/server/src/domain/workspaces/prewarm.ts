@@ -315,7 +315,7 @@ export async function tryClaimPrewarmed(
     // Each spare's launch settings are on its row. Read before reserving, so
     // a reservation never spans an unneeded await.
     const launched = new Map(await Promise.all(spares.map(async (p) =>
-      [p.jobName, await getWorkspaceRow(projectId, p.workspaceId).catch(() => undefined)] as const)))
+      [p.jobName, await getWorkspaceRow(projectId, p.workspaceId)] as const)))
     const owner = (await getProjectRow(projectId))?.owner
     if (owner === undefined) return undefined
     const timeZone = (await getTimeZone(owner)).timeZone ?? undefined

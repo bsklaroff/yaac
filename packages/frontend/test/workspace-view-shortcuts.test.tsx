@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { screen, cleanup, waitFor, fireEvent, act } from '@testing-library/react'
 import type { PortMapping, ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
@@ -12,13 +11,6 @@ import { DEFAULT_BINDINGS } from '#lib/shortcuts'
 import { shortcutsSuspended, useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient } from './harness'
 
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 const workspace: WorkspaceListEntry = {
   workspaceId: 's1',
@@ -46,10 +38,6 @@ beforeEach(() => {
       },
     },
   })
-})
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
 })
 
 function renderView(forwardedPorts: PortMapping[] = []): void {

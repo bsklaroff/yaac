@@ -9,29 +9,20 @@
  * test ties them together). An adapter that drops a mode does not fail; it
  * silently runs its default, so only the version check catches drift.
  */
-import { ACP_ADAPTERS, type AgentTool, type PermissionMode } from '@yaac/shared/types'
+import { ACP_ADAPTERS, type AgentTool } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { envJsonAssignment } from '#lib/shell'
 import { opencodeConfigArg } from './agent-command'
 import { CLAUDE_SESSION_META, CODEX_CAPABILITIES_META, OPENCODE_CAPABILITIES_META } from './acp-protocol'
+import { type AcpSessionProfile } from './acp-client'
 import type { AgentLaunchSpec } from './drivers'
 
-export interface AcpAdapterProfile {
+export interface AcpAdapterProfile extends AcpSessionProfile {
   /** The command the tmux window runs, joined with spaces. Never quoted: the
    *  launch string is embedded in a single-quoted `respawn-window '<cmd>'`. */
   argv: string[]
   /** `NAME=value` assignments prefixed to that command. */
   env(spec: AgentLaunchSpec): string[]
-  /**
-   * yaac postures mapped to this adapter's session mode ids. A missing
-   * posture means "send nothing" (not "send the default"): it is either
-   * carried another way (opencode's rules in `OPENCODE_PERMISSION`) or has
-   * no meaning for the tool (pi).
-   */
-  modeIds: Partial<Record<PermissionMode, string>>
-  /** Mode ids no posture launches in but the session can switch to, mapped to
-   *  the posture they behave as. */
-  readsAs?: Record<string, PermissionMode>
   /**
    * How the model is set: `env` before launch, or `set_config_option` (the
    * `model` config option) after the handshake. Never `session/set_model`:
@@ -39,25 +30,6 @@ export interface AcpAdapterProfile {
    * while both advertise `model` in `configOptions`.
    */
   modelVia: 'env' | 'set_config_option'
-  /**
-   * Whether `session/request_permission` still reaches the user under
-   * `bypass`. True for pi, which has no permission system; its asks are
-   * extension questions that auto-answering would answer for the user.
-   */
-  forwardAsksUnderBypass: boolean
-  /**
-   * Whether a message sent mid-turn can join the running turn
-   * (`_session/steering`), as the tool's TUI lets it. Otherwise it waits for
-   * the turn to end: opencode's acp refuses a second `session/prompt`
-   * outright and has no steering method. pi-acp steers only as yaac patches
-   * it (dockerfiles/agent-patches/pi-acp.js).
-   */
-  steers: boolean
-  /** `_meta` sent with `session/new` and `session/load`. */
-  sessionMeta?: Record<string, unknown>
-  /** `_meta` sent in `initialize`'s client capabilities: the adapter's own
-   *  opt-ins, such as how it reports subagents. */
-  capabilitiesMeta?: Record<string, unknown>
 }
 
 /** The model to name for an ACP conversation. For pi, the provider decides
@@ -187,21 +159,6 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
  */
 export function acpAdapterFor(tool: AgentTool): AcpAdapterProfile {
   return PROFILES[tool]
-}
-
-/**
- * The posture a session mode id stands for (`modeIds` reversed, then
- * `readsAs`), used when the adapter switches mode on its own. Undefined for
- * ids no posture maps to (pi's thinking levels).
- */
-export function acpPermissionModeFor(
-  profile: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs'>,
-  modeId: string,
-): PermissionMode | undefined {
-  const launched = (Object.keys(profile.modeIds) as PermissionMode[]).find((m) => profile.modeIds[m] === modeId)
-  return launched ?? (profile.readsAs !== undefined && Object.hasOwn(profile.readsAs, modeId)
-    ? profile.readsAs[modeId]
-    : undefined)
 }
 
 /** Test-only: the table, to check against the shared adapter list and the

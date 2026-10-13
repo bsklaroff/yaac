@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
-import { POPUP } from '#components/ui/menu'
+import { PopoverPopup } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { useQuery } from '@tanstack/react-query'
 import { EditorView } from '@uiw/react-codemirror'
@@ -598,25 +598,21 @@ function DiffModeMenu({ mode, active, onChange }: {
       >
         <DiffIcon size={12} />
       </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Positioner side="bottom" align="end" sideOffset={6}>
-          <Popover.Popup className={clsx('min-w-[200px] text-xs', POPUP)}>
-            <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Show changes</div>
-            {DIFF_MODES.map((m) => (
-              <button
-                key={m.mode}
-                onClick={() => { onChange(m.mode); setOpen(false) }}
-                aria-pressed={m.mode === mode}
-                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-text-dim transition
-                  hover:bg-surface-3 hover:text-text"
-              >
-                <CheckIcon size={12} className={clsx('shrink-0', m.mode !== mode && 'invisible')} />
-                {m.label}
-              </button>
-            ))}
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
+      <PopoverPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px] text-xs">
+        <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Show changes</div>
+        {DIFF_MODES.map((m) => (
+          <button
+            key={m.mode}
+            onClick={() => { onChange(m.mode); setOpen(false) }}
+            aria-pressed={m.mode === mode}
+            className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-text-dim transition
+              hover:bg-surface-3 hover:text-text"
+          >
+            <CheckIcon size={12} className={clsx('shrink-0', m.mode !== mode && 'invisible')} />
+            {m.label}
+          </button>
+        ))}
+      </PopoverPopup>
     </Popover.Root>
   )
 }
@@ -637,40 +633,36 @@ function TextSizeMenu({ size, onChange }: { size: number; onChange: (px: number)
       >
         <TextSizeIcon size={14} />
       </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Positioner side="bottom" align="end" sideOffset={6}>
-          <Popover.Popup className={clsx('flex items-center gap-1 text-xs', POPUP)}>
-            <button
-              onClick={() => onChange(size - 1)}
-              disabled={size <= MIN_EDITOR_FONT_SIZE}
-              title={`Smaller (${mod}−)`}
-              aria-label="Smaller text"
-              className={step}
-            >
-              <MinusIcon size={13} />
-            </button>
-            <span className="w-10 text-center tabular-nums">{size}px</span>
-            <button
-              onClick={() => onChange(size + 1)}
-              disabled={size >= MAX_EDITOR_FONT_SIZE}
-              title={`Larger (${mod}=)`}
-              aria-label="Larger text"
-              className={step}
-            >
-              <AddIcon size={13} />
-            </button>
-            <button
-              onClick={() => onChange(DEFAULT_EDITOR_FONT_SIZE)}
-              disabled={size === DEFAULT_EDITOR_FONT_SIZE}
-              title={`Reset (${mod}0)`}
-              className="h-6 rounded px-2 text-text-dim transition hover:bg-surface-3 hover:text-text
-                disabled:pointer-events-none disabled:opacity-35"
-            >
-              Reset
-            </button>
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
+      <PopoverPopup side="bottom" align="end" sideOffset={6} className="flex items-center gap-1 text-xs">
+        <button
+          onClick={() => onChange(size - 1)}
+          disabled={size <= MIN_EDITOR_FONT_SIZE}
+          title={`Smaller (${mod}−)`}
+          aria-label="Smaller text"
+          className={step}
+        >
+          <MinusIcon size={13} />
+        </button>
+        <span className="w-10 text-center tabular-nums">{size}px</span>
+        <button
+          onClick={() => onChange(size + 1)}
+          disabled={size >= MAX_EDITOR_FONT_SIZE}
+          title={`Larger (${mod}=)`}
+          aria-label="Larger text"
+          className={step}
+        >
+          <AddIcon size={13} />
+        </button>
+        <button
+          onClick={() => onChange(DEFAULT_EDITOR_FONT_SIZE)}
+          disabled={size === DEFAULT_EDITOR_FONT_SIZE}
+          title={`Reset (${mod}0)`}
+          className="h-6 rounded px-2 text-text-dim transition hover:bg-surface-3 hover:text-text
+            disabled:pointer-events-none disabled:opacity-35"
+        >
+          Reset
+        </button>
+      </PopoverPopup>
     </Popover.Root>
   )
 }

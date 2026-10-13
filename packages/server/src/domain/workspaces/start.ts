@@ -1,6 +1,14 @@
+import { workspaceDriver } from '#drivers/driver'
 import { createWorkspace, resolveCreate, type WorkspaceCreateResult } from './create'
 import { saveDraftWorkspace } from './drafts'
-import { ensureProvisioning, ProvisionStoppedError, throwIfProvisionStopped } from './provisioning'
+import { resolveGroup } from './groups'
+import {
+  provision,
+  ProvisionStoppedError,
+  refuseLiveProvision,
+  throwIfProvisionStopped,
+  type ProvisionRun,
+} from './provisioning'
 import { tryClaimPrewarmed } from './prewarm'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
@@ -25,7 +33,11 @@ export interface StartWorkspaceRequest {
   prompt?: string
   /** The user's title; given, the workspace is not auto-titled. */
   title?: string
-  /** Sidebar group, already resolved to an id. */
+  /** Sidebar group by id or name. An unknown name is created, once the
+   *  other settings have checked out. */
+  group?: string
+  /** A group id filed under as is, never resolved or created: the group a
+   *  queued entry was filed into. One deleted since fails the create. */
   groupId?: string
   /** Remember the named settings as project defaults (user creates only). */
   rememberDefaults: boolean
@@ -41,20 +53,20 @@ export interface StartWorkspaceRequest {
 }
 
 /**
- * Start a workspace: resolve settings, register the provisioning row, then
- * claim a spare or create cold. Used by the create route, `yaac-mama create`
- * and queued launches.
+ * Check a start and resolve its settings, then register its provisioning
+ * row and return the run that claims a spare or creates cold. A bad setting
+ * is refused here, before anything shows. Used by the create route,
+ * `yaac-mama create` and queued launches.
  *
  * A create that the user stops before its agent runs, or that fails, is
  * rolled back. Its prompt is all it had worth keeping, so per `draft` it
  * becomes a draft (docs/draft-workspaces.md).
  */
-export async function startWorkspace(
+export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
-  onProgress: (message: string) => void,
-): Promise<WorkspaceCreateResult> {
-  const { projectId, workspaceId, groupId, prompt, title, branch } = request
+): Promise<ProvisionRun<WorkspaceCreateResult>> {
+  const { projectId, workspaceId, prompt, title, branch } = request
   await authorizeProject(principal, projectId)
   const setup = await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
@@ -64,6 +76,12 @@ export async function startWorkspace(
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
   })
   const { tool } = setup
+  // Before the group and defaults below, so a create refused as a duplicate
+  // leaves neither behind.
+  refuseLiveProvision(workspaceId)
+  const groupId = request.groupId ?? (request.group === undefined
+    ? undefined
+    : (await resolveGroup(projectId, request.group, { create: true })).groupId)
   if (request.rememberDefaults) {
     // Only the named fields, so a resolved default never overwrites a pick.
     await recordProjectCreate(projectId, tool, {
@@ -74,9 +92,8 @@ export async function startWorkspace(
     }, branch)
   }
 
-  // `ensure`: the caller may have reserved the row already.
   const modelName = setup.model !== undefined ? modelDisplayName(tool, setup.model) : undefined
-  ensureProvisioning({
+  return provision({
     workspaceId,
     projectId,
     tool,
@@ -87,60 +104,61 @@ export async function startWorkspace(
     ...(setup.model !== undefined ? { model: setup.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
     ...(branch !== undefined ? { branch } : {}),
-  })
+  }, async (onProgress) => {
+    try {
+      throwIfProvisionStopped(workspaceId)
+      // Containerless keeps no spare pool (`defaultReconcileSteps`).
+      if (request.claimSpare && workspaceDriver().kind !== 'containerless') {
+        const claimed = await tryClaimPrewarmed(projectId, workspaceId, setup, onProgress, {
+          ...(branch !== undefined ? { branch } : {}),
+          ...(prompt !== undefined ? { prompt } : {}),
+          ...(title !== undefined ? { title } : {}),
+          ...(groupId !== undefined ? { groupId } : {}),
+        })
+        if (claimed) return claimed
+      }
 
-  try {
-    throwIfProvisionStopped(workspaceId)
-    if (request.claimSpare) {
-      const claimed = await tryClaimPrewarmed(projectId, workspaceId, setup, onProgress, {
+      return await createWorkspace(projectId, {
+        workspaceId,
+        onProgress,
+        tool,
+        mode: setup.mode,
+        permissionMode: setup.permissionMode,
+        ...(setup.model !== undefined ? { model: setup.model } : {}),
+        ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
         ...(branch !== undefined ? { branch } : {}),
-        ...(prompt !== undefined ? { prompt } : {}),
+        ...(prompt !== undefined ? { initialPrompt: prompt } : {}),
         ...(title !== undefined ? { title } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
       })
-      if (claimed) return claimed
+    } catch (err) {
+      const { draft } = request
+      if (draft === undefined || prompt === undefined) throw err
+      if (!(err instanceof ProvisionStoppedError) && draft.onFailure !== true) throw err
+      const settings = {
+        prompt,
+        tool,
+        mode: setup.mode,
+        permissionMode: setup.permissionMode,
+        ...(setup.model !== undefined ? { model: setup.model } : {}),
+        ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
+        ...(branch !== undefined ? { branch } : {}),
+        ...(title !== undefined ? { title } : {}),
+        ...(groupId !== undefined ? { groupId } : {}),
+      }
+      // The draft may have been discarded meanwhile; then save a new one. If
+      // no draft can be saved, the create's own error is the one to report.
+      const saved = await (draft.id === undefined
+        ? saveDraftWorkspace(principal, projectId, settings)
+        : saveDraftWorkspace(principal, projectId, settings, draft.id)
+          .catch(() => saveDraftWorkspace(principal, projectId, settings)))
+        .then(() => true, () => false)
+      if (!saved || !(err instanceof Error)) throw err
+      // A copy, since concurrent creates can share one error (a shared install
+      // or build). It keeps the code, and a plain error's message still
+      // classifies as it did (`toErrorBody`).
+      const message = `${err.message.replace(/\.$/, '')}; its prompt is kept as a draft`
+      throw err instanceof ServerError ? new ServerError(err.code, message) : new Error(message, { cause: err })
     }
-
-    return await createWorkspace(projectId, {
-      workspaceId,
-      onProgress,
-      tool,
-      mode: setup.mode,
-      permissionMode: setup.permissionMode,
-      ...(setup.model !== undefined ? { model: setup.model } : {}),
-      ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
-      ...(branch !== undefined ? { branch } : {}),
-      ...(prompt !== undefined ? { initialPrompt: prompt } : {}),
-      ...(title !== undefined ? { title } : {}),
-      ...(groupId !== undefined ? { groupId } : {}),
-    })
-  } catch (err) {
-    const { draft } = request
-    if (draft === undefined || prompt === undefined) throw err
-    if (!(err instanceof ProvisionStoppedError) && draft.onFailure !== true) throw err
-    const settings = {
-      prompt,
-      tool,
-      mode: setup.mode,
-      permissionMode: setup.permissionMode,
-      ...(setup.model !== undefined ? { model: setup.model } : {}),
-      ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
-      ...(branch !== undefined ? { branch } : {}),
-      ...(title !== undefined ? { title } : {}),
-      ...(groupId !== undefined ? { groupId } : {}),
-    }
-    // The draft may have been discarded meanwhile; then save a new one. If
-    // no draft can be saved, the create's own error is the one to report.
-    const saved = await (draft.id === undefined
-      ? saveDraftWorkspace(principal, projectId, settings)
-      : saveDraftWorkspace(principal, projectId, settings, draft.id)
-        .catch(() => saveDraftWorkspace(principal, projectId, settings)))
-      .then(() => true, () => false)
-    if (!saved || !(err instanceof Error)) throw err
-    // A copy, since concurrent creates can share one error (a shared install
-    // or build). It keeps the code, and a plain error's message still
-    // classifies as it did (`toErrorBody`).
-    const message = `${err.message.replace(/\.$/, '')}; its prompt is kept as a draft`
-    throw err instanceof ServerError ? new ServerError(err.code, message) : new Error(message, { cause: err })
-  }
+  })
 }

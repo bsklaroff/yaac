@@ -28,7 +28,7 @@ import {
 } from '#db/workspace-store'
 import { applyWorkspaceEvent } from '#db/apply-workspace-event'
 import { firstAgentSession, recordAgentSessions } from '#db/agent-session-store'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'

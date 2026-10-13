@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { agentBinDirs } from '@yaac/shared/tool-install'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { realizeGitAuth } from './git-auth'
 import { runHost, onPath } from './host'
 import {
@@ -208,12 +208,6 @@ async function realizeMount(
   const { mountPath, source } = mount
   // emptyDir: a plain directory on the host.
   if (source.kind === 'emptyDir') return 'nothing-to-do'
-  if (source.kind === 'pvc') {
-    throw new ServerError(
-      'VALIDATION',
-      `containerless: cannot realize a volume claim mount at ${mountPath}`,
-    )
-  }
 
   // Already in place: the checkout, and the main clone at its own path.
   if (mountPath === paths.workspaceDir || mountPath === '/workspace') return 'nothing-to-do'
@@ -431,9 +425,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     projectId: spec.projectId,
     workspaceId: spec.workspaceId,
     tool: spec.tool,
-    declaredTool: spec.tool,
     mode: spec.mode,
-    prewarm: spec.prewarm,
     createdAtMs: Date.now(),
     ...(await tmuxServerPid(paths.tmuxSock, env)),
     // So teardown can kill the ssh-agent.

@@ -3,13 +3,8 @@ import fs from 'node:fs/promises'
 import http from 'node:http'
 import path from 'node:path'
 import WebSocket from 'ws'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { asTailnet } from '@yaac/test-utils/api'
+import { createYaacTestEnv, spawnYaacServer, type YaacTestEnv } from '#support/cli'
+import { asTailnet, type SpawnedServer } from '@yaac/test-utils/api'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { closeDb } from '@yaac/server/db/client'

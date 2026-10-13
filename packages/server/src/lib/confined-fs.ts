@@ -559,3 +559,19 @@ export async function openRoot(
     },
   }
 }
+
+/**
+ * Open `dir`, a directory under the project dir `project` that agents can
+ * also write: a tool home (`claude/`, `codex/`, `pi/`, `opencode-config/`)
+ * or a workspace's conversation records (`acp/<workspaceId>/`). Paths are
+ * taken relative to `dir` either way.
+ *
+ * When workspaces run sandboxed, every pod of the project mounts these
+ * read-write, so any link or FIFO below may be planted: `dir` is opened
+ * `no-links`, rooted at itself. Otherwise there is nothing to defend and
+ * yaac itself links things in (history, builtin skills), so it is opened
+ * `inside`, rooted at the project dir.
+ */
+export function openAgentDir(project: string, dir: string, sandboxed: boolean): Promise<ConfinedRoot> {
+  return sandboxed ? openRoot(dir, 'no-links') : openRoot(project, 'inside', { base: dir })
+}

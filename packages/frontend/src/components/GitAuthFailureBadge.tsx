@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { POPUP } from '#components/ui/menu'
+import { PopoverPopup } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { WarningIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
@@ -38,37 +38,33 @@ export function GitAuthFailureBadge({
         <WarningIcon size={iconSize} />
         git auth
       </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Positioner side="bottom" align="end" sideOffset={4}>
-          <Popover.Popup className={clsx('max-w-xs', POPUP)}>
-            <div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-danger">
-              Git authentication failed
-            </div>
-            <ul className="max-h-64 overflow-y-auto">
-              {failures.map((f) => (
-                <li key={f.host} className="truncate px-2 py-1 font-mono text-xs text-text-dim">
-                  {f.host} — HTTP {f.status}
-                </li>
-              ))}
-            </ul>
-            <p className="px-2 pb-1 pt-0.5 text-xs text-text-dim">
-              The project's git credential was rejected — it is likely expired or revoked. Assign
-              the project a new credential in Settings (running workspaces pick it up immediately),
-              then retry the git command.
-            </p>
-            <div className="p-1">
-              <button
-                type="button"
-                onClick={() => { setOpen(false); openSettings('credentials', undefined, projectId) }}
-                className="w-full rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
-                  text-text transition hover:bg-border-strong"
-              >
-                Change git credential…
-              </button>
-            </div>
-          </Popover.Popup>
-        </Popover.Positioner>
-      </Popover.Portal>
+      <PopoverPopup side="bottom" align="end" sideOffset={4} className="max-w-xs">
+        <div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-danger">
+          Git authentication failed
+        </div>
+        <ul className="max-h-64 overflow-y-auto">
+          {failures.map((f) => (
+            <li key={f.host} className="truncate px-2 py-1 font-mono text-xs text-text-dim">
+              {f.host} — HTTP {f.status}
+            </li>
+          ))}
+        </ul>
+        <p className="px-2 pb-1 pt-0.5 text-xs text-text-dim">
+          The project's git credential was rejected — it is likely expired or revoked. Assign
+          the project a new credential in Settings (running workspaces pick it up immediately),
+          then retry the git command.
+        </p>
+        <div className="p-1">
+          <button
+            type="button"
+            onClick={() => { setOpen(false); openSettings('credentials', undefined, projectId) }}
+            className="w-full rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
+              text-text transition hover:bg-border-strong"
+          >
+            Change git credential…
+          </button>
+        </div>
+      </PopoverPopup>
     </Popover.Root>
   )
 }

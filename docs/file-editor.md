@@ -21,7 +21,7 @@ and on phones, the filter (quick-open) is the way to find a file.
 
 ### Plain `fs` on the server's filesystem
 
-`#domain/workspaces` (`files.ts`) reads and writes the checkout with plain
+`#domain/workspaces` reads and writes the checkout with plain
 `fs` on `workspaceDir(projectId, id)`. Under k8s the server pod mounts that path;
 under containerless it is the host checkout. So there is no driver verb, and
 both drivers behave the same.
@@ -66,9 +66,9 @@ status bar's counts and the explorer's listing. The changes are everything
 that differs from the **diff base**: the merge
 base of HEAD with the explorer's picked branch, else with the branch the
 workspace forked from, or the one its agent later named with `yaac-mama
-set-base` (`workspaceForkBranch`, tried as `origin/<base>`, then local, then
-`@{upstream}`). One script (`#drivers/shared`'s
-`workspace-changes.ts`) runs inside the workspace under either driver. It
+set-base` (`workspaces.baseBranch`, tried as `origin/<base>`, then local, then
+`@{upstream}`). One script (`changes.ts` in `#domain/workspaces`)
+runs inside the workspace through the driver's `exec`, under either driver. It
 runs `git add -A` into a private index at a stable scratch path, so the
 whole working tree is diffed without touching the agent's index, and git's
 stat cache keeps each poll incremental. `add -A` skips a tracked file that
@@ -260,8 +260,7 @@ fetch and a reader leaving never forks the query. The listing lands in its
 own cache entry (`useWorkspaceFiles`), so the tree, the line counts and the
 colors always come from one snapshot. An answer without a diff body is one
 that did not ask for it, so the Changes pane shows its diffs as loading
-until its own fetch lands. On the server, `runChangesRead`
-(`#drivers/shared`) runs one read of a checkout at a time, since each walks
+until its own fetch lands. On the server, `runChangesRead` runs one read of a checkout at a time, since each walks
 the whole working tree: a request merges into the read queued behind the
 running one, never into the running one, which could predate an edit the
 caller just made. A failed poll leaves the last answer cached, so the status

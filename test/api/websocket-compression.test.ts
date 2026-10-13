@@ -1,12 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
 import crypto from 'node:crypto'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
+import { createYaacTestEnv, spawnYaacServer, type YaacTestEnv } from '#support/cli'
+import type { SpawnedServer } from '@yaac/test-utils/api'
 
 /**
  * Every WebSocket the webapp holds open must negotiate permessage-deflate.

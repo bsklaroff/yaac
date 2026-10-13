@@ -3,8 +3,9 @@
  * applies, and what `yaac cluster start|stop|restart` do afterwards.
  *
  * Only the cluster (the shared fake, plus the kubectl processes for rollout
- * waits and log tails), the registry client and the host `fetch` (which
- * probes the published origin) are faked, so the real manifests are built.
+ * waits and log tails), host podman, the registry client and the host
+ * `fetch` (which probes the published origin) are faked, so the real
+ * manifests are built.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
@@ -14,9 +15,8 @@ import path from 'node:path'
 import { fakeCluster, type FakeCall } from '@yaac/test-utils/k8s-stub'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type * as apiModule from '#drivers/k8s/substrate/api'
-import type * as registryModule from '#drivers/k8s/container/registry'
-import type * as runtimeModule from '#drivers/k8s/container/runtime'
-import type * as imageEngineModule from '#drivers/k8s/image-engine'
+import type * as registryModule from '#drivers/k8s/cluster/registry'
+import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
 import type * as childProcessModule from 'node:child_process'
 
 
@@ -27,39 +27,35 @@ vi.mock('node:child_process', async (importOriginal) => ({
   spawn: mockSpawn,
 }))
 
-// The rollout waits are the kubectl processes this path runs.
+// The rollout waits are the kubectl processes this path runs. Host podman
+// is asked only for the kind node's published port.
 const mockKubectl = vi.hoisted(() => vi.fn())
+const mockPodmanPort = vi.hoisted(() => vi.fn<(args: string[]) => Promise<{ stdout: string; stderr: string }>>())
 vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...(await importOriginal<typeof apiModule>()),
   k8sNamespace: () => 'test-ns',
-  execFileAsync: mockKubectl,
+  execFileAsync: (file: string, args: string[]) => {
+    if (file !== 'podman') return mockKubectl(file, args) as Promise<unknown>
+    return args[0] === 'port'
+      ? mockPodmanPort(args)
+      : Promise.reject(new Error(`unexpected host process: ${file} ${args.join(' ')}`))
+  },
 }))
 
 // The bundle is a build artifact, so hashing it for real would require
 // `pnpm build` first.
 const mockContextHash = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
-  ...(await importOriginal<typeof imageEngineModule>()),
+vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
+  ...(await importOriginal<typeof imageTagsModule>()),
   contextHash: mockContextHash,
 }))
 
-const mockRegistryHasTag = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
+// The registry already holds the server image, so nothing is built.
+const mockRegistryTagState = vi.hoisted(() => vi.fn())
+vi.mock('#drivers/k8s/cluster/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
-  registryHasTag: mockRegistryHasTag,
+  registryTagState: mockRegistryTagState,
   registryRef: (tag: string) => `reg.local:5000/${tag}`,
-  pushImageToRegistry: (tag: string) => Promise.resolve(`reg.local:5000/${tag}`),
-}))
-
-// Host podman, which the kind fronting asks for the node's published port.
-// Any other podman call fails.
-const mockPodmanPort = vi.hoisted(() => vi.fn<(args: string[]) => Promise<{ stdout: string; stderr: string }>>())
-vi.mock('#drivers/k8s/container/runtime', async (importOriginal) => ({
-  ...(await importOriginal<typeof runtimeModule>()),
-  execFileAsync: (file: string, args: string[]) =>
-    file === 'podman' && args[0] === 'port'
-      ? mockPodmanPort(args)
-      : Promise.reject(new Error(`unexpected host process: ${file} ${args.join(' ')}`)),
 }))
 
 import {
@@ -83,7 +79,7 @@ import {
   processIdentity,
 } from '#drivers/k8s/substrate'
 // Setup value: the real hash function, to derive the expected tag.
-import { stringHash } from '#drivers/k8s/image-engine'
+import { stringHash } from '#drivers/k8s/cluster'
 import { readInstallRecord } from '@yaac/shared/install-record'
 import { readServerConfig } from '@yaac/shared/server-config'
 // Setup value: writes the data-dir lock the pre-deploy guard reads.
@@ -240,7 +236,7 @@ beforeEach(async () => {
   })
   // The image is already in the registry, so nothing is built.
   mockContextHash.mockResolvedValue('bundlehash')
-  mockRegistryHasTag.mockResolvedValue(true)
+  mockRegistryTagState.mockResolvedValue('present')
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(
     new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }),
   )))
@@ -361,7 +357,6 @@ describe('deployServerWorkload', () => {
     expect(env.YAAC_GLOBAL_ROOT).toBe('/yaac/global')
     expect(env.YAAC_SERVER_LOCAL_ROOT).toBe('/yaac/server-local')
     expect(env.YAAC_NODE_LOCAL_ROOT).toBe('/yaac/node-local')
-    expect(env.YAAC_DRIVER).toBe('k8s')
     // IN_CLUSTER makes the registry client dial Service DNS.
     expect(env.YAAC_IN_CLUSTER).toBe('1')
   })

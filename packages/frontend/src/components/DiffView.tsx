@@ -1,23 +1,27 @@
 import { useMemo, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { highlightLine, type HighlightLanguage, type HighlightSegment } from '#lib/highlight'
+import type { CodeLine } from '#lib/code'
 import type { DiffLine } from '#lib/diff'
 
-/** A find match in a line's text; the `current` one carries
- *  `data-find-current`, for scrolling to. */
+/** A find match's span in a line's text. */
 export interface FindMark {
   from: number
   to: number
-  current: boolean
 }
 
 /** The find highlight colors, the editor's (`ui/CodeEditor`). */
 const MARK = 'bg-[rgb(210_153_34/0.3)]'
 const CURRENT_MARK = 'bg-[rgb(210_153_34/0.55)] outline outline-1 outline-[rgb(210_153_34)]'
 
+/** A line's text, as its highlighted segments when there are any. */
+function spans(segments: HighlightSegment[] | null, text: string): ReactNode {
+  return segments ? segments.map((seg, i) => <span key={i} className={seg.className}>{seg.text}</span>) : text
+}
+
 /** A line's segments, cut where the marks start and end, the marked pieces
- *  tinted. */
-function withMarks(segments: HighlightSegment[], marks: FindMark[]): ReactNode[] {
+ *  tinted. The `current` mark carries `data-find-current`, for scrolling to. */
+function withMarks(segments: HighlightSegment[], marks: FindMark[], current: FindMark | undefined): ReactNode[] {
   const out: ReactNode[] = []
   let pos = 0
   segments.forEach((seg, i) => {
@@ -26,11 +30,12 @@ function withMarks(segments: HighlightSegment[], marks: FindMark[]): ReactNode[]
       .sort((a, b) => a - b)
     for (let k = 0; k + 1 < cuts.length; k++) {
       const mark = marks.find((m) => m.from <= cuts[k] && cuts[k + 1] <= m.to)
+      const isCurrent = mark !== undefined && mark === current
       out.push(
         <span
           key={`${i}:${k}`}
-          data-find-current={mark?.current || undefined}
-          className={clsx(seg.className, mark && (mark.current ? CURRENT_MARK : MARK))}
+          data-find-current={isCurrent || undefined}
+          className={clsx(seg.className, mark && (isCurrent ? CURRENT_MARK : MARK))}
         >
           {seg.text.slice(cuts[k] - pos, cuts[k + 1] - pos)}
         </span>,
@@ -52,12 +57,15 @@ export function DiffView({
   language,
   showLineNumbers = true,
   marks,
+  current,
 }: {
   lines: DiffLine[]
   language: HighlightLanguage | null
   showLineNumbers?: boolean
   /** Find matches, by index into `lines`. */
   marks?: ReadonlyMap<number, FindMark[]>
+  /** The current find match, one of `marks`. */
+  current?: FindMark
 }): JSX.Element {
   // `diff-hl` below scopes the tok-* colors (index.css).
   const highlighted = useMemo(
@@ -99,14 +107,50 @@ export function DiffView({
             </span>
             <span className="min-w-0 break-words pr-3 text-text">
               {lineMarks
-                ? withMarks(segments ?? [{ text: line.text, className: '' }], lineMarks)
-                : segments
-                  ? segments.map((seg, i) => <span key={i} className={seg.className}>{seg.text}</span>)
-                  : line.text}
+                ? withMarks(segments ?? [{ text: line.text, className: '' }], lineMarks, current)
+                : spans(segments, line.text)}
             </span>
           </div>
         )
       })}
+    </div>
+  )
+}
+
+/**
+ * Syntax-highlighted source lines; the plain-code counterpart to `DiffView`.
+ * The `diff-hl` class scopes the `tok-*` colors (index.css). Highlighting is
+ * per line, so constructs spanning lines (block comments) are not recognized.
+ */
+export function CodeView({
+  lines,
+  language,
+  className,
+}: {
+  lines: CodeLine[]
+  language: HighlightLanguage | null
+  className?: string
+}): JSX.Element {
+  const highlighted = useMemo(
+    () => (language ? lines.map((line) => highlightLine(line.text, language)) : null),
+    [lines, language],
+  )
+  // Show the gutter for the whole block if any line is numbered.
+  const numbered = lines.some((line) => line.no !== undefined)
+  return (
+    <div className={clsx('diff-hl min-w-full font-mono text-[11px] leading-[1.5] text-text', className)}>
+      {lines.map((line, idx) => (
+        <div key={idx} className="flex whitespace-pre">
+          {numbered && (
+            <span className="w-10 shrink-0 select-none px-1 text-right text-text-faint/70">{line.no ?? ''}</span>
+          )}
+          <span className="pr-3">
+            {spans(highlighted?.[idx] ?? null, line.text)}
+            {/* A blank line still has a line's height. */}
+            {line.text === '' && ' '}
+          </span>
+        </div>
+      ))}
     </div>
   )
 }

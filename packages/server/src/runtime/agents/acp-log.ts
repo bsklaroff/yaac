@@ -10,7 +10,7 @@
  *
  * It is the only path by which conversation content reaches a pane (see
  * `tailAcpLog`), and because it holds both directions it also tells a
- * reconnecting client whether a turn is running (see `readAcpInFlight`).
+ * reconnecting client whether a turn is running (see `readAcpRecovery`).
  */
 
 import type { FileHandle } from 'node:fs/promises'
@@ -18,11 +18,12 @@ import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
-  ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, asRecord, asString, backgroundWorkReport,
-  sessionEffort, sessionModeId, sessionModels, sessionStateModeId, toContentList, type AcpEffort,
+  ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, backgroundWorkReport, sessionEffort,
+  sessionModeId, sessionModels, sessionStateModeId, toContentList, type AcpEffort,
 } from './acp-protocol'
+import { asRecord, asString } from '#lib/narrow'
 import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 
 /** Which conversation's record; acpd names each `<agentSessionId>.jsonl`
@@ -381,7 +382,7 @@ function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
 }
 
 /** What a record says was running when it was last written; see
- *  `readAcpInFlight`. */
+ *  `readAcpRecovery`. */
 export interface AcpInFlight {
   /** Our last `session/prompt` has no reply. */
   prompt: boolean
@@ -393,55 +394,109 @@ export interface AcpInFlight {
   backgroundWork?: boolean
 }
 
+/** What a reattach learns from a conversation's record; see
+ *  `readAcpRecovery`. */
+export interface AcpRecovery {
+  inFlight: AcpInFlight
+  /**
+   * Permission asks the agent was still blocked on: asks with no recorded
+   * answer. Several can be open at once. Ids are verbatim, not strings:
+   * JSON-RPC matches ids by value and type, so answering `42` with `"42"`
+   * would never pair.
+   */
+  pendingPermissions: Array<string | number>
+  /** The session mode the record last shows: the handshake reply's, then
+   *  each successful `session/set_mode` and adapter mode update. */
+  modeId?: string
+  /** The effort option the record last shows (`sessionEffort`): from the
+   *  handshake reply, each config-option reply, and each
+   *  `config_option_update`. */
+  effort?: AcpEffort
+}
+
 /**
- * What was in flight when the record was last written.
+ * Everything a reattaching connection reads back from the record, in one
+ * pass over it. A reattach runs no handshake, and ACP gives a reconnecting
+ * client no way to ask what the agent is doing, but the record holds both
+ * directions:
  *
- * ACP gives a reconnecting client no way to ask whether the agent is working
- * (turn state is tied to your own unanswered `session/prompt`). The record
- * has both directions, so a prompt is in flight if the last recorded one has
- * no recorded reply. Turns never overlap (`AcpConversation` queues them, and
- * a steered message joins the running turn rather than starting one), so
- * only the last can be open. An adapter that reports its own state also
- * covers turns the agent started itself, including one codex starts from a
- * steer it answers `startedNewTurn`. No record means nothing running.
+ * - A prompt is in flight if the last recorded one has no recorded reply.
+ *   Turns never overlap (`AcpConversation` queues them, and a steered
+ *   message joins the running turn), so only the last can be open. An
+ *   adapter that reports its own state also covers turns the agent started
+ *   itself, including one codex starts from a steer it answers
+ *   `startedNewTurn`.
+ * - An ask is pending if it has no recorded answer; the ask went to a
+ *   connection that is gone and nothing replays it.
+ * - The mode and effort are the last ones recorded, since the session may
+ *   have changed either while disconnected.
+ *
+ * acpd's exit line ends a life: what was running and asked dies with it.
+ * No record means nothing running and nothing recorded.
  */
-export async function readAcpInFlight(record: AcpRecordRef): Promise<AcpInFlight> {
+export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery> {
   const raw = await readRecord(record)
-  if (raw === undefined) return { prompt: false }
+  if (raw === undefined) return { inFlight: { prompt: false }, pendingPermissions: [] }
   let pending: string | number | undefined
   const steers = new Set<string | number>()
   let agentRunning: boolean | undefined
   let backgroundWork: boolean | undefined
+  // Keyed by string form for pairing, valued by the original id.
+  const asks = new Map<string, string | number>()
+  let modeId: string | undefined
+  // Requests whose reply moves the mode: a `set_mode` naming it, or a
+  // handshake whose reply reports it (undefined here).
+  const modeAsked = new Map<string, string | undefined>()
+  let effort: AcpEffort | undefined
   for (const line of raw.split('\n')) {
     const msg = parseLine(line)
     if (msg === undefined) continue
     const id = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
-    if (msg.method === ACP.sessionPrompt) {
-      // Without an id it is a notification, which is never answered.
-      if (id !== undefined) pending = id
-      continue
-    }
-    if (msg.method === ACP.sessionSteer) {
-      if (id !== undefined) steers.add(id)
-      continue
-    }
-    // As live (`AcpConversation.cancel`): Stop with no prompt running drops
-    // the adapter's report.
-    if (msg.method === ACP.sessionCancel) {
-      if (pending === undefined) agentRunning = undefined
-      continue
-    }
-    if (msg.method === ACPD.exit) {
-      // The agent exited; acpd starts a fresh record for the next life.
-      pending = undefined
-      agentRunning = undefined
-      backgroundWork = undefined
-      continue
+    switch (msg.method) {
+      case ACP.sessionPrompt:
+        // Without an id it is a notification, which is never answered.
+        if (id !== undefined) pending = id
+        continue
+      case ACP.sessionSteer:
+        if (id !== undefined) steers.add(id)
+        continue
+      case ACP.sessionCancel:
+        // As live (`AcpConversation.cancel`): Stop with no prompt running
+        // drops the adapter's report.
+        if (pending === undefined) agentRunning = undefined
+        continue
+      case ACP.requestPermission:
+        if (id !== undefined) asks.set(String(id), id)
+        continue
+      case ACPD.exit:
+        // The agent exited, and its turn and asks with it; acpd starts a
+        // fresh record for the next life.
+        pending = undefined
+        agentRunning = undefined
+        backgroundWork = undefined
+        asks.clear()
+        continue
+      case ACP.sessionNew:
+      case ACP.sessionLoad:
+      case ACP.sessionSetMode:
+        if (id !== undefined) modeAsked.set(String(id), asString(asRecord(msg.params)?.modeId))
+        continue
+      case ACP.sessionUpdate: {
+        const update = asRecord(asRecord(msg.params)?.update)
+        if (update !== undefined) {
+          modeId = sessionModeId(update) ?? modeId
+          effort = sessionEffort(update) ?? effort
+        }
+        break
+      }
     }
     agentRunning = agentRunningReport(msg.method, msg.params) ?? agentRunning
     backgroundWork = backgroundWorkReport(msg.method, msg.params) ?? backgroundWork
-    // Only a reply (no method) can close a turn.
-    if (msg.method !== undefined || id === undefined) continue
+    // Only a reply (no method) closes a turn, settles an ask or moves state;
+    // an `error` means the request did nothing.
+    if (msg.method !== undefined) continue
+    if (msg.error === undefined) effort = sessionEffort(msg.result) ?? effort
+    if (id === undefined) continue
     if (id === pending) {
       pending = undefined
       // As live (`AcpConversation.runTurn`): a refused prompt drops the
@@ -449,46 +504,23 @@ export async function readAcpInFlight(record: AcpRecordRef): Promise<AcpInFlight
       if (msg.error !== undefined) agentRunning = undefined
     }
     if (steers.delete(id) && asRecord(msg.result)?.outcome === 'startedNewTurn') agentRunning = true
+    asks.delete(String(id))
+    if (modeAsked.has(String(id))) {
+      const set = modeAsked.get(String(id))
+      modeAsked.delete(String(id))
+      if (msg.error === undefined) modeId = set ?? sessionStateModeId(msg.result) ?? modeId
+    }
   }
   return {
-    prompt: pending !== undefined,
-    ...(agentRunning !== undefined ? { agentRunning } : {}),
-    ...(backgroundWork !== undefined ? { backgroundWork } : {}),
+    inFlight: {
+      prompt: pending !== undefined,
+      ...(agentRunning !== undefined ? { agentRunning } : {}),
+      ...(backgroundWork !== undefined ? { backgroundWork } : {}),
+    },
+    pendingPermissions: [...asks.values()],
+    ...(modeId !== undefined ? { modeId } : {}),
+    ...(effort !== undefined ? { effort } : {}),
   }
-}
-
-/**
- * Permission asks the agent was still blocked on when the record was last
- * written: asks with no recorded answer, paired as in `readAcpInFlight`.
- * Several can be open at once.
- *
- * Ids are returned verbatim, not as strings: JSON-RPC matches ids by value
- * and type, so answering `42` with `"42"` would never pair.
- */
-export async function readAcpPendingPermissions(
-  record: AcpRecordRef,
-): Promise<Array<string | number>> {
-  const raw = await readRecord(record)
-  if (raw === undefined) return []
-  // Keyed by string form for pairing, valued by the original id.
-  const open = new Map<string, string | number>()
-  for (const line of raw.split('\n')) {
-    const msg = parseLine(line)
-    if (msg === undefined) continue
-    const raw = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
-    if (msg.method === ACP.requestPermission) {
-      if (raw !== undefined) open.set(String(raw), raw)
-      continue
-    }
-    if (msg.method === ACPD.exit) {
-      // The agent exited, and its asks with it.
-      open.clear()
-      continue
-    }
-    if (msg.method !== undefined) continue
-    if (raw !== undefined) open.delete(String(raw))
-  }
-  return [...open.values()]
 }
 
 /**
@@ -569,60 +601,4 @@ function promptText(params: unknown): string | undefined {
     })
     .join('')
   return text === '' ? undefined : text
-}
-
-
-/**
- * The session mode the record last shows: the handshake reply's, then each
- * successful `session/set_mode` and adapter mode update, last one winning.
- * A reattach seeds its posture from this (`AcpConversation.recoverMode`).
- */
-export async function readAcpModeId(record: AcpRecordRef): Promise<string | undefined> {
-  const raw = await readRecord(record)
-  if (raw === undefined) return undefined
-  let modeId: string | undefined
-  // Requests whose reply moves the mode: a `set_mode` naming it, or a
-  // handshake whose reply reports it (undefined here).
-  const asked = new Map<string, string | undefined>()
-  for (const line of raw.split('\n')) {
-    const msg = parseLine(line)
-    if (msg === undefined) continue
-    const id = lineId(msg)
-    if (msg.method === ACP.sessionNew || msg.method === ACP.sessionLoad || msg.method === ACP.sessionSetMode) {
-      if (id !== undefined) asked.set(id, asString(asRecord(msg.params)?.modeId))
-      continue
-    }
-    if (msg.method === ACP.sessionUpdate) {
-      const update = asRecord(asRecord(msg.params)?.update)
-      modeId = (update === undefined ? undefined : sessionModeId(update)) ?? modeId
-      continue
-    }
-    if (msg.method !== undefined || id === undefined || !asked.has(id)) continue
-    const set = asked.get(id)
-    asked.delete(id)
-    // An `error` means the request did nothing.
-    if (msg.error === undefined) modeId = set ?? sessionStateModeId(msg.result) ?? modeId
-  }
-  return modeId
-}
-
-/**
- * The effort option the record last shows (`sessionEffort`): from the
- * handshake reply, each `session/set_config_option` reply, and each
- * `config_option_update`, last one winning. A reattach runs no handshake,
- * so this is where it learns the levels a pane may pick.
- */
-export async function readAcpEffort(record: AcpRecordRef): Promise<AcpEffort | undefined> {
-  const raw = await readRecord(record)
-  if (raw === undefined) return undefined
-  let effort: AcpEffort | undefined
-  for (const line of raw.split('\n')) {
-    const msg = parseLine(line)
-    if (msg === undefined) continue
-    const state = msg.method === ACP.sessionUpdate
-      ? asRecord(asRecord(msg.params)?.update)
-      : msg.method === undefined && msg.error === undefined ? msg.result : undefined
-    effort = sessionEffort(state) ?? effort
-  }
-  return effort
 }

@@ -1,8 +1,8 @@
 /**
  * Turns file text, as a tool reported it, into the lines a code view renders
- * (`#components/CodeView` does the rendering). An agent's file reader may
- * print a line-number gutter, and some ACP adapters wrap output in a
- * markdown fence. Neither is part of the file, so both are stripped here.
+ * (`CodeView` in `#components/DiffView` renders them). An agent's file
+ * reader may print a line-number gutter, and some ACP adapters wrap output
+ * in a markdown fence. Neither is part of the file, so both are stripped here.
  */
 
 export interface CodeLine {

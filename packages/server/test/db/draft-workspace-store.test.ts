@@ -10,7 +10,7 @@ import {
   updateDraftWorkspace,
 } from '#db/draft-workspace-store'
 import type { DraftWorkspaceSettings } from '@yaac/shared/types'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 

@@ -1,12 +1,31 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import { EventEmitter } from 'node:events'
+import type * as ChildProcessModule from 'node:child_process'
+
+/** The detached teardown scripts a stop spawned, each with the child that
+ *  runs it. A child exits at once unless `holdTeardowns` is set. */
+const teardowns = vi.hoisted(() => ({ spawned: [] as Array<{ script: string; child: EventEmitter }>, hold: false }))
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcessModule>()
+  return {
+    ...actual,
+    spawn: (cmd: string, args: string[], opts: ChildProcessModule.SpawnOptions) => {
+      if (cmd !== 'sh') return actual.spawn(cmd, args, opts)
+      const child = Object.assign(new EventEmitter(), { unref: () => { /* detached */ } })
+      teardowns.spawned.push({ script: args[1], child })
+      if (!teardowns.hold) setImmediate(() => child.emit('exit', 0))
+      return child
+    },
+  }
+})
 import {
   listDraftWorkspaces,
   listProvisioning,
+  prepareRestart,
+  prepareStart,
   queueWorkspace,
-  registerProvisioning,
-  restartWorkspace,
-  runProvisioned,
-  startWorkspace,
   stopWorkspace,
 } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
@@ -16,10 +35,13 @@ import { getWorkspaceRow, listWorkspaceAgentSessions } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import { WorkspaceExecError } from '#drivers/contract'
 import { BUILT_IN_USER_ID } from '#db'
+import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
+import { serverLog } from '#lib/log'
+import { workspaceDir } from '@yaac/shared/project-paths'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -38,6 +60,9 @@ beforeEach(async () => {
   await seedProject(PROJ)
   clearAllProvisioningForTests()
   clearQueuedLaunchesForTests()
+  _clearTerminatingForTests()
+  teardowns.spawned = []
+  teardowns.hold = false
   deregistered = []
   launched = []
   installFakeWorkspaceDriver({
@@ -111,6 +136,68 @@ describe('stopWorkspace', () => {
     expect(waiting?.releasedAt).toBeUndefined()
   })
 
+  /**
+   * The teardown runs detached, so the stop returns at once: routing stops
+   * in-process, then the runtime's teardown and this layer's dirs go in one
+   * script, once anything the workspace holds has been salvaged.
+   */
+  describe('the teardown it schedules', () => {
+    const TEARDOWN = 'runtime-teardown-here'
+    /** What the runtime was asked, in order. */
+    let calls: string[]
+
+    function installTeardown(salvage: () => Promise<void> = () => Promise.resolve()): void {
+      installFakeWorkspaceDriver({
+        findForTeardown: (id) => Promise.resolve(id === 'parent'
+          ? { workspaceId: 'parent', projectId: PROJ, unitName: 'yaac-proj-parent' }
+          : undefined),
+        deregisterWorkspace: (id) => { calls.push(`deregister ${id}`); return Promise.resolve() },
+        salvageImages: (target) => { calls.push(`salvage ${target.unitName}`); return salvage() },
+        detachedTeardownCommand: () => TEARDOWN,
+      })
+    }
+
+    beforeEach(() => {
+      calls = []
+      installTeardown()
+    })
+
+    it('records the stop and marks it terminating, deregisters, then runs the runtime teardown ahead of the dirs this layer owns', async () => {
+      const modules = path.join(workspaceDir(PROJ, 'parent'), 'node_modules')
+      await fs.mkdir(modules, { recursive: true })
+      let release!: () => void
+      installTeardown(() => new Promise((resolve) => { release = resolve }))
+      vi.mocked(serverLog).mockClear()
+
+      await stopWorkspace(local, 'parent')
+
+      expect(isWorkspaceTerminating('parent')).toBe(true)
+      expect((await getWorkspaceRow(PROJ, 'parent'))?.stoppedAt).toBeInstanceOf(Date)
+      // Routing stops in-process, and the salvage reads from the workspace,
+      // so nothing is spawned until both are done.
+      expect(calls).toEqual(['deregister parent', 'salvage yaac-proj-parent'])
+      expect(teardowns.spawned).toEqual([])
+      // The detached script's output is discarded, so the teardown is
+      // logged here.
+      const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
+      expect(logged).toContain(`session teardown: session=parent job=yaac-proj-parent project=${PROJ}`)
+      expect(logged).not.toContain('cause=')
+
+      release()
+      await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) })
+      const { script } = teardowns.spawned[0]
+      expect(script.startsWith(TEARDOWN)).toBe(true)
+      expect(script).toContain(`rm -rf '${modules}'`)
+      expect(script.indexOf(TEARDOWN)).toBeLessThan(script.indexOf('rm -rf'))
+    })
+
+    it('spawns the teardown even when the salvage fails', async () => {
+      installTeardown(() => Promise.reject(new Error('registry down')))
+      await stopWorkspace(local, 'parent')
+      await vi.waitFor(() => { expect(teardowns.spawned).toHaveLength(1) })
+    })
+  })
+
   describe('a workspace still being created', () => {
     /** Start creating workspace `new` (or restarting `parent`) the way the
      *  routes do, with the driver's `assertCanLaunch`, `awaitReady` and `exec`
@@ -149,10 +236,9 @@ describe('stopWorkspace', () => {
           return Promise.resolve(true)
         },
       })
-      registerProvisioning({ workspaceId: id, projectId: PROJ, tool: 'claude', kind })
-      const create = kind === 'restart'
-        ? runProvisioned(id, (onProgress) => restartWorkspace(local, id, { onProgress }))
-        : runProvisioned(id, (onProgress) => startWorkspace(local, {
+      const create = (kind === 'restart'
+        ? prepareRestart(local, id)
+        : prepareStart(local, {
           projectId: PROJ,
           workspaceId: 'new',
           tool: 'claude',
@@ -163,7 +249,7 @@ describe('stopWorkspace', () => {
           rememberDefaults: false,
           claimSpare: false,
           draft: {},
-        }, onProgress))
+        })).then((run) => run())
       create.catch(() => { /* asserted by the test */ })
       return { create, destroyed, deregistered }
     }

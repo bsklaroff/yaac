@@ -10,7 +10,7 @@ import { countStoppedWorkspaces } from '#db'
 import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
-import { errorText, serverLog } from '#log'
+import { errorText, serverLog } from '#lib/log'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
@@ -64,8 +64,8 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
 
 /**
  * Fan-out hub for the `/events` stream: holds every open connection and
- * pushes snapshots to them. It is the only consumer of `#notify`, which every
- * store the snapshot reads emits on change (docs/layered-server.md).
+ * pushes snapshots to them. It is the only consumer of `#lib/notify`, which
+ * every store the snapshot reads emits on change (docs/layered-server.md).
  * Snapshots are broadcast only when they differ from the last one sent.
  */
 export class EventHub {

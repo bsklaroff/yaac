@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, afterEach } from 'vitest'
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { useLocalPorts } from '#lib/useLocalPorts'

@@ -83,7 +83,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
           enableServiceLinks: false,
           // Every workspace's DNS and egress depend on it.
           priorityClassName: PRIORITY_CLASS_INFRA,
-          // Trusted infra: runc, not gVisor (see gvisor.ts).
+          // Trusted infra: runc, not gVisor (see install/gvisor-runtime.ts).
           ...proxyRunAsSecurityContext(),
           containers: [
             {

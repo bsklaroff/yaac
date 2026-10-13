@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import { ServerIcon } from '#lib/icons'
-import { windowApi } from '#components/WindowControls'
+import { windowApi } from '#lib/platform'
 
 /** host[:port] of the origin, or the origin as-is if it doesn't parse. */
 export function serverLabel(origin: string): string {

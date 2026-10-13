@@ -11,9 +11,9 @@ import {
   onStreamHealthLost,
   _resetWorkspaceStatusStoreForTests,
 } from '#runtime/status/status-store'
-import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#notify'
+import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
-// The store announces changes on #notify; these tests listen there.
+// The store announces changes on #lib/notify; these tests listen there.
 beforeEach(() => {
   _resetWorkspaceStatusStoreForTests()
   _resetWorkspaceListChangedForTests()
@@ -21,7 +21,7 @@ beforeEach(() => {
 
 /**
  * The status watcher writes (`setAgentStatus`, `setWorkspaceStreamHealth`);
- * the snapshot reads, and re-reads whenever `#notify` announces a change.
+ * the snapshot reads, and re-reads whenever `#lib/notify` announces a change.
  */
 describe('readWorkspaceStatus', () => {
   it('reads waiting until a status is written, keyed by projectId and session id', () => {

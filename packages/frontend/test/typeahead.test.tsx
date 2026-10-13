@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
 import { Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
+import { typeInto } from './harness'
 
-afterEach(cleanup)
 
 const MODELS: TypeaheadItem[] = [
   { value: 'claude-opus-5-5', label: 'Opus 5.5', detail: 'claude-opus-5-5' },
@@ -55,7 +54,7 @@ describe('Typeahead', () => {
   it('highlights the first match as the user types when asked to', () => {
     const { onSelect } = field({ autoHighlight: true })
     const input = screen.getByLabelText('Model')
-    fireEvent.change(input, { target: { value: 'o' } })
+    typeInto(input, 'o')
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSelect).toHaveBeenCalledWith('claude-opus-5-5')
   })

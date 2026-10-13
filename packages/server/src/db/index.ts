@@ -75,7 +75,6 @@ export {
   getGitIdentity,
   getShortcutOverrides,
   getTimeZone,
-  isSerializedChord,
   setGitIdentity,
   setShortcutOverride,
   setTimeZone,
@@ -113,7 +112,6 @@ export {
   getToolCredential,
   listToolCredentials,
   setToolCredential,
-  type ToolCredential,
 } from './tool-credential-store'
 export {
   BUILT_IN_USER_ID,

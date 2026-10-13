@@ -1,17 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { snapshotFixture } from '@yaac/test-utils/fake-driver'
-import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
+import { installFakeWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
+import { createK8sDriver } from '#drivers/k8s'
+import { setWorkspaceDriver } from '#drivers/driver'
 import { K8S_TRIGGERS } from '#drivers/k8s/lifecycle'
 import type * as cleanupModule from '#domain/workspaces/cleanup'
-import type * as imagePrewarmModule from '#drivers/k8s/images/image-prewarm'
-import type * as projectRegistryModule from '#drivers/k8s/cluster/project-registry'
-import type * as titleGenerationModule from '#domain/titles/title-generation'
+import type * as titleGenerationModule from '#domain/workspaces/title-generation'
 
-// Each reconcile step is faked; these tests check which steps run and in
-// what order, not what they do.
+// Each mediator step is faked, and the runtime's steps come from a fake
+// driver; these tests check which steps run and in what order, not what
+// they do. The real driver is installed only to read its step list.
 vi.mock('#domain/workspaces/stale-workspaces', () => ({ reconcileStaleWorkspaces: vi.fn() }))
 vi.mock('#domain/workspaces/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
-vi.mock('#drivers/k8s/workspaces/salvage-reconcile', () => ({ reconcileImageSalvage: vi.fn() }))
 vi.mock('#domain/workspaces/agent-session-registry', () => ({
   reconcileAgentSessions: vi.fn(),
   reconcileStoppedAgentSessions: vi.fn(),
@@ -21,53 +20,34 @@ vi.mock('#domain/workspaces/cleanup', async (importOriginal) => ({
   gcOrphanEphemeralModuleDirs: vi.fn(),
   reapOrphanNodeLocal: vi.fn(),
 }))
-vi.mock('#drivers/k8s/images/main-registry-gc', () => ({ reconcileMainRegistryGc: vi.fn() }))
-vi.mock('#drivers/k8s/cluster/node-sync', () => ({ reconcileNodeSet: vi.fn() }))
-vi.mock('#drivers/k8s/images/store-writer', () => ({ reconcileNodeImageStores: vi.fn() }))
-vi.mock('#drivers/k8s/images/image-prewarm', async (importOriginal) => ({
-  ...(await importOriginal<typeof imagePrewarmModule>()),
-  reconcileImagePrewarm: vi.fn(),
-}))
-vi.mock('#drivers/k8s/egress/proxy-registration', async (importOriginal) => ({
-  ...(await importOriginal<typeof proxyRegistrationModule>()),
-  reconcileRegistrationGc: vi.fn(),
-}))
 vi.mock('#domain/auth/runtime-push', () => ({
   adoptRefreshedToolCredentials: vi.fn(),
   pushCredentialsToRuntime: vi.fn(),
 }))
-vi.mock('#drivers/k8s/cluster/project-registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof projectRegistryModule>()),
-  reconcileProjectRegistryGc: vi.fn(),
-}))
-vi.mock('#domain/titles/title-generation', async (importOriginal) => ({
+vi.mock('#domain/workspaces/title-generation', async (importOriginal) => ({
   ...(await importOriginal<typeof titleGenerationModule>()),
   reconcileGeneratedTitles: vi.fn(),
 }))
 
 import { startReconciler } from '#main/reconciler'
-import { defaultReconcileSteps } from '#domain/reconcile'
+import { defaultReconcileSteps } from '#main/reconcile-steps'
 import type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/contract'
 import { reconcileStaleWorkspaces } from '#domain/workspaces/stale-workspaces'
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
-import { reconcileImageSalvage } from '#drivers/k8s/workspaces/salvage-reconcile'
 import { reconcileAgentSessions } from '#domain/workspaces/agent-session-registry'
 import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal } from '#domain/workspaces/cleanup'
-import { reconcileMainRegistryGc } from '#drivers/k8s/images/main-registry-gc'
-import { reconcileNodeImageStores } from '#drivers/k8s/images/store-writer'
-import { reconcileImagePrewarm } from '#drivers/k8s/images/image-prewarm'
-import { reconcileRegistrationGc } from '#drivers/k8s/egress/proxy-registration'
 import { adoptRefreshedToolCredentials } from '#domain/auth/runtime-push'
-import type * as proxyRegistrationModule from '#drivers/k8s/egress/proxy-registration'
-import { reconcileProjectRegistryGc } from '#drivers/k8s/cluster/project-registry'
-import { reconcileGeneratedTitles } from '#domain/titles/title-generation'
+import { reconcileGeneratedTitles } from '#domain/workspaces/title-generation'
+
+/** The fake driver's steps: one before the pool, one in maintenance. */
+const runtimePrePool = vi.fn<(ctx: PassContext) => Promise<void>>()
+const runtimeMaintenance = vi.fn<(ctx: PassContext) => Promise<void>>()
 
 const ALL_STEP_FNS = [
   reconcileStaleWorkspaces,
-  reconcileImagePrewarm, reconcilePrewarmPool,
-  reconcileImageSalvage, reconcileNodeImageStores, reconcileProjectRegistryGc,
+  runtimePrePool, reconcilePrewarmPool,
   reconcileAgentSessions,
-  reconcileRegistrationGc, reconcileMainRegistryGc,
+  runtimeMaintenance,
   gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, adoptRefreshedToolCredentials,
   reconcileGeneratedTitles,
 ] as const
@@ -314,8 +294,12 @@ async function runPass(
 
 describe('defaultReconcileSteps', () => {
   beforeEach(() => {
-    // The real driver contributes its steps; their modules are mocked above.
-    installRealWorkspaceDriver()
+    installFakeWorkspaceDriver({
+      reconcileSteps: () => ({
+        prePool: [{ name: 'runtime-pre-pool', triggers: [], run: runtimePrePool }],
+        maintenance: [{ name: 'runtime-maintenance', triggers: [], run: runtimeMaintenance }],
+      }),
+    })
     for (const fn of ALL_STEP_FNS) vi.mocked(fn).mockReset()
   })
 
@@ -373,11 +357,13 @@ describe('defaultReconcileSteps', () => {
     for (const fn of ALL_STEP_FNS) expect(fn).toHaveBeenCalledTimes(1)
   })
 
-  // A spare's create joins the builds the prewarm sweep started.
-  it('keeps the prewarm → pool order', async () => {
+  // A spare's create joins the builds the runtime's pre-pool steps (the
+  // image prewarm) started.
+  it('runs the runtime\'s pre-pool steps before the pool', async () => {
     const order: string[] = []
-    vi.mocked(reconcileImagePrewarm).mockImplementation(() => {
+    runtimePrePool.mockImplementation(() => {
       order.push('prewarm')
+      return Promise.resolve()
     })
     vi.mocked(reconcilePrewarmPool).mockImplementation(() => {
       order.push('pool')
@@ -390,6 +376,7 @@ describe('defaultReconcileSteps', () => {
   // A trigger nothing raises would silently wait for the 60s resync. The
   // driver raises only K8S_TRIGGERS, so every declared trigger must be one.
   it('declares only triggers something can actually raise', () => {
+    setWorkspaceDriver(createK8sDriver())
     const raisable = new Set<string>(K8S_TRIGGERS)
     const declared = new Set(defaultReconcileSteps().flatMap((s) => s.triggers))
     expect([...declared].filter((t) => !raisable.has(t))).toEqual([])
@@ -408,6 +395,7 @@ describe('defaultReconcileSteps', () => {
   // before the registry collect, which makes the registry read-only for
   // minutes.
   it('rebuilds the image store between the salvage and the registry collect', () => {
+    setWorkspaceDriver(createK8sDriver())
     const names = defaultReconcileSteps().map((s) => s.name)
     expect(names.filter((n) => ['image-salvage', 'image-store', 'registry-gc'].includes(n)))
       .toEqual(['image-salvage', 'image-store', 'registry-gc'])

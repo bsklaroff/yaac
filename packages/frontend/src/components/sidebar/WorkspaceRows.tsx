@@ -397,7 +397,7 @@ function GroupDialog({
     if (name) move.mutate(() => api.workspace.group.create.$post({ json: { projectId, workspaceId, name } }))
   }
   const moveTo = (groupId: string | null): void => {
-    move.mutate(() => api.workspace['set-group'].$post({ json: { projectId, workspaceId, groupId } }))
+    move.mutate(() => api.workspace.group.move.$post({ json: { projectId, workspaceId, group: groupId } }))
   }
 
   const others = shownGroups.filter((g) => g.groupId !== workspace.groupId)

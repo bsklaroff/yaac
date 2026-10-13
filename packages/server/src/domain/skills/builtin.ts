@@ -14,10 +14,6 @@
  * symlinked once per project into the shared skills roots, pointing at the
  * install dir. Project-wide scope is the best this substrate can do.
  *
- * An install can switch substrates, so `reconcileSharedSkillRoots` converts
- * whatever the other delivery left (an empty mountpoint, or our link). It
- * runs on every create and restart, so no migration is needed.
- *
  * Discovery (discover.ts) reads the install dir directly, since it can't see
  * in-pod mounts.
  */
@@ -25,11 +21,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
-  PACKAGE_ROOT, claudeDir, codexDir, opencodeConfigDir, piDir,
+  PACKAGE_ROOT, claudeDir, codexDir, opencodeConfigDir, piDir, projectDir,
 } from '@yaac/shared/project-paths'
 import type { WorkspaceMount } from '#drivers/contract'
-import type { PinnedDir } from '#lib/confined-fs'
-import { openSandboxDir } from '#runtime/agents'
+import { workspacesSandboxed } from '#drivers/driver'
+import { openAgentDir, type PinnedDir } from '#lib/confined-fs'
 
 /** The package dir the skills ship in. A link into any dir with this name is
  *  treated as ours (see `isBuiltinSkillLink`). */
@@ -143,10 +139,6 @@ export type SkillDelivery = 'link' | 'mountpoint'
  * Only our own entries are touched: a user's skill directory, file or link
  * keeps its name. Our links are re-aimed if the install moved and removed if
  * the skill is no longer shipped.
- *
- * Leftovers from the other delivery are converted (`link` reclaims an empty
- * mountpoint; `mountpoint` replaces our link), but only for shipped names;
- * an unshipped empty directory may be the user's.
  */
 export async function reconcileSharedSkillRoots(
   srcDir: string, projectId: string, delivery: SkillDelivery,
@@ -155,7 +147,7 @@ export async function reconcileSharedSkillRoots(
   for (const [homeOf, rel] of SKILL_HOMES) {
     // With nothing shipped, create nothing; only prune existing roots.
     if (names.length > 0) await fs.mkdir(homeOf(projectId), { recursive: true })
-    const home = await openSandboxDir(projectId, homeOf(projectId)).catch(() => null)
+    const home = await openAgentDir(projectDir(projectId), homeOf(projectId), workspacesSandboxed()).catch(() => null)
     if (home === null) continue
     if (names.length > 0) await home.mkdirp(rel)
     // All operations below go through the pinned root, so a pod that swaps
@@ -183,59 +175,24 @@ async function linkSkill(src: string, dest: string): Promise<void> {
     await plantLink(src, dest)
     return
   }
-  // A real dir or file here is either the user's own skill, which wins (see
-  // `builtin-skills/README.md`), or an empty mountpoint left by a pod run,
-  // which we reclaim.
-  if (!stat.isSymbolicLink()) {
-    if (await reclaimSpentMountpoint(dest)) await plantLink(src, dest)
-    return
-  }
+  // A real dir or file here is the user's own skill, which wins (see
+  // `builtin-skills/README.md`).
+  if (!stat.isSymbolicLink()) return
   if (await fs.readlink(dest).catch(() => null) === src) return
   if (!(await isBuiltinSkillLink(dest))) return // their link, their name
   await reaimLink(src, dest)
 }
 
 /**
- * Remove an empty directory at `dest` and return whether the name is free.
- * `rmdir` fails on anything non-empty (or a file), so the user's skill is
- * safe without a racy emptiness check. An empty directory is a mountpoint
- * left by a k8s run; leaving it would hide the builtin after a switch.
- */
-async function reclaimSpentMountpoint(dest: string): Promise<boolean> {
-  try {
-    await fs.rmdir(dest)
-    return true
-  } catch (err) {
-    // Already gone (a concurrent create) means free; anything else is theirs.
-    return (err as NodeJS.ErrnoException).code === 'ENOENT'
-  }
-}
-
-/**
- * Make `dest` an empty directory for a pod to mount over, unless the user
- * owns the name. It must exist before the pod, since a kubelet-created
- * mountpoint is root-owned and the server couldn't clear it after a switch
- * to link delivery. Our link at the name (from containerless) is replaced;
- * `fs.rm` doesn't follow it.
+ * Make `dest` an empty directory for a pod to mount over, unless the name is
+ * taken (by the user's skill, or a mountpoint already). It must exist before
+ * the pod, since a kubelet-created mountpoint is root-owned.
  */
 async function makeMountpoint(dest: string): Promise<void> {
-  const stat = await fs.lstat(dest).catch(() => null)
-  if (stat === null) {
-    await mkdirMountpoint(dest)
-    return
-  }
-  if (!stat.isSymbolicLink()) return // their skill, or a mountpoint already
-  if (!(await isBuiltinSkillLink(dest))) return // their link, their name
-  await fs.rm(dest, { force: true })
-  await mkdirMountpoint(dest)
-}
-
-/** Create one mountpoint, tolerating a concurrent create that just made it
- *  (as `plantLink` does). */
-async function mkdirMountpoint(dest: string): Promise<void> {
   try {
     await fs.mkdir(dest)
   } catch (err) {
+    // Taken, possibly by a concurrent create that just made it.
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
   }
 }

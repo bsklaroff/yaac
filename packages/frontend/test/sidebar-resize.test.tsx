@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup } from '@testing-library/react'
 
@@ -21,11 +20,6 @@ import {
 import { mockFetch, renderWithClient } from './harness'
 
 beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
   // jsdom has no pointer capture; the handle calls it on every drag.
   Element.prototype.setPointerCapture = (): void => {}
   Element.prototype.releasePointerCapture = (): void => {}
@@ -43,23 +37,17 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   document.body.className = ''
-  vi.unstubAllGlobals()
 })
 
 /** The sidebar with no project selected: the handle, without project menus. */
 function renderSidebar(): HTMLElement {
   renderWithClient(
     <Sidebar
-      projectId={null}
-      projectRemoteUrl=""
-      workspaces={[]}
-      groups={[]}
-      queued={[]}
-      held={[]}
-      drafts={[]}
-      provisioning={[]}
+      scope={{
+        projectId: null, project: undefined, workspaces: [], groups: [], provisioning: [],
+        queued: [], held: [], drafts: [], gitAuthFailures: [],
+      }}
       connected
-      gitAuthFailures={[]}
     />,
   )
   return screen.getByRole('separator', { name: 'Resize sidebar' })

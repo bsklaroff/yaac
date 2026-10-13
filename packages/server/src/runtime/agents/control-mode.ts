@@ -1,7 +1,8 @@
 /**
  * Minimal tmux control-mode (`tmux -C`) client. Two kinds of stream use it,
  * one of each per workspace:
- * - the status watcher's, in both agent modes: notifications push state
+ * - the status watcher's, in both agent modes (`ControlModeConnection`,
+ *   which both agent drivers extend): notifications push state
  *   (`%subscription-changed` carries the subscribed format's value; the
  *   watchers attach `no-output`), and commands go over the same connection
  *   (`send()` resolves with the `%begin`/`%end` reply body), so the
@@ -25,7 +26,12 @@
  *   arrives at the first check, giving an initial classification.
  */
 
-import type { WorkspacePaths } from '#drivers/contract'
+import { StringDecoder } from 'node:string_decoder'
+import type { StreamChild, WorkspacePaths } from '#drivers/contract'
+import { workspaceDriver } from '#drivers/driver'
+import { serverLog } from '#lib/log'
+import type { AgentConnectDeps, AgentConnection, AgentObservation, DrivenWorkspace } from './drivers'
+import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 /**
  * The in-workspace control-mode attach argv, dialed as a ctrl stream. Flags:
@@ -35,7 +41,7 @@ import type { WorkspacePaths } from '#drivers/contract'
  * any read-only client is attached, which would stop every prompt and
  * message yaac types into a pane.
  */
-export function controlModeAttachArgv(paths: WorkspacePaths): string[] {
+function controlModeAttachArgv(paths: WorkspacePaths): string[] {
   return [
     'tmux', '-S', paths.tmuxSock, '-C', 'attach-session', '-t', 'yaac',
     '-f', 'ignore-size,no-output',
@@ -52,7 +58,7 @@ export function controlModeAttachArgv(paths: WorkspacePaths): string[] {
 export const PLACEHOLDER_FORMAT = '#{m/r:^"?sleep (infinity|2147483647)"?$,#{pane_start_command}}'
 
 /** Reject `promise` if it has not settled within `ms`. */
-export function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)
     promise.then(
@@ -79,7 +85,7 @@ export type ControlModeNotification =
  * Parse one notification line (a `%` line outside a reply block). Returns
  * null for notifications the watchers ignore and for non-`%` noise.
  */
-export function parseControlModeNotification(line: string): ControlModeNotification | null {
+function parseControlModeNotification(line: string): ControlModeNotification | null {
   if (line.startsWith('%subscription-changed ')) {
     const rest = line.slice('%subscription-changed '.length)
     const sep = rest.indexOf(' : ')
@@ -239,4 +245,197 @@ export class ControlModeClient {
       skipped.reject(err)
     }
   }
+}
+
+/** For a pane still running create's placeholder, until an agent is
+ *  respawned into it (`PLACEHOLDER_FORMAT`). */
+export const BOOT_SUBSCRIPTION_PREFIX = 'boot-'
+
+/**
+ * What the `tui` and `acp` connections share: one persistent control-mode
+ * client per workspace, dialed as a ctrl stream, which carries both the
+ * driver's tmux commands and tmux's pushes. Owns the dial, decoding, the
+ * command timeout, the heartbeat that detects a wedged stream, the window
+ * and boot notifications that trigger a re-list, and teardown. A subclass
+ * says what a re-list does (`sync`) and what else a heartbeat checks.
+ *
+ * A subclass calls `start()` at the end of its constructor, once its own
+ * fields exist, since a failed dial tears down synchronously.
+ */
+export abstract class ControlModeConnection implements AgentConnection {
+  protected done = false
+  protected readonly log: (msg: string) => void
+  protected readonly dial: (session: DrivenWorkspace, argv: string[]) => StreamChild
+  private child: StreamChild | null = null
+  private client: ControlModeClient | null = null
+  private heartbeatTimer: NodeJS.Timeout | null = null
+  private heartbeatInFlight = false
+  private readonly heartbeatIntervalMs: number
+  protected readonly commandTimeoutMs: number
+
+  constructor(
+    readonly session: DrivenWorkspace,
+    protected readonly sink: (obs: AgentObservation) => void,
+    deps: AgentConnectDeps,
+    private readonly label: string,
+  ) {
+    this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
+    this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
+    this.log = deps.log ?? serverLog
+    this.dial = deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv))
+  }
+
+  /** Reconcile with the workspace's windows; run at attach, on every
+   *  heartbeat and on each window or boot notification. */
+  protected abstract sync(): Promise<void>
+  /** A subscription push other than a boot one. */
+  protected abstract onSubscription(n: Extract<ControlModeNotification, { kind: 'subscription' }>): void
+  /** Release what the subclass holds; the stream is already gone. */
+  protected abstract cleanup(): void
+  /** Setup before the first re-list. */
+  protected init(): Promise<void> {
+    return Promise.resolve()
+  }
+
+  /** A placeholder pane's agent replaced it. */
+  protected onBooted(_paneId: string): void {}
+
+  /** Extra work on each heartbeat, before the re-list. */
+  protected beforeHeartbeat(): void {}
+
+  protected start(): void {
+    let child: StreamChild
+    try {
+      child = this.dial(this.session, controlModeAttachArgv(workspaceDriver().workspacePaths(this.session.jobName)))
+    } catch (err) {
+      this.down(`spawn failed: ${String(err)}`)
+      return
+    }
+    this.child = child
+    const client = new ControlModeClient(
+      (data) => child.stdin?.write(data),
+      (n) => this.onNotification(n),
+    )
+    this.client = client
+    // Chunks can split multi-byte characters (e.g. claude's Braille
+    // spinner), which would corrupt titles and flip a classification.
+    const decoder = new StringDecoder('utf8')
+    child.stdout?.on('data', (chunk) => {
+      if (!this.done) client.feed(typeof chunk === 'string' ? chunk : decoder.write(chunk))
+    })
+    child.stderr?.on('data', () => { /* no stderr on ctrl streams — exit logs */ })
+    child.on('error', (err) => this.down(`child error: ${String(err)}`))
+    child.on('exit', () => this.down('stream closed'))
+    void this.establish().catch((err: unknown) => this.down(`init failed: ${String(err)}`))
+  }
+
+  /** Run one tmux command over the stream, with the reply deadline. */
+  protected send(cmd: string): Promise<string> {
+    const client = this.client
+    if (!client) return Promise.reject(new Error('control stream torn down'))
+    return withTimeout(client.send(cmd), this.commandTimeoutMs, `tmux ${cmd.split(' ')[0]}`)
+  }
+
+  /** Re-list off the hot path, ignoring failures; the heartbeat detects a
+   *  wedged stream. */
+  protected async resync(): Promise<void> {
+    if (this.done) return
+    try {
+      await this.sync()
+    } catch { /* the heartbeat handles wedges */ }
+  }
+
+  private async establish(): Promise<void> {
+    await this.init()
+    await this.sync()
+    if (this.done) return
+    this.sink({ kind: 'up' })
+    this.sink({ kind: 'command-channel', send: (cmd) => this.send(cmd) })
+    this.heartbeatTimer = setInterval(() => void this.heartbeat(), this.heartbeatIntervalMs)
+  }
+
+  /**
+   * Wedge detector: a command over the open stream whose reply proves the
+   * path to the tmux server, then a re-list, which also catches windows
+   * that came and went between notifications. A failure of either tears
+   * the stream down, so a connection whose re-list keeps failing redials
+   * rather than staying up with nothing attached.
+   */
+  private async heartbeat(): Promise<void> {
+    if (this.done || this.heartbeatInFlight) return
+    this.heartbeatInFlight = true
+    try {
+      this.beforeHeartbeat()
+      await this.send('display-message -p ok')
+      if (!this.done) await this.sync()
+    } catch (err) {
+      this.down(`heartbeat failed: ${String(err)}`)
+    } finally {
+      this.heartbeatInFlight = false
+    }
+  }
+
+  private onNotification(n: ControlModeNotification): void {
+    if (this.done) return
+    if (n.kind === 'windows-changed') {
+      this.sink({ kind: 'windows-changed' })
+      void this.resync()
+    } else if (n.kind === 'subscription') {
+      if (!n.name.startsWith(BOOT_SUBSCRIPTION_PREFIX)) this.onSubscription(n)
+      else if (n.value === '0') {
+        this.onBooted(n.paneId)
+        void this.resync()
+      }
+    }
+    // `exit`: tmux is detaching us, and the child exit that follows tears
+    // down. `%output` never arrives, since connections attach no-output.
+  }
+
+  protected down(reason: string): void {
+    if (this.done) return
+    this.teardown()
+    this.sink({ kind: 'down', reason })
+  }
+
+  private teardown(): void {
+    this.done = true
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    this.heartbeatTimer = null
+    this.sink({ kind: 'command-channel', send: null })
+    this.client?.fail(new Error('stream torn down'))
+    this.client = null
+    this.child?.kill('SIGTERM')
+    this.child = null
+    this.cleanup()
+  }
+
+  close(): void {
+    if (this.done) return
+    this.log(`[server] ${this.label} ${this.session.workspaceId}: closing`)
+    this.teardown()
+  }
+}
+
+/** The name stays last — it may contain pipes. */
+const LIST_WINDOWS = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"
+const WINDOW_LINE = /^(\d+)\|(@\d+)\|(.*)$/
+
+/**
+ * List a workspace's webapp-attachable terminals: every window of its
+ * `yaac` session except the agent's (the lowest index). `tmux` runs one
+ * read-only tmux command and returns its output: the status watcher passes
+ * its control-mode stream, which costs no exec.
+ */
+export async function listTerminals(
+  tmux: (tmuxArgs: string) => Promise<string>,
+): Promise<WorkspaceTerminalEntry[]> {
+  const rows = (await tmux(LIST_WINDOWS)).split('\n').flatMap((line) => {
+    const m = WINDOW_LINE.exec(line.trim())
+    return m ? [{ index: Number(m[1]), id: m[2], name: m[3] }] : []
+  })
+  if (rows.length === 0) return []
+  const agentIndex = Math.min(...rows.map((r) => r.index))
+  return rows
+    .filter((r) => r.index !== agentIndex)
+    .map((r) => ({ target: `window:${r.id}`, name: r.name }))
 }

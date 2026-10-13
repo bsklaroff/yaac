@@ -1,6 +1,6 @@
 import { testEnv } from '@yaac/shared/env'
 import { PLACEHOLDER_REFRESH_TOKEN } from '@yaac/shared/tool-auth'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /**
  * Whether this server may present `refreshToken` in an OAuth refresh grant.

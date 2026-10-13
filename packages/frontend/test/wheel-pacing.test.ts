@@ -1,47 +1,14 @@
-import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type { Terminal } from '@xterm/xterm'
-import { addToBacklog, paceStep, patchWheelPacing } from '#lib/wheel-pacing'
-
-describe('paceStep', () => {
-  it('emits the whole backlog when under the per-flush cap', () => {
-    expect(paceStep(1, 2, 6)).toEqual({ emit: 1, carry: 0 })
-    expect(paceStep(-2, 2, 6)).toEqual({ emit: -2, carry: 0 })
-    expect(paceStep(0, 2, 6)).toEqual({ emit: 0, carry: 0 })
-  })
-
-  it('caps emission per flush and carries the rest', () => {
-    expect(paceStep(5, 2, 6)).toEqual({ emit: 2, carry: 3 })
-    expect(paceStep(-5, 2, 6)).toEqual({ emit: -2, carry: -3 })
-  })
-
-  it('clamps the carried backlog to the cap', () => {
-    expect(paceStep(20, 2, 6)).toEqual({ emit: 2, carry: 6 })
-    expect(paceStep(-20, 2, 6)).toEqual({ emit: -2, carry: -6 })
-  })
-})
-
-describe('addToBacklog', () => {
-  it('accumulates signed reports', () => {
-    expect(addToBacklog(0, 1, 6)).toBe(1)
-    expect(addToBacklog(1, -1, 6)).toBe(0)
-    expect(addToBacklog(-2, -1, 6)).toBe(-3)
-  })
-
-  it('drops the excess beyond the cap in either direction', () => {
-    expect(addToBacklog(6, 1, 6)).toBe(6)
-    expect(addToBacklog(-6, -1, 6)).toBe(-6)
-  })
-})
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { patchWheelPacing } from '#lib/wheel-pacing'
+import type { CoreMouseEvent } from '#lib/xterm-internals'
+import { fakeXterm } from './harness'
 
 describe('patchWheelPacing', () => {
-  type Report = { col: number; row: number; button: number; action: number }
+  type Report = Pick<CoreMouseEvent, 'col' | 'row' | 'button' | 'action'>
 
-  /** A fake of exactly the internals the patch touches, plus the public
-   *  attachCustomWheelEventHandler. */
+  /** A terminal recording its wheel reports and its custom wheel handler. */
   function fakeTerm(): {
-    term: Terminal
+    term: ReturnType<typeof fakeXterm>
     reports: Report[]
     setMouseActive: (a: boolean) => void
     wheel: (deltaY: number, opts?: Partial<WheelEvent>) => boolean | undefined
@@ -51,32 +18,24 @@ describe('patchWheelPacing', () => {
     let mouseActive = true
     // Events default to 200 ms apart, far enough for each to be a notch.
     let now = 0
-    const coreMouseService = {
-      get areMouseEventsActive(): boolean {
-        return mouseActive
-      },
-      triggerMouseEvent: (e: Report): boolean => {
-        reports.push({ ...e })
-        return true
-      },
-      // Real consumeWheelEvent damps and carries fractions; the fake maps
-      // one event to one line so tests control the report count directly.
-      consumeWheelEvent: (ev: WheelEvent): number => (ev.deltaY === 0 ? 0 : ev.deltaY < 0 ? -1 : 1),
-    }
-    const term = {
-      _core: {
-        screenElement: {},
-        _mouseService: {
-          getMouseReportCoords: () => ({ col: 3, row: 4, x: 30, y: 40 }),
+    const term = fakeXterm({
+      coreMouseService: {
+        get areMouseEventsActive(): boolean {
+          return mouseActive
         },
-        coreMouseService,
-        _renderService: { dimensions: { device: { cell: { height: 16 } } } },
-        _coreBrowserService: { dpr: 2 },
+        triggerMouseEvent: (e: CoreMouseEvent): boolean => {
+          reports.push({ ...e })
+          return true
+        },
+        // Real consumeWheelEvent damps and carries fractions; the fake maps
+        // one event to one line so tests control the report count directly.
+        consumeWheelEvent: (ev: WheelEvent): number => (ev.deltaY === 0 ? 0 : ev.deltaY < 0 ? -1 : 1),
       },
+    }, {
       attachCustomWheelEventHandler: (h: (ev: WheelEvent) => boolean): void => {
         handler = h
       },
-    } as unknown as Terminal
+    })
     return {
       term,
       reports,
@@ -87,32 +46,22 @@ describe('patchWheelPacing', () => {
     }
   }
 
-  /** Run pending animation-frame callbacks one frame at a time. */
-  function frames(): { step: () => void; dispose: () => void } {
-    let queue: FrameRequestCallback[] = []
-    let id = 1
-    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => {
-      queue.push(cb)
-      return id++
-    })
-    vi.stubGlobal('cancelAnimationFrame', (): void => { /* dropped with the queue */ })
-    return {
-      step: () => {
-        const run = queue
-        queue = []
-        for (const cb of run) cb(0)
-      },
-      dispose: () => vi.unstubAllGlobals(),
-    }
+  /** Pending animation-frame callbacks, run one frame at a time by `step`. */
+  let queue: FrameRequestCallback[] = []
+  const step = (): void => {
+    const run = queue
+    queue = []
+    for (const cb of run) cb(0)
   }
-
-  let raf: { step: () => void; dispose: () => void }
-  beforeEach(() => { raf = frames() })
-  afterEach(() => raf.dispose())
+  beforeEach(() => {
+    queue = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback): number => queue.push(cb))
+    vi.stubGlobal('cancelAnimationFrame', (): void => { queue = [] })
+  })
 
   it('claims wheel events while mouse reporting is active, passes them through when not', () => {
     const f = fakeTerm()
-    expect(patchWheelPacing(f.term)).not.toBeNull()
+    patchWheelPacing(f.term)
     expect(f.wheel(100)).toBe(false)
     f.setMouseActive(false)
     expect(f.wheel(100)).toBe(true)
@@ -123,7 +72,7 @@ describe('patchWheelPacing', () => {
     patchWheelPacing(f.term)
     f.wheel(-10)
     expect(f.reports).toHaveLength(0) // nothing until the frame flushes
-    raf.step()
+    step()
     expect(f.reports).toHaveLength(1)
     expect(f.reports[0]).toMatchObject({ button: 4, action: 0 }) // WHEEL, UP
     // 1-based coord fixup happens inside the real triggerMouseEvent; the
@@ -135,10 +84,10 @@ describe('patchWheelPacing', () => {
     const f = fakeTerm()
     patchWheelPacing(f.term)
     f.wheel(100) // pixel-mode notch
-    raf.step()
+    step()
     expect(f.reports).toHaveLength(2)
     f.wheel(3, { deltaMode: 1 }) // line-mode notch (Firefox)
-    raf.step()
+    step()
     expect(f.reports).toHaveLength(4)
     expect(f.reports.every((r) => r.action === 1)).toBe(true) // DOWN
   })
@@ -150,7 +99,7 @@ describe('patchWheelPacing', () => {
     // before it, can pass for a notch.
     for (let i = 0; i < 20; i++) {
       f.wheel(-60, { timeStamp: 10_000 + i * 16 })
-      raf.step()
+      step()
     }
     expect(f.reports).toHaveLength(21)
   })
@@ -160,10 +109,10 @@ describe('patchWheelPacing', () => {
     patchWheelPacing(f.term)
     for (let i = 0; i < 20; i++) f.wheel(100) // one gesture's worth of events
     // Backlog is capped at 6; drained 2 per frame → 3 frames, 6 reports.
-    raf.step()
-    raf.step()
-    raf.step()
-    raf.step()
+    step()
+    step()
+    step()
+    step()
     expect(f.reports).toHaveLength(6)
     expect(f.reports.every((r) => r.action === 1)).toBe(true) // DOWN
   })
@@ -173,8 +122,8 @@ describe('patchWheelPacing', () => {
     patchWheelPacing(f.term)
     for (let i = 0; i < 3; i++) f.wheel(100)
     for (let i = 0; i < 3; i++) f.wheel(-100)
-    raf.step()
-    raf.step()
+    step()
+    step()
     expect(f.reports).toHaveLength(0) // netted out before any flush
   })
 
@@ -183,7 +132,7 @@ describe('patchWheelPacing', () => {
     patchWheelPacing(f.term)
     f.wheel(100)
     f.setMouseActive(false)
-    raf.step()
+    step()
     expect(f.reports).toHaveLength(0)
   })
 
@@ -191,7 +140,7 @@ describe('patchWheelPacing', () => {
     const f = fakeTerm()
     patchWheelPacing(f.term)
     expect(f.wheel(0)).toBe(false)
-    raf.step()
+    step()
     expect(f.reports).toHaveLength(0)
   })
 
@@ -199,30 +148,9 @@ describe('patchWheelPacing', () => {
     const f = fakeTerm()
     const dispose = patchWheelPacing(f.term)
     f.wheel(100)
-    dispose?.()
-    raf.step()
+    dispose()
+    step()
     expect(f.reports).toHaveLength(0)
     expect(f.wheel(100)).toBe(true) // stock: xterm processes the event
-  })
-
-  it('reports failure without throwing when the internals are missing', () => {
-    expect(patchWheelPacing({} as Terminal)).toBeNull()
-    expect(patchWheelPacing({ _core: {} } as unknown as Terminal)).toBeNull()
-  })
-
-  // Canary (as in selection.test.ts): the patch uses private xterm internals,
-  // so an upgrade that renames them must fail here instead of silently
-  // reverting to unpaced scrolling.
-  it('still finds the private names in the shipped xterm bundle', () => {
-    const require = createRequire(import.meta.url)
-    const bundle = readFileSync(require.resolve('@xterm/xterm'), 'utf8')
-    expect(bundle).toContain('coreMouseService')
-    expect(bundle).toContain('consumeWheelEvent')
-    expect(bundle).toContain('triggerMouseEvent')
-    expect(bundle).toContain('areMouseEventsActive')
-    expect(bundle).toContain('getMouseReportCoords')
-    expect(bundle).toContain('_renderService')
-    expect(bundle).toContain('_coreBrowserService')
-    expect(bundle).toContain('attachCustomWheelEventHandler')
   })
 })

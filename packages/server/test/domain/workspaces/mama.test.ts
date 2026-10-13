@@ -1,36 +1,19 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { installRealWorkspaceDriver } from '@yaac/test-utils/real-driver'
+import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
 
-// The DB and group resolution are real. Only process boundaries are mocked:
-// pod listing, the create a spawn detaches into, and the teardown a stop
-// detaches into.
-vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
-  const actual = await importOriginal<typeof podsModule>()
-  return {
-    ...actual,
-    listWorkspacePods: vi.fn().mockResolvedValue([]),
-    listWorkspaceJobs: vi.fn().mockResolvedValue([]),
-  }
-})
+// The DB and group resolution are real. Only the boundaries are faked: the
+// runtime (a fake driver reporting `running` and recording execs), the
+// create a spawn detaches into, and the teardown a stop detaches into.
 vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   ...(await importOriginal<typeof createModule>()),
   createWorkspace: vi.fn(),
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({ cleanupWorkspaceDetached: vi.fn() }))
-vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
-  ...(await importOriginal<typeof streamRelayModule>()),
-  podExec: vi.fn(),
-}))
-
-import { listWorkspacePods } from '#drivers/k8s/substrate/pods'
-import type * as podsModule from '#drivers/k8s/substrate/pods'
-import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
-import { podExec } from '#drivers/k8s/substrate/stream-relay'
 import type * as createModule from '#domain/workspaces/create'
 import { createWorkspace } from '#domain/workspaces/create'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
@@ -41,16 +24,19 @@ import { recordProject } from '#db/project-store'
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
-import { runMamaCommand, type MamaCaller } from '#domain/workspaces/mama'
-import { queueWorkspace } from '#domain/workspaces/queued-workspaces'
+import { listProvisioning, queueWorkspace, runMamaCommand } from '#domain/workspaces'
+import type { MamaCaller } from '#domain/workspaces/mama'
+import { SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE } from '#domain/workspaces/spawn-policy'
+import { recordProjectCreate } from '#db/project-store'
+import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { getWorkspaceRow, setToolCredential } from '#db'
+import { deleteToolCredential, getWorkspaceRow, setToolCredential } from '#db'
 import { cloneRepo } from '#domain/git'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
-import { WorkspaceExecError } from '#drivers/contract'
+import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
 import { git } from '@yaac/test-utils/git'
 import { buildPeerReader } from '@yaac/test-utils/peer-reader'
 import { setPeerReaderEntry } from '#domain/git/peer-bundle'
@@ -60,18 +46,44 @@ import path from 'node:path'
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
-const CALLER: MamaCaller = {
-  workspaceId: 'caller-workspace',
-  principal: { kind: 'workspace', workspaceId: 'caller-workspace', userId: BUILT_IN_USER_ID },
-  projectId: PROJ,
-  tool: 'codex',
+/** The calling workspace, as the transport identifies it. */
+const CALLER = { workspaceId: 'caller-workspace', projectId: PROJ, tool: 'codex' } as const
+
+/** A caller as the transport resolves it: its posture and agent mode from
+ *  its row. */
+async function callerFor(over: Partial<MamaCaller> = {}): Promise<MamaCaller> {
+  const workspaceId = over.workspaceId ?? CALLER.workspaceId
+  const row = await getWorkspaceRow(PROJ, workspaceId)
+  return {
+    ...CALLER,
+    workspaceId,
+    principal: { kind: 'workspace', workspaceId, userId: BUILT_IN_USER_ID },
+    permissionMode: row?.permissionMode ?? 'bypass',
+    mode: row?.mode ?? 'tui',
+    ...over,
+  }
 }
 
 let tmpDir: string
 
+/** The workspaces the runtime reports running. */
+let running: RuntimeHandle[] = []
+/** Commands run in a workspace, as the runtime receives them. */
+const exec = vi.fn<WorkspaceDriver['exec']>()
+
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  installRealWorkspaceDriver()
+  running = []
+  exec.mockReset()
+  installFakeWorkspaceDriver({
+    find: (workspaceId) => Promise.resolve(running.find((h) => h.workspaceId === workspaceId)),
+    findForTeardown: (workspaceId) => {
+      const h = running.find((r) => r.workspaceId === workspaceId)
+      return Promise.resolve(h && { projectId: h.projectId, workspaceId: h.workspaceId, unitName: h.jobName })
+    },
+    list: (projectId) => Promise.resolve(running.filter((h) => !projectId || h.projectId === projectId)),
+    exec,
+  })
   // The caller's project always exists, since the caller runs in it.
   await recordProject({ id: PROJ, name: 'demo', remoteUrl: 'https://example.com/proj', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
   await recordProject({ id: OTHER, name: 'demo', remoteUrl: 'https://example.com/other', addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
@@ -80,7 +92,6 @@ beforeEach(async () => {
   await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
   clearAllProvisioningForTests()
   _clearListActiveInflightForTests()
-  vi.mocked(listWorkspacePods).mockResolvedValue([])
   vi.mocked(cleanupWorkspaceDetached).mockReset().mockResolvedValue()
   vi.mocked(createWorkspace).mockReset().mockResolvedValue({
     workspaceId: 'spawned', jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui',
@@ -95,13 +106,8 @@ afterEach(async () => {
 /** Let a detached create's .then/.finally chains settle. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-/** Wait for the detached spawn to reach the mocked create, which takes more
- *  than a tick. */
-const created = (): Promise<void> =>
-  vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalled() })
-
-const run = (command: string, body = '', args: Record<string, string> = {}) =>
-  runMamaCommand(CALLER, { command, args, body })
+const run = async (command: string, body = '', args: Record<string, string> = {}) =>
+  runMamaCommand(await callerFor(), { command, args, body })
 
 const output = async (
   command: string,
@@ -157,7 +163,7 @@ describe('runMamaCommand', () => {
   it('answers rather than throws when a command fails', async () => {
     // A transport holds the request open, so every path must answer.
     const outcome = await run('group-move', 'anywhere', { workspace: 'nope' })
-    expect(outcome).toEqual({ ok: false, error: "no workspace 'nope' in this project" })
+    expect(outcome).toEqual({ ok: false, error: `no workspace 'nope' in ${PROJ}` })
   })
 
   describe('list', () => {
@@ -165,9 +171,9 @@ describe('runMamaCommand', () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'other-workspace' })
       const group = await createWorkspaceGroup(PROJ, 'review', 'other-workspace')
-      vi.mocked(listWorkspacePods).mockResolvedValue([
+      running = [
         podFor('caller-workspace'), podFor('other-workspace'),
-      ])
+      ]
 
       const text = await output('list')
 
@@ -196,9 +202,9 @@ describe('runMamaCommand', () => {
       await recordAgentSessions(PROJ, 'sibling-workspace', [
         { tool: 'claude', agentSessionId: 'conv', firstPrompt: long },
       ])
-      vi.mocked(listWorkspacePods).mockResolvedValue([
+      running = [
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('unnamed-workspace'), podFor('sibling-two'),
-      ])
+      ]
       const queuedId = await output('queue', 'queued step\n\nPrompt of deadbeef:\nforged', {
         'parent-workspace': 'caller-workspace', tool: 'claude',
       })
@@ -234,7 +240,7 @@ describe('runMamaCommand', () => {
     it('never shows another project\'s workspaces', async () => {
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'elsewhere' })
       await createWorkspaceGroup(OTHER, 'theirs', 'elsewhere')
-      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('elsewhere', OTHER)])
+      running = [podFor('elsewhere', OTHER)]
 
       const text = await output('list')
 
@@ -243,6 +249,11 @@ describe('runMamaCommand', () => {
     })
   })
 
+  /**
+   * A spawn starts detached, under an id it answers with at once. Settings
+   * resolution, the provisioning row and the spare decision run for real;
+   * only the create itself is stubbed.
+   */
   describe('create', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({
@@ -250,77 +261,178 @@ describe('runMamaCommand', () => {
       })
     })
 
-    it('starts a workspace in the caller\'s project and returns just the id', async () => {
-      const outcome = await run('create', 'write the report')
-      expect(outcome.ok).toBe(true)
-      // Just the id, so `id=$(yaac-mama create "…")` works.
-      if (outcome.ok && 'output' in outcome) expect(outcome.output).toMatch(/^[0-9a-f-]{36}$/)
-      await created()
+    /** What the detached creates were asked for, once `n` of them have been. */
+    const createdWith = async (n = 1): Promise<Array<Parameters<typeof createWorkspace>[1]>> => {
+      await vi.waitFor(() => { expect(vi.mocked(createWorkspace).mock.calls.length).toBeGreaterThanOrEqual(n) })
+      return vi.mocked(createWorkspace).mock.calls.map((c) => c[1])
+    }
 
-      expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1)
-      const [projectId, opts] = vi.mocked(createWorkspace).mock.calls[0]
-      expect(projectId).toBe(PROJ)
+    /** Spawn as a caller with the given posture (its row's), returning the
+     *  decision or the create it started. */
+    const spawn = async (
+      args: Record<string, string>,
+      caller: Partial<MamaCaller> = {},
+    ): Promise<{ ok: false; error: string } | Parameters<typeof createWorkspace>[1]> => {
+      vi.mocked(createWorkspace).mockClear()
+      const outcome = await runMamaCommand(await callerFor(caller), { command: 'create', args, body: 'do it' })
+      if (!outcome.ok) return outcome
+      return (await createdWith())[0]
+    }
+
+    it('starts a workspace in the caller\'s project under the id it answers with, never a spare\'s', async () => {
+      const list = vi.fn(() => Promise.resolve([]))
+      installFakeWorkspaceDriver({ list })
+      let rowDuringCreate: ReturnType<typeof listProvisioning>[number] | undefined
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      vi.mocked(createWorkspace).mockImplementation(async (_projectId, opts) => {
+        opts.onProgress?.('Creating job...')
+        rowDuringCreate = listProvisioning()[0]
+        await gate
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'codex', mode: 'tui' }
+      })
+
+      const output = await run('create', 'write the report')
+      // Just the id, so `id=$(yaac-mama create "…")` works.
+      if (!output.ok || !('output' in output)) throw new Error('expected an id')
+      expect(output.output).toMatch(/^[0-9a-f-]{36}$/)
+      // Registered before the answer returns, so the id resolves at once.
+      expect(listProvisioning().map((p) => p.workspaceId)).toEqual([output.output])
+
+      const [opts] = await createdWith()
+      expect(vi.mocked(createWorkspace).mock.calls[0][0]).toBe(PROJ)
       // The caller's tool, permission mode and UI mode, unless others are
       // requested.
-      expect(opts).toMatchObject({ initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto', mode: 'tui' })
+      expect(opts).toMatchObject({
+        workspaceId: output.output, initialPrompt: 'write the report', tool: 'codex', permissionMode: 'auto', mode: 'tui',
+        model: FALLBACK_MODELS.codex,
+      })
+      expect(rowDuringCreate).toMatchObject({ workspaceId: output.output, kind: 'create', message: 'Creating job...' })
+      release()
+      await vi.waitFor(() => { expect(listProvisioning()).toEqual([]) })
+      // A claimed spare keeps its own id, so the id handed back would name
+      // nothing.
+      expect(list).not.toHaveBeenCalled()
+    })
+
+    it('keeps a failed row (dismissable) when the detached create rejects', async () => {
+      vi.mocked(createWorkspace).mockRejectedValue(new Error('image build exploded'))
+      expect((await run('create', 'do it')).ok).toBe(true)
+      await vi.waitFor(() => {
+        expect(listProvisioning()[0]).toMatchObject({ error: 'image build exploded' })
+      })
     })
 
     it('takes every option the webapp\'s create form has, capped at the caller\'s own posture', async () => {
-      expect((await run('create', 'do it', {
+      expect(await spawn({
         tool: 'claude', model: 'opus', 'permission-mode': 'accept-edits', 'ui-mode': 'acp', branch: 'feature/x',
         title: '  Port   the lexer ',
-      })).ok).toBe(true)
-      await created()
-      expect(vi.mocked(createWorkspace).mock.calls[0][1]).toMatchObject({
+      })).toMatchObject({
         tool: 'claude', model: 'opus', permissionMode: 'accept-edits', mode: 'acp', branch: 'feature/x',
         title: 'Port the lexer',
       })
-
-      // The limit comes from the caller's recorded row, not the request.
-      const above = await run('create', 'do it', { 'permission-mode': 'bypass' })
-      expect(above.ok).toBe(false)
-      if (!above.ok) expect(above.error).toContain("more permissive than this workspace's own ('auto')")
-      await settle()
-      expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1)
+      // A provider/model for a non-claude tool, and a named effort, refused
+      // when the model lacks it: the create runs detached, so this is the
+      // last point the caller can see a refusal.
+      expect(await spawn({ model: 'openai/gpt-5.2' })).toMatchObject({ tool: 'codex', model: 'openai/gpt-5.2' })
+      expect(await spawn({ tool: 'claude', model: 'claude-opus-4-7', effort: 'max' }))
+        .toMatchObject({ model: 'claude-opus-4-7', effort: 'max' })
+      expect(await spawn({ tool: 'claude', model: 'claude-opus-4-6', effort: 'xhigh' }))
+        .toEqual({ ok: false, error: expect.stringContaining('no "xhigh" effort') as unknown })
+      // The UI mode defaults to the caller's.
+      expect(await spawn({}, { mode: 'acp' })).toMatchObject({ mode: 'acp' })
     })
 
-    it('refuses a caller with no recorded posture to cap the spawn at', async () => {
-      const outcome = await runMamaCommand({ ...CALLER, workspaceId: 'unrecorded' }, {
-        command: 'create', args: {}, body: 'do it',
+    // The caller's tool is reported only when it is one yaac knows.
+    it('picks the caller\'s tool, else the project\'s last agent, else claude', async () => {
+      expect(await spawn({}, { tool: undefined })).toMatchObject({ tool: 'claude' })
+      await recordProjectCreate(PROJ, 'pi', {})
+      await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
+      expect(await spawn({}, { tool: undefined, permissionMode: 'bypass' })).toMatchObject({ tool: 'pi' })
+    })
+
+    it('refuses a tool the project owner has not signed in to, starting nothing', async () => {
+      await deleteToolCredential(BUILT_IN_USER_ID, 'codex')
+      expect(await spawn({})).toEqual({
+        ok: false, error: expect.stringMatching(/^codex is not signed in for this project's owner/) as string,
       })
-      expect(outcome).toEqual({ ok: false, error: 'this workspace has no recorded permission mode' })
+      expect(listProvisioning()).toEqual([])
+      expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
+      // Another tool the owner has is fine.
+      expect(await spawn({ tool: 'claude' })).toMatchObject({ tool: 'claude' })
     })
 
-    it('files the new workspace into a group, creating it by name', async () => {
-      const outcome = await run('create', 'do it', { group: 'release train' })
-      expect(outcome.ok).toBe(true)
-      await created()
+    it('inherits the caller\'s posture, stepping down to the most the tool has', async () => {
+      await setToolCredential(BUILT_IN_USER_ID, 'opencode', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
+      await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
+      const posture = async (permissionMode: MamaCaller['permissionMode'], args: Record<string, string> = {}): Promise<unknown> => {
+        const result = await spawn(args, { permissionMode })
+        return 'ok' in result ? result : result.permissionMode
+      }
+      expect(await posture('auto')).toBe('auto')
+      // A `plan` caller's sibling is `plan`, not the driver's default.
+      expect(await posture('plan', { tool: 'claude' })).toBe('plan')
+      // opencode has no `auto`, so it inherits the next mode down.
+      expect(await posture('auto', { tool: 'opencode' })).toBe('accept-edits')
+      // codex has no `manual`, so it steps down to `read-only`, in chat too.
+      expect(await posture('manual', { 'ui-mode': 'acp' })).toBe('read-only')
+      // Never steps up: pi has nothing below `bypass`, so it is refused.
+      expect(await posture('plan', { tool: 'pi' })).toEqual({
+        ok: false,
+        error: "pi has no permission mode at or below this workspace's own ('plan')",
+      })
+    })
 
+    it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
+      const at = async (permissionMode: MamaCaller['permissionMode'], asked: string, args: Record<string, string> = { tool: 'claude' }): Promise<unknown> => {
+        const result = await spawn({ ...args, 'permission-mode': asked }, { permissionMode })
+        return 'ok' in result ? result : result.permissionMode
+      }
+      expect(await at('accept-edits', 'accept-edits')).toBe('accept-edits')
+      expect(await at('accept-edits', 'manual')).toBe('manual')
+      expect(await at('manual', 'plan')).toBe('plan')
+      // plan and read-only rank equal, so either may be granted under the
+      // other.
+      expect(await at('plan', 'read-only', {})).toBe('read-only')
+      expect(await at('read-only', 'plan')).toBe('plan')
+
+      // Anything more permissive than the caller's mode is refused, never
+      // clamped.
+      expect(await at('accept-edits', 'auto')).toEqual({
+        ok: false,
+        error: "permission mode 'auto' is more permissive than this workspace's own ('accept-edits'); "
+          + 'a workspace it starts may be granted at most that '
+          + '(bypass > auto > accept-edits > manual > plan = read-only)',
+      })
+      for (const [caller, asked] of [['plan', 'bypass'], ['plan', 'manual'], ['manual', 'accept-edits'], ['auto', 'bypass']] as const) {
+        expect(await at(caller, asked), `${caller} → ${asked}`).toMatchObject({ ok: false })
+      }
+      // Allowed by rank, but the tool lacks that mode.
+      expect(await at('auto', 'plan', { 'ui-mode': 'acp' })).toEqual({ ok: false, error: "codex has no 'plan' permission mode" })
+      expect(await at('auto', 'manual', {})).toEqual({ ok: false, error: "codex has no 'manual' permission mode" })
+      // A caller mode this build does not know (written by another build)
+      // cannot be ranked, so nothing is granted.
+      const unknown = 'dontAsk' as MamaCaller['permissionMode']
+      for (const args of [{ tool: 'claude', 'permission-mode': 'bypass' }, { tool: 'claude' }] as Array<Record<string, string>>) {
+        expect(await spawn(args, { permissionMode: unknown })).toEqual({
+          ok: false, error: "this workspace's recorded permission mode 'dontAsk' is not one this server knows",
+        })
+      }
+    })
+
+    it('files the new workspace into a group, creating it by name, or reusing one of that name', async () => {
+      const opts = await spawn({ group: 'release train' })
       const rows = await listWorkspaceGroupRows(PROJ)
       expect(rows.map((r) => r.name)).toEqual(['release train'])
-      // The group is resolved to an id before the create, so the workspace is
-      // filed as soon as its row exists.
-      const [, opts] = vi.mocked(createWorkspace).mock.calls[0]
-      expect(opts.groupId).toBe(rows[0].groupId)
-    })
+      // Resolved to an id before the create, so the workspace is filed as
+      // soon as its row exists.
+      expect(opts).toMatchObject({ groupId: rows[0].groupId })
 
-    it('reuses an existing group rather than making a second of the same name', async () => {
-      const existing = await createWorkspaceGroup(PROJ, 'review', null)
-      await run('create', 'do it', { group: 'review' })
-      await created()
-
+      expect(await spawn({ group: 'release train' })).toMatchObject({ groupId: rows[0].groupId })
       expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(1)
-      expect(vi.mocked(createWorkspace).mock.calls[0][1].groupId).toBe(existing.groupId)
     })
 
-    it('relays the policy\'s refusal instead of starting anything', async () => {
-      const outcome = await run('create', '   ')
-      expect(outcome).toEqual({ ok: false, error: 'prompt must not be empty' })
-      await settle()
-      expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
-    })
-
-    it('refuses a malformed option without creating', async () => {
+    it('refuses a malformed option or an empty prompt without creating', async () => {
       const refusals: Array<[Record<string, string>, string]> = [
         [{ tool: 'not-a-tool' }, "invalid tool 'not-a-tool'"],
         [{ model: "opus'; rm -rf /" }, "invalid model 'opus'; rm -rf /'"],
@@ -335,8 +447,29 @@ describe('runMamaCommand', () => {
         expect(outcome.ok, JSON.stringify(args)).toBe(false)
         if (!outcome.ok) expect(outcome.error).toContain(error)
       }
+      expect(await run('create', '   ')).toEqual({ ok: false, error: 'prompt must not be empty' })
       await settle()
       expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
+    })
+
+    it('caps a caller\'s creates still provisioning, holding the cap against concurrent requests', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      vi.mocked(createWorkspace).mockImplementation(async (_projectId, opts) => {
+        await gate
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'codex', mode: 'tui' }
+      })
+      // A refusal after the cap check (no sign-in for opencode) gives its
+      // slot back.
+      expect((await run('create', 'x', { tool: 'opencode' })).ok).toBe(false)
+
+      const decisions = await Promise.all(Array.from({ length: 2 * SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE }, () => run('create', 'x')))
+      expect(decisions.filter((d) => d.ok)).toHaveLength(SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE)
+      expect(decisions.find((d) => !d.ok)).toMatchObject({ error: expect.stringContaining('too many concurrent spawns') as unknown })
+
+      // Each slot comes back once its create settles.
+      release()
+      await vi.waitFor(async () => { expect((await run('create', 'x')).ok).toBe(true) })
     })
   })
 
@@ -531,7 +664,7 @@ describe('runMamaCommand', () => {
 
     it('is readable back through list, which is the only view an agent has', async () => {
       await output('rename', 'porting the lexer')
-      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('caller-workspace')])
+      running = [podFor('caller-workspace')]
       _clearListActiveInflightForTests()
 
       const listed = await output('list')
@@ -636,9 +769,9 @@ describe('runMamaCommand', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace' })
-      vi.mocked(listWorkspacePods).mockResolvedValue([
+      running = [
         podFor('caller-workspace'), podFor('sibling-workspace'),
-      ])
+      ]
     })
 
     it('stops a sibling by short id prefix, keeping what makes it restartable', async () => {
@@ -669,7 +802,7 @@ describe('runMamaCommand', () => {
     it('reports a workspace that is not running as such, not as unknown', async () => {
       // The row exists but there is no unit. The driver's NOT_FOUND points
       // at `yaac workspace list`, which an agent cannot run.
-      vi.mocked(listWorkspacePods).mockResolvedValue([])
+      running = []
 
       const outcome = await run('stop', '', { workspace: 'sibling' })
 
@@ -679,7 +812,7 @@ describe('runMamaCommand', () => {
 
     it('cannot stop another project\'s workspace', async () => {
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
-      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('foreign-workspace', OTHER)])
+      running = [podFor('foreign-workspace', OTHER)]
 
       const outcome = await run('stop', '', { workspace: 'foreign-workspace' })
 
@@ -704,7 +837,7 @@ describe('runMamaCommand', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'sibling-workspace', permissionMode: 'manual' })
-      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('caller-workspace'), podFor('sibling-workspace')])
+      running = [podFor('caller-workspace'), podFor('sibling-workspace')]
       await recordAgentSessions(PROJ, 'sibling-workspace', [
         { tool: 'claude', agentSessionId: 'first-conv' },
         { tool: 'claude', agentSessionId: 'second-conv' },
@@ -713,7 +846,7 @@ describe('runMamaCommand', () => {
         { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
         { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
       ])
-      vi.mocked(podExec).mockReset().mockResolvedValue({ stdout: '', stderr: '' })
+      exec.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
       _resetWorkspaceStatusStoreForTests()
     })
 
@@ -725,7 +858,7 @@ describe('runMamaCommand', () => {
      *  message. It runs in the foreground, so the reply can say whether the
      *  message landed. */
     const delivered = (message: string): { jobName: string; pane?: string; carries: boolean } => {
-      const [jobName, cmd] = vi.mocked(podExec).mock.calls.at(-1)!
+      const [jobName, cmd] = exec.mock.calls.at(-1)!
       const script = scriptOf(cmd)
       return {
         jobName,
@@ -745,18 +878,18 @@ describe('runMamaCommand', () => {
       expect(text).toContain('first-co')
 
       // Each delivery checks its own conversation for a dialog first.
-      expect(scriptOf(vi.mocked(podExec).mock.calls.at(-1)![1])).toContain('first-conv')
+      expect(scriptOf(exec.mock.calls.at(-1)![1])).toContain('first-conv')
 
       await output('send', 'and you', { workspace: 'sibling', conversation: 'second' })
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you').pane).toBe('%7')
-      expect(scriptOf(vi.mocked(podExec).mock.calls.at(-1)![1])).toContain('second-conv')
+      expect(scriptOf(exec.mock.calls.at(-1)![1])).toContain('second-conv')
     })
 
     it('strips control characters before any tool sees them, pi\'s editor-free path included', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'pi-workspace', permissionMode: 'manual' })
       await recordAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv' }])
       await setActiveAgentSessions(PROJ, 'pi-workspace', [{ tool: 'pi', agentSessionId: 'pi-conv', paneId: '%5' }])
-      vi.mocked(listWorkspacePods).mockResolvedValue([podFor('caller-workspace'), podFor('pi-workspace')])
+      running = [podFor('caller-workspace'), podFor('pi-workspace')]
 
       await output('send', 'look\x1b]52;c;cGF5bG9hZA==\x07 here\x1b[6n', { workspace: 'pi-workspace' })
 
@@ -767,7 +900,7 @@ describe('runMamaCommand', () => {
     })
 
     it('reports a message the agent could not take as not delivered', async () => {
-      vi.mocked(podExec).mockRejectedValue(new WorkspaceExecError('paste', 1, '', 'prompt never appeared'))
+      exec.mockRejectedValue(new WorkspaceExecError('paste', 1, '', 'prompt never appeared'))
 
       const outcome = await run('send', 'go', { workspace: 'sibling' })
 
@@ -775,24 +908,24 @@ describe('runMamaCommand', () => {
       if (!outcome.ok) expect(outcome.error).toMatch(/^not delivered to sibling-'s claude conversation first-co: .*nothing was submitted/)
 
       // The paste script found a dialog up, so it typed nothing.
-      vi.mocked(podExec).mockRejectedValue(new WorkspaceExecError('paste', 3, '', 'showing a prompt'))
+      exec.mockRejectedValue(new WorkspaceExecError('paste', 3, '', 'showing a prompt'))
       const asking = await run('send', 'go', { workspace: 'sibling' })
       expect(asking.ok === false && asking.error).toContain('nothing was typed')
     })
 
     it('delivers one message at a time per sender and per conversation', async () => {
       let release!: () => void
-      vi.mocked(podExec).mockReturnValueOnce(new Promise((resolve) => {
+      exec.mockReturnValueOnce(new Promise((resolve) => {
         release = () => resolve({ stdout: '', stderr: '' })
       }))
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'third-workspace', permissionMode: 'manual' })
-      vi.mocked(listWorkspacePods).mockResolvedValue([
+      running = [
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('third-workspace'),
-      ])
-      const third = { ...CALLER, workspaceId: 'third-workspace' }
+      ]
+      const third = await callerFor({ workspaceId: 'third-workspace' })
 
       const first = run('send', 'one', { workspace: 'sibling' })
-      await vi.waitFor(() => { expect(vi.mocked(podExec)).toHaveBeenCalledTimes(1) })
+      await vi.waitFor(() => { expect(exec).toHaveBeenCalledTimes(1) })
       const again = await run('send', 'two', { workspace: 'sibling', conversation: 'second' })
       const other = await runMamaCommand(third, { command: 'send', args: { workspace: 'sibling' }, body: 'three' })
       release()
@@ -800,7 +933,7 @@ describe('runMamaCommand', () => {
       expect(again.ok === false && again.error).toContain('previous send is still being delivered')
       expect(other.ok === false && other.error).toContain('another message to sibling-')
       expect((await first).ok).toBe(true)
-      expect(vi.mocked(podExec)).toHaveBeenCalledTimes(1)
+      expect(exec).toHaveBeenCalledTimes(1)
       // Both free again once it lands.
       expect((await run('send', 'two', { workspace: 'sibling' })).ok).toBe(true)
     })
@@ -811,10 +944,10 @@ describe('runMamaCommand', () => {
       await setActiveAgentSessions(PROJ, 'bypass-workspace', [{ tool: 'claude', agentSessionId: 'bypass-conv', paneId: '%1' }])
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'stopped-workspace', permissionMode: 'plan' })
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', permissionMode: 'plan' })
-      vi.mocked(listWorkspacePods).mockResolvedValue([
+      running = [
         podFor('caller-workspace'), podFor('sibling-workspace'), podFor('bypass-workspace'),
         podFor('foreign-workspace', OTHER),
-      ])
+      ]
       const refusal = async (body: string, args: Record<string, string>): Promise<string> => {
         const outcome = await run('send', body, args)
         if (outcome.ok) throw new Error(`expected a refusal for ${JSON.stringify(args)}`)
@@ -839,7 +972,7 @@ describe('runMamaCommand', () => {
       expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')
       await setActiveAgentSessions(PROJ, 'sibling-workspace', [])
       expect(await refusal('go', { workspace: 'sibling' })).toContain('has no running conversation yet')
-      expect(vi.mocked(podExec)).not.toHaveBeenCalled()
+      expect(exec).not.toHaveBeenCalled()
     })
   })
 
@@ -969,7 +1102,7 @@ describe('runMamaCommand', () => {
       expect(Buffer.from(await new Response(outcome.body).arrayBuffer()).toString('latin1')).toContain(`${tip} refs/heads/agent/sibling\n${tip} HEAD\n`)
 
       expect(await run('fetch', '', { workspace: 'foreign-workspace' }))
-        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in this project' })
+        .toEqual({ ok: false, error: `no workspace 'foreign-workspace' in ${PROJ}` })
       expect(await run('fetch')).toEqual({ ok: false, error: 'fetch needs a workspace id' })
     })
   })
@@ -1037,7 +1170,7 @@ describe('runMamaCommand', () => {
       expect(await run('history', '', { workspace: 'sibling', conversation: 'nope' }))
         .toEqual({ ok: false, error: 'no conversation \'nope\' in sibling- (see: yaac-mama history sibling-)' })
       expect(await run('history', '', { workspace: 'foreign-workspace' }))
-        .toEqual({ ok: false, error: 'no workspace \'foreign-workspace\' in this project' })
+        .toEqual({ ok: false, error: `no workspace 'foreign-workspace' in ${PROJ}` })
       expect(await run('history')).toEqual({ ok: false, error: 'history needs a workspace id' })
     })
   })
@@ -1061,17 +1194,12 @@ describe('runMamaCommand', () => {
   })
 })
 
-function podFor(workspaceId: string, projectId = PROJ): podsModule.PodInfo {
-  return {
+function podFor(workspaceId: string, projectId = PROJ): RuntimeHandle {
+  return handleFixture({
     jobName: `yaac-${workspaceId}`,
-    podName: `yaac-${workspaceId}-abcde`,
-    workspaceId: workspaceId,
+    workspaceId,
     projectId,
     tool: 'claude',
-    phase: 'Running',
-    running: true,
-    terminating: false,
     createdAtMs: 1_760_000_000_000,
-    labels: {},
-  }
+  })
 }

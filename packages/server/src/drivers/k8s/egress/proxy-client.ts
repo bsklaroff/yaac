@@ -18,8 +18,8 @@ import {
   readProxyAuthSecret,
   type ObjectRef,
 } from '#drivers/k8s/substrate'
-import { registryRef } from '#drivers/k8s/container'
-import { serverLog } from '#log'
+import { registryRef } from '#drivers/k8s/cluster'
+import { serverLog } from '#lib/log'
 import { testEnv } from '@yaac/shared/env'
 
 /**

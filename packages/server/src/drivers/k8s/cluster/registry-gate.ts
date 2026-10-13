@@ -6,7 +6,7 @@
  *
  * Reads pass untouched, so node containerd, the kubelet and every pull stay
  * anonymous. A write — any method but GET and HEAD — must carry a grant
- * (`#drivers/k8s/container`, registry-grant.ts) whose signature verifies
+ * (registry-grant.ts) whose signature verifies
  * against the public key rendered into this config, whose expiry has not
  * passed, and whose scope names the repository the path writes. DELETE is
  * refused outright: the main registry never deletes over the API (its GC

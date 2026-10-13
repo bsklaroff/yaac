@@ -31,7 +31,7 @@
  *     for the session id it already holds.
  *  2. ACP has no way to ask whether a turn is running (turn state is tied
  *     to your own unanswered `session/prompt`). A reattach rebuilds it from
- *     the record (`recoverInFlight`), which shows whether the last prompt
+ *     the record (`recover`), which shows whether the last prompt
  *     was answered and what state the adapter last reported.
  *
  * Recovery reads a file, so newer signals can beat it: a prompt sent after
@@ -47,7 +47,6 @@ import {
   ACPD,
   ACP_PROTOCOL_VERSION,
   acpModeOffered,
-  asRecord,
   chooseAllowOption,
   clientCapabilities,
   agentRunningReport,
@@ -66,9 +65,9 @@ import {
   type AcpLoadSessionResult,
   type AcpSessionModes,
 } from './acp-protocol'
-import { acpPermissionModeFor, type AcpAdapterProfile } from './acp-adapters'
-import type { AcpInFlight } from './acp-log'
-import { serverLog } from '#log'
+import { asRecord } from '#lib/narrow'
+import type { AcpRecovery } from './acp-log'
+import { serverLog } from '#lib/log'
 import type { AcpEventInit, AcpImage, AcpQueuedPrompt, AcpServerMessage, AcpStopReason } from '@yaac/shared/acp'
 import { PERMISSION_MODES, type AgentStatus, type PermissionMode } from '@yaac/shared/types'
 
@@ -79,6 +78,58 @@ import { PERMISSION_MODES, type AgentStatus, type PermissionMode } from '@yaac/s
  * would start a waiting spell, which chimes.
  */
 const BACKGROUND_SETTLE_MS = 3000
+
+/**
+ * What a conversation knows of its adapter: how it is told a posture, and
+ * what it does with asks and mid-turn messages. The protocol side of the
+ * per-tool `AcpAdapterProfile` (`#runtime/agents`).
+ */
+export interface AcpSessionProfile {
+  /**
+   * yaac postures mapped to this adapter's session mode ids. A missing
+   * posture means "send nothing" (not "send the default"): it is either
+   * carried another way (opencode's rules in `OPENCODE_PERMISSION`) or has
+   * no meaning for the tool (pi).
+   */
+  modeIds: Partial<Record<PermissionMode, string>>
+  /** Mode ids no posture launches in but the session can switch to, mapped to
+   *  the posture they behave as. */
+  readsAs?: Record<string, PermissionMode>
+  /**
+   * Whether `session/request_permission` still reaches the user under
+   * `bypass`. True for pi, which has no permission system; its asks are
+   * extension questions that auto-answering would answer for the user.
+   */
+  forwardAsksUnderBypass: boolean
+  /**
+   * Whether a message sent mid-turn can join the running turn
+   * (`_session/steering`), as the tool's TUI lets it. Otherwise it waits for
+   * the turn to end: opencode's acp refuses a second `session/prompt`
+   * outright and has no steering method. pi-acp steers only as yaac patches
+   * it (dockerfiles/agent-patches/pi-acp.js).
+   */
+  steers: boolean
+  /** `_meta` sent with `session/new` and `session/load`. */
+  sessionMeta?: Record<string, unknown>
+  /** `_meta` sent in `initialize`'s client capabilities: the adapter's own
+   *  opt-ins, such as how it reports subagents. */
+  capabilitiesMeta?: Record<string, unknown>
+}
+
+/**
+ * The posture a session mode id stands for (`modeIds` reversed, then
+ * `readsAs`), used when the adapter switches mode on its own. Undefined for
+ * ids no posture maps to (pi's thinking levels).
+ */
+export function acpPermissionModeFor(
+  profile: Pick<AcpSessionProfile, 'modeIds' | 'readsAs'>,
+  modeId: string,
+): PermissionMode | undefined {
+  const launched = (Object.keys(profile.modeIds) as PermissionMode[]).find((m) => profile.modeIds[m] === modeId)
+  return launched ?? (profile.readsAs !== undefined && Object.hasOwn(profile.readsAs, modeId)
+    ? profile.readsAs[modeId]
+    : undefined)
+}
 
 export interface AcpConversationDeps {
   /** The pod-side transport, already dialed. */
@@ -102,18 +153,13 @@ export interface AcpConversationDeps {
    */
   onStatus: () => void
   /**
-   * Whether a prompt turn was in flight when the record was last written
-   * (`readAcpInFlight`). Used once on a reattach, the only case where a turn
-   * this connection did not start can be running. Absent or throwing means
-   * idle.
+   * What the record shows of the session (`readAcpRecovery`), read once on
+   * a reattach, which runs no handshake: whether a turn this connection did
+   * not start is running, the asks it is blocked on, and the mode and
+   * effort it was left in. Absent or throwing means idle, with nothing
+   * recorded.
    */
-  recoverInFlight?: () => Promise<AcpInFlight>
-  /**
-   * Permission asks the agent was still blocked on per the record
-   * (`readAcpPendingPermissions`). Used on a reattach, since the ask went to
-   * a connection that is gone and nothing replays it.
-   */
-  recoverPendingPermissions?: () => Promise<Array<string | number>>
+  recover?: () => Promise<AcpRecovery>
   /**
    * The conversation's permission posture. An accessor because a restart
    * can rewrite the row while the conversation lives. `undefined` means not
@@ -126,26 +172,19 @@ export interface AcpConversationDeps {
    * protocol directly) means tell it nothing: no mode, no model, leaving the
    * adapter's strict default.
    */
-  profile?: Pick<AcpAdapterProfile, 'modeIds' | 'readsAs' | 'forwardAsksUnderBypass' | 'steers'
-    | 'sessionMeta' | 'capabilitiesMeta'>
+  profile?: AcpSessionProfile
   /**
    * The model to send, for adapters that only accept one over the protocol.
-   * Sent once after `session/new`, never after `session/load` (the user may
-   * have changed the model since).
+   * Read and sent once after `session/new`, never after `session/load` (the
+   * user may have changed the model since).
    */
-  launchModel?: string
-  /** Where `launchModel` comes from when it was not handed over: read once,
-   *  after `session/new`. */
-  recoverLaunchModel?: () => Promise<string | undefined>
+  launchModel?: () => Promise<string | undefined>
   /**
    * The effort level to put a new or loaded session at: the workspace's
    * (docs/effort-levels.md), as its connection last knew it. Absent or
    * undefined leaves the adapter's own.
    */
   effort?: () => string | undefined
-  /** The effort option the record last shows (`readAcpEffort`), read on a
-   *  reattach, which runs no handshake to learn it. */
-  recoverEffort?: () => Promise<AcpEffort | undefined>
   /** The session's effort level changed or was first learned. Fires only on
    *  change. */
   onEffort?: (effort: string) => void
@@ -161,12 +200,6 @@ export interface AcpConversationDeps {
    * mode the record shows.
    */
   onModeId?: (modeId: string) => void
-  /**
-   * The mode the record last shows (`readAcpModeId`). Used on a reattach,
-   * which runs no handshake, since the session may have changed mode while
-   * disconnected.
-   */
-  recoverModeId?: () => Promise<string | undefined>
   /**
    * The last `bytes` of a file in the workspace, for showing a background
    * task's output (`readTaskOutput`). Absent means unreadable.
@@ -293,12 +326,12 @@ export class AcpConversation {
   /** Woken when `offeredModels` changes or the connection closes. */
   private readonly offerWaiters = new Set<() => void>()
   /** The session's effort option as last reported; on a reattach, read
-   *  back from the record (`recoverEffort`). */
+   *  back from the record (`recover`). */
   private effortOption: AcpEffort | undefined
   /** The posture a first attach launched in; see `posture()`. Never set on
    *  a reattach. */
   private launchPosture: PermissionMode | undefined
-  /** Settles once a reattach has read its mode back (`recoverMode`). */
+  /** Settles once a reattach has read its mode back from the record. */
   private postureRecovery: Promise<void> | undefined
 
   constructor(private readonly deps: AcpConversationDeps) {
@@ -682,16 +715,17 @@ export class AcpConversation {
   }
 
   /**
-   * Recover a reattached session's mode from its record, since it may have
-   * changed while disconnected. A mode change seen during the read is newer
-   * and wins.
+   * Read a reattached session's record (`AcpConversationDeps.recover`).
+   * Failing reads as idle with nothing recorded: erring toward idle only
+   * mislabels, while erring toward busy pins the conversation with nothing
+   * to release it.
    */
-  private async recoverMode(): Promise<void> {
+  private async readRecovery(): Promise<AcpRecovery> {
     try {
-      const recorded = await this.deps.recoverModeId?.()
-      if (this.currentModeId() === undefined) this.setModeId(recorded)
+      return await this.deps.recover?.() ?? { inFlight: { prompt: false }, pendingPermissions: [] }
     } catch (err) {
-      this.log(`[server] acp: could not recover the session mode: ${String(err)}`)
+      this.log(`[server] acp: could not read the record back: ${err instanceof Error ? err.message : String(err)}`)
+      return { inFlight: { prompt: false }, pendingPermissions: [] }
     }
   }
 
@@ -826,11 +860,18 @@ export class AcpConversation {
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
         // Ready before recovery; a prompt still waits for it to classify
         // the turn (`prompt`), and asks for the posture to be recovered.
-        this.postureRecovery = this.recoverMode().finally(() => { this.postureRecovery = undefined })
+        // A mode or effort the adapter reported during the read is newer
+        // and wins.
+        const recovered = this.readRecovery()
+        this.postureRecovery = recovered.then(({ modeId }) => {
+          if (this.currentModeId() === undefined) this.setModeId(modeId)
+        }).finally(() => { this.postureRecovery = undefined })
         this.markReady()
-        void this.recoverEffort()
+        void recovered.then(({ effort }) => {
+          if (this.effortOption === undefined) this.setEffortOption(effort)
+        })
         await this.postureRecovery
-        await this.recover()
+        this.recover(await recovered)
         return
       }
 
@@ -1017,17 +1058,6 @@ export class AcpConversation {
     this.log(`[server] acp: session effort set to ${effort}`)
   }
 
-  /** Read a reattached session's effort option back from its record. One
-   *  the adapter reported during the read is newer and wins. */
-  private async recoverEffort(): Promise<void> {
-    try {
-      const recorded = await this.deps.recoverEffort?.()
-      if (this.effortOption === undefined) this.setEffortOption(recorded)
-    } catch (err) {
-      this.log(`[server] acp: could not recover the session effort: ${String(err)}`)
-    }
-  }
-
   /** Emit now and keep it for later attachers until it no longer applies. */
   private notice(about: 'mode' | 'model' | 'effort', event: AcpEventInit): void {
     this.notices.set(about, event)
@@ -1052,7 +1082,7 @@ export class AcpConversation {
    * `--model` asked for could surprise the user's bill.
    */
   private async applyLaunchModel(): Promise<void> {
-    const model = this.deps.launchModel ?? await this.deps.recoverLaunchModel?.().catch((err: unknown) => {
+    const model = await this.deps.launchModel?.().catch((err: unknown) => {
       this.log(`[server] acp: could not read the launch model: ${err instanceof Error ? err.message : String(err)}`)
       return undefined
     })
@@ -1155,29 +1185,10 @@ export class AcpConversation {
    * status set during the read (a new prompt, an orphan reply) is newer than
    * the record, so a late scan result is discarded.
    */
-  private async recover(): Promise<void> {
-    let inFlight: AcpInFlight = { prompt: false }
-    if (this.deps.recoverInFlight !== undefined) {
-      try {
-        inFlight = await this.deps.recoverInFlight()
-      } catch (err) {
-        // Erring toward idle only mislabels; erring toward busy pins the
-        // conversation with nothing to release it.
-        this.log(`[server] acp: could not recover turn state: ${
-          err instanceof Error ? err.message : String(err)}`)
-      }
-    }
+  private recover({ inFlight, pendingPermissions }: AcpRecovery): void {
     // Asks can only be outstanding inside a running turn.
-    let awaiting: Array<string | number> = []
     const running = inFlight.prompt || inFlight.agentRunning === true
-    if (running && this.deps.recoverPendingPermissions !== undefined) {
-      try {
-        awaiting = await this.deps.recoverPendingPermissions()
-      } catch (err) {
-        this.log(`[server] acp: could not recover permission state: ${
-          err instanceof Error ? err.message : String(err)}`)
-      }
-    }
+    const awaiting = running ? pendingPermissions : []
     if (this.closed) return
     // A report received live during the read is newer.
     if (this.agentRunning === undefined) this.setAgentRunning(inFlight.agentRunning)

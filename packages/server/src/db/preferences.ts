@@ -17,17 +17,6 @@ export interface SerializedChord {
   shift: boolean
 }
 
-/** Structural guard for a chord sent by the webapp, which is untrusted. */
-export function isSerializedChord(value: unknown): value is SerializedChord {
-  if (typeof value !== 'object' || value === null) return false
-  const c = value as Record<string, unknown>
-  return typeof c.code === 'string'
-    && typeof c.alt === 'boolean'
-    && typeof c.ctrl === 'boolean'
-    && typeof c.meta === 'boolean'
-    && typeof c.shift === 'boolean'
-}
-
 /** `preferences` row keys for the git identity workspaces commit under. */
 export const GIT_USER_NAME_KEY = 'git_user_name'
 export const GIT_USER_EMAIL_KEY = 'git_user_email'

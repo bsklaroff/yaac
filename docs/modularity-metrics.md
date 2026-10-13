@@ -32,10 +32,10 @@ deepest one: `drivers/k8s/substrate` is a module inside `drivers/k8s`.
 
 Any other file belongs to the shallowest directory under `src/` that holds
 source files directly. A directory with only subdirectories is therefore not
-a module itself: in the server, `runtime/` has no files of its own, so
-`runtime/agents` and its siblings are the modules. `drivers/` holds
-`contract.ts` and `driver.ts`, so it is a module of its own beside the sealed
-driver folders under it.
+a module itself. In the server, `drivers/` holds `contract.ts` and
+`driver.ts`, so it is a module of its own beside the sealed driver folders
+under it, while `runtime/` holds no files of its own, so `runtime/agents`
+and its siblings are the modules.
 
 ## Coupling and cycles
 

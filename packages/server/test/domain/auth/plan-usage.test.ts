@@ -1,7 +1,11 @@
 import fs from 'node:fs/promises'
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
 
-vi.mock('#notify', () => ({ notifyWorkspaceListChanged: vi.fn() }))
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
+
+vi.mock('#lib/notify', () => ({ notifyWorkspaceListChanged: vi.fn() }))
 // Only whether a persisted rotation is pushed matters here; the push itself
 // is tested in runtime-push.test.ts.
 vi.mock('#domain/auth/runtime-push', () => ({
@@ -9,7 +13,7 @@ vi.mock('#domain/auth/runtime-push', () => ({
   adoptRefreshedToolCredentials: vi.fn(),
 }))
 
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { pushCredentialsToRuntime } from '#domain/auth/runtime-push'
 import {
   planUsageForSnapshot as usageSlices,
@@ -31,7 +35,7 @@ import {
   PLACEHOLDER_ACCESS_TOKEN,
   PLACEHOLDER_REFRESH_TOKEN,
 } from '@yaac/shared/tool-auth'
-import { installFakeWorkspaceDriver, handleFixture, snapshotFixture } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver, handleFixture, snapshotFixture } from '#test/support/fake-driver'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 
 /**

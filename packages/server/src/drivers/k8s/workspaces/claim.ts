@@ -15,7 +15,7 @@ import { servingNpmCacheUrl } from '#drivers/k8s/cluster'
 import { registerWorkspaceEgress } from '#drivers/k8s/egress'
 import type { AgentTool } from '@yaac/shared/types'
 import type { WorkspaceRegistration } from '#drivers/contract'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { npmCacheApplies } from './launch'
 
 /**

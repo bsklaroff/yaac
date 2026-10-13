@@ -19,11 +19,6 @@ import { filesKey } from '#lib/useWorkspaceChanges'
 import { patchWheelPacing } from '#lib/wheel-pacing'
 import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
-import {
-  parsePongRtt,
-  recordRtt,
-  RTT_PROBE_INTERVAL_MS,
-} from '#lib/link-quality'
 import { createOutputBatcher } from '@yaac/shared/batcher'
 import type { WorkspaceFiles } from '@yaac/shared/types'
 import { resolveEffectiveTheme } from '#lib/theme'
@@ -41,25 +36,30 @@ const INPUT_BATCH_MS = 4
  *  to 5,000 of them and live output adds the rest. */
 const SCROLLBACK_LINES = 10_000
 
+/** How often an open socket sends a ping, so proxies in between don't drop
+ *  an idle terminal. */
+const KEEPALIVE_MS = 10_000
+
 /**
  * One terminal attached to a tmux pane in a workspace over the server's
  * /pty/attach WebSocket (docs/terminal-mirror.md). Binary frames carry the
  * pane's raw output and the user's input; text frames carry control
- * messages (resize and ping from here, size and pong from the server).
+ * messages (resize and keepalive ping from here; size, pong and errors
+ * from the server).
  * This xterm holds the scrollback, so scrolling history is local.
  */
 export function WorkspaceTerminal({
   workspaceId,
-  target = 'agent',
-  visible = true,
+  target,
+  visible,
   focusKey,
 }: {
   workspaceId: string
   /** /pty/attach target: 'agent', 'shell:<name>', or 'window:@<id>'. */
-  target?: string
+  target: string
   /** Whether this pane is on-screen. Hidden panes drop their WebGL context
    *  (see createWebglController). */
-  visible?: boolean
+  visible: boolean
   /** Focus the terminal whenever this changes to a defined value. The
    *  caller bumps it when the workspace is selected or opened. */
   focusKey?: number
@@ -143,24 +143,11 @@ export function WorkspaceTerminal({
     // plain drag selects, Alt+drag and plain clicks go to a mouse-tracking
     // app, selections survive mouse reports, and wheel and touch scrolling
     // are paced for the app or scroll the local history.
-    if (!patchForcedSelection(term)) {
-      console.warn('xterm internals changed: drag reports to the app instead of selecting')
-    }
-    if (!patchKeepSelection(term)) {
-      console.warn('xterm internals changed: selection clears eagerly again')
-    }
+    patchForcedSelection(term)
+    patchKeepSelection(term)
     const disposeClickForwarding = patchClickForwarding(term)
-    if (!disposeClickForwarding) {
-      console.warn('xterm internals changed: clicks need Alt to reach the TUI again')
-    }
     const disposeWheelPacing = patchWheelPacing(term)
-    if (!disposeWheelPacing) {
-      console.warn('xterm internals changed: wheel reports reach the app unpaced')
-    }
     const disposeTouchScroll = patchTouchScroll(term)
-    if (!disposeTouchScroll) {
-      console.warn('xterm internals changed: touch no longer scrolls the pane')
-    }
     const disposeQueries = swallowTerminalQueries(term)
     const disposeLinks = installTerminalLinks(term, {
       isMac: IS_MAC,
@@ -188,7 +175,6 @@ export function WorkspaceTerminal({
     }
     let sock: ReconnectingSocket | null = null
     let noticeTimer: ReturnType<typeof setTimeout> | undefined
-    let pingTimer: ReturnType<typeof setInterval> | undefined
     const encoder = new TextEncoder()
 
     // Batch keystrokes so bursts share a frame instead of one frame per
@@ -201,37 +187,24 @@ export function WorkspaceTerminal({
     const sendResize = (): void => {
       sock?.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
     }
-    // Measure the round trip for #lib/link-quality.
-    const sendPing = (): void => {
-      sock?.send(JSON.stringify({ type: 'ping', t: performance.now() }))
-    }
     // The pane's output only renders at the size the app drew it for, so
     // the server's `size` sets this xterm's grid. It is not echoed back as
     // a resize: another device may be the one sizing the pane, and this one
     // reclaims it by resizing its container or typing (the server re-applies
     // its last requested size).
     let applyingServerSize = false
-    const applyServerSize = (text: string): boolean => {
-      let msg: unknown
+    const applyServerSize = (text: string): void => {
+      const m = JSON.parse(text) as { type: string; cols: number; rows: number }
+      if (m.type !== 'size' || (m.cols === term.cols && m.rows === term.rows)) return
+      applyingServerSize = true
       try {
-        msg = JSON.parse(text)
-      } catch {
-        return false
+        term.resize(m.cols, m.rows)
+      } finally {
+        applyingServerSize = false
       }
-      const m = msg as { type?: unknown; cols?: unknown; rows?: unknown }
-      if (m.type !== 'size' || typeof m.cols !== 'number' || typeof m.rows !== 'number') return false
-      if (m.cols !== term.cols || m.rows !== term.rows) {
-        applyingServerSize = true
-        try {
-          term.resize(m.cols, m.rows)
-        } finally {
-          applyingServerSize = false
-        }
-      }
-      return true
     }
 
-    const gate = createSettleGate(() => setSettled(true), { hasContent })
+    const gate = createSettleGate(() => setSettled(true), hasContent)
 
     // (Re)attach to the workspace's pane. tmux outlives the connection, and
     // each attach starts with a snapshot that resets this terminal, so
@@ -255,15 +228,10 @@ export function WorkspaceTerminal({
           gate.onOpen()
           fit.fit()
           sendResize()
-          sendPing()
-          clearInterval(pingTimer)
-          pingTimer = setInterval(sendPing, RTT_PROBE_INTERVAL_MS)
         },
         message: (data) => {
           if (typeof data === 'string') {
-            if (applyServerSize(data)) return false
-            const rtt = parsePongRtt(data, performance.now())
-            if (rtt !== null) recordRtt(rtt)
+            applyServerSize(data)
             return false
           }
           // Pane bytes mean the attach succeeded; a failed one sends a text
@@ -273,8 +241,6 @@ export function WorkspaceTerminal({
           return true
         },
         close: (opened) => {
-          clearInterval(pingTimer)
-          pingTimer = undefined
           // CAN (0x18) resets the parser in case the stream died inside an
           // escape sequence, which would otherwise swallow what comes next.
           if (opened) term.write('\x18')
@@ -352,6 +318,9 @@ export function WorkspaceTerminal({
     }
     document.addEventListener('visibilitychange', onVisible)
 
+    // A no-op while the socket is down.
+    const keepaliveTimer = setInterval(() => sock?.send('{"type":"ping"}'), KEEPALIVE_MS)
+
     // Defer the first connect one tick. React StrictMode mounts, unmounts
     // and remounts synchronously, and a socket closed while CONNECTING can
     // leak its server-side PTY, so the throwaway mount never connects.
@@ -369,7 +338,7 @@ export function WorkspaceTerminal({
       gate.dispose()
       clearTimeout(connectTimer)
       clearTimeout(noticeTimer)
-      clearInterval(pingTimer)
+      clearInterval(keepaliveTimer)
       // Send any pending input before closing the socket below.
       input.flush()
       input.dispose()
@@ -383,11 +352,11 @@ export function WorkspaceTerminal({
       el.removeEventListener('drop', onDrop)
       unregisterInput()
       testHooks.__xterms?.delete(term)
-      disposeWheelPacing?.()
-      disposeTouchScroll?.()
+      disposeWheelPacing()
+      disposeTouchScroll()
       disposeQueries()
       disposeLinks()
-      disposeClickForwarding?.()
+      disposeClickForwarding()
       sock?.close()
       // Before term.dispose(), so a late context-loss callback can't touch it.
       webgl.dispose()
@@ -417,11 +386,9 @@ export function WorkspaceTerminal({
       if (termRef.current) termRef.current.options.theme = terminalTheme(resolveEffectiveTheme())
     }
     apply()
-    const mq = typeof window !== 'undefined' && window.matchMedia
-      ? window.matchMedia('(prefers-color-scheme: dark)')
-      : null
-    mq?.addEventListener('change', apply)
-    return () => mq?.removeEventListener('change', apply)
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
   }, [themePref])
 
   return (

@@ -1,10 +1,8 @@
-// @vitest-environment jsdom
 import type { JSX } from 'react'
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 
-afterEach(cleanup)
 
 const URL = 'https://github.com/acme/widgets.git'
 

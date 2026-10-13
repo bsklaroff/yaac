@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import {
   setDataDir,
   acpLogDir,
@@ -14,16 +14,18 @@ import {
   projectDir,
 } from '@yaac/shared/project-paths'
 import {
-  claudeProjectDirName,
   conversationFiles,
   locateTranscript,
   openConversationFile,
   resolveProjectPath,
-  sessionIdFromPiLog,
   sessionTranscriptPath,
   toProjectRelative,
   transcriptLastActiveMs,
 } from '#runtime/agents/transcripts'
+
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 const projectId = 'demo'
 const wt = 'wt-a'
@@ -54,33 +56,6 @@ describe('transcripts', () => {
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true })
-  })
-
-  describe('sessionIdFromPiLog', () => {
-    it('takes everything after the timestamp prefix', () => {
-      expect(sessionIdFromPiLog('/logs/20260101-120000_sess-1.jsonl')).toBe('sess-1')
-    })
-
-    it('returns undefined without a separator, or with an empty id', () => {
-      expect(sessionIdFromPiLog('/logs/stray.jsonl')).toBeUndefined()
-      expect(sessionIdFromPiLog('/logs/100_.jsonl')).toBeUndefined()
-    })
-  })
-
-  describe('claudeProjectDirName', () => {
-    it('punches every non-alphanumeric out of the cwd', () => {
-      expect(claudeProjectDirName('/workspace')).toBe('-workspace')
-      expect(claudeProjectDirName('/home/me/.yaac/projects/p_1/workspaces/abc'))
-        .toBe('-home-me--yaac-projects-p-1-workspaces-abc')
-    })
-
-    it('cuts a long one at 200 and appends claude\'s own hash of the whole path', () => {
-      // Observed from claude 2.1.282 run in this cwd.
-      const cwd = `/tmp/claude-1000/-workspace/26a9c9fd-de5b-4db5-a741-c3522285d032/scratchpad/cc/${'a'.repeat(120)}/with.dots_and space/${'b'.repeat(100)}`
-      expect(claudeProjectDirName(cwd)).toBe(
-        `-tmp-claude-1000--workspace-26a9c9fd-de5b-4db5-a741-c3522285d032-scratchpad-cc-${'a'.repeat(120)}--yck5ws`,
-      )
-    })
   })
 
   describe('sessionTranscriptPath', () => {
@@ -124,6 +99,9 @@ describe('transcripts', () => {
       await write(path.join(dir, '100_sid.jsonl'))
       await write(path.join(dir, 'workspace', '150_sid.jsonl'))
       await write(path.join(dir, '300_other.jsonl'))
+      // Names with no id after the timestamp belong to no conversation.
+      await write(path.join(dir, 'stray.jsonl'))
+      await write(path.join(dir, '400_.jsonl'))
       expect(await sessionTranscriptPath(projectId, wt, 'pi', 'sid'))
         .toEqual({ projectId, dir, rel: 'workspace/150_sid.jsonl' })
       expect(await sessionTranscriptPath(projectId, wt, 'pi', 'unknown')).toBeUndefined()
@@ -278,14 +256,12 @@ describe('transcripts', () => {
         expect(files.get('cl')?.map((f) => f.name)).toEqual(['cl.jsonl'])
         expect(files.get('cl2')?.map((f) => f.name)).toEqual(['cl2.jsonl'])
       } finally {
-        resetWorkspaceDriver()
+        installFakeWorkspaceDriver()
       }
     })
   })
 
   describe('openConversationFile', () => {
-    afterEach(() => { resetWorkspaceDriver() })
-
     const dir = (): string => opencodeCheckpointDir(projectId, wt)
     const database = { name: 'opencode.db', file: { projectId, dir: '', rel: 'opencode.db' }, sqlite: true, size: 0, mtimeMs: 0 }
     const opened = async (): Promise<Buffer | null> => {
@@ -326,7 +302,7 @@ describe('transcripts', () => {
 
         // A sandboxed workspace's database is never opened with SQLite: its
         // bytes are handed out as they are.
-        resetWorkspaceDriver()
+        installFakeWorkspaceDriver()
         expect(await opened()).toEqual(await fs.readFile(path.join(dir(), 'opencode.db')))
       } finally {
         live.close()

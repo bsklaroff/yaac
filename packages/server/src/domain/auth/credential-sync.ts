@@ -1,19 +1,9 @@
-import {
-  dropProjectClaudeKeychainItem,
-  isPlaceholderClaudeBundle,
-  isPlaceholderCodexBundle,
-  readProjectClaudeBundle,
-  readProjectCodexBundle,
-  writeProjectClaudeCredentials,
-  writeProjectClaudePlaceholder,
-  writeProjectCodexAuth,
-  writeProjectCodexPlaceholder,
-} from '@yaac/shared/tool-auth'
-import { getToolCredential, listProjectRows } from '#db'
-import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
-import { serverLog } from '#log'
-import { ownedProjectIds, saveClaudeOAuthBundle, saveCodexOAuthBundle } from './store'
-import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
+import { listProjectRows } from '#db'
+import { workspaceDriver, workspacesSandboxed } from '#drivers/driver'
+import { serverLog } from '#lib/log'
+import { adoptNewest, OAUTH_TOOLS, type OAuthTool } from './oauth-tools'
+import { ownedProjectIds } from './store'
+import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * Keeps OAuth credentials consistent between each user's store (`#db`
@@ -40,23 +30,6 @@ import type { AgentTool, ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/share
  */
 
 /**
- * Whether the runtime intercepts workspace egress, which decides whether a
- * project's tool home gets a sentinel or the real credential. True when no
- * driver is registered (e.g. api tests), the safe default that never writes a
- * real bundle.
- */
-export function runtimeMediatesEgress(): boolean {
-  return !hasWorkspaceDriver() || workspaceDriver().kind !== 'containerless'
-}
-
-/** Whether any workspace is live right now. */
-async function anyLiveWorkspace(): Promise<boolean> {
-  if (!hasWorkspaceDriver()) return false
-  const handles = await workspaceDriver().snapshot().workspaces()
-  return handles.some((h) => h.running && !h.terminating)
-}
-
-/**
  * Whether the host may refresh a rotating credential itself. False only
  * without a proxy while a workspace is live, since a host refresh would
  * invalidate the agent's copy; the agent refreshes and harvest picks it up.
@@ -71,85 +44,30 @@ async function anyLiveWorkspace(): Promise<boolean> {
  * without a cycle.
  */
 export async function hostMayRefreshCredentials(): Promise<boolean> {
-  if (runtimeMediatesEgress()) return true
+  if (workspacesSandboxed()) return true
   try {
-    return !(await anyLiveWorkspace())
+    const handles = await workspaceDriver().snapshot().workspaces()
+    return !handles.some((h) => h.running && !h.terminating)
   } catch (err) {
     serverLog(`[server] credential-sync: liveness check failed, holding off refresh: ${String(err)}`)
     return false
   }
 }
 
-// ── Comparators ────────────────────────────────────────────────────────
-
-/**
- * Whether `candidate` supersedes `current`. An identical access token never
- * wins (so repeated sweeps don't rewrite files); otherwise the later expiry
- * wins.
- */
-export function claudeBundleIsNewer(candidate: ClaudeOAuthBundle, current: ClaudeOAuthBundle): boolean {
-  if (candidate.accessToken === current.accessToken) return false
-  return candidate.expiresAt > current.expiresAt
-}
-
-/**
- * The Codex version. Compares `lastRefresh` (stamped by codex on every
- * refresh) first, then expiry (from the access token's JWT) for ties or an
- * unparseable stamp. `readProjectCodexBundle` ranks a file without
- * `last_refresh` at the epoch, so a missing stamp never looks newest.
- */
-export function codexBundleIsNewer(candidate: CodexOAuthBundle, current: CodexOAuthBundle): boolean {
-  if (candidate.accessToken === current.accessToken) return false
-  const a = Date.parse(candidate.lastRefresh)
-  const b = Date.parse(current.lastRefresh)
-  if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a > b
-  return candidate.expiresAt > current.expiresAt
-}
-
 // ── Harvest: project tool homes → host store ───────────────────────────
 
-/**
- * Adopt the newest Claude bundle among `projectIds` into the host store. A
- * compare-and-set skips the write if another writer changed the store while
- * the projects were read; the next sweep re-reads.
- */
-async function harvestClaude(owner: string, projectIds: string[]): Promise<void> {
-  const stored = await getToolCredential(owner, 'claude')
-  // Nothing to harvest for api-key auth, and a leftover project file must
-  // not sign a signed-out user back in.
-  if (stored?.kind !== 'oauth') return
-  const base = stored.claudeAiOauth
-  let best = base
-  for (const projectId of projectIds) {
-    const candidate = await readProjectClaudeBundle(projectId).catch(() => null)
-    // Never adopt a sentinel (see `isPlaceholderClaudeBundle`).
-    if (!candidate || isPlaceholderClaudeBundle(candidate)) continue
-    if (claudeBundleIsNewer(candidate, best)) best = candidate
+/** Adopt the newest of one tool's bundles among `projectIds` into the host
+ *  store. Unreadable projects are skipped. */
+async function harvest<B extends { accessToken: string }>(
+  t: OAuthTool<B>, owner: string, projectIds: string[],
+): Promise<void> {
+  const read = async (): Promise<Array<B | null>> => {
+    const bundles = []
+    for (const id of projectIds) bundles.push(await t.readProject(id).catch(() => null))
+    return bundles
   }
-  if (best === base) return
-  const now = await getToolCredential(owner, 'claude')
-  if (now?.kind === 'oauth' && now.claudeAiOauth.accessToken === base.accessToken) {
-    await saveClaudeOAuthBundle(owner, best)
-    serverLog('[server] credential-sync: adopted a refreshed Claude bundle from a workspace')
-  }
-}
-
-/** The Codex version of `harvestClaude`. */
-async function harvestCodex(owner: string, projectIds: string[]): Promise<void> {
-  const stored = await getToolCredential(owner, 'codex')
-  if (stored?.kind !== 'oauth') return
-  const base = stored.codexOauth
-  let best = base
-  for (const projectId of projectIds) {
-    const candidate = await readProjectCodexBundle(projectId).catch(() => null)
-    if (!candidate || isPlaceholderCodexBundle(candidate)) continue
-    if (codexBundleIsNewer(candidate, best)) best = candidate
-  }
-  if (best === base) return
-  const now = await getToolCredential(owner, 'codex')
-  if (now?.kind === 'oauth' && now.codexOauth.accessToken === base.accessToken) {
-    await saveCodexOAuthBundle(owner, best)
-    serverLog('[server] credential-sync: adopted a refreshed Codex bundle from a workspace')
+  if (await adoptNewest(t, owner, read)) {
+    serverLog(`[server] credential-sync: adopted a refreshed ${t.tool} bundle from a workspace`)
   }
 }
 
@@ -167,120 +85,78 @@ export async function harvestToolCredentials(
   owner: string,
   opts: { tool?: 'claude' | 'codex'; projectId?: string } = {},
 ): Promise<void> {
-  if (runtimeMediatesEgress()) return
+  if (workspacesSandboxed()) return
   const projectIds = opts.projectId !== undefined ? [opts.projectId] : await ownedProjectIds(owner)
   if (projectIds.length === 0) return
-  if (opts.tool !== 'codex') await harvestClaude(owner, projectIds)
-  if (opts.tool !== 'claude') await harvestCodex(owner, projectIds)
+  for (const t of OAUTH_TOOLS) {
+    if (opts.tool === undefined || opts.tool === t.tool) await harvest(t, owner, projectIds)
+  }
 }
 
 // ── Push: host store → project tool homes ──────────────────────────────
 
 /**
- * Write the host's Claude bundle into a project that is behind it. When one
+ * Write the host's bundle into a project that is behind it. When one
  * project's agent rotates the shared refresh token, the others hold a
  * superseded one; harvest updates the host store and this copies it back
  * out.
- *
- * The macOS Keychain item is dropped only after the file is written: claude
- * prefers the item, so a stale one would shadow the new file, and dropping
- * it first could leave the project with neither.
  */
-async function pushClaude(owner: string, projectId: string): Promise<void> {
-  const stored = await getToolCredential(owner, 'claude')
-  if (stored?.kind !== 'oauth') return
-  const host = stored.claudeAiOauth
-  const current = await readProjectClaudeBundle(projectId).catch(() => null)
+async function push<B extends { accessToken: string }>(
+  t: OAuthTool<B>, owner: string, projectId: string,
+): Promise<void> {
+  const host = await t.stored(owner)
+  if (!host) return
+  const current = await t.readProject(projectId).catch(() => null)
   // Same token: nothing to do. This also covers yaac-in-yaac, where both
   // hold the same sentinel.
   if (current && current.accessToken === host.accessToken) return
   // A real project credential is replaced only by a strictly newer real
   // one, never by a sentinel (which a chained install's host store holds).
   // A project with a sentinel or nothing takes whatever the host has.
-  if (current && !isPlaceholderClaudeBundle(current)
-      && (isPlaceholderClaudeBundle(host) || !claudeBundleIsNewer(host, current))) return
-  await writeProjectClaudeCredentials(projectId, host)
-  dropProjectClaudeKeychainItem(projectId)
-}
-
-/** The Codex version of `pushClaude` (codex uses no Keychain item). */
-async function pushCodex(owner: string, projectId: string): Promise<void> {
-  const stored = await getToolCredential(owner, 'codex')
-  if (stored?.kind !== 'oauth') return
-  const host = stored.codexOauth
-  const current = await readProjectCodexBundle(projectId).catch(() => null)
-  if (current && current.accessToken === host.accessToken) return
-  if (current && !isPlaceholderCodexBundle(current)
-      && (isPlaceholderCodexBundle(host) || !codexBundleIsNewer(host, current))) return
-  await writeProjectCodexAuth(projectId, host)
+  if (current && !t.isPlaceholder(current) && (t.isPlaceholder(host) || !t.isNewer(host, current))) return
+  await t.writeProject(projectId, host)
 }
 
 // ── The composed operations ────────────────────────────────────────────
 
 /**
  * Prepare a project's tool homes for a workspace launch from its owner's
- * store; called on every create. Without a proxy it harvests first (so a
- * running workspace's refresh reaches the store), then pushes, so it never
- * overwrites a newer credential. With a proxy it just writes sentinels.
+ * store; called on every create. Sandboxed, it just writes sentinels.
+ * Otherwise it harvests first (so a running workspace's refresh reaches the
+ * store), then pushes, so it never overwrites a newer credential.
  */
-export async function seedProjectToolHome(
-  projectId: string,
-  owner: string,
-  opts: { mediatedEgress: boolean },
-): Promise<void> {
-  if (opts.mediatedEgress) {
-    const claude = await getToolCredential(owner, 'claude')
-    if (claude?.kind === 'oauth') await writeProjectClaudePlaceholder(projectId, claude.claudeAiOauth)
-    const codex = await getToolCredential(owner, 'codex')
-    if (codex?.kind === 'oauth') await writeProjectCodexPlaceholder(projectId, codex.codexOauth)
+export async function seedProjectToolHome(projectId: string, owner: string): Promise<void> {
+  if (workspacesSandboxed()) {
+    for (const t of OAUTH_TOOLS) await writePlaceholder(t, owner, projectId)
     return
   }
   await harvestToolCredentials(owner, { projectId })
-  await pushClaude(owner, projectId)
-  await pushCodex(owner, projectId)
+  for (const t of OAUTH_TOOLS) await push(t, owner, projectId)
 }
 
-/** Every project id, grouped by owner. */
-async function projectIdsByOwner(): Promise<Map<string, string[]>> {
-  const byOwner = new Map<string, string[]>()
-  for (const { id, owner } of await listProjectRows()) byOwner.set(owner, [...byOwner.get(owner) ?? [], id])
-  return byOwner
-}
-
-/**
- * Rewrite every project's tool homes with sentinels from its owner's store.
- * A containerless server writes real OAuth tokens there, and those are the
- * files a workspace pod mounts, so if a data dir once run containerless is
- * served by k8s, sandboxed pods would see real tokens. Run at every start
- * of a mediating runtime, before any pod launches; on an install that never
- * ran containerless it rewrites the same sentinels.
- */
-export async function reseedPlaceholderToolHomes(): Promise<void> {
-  if (!runtimeMediatesEgress()) return
-  for (const [owner, projectIds] of await projectIdsByOwner()) {
-    for (const projectId of projectIds) {
-      await seedProjectToolHome(projectId, owner, { mediatedEgress: true }).catch((err: unknown) =>
-        serverLog(`[server] placeholder re-seed of project "${projectId}" failed: ${String(err)}`))
-    }
-  }
+async function writePlaceholder<B extends { accessToken: string }>(
+  t: OAuthTool<B>, owner: string, projectId: string,
+): Promise<void> {
+  const host = await t.stored(owner)
+  if (host) await t.writeProjectPlaceholder(projectId, host)
 }
 
 /**
  * Converge every project both ways: adopt the newest credential among each
  * owner's projects, then update that owner's projects that are behind. Run
- * by a timed reconcile step, whose first run is at attach. A no-op with a
- * proxy, where project homes hold sentinels kept current by
+ * by a timed reconcile step, whose first run is at attach. A no-op when
+ * sandboxed, where project homes hold sentinels kept current by
  * `fanOutToolCredentials`.
  */
 export async function syncToolCredentials(): Promise<void> {
-  if (runtimeMediatesEgress()) return
-  for (const [owner, projectIds] of await projectIdsByOwner()) {
-    await harvestClaude(owner, projectIds)
-    await harvestCodex(owner, projectIds)
+  if (workspacesSandboxed()) return
+  const byOwner = new Map<string, string[]>()
+  for (const { id, owner } of await listProjectRows()) byOwner.set(owner, [...byOwner.get(owner) ?? [], id])
+  for (const [owner, projectIds] of byOwner) {
+    for (const t of OAUTH_TOOLS) await harvest(t, owner, projectIds)
     for (const projectId of projectIds) {
       try {
-        await pushClaude(owner, projectId)
-        await pushCodex(owner, projectId)
+        for (const t of OAUTH_TOOLS) await push(t, owner, projectId)
       } catch (err) {
         serverLog(`[server] credential-sync: push to project "${projectId}" failed: ${String(err)}`)
       }
@@ -289,42 +165,28 @@ export async function syncToolCredentials(): Promise<void> {
 }
 
 /**
- * Write a user's new login into each of their projects: a sentinel with a
- * proxy, the real bundle without. Unconditional, since a login may switch
- * accounts and must not lose a newest-wins comparison. Per-project failures
- * are logged and skipped; the next sweep or create repairs them. As in
- * `pushClaude`, the macOS Keychain item is dropped after writing the file.
+ * Write a user's new login into each of their projects: a sentinel when
+ * sandboxed, the real bundle otherwise. Unconditional, since a login may
+ * switch accounts and must not lose a newest-wins comparison. Per-project
+ * failures are logged and skipped; the next sweep or create repairs them.
  */
-export async function fanOutToolCredentials(
-  owner: string,
-  tool: AgentTool,
-  opts: { mediatedEgress: boolean },
-): Promise<void> {
+export async function fanOutToolCredentials(owner: string, tool: AgentTool): Promise<void> {
   // opencode and pi authenticate by env var and keep no project file.
-  if (tool !== 'claude' && tool !== 'codex') return
-  const projectIds = await ownedProjectIds(owner)
-  if (projectIds.length === 0) return
+  const t = OAUTH_TOOLS.find((o) => o.tool === tool)
+  if (t) await fanOut(t, owner)
+}
 
+async function fanOut<B extends { accessToken: string }>(t: OAuthTool<B>, owner: string): Promise<void> {
   // api-key auth has no bundle; the key is passed as an env var.
-  const stored = await getToolCredential(owner, tool)
-  if (stored?.kind !== 'oauth') return
-
-  for (const projectId of projectIds) {
+  const host = await t.stored(owner)
+  if (!host) return
+  const sandboxed = workspacesSandboxed()
+  for (const projectId of await ownedProjectIds(owner)) {
     try {
-      if ('claudeAiOauth' in stored) {
-        if (opts.mediatedEgress) {
-          await writeProjectClaudePlaceholder(projectId, stored.claudeAiOauth)
-        } else {
-          await writeProjectClaudeCredentials(projectId, stored.claudeAiOauth)
-          dropProjectClaudeKeychainItem(projectId)
-        }
-      } else if (opts.mediatedEgress) {
-        await writeProjectCodexPlaceholder(projectId, stored.codexOauth)
-      } else {
-        await writeProjectCodexAuth(projectId, stored.codexOauth)
-      }
+      if (sandboxed) await t.writeProjectPlaceholder(projectId, host)
+      else await t.writeProject(projectId, host)
     } catch (err) {
-      serverLog(`[server] credential-sync: ${tool} fan-out to project "${projectId}" failed: ${String(err)}`)
+      serverLog(`[server] credential-sync: ${t.tool} fan-out to project "${projectId}" failed: ${String(err)}`)
     }
   }
 }

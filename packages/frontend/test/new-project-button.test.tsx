@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import type { JSX } from 'react'
-import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { AuthListResult, GitCredentialSummary } from '@yaac/shared/types'
 import { AddProjectDialog, NewProjectButton } from '#components/NewProjectButton'
 import { ProjectOpPane } from '#components/ProjectOpPane'
@@ -26,10 +25,6 @@ beforeEach(() => {
   server = mockFetch({ [AUTH_LIST]: list(TOKEN) })
 })
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 /** The button and dialog, plus the main area's progress pane for the
  *  selected op, as the shell shows it. */

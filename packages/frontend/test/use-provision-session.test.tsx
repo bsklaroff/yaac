@@ -1,23 +1,13 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
-import { renderHook, act, waitFor, screen, cleanup } from '@testing-library/react'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { renderHook, act, waitFor, screen } from '@testing-library/react'
 import { WorkspaceView } from '#components/WorkspaceView'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { useUiStore } from '#lib/store'
 import { renderWithClient } from './harness'
 import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
 
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
-
 const initial = useUiStore.getState()
 beforeEach(() => { useUiStore.setState(initial, true) })
-afterEach(() => { cleanup() })
 
 describe('useProvisionWorkspace', () => {
   it('adds an optimistic provisioning row with the given id and auto-opens it', () => {

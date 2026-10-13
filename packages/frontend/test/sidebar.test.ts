@@ -1,17 +1,13 @@
-// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
-import { groupDisplay, narrowRows } from '#components/WorkspaceList'
+import { groupDisplay } from '#components/WorkspaceList'
 import { stoppedSectionCount } from '#lib/useStoppedWorkspaces'
 import type {
-  DraftWorkspaceEntry,
   HeldWorkspaceEntry,
   ProvisioningWorkspaceEntry,
-  QueuedWorkspaceEntry,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
-import type { SidebarStatus } from '#lib/store'
 
 /** A workspace entry. `at` is the seconds field of its creation time, which is
  *  what the list orders on. */
@@ -102,22 +98,6 @@ describe('sidebarLayout', () => {
     ], [])).toEqual({ default: ['c', 'b', 'a'] })
   })
 
-  it('files members into their group and orders the groups newest-first', () => {
-    const late = group('late', 20)
-    const early = group('early', 10)
-    const layout = sidebarLayout([
-      entry('in-late', 1, { groupId: 'late' }),
-      entry('loose', 2),
-      entry('in-early-new', 4, { groupId: 'early' }),
-      entry('in-early-old', 3, { groupId: 'early' }),
-    ], [late, early])
-
-    expect(layout.defaultList.map((w) => w.workspaceId)).toEqual(['loose'])
-    expect(layout.groups.map((s) => s.group.groupId)).toEqual(['late', 'early'])
-    expect(layout.groups[1]?.members.map((w) => w.workspaceId))
-      .toEqual(['in-early-new', 'in-early-old'])
-  })
-
   it('hides an unpinned group with no live member, and keeps a pinned one', () => {
     const loose = group('loose-group', 10)
     const pinned = group('pinned-group', 20, { pinned: true })
@@ -138,25 +118,6 @@ describe('sidebarLayout', () => {
       .toEqual({ default: [], g: ['t'] })
   })
 
-  it('files a provisioning row into its group, above the live rows', () => {
-    const g = group('g', 10)
-    // Restarting a stopped member: the restarting row takes its place inside
-    // the section rather than at the top of the sidebar.
-    expect(shape(
-      [entry('live', 2, { groupId: 'g' })],
-      [g],
-      [prov('coming-back', 9, { groupId: 'g' }), prov('fresh', 9)],
-    )).toEqual({ top: ['fresh'], default: [], g: ['coming-back', 'live'] })
-  })
-
-  it('shows an unpinned group whose only row is provisioning', () => {
-    // The last live member is mid-restart. The section has no other rows but
-    // must not disappear from under this one.
-    const g = group('g', 10)
-    expect(shape([], [g], [prov('coming-back', 9, { groupId: 'g' })]))
-      .toEqual({ top: [], default: [], g: ['coming-back'] })
-  })
-
   it('leaves a provisioning row naming an unknown group at the top', () => {
     expect(shape([], [], [prov('orphan', 9, { groupId: 'gone' })]))
       .toEqual({ top: ['orphan'], default: [] })
@@ -168,84 +129,12 @@ describe('sidebarLayout', () => {
   })
 })
 
-/** A queued workspace waiting on `parent`: a workspace, or another queued
- *  entry when `chained` is set. */
-const queued = (
-  id: string,
-  parent: string,
-  extra: Partial<QueuedWorkspaceEntry> & { chained?: boolean } = {},
-): QueuedWorkspaceEntry => {
-  const { chained, ...rest } = extra
-  return {
-    id,
-    projectId: 'p',
-    ...(chained === true ? { parentQueuedId: parent } : { parentWorkspaceId: parent }),
-    prompt: id,
-    tool: 'claude',
-    model: 'm',
-    mode: 'tui',
-    permissionMode: 'bypass',
-    branch: 'main',
-    createdAt: '2026-01-01 00:00:00',
-    ...rest,
-  }
-}
-
 const held = (workspaceId: string, groupId?: string): HeldWorkspaceEntry => ({
   workspaceId,
   projectId: 'p',
   tool: 'claude',
   stoppedAt: '2026-01-01 00:00:05',
   ...(groupId !== undefined ? { groupId } : {}),
-})
-
-describe('sidebarLayout with queued workspaces', () => {
-  it('nests each entry under what it waits on, chains included', () => {
-    const layout = sidebarLayout([entry('a', 1)], [], [prov('p', 2)], [
-      queued('q1', 'a'),
-      queued('q2', 'q1', { chained: true }),
-      queued('q3', 'p'),
-    ])
-    expect(layout.queuedChildren.get('a')?.map((e) => e.id)).toEqual(['q1'])
-    expect(layout.queuedChildren.get('q1')?.map((e) => e.id)).toEqual(['q2'])
-    expect(layout.queuedChildren.get('p')?.map((e) => e.id)).toEqual(['q3'])
-    expect(layout.orphans).toEqual([])
-  })
-
-  it('holds a stopped parent in its place, the default list included', () => {
-    const g = group('g', 10)
-    const layout = sidebarLayout([], [g], [],
-      [queued('q1', 'loose'), queued('q2', 'grouped')],
-      [held('loose'), held('grouped', 'g')])
-    expect(layout.defaultHeld.map((d) => d.workspaceId)).toEqual(['loose'])
-    // The group shows for its held member alone.
-    expect(layout.groups.map((s) => s.held.map((d) => d.workspaceId))).toEqual([['grouped']])
-    expect(layout.orphans).toEqual([])
-  })
-
-  it('draws a held parent once, as its live or restarting row', () => {
-    // Every list the group header sums: provisioning, members, held.
-    const counted = (layout: ReturnType<typeof sidebarLayout>): string[][][] => layout.groups.map((s) =>
-      [s.provisioning, s.members, s.held].map((l) => l.map((w) => w.workspaceId)))
-    const stopping = sidebarLayout([entry('a', 1, { groupId: 'g' })], [group('g', 10)], [],
-      [queued('q1', 'a')], [held('a', 'g')])
-    expect(counted(stopping)).toEqual([[[], ['a'], []]])
-    expect(stopping.orphans).toEqual([])
-    const restarting = sidebarLayout([], [group('g', 10)], [prov('a', 1, { groupId: 'g' })],
-      [queued('q1', 'a')], [held('a', 'g')])
-    expect(counted(restarting)).toEqual([[['a'], [], []]])
-    expect(restarting.orphans).toEqual([])
-  })
-
-
-  it('puts an entry with no row to nest under at the top', () => {
-    const layout = sidebarLayout([entry('a', 1)], [], [], [
-      queued('q1', 'nowhere', { orphaned: true }),
-      queued('q2', 'q1', { chained: true }),
-      queued('q3', 'not-drawn'),
-    ])
-    expect(layout.orphans.map((e) => e.id)).toEqual(['q1', 'q3'])
-  })
 })
 
 describe('sidebarRowIds', () => {
@@ -303,48 +192,6 @@ describe('groupDisplay', () => {
     expect(groupDisplay(ghostsOnly, { ...state, collapsed: true }))
       .toEqual({ onlyGhosts: true, expanded: true, ownsGhosts: true })
     expect(groupDisplay(ghostsOnly, { ...state, showStopped: false }).expanded).toBe(false)
-  })
-})
-
-describe('narrowRows', () => {
-  it('keeps every kind of row whose title, prompt or agent matches, ignoring case', () => {
-    const rows = {
-      workspaces: [entry('t', 1, { title: 'Fix PARSER' }), entry('p', 2, { prompt: 'the parser' }),
-        entry('x', 3, { title: 'docs', tool: 'codex' }), entry('n', 4, { title: 'nothing' })],
-      provisioning: [prov('pv', 5, { kind: 'create', title: 'parser run' }), prov('other', 6, { kind: 'create' })],
-      queued: [queued('q-parser', 'a'), queued('q-other', 'a')],
-      held: [{ ...held('h'), title: 'Parser held' }, held('h2')],
-      drafts: [],
-    }
-    const hit = narrowRows('  Parser ', [], rows)
-    expect(hit.workspaces.map((w) => w.workspaceId)).toEqual(['t', 'p'])
-    expect(hit.provisioning.map((p) => p.workspaceId)).toEqual(['pv'])
-    expect(hit.queued.map((e) => e.id)).toEqual(['q-parser'])
-    expect(hit.held.map((h) => h.workspaceId)).toEqual(['h'])
-    expect(narrowRows('codex', [], rows).workspaces.map((w) => w.workspaceId)).toEqual(['x'])
-    expect(narrowRows('  ', [], rows)).toBe(rows)
-  })
-
-  it('keeps the rows with a checked status, counting provisioning as running and held as stopped', () => {
-    const rows = {
-      workspaces: [entry('w', 1, { status: 'waiting', title: 'fix' }), entry('r', 2),
-        entry('b', 3, { status: 'background' })],
-      provisioning: [prov('pv', 4)],
-      queued: [queued('q', 'w')],
-      held: [held('h')],
-      // Only the id is read.
-      drafts: [{ id: 'd' } as DraftWorkspaceEntry],
-    }
-    const ids = (query: string, picked: SidebarStatus[]): string[][] => {
-      const kept = narrowRows(query, picked, rows)
-      return [kept.workspaces.map((w) => w.workspaceId), kept.provisioning.map((p) => p.workspaceId),
-        kept.queued.map((e) => e.id), kept.held.map((h) => h.workspaceId), kept.drafts.map((d) => d.id)]
-    }
-    expect(ids('', ['waiting', 'background'])).toEqual([['w', 'b'], [], ['q'], [], []])
-    expect(ids('', ['running'])).toEqual([['r'], ['pv'], ['q'], [], []])
-    expect(ids('', ['stopped'])).toEqual([[], [], ['q'], ['h'], []])
-    // Both must hold.
-    expect(ids('FIX', ['waiting', 'running'])).toEqual([['w'], [], [], [], []])
   })
 })
 

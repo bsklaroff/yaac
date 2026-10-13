@@ -4,8 +4,6 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import type * as apiModule from '#drivers/k8s/substrate/api'
 import type * as clusterBarrel from '#drivers/k8s/cluster'
 import type * as substrateBarrel from '#drivers/k8s/substrate'
-import type * as containerBarrel from '#drivers/k8s/container'
-import type * as imageEngineBarrel from '#drivers/k8s/image-engine'
 
 /**
  * What these tests cover is what install decides: order, which failures
@@ -13,7 +11,7 @@ import type * as imageEngineBarrel from '#drivers/k8s/image-engine'
  * (cluster, substrate) are faked at their barrels. Install's own steps
  * (built-in images, the gVisor installer, the server deploy) run for real
  * against faked process boundaries: the cluster (the shared fake), kubectl,
- * the registry, the image engine, host podman and `fetch`. Each records
+ * the registry, host podman and `fetch`. Each records
  * itself in `events` when it reaches the cluster, which is what the order
  * assertions read.
  */
@@ -39,49 +37,41 @@ const { events, failing, reach, fakeStep } = vi.hoisted(() => {
 })
 const ran = (step: Step): number => events.filter((e) => e === step).length
 const order = (step: Step): number => events.indexOf(step)
+// The registry already holds every image, so nothing is built or pushed.
+// Hashing the real build contexts would need `pnpm build` for the bundle.
 vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterBarrel>()),
   ensureMainRegistry: fakeStep('ensureMainRegistry'),
   ensureBuilderRoleGuard: fakeStep('ensureBuilderRoleGuard'),
   ensureNetd: fakeStep('ensureNetd'),
   ensureNpmCache: fakeStep('ensureNpmCache'),
-}))
-vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
-  ...(await importOriginal<typeof substrateBarrel>()),
-  ensurePriorityClasses: fakeStep('ensurePriorityClasses'),
-}))
-
-// The registry already holds every image, so nothing is built or pushed.
-// Host podman answers only the kind node's published server port.
-vi.mock('#drivers/k8s/container', async (importOriginal) => ({
-  ...(await importOriginal<typeof containerBarrel>()),
-  registryHasTag: vi.fn().mockResolvedValue(true),
+  registryTagState: vi.fn().mockResolvedValue('present'),
   registryRef: (tag: string) => `reg.local:5000/${tag}`,
-  pushImageToRegistry: (tag: string) => Promise.resolve(`reg.local:5000/${tag}`),
-  reapOrphanedPodmanProcs: vi.fn().mockResolvedValue(undefined),
+  prebuiltRef: (_what: string, tag: string) => Promise.resolve(`reg.local:5000/${tag}`),
+  ensureBuilderImage: () => Promise.resolve('reg.local:5000/podman-stable:v5.5'),
   invalidateRegistryEndpoint: vi.fn(),
-  execFileAsync: (file: string, args: string[]) =>
-    file === 'podman' && args[0] === 'port'
-      ? Promise.resolve({ stdout: `127.0.0.1:${String(DEFAULT_CLUSTER_SERVER_PORT)}\n`, stderr: '' })
-      : Promise.reject(new Error(`unexpected host process: ${file} ${args.join(' ')}`)),
-}))
-// Hashing the real build contexts would need `pnpm build` for the bundle.
-vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
-  ...(await importOriginal<typeof imageEngineBarrel>()),
   contextHash: vi.fn().mockResolvedValue('ctxhash'),
-  gcHostImages: vi.fn().mockResolvedValue({ retired: [], pruned: 0 }),
   resolveTrustedLayers: vi.fn(() => {
     reach('buildBuiltinImages')
     const layer = (name: string): object => ({ tag: `yaac-${name}:0123456789abcdef`, name, dockerfile: '', context: '' })
     return Promise.resolve({ base: layer('base'), tools: layer('tools'), nestable: layer('nestable') })
   }),
 }))
+vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
+  ...(await importOriginal<typeof substrateBarrel>()),
+  ensurePriorityClasses: fakeStep('ensurePriorityClasses'),
+}))
 
+// Child processes: the rollout waits (every workload rolls out at once),
+// the host image store sweep (nothing to sweep), and host podman's answer
+// for the kind node's published server port.
 vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...await importOriginal<typeof apiModule>(),
   k8sNamespace: vi.fn(() => 'test-ns'),
-  // The rollout waits: every workload rolls out at once.
-  execFileAsync: vi.fn().mockResolvedValue({ stdout: '', stderr: '' }),
+  execFileAsync: vi.fn((file: string, args: string[]) => Promise.resolve({
+    stdout: file === 'podman' && args[0] === 'port' ? `127.0.0.1:${String(DEFAULT_CLUSTER_SERVER_PORT)}\n` : '',
+    stderr: '',
+  })),
 }))
 
 /** An applied object, with only the fields the tests read. */

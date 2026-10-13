@@ -1,12 +1,12 @@
 import {
-  PRE_STOP_GRACE_SECONDS,
   findWorkspacePod,
   execFileAsync,
   k8sNamespace,
   readWorkspacePods,
 } from '#drivers/k8s/substrate'
+import { PRE_STOP_GRACE_SECONDS } from './pod-job'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
-import { stopWorkspaceForwarders } from '#drivers/k8s/forwarders'
+import { stopWorkspaceForwarders } from './port-forwarders'
 import { salvageJobImages } from '#drivers/k8s/images'
 import { removeProjectRegistry, removeProjectSecrets } from '#drivers/k8s/cluster'
 import type { TeardownTarget } from '#drivers/contract'

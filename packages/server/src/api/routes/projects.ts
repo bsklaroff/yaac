@@ -21,7 +21,7 @@ import {
   setProjectEnvVar,
   writeProjectConfig,
   writeProjectDockerfile,
-  resolveProjectEnv,
+  pushProjectSecrets,
   resolveProjectId,
   serveHostedRepo,
   setDefaultBranchGuard,
@@ -34,8 +34,8 @@ import { DEFAULT_ALLOWED_HOSTS } from '#lib/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
 import { buildFilesApp } from '#routes/build-files'
 import { authorizeProject } from '#domain/access'
-import { requireDriverFeature, type IdentityEnv } from '#http'
-import { workspaceDriver } from '#drivers/driver'
+import { requireDriverFeature } from '#api/http/driver-features'
+import type { IdentityEnv } from '#api/http/web-auth'
 
 /**
  * Send a project's changed secrets to running workspaces, which resolve
@@ -46,11 +46,7 @@ import { workspaceDriver } from '#drivers/driver'
  */
 async function syncRunningWorkspaces(projectId: string, applied: string): Promise<void> {
   try {
-    const { secrets } = await resolveProjectEnv(projectId)
-    await workspaceDriver().syncProjectSecrets(
-      projectId,
-      Object.fromEntries(Object.entries(secrets).map(([name, { value }]) => [name, value])),
-    )
+    await pushProjectSecrets(projectId)
   } catch (err) {
     throw new ServerError(
       'RUNTIME_UNAVAILABLE',

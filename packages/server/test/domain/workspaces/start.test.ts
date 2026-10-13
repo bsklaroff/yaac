@@ -1,110 +1,845 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { listDraftWorkspaces, saveDraftWorkspace, startWorkspace } from '#domain/workspaces'
-import { clearAllProvisioningForTests, listProvisioning } from '#domain/workspaces/provisioning'
-import { getProjectRow, getWorkspaceRow, listWorkspaceAgentSessions } from '#db'
-import { closeDb } from '#db/client'
+import type * as childProcessModule from 'node:child_process'
+
+/** While set, a `git fetch` never answers: an origin too slow to wait on. */
+const slowOrigin = vi.hoisted(() => ({ hang: false }))
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcessModule>()
+  const execFile = (...args: Parameters<typeof actual.execFile>): ReturnType<typeof actual.execFile> => {
+    const [file, argv] = args as unknown as [string, string[] | undefined]
+    if (slowOrigin.hang && file === 'git' && argv?.includes('fetch')) return {} as ReturnType<typeof actual.execFile>
+    return actual.execFile(...args)
+  }
+  return { ...actual, execFile }
+})
+import { randomUUID } from 'node:crypto'
+import fs from 'node:fs/promises'
+import path from 'node:path'
+import {
+  listDraftWorkspaces,
+  listProvisioning,
+  prepareStart,
+  reconcilePrewarmPool,
+  saveDraftWorkspace,
+} from '#domain/workspaces'
+import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
+import { clearPrewarmStateForTests } from '#domain/workspaces/prewarm'
+import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
+import type { StartWorkspaceRequest } from '#domain/workspaces/start'
+import type { WorkspaceCreateResult } from '#domain/workspaces/create'
+import { setProjectEnvVar } from '#domain/projects'
+import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
+import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
+import type { AcpConversation } from '#runtime/agents'
+import { serverLog } from '#lib/log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-import { seedProject } from '@yaac/test-utils/project-fixture'
-import type { WorkspaceDriver } from '#drivers/contract'
+import { git } from '@yaac/test-utils/git'
+import { DEMO_PROJECT_ID, recordTestProject, seedProject } from '@yaac/test-utils/project-fixture'
+import {
+  handleFixture,
+  installFakeWorkspaceDriver,
+  resetWorkspaceDriver,
+  snapshotFixture,
+  substrateFixture,
+} from '#test/support/fake-driver'
+import {
+  cachedPackagesDir,
+  claudeDir,
+  codexDir,
+  opencodeCheckpointDir,
+  opencodeConfigDir,
+  opencodeDataDir,
+  piDir,
+  repoDir,
+  workspaceDir,
+} from '@yaac/shared/project-paths'
+import { CONTAINER_TMUX_DIR, projectConfigDir } from '@yaac/shared/paths'
+import {
+  PLACEHOLDER_API_KEY, PLACEHOLDER_GH_TOKEN, PLACEHOLDER_OPENCODE_API_KEY, PLACEHOLDER_PI_API_KEY,
+} from '@yaac/shared/tool-auth'
+import { closeDb } from '#db/client'
+import {
+  BUILT_IN_USER_ID,
+  createWorkspaceGroup,
+  deleteWorkspaceGroup,
+  getWorkspaceRow,
+  insertGitCredential,
+  listWorkspaceAgentSessions,
+  listWorkspaceGroupRows,
+  setGitIdentity,
+  setProjectEgressAllowlist,
+  setProjectGitCredential,
+  setTimeZone,
+  seeTailnetUser,
+  setToolCredential,
+  type WorkspaceRow,
+} from '#db'
+import { getProjectRow, recordProject, recordProjectCreate } from '#db/project-store'
+import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
+import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 import { ServerError } from '@yaac/shared/errors'
-import { BUILT_IN_USER_ID } from '#db'
+import {
+  WorkspaceExecError,
+  type RuntimeHandle,
+  type WorkspaceDriver,
+  type WorkspaceRegistration,
+  type WorkspaceSpec,
+} from '#drivers/contract'
+import type { AgentTool, YaacConfig } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
-const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
-
-// Everything runs for real down to the fake driver, over a real project.
-let tmpDir: string
-let launched: string[]
-/** Install the driver, recording launches; `list` is the spare lookup. */
-function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
-  installFakeWorkspaceDriver({
-    launch: (spec) => {
-      launched.push(spec.workspaceId)
-      return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
-    },
-    ...overrides,
-  })
+/** Store the built-in user's api key for a tool, with its provider where
+ *  the tool needs one. */
+async function saveToolAuth(tool: AgentTool, apiKey: string, provider?: string): Promise<void> {
+  if (tool === 'opencode' || tool === 'pi') {
+    await setToolCredential(BUILT_IN_USER_ID, tool, { kind: 'api-key', provider: provider as never, savedAt: 'x', apiKey })
+  } else {
+    await setToolCredential(BUILT_IN_USER_ID, tool, { kind: 'api-key', savedAt: 'x', apiKey })
+  }
 }
 
-beforeEach(async () => {
-  tmpDir = await createTempDataDir()
-  await seedProject(PROJ)
-  clearAllProvisioningForTests()
-  launched = []
-})
+/**
+ * Starts run to completion against a fake runtime over a real project
+ * (`seedProject`) and a real database. The assertions land on what reaches
+ * the runtime (the launch spec, the commands run in the workspace, the
+ * registrations) and on the rows.
+ *
+ * The fake runtime keeps the units it launched, so a spare the pool warms
+ * is listed, claimed and torn down like a real one.
+ */
+describe('prepareStart', () => {
+  let tmpDir: string
+  let specs: WorkspaceSpec[]
+  let execs: Array<{ jobName: string; cmd: string }>
+  /** Each teardown's `unitOnly`: true keeps the prepared substrate. */
+  let destroys: boolean[]
+  let deregistered: string[]
+  let registrations: WorkspaceRegistration[]
+  let units: RuntimeHandle[]
+  let claims: Array<[string, AgentTool]>
+  /** What `rev-parse HEAD` reads in a workspace; origin's main unless a case
+   *  moves it. */
+  let head: string
 
-afterEach(async () => {
-  vi.unstubAllEnvs()
-  resetWorkspaceDriver()
-  await closeDb()
-  await cleanupTempDir(tmpDir)
-})
-
-describe('startWorkspace', () => {
-  it('resolves the setup, shows its row, and creates cold when no spare is wanted', async () => {
-    const list = vi.fn(() => Promise.resolve([]))
-    let row: ReturnType<typeof listProvisioning>[number] | undefined
-    installDriver({
-      list,
-      prepareImage: () => {
-        row = listProvisioning().find((p) => p.workspaceId === 'wt-1')
-        return Promise.resolve('img')
+  /** Install the fake runtime; `overrides` replace verbs for one case. */
+  function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
+    installFakeWorkspaceDriver({
+      launch: (spec) => {
+        specs.push(spec)
+        spec.onProgress?.('launching')
+        const unit = handleFixture({
+          workspaceId: spec.workspaceId,
+          projectId: spec.projectId,
+          jobName: `yaac-demo-${spec.workspaceId}`,
+          tool: spec.tool,
+          declaredTool: spec.tool,
+          mode: spec.mode,
+          prewarmed: spec.prewarm,
+          createdAtMs: Date.now(),
+        })
+        units.push(unit)
+        return Promise.resolve(unit)
       },
+      list: (projectId) => Promise.resolve(units.filter((u) => projectId === undefined || u.projectId === projectId)),
+      find: (id) => Promise.resolve(units.find((u) => u.workspaceId === id)),
+      findForTeardown: (id) => {
+        const u = units.find((x) => x.workspaceId === id)
+        return Promise.resolve(u && { workspaceId: u.workspaceId, projectId: u.projectId, unitName: u.jobName })
+      },
+      exec: (jobName, cmd) => {
+        execs.push({ jobName, cmd })
+        const stdout = cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : ''
+        return Promise.resolve({ stdout, stderr: '' })
+      },
+      registerWorkspace: (registration) => { registrations.push(registration); return Promise.resolve() },
+      claimSpare: (id, tool) => {
+        claims.push([id, tool])
+        const unit = units.find((u) => u.workspaceId === id)
+        if (unit) Object.assign(unit, { prewarmed: false, tool, declaredTool: tool })
+        return Promise.resolve()
+      },
+      destroy: (target, opts) => {
+        destroys.push(opts?.unitOnly === true)
+        units = units.filter((u) => u.workspaceId !== target.workspaceId)
+        return Promise.resolve(true)
+      },
+      deregisterWorkspace: (id) => { deregistered.push(id); return Promise.resolve() },
+      ...overrides,
     })
+  }
 
-    const result = await startWorkspace(local, {
-      projectId: PROJ,
-      workspaceId: 'wt-1',
-      tool: 'claude',
-      model: 'claude-opus-5-5',
-      permissionMode: 'plan',
+  /** A start as the create route makes one, with no spare unless asked. */
+  async function start(
+    over: Partial<StartWorkspaceRequest> & { onProgress?: (message: string) => void } = {},
+  ): Promise<WorkspaceCreateResult> {
+    const { onProgress, ...request } = over
+    const run = await prepareStart(local, {
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: randomUUID(),
       mode: 'tui',
-      branch: 'dev',
-      prompt: 'go',
       rememberDefaults: false,
       claimSpare: false,
-    }, () => {})
-
-    expect(result.workspaceId).toBe('wt-1')
-    // The row names what is coming up before any agent has answered.
-    expect(row).toMatchObject({ kind: 'create', tool: 'claude', prompt: 'go', model: 'claude-opus-5-5', modelName: 'Opus 5.5' })
-    expect(await getWorkspaceRow(PROJ, 'wt-1')).toMatchObject({
-      model: 'claude-opus-5-5', permissionMode: 'plan', mode: 'tui', baseBranch: 'dev',
+      ...request,
     })
-    expect(await listWorkspaceAgentSessions(PROJ, 'wt-1')).toEqual([
-      expect.objectContaining({ tool: 'claude', firstPrompt: 'go' }),
-    ])
-    // No spare was looked for, and nothing was remembered for the project.
-    expect(list).not.toHaveBeenCalled()
-    const project = await getProjectRow(PROJ)
-    expect(project?.lastTool).toBeUndefined()
-    expect(project?.lastBranch).toBeUndefined()
+    return await run(onProgress)
+  }
+
+  const env = (): string[] => specs.at(-1)!.env
+  const cmds = (): string[] => execs.map((e) => e.cmd)
+  const execOf = (needle: string): string | undefined => cmds().find((c) => c.includes(needle))
+
+  async function writeConfig(config: YaacConfig): Promise<void> {
+    await fs.mkdir(projectConfigDir(DEMO_PROJECT_ID), { recursive: true })
+    await fs.writeFile(path.join(projectConfigDir(DEMO_PROJECT_ID), 'yaac-config.json'), JSON.stringify(config))
+  }
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+    await seedProject()
+    head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
+    specs = []
+    execs = []
+    destroys = []
+    deregistered = []
+    registrations = []
+    units = []
+    claims = []
+    clearAllProvisioningForTests()
+    clearPrewarmStateForTests()
+    _clearTmuxAliveCacheForTests()
+    _resetAcpRegistryForTests()
+    installDriver()
   })
 
-  it('remembers what a person named, and looks for a spare before creating', async () => {
-    const list = vi.fn(() => Promise.resolve([]))
-    installDriver({ list })
+  afterEach(async () => {
+    vi.unstubAllEnvs()
+    setWorkspaceBinDir(null)
+    clearAllProvisioningForTests()
+    resetWorkspaceDriver()
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
 
-    await startWorkspace(local, {
-      projectId: PROJ,
-      workspaceId: 'wt-2',
-      tool: 'codex',
-      permissionMode: 'accept-edits',
-      branch: 'dev',
-      rememberDefaults: true,
-      claimSpare: true,
-    }, () => {})
+  /**
+   * Each setting is the request's, else what the project last used for
+   * that agent, else the fallback. No credentials are stored, so the model
+   * falls back to the tool's default.
+   */
+  describe('settings', () => {
+    /** What a start resolved to, as its row records it. The create stops
+     *  at its first runtime call after writing the row. */
+    const settled = async (
+      over: Partial<StartWorkspaceRequest> = {},
+      driver: Partial<WorkspaceDriver> = {},
+    ): Promise<WorkspaceRow & { tool: AgentTool }> => {
+      const workspaceId = randomUUID()
+      const stop = (): never => { throw new Error('stop here') }
+      installDriver({ ...driver, prepareImage: stop, prepareSubstrate: stop })
+      await expect(start({ ...over, workspaceId })).rejects.toThrow('stop here')
+      const { tool } = listProvisioning().find((p) => p.workspaceId === workspaceId)!
+      return { ...(await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId))!, tool }
+    }
 
-    expect(list).toHaveBeenCalled()
-    expect(await getProjectRow(PROJ)).toMatchObject({
-      lastTool: 'codex',
-      lastBranch: 'dev',
-      createDefaults: { codex: { permissionMode: 'accept-edits' } },
+    it('falls back per field when nothing is remembered, the posture from the driver', async () => {
+      expect(await settled({ mode: undefined })).toMatchObject({
+        tool: 'claude',
+        model: FALLBACK_MODELS.claude,
+        permissionMode: 'bypass',
+        effort: EFFORTS.claude[FALLBACK_MODELS.claude].default,
+        mode: 'acp',
+      })
+      // In a container, prompting protects nothing. Containerless runs as
+      // the user on their machine, so shells and out-of-tree writes ask; pi
+      // has no permission system, so it is always bypass.
+      expect(await settled({ tool: 'codex' }, { kind: 'containerless' })).toMatchObject({
+        model: FALLBACK_MODELS.codex, permissionMode: 'accept-edits',
+      })
+      expect((await settled({ tool: 'pi' }, { kind: 'containerless' })).permissionMode).toBe('bypass')
     })
-    expect(launched).toEqual(['wt-2'])
+
+    it('reopens on the last agent and what it was last created with, the request first', async () => {
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { model: 'claude-sonnet-5', permissionMode: 'plan' })
+      await recordProjectCreate(DEMO_PROJECT_ID, 'codex', { model: 'gpt-5.5', permissionMode: 'plan', mode: 'tui' })
+
+      // codex lacks `plan`, so the nearest stricter mode, `read-only`, is used.
+      expect(await settled({ mode: undefined })).toMatchObject({
+        tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', effort: EFFORTS.codex['gpt-5.5'].default, mode: 'tui',
+      })
+      // Each agent has its own remembered settings.
+      expect(await settled({ tool: 'claude' })).toMatchObject({ model: 'claude-sonnet-5', permissionMode: 'plan' })
+      expect(await settled({ tool: 'claude', model: 'claude-opus-5', permissionMode: 'manual' }))
+        .toMatchObject({ model: 'claude-opus-5', permissionMode: 'manual' })
+      // Only a person's create is remembered.
+      expect((await getProjectRow(DEMO_PROJECT_ID))?.createDefaults.claude)
+        .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan' })
+    })
+
+    // docs/effort-levels.md. One level name means the same across a tool's
+    // models, so a remembered effort carries to any model that has it.
+    it('resolves effort per model: named if it has it, else remembered if it has it, else its default', async () => {
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { effort: 'max' })
+      expect((await settled({ tool: 'claude', model: 'claude-opus-4-6' })).effort).toBe('max')
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { effort: 'xhigh' })
+      // opus-4-6 has no xhigh: its own default instead.
+      expect((await settled({ tool: 'claude', model: 'claude-opus-4-6' })).effort).toBe('high')
+      // Claude Code offers opus-4-5 no effort at all.
+      expect((await settled({ tool: 'claude', model: 'claude-opus-4-5' })).effort).toBeUndefined()
+
+      expect((await settled({ tool: 'claude', model: 'claude-opus-4-6', effort: 'low' })).effort).toBe('low')
+      // A model outside the catalog is the tool's to judge, like the model.
+      expect((await settled({ tool: 'claude', model: 'opus', effort: 'ultra' })).effort).toBe('ultra')
+
+      // Refused before anything shows.
+      const shown = listProvisioning().length
+      await expect(start({ tool: 'claude', model: 'claude-opus-4-6', effort: 'xhigh' }))
+        .rejects.toThrow(/no "xhigh" effort; it supports: low, medium, high, max/)
+      await expect(start({ tool: 'claude', model: 'claude-opus-4-5', effort: 'low' }))
+        .rejects.toThrow(/has no effort setting/)
+      expect(listProvisioning()).toHaveLength(shown)
+    })
+
+    it('refuses a named posture the agent lacks, under either UI, naming the ones it has', async () => {
+      await expect(start({ tool: 'pi', permissionMode: 'plan' }))
+        .rejects.toThrow(/pi has no "plan" permission mode; it supports: bypass/)
+      await expect(start({ tool: 'codex', permissionMode: 'plan', mode: 'acp' }))
+        .rejects.toThrow(/codex has no "plan"/)
+      // opencode lacks `auto` but has the other modes.
+      await expect(start({ tool: 'opencode', permissionMode: 'auto' })).rejects.toThrow(/no "auto"/)
+      expect(listProvisioning()).toEqual([])
+      expect((await settled({ tool: 'opencode', permissionMode: 'plan' })).permissionMode).toBe('plan')
+    })
+
+    it('remembers what a person named, and only that, with the branch', async () => {
+      await start({ tool: 'codex', permissionMode: 'accept-edits', branch: 'dev', rememberDefaults: true })
+      expect(await getProjectRow(DEMO_PROJECT_ID)).toMatchObject({
+        lastTool: 'codex',
+        lastBranch: 'dev',
+        createDefaults: { codex: { permissionMode: 'accept-edits', mode: 'tui' } },
+      })
+    })
+
+    it('files the workspace by group name, creating the group only for a start that checks out', async () => {
+      await expect(start({ tool: 'pi', permissionMode: 'plan', group: 'Reviews' })).rejects.toThrow()
+      expect(await listWorkspaceGroupRows(DEMO_PROJECT_ID)).toEqual([])
+
+      const { workspaceId } = await start({ group: 'Reviews', title: 'Port the lexer' })
+      const [group] = await listWorkspaceGroupRows(DEMO_PROJECT_ID)
+      expect(group).toMatchObject({ name: 'Reviews' })
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)).toMatchObject({
+        groupId: group.groupId, title: 'Port the lexer',
+      })
+      // An id names the same group.
+      const again = await start({ group: group.groupId })
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, again.workspaceId))?.groupId).toBe(group.groupId)
+    })
+
+    // A queued entry files under the group it was queued into, which may be
+    // deleted just before its launch. Resolving the id as a name would make
+    // a stray group named after it.
+    it('files under a given group id as is, never creating one', async () => {
+      await expect(start({ groupId: 'deleted-group' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+      expect(await listWorkspaceGroupRows(DEMO_PROJECT_ID)).toEqual([])
+    })
+
+    it('refuses an id still provisioning before making its group or remembering defaults', async () => {
+      const workspaceId = randomUUID()
+      const request = { projectId: DEMO_PROJECT_ID, workspaceId, mode: 'tui', claimSpare: false } as const
+      await prepareStart(local, { ...request, rememberDefaults: false })
+      await expect(prepareStart(local, { ...request, tool: 'codex', group: 'Dupes', rememberDefaults: true }))
+        .rejects.toMatchObject({ code: 'CONFLICT' })
+      expect(await listWorkspaceGroupRows(DEMO_PROJECT_ID)).toEqual([])
+      expect((await getProjectRow(DEMO_PROJECT_ID))?.lastTool).toBeUndefined()
+    })
+  })
+
+  describe('a cold create', () => {
+    it('checks out the requested branch, records the row and conversation, and launches the agent', async () => {
+      // What the driver reports while it prepares reaches the caller too.
+      let row: ReturnType<typeof listProvisioning>[number] | undefined
+      installDriver({
+        prepareImage: (o) => {
+          row = listProvisioning()[0]
+          o.onProgress?.('image ready')
+          return Promise.resolve('img')
+        },
+        prepareSubstrate: (i) => { i.onProgress?.('substrate ready'); return Promise.resolve(substrateFixture()) },
+      })
+      const progress: string[] = []
+      const result = await start({
+        tool: 'codex', branch: 'dev', model: 'gpt-6-sol', prompt: 'ship it',
+        onProgress: (m) => progress.push(m),
+      })
+      const { workspaceId } = result
+
+      expect(result).toEqual({
+        workspaceId, jobName: `yaac-demo-${workspaceId}`, tool: 'codex', mode: 'tui', forwardedPorts: [],
+      })
+      // The row names what is coming up before any agent has answered, and
+      // goes once the workspace is up.
+      expect(row).toMatchObject({ workspaceId, kind: 'create', tool: 'codex', prompt: 'ship it', model: 'gpt-6-sol' })
+      expect(listProvisioning()).toEqual([])
+      expect(await git(workspaceDir(DEMO_PROJECT_ID, workspaceId), ['rev-parse', '--abbrev-ref', 'HEAD']))
+        .toBe(`agent/${workspaceId}\n`)
+      // Stored so a restart relaunches with the user's choice and a spare
+      // claim can match on it, and up front: a workspace queued while this
+      // one boots defaults to its branch.
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)).toMatchObject({
+        baseBranch: 'dev', permissionMode: 'bypass', mode: 'tui', model: 'gpt-6-sol',
+      })
+      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, workspaceId)).toEqual([expect.objectContaining({
+        tool: 'codex', agentSessionId: workspaceId, firstPrompt: 'ship it', model: 'gpt-6-sol',
+      })])
+      expect(progress).toEqual(expect.arrayContaining([
+        'image ready', 'substrate ready', 'launching', 'Creating workspace from dev...', 'Starting Codex...',
+        'Sending initial prompt...',
+      ]))
+      // No spare was looked for.
+      expect(claims).toEqual([])
+
+      // The clone borrows from the main clone at the path the server sees it
+      // at, mounted read-only there.
+      expect(execOf('objects/info/alternates')).toContain(`'${repoDir(DEMO_PROJECT_ID)}/.git/objects'`)
+      const { mounts, postStartExec, preStopExec } = specs[0]
+      expect(mounts).toContainEqual({
+        source: { kind: 'hostPath', path: `${repoDir(DEMO_PROJECT_ID)}/.git` },
+        mountPath: `${repoDir(DEMO_PROJECT_ID)}/.git`,
+        readOnly: true,
+      })
+      // The tmux socket needs no host dir: every client reaches it in-pod.
+      expect(mounts).toContainEqual({ source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR })
+      expect(postStartExec).toEqual(['/usr/local/bin/yaac-workspace-init'])
+      // The shipped helper commands are mounted where the agent finds them.
+      const helpers = mounts.map((m) => m.mountPath).filter((p) => p.startsWith('/usr/local/bin/'))
+      expect(helpers).toEqual(expect.arrayContaining(['/usr/local/bin/yaac-mama', '/usr/local/bin/yaac-watch-prs']))
+      expect(preStopExec).toEqual(['/usr/local/bin/yaac-opencode-checkpoint', 'stop'])
+      // Every tool's home is mounted whatever the tool, since spares are
+      // retoolable. A package tree shared by every pod would be a channel
+      // between them, so the project's package cache is not.
+      const sources = mounts.flatMap((m) => (m.source.kind === 'hostPath' ? [m.source.path] : []))
+      expect(sources).toEqual(expect.arrayContaining([
+        claudeDir(DEMO_PROJECT_ID), codexDir(DEMO_PROJECT_ID), opencodeConfigDir(DEMO_PROJECT_ID), piDir(DEMO_PROJECT_ID),
+        opencodeCheckpointDir(DEMO_PROJECT_ID, workspaceId), opencodeDataDir(DEMO_PROJECT_ID, workspaceId),
+      ]))
+      expect(sources).not.toContain(cachedPackagesDir(DEMO_PROJECT_ID))
+      expect(env()).toEqual(expect.arrayContaining([
+        `YAAC_WORKSPACE_ID=${workspaceId}`, 'YAAC_TOOL=codex', 'YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com',
+        `YAAC_STATUS_RIGHT= ${workspaceId.slice(0, 8)} `,
+      ]))
+      expect(execOf('respawn-window')).toMatch(/respawn-window -k -t yaac:codex 'codex .* --yolo --model gpt-6-sol'/)
+      // The workspace runs as the server's uid, so a chown would only corrupt
+      // host-side ownership.
+      expect(cmds().some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
+      // Onboarding state is seeded whatever the tool, since spares are
+      // retoolable.
+      const claudeJson = JSON.parse(
+        await fs.readFile(path.join(claudeDir(DEMO_PROJECT_ID), '.claude.json'), 'utf8'),
+      ) as { hasCompletedOnboarding?: boolean }
+      expect(claudeJson.hasCompletedOnboarding).toBe(true)
+    })
+
+    it('spends the project owner\'s credentials: its egress registration names the owner, and no other user\'s key is seeded', async () => {
+      const owners: string[] = []
+      installDriver({ prepareSubstrate: (i) => { owners.push(i.owner); return Promise.resolve(substrateFixture()) } })
+      await setToolCredential(await seeTailnetUser('bob@example.com', 'Bob'), 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'sk-bob' })
+
+      await start({ tool: 'claude' })
+
+      // The built-in user's credentials are filed under `install`.
+      expect(owners).toEqual(['install'])
+      expect(env().map((e) => e.split('=')[0])).not.toContain('ANTHROPIC_API_KEY')
+    })
+
+    // Every credentialed tool's key is seeded on any workspace (a spare may be
+    // retooled at claim), as a placeholder the proxy swaps. opencode and pi
+    // each read theirs from a variable of their own, so neither collides with
+    // claude's or codex's.
+    it.each<{ name: string; tool: AgentTool; key: string; kind: 'api-key' | 'oauth'; provider?: string; want: Record<string, string>; not: string[] }>([
+      { name: 'claude api key', tool: 'claude', key: 'sk-ant', kind: 'api-key', want: { ANTHROPIC_API_KEY: PLACEHOLDER_API_KEY }, not: [] },
+      { name: 'opencode on openrouter', tool: 'opencode', key: 'sk-or', kind: 'api-key', provider: 'openrouter', want: { YAAC_OPENCODE_KEY_OPENROUTER: PLACEHOLDER_OPENCODE_API_KEY, OPENCODE_CONFIG: '/home/yaac/.config/opencode/yaac-keys/openrouter.json' }, not: ['OPENROUTER_API_KEY'] },
+      { name: 'opencode on neuralwatt', tool: 'opencode', key: 'nw', kind: 'api-key', provider: 'neuralwatt', want: { YAAC_OPENCODE_KEY_NEURALWATT: PLACEHOLDER_OPENCODE_API_KEY }, not: ['NEURALWATT_API_KEY', 'YAAC_OPENCODE_KEY_OPENROUTER'] },
+      { name: 'pi on anthropic', tool: 'pi', key: 'sk-ant', kind: 'api-key', provider: 'anthropic', want: { YAAC_PI_KEY_ANTHROPIC: PLACEHOLDER_PI_API_KEY }, not: ['ANTHROPIC_API_KEY'] },
+      { name: 'codex api key', tool: 'codex', key: 'sk-oai', kind: 'api-key', want: { OPENAI_API_KEY: PLACEHOLDER_API_KEY }, not: [] },
+      // Under codex OAuth this var would switch it into api-key mode.
+      { name: 'codex OAuth', tool: 'codex', key: 'access', kind: 'oauth', want: {}, not: ['OPENAI_API_KEY'] },
+    ])('seeds the env a $name credential needs, on a workspace of any tool', async ({ tool, key, kind, provider, want, not }) => {
+      if (kind === 'oauth') {
+        await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'oauth', savedAt: 'x', codexOauth: {
+          accessToken: key, refreshToken: 'r', idTokenRawJwt: 'h.p.s', expiresAt: 0, lastRefresh: '2026-01-01T00:00:00.000Z',
+        } })
+      } else {
+        await saveToolAuth(tool, key, provider)
+      }
+      await start({ tool: 'claude' })
+
+      expect(env()).toEqual(expect.arrayContaining(Object.entries(want).map(([name, value]) => `${name}=${value}`)))
+      expect(specs[0].secretEnvKeys).toEqual(expect.arrayContaining(Object.keys(want).filter((n) => n !== 'OPENCODE_CONFIG')))
+      const names = env().map((e) => e.split('=')[0])
+      for (const name of not) expect(names).not.toContain(name)
+      expect(env()).toEqual(expect.arrayContaining([
+        'OPENCODE_DISABLE_AUTOUPDATE=1', 'PI_CODING_AGENT_SESSION_DIR=/home/yaac/.yaac-pi-sessions', 'PI_SKIP_VERSION_CHECK=1',
+      ]))
+    })
+
+    it('gives opencode and pi each their own key for one provider, in the config each tool reads', async () => {
+      installDriver({ kind: 'containerless' })
+      await saveToolAuth('opencode', 'sk-or-oc', 'openrouter')
+      await saveToolAuth('pi', 'sk-or-pi', 'openrouter')
+      // A user's own pi config is kept.
+      const models = path.join(piDir(DEMO_PROJECT_ID), 'agent', 'models.json')
+      await fs.mkdir(path.dirname(models), { recursive: true })
+      await fs.writeFile(models, JSON.stringify({ providers: { ollama: { baseUrl: 'http://localhost:11434/v1' } } }))
+
+      await start({ tool: 'claude' })
+
+      expect(env()).toEqual(expect.arrayContaining([
+        'YAAC_OPENCODE_KEY_OPENROUTER=sk-or-oc', 'YAAC_PI_KEY_OPENROUTER=sk-or-pi',
+      ]))
+      expect(env().map((e) => e.split('=')[0])).not.toContain('OPENROUTER_API_KEY')
+      expect(JSON.parse(await fs.readFile(path.join(opencodeConfigDir(DEMO_PROJECT_ID), 'yaac-keys', 'openrouter.json'), 'utf8')))
+        .toEqual({ provider: { openrouter: { env: ['YAAC_OPENCODE_KEY_OPENROUTER', 'OPENROUTER_API_KEY'] } } })
+      expect(JSON.parse(await fs.readFile(models, 'utf8'))).toEqual({ providers: {
+        ollama: { baseUrl: 'http://localhost:11434/v1' },
+        openrouter: { apiKey: '!printenv YAAC_PI_KEY_OPENROUTER || printenv OPENROUTER_API_KEY' },
+      } })
+    })
+
+    it('lets a project override TZ and OPENCODE_CONFIG, takes a variable matching yaac\'s, and refuses one that conflicts', async () => {
+      await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
+      await saveToolAuth('opencode', 'sk-or', 'openrouter')
+      await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'TZ', value: 'Europe/Paris' })
+      await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'OPENCODE_CONFIG', value: '/workspace/opencode.json' })
+      await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'OPENCODE_DISABLE_AUTOUPDATE', value: '1' })
+      await start()
+      expect(env().filter((e) => e.startsWith('TZ='))).toEqual(['TZ=Europe/Paris'])
+      expect(env().filter((e) => e.startsWith('OPENCODE_CONFIG='))).toEqual(['OPENCODE_CONFIG=/workspace/opencode.json'])
+
+      await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: 'PI_SKIP_VERSION_CHECK', value: '0' })
+      await expect(start()).rejects.toThrow(
+        "the project's environment variable PI_SKIP_VERSION_CHECK conflicts with the value yaac sets for it",
+      )
+      // Refused before anything launched.
+      expect(specs).toHaveLength(1)
+    })
+
+    // `gh` is logged in with the git token for a GitHub HTTPS remote, unless
+    // the project wires a GitHub token of its own.
+    it.each<{ name: string; remote?: string; plain?: string; secret?: string; want: string | undefined }>([
+      { name: 'a github.com remote', want: PLACEHOLDER_GH_TOKEN },
+      { name: 'a non-GitHub remote', remote: 'https://gitlab.com/o/r.git', want: undefined },
+      { name: 'a project GH_TOKEN', plain: 'GH_TOKEN', want: 'ghp_user' },
+      { name: 'a proxied GITHUB_TOKEN secret', secret: 'GITHUB_TOKEN', want: undefined },
+    ])('seeds GH_TOKEN as it should for $name', async ({ remote, plain, secret, want }) => {
+      if (remote !== undefined) await recordProject({ id: DEMO_PROJECT_ID, name: 'demo', remoteUrl: remote, addedAt: '2026-01-01T00:00:00.000Z' }, BUILT_IN_USER_ID)
+      if (plain !== undefined) await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: plain, value: 'ghp_user' })
+      if (secret !== undefined) {
+        await setProjectEnvVar(local, DEMO_PROJECT_ID, { name: secret, value: 'sekrit', secret: true, rule: { hosts: ['api.github.com'] } })
+      }
+
+      await start()
+
+      expect(env().find((e) => e.startsWith('GH_TOKEN='))?.slice('GH_TOKEN='.length)).toBe(want)
+    })
+
+    // The server setting is the only source. There is no fallback to the
+    // server host's `git config --global`: only someone with a shell there
+    // could change it, and under k8s the server pod's `$HOME` is ephemeral.
+    it('refuses without a git identity, naming where a client can set one', async () => {
+      await setGitIdentity(BUILT_IN_USER_ID, { name: ' ', email: ' ' })
+      await expect(start()).rejects.toThrow(/owner has no git identity set.*Settings/)
+      expect(specs).toEqual([])
+    })
+
+    it('seeds claude\'s config and settings, keeping what claude itself wrote', async () => {
+      const home = claudeDir(DEMO_PROJECT_ID)
+      const readJson = async (name: string): Promise<Record<string, unknown>> =>
+        JSON.parse(await fs.readFile(path.join(home, name), 'utf8')) as Record<string, unknown>
+      await fs.mkdir(home, { recursive: true })
+      await fs.writeFile(path.join(home, '.claude.json'), JSON.stringify({
+        oauthAccount: { uuid: 'x' },
+        customApiKeyResponses: { approved: ['other-key'], rejected: ['nope'] },
+      }))
+      // A pod can plant a link in its tool home; following it would let every
+      // create rewrite the file it names.
+      const target = path.join(tmpDir, 'elsewhere')
+      await fs.writeFile(target, 'not yours')
+      await fs.symlink(target, path.join(home, 'settings.json'))
+
+      await start()
+
+      const config = await readJson('.claude.json')
+      expect(config).toMatchObject({
+        oauthAccount: { uuid: 'x' },
+        hasCompletedOnboarding: true,
+        projects: { '/workspace': { hasTrustDialogAccepted: true } },
+        customApiKeyResponses: { approved: ['other-key', PLACEHOLDER_API_KEY], rejected: ['nope'] },
+      })
+      expect(typeof config.lastOnboardingVersion).toBe('string')
+      expect(await fs.readFile(target, 'utf8')).toBe('not yours')
+      expect((await fs.lstat(path.join(home, 'settings.json'))).isFile()).toBe(true)
+      // Transcripts are kept for 100 years rather than claude's 30 days, and
+      // worktrees, whose installs would land on the shared tier, are denied.
+      const worktreeDeny = ['EnterWorktree', 'Agent(isolation:worktree)']
+      expect(await readJson('settings.json')).toMatchObject({
+        skipDangerousModePermissionPrompt: true, cleanupPeriodDays: 36500, permissions: { deny: worktreeDeny },
+      })
+
+      // An unreadable config starts over; settings keep their own keys.
+      await fs.writeFile(path.join(home, '.claude.json'), 'not json{')
+      await fs.writeFile(path.join(home, 'settings.json'), JSON.stringify({
+        theme: 'dark', cleanupPeriodDays: 30, permissions: { allow: ['Bash(ls)'], deny: ['Bash(rm *)', 'EnterWorktree'] },
+      }))
+      await start()
+      expect(await readJson('.claude.json')).toMatchObject({ hasCompletedOnboarding: true })
+      expect(await readJson('settings.json')).toMatchObject({
+        theme: 'dark', cleanupPeriodDays: 36500,
+        permissions: { allow: ['Bash(ls)'], deny: ['Bash(rm *)', ...worktreeDeny] },
+      })
+    })
+
+    it('trusts each containerless checkout where it is, keeping every root when creates run at once', async () => {
+      // A containerless agent runs in the real checkout, so a `/workspace`
+      // entry would match nothing. The project's workspaces share one
+      // claude.json, and a lost entry opens claude's trust dialog. Asked for
+      // a spare, it creates cold: containerless keeps no pool.
+      const list = vi.fn(() => Promise.resolve([]))
+      installDriver({ kind: 'containerless', list })
+      const created = await Promise.all([1, 2, 3].map(() => start({ claimSpare: true })))
+      expect(list).not.toHaveBeenCalled()
+      const config = JSON.parse(await fs.readFile(path.join(claudeDir(DEMO_PROJECT_ID), '.claude.json'), 'utf8')) as {
+        projects: Record<string, unknown>
+      }
+      for (const { workspaceId } of created) {
+        expect(config.projects[await fs.realpath(workspaceDir(DEMO_PROJECT_ID, workspaceId))]).toEqual({ hasTrustDialogAccepted: true })
+      }
+      expect(config.projects['/workspace']).toBeUndefined()
+      // A worktree's own install is cheap on local disk, so worktrees stay.
+      const settings = JSON.parse(await fs.readFile(path.join(claudeDir(DEMO_PROJECT_ID), 'settings.json'), 'utf8')) as object
+      expect(settings).not.toHaveProperty('permissions')
+    })
+
+    it('stages the helper commands each launch, mounting each read-only onto /usr/local/bin', async () => {
+      const src = path.join(tmpDir, 'workspace-bin')
+      await fs.mkdir(path.join(src, 'subdir'), { recursive: true })
+      for (const name of ['yaac-workspace-init', 'a-tool', '.hidden']) {
+        await fs.writeFile(path.join(src, name), '#!/bin/sh\n', { mode: 0o600 })
+      }
+      setWorkspaceBinDir(src)
+      const helpers = (): WorkspaceSpec['mounts'] =>
+        specs.at(-1)!.mounts.filter((m) => m.mountPath.startsWith('/usr/local/bin/'))
+
+      await start({ workspaceId: 'wt-bin' })
+
+      // Regular files only, executable.
+      expect(helpers().map((m) => m.mountPath)).toEqual(['/usr/local/bin/a-tool', '/usr/local/bin/yaac-workspace-init'])
+      for (const { source, readOnly } of helpers()) {
+        expect(source).toMatchObject({ kind: 'hostPath', type: 'File' })
+        expect(readOnly).toBe(true)
+        expect((await fs.stat((source as { path: string }).path)).mode & 0o777).toBe(0o755)
+      }
+
+      await fs.rm(path.join(src, 'a-tool'))
+      await start({ workspaceId: 'wt-bin-2' })
+      expect(helpers().map((m) => m.mountPath)).toEqual(['/usr/local/bin/yaac-workspace-init'])
+    })
+
+    // The window probe is not awaited, so a dead agent's verdict can land
+    // after the create resolved. It waits for the create's run and then
+    // files a failed row, which leaves the workspace to the reaper.
+    it('reports an agent that died right after launch as a failed row, once the create has settled', async () => {
+      // The create is held at its prompt delivery, after the probe fired.
+      let probed = false
+      let release!: () => void
+      const held = new Promise<void>((resolve) => { release = resolve })
+      installDriver({
+        exec: async (_jobName, cmd) => {
+          if (cmd.includes('list-windows -t =yaac')) {
+            probed = true
+            throw new WorkspaceExecError('probe', 1, '', 'codex')
+          }
+          if (cmd.includes('.yaac-prompt.sh')) await held
+          return { stdout: '', stderr: '' }
+        },
+      })
+
+      const run = start({ workspaceId: 'wt-dead', tool: 'codex', prompt: 'go' })
+      // Filed now, the verdict would be erased by the create's success.
+      await vi.waitFor(() => { expect(probed).toBe(true) }, { timeout: 30_000 })
+      await new Promise((r) => setTimeout(r, 50))
+      expect(listProvisioning()[0]?.error).toBeUndefined()
+      release()
+      await run
+
+      await vi.waitFor(() => {
+        expect(listProvisioning()).toMatchObject([{ workspaceId: 'wt-dead', kind: 'create' }])
+        expect(listProvisioning()[0]?.error).toMatch(/agent "codex" exited right after launch/)
+      }, { timeout: 30_000 })
+    })
+
+    // A fresh chat conversation has no id until its agent answers
+    // `session/new`, so the create waits for that before the prompt. Only a
+    // conversation on the window's current process counts.
+    it('hands a chat workspace its prompt once its conversation is up, and gives up on an agent that dies first', async () => {
+      const prompted = vi.fn(() => Promise.resolve())
+      const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
+      installDriver({
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('#{pane_pid}')) {
+            setTimeout(() => {
+              registerAcpConversation(DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'stale', panePid: '41' }, conversation)
+              registerAcpConversation(DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, conversation)
+            }, 20)
+            return Promise.resolve({ stdout: '42\n', stderr: '' })
+          }
+          return Promise.resolve({ stdout: '', stderr: '' })
+        },
+      })
+      const progress: string[] = []
+      await start({ workspaceId: 'wt-chat', mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) })
+      expect(progress).toEqual(expect.arrayContaining(['Connecting to Claude Code...', 'Sending initial prompt...']))
+      await vi.waitFor(() => { expect(prompted).toHaveBeenCalledWith('go') })
+
+      // The agent's window exits before any handshake: the workspace is up,
+      // but no prompt can be delivered.
+      installDriver({
+        exec: (jobName, cmd) => cmd.includes('list-windows -t =yaac')
+          ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
+          : Promise.resolve({ stdout: '', stderr: '' }),
+      })
+      vi.mocked(serverLog).mockClear()
+      expect(await start({ workspaceId: 'wt-gone', mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: 'wt-gone' })
+      const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
+      expect(logged).toContain('acp agent window exited before its handshake')
+      expect(logged).toContain('initial prompt not delivered')
+      expect(prompted).toHaveBeenCalledTimes(1)
+    })
+
+    it('opens the init windows and declares the forwards before the agent starts', async () => {
+      await writeConfig({
+        initCommands: [
+          { name: 'backend', commands: ['pnpm dev:backend'] },
+          { name: 'frontend', commands: ['pnpm install', "echo 'hi'"], hidePane: true },
+        ],
+        portForward: [{ containerPort: 3000, hostPortStart: 3000 }],
+      })
+
+      const result = await start({ tool: 'claude', model: 'claude-opus-4-5' })
+
+      // Clients bind the ports (docs/port-forward-tunnel.md); the create only
+      // declares them.
+      expect(result.forwardedPorts).toEqual([{ containerPort: 3000, hostPort: 3000 }])
+      // Init windows and the agent respawn go in one exec. Only windows
+      // without hidePane keep remain-on-exit.
+      const windows = execOf('new-window')!
+      expect(windows).toContain("-n backend 'cd /workspace && pnpm dev:backend'")
+      expect(windows).toContain("-n frontend 'cd /workspace && pnpm install && echo '\\''hi'\\'''")
+      expect(windows).toContain('set-option -t yaac:backend remain-on-exit on')
+      expect(windows).not.toContain('yaac:frontend remain-on-exit on')
+      expect(windows).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.workspaceId}`)
+    })
+
+    it('refuses an init window named after any agent tool, before provisioning', async () => {
+      // A retooled spare renames the agent window, so every tool name is
+      // taken, not just the one launching.
+      for (const name of ['claude', 'codex']) {
+        await writeConfig({ initCommands: [{ name, commands: ['echo hi'] }] })
+        await expect(start({ tool: 'claude' })).rejects.toThrow(`"${name}" is reserved`)
+      }
+      expect(specs).toEqual([])
+    })
+
+    it('fails fast, rolling the row back, when origin cannot be fetched', async () => {
+      // Nothing listens on this host's 443, so the fetch fails at once.
+      vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
+      await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'https://127.0.0.1/o/r.git' })
+      await setProjectEgressAllowlist(DEMO_PROJECT_ID, { hosts: ['127.0.0.1'], defaults: true })
+
+      await expect(start({ workspaceId: 'wt-nofetch' })).rejects.toThrow(/could not fetch from remote/)
+
+      // A bad input is not retried.
+      expect(specs).toHaveLength(1)
+      await vi.waitFor(async () => {
+        expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-nofetch')).toBeUndefined()
+      }, { timeout: 30_000 })
+    })
+
+    it('hands an SSH remote the host key it was assigned with, and no GH_TOKEN', async () => {
+      await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'git@github.com:o/r.git' })
+      const key = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'key', kind: 'ssh', secret: 'c2VlZA==', publicKey: 'ssh-ed25519 AAAA yaac' })
+      await setProjectGitCredential(DEMO_PROJECT_ID, key.id, 'github.com ssh-ed25519 AAAAC3')
+
+      await start()
+
+      // How the key and tunnel reach the workspace is the driver's concern.
+      expect(await fs.readFile(specs[0].ssh!.knownHostsFile, 'utf8')).toBe('github.com ssh-ed25519 AAAAC3\n')
+      expect(env().filter((e) => e.startsWith('GH_TOKEN='))).toEqual([])
+    })
+
+    it('refuses a branch missing from origin, tearing its launch down', async () => {
+      await expect(start({ branch: 'ghost', workspaceId: 'wt-ghost' }))
+        .rejects.toThrow(/branch "ghost" not found on origin/)
+      expect(specs).toHaveLength(1)
+      expect(destroys).toEqual([false])
+    })
+
+    it('refuses a taken id before provisioning anything', async () => {
+      await start({ workspaceId: 'wt-taken' })
+      await expect(start({ workspaceId: 'wt-taken' })).rejects.toThrow()
+      expect(specs).toHaveLength(1)
+    })
+
+    it('fails on its first failed launch, rolls a fresh create back entirely, and keeps a failed row', async () => {
+      installDriver({ awaitReady: () => Promise.reject(new Error('pod never became ready')) })
+
+      await expect(start({ workspaceId: 'wt-fail' })).rejects.toThrow('pod never became ready')
+
+      // One launch, and a fresh create drops its substrate too, since its row
+      // is about to go.
+      expect(specs).toHaveLength(1)
+      expect(destroys).toEqual([false])
+      expect(deregistered).toEqual(['wt-fail'])
+      expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'wt-fail', error: 'pod never became ready' })])
+      // The rollback is not awaited, so it lands after the rejection.
+      await vi.waitFor(async () => {
+        expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-fail')).toBeUndefined()
+      }, { timeout: 30_000 })
+      await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, 'wt-fail'))).rejects.toThrow()
+    })
+
+    it('records the branch it forks from with the row, before anything is provisioned', async () => {
+      // A workspace queued after this one defaults to this branch and may be
+      // queued mid-provisioning, so it is recorded up front: the requested
+      // branch, else the clone's default.
+      const rowAtImage = async (workspaceId: string, branch?: string): Promise<WorkspaceRow | undefined> => {
+        let row: WorkspaceRow | undefined
+        installDriver({
+          prepareImage: async () => {
+            row = await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)
+            throw new Error('stop here')
+          },
+        })
+        await expect(start({ workspaceId, ...(branch !== undefined ? { branch } : {}) }))
+          .rejects.toThrow('stop here')
+        return row
+      }
+      expect((await rowAtImage('wt-1', 'dev'))?.baseBranch).toBe('dev')
+      expect((await rowAtImage('wt-2'))?.baseBranch).toBe('main')
+    })
+
+    it('launches in the time zone clients report, and records it', async () => {
+      // A pod would otherwise run in UTC, whatever zone the user is in.
+      const before = await start()
+      expect(env().filter((e) => e.startsWith('TZ='))).toEqual([])
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, before.workspaceId))?.timeZone).toBeUndefined()
+
+      await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
+      const after = await start()
+      expect(env()).toContain('TZ=Asia/Tokyo')
+      // Recorded, so a spare claim can tell which zone it launched in.
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, after.workspaceId))?.timeZone).toBe('Asia/Tokyo')
+    })
   })
 
   // A failed create rolls back. Its prompt survives as a draft, updating
@@ -115,30 +850,388 @@ describe('startWorkspace', () => {
     // install see; neither create may change what the other reports.
     const shared = new ServerError('VALIDATION', 'pod never became ready')
     installDriver({ awaitReady: () => Promise.reject(shared) })
-    const draft = await saveDraftWorkspace(local, PROJ, { prompt: 'old', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
-    const start = (workspaceId: string, onFailure: boolean): Promise<unknown> => startWorkspace(local, {
-      projectId: PROJ,
+    const draft = await saveDraftWorkspace(local, DEMO_PROJECT_ID, { prompt: 'old', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
+    const failing = (workspaceId: string, onFailure: boolean): Promise<unknown> => start({
       workspaceId,
       tool: 'codex',
       permissionMode: 'accept-edits',
-      mode: 'tui',
       prompt: 'fix the build',
       title: 'Build',
-      rememberDefaults: false,
-      claimSpare: false,
       draft: { id: draft.id, ...(onFailure ? { onFailure } : {}) },
-    }, () => {})
+    })
 
-    await expect(start('wt-plain', false)).rejects.toMatchObject({ message: 'pod never became ready' })
+    await expect(failing('wt-plain', false)).rejects.toMatchObject({ message: 'pod never became ready' })
     expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({ id: draft.id, prompt: 'old' })])
 
-    await expect(start('wt-fail', true)).rejects.toMatchObject({
+    await expect(failing('wt-fail', true)).rejects.toMatchObject({
       code: 'VALIDATION', message: 'pod never became ready; its prompt is kept as a draft',
     })
     expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({
       id: draft.id, prompt: 'fix the build', title: 'Build', tool: 'codex', permissionMode: 'accept-edits',
     })])
     expect(shared.message).toBe('pod never became ready')
-    await vi.waitFor(async () => expect(await getWorkspaceRow(PROJ, 'wt-fail')).toBeUndefined(), { timeout: 30_000 })
+    // The failed row carries what the caller is told.
+    expect(listProvisioning()).toContainEqual(expect.objectContaining({
+      workspaceId: 'wt-fail', error: 'pod never became ready; its prompt is kept as a draft',
+    }))
+    await vi.waitFor(async () => expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-fail')).toBeUndefined(), { timeout: 30_000 })
+  })
+
+  /**
+   * A spare is warmed by the pool (`reconcilePrewarmPool`) with the
+   * project's default create settings: here claude in `tui`. A claim hands
+   * it over under its own id, respawning its agent for another tool, model
+   * or posture, and moving its checkout to another branch or a newer tip.
+   * Anything that goes wrong falls back to a cold create under the
+   * requested id.
+   */
+  describe('claiming a prewarmed spare', () => {
+    /** A running workspace of the project, which is what makes the pool
+     *  warm a spare for it. */
+    const user = handleFixture({ workspaceId: 'user-ws', projectId: DEMO_PROJECT_ID, jobName: 'yaac-demo-user-ws' })
+
+    /** Warm one spare as the pool does, and wait until it is up. */
+    async function warm(): Promise<RuntimeHandle> {
+      await reconcilePrewarmPool(snapshotFixture([user, ...units]))
+      let spare: RuntimeHandle | undefined
+      await vi.waitFor(() => {
+        spare = units.find((u) => u.prewarmed && cmds().some((c) => c.includes('respawn-window') && c.includes(u.workspaceId)))
+        expect(spare).toBeDefined()
+      }, { timeout: 30_000 })
+      // The pool's spawn settles after its create returns.
+      await new Promise((r) => setTimeout(r, 20))
+      execs = []
+      return spare!
+    }
+
+    /** Commands run in `unit` since the spare was warmed. */
+    const ranIn = (unit: RuntimeHandle): string[] =>
+      execs.filter((e) => e.jobName === unit.jobName).map((e) => e.cmd)
+
+    beforeEach(async () => {
+      vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '1')
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'tui' })
+    })
+
+    it('warms a spare flagged and conversation-less, then hands it over as warmed, under its own id', async () => {
+      const spare = await warm()
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({ spare: true, mode: 'tui' })
+      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
+      expect(specs.at(-1)?.prewarm).toBe(true)
+      registrations = []
+
+      const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', null)
+      const result = await start({
+        workspaceId: 'req', claimSpare: true, prompt: 'fix the bug', title: 'Bug fix', group: group.groupId,
+      })
+
+      expect(result).toEqual({ workspaceId: spare.workspaceId, jobName: spare.jobName, tool: 'claude', mode: 'tui', forwardedPorts: [] })
+      expect(claims).toEqual([[spare.workspaceId, 'claude']])
+      // The agent matched, so nothing was respawned, and no new unit came up.
+      expect(ranIn(spare).some((c) => c.includes('respawn-window'))).toBe(false)
+      expect(specs.filter((s) => !s.prewarm)).toEqual([])
+      // Re-registered from the project as it is now, and given the current
+      // git identity.
+      expect(registrations).toEqual([expect.objectContaining({
+        workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install', tool: 'claude',
+      })])
+      expect(ranIn(spare)).toContain("git config --global user.name 'Ada' && git config --global user.email 'ada@example.com'")
+      // Recorded as a cold create records it: no longer a spare, filed,
+      // titled, its first conversation holding the prompt.
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
+        spare: false, groupId: group.groupId, title: 'Bug fix', baseBranch: 'main',
+      })
+      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([
+        expect.objectContaining({ tool: 'claude', agentSessionId: spare.workspaceId, firstPrompt: 'fix the bug' }),
+      ])
+      // The prompt was pasted into the spare's agent.
+      expect(ranIn(spare).some((c) => c.includes('base64 -d'))).toBe(true)
+      expect(listProvisioning()).toEqual([])
+    })
+
+    it('respawns the agent for another tool, model, posture or effort, and moves the checkout to another branch', async () => {
+      const spare = await warm()
+      await saveToolAuth('codex', 'sk-oai')
+
+      const result = await start({ claimSpare: true, tool: 'codex', permissionMode: 'read-only', branch: 'dev' })
+
+      expect(result).toMatchObject({ workspaceId: spare.workspaceId, tool: 'codex' })
+      expect(claims).toEqual([[spare.workspaceId, 'codex']])
+      const ran = ranIn(spare)
+      // The checkout is reset to dev's tip, keeping mount points, and the
+      // branch becomes its upstream.
+      const tip = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/dev'])).trim()
+      expect(ran).toContainEqual(expect.stringMatching(new RegExp(`reset --hard ${tip} && git -C /workspace clean -fd -e 'node_modules'`)))
+      expect(ran).toContainEqual(expect.stringContaining("update-ref 'refs/remotes/origin/dev'"))
+      // The window is renamed for codex and its agent respawned once, by the
+      // retool, as a fresh conversation under the spare's id.
+      expect(ran).toContainEqual(expect.stringContaining('rename-window -t yaac:claude codex'))
+      const respawns = ran.filter((c) => c.includes('respawn-window'))
+      expect(respawns).toHaveLength(1)
+      expect(respawns[0]).toMatch(/respawn-window -k -t yaac:codex 'codex .*--sandbox read-only/)
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
+        baseBranch: 'dev', permissionMode: 'read-only', model: FALLBACK_MODELS.codex,
+      })
+    })
+
+    it('respawns a spare as pi on the owner\'s pi provider', async () => {
+      const spare = await warm()
+      await saveToolAuth('pi', 'sk-or', 'openrouter')
+
+      expect(await start({ claimSpare: true, tool: 'pi' })).toMatchObject({ workspaceId: spare.workspaceId, tool: 'pi' })
+      expect(ranIn(spare).find((c) => c.includes('respawn-window'))).toMatch(/respawn-window -k -t yaac:pi '.*openrouter/)
+    })
+
+    /** Settle `claim` with fake time, which has to pass while the claim also
+     *  waits on real disk and git work. */
+    async function settleWithFakeTime<T>(claim: Promise<T>): Promise<T> {
+      let done = false
+      void claim.finally(() => { done = true }).catch(() => {})
+      for (let i = 0; i < 200 && !done; i++) {
+        await vi.advanceTimersByTimeAsync(250)
+        await new Promise((r) => setImmediate(r))
+      }
+      return await claim
+    }
+
+    // A refresh is only worth it while cheap: a slow origin leaves the
+    // spare on the commit it was warmed at rather than holding the user.
+    it('hands a spare over on its warmed base when the fetch outlasts the wait', async () => {
+      const spare = await warm()
+      head = 'an-older-commit'
+      vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
+      slowOrigin.hang = true
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        expect((await settleWithFakeTime(start({ claimSpare: true }))).workspaceId).toBe(spare.workspaceId)
+      } finally {
+        vi.useRealTimers()
+        slowOrigin.hang = false
+      }
+      expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(false)
+    })
+
+    // A background refresh can take minutes (a slow reset, init windows);
+    // a cold create beats waiting that long.
+    it('creates cold rather than wait out a refresh that outlasts the wait', async () => {
+      const spare = await warm()
+      head = 'an-older-commit'
+      installDriver({
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          // The pool's refresh never finishes its reset.
+          if (cmd.includes('reset --hard')) return new Promise(() => { /* held */ })
+          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+        },
+      })
+      await reconcilePrewarmPool(snapshotFixture([user, ...units]))
+      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(true) })
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      let result: WorkspaceCreateResult
+      try {
+        result = await settleWithFakeTime(start({ claimSpare: true }))
+      } finally {
+        vi.useRealTimers()
+      }
+      expect(result.workspaceId).not.toBe(spare.workspaceId)
+      expect(claims).toEqual([])
+    })
+
+    it('brings a spare whose branch moved on origin up to its tip, restarting its agent there', async () => {
+      const spare = await warm()
+      head = 'an-older-commit'
+      await writeConfig({ initCommands: [{ name: 'backend', commands: ['pnpm dev'] }] })
+
+      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
+
+      const ran = ranIn(spare)
+      const reset = ran.findIndex((c) => c.includes('reset --hard'))
+      expect(reset).toBeGreaterThanOrEqual(0)
+      // Each init window is recreated in one exec with its kill, then the
+      // agent respawned last.
+      const after = ran.slice(reset)
+      expect(after).toContainEqual(expect.stringMatching(/kill-window -t yaac:backend 2>\/dev\/null; .*new-window -d -t yaac -n backend/))
+      expect(after.findIndex((c) => c.includes('respawn-window')))
+        .toBeGreaterThan(after.findIndex((c) => c.includes('kill-window -t yaac:backend')))
+    })
+
+    it('waits out a background refresh, then claims the refreshed spare', async () => {
+      const spare = await warm()
+      head = 'an-older-commit'
+      let release!: () => void
+      const held = new Promise<void>((resolve) => { release = resolve })
+      installDriver({
+        exec: async (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('reset --hard')) {
+            await held
+            head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
+          }
+          return { stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }
+        },
+      })
+      // The pool starts moving the spare to the tip in the background.
+      await reconcilePrewarmPool(snapshotFixture([user, ...units]))
+      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(true) })
+
+      let claimed = false
+      const claim = start({ claimSpare: true }).finally(() => { claimed = true })
+      await new Promise((r) => setTimeout(r, 50))
+      expect(claimed).toBe(false)
+      release()
+
+      expect((await claim).workspaceId).toBe(spare.workspaceId)
+      // Already current, so the claim reset it no further.
+      expect(ranIn(spare).filter((c) => c.includes('reset --hard'))).toHaveLength(1)
+    })
+
+    it('refuses a branch missing from origin, putting the spare back untouched', async () => {
+      const spare = await warm()
+
+      await expect(start({ workspaceId: 'req', claimSpare: true, branch: 'ghost' }))
+        .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('branch "ghost" not found') as unknown })
+
+      // No cold create was tried, and the spare is a spare again.
+      expect(specs.filter((s) => !s.prewarm)).toEqual([])
+      expect(claims).toEqual([])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({ spare: true })
+      expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
+      expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'req', error: expect.stringContaining('ghost') as unknown })])
+      // The next claim takes it.
+      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
+    })
+
+    it('reaps a spare a failed respawn left half-changed, and creates cold instead', async () => {
+      const spare = await warm()
+      await saveToolAuth('codex', 'sk-oai')
+      installDriver({
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('respawn-window') && jobName === spare.jobName) {
+            return Promise.reject(new WorkspaceExecError('respawn', 1, '', 'no codex'))
+          }
+          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+        },
+      })
+
+      const result = await start({ workspaceId: 'req', claimSpare: true, tool: 'codex' })
+
+      expect(result).toMatchObject({ workspaceId: 'req', tool: 'codex' })
+      expect(specs.filter((s) => !s.prewarm).map((s) => s.workspaceId)).toEqual(['req'])
+      // Torn down whole: unit, checkout, then row.
+      await vi.waitFor(async () => {
+        expect(units.some((u) => u.workspaceId === spare.workspaceId)).toBe(false)
+        expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
+      }, { timeout: 30_000 })
+      await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spare.workspaceId))).rejects.toThrow()
+    })
+
+    it('passes over a spare it cannot use, creating cold', async () => {
+      const spare = await warm()
+      const cold = async (over: Partial<StartWorkspaceRequest> = {}): Promise<void> => {
+        const result = await start({ claimSpare: true, ...over })
+        expect(result.workspaceId).not.toBe(spare.workspaceId)
+        expect(claims).toEqual([])
+        expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({ spare: true })
+      }
+
+      // Its agent transport never answers: left alone, before any change.
+      installDriver({ awaitAgentTransport: (jobName) => jobName === spare.jobName
+        ? Promise.reject(new Error('no transport'))
+        : Promise.resolve() })
+      await cold()
+      _clearTmuxAliveCacheForTests()
+      // Its tmux is gone.
+      installDriver({ exec: (jobName, cmd) => {
+        execs.push({ jobName, cmd })
+        return jobName === spare.jobName && cmd.includes('has-session')
+          ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'no server'))
+          : Promise.resolve({ stdout: '', stderr: '' })
+      } })
+      await cold()
+      _clearTmuxAliveCacheForTests()
+      installDriver()
+      // The commit lost a race: the spare goes back on its warm settings.
+      installDriver({ claimSpare: () => Promise.reject(new Error('already claimed')) })
+      await cold()
+      installDriver()
+      // A zone the user has left, which `TZ` fixed at warm time.
+      await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
+      await cold()
+    })
+
+    // The workspace is already usable, so neither is worth burning the spare.
+    it('hands a spare over even when its git identity or group cannot be re-applied', async () => {
+      const spare = await warm()
+      const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Gone soon', null)
+      installDriver({
+        // The group goes after the start resolved it.
+        registerWorkspace: async () => { await deleteWorkspaceGroup(DEMO_PROJECT_ID, group.groupId) },
+        exec: (jobName, cmd) => cmd.includes('git config --global')
+          ? Promise.reject(new WorkspaceExecError('identity', 1, '', 'read-only home'))
+          : Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }),
+      })
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      expect((await start({ claimSpare: true, group: group.groupId })).workspaceId).toBe(spare.workspaceId)
+
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.groupId).toBeUndefined()
+      const warned = warn.mock.calls.map(([m]) => String(m)).join('\n')
+      expect(warned).toContain('not applied')
+      expect(warned).toContain('not filed in group')
+      warn.mockRestore()
+    })
+
+    // A refresh is only worth it while cheap.
+    it('hands a spare over on its warmed base when the fetch of origin fails', async () => {
+      const spare = await warm()
+      head = 'an-older-commit'
+      // Nothing listens on this host's 443, so the fetch fails at once.
+      vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
+      await recordTestProject(DEMO_PROJECT_ID, { remoteUrl: 'https://127.0.0.1/o/r.git' })
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
+
+      expect(ranIn(spare).some((c) => c.includes('reset --hard'))).toBe(false)
+      expect(warn.mock.calls.map(([m]) => String(m)).join('\n')).toContain('kept its warmed base')
+      warn.mockRestore()
+    })
+
+    it('claims the newest of several spares that match', async () => {
+      vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '2')
+      await reconcilePrewarmPool(snapshotFixture([user]))
+      await vi.waitFor(() => {
+        expect(units.filter((u) => u.prewarmed && cmds().some((c) => c.includes('respawn-window') && c.includes(u.workspaceId))))
+          .toHaveLength(2)
+      }, { timeout: 30_000 })
+      await new Promise((r) => setTimeout(r, 20))
+      const newest = [...units].sort((a, b) => b.createdAtMs - a.createdAtMs)[0]
+
+      expect((await start({ claimSpare: true })).workspaceId).toBe(newest.workspaceId)
+    })
+
+    // Its row survives flagged `spare`, and the startup sweep collects the
+    // checkout from that flag.
+    it('leaves a spare that failed to warm flagged, checkout and all, and never claims it', async () => {
+      installDriver({
+        awaitReady: (handle) => handle.prewarmed ? Promise.reject(new Error('pod never became ready')) : Promise.resolve(),
+      })
+      await reconcilePrewarmPool(snapshotFixture([user]))
+      await vi.waitFor(() => { expect(destroys).toEqual([true]) }, { timeout: 30_000 })
+      const spareId = specs[0].workspaceId
+
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spareId)).toMatchObject({ spare: true })
+      await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spareId))).resolves.toBeUndefined()
+      expect((await start({ claimSpare: true })).workspaceId).not.toBe(spareId)
+    })
+
+    it('lets only one of two concurrent claims have the single spare', async () => {
+      const spare = await warm()
+      const results = await Promise.all([start({ claimSpare: true }), start({ claimSpare: true })])
+      expect(results.filter((r) => r.workspaceId === spare.workspaceId)).toHaveLength(1)
+      expect(claims).toEqual([[spare.workspaceId, 'claude']])
+    })
   })
 })

@@ -7,8 +7,8 @@ import { wsUrl } from '@yaac/shared/api-core'
  * with exponential backoff: the delay doubles on each failure up to the
  * maximum.
  */
-export const INITIAL_RECONNECT_DELAY_MS = 500
-export const MAX_RECONNECT_DELAY_MS = 10_000
+const INITIAL_RECONNECT_DELAY_MS = 500
+const MAX_RECONNECT_DELAY_MS = 10_000
 
 /**
  * How long a terminal must stay disconnected before WorkspaceTerminal shows
@@ -17,11 +17,6 @@ export const MAX_RECONNECT_DELAY_MS = 10_000
  * initial delay plus an attach) to avoid announcing them.
  */
 export const DISCONNECT_NOTICE_DELAY_MS = 1_500
-
-/** Next backoff delay: double the current one, capped at the ceiling. */
-export function nextReconnectDelay(current: number): number {
-  return Math.min(current * 2, MAX_RECONNECT_DELAY_MS)
-}
 
 export interface ReconnectingSocket {
   /** Send on the current socket. False when none is open, so the caller can
@@ -70,7 +65,7 @@ export function reconnectingSocket(path: () => string, on: {
       sock = null
       on.close?.(opened)
       timer = setTimeout(connect, delay)
-      delay = nextReconnectDelay(delay)
+      delay = Math.min(delay * 2, MAX_RECONNECT_DELAY_MS)
     }
   }
 

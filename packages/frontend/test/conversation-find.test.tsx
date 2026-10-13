@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { screen, cleanup, fireEvent, act } from '@testing-library/react'
@@ -6,7 +5,6 @@ import type { AcpEvent } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
-import { countMatches, type QuerySpec } from '#lib/matchCount'
 import { IS_MAC } from '#lib/platform'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, testQueryClient } from './harness'
@@ -18,15 +16,6 @@ import { mockFetch, renderWithClient, testQueryClient } from './harness'
  * fake Worker, so what is asserted is what the reader sees: the count, and
  * the rows a match opens.
  */
-
-/** jsdom has no Worker. This one runs the real `countMatches` a tick later. */
-class FakeWorker {
-  onmessage: ((e: MessageEvent) => void) | null = null
-  postMessage(msg: { id: number; doc: string; spec: QuerySpec }): void {
-    setTimeout(() => this.onmessage?.({ data: { id: msg.id, matches: countMatches(msg.doc, msg.spec) } } as MessageEvent), 0)
-  }
-  terminate(): void {}
-}
 
 const TRANSCRIPT = 'GET /api/workspace/w1/agent-sessions/c1/transcript'
 
@@ -49,7 +38,6 @@ const EVENTS: AcpEvent[] = [
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-  vi.stubGlobal('Worker', FakeWorker)
   Range.prototype.getBoundingClientRect = () => new DOMRect()
   mockFetch({ [TRANSCRIPT]: { events: EVENTS } })
   // Every step shown: these cases are about rows, not folded runs.
@@ -58,7 +46,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 

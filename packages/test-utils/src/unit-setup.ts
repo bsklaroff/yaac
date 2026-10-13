@@ -23,7 +23,7 @@ setHermeticScratch(true)
 // under the data dir. pipeToServerLog stays real, since callers read output
 // through its line callback. A file that tests the log itself unmocks it,
 // and one that asserts on log lines reads `vi.mocked(serverLog)`.
-vi.mock('@yaac/server/log', async (importOriginal) => ({
+vi.mock('@yaac/server/lib/log', async (importOriginal) => ({
   ...await importOriginal<object>(),
   serverLog: vi.fn(),
 }))

@@ -1,8 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type JSX, type KeyboardEvent, type RefObject } from 'react'
-import { Tooltip } from '@base-ui/react/tooltip'
-import { SearchQuery } from '@codemirror/search'
+import { useEffect, useMemo, useRef, useState, type JSX, type RefObject } from 'react'
 import { groupFindText, type Found, type Group } from '#components/AcpTranscript'
-import { FindControls } from '#components/ui/FindPanel'
+import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches, type QuerySpec } from '#lib/matchCount'
 import { chordMatches, claimChord, findChord } from '#lib/shortcuts'
@@ -62,20 +60,12 @@ export function useConversationFind({ groups, scrollRef, chord, defaultOpen = fa
   /** The scrolling element whose text is searched and highlighted. */
   scrollRef: RefObject<HTMLElement | null>
 }): { bar: JSX.Element | null; found: Found | undefined } {
-  const [open, setOpen] = useState(defaultOpen)
-  const [focusNonce, setFocusNonce] = useState(0)
-  const [text, setText] = useState('')
-  const [flags, setFlags] = useState({ caseSensitive: false, wholeWord: false, regexp: false })
-  const spec = useMemo<QuerySpec>(() => ({ search: text, literal: false, ...flags }), [text, flags])
-  const parses = new SearchQuery(spec).valid
-  const valid = text !== '' && parses
+  const find = useFindQuery(defaultOpen)
+  const { isOpen: open, spec, valid, jump } = find
   const [revealed, setRevealed] = useState<Revealed>()
   const [matches, setMatches] = useState<Matches>(NO_MATCHES)
   const [current, setCurrent] = useState(-1)
   const ranges = useRef<Range[]>([])
-  const inputRef = useRef<HTMLInputElement>(null)
-  /** Set by a new query: move to its first match once counted. */
-  const jump = useRef(false)
   const specRef = useRef(spec)
   specRef.current = spec
   const currentRef = useRef(current)
@@ -95,15 +85,7 @@ export function useConversationFind({ groups, scrollRef, chord, defaultOpen = fa
   }
   useEffect(() => () => paint([], -1), [])
 
-  useFindChord(chord, () => {
-    setOpen(true)
-    setFocusNonce((n) => n + 1)
-  })
-  useEffect(() => {
-    if (!open) return
-    inputRef.current?.focus()
-    inputRef.current?.select()
-  }, [open, focusNonce])
+  useFindChord(chord, find.open)
 
   const revealCounter = useMemo(() => new MatchCounter(), [])
   const domCounter = useMemo(() => new MatchCounter(), [])
@@ -186,7 +168,7 @@ export function useConversationFind({ groups, scrollRef, chord, defaultOpen = fa
       clearTimeout(timer)
       observer.disconnect()
     }
-  }, [open, revealed, scrollRef, domCounter])
+  }, [open, revealed, scrollRef, domCounter, jump])
 
   const step = (delta: number): void => {
     const found = ranges.current
@@ -204,49 +186,13 @@ export function useConversationFind({ groups, scrollRef, chord, defaultOpen = fa
     const seq = row ? Number(row.getAttribute('data-seq')) : undefined
     setRevealed(seq === undefined ? undefined : { spec: specRef.current, any: new Set([seq]), hidden: new Set([seq]) })
     ranges.current = []
-    setOpen(false)
+    find.close()
     onClose?.()
   }
 
-  const query = (search: string, next: Partial<typeof flags>): void => {
-    setText(search)
-    setFlags((cur) => ({ ...cur, ...next }))
-    jump.current = true
-  }
-
-  const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') {
-      // Not also the pane's Escape (leaving a subagent's view).
-      e.stopPropagation()
-      close()
-    } else if (e.key === 'Enter' && e.target === inputRef.current) {
-      e.preventDefault()
-      step(e.shiftKey ? -1 : 1)
-    }
-  }
-
-  const bar = open ? (
-    <Tooltip.Provider>
-      <div
-        onKeyDown={onKeyDown}
-        className="grid shrink-0 grid-cols-[minmax(0,380px)_auto] items-center justify-start gap-x-1 border-b
-          border-hairline bg-surface px-1.5 py-1 font-sans text-[11px] text-text-dim"
-      >
-        <FindControls
-          inputRef={inputRef}
-          text={text}
-          onText={(search) => query(search, {})}
-          query={{ ...flags, valid: parses }}
-          onToggle={(next) => query(text, next)}
-          matches={matches}
-          current={current + 1}
-          onPrev={() => step(-1)}
-          onNext={() => step(1)}
-          onClose={close}
-        />
-      </div>
-    </Tooltip.Provider>
-  ) : null
+  const bar = open
+    ? <PaneFindBar find={find} matches={matches} current={current} onStep={step} onClose={close} />
+    : null
   return { bar, found: revealed }
 }
 

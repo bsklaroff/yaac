@@ -1,4 +1,5 @@
-import { resolveProjectPath, type SandboxFile } from '#runtime/agents'
+import { resolveProjectPath } from '#runtime/agents'
+import type { SandboxFile } from '#runtime/agents'
 import type { AgentSessionLinkRow } from '#db'
 
 /** The row fields needed to resolve a stored transcript path. */

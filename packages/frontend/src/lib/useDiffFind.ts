@@ -1,12 +1,14 @@
 /**
  * Cmd/Ctrl-F over the Changes pane's diffs: one query across every shown
  * file's diff lines, counted off the main thread like the editor's find
- * (`MatchCounter`), with a current match to step through. Stepping walks
+ * (`MatchCounter`), with a current match to step through. It counts the
+ * parsed diffs, not the rendered page as a conversation's find does,
+ * because a long diff mounts only the chunks near the screen. Stepping walks
  * the counted matches, so the count is not capped; the server cuts the
  * diff body at 1 MB, which bounds it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { SearchQuery } from '@codemirror/search'
+import type { FindQuery } from '#components/ui/FindPanel'
 import type { DiffLine } from '#lib/diff'
 import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches } from '#lib/matchCount'
 
@@ -24,8 +26,6 @@ export interface DiffMatch {
   from: number
   to: number
 }
-
-type QueryFields = Partial<ConstructorParameters<typeof SearchQuery>[0]>
 
 /**
  * Every diff line as one document, a line per line, so the counter's offsets
@@ -64,16 +64,11 @@ function locate({ starts, owners }: ReturnType<typeof searchIndex>, matches: Mat
 }
 
 /**
- * The find bar's state over `diffs`. `reveal` runs with the match each move
- * lands on, in the same update, so the pane can unfold it before `moved`
- * (bumped per move) asks it to scroll there.
+ * The matches of `find`'s query over `diffs`, and the current one. `reveal`
+ * runs with the match each move lands on, in the same update, so the pane
+ * can unfold it before `moved` (bumped per move) asks it to scroll there.
  */
-export function useDiffFind(diffs: SearchedDiff[], reveal: (match: DiffMatch) => void): {
-  isOpen: boolean
-  open: () => void
-  close: () => void
-  query: SearchQuery
-  commit: (fields: QueryFields, jump: boolean) => void
+export function useDiffFind(diffs: SearchedDiff[], find: FindQuery, reveal: (match: DiffMatch) => void): {
   /** The count, for the bar's status. */
   matches: Matches
   located: DiffMatch[]
@@ -81,15 +76,11 @@ export function useDiffFind(diffs: SearchedDiff[], reveal: (match: DiffMatch) =>
   current: number
   step: (dir: 1 | -1) => void
   moved: number
-  focusKey: number
 } {
-  const [isOpen, setOpen] = useState(false)
-  const [query, setQuery] = useState(() => new SearchQuery({ search: '' }))
+  const { isOpen, spec, valid, jump } = find
   const [found, setFound] = useState<{ matches: Matches; located: DiffMatch[] }>({ matches: NO_MATCHES, located: [] })
   const [current, setCurrent] = useState(-1)
   const [moved, setMoved] = useState(0)
-  const [focusKey, setFocusKey] = useState(0)
-  const jump = useRef(false)
   const revealRef = useRef(reveal)
   revealRef.current = reveal
   const counter = useMemo(() => new MatchCounter(), [])
@@ -105,15 +96,14 @@ export function useDiffFind(diffs: SearchedDiff[], reveal: (match: DiffMatch) =>
   }, [])
 
   useEffect(() => {
-    if (!index || !query.valid || query.search === '') {
+    if (!index || !valid) {
       setFound({ matches: NO_MATCHES, located: [] })
       setCurrent(-1)
       return
     }
     let live = true
     const timer = setTimeout(() => {
-      const { search, caseSensitive, literal, regexp, wholeWord } = query
-      counter.count(index.text, { search, caseSensitive, literal, regexp, wholeWord }, (matches) => {
+      counter.count(index.text, spec, (matches) => {
         if (!live) return
         const located = matches.slow ? [] : locate(index, matches)
         setFound({ matches: { ...matches, froms: located.map((m) => m.from), tos: located.map((m) => m.to) }, located })
@@ -127,23 +117,9 @@ export function useDiffFind(diffs: SearchedDiff[], reveal: (match: DiffMatch) =>
       live = false
       clearTimeout(timer)
     }
-  }, [query, index, counter, moveTo])
+  }, [spec, valid, index, counter, moveTo, jump])
 
   return {
-    isOpen,
-    open: () => {
-      setOpen(true)
-      setFocusKey((n) => n + 1)
-    },
-    close: () => setOpen(false),
-    query,
-    commit: (fields, jumpTo) => {
-      jump.current = jumpTo
-      setQuery((q) => new SearchQuery({
-        search: q.search, caseSensitive: q.caseSensitive, literal: q.literal, regexp: q.regexp,
-        wholeWord: q.wholeWord, ...fields,
-      }))
-    },
     matches: found.matches,
     located: found.located,
     current,
@@ -152,6 +128,5 @@ export function useDiffFind(diffs: SearchedDiff[], reveal: (match: DiffMatch) =>
       if (n > 0) moveTo(found.located, current === -1 ? (dir > 0 ? 0 : n - 1) : (current + dir + n) % n)
     },
     moved,
-    focusKey,
   }
 }

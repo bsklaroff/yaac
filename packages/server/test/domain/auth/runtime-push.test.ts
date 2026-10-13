@@ -4,10 +4,10 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 
-import { adoptRefreshedToolCredentials, pushCredentialsToRuntime } from '#domain/auth'
-import { addHttpsCredential, assignProjectCredential } from '#domain/projects'
+import { addHttpsCredential, adoptRefreshedToolCredentials, generateSshCredential, pushCredentialsToRuntime } from '#domain/auth'
+import { assignProjectCredential } from '#domain/projects'
 import { BUILT_IN_USER_ID, closeDb, getToolCredential, openDb, recordProject, seeTailnetUser, setToolCredential } from '#db'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { setDataDir } from '@yaac/shared/project-paths'
 import { PLACEHOLDER_ACCESS_TOKEN, PLACEHOLDER_REFRESH_TOKEN } from '@yaac/shared/tool-auth'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
@@ -73,7 +73,6 @@ describe('pushCredentialsToRuntime', () => {
     await setToolCredential(ME, 'codex', { kind: 'oauth', savedAt: 'x', codexOauth: codexBundle() })
     await setToolCredential(ME, 'opencode', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'sk-or' })
     // Only credentials a project uses are sent, each with its projects.
-    // runtimeGitCredentials' tests cover ssh keys.
     await recordProject({ id: WEB, name: 'demo', remoteUrl: 'https://github.com/acme/web', addedAt: 'x' }, BUILT_IN_USER_ID)
     await assignProjectCredential(local, WEB, (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp' })).id)
     await addHttpsCredential(BUILT_IN_USER_ID, { name: 'unused', token: 'ghp_unused' })
@@ -107,6 +106,24 @@ describe('pushCredentialsToRuntime', () => {
     expect(Object.keys(all).sort()).toEqual([bob, OWNER].sort())
     expect(all[bob]).toMatchObject({ claude: null, pi: { apiKey: 'sk-bob' }, git: [{ token: 'ghp_bob', projects: [BOBS] }] })
     expect(all[OWNER].git).toEqual([{ token: 'ghp', projects: [WEB] }])
+  })
+
+  it('hands an ssh key over in the form ssh-add reads, with each project\'s host and trusted host key', async () => {
+    const SVC = '961e38b5-146c-4b07-8078-f53dec9b699a'
+    const HOST_KEY = 'git.example.com ssh-ed25519 AAAAHOST'
+    const key = await generateSshCredential(ME, { name: 'deploy' })
+    await recordProject(
+      { id: SVC, name: 'svc', remoteUrl: 'git@git.example.com:acme/svc.git', addedAt: 'x' }, ME,
+      { id: key.id, knownHostsEntry: HOST_KEY },
+    )
+
+    await pushCredentialsToRuntime()
+
+    expect(synced[0].ssh).toEqual([{
+      privateKey: expect.stringContaining('BEGIN OPENSSH PRIVATE KEY') as string,
+      publicKey: key.publicKey,
+      projects: [{ projectId: SVC, host: 'git.example.com', knownHostsEntry: HOST_KEY }],
+    }])
   })
 
   it('coalesces overlapping pushes so the runtime ends on the store’s latest state', async () => {

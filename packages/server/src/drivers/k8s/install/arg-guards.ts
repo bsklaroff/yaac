@@ -1,14 +1,8 @@
 
 /**
  * `cluster install` flag checks that need no cluster, binaries or
- * kubeconfig.
- *
- * Kept apart from install.ts because it loads
- * `@kubernetes/client-node`, which takes seconds (see
- * packages/cli/src/cli.ts). This module has no imports, so the CLI can
- * call `clusterArgError` before loading the command and reject a typo
- * quickly. install.ts runs the same checks itself, so the CLI's call is
- * only a fast path.
+ * kubeconfig. The CLI runs them before it moves any data dir, so a typo
+ * changes nothing; install.ts runs them again itself.
  */
 
 /** An install step failed in a way the user must resolve; message is the fix. */

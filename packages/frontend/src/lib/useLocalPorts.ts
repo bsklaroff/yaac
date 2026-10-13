@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { windowApi } from '#components/WindowControls'
+import { windowApi } from '#lib/platform'
 import type { LocalPortRemap, PortMapping } from '@yaac/shared/types'
 
 /**

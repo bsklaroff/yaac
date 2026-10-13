@@ -7,13 +7,14 @@
  * A frontmatter typo or misplaced dir would silently drop a skill, so the real
  * packaged dir runs through staging and discovery.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { setDataDir } from '@yaac/shared/project-paths'
 import type { SkillSummary } from '@yaac/shared/types'
 import { builtinSkillsDir, getProjectSkills, getSkillDetail, stageBuiltinSkills } from '#domain/skills'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // A project with nothing on disk, so discovery finds only the packaged tier.
 const projectId = 'shipped-skills'
@@ -22,9 +23,13 @@ let tmp: string
 let staged: string[]
 let shipped: SkillSummary[]
 
+// Workspaces sandboxed, as under k8s, for the setup and for each test.
+beforeEach(() => { installFakeWorkspaceDriver() })
+
 beforeAll(async () => {
   tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-shipped-skills-'))
   setDataDir(tmp)
+  installFakeWorkspaceDriver()
   staged = await stageBuiltinSkills(builtinSkillsDir(), path.join(tmp, 'stage'))
   shipped = (await getProjectSkills('claude', projectId)).skills
 })

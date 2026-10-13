@@ -1,4 +1,5 @@
-import { contextHash, prebuiltRef } from '#drivers/k8s/image-engine'
+import { contextHash } from './image-tags'
+import { prebuiltRef } from './registry'
 import { PROXY_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 

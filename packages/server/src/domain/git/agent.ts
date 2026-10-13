@@ -4,7 +4,7 @@ import path from 'node:path'
 import { installTmpDir } from '@yaac/shared/paths'
 import { listGitCredentials } from '#db'
 import { sshPublicKeyBlobFromLine, sshSign, sshString, sshUint32 } from '#lib/ssh-key'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /**
  * The ssh-agent the server's own git signs through. `ssh` needs a private

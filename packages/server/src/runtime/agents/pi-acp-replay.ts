@@ -28,7 +28,9 @@
 
 import { isAbsolute, resolve } from 'node:path'
 import { AcpRecordWriter } from './acp-log'
-import { ACP, asRecord, asString, unifiedDiffHunks } from './acp-protocol'
+import { ACP } from './acp-protocol'
+import { asRecord, asString } from '#lib/narrow'
+import { unifiedDiffHunks } from './unified-diff'
 import { jsonObjects } from './jsonl'
 import type { AcpEvent } from '@yaac/shared/acp'
 

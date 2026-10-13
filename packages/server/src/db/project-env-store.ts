@@ -3,7 +3,7 @@ import { getDb } from './client'
 import { projectEnvVars } from './schema'
 import { secretConfig } from './secret-key'
 import { symmetricDecrypt, symmetricEncrypt } from 'better-auth/crypto'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { SecretProxyRule } from '@yaac/shared/types'
 
 /**

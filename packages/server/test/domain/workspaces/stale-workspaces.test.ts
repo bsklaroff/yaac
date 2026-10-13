@@ -1,19 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type * as podsModule from '#drivers/k8s/substrate/pods'
-import { runtimeHandleFromPod } from '#drivers/k8s/workspaces'
 import type { RuntimeHandle, StrayUnit } from '#drivers/contract'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
-
-vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => {
-  const actual = await importOriginal<typeof podsModule>()
-  return { ...actual }
-})
+import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // The liveness probes are stubbed inputs; cleanupWorkspaceDetached is the
-// destructive action the tests assert on.
+// destructive action the tests assert on, run for real where a case says so.
 vi.mock('#runtime/status/liveness', () => ({
   probeTmuxLiveness: vi.fn(),
   probeAgentPaneState: vi.fn(),
+  forgetLiveness: vi.fn(),
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({
   cleanupWorkspaceDetached: vi.fn().mockResolvedValue(undefined),
@@ -32,8 +26,9 @@ vi.mock('#db', () => ({
 
 import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
+import type * as CleanupModule from '#domain/workspaces/cleanup'
 import { markWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { applyWorkspaceEvent, desiredWorkspaces, releaseQueuedChildren } from '#db'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import type { WorkspaceEvent } from '#db'
@@ -73,17 +68,15 @@ const mockLog = vi.mocked(serverLog)
 
 // createdAtMs=1 (epoch) is always older than any grace window.
 function pod(workspaceId: string, running = true): RuntimeHandle {
-  return runtimeHandleFromPod({
+  return handleFixture({
     jobName: `yaac-proj-${workspaceId}`,
-    podName: `yaac-proj-${workspaceId}-x1`,
     workspaceId,
     projectId: 'proj',
     tool: 'claude',
-    phase: running ? 'Running' : 'Failed',
+    declaredTool: 'claude',
     running,
-    terminating: false,
+    state: running ? 'running' : 'failed',
     createdAtMs: 1,
-    labels: {},
   })
 }
 
@@ -135,9 +128,11 @@ describe('reconcileStaleWorkspaces', () => {
     expect(releaseQueuedChildren).not.toHaveBeenCalled()
   })
 
-  // The driver derives the cause; the reaper must pass it to the teardown
-  // and the audit log.
+  // The driver derives the cause; the reaper must pass it to the teardown,
+  // which records it with the stop and audits it.
   it('reaps a stopped workspace with its derived death cause, and audits it', async () => {
+    const actual = await vi.importActual<typeof CleanupModule>('#domain/workspaces/cleanup')
+    mockCleanup.mockImplementationOnce(actual.cleanupWorkspaceDetached)
     mockWorkspaces.mockResolvedValue([{
       ...pod('oomed-1', false),
       deathCause: { reason: 'oom', detail: 'exit code 137' },
@@ -151,7 +146,9 @@ describe('reconcileStaleWorkspaces', () => {
         cause: { reason: 'oom', detail: 'exit code 137' },
       }),
     )
+    expect(stopsReported()).toEqual([['proj', 'oomed-1', { reason: 'oom', detail: 'exit code 137' }]])
     expect(loggedLines()).toContain('pod stopped: oom (exit code 137)')
+    expect(loggedLines()).toContain('reported cause=oom (exit code 137), kept only if no stop is recorded yet')
   })
 
   it('keeps a not-yet-Running pod past grace while its create is still provisioning', async () => {

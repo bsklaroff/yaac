@@ -432,7 +432,7 @@ immutable, so no lock file or sidecar appears beside it.
 
 ### Converging at create
 
-Every create and restart runs `convergeAgentHistory` (`#domain/agent-history`)
+Every create and restart runs `convergeAgentHistory` (`#domain/workspaces`)
 before launch. Under k8s it only creates every mount source and nested
 mountpoint, so the kubelet never creates one owned by root: a pod writes its
 history through those mounts and never into the shared homes. Under
@@ -483,8 +483,8 @@ confined root (`#lib/confined-fs`), which checks each path step on an open
 descriptor, opens leaves non-blocking, caps reads, writes through a random temp
 file plus rename, and deletes by walking descriptors.
 
-- **Tool homes and records** are opened with `openSandboxDir`
-  (`#runtime/agents`). Under a sandboxing runtime this is `no-links`, rooted at
+- **Tool homes and records** are opened with `openAgentDir`
+  (`#lib/confined-fs`). Under a sandboxing runtime this is `no-links`, rooted at
   the dir itself (a mount root the pod cannot replace): a link or FIFO in place
   of a file reads as missing, and a write replaces it instead of following it.
   Under containerless there is no boundary to defend and the links are yaac's

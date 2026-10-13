@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   _resetAcpRegistryForTests,
-  acpConversation,
   dropAcpQueues,
   parkAcpQueue,
   registerAcpConversation,
@@ -11,37 +10,10 @@ import {
 } from '#runtime/agents/acp-registry'
 import type { AcpConversation, QueuedTurn } from '#runtime/agents/acp-client'
 
-/**
- * A stand-in conversation. The registry must find it under both its
- * session id and its handle, and drop both names together.
- */
+/** A stand-in conversation; the registry only stores and hands it out. */
 const fake = (id: string): AcpConversation => ({ id }) as unknown as AcpConversation
 
 beforeEach(() => _resetAcpRegistryForTests())
-
-describe('acpConversation', () => {
-  it('finds a conversation by the id a pane addresses it with', () => {
-    const c = fake('a')
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, c)
-
-    expect(acpConversation('demo', 'wt-1', 'acp-1')).toBe(c)
-  })
-
-  it('is scoped per workspace and per project, so ids cannot collide across them', () => {
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, fake('a'))
-
-    expect(acpConversation('demo', 'wt-2', 'acp-1')).toBeUndefined()
-    expect(acpConversation('other', 'wt-1', 'acp-1')).toBeUndefined()
-  })
-
-  it('drops both names on unregister, so a dead conversation is never handed out', async () => {
-    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, fake('a'))
-    unregisterAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' })
-
-    expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeUndefined()
-    await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0)).resolves.toBeUndefined()
-  })
-})
 
 describe('whenAcpConversation', () => {
   afterEach(() => {
@@ -78,6 +50,14 @@ describe('whenAcpConversation', () => {
     registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-new', panePid: '11' }, next)
     await expect(waited).resolves.toBe(next)
     await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0, '10')).resolves.toBeUndefined()
+  })
+
+  it('is scoped per project, and hands out no conversation once it is unregistered', async () => {
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, fake('a'))
+    await expect(whenAcpConversation('other', 'wt-1', 'claude', 0)).resolves.toBeUndefined()
+
+    unregisterAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' })
+    await expect(whenAcpConversation('demo', 'wt-1', 'claude', 0)).resolves.toBeUndefined()
   })
 
   it('gives up after the timeout', async () => {

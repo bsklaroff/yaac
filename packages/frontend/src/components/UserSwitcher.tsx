@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
-import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { CheckIcon, UsersIcon } from '#lib/icons'
 import { identityColor, identityInitial } from '#lib/projectIdentity'
 import { useUiStore } from '#lib/store'
@@ -53,37 +53,33 @@ export function UserSwitcher({ variant = 'rail' }: { variant?: 'rail' | 'row' })
         <UsersIcon size={18} />
         {variant === 'row' && <span className="truncate">{label}</span>}
       </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner side={variant === 'row' ? 'bottom' : 'right'} align="start" sideOffset={6}>
-          <Menu.Popup className={clsx('w-72', POPUP)}>
-            {users.map((u) => (
-              <Menu.Item key={u.id} className={clsx(MENU_ITEM, 'gap-2.5')} onClick={() => pick(u.id)}>
-                <Avatar user={u} />
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-text">{u.id === me ? `${u.name} (you)` : u.name}</span>
-                  {u.login !== null && <span className="truncate text-[11px] text-text-faint">{u.login}</span>}
+      <MenuPopup side={variant === 'row' ? 'bottom' : 'right'} align="start" sideOffset={6} className="w-72">
+        {users.map((u) => (
+          <Menu.Item key={u.id} className={clsx(MENU_ITEM, 'gap-2.5')} onClick={() => pick(u.id)}>
+            <Avatar user={u} />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-text">{u.id === me ? `${u.name} (you)` : u.name}</span>
+              {u.login !== null && <span className="truncate text-[11px] text-text-faint">{u.login}</span>}
+            </span>
+            {active.get(u.id)
+              ? (
+                <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-text-dim">
+                  <span className="h-1.5 w-1.5 rounded-full bg-success" />
+                  {active.get(u.id)} active
                 </span>
-                {active.get(u.id)
-                  ? (
-                    <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-text-dim">
-                      <span className="h-1.5 w-1.5 rounded-full bg-success" />
-                      {active.get(u.id)} active
-                    </span>
-                  )
-                  : <span className="shrink-0 text-[11px] text-text-faint">idle</span>}
-                {u.id === viewed && <CheckIcon size={14} className="shrink-0" />}
-              </Menu.Item>
-            ))}
-            <p className="px-2 pb-1 pt-2 text-[11px] leading-relaxed text-text-faint">
-              A teammate&apos;s projects open read-only.
-              {snapshot?.driver === 'containerless' && (
-                ' This server runs workspaces on its host without containers, so it does not separate '
-                + "users: any workspace can read every user's files and credentials."
-              )}
-            </p>
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
+              )
+              : <span className="shrink-0 text-[11px] text-text-faint">idle</span>}
+            {u.id === viewed && <CheckIcon size={14} className="shrink-0" />}
+          </Menu.Item>
+        ))}
+        <p className="px-2 pb-1 pt-2 text-[11px] leading-relaxed text-text-faint">
+          A teammate&apos;s projects open read-only.
+          {snapshot?.driver === 'containerless' && (
+            ' This server runs workspaces on its host without containers, so it does not separate '
+            + "users: any workspace can read every user's files and credentials."
+          )}
+        </p>
+      </MenuPopup>
     </Menu.Root>
   )
 }

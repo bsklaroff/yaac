@@ -1,9 +1,7 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import { BranchPicker } from '#components/BranchPicker'
 
-afterEach(cleanup)
 
 const BRANCHES = ['main', 'dev', 'release/2.x', 'feature/login']
 
@@ -24,7 +22,7 @@ describe('BranchPicker', () => {
 
   it('tags the defaultBranch', () => {
     render(<BranchPicker branches={BRANCHES} defaultBranch="main" query="" onQueryChange={() => {}} onSelect={() => {}} showList />)
-    const mainRow = within(screen.getByRole('listbox')).getByText('main').closest('li')
+    const mainRow = within(screen.getByRole('listbox')).getByText('main').closest('[role="option"]')
     expect(mainRow).toBeTruthy()
     expect(within(mainRow as HTMLElement).getByText('default')).toBeTruthy()
   })

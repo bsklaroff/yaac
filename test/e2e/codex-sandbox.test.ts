@@ -1,14 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
-import {
-  requirePodman,
-  requireCluster,
-  useTestNamespace,
-} from '@yaac/test-utils/setup'
-import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/image-engine/image-builder'
+import { requireCluster, useTestNamespace } from '@yaac/test-utils/setup'
+import { requirePodman } from '#support/cluster'
+import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
-import { registryHasTag, registryRef } from '@yaac/server/drivers/k8s/container/registry'
-import { buildPodJobManifest, k8sWorkspacePaths } from '@yaac/server/drivers/k8s/substrate'
+import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster/registry'
+import { k8sWorkspacePaths } from '@yaac/server/drivers/k8s/substrate'
+import { buildPodJobManifest } from '@yaac/server/drivers/k8s/workspaces'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from '@yaac/server/domain/workspaces/codex-home'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { applyObject, deleteObject, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
@@ -82,7 +80,7 @@ async function inSandbox(pod: string, profile: string): Promise<string> {
 async function workspacePod(pod: string, nested: boolean): Promise<Record<string, unknown>> {
   const { tools, nestable } = await resolveTrustedLayers('yaac-test')
   const tag = nested ? nestable.tag : tools.tag
-  if (!await registryHasTag(tag)) {
+  if (await registryTagState(tag) !== 'present') {
     throw new Error(`${tag} is not in the local registry — did test/global-setup.ts run?`)
   }
   interface Template {

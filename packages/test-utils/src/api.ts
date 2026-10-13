@@ -1,6 +1,6 @@
 import { createRawApiClient } from '@yaac/shared/api-core'
 import type { buildApp } from '@yaac/server/main/server'
-import type { SpawnedServer } from '#cli'
+import type { ServerLock } from '@yaac/shared/server-lock-file'
 import type { AgentTool, ToolAuthPayload } from '@yaac/shared/types'
 
 type ServerApp = ReturnType<typeof buildApp>
@@ -92,4 +92,9 @@ export async function signInTestTool(
 ): Promise<void> {
   const res = await makeServerApiClient(server, headers).auth[':tool'].$put({ param: { tool }, json: payload })
   if (!res.ok) throw new Error(`signing in to ${tool} failed: ${await res.text()}`)
+}
+
+export interface SpawnedServer {
+  lock: ServerLock
+  stop: () => Promise<void>
 }

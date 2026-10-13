@@ -1,4 +1,4 @@
-import { prebuiltRef } from '#drivers/k8s/image-engine'
+import { prebuiltRef } from './registry'
 
 /**
  * The digest-pinned podman image the sandboxed builder pods run, mirrored

@@ -2,7 +2,8 @@ import { Hono, type Context } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
 import { deleteBuildFile, listBuildFiles, readBuildFile, renameBuildFile, writeBuildFile } from '#domain/projects'
-import { requireDriverFeature, type IdentityEnv } from '#http'
+import { requireDriverFeature } from '#api/http/driver-features'
+import type { IdentityEnv } from '#api/http/web-auth'
 import type { AccessLevel } from '#domain/access'
 
 /**

@@ -61,12 +61,14 @@ describe('resolveProjectConfig', () => {
     const origWarn = console.warn
     console.warn = (msg: string) => warns.push(msg)
     try {
-      expect(await roundTrip({ initCommands: ['pnpm install'], unknownField: true }))
+      // A name every object inherits is still unknown here.
+      expect(await roundTrip({ initCommands: ['pnpm install'], unknownField: true, toString: 1 }))
         .toEqual({ initCommands: ['pnpm install'] })
     } finally {
       console.warn = origWarn
     }
     expect(warns).toContain('yaac-config.json: unknown field "unknownField"')
+    expect(warns).toContain('yaac-config.json: unknown field "toString"')
   })
 
   describe('cacheVolumes', () => {
@@ -246,7 +248,7 @@ describe('resolveProjectConfig', () => {
       await expect(roundTrip({ ephemeralModulesPaths: 'node_modules' }))
         .rejects.toThrow(/must be a string array/)
       await expect(roundTrip({ ephemeralModulesPaths: ['node_modules', 5] }))
-        .rejects.toThrow(/must be a string array/)
+        .rejects.toThrow('ephemeralModulesPaths[1] must be a string')
       await expect(roundTrip({ ephemeralModulesPaths: ['/etc/passwd'] }))
         .rejects.toThrow(/relative to \/workspace/)
       await expect(roundTrip({ ephemeralModulesPaths: [''] })).rejects.toThrow(/must not be empty/)

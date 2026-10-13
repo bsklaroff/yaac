@@ -1,16 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import {
-  TEST_CLI_ENTRY,
-  createYaacTestEnv,
-  spawnYaacServer,
-  runYaac,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
+import { TEST_CLI_ENTRY, createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import type { SpawnedServer } from '@yaac/test-utils/api'
 import { TEST_NAMESPACE } from '@yaac/test-utils/setup'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/test-pods'
+import { resolveTestBaseImageRef } from '#support/test-pods'
 import { readLock } from '@yaac/shared/lock'
 import {
   RUNTIME_CLASS_GVISOR,

@@ -16,11 +16,11 @@
  * strips the marker from the published copy.
  */
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { collectFileHashes, combineHashes, hashBuffer } from '@yaac/shared/content-hash'
 
 const __filename = fileURLToPath(import.meta.url)
 const repoRoot = path.resolve(path.dirname(__filename), '..')
@@ -32,18 +32,33 @@ const markerFile = path.join(frontendDist, '.input-hash')
 /** Dirs the vite build never reads, including its own output. */
 const SKIP_DIRS = new Set(['dist', 'node_modules'])
 
+/**
+ * One digest over the inputs: every file's repo-relative path and the
+ * sha256 of its bytes, sorted by path and NUL-delimited so different splits
+ * of path and hash cannot collide.
+ */
 async function hashInputs(): Promise<string> {
-  const entries = [
-    ...(await collectFileHashes(frontendDir, { prefix: 'frontend', skipDirs: SKIP_DIRS })),
-    ...(await collectFileHashes(path.join(repoRoot, 'packages', 'shared', 'src'), {
-      prefix: 'shared',
-    })),
-  ]
-  const lock = path.join(repoRoot, 'pnpm-lock.yaml')
-  if (existsSync(lock)) {
-    entries.push({ rel: 'pnpm-lock.yaml', hash: hashBuffer(await fs.readFile(lock)) })
+  const files: string[] = []
+  async function walk(dir: string): Promise<void> {
+    const dirents = await fs.readdir(dir, { withFileTypes: true }).catch(() => [])
+    for (const ent of dirents) {
+      const full = path.join(dir, ent.name)
+      if (ent.isDirectory()) {
+        if (!SKIP_DIRS.has(ent.name)) await walk(full)
+      } else if (ent.isFile()) {
+        files.push(path.relative(repoRoot, full))
+      }
+    }
   }
-  return combineHashes(entries)
+  await walk(frontendDir)
+  await walk(path.join(repoRoot, 'packages', 'shared', 'src'))
+  if (existsSync(path.join(repoRoot, 'pnpm-lock.yaml'))) files.push('pnpm-lock.yaml')
+  const outer = crypto.createHash('sha256')
+  for (const rel of files.sort()) {
+    const hash = crypto.createHash('sha256').update(await fs.readFile(path.join(repoRoot, rel))).digest('hex')
+    outer.update(`${rel}\0${hash}\0`)
+  }
+  return outer.digest('hex')
 }
 
 function runFrontendBuild(): Promise<void> {

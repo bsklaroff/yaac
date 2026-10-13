@@ -14,7 +14,7 @@ a forward) return `NOT_SUPPORTED` (docs/containerless-driver.md "Ports").
 
 ```
 streamd `ports` stream (polls /proc/net in the pod, pushes on change)
-  → server detector map (drivers/k8s/forwarders/port-detector.ts)
+  → server detector map (drivers/k8s/workspaces/port-detector.ts)
   → snapshot `unforwardedPorts[]` → /events WS
   → UnforwardedPortsBadge (workspace toolbar popover)
   → POST /workspace/:id/forward-port {containerPort, persist}

@@ -2,46 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as childProcess from 'node:child_process'
 import fs from 'node:fs/promises'
 
-// Only process boundaries and other folders' barrels are faked: the cluster
-// (the fake behind client-node), child processes, the registry client and
-// the image engine. Nothing in the cluster folder is mocked, so
-// `ensureProxyResources` runs the real manifests, policies, CIDR probes and
-// netd.
+// Only process boundaries are faked: the cluster (the fake behind
+// client-node), child processes and the registry. Nothing in the cluster
+// folder is mocked, so `ensureProxyResources` runs the real manifests,
+// policies, CIDR probes and netd.
 
-// Child processes (podman, `kubectl rollout status`) are faked at
+// Child processes (`kubectl rollout status`) are faked at
 // node:child_process so a test can assert nothing was pulled.
 vi.mock('node:child_process', async (importOriginal) => ({
   ...await importOriginal<typeof childProcess>(),
   execFile: vi.fn((...allArgs: unknown[]) => {
-    const args = allArgs[1] as string[]
     const cb = allArgs[allArgs.length - 1] as (...cbArgs: unknown[]) => void
-    // Answer an arch probe with the host arch so assertMirrorArch passes.
-    const isArchProbe = args.includes('inspect') && args.some((a) => a.includes('Architecture'))
-    cb(null, { stdout: isArchProbe ? hostArch() : '', stderr: '' })
+    cb(null, { stdout: '', stderr: '' })
   }),
 }))
-
-vi.mock('#drivers/k8s/container/registry', () => ({
-  registryHasTag: vi.fn().mockResolvedValue(true),
-  registryRef: vi.fn((tag: string) => `localhost:5001/${tag}`),
-  pushImageToRegistry: vi.fn((tag: string) => Promise.resolve(`localhost:5001/${tag}`)),
-}))
-
-vi.mock('#drivers/k8s/container/runtime', () => ({
-  imageExists: vi.fn().mockResolvedValue(true),
-}))
-
-// `yaac cluster install` builds netd's image; this path only looks its tag
-// up, so only the hash is faked and the real missing-image error is kept.
-vi.mock('#drivers/k8s/image-engine', async (importOriginal) => ({
-  ...(await importOriginal<typeof imageEngineModule>()),
-  contextHash: vi.fn().mockResolvedValue('deadbeefcafe1234'),
-  buildImage: vi.fn().mockResolvedValue(undefined),
-  registerImageBuild: vi.fn(() => 'build-1'),
-  finishImageBuild: vi.fn(),
-  failImageBuild: vi.fn(),
-}))
-import type * as imageEngineModule from '#drivers/k8s/image-engine'
 
 import {
   ensureBuilderRoleGuard,
@@ -55,6 +29,8 @@ import {
   syncProjectSecrets,
   syncProxyCredentials,
   vapAvailable,
+  ENVOY_MIRROR_TAG,
+  resolveNetdImageTag,
 } from '#drivers/k8s/cluster'
 import { globalRoot } from '@yaac/shared/project-paths'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
@@ -83,24 +59,17 @@ import {
 import { LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
 import { LABEL_INSTALL_ID, installId } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { imageExists } from '#drivers/k8s/container/runtime'
-import { registryHasTag } from '#drivers/k8s/container/registry'
-import { buildImage, registerImageBuild } from '#drivers/k8s/image-engine'
-import { serverLog } from '#log'
+import { fakeRegistry } from '#test/support/fake-registry'
+import { registryHost } from '#drivers/k8s/cluster'
+import { serverLog } from '#lib/log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
 
 
-const mockPodman = vi.mocked(execFile)
-/** podman's arch string for this host, as assertMirrorArch expects it. */
-function hostArch(): string {
-  return process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : process.arch
-}
+const mockExecFile = vi.mocked(execFile)
 /** The argv of every child process recorded by the child_process fake. */
 const childArgs = (): string[][] =>
-  mockPodman.mock.calls.map((c) => c[1] as string[])
-const mockImageExists = vi.mocked(imageExists)
-const mockHasTag = vi.mocked(registryHasTag)
+  mockExecFile.mock.calls.map((c) => c[1] as string[])
 
 const NODE_IP = '10.89.0.7'
 const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
@@ -155,8 +124,8 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   vi.clearAllMocks()
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
-  mockImageExists.mockResolvedValue(true)
-  mockHasTag.mockResolvedValue(true)
+  fakeRegistry.install()
+  fakeRegistry.holdsAll = true
   resetClusterCidrCache()
   resetProxyClusterIpCache()
   vi.stubEnv('YAAC_USE_TOR', '')
@@ -165,6 +134,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await cleanupTempDir(tmpDir)
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 describe('ensureNamespace', () => {
@@ -497,7 +467,7 @@ describe('ensureProxyResources', () => {
       .find((e) => e.name === 'NETD_VETH_PREFIX')
     expect(vethEnv?.value).toBe('cali')
     // Both images resolve through the local registry, never upstream.
-    for (const c of pod.containers) expect(c.image).toMatch(/^localhost:5001\//)
+    for (const c of pod.containers) expect(c.image.startsWith(`${registryHost()}/`)).toBe(true)
   })
 
   it('adds the configured pod CIDRs and veth prefix for an adopted CNI', async () => {
@@ -525,23 +495,22 @@ describe('ensureProxyResources', () => {
     // `yaac cluster install` produces both images; the server only looks
     // them up and never needs a container engine.
     stageClusterReads()
-    mockImageExists.mockResolvedValue(false)
+    const netdTag = await resolveNetdImageTag()
+    fakeRegistry.holdsAll = false
 
     // Envoy mirrored, netd not: the missing one is the one named.
-    mockHasTag.mockImplementation((tag: string) =>
-      Promise.resolve(!tag.startsWith('yaac-netd:')))
+    fakeRegistry.tags.add(ENVOY_MIRROR_TAG)
     await expect(ensureProxyResources('img'))
       .rejects.toThrow(/netd image .* is missing.*yaac cluster install/s)
 
     // netd present, Envoy absent.
-    mockHasTag.mockImplementation((tag: string) =>
-      Promise.resolve(tag.startsWith('yaac-netd:')))
+    fakeRegistry.tags.clear()
+    fakeRegistry.tags.add(netdTag)
     await expect(ensureProxyResources('img'))
       .rejects.toThrow(/Envoy image .* is missing.*yaac cluster install/s)
 
-    expect(childArgs().some((a) => a[0] === 'pull')).toBe(false)
-    expect(vi.mocked(buildImage)).not.toHaveBeenCalled()
-    expect(vi.mocked(registerImageBuild)).not.toHaveBeenCalled()
+    // Nothing pulled or built.
+    expect(childArgs().filter((a) => a[0] !== 'rollout')).toEqual([])
   })
 
   it('resolves netd\'s pod-CIDR exclusions from every source, and falls back when none answer', async () => {

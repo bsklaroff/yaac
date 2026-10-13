@@ -4,7 +4,7 @@ vi.mock('#domain/projects/local-config', () => ({
   addPortForwardToProjectConfig: vi.fn(() => Promise.resolve({})),
 }))
 
-import { handleFixture, installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { addPortForwardToProjectConfig } from '#domain/projects/local-config'
 import { dismissWorkspacePort, forwardWorkspacePort, unforwardWorkspacePort } from '#domain/workspaces/forward-port'
 import { ServerError } from '@yaac/shared/errors'

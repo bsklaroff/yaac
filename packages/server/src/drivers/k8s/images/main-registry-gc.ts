@@ -18,12 +18,11 @@
  * repeated just before it runs. The registry keeps no blob-descriptor
  * cache (main-registry.ts), so it needs no restart afterwards.
  */
-import { buildRegistryRetentionScript, mainRegistryExec } from '#drivers/k8s/cluster'
+import { buildRegistryRetentionScript, mainRegistryExec, resolveImageChain } from '#drivers/k8s/cluster'
 import { listObjects } from '#drivers/k8s/substrate'
-import { resolveImageChain } from '#drivers/k8s/image-engine'
 import { testEnv } from '@yaac/shared/env'
 import type { ProjectReaders } from '#drivers/contract'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
 import { pruneNodeImages, registryGeneration } from './node-image-gc'
@@ -236,11 +235,10 @@ async function readLiveImages(
 ): Promise<LiveImages> {
   const inUse = await readInUse()
   let wanted: Set<string> | null = new Set<string>()
-  const prefix = testEnv.imagePrefix ?? 'yaac'
   for (const projectId of projectIds) {
     try {
       const nested = (await projects.projectConfig(projectId))?.nestedContainers === true
-      const { layers } = await resolveImageChain(projectId, await projects.projectOwner(projectId), prefix, nested)
+      const { layers } = await resolveImageChain(projectId, await projects.projectOwner(projectId), nested)
       for (const { tag } of layers) wanted.add(tag)
     } catch (err) {
       serverLog(`[main-registry-gc] ${projectId}: cannot resolve its image chain, `

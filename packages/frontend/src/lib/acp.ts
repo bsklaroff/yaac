@@ -6,9 +6,9 @@
  *
  * History is the record acpd writes, and each attach numbers it from zero.
  * So the pane replaces its list on `hello` rather than merging, and a
- * dropped connection costs only a repaint. Live events after that are
- * merged by `seq`, so a repeated or out-of-order delivery can't duplicate a
- * message.
+ * dropped connection costs only a repaint. After that the server numbers
+ * each event it sends on this socket one past the last, in send order, so
+ * live events are appended as they come.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -45,15 +45,6 @@ export interface TaskOutput { text?: string; error?: string }
  *  read. */
 export interface SubagentTranscript { events?: AcpEventInit[]; error?: string }
 
-/** Merge a batch of events into the list, keyed by `seq`, so a replayed
- *  event replaces its earlier copy instead of duplicating it. */
-export function mergeEvents(existing: AcpEvent[], incoming: AcpEvent[]): AcpEvent[] {
-  if (incoming.length === 0) return existing
-  const bySeq = new Map(existing.map((e) => [e.seq, e]))
-  for (const e of incoming) bySeq.set(e.seq, e)
-  return [...bySeq.values()].sort((a, b) => a.seq - b.seq)
-}
-
 /**
  * Attach to one conversation for as long as the pane is mounted.
  *
@@ -77,17 +68,10 @@ export function useAcpStream(
   const socketRef = useRef<ReconnectingSocket | null>(null)
 
   useEffect(() => {
-    if (workspaceId === '' || agentSessionId === '') return
     const params = new URLSearchParams({ id: workspaceId, session: agentSessionId })
     const sock = reconnectingSocket(() => `/api/acp/attach?${params}`, {
       message: (data) => {
-        if (typeof data !== 'string') return false
-        let msg: AcpServerMessage
-        try {
-          msg = JSON.parse(data) as AcpServerMessage
-        } catch {
-          return false
-        }
+        const msg = JSON.parse(data as string) as AcpServerMessage
         if (msg.type === 'hello') {
           // Replace, don't merge: each attach renumbers history from zero.
           setEvents(msg.events)
@@ -99,7 +83,7 @@ export function useAcpStream(
           return true
         }
         if (msg.type === 'event') {
-          setEvents((prev) => mergeEvents(prev, [msg.event]))
+          setEvents((prev) => [...prev, msg.event])
           // Only explicit boundaries set `busy`. A `user` event can't be used:
           // `session/load` replays past messages as live updates with no
           // closing boundary, which would leave a restarted workspace stuck

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { env } from '@yaac/shared/env'
 import { secretKeyPath } from '@yaac/shared/project-paths'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { SecretConfig } from 'better-auth/crypto'
 
 /**

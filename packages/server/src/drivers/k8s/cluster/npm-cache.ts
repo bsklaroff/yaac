@@ -38,7 +38,7 @@ import {
   listObjects,
   waitForRollout,
 } from '#drivers/k8s/substrate'
-import { prebuiltRef } from '#drivers/k8s/image-engine'
+import { prebuiltRef } from './registry'
 import { clusterPodCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { ensureNamespace } from './proxy-apply'
 

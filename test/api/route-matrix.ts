@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { buildApp } from '@yaac/server/main/server'
+import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { closeDb, getDb } from '@yaac/server/db/client'
 import { draftWorkspaces, gitCredentials, queuedWorkspaces } from '@yaac/server/db/schema'
 import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
@@ -8,7 +9,7 @@ import { insertQueuedWorkspace } from '@yaac/server/db/queued-workspace-store'
 import { insertDraftWorkspace } from '@yaac/server/db/draft-workspace-store'
 import { BUILT_IN_USER_ID, insertGitCredential } from '@yaac/server/db'
 import { clearAllProvisioningForTests, registerProvisioning } from '@yaac/server/domain/workspaces/provisioning'
-import { registerImageBuild } from '@yaac/server/drivers/k8s/image-engine/image-builds'
+import { registerImageBuild } from '@yaac/server/drivers/k8s/images/image-builds'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { asTailnet } from '@yaac/test-utils/api'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
@@ -27,19 +28,23 @@ import type { DriverKind } from '@yaac/shared/types'
  * another user's project. Otherwise it checks only the status a caller gets
  * from a server with no projects or workspaces. Behavior is covered by
  * `write-routes.test.ts` and the e2e tiers.
+ *
+ * `routes-k8s.test.ts` and `routes-containerless.test.ts` each run
+ * `defineRouteSuite` for one column, in a project whose setup file
+ * registers that real driver.
  */
 
 /** What a route answers. A number is exact; an array is "one of these". */
-export type Expected = number | number[]
+type Expected = number | number[]
 
 /**
  * Who may call a route (docs/multi-user.md "Authorization"). `public`
  * never consults the caller; `reader` is any user; `owner` is the owner of
  * what the route names, refused to anyone else with 403.
  */
-export type Access = 'public' | 'reader' | 'owner'
+type Access = 'public' | 'reader' | 'owner'
 
-export interface RouteCase {
+interface RouteCase {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   /** Exactly as Hono registered it, params and all. */
   path: string
@@ -69,7 +74,7 @@ const OK_OR_MISSING = [200, 404]
  * What the requests name. None exists on the empty server; `seedOwnedFixtures`
  * creates each under another user's project.
  */
-export const ID = {
+const ID = {
   project: '5e1f0c2a-7b3d-4e8f-9a6c-0d1e2f3a4b5c',
   workspace: '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d',
   queued: '7a3b2e4c-9d5f-4a0b-8c8e-2f3a4b5c6d7e',
@@ -88,7 +93,7 @@ const W = `/api/workspace/${ID.workspace}`
  * The table, grouped as the routes are. Most routes answer identically
  * under both drivers; the differences are features a host install lacks.
  */
-export const ROUTE_MATRIX: RouteCase[] = [
+const ROUTE_MATRIX: RouteCase[] = [
   // ── health and identity ───────────────────────────────────────────────
   { method: 'GET', path: '/api/health', access: 'public', k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/whoami', access: 'reader', k8s: 200, containerless: 200 },
@@ -192,7 +197,6 @@ export const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/group/rename', body: { projectId: ID.project, groupId: ID.group, name: 'g' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/set-pinned', body: { projectId: ID.project, groupId: ID.group, pinned: true }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/delete', body: { projectId: ID.project, groupId: ID.group }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/set-group', body: { projectId: ID.project, workspaceId: ID.workspace, groupId: null }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // Idempotent for an id with no entry.
   { method: 'POST', path: '/api/workspace/provisioning/:id/dismiss', request: `/api/workspace/provisioning/${ID.provisioning}/dismiss`, access: 'owner', k8s: 204, containerless: 204 },
   { method: 'POST', path: '/api/workspace/:id/title', request: `${W}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
@@ -259,7 +263,7 @@ export const ROUTE_MATRIX: RouteCase[] = [
  * Fail on any route the server registers that this table does not name,
  * or any row naming a route that no longer exists.
  */
-export function assertMatrixCoversEveryRoute(): void {
+function assertMatrixCoversEveryRoute(): void {
   const app = buildApp({ buildId: 'matrix' })
   const registered = new Set(
     (app.routes as Array<{ method: string; path: string }>)
@@ -280,18 +284,18 @@ export function assertMatrixCoversEveryRoute(): void {
 }
 
 /** The status(es) a case expects under `kind`. */
-export function expectedFor(route: RouteCase, kind: DriverKind): number[] {
+function expectedFor(route: RouteCase, kind: DriverKind): number[] {
   const want = kind === 'k8s' ? route.k8s : route.containerless
   return Array.isArray(want) ? want : [want]
 }
 
 /** A one-line label for a case, used as the test name. */
-export function label(route: RouteCase): string {
+function label(route: RouteCase): string {
   return `${route.method} ${route.path}`
 }
 
 /** Request a case from `app`, as the caller `headers` make it. */
-export async function requestRoute(
+async function requestRoute(
   app: ReturnType<typeof buildApp>,
   route: RouteCase,
   headers: Record<string, string> = {},
@@ -306,17 +310,17 @@ export async function requestRoute(
 
 /** The tailnet name the non-owner check's requests arrive at. Its test
  *  must admit it through `YAAC_ALLOWED_HOSTS`. */
-export const TAILNET_HOST = 'srv.tailnet.ts.net'
+const TAILNET_HOST = 'srv.tailnet.ts.net'
 
 /** A second user: what `tailscale serve` stamps on a teammate's request. */
-export const asTeammate = (): Record<string, string> => asTailnet('teammate@example.com', TAILNET_HOST)
+const asTeammate = (): Record<string, string> => asTailnet('teammate@example.com', TAILNET_HOST)
 
 /**
  * Give the built-in user a project holding everything `ID` names, so a
  * request as anyone else names another user's things. The group needs no
  * row: its routes refuse on the project before looking it up.
  */
-export async function seedOwnedFixtures(): Promise<void> {
+async function seedOwnedFixtures(): Promise<void> {
   await recordTestProject(ID.project)
   await recordWorkspaceCreated({ projectId: ID.project, workspaceId: ID.workspace })
   const settings = { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' } as const
@@ -341,7 +345,7 @@ export async function seedOwnedFixtures(): Promise<void> {
  * skipped, except that another user's git credential must read as missing.
  * A tailnet server, so the second user is just request headers.
  */
-export function describeNonOwner(kind: DriverKind): void {
+function describeNonOwner(kind: DriverKind): void {
   describe(`every route as a non-owner, ${kind}`, () => {
     let tmpDir: string
     const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'matrix', access: () => 'tailnet' })
@@ -381,4 +385,39 @@ export function describeNonOwner(kind: DriverKind): void {
       }
     })
   })
+}
+
+/**
+ * Every route against a server on `kind`'s driver: each answers as its
+ * column says, and each refusal of a feature this substrate lacks says why,
+ * since a client that renders per driver never asks, so whoever sees one is
+ * a human. Under k8s with no cluster up, a route that reaches the substrate
+ * answers RUNTIME_UNAVAILABLE, which is why several rows allow 503 beside
+ * 404. Then the non-owner checks.
+ */
+export function defineRouteSuite(kind: DriverKind): void {
+  const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'matrix' })
+
+  describe(`every route, ${kind}`, () => {
+    it('the matrix names every route the server registers', () => {
+      assertMatrixCoversEveryRoute()
+    })
+
+    it(`runs against the ${kind} driver`, () => {
+      expect(workspaceDriver().kind).toBe(kind)
+    })
+
+    for (const route of ROUTE_MATRIX) {
+      it(`${label(route)} answers as the matrix says`, async () => {
+        const res = await requestRoute(app(), route)
+        expect(expectedFor(route, kind), `${label(route)} → ${String(res.status)}`).toContain(res.status)
+        if (res.status !== UNSUPPORTED) return
+        const body = await res.json() as { error?: { code?: string; message?: string } }
+        expect(body.error?.code).toBe('NOT_SUPPORTED')
+        expect(body.error?.message).toMatch(/This server /)
+      })
+    }
+  })
+
+  describeNonOwner(kind)
 }

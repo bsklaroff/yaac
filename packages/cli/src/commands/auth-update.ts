@@ -10,9 +10,20 @@ import {
 } from '@yaac/auth-daemon/tool-login'
 import {
   buildAuthPayload,
-  promptForApiKey,
-  runToolLogin,
+  detectAuthKind,
+  type ToolLoginResult,
 } from '@yaac/shared/tool-auth-interactive'
+import {
+  OPENCODE_DEFAULT_PROVIDER,
+  OPENCODE_PROVIDERS,
+  PI_DEFAULT_PROVIDER,
+  PI_PROVIDERS,
+  opencodeProviderInfo,
+  piProviderInfo,
+  type OpencodeProvider,
+  type PiProvider,
+  type ToolProviderInfo,
+} from '@yaac/shared/tool-providers'
 import { TOOL_LABELS, type AgentTool } from '@yaac/shared/types'
 
 export async function authUpdate(): Promise<void> {
@@ -82,14 +93,15 @@ async function runGitUpdate(): Promise<void> {
   console.log(`Add a project with it: yaac project add <remote-url> '${name}'`)
 }
 
+/**
+ * Sign a tool in: claude and codex through their vendor CLI's browser
+ * sign-in when it is installed here, else (and always for opencode and
+ * pi) with a pasted api key.
+ */
 async function runToolUpdate(tool: AgentTool): Promise<void> {
   const label = TOOL_LABELS[tool]
 
-  // Returns a result directly for the e2e hook and the opencode/pi api-key
-  // prompt; otherwise null.
-  let result = await runToolLogin(tool)
-
-  if (!result && (tool === 'claude' || tool === 'codex')) {
+  if (tool === 'claude' || tool === 'codex') {
     const outcome = await runBrowserLogin(tool)
     if (outcome === 'success') {
       console.log(`${label} credentials saved.`)
@@ -98,7 +110,7 @@ async function runToolUpdate(tool: AgentTool): Promise<void> {
     if (outcome === 'error') process.exit(1)
     console.log(`The ${label} CLI is not installed on this machine — enter an API key instead.`)
   }
-  result ??= await promptForApiKey(tool)
+  const result = await promptForApiKey(tool)
 
   const payload = buildAuthPayload(tool, result)
   const client = getApiClient()
@@ -177,4 +189,55 @@ async function runBrowserLogin(tool: 'claude' | 'codex'): Promise<'success' | 'c
   if (view.cliMissing) return 'cli-missing'
   console.error(view.error ?? 'Sign-in failed.')
   return 'error'
+}
+
+/**
+ * Ask which provider an opencode/pi api key is for. There are too many for
+ * a numbered menu, so the user types an id; "?" lists them and Enter takes
+ * the default. Re-prompts on an unknown id.
+ */
+async function promptForProvider<T extends string>(
+  rl: readline.Interface,
+  tool: 'opencode' | 'pi',
+  list: readonly ToolProviderInfo[],
+  defaultId: T,
+): Promise<T> {
+  console.log(`Which ${tool} provider? Type its id, "?" to list all ${list.length}, or Enter for "${defaultId}".`)
+  for (;;) {
+    const answer = (await rl.question(`Provider [${defaultId}]: `)).trim()
+    if (!answer) return defaultId
+    if (answer === '?') {
+      for (const p of list) console.log(`  ${p.id}  —  ${p.label}`)
+      continue
+    }
+    const match = list.find((p) => p.id === answer)
+    if (match) return match.id as T
+    console.log(`Unknown provider "${answer}". Type "?" to see the full list.`)
+  }
+}
+
+/** Prompt the user to paste an API key, asking for the provider first on opencode/pi. */
+async function promptForApiKey(tool: AgentTool): Promise<ToolLoginResult> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  let opencodeProvider: OpencodeProvider | undefined
+  let piProvider: PiProvider | undefined
+  if (tool === 'opencode') {
+    opencodeProvider = await promptForProvider(rl, 'opencode', OPENCODE_PROVIDERS, OPENCODE_DEFAULT_PROVIDER)
+  }
+  if (tool === 'pi') {
+    piProvider = await promptForProvider(rl, 'pi', PI_PROVIDERS, PI_DEFAULT_PROVIDER)
+  }
+  const label =
+    tool === 'claude' ? 'Anthropic API key or OAuth token' :
+    tool === 'codex' ? 'OpenAI API key' :
+    tool === 'opencode' && opencodeProvider ? `${opencodeProviderInfo(opencodeProvider).label} API key` :
+    tool === 'pi' && piProvider ? `${piProviderInfo(piProvider).label} API key` :
+    'API key'
+  const key = (await rl.question(`Paste your ${label}: `)).trim()
+  rl.close()
+  if (!key) {
+    console.error('Key cannot be empty.')
+    process.exit(1)
+  }
+  return { apiKey: key, kind: detectAuthKind(tool, key), opencodeProvider, piProvider }
 }

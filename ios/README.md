@@ -105,7 +105,7 @@ with everything typed into it.
 - **The bridge.** A script injected at document start defines
   `window.yaacWindow` with `showServers`, `openExternal` and `openPreview`,
   the three calls the SPA makes of a native shell (`windowApi()` in
-  `packages/frontend/src/components/WindowControls.tsx`). The SPA shows its
+  `packages/frontend/src/lib/platform.ts`). The SPA shows its
   Servers row (`ServersButton`) only when `showServers` exists, its Preview
   entries only when `openPreview` does, and its window controls only under
   Electron;

@@ -1,16 +1,13 @@
-// @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach, beforeAll, beforeEach } from 'vitest'
-import { screen, cleanup, fireEvent } from '@testing-library/react'
-import type { ServerSnapshot, StoppedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { screen, fireEvent } from '@testing-library/react'
+import type { ServerSnapshot, StoppedWorkspaceEntry } from '@yaac/shared/types'
 
-const useSnapshot = vi.hoisted(() => vi.fn())
-vi.mock('#lib/useSnapshot', () => ({ useSnapshot }))
 vi.mock('#components/WorkspaceTerminal', () => ({ WorkspaceTerminal: () => <textarea data-testid="terminal" /> }))
 
 import { ReadOnlyWorkspace } from '#components/ReadOnlyWorkspace'
 import { WorkspaceView } from '#components/WorkspaceView'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient } from './harness'
+import { mockFetch, renderWithClient, serverSnapshot, testQueryClient, workspaceEntry } from './harness'
 
 /**
  * The containerless badge in both workspace headers: the live pane's and the
@@ -18,26 +15,8 @@ import { mockFetch, renderWithClient } from './harness'
  * server's driver, so a k8s server draws none.
  */
 
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
-const workspace: WorkspaceListEntry = {
-  workspaceId: 's1',
-  projectId: 'proj',
-  tool: 'claude',
-  status: 'running',
-  createdAt: '2026-08-10 00:00:00',
-  agentSessions: [],
-  blockedHosts: [],
-  forwardedPorts: [],
-  unforwardedPorts: [],
-  terminals: [],
-}
+const workspace = workspaceEntry({ terminals: [] })
 
 const stopped: StoppedWorkspaceEntry = {
   workspaceId: 's2',
@@ -57,19 +36,15 @@ beforeEach(() => {
   useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {} })
   mockFetch()
 })
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 function renderPanes(driver: ServerSnapshot['driver']): void {
-  const snapshot = { driver, workspaces: [workspace] } as unknown as ServerSnapshot
-  useSnapshot.mockReturnValue(snapshot)
+  const snapshot = serverSnapshot({ driver, workspaces: [workspace] })
   renderWithClient(
     <>
       <WorkspaceView snapshot={snapshot} provisioning={[]} />
       <ReadOnlyWorkspace subject={{ kind: 'stopped', entry: stopped }} />
     </>,
+    testQueryClient(undefined, snapshot),
   )
 }
 

@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { k8sNamespace, listObjects } from './api'
 import { installId } from './install-id'
 import { LABEL_INSTALL_ID } from './storage-constants'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 // Label keys attached to every workspace Job and its Pod.
 

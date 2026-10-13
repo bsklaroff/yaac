@@ -26,7 +26,7 @@
  *   (`onStreamHealthLost`).
  */
 
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import type { LiveAgent } from '#runtime/agents'
 import type { AgentStatus, WorkspaceTerminalEntry } from '@yaac/shared/types'
 

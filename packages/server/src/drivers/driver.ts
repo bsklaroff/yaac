@@ -30,7 +30,12 @@ export function workspaceDriver(): WorkspaceDriver {
   return registered
 }
 
-/** Whether a driver is registered, for shutdown paths. */
-export function hasWorkspaceDriver(): boolean {
-  return registered !== null
+/**
+ * Whether workspaces run sandboxed: in pods whose egress a proxy mediates
+ * and whose mounts can sit over the project's shared tool homes. Every
+ * substrate but containerless. A sandboxed workspace holds only placeholder
+ * credentials, and anything it can write may hold a planted link.
+ */
+export function workspacesSandboxed(): boolean {
+  return workspaceDriver().kind !== 'containerless'
 }

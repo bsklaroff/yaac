@@ -4,7 +4,7 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createYaacTestEnv, runYaac, type YaacTestEnv } from '@yaac/test-utils/cli'
+import { createYaacTestEnv, runYaac, type YaacTestEnv } from '#support/cli'
 import { TAILSCALE_OPERATOR_NAMESPACE } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 
 /**

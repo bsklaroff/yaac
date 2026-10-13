@@ -8,7 +8,11 @@ import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { setClaudeBundledSkills } from '#domain/skills/claude-bundled'
 import { setBuiltinSkillsDir } from '#domain/skills/builtin'
 import { git } from '@yaac/test-utils/git'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 const projectId = 'proj'
 

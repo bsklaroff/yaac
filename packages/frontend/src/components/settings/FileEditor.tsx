@@ -38,7 +38,7 @@ export function FileEditor({
   const [expanded, setExpanded] = useState(false)
   const fontSize = useUiStore((s) => s.editorFontSize)
   const saving = useMutation({
-    mutationFn: (text: string) => save?.(text) ?? Promise.resolve(),
+    mutationFn: save,
     onSuccess: (_, text) => {
       queryClient.setQueryData(queryKey, text)
       setEdit(null)

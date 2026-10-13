@@ -1,15 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
-import {
-  requirePodman,
-  requireCluster,
-  useTestNamespace,
-  createTempDataDir,
-  cleanupTempDir,
-  TEST_PROXY_CONFIG,
-} from '@yaac/test-utils/setup'
-import { resolveTestBaseImageRef } from '@yaac/test-utils/test-pods'
-import { startWorkspacePod, waitForPod } from '@yaac/test-utils/test-pods'
+import { requireCluster, useTestNamespace, createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { requirePodman, TEST_PROXY_CONFIG } from '#support/cluster'
+import { resolveTestBaseImageRef } from '#support/test-pods'
+import { startWorkspacePod, waitForPod } from '#support/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
 import {
   applyProxyRegistration,

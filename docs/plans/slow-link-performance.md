@@ -14,11 +14,11 @@ is the whole WAN path. There is no edge tier to move. The lag has two causes:
   control past the server. Foreground echo waits behind all of it.
 
 Basic transport tuning is done: WebSocket compression, `setNoDelay`, output
-batching in the PTY bridge, keystroke batching in the browser, and a
-round-trip measurement feeding the link-quality store. See
-[stream-relay.md](../stream-relay.md) "The browser hop". Re-measure with the
-link-quality numbers before starting anything below, since that tuning may
-have fixed much of the bandwidth problem.
+batching in the PTY bridge and keystroke batching in the browser. See
+[stream-relay.md](../stream-relay.md) "The browser hop". Re-measure the
+round trip before starting anything below, since that tuning may have fixed
+much of the bandwidth problem. The terminal socket's `ping`/`pong` is a bare
+keepalive; timing it would mean echoing a client stamp in the pong again.
 
 Plans B-E are in recommended order. Each stands alone.
 
@@ -79,8 +79,8 @@ This is the only fix for slow typing. Port VS Code's terminal typeahead addon
 (MIT-licensed, written for xterm.js). Keystrokes appear at once in a dimmed
 style and are confirmed when the server's echo arrives. Prediction turns
 itself off when the program stops echoing predictably (password prompts,
-full-screen TUIs). Enable it only when the link-quality store's measured
-round trip is above a threshold (VS Code uses 30 ms).
+full-screen TUIs). Enable it only when the measured round trip (see
+above) is above a threshold (VS Code uses 30 ms).
 
 It works best in `shell:*` panes and normal line editing. Inside TUIs that
 redraw heavily it will often be off, as it is in VS Code. For chat panes,

@@ -3,75 +3,18 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {
-  agentStatusFormat,
   agentWindowName,
-  agentWindowTool,
-  classifyAgentObservation,
   getAgentSessionFirstMessage,
   resolveAgentPermissionMode,
 } from '#runtime/agents/agent-tools'
-import type { SandboxFile } from '#runtime/agents/sandbox-fs'
+import type { SandboxFile } from '#runtime/agents'
 import type { WorkspaceDriver } from '#drivers/contract'
-import { installFakeWorkspaceDriver } from '@yaac/test-utils/fake-driver'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import type { AgentTool } from '@yaac/shared/types'
 
-describe('agentStatusFormat', () => {
-  it('subscribes title tools to the pane title, classified server-side', () => {
-    expect(agentStatusFormat('claude')).toBe('#{pane_title}')
-    expect(agentStatusFormat('codex')).toBe('#{pane_title}')
-  })
-
-  // tmux evaluates these itself, so they are pinned exactly: small mistakes
-  // still parse but mean something else.
-  // test-playwright-scripts/verify-tmux-status-format.js checks the markers
-  // against a live tmux. opencode's progress strip needs 4+ cells so short
-  // runs in transcript text do not match.
-  it('resolves opencode and pi tmux-side by a case-insensitive content search', () => {
-    expect(agentStatusFormat('opencode')).toBe(
-      '#{?#{||:#{C/ri:esc\\s+(again\\s+to\\s+)?interrupt},#{C/ri:[■⬝][■⬝][■⬝][■⬝]}},running,waiting}',
-    )
-    expect(agentStatusFormat('pi')).toBe(
-      '#{?#{||:#{C/ri:esc\\s+(to\\s+)?(interrupt|cancel|stop)},'
-        + '#{C/ri:\\b(thinking|working|generating|streaming|running)\\b}},running,waiting}',
-    )
-  })
-})
-
-/**
- * Titles observed from live tools. claude and codex show a Braille spinner
- * (claude also the circle phases ◐◑, from 2.1.228) at the first character
- * while a turn runs. Every state waiting on the user, including a permission
- * dialog or codex's blinking "Action Required", has none. Until the tool
- * sets a title, `#{pane_title}` is the hostname.
- */
-describe('classifyAgentObservation', () => {
-  const HOSTNAME = 'yaac-yaac-ee9cb586-74d3-4a1f-9d1f-482839b26d70-5tfxq'
-  const cases = {
-    claude: {
-      // The whole Braille block and all four circle phases, with or without
-      // display-message's trailing newline.
-      running: ['⠐ Create marker', '⠋ Fix the bug', '⠀ edge', '⣿ edge', '◐ Review PR', '◑ Review PR',
-        '◒ edge', '◓ edge', '⠹ Summarize\n', '◐ Summarize\n'],
-      // Neighbouring geometric glyphs claude uses elsewhere, and a spinner
-      // anywhere but the first character.
-      waiting: ['✳ Create marker', '✳ Claude Code', HOSTNAME, '', '● Ran a command', '○ Pending',
-        '◆ Marker', '◔ Past the phases', '✳ Fix ⠋ rendering', '✳ Fix ◐ rendering', ' ⠋ lead', ' ◐ lead'],
-    },
-    codex: {
-      running: ['⠴ workdir', '⠋ yaac', '⠀ edge', '⣿ edge', '⠹ workdir\n'],
-      waiting: ['workdir', '[ ! ] Action Required workdir', '[ . ] Action Required workdir', HOSTNAME, '',
-        'fix ⠋ rendering', ' ⠋ lead'],
-    },
-    // Verdicts already resolved tmux-side.
-    opencode: { running: ['running'], waiting: ['waiting'] },
-    pi: { running: [' running '], waiting: ['waiting'] },
-  } as const
-
-  it.each(Object.entries(cases))('classifies %s observations', (tool, { running, waiting }) => {
-    for (const t of running) expect(classifyAgentObservation(tool as AgentTool, t), t).toBe('running')
-    for (const t of waiting) expect(classifyAgentObservation(tool as AgentTool, t), t).toBe('waiting')
-  })
-})
+// Workspaces sandboxed, as under k8s; a test wanting containerless
+// installs its own.
+beforeEach(() => { installFakeWorkspaceDriver() })
 
 describe('agentWindowName', () => {
   it("gives the workspace's first agent the bare tool name", () => {
@@ -83,30 +26,6 @@ describe('agentWindowName', () => {
   it('suffixes extra agents with their 1-based ordinal', () => {
     expect(agentWindowName('claude', 1)).toBe('claude-2')
     expect(agentWindowName('pi', 4)).toBe('pi-5')
-  })
-})
-
-describe('agentWindowTool', () => {
-  it('reads back every name agentWindowName can produce', () => {
-    for (const tool of ['claude', 'codex', 'opencode', 'pi'] as const) {
-      for (const i of [0, 1, 9]) {
-        expect(agentWindowTool(agentWindowName(tool, i))).toBe(tool)
-      }
-    }
-  })
-
-  it("matches any tool, not just the workspace's own", () => {
-    // Otherwise a restart would forget a codex conversation in a claude
-    // workspace.
-    expect(agentWindowTool('codex-2')).toBe('codex')
-  })
-
-  it('excludes init-command windows and scratch shells', () => {
-    expect(agentWindowTool('shell')).toBeUndefined()
-    expect(agentWindowTool('dev')).toBeUndefined()
-    expect(agentWindowTool('claude-ish')).toBeUndefined()
-    expect(agentWindowTool('myclaude')).toBeUndefined()
-    expect(agentWindowTool('claude-')).toBeUndefined()
   })
 })
 

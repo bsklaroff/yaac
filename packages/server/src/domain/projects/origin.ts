@@ -1,10 +1,10 @@
 import { fetchOrigin, maintainRepo } from '#domain/git'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeSnapshot } from '#drivers/contract'
-import { serverLog } from '#log'
-import { buildOriginRefreshExec } from '#runtime/agents'
+import { serverLog } from '#lib/log'
 import { repoDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
+import { buildOriginRefreshExec } from '@yaac/shared/git'
 import { resolveProjectCredential } from './credentials'
 import { projectFetchUrl } from './detail'
 
@@ -92,7 +92,7 @@ async function fanOut(projectId: string): Promise<void> {
   const repoGitDir = `${repoDir(projectId)}/.git`
   const worker = async (): Promise<void> => {
     for (let h = queue.shift(); h !== undefined; h = queue.shift()) {
-      const cmd = buildOriginRefreshExec(repoGitDir, driver.workspacePaths(h.jobName))
+      const cmd = buildOriginRefreshExec(repoGitDir, driver.workspacePaths(h.jobName).workspaceDir)
       // A failure is retried by the next fetch's fan-out.
       await driver.exec(h.jobName, cmd, { maxAttempts: 1 }).catch(() => {})
     }

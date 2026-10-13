@@ -9,7 +9,7 @@ import { setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
 import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 import { agentBinDirs } from '@yaac/shared/tool-install'
-import { substrateFixture } from '@yaac/test-utils/fake-driver'
+import { substrateFixture } from '#test/support/fake-driver'
 import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
 // Only host process calls are mocked, so the launch's mkdirs, symlinks,

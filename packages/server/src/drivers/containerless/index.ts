@@ -1,9 +1,5 @@
 import { ServerError } from '@yaac/shared/errors'
-import {
-  awaitAgentTransport,
-  execInWorkspace,
-  getWorkspaceChanges,
-} from './exec'
+import { awaitAgentTransport, execInWorkspace } from './exec'
 import { dialCtrlStream, dialPtyStream, reviveStatusStream } from './dial'
 import { awaitReady, launchWorkspace, prepareSubstrate } from './launch'
 import {
@@ -16,7 +12,6 @@ import { assertHostCanLaunch } from './check'
 import { containerlessWorkspacePaths } from './paths'
 import { dialWorkspacePort, forgetPorts, workspacePorts } from './ports'
 import {
-  claimWorkspaceTool,
   countWorkspaces,
   createRuntimeSnapshot,
   findForTeardown,
@@ -62,10 +57,9 @@ export function createContainerlessDriver(): WorkspaceDriver {
     release: () => releaseContainerlessDriver(),
 
     find: (workspaceId) => Promise.resolve(findWorkspace(workspaceId)),
-    findForTeardown: (workspaceId, opts) => Promise.resolve(findForTeardown(workspaceId, opts)),
+    findForTeardown: (workspaceId) => Promise.resolve(findForTeardown(workspaceId)),
     list: (projectId) => Promise.resolve(listWorkspaces(projectId)),
     count: () => Promise.resolve(countWorkspaces()),
-    changes: getWorkspaceChanges,
     snapshot: (resync) => createRuntimeSnapshot(resync),
     reconcileSteps: () => ({ prePool: [], maintenance: [] }),
 
@@ -116,11 +110,8 @@ export function createContainerlessDriver(): WorkspaceDriver {
     },
     awaitReady: () => awaitReady(),
 
-    // No spare pool here (creates are already fast); only a caller that
-    // ignored the driver kind reaches this.
-    claimSpare: (workspaceId, tool) => claimWorkspaceTool(workspaceId, tool)
-      ? Promise.resolve()
-      : Promise.reject(new Error(`no prewarmed spare ${workspaceId} to claim`)),
+    // No spare pool here (creates are already fast).
+    claimSpare: () => unsupported('claiming a prewarmed spare'),
 
     // Nothing to register. Deregister must drop the workspace from the
     // in-process registry, which the detached teardown script cannot reach;

@@ -1,6 +1,6 @@
 // Barrel for `#runtime/terminals`: the windows of a workspace's `yaac` tmux
-// session. The status watcher lists them (so the snapshot carries them), the
-// workspaces route creates and kills them, and the /pty/attach WebSocket
+// session. The workspaces route creates and kills them (the status watcher
+// lists them, through `#runtime/agents`), and the /pty/attach WebSocket
 // hands each connection to attachPty, which owns everything that connection
 // creates (the webapp's pane mirror viewers, the CLI's tmux view sessions
 // and their ghost sweep, and teardown on close). The route supplies only the
@@ -11,4 +11,5 @@
 
 export { attachPty } from './pty-bridge'
 export type { SocketLike } from './socket'
-export { createShellWindow, killWindowTerminal, listTerminals } from './terminals'
+export { createShellWindow, killWindowTerminal } from './terminals'
+export { TUNNEL_DIAL_FAILED, attachPortTunnel } from './tunnel'

@@ -146,9 +146,9 @@ can be deleted once no pod mounts it.
 **The writer pod** builds nothing. It pulls what the registry holds and
 lays it out on a node path, so it is not a trust-split builder pod and has
 none of their identity. It only reuses their pinned `quay.io/podman/stable`
-image. Like the pods that write `hosts.toml`, it runs on runc as plain
-root, pinned with `nodeName`, tolerating every taint, with the store path
-hostPath-mounted read-write. Two choices matter:
+image. Like the pods that write the main registry's `hosts.toml`, it runs
+on runc as plain root, pinned with `nodeName`, tolerating every taint, with
+the store path hostPath-mounted read-write. Two choices matter:
 
 - **hostNetwork.** The project registry's ingress policy already admits the
   node's addresses for containerd pulls. On the host network the writer is
@@ -345,10 +345,9 @@ The proxy and project registry Services keep their allocator-assigned
 ClusterIPs because they are never deleted (server-side apply updates them in
 place). Workspace pods reach them by service-DNS name through the proxy's
 DNS, which forwards `*.cluster.local` to CoreDNS and blocks bare `.svc`
-names so DNS cannot carry data out. The node does not use cluster DNS, so
-the registry's `hosts.toml` under `/etc/containerd/certs.d/` maps its
-service-DNS host to the live ClusterIP. It is rewritten on every ensure
-and read on every pull, so containerd never needs a restart.
+names so DNS cannot carry data out. Nothing on the node pulls from a
+project registry by name: the image-store writer, a host-network pod with
+no cluster DNS, dials the live ClusterIP.
 
 ## Egress
 

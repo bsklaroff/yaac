@@ -1,13 +1,12 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { z } from 'zod'
 import { AGENT_TOOLS } from '@yaac/shared/types'
-import type { YaacConfig, InitCommandSpec } from '@yaac/shared/types'
+import type { InitCommandSpec, YaacConfig } from '@yaac/shared/types'
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { isInfraPort } from '#lib/port-policy'
 
 const CACHE_VOLUME_KEY_RE = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/
-
-const KNOWN_KEYS = new Set(['cacheVolumes', 'initCommands', 'portForward', 'hideInitPane', 'ephemeralModulesPaths', 'nestedContainers', 'npmCache'])
 
 /** Default when `ephemeralModulesPaths` is unset — redirect the root
  *  node_modules only. Set to `[]` in yaac-config.json to opt out. */
@@ -34,191 +33,118 @@ const RESERVED_INIT_WINDOW_NAMES: ReadonlySet<string> = new Set(
 
 const INIT_WINDOW_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/
 
-function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
+const isPlainObject = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+const BOOLEAN = z.boolean({ error: 'must be a boolean' }).optional()
+const PORT = z.number({ error: 'must be an integer between 1 and 65535' }).int().min(1).max(65535)
+
+const initCommandSpecSchema = z.object({
+  name: z.string({ error: 'must be a non-empty string' }).min(1)
+    .regex(INIT_WINDOW_NAME_PATTERN, {
+      error: (iss) => `"${String(iss.input)}" must match ${INIT_WINDOW_NAME_PATTERN.source} `
+        + '(kebab/snake, no shell or tmux target chars)',
+    })
+    .refine((name) => !RESERVED_INIT_WINDOW_NAMES.has(name), { error: (iss) => `"${String(iss.input)}" is reserved` }),
+  commands: z.custom<string[]>(
+    (c) => Array.isArray(c) && c.length > 0 && c.every((cmd) => typeof cmd === 'string' && cmd.length > 0),
+    { error: 'must be a non-empty array of non-empty strings' },
+  ),
+  hidePane: BOOLEAN,
+})
+
+const initCommandSpecsSchema = z.array(initCommandSpecSchema).superRefine((specs, ctx) => {
+  const seen = new Set<string>()
+  specs.forEach(({ name }, i) => {
+    if (seen.has(name)) ctx.addIssue({ code: 'custom', path: [i, 'name'], message: `"${name}" is duplicated` })
+    seen.add(name)
+  })
+})
 
 /**
- * Parse the `initCommands` field. Two shapes are accepted but never mixed:
+ * The `initCommands` field, in one of two shapes, never mixed so each
+ * workspace has a predictable window layout:
  *   - string[]              → collapses into a single `init` tmux window
  *   - InitCommandSpec[]     → one tmux window per entry (parallel execution)
- *
- * A mixed array is rejected so each workspace has a predictable window layout.
  */
-export function parseInitCommands(raw: unknown): string[] | InitCommandSpec[] {
-  if (!Array.isArray(raw)) {
-    throw new Error('yaac-config.json: initCommands must be an array')
-  }
-  if (raw.length === 0) return []
-
-  const allStrings = raw.every((v) => typeof v === 'string')
-  const allObjects = raw.every((v) => isPlainObject(v))
-  if (!allStrings && !allObjects) {
-    throw new Error(
-      'yaac-config.json: initCommands must be either a string array or an '
-      + 'array of {name, commands} objects — the two forms cannot be mixed',
-    )
-  }
-
-  if (allStrings) return raw
-
-  const specs: InitCommandSpec[] = []
-  const seen = new Set<string>()
-  for (let i = 0; i < raw.length; i++) {
-    const entry = raw[i]
-    if (typeof entry.name !== 'string' || entry.name.length === 0) {
-      throw new Error(`yaac-config.json: initCommands[${i}].name must be a non-empty string`)
+const initCommandsSchema = z.array(z.unknown(), { error: 'must be an array' })
+  .transform((raw, ctx): string[] | InitCommandSpec[] => {
+    if (raw.every((v) => typeof v === 'string')) return raw
+    if (!raw.every(isPlainObject)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'must be either a string array or an array of {name, commands} objects — the two forms cannot be mixed',
+      })
+      return z.NEVER
     }
-    if (!INIT_WINDOW_NAME_PATTERN.test(entry.name)) {
-      throw new Error(
-        `yaac-config.json: initCommands[${i}].name "${entry.name}" must match `
-        + `${INIT_WINDOW_NAME_PATTERN.source} (kebab/snake, no shell or tmux target chars)`,
-      )
-    }
-    if (RESERVED_INIT_WINDOW_NAMES.has(entry.name)) {
-      throw new Error(
-        `yaac-config.json: initCommands[${i}].name "${entry.name}" is reserved`,
-      )
-    }
-    if (seen.has(entry.name)) {
-      throw new Error(`yaac-config.json: initCommands[${i}].name "${entry.name}" is duplicated`)
-    }
-    seen.add(entry.name)
-    if (
-      !Array.isArray(entry.commands)
-      || entry.commands.length === 0
-      || !entry.commands.every((c) => typeof c === 'string' && c.length > 0)
-    ) {
-      throw new Error(
-        `yaac-config.json: initCommands[${i}].commands must be a non-empty array of non-empty strings`,
-      )
-    }
-    if (entry.hidePane !== undefined && typeof entry.hidePane !== 'boolean') {
-      throw new Error(`yaac-config.json: initCommands[${i}].hidePane must be a boolean`)
-    }
-    const spec: InitCommandSpec = {
-      name: entry.name,
-      commands: entry.commands as string[],
-    }
-    if (entry.hidePane !== undefined) spec.hidePane = entry.hidePane
-    specs.push(spec)
-  }
-  return specs
-}
+    const specs = initCommandSpecsSchema.safeParse(raw)
+    if (specs.success) return specs.data
+    for (const issue of specs.error.issues) ctx.addIssue({ code: 'custom', path: issue.path, message: issue.message })
+    return z.NEVER
+  })
 
-export function parseProjectConfig(raw: string): YaacConfig {
-  const parsed: unknown = JSON.parse(raw)
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error('yaac-config.json must be a JSON object')
-  }
+/** One `ephemeralModulesPaths` entry, relative to /workspace, with any
+ *  surrounding slashes stripped. */
+const modulesPathSchema = z.string({ error: 'must be a string' })
+  .refine((raw) => !raw.startsWith('/'), 'must be relative to /workspace (no leading slash)')
+  .transform((raw) => raw.replace(/^\/+|\/+$/g, ''))
+  .refine((p) => p.length > 0, 'must not be empty')
+  .refine((p) => !p.split('/').some((seg) => seg === '..' || seg === '.'), 'must not contain "." or ".." segments')
 
-  const obj = parsed as Record<string, unknown>
-
-  for (const key of Object.keys(obj)) {
-    if (!KNOWN_KEYS.has(key)) console.warn(`yaac-config.json: unknown field "${key}"`)
-  }
-
-  const config: YaacConfig = {}
-
-  if (obj.cacheVolumes !== undefined) {
-    if (typeof obj.cacheVolumes !== 'object' || obj.cacheVolumes === null || Array.isArray(obj.cacheVolumes)) {
-      throw new Error('yaac-config.json: cacheVolumes must be an object')
-    }
-    const volumes = obj.cacheVolumes as Record<string, unknown>
+const projectConfigSchema = z.object({
+  cacheVolumes: z.record(z.string(), z.unknown(), { error: 'must be an object' }).superRefine((volumes, ctx) => {
     for (const [key, val] of Object.entries(volumes)) {
       // The key names a host dir under `cache-volumes/`, mounted read-write.
       // A single plain segment prevents `..` (mounting another server dir)
       // and `a/b` (a mount inside one the pod could swap for a link).
       if (!CACHE_VOLUME_KEY_RE.test(key)) {
-        throw new Error(
-          `yaac-config.json: cacheVolumes key "${key}" must be 1-64 letters, digits, "_", "-" or "." `
-          + 'and not start with "."',
-        )
-      }
-      if (typeof val !== 'string') {
-        throw new Error(`yaac-config.json: cacheVolumes.${key} must be a string (absolute container path)`)
-      }
-      if (!val.startsWith('/') || val === '/' || path.posix.normalize(val) !== val) {
-        throw new Error(`yaac-config.json: cacheVolumes.${key} must be a normalized absolute path other than /`)
+        ctx.addIssue({
+          code: 'custom',
+          message: `key "${key}" must be 1-64 letters, digits, "_", "-" or "." and not start with "."`,
+        })
+      } else if (typeof val !== 'string') {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'must be a string (absolute container path)' })
+      } else if (!val.startsWith('/') || val === '/' || path.posix.normalize(val) !== val) {
+        ctx.addIssue({ code: 'custom', path: [key], message: 'must be a normalized absolute path other than /' })
       }
     }
-    config.cacheVolumes = volumes as Record<string, string>
-  }
+  }).transform((volumes) => volumes as Record<string, string>).optional(),
+  initCommands: initCommandsSchema.optional(),
+  hideInitPane: BOOLEAN,
+  portForward: z.array(
+    z.object({
+      containerPort: PORT.refine((port) => !isInfraPort(port), {
+        error: (iss) => `${String(iss.input)} is reserved for yaac's own in-workspace services (10250-10350)`,
+      }),
+      hostPortStart: PORT,
+    }, { error: 'must be an object with containerPort and hostPortStart' }),
+    { error: 'must be an array of {containerPort, hostPortStart} objects' },
+  ).optional(),
+  nestedContainers: BOOLEAN,
+  npmCache: BOOLEAN,
+  ephemeralModulesPaths: z.array(modulesPathSchema, { error: 'must be a string array' }).optional(),
+})
 
-  if (obj.initCommands !== undefined) {
-    config.initCommands = parseInitCommands(obj.initCommands)
-  }
+/** Where an issue is, as a config key path: `initCommands[0].name`. */
+function issuePath(at: PropertyKey[]): string {
+  return at.map((k, i) => typeof k === 'number' ? `[${k}]` : `${i === 0 ? '' : '.'}${String(k)}`).join('')
+}
 
-  if (obj.hideInitPane !== undefined) {
-    if (typeof obj.hideInitPane !== 'boolean') {
-      throw new Error('yaac-config.json: hideInitPane must be a boolean')
-    }
-    config.hideInitPane = obj.hideInitPane
+/**
+ * Parse a yaac-config.json. Unknown fields are warned about and dropped;
+ * anything else invalid throws, naming the first bad field.
+ */
+export function parseProjectConfig(raw: string): YaacConfig {
+  const parsed: unknown = JSON.parse(raw)
+  if (!isPlainObject(parsed)) throw new Error('yaac-config.json must be a JSON object')
+  for (const key of Object.keys(parsed as object)) {
+    if (!Object.hasOwn(projectConfigSchema.shape, key)) console.warn(`yaac-config.json: unknown field "${key}"`)
   }
-
-  if (obj.portForward !== undefined) {
-    if (!Array.isArray(obj.portForward)) {
-      throw new Error('yaac-config.json: portForward must be an array of {containerPort, hostPortStart} objects')
-    }
-    config.portForward = []
-    for (let i = 0; i < obj.portForward.length; i++) {
-      const entry = obj.portForward[i] as Record<string, unknown>
-      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-        throw new Error(`yaac-config.json: portForward[${i}] must be an object with containerPort and hostPortStart`)
-      }
-      if (typeof entry.containerPort !== 'number' || !Number.isInteger(entry.containerPort) || entry.containerPort < 1 || entry.containerPort > 65535) {
-        throw new Error(`yaac-config.json: portForward[${i}].containerPort must be an integer between 1 and 65535`)
-      }
-      if (isInfraPort(entry.containerPort)) {
-        throw new Error(
-          `yaac-config.json: portForward[${i}].containerPort ${entry.containerPort} is reserved for yaac's own `
-          + 'in-workspace services (10250-10350)',
-        )
-      }
-      if (typeof entry.hostPortStart !== 'number' || !Number.isInteger(entry.hostPortStart) || entry.hostPortStart < 1 || entry.hostPortStart > 65535) {
-        throw new Error(`yaac-config.json: portForward[${i}].hostPortStart must be an integer between 1 and 65535`)
-      }
-      config.portForward.push({ containerPort: entry.containerPort, hostPortStart: entry.hostPortStart })
-    }
+  const result = projectConfigSchema.safeParse(parsed)
+  if (!result.success) {
+    const [issue] = result.error.issues
+    throw new Error(`yaac-config.json: ${issuePath(issue.path)} ${issue.message}`)
   }
-
-  if (obj.nestedContainers !== undefined) {
-    if (typeof obj.nestedContainers !== 'boolean') {
-      throw new Error('yaac-config.json: nestedContainers must be a boolean')
-    }
-    config.nestedContainers = obj.nestedContainers
-  }
-
-  if (obj.npmCache !== undefined) {
-    if (typeof obj.npmCache !== 'boolean') {
-      throw new Error('yaac-config.json: npmCache must be a boolean')
-    }
-    config.npmCache = obj.npmCache
-  }
-
-  if (obj.ephemeralModulesPaths !== undefined) {
-    if (!Array.isArray(obj.ephemeralModulesPaths) || !obj.ephemeralModulesPaths.every((v) => typeof v === 'string')) {
-      throw new Error('yaac-config.json: ephemeralModulesPaths must be a string array')
-    }
-    const normalized: string[] = []
-    for (let i = 0; i < obj.ephemeralModulesPaths.length; i++) {
-      const raw = obj.ephemeralModulesPaths[i]
-      if (raw.startsWith('/')) {
-        throw new Error(`yaac-config.json: ephemeralModulesPaths[${i}] must be relative to /workspace (no leading slash)`)
-      }
-      const trimmed = raw.replace(/^\/+|\/+$/g, '')
-      if (trimmed.length === 0) {
-        throw new Error(`yaac-config.json: ephemeralModulesPaths[${i}] must not be empty`)
-      }
-      if (trimmed.split('/').some((seg) => seg === '..' || seg === '.')) {
-        throw new Error(`yaac-config.json: ephemeralModulesPaths[${i}] must not contain "." or ".." segments`)
-      }
-      normalized.push(trimmed)
-    }
-    config.ephemeralModulesPaths = normalized
-  }
-
-  return config
+  return result.data
 }
 
 export async function loadProjectConfig(repoPath: string): Promise<YaacConfig | null> {

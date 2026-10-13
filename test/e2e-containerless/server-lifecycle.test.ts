@@ -1,20 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import fs from 'node:fs/promises'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  runYaac,
-  acquireServerMutex,
-  TEST_CLI_ENTRY,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
+import { createYaacTestEnv, spawnYaacServer, runYaac, acquireServerMutex, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
+import { asTailnet, type SpawnedServer } from '@yaac/test-utils/api'
 import { readLock, serverLockPath } from '@yaac/shared/lock'
 import { MAX_PORT_PROBES } from '@yaac/shared/server-port'
 import { serverLogPath } from '@yaac/shared/paths'
 import { readServerConfig } from '@yaac/shared/server-config'
 import { readInstallRecord } from '@yaac/shared/install-record'
-import { asTailnet } from '@yaac/test-utils/api'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import path from 'node:path'

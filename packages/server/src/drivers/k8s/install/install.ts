@@ -4,6 +4,9 @@ import {
   ensureMainRegistry,
   ensureNetd,
   ensureNpmCache,
+  REGISTRY_NAMESPACE,
+  REGISTRY_SERVICE_NAME,
+  registryHost,
   resetClusterCidrCache,
 } from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
@@ -39,7 +42,6 @@ import {
   readObject,
   runOnEachNode,
 } from '#drivers/k8s/substrate'
-import { REGISTRY_NAMESPACE, REGISTRY_SERVICE_NAME, registryHost } from '#drivers/k8s/container'
 import { GVISOR_INSTALLER_APP_NAME, ensureGvisorRuntime } from './gvisor-installer'
 import { buildBuiltinImages } from './builtin-images'
 import { ClusterInstallError, YAAC_CLUSTER_INSTALL, resolveNodeCount, tailnetServeHost } from './arg-guards'
@@ -59,7 +61,7 @@ import {
   NODE_KUBELET_HOUSEKEEPING_INTERVAL,
   NODE_PIDS_LIMIT,
 } from './check'
-import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from '#drivers/k8s/container'
+import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from './podman'
 import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
 import { BYO_INSTALL_IDENTITY, deployServerWorkload } from './server-deploy'
 import { TAILNET_HOSTNAME, kindFronting, serveFronting, tailnetFronting } from './server-fronting'
@@ -96,7 +98,7 @@ import { env } from '@yaac/shared/env'
  * no in-cluster agent can set) and the in-cluster layers (gVisor runtime,
  * PriorityClasses, netd, images), which is how an existing cluster picks up
  * an upgrade. Node sysctls are applied by the gVisor installer DaemonSet
- * instead (substrate/node-tuning.ts).
+ * instead (node-tuning.ts).
  */
 
 /**
@@ -336,7 +338,17 @@ export async function runClusterInstall(
   // After the registry (images are pushed there) and before the gVisor
   // installer and netd, which pull from it.
   await buildBuiltinImages({ log: deps.log })
-  await installGvisorRuntime(deps)
+  // Fatal: nothing else installs the runtime, and without it every
+  // workspace pod stays Pending.
+  deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
+  await ensureGvisorRuntime().catch((err: unknown) => {
+    throw new ClusterInstallError(
+      'Could not install the gVisor runtime '
+      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}).\n`
+      + `Inspect the installer with: kubectl -n ${k8sNamespace()} logs -l app=${GVISOR_INSTALLER_APP_NAME}\n`
+      + 'Session pods cannot run until it lands runsc on a node and labels it.',
+    )
+  })
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   await ensureNetd()
   await deployNpmCache(deps)
@@ -1027,24 +1039,6 @@ async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Prom
   await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
 }
 
-/**
- * Apply the gVisor installer DaemonSet and then the RuntimeClasses.
- * Failure is fatal: nothing else installs the runtime, and without it every
- * workspace pod stays Pending.
- */
-async function installGvisorRuntime(deps: ClusterInstallDeps): Promise<void> {
-  deps.log('Installing the gVisor runtime (installer DaemonSet + RuntimeClasses)...')
-  try {
-    await ensureGvisorRuntime()
-  } catch (err) {
-    throw new ClusterInstallError(
-      'Could not install the gVisor runtime '
-      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}).\n`
-      + `Inspect the installer with: kubectl -n ${k8sNamespace()} logs -l app=${GVISOR_INSTALLER_APP_NAME}\n`
-      + 'Session pods cannot run until it lands runsc on a node and labels it.',
-    )
-  }
-}
 
 /**
  * Build, deploy and publish the server. Failure is fatal. This step also

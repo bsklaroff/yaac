@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcess from 'node:child_process'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
-import type * as registryModule from '#drivers/k8s/container/registry'
+import { fakeRegistry } from '#test/support/fake-registry'
 
 // The cluster and `kubectl rollout status` are the boundaries; everything
 // behind them runs for real. `events` records their order.
@@ -26,17 +26,11 @@ vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   clusterPodCidrs: vi.fn().mockResolvedValue(['10.244.0.0/16']),
 }))
 
-const mockRegistryHasTag = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
-  ...(await importOriginal<typeof registryModule>()),
-  registryHasTag: mockRegistryHasTag,
-  registryRef: (tag: string) => `localhost:5001/${tag}`,
-}))
-
 import {
   NGINX_MIRROR_TAG,
   VERDACCIO_MIRROR_TAG,
   ensureNpmCache,
+  registryRef,
   servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
 // A setup value: the claim name carries it.
@@ -57,13 +51,15 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   events.length = 0
-  mockRegistryHasTag.mockResolvedValue(true)
+  fakeRegistry.install()
+  fakeRegistry.holdsAll = true
   mockRollout.mockResolvedValue(undefined)
   fakeCluster.intercept((call) => { events.push(`${call.verb} ${call.kind}`) })
 })
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
 
 describe('ensureNpmCache', () => {
@@ -89,7 +85,7 @@ describe('ensureNpmCache', () => {
           containers: [
             {
               name: 'verdaccio',
-              image: `localhost:5001/${VERDACCIO_MIRROR_TAG}`,
+              image: registryRef(VERDACCIO_MIRROR_TAG),
               // Reachable only through nginx; tarball URLs name the Service.
               env: expect.arrayContaining([
                 { name: 'VERDACCIO_ADDRESS', value: '127.0.0.1' },
@@ -100,7 +96,7 @@ describe('ensureNpmCache', () => {
             },
             {
               name: 'nginx',
-              image: `localhost:5001/${NGINX_MIRROR_TAG}`,
+              image: registryRef(NGINX_MIRROR_TAG),
               ports: [{ containerPort: 4873 }],
               readinessProbe: { httpGet: { path: '/-/ping', port: 4873 } },
               env: [
@@ -194,10 +190,10 @@ describe('ensureNpmCache', () => {
   })
 
   it('refuses before applying anything when an image was never mirrored', async () => {
-    mockRegistryHasTag.mockResolvedValue(false)
+    fakeRegistry.holdsAll = false
     await expect(ensureNpmCache()).rejects.toThrow(/Verdaccio/)
 
-    mockRegistryHasTag.mockImplementation((tag: string) => Promise.resolve(tag !== NGINX_MIRROR_TAG))
+    fakeRegistry.tags.add(VERDACCIO_MIRROR_TAG)
     await expect(ensureNpmCache()).rejects.toThrow(/nginx/)
     expect(applied()).toEqual([])
   })

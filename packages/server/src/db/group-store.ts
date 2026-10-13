@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm'
 import { getDb } from './client'
 import { draftWorkspaces, queuedWorkspaces, workspaceGroups, workspaces } from './schema'
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { normalizeTitle } from '@yaac/shared/titles'
 

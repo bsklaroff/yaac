@@ -1,34 +1,34 @@
 import crypto from 'node:crypto'
 import fengari from 'fengari'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { EventEmitter } from 'node:events'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as childProcess from 'node:child_process'
 
-// The cluster (the fake behind client-node) and the kubectl child process
-// (`rollout status`, `exec`) are the boundaries. The cluster folder runs for
-// real behind them, including `runPodToCompletion`, which drives the
-// hosts.toml writer pods.
+// The cluster (the fake behind client-node), the kubectl child processes
+// (`rollout status`, `exec`, and the registry client's `port-forward`) and
+// the registry's HTTP API (`fetch`) are the boundaries. The cluster folder
+// runs for real behind them, including `runPodToCompletion`, which drives
+// the hosts.toml writer pods.
 const mockKubectl = vi.hoisted(() => vi.fn<(args: string[]) => Promise<{ stdout: string; stderr: string }>>())
+const forwards = vi.hoisted(() => ({ spawned: 0 }))
 vi.mock('node:child_process', async (importOriginal) => ({
   ...await importOriginal<typeof childProcess>(),
   execFile: (_file: string, args: string[], _opts: unknown, cb: (err: unknown, res?: object) => void) => {
     mockKubectl(args).then((res) => { cb(null, res) }, cb)
+  },
+  spawn: () => {
+    forwards.spawned++
+    const pipe = (): EventEmitter => Object.assign(new EventEmitter(), { unref: () => {} })
+    const child = Object.assign(new EventEmitter(), { stdout: pipe(), stderr: pipe(), unref: () => {}, kill: () => {} })
+    // A live port-forward announces its listener and then stays up.
+    process.nextTick(() => child.stdout.emit('data', Buffer.from('Forwarding from 127.0.0.1:41234 -> 5000\n')))
+    return child
   },
 }))
 
 // The node-CIDR probe behind the ingress policy reads the live cluster.
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-}))
-
-// The registry client's reachability probe is HTTP over a kubectl
-// port-forward, which a unit run does not have.
-vi.mock('#drivers/k8s/container/registry', () => ({
-  REGISTRY_NAMESPACE: 'yaac',
-  REGISTRY_SERVICE_NAME: 'yaac-registry',
-  REGISTRY_SERVICE_PORT: 5000,
-  registryHost: vi.fn(() => 'yaac-registry.yaac.svc.cluster.local:5000'),
-  registryReachable: vi.fn().mockResolvedValue(false),
-  invalidateRegistryEndpoint: vi.fn(),
 }))
 
 import { ensureMainRegistry, mainRegistryExec } from '#drivers/k8s/cluster'
@@ -42,15 +42,27 @@ import {
 import { ROLE_BUILDER } from '#drivers/k8s/substrate/proxy-constants'
 import { LABEL_REGISTRY_SERVES, REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/project-registry'
 import { ENVOY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/netd'
-import { registryAuthFile } from '#drivers/k8s/container'
-import { _resetRegistryGrantKeyForTests, mintRegistryGrant } from '#drivers/k8s/container/registry-grant'
+import { registryAuthFile } from '#drivers/k8s/cluster'
+import { _resetRegistryGrantKeyForTests, mintRegistryGrant } from '#drivers/k8s/cluster/registry-grant'
 import { installId } from '#drivers/k8s/substrate'
-import { invalidateRegistryEndpoint, registryReachable } from '#drivers/k8s/container/registry'
+// State-reset hook, not a unit under test.
+import { _resetPortForwardsForTests } from '#drivers/k8s/substrate/port-forward'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
-const mockReachable = vi.mocked(registryReachable)
-const mockInvalidate = vi.mocked(invalidateRegistryEndpoint)
 const CLUSTER_IP = '10.96.12.34'
+
+/**
+ * Whether the registry answers its `/v2/` ping right now. "Not yet" is a
+ * 503, an answer, so the client keeps its port-forward and only an
+ * explicit invalidation replaces it.
+ */
+let answers: () => boolean = () => false
+
+/** The registry answers from the second ping on, as after a fresh deploy. */
+function answersAfterFirstPing(): void {
+  let pings = 0
+  answers = () => pings++ > 0
+}
 
 /** The cluster's grant key, as its Secret serves it. */
 let grantKeyPem = ''
@@ -180,14 +192,25 @@ beforeEach(() => {
   vi.clearAllMocks()
   grantKeyPem = FIRST_GRANT_KEY_PEM
   _resetRegistryGrantKeyForTests()
+  _resetPortForwardsForTests()
+  forwards.spawned = 0
   mockKubectl.mockResolvedValue({ stdout: '', stderr: '' })
-  mockReachable.mockResolvedValue(false)
+  answers = () => false
+  vi.stubGlobal('fetch', (url: string) => {
+    expect(url).toBe('http://127.0.0.1:41234/v2/')
+    return Promise.resolve(new Response(null, { status: answers() ? 200 : 503 }))
+  })
   serveCluster()
+})
+
+afterEach(() => {
+  _resetPortForwardsForTests()
+  vi.unstubAllGlobals()
 })
 
 describe('ensureMainRegistry', () => {
   it('is a no-op when the registry already answers', async () => {
-    mockReachable.mockResolvedValue(true)
+    answers = () => true
     await ensureMainRegistry()
     // On a healthy install the boot check is one ping.
     expect(fakeCluster.calls).toEqual([])
@@ -195,7 +218,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('applies namespace, PVC, Deployment and Service, then wires every node up', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    answersAfterFirstPing()
     await ensureMainRegistry()
 
     // The claim is applied before the Deployment that mounts it, so the
@@ -302,12 +325,13 @@ describe('ensureMainRegistry', () => {
     expect(podSpec.volumes[0].hostPath.path)
       .toBe('/etc/containerd/certs.d/yaac-registry.yaac.svc.cluster.local:5000')
 
-    // This process's port-forward may point at the replaced pod.
-    expect(mockInvalidate).toHaveBeenCalled()
+    // This process's port-forward may point at the replaced pod, so it is
+    // replaced too.
+    expect(forwards.spawned).toBe(2)
   })
 
   it('puts a write gate holding only the public grant key in front of the registry', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    answersAfterFirstPing()
     await ensureMainRegistry()
 
     interface Container {
@@ -361,7 +385,7 @@ describe('ensureMainRegistry', () => {
     grantKeyPem = newGrantKeyPem()
     _resetRegistryGrantKeyForTests()
     serveCluster()
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    answersAfterFirstPing()
     await ensureMainRegistry()
     const rolled = (appliedOfKind('Deployment').spec as { template: typeof template })
       .template.metadata.annotations['yaac.registry-gate-config']
@@ -369,7 +393,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('gates writes on a genuine, unexpired grant naming the exact repo the registry writes', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    answersAfterFirstPing()
     await ensureMainRegistry()
     const bootstrap = (appliedOfKind('ConfigMap') as unknown as { data: Record<string, string> })
       .data['bootstrap.json']
@@ -426,7 +450,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('locks registry ingress to the node and to builder pods in any namespace', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    answersAfterFirstPing()
     await ensureMainRegistry()
 
     const np = appliedOfKind('NetworkPolicy')
@@ -483,7 +507,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('keeps waiting out a slow rollout whose pod netns answers ARP', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    answersAfterFirstPing()
     let rollouts = 0
     mockKubectl.mockImplementation((args: string[]) => {
       if (args[0] === 'rollout' && rollouts++ === 0) return Promise.reject(new Error('timed out'))
@@ -497,7 +521,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('writes one hosts.toml pod per node, reaping strays first', async () => {
-    mockReachable.mockResolvedValueOnce(false).mockResolvedValue(true)
+    answersAfterFirstPing()
     serveCluster({ nodes: ['node-a', 'node-b'] })
     await ensureMainRegistry()
 
@@ -512,7 +536,7 @@ describe('ensureMainRegistry', () => {
   })
 
   it('applies everything again under `force`, even when the registry answers', async () => {
-    mockReachable.mockResolvedValue(true)
+    answers = () => true
     await ensureMainRegistry({ force: true })
     // `yaac cluster install` re-writes wiring a node restart may have lost.
     expect(applied().map((m) => m.kind)).toContain('Deployment')
@@ -535,12 +559,12 @@ describe('ensureMainRegistry', () => {
       // After a node restart the rollout can report done while the pod's
       // network is still coming up, so the dial succeeds only later.
       const answersAt = Date.now() + 45_000
-      mockReachable.mockImplementation(() => Promise.resolve(Date.now() >= answersAt))
+      answers = () => Date.now() >= answersAt
       const recovered = ensureMainRegistry()
       await vi.advanceTimersByTimeAsync(46_000)
       await expect(recovered).resolves.toBeUndefined()
 
-      mockReachable.mockResolvedValue(false)
+      answers = () => false
       const never = expect(ensureMainRegistry()).rejects.toThrow(/did not become reachable/)
       await vi.advanceTimersByTimeAsync(300_000)
       await never

@@ -2,7 +2,7 @@ import { useRef, type JSX } from 'react'
 import clsx from 'clsx'
 import { Menu } from '@base-ui/react/menu'
 import { MoreIcon } from '#lib/icons'
-import { MENU_ITEM, POPUP } from '#components/ui/menu'
+import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { useReadOnly } from '#lib/viewer'
 
 /** A menu item, or a separator. `view` marks an item that changes only what
@@ -57,24 +57,23 @@ export function RowMenu({ label, items, position = 'right-2 top-2' }: {
       >
         <MoreIcon size={14} />
       </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner side="bottom" align="end" sideOffset={4}>
-          <Menu.Popup
-            finalFocus={() => picked.current === null}
-            onKeyDown={() => { byKey.current = true }}
-            onPointerUp={() => { byKey.current = false }}
-            className={clsx('min-w-[180px]', POPUP)}
-          >
-            {shown.map((item, i) => item === 'separator'
-              ? <Menu.Separator key={`sep-${i}`} className="my-1 h-px bg-border" />
-              : (
-                <Menu.Item key={item.label} className={MENU_ITEM} onClick={() => { picked.current = item.onSelect }}>
-                  {item.label}
-                </Menu.Item>
-              ))}
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
+      <MenuPopup
+        side="bottom"
+        align="end"
+        sideOffset={4}
+        finalFocus={() => picked.current === null}
+        onKeyDown={() => { byKey.current = true }}
+        onPointerUp={() => { byKey.current = false }}
+        className="min-w-[180px]"
+      >
+        {shown.map((item, i) => item === 'separator'
+          ? <Menu.Separator key={`sep-${i}`} className="my-1 h-px bg-border" />
+          : (
+            <Menu.Item key={item.label} className={MENU_ITEM} onClick={() => { picked.current = item.onSelect }}>
+              {item.label}
+            </Menu.Item>
+          ))}
+      </MenuPopup>
     </Menu.Root>
   )
 }

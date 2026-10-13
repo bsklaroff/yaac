@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, cleanup, createEvent } from '@testing-library/react'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { render, screen, fireEvent, createEvent } from '@testing-library/react'
 
 vi.mock('#lib/createWorkspace', () => ({
   renameWorkspace: vi.fn(),
@@ -14,7 +13,6 @@ beforeEach(() => {
   vi.mocked(renameWorkspace).mockResolvedValue(undefined)
 })
 
-afterEach(cleanup)
 
 /** Click the pencil to open the inline editor and return the field. */
 function openEditor(): HTMLInputElement {

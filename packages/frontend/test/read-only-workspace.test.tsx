@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
 import type { JSX } from 'react'
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { StoppedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import type { StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 const provision = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
@@ -11,21 +10,16 @@ vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => prov
 import { ReadOnlyWorkspace, type ReadOnlySubject } from '#components/ReadOnlyWorkspace'
 import { useStoppedEntry } from '#lib/useStoppedWorkspaces'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchCall, type FetchMock } from './harness'
+import {
+  agentEvent, agentSession, mockFetch, renderWithClient, serverError, testQueryClient, userEvent, workspaceEntry,
+  type FetchCall, type FetchMock,
+} from './harness'
 
 /**
  * The pane for a workspace the user reads but does not drive: a stopped one
  * (theirs or a teammate's), or a teammate's running one. The server is
  * answered at `fetch`; the restart goes through the provisioning hook.
  */
-
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 const MARK = 'POST /api/workspace/mark-death-seen'
 const initial = useUiStore.getState()
@@ -52,7 +46,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  vi.unstubAllGlobals()
 })
 
 /** The selected stopped workspace as App resolves it, in the pane. */
@@ -144,15 +137,13 @@ describe('ReadOnlyWorkspace', () => {
   it('carries the chat pane\'s width and condensed toggles under the conversation', async () => {
     server.route('GET /api/workspace/s1/agent-sessions/c1/transcript', {
       events: [
-        { type: 'user', seq: 0, content: [{ type: 'text', text: 'fix the parser' }] },
+        userEvent(0, 'fix the parser'),
         { type: 'tool', seq: 1, call: { toolCallId: 't1', title: 'grep parse', kind: 'other', status: 'completed' } },
-        { type: 'agent', seq: 2, content: [{ type: 'text', text: 'fixed' }] },
+        agentEvent(2, 'fixed'),
       ],
     })
     useUiStore.setState({ chatCondensed: true, chatFullWidth: false })
-    renderPane({ kind: 'stopped', entry: stopped({
-      agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
-    }) })
+    renderPane({ kind: 'stopped', entry: stopped({ agentSessions: [agentSession()] }) })
     expect(await screen.findByText('fixed')).toBeTruthy()
     expect(screen.queryByText('grep parse')).toBeNull()
 
@@ -168,12 +159,8 @@ describe('ReadOnlyWorkspace', () => {
   })
 
   it('shows a teammate\'s running workspace with its status and no actions', () => {
-    const live: WorkspaceListEntry = {
-      workspaceId: 'w1', projectId: 'proj', tool: 'codex', status: 'running', createdAt: '2026-07-13 00:00:00',
-      title: 'Their run', agentSessions: [], blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
-    }
     useUiStore.setState({ viewedUserId: 'u-ada' })
-    renderPane({ kind: 'live', entry: live })
+    renderPane({ kind: 'live', entry: workspaceEntry({ workspaceId: 'w1', tool: 'codex', title: 'Their run' }) })
     expect(screen.getByText('Their run')).toBeTruthy()
     expect(screen.getByText('Status').nextElementSibling?.textContent).toBe('running')
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()

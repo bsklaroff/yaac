@@ -18,7 +18,7 @@
  *    policy only allows netd).
  *
  * Host processes reach it through a `kubectl port-forward`; see
- * `#drivers/k8s/container`'s registry module.
+ * registry.ts, its client.
  *
  * Storage is an RWO PVC, so a reschedule takes the store along. One
  * replica with `Recreate` means one mounter at a time. If no default
@@ -33,6 +33,7 @@ import {
   installNameKey,
   execFileAsync,
   readObject,
+  runOnEachNode,
   LABEL_ROLE,
   PRIORITY_CLASS_INFRA,
   PRIVILEGED_PSS_LABELS,
@@ -46,22 +47,18 @@ import {
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
   invalidateRegistryEndpoint,
-  registryGrantPublicKey,
   registryHost,
   registryReachable,
-} from '#drivers/k8s/container'
-import {
-  LABEL_REGISTRY_SERVES,
-  REGISTRY_UPSTREAM_IMAGE,
-  writeNodeHostsToml,
-} from './project-registry'
+} from './registry'
+import { registryGrantPublicKey } from './registry-grant'
+import { LABEL_REGISTRY_SERVES, REGISTRY_UPSTREAM_IMAGE } from './project-registry'
 import { ENVOY_UPSTREAM_IMAGE } from './netd'
 import {
   REGISTRY_BACKEND_PORT,
   REGISTRY_GATE_CONFIG_DIR,
   registryGateBootstrap,
 } from './registry-gate'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /** `app` label for the main registry's objects, distinct from the project
  *  registries' so neither's selectors match the other. */
@@ -413,10 +410,13 @@ export async function applyMainRegistryIngress(nodeCidrs: string[]): Promise<voi
 }
 
 /**
- * Point every node's (or these nodes') containerd at the registry's live
- * ClusterIP, since nodes do not use cluster DNS. The writer pods run the
- * upstream `registry:2` ref, which a node can pull before it can reach
- * this registry. `reconcileNodeSet` calls it for nodes that joined later.
+ * Write every node's (or these nodes') containerd `hosts.toml` mapping the
+ * registry's DNS host to its live ClusterIP, since nodes do not use cluster
+ * DNS. containerd reads it per pull, so it is rewritten on every ensure
+ * with no restart. Each writer pod's hostPath is only that host's
+ * `certs.d` dir, and it runs the upstream `registry:2` ref, which a node can
+ * pull before it can reach this registry. `reconcileNodeSet` calls it for
+ * nodes that joined later.
  */
 export async function writeMainRegistryHosts(onNodes?: ReadonlySet<string>): Promise<void> {
   const svc = await readObject<{ spec?: { clusterIP?: string } }>({
@@ -426,16 +426,31 @@ export async function writeMainRegistryHosts(onNodes?: ReadonlySet<string>): Pro
   if (!clusterIp) {
     throw new Error(`registry Service ${REGISTRY_SERVICE_NAME} has no ClusterIP yet`)
   }
-  await writeNodeHostsToml({
-    host: registryHost(),
-    clusterIp,
-    port: REGISTRY_SERVICE_PORT,
-    image: REGISTRY_UPSTREAM_IMAGE,
+  const content = `[host."http://${clusterIp}:${String(REGISTRY_SERVICE_PORT)}"]`
+  const runs = await runOnEachNode({
     name: `${REGISTRY_SERVICE_NAME}-hosts`,
     namespace: REGISTRY_NAMESPACE,
     labels: { ...mainRegistryLabels(), [LABEL_MAIN_REGISTRY_NODE_WRITE]: 'hosts' },
-    onNodes,
+    timeoutMs: 120_000,
+    pod: (node) => onNodes && !onNodes.has(node.name) ? null : ({
+      image: REGISTRY_UPSTREAM_IMAGE,
+      command: ['sh', '-c', `printf '%s\\n' '${content}' > /host-certs/hosts.toml`],
+      container: { volumeMounts: [{ name: 'certs', mountPath: '/host-certs' }] },
+      spec: {
+        volumes: [{
+          name: 'certs',
+          hostPath: { path: `/etc/containerd/certs.d/${registryHost()}`, type: 'DirectoryOrCreate' },
+        }],
+      },
+    }),
   })
+  const failed = runs.find((r) => r.phase !== 'Succeeded')
+  if (failed) {
+    throw new Error(
+      `hosts.toml pod ${failed.pod} on ${failed.node} did not complete (phase ${failed.phase})`
+      + (failed.logs.trim() ? `; logs: ${failed.logs.trim()}` : ''),
+    )
+  }
 }
 
 /**

@@ -2,11 +2,10 @@ import { workspaceDriver } from '#drivers/driver'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost } from '#runtime/status'
 import { acpLaunchModel } from '#runtime/agents'
 import { loadToolAuthEntry } from '#domain/auth'
-import { restoreAllWorkspaceForwarders } from '#runtime/ports'
+import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
 import { getProjectRow, getWorkspaceRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
-import { reseedPlaceholderToolHomes } from '#domain/auth'
-import { errorText, serverLog } from '#log'
+import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
 /**
@@ -81,11 +80,8 @@ export async function attachConvergence(opts: {
     workspacesChanged: (workspaces: RuntimeHandle[]) => manager.sync(workspaces),
     // A restart loses the in-memory forwarder registry while running
     // workspaces still advertise their ports in tmux `status-right`.
-    // Rebuild forwarders before anything watches. Tool homes are re-seeded
-    // with sentinels before any new workspace mounts them.
+    // Rebuild forwarders before anything watches.
     recover: async () => {
-      await reseedPlaceholderToolHomes()
-        .catch((err: unknown) => serverLog(`[server] placeholder re-seed failed: ${errorText(err)}`))
       try {
         await restoreAllWorkspaceForwarders(
           (projectId: string) => resolveProjectConfig(projectId).then((c) => c ?? undefined),

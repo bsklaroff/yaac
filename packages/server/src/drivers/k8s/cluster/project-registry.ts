@@ -10,15 +10,13 @@ import {
   k8sNamespace,
   listObjects,
   readObject,
-  runOnEachNode,
   runPodToCompletion,
   waitForRollout,
 } from '#drivers/k8s/substrate'
 import { createKeyedMutex } from '#lib/keyed-mutex'
-import { prebuiltRef } from '#drivers/k8s/image-engine'
-import { registryRef } from '#drivers/k8s/container'
+import { prebuiltRef, registryRef } from './registry'
 import { nodeIpBlocks } from './cluster-cidrs'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /** `app` label value shared by every per-project registry pod. */
 export const REGISTRY_APP_LABEL = 'yaac-registry'
@@ -28,7 +26,7 @@ export const LABEL_NODE_WRITE = 'yaac.node-write'
 
 /**
  * On a registry's serving pods only, and in its Service's selector. The
- * one-shot pods (hosts.toml writers, the GC run) share the registry's other
+ * one-shot GC pods share the registry's other
  * labels, so its policies cover them, but must never become Service
  * endpoints: none listens on the port, so a share of every dial to the
  * registry would land on one and hang.
@@ -57,8 +55,8 @@ export function projectRegistryName(projectId: string): string {
 
 /**
  * The registry's full `.svc.cluster.local` name. Workspaces resolve it via
- * the proxy's DNS, which forwards only `.cluster.local` to CoreDNS. Node
- * containerd matches it against the hosts.toml written here.
+ * the proxy's DNS, which forwards only `.cluster.local` to CoreDNS. Nothing
+ * on the node pulls by it: the image-store writer dials the ClusterIP.
  */
 export function projectRegistryHostname(projectId: string): string {
   return `${projectRegistryName(projectId)}.${k8sNamespace()}.svc.cluster.local`
@@ -150,7 +148,8 @@ function buildProjectRegistryPvcManifest(projectId: string): Record<string, unkn
 }
 
 /**
- * The registry:2 Deployment. Trusted infra, so runc (see gvisor.ts).
+ * The registry:2 Deployment. Trusted infra, so runc (see
+ * install/gvisor-runtime.ts).
  * `Recreate` avoids two pods on one RWO volume. Not pinned to a node; a
  * bound volume carries its own node affinity.
  *
@@ -233,8 +232,7 @@ function buildProjectRegistryServiceManifest(projectId: string): Record<string, 
     },
     spec: {
       type: 'ClusterIP',
-      // Workspaces resolve the ClusterIP via the proxy's DNS; the node's
-      // hosts.toml is rewritten with it on every ensure.
+      // Workspaces resolve the ClusterIP via the proxy's DNS.
       selector: { ...registryPodSelector(projectId), ...REGISTRY_SERVES },
       // port == targetPort, since the policies name the pod port.
       ports: [{
@@ -467,8 +465,8 @@ async function ensureRegistryImage(): Promise<string> {
 
 /**
  * The registry Service's ClusterIP, or null if none yet (or unreachable).
- * Consumers without cluster DNS (node hosts.toml, the hostNetwork image-store
- * builder) must read it fresh.
+ * Consumers without cluster DNS (the hostNetwork image-store builder) must
+ * read it fresh.
  */
 export async function projectRegistryClusterIp(projectId: string): Promise<string | null> {
   const svc = await readObject<{ spec?: { clusterIP?: string } }>({
@@ -477,59 +475,12 @@ export async function projectRegistryClusterIp(projectId: string): Promise<strin
   return svc?.spec?.clusterIP ?? null
 }
 
-/**
- * Write every node's containerd hosts.toml mapping a registry's DNS host to
- * its ClusterIP, since nodes do not use cluster DNS. containerd reads it per
- * pull, so it is rewritten on every ensure with no restart. Must run after
- * the registry rolls out, which also puts `image` (the registry's own) on
- * every node: nothing can pull from the registry before this file exists.
- * Each pod's hostPath is only that host's `certs.d` dir.
- */
-export async function writeNodeHostsToml(opts: {
-  host: string
-  clusterIp: string
-  port: number
-  image: string
-  /** Pod name prefix. */
-  name: string
-  namespace: string
-  labels: Record<string, string>
-  /** Write only on these nodes (by name); every node when absent. */
-  onNodes?: ReadonlySet<string>
-}): Promise<void> {
-  const content = `[host."http://${opts.clusterIp}:${String(opts.port)}"]`
-  const runs = await runOnEachNode({
-    name: opts.name,
-    namespace: opts.namespace,
-    labels: opts.labels,
-    timeoutMs: 120_000,
-    pod: (node) => opts.onNodes && !opts.onNodes.has(node.name) ? null : ({
-      image: opts.image,
-      command: ['sh', '-c', `printf '%s\\n' '${content}' > /host-certs/hosts.toml`],
-      container: { volumeMounts: [{ name: 'certs', mountPath: '/host-certs' }] },
-      spec: {
-        volumes: [{
-          name: 'certs',
-          hostPath: { path: `/etc/containerd/certs.d/${opts.host}`, type: 'DirectoryOrCreate' },
-        }],
-      },
-    }),
-  })
-  const failed = runs.find((r) => r.phase !== 'Succeeded')
-  if (failed) {
-    throw new Error(
-      `hosts.toml pod ${failed.pod} on ${failed.node} did not complete (phase ${failed.phase})`
-      + (failed.logs.trim() ? `; logs: ${failed.logs.trim()}` : ''),
-    )
-  }
-}
-
 /** Per-project queue behind `ensureProjectRegistry` (see its doc). */
 const registryEnsureMutex = createKeyedMutex()
 
 /**
  * Create or update the project's registry (PVC, Deployment, Service,
- * policies, node hosts.toml) and wait for it to serve. Called for every
+ * policies) and wait for it to serve. Called for every
  * `nestedContainers` workspace; the cross-workspace image cache uses it.
  * Serialized per project, since concurrent creates on one project are
  * common.
@@ -555,9 +506,6 @@ export async function ensureProjectRegistry(projectId: string): Promise<void> {
         + 'a Pending PVC means the cluster has no default StorageClass to bind '
         + 'it, or the provisioner refused the request.',
     })
-    const clusterIp = await projectRegistryClusterIp(projectId)
-    if (!clusterIp) throw new Error(`project registry Service ${name} has no ClusterIP yet`)
-    await writeRegistryHosts(projectId, clusterIp)
   })
 }
 
@@ -574,40 +522,8 @@ export async function applyProjectRegistryIngress(projectId: string, nodeCidrs: 
 }
 
 /**
- * Point these nodes' containerd at the project's registry, for nodes that
- * joined after `ensureProjectRegistry` ran (`reconcileNodeSet`). A no-op for
- * a project with no registry.
- */
-export async function writeProjectRegistryHosts(projectId: string, onNodes: ReadonlySet<string>): Promise<void> {
-  await registryEnsureMutex(projectId, async () => {
-    const clusterIp = await projectRegistryClusterIp(projectId)
-    if (clusterIp) await writeRegistryHosts(projectId, clusterIp, onNodes)
-  })
-}
-
-/** Point every node's (or these nodes') containerd at the project's registry. */
-async function writeRegistryHosts(
-  projectId: string,
-  clusterIp: string,
-  onNodes?: ReadonlySet<string>,
-): Promise<void> {
-  await writeNodeHostsToml({
-    host: projectRegistryHost(projectId),
-    clusterIp,
-    port: PROJECT_REGISTRY_PORT,
-    image: await ensureRegistryImage(),
-    name: `${projectRegistryName(projectId)}-hosts`,
-    namespace: k8sNamespace(),
-    // The registry labels put the pods under its deny-all egress policy.
-    labels: { ...registryLabels(projectId), [LABEL_NODE_WRITE]: 'hosts' },
-    onNodes,
-  })
-}
-
-/**
  * Delete a project's registry objects (PVC included). Scoped to this
- * install. Each node's `certs.d` entry for it stays: a few bytes naming a
- * host no image ref uses again, since project ids are never reused.
+ * install.
  */
 export async function removeProjectRegistry(projectId: string): Promise<void> {
   // Deleting the PVC while mounted is fine; its finalizer holds it until

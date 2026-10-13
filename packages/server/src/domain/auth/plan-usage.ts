@@ -1,18 +1,11 @@
 import { queryClaudePlanUsage, queryClaudeRateLimitTier, queryCodexPlanUsage } from './usage'
-import { refreshClaudeOAuthBundle } from './claude-oauth'
-import { refreshCodexOAuthBundle } from './codex-oauth'
 import { getToolCredential, listToolCredentials } from '#db'
-import { saveClaudeOAuthBundle, saveCodexOAuthBundle } from './store'
-import {
-  claudeBundleIsNewer,
-  codexBundleIsNewer,
-  harvestToolCredentials,
-  hostMayRefreshCredentials,
-  runtimeMediatesEgress,
-} from './credential-sync'
+import { workspacesSandboxed } from '#drivers/driver'
+import { harvestToolCredentials, hostMayRefreshCredentials } from './credential-sync'
+import { CLAUDE, CODEX, type OAuthTool } from './oauth-tools'
 import { pushCredentialsToRuntime } from './runtime-push'
-import { notifyWorkspaceListChanged } from '#notify'
-import { serverLog } from '#log'
+import { notifyWorkspaceListChanged } from '#lib/notify'
+import { serverLog } from '#lib/log'
 import type { ClaudeOAuthBundle, CodexOAuthBundle, PlanUsageResult, ToolCredentialBundle } from '@yaac/shared/types'
 
 /**
@@ -123,87 +116,73 @@ function kickRefresh(
   })()
 }
 
-// ── Claude ─────────────────────────────────────────────────────────────
+// ── Token upkeep, shared by both tools ─────────────────────────────────
 
 /**
- * Refresh Claude's OAuth bundle upstream and persist it, so workspaces and
- * later restarts use the new token. Never throws; null if the refresh
- * failed.
+ * Refresh a bundle upstream and persist it, so workspaces and later
+ * restarts use the new token. Never throws; null if the refresh failed.
+ *
+ * Another writer (a proxy-captured or harvested workspace refresh, `yaac
+ * auth update`) may have replaced the credential meanwhile. Our grant
+ * already spent the old token, so discarding the result could leave a token
+ * nothing can refresh (Codex refresh tokens are single-use). Newest wins: a
+ * genuinely newer stored bundle is kept, otherwise ours is stored.
  */
-async function refreshAndPersistClaudeBundle(
-  owner: string,
-  bundle: ClaudeOAuthBundle,
-): Promise<ClaudeOAuthBundle | null> {
-  const fresh = await refreshClaudeOAuthBundle(bundle)
+async function refreshAndPersist<B extends { accessToken: string }>(
+  t: OAuthTool<B>, owner: string, bundle: B,
+): Promise<B | null> {
+  const fresh = await t.refresh(bundle)
   if (!fresh) return null
   try {
-    // Another writer (a proxy-captured or harvested workspace refresh, `yaac
-    // auth update`) may have replaced the credential meanwhile. Our grant
-    // already spent the old token, so discarding `fresh` could leave a token
-    // nothing can refresh. Newest wins: keep a genuinely newer stored bundle,
-    // otherwise store ours.
-    const stored = await getToolCredential(owner, 'claude')
-    const current = stored?.kind === 'oauth' ? stored.claudeAiOauth : null
-    if (!current
-        || current.accessToken === bundle.accessToken
-        || claudeBundleIsNewer(fresh, current)) {
-      await saveClaudeOAuthBundle(owner, fresh)
+    const current = await t.stored(owner)
+    if (!current || current.accessToken === bundle.accessToken || t.isNewer(fresh, current)) {
+      await t.save(owner, fresh)
       // The runtime's copy was just spent.
       await pushCredentialsToRuntime()
     }
   } catch (err) {
     // Only the save can throw. `fresh` still serves this cycle, and the next
     // refresh retries the save.
-    serverLog(`[server] failed to persist refreshed Claude OAuth bundle: ${String(err)}`)
+    serverLog(`[server] failed to persist refreshed ${t.tool} OAuth bundle: ${String(err)}`)
   }
   return fresh
 }
 
 /**
  * Adopt any token a running workspace refreshed, then return the stored
- * credential to use this cycle. Only needed without a proxy: with one, the
+ * credential to use this cycle. Only needed unsandboxed: a sandboxed
  * workspace holds a sentinel and its refreshes are already captured to the
- * owner's store, so `fallback` is current. Without one, this avoids querying
+ * owner's store, so `fallback` is current. Unsandboxed, this avoids querying
  * with (or refreshing) a superseded token. Never throws; returns `fallback`
  * on failure.
  */
-async function convergedClaudeBundle(owner: string, fallback: ClaudeOAuthBundle): Promise<ClaudeOAuthBundle> {
-  if (runtimeMediatesEgress()) return fallback
+async function convergedBundle<B extends { accessToken: string }>(
+  t: OAuthTool<B>, owner: string, fallback: B,
+): Promise<B> {
+  if (workspacesSandboxed()) return fallback
   try {
-    await harvestToolCredentials(owner, { tool: 'claude' })
-    const stored = await getToolCredential(owner, 'claude')
-    if (stored?.kind === 'oauth') return stored.claudeAiOauth
+    await harvestToolCredentials(owner, { tool: t.tool })
+    return await t.stored(owner) ?? fallback
   } catch (err) {
-    serverLog(`[server] plan-usage: Claude credential harvest failed: ${String(err)}`)
+    serverLog(`[server] plan-usage: ${t.tool} credential harvest failed: ${String(err)}`)
   }
   return fallback
 }
 
-/** The Codex version of `convergedClaudeBundle`. */
-async function convergedCodexBundle(owner: string, fallback: CodexOAuthBundle): Promise<CodexOAuthBundle> {
-  if (runtimeMediatesEgress()) return fallback
-  try {
-    await harvestToolCredentials(owner, { tool: 'codex' })
-    const stored = await getToolCredential(owner, 'codex')
-    if (stored?.kind === 'oauth') return stored.codexOauth
-  } catch (err) {
-    serverLog(`[server] plan-usage: Codex credential harvest failed: ${String(err)}`)
-  }
-  return fallback
-}
+// ── Claude ─────────────────────────────────────────────────────────────
 
 /** One Claude usage cycle: adopt workspace refreshes, refresh an expired
  *  token if this host may, query usage and (once per credential) the tier,
  *  and retry once after a refresh if an unexpired token is unauthorized. */
 async function claudeRefreshOnce(owner: string, bundle: ClaudeOAuthBundle, state: UsageState): Promise<PlanUsageResult> {
-  let effective = await convergedClaudeBundle(owner, bundle)
+  let effective = await convergedBundle(CLAUDE, owner, bundle)
   let tokenRefreshTried = false
   // An expired token would only 401, so refresh first, but only if no live
   // workspace holds a copy we would invalidate (`hostMayRefreshCredentials`).
   // Otherwise a running agent refreshes and the harvest above picks it up.
   if (effective.expiresAt <= Date.now() && await hostMayRefreshCredentials()) {
     tokenRefreshTried = true
-    effective = await refreshAndPersistClaudeBundle(owner, effective) ?? effective
+    effective = await refreshAndPersist(CLAUDE, owner, effective) ?? effective
   }
   let [result, tier] = await Promise.all([
     queryClaudePlanUsage(effective),
@@ -213,7 +192,7 @@ async function claudeRefreshOnce(owner: string, bundle: ClaudeOAuthBundle, state
   // refresh and retry once, under the same gate as above.
   if (!result.available && result.reason === 'unauthorized' && !tokenRefreshTried
       && await hostMayRefreshCredentials()) {
-    const fresh = await refreshAndPersistClaudeBundle(owner, effective)
+    const fresh = await refreshAndPersist(CLAUDE, owner, effective)
     if (fresh) {
       ;[result, tier] = await Promise.all([
         queryClaudePlanUsage(fresh),
@@ -226,38 +205,15 @@ async function claudeRefreshOnce(owner: string, bundle: ClaudeOAuthBundle, state
 
 // ── Codex ──────────────────────────────────────────────────────────────
 
-async function refreshAndPersistCodexBundle(
-  owner: string,
-  bundle: CodexOAuthBundle,
-): Promise<CodexOAuthBundle | null> {
-  const fresh = await refreshCodexOAuthBundle(bundle)
-  if (!fresh) return null
-  try {
-    // Same newest-wins rule as for Claude; more important here, since Codex
-    // refresh tokens are single-use.
-    const stored = await getToolCredential(owner, 'codex')
-    const current = stored?.kind === 'oauth' ? stored.codexOauth : null
-    if (!current
-        || current.accessToken === bundle.accessToken
-        || codexBundleIsNewer(fresh, current)) {
-      await saveCodexOAuthBundle(owner, fresh)
-      await pushCredentialsToRuntime()
-    }
-  } catch (err) {
-    serverLog(`[server] failed to persist refreshed Codex OAuth bundle: ${String(err)}`)
-  }
-  return fresh
-}
-
 /** One Codex usage cycle. Unlike Claude, it never refreshes proactively,
  *  because Codex refresh tokens are single-use and running workspaces keep
  *  the host token fresh. It refreshes only on an unauthorized result, and
  *  only if no live workspace holds the credential. */
 async function codexRefreshOnce(owner: string, bundle: CodexOAuthBundle): Promise<PlanUsageResult> {
-  const effective = await convergedCodexBundle(owner, bundle)
+  const effective = await convergedBundle(CODEX, owner, bundle)
   let result = await queryCodexPlanUsage(effective)
   if (!result.available && result.reason === 'unauthorized' && await hostMayRefreshCredentials()) {
-    const fresh = await refreshAndPersistCodexBundle(owner, effective)
+    const fresh = await refreshAndPersist(CODEX, owner, effective)
     if (fresh) result = await queryCodexPlanUsage(fresh)
   }
   return result

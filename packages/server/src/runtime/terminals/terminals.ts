@@ -4,45 +4,17 @@ import { tmuxCmd } from '#runtime/agents'
 import type { WorkspaceTerminalEntry } from '@yaac/shared/types'
 
 /**
- * List and manage a workspace's webapp terminals: the windows of its `yaac`
- * tmux session. The lowest-index window is the agent, reached through the
- * 'agent' target, so listings skip it and kills refuse it. Scratch shells
+ * Manage a workspace's webapp terminals: the windows of its `yaac` tmux
+ * session. The lowest-index window is the agent, reached through the
+ * 'agent' target, so kills refuse it (and `listTerminals` skips it). Scratch shells
  * ('shell', 'shell-2', …) are ordinary windows created on demand.
  */
 
-/** The name stays last — it may contain pipes. */
-const LIST_WINDOWS = "list-windows -t yaac -F '#{window_index}|#{window_id}|#{window_name}'"
-const WINDOW_LINE = /^(\d+)\|(@\d+)\|(.*)$/
 const WINDOW_ID = /^@\d{1,6}$/
 const CREATED = /^(@\d{1,6}) (shell(?:-\d{1,4})?)$/
 /** Exit codes of the kill script's refusals. */
 const KILL_BLIND = 90
 const KILL_AGENT = 91
-
-/** Parse the window listing into webapp terminal entries — every window
- *  except the agent's (lowest index). */
-function parseWindowList(stdout: string): WorkspaceTerminalEntry[] {
-  const rows = stdout.split('\n').flatMap((line) => {
-    const m = WINDOW_LINE.exec(line.trim())
-    return m ? [{ index: Number(m[1]), id: m[2], name: m[3] }] : []
-  })
-  if (rows.length === 0) return []
-  const agentIndex = Math.min(...rows.map((r) => r.index))
-  return rows
-    .filter((r) => r.index !== agentIndex)
-    .map((r) => ({ target: `window:${r.id}`, name: r.name }))
-}
-
-/**
- * List a workspace's webapp-attachable terminals. `tmux` runs one read-only
- * tmux command and returns its output: the status watcher passes its
- * control-mode stream, which costs no exec.
- */
-export async function listTerminals(
-  tmux: (tmuxArgs: string) => Promise<string>,
-): Promise<WorkspaceTerminalEntry[]> {
-  return parseWindowList(await tmux(LIST_WINDOWS))
-}
 
 /**
  * Create a scratch-shell window under the first free name (shell, shell-2,

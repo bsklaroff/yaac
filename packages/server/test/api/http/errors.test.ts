@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { HTTPException } from 'hono/http-exception'
 import { ServerError } from '@yaac/shared/errors'
-import { toErrorBody } from '#http'
+import { toErrorBody } from '#api/http/errors'
 
 describe('toErrorBody', () => {
   it('passes through ServerError fields verbatim', () => {

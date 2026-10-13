@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getProjectsDir } from '@yaac/shared/paths'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import { containerlessJobName, markerPath, containerlessStateDir } from './paths'
 import type {
   AgentMode,
@@ -22,9 +22,7 @@ export interface WorkspaceMarker {
   projectId: string
   workspaceId: string
   tool: AgentTool
-  declaredTool?: AgentTool
   mode: AgentMode
-  prewarm: boolean
   createdAtMs: number
   /** The tmux server's pid, for the port scan. Pids are recycled, so it is
    *  only used alongside a socket liveness check. */
@@ -45,8 +43,6 @@ interface Entry {
   marker: WorkspaceMarker
   running: boolean
   deathCause: WorkspaceDeathCause
-  /** A teardown has started. */
-  terminating: boolean
   /** The full environment, credentials included; in memory only, for
    *  workspaces this server launched. */
   env?: NodeJS.ProcessEnv
@@ -64,19 +60,13 @@ export function rememberWorkspace(marker: WorkspaceMarker, env?: NodeJS.ProcessE
     marker,
     running: true,
     deathCause: { reason: 'pod-stopped' },
-    terminating: false,
     ...(env !== undefined ? { env } : {}),
   })
-  return handleFor(marker.workspaceId) as RuntimeHandle
+  return findWorkspace(marker.workspaceId) as RuntimeHandle
 }
 
 export function forgetWorkspace(workspaceId: string): void {
   entries.delete(workspaceId)
-}
-
-export function markTerminating(workspaceId: string): void {
-  const entry = entries.get(workspaceId)
-  if (entry) entry.terminating = true
 }
 
 /** Record observed liveness; returns whether it changed. */
@@ -105,15 +95,6 @@ export function tmuxPidOf(workspaceId: string): number | undefined {
   return entries.get(workspaceId)?.marker.tmuxPid
 }
 
-export function claimWorkspaceTool(workspaceId: string, tool: AgentTool): boolean {
-  const entry = entries.get(workspaceId)
-  if (!entry?.marker.prewarm) return false
-  entry.marker.prewarm = false
-  entry.marker.tool = tool
-  entry.marker.declaredTool = tool
-  return true
-}
-
 function toHandle(entry: Entry): RuntimeHandle {
   const { marker } = entry
   return {
@@ -121,39 +102,29 @@ function toHandle(entry: Entry): RuntimeHandle {
     projectId: marker.projectId,
     jobName: containerlessJobName(marker.projectId, marker.workspaceId),
     tool: marker.tool,
-    ...(marker.declaredTool !== undefined ? { declaredTool: marker.declaredTool } : {}),
+    declaredTool: marker.tool,
     mode: marker.mode,
     running: entry.running,
     state: entry.running ? 'running' : 'failed',
     // Host processes have no labels.
     labels: {},
     createdAtMs: marker.createdAtMs,
-    prewarmed: marker.prewarm,
-    terminating: entry.terminating,
+    // No spare pool here (creates are already fast).
+    prewarmed: false,
+    // The domain's terminating mark covers a teardown in progress.
+    terminating: false,
     deathCause: entry.deathCause,
   }
 }
 
-function handleFor(workspaceId: string): RuntimeHandle | undefined {
+/** The workspace with this exact id. */
+export function findWorkspace(workspaceId: string): RuntimeHandle | undefined {
   const entry = entries.get(workspaceId)
   return entry ? toHandle(entry) : undefined
 }
 
-/** The workspace with this exact id; unclaimed spares only with
- *  `spares`. */
-export function findWorkspace(
-  workspaceId: string,
-  opts: { spares?: boolean } = {},
-): RuntimeHandle | undefined {
-  const handle = handleFor(workspaceId)
-  return handle?.prewarmed === true && opts.spares !== true ? undefined : handle
-}
-
-export function findForTeardown(
-  workspaceId: string,
-  opts: { spares?: boolean } = {},
-): TeardownTarget | undefined {
-  const handle = findWorkspace(workspaceId, opts)
+export function findForTeardown(workspaceId: string): TeardownTarget | undefined {
+  const handle = findWorkspace(workspaceId)
   if (!handle) return undefined
   return {
     projectId: handle.projectId,
@@ -172,7 +143,7 @@ export function listWorkspaces(projectId?: string): RuntimeHandle[] {
 export function countWorkspaces(): Record<string, number> {
   const counts: Record<string, number> = {}
   for (const e of entries.values()) {
-    if (e.marker.prewarm || !e.running) continue
+    if (!e.running) continue
     counts[e.marker.projectId] = (counts[e.marker.projectId] ?? 0) + 1
   }
   return counts
@@ -252,7 +223,7 @@ export function restoreWorkspace(
   running: boolean,
   deathCause: WorkspaceDeathCause,
 ): void {
-  entries.set(marker.workspaceId, { marker, running, deathCause, terminating: false })
+  entries.set(marker.workspaceId, { marker, running, deathCause })
 }
 
 /** The workspace's recorded ssh-agent pid, for teardown. */

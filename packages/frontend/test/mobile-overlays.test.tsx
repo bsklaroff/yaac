@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import type { JSX } from 'react'
@@ -11,14 +10,6 @@ import { MasterDetail } from '#components/ui/MasterDetail'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
 
-// jsdom has no ResizeObserver; Base UI needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 // eslint-disable-next-line @typescript-eslint/unbound-method -- only ever restored onto window
 const realMatchMedia = window.matchMedia
@@ -51,7 +42,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   window.matchMedia = realMatchMedia
-  vi.unstubAllGlobals()
 })
 
 describe('MasterDetail', () => {

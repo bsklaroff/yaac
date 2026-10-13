@@ -3,30 +3,30 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
+import { parseGitRemote } from '@yaac/shared/git-remote'
 import { projectNameFor } from '@yaac/shared/project-name'
 
 export type GitCredentialKind = 'https' | 'ssh'
 
-/** SCP-style remote (`[user@]host:path`), matching the server's `parseGitRemote`. */
-const SCP_RE = /^(?:[\w._-]+@)?([\w.-]+):(?!\/)(.+)$/
-
-/** SCP-style remotes use an SSH key; anything else uses an HTTPS token. */
+/** The credential kind a remote takes, as the server reads it: SCP-style
+ *  remotes use an SSH key; anything else (or nothing parseable yet) uses an
+ *  HTTPS token. */
 export function remoteKind(remoteUrl: string): GitCredentialKind {
-  return SCP_RE.test(remoteUrl) ? 'ssh' : 'https'
+  try {
+    return parseGitRemote(remoteUrl).scheme
+  } catch {
+    return 'https'
+  }
 }
 
 /** The project name the server would derive from a remote, or '' if the
  *  remote doesn't parse. */
 export function remoteProjectName(remoteUrl: string): string {
-  let repoPath = SCP_RE.exec(remoteUrl)?.[2]
-  if (repoPath === undefined) {
-    try {
-      repoPath = new URL(remoteUrl).pathname
-    } catch {
-      return ''
-    }
+  try {
+    return projectNameFor(parseGitRemote(remoteUrl).path)
+  } catch {
+    return ''
   }
-  return projectNameFor(repoPath.replace(/\/$/, '').replace(/\.git$/, ''))
 }
 
 /** `<project name>-token` or `<project name>-key` (`git-…` without a

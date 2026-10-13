@@ -6,21 +6,10 @@ import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, isPrewarmed } from '@yaac/server/drivers/k8s/substrate/pods'
 import { listActiveWorkspaces } from '@yaac/server/domain/workspaces/list'
 import { listProjects } from '@yaac/server/domain/projects/list'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  setTestGitIdentity,
-  runYaac,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
-import {
-  requirePodman,
-  requireCluster,
-  cleanupWorkspaceJobs,
-  execInJob,
-} from '@yaac/test-utils/setup'
+import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
+import { assignTestGitCredential, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
+import { requireCluster } from '@yaac/test-utils/setup'
+import { requirePodman, cleanupWorkspaceJobs, execInJob } from '#support/cluster'
 import {
   startMockLLM,
   startMockGit,
@@ -28,7 +17,7 @@ import {
   cleanupMocks,
   type MockLLM,
   type MockGit,
-} from '@yaac/test-utils/mock-remotes'
+} from '#support/mock-remotes'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 /**

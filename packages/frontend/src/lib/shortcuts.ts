@@ -120,7 +120,7 @@ export const CYCLE_IDS: ReadonlySet<ShortcutId> = new Set<ShortcutId>([
 ])
 
 /** True when `id` is one of the known rebindable commands. */
-export function isShortcutId(id: string): id is ShortcutId {
+function isShortcutId(id: string): id is ShortcutId {
   return SHORTCUT_IDS.includes(id as ShortcutId)
 }
 
@@ -337,7 +337,7 @@ export function validateChord(
 }
 
 /** Runtime check for a Chord, since overrides arrive as JSON. */
-export function isChord(value: unknown): value is Chord {
+function isChord(value: unknown): value is Chord {
   if (typeof value !== 'object' || value === null) return false
   const c = value as Record<string, unknown>
   return typeof c.code === 'string'
@@ -372,7 +372,7 @@ export function mergeBindings(overrides: Record<string, unknown>, isMac = IS_MAC
 
 /** A human label for a physical `code`: KeyN→N, Digit1→1, ArrowLeft→←, else
  *  the raw code. */
-export function formatCode(code: string): string {
+function formatCode(code: string): string {
   const named: Record<string, string> = {
     ArrowLeft: '←', ArrowRight: '→', ArrowUp: '↑', ArrowDown: '↓',
     Enter: 'Enter', Escape: 'Esc', Space: 'Space', Tab: 'Tab',

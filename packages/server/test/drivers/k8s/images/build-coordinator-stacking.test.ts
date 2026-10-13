@@ -4,12 +4,12 @@
  * `yaac cluster install` builds the yaac-shipped layers (base/tools/
  * nestable); here they are only looked up in the registry. The remaining
  * layers build in sandboxed pods. Chain composition (tags, build args,
- * order) is asserted in image-builder-stacking.test.ts.
+ * order) is asserted in cluster/image-tags-stacking.test.ts.
  */
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { HASH_RE, setupStackingHarness } from '#test/drivers/k8s/image-engine/stacking-harness'
+import { HASH_RE, setupStackingHarness } from '#test/drivers/k8s/images/stacking-harness'
 
 const PROJECT = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
 /** The projects' owner, whose Dockerfile.user tops each chain. */
@@ -23,12 +23,12 @@ describe('ensureImage', () => {
 
   /** Put every yaac-shipped layer of this project's chain in the registry. */
   async function stagePrebuilt(
-    resolveImageChain: (projectId: string, owner: string, prefix: string, nested?: boolean) => Promise<{
+    resolveImageChain: (projectId: string, owner: string, nested?: boolean) => Promise<{
       layers: Array<{ name: string; tag: string }>
     }>,
     nested = false,
   ): Promise<void> {
-    const { layers } = await resolveImageChain(PROJECT, OWNER, 'yaac', nested)
+    const { layers } = await resolveImageChain(PROJECT, OWNER, nested)
     h.stageRegistry(layers.filter((l) => PREBUILT.has(l.name)).map((l) => l.tag))
   }
 
@@ -86,7 +86,7 @@ describe('ensureImage', () => {
 
     const { ensureImage, resolveImageChain } = await h.load()
     await stagePrebuilt(resolveImageChain, true)
-    await ensureImage(PROJECT, OWNER, undefined, false, true)
+    await ensureImage(PROJECT, OWNER, { nestedContainers: true })
 
     // The project layer builds on nestable, not tools, so the workspace
     // image carries the in-pod container engine.

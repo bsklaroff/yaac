@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, cleanup } from '@testing-library/react'
 import type * as PlatformModule from '#lib/platform'
@@ -10,7 +9,7 @@ vi.mock('#lib/platform', async (importOriginal) => ({
   get IS_MAC() { return platform.IS_MAC },
 }))
 
-import { WindowControls, windowApi } from '#components/WindowControls'
+import { WindowControls } from '#components/WindowControls'
 
 afterEach(() => {
   cleanup()
@@ -20,18 +19,6 @@ afterEach(() => {
 const inject = (bridge: unknown): void => {
   ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = bridge
 }
-
-describe('windowApi', () => {
-  it('is undefined without the bridge', () => {
-    expect(windowApi()).toBeUndefined()
-  })
-
-  it('returns the injected bridge', () => {
-    const bridge = { minimize() {}, toggleMaximize() {}, close() {} }
-    inject(bridge)
-    expect(windowApi()).toBe(bridge)
-  })
-})
 
 describe('WindowControls', () => {
   it('wires each button to the bridge', () => {

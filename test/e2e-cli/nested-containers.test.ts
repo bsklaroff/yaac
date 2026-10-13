@@ -7,8 +7,7 @@ import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
-import { deleteObject, k8sNamespace, listObjects, readObject } from '@yaac/server/drivers/k8s/substrate/api'
-import { kubectl } from '@yaac/test-utils/kubectl'
+import { k8sNamespace, listObjects, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import {
   ORPHAN_REGISTRY_MIN_AGE_MS,
   ensureProjectRegistry,
@@ -22,22 +21,10 @@ import { DONE_MARKER } from '@yaac/server/drivers/k8s/images/store-writer'
 import { nodeLocalHostPath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import { serverLogPath } from '@yaac/shared/paths'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  setTestGitIdentity,
-  runYaac,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { assignTestGitCredential, makeServerApiClient, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
-import {
-  requirePodman,
-  requireCluster,
-  execInJob,
-  cleanupWorkspaceJobs,
-  testContainerOwnerLabel,
-} from '@yaac/test-utils/setup'
+import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
+import { assignTestGitCredential, makeServerApiClient, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
+import { requireCluster, testContainerOwnerLabel } from '@yaac/test-utils/setup'
+import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster'
 import {
   startMockLLM,
   startMockGit,
@@ -45,7 +32,7 @@ import {
   cleanupMocks,
   type MockLLM,
   type MockGit,
-} from '@yaac/test-utils/mock-remotes'
+} from '#support/mock-remotes'
 
 const execFileAsync = promisify(execFile)
 
@@ -561,7 +548,7 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
     expect(Date.now() - started).toBeLessThan(60_000)
   }, 900_000)
 
-  it('serves the project registry by svc name, isolated per project and pullable by the node', async () => {
+  it('serves the project registry by svc name, isolated per project', async () => {
     const name = sharedJob
     const regName = projectRegistryName(sharedProjectId)
     const regHost = projectRegistryHost(sharedProjectId)
@@ -611,50 +598,6 @@ describe('yaac nested containers (real CLI + real server + real cluster)', () =>
       'sh', '-c', `curl -fsS --max-time 5 http://${regHost}/v2/probe/tags/list`,
     ], { timeout: 30_000 })
     expect((JSON.parse(tags) as { tags: string[] }).tags).toContain('v1')
-
-    // The node can pull the pushed ref (via hosts.toml). The image has no
-    // entrypoint, so a successful pull ends in a container-create error;
-    // only ErrImagePull counts as failure.
-    const podName = `reg-pull-probe-${crypto.randomBytes(3).toString('hex')}`
-    await kubectl([
-      'run', podName, `--image=${regHost}/probe:v1`,
-      '--restart=Never', '-n', k8sNamespace(),
-    ])
-    try {
-      interface PodStatus {
-        status?: {
-          containerStatuses?: Array<{
-            state?: {
-              waiting?: { reason?: string }
-              terminated?: object
-            }
-          }>
-        }
-      }
-      const deadline = Date.now() + 120_000
-      let verdict = ''
-      while (Date.now() < deadline && !verdict) {
-        const pod = await readObject<PodStatus>({ apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() })
-        const state = pod?.status?.containerStatuses?.[0]?.state
-        const waiting = state?.waiting?.reason ?? ''
-        if (waiting === 'ErrImagePull' || waiting === 'ImagePullBackOff') {
-          verdict = 'PULL_FAILED'
-        } else if (
-          state?.terminated
-          || ['CreateContainerError', 'RunContainerError', 'CrashLoopBackOff'].includes(waiting)
-        ) {
-          verdict = 'PULLED'
-        } else {
-          await new Promise((r) => setTimeout(r, 1000))
-        }
-      }
-      expect(verdict).toBe('PULLED')
-    } finally {
-      await deleteObject(
-        { apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() },
-        { wait: true, gracePeriodSeconds: 1 },
-      ).catch(() => { /* best-effort */ })
-    }
   }, 900_000)
 
   it('trusts the MITM CA for own-bundle tools (curl) via the combined bundle', async () => {

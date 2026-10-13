@@ -10,7 +10,7 @@
  * display-list build that already renders the result.
  */
 
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 
 /** workspaceId -> epoch ms when the teardown was marked. */
 const marks = new Map<string, number>()

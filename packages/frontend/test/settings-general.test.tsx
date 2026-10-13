@@ -1,28 +1,15 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { describe, it, expect, beforeEach } from 'vitest'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { SettingsButton } from '#components/SettingsButton'
 import { useUiStore } from '#lib/store'
 import { deviceTimeZone } from '#lib/time'
 import { mockFetch, renderWithClient, type FetchMock } from './harness'
 
-// jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 beforeEach(() => {
   useUiStore.setState({ settingsOpen: false, settingsSection: 'general' })
 })
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 /** Serve the General pane with `stored` as the server's time zone setting;
  *  a PUT answers with what it was sent. */

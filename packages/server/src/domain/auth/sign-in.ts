@@ -1,4 +1,4 @@
-import { fanOutToolCredentials, runtimeMediatesEgress } from './credential-sync'
+import { fanOutToolCredentials } from './credential-sync'
 import { pushCredentialsToRuntime } from './runtime-push'
 import { persistToolAuthPayload } from './store'
 import type { AgentTool, ToolAuthPayload } from '@yaac/shared/types'
@@ -11,6 +11,6 @@ import type { AgentTool, ToolAuthPayload } from '@yaac/shared/types'
  */
 export async function signInTool(owner: string, tool: AgentTool, payload: ToolAuthPayload): Promise<void> {
   await persistToolAuthPayload(owner, tool, payload)
-  await fanOutToolCredentials(owner, tool, { mediatedEgress: runtimeMediatesEgress() })
+  await fanOutToolCredentials(owner, tool)
   await pushCredentialsToRuntime()
 }

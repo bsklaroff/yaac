@@ -1,0 +1,648 @@
+import { describe, it, expect } from 'vitest'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { promisify } from 'node:util'
+import {
+  CA_CONFIGMAP_NAME,
+  NESTED_GRAPHROOT_PATH,
+  SSH_AGENT_MOUNT,
+  SSH_AGENT_SOCKET_PATH,
+  installSecurityContext,
+  sentryTmpfsAnnotations,
+} from '#drivers/k8s/substrate'
+import { buildPodJobManifest } from '#drivers/k8s/workspaces'
+// Internals, for fixtures and bounds only.
+import {
+  CA_MOUNT_DIR,
+  MODULES_REQUEST_BYTES,
+  MODULES_SIZELIMIT_BYTES,
+  MODULES_TMPFS_BYTES,
+  NESTED_GRAPHROOT_SIZELIMIT_BYTES,
+  NESTED_GRAPHROOT_TMPFS_BYTES,
+  WORKSPACE_POD_ANNOTATIONS,
+  type PodJobParams,
+} from '#drivers/k8s/workspaces/pod-job'
+
+const execFileAsync = promisify(execFile)
+
+function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
+  return {
+    jobName: 'yaac-demo-abcd',
+    namespace: 'test-ns',
+    labels: {
+      'yaac.project-id': 'demo',
+      'yaac.workspace-id': 'abcd',
+      'yaac.install-id': 'test-install',
+      'yaac.tool': 'claude',
+    },
+    image: 'localhost:5000/yaac-tools:abc',
+    env: ['YAAC_SESSION_ID=abcd', 'X=a=b'],
+    mounts: [],
+    memoryRequestBytes: 1 * 1024 ** 3,
+    memoryLimitBytes: 8 * 1024 ** 3,
+    cpuRequestMillis: 250,
+    cpuLimitMillis: 8000,
+    ephemeralStorageRequestBytes: 2 * 1024 ** 3,
+    ephemeralStorageLimitBytes: 16 * 1024 ** 3,
+    // The proxy Service's ClusterIP, never a DNS name.
+    proxyHost: '10.96.0.179',
+    ...overrides,
+  }
+}
+
+interface Manifest {
+  apiVersion: string
+  kind: string
+  metadata: { name: string; namespace: string; labels: Record<string, string> }
+  spec: {
+    backoffLimit: number
+    template: {
+      metadata: { labels: Record<string, string>; annotations?: Record<string, string> }
+      spec: {
+        restartPolicy: string
+        terminationGracePeriodSeconds: number
+        automountServiceAccountToken: boolean
+        enableServiceLinks: boolean
+        hostUsers?: boolean
+        runtimeClassName?: string
+        priorityClassName?: string
+        topologySpreadConstraints?: Array<{
+          maxSkew: number
+          topologyKey: string
+          whenUnsatisfiable: string
+          labelSelector: { matchLabels: Record<string, string> }
+        }>
+        dnsPolicy?: string
+        dnsConfig?: { nameservers: string[] }
+        securityContext: { seccompProfile: { type: string }; fsGroup?: number }
+        initContainers?: Array<{
+          name: string
+          image: string
+          imagePullPolicy: string
+          restartPolicy?: string
+          command?: string[]
+          securityContext: {
+            runAsUser?: number
+            allowPrivilegeEscalation?: boolean
+            capabilities?: { add?: string[]; drop?: string[] }
+          }
+          env: Array<{ name: string; value: string }>
+          startupProbe?: { exec: { command: string[] } }
+          volumeMounts?: Array<{ name: string; mountPath: string }>
+        }>
+        containers: Array<{
+          name: string
+          image: string
+          imagePullPolicy: string
+          workingDir: string
+          env: Array<{ name: string; value: string }>
+          securityContext?: {
+            capabilities?: { add?: string[] }
+            allowPrivilegeEscalation?: boolean
+          }
+          lifecycle?: { postStart?: { exec?: { command: string[] } } }
+          volumeMounts: Array<{
+            name: string
+            mountPath: string
+            subPath?: string
+            readOnly?: boolean
+          }>
+          resources: { requests: Record<string, string>; limits: Record<string, string> }
+        }>
+        volumes: Array<{
+          name: string
+          hostPath?: { path: string; type: string }
+          configMap?: { name: string }
+          emptyDir?: { medium?: string; sizeLimit?: string }
+          persistentVolumeClaim?: { claimName: string }
+        }>
+      }
+    }
+  }
+}
+
+function build(overrides: Partial<PodJobParams> = {}): Manifest {
+  return buildPodJobManifest(params(overrides)) as unknown as Manifest
+}
+
+describe('buildPodJobManifest', () => {
+  it('builds a single-shot Job: backoffLimit 0, restartPolicy Never', () => {
+    const m = build()
+    expect(m.apiVersion).toBe('batch/v1')
+    expect(m.kind).toBe('Job')
+    expect(m.spec.backoffLimit).toBe(0)
+    expect(m.spec.template.spec.restartPolicy).toBe('Never')
+  })
+
+  it('sets name/namespace and applies labels to both the Job and the pod template', () => {
+    const m = build()
+    expect(m.metadata.name).toBe('yaac-demo-abcd')
+    expect(m.metadata.namespace).toBe('test-ns')
+    expect(m.metadata.labels).toEqual(params().labels)
+    expect(m.spec.template.metadata.labels).toEqual(params().labels)
+  })
+
+  it('hardens the pod: no service account token, no service links', () => {
+    const spec = build().spec.template.spec
+    expect(spec.automountServiceAccountToken).toBe(false)
+    expect(spec.enableServiceLinks).toBe(false)
+  })
+
+  it('hardens the pod: default seccomp profile, and runs as the host identity', () => {
+    const spec = build().spec.template.spec
+    // Runs as the install's uid so it can write the server-created checkout;
+    // group 0 makes the image's files writable (docs/arbitrary-uid-images.md).
+    expect(spec.securityContext).toEqual({
+      seccompProfile: { type: 'RuntimeDefault' },
+      runAsUser: process.getuid?.(),
+      runAsGroup: process.getgid?.(),
+      supplementalGroups: [0],
+    })
+    // No fsGroup: the nested engine's graphroot is root-owned.
+    expect(spec.securityContext).not.toHaveProperty('fsGroup')
+  })
+
+  it('host pod: stamps the gvisor RuntimeClass and no user namespace', () => {
+    const spec = build().spec.template.spec
+    expect(spec.runtimeClassName).toBe('gvisor')
+    // gVisor provides the isolation, so no hostUsers key.
+    expect(spec.hostUsers).toBeUndefined()
+  })
+
+  it('defaults terminationGracePeriodSeconds to 5 and honors an override', () => {
+    expect(build().spec.template.spec.terminationGracePeriodSeconds).toBe(5)
+    expect(
+      build({ terminationGracePeriodSeconds: 30 }).spec.template.spec.terminationGracePeriodSeconds,
+    ).toBe(30)
+  })
+
+  it('configures the session container: image, pull policy, workdir, requests/limits', () => {
+    const c = build().spec.template.spec.containers[0]
+    expect(c.name).toBe('workspace')
+    expect(c.image).toBe('localhost:5000/yaac-tools:abc')
+    expect(c.imagePullPolicy).toBe('IfNotPresent')
+    expect(c.workingDir).toBe('/workspace')
+    // Every resource is requested, so the scheduler counts the pod.
+    expect(c.resources.requests).toEqual({
+      cpu: '250m',
+      memory: String(1 * 1024 ** 3),
+      'ephemeral-storage': String(2 * 1024 ** 3),
+    })
+    // Every resource is capped. The cpu limit is far above the request so it
+    // only binds on parallel bursts; under gVisor it also bounds the sandbox's
+    // systrap stubs.
+    expect(c.resources.limits).toEqual({
+      cpu: '8000m',
+      memory: String(8 * 1024 ** 3),
+      'ephemeral-storage': String(16 * 1024 ** 3),
+    })
+    expect(Number(c.resources.limits.cpu.replace('m', '')))
+      .toBeGreaterThan(Number(c.resources.requests.cpu.replace('m', '')))
+  })
+
+  it('puts session pods on the low-priority tier', () => {
+    // Infra outranks workspaces, so a full node evicts a workspace first.
+    expect(build().spec.template.spec.priorityClassName).toBe('yaac-workspace')
+  })
+
+  it('prefers spreading the install\'s workspaces across nodes, never blocking on it', () => {
+    // Selects every workspace of this install, so the count per node evens
+    // out across projects; ScheduleAnyway keeps a lopsided cluster schedulable.
+    expect(build().spec.template.spec.topologySpreadConstraints).toEqual([{
+      maxSkew: 1,
+      topologyKey: 'kubernetes.io/hostname',
+      whenUnsatisfiable: 'ScheduleAnyway',
+      labelSelector: { matchLabels: { 'yaac.install-id': 'test-install' } },
+    }])
+  })
+
+  it('parses env entries, preserving equals signs inside values and rendering each name once', () => {
+    // Split at the first `=`; a bare name or trailing `=` is an empty value.
+    // A server-side apply refuses a repeated name, so an identical repeat is
+    // dropped and a conflicting one refused before it gets that far.
+    const c = build({ env: ['YAAC_SESSION_ID=abcd', 'X=a=b', 'BARE', 'EMPTY=', 'X=a=b'] })
+      .spec.template.spec.containers[0]
+    expect(c.env).toEqual([
+      { name: 'YAAC_SESSION_ID', value: 'abcd' },
+      { name: 'X', value: 'a=b' },
+      { name: 'BARE', value: '' },
+      { name: 'EMPTY', value: '' },
+    ])
+    expect(() => build({ env: ['OPENROUTER_API_KEY=a', 'OPENROUTER_API_KEY=b'] }))
+      .toThrow('environment variable OPENROUTER_API_KEY is set to two different values')
+  })
+
+  it('renders hostPath mounts with the Directory default, File, and "" types', () => {
+    const m = build({
+      mounts: [
+        { source: { kind: 'hostPath', path: '/host/dir' }, mountPath: '/workspace' },
+        {
+          source: { kind: 'hostPath', path: '/host/file.json', type: 'File' },
+          mountPath: '/home/yaac/.claude.json',
+        },
+        { source: { kind: 'hostPath', path: '/host/any', type: '' }, mountPath: '/mnt/any' },
+      ],
+    })
+    const { volumes, containers } = m.spec.template.spec
+    expect(volumes[0]).toEqual({ name: 'hp-0', hostPath: { path: '/host/dir', type: 'Directory' } })
+    expect(volumes[1]).toEqual({ name: 'hp-1', hostPath: { path: '/host/file.json', type: 'File' } })
+    expect(volumes[2]).toEqual({ name: 'hp-2', hostPath: { path: '/host/any', type: '' } })
+    expect(containers[0].volumeMounts.slice(0, 3)).toEqual([
+      { name: 'hp-0', mountPath: '/workspace' },
+      { name: 'hp-1', mountPath: '/home/yaac/.claude.json' },
+      { name: 'hp-2', mountPath: '/mnt/any' },
+    ])
+  })
+
+  it('renders every mount source, leaving the container-side paths identical', () => {
+    // Only the source varies (node disk, the global claim, or pod-local
+    // scratch, chosen per tier by `resolveMountSource`).
+    const m = build({
+      mounts: [
+        { source: { kind: 'hostPath', path: '/host/dir' }, mountPath: '/workspace' },
+        {
+          source: { kind: 'pvc', claimName: 'yaac-shared', subPath: 'projects/demo/claude' },
+          mountPath: '/home/yaac/.claude',
+        },
+        { source: { kind: 'pvc', claimName: 'yaac-shared' }, mountPath: '/mnt/whole-claim' },
+        { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
+        { source: { kind: 'emptyDir', sizeLimit: 2 * 1024 ** 3 }, mountPath: '/mnt/scratch' },
+      ],
+    })
+    const { volumes, containers } = m.spec.template.spec
+    // Names carry the source kind and position, so sources never collide.
+    expect(volumes.slice(0, 5)).toEqual([
+      { name: 'hp-0', hostPath: { path: '/host/dir', type: 'Directory' } },
+      // Each mount of a claim has its own volume and subPath.
+      { name: 'pv-1', persistentVolumeClaim: { claimName: 'yaac-shared' } },
+      { name: 'pv-2', persistentVolumeClaim: { claimName: 'yaac-shared' } },
+      { name: 'ed-3', emptyDir: {} },
+      { name: 'ed-4', emptyDir: { sizeLimit: String(2 * 1024 ** 3) } },
+    ])
+    expect(containers[0].volumeMounts.slice(0, 5)).toEqual([
+      { name: 'hp-0', mountPath: '/workspace' },
+      { name: 'pv-1', mountPath: '/home/yaac/.claude', subPath: 'projects/demo/claude' },
+      // No subPath when the whole claim is mounted.
+      { name: 'pv-2', mountPath: '/mnt/whole-claim' },
+      { name: 'ed-3', mountPath: '/tmp/yaac-tmux' },
+      { name: 'ed-4', mountPath: '/mnt/scratch' },
+    ])
+  })
+
+  it('marks readOnly mounts on any source and omits the key otherwise', () => {
+    const m = build({
+      mounts: [
+        { source: { kind: 'hostPath', path: '/ro' }, mountPath: '/mnt/ro', readOnly: true },
+        { source: { kind: 'hostPath', path: '/rw' }, mountPath: '/mnt/rw' },
+        {
+          source: { kind: 'pvc', claimName: 'yaac-shared', subPath: 'skills' },
+          mountPath: '/mnt/skills',
+          readOnly: true,
+        },
+      ],
+    })
+    const mounts = m.spec.template.spec.containers[0].volumeMounts
+    expect(mounts[0]).toEqual({ name: 'hp-0', mountPath: '/mnt/ro', readOnly: true })
+    expect(mounts[1]).toEqual({ name: 'hp-1', mountPath: '/mnt/rw' })
+    expect(mounts[2]).toEqual({
+      name: 'pv-2', mountPath: '/mnt/skills', subPath: 'skills', readOnly: true,
+    })
+  })
+
+  it('wires postStartExec as the session container postStart hook', () => {
+    const c = build({ postStartExec: ['/usr/local/bin/yaac-workspace-init'] })
+      .spec.template.spec.containers[0]
+    expect(c.lifecycle).toEqual({
+      postStart: { exec: { command: ['/usr/local/bin/yaac-workspace-init'] } },
+    })
+  })
+
+  it('wires preStopExec as the preStop hook, beside or without postStart', () => {
+    const both = build({
+      postStartExec: ['/usr/local/bin/yaac-workspace-init'],
+      preStopExec: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'],
+    }).spec.template.spec.containers[0]
+    expect(both.lifecycle).toEqual({
+      postStart: { exec: { command: ['/usr/local/bin/yaac-workspace-init'] } },
+      preStop: { exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] } },
+    })
+    const only = build({ preStopExec: ['x'] }).spec.template.spec.containers[0]
+    expect(only.lifecycle).toEqual({ preStop: { exec: { command: ['x'] } } })
+  })
+
+  it('creates the node-local dirs with an init container: the pod image, as root, chowning to the pod identity', () => {
+    const m = build({
+      nodeLocalRoot: '/var/lib/yaac/node/ddh',
+      nodeLocalDirs: [
+        '/var/lib/yaac/node/ddh/projects/demo/.cached-packages',
+        '/var/lib/yaac/node/ddh/projects/demo/opencode-data/abcd',
+      ],
+    })
+    const spec = m.spec.template.spec
+    const [init] = spec.initContainers ?? []
+    expect(init).toBeDefined()
+    expect(init.name).toBe('node-dirs')
+    // Reuses the pod's own image, so nothing extra is pulled.
+    expect(init.image).toBe('localhost:5000/yaac-tools:abc')
+    expect(init.securityContext).toEqual({ runAsUser: 0, runAsGroup: 0 })
+    expect(init.volumeMounts).toEqual([{ name: 'node-root', mountPath: '/node' }])
+    expect(spec.volumes.find((v) => v.name === 'node-root')).toEqual({
+      name: 'node-root', hostPath: { path: '/var/lib/yaac/node/ddh', type: 'DirectoryOrCreate' },
+    })
+    expect(init.command?.slice(0, 2)).toEqual(['sh', '-c'])
+    expect(init.command?.slice(-2)).toEqual([
+      '/node/projects/demo/.cached-packages',
+      '/node/projects/demo/opencode-data/abcd',
+    ])
+    // Chowned to the workspace's uid, since hostPath ignores fsGroup. Always
+    // chowned: kubelet has already created the leaf before the init runs.
+    const { runAsUser, runAsGroup } = installSecurityContext()
+    expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
+    expect(init.command?.[2]).toContain(`\n    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
+  })
+
+  it('runs the node-dirs script for real: a leaf kubelet already created is chowned, parents are made', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-node-dirs-'))
+    try {
+      // As with DirectoryOrCreate, the leaf already exists.
+      await fs.mkdir(path.join(root, 'projects/demo/opencode-data/abcd'), { recursive: true })
+      const m = build({
+        nodeLocalRoot: '/var/lib/yaac/node/ddh',
+        nodeLocalDirs: [
+          '/var/lib/yaac/node/ddh/projects/demo/opencode-data/abcd',
+          '/var/lib/yaac/node/ddh/projects/demo/.cached-packages/modules/abcd',
+        ],
+      })
+      const [init] = m.spec.template.spec.initContainers ?? []
+      const script = (init.command?.[2] ?? '').replaceAll('/node', root)
+      const args = (init.command ?? []).slice(4).map((d) => d.replace('/node', root))
+      await expect(execFileAsync('sh', ['-c', script, '--', ...args])).resolves.toBeTruthy()
+      const { uid, gid } = await fs.stat(path.join(root, 'projects/demo/opencode-data/abcd'))
+      const { runAsUser, runAsGroup } = installSecurityContext()
+      expect([uid, gid]).toEqual([runAsUser, runAsGroup])
+      await expect(fs.stat(path.join(root, 'projects/demo/.cached-packages/modules/abcd'))).resolves.toBeTruthy()
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces a symlinked component a pod planted with a real directory, never following it', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-node-dirs-'))
+    try {
+      const victim = path.join(root, 'victim')
+      await fs.mkdir(path.join(victim, 'precious'), { recursive: true })
+      await fs.mkdir(path.join(root, 'projects/demo/.cached-packages'), { recursive: true })
+      await fs.symlink(victim, path.join(root, 'projects/demo/.cached-packages/modules'))
+      const m = build({
+        nodeLocalRoot: '/var/lib/yaac/node/ddh',
+        nodeLocalDirs: ['/var/lib/yaac/node/ddh/projects/demo/.cached-packages/modules/abcd'],
+      })
+      const [init] = m.spec.template.spec.initContainers ?? []
+      const script = (init.command?.[2] ?? '').replaceAll('/node', root)
+      const args = (init.command ?? []).slice(4).map((d) => d.replace('/node', root))
+      await expect(execFileAsync('sh', ['-c', script, '--', ...args])).resolves.toBeTruthy()
+      const modules = await fs.lstat(path.join(root, 'projects/demo/.cached-packages/modules'))
+      expect(modules.isSymbolicLink()).toBe(false)
+      expect(modules.isDirectory()).toBe(true)
+      await expect(fs.stat(path.join(root, 'projects/demo/.cached-packages/modules/abcd'))).resolves.toBeTruthy()
+      await expect(fs.stat(path.join(victim, 'precious'))).resolves.toBeTruthy()
+      expect(await fs.readdir(victim)).toEqual(['precious'])
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('renders no init container when there is nothing node-local to create', () => {
+    expect(build().spec.template.spec.initContainers).toBeUndefined()
+    expect(build({ nodeLocalDirs: [], nodeLocalRoot: '/x' }).spec.template.spec.initContainers).toBeUndefined()
+    expect(() => build({ nodeLocalDirs: ['/x/y'] })).toThrow(/nodeLocalRoot/)
+  })
+
+  it('emits no lifecycle block without postStartExec', () => {
+    expect(build().spec.template.spec.containers[0].lifecycle).toBeUndefined()
+  })
+
+  it('injects no per-pod egress sidecars — egress is redirected at the cluster level', () => {
+    const spec = build().spec.template.spec
+    expect(spec.initContainers).toBeUndefined()
+    // No added capabilities.
+    expect(spec.containers[0]).not.toHaveProperty('securityContext')
+  })
+
+  it('points the pod resolver at the proxy VIP DNS stub (dnsPolicy None)', () => {
+    const spec = build().spec.template.spec
+    expect(spec.dnsPolicy).toBe('None')
+    expect(spec.dnsConfig).toEqual({ nameservers: ['10.96.0.179'] })
+  })
+
+  it('never leaks a relay token into the session container env', () => {
+    const spec = build().spec.template.spec
+    const sessionEnvNames = spec.containers[0].env.map((e) => e.name)
+    expect(sessionEnvNames).not.toContain('RELAY_TOKEN')
+  })
+
+  it('never emits hostAliases (in-cluster names resolve via the proxy DNS)', () => {
+    const spec = build().spec.template.spec
+    expect(spec).not.toHaveProperty('hostAliases')
+  })
+
+  it('always appends the proxy-CA ConfigMap volume mounted read-only at the CA dir', () => {
+    const m = build()
+    const { volumes, containers } = m.spec.template.spec
+    expect(volumes).toContainEqual({
+      name: 'proxy-ca',
+      configMap: { name: CA_CONFIGMAP_NAME },
+    })
+    expect(containers[0].volumeMounts).toContainEqual({
+      name: 'proxy-ca',
+      mountPath: CA_MOUNT_DIR,
+      readOnly: true,
+    })
+  })
+
+  it('always mounts a pod-local emptyDir for the forwarded ssh-agent socket', () => {
+    // Used only within the pod, so the proxy can be on another node.
+    const m = build()
+    const { volumes, containers } = m.spec.template.spec
+    expect(volumes).toContainEqual({ name: 'ssh-agent', emptyDir: {} })
+    expect(containers[0].volumeMounts).toContainEqual({
+      name: 'ssh-agent',
+      mountPath: SSH_AGENT_MOUNT,
+    })
+    expect(SSH_AGENT_SOCKET_PATH.startsWith(`${SSH_AGENT_MOUNT}/`)).toBe(true)
+    expect(volumes.filter((v) => v.name === 'ssh-agent')
+      .every((v) => !('hostPath' in v))).toBe(true)
+  })
+
+  describe('nestedContainers', () => {
+    const nested = true
+
+    it('leaves the non-nested manifest byte-identical when nested is absent', () => {
+      const withoutField = buildPodJobManifest(params())
+      const withUndefined = buildPodJobManifest({ ...params(), nested: undefined })
+      expect(JSON.stringify(withUndefined)).toBe(JSON.stringify(withoutField))
+
+      const spec = build().spec.template.spec
+      // `nested` adds only the graphroot volume, annotations and capabilities.
+      expect(spec.securityContext).toEqual({
+        seccompProfile: { type: 'RuntimeDefault' },
+        runAsUser: process.getuid?.(),
+        runAsGroup: process.getgid?.(),
+        supplementalGroups: [0],
+      })
+      expect(spec.initContainers).toBeUndefined()
+      expect(spec.volumes.some((v) => v.name === 'podman-graphroot')).toBe(false)
+      expect(build().spec.template.metadata.annotations).toEqual(WORKSPACE_POD_ANNOTATIONS)
+      expect(spec.containers[0].resources).toEqual({
+        requests: {
+          cpu: '250m',
+          memory: String(1 * 1024 ** 3),
+          'ephemeral-storage': String(2 * 1024 ** 3),
+        },
+        limits: {
+          cpu: '8000m',
+          memory: String(8 * 1024 ** 3),
+          'ephemeral-storage': String(16 * 1024 ** 3),
+        },
+      })
+    })
+
+    it('nested host pod: maps to the gvisor-nested handler, no userns', () => {
+      const spec = build({ nested }).spec.template.spec
+      expect(spec.runtimeClassName).toBe('gvisor-nested')
+      expect(spec.hostUsers).toBeUndefined()
+    })
+
+    it('allows a graphroot cap at or above the pod memory limit (disk-backed)', () => {
+      // The graphroot is disk-backed, so it is not bounded by pod memory.
+      expect(() => buildPodJobManifest({
+        ...params(), nested, memoryLimitBytes: NESTED_GRAPHROOT_TMPFS_BYTES,
+      })).not.toThrow()
+    })
+
+    it('adds the rootful engine caps and no fsGroup on the session container', () => {
+      const spec = build({ nested }).spec.template.spec
+      // seccomp stays RuntimeDefault (runsc adds its own); no fsGroup, as
+      // the graphroot is root-owned.
+      expect(spec.securityContext).toEqual({
+        seccompProfile: { type: 'RuntimeDefault' },
+        runAsUser: process.getuid?.(),
+        runAsGroup: process.getgid?.(),
+        supplementalGroups: [0],
+      })
+      expect(spec.containers[0].securityContext).toEqual({
+        capabilities: {
+          add: [
+            'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
+            'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
+          ],
+        },
+      })
+    })
+
+    it('backs the graphroot with a disk emptyDir + gVisor disk-tmpfs annotations', () => {
+      const m = build({ nested })
+      const spec = m.spec.template.spec
+      // Pins how the cap relates across the sentry's `size=`, the emptyDir
+      // sizeLimit, and the slack between them.
+      const cap = NESTED_GRAPHROOT_TMPFS_BYTES
+      // Disk-backed emptyDir holding runsc's filestore. sizeLimit has slack
+      // above `size=` so the sentry hits ENOSPC before kubelet evicts.
+      expect(spec.volumes).toContainEqual({
+        name: 'podman-graphroot',
+        emptyDir: { sizeLimit: String(cap + 1024 ** 3) },
+      })
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'podman-graphroot',
+        mountPath: NESTED_GRAPHROOT_PATH,
+      })
+      // runsc annotations make it a disk-backed sentry tmpfs (see
+      // NESTED_GRAPHROOT_ANNOTATIONS).
+      expect(m.spec.template.metadata.annotations).toEqual({
+        ...WORKSPACE_POD_ANNOTATIONS,
+        'dev.gvisor.spec.mount.podman-graphroot.type': 'bind',
+        'dev.gvisor.spec.mount.podman-graphroot.share': 'container',
+        'dev.gvisor.spec.mount.podman-graphroot.options': `rw,size=${cap}`,
+      })
+    })
+
+    it('mounts nothing for the image cache — it rides the project registry', () => {
+      const plain = build().spec.template.spec
+      const spec = build({ nested }).spec.template.spec
+      // Image caching goes through the project registry, so nesting adds
+      // only the graphroot volume and nothing tied to a node.
+      expect(spec.volumes.map((v) => v.name))
+        .toEqual([...plain.volumes.map((v) => v.name), 'podman-graphroot'])
+      expect(JSON.stringify(spec)).not.toContain('shared-images')
+      expect(spec.initContainers).toBeUndefined()
+    })
+
+    it('adds the graphroot volume to the ephemeral-storage limit, nothing else', () => {
+      const resources = build({ nested }).spec.template.spec.containers[0].resources
+      // emptyDirs count against ephemeral storage, so the limit must exceed
+      // the graphroot's sizeLimit or a build would evict the workspace.
+      // Requests are unchanged.
+      expect(resources).toEqual({
+        requests: {
+          cpu: '250m',
+          memory: String(1 * 1024 ** 3),
+          'ephemeral-storage': String(2 * 1024 ** 3),
+        },
+        limits: {
+          cpu: '8000m',
+          memory: String(8 * 1024 ** 3),
+          'ephemeral-storage': String(16 * 1024 ** 3 + NESTED_GRAPHROOT_SIZELIMIT_BYTES),
+        },
+      })
+      const graphroot = build({ nested }).spec.template.spec.volumes
+        .find((v) => v.name === 'podman-graphroot')
+      expect(Number(resources.limits['ephemeral-storage']))
+        .toBeGreaterThan(Number(graphroot?.emptyDir?.sizeLimit))
+    })
+  })
+
+  describe('moduleDirs', () => {
+    const moduleDirs = ['/workspace/node_modules', '/workspace/packages/web/node_modules']
+
+    // One volume per dir: the tmpfs annotation applies per volume, not to
+    // a subPath.
+    it('backs each dir with its own sentry-tmpfs emptyDir, alongside the graphroot', () => {
+      const m = build({ moduleDirs, nested: true })
+      const spec = m.spec.template.spec
+      expect(spec.volumes).toContainEqual({
+        name: 'pnpm-modules-0', emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) },
+      })
+      expect(spec.volumes).toContainEqual({
+        name: 'pnpm-modules-1', emptyDir: { sizeLimit: String(MODULES_SIZELIMIT_BYTES) },
+      })
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'pnpm-modules-0', mountPath: '/workspace/node_modules',
+      })
+      expect(spec.containers[0].volumeMounts).toContainEqual({
+        name: 'pnpm-modules-1', mountPath: '/workspace/packages/web/node_modules',
+      })
+      expect(m.spec.template.metadata.annotations).toEqual({
+        ...WORKSPACE_POD_ANNOTATIONS,
+        ...sentryTmpfsAnnotations('podman-graphroot', NESTED_GRAPHROOT_TMPFS_BYTES),
+        ...sentryTmpfsAnnotations('pnpm-modules-0', MODULES_TMPFS_BYTES),
+        ...sentryTmpfsAnnotations('pnpm-modules-1', MODULES_TMPFS_BYTES),
+      })
+      expect(spec.initContainers).toBeUndefined()
+    })
+
+    it('grows the ephemeral-storage request by one install and the limit by one dir\'s ceiling', () => {
+      const { resources } = build({ moduleDirs }).spec.template.spec.containers[0]
+      expect(resources.requests['ephemeral-storage'])
+        .toBe(String(2 * 1024 ** 3 + MODULES_REQUEST_BYTES))
+      expect(resources.limits['ephemeral-storage'])
+        .toBe(String(16 * 1024 ** 3 + MODULES_SIZELIMIT_BYTES))
+    })
+
+    it('leaves a pod with none exactly as it was', () => {
+      expect(build({ moduleDirs: [] })).toEqual(build())
+      expect(build().spec.template.metadata.annotations).toEqual(WORKSPACE_POD_ANNOTATIONS)
+    })
+  })
+})

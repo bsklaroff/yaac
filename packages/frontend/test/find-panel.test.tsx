@@ -1,15 +1,13 @@
-// @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import type { EditorView } from '@uiw/react-codemirror'
 import { getSearchQuery, openSearchPanel } from '@codemirror/search'
 import { CodeEditor } from '#components/ui/CodeEditor'
 import { COUNT_DEBOUNCE_MS, COUNT_TIMEOUT_MS } from '#lib/matchCount'
-import { FakeWorker, HANGS } from './harness'
+import { HANGS } from './setup'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-  vi.stubGlobal('Worker', FakeWorker)
   // CodeMirror measures ranges when it scrolls a match into view.
   Range.prototype.getClientRects = () => [] as unknown as DOMRectList
   Range.prototype.getBoundingClientRect = () => new DOMRect()
@@ -17,7 +15,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 

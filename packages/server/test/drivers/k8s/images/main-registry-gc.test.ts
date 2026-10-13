@@ -32,12 +32,12 @@ vi.mock('node:child_process', async (importOriginal) => {
     },
   }
 })
-vi.mock('#drivers/k8s/container/registry', async (importOriginal) => ({
+vi.mock('#drivers/k8s/cluster/registry', async (importOriginal) => ({
   ...(await importOriginal<typeof registryModule>()),
   registryTagState: vi.fn(),
 }))
 const mockServerLog = vi.hoisted(() => vi.fn())
-vi.mock('#log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
+vi.mock('#lib/log', () => ({ serverLog: mockServerLog, pipeToServerLog: vi.fn() }))
 
 import { reconcileMainRegistryGc } from '#drivers/k8s/images'
 // Setup values and test hooks, not units under test.
@@ -45,11 +45,9 @@ import {
   _mainRegistryGcSettledForTests,
   _resetMainRegistryGcForTests,
 } from '#drivers/k8s/images/main-registry-gc'
-import { resolveImageChain } from '#drivers/k8s/image-engine'
-import { registryHost, registryTagState } from '#drivers/k8s/container/registry'
-import { REGISTRY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster'
+import { REGISTRY_UPSTREAM_IMAGE, registryHost, registryTagState, resolveImageChain } from '#drivers/k8s/cluster'
 import { USER_DOCKERFILE, userBuildDir } from '#lib/build-dirs'
-import type * as registryModule from '#drivers/k8s/container/registry'
+import type * as registryModule from '#drivers/k8s/cluster/registry'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
@@ -195,7 +193,7 @@ afterEach(async () => {
 
 describe('reconcileMainRegistryGc', () => {
   it('retires what nothing live names, keeps every live and recent tag, then collects', async () => {
-    const { layers } = await resolveImageChain(DEMO, OWNER, 'yaac')
+    const { layers } = await resolveImageChain(DEMO, OWNER)
     const [wantedBase, wantedTools] = layers.map((l) => l.tag)
     for (const [tag, age] of [
       // A project image: one generation a running pod names, two newest kept.

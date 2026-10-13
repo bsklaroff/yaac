@@ -4,7 +4,7 @@ import type { z } from 'zod'
 import { getDb } from './client'
 import { toolCredentials } from './schema'
 import { secretConfig } from './secret-key'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import {
   claudeCredentialsFileSchema,
   codexCredentialsFileSchema,

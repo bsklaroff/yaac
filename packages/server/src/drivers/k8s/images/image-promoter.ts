@@ -2,7 +2,7 @@ import { containerExec } from '#drivers/k8s/substrate'
 import { projectRegistryHost } from '#drivers/k8s/cluster'
 import { shellQuote } from '#lib/shell'
 import { ensureNodeImageStore } from './store-writer'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 
 /**
  * The push half of the nested-workspace image cache

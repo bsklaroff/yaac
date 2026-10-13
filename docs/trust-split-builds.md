@@ -107,7 +107,7 @@ Build flow, for a layer tag `T` with parent tag `P`:
 ### Timeouts
 
 Every build, in a pod or on the install machine, has two timeouts,
-enforced by `drivers/k8s/container/streaming-proc.ts`:
+enforced by `drivers/k8s/substrate/streaming-proc.ts`:
 
 - An **idle** timeout per exec step, reset on every byte of output. This
   is the main signal: podman prints constantly, so silence means stuck,
@@ -125,12 +125,10 @@ the pod's status.
 ## The registry
 
 The main registry is an in-cluster `registry:2` Deployment behind a
-ClusterIP Service, set up like the per-project registries
-(docs/nested-containers.md): blobs on an RWO claim, and a containerd
-`hosts.toml` on each node mapping its name to the live ClusterIP, because
-nodes do not use cluster DNS. It lives in the default install namespace
-rather than a per-run one, so concurrent e2e namespaces share one image
-store. Writes pass through the write gate (below).
+ClusterIP Service: blobs on an RWO claim, and a containerd `hosts.toml` on
+each node mapping its name to the live ClusterIP, because nodes do not use
+cluster DNS. It lives in the default install namespace rather than a
+per-run one, so concurrent e2e namespaces share one image store. Writes pass through the write gate (below).
 
 Its ingress policy admits three kinds of caller:
 
@@ -147,7 +145,7 @@ the in-cluster server dial that name. Host processes (`yaac cluster
 install`, `cluster check`, the e2e global setup) have no route into the pod
 network and push through a `kubectl port-forward` instead; blobs are
 stored by repository path, so the result is the same image. A HEAD request,
-`registryHasTag()`, is what skips a build whose tag already exists.
+`registryTagState()`, is what skips a build whose tag already exists.
 
 For each untrusted build the registry holds:
 
@@ -186,7 +184,7 @@ window (adopting one is a possible follow-up). It handles the two hazards
 of collecting a live registry directly:
 
 - **A push racing the collect** can lose blobs between upload and manifest
-  `PUT`, leaving an image that never pulls and that the `registryHasTag`
+  `PUT`, leaving an image that never pulls and that the `registryTagState`
   skip never re-pushes. The collect waits while there is an upload in
   progress, any link file written in the last few minutes, or an
   in-flight build in this server. The first two are read from the
@@ -232,7 +230,7 @@ halves of the split clean up after an interrupted run:
   first build is scheduled. A pod leaked later is bounded by its
   `activeDeadlineSeconds`.
 - **Host podman.** `yaac cluster install` runs its `podman build` and
-  `podman push` children through `drivers/k8s/container/host-procs.ts`,
+  `podman push` children through `drivers/k8s/install/host-procs.ts`,
   which records each pid in `<data dir>/host-podman.json`. The next install
   reads that file first, confirms with `ps` that each pid is still a podman
   process for the recorded tag (to guard against pid reuse), and stops it
@@ -256,7 +254,7 @@ the next prewarm sweep recomputes what is missing.
   drives a builder pod (`builder-pod.ts`). There is no separate push: a
   builder pod's push is part of its build, and a trusted layer was pushed
   by the install that built it.
-- Every layer's existence check is `registryHasTag()`, because the
+- Every layer's existence check is `registryTagState()`, because the
   registry is what pods pull from and an in-cluster server cannot see the
   install machine's local store. That local store is only a build cache,
   swept by `gcHostImages` at the end of each install. The sweep skips the
@@ -277,7 +275,7 @@ Envoy's Lua filter (`registry-gate.ts` in the cluster folder) is the only
 way in:
 
 - `GET` and `HEAD` pass through untouched, so containerd, the kubelet,
-  every pull and every `registryHasTag()` stay anonymous.
+  every pull and every `registryTagState()` stay anonymous.
 - Every other method needs a grant, sent as a Basic credential: a payload
   `v1|<expiry>|<scope>` plus an RSA-SHA256 signature. The gate verifies it
   against the public key in its ConfigMap, checks the expiry, and requires
@@ -313,7 +311,7 @@ ClusterRole) can read it. The gate holds only the public key, so
 compromising the registry pod mints nothing.
 
 Two kinds of grant are minted (`registry-grant.ts` in
-`#drivers/k8s/container`):
+`#drivers/k8s/cluster`):
 
 - **Admin (`*`)**, valid one hour, for every host push
   (`pushImageToRegistry`: install, `cluster check`'s probe, the e2e global

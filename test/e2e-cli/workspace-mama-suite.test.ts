@@ -6,21 +6,10 @@ import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import { SERVER_MAMA_PORT, SERVER_MAMA_SERVICE_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  setTestGitIdentity,
-  runYaac,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { assignTestGitCredential, registerTestProject, signInTestTool } from '@yaac/test-utils/api'
-import {
-  requirePodman,
-  requireCluster,
-  execInJob,
-  cleanupWorkspaceJobs,
-} from '@yaac/test-utils/setup'
+import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
+import { assignTestGitCredential, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
+import { requireCluster } from '@yaac/test-utils/setup'
+import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import {
   startMockLLM,
@@ -29,7 +18,7 @@ import {
   cleanupMocks,
   type MockLLM,
   type MockGit,
-} from '@yaac/test-utils/mock-remotes'
+} from '#support/mock-remotes'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))

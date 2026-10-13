@@ -1,21 +1,12 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import type { JSX } from 'react'
-import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ProjectOpPane } from '#components/ProjectOpPane'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
-// jsdom has no ResizeObserver; Base UI's positioner needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
 const REMOTE = 'https://github.com/acme/widgets.git'
 
@@ -28,10 +19,6 @@ beforeEach(() => {
   server = mockFetch({ [REMOVE]: undefined })
 })
 
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
 
 /** The menu, plus the main area's progress pane while the project's op
  *  runs, as the shell shows it. */

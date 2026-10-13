@@ -71,7 +71,7 @@ function spawnedArgv(): string[] {
 function running(): void {
   rememberWorkspace({
     projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
-    prewarm: false, createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242,
+    createdAtMs: 1_000, launchEnv: {}, tmuxPid: 4242,
   })
 }
 
@@ -163,7 +163,7 @@ describe('sweepPorts', () => {
     // Without a tree root pid, the workspace's ports go unreported.
     rememberWorkspace({
       projectId: 'demo', workspaceId: UUID, tool: 'claude', mode: 'tui',
-      prewarm: false, createdAtMs: 1_000, launchEnv: {},
+      createdAtMs: 1_000, launchEnv: {},
     })
     await sweepPorts()
     expect(mockSpawn).not.toHaveBeenCalled()

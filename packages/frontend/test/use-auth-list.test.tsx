@@ -1,5 +1,4 @@
-// @vitest-environment jsdom
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { JSX, ReactNode } from 'react'
@@ -19,7 +18,6 @@ const LIST: AuthListResult = {
   ],
 }
 
-afterEach(() => vi.unstubAllGlobals())
 
 describe('configuredTools', () => {
   it('is empty while the list is still loading', () => {

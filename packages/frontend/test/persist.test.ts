@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   MAX_EDITOR_FONT_SIZE, MAX_SIDEBAR_WIDTH, MIN_EDITOR_FONT_SIZE, chatDraftKey, flushChatDrafts, loadPersisted,
@@ -237,92 +236,52 @@ describe('chat drafts', () => {
   })
 })
 
-describe('persistSelection', () => {
-  it('writes localStorage and mirrors into the URL query', () => {
-    persistSelection('proj', 'sess')
-    expect(JSON.parse(localStorage.getItem('yaac.selection.v1')!)).toEqual({
-      projectId: 'proj', workspaceId: 'sess',
-    })
-    const params = new URLSearchParams(window.location.search)
-    expect(params.get('project')).toBe('proj')
-    expect(params.get('workspace')).toBe('sess')
-  })
+describe('selection', () => {
+  const stored = (): unknown => JSON.parse(localStorage.getItem('yaac.selection.v1') ?? 'null')
+  const query = (): Record<string, string> => Object.fromEntries(new URLSearchParams(window.location.search))
 
-  it('drops the query params (and stores nulls) when both values are null', () => {
-    persistSelection('proj', 'sess')
-    persistSelection(null, null)
-    expect(window.location.search).toBe('')
-    expect(JSON.parse(localStorage.getItem('yaac.selection.v1')!)).toEqual({
-      projectId: null, workspaceId: null,
-    })
-  })
-
-  it('keeps the project but clears the workspace when only the workspace is null', () => {
-    persistSelection('proj', 'sess')
-    persistSelection('proj', null)
-    const params = new URLSearchParams(window.location.search)
-    expect(params.get('project')).toBe('proj')
-    expect(params.has('workspace')).toBe(false)
-  })
-
-  it('preserves unrelated query params such as token', () => {
+  it('saves to localStorage and the URL query, keeping unrelated params', () => {
     window.history.replaceState({}, '', '/?token=abc')
     persistSelection('proj', 'sess')
-    const params = new URLSearchParams(window.location.search)
-    expect(params.get('token')).toBe('abc')
-    expect(params.get('project')).toBe('proj')
-    expect(params.get('workspace')).toBe('sess')
+    expect(stored()).toEqual({ projectId: 'proj', workspaceId: 'sess' })
+    expect(query()).toEqual({ token: 'abc', project: 'proj', workspace: 'sess' })
+    persistSelection('proj', null)
+    expect(query()).toEqual({ token: 'abc', project: 'proj' })
+    persistSelection(null, null)
+    expect(stored()).toEqual({ projectId: null, workspaceId: null })
+    expect(query()).toEqual({ token: 'abc' })
   })
 
-  it('is a no-op without localStorage', () => {
+  it('mirrors into the URL without localStorage', () => {
     const real = globalThis.localStorage
     // Simulate a browser that denies storage access.
     delete (globalThis as Record<string, unknown>).localStorage
-    expect(() => persistSelection('proj', 'sess')).not.toThrow()
-    // The URL is still mirrored even when storage is unavailable.
-    expect(new URLSearchParams(window.location.search).get('project')).toBe('proj')
-    ;(globalThis as Record<string, unknown>).localStorage = real
+    try {
+      expect(() => persistSelection('proj', 'sess')).not.toThrow()
+      expect(query()).toEqual({ project: 'proj', workspace: 'sess' })
+    } finally {
+      ;(globalThis as Record<string, unknown>).localStorage = real
+    }
   })
-})
 
-describe('loadSelection', () => {
-  it('reads the URL query first, ignoring localStorage', () => {
+  it('loads from the URL query first, then localStorage', () => {
+    persistSelection('lsproj', 'lssess')
     window.history.replaceState({}, '', '/?project=urlproj&workspace=urlsess')
-    localStorage.setItem('yaac.selection.v1', JSON.stringify({
-      projectId: 'lsproj', workspaceId: 'lssess',
-    }))
     expect(loadSelection()).toEqual({ projectId: 'urlproj', workspaceId: 'urlsess' })
-  })
-
-  it('treats a URL project with no workspace as a null workspace', () => {
     window.history.replaceState({}, '', '/?project=urlproj')
     expect(loadSelection()).toEqual({ projectId: 'urlproj', workspaceId: null })
-  })
-
-  it('falls back to localStorage when the URL has no project', () => {
-    localStorage.setItem('yaac.selection.v1', JSON.stringify({
-      projectId: 'lsproj', workspaceId: 'lssess',
-    }))
+    // A bare reload restores from localStorage.
+    window.history.replaceState({}, '', '/')
     expect(loadSelection()).toEqual({ projectId: 'lsproj', workspaceId: 'lssess' })
   })
 
-  it('returns nulls when nothing is persisted', () => {
+  it('loads nulls when nothing valid is saved', () => {
     expect(loadSelection()).toEqual({ projectId: null, workspaceId: null })
-  })
-
-  it('survives malformed or partial localStorage', () => {
     localStorage.setItem('yaac.selection.v1', '{{{')
     expect(loadSelection()).toEqual({ projectId: null, workspaceId: null })
     localStorage.setItem('yaac.selection.v1', JSON.stringify({ projectId: 'p' }))
     expect(loadSelection()).toEqual({ projectId: 'p', workspaceId: null })
     localStorage.setItem('yaac.selection.v1', '"a string"')
     expect(loadSelection()).toEqual({ projectId: null, workspaceId: null })
-  })
-
-  it('round-trips through persistSelection', () => {
-    persistSelection('proj', 'sess')
-    // A bare reload (no URL params) should restore from localStorage.
-    window.history.replaceState({}, '', '/')
-    expect(loadSelection()).toEqual({ projectId: 'proj', workspaceId: 'sess' })
   })
 })

@@ -30,6 +30,7 @@ import type {
   AcpWake,
 } from '@yaac/shared/acp'
 import { IMAGE_MIME_TYPES } from '@yaac/shared/attachments'
+import { asRecord, asString } from '#lib/narrow'
 
 /** The ACP revision this client negotiates. */
 export const ACP_PROTOCOL_VERSION = 1
@@ -223,14 +224,6 @@ const OPENCODE_CHILD_STATES: Record<string, AcpSubagentState> = {
   failed: 'failed',
 }
 
-export function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
-}
-
-export function asString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
-}
-
 /** Unknown stop reasons are reported as `end_turn`; the turn is over
  *  either way. */
 export function toStopReason(value: unknown): AcpStopReason {
@@ -303,38 +296,6 @@ function toToolContent(value: unknown): AcpToolContent[] {
     // yaac declines terminals, so there is nothing to show.
   }
   return out
-}
-
-/**
- * Each hunk of a one-file unified diff as before/after text, the shape a
- * `diff` tool content entry takes. A "No newline at end of file" marker
- * strips the line break off the side it follows.
- */
-export function unifiedDiffHunks(diff: string): Array<{ oldText: string; newText: string }> {
-  const hunks: Array<{ old: string[]; new: string[]; previous: string }> = []
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('@@')) {
-      hunks.push({ old: [], new: [], previous: ' ' })
-      continue
-    }
-    const hunk = hunks.at(-1)
-    const sign = line[0]
-    if (hunk === undefined || sign === undefined) continue
-    if (sign === '\\') {
-      if (hunk.previous !== '+') stripBreak(hunk.old)
-      if (hunk.previous !== '-') stripBreak(hunk.new)
-      continue
-    }
-    if (sign !== '+') hunk.old.push(`${line.slice(1)}\n`)
-    if (sign !== '-') hunk.new.push(`${line.slice(1)}\n`)
-    hunk.previous = sign
-  }
-  return hunks.map((h) => ({ oldText: h.old.join(''), newText: h.new.join('') }))
-}
-
-function stripBreak(lines: string[]): void {
-  const last = lines.at(-1)
-  if (last !== undefined) lines[lines.length - 1] = last.slice(0, -1)
 }
 
 function toLocations(value: unknown): Array<{ path: string; line?: number }> | undefined {

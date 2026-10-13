@@ -3,7 +3,7 @@ import { and, count, desc, eq, exists, ilike, isNotNull, isNull, lt, notInArray,
 import { getDb } from './client'
 import { deleteWorkspaceAgentSessions } from './agent-session-store'
 import { agentSessions, workspaceAgentSessions, workspaces } from './schema'
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
@@ -204,7 +204,7 @@ export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void>
     baseBranch: warmed.baseBranch ?? null,
     permissionMode: warmed.permissionMode,
     model: warmed.model ?? null,
-    mode: warmed.mode ?? null,
+    mode: warmed.mode,
     effort: warmed.effort ?? null,
   }).where(key(projectId, workspaceId))
   await deleteWorkspaceAgentSessions(projectId, workspaceId)
@@ -316,17 +316,12 @@ export async function setWorkspaceMamaTokenHash(
  * Hashes the token here so callers never handle the stored form. A stopped
  * workspace still matches; commands are project-scoped either way.
  */
-export async function findWorkspaceByMamaToken(
-  token: string,
-): Promise<{ projectId: string; workspaceId: string } | undefined> {
+export async function findWorkspaceByMamaToken(token: string): Promise<WorkspaceRow | undefined> {
   if (token === '') return undefined
   const hash = createHash('sha256').update(token).digest('hex')
   const db = await getDb()
-  const rows = await db.select({
-    projectId: workspaces.projectId,
-    workspaceId: workspaces.workspaceId,
-  }).from(workspaces).where(eq(workspaces.mamaTokenHash, hash))
-  return rows[0]
+  const rows = await db.select().from(workspaces).where(eq(workspaces.mamaTokenHash, hash))
+  return rows[0] ? toRow(rows[0]) : undefined
 }
 
 /**

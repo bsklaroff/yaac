@@ -1,10 +1,8 @@
-// @vitest-environment jsdom
 // @vitest-environment-options { "url": "https://srv.tail1234.ts.net/" }
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
+import { describe, it, expect } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import { PhoneLinkField, phoneLink } from '#components/settings/PhoneLink'
 
-afterEach(cleanup)
 
 describe('phoneLink', () => {
   it('links the iPhone app to an https origin, and to nothing else', () => {

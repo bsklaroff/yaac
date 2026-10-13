@@ -24,7 +24,8 @@ import {
   type ObjectRef,
 } from '#drivers/k8s/substrate'
 import { ENVOY_MIRROR_TAG } from '#drivers/k8s/cluster'
-import { execFileAsync, registryRef } from '#drivers/k8s/container'
+import { execFileAsync } from '#drivers/k8s/substrate'
+import { registryRef } from '#drivers/k8s/cluster'
 import { env } from '@yaac/shared/env'
 import type { AccessMode } from '@yaac/shared/types'
 import { ClusterInstallError } from './arg-guards'

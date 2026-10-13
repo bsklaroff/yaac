@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest'
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { FileEditor } from '#components/settings/FileEditor'
 import { renderWithClient } from './harness'
 
@@ -12,16 +11,7 @@ vi.mock('#components/ui/CodeEditor', () => ({
   ),
 }))
 
-// jsdom has no ResizeObserver; Base UI's dialog needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
 
-afterEach(cleanup)
 
 function saveButton(): HTMLButtonElement {
   return screen.getByRole<HTMLButtonElement>('button', { name: /save/i })

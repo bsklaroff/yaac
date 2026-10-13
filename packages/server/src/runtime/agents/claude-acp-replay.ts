@@ -21,7 +21,7 @@ import { ACP } from './acp-protocol'
 import { jsonObjects } from './jsonl'
 import { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { isUuid } from '#lib/uuid'
-import { serverLog } from '#log'
+import { serverLog } from '#lib/log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 // Type-only; the lazy import below is the only runtime load.
 import type { SessionStore, SessionStoreEntry } from '@anthropic-ai/claude-agent-sdk'

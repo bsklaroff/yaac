@@ -3,16 +3,10 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import path from 'node:path'
 import WebSocket from 'ws'
-import {
-  createYaacTestEnv,
-  spawnYaacServer,
-  setTestGitIdentity,
-  runYaac,
-  TEST_CLI_ENTRY,
-  type YaacTestEnv,
-  type SpawnedServer,
-} from '@yaac/test-utils/cli'
-import { addTestProject, createTestRepo, requirePodman, requireCluster } from '@yaac/test-utils/setup'
+import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
+import type { SpawnedServer } from '@yaac/test-utils/api'
+import { createTestRepo, requireCluster } from '@yaac/test-utils/setup'
+import { addTestProject, requirePodman } from '#support/cluster'
 import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
@@ -23,7 +17,25 @@ import {
 } from '@yaac/server/db/agent-session-store'
 import { setDataDir } from '@yaac/shared/paths'
 import { closeDb } from '@yaac/server/db/client'
-import { firstSnapshot } from '@yaac/test-utils/events-ws'
+import type { ServerSnapshot } from '@yaac/shared/types'
+
+/** Open a WS and resolve the first `snapshot` frame's data. */
+async function firstSnapshot(port: number): Promise<ServerSnapshot> {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/api/events`)
+  try {
+    return await new Promise<ServerSnapshot>((resolve, reject) => {
+      ws.once('error', reject)
+      ws.on('message', (data, isBinary) => {
+        if (isBinary) return
+        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
+        const parsed = JSON.parse(buf.toString('utf8')) as { type: string; data: ServerSnapshot }
+        if (parsed.type === 'snapshot') resolve(parsed.data)
+      })
+    })
+  } finally {
+    ws.close()
+  }
+}
 
 /**
  * The `yaac workspace` commands that need no running workspace, sharing one
@@ -37,8 +49,9 @@ import { firstSnapshot } from '@yaac/test-utils/events-ws'
  * Nothing here may seed credentials: the create tests expect the
  * missing-credential error.
  *
- * Listing and resolving workspaces query the cluster even when empty, so
- * this needs podman and a reachable cluster.
+ * Runs under both drivers (it is in the e2e-containerless project too).
+ * A k8s server lists and resolves workspaces through the cluster even when
+ * there are none, so there it needs podman and a reachable cluster.
  */
 
 let testEnv: YaacTestEnv
@@ -46,8 +59,10 @@ let server: SpawnedServer
 const TAILNET_HOST = 'srv.tailnet.ts.net'
 
 beforeAll(async () => {
-  await requirePodman()
-  await requireCluster()
+  if (process.env.YAAC_DRIVER !== 'containerless') {
+    await requirePodman()
+    await requireCluster()
+  }
   testEnv = await createYaacTestEnv()
   // Admit a tailnet name, so the identity refusal below is reachable past
   // the Host check.

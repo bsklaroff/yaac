@@ -2,28 +2,21 @@ import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import {
-  denyBrowserCors,
-  fetchSiteCheck,
-  hostHeaderCheck,
-  identify,
-  originHeaderCheck,
-  registerStaticRoutes,
-  requestLogger,
-  toErrorBody,
-  type IdentityEnv,
-} from '#http'
+import { denyBrowserCors, requestLogger } from '#api/http/auth'
+import { fetchSiteCheck, hostHeaderCheck, identify, originHeaderCheck, type IdentityEnv } from '#api/http/web-auth'
+import { registerStaticRoutes } from '#api/http/static'
+import { toErrorBody } from '#api/http/errors'
 import { projectApp } from '#routes/projects'
 import { mamaRelayApp, workspaceApp } from '#routes/workspaces'
 import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
 import { imageApp } from '#routes/images'
-import { hasWorkspaceDriver, workspaceDriver } from '#drivers/driver'
+import { workspaceDriver } from '#drivers/driver'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import type { AccessMode, Whoami } from '@yaac/shared/types'
 import { listUsers } from '#db'
-import { errorText, serverLog } from '#log'
+import { errorText, serverLog } from '#lib/log'
 
 export interface ServerAppDeps {
   buildId: string
@@ -106,8 +99,8 @@ export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<bool
 }
 
 /**
- * Every HTTP route, mounted under `/api` (like server-run's WebSocket
- * routes) so none collide with SPA paths. `AppType` is this sub-app;
+ * Every HTTP route, mounted under `/api` (like the WebSocket routes,
+ * `#api/ws-routes`) so none collide with SPA paths. `AppType` is this sub-app;
  * `createApiClient` adds the prefix.
  */
 function apiRoutes(
@@ -126,10 +119,9 @@ function apiRoutes(
         // it was asked for, and prints a refused start's reason.
         access: typeof a === 'string' ? a : null,
         refused: typeof a === 'object' ? a.refused : undefined,
-        // The driver, or null before one is registered. On /health because
-        // `yaac cluster …` needs it before identifying, to know what THIS
-        // server runs.
-        driver: hasWorkspaceDriver() ? workspaceDriver().kind : null,
+        // On /health because `yaac cluster …` needs it before identifying,
+        // to know what THIS server runs.
+        driver: workspaceDriver().kind,
       })
     })
     // The SPA's bootstrap and the clients' "will this server accept me"

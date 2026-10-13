@@ -14,10 +14,8 @@ import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import type { WorkspaceMount } from '#drivers/contract'
 
-/**
- * The in-workspace setup script (git identity, tmux, streamd). Required: a
- * create fails if it did not stage. The other scripts are optional.
- */
+/** The in-workspace setup script (git identity, tmux, streamd), which a
+ *  workspace runs once it starts. */
 export const WORKSPACE_INIT_SCRIPT = 'yaac-workspace-init'
 
 /** The opencode checkpoint script: the pod's `preStop` hook (with `stop`)
@@ -42,12 +40,11 @@ export function setWorkspaceBinDir(dir: string | null): void {
 
 /**
  * Copy every regular file from `srcDir` into a fresh `destDir`, make each
- * executable, and return the sorted names. A missing source dir gives [].
+ * executable, and return the sorted names.
  */
 export async function stageWorkspaceBin(srcDir: string, destDir: string): Promise<string[]> {
   await fs.rm(destDir, { recursive: true, force: true })
-  const entries = await fs.readdir(srcDir, { withFileTypes: true }).catch(() => null)
-  if (!entries) return []
+  const entries = await fs.readdir(srcDir, { withFileTypes: true })
   await fs.mkdir(destDir, { recursive: true })
   const names: string[] = []
   for (const e of entries) {

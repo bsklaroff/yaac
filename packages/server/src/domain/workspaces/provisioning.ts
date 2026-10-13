@@ -11,7 +11,7 @@
  * next checkpoint (`throwIfProvisionStopped`), and its row is then dropped
  * rather than shown failed.
  */
-import { notifyWorkspaceListChanged } from '#notify'
+import { notifyWorkspaceListChanged } from '#lib/notify'
 import { authorizeProject, type Actor } from '#domain/access'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { ServerError } from '@yaac/shared/errors'
@@ -39,11 +39,6 @@ interface ProvisioningEntry {
   /** The requested base branch; a workspace queued after this one defaults
    *  to it before the row exists. Not sent to clients. */
   branch?: string
-  /** Registered by the create route before provisioning starts. A run that
-   *  fails while still reserved was refused up front (e.g. a bad model), so
-   *  the entry is dropped rather than shown as failed; the caller already
-   *  has the error. Cleared by `ensureProvisioning`. */
-  reserved?: boolean
   /** Set by `stopProvisioning`; the next checkpoint throws. */
   stopping?: boolean
   startedAt: number
@@ -74,7 +69,17 @@ interface ProvisioningInput {
   model?: string
   modelName?: string
   branch?: string
-  reserved?: boolean
+}
+
+/**
+ * Refuse an id that is still provisioning (`CONFLICT`). A failed entry is
+ * not refused: registering again is a retry.
+ */
+export function refuseLiveProvision(workspaceId: string): void {
+  const existing = entries.get(workspaceId)
+  if (existing !== undefined && existing.error === undefined) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId} is already provisioning`)
+  }
 }
 
 /**
@@ -82,11 +87,8 @@ interface ProvisioningInput {
  * failed entry (a retry); a live one is a `CONFLICT`.
  */
 export function registerProvisioning(input: ProvisioningInput): void {
+  refuseLiveProvision(input.workspaceId)
   stoppedIds.delete(input.workspaceId)
-  const existing = entries.get(input.workspaceId)
-  if (existing !== undefined && existing.error === undefined) {
-    throw new ServerError('CONFLICT', `workspace ${input.workspaceId} is already provisioning`)
-  }
   entries.set(input.workspaceId, {
     workspaceId: input.workspaceId,
     projectId: input.projectId,
@@ -99,32 +101,9 @@ export function registerProvisioning(input: ProvisioningInput): void {
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.modelName !== undefined ? { modelName: input.modelName } : {}),
     ...(input.branch !== undefined ? { branch: input.branch } : {}),
-    ...(input.reserved === true ? { reserved: true } : {}),
     startedAt: Date.now(),
     seq: nextSeq++,
   })
-  notifyWorkspaceListChanged()
-}
-
-/**
- * Register, or update an existing entry's tool, group, title, prompt, model and branch
- * without changing its order, message or error (for callers the route may
- * already have registered).
- */
-export function ensureProvisioning(input: ProvisioningInput): void {
-  const e = entries.get(input.workspaceId)
-  if (e === undefined) {
-    registerProvisioning(input)
-    return
-  }
-  e.tool = input.tool
-  delete e.reserved
-  if (input.groupId !== undefined) e.groupId = input.groupId
-  if (input.title !== undefined) e.title = input.title
-  if (input.prompt !== undefined) e.prompt = input.prompt
-  if (input.model !== undefined) e.model = input.model
-  if (input.modelName !== undefined) e.modelName = input.modelName
-  if (input.branch !== undefined) e.branch = input.branch
   notifyWorkspaceListChanged()
 }
 
@@ -151,13 +130,12 @@ export function claimProvisioning(workspaceId: string, claimedId: string | undef
 }
 
 /** Mark an entry failed; kept until dismissed. Releases any claimed spare
- *  so the lingering row does not hide it. A stopped or still-reserved entry
- *  is dropped instead: the user asked for it to go, or the caller already
- *  has the error. No-op if absent. */
+ *  so the lingering row does not hide it. A stopped entry is dropped
+ *  instead, since the user asked for it to go. No-op if absent. */
 export function failProvisioning(workspaceId: string, error: string): void {
   const e = entries.get(workspaceId)
   if (!e) return
-  if (e.stopping === true || e.reserved === true) {
+  if (e.stopping === true) {
     removeProvisioning(workspaceId)
     return
   }
@@ -170,7 +148,7 @@ export function failProvisioning(workspaceId: string, error: string): void {
  * Report an agent launch failure found after the create returned (the
  * unawaited agent-window probe), as a failed provisioning row.
  *
- * Waits for the create's `runProvisioned` to finish first; otherwise its
+ * Waits for the create's run to finish first; otherwise its
  * success path could remove this row. The workspace itself is left to the
  * liveness watch and stale reaper.
  */
@@ -196,14 +174,14 @@ export async function reportAgentLaunchFailure(input: {
 }
 
 /**
- * In-flight `runProvisioned` calls by workspace id, for
+ * In-flight provision runs by workspace id, for
  * `reportAgentLaunchFailure` and `stopProvisioning` to wait on. Each
  * resolves with the id the run left running (a claimed spare's, on success),
  * or undefined if it failed; none rejects.
  */
 const runs = new Map<string, Promise<string | undefined>>()
 
-/** Resolves once no `runProvisioned` is in flight for this id. */
+/** Resolves once no provision run is in flight for this id. */
 async function settledRun(workspaceId: string): Promise<void> {
   // Loop: a retry can start a new run under the same id.
   let run = runs.get(workspaceId)
@@ -275,36 +253,47 @@ export async function dismissProvisioning(principal: Actor, workspaceId: string)
   removeProvisioning(workspaceId)
 }
 
+/** A create or restart that passed its checks and holds its row: called
+ *  once, it runs the provision and settles the row. */
+export type ProvisionRun<T> = (onProgress?: (message: string) => void) => Promise<T>
+
 /**
- * Run a provisioning task, mirroring progress into its row. Success drops the
- * row (the ready workspace replaces it); failure marks it failed and
- * rethrows. The caller registers the row; without one, the updates are
- * no-ops. Used by the HTTP create/restart routes and the spawn reconciler.
+ * Register a provisioning row (`CONFLICT` if this id is already
+ * provisioning) and return the run that drives it. The run mirrors progress
+ * into the row and to its `onProgress`; success drops the row (the ready
+ * workspace replaces it), failure marks it failed and rethrows.
  */
-export async function runProvisioned<T extends { workspaceId: string }>(
-  workspaceId: string,
+export function provision<T extends { workspaceId: string }>(
+  input: ProvisioningInput,
   run: (onProgress: (message: string) => void) => Promise<T>,
-): Promise<T> {
-  // Published before `run` starts, since the failure report is fired from
-  // inside the run.
-  let settle!: (ranAs: string | undefined) => void
-  const settled = new Promise<string | undefined>((resolve) => { settle = resolve })
-  runs.set(workspaceId, settled)
-  let ranAs: string | undefined
-  try {
-    const result = await run((message) => updateProvisioningMessage(workspaceId, message))
-    ranAs = result.workspaceId
-    // Drop the row before returning, so the snapshot shows the workspace.
-    removeProvisioning(workspaceId)
-    notifyWorkspaceListChanged()
-    return result
-  } catch (err) {
-    failProvisioning(workspaceId, err instanceof Error ? err.message : String(err))
-    throw err
-  } finally {
-    // Only if not already replaced by a newer run on the same id.
-    if (runs.get(workspaceId) === settled) runs.delete(workspaceId)
-    settle(ranAs)
+): ProvisionRun<T> {
+  const { workspaceId } = input
+  registerProvisioning(input)
+  return async (onProgress) => {
+    // Published before `run` starts, since the failure report is fired from
+    // inside the run.
+    let settle!: (ranAs: string | undefined) => void
+    const settled = new Promise<string | undefined>((resolve) => { settle = resolve })
+    runs.set(workspaceId, settled)
+    let ranAs: string | undefined
+    try {
+      const result = await run((message) => {
+        updateProvisioningMessage(workspaceId, message)
+        onProgress?.(message)
+      })
+      ranAs = result.workspaceId
+      // Drop the row before returning, so the snapshot shows the workspace.
+      removeProvisioning(workspaceId)
+      notifyWorkspaceListChanged()
+      return result
+    } catch (err) {
+      failProvisioning(workspaceId, err instanceof Error ? err.message : String(err))
+      throw err
+    } finally {
+      // Only if not already replaced by a newer run on the same id.
+      if (runs.get(workspaceId) === settled) runs.delete(workspaceId)
+      settle(ranAs)
+    }
   }
 }
 

@@ -7,6 +7,7 @@ import { useUiStore } from '#lib/store'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { GitCredentials } from '#components/settings/GitCredentials'
 import { Field } from '#components/settings/Field'
+import { filterSuggestions, Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 import { TOOL_LABELS, type AgentTool, type ToolAuthSummary, type ToolInstallView, type ToolLoginView } from '@yaac/shared/types'
 
@@ -14,12 +15,13 @@ const TOOLS: AgentTool[] = ['claude', 'codex', 'opencode', 'pi']
 
 /**
  * Provider choices for the API-key-only tools: which backend the pasted key
- * is for. The first entry is the default. Unlisted tools have no provider.
+ * is for, as a picker item whose value is the provider id. The first entry
+ * is the default. Unlisted tools have no provider.
  */
-interface ProviderOption { id: string; label: string }
-const PROVIDER_OPTIONS: Partial<Record<AgentTool, ProviderOption[]>> = {
-  opencode: OPENCODE_PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
-  pi: PI_PROVIDERS.map((p) => ({ id: p.id, label: p.label })),
+const providerItem = (p: { id: string; label: string }): TypeaheadItem => ({ value: p.id, label: p.label, detail: p.id })
+const PROVIDER_OPTIONS: Partial<Record<AgentTool, TypeaheadItem[]>> = {
+  opencode: OPENCODE_PROVIDERS.map(providerItem),
+  pi: PI_PROVIDERS.map(providerItem),
 }
 
 /**
@@ -61,7 +63,7 @@ export function CredentialsPane(): JSX.Element {
 function apiKeyLabel(tool: AgentTool, provider: string | undefined): string {
   if (tool === 'claude') return 'Anthropic API key'
   if (tool === 'codex') return 'OpenAI API key'
-  const label = PROVIDER_OPTIONS[tool]?.find((o) => o.id === provider)?.label
+  const label = PROVIDER_OPTIONS[tool]?.find((o) => o.value === provider)?.label
   return label ? `${label} API key` : 'API key'
 }
 
@@ -70,56 +72,32 @@ const PROVIDER_VISIBLE_LIMIT = 50
 
 /**
  * Searchable provider picker for the API-key-only tools. opencode has 150+
- * providers, so a filtered list replaces a radio row. The value is the
- * provider id.
+ * providers, so a filtered list replaces a radio row. The current pick is
+ * tagged.
  */
 function ProviderCombobox({ options, value, onChange }: {
-  options: ProviderOption[]
+  options: TypeaheadItem[]
   value: string
   onChange: (id: string) => void
 }): JSX.Element {
   const [query, setQuery] = useState('')
-  const q = query.trim().toLowerCase()
-  const matches = q
-    ? options.filter((o) => o.label.toLowerCase().includes(q) || o.id.toLowerCase().includes(q))
-    : options
-  const shown = matches.slice(0, PROVIDER_VISIBLE_LIMIT)
-  const hidden = matches.length - shown.length
-
+  const hidden = filterSuggestions(options, query, Infinity).length - PROVIDER_VISIBLE_LIMIT
   return (
-    <div className="flex flex-col gap-1.5">
-      <input
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
+    <div>
+      <Typeahead
+        items={options}
+        query={query}
+        onQueryChange={setQuery}
+        onSelect={onChange}
+        showList
+        limit={PROVIDER_VISIBLE_LIMIT}
         placeholder="Search providers…"
-        className="w-full rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs
-          text-text outline-none focus:border-border-strong"
+        ariaLabel="Provider"
+        tag={(item) => item.value === value && 'selected'}
       />
-      <div className="max-h-40 overflow-y-auto rounded-md border border-hairline-soft">
-        {shown.length === 0 ? (
-          <p className="px-2 py-1.5 text-[11px] text-text-faint">No providers found.</p>
-        ) : (
-          shown.map((o) => (
-            <button
-              key={o.id}
-              type="button"
-              onClick={() => onChange(o.id)}
-              className={clsx(
-                'flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-[11px] transition',
-                o.id === value
-                  ? 'bg-surface-3 text-text'
-                  : 'text-text-dim hover:bg-surface-2 hover:text-text',
-              )}
-            >
-              <span className="truncate">{o.label}</span>
-              <span className="shrink-0 font-mono text-[10px] text-text-faint">{o.id}</span>
-            </button>
-          ))
-        )}
-        {hidden > 0 && (
-          <p className="px-2 py-1 text-[10px] text-text-faint">+{hidden} more — keep typing to narrow.</p>
-        )}
-      </div>
+      {hidden > 0 && (
+        <p className="px-2 py-1 text-[10px] text-text-faint">+{hidden} more — keep typing to narrow.</p>
+      )}
     </div>
   )
 }
@@ -137,7 +115,7 @@ function ToolAuthRow({ tool, summary, autoExpand, onChanged }: {
   const [expanded, setExpanded] = useState(false)
   const [justSignedIn, setJustSignedIn] = useState(false)
   const providerOptions = PROVIDER_OPTIONS[tool]
-  const [provider, setProvider] = useState<string>(providerOptions?.[0].id ?? 'openrouter')
+  const [provider, setProvider] = useState<string>(providerOptions?.[0].value ?? 'openrouter')
 
   // Opened from a "Sign in" link elsewhere: start with this tool's form open.
   useEffect(() => {

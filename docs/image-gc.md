@@ -6,7 +6,7 @@ until the disk fills, and on kind that disk is the host's, with no warning.
 
 | Store | What accumulates | Collector | When |
 |---|---|---|---|
-| Host podman engine | one tagged generation per source change of each yaac-built repo | `gcHostImages` (`#drivers/k8s/image-engine`), keeps the newest 2 per repo | every `yaac cluster install` |
+| Host podman engine | one tagged generation per source change of each yaac-built repo | `gcHostImages` (`#drivers/k8s/install`), keeps the newest 2 per repo | every `yaac cluster install` |
 | Main registry, step cache | a cache tag per Dockerfile step per edit | main-registry GC | reconcile, every 6 h |
 | Main registry, images | one tagged generation per source change | main-registry GC | reconcile, every 6 h |
 | Main registry, project repos | the repos of removed projects | main-registry GC | reconcile, every 6 h |

@@ -2,7 +2,9 @@
 // SEALED_FOLDERS).
 //
 // This feature owns a workspace's life: creating, starting, restarting,
-// stopping and reaping it, and its rows. It drives the runtime only through
+// stopping and reaping it, and its rows; the `yaac-mama` commands an agent
+// runs against its siblings; and the file editor's reads and writes of a
+// workspace's checkout. It drives the runtime only through
 // `#drivers/driver` and `#drivers/contract`, and uses `#runtime/agents` and
 // `#runtime/status`. The reconcile entry points are idempotent, since the
 // background loop calls them every tick.
@@ -12,24 +14,45 @@
 
 export { reconcileAgentSessions, reconcileStoppedAgentSessions } from './agent-session-registry'
 export { toAgentSessionEntry } from './agent-session-entry'
-export {
-  cleanupWorkspaceDetached,
-  gcOrphanEphemeralModuleDirs,
-  reapOrphanNodeLocal,
-  teardownForRestart,
-} from './cleanup'
-export {
-  createWorkspace,
-  resolveCreate,
-  type CreateSetup,
-  type WorkspaceCreateOptions,
-  type WorkspaceCreateResult,
-} from './create'
+export { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal } from './cleanup'
 export {
   getWorkspaceBlockedHosts,
   getWorkspaceDetail,
 } from './detail'
 export { allowWorkspaceHost } from './allow-host'
+export { listWorkspaceGroups, resolveGroup } from './groups'
+export { dismissWorkspacePort, forwardWorkspacePort, unforwardWorkspacePort } from './forward-port'
+export { listActiveWorkspaces } from './list'
+export {
+  claimDraft,
+  discardDraftWorkspace,
+  listDraftWorkspaces,
+  saveDraftWorkspace,
+} from './drafts'
+export { removeProject } from './project-teardown'
+export { reconcilePrewarmPool } from './prewarm-reconcile'
+export { dismissProvisioning, listProvisioning } from './provisioning'
+export {
+  discardQueuedWorkspace,
+  listHeldWorkspaces,
+  listQueuedWorkspaces,
+  queueWorkspace,
+  reconcileQueuedWorkspaces,
+  runQueuedWorkspace,
+  updateQueuedWorkspace,
+} from './queued-workspaces'
+export {
+  resolveProjectWorkspace,
+  resolveWorkspaceContainer,
+  resolveWorkspaceId,
+  resolveWorkspaceRecord,
+} from './resolve'
+export { prepareRestart } from './restart'
+export { prepareStart } from './start'
+export { reconcileStaleWorkspaces } from './stale-workspaces'
+export { stopWorkspace } from './stop'
+export { listStoppedWorkspaces } from './stopped-list'
+export { getAcpStoredImage, getAgentSessionTranscript } from './transcript'
 export { saveWorkspaceAttachment } from './attachments'
 export {
   createWorkspaceFolder,
@@ -42,40 +65,6 @@ export {
   renameWorkspaceEntry,
   writeWorkspaceFile,
 } from './files'
-export { listWorkspaceGroups, resolveGroup } from './groups'
-export { dismissWorkspacePort, forwardWorkspacePort, unforwardWorkspacePort } from './forward-port'
-export { listActiveWorkspaces } from './list'
-export { purgeProjectBytes } from './project-purge'
-export { claimDraft, discardDraftWorkspace, listDraftWorkspaces, saveDraftWorkspace } from './drafts'
-export { removeProject } from './project-teardown'
-export { reconcilePrewarmPool } from './prewarm-reconcile'
-export {
-  dismissProvisioning,
-  inFlightWorkspaceIds,
-  listProvisioning,
-  registerProvisioning,
-  runProvisioned,
-} from './provisioning'
-export {
-  discardQueuedWorkspace,
-  listHeldWorkspaces,
-  listQueuedWorkspaces,
-  queueWorkspace,
-  reconcileQueuedWorkspaces,
-  runQueuedWorkspace,
-  updateQueuedWorkspace,
-} from './queued-workspaces'
-export {
-  resolveWorkspace,
-  resolveWorkspaceContainer,
-  resolveWorkspaceId,
-  resolveWorkspaceRecord,
-} from './resolve'
-export { resolveRestartTarget, restartWorkspace } from './restart'
-export { startWorkspace } from './start'
-export { rebranchSpare, retoolSpare } from './spare-pool'
-export { runMamaCommand, type MamaCaller } from './mama'
-export { reconcileStaleWorkspaces } from './stale-workspaces'
-export { stopWorkspace } from './stop'
-export { listStoppedWorkspaces } from './stopped-list'
-export { getAcpStoredImage, getAgentSessionTranscript } from './transcript'
+export { runMamaCommand } from './mama'
+export { convergeAgentHistory, removeAgentHistory } from './history'
+export { reconcileGeneratedTitles } from './title-generation'

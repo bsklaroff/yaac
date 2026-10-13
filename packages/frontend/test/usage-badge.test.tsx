@@ -1,11 +1,7 @@
-// @vitest-environment jsdom
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup } from '@testing-library/react'
 
-vi.mock('#lib/useSnapshot', () => ({ useSnapshot: vi.fn() }))
-
-import { useSnapshot } from '#lib/useSnapshot'
-import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverSnapshot, testQueryClient, type FetchMock } from './harness'
 import {
   limitLabel,
   metricKey,
@@ -16,30 +12,20 @@ import {
   UsageBadge,
 } from '#components/UsageBadge'
 import { useUiStore } from '#lib/store'
-import type { PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
-
-// jsdom has no ResizeObserver; Base UI needs one to exist.
-beforeAll(() => {
-  globalThis.ResizeObserver ??= class {
-    observe(): void {}
-    unobserve(): void {}
-    disconnect(): void {}
-  }
-})
+import type { PlanUsageLimit, PlanUsageResult, ServerSnapshot } from '@yaac/shared/types'
 
 let server: FetchMock
+/** What the badge's snapshot holds; undefined before the first one. */
+let snapshot: ServerSnapshot | undefined
 
 beforeEach(() => {
   vi.clearAllMocks()
+  snapshot = undefined
   useUiStore.setState({ pinnedUsageMetric: null })
   server = mockFetch({
     'POST /api/auth/claude/usage/refresh': undefined,
     'GET /api/whoami': { kind: 'local', userId: ME, users: [] },
   })
-})
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
 })
 
 function limit(overrides: Partial<PlanUsageLimit> = {}): PlanUsageLimit {
@@ -90,10 +76,7 @@ function stubSnapshot(
   planUsage: PlanUsageResult | null,
   codexPlanUsage: PlanUsageResult | null = null,
 ): void {
-  vi.mocked(useSnapshot).mockReturnValue({
-    driver: 'k8s',
-    workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], gitAuthFailures: {},
-    imageBuilds: [],
+  snapshot = serverSnapshot({
     // Another user's readout, which the badge must not show.
     planUsage: { [ME]: planUsage, [OTHER]: { available: false, reason: 'api-key' } },
     codexPlanUsage: { [ME]: codexPlanUsage },
@@ -105,9 +88,7 @@ const OTHER = '6f1c1c55-7a53-4bd5-9a0f-0b3a3d1b1a02'
 
 /** Render the badge as `ME`, whose `whoami` App has already loaded. */
 function renderBadge(): void {
-  const client = testQueryClient()
-  client.setQueryData(['whoami'], { kind: 'local', userId: ME, users: [] })
-  renderWithClient(<UsageBadge />, client)
+  renderWithClient(<UsageBadge />, testQueryClient({ kind: 'local', userId: ME, users: [] }, snapshot))
 }
 
 function pill(): HTMLElement {
@@ -209,7 +190,6 @@ describe('usageTone', () => {
 
 describe('UsageBadge', () => {
   it('renders nothing before the snapshot or any usage arrives', () => {
-    vi.mocked(useSnapshot).mockReturnValue(undefined)
     renderBadge()
     expect(screen.queryByRole('button')).toBeNull()
 
