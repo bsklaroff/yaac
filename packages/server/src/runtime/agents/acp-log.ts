@@ -492,44 +492,68 @@ export async function readAcpPendingPermissions(
 }
 
 /**
- * How much of a record to scan for the opening message. The first prompt
- * follows the small life header and handshake, so a bounded read suffices
- * even for a large conversation.
+ * How much of each record line `readAcpFirstPrompt` keeps, and how much it
+ * reads at once. Adapters may write long lines before the opening message
+ * (opencode's model lists), so the record is read up to that message, but
+ * memory stays bounded however large the record or its lines grow. The read
+ * stops at `MAX_ACP_RECORD_BYTES`, as the other record readers do, because a
+ * conversation nobody has prompted is rescanned on every reconcile pass.
  */
-const FIRST_PROMPT_SCAN_BYTES = 64 * 1024
+const LINE_HEAD_CHARS = 64 * 1024
 
-/** The text block at the start of a `session/prompt` line, used only for a
- *  line too long to parse. */
-const TRUNCATED_PROMPT_TEXT =
-  /"method":"session\/prompt".*?"prompt":\[\{"type":"text","text":("(?:[^"\\]|\\.)*")/
+/**
+ * A `session/prompt` line too long to parse, and the text block at its
+ * start if that fits in the line's head.
+ */
+const TRUNCATED_PROMPT =
+  /"method":"session\/prompt"(?:.*?"prompt":\[\{"type":"text","text":("(?:[^"\\]|\\.)*"))?/
 
 /**
  * The conversation's opening user message, used as the workspace's sidebar
  * label. Read from the record so the registry, which runs on a reconcile
- * tick, needs no live connection.
+ * tick, needs no live connection. A line cut to its head is typically an
+ * opening message with an image; its text is still reachable because
+ * `AcpConversation.prompt` writes the text block before the images.
  */
 export async function readAcpFirstPrompt(record: AcpRecordRef): Promise<string | undefined> {
   const handle = await openRecord(record)
   if (handle === null) return undefined
   try {
-    const buf = Buffer.alloc(FIRST_PROMPT_SCAN_BYTES)
-    const { bytesRead } = await handle.read(buf, 0, FIRST_PROMPT_SCAN_BYTES, 0)
-    // Decode so a character split at the scan boundary is held back rather
-    // than shown as U+FFFD; an incomplete trailing line is discarded.
-    const head = new StringDecoder('utf8').write(buf.subarray(0, bytesRead))
-    for (const line of head.split('\n')) {
+    for await (const line of lineHeads(handle)) {
       const msg = parseLine(line)
       if (msg?.method === ACP.sessionPrompt) return promptText(msg.params)
-      // The scan may end mid-line, typically in an opening message with an
-      // image; its text is still reachable because `AcpConversation.prompt`
-      // writes the text block before the images.
-      const cut = TRUNCATED_PROMPT_TEXT.exec(line)
-      if (cut) return JSON.parse(cut[1]) as string
+      const cut = TRUNCATED_PROMPT.exec(line)
+      if (cut) return cut[1] === undefined ? undefined : JSON.parse(cut[1]) as string
     }
     return undefined
   } finally {
     await handle.close()
   }
+}
+
+/**
+ * Each line of a record's first `MAX_ACP_RECORD_BYTES`, cut to its first
+ * `LINE_HEAD_CHARS`. One decoder spans the reads so a character split
+ * between two is not shown as U+FFFD.
+ */
+async function* lineHeads(handle: FileHandle): AsyncGenerator<string> {
+  const decoder = new StringDecoder('utf8')
+  const buf = Buffer.alloc(LINE_HEAD_CHARS)
+  let head = ''
+  for (let pos = 0; pos < MAX_ACP_RECORD_BYTES;) {
+    const { bytesRead } = await handle.read(buf, 0, Math.min(buf.length, MAX_ACP_RECORD_BYTES - pos), pos)
+    if (bytesRead === 0) break
+    pos += bytesRead
+    const parts = decoder.write(buf.subarray(0, bytesRead)).split('\n')
+    for (const [i, part] of parts.entries()) {
+      if (i > 0) {
+        yield head
+        head = ''
+      }
+      if (head.length < LINE_HEAD_CHARS) head = (head + part).slice(0, LINE_HEAD_CHARS)
+    }
+  }
+  if (head !== '') yield head
 }
 
 /** The text of a `session/prompt` request, if it carries any. */

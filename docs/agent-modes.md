@@ -794,8 +794,12 @@ PNG still over 1 MB re-encoded as WebP or JPEG when smaller.
 For large prompts, acpd writes whole lines only, so a multi-megabyte prompt
 arriving in chunks is never split by agent output; a client that disconnects
 mid-line gets its line ended with a newline, so the agent discards the
-fragment. The opening-message scan reads only the record's first 64 KB, but
-still finds the text because it is written before the images.
+fragment. The opening-message scan, which labels the workspace, reads the
+record up to that message, however much adapter output precedes it
+(opencode writes its model lists first), but keeps only the first 64 KB of
+each line and stops at the record's 64 MB cap, since a conversation nobody
+has prompted is rescanned on every reconcile pass. It still finds the text
+of an opening message with images because the text is written before them.
 
 In either pane, a paste that also carries plain text is treated as text,
 since office apps put a picture of the copied selection beside the text. A
