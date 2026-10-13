@@ -1008,7 +1008,7 @@ describe('WorkspaceChat rendering', () => {
     show()
     fireEvent.click(screen.getByText(command))
     expect(screen.getAllByText(command).map((el) => el.tagName)).toEqual(['SPAN', 'PRE'])
-    expect(screen.getByText('mcp.github.get_issue').closest('button')?.disabled).toBe(true)
+    expect(screen.getByText('mcp.github.get_issue').closest('button')?.getAttribute('aria-disabled')).toBe('true')
     expect(screen.queryByText('git status')).toBeNull()
     fireEvent.click(screen.getByText('Show working tree status'))
     expect(screen.getByText('git status').tagName).toBe('PRE')
@@ -1321,7 +1321,7 @@ describe('WorkspaceChat permission asks', () => {
       { type: 'permission-resolved', seq: 2, requestId: '5', outcome: 'selected', optionId: 'allow' },
     ]
     show()
-    expect(screen.getByText(/Allow Once/).closest('button')?.disabled).toBe(true)
+    expect(screen.getByText(/Allow Once/).closest('button')?.getAttribute('aria-disabled')).toBe('true')
   })
 
   it('says the agent is waiting on the user rather than working', () => {
@@ -1827,5 +1827,36 @@ describe('WorkspaceChat file links', () => {
       ['w1', 'docs/b c.md', 3], ['w1', 'packages/a.ts', 100], ['w1', 'packages/a.ts', 40],
       ['w1', 'packages/a.ts', 8], ['w1', 'README.md', 5],
     ])
+  })
+
+  it('opens the page a tool call names, in a new tab, but links no URL a message left unlinked', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    stream.events = [
+      // A URL in a link's label is the label, not a second link.
+      { type: 'agent', seq: 0, content: [{ type: 'text', text: '[**https://shown.example/x**](https://target.example/y)' }] },
+      // A checkout path inside a URL is part of the URL.
+      tool(1, { title: 'Fetch https://github.com/o/r/blob/main/README.md', kind: 'fetch' }),
+      // A row with nothing to expand, as codex sends a web search.
+      tool(2, { title: 'Open page: https://en.wikipedia.org/wiki/Foo_(bar).', kind: 'search' }),
+      tool(3, { title: 'webfetch http://127.0.0.1:8080/page.', kind: 'fetch' }),
+    ]
+    show()
+    act(() => { client.setQueryData(filesKey('w1'), listing) })
+    await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(4))
+    const links = screen.getAllByRole('link')
+    expect(links.map((l) => l.textContent)).toEqual([
+      'https://shown.example/x',
+      'https://github.com/o/r/blob/main/README.md',
+      'https://en.wikipedia.org/wiki/Foo_(bar)',
+      'http://127.0.0.1:8080/page',
+    ])
+    expect(links[0].getAttribute('href')).toBe('https://target.example/y')
+    // A browser delivers no click inside a disabled button.
+    const row = screen.getByRole<HTMLButtonElement>('button', { name: /Open page/ })
+    expect([row.disabled, row.getAttribute('aria-disabled')]).toEqual([false, 'true'])
+    fireEvent.click(links[2])
+    expect(open).toHaveBeenCalledWith('https://en.wikipedia.org/wiki/Foo_(bar)', '_blank', 'noopener,noreferrer')
+    expect(openFile).not.toHaveBeenCalled()
+    open.mockRestore()
   })
 })

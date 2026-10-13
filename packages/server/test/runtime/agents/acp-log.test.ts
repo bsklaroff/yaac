@@ -968,6 +968,20 @@ describe('replayAcpLog', () => {
     expect(events).toMatchObject([{ type: 'tool', call: { toolCallId: 'call-9', status: 'completed' } }])
   })
 
+  it('names a fetch\'s URL in its title, unless the adapter already did', () => {
+    const fetch = (toolCallId: string, title: string, url: string): string => update({
+      sessionUpdate: 'tool_call_update', toolCallId, title, kind: 'fetch', status: 'in_progress', rawInput: { url },
+    })
+    const events = replayAcpLog([
+      // As opencode sends one, and as claude does.
+      fetch('call_7', 'webfetch', 'http://127.0.0.1:28932/page'),
+      fetch('toolu_f', 'Fetch https://example.com/a', 'https://example.com/a'),
+    ].join('\n'))
+    expect(events.flatMap((e) => (e.type === 'tool' ? [e.call.title] : []))).toEqual([
+      'webfetch http://127.0.0.1:28932/page', 'Fetch https://example.com/a',
+    ])
+  })
+
   it('numbers events from zero so an attach can continue past them', () => {
     const events = replayAcpLog([
       prompt('a'),
