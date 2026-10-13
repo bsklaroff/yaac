@@ -95,7 +95,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  useUiStore.setState({ paneView: {}, changesBase: {}, layouts: {}, activeTabs: {}, findPending: null })
+  useUiStore.setState({ paneView: {}, changesBase: {}, layouts: {}, activeTabs: {}, findPending: null, filesFontSize: 12 })
 })
 
 const explorer = <WorkspaceFiles workspaceId="s1" projectId="proj" baseBranch="main" />
@@ -248,6 +248,51 @@ describe('WorkspaceFiles changes', () => {
     await waitFor(() => expect(screen.getByText('Nothing uncommitted')).toBeTruthy())
     // The picker stays reachable with nothing to list.
     expect(screen.getByTitle(BASE_TRIGGER)).toBeTruthy()
+  })
+  // The list below the header scales as a whole, diffs included, so its
+  // rows and indents grow with the text; the header keeps its size.
+  it('sizes the list from its menu, the text-size keys and a two-finger pinch', async () => {
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ['src/app.ts'] })
+    renderChanges()
+    await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
+    const list = row('src/app.ts').closest<HTMLElement>('[style*="zoom"]')!
+    const zoom = (): string => list.style.getPropertyValue('zoom')
+    expect(list.contains(screen.getByText('needle1'))).toBe(true)
+    expect(zoom()).toBe('1')
+
+    fireEvent.click(screen.getByLabelText('Text size'))
+    fireEvent.click(await screen.findByLabelText('Larger text'))
+    fireEvent.click(screen.getByLabelText('Larger text'))
+    expect(screen.getByText('14px')).toBeTruthy()
+    expect(zoom()).toBe(String(14 / 12))
+
+    const key = (k: string): void => {
+      fireEvent.keyDown(row('src/app.ts'), { key: k, ctrlKey: !IS_MAC, metaKey: IS_MAC })
+    }
+    key('0')
+    expect(zoom()).toBe('1')
+    key('-')
+    expect(useUiStore.getState().filesFontSize).toBe(11)
+
+    // Fingers 100px apart spreading to 200 double the size the pinch began
+    // at, up to the cap; lifting one ends it, so a lone finger's move is a
+    // scroll. A pinch over the header, which does not scale, zooms the page.
+    const touches = (...xs: number[]): { touches: { clientX: number; clientY: number }[] } => (
+      { touches: xs.map((clientX) => ({ clientX, clientY: 0 })) })
+    const filter = screen.getByLabelText('Filter changed files')
+    fireEvent.touchStart(filter, touches(0, 100))
+    fireEvent.touchMove(filter, touches(0, 150))
+    expect(useUiStore.getState().filesFontSize).toBe(11)
+    fireEvent.touchStart(list, touches(0, 100))
+    fireEvent.touchMove(list, touches(0, 150))
+    expect(useUiStore.getState().filesFontSize).toBe(17)
+    fireEvent.touchMove(list, touches(0, 300))
+    expect(useUiStore.getState().filesFontSize).toBe(24)
+    fireEvent.touchMove(list, touches(0, 50))
+    expect(useUiStore.getState().filesFontSize).toBe(9)
+    fireEvent.touchEnd(list, touches(0))
+    fireEvent.touchMove(list, touches(500))
+    expect(useUiStore.getState().filesFontSize).toBe(9)
   })
 })
 

@@ -3,15 +3,14 @@ import clsx from 'clsx'
 import { PopoverPopup } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { useQuery } from '@tanstack/react-query'
-import { EditorView } from '@uiw/react-codemirror'
+import { EditorView, panels } from '@uiw/react-codemirror'
 import { openSearchPanel } from '@codemirror/search'
 import { ServerError } from '@yaac/shared/errors'
 import { mediaType } from '@yaac/shared/media-types'
 import type { WorkspaceChange, WorkspaceFile as WorkspaceFileRead } from '@yaac/shared/types'
-import {
-  DEFAULT_EDITOR_FONT_SIZE, MAX_EDITOR_FONT_SIZE, MIN_EDITOR_FONT_SIZE, useUiStore, type FileDiffMode,
-} from '#lib/store'
+import { DEFAULT_FONT_SIZE, useUiStore, type FileDiffMode } from '#lib/store'
 import { CodeEditor } from '#components/ui/CodeEditor'
+import { TextSizeMenu } from '#components/ui/TextSizeMenu'
 import { LineCountsLabel } from '#components/ui/LineCountsLabel'
 import { api } from '#lib/api'
 import { diffExtensions, setOriginal } from '#lib/diffEditor'
@@ -20,7 +19,8 @@ import { languageForPath } from '#lib/highlight'
 import { CHANGES_POLL_MS, useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { chordMatches, findChord, formatChord, saveChord, textSizeStep } from '#lib/shortcuts'
 import { IS_MAC } from '#lib/platform'
-import { focusRaisesKeyboard } from '#lib/viewport'
+import { usePinchSize, type TouchHandlers } from '#lib/usePinchSize'
+import { PHONE_TEXT_PX, focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
 import {
   FileConflict,
   discardFileSavers,
@@ -31,7 +31,7 @@ import {
   saveWorkspaceFile,
   workspaceMediaUrl,
 } from '#lib/files'
-import { AddIcon, CheckIcon, DiffIcon, LoadingIcon, MinusIcon, SaveIcon, SearchIcon, TextSizeIcon, WarningIcon } from '#lib/icons'
+import { CheckIcon, DiffIcon, LoadingIcon, SaveIcon, SearchIcon, WarningIcon } from '#lib/icons'
 
 /** Idle time after the last edit before autosave. */
 export const AUTOSAVE_MS = 1000
@@ -294,11 +294,42 @@ function MediaView({ src, type, path, failed }: {
 }
 
 /**
+ * The editor drawn at `scale`, filling the same box, and the one place a
+ * pinch sizes the text (`touch`); elsewhere in the pane, a media file
+ * included, a pinch still zooms the page. On phones the scale is the text
+ * size: the editor's own text stays at PHONE_TEXT_PX, and iOS decides
+ * whether to zoom on focus from the font size, which a transform leaves
+ * alone (CSS `zoom` would not). CodeMirror measures through the transform,
+ * so taps, the cursor and selection still land. Rendered at scale 1 too, so
+ * crossing the breakpoint keeps the editor mounted, with its undo history.
+ */
+function Scaled({ scale, touch, children }: {
+  scale: number
+  touch: TouchHandlers
+  children: JSX.Element
+}): JSX.Element {
+  return (
+    <div {...touch} className="relative min-h-0 flex-1 touch-pan-x touch-pan-y overflow-hidden">
+      <div
+        className="absolute left-0 top-0 flex origin-top-left flex-col"
+        style={{
+          width: `${100 / scale}%`,
+          height: `${100 / scale}%`,
+          transform: scale === 1 ? undefined : `scale(${scale})`,
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/**
  * One file open for editing (docs/file-editor.md). Stays mounted while hidden
  * so undo history, cursor and unsaved text survive a tab switch; polls only
  * while visible. Autosaves a second after the last keystroke. Pane-level
  * keys: Cmd/Ctrl-S saves now, Cmd/Ctrl-F opens find, Cmd/Ctrl =/−/0 size the
- * text instead of zooming the page.
+ * text instead of zooming the page, as a two-finger pinch does.
  */
 export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   workspaceId: string
@@ -314,6 +345,8 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const setFileDirty = useUiStore((s) => s.setFileDirty)
   const fontSize = useUiStore((s) => s.editorFontSize)
   const setFontSize = useUiStore((s) => s.setEditorFontSize)
+  const pinch = usePinchSize(fontSize, setFontSize)
+  const mobile = useIsMobile()
   const viewRef = useRef<EditorView | null>(null)
   const openFind = (): void => { if (viewRef.current) openSearchPanel(viewRef.current) }
 
@@ -343,7 +376,15 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
   const setDiffMode = useUiStore((s) => s.setFileDiffMode)
   const original = useOriginal(workspaceId, change, changes?.base, diffMode !== 'plain')
   const diffing = original !== null
-  const extensions = useMemo(() => (original === null ? [] : diffExtensions(diffMode, original)), [diffMode, original])
+  // The find bar mounts above the editor rather than in it, so a phone's
+  // text size (Scaled) leaves its controls their normal size. CodeMirror
+  // gives the host the editor's theme classes, which style the panel but
+  // also set `height: 100%`; the host's inline height undoes that.
+  const [panelHost, setPanelHost] = useState<HTMLDivElement | null>(null)
+  const extensions = useMemo(() => [
+    ...(panelHost ? [panels({ topContainer: panelHost })] : []),
+    ...(original === null ? [] : diffExtensions(diffMode, original)),
+  ], [diffMode, original, panelHost])
   useEffect(() => {
     if (viewRef.current && original !== null) setOriginal(viewRef.current, original)
   }, [original, extensions])
@@ -399,7 +440,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
     const size = textSizeStep(e)
     if (size !== null) {
       e.preventDefault()
-      setFontSize(size === 0 ? DEFAULT_EDITOR_FONT_SIZE : fontSize + size)
+      setFontSize(size === 0 ? DEFAULT_FONT_SIZE : fontSize + size)
     } else if (chordMatches(saveChord(), e.nativeEvent)) {
       e.preventDefault()
       void saver.flush()
@@ -465,20 +506,25 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
           )
         }
         return (
-          <CodeEditor
-            value={saver.text}
-            onChange={(v) => saver.edit(v)}
-            language={languageForPath(path)}
-            height="100%"
-            className="min-h-0 flex-1"
-            bare
-            fontSize={fontSize}
-            extensions={extensions}
-            onCreateEditor={(view) => {
-              viewRef.current = view
-              revealPending(view)
-            }}
-          />
+          <>
+            <div ref={setPanelHost} style={{ height: 'auto' }} />
+            <Scaled scale={mobile ? fontSize / PHONE_TEXT_PX : 1} touch={pinch}>
+              <CodeEditor
+                value={saver.text}
+                onChange={(v) => saver.edit(v)}
+                language={languageForPath(path)}
+                height="100%"
+                className="min-h-0 flex-1"
+                bare
+                fontSize={mobile ? PHONE_TEXT_PX : fontSize}
+                extensions={extensions}
+                onCreateEditor={(view) => {
+                  viewRef.current = view
+                  revealPending(view)
+                }}
+              />
+            </Scaled>
+          </>
         )
     }
   })()
@@ -523,7 +569,7 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         {phase.kind === 'ready' && !conflict && (
           <div className="flex shrink-0 items-center">
             <DiffModeMenu mode={diffMode} active={diffing} onChange={setDiffMode} />
-            <TextSizeMenu size={fontSize} onChange={setFontSize} />
+            <TextSizeMenu size={fontSize} onChange={setFontSize} className="h-5 w-5" />
             <button
               onClick={openFind}
               title={`Find (${formatChord(findChord(), IS_MAC)})`}
@@ -612,56 +658,6 @@ function DiffModeMenu({ mode, active, onChange }: {
             {m.label}
           </button>
         ))}
-      </PopoverPopup>
-    </Popover.Root>
-  )
-}
-
-/** The header's "Aa" button, opening − / size / + and Reset. Hidden on
- *  phones, where editor text is fixed at 16px (index.css). */
-function TextSizeMenu({ size, onChange }: { size: number; onChange: (px: number) => void }): JSX.Element {
-  const mod = IS_MAC ? '⌘' : 'Ctrl+'
-  const step = 'flex h-6 w-6 items-center justify-center rounded text-text-dim transition hover:bg-surface-3 '
-    + 'hover:text-text disabled:pointer-events-none disabled:opacity-35'
-  return (
-    <Popover.Root>
-      <Popover.Trigger
-        title={`Text size (${mod}= / ${mod}−)`}
-        aria-label="Text size"
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint outline-none transition
-          hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text max-md:hidden"
-      >
-        <TextSizeIcon size={14} />
-      </Popover.Trigger>
-      <PopoverPopup side="bottom" align="end" sideOffset={6} className="flex items-center gap-1 text-xs">
-        <button
-          onClick={() => onChange(size - 1)}
-          disabled={size <= MIN_EDITOR_FONT_SIZE}
-          title={`Smaller (${mod}−)`}
-          aria-label="Smaller text"
-          className={step}
-        >
-          <MinusIcon size={13} />
-        </button>
-        <span className="w-10 text-center tabular-nums">{size}px</span>
-        <button
-          onClick={() => onChange(size + 1)}
-          disabled={size >= MAX_EDITOR_FONT_SIZE}
-          title={`Larger (${mod}=)`}
-          aria-label="Larger text"
-          className={step}
-        >
-          <AddIcon size={13} />
-        </button>
-        <button
-          onClick={() => onChange(DEFAULT_EDITOR_FONT_SIZE)}
-          disabled={size === DEFAULT_EDITOR_FONT_SIZE}
-          title={`Reset (${mod}0)`}
-          className="h-6 rounded px-2 text-text-dim transition hover:bg-surface-3 hover:text-text
-            disabled:pointer-events-none disabled:opacity-35"
-        >
-          Reset
-        </button>
       </PopoverPopup>
     </Popover.Root>
   )

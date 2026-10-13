@@ -20,13 +20,14 @@ export function clampSidebarWidth(px: number): number {
   return Math.round(Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, px)))
 }
 
-/** File-pane editor font size, in px, and the range the A−/A+ steps stay in. */
-export const DEFAULT_EDITOR_FONT_SIZE = 12
-export const MIN_EDITOR_FONT_SIZE = 9
-export const MAX_EDITOR_FONT_SIZE = 24
+/** The file panes' text size, in px, and the range the A−/A+ steps stay in.
+ *  The editor and the explorer/Changes list each keep their own. */
+export const DEFAULT_FONT_SIZE = 12
+export const MIN_FONT_SIZE = 9
+export const MAX_FONT_SIZE = 24
 
-const clampEditorFontSize = (px: number): number =>
-  Math.min(MAX_EDITOR_FONT_SIZE, Math.max(MIN_EDITOR_FONT_SIZE, Math.round(px)))
+const clampFontSize = (px: number): number =>
+  Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, Math.round(px)))
 
 /**
  * Which of the three mobile screens is showing (docs/mobile-layout.md).
@@ -223,7 +224,8 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
   stoppedExpanded: flag('yaac.stoppedexpanded.v1'),
   sidebarStatuses: someOf('yaac.sidebarstatuses.v1', SIDEBAR_STATUSES),
-  editorFontSize: number('yaac.editorfontsize.v1', clampEditorFontSize),
+  editorFontSize: number('yaac.editorfontsize.v1', clampFontSize),
+  filesFontSize: number('yaac.filesfontsize.v1', clampFontSize),
   fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
   chatCondensed: flag('yaac.chatcondensed.v1'),
@@ -523,6 +525,9 @@ interface UiState {
   /** Editor font size in px for all file panes. Saved and clamped. */
   editorFontSize: number
   setEditorFontSize: (px: number) => void
+  /** Text size in px for the explorer and Changes pane. Saved and clamped. */
+  filesFontSize: number
+  setFilesFontSize: (px: number) => void
   /** How file panes show their changes. Saved. */
   fileDiffMode: FileDiffMode
   setFileDiffMode: (mode: FileDiffMode) => void
@@ -774,7 +779,8 @@ export const useUiStore = create<UiState>((set) => ({
   setMobileScreen: (screen) => set((s) => (s.mobileScreen === screen ? s : { mobileScreen: screen })),
   themePref: 'system',
   soundEnabled: true,
-  editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+  editorFontSize: DEFAULT_FONT_SIZE,
+  filesFontSize: DEFAULT_FONT_SIZE,
   fileDiffMode: 'plain',
   chatFullWidth: false,
   chatCondensed: true,
@@ -992,7 +998,8 @@ export const useUiStore = create<UiState>((set) => ({
   setSoundEnabled: (enabled) => set({ soundEnabled: enabled }),
   setChatFullWidth: (full) => set({ chatFullWidth: full }),
   setChatCondensed: (condensed) => set({ chatCondensed: condensed }),
-  setEditorFontSize: (px) => set({ editorFontSize: clampEditorFontSize(px) }),
+  setEditorFontSize: (px) => set({ editorFontSize: clampFontSize(px) }),
+  setFilesFontSize: (px) => set({ filesFontSize: clampFontSize(px) }),
   setFileDiffMode: (mode) => set({ fileDiffMode: mode }),
   setViewMode: (mode) => set({ viewMode: mode }),
   setPinnedUsageMetric: (key) => set({ pinnedUsageMetric: key }),
