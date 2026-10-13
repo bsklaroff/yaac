@@ -1,11 +1,23 @@
 // @vitest-environment jsdom
-import { describe, it, expect, beforeEach } from 'vitest'
-import { renderHook, act, waitFor } from '@testing-library/react'
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { renderHook, act, waitFor, screen, cleanup } from '@testing-library/react'
+import { WorkspaceView } from '#components/WorkspaceView'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { useUiStore } from '#lib/store'
+import { renderWithClient } from './harness'
+import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
+
+beforeAll(() => {
+  globalThis.ResizeObserver ??= class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+})
 
 const initial = useUiStore.getState()
 beforeEach(() => { useUiStore.setState(initial, true) })
+afterEach(() => { cleanup() })
 
 describe('useProvisionWorkspace', () => {
   it('adds an optimistic provisioning row with the given id and auto-opens it', () => {
@@ -54,7 +66,14 @@ describe('useProvisionWorkspace', () => {
     })
   })
 
-  it('records the claim when a create comes back as a prewarmed spare (id swap)', async () => {
+  it('keeps a create that claimed a spare on screen until the spare is listed', async () => {
+    // The server hides a claimed spare until the create's own row goes, so the
+    // create's result can arrive before any snapshot lists either.
+    const snapshot = (workspaces: Partial<WorkspaceListEntry>[]): ServerSnapshot => ({
+      workspaces, provisioning: [], projects: [{ id: 'proj', stoppedCount: 0 }],
+      queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [],
+    }) as unknown as ServerSnapshot
+    act(() => useUiStore.getState().receiveSnapshot(snapshot([])))
     const { result } = renderHook(() => useProvisionWorkspace())
 
     act(() => {
@@ -69,12 +88,19 @@ describe('useProvisionWorkspace', () => {
       expect(useUiStore.getState().inFlightProvisions).toEqual([])
     })
     expect(useUiStore.getState().claims['requested-id']).toBe('spare-id')
-    // The requested id's row is dropped and no row stands in for the spare,
-    // which would duplicate the server's row. The selection stays on the
-    // requested id until the spare is listed; App then hands it over
-    // (resolveVacantSelection).
-    expect(useUiStore.getState().optimisticProvisioning).toEqual([])
     expect(useUiStore.getState().selectedWorkspaceId).toBe('requested-id')
+
+    // The pane keeps showing the create's progress, not its empty state.
+    const s = useUiStore.getState()
+    renderWithClient(<WorkspaceView snapshot={s.snapshot} provisioning={s.optimisticProvisioning} />)
+    expect(screen.getByText('Starting…')).toBeTruthy()
+    expect(screen.queryByText('No workspaces yet')).toBeNull()
+
+    // Once the spare is listed, its row replaces the create's, and the claim
+    // stays for the selection to follow (resolveVacantSelection).
+    act(() => useUiStore.getState().receiveSnapshot(snapshot([{ workspaceId: 'spare-id', projectId: 'proj' }])))
+    expect(useUiStore.getState().optimisticProvisioning).toEqual([])
+    expect(useUiStore.getState().claims['requested-id']).toBe('spare-id')
   })
 
   it('keeps the row and selection when the result id matches (cold create)', async () => {

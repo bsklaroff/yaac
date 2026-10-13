@@ -94,8 +94,8 @@ function App(): JSX.Element {
 }
 
 /*
- * Reads the snapshot from the query cache itself rather than taking App's as
- * a prop: a component that selects a project the moment the cache lists it
+ * Reads the snapshot from the store itself rather than taking App's as
+ * a prop: a component that selects a project the moment the store lists it
  * (NewProjectButton) can re-render Shell before App has, and the fallback
  * below would then miss the project in a stale prop and switch back.
  *

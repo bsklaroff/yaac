@@ -6,8 +6,8 @@ import App from './App'
 import { ErrorBoundary } from '#components/ErrorBoundary'
 import './index.css'
 
-// State is pushed over the events WebSocket into the cache, so React Query
-// never refetches on its own.
+// Queries are refreshed by explicit invalidation after the writes that
+// change them, so React Query never refetches on its own.
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

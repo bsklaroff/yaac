@@ -2,9 +2,9 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
-import { SNAPSHOT_KEY } from '#lib/useEvents'
-import { mockFetch, renderWithClient as render, serverError, testQueryClient, TEST_USER_ID, type FetchMock } from './harness'
-import type { ImageBuildEntry } from '@yaac/shared/types'
+import { useUiStore } from '#lib/store'
+import { mockFetch, renderWithClient as render, serverError, TEST_USER_ID, type FetchMock } from './harness'
+import type { ImageBuildEntry, ServerSnapshot } from '@yaac/shared/types'
 
 // jsdom has no ResizeObserver; Base UI needs one to exist.
 beforeAll(() => {
@@ -41,6 +41,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  useUiStore.setState({ snapshot: undefined })
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -73,9 +74,8 @@ describe('ImageBuildsOverlay', () => {
       build({ stepCurrent: 3, stepTotal: 14, stepText: 'RUN apt-get update' }),
       build({ id: 'build-2', tag: 'yaac-user-p:def', layer: 'user', status: 'failed', error: 'registry down' }),
     ]
-    const client = testQueryClient()
-    client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: 'proj', name: 'widgets', owner: TEST_USER_ID }] })
-    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />, client)
+    useUiStore.setState({ snapshot: { projects: [{ id: 'proj', name: 'widgets', owner: TEST_USER_ID }] } as ServerSnapshot })
+    render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
 
     expect(screen.getByText('Image builds')).toBeTruthy()
     expect(screen.getByText('base layer')).toBeTruthy()
@@ -170,15 +170,14 @@ describe('ImageBuildsOverlay', () => {
   })
 
   it('offers retry and dismiss on shared images and the caller\'s own chains, not on a teammate\'s', () => {
-    const client = testQueryClient()
-    client.setQueryData(SNAPSHOT_KEY, { projects: [
+    useUiStore.setState({ snapshot: { projects: [
       { id: 'proj', name: 'widgets', owner: TEST_USER_ID }, { id: 'hers', name: 'gadgets', owner: 'u-ada' },
-    ] })
+    ] } as ServerSnapshot })
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={[
       build({ id: 'build-1', status: 'failed', projectIds: ['hers'] }),
       build({ id: 'build-2', tag: 'yaac-user-p:def', layer: 'user', status: 'failed', projectIds: ['proj'] }),
       build({ id: 'old-failed', tag: 'yaac-project-h:abc', layer: 'project', status: 'failed', projectIds: ['hers'] }),
-    ]} />, client)
+    ]} />)
     // The base build (shared, requested by her project) and the caller's user
     // layer keep their actions; her project layer does not.
     expect(screen.getAllByRole('button', { name: 'Retry build' })).toHaveLength(2)

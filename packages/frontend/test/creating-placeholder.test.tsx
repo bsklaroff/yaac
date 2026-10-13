@@ -2,9 +2,9 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { screen, cleanup } from '@testing-library/react'
 import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
-import { SNAPSHOT_KEY } from '#lib/useEvents'
-import { renderWithClient, testQueryClient } from './harness'
-import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
+import { useUiStore } from '#lib/store'
+import { renderWithClient } from './harness'
+import type { ProvisioningWorkspaceEntry, ServerSnapshot } from '@yaac/shared/types'
 
 afterEach(() => {
   cleanup()
@@ -30,11 +30,10 @@ describe('CreatingPlaceholder', () => {
   })
 
   it('shows progress, naming the project, rather than a dismiss while it is still working', () => {
-    const client = testQueryClient()
-    client.setQueryData(SNAPSHOT_KEY, { projects: [{ id: 'demo', name: 'widgets' }] })
+    useUiStore.setState({ snapshot: { projects: [{ id: 'demo', name: 'widgets' }] } as ServerSnapshot })
     renderWithClient(<CreatingPlaceholder creating={{
       ...failed(), error: undefined, message: 'Pulling image…',
-    }} />, client)
+    }} />)
     expect(screen.getByText('Pulling image…')).toBeTruthy()
     expect(screen.getByText(/in widgets/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
