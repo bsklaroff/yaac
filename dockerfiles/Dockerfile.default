@@ -59,6 +59,9 @@ COPY acpd/ /opt/yaac/acpd/
 # `chgrp -R` layer would copy the whole ~1GB tree. The Chromium directory is
 # chrome-linux64 on x64 and chrome-linux on arm64.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+# The prebuilt browsers have no `.links` registration, so without this a
+# `playwright install` from any other Playwright version deletes them as unused.
+ENV PLAYWRIGHT_SKIP_BROWSER_GC=1
 ARG PLAYWRIGHT_VERSION=1.63.0
 RUN npx -y playwright-core@${PLAYWRIGHT_VERSION} install chromium && \
     rm -rf /opt/playwright-browsers/ffmpeg-* /opt/playwright-browsers/.links && \
