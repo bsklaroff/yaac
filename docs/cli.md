@@ -6,7 +6,21 @@ prefix of the id; `yaac project list` shows both. Names need not be unique
 (adding a remote twice makes two projects), so a shared name is refused with
 the candidates' ids.
 
+## Whose projects
+
+On an install with several users (docs/multi-user.md), a project's name or
+id prefix means one of your own projects, and `project list`, `workspace
+list` and `group list` show only yours. The global `--user <user>` (a login,
+display name or user id, before or after the command) points all of that at
+a teammate's projects instead: `yaac workspace list --user ada@example.com`.
+A full project id names anyone's project either way. The CLI resolves the
+project itself and sends the server its id, so two users each holding a
+project of the same name (a hosted project and its share,
+docs/hosted-projects.md) never collide. Workspace ids are unaffected.
+
 ```
+yaac --user <user> <command>    Mean this user's projects rather than your own
+
 yaac server                     The yaac server the CLI and web app talk to
   start | stop | restart        Under k8s these scale or roll the in-cluster server
   run [-p <port>]               Run in the foreground (what `start` runs)
@@ -32,7 +46,7 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
 yaac host check                 Verify this machine can run containerless workspaces
 
 yaac project
-  list
+  list                          Your projects (or --user's)
   add <remote-url> <credential> Clone a project (HTTPS or git@host:path) with the
                                 named git credential (see `yaac auth list`)
   create <name>                 Create an empty project whose git remote yaac
@@ -52,7 +66,7 @@ yaac workspace
     --permission-mode <mode>    bypass, auto, accept-edits, manual, plan or
                                 read-only (permission-modes.md)
     -g, --group <group>         File it under a sidebar group (created if new)
-  list [project]                List running workspaces
+  list [project]                List running workspaces of your projects
     -s, --stopped               List stopped ones instead
     -n, --num <n>               With -s, show at most n (default 25)
     -a, --all                   With -s, show all

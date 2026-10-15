@@ -2188,5 +2188,88 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const { stdout } = await execInJob(aliceJob, ['sh', '-c', 'ls /workspace/from-bob.txt 2>&1 || true'])
       expect(stdout).toContain('No such file')
     }, 120_000)
+
+    /**
+     * The CLI's environment as `who`: a loopback proxy that plays tailscale
+     * serve, adding `who`'s identity to every request. Closed when the test
+     * ends.
+     */
+    async function cliAs(who: Record<string, string>): Promise<NodeJS.ProcessEnv> {
+      const proxy = http.createServer((req, res) => {
+        const upstream = http.request({
+          host: '127.0.0.1', port: server!.lock.port, path: req.url, method: req.method,
+          headers: { ...req.headers, ...who },
+        }, (up) => {
+          res.writeHead(up.statusCode ?? 502, up.headers)
+          up.pipe(res)
+        })
+        req.pipe(upstream)
+      })
+      await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+      onTestFinished(() => new Promise<void>((resolve) => { proxy.close(() => resolve()) }))
+      return { ...serverEnv, YAAC_SERVER_URL: `http://127.0.0.1:${String((proxy.address() as net.AddressInfo).port)}` }
+    }
+
+    // Last in the file: it stops bob's workspace.
+    it('scopes the CLI to the caller\'s projects, and to a teammate\'s with --user', async () => {
+      const [alice, bob] = await Promise.all([cliAs(ALICE), cliAs(BOB)])
+      const bobId = (await (await as(BOB, '/whoami')).json() as { userId: string }).userId
+      const bobWorkspace = (await findWorkspacePod(BOB_PROJECT)).workspaceId
+
+      // Alice's hosted project and bob's share of it: one name, two projects.
+      const created = await as(ALICE, '/project/create', { method: 'POST', body: JSON.stringify({ name: 'shared-app' }) })
+      expect(created.status).toBe(200)
+      const source = (await created.json() as { id: string }).id
+      const shared = await as(ALICE, `/project/${source}/shares`, { method: 'POST', body: JSON.stringify({ userId: bobId }) })
+      expect(shared.status).toBe(200)
+      const share = (await shared.json() as { id: string }).id
+
+      const own = await runYaac(alice, 'project', 'list')
+      expect(own.stdout).toContain('acped')
+      expect(own.stdout).not.toContain(BOB_PROJECT)
+      // Before or after the command, by login or display name.
+      for (const args of [['--user', 'bob@example.com', 'project', 'list'], ['project', 'list', '--user', 'bob']]) {
+        const bobs = await runYaac(alice, ...args)
+        expect(bobs.stdout).toContain(BOB_PROJECT)
+        expect(bobs.stdout).toContain('shared-app')
+        expect(bobs.stdout).not.toContain('acped')
+      }
+
+      // The name picks each caller's own copy.
+      for (const [env, id, who] of [[alice, source, 'alice'], [bob, share, 'bob']] as const) {
+        const dir = path.join(testEnv.scratchDir, `shared-app-${who}`)
+        const cloned = await runYaac(env, 'project', 'clone', 'shared-app', dir)
+        expect(cloned.exitCode, cloned.stderr).toBe(0)
+        expect((await git(dir, ['remote', 'get-url', 'origin'])).trim()).toContain(`/api/project/${id}/git`)
+      }
+
+      const group = await as(BOB, '/workspace/group/create', {
+        method: 'POST', body: JSON.stringify({ projectId: idOf(BOB_PROJECT), name: 'bob-group' }),
+      })
+      expect(group.status).toBe(200)
+      expect((await runYaac(alice, 'group', 'list')).stdout).not.toContain('bob-group')
+      expect((await runYaac(alice, 'group', 'list', '--user', 'bob@example.com')).stdout).toContain('bob-group')
+
+      const id8 = bobWorkspace.slice(0, 8)
+      expect((await runYaac(alice, 'workspace', 'list')).stdout).not.toContain(id8)
+      expect((await runYaac(alice, 'workspace', 'list', BOB_PROJECT, '--user', 'bob@example.com')).stdout).toContain(id8)
+      const notMine = await runYaac(alice, 'workspace', 'list', BOB_PROJECT)
+      expect(notMine.exitCode).toBe(1)
+      expect(notMine.stderr).toContain(`You have no project ${BOB_PROJECT}; pass --user <user> for a teammate's.`)
+      // A full id names anyone's project.
+      expect((await runYaac(alice, 'workspace', 'list', idOf(BOB_PROJECT))).stdout).toContain(id8)
+
+      const nobody = await runYaac(alice, '--user', 'carol@example.com', 'project', 'list')
+      expect(nobody.exitCode).toBe(1)
+      expect(nobody.stderr).toContain('No user "carol@example.com" on this server')
+
+      // The stopped listing pages through the scoped user's projects alone.
+      expect((await as(BOB, '/workspace/stop', { method: 'POST', body: JSON.stringify({ workspaceId: bobWorkspace }) })).status)
+        .toBe(200)
+      await vi.waitFor(async () => {
+        expect((await runYaac(alice, 'workspace', 'list', '-s', '--user', 'bob@example.com')).stdout).toContain(id8)
+      }, { timeout: 60_000, interval: 2000 })
+      expect((await runYaac(alice, 'workspace', 'list', '-s')).stdout).not.toContain(id8)
+    }, 180_000)
   })
 })

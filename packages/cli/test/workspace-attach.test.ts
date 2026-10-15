@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vites
 import { workspaceAttach } from '#commands/workspace-attach'
 import { workspaceCreate } from '#commands/workspace-create'
 import { workspaceRestart } from '#commands/workspace-restart'
-import { startFakeApi, type FakeApi } from './fake-api'
+import { serveProjects, startFakeApi, type FakeApi } from './fake-api'
 
 /**
  * The commands that end by attaching the terminal to a workspace, against a
@@ -25,6 +25,7 @@ afterAll(async () => {
 beforeEach(() => {
   api.reset()
   logSpy.mockClear()
+  serveProjects(api, [['id-demo', 'demo']])
 })
 
 /** The terminal attaches made so far, as `[workspace id, target]`. */
@@ -47,7 +48,7 @@ describe('workspaceCreate', () => {
     // Omitted so the server picks from what the project last used. The git
     // identity is a server setting, not a request field.
     const create = api.requests.find((r) => r.route === 'POST /api/workspace/create')
-    expect(create?.body).toEqual({ project: 'demo' })
+    expect(create?.body).toEqual({ project: 'id-demo' })
     expect(logSpy.mock.calls.map((args) => args[0] as unknown)).toEqual(expect.arrayContaining([
       'Fetching latest from remote...', 'Creating session job yaac-demo-sess-123...',
     ]))

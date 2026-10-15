@@ -1,4 +1,4 @@
-import { api } from '#commands/api'
+import { api, resolveProjectId } from '#commands/api'
 import { attachWorkspacePty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
@@ -49,7 +49,7 @@ export async function workspaceCreate(project: string, options: WorkspaceCreateO
 
   await attachStarted(await api.workspace.create.$post({
     json: {
-      project,
+      project: await resolveProjectId(project),
       tool: options.tool,
       branch: options.branch,
       prompt: options.prompt,

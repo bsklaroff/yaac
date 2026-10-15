@@ -10,6 +10,7 @@ import {
   setProjectDefaultBranchGuard,
   setProjectEgressAllowlist,
   setProjectGitCredential,
+  setProjectShareRevoked,
 } from '#db/project-store'
 import { insertGitCredential } from '#db/git-credential-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
@@ -50,6 +51,7 @@ describe('recordProject', () => {
       egressAllowlist: { hosts: [], defaults: true },
       hosted: false,
       guardDefaultBranch: true,
+      shareRevoked: false,
     })
   })
 
@@ -141,6 +143,7 @@ describe('listProjectRows', () => {
         egressAllowlist: { hosts: [], defaults: true },
         hosted: false,
         guardDefaultBranch: true,
+        shareRevoked: false,
       },
     ])
   })
@@ -269,5 +272,30 @@ describe('setProjectDefaultBranchGuard', () => {
     expect(await setProjectDefaultBranchGuard(APP, false)).toBe(true)
     expect(await getProjectRow(APP)).toMatchObject({ guardDefaultBranch: false })
     expect(await setProjectDefaultBranchGuard('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
+  })
+})
+
+describe('setProjectShareRevoked', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('removes a share and gives it back, and reports an unknown projectId', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'http://yaac.internal/a.git', addedAt: '2026-01-01', hosted: true }, BUILT_IN_USER_ID)
+    await recordProject({ id: P, name: 'app', remoteUrl: 'http://yaac.internal/p.git', addedAt: '2026-01-01', hosted: true, sharedFrom: APP }, BUILT_IN_USER_ID)
+    expect((await getProjectRow(APP))?.sharedFrom).toBeUndefined()
+    expect(await getProjectRow(P)).toMatchObject({ sharedFrom: APP, shareRevoked: false })
+
+    expect(await setProjectShareRevoked(P, true)).toBe(true)
+    expect(await getProjectRow(P)).toMatchObject({ shareRevoked: true })
+    expect(await setProjectShareRevoked(P, false)).toBe(true)
+    expect(await getProjectRow(P)).toMatchObject({ shareRevoked: false })
+    expect(await setProjectShareRevoked('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
   })
 })

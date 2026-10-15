@@ -1,8 +1,9 @@
-import { api } from '#commands/api'
+import { projectScope } from '#commands/api'
 import { printTable } from '#commands/table'
 
+/** The projects in scope (`projectScope`): the caller's, or `--user`'s. */
 export async function projectList(): Promise<void> {
-  const projects = await api.project.list.$get()
+  const { projects } = await projectScope()
 
   if (projects.length === 0) {
     console.log('No projects found. Add one with `yaac project add <remote-url> <credential>`, or create one with `yaac project create <name>`.')

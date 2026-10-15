@@ -1,4 +1,4 @@
-import { api, projectNames } from '#commands/api'
+import { api, projectScope, resolveProjectId } from '#commands/api'
 import { printTable } from '#commands/table'
 import type { GitAuthFailure, StoppedWorkspacePage, WorkspaceListEntry } from '@yaac/shared/types'
 
@@ -10,37 +10,42 @@ export interface WorkspaceListOptions {
 
 export const STOPPED_DEFAULT_LIMIT = 25
 
-/** `project` is a name, id or id prefix, resolved by the server. */
+/**
+ * One project's workspaces, or those of every project in scope
+ * (`projectScope`). `project` is a name, id or id prefix.
+ */
 export async function workspaceList(
   project?: string,
   options: WorkspaceListOptions = {},
 ): Promise<void> {
+  const scope = await projectScope()
+  const projectId = project ? await resolveProjectId(project, scope) : undefined
+  const names = new Map(scope.all.map((p) => [p.id, p.name]))
   if (options.stopped) {
     const limit = resolveStoppedLimit(options)
-    const query: { project?: string; limit?: string } = {}
-    if (project) query.project = project
+    const query: { project?: string; owner?: string; limit?: string } = projectId ? { project: projectId } : { owner: scope.userId }
     if (limit !== undefined) query.limit = String(limit)
-    const [page, names] = await Promise.all([api.workspace['list-stopped'].$get({ query }), projectNames()])
-    renderStopped(page, project, names)
+    renderStopped(await api.workspace['list-stopped'].$get({ query }), project, names)
     return
   }
 
-  const query = project ? { project } : {}
-  const [result, { groups }, names] = await Promise.all([
-    api.workspace.list.$get({ query }),
-    api.workspace.group.list.$get({ query }),
-    projectNames(),
+  const ids = new Set(projectId ? [projectId] : scope.projects.map((p) => p.id))
+  const [result, { groups }] = await Promise.all([
+    api.workspace.list.$get({ query: {} }),
+    api.workspace.group.list.$get({ query: {} }),
   ])
+  const workspaces = result.workspaces.filter((w) => ids.has(w.projectId))
 
-  if (result.workspaces.length === 0) {
+  if (workspaces.length === 0) {
     const suffix = project ? ` for project "${project}"` : ''
     console.log(`No running workspaces${suffix}. Create one with: yaac workspace create <project>`)
   } else {
-    renderRunning(result.workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names)
-    renderBlockedHosts(result.workspaces)
+    renderRunning(workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names)
+    renderBlockedHosts(workspaces)
   }
   // Shown even with no workspaces: a rejected credential also blocks creates.
-  renderGitAuthFailures(result.gitAuthFailures, names)
+  const failures = Object.fromEntries(Object.entries(result.gitAuthFailures).filter(([id]) => ids.has(id)))
+  renderGitAuthFailures(failures, names)
 }
 
 function renderRunning(

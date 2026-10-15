@@ -29,7 +29,7 @@ export {
   listDraftWorkspaces,
   saveDraftWorkspace,
 } from './drafts'
-export { removeProject } from './project-teardown'
+export { reconcileRevokedShares, removeProject, unshareProject } from './project-teardown'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export { dismissProvisioning, listProvisioning } from './provisioning'
 export {

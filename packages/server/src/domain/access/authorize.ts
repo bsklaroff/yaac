@@ -27,10 +27,12 @@ export type Actor =
 export const systemPrincipal: Actor = { kind: 'system' }
 
 /** A project's owner. A project that does not exist is `NOT_FOUND`, since
- *  some verbs authorize before they check the project exists. */
+ *  some verbs authorize before they check the project exists. A share its
+ *  source's owner removed is FORBIDDEN to everyone, the server included. */
 async function projectOwner(projectId: string): Promise<string> {
   const row = await getProjectRow(projectId)
   if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  if (row.shareRevoked) throw new ServerError('FORBIDDEN', `${row.name} is no longer shared with its owner`)
   return row.owner
 }
 
@@ -41,8 +43,8 @@ async function projectOwner(projectId: string): Promise<string> {
  * Reads need no check, since every user may read every resource.
  */
 export async function authorizeProject(principal: Actor, projectId: string): Promise<void> {
-  if (principal.kind === 'system') return
-  if (principal.userId !== await projectOwner(projectId)) {
+  const owner = await projectOwner(projectId)
+  if (principal.kind !== 'system' && principal.userId !== owner) {
     throw new ServerError('FORBIDDEN', 'only the owner of this project may do that')
   }
 }

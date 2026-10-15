@@ -29,8 +29,7 @@ repository's objects through an alternate, because pods would then have to
 see SERVER-LOCAL.
 
 `createHostedProject` creates the repository empty, on `main`
-(`initHostedRepo`). A project's name must be unused, since it is a hosted
-project's only handle (`yaac project clone`, the remove confirmation). It then clones it as the main clone over the `file`
+(`initHostedRepo`), then clones it as the main clone over the `file`
 transport, the same `cloneRepo` that `project add` runs against a URL. An
 empty remote needs no special case anywhere: workspace create already
 handles a repository with no branches (docs/server-git.md).
@@ -141,9 +140,61 @@ local clone. The built-in skills that drive `gh` (`push-pr`, `review-pr`,
 `spawn-pr-reviewers`, `yaac-watch-prs`) check the `origin` URL first and say
 they do not apply.
 
+## Sharing
+
+The owner of a hosted project can share it with another user of the
+install, in Project settings (`POST /api/project/<id>/shares`). Sharing
+gives that user a project of their own (`shareProject`): a new row with the
+same name, owned by them, whose `sharedFrom` names the source project. It is
+an ordinary project in every other way, with its own workspaces, env vars,
+config, allowlist and image chain, and it shows in their sidebar as soon as
+the snapshot carries it.
+
+What the share has in common with the source is the repository. Its remote
+is `hostedRemoteUrl(<share id>)` like any hosted project's, and the server
+resolves a share's id to the source's bare repository wherever it reads
+one (`serveHostedRepo`, `projectFetchUrl`). So the share's owner and
+workspaces read and push the same repository through the same two routes,
+each under its own project id, and every check above applies unchanged: a
+workspace still reaches only its own project, and a user pushes only to a
+project they own. A push lands in the main clone of the source and of every
+active share, so each project's running workspaces see it at once. The
+default-branch guard is the source's; a share cannot change it.
+
+A share is never shared on, and only a project the server hosts can be
+shared. A project hosted elsewhere already has a remote each user can add
+under their own credential.
+
+**Removing a share** (`DELETE /api/project/<id>/shares/<user id>`,
+`unshareProject`) sets `shareRevoked` on the share's row and stops its
+running workspaces. Nothing is deleted: the rows, checkouts and sessions
+stay. From then on `authorizeProject` refuses every write to the share,
+the server's own included, and both git routes refuse its repository. It
+stays in its owner's sidebar, read-only to them as it is to everyone else
+(`useReadOnly` in the webapp), so they and the source's owner can still
+read what was done in it. Sharing with the same user again clears the flag
+and gives the share back as it was. A removed share stays until the source
+is removed: its owner can no longer remove it, and the source's owner does
+not own it, so what was done in it cannot be deleted from under the
+source's owner.
+
+Removing a share stops its running workspaces (`unshareProject`), adopting
+any token their agents refreshed, as a stop does. A workspace that cannot
+be stopped then, or a create or restart that had passed its owner check
+first, is stopped by the `revoked-shares` reconcile step
+(`reconcileRevokedShares`), which tears down whatever runs in a removed
+share on every pass. A removed share's main clone fetches nothing more.
+
+**Removing the source** removes every share of it first, workspaces and
+all, since the repository they use goes with it.
+
+A share has the source's name. The CLI resolves a name among the caller's
+own projects (docs/cli.md "Whose projects"), so `yaac project clone <name>`
+picks each user's own copy.
+
 ## Removing a hosted project
 
 `project remove` deletes the bare repository with the rest of the project
-(`purgeProjectBytes`). That is the only authoritative copy of the code, so
+(`purgeProjectBytes`), along with every share of it (see "Sharing"). That is the only authoritative copy of the code, so
 the webapp's confirmation says so, asks for the project's name rather than
 its remote, and points at `yaac project clone`.

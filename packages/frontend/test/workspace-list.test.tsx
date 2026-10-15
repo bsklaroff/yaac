@@ -28,7 +28,7 @@ vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => prov
 import { WorkspaceList } from '#components/WorkspaceList'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, serverSnapshot, testQueryClient, type FetchCall, type FetchMock } from './harness'
+import { mockFetch, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
 import { intersect, intersection } from './setup'
 
 /** Scroll every load-more marker into view: jsdom has no layout, so the
@@ -1232,6 +1232,23 @@ describe('WorkspaceList', () => {
 
       expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
     })
+  })
+
+  it('shows a share its source\'s owner removed read-only to its own owner', () => {
+    const removed = {
+      id: 'proj', name: 'proj', remoteUrl: '', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0,
+      unseenDeaths: 0, createDefaults: {}, gitCredential: null, hosted: true, guardDefaultBranch: true,
+      sharedFrom: { projectId: 'src', revoked: true },
+    }
+    useUiStore.setState({ activeProjectId: 'proj' })
+    renderList([entry({ workspaceId: 'a', title: 'My run' })], {
+      project: removed, snapshot: serverSnapshot({ projects: [removed] }),
+    })
+
+    expect(screen.getByText('No longer shared with you, so read-only')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Workspace actions' })).toBeNull()
+    fireEvent.click(screen.getByText('My run'))
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
   })
 
   it('lays out a teammate\'s list as theirs, with every control off and rows still opening', async () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { ServerError } from '@yaac/shared/errors'
-import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser } from '#db'
+import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser, setProjectShareRevoked } from '#db'
 import {
   authorizeProject,
   systemPrincipal,
@@ -11,6 +11,7 @@ import {
 
 const BOB = 'a1b2c3d4-0000-4000-8000-000000000002'
 const PROJ = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
+const SHARE = '9c0d6b1e-2f3a-4b5c-8d7e-0f1a2b3c4d5e'
 const MISSING = '4101bef8-794f-4d98-8e95-dfb54850c68b'
 
 function user(userId: string): Actor {
@@ -50,6 +51,16 @@ describe('authorizeProject', () => {
 
   it('is NOT_FOUND for a project that does not exist, never open', async () => {
     expect(await codeOf(authorizeProject(user(BOB), MISSING))).toBe('NOT_FOUND')
+  })
+
+  it("refuses everyone, the server too, a share its source's owner removed", async () => {
+    const recipient = await seeTailnetUser('recipient@example.com', 'Recipient')
+    await recordProject({ id: SHARE, name: 'demo', remoteUrl: 'https://github.com/o/r', addedAt: 'now', sharedFrom: PROJ }, recipient)
+    await expect(authorizeProject(user(recipient), SHARE)).resolves.toBeUndefined()
+    await setProjectShareRevoked(SHARE, true)
+    expect(await codeOf(authorizeProject(user(recipient), SHARE))).toBe('FORBIDDEN')
+    expect(await codeOf(authorizeProject(systemPrincipal, SHARE))).toBe('FORBIDDEN')
+    expect(await codeOf(authorizeProject(user(owner), SHARE))).toBe('FORBIDDEN')
   })
 })
 

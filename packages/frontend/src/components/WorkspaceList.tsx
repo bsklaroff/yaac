@@ -16,7 +16,7 @@ import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
 import { stoppedSectionCount, useStoppedEntry, useStoppedMatch, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
-import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
+import { useReadOnly, useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
 import { useUiStore, type SidebarStatus } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
@@ -367,6 +367,7 @@ export function WorkspaceList({
   // For the empty-state text: there's no project rail on a phone.
   const isMobile = useIsMobile()
   const readOnly = useReadOnly()
+  const teammateView = useTeammateView()
   const viewedUserId = useViewedUserId()
   const viewedName = useWhoami()?.users.find((u) => u.id === viewedUserId)?.name ?? 'A teammate'
   const query = useUiStore((s) => s.sidebarQuery)
@@ -647,7 +648,9 @@ export function WorkspaceList({
         <div className="flex-1 overflow-y-auto py-1">
           {readOnly && (
             <p className="mx-3 mb-1 rounded-md bg-surface-2 px-2.5 py-1.5 text-[11px] text-text-dim">
-              {viewedName}&apos;s workspaces, read-only
+              {teammateView
+                ? <>{viewedName}&apos;s workspaces, read-only</>
+                : 'No longer shared with you, so read-only'}
             </p>
           )}
           {!projectId && (

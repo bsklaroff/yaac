@@ -9,6 +9,7 @@ import { projectCreate } from '#commands/project-create'
 import { projectClone } from '#commands/project-clone'
 import { groupCreate, groupDelete, groupList, groupMove } from '#commands/group'
 import { workspaceCreate } from '#commands/workspace-create'
+import { scopeToUser } from '#commands/api'
 import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
@@ -109,6 +110,8 @@ const program = new Command()
   .description('Agent sandbox manager')
   .version(pkg.version)
   .configureHelp({ formatHelp: nestedHelp })
+  .option('--user <user>', 'Act on this user\'s projects (login, name or id) rather than your own: project names and id prefixes, and the project, workspace and group listings, then mean theirs')
+  .hook('preAction', () => scopeToUser(program.opts<{ user?: string }>().user))
 
 const TAILNET_HELP = 'Serve tailnet users through `tailscale serve` at this MagicDNS name (e.g. srv.<tailnet>.ts.net) instead of only this machine. The install records the mode, and every later start must name it again'
 const OWNER_HELP = 'With --tailnet: switch a local install to tailnet mode, giving its projects and settings to this tailnet login. One-way; not needed for a fresh install'
@@ -261,7 +264,7 @@ const project = program
 
 project
   .command('list')
-  .description('List all projects')
+  .description('List your projects (or --user\'s)')
   .action(projectList)
 
 project
@@ -297,7 +300,7 @@ group
 
 group
   .command('list')
-  .description('List workspace groups and how many running workspaces each holds')
+  .description('List your projects\' (or --user\'s) workspace groups and how many running workspaces each holds')
   .argument('[project]', 'Filter by project name, id, or id prefix')
   .action(groupList)
 
@@ -338,7 +341,7 @@ workspace
 
 workspace
   .command('list')
-  .description('List running workspaces')
+  .description('List the running workspaces of your projects (or --user\'s)')
   .argument('[project]', 'Filter by project name, id, or id prefix')
   .option('-s, --stopped', 'List stopped workspaces (their checkouts are kept, and they can be restarted)')
   .option('-n, --num <n>', 'With -s, cap stopped results to N rows (default 25)', (v) => Number.parseInt(v, 10))

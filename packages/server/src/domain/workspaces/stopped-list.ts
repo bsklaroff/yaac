@@ -1,6 +1,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import {
   getAgentSessionsFor,
+  listProjectRows,
   listStoppedWorkspaceRows,
   openingPrompt,
   type AgentSessionLinkRow,
@@ -16,6 +17,8 @@ import type { StoppedWorkspaceEntry, StoppedWorkspacePage } from '@yaac/shared/t
 /** What `GET /workspace/list-stopped` narrows the listing to. */
 export interface StoppedListQuery {
   project?: string
+  /** Only the projects this user owns, when no `project` is named. */
+  owner?: string
   /** Searched in the title, first prompts and tools. */
   q?: string
   /** Only this group's members. */
@@ -42,8 +45,13 @@ export interface StoppedListQuery {
  */
 export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promise<StoppedWorkspacePage> {
   if (query.project) await ensureProjectExists(query.project)
+  const projectIds = query.project !== undefined
+    ? [query.project]
+    : query.owner !== undefined
+      ? (await listProjectRows()).filter((p) => p.owner === query.owner).map((p) => p.id)
+      : undefined
   const { rows, total } = await listStoppedWorkspaceRows({
-    projectId: query.project,
+    projectIds,
     q: query.q,
     groupId: query.group,
     excludeGroupIds: query.excludeGroups,

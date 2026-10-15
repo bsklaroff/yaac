@@ -105,6 +105,7 @@ export {
   setProjectDefaultBranchGuard,
   setProjectEgressAllowlist,
   setProjectGitCredential,
+  setProjectShareRevoked,
   type ProjectRow,
 } from './project-store'
 export {

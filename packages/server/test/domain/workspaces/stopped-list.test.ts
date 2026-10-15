@@ -14,6 +14,7 @@ import {
 import { createWorkspaceGroup } from '#db/group-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
+import { BUILT_IN_USER_ID, recordProject, seeTailnetUser } from '#db'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { listStoppedWorkspaces } from '#domain/workspaces/stopped-list'
 import type { AgentTool, StoppedWorkspaceEntry } from '@yaac/shared/types'
@@ -105,6 +106,16 @@ describe('listStoppedWorkspaces', () => {
     await seedWorkspace(OTHER, 'elsewhere', { deleted: true })
     expect(await ids()).toEqual(['here'])
     expect((await ids({})).sort()).toEqual(['elsewhere', 'here'])
+  })
+
+  it("filters by owner, to that user's projects", async () => {
+    const ada = await seeTailnetUser('ada@example.com', 'Ada')
+    await recordProject({ id: OTHER, name: 'theirs', remoteUrl: 'https://example.com/theirs', addedAt: '' }, ada)
+    await seedWorkspace(DEMO_PROJECT_ID, 'mine', { deleted: true })
+    await seedWorkspace(OTHER, 'hers', { deleted: true })
+    expect(await ids({ owner: ada })).toEqual(['hers'])
+    expect(await ids({ owner: BUILT_IN_USER_ID })).toEqual(['mine'])
+    expect(await ids({ owner: NOPE })).toEqual([])
   })
 
   it('orders by recorded deletion time, newest first', async () => {

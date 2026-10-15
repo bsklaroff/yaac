@@ -6,7 +6,7 @@ import type {
   PermissionMode,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
-import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, primaryKey, snakeCase, text, timestamp, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core'
 
 /**
  * Drizzle schema for the server's PGlite database, opened only by the server
@@ -128,7 +128,17 @@ export const projects = snakeCase.table('projects', {
   /** For a hosted project: refuse pushes that delete or rewind the default
    *  branch. */
   guardDefaultBranch: boolean().notNull().default(true),
-})
+  /**
+   * For a project shared with its owner (docs/hosted-projects.md "Sharing"):
+   * the hosted project it was shared from, whose repository it reads and
+   * pushes. Null for every other project. Removing a project removes its
+   * shares first; the foreign key is a backstop.
+   */
+  sharedFrom: uuid().references((): AnyPgColumn => projects.id),
+  /** Set when the source project's owner removes the share. The row, its
+   *  workspaces and its sessions stay; its owner can no longer use them. */
+  shareRevoked: boolean().notNull().default(false),
+}, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
 
 /**
  * Remembered create defaults per (project, agent): the model, permission

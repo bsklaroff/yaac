@@ -1347,6 +1347,10 @@ export interface ProjectSummary {
   /** For a hosted project, whether pushes may not delete or rewind the
    *  default branch. */
   guardDefaultBranch: boolean
+  /** For a project shared with its owner (docs/hosted-projects.md
+   *  "Sharing"): the hosted project it was shared from, and whether that
+   *  project's owner has since removed the share. */
+  sharedFrom?: { projectId: string; revoked: boolean }
 }
 
 /**

@@ -54,7 +54,9 @@ pods cannot reach the server.
   credential and image chain. Everything inside a project (workspaces,
   queued workspaces, drafts, groups, agent sessions, env vars and secrets,
   its config) belongs to the project's owner and carries no owner of its
-  own.
+  own. A hosted project can be shared, which gives another user a project
+  of their own on the same repository rather than a second owner
+  (docs/hosted-projects.md "Sharing").
 - **User-scoped rows** carry an `owner`: `preferences` (git identity, time
   zone), `shortcut_overrides`, `git_credentials` (names unique per owner)
   and `tool_credentials`. Their stores take the owner's id as an argument
@@ -219,6 +221,9 @@ install-wide fields (image builds, plan usage, driver) pass through.
   with secret values masked. Personal settings (credentials, git identity,
   shortcuts, `Dockerfile.user`) always show the caller's own.
 - The waiting chime counts only the caller's workspaces.
+- **The CLI** cuts the same way: project names and the project, workspace
+  and group listings mean the caller's own projects, or those of the user
+  `--user` names (docs/cli.md "Whose projects").
 
 ## Not covered
 

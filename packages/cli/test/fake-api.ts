@@ -92,3 +92,20 @@ export async function startFakeApi(): Promise<FakeApi> {
     }),
   }
 }
+
+/** The caller every fake answers `/whoami` with, and a teammate. */
+export const ME = '00000000-0000-0000-0000-000000000000'
+export const ADA = 'a1b2c3d4-0000-4000-8000-00000000ada0'
+
+/**
+ * Answer `/whoami` (the caller `ME`, and `ADA`) and `/project/list` with
+ * `projects`, each `[id, name, owner]`: what a command resolves a project
+ * name against.
+ */
+export function serveProjects(api: FakeApi, projects: Array<[string, string, string?]>): void {
+  api.on('GET /api/whoami', { json: {
+    kind: 'tailnet', userId: ME, login: 'me@example.com', name: 'Me',
+    users: [{ id: ME, login: 'me@example.com', name: 'Me' }, { id: ADA, login: 'ada@example.com', name: 'Ada' }],
+  } })
+  api.on('GET /api/project/list', { json: projects.map(([id, name, owner]) => ({ id, name, owner: owner ?? ME })) })
+}

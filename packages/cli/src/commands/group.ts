@@ -1,4 +1,4 @@
-import { api, projectNames, resolveProjectId } from '#commands/api'
+import { api, projectScope, resolveProjectId } from '#commands/api'
 import { printTable } from '#commands/table'
 import { normalizeTitle } from '@yaac/shared/titles'
 import type { WorkspaceGroupSummary, WorkspaceListEntry } from '@yaac/shared/types'
@@ -9,8 +9,8 @@ import type { WorkspaceGroupSummary, WorkspaceListEntry } from '@yaac/shared/typ
  *
  * Groups are addressed by name, since that is all a user (or an agent using
  * `yaac-mama`) sees. The server resolves names (`resolveGroup`) and refuses
- * an ambiguous one. `project` arguments are a name, id or id prefix, which
- * the server resolves the same way.
+ * an ambiguous one. `project` arguments are a name, id or id prefix,
+ * resolved among the projects in scope (`resolveProjectId`).
  */
 
 export async function groupCreate(project: string, name: string): Promise<void> {
@@ -30,20 +30,22 @@ export async function groupCreate(project: string, name: string): Promise<void> 
   console.log(`Created group "${created.name}" in ${project} (${created.groupId}).`)
 }
 
+/** One project's groups, or those of every project in scope. */
 export async function groupList(project?: string): Promise<void> {
-  const query = project ? { project } : {}
-  const [{ groups }, running, names] = await Promise.all([
-    api.workspace.group.list.$get({ query }),
-    api.workspace.list.$get({ query }),
-    projectNames(),
+  const scope = await projectScope()
+  const ids = new Set(project ? [await resolveProjectId(project, scope)] : scope.projects.map((p) => p.id))
+  const [{ groups }, running] = await Promise.all([
+    api.workspace.group.list.$get({ query: {} }),
+    api.workspace.list.$get({ query: {} }),
   ])
 
-  if (groups.length === 0) {
+  const theirs = groups.filter((g) => ids.has(g.projectId))
+  if (theirs.length === 0) {
     const suffix = project ? ` in project "${project}"` : ''
     console.log(`No workspace groups${suffix}. Create one with: yaac group create <project> <name>`)
     return
   }
-  renderGroups(groups, running.workspaces, names)
+  renderGroups(theirs, running.workspaces, new Map(scope.all.map((p) => [p.id, p.name])))
 }
 
 export async function groupMove(
@@ -51,7 +53,9 @@ export async function groupMove(
   group: string | undefined,
   options: { project?: string } = {},
 ): Promise<void> {
-  const projectId = options.project ?? await projectOfWorkspace(workspaceId)
+  const projectId = options.project !== undefined
+    ? await resolveProjectId(options.project)
+    : await projectOfWorkspace(workspaceId)
   if (!projectId) {
     throw new Error(
       `Could not find a running workspace "${workspaceId}". Pass --project <project> to move a `

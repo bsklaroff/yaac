@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import type { ProjectEnvVar, ProjectSummary } from '@yaac/shared/types'
+import type { ProjectEnvVar, ProjectSummary, Whoami } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; the config editor gets a textarea.
 vi.mock('#components/ui/CodeEditor', () => ({
@@ -90,6 +90,73 @@ describe('ProjectSettings', () => {
     fireEvent.click(guard)
     await waitFor(() => expect(server.called('PUT /api/project/id-gamma/default-branch-guard').map((c) => c.body))
       .toEqual([{ enabled: false }]))
+  })
+
+  it('shares a hosted project with another user and stops sharing it', async () => {
+    useUiStore.setState({ activeProjectId: 'id-gamma' })
+    const whoami: Whoami = {
+      kind: 'tailnet', userId: TEST_USER_ID, login: 'me@x.com', name: 'Me',
+      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada' }, { id: 'u-bo', login: 'bo@x.com', name: 'Bo' }],
+    }
+    const gamma = { ...project('gamma', 'http://yaac.internal/api/workspace/git/id-gamma.git'), hosted: true }
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [gamma, { ...gamma, id: 'id-ada-gamma', owner: 'u-ada', sharedFrom: { projectId: 'id-gamma', revoked: false } }],
+    })
+    const server = mockFetch({
+      'GET /api/project/id-gamma/env': { vars: [] },
+      'GET /api/project/id-gamma/config': { config: null },
+      'POST /api/project/id-gamma/shares': { id: 'id-bo-gamma', name: 'gamma', remoteUrl: '', addedAt: '' },
+      'DELETE /api/project/id-gamma/shares/u-ada': () => undefined,
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(whoami, snapshot))
+
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toContain('gamma')
+    screen.getByText('ada@x.com')
+    const pick = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Share with' })
+    expect([...pick.options].map((o) => o.textContent)).toEqual(['Share with…', 'Bo'])
+    fireEvent.change(pick, { target: { value: 'u-bo' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }))
+    await waitFor(() => expect(server.called('POST /api/project/id-gamma/shares').map((c) => c.body)).toEqual([{ userId: 'u-bo' }]))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop sharing with Ada' }))
+    await waitFor(() => expect(server.called('DELETE /api/project/id-gamma/shares/u-ada')).toHaveLength(1))
+  })
+
+  it("shows a share as its sharer's, with the guard left to them and no sharing of its own", () => {
+    useUiStore.setState({ activeProjectId: 'id-mine' })
+    const whoami: Whoami = {
+      kind: 'tailnet', userId: TEST_USER_ID, login: 'me@x.com', name: 'Me',
+      users: [{ id: TEST_USER_ID, login: 'me@x.com', name: 'Me' }, { id: 'u-ada', login: 'ada@x.com', name: 'Ada' }],
+    }
+    const hosted = { ...project('gamma', 'http://yaac.internal/api/workspace/git/x.git'), hosted: true }
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [
+        { ...hosted, id: 'id-gamma', owner: 'u-ada' },
+        { ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: false } },
+      ],
+    })
+    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config': { config: null } })
+    renderWithClient(<ProjectSettings />, testQueryClient(whoami, snapshot))
+
+    screen.getByText('Shared by Ada')
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: /Protect the default branch/ }).disabled).toBe(true)
+    expect(screen.queryByText('Sharing')).toBeNull()
+  })
+
+  it('shows a share its source\'s owner removed to its owner read-only', () => {
+    useUiStore.setState({ activeProjectId: 'id-mine' })
+    const hosted = { ...project('gamma', 'http://yaac.internal/api/workspace/git/x.git'), hosted: true }
+    const snapshot = serverSnapshot({
+      driver: 'containerless',
+      projects: [{ ...hosted, id: 'id-mine', sharedFrom: { projectId: 'id-gamma', revoked: true } }],
+    })
+    mockFetch({ 'GET /api/project/id-mine/env': { vars: [] }, 'GET /api/project/id-mine/config': { config: null } })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+
+    screen.getByText('Sharing removed')
+    expect(screen.queryByPlaceholderText('NAME')).toBeNull()
   })
 
   it('lists the project\'s variables, adds a secret with its proxy rule, and deletes one', async () => {

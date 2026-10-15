@@ -5,12 +5,13 @@ import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { HostedRemote } from '#components/settings/HostedRemote'
+import { ProjectSharing } from '#components/settings/ProjectSharing'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
-import { projectsOf, useReadOnly, useViewedUserId } from '#lib/viewer'
+import { projectsOf, useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
 
 const project = api.project[':projectId']
 
@@ -36,8 +37,10 @@ async function saveConfig(projectId: string, text: string): Promise<void> {
  */
 export function ProjectSettings(): JSX.Element {
   const viewedUserId = useViewedUserId()
-  const readOnly = useReadOnly()
-  const projects = projectsOf(useSnapshot()?.projects ?? [], viewedUserId)
+  const teammateView = useTeammateView()
+  const whoami = useWhoami()
+  const all = useSnapshot()?.projects ?? []
+  const projects = projectsOf(all, viewedUserId)
   const activeProjectId = useUiStore((s) => s.activeProjectId)
   // The dialog unmounts on close, so this re-defaults to the active project
   // each time settings open.
@@ -48,6 +51,12 @@ export function ProjectSettings(): JSX.Element {
     ?? projects.find((p) => p.id === activeProjectId)
     ?? projects[0]
   const projectId = selected?.id ?? null
+  const sharedFrom = selected?.sharedFrom
+  // A removed share stays readable by its owner, like a teammate's project.
+  const readOnly = teammateView || sharedFrom?.revoked === true
+  // A name its owner has twice names no one project to the CLI.
+  const cliRef = selected && projects.filter((p) => p.name === selected.name).length > 1 ? selected.id : selected?.name
+  const sharer = whoami?.users.find((u) => u.id === all.find((p) => p.id === sharedFrom?.projectId)?.owner)
 
   const filesApi = useMemo(() => (projectId ? projectBuildFilesApi(projectId) : null), [projectId])
 
@@ -85,6 +94,11 @@ export function ProjectSettings(): JSX.Element {
               {!selected.hosted && (
                 <span title={selected.remoteUrl} className="truncate font-mono text-text-faint">{selected.remoteUrl}</span>
               )}
+              {sharedFrom && (
+                <span className="truncate text-text-faint">
+                  {sharedFrom.revoked ? 'Sharing removed' : 'Shared'}{sharer ? ` by ${sharer.name}` : ''}
+                </span>
+              )}
             </p>
           </div>
 
@@ -93,9 +107,15 @@ export function ProjectSettings(): JSX.Element {
               key={`hosted:${projectId}`}
               projectId={projectId}
               name={selected.name}
+              cliRef={cliRef ?? selected.name}
+              shared={sharedFrom !== undefined}
               guardDefaultBranch={selected.guardDefaultBranch}
-              readOnly={readOnly}
+              readOnly={readOnly || sharedFrom !== undefined}
             />
+          </div>}
+
+          {selected.hosted && !sharedFrom && <div className="mt-6">
+            <ProjectSharing key={`sharing:${projectId}`} projectId={projectId} owner={selected.owner} readOnly={readOnly} />
           </div>}
 
           {!mediatedEgress && (

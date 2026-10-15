@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { and, count, desc, eq, exists, ilike, isNotNull, isNull, lt, notInArray, or, sql, type SQL } from 'drizzle-orm'
+import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
 import { deleteWorkspaceAgentSessions } from './agent-session-store'
 import { agentSessions, workspaceAgentSessions, workspaces } from './schema'
@@ -410,7 +410,8 @@ export async function listWorkspaceRows(projectId?: string): Promise<WorkspaceRo
 
 /** What `listStoppedWorkspaceRows` narrows the stopped rows to. */
 export interface StoppedRowFilter {
-  projectId?: string
+  /** Only these projects' rows; an empty list matches none. */
+  projectIds?: string[]
   /** Ids to leave out: the ones the runtime reports running, since a
    *  restart keeps its stop until it succeeds. */
   excludeIds?: string[]
@@ -446,7 +447,9 @@ export async function listStoppedWorkspaceRows(
 ): Promise<{ rows: WorkspaceRow[]; total: number }> {
   const db = await getDb()
   const conds: (SQL | undefined)[] = [isNotNull(workspaces.stoppedAt), notSpare]
-  if (filter.projectId !== undefined) conds.push(eq(workspaces.projectId, filter.projectId))
+  if (filter.projectIds !== undefined) {
+    conds.push(filter.projectIds.length > 0 ? inArray(workspaces.projectId, filter.projectIds) : sql`false`)
+  }
   if (filter.workspaceId !== undefined) conds.push(eq(workspaces.workspaceId, filter.workspaceId))
   if (filter.groupId !== undefined) conds.push(eq(workspaces.groupId, filter.groupId))
   if (filter.excludeIds?.length) conds.push(notInArray(workspaces.workspaceId, filter.excludeIds))

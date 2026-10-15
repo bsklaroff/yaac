@@ -52,9 +52,10 @@ vi.mock('@yaac/server/domain/projects/add', async () => {
   }
 })
 
-vi.mock('@yaac/server/domain/workspaces/project-teardown', () => ({
+vi.mock('@yaac/server/domain/workspaces/project-teardown', async (importOriginal) => ({
+  ...await importOriginal<typeof projectRemoveModule>(),
   removeProject: vi.fn(),
-} satisfies Partial<typeof projectRemoveModule>))
+}))
 
 // The install flow's post-exit check looks for the CLI on this machine;
 // mocked so the tests don't depend on what is installed.
@@ -1061,6 +1062,27 @@ describe('write routes', () => {
       expect(await own.text()).toContain('# service=git-upload-pack')
       expect((await relayGit(project.id, 'sess-other')).status).toBe(403)
       expect((await relayGit(project.id, 'sess-h', 'guess')).status).toBe(401)
+    })
+
+    it('shares one with another user, whose workspaces reach its repository until the share is removed', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const project = await (await client.project.create.$post({ json: { name: 'together' } })).json()
+      const bob = await seeTailnetUser('bob@example.com', 'Bob')
+      const shares = client.project[':projectId'].shares
+
+      const shared = await shares.$post({ param: { projectId: project.id }, json: { userId: bob } })
+      expect(shared.status).toBe(200)
+      const share = await shared.json()
+      expect(await getProjectRow(share.id)).toMatchObject({ owner: bob, name: 'together', sharedFrom: project.id })
+
+      await recordWorkspaceCreated({ projectId: share.id, workspaceId: 'sess-s' })
+      expect((await relayGit(share.id, 'sess-s')).status).toBe(200)
+
+      const removed = await shares[':userId'].$delete({ param: { projectId: project.id, userId: bob } })
+      expect(removed.status).toBe(204)
+      expect((await getProjectRow(share.id))?.shareRevoked).toBe(true)
+      expect((await relayGit(share.id, 'sess-s')).status).toBe(403)
+      expect((await shares[':userId'].$delete({ param: { projectId: project.id, userId: bob } })).status).toBe(404)
     })
 
     it('turns the default-branch guard off and on, for a hosted project only', async () => {

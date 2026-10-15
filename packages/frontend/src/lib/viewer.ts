@@ -27,15 +27,25 @@ export function useViewedUserId(): string | undefined {
   return viewed ?? me
 }
 
-/**
- * Whether another user's data is shown. Every control is then off, and
- * views skip the writes they would make as a side effect (marking a death
- * seen), since only the owner may make them.
- */
-export function useReadOnly(): boolean {
+/** Whether another user's data is shown, rather than the caller's own. */
+export function useTeammateView(): boolean {
   const viewed = useUiStore((s) => s.viewedUserId)
   const me = useWhoami()?.userId
   return viewed !== null && me !== undefined && viewed !== me
+}
+
+/**
+ * Whether the active project is shown read-only: it is another user's, or a
+ * share its source's owner removed, which its owner can still read but no
+ * longer change (docs/hosted-projects.md "Sharing"). Every control is then
+ * off, and views skip the writes they would make as a side effect (marking
+ * a death seen), since the server refuses them.
+ */
+export function useReadOnly(): boolean {
+  const teammate = useTeammateView()
+  const removed = useUiStore((s) =>
+    s.snapshot?.projects.find((p) => p.id === s.activeProjectId)?.sharedFrom?.revoked === true)
+  return teammate || removed
 }
 
 /** The projects `userId` owns, in snapshot order. */
