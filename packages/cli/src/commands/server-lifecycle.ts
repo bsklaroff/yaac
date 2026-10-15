@@ -1,15 +1,16 @@
 /**
  * `yaac server start|stop|restart|status|logs`, which manage the host server
  * through its lock and `/health` rather than its API, and `yaac cluster
- * status`, which reads the same lock. Nothing here loads the server or the
- * kubernetes client, so these stay quick (the desktop app polls `status`).
+ * status`, which reads the same lock and `/health`. Nothing here loads the
+ * server or the kubernetes client, so these stay quick (the desktop app
+ * polls `status`).
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { readBuildId } from '@yaac/shared/build-id'
 import { readLock, removeLock } from '@yaac/shared/lock'
-import { isLockLive, isSameHostLock, type ServerLock } from '@yaac/shared/server-lock-file'
+import { isLeaseFresh, isLockLive, isOtherLivePid, isSameHostLock, type ServerLock } from '@yaac/shared/server-lock-file'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- names the data dir in a refusal; builds no path
 import { getDataDir, serverLogPath } from '@yaac/shared/paths'
@@ -92,11 +93,10 @@ export async function serverStatus(options: { json?: boolean }): Promise<void> {
 
 /** `yaac cluster status`. */
 export async function clusterStatus(options: { json?: boolean }): Promise<void> {
-  const status = await localServerStatus()
-  if (status.driver === 'k8s') {
-    printServerStatus(status, options.json)
+  if (await recordedDriver() === 'k8s') {
+    printServerStatus(await localServerStatus(), options.json)
   } else if (options.json) {
-    console.log(JSON.stringify({ ...status, driver: null, running: false, serverBuildId: null, origin: null }))
+    console.log(JSON.stringify({ driver: null, cliBuildId: await readBuildId(), origin: null, ...NOT_RUNNING }))
   } else {
     console.log('no cluster install; create one with `yaac cluster install`')
   }
@@ -132,7 +132,7 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
 
   const existing = await readLock()
   if (existing && await isLockLive(existing)) {
-    const running = (await health(existing.port))?.access
+    const running = (await health(`http://127.0.0.1:${existing.port}`))?.access
     if (existing.buildId === cliBuildId && running === 'tailnet' && mode === 'local') {
       throw new Error(
         'yaac server is running in tailnet mode, which cannot switch back to local. '
@@ -261,18 +261,33 @@ async function stopServer(): Promise<void> {
   console.error(`[yaac] force-removed stale lock (pid ${existing.pid})`)
 }
 
+const NOT_RUNNING = { running: false, serverBuildId: null, refused: null, reachable: null } as const
+
 /**
- * Whether this data dir's server runs, and on which build. The lock answers
- * for a host server and for a kind install's pod alike, since both keep it
- * in their data dir.
+ * Whether this data dir's server runs, on which build, and whether it
+ * refused to start. The lock answers for a host server and for a kind
+ * install's pod alike, since both keep it in their data dir. A host server
+ * runs while its pid does, so one that hangs still counts as running, and
+ * `/health` is asked at the lock's port. A pod runs while its lease is
+ * renewed, and `/health` is asked at the install's origin, since the lock
+ * names a port inside the pod.
  */
 async function localServerStatus(): Promise<LocalServerStatus> {
   const cfg = await readInstallRecord()
   const base = { driver: cfg?.driver ?? null, cliBuildId: await readBuildId(), origin: cfg?.origin ?? null }
-  if (cfg?.byo) return { ...base, running: null, serverBuildId: null }
+  if (cfg?.byo) return { ...base, ...NOT_RUNNING, running: null }
   const lock = await readLock()
-  const live = lock !== null && await isLockLive(lock)
-  return { ...base, running: live, serverBuildId: live ? lock.buildId : null }
+  const sameHost = lock !== null && isSameHostLock(lock)
+  if (lock === null || !(sameHost ? isOtherLivePid(lock.pid) : isLeaseFresh(lock))) return { ...base, ...NOT_RUNNING }
+  const url = sameHost ? `http://127.0.0.1:${lock.port}` : base.driver === 'k8s' ? base.origin : null
+  const body = url === null ? undefined : await health(url)
+  return {
+    ...base,
+    running: true,
+    serverBuildId: lock.buildId,
+    refused: body?.refused ?? null,
+    reachable: url === null ? null : body !== undefined,
+  }
 }
 
 function printServerStatus(status: LocalServerStatus, json: boolean | undefined): void {
@@ -282,6 +297,11 @@ function printServerStatus(status: LocalServerStatus, json: boolean | undefined)
     console.log('unknown: a --byo install keeps its server lock on the cluster')
   } else if (!status.running) {
     console.log('not running')
+  } else if (status.refused !== null) {
+    console.log(`up, but refused to start: ${status.refused}`)
+  } else if (status.reachable === false) {
+    const scope = status.driver === 'k8s' ? 'cluster' : 'server'
+    console.log(`running, but its /api/health does not answer; see \`yaac ${scope} logs\``)
   } else if (status.serverBuildId === status.cliBuildId) {
     console.log('running')
   } else {
@@ -343,7 +363,7 @@ async function waitForReadyLock(timeoutMs: number): Promise<ServerLock> {
   const lock = await waitFor(async () => {
     const cur = await readLock()
     if (!cur || !await isLockLive(cur)) return undefined
-    const body = await health(cur.port)
+    const body = await health(`http://127.0.0.1:${cur.port}`)
     refused = body?.refused
     return body?.ready === true || refused !== undefined ? cur : undefined
   }, { timeoutMs, intervalMs: 100 })
@@ -357,10 +377,10 @@ async function waitForReadyLock(timeoutMs: number): Promise<ServerLock> {
 
 interface Health { ready?: boolean; access?: AccessMode | null; refused?: string }
 
-/** The host server's `/health`, or undefined when it does not answer. */
-async function health(port: number): Promise<Health | undefined> {
+/** A server's `/health`, or undefined when it does not answer with one. */
+async function health(baseUrl: string): Promise<Health | undefined> {
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`, { signal: AbortSignal.timeout(500) })
+    const res = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(2_000) })
     return res.ok ? await res.json() as Health : undefined
   } catch {
     return undefined

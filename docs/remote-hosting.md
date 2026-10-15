@@ -47,7 +47,7 @@ var cannot change who the server admits.
   and `restart` take the same `--tailnet <host>` each time. A start asking
   for another mode is refused with the command that fixes it, and a refusing
   server stops (host) or keeps answering `/health` with the reason, which
-  `yaac cluster install` prints (k8s).
+  `yaac cluster install` and `yaac cluster status` print (k8s).
 - **`local` → `tailnet` is one-way and needs `--owner <login>`** on that
   start. It gives the built-in user that tailnet login, so the owner keeps
   every project, credential and setting the install had. A fresh `tailnet`

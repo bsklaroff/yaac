@@ -192,7 +192,7 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     // offers to restart.
     expect((await runYaac({ ...testEnv.env, YAAC_BUILD_ID: 'old-build' }, 'server', 'start')).exitCode).toBe(0)
     const json = JSON.parse(await status(testEnv.env, '--json')) as Record<string, unknown>
-    expect(json).toMatchObject({ running: true, driver: 'containerless', serverBuildId: 'old-build' })
+    expect(json).toMatchObject({ running: true, driver: 'containerless', serverBuildId: 'old-build', refused: null, reachable: true })
     // The origin the desktop app trusts this install's pages from.
     expect(json.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
     expect(json.cliBuildId).not.toBe('old-build')
@@ -200,6 +200,16 @@ describe('yaac server start / stop / restart (real CLI)', () => {
 
     expect((await runYaac(testEnv.env, 'server', 'restart')).exitCode).toBe(0)
     expect(await status(testEnv.env)).toBe('running')
+
+    // A hung server still runs: its pid lives though its port is silent.
+    const { pid } = (await readLock())!
+    process.kill(pid, 'SIGSTOP')
+    try {
+      expect(await status(testEnv.env)).toBe('running, but its /api/health does not answer; see `yaac server logs`')
+      expect(JSON.parse(await status(testEnv.env, '--json'))).toMatchObject({ running: true, refused: null, reachable: false })
+    } finally {
+      process.kill(pid, 'SIGCONT')
+    }
   })
 
 })
@@ -253,6 +263,24 @@ describe('yaac server start|restart --tailnet/--owner (access modes)', () => {
     expect(back.exitCode).toBe(1)
     expect(back.stderr).toMatch(/refused to start: this install runs in tailnet mode[\s\S]*--tailnet <host>/)
     expect(await readLock()).toBeNull()
+
+    // A foreground `server run` is not stopped on refusal: it stays up
+    // answering `/health` with the reason, as the in-cluster server does,
+    // and status reports that rather than `running`.
+    const refusing = spawn(process.execPath, [TEST_CLI_ENTRY, 'server', 'run'], { env: testEnv.env, stdio: 'ignore' })
+    try {
+      const status = await vi.waitFor(async () => {
+        const json = JSON.parse((await runYaac(testEnv.env, 'server', 'status', '--json')).stdout) as Record<string, unknown>
+        if (json.refused === null) throw new Error('the server has not refused yet')
+        return json
+      }, { timeout: 60_000, interval: 200 })
+      expect(status).toMatchObject({ running: true, reachable: true })
+      expect(status.refused).toMatch(/runs in tailnet mode/)
+      expect((await runYaac(testEnv.env, 'server', 'status')).stdout).toMatch(/^up, but refused to start: this install runs in tailnet mode/)
+    } finally {
+      refusing.kill('SIGTERM')
+      await new Promise<void>((resolve) => refusing.once('exit', () => resolve()))
+    }
 
     const again = await runYaac(testEnv.env, 'server', 'restart', '--tailnet', HOST)
     expect(again.exitCode).toBe(0)
@@ -340,8 +368,9 @@ describe('yaac server and yaac cluster: two installs, two data dirs', () => {
       expect((await runYaac(testEnv.env, 'cluster', 'logs', ...args)).stderr).toMatch(/no cluster install/)
     }
     expect((await runYaac(testEnv.env, 'cluster', 'status')).stdout).toMatch(/no cluster install; create one with `yaac cluster install`/)
-    expect(await json(testEnv.env, 'cluster', 'status'))
-      .toEqual({ driver: null, running: false, serverBuildId: null, cliBuildId: 'test-build-id', origin: null })
+    expect(await json(testEnv.env, 'cluster', 'status')).toEqual({
+      driver: null, running: false, serverBuildId: null, cliBuildId: 'test-build-id', origin: null, refused: null, reachable: null,
+    })
   })
 
   it('keeps a cluster install in ~/.yaac-cluster beside the host server\'s ~/.yaac', async () => {

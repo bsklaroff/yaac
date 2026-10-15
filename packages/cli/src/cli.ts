@@ -150,7 +150,7 @@ server
 
 server
   .command('status')
-  .description('Show whether the server is running, and whether it runs the installed build')
+  .description('Show whether the server is running, refused to start, or runs another build')
   .option('--json', 'Print the status as JSON (what the desktop app reads)')
   .action(serverStatus)
 
@@ -232,7 +232,7 @@ cluster
 
 cluster
   .command('status')
-  .description('Show whether the cluster\'s server is running, and whether it runs the installed build')
+  .description('Show whether the cluster\'s server is running, refused to start, or runs another build')
   .option('--json', 'Print the status as JSON (what the desktop app reads)')
   .action(clusterStatus)
 

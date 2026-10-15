@@ -160,7 +160,8 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
       return JSON.parse(res.stdout) as { running: boolean, driver: string, serverBuildId: string | null, cliBuildId: string }
     }
     const running = await status()
-    expect(running).toMatchObject({ running: true, driver: 'k8s' })
+    // Its /health is asked at the origin, since the lock names a port inside the pod.
+    expect(running).toMatchObject({ running: true, driver: 'k8s', refused: null, reachable: true })
     // The pod runs the bundle this CLI came from, so the tray offers no update.
     expect(running.serverBuildId).toBe(running.cliBuildId)
 
