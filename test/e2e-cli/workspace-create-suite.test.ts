@@ -1544,10 +1544,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     afterAll(() => stopWorkspace(workspaceId))
 
     it('boots opencode and answers a session probe from inside the container', async () => {
-      // Wait for the TUI's prompt box: some opencode releases never draw
-      // under gVisor. Wait before starting any other opencode server, too:
-      // two servers creating the SQLite schema at once race, and if the
-      // TUI's loses, the TUI and the tmux server exit.
+      // Wait for the TUI's prompt box, which checks the pane draws in our
+      // tmux (dockerfiles/Dockerfile.tools). Wait before starting any other
+      // opencode server, too: two servers creating the SQLite schema at once
+      // race, and if the TUI's loses, the TUI and the tmux server exit.
       await vi.waitFor(async () => {
         const { stdout: pane } = await execInJob(jobName, [
           'sh', '-c', `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:opencode -p`,
