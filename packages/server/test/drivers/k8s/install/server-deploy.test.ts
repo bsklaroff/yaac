@@ -568,13 +568,19 @@ describe('deployServerWorkload', () => {
     expect(await readServerConfig()).toMatchObject({ url: origin })
   })
 
-  it('stops the pod that is there before it deploys', async () => {
+  it('stops the pod that is there only once its image is ready, and before it deploys', async () => {
     liveDeployment()
+    mockRegistryTagState.mockImplementation(() => {
+      actions.push('registry tag state')
+      return Promise.resolve('present')
+    })
 
     await deploy({ log: vi.fn() })
 
     const stopAt = actions.indexOf(`patch Deployment ${SERVER_APP_NAME} {"spec":{"replicas":0}}`)
     expect(stopAt).toBeGreaterThanOrEqual(0)
+    // The old pod serves while the image is built.
+    expect(actions.slice(0, stopAt)).toContain('registry tag state')
     // Waits for the pod's deletion, not just the scale.
     expect(actions[stopAt + 1]).toBe('list Pod ')
     expect(stopAt).toBeLessThan(actions.indexOf(`apply Deployment ${SERVER_APP_NAME}`))

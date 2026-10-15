@@ -13,8 +13,9 @@ one mounts two (see "Storage claims").
 
 `yaac cluster install` ends with these steps, in this order:
 
-1. **Stop the running server pod**, if there is one, and build and push the
-   server image.
+1. **Build and push the server image**, then **stop the running server
+   pod**, if there is one. The old pod serves through the build, so the
+   outage is only the rollout.
 2. **The storage claims** and the volumes behind them (see "Storage
    claims"). On byo, the binder pod that binds them runs the server image,
    which is why the image comes first.
