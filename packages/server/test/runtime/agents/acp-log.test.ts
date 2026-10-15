@@ -6,12 +6,17 @@ import {
   readAcpFirstPrompt,
   readAcpRecovery,
   replayAcpLog,
+  readAcpLife,
+  readAcpPage,
   tailAcpLog,
   MAX_ACP_RECORD_BYTES,
+  MAX_ACP_SCAN_BYTES,
+  PAGE_BYTES,
   type AcpRecordRef,
+  type RecordOrigin,
 } from '#runtime/agents/acp-log'
 import { acpLogDir, setDataDir } from '@yaac/shared/project-paths'
-import type { AcpEventInit } from '@yaac/shared/acp'
+import { acpPageOf, ACP_PAGE_SPAN, type AcpEventInit } from '@yaac/shared/acp'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
@@ -27,8 +32,11 @@ beforeEach(() => { installFakeWorkspaceDriver() })
 const line = (msg: unknown): string => JSON.stringify(msg)
 
 /** The first line acpd writes for each agent run; its id tells runs apart. */
-const life = (id: string): string =>
-  line({ jsonrpc: '2.0', method: '_acpd/life', params: { id } })
+const life = (id: string, startedAt = '2026-01-01T00:00:00.000Z'): string =>
+  line({ jsonrpc: '2.0', method: '_acpd/life', params: { id, startedAt } })
+
+/** A tail's origin when the record is the whole conversation. */
+const noHistory = (): Promise<RecordOrigin> => Promise.resolve({ firstPage: 0, skipReplay: false })
 
 const update = (u: unknown): string => line({
   jsonrpc: '2.0',
@@ -103,7 +111,7 @@ describe('tailAcpLog', () => {
 
   it('reports an empty history for a record that does not exist yet', async () => {
     const batches: Array<{ events: unknown[]; reset: boolean }> = []
-    tails.push(tailAcpLog((await scratch()).ref, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog((await scratch()).ref, noHistory, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
 
     // An empty history is still reported, so the pane knows it is attached.
     await until(() => batches.length > 0)
@@ -114,7 +122,7 @@ describe('tailAcpLog', () => {
     const { file, ref } = await scratch()
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'one' } }) + '\n')
     const batches: Array<{ events: Array<{ type: string }>; reset: boolean }> = []
-    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events: events, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, noHistory, (events, reset) => batches.push({ events: events, reset }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
     expect(batches[0].reset).toBe(true)
     expect(batches[0].events).toHaveLength(1)
@@ -131,7 +139,7 @@ describe('tailAcpLog', () => {
     const full = update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'split' } })
     await fs.writeFile(file, full.slice(0, 20))
     const batches: Array<{ events: unknown[] }> = []
-    tails.push(tailAcpLog(ref, (events) => batches.push({ events }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, noHistory, (events) => batches.push({ events }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
     // A pass can land mid-line while acpd is appending.
     expect(batches[0].events).toEqual([])
@@ -140,7 +148,7 @@ describe('tailAcpLog', () => {
     await until(() => batches.some((b) => b.events.length > 0))
   })
 
-  it('starts over when the record is truncated for a new agent life', async () => {
+  it('starts over when the record is replaced by a shorter one', async () => {
     const { file, ref } = await scratch()
     await fs.writeFile(file, [
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old life' } }),
@@ -149,14 +157,13 @@ describe('tailAcpLog', () => {
     // Rebuild the pane's view (replace on reset, else append), since a pass
     // may see the truncated file empty and report the reset with no events.
     let view: Array<{ content?: Array<{ text?: string }> }> = []
-    tails.push(tailAcpLog(ref, (events, reset) => {
+    tails.push(tailAcpLog(ref, noHistory, (events, reset) => {
       const batch = events as typeof view
       view = reset ? batch : [...view, ...batch]
     }, { intervalMs: 20 }))
     await until(() => view.length === 2)
 
-    // A restart truncates the log; appending from the old offset would mix
-    // two runs.
+    // Reading on from the old offset would mix two records.
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'new life' } }) + '\n')
     await until(() => view.length === 1)
     expect(view[0]).toMatchObject({ content: [{ text: 'new life' }] })
@@ -166,13 +173,11 @@ describe('tailAcpLog', () => {
     expect(view).toHaveLength(1)
   })
 
-  it('still reports the restart when it catches the record empty', async () => {
-    // acpd's open(…, 'w') empties the file first, so a pass can see size 0.
-    // The reset must still be reported.
+  it('still reports the replacement when it catches the record empty', async () => {
     const { file, ref } = await scratch()
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old life' } }) + '\n')
     const batches: Array<{ events: unknown[]; reset: boolean }> = []
-    tails.push(tailAcpLog(ref, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, noHistory, (events, reset) => batches.push({ events, reset }), { intervalMs: 20 }))
     await until(() => batches.length > 0)
 
     await fs.truncate(file, 0)
@@ -198,7 +203,7 @@ describe('tailAcpLog', () => {
     await fs.writeFile(file, full.subarray(0, at))
 
     const events: Array<{ content?: Array<{ text?: string }> }> = []
-    tails.push(tailAcpLog(ref, (batch) => events.push(...batch as typeof events), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, noHistory, (batch) => events.push(...batch as typeof events), { intervalMs: 20 }))
     await until(() => events.length === 0)
     await new Promise((r) => setTimeout(r, 60))
 
@@ -207,23 +212,35 @@ describe('tailAcpLog', () => {
     expect(events[0].content?.[0].text).toBe('héllo 😀 世界')
   })
 
-  it('starts over when a new life reuses the byte count of the one before', async () => {
-    // A restart's session/load replay can regrow the file past the old
-    // offset within one tick, so only the run id reveals the truncation.
+  it('starts over at a new life, told by its life line, after the history before it', async () => {
+    // A restart's replay can regrow the record past the old offset within
+    // one pass, so only the life line reveals that acpd started it afresh.
     const { file, ref } = await scratch()
-    const a = update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old' } })
-    await fs.writeFile(file, [life('life-1'), a].join('\n') + '\n')
-
-    let view: Array<{ content?: Array<{ text?: string }> }> = []
-    tails.push(tailAcpLog(ref, (batch, reset) => {
-      view = reset ? batch as typeof view : [...view, ...batch as typeof view]
+    await fs.writeFile(file, [life('life-1'), text('old')].join('\n') + '\n')
+    const lives: Array<string | undefined> = []
+    let view: string[] = []
+    let page = -1
+    tails.push(tailAcpLog(ref, (l) => {
+      lives.push(l?.id)
+      return Promise.resolve({ firstPage: lives.length - 1, skipReplay: lives.length > 1 })
+    }, (batch, reset, p) => {
+      view = reset ? texts(batch) : [...view, ...texts(batch)]
+      if (reset) page = p
     }, { intervalMs: 20 }))
     await until(() => view.length === 1)
 
-    // Same size, different run.
-    const b = update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'new' } })
-    await fs.writeFile(file, [life('life-2'), b].join('\n') + '\n')
-    await until(() => view.length === 1 && view[0].content?.[0].text === 'new')
+    await fs.writeFile(file, [
+      life('life-2'),
+      line({ jsonrpc: '2.0', id: 1, method: 'session/load', params: {} }),
+      text('old'),
+      line({ jsonrpc: '2.0', id: 1, result: {} }),
+      text('new'),
+    ].join('\n') + '\n')
+    await until(() => view.includes('new'))
+    // The replay of what the tool's own history holds is not shown again.
+    expect(view).toEqual(['new'])
+    expect(page).toBe(1)
+    expect(lives).toEqual(['life-1', 'life-2'])
   })
 
   it('flushes what has been appended even while a pass is already running', async () => {
@@ -232,7 +249,7 @@ describe('tailAcpLog', () => {
     const { file, ref } = await scratch()
     await fs.writeFile(file, '')
     const events: unknown[] = []
-    const tail = tailAcpLog(ref, (batch) => events.push(...batch), { intervalMs: 20 })
+    const tail = tailAcpLog(ref, noHistory, (batch) => events.push(...batch), { intervalMs: 20 })
     tails.push(tail)
     await until(() => events.length === 0)
 
@@ -248,20 +265,20 @@ describe('tailAcpLog', () => {
     const { file, ref } = await scratch()
     await fs.writeFile(file, update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } }) + '\n')
     const growing: Array<{ events: AcpEventInit[]; reset: boolean }> = []
-    tails.push(tailAcpLog(ref, (events, reset) => growing.push({ events, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, noHistory, (events, reset) => growing.push({ events, reset }), { intervalMs: 20 }))
     await until(() => growing.length > 0)
 
     // A huge sparse file is cheap to create but costly to read.
     const handle = await fs.open(file, 'r+')
-    await handle.truncate(MAX_ACP_RECORD_BYTES + 1)
+    await handle.truncate(MAX_ACP_SCAN_BYTES + 1)
     await handle.close()
     await until(() => growing.length > 1)
-    const tooLarge = { type: 'error', message: expect.stringContaining('past the 64 MB a chat pane can show') as string }
+    const tooLarge = expect.objectContaining({ type: 'error', message: expect.stringContaining('past the 1 GB a chat pane can show') as string }) as AcpEventInit
     expect(growing[1]).toEqual({ events: [tooLarge], reset: false })
 
     // A pane attaching now gets the notice as its whole history.
     const fresh: Array<{ events: AcpEventInit[]; reset: boolean }> = []
-    tails.push(tailAcpLog(ref, (events, reset) => fresh.push({ events, reset }), { intervalMs: 20 }))
+    tails.push(tailAcpLog(ref, noHistory, (events, reset) => fresh.push({ events, reset }), { intervalMs: 20 }))
     await until(() => fresh.length > 0)
     expect(fresh[0]).toEqual({ events: [tooLarge], reset: true })
     await new Promise((r) => setTimeout(r, 100))
@@ -272,7 +289,7 @@ describe('tailAcpLog', () => {
     const { file, ref } = await scratch()
     await fs.writeFile(file, '')
     const batches: unknown[] = []
-    const tail = tailAcpLog(ref, (events) => batches.push(events), { intervalMs: 20 })
+    const tail = tailAcpLog(ref, noHistory, (events) => batches.push(events), { intervalMs: 20 })
     await until(() => batches.length > 0)
     tail.close()
     const after = batches.length
@@ -412,6 +429,65 @@ describe('readAcpRecovery', () => {
   })
 })
 
+/** A compaction as an adapter told `session.compaction` reports it. */
+const compaction = (id: string, status: string, more: Record<string, unknown> = {}): string =>
+  update({ sessionUpdate: 'compaction_update', compactionId: id, status, ...more })
+const text = (t: string): string => update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
+const texts = (events: Array<{ type: string; content?: unknown }>): string[] =>
+  events.flatMap((e) => (e.type === 'agent' || e.type === 'user' ? [(e.content as Array<{ text?: string }>).map((c) => c.text).join('')] : []))
+
+describe('readAcpPage', () => {
+  it('reads one page of a record, the last by default, each compaction opening one', async () => {
+    const { file, ref } = await record()
+    await fs.writeFile(file, [
+      life('l1'), prompt('first'), text('one'),
+      compaction('c1', 'completed'), text('two'),
+      compaction('c2', 'completed'), text('three'),
+    ].join('\n') + '\n')
+
+    const last = await readAcpPage(ref)
+    expect(last.page).toBe(2)
+    expect(last.events.map((e) => e.type)).toEqual(['compaction', 'agent'])
+    expect(last.events.every((e) => acpPageOf(e.seq) === 2)).toBe(true)
+    expect(texts((await readAcpPage(ref, 0)).events)).toEqual(['first', 'one'])
+    expect(texts((await readAcpPage(ref, 1)).events)).toEqual(['two'])
+    // Past the end is the last page; no record is an empty history.
+    expect(await readAcpPage(ref, 9)).toEqual(last)
+    expect(await readAcpPage((await record()).ref)).toEqual({ page: 0, events: [] })
+  })
+
+  it('follows the history before its life, without the replay of it that history holds', async () => {
+    const { file, ref } = await record()
+    const load = line({ jsonrpc: '2.0', id: 1, method: 'session/load', params: {} })
+    const loaded = line({ jsonrpc: '2.0', id: 1, result: { models: { currentModelId: 'm', availableModels: [{ modelId: 'm' }] } } })
+    const replayed = update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'first' } })
+    const commands = update({ sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'compact' }] })
+    await fs.writeFile(file, [life('l2'), load, replayed, text('one'), commands, loaded, text('two')].join('\n') + '\n')
+
+    const after = await readAcpPage(ref, undefined, { firstPage: 3, skipReplay: true })
+    expect(after.page).toBe(3)
+    expect(after.events.map((e) => [e.type, acpPageOf(e.seq)])).toEqual([['commands', 3], ['models', 3], ['agent', 3]])
+    expect(texts(after.events)).toEqual(['two'])
+    // A page before the record's own is its last.
+    expect(await readAcpPage(ref, 1, { firstPage: 3, skipReplay: true })).toEqual(after)
+    // With no history found, the replay is all there is of it.
+    expect(texts((await readAcpPage(ref)).events)).toEqual(['first', 'one', 'two'])
+    expect(await readAcpLife(ref)).toEqual({ id: 'l2', startedAt: '2026-01-01T00:00:00.000Z' })
+  })
+
+  it('ends a page past its size cap at the next message the user sent', async () => {
+    const { file, ref } = await record()
+    const big = text('x'.repeat(1024 * 1024))
+    const filler = Array.from({ length: Math.ceil(PAGE_BYTES / big.length) + 1 }, () => big)
+    await fs.writeFile(file, [life('l1'), prompt('first'), ...filler, text('still the first page'), prompt('second')].join('\n') + '\n')
+
+    const last = await readAcpPage(ref)
+    expect(last.page).toBe(1)
+    expect(texts(last.events)).toEqual(['second'])
+    expect(texts((await readAcpPage(ref, 0)).events).at(-1)).toBe('still the first page')
+  })
+})
+
 describe('replayAcpLog', () => {
   it('reads a record', () => {
     const events = replayAcpLog([
@@ -420,6 +496,61 @@ describe('replayAcpLog', () => {
       update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ok' } }),
     ].join('\n') + '\n')
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
+  })
+
+  it('starts a page at each compaction, opening it with what still stands', () => {
+    const sdk = (message: Record<string, unknown>): string =>
+      line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
+    const events = replayAcpLog([
+      life('l1'),
+      prompt('build it'),
+      update({ sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'compact' }] }),
+      update({ sessionUpdate: 'usage_update', used: 900, size: 1000 }),
+      sdk({ subtype: 'task_started', task_id: 'b1', tool_use_id: 'toolu_b', description: 'Run tests', is_backgrounded: true, task_type: 'local_bash' }),
+      ask(7),
+      text('compacting now'),
+      compaction('c1', 'in_progress'),
+      update({ sessionUpdate: 'compaction_summary_chunk', compactionId: 'c1', content: { type: 'text', text: 'we built ' } }),
+      update({ sessionUpdate: 'compaction_summary_chunk', compactionId: 'c1', content: { type: 'text', text: 'it' } }),
+      // claude's boundary may follow its compaction's end.
+      compaction('c1', 'completed'),
+      sdk({ subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 900, post_tokens: 50 } }),
+      text('carrying on'),
+    ].join('\n') + '\n')
+
+    const page1 = events.filter((e) => acpPageOf(e.seq) === 1)
+    // Each summary chunk, the end and the boundary update the compaction.
+    expect(page1.map((e) => e.type)).toEqual([
+      'compaction', 'commands', 'usage', 'task', 'permission-request', ...Array<string>(4).fill('compaction'), 'agent',
+    ])
+    expect(page1[0].seq).toBe(ACP_PAGE_SPAN)
+    expect(events.filter((e) => e.type === 'compaction').at(-1)).toMatchObject({
+      compaction: { id: 'c1', status: 'completed', summary: 'we built it', trigger: 'auto', tokensBefore: 900, tokensAfter: 50 },
+    })
+    expect(texts(events.filter((e) => acpPageOf(e.seq) === 0))).toEqual(['build it', 'compacting now'])
+  })
+
+  it('reads a compaction an adapter reported as a tool call, as records before session.compaction hold', () => {
+    const events = replayAcpLog([
+      prompt('/compact'),
+      update({ sessionUpdate: 'tool_call', toolCallId: 'k1', title: 'Compact conversation', kind: 'think', status: 'in_progress', _meta: { claudeCode: { toolName: 'compact' } } }),
+      update({ sessionUpdate: 'tool_call_update', toolCallId: 'k1', status: 'completed', rawOutput: { trigger: 'manual', preTokens: 800, postTokens: 40 } }),
+      text('done'),
+    ].join('\n') + '\n')
+    expect(events.map((e) => [e.type, acpPageOf(e.seq)])).toEqual([['user', 0], ['compaction', 1], ['compaction', 1], ['agent', 1]])
+    expect(events[2]).toMatchObject({ compaction: { id: 'k1', status: 'completed', trigger: 'manual', tokensBefore: 800, tokensAfter: 40 } })
+  })
+
+  it('shows a /compact the agent answered without reporting a compaction as one', () => {
+    // opencode's adapter reports none; claude's reports its own.
+    const compact = line({ jsonrpc: '2.0', id: 5, method: 'session/prompt', params: { prompt: [{ type: 'text', text: '/compact' }] } })
+    const answered = line({ jsonrpc: '2.0', id: 5, result: { stopReason: 'end_turn' } })
+    const unreported = replayAcpLog([life('l1'), prompt('hi'), compact, answered, text('next')].join('\n') + '\n')
+    expect(unreported.map((e) => [e.type, acpPageOf(e.seq)])).toEqual([['user', 0], ['user', 0], ['compaction', 1], ['agent', 1]])
+    expect(unreported[2]).toMatchObject({ compaction: { status: 'completed', trigger: 'manual' } })
+
+    const reported = replayAcpLog([life('l1'), prompt('hi'), compact, compaction('c1', 'completed'), answered].join('\n') + '\n')
+    expect(reported.filter((e) => e.type === 'compaction')).toHaveLength(1)
   })
 
   it('marks each run an adapter reports starting, so a self-started reply stands apart', () => {

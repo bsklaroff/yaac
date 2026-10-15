@@ -105,6 +105,9 @@ a **record** file on a host-mounted path (`acpLogDir()` in
 - It is on the host, so the server can read it without the pod, including
   after the pod is gone. That is what makes a stopped workspace's
   conversation readable.
+- It holds one agent life. acpd starts it afresh, opening with an
+  `_acpd/life` line that says when, and the lives before are read from the
+  tool's own history (see "Pages and compaction").
 
 Both directions are needed because the agent echoes user messages only when
 replaying under `session/load`; without the client's `session/prompt` lines
@@ -114,8 +117,8 @@ client, and the server keeps no copy.
 Images are the exception to recording lines verbatim. A screenshot is
 megabytes of base64, claude repeats each one in a tool result's `rawOutput`
 and again in `_meta.claudeCode.toolResponse.file.base64`, and pi sends each
-one twice when it replays a tool result, so a few dozen would carry the
-record past the 64 MB the server reads (`MAX_ACP_RECORD_BYTES`). acpd parses
+one twice when it replays a tool result, so a few dozen would fill a page of
+the record (`PAGE_BYTES`) with base64. acpd parses
 each long line, writes every `data` or `base64` string that decodes to a
 PNG, JPEG, GIF or WebP to `images/<sha256>` beside the record, and records
 `yaac-image:<sha256>` in its place. Other keys, and the `data` of codex's
@@ -135,12 +138,14 @@ NFS sends a held-open file's bytes only on close, sync or writeback
 
 ### Reading a stopped conversation
 
-`GET /workspace/:id/agent-sessions/:sessionId/transcript` returns the same
-`AcpEvent[]` a pane renders, read from files rather than from a running
-workspace, so the read-only pane can show a stopped workspace's whole
-conversation.
+`GET /workspace/:id/agent-sessions/:sessionId/transcript?page=` returns one
+page of the same `AcpEvent[]` a pane renders (the last page without
+`page`), read from files rather than from a running workspace, so the
+read-only pane can show a stopped workspace's whole conversation.
 
-- An `acp` conversation is a replay of its acpd record.
+- An `acp` conversation's current life is a replay of its acpd record; the
+  lives before it are the tool's own history, read as a `tui`
+  conversation's is.
 - A `tui` conversation has no record, so the tool's own history is
   translated on demand into the `session/update` lines its adapter would have
   sent live, then fed through the same replay as an acpd record. No adapter
@@ -166,10 +171,9 @@ replies and the agent's own questions, but no rendered messages. Record and
 socket carry the same `session/update` notifications, which have no `id`, so
 two copies can't be merged without duplicating or dropping the overlap.
 
-A pane's content is a tail of the record: the first pass delivers everything
-and the pane replaces what it held; later passes deliver only new lines
-(`seq` is scoped to one attach). The cost is polling latency; replies arrive
-in bursts.
+A pane's content is a tail of the record: the first pass delivers the
+record's last page and the pane replaces what it held; later passes deliver
+only new lines. The cost is polling latency; replies arrive in bursts.
 
 Two events come over the socket because the record can't carry them: turn end
 and error, built from a `session/prompt` reply that acpd never sees or from
@@ -185,18 +189,26 @@ conversation as live `user` messages, and the record has no boundary to close
 them. A pane inferring from content would come back from a restart stuck at
 "working…".
 
-acpd truncates the record when it starts. A tail that sees the file shrink
-resets its position and projection, and the pane replaces its content. A
-restart's `session/load` replays the whole conversation, so the new file ends
-up complete. This depends on every adapter replaying on load, which is
-adapter behavior, not a protocol guarantee. An adapter that didn't would come
-back blank, and the fix would be to keep the record instead of truncating it.
+acpd starts the record afresh with each agent life. A tail tells the new
+life by its `_acpd/life` line rather than by the file shrinking, since a
+restart's `session/load` replay can regrow it within one pass, and starts
+over: the pane replaces its content.
 
-A record past the cap is not followed further, since its size is the
-workspace's to choose but the memory is the server's. The tail reports it
-once as an `error` event, so a pane attaching to an oversized record shows
-why it has nothing to show rather than an empty conversation, and one
-following a record as it crosses the cap says the pane stops there.
+A restart's `session/load` replays the conversation into the new record,
+but not all of it: claude and pi replay only what followed their latest
+compaction. So the history before the life comes from the tool's own files
+instead, cut at the life's start (see "Pages and compaction"), and the
+replay contributes only session state: commands, models and context usage
+(`RecordOrigin`). Where the tool's history is not found, the replay is
+shown as all there is of it.
+
+Every reader holds one page at a time, so memory stays bounded by the page
+size whatever the record's. Reading still costs time in the record's size,
+which is the workspace's to choose, so a record past 1 GB
+(`MAX_ACP_SCAN_BYTES`) is not read at all. The tail reports it once as an
+`error` event, so a pane attaching to an oversized record shows why it has
+nothing to show rather than an empty conversation, and one following a
+record as it crosses the cap says the pane stops there.
 
 The record is named for the conversation, not the window. Window names are
 slots, and a restart that drops an earlier conversation shifts later ones
@@ -217,8 +229,8 @@ earlier one.)
 
 An off-screen pane stays mounted and keeps its socket, like a terminal, so
 switching tabs or workspaces costs no network. Attaching is the slow part (a
-handshake, then the whole conversation in one `hello` frame): that is the
-"Connecting to the agent…" wait. The warm-up that pre-attaches terminals
+handshake, then the conversation's last page in one `hello` frame): that is
+the "Connecting to the agent…" wait. The warm-up that pre-attaches terminals
 after a page load covers chat panes too.
 
 ### File links
@@ -241,6 +253,81 @@ Nothing inside a link's label links again, so a backticked path labelling
 a link opens what the link says. Only the live pane links paths; a stopped
 workspace has no file pane, so its transcript leaves them as text.
 
+## Pages and compaction
+
+A conversation can outlive any one view of it: an agent compacts its context
+(replacing what it holds with a summary and carrying on), the workspace
+restarts, and a long conversation grows past what is worth sending at once.
+So a conversation's history is split into **pages**, and every view starts
+at the last one.
+
+**The history is the tool's own.** Every tool keeps a conversation's whole
+history in one place across compactions and restarts: claude's transcript,
+codex's rollout, pi's session log and opencode's database, each found by the
+conversation's id, which every adapter takes from its tool. A `tui`
+conversation's pages are that history translated (see "Reading a stopped
+conversation").
+
+An `acp` conversation's live pane shows acpd's record, which holds only the
+current life. So its pages are the tool's history up to the life's start,
+then the record's, whose `session/load` replay repeats that history and is
+not shown. The tool's history is read only up to the first entry stamped at
+or after the life's `startedAt`, so what is read stays the same while the
+life runs. The live pane and the transcript route both take the record's
+first page from `recordOrigin` in `#domain/workspaces`, cached per life, and
+every page carries the life's id (`AcpTranscriptPage.life`): a restart
+numbers the pages afresh, so a pane starts over at a new life and drops a
+page read for another. opencode is the exception: its replay holds the whole
+conversation, while a sandboxed workspace's export of its database lags by
+up to the checkpoint interval, so its earlier lives are the replay. What
+this cannot bring back of what the live pane showed is listed in
+docs/acp-history-differences.md.
+
+**A page starts at each compaction, and past a size cap.** The cap
+(`PAGE_BYTES`, 16 MB of record) ends a page at the next user message, or at
+once at twice the cap, so a conversation that never compacts still loads a
+page at a time. `Pager` numbers each event's `seq` in its page's own range
+(`ACP_PAGE_SPAN` values per page, so `acpPageOf(seq)` names the page), and
+events from different reads of one conversation never collide. A new page
+opens with the session state the pages before it left standing: the latest
+commands, models and context usage, the subagents and tasks still running,
+and the permission asks not yet answered. A page read alone therefore still
+gives the composer its commands, the strip what is running and the pane what
+the agent is waiting on. A compaction stays first on its page.
+
+**A compaction is its own event** (`compaction`), drawn as a divider across
+the column with its trigger and token counts, which opens to the summary the
+agent kept. yaac declares `session.compaction`, so claude's and codex's
+adapters report one as `compaction_update`s (claude adds the summary,
+streamed as `compaction_summary_chunk`s, and its trigger and token counts
+come from the `compact_boundary` SDK message the handshake asks for). The
+other two are made to fit:
+
+- pi-acp listens only for event names pi no longer sends, so automatic
+  compactions are otherwise invisible; yaac's patch
+  (`dockerfiles/agent-patches/pi-acp.js`) reports every one as
+  `compaction_update`s, with the summary and the token counts under the
+  `yaac/compaction` `_meta` key.
+- opencode's adapter reports no compaction at all. A `/compact` the user
+  sends is shown as one where its reply arrives
+  (`AcpProjection.unreportedCompaction`); an automatic one is not seen live,
+  though its rows show it in a tui transcript.
+
+The tui transcript translators report compactions the same way: claude's cuts
+its transcript at each `compact_boundary` and parses each part alone, since
+the SDK's parser stops at the latest one; codex's and opencode's read theirs
+from the rollout and the database, and pi's from its log's `compaction`
+entries. A record written before yaac declared `session.compaction` holds a
+think call titled `Compact conversation`, which is read as a compaction too.
+
+**Panes load pages as the reader moves** (`useTranscriptPages`). The live
+pane's `hello` and the read-only pane's first read are the last page, shown
+at its end. Scrolling near the top reads the page before from the
+transcript route and keeps the reader where they were. The buttons over the
+conversation jump to the start, which shows the first page alone and reads
+each next one as the reader scrolls down, and back to the latest. The live
+pane follows new output only while it shows the last page.
+
 ## Find
 
 Cmd/Ctrl-F searches the whole conversation in the main pane, whichever mode
@@ -253,6 +340,9 @@ reaches a terminal or the browser's own find. One find bar
   conversation, a subagent's thread or a task).
 - **Stopped, or a teammate's:** the read-only pane searches the transcript
   it shows.
+
+Either pane searches the pages it has loaded (see "Pages and compaction");
+jumping to the start and scrolling down loads the rest.
 - **`tui`, running:** the terminal holds only the screens tmux last drew, so
   the chord lays the tool's own history over it instead, read through the
   transcript route above and refreshed while the workspace runs. Escape
@@ -422,8 +512,7 @@ notification that arrives mid-run joins that run and wakes nothing. The
 notification text the agent itself received is not available: the CLI
 replays it only when it joins a running turn.
 
-A new agent life empties the record, and `session/load` replays the history
-with none of these signals: no state reports, no task messages, and each
+A `session/load` replays the history with none of these signals: no state reports, no task messages, and each
 notification a user message of `<task-notification>` markup. (The adapter
 replays subagents itself only to an AIR client.) So between the
 `session/load` request and its reply, the projection rebuilds what it can
@@ -523,11 +612,10 @@ conversation, and the registry records exactly those as active
 it on its pane through a hook or plugin, while `session/new` gives an `acp`
 one to the server.
 
-An ACP row records no transcript path. Under ACP, three of the four tools
-leave nothing the server can find outside the pod (codex's rollouts are named
-by a thread id yaac never sees, opencode's history is a database in the
-container, pi's log is named by an id its adapter made up), so the row's
-opening message and last-active time are read from the record instead.
+An ACP row records no transcript path. Each tool's history is found by the
+conversation's id when it is read (see "Pages and compaction"), but the
+row's opening message and last-active time are read from the record, which
+every tool's conversation has.
 
 The model comes from the adapter: the handshake reply names it (as a
 `models` block, a `configOptions` entry with `id: model`, or both), and later
@@ -821,7 +909,7 @@ mid-line gets its line ended with a newline, so the agent discards the
 fragment. The opening-message scan, which labels the workspace, reads the
 record up to that message, however much adapter output precedes it
 (opencode writes its model lists first), but keeps only the first 64 KB of
-each line and stops at the record's 64 MB cap, since a conversation nobody
+each line and stops after 64 MB of record, since a conversation nobody
 has prompted is rescanned on every reconcile pass. It still finds the text
 of an opening message with images because the text is written before them.
 
@@ -866,6 +954,7 @@ image given by URL into text.
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
 | Chat pane | `packages/frontend/src/components/WorkspaceChat.tsx`, `src/lib/acp.ts` |
+| Pages of a conversation, jump to start and latest | `packages/frontend/src/lib/useTranscriptPages.ts` |
 | Composer `/` and `$` completion | `packages/frontend/src/components/ComposerMenu.tsx` |
 | Subagent and task views | `packages/frontend/src/components/AcpActivity.tsx` |
 | Find | `packages/frontend/src/components/ConversationFind.tsx`, `TuiTranscriptSearch.tsx` |

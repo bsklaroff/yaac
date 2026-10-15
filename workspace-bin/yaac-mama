@@ -135,11 +135,13 @@ Only committed work travels. Fetching again replaces those refs.
 history reads another workspace's agent conversations, running or stopped.
 With no conversation it lists them (CONVERSATION is the id the other forms
 take, or a unique prefix of it). Naming one prints its JSONL transcripts to
-stdout, the main one first and then its subagents'. -o <dir> saves every
-file of that conversation, or of all of them, as <dir>/<conversation>/...
-(a file over 256 MB is skipped, and named on stderr),
-including what the transcripts point at (claude's saved tool results) and,
-for a chat-pane (acp) conversation, yaac's own record as acpd.jsonl.
+stdout, the main one first and then its subagents'. They are the whole
+conversation: compactions and restarts keep adding to the same files.
+-o <dir> saves every file of that conversation, or of all of them, as
+<dir>/<conversation>/... (a file over 256 MB is skipped, and named on
+stderr), including what the transcripts point at (claude's saved tool
+results) and, for a chat-pane (acp) conversation, yaac's own record of its
+latest agent life as acpd.jsonl.
 
 opencode keeps its history in one SQLite database per workspace. Each of its
 conversations is handed out as a copy of that database (opencode.db), which

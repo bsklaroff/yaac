@@ -113,6 +113,9 @@ export {
   Bot as SubagentIcon,
   Activity as MonitorIcon,
   Workflow as WorkflowIcon,
+  Shrink as CompactionIcon,
+  ArrowUpToLine as JumpTopIcon,
+  ArrowDownToLine as JumpBottomIcon,
 } from 'lucide-react'
 
 /** Display name per agent tool. */

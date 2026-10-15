@@ -30,6 +30,10 @@ const PI_ACP = path.dirname(require.resolve('pi-acp/package.json'))
  * Like pi's extension commands, `/status` starts no run, `/ask` starts one
  * before answering and `/ask-later` 100ms after, and all answer the prompt
  * with disposition `handled`. Like pi, it refuses a prompt mid-run.
+ *
+ * Like pi, the `compact` command reports a manual compaction's start and
+ * end before answering, and the prompt `auto` runs with an automatic
+ * compaction inside it.
  */
 const FAKE_PI = `#!/usr/bin/env node
 const SETTLE_DELAY_MS = 400
@@ -41,6 +45,12 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const LINES = Array.from({ length: 12 }, (_, i) => 'line-' + (i + 1))
 const whole = (n) => ({ content: [{ type: 'text', text: LINES.slice(0, n).map((l) => l + '\\n').join('') }] })
 const window = (n) => ({ content: [{ type: 'text', text: LINES.slice(n - 4, n).join('\\n') }] })
+function compaction(reason) {
+  out({ type: 'compaction_start', reason })
+  const result = { summary: 'kept:' + reason, firstKeptEntryId: 'e1', tokensBefore: 900, estimatedTokensAfter: 100 }
+  out({ type: 'compaction_end', reason, result, aborted: false, willRetry: false })
+  return result
+}
 function bash() {
   const call = { toolCallId: 'call_1', toolName: 'bash', args: { command: 'tail-window' } }
   out({ type: 'agent_start' })
@@ -74,7 +84,9 @@ process.stdin.on('data', (c) => {
     else if (cmd.type === 'prompt' && cmd.message === '/status') reply({ disposition: 'handled' })
     else if (cmd.type === 'prompt' && cmd.message === '/ask') { void run('asked'); reply({ disposition: 'handled' }) }
     else if (cmd.type === 'prompt' && cmd.message === '/ask-later') { setTimeout(() => void run('later'), 100); reply({ disposition: 'handled' }) }
+    else if (cmd.type === 'prompt' && cmd.message === 'auto') { reply({ disposition: 'started' }); out({ type: 'agent_start' }); compaction('threshold'); void run('auto') }
     else if (cmd.type === 'prompt') { reply({ disposition: 'started' }); if (cmd.message === 'bash') bash(); else void run(cmd.message) }
+    else if (cmd.type === 'compact') reply(compaction('manual'))
     else if (cmd.type === 'steer') { queue.push(cmd.message); reply() }
     else if (cmd.type === 'clear_queue') reply({ steering: queue.splice(0), followUp: [] })
     else if (cmd.type === 'get_available_models') reply({ models: [{ provider: 'fake', id: 'fake', name: 'fake' }] })
@@ -93,6 +105,7 @@ let nextId = 1
 const replies = new Map<number, (msg: { result?: Record<string, unknown> }) => void>()
 let agentText = ''
 let terminalOutput = ''
+let compactions: Array<Record<string, unknown>> = []
 const log: string[] = []
 
 beforeAll(() => {
@@ -120,6 +133,7 @@ function request(method: string, params: unknown): Promise<{ result?: Record<str
 async function start(): Promise<string> {
   agentText = ''
   terminalOutput = ''
+  compactions = []
   log.length = 0
   adapter = spawn(process.execPath, [path.join(dir, 'pi-acp', 'dist', 'index.js')], {
     cwd: dir,
@@ -145,6 +159,11 @@ async function start(): Promise<string> {
       }
       const update = msg.params?.update
       terminalOutput += update?._meta?.terminal_output?.data ?? ''
+      if (update?.sessionUpdate === 'compaction_update') {
+        compactions.push(update)
+        log.push(`compaction ${String((update as { status?: string }).status)}`)
+      }
+      if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.text?.includes('Compaction')) log.push('compaction text')
       // Only the stand-in's own text: pi-acp adds a prelude whose content
       // depends on the host (its update notice runs the real pi and npm).
       const own = update?.sessionUpdate === 'agent_message_chunk' ? update.content?.text?.match(/(run|steer):[^;]*;/g) : null
@@ -227,6 +246,30 @@ describe('patchPiAcp', () => {
     await until(() => agentText.includes('run:later;'))
     expect((await prompt('next')).result).toEqual({ stopReason: 'end_turn' })
     expect(agentText).toBe('run:asked;run:later;run:next;')
+  })
+
+  it('reports compactions, asked for or automatic, as compaction updates carrying the summary and token counts', async () => {
+    const sessionId = await start()
+    const prompt = (text: string) => request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] })
+    const compactId = nextId
+    expect((await prompt('/compact')).result).toEqual({ stopReason: 'end_turn' })
+    expect((await prompt('auto')).result).toEqual({ stopReason: 'end_turn' })
+
+    const [manualStart, manualEnd, autoStart, autoEnd] = compactions
+    expect(manualStart).toMatchObject({ status: 'in_progress', _meta: { 'yaac/compaction': { trigger: 'manual' } } })
+    expect(manualEnd).toEqual({
+      sessionUpdate: 'compaction_update',
+      compactionId: manualStart.compactionId,
+      status: 'completed',
+      summary: [{ type: 'text', text: 'kept:manual' }],
+      _meta: { 'yaac/compaction': { trigger: 'manual', tokensBefore: 900, tokensAfter: 100 } },
+    })
+    expect(autoStart).toMatchObject({ status: 'in_progress', _meta: { 'yaac/compaction': { trigger: 'auto' } } })
+    expect(autoEnd).toMatchObject({ compactionId: autoStart.compactionId, status: 'completed', summary: [{ type: 'text', text: 'kept:threshold' }] })
+    expect(autoStart.compactionId).not.toBe(manualStart.compactionId)
+    // The manual one is reported before its prompt is answered, and never as text.
+    expect(log.indexOf('compaction completed')).toBeLessThan(log.indexOf(`reply ${String(compactId)}`))
+    expect(log).not.toContain('compaction text')
   })
 
   it('is tested against the release the image installs', () => {

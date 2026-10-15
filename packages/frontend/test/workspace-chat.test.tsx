@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeAll, beforeEach, vi } from 'vite
 import { render, screen, cleanup, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query'
 import type { JSX, ReactNode } from 'react'
-import type { AcpClientMessage, AcpDiff, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpToolCall } from '@yaac/shared/acp'
+import { ACP_PAGE_SPAN, type AcpClientMessage, type AcpDiff, type AcpEvent, type AcpEventInit, type AcpQueuedPrompt, type AcpToolCall } from '@yaac/shared/acp'
 import type { PermissionMode, WorkspaceFiles } from '@yaac/shared/types'
 
 
@@ -14,6 +14,8 @@ import type { PermissionMode, WorkspaceFiles } from '@yaac/shared/types'
  */
 
 const stream = {
+  page: 0,
+  life: undefined as string | undefined,
   events: [] as AcpEvent[],
   busy: false,
   queued: [] as AcpQueuedPrompt[],
@@ -33,7 +35,7 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { chatDraftKey, flushChatDrafts, useUiStore } from '#lib/store'
 import { IS_MAC } from '#lib/platform'
 import { filesKey } from '#lib/useWorkspaceChanges'
-import { agentEvent as agent, testQueryClient, userEvent as user } from './harness'
+import { agentEvent as agent, mockFetch, testQueryClient, userEvent as user } from './harness'
 import { resizeAll } from './setup'
 
 function box(): HTMLTextAreaElement {
@@ -1738,5 +1740,71 @@ describe('WorkspaceChat file links', () => {
     expect(open).toHaveBeenCalledWith('https://en.wikipedia.org/wiki/Foo_(bar)', '_blank', 'noopener,noreferrer')
     expect(openFile).not.toHaveBeenCalled()
     open.mockRestore()
+  })
+})
+
+describe('WorkspaceChat pages', () => {
+  afterEach(() => {
+    cleanup()
+    stream.page = 0
+    stream.life = undefined
+    stream.events = []
+    stream.send.mockClear()
+    vi.unstubAllGlobals()
+  })
+
+  it('reads the pages before the one it attached to above it, and still sends from the latest', async () => {
+    const server = mockFetch({
+      'GET /api/workspace/w1/agent-sessions/acp-1/transcript': { page: 0, events: [user(0, 'the first ask')] },
+    })
+    // Attached past a compaction: its `hello` is the conversation's last page.
+    stream.page = 1
+    stream.events = [
+      { type: 'compaction', seq: ACP_PAGE_SPAN, compaction: { id: 'c1', status: 'completed', trigger: 'manual' } },
+      agent(ACP_PAGE_SPAN + 1, 'the latest answer'),
+    ]
+    const { container } = show()
+    // jsdom lays nothing out, so the reader sits at the top and the page
+    // before loads above.
+    expect(await screen.findByText('the first ask')).toBeTruthy()
+    expect(server.called('GET /api/workspace/w1/agent-sessions/acp-1/transcript').map((c) => c.query.get('page'))).toEqual(['0'])
+    const text = container.textContent ?? ''
+    expect(text.indexOf('the first ask')).toBeLessThan(text.indexOf('Conversation compacted'))
+    expect(text.indexOf('Conversation compacted')).toBeLessThan(text.indexOf('the latest answer'))
+
+    type('and now?')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: 'and now?' })
+  })
+
+  it('starts over when the agent restarts, never joining a page read for the life before', async () => {
+    // A restart reads the life before back from the tool's history and pages
+    // it afresh, so page 1 is a different page afterwards.
+    let life = 'L1'
+    const pages: Record<string, AcpEvent[][]> = {
+      L1: [[user(0, 'the first ask')]],
+      L2: [[user(0, 'the first ask')], [user(ACP_PAGE_SPAN, 'the old life, read back')]],
+    }
+    const route = 'GET /api/workspace/w1/agent-sessions/acp-1/transcript'
+    const server = mockFetch({
+      [route]: (c: { query: URLSearchParams }) => ({ page: Number(c.query.get('page')), life, events: pages[life][Number(c.query.get('page'))] }),
+    })
+    stream.page = 1
+    stream.life = 'L1'
+    stream.events = [agent(ACP_PAGE_SPAN, 'the old life, live')]
+    const view = show()
+    expect(await screen.findByText('the first ask')).toBeTruthy()
+
+    // The pane's next hello is the new life's last page.
+    life = 'L2'
+    stream.page = 2
+    stream.life = 'L2'
+    stream.events = [agent(2 * ACP_PAGE_SPAN, 'after the restart')]
+    view.rerender(<QueryClientProvider client={client}>{pane()}</QueryClientProvider>)
+    expect(await screen.findByText('the old life, read back')).toBeTruthy()
+    expect(screen.getByText('after the restart')).toBeTruthy()
+    expect(screen.queryByText('the old life, live')).toBeNull()
+    // Each life's pages were read for that life.
+    expect(server.called(route).map((c) => c.query.get('page'))).toEqual(['0', '1', '0'])
   })
 })

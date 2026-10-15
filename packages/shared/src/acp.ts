@@ -7,12 +7,37 @@
  * translates each `session/update` into the small union below, so the pane
  * does not depend on the ACP version the agent's adapter speaks.
  *
- * Every event carries an increasing `seq`, scoped to one attach. Each attach
- * replays acpd's recorded history numbered from zero, then continues with
- * live events, so a pane replaces its list on `hello` instead of merging.
+ * A conversation's history is split into pages: a new one starts at each
+ * compaction, and when a page grows past a size cap. Every event carries an
+ * increasing `seq` that names its page (`acpPageOf`), so events from
+ * different reads of one conversation never collide. An attach sends the
+ * last page in `hello`, then continues with live events, so a pane replaces
+ * its list on `hello` instead of merging; earlier pages are read from the
+ * transcript route, for the same agent life (`AcpTranscriptPage.life`).
  */
 
 import type { PermissionMode } from './types'
+
+/** How many `seq` values each page owns: page `n` numbers its events from
+ *  `n * ACP_PAGE_SPAN`. */
+export const ACP_PAGE_SPAN = 2 ** 32
+
+/** The page an event's `seq` belongs to. */
+export function acpPageOf(seq: number): number {
+  return Math.floor(seq / ACP_PAGE_SPAN)
+}
+
+/**
+ * One page of a conversation's history (the transcript route's answer).
+ * An `acp` conversation's pages are numbered for the agent life its record
+ * holds, `life`, since a restart numbers them afresh; a page from another
+ * life is not one a pane can join to its own.
+ */
+export interface AcpTranscriptPage {
+  page: number
+  life?: string
+  events: AcpEvent[]
+}
 
 /** A piece of renderable content: ACP's content blocks, minus the kinds the
  *  agent never produces here (such as embedded resources). */
@@ -159,6 +184,26 @@ export interface AcpTask {
   ambient?: true
 }
 
+/**
+ * The agent compacting its context: it replaced the conversation so far with
+ * a summary and carries on from that. What came before stays in the history,
+ * so a compaction starts a new page (`ACP_PAGE_SPAN`). The facts are each
+ * present when the agent reports them.
+ */
+export interface AcpCompaction {
+  /** Reused by later updates to the same compaction. */
+  id: string
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  /** Asked for (`/compact`) or started by the agent as the context filled. */
+  trigger?: 'manual' | 'auto'
+  /** The context's size in tokens before and after. */
+  tokensBefore?: number
+  tokensAfter?: number
+  /** What the agent kept of the conversation it dropped. */
+  summary?: string
+  error?: string
+}
+
 /** Why a prompt turn ended. Anything but `end_turn` is shown to the user. */
 export type AcpStopReason =
   | 'end_turn'
@@ -191,6 +236,9 @@ export type AcpEvent =
   | { type: 'subagent'; seq: number; subagent: AcpSubagent }
   /** A background task was started or changed; carries its whole state. */
   | { type: 'task'; seq: number; task: AcpTask }
+  /** The main conversation's context was compacted, or is being; carries
+   *  its whole state. */
+  | { type: 'compaction'; seq: number; compaction: AcpCompaction }
   /** The slash commands this session accepts, pushed on connect and whenever
    *  they change. */
   | { type: 'commands'; seq: number; commands: AcpCommand[] }
@@ -264,9 +312,10 @@ export interface AcpQueuedPrompt { id: string; text: string; images: number }
 
 /** Server → pane. */
 export type AcpServerMessage =
-  /** Sent once per attach, before any event: the recorded conversation,
-   *  numbered from zero. Replaces whatever the pane held. */
-  | { type: 'hello'; agentSessionId: string; busy: boolean; queued: AcpQueuedPrompt[]; events: AcpEvent[] }
+  /** Sent once per attach, and again when the agent restarts, before any
+   *  event: the conversation's last page, `page`, numbered for agent life
+   *  `life`. Replaces whatever the pane held. */
+  | { type: 'hello'; agentSessionId: string; busy: boolean; queued: AcpQueuedPrompt[]; page: number; life?: string; events: AcpEvent[] }
   | { type: 'event'; event: AcpEvent }
   /** The queued messages changed. Not an event: it is current state, not
    *  history, so it replaces what the pane held. */

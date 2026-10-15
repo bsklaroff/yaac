@@ -8,7 +8,7 @@
  * longer fit fails the install (`applyEdits`). Bump the patch's `revision`
  * in `@yaac/shared/tool-install` whenever its edits change.
  *
- * Three changes, each deletable on its own once a pi-acp release makes it
+ * Four changes, each deletable on its own once a pi-acp release makes it
  * unnecessary:
  *
  * 1. Steering. pi-acp gains the `_session/steering` extension claude's and
@@ -49,6 +49,17 @@
  *    late run's `agent_start` still reaches pi, where it races that run.
  *    Goes once pi-acp reads the disposition and owns the runs it did not
  *    start.
+ *
+ * 4. Compactions as ACP `compaction_update`s, the shape claude's and codex's
+ *    adapters send a client declaring `session.compaction`, so yaac shows
+ *    one as a compaction and starts a new page there. pi reports every
+ *    compaction, manual or automatic, as `compaction_start` and
+ *    `compaction_end`; pi-acp listens only for the `auto_compaction_*`
+ *    names pi no longer sends, so automatic ones are otherwise invisible,
+ *    and it reports `/compact` as agent text. The summary goes in the
+ *    update, and the trigger and token counts in its `_meta` under
+ *    `yaac/compaction`, as the server reads them (`COMPACTION_META`). Goes
+ *    once pi-acp reports compactions this way itself.
  */
 
 import { applyEdits, patchFileFromArgv } from './apply-edits.js'
@@ -247,6 +258,49 @@ const EDITS = [
 `,
     insert: 'after',
     text: `      _meta: { steering: { supported: true } },
+`,
+  },
+  {
+    name: 'compactions as compaction updates',
+    anchor: `      case "auto_compaction_start": {
+`,
+    insert: 'before',
+    text: `      case "compaction_start": {
+        this.compactionId = globalThis.crypto.randomUUID();
+        this.emit({
+          sessionUpdate: "compaction_update",
+          compactionId: this.compactionId,
+          status: "in_progress",
+          _meta: { "yaac/compaction": { trigger: ev.reason === "manual" ? "manual" : "auto" } }
+        });
+        break;
+      }
+      case "compaction_end": {
+        const r = ev.result;
+        this.emit({
+          sessionUpdate: "compaction_update",
+          compactionId: this.compactionId ?? globalThis.crypto.randomUUID(),
+          status: r ? "completed" : ev.aborted ? "cancelled" : "failed",
+          ...(typeof r?.summary === "string" ? { summary: [{ type: "text", text: r.summary }] } : {}),
+          ...(!r && ev.errorMessage ? { error: ev.errorMessage } : {}),
+          _meta: { "yaac/compaction": {
+            trigger: ev.reason === "manual" ? "manual" : "auto",
+            tokensBefore: r?.tokensBefore,
+            tokensAfter: r?.estimatedTokensAfter
+          } }
+        });
+        this.compactionId = undefined;
+        break;
+      }
+`,
+  },
+  {
+    name: '/compact reports through its compaction events',
+    anchor: `        const res = await session.proc.compact(customInstructions);
+`,
+    insert: 'after',
+    text: `        await session.flushEmits();
+        return { stopReason: "end_turn" };
 `,
   },
   {

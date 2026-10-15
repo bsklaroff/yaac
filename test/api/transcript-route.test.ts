@@ -40,9 +40,10 @@ afterEach(async () => {
 const client = (): ReturnType<typeof makeTestApiClient> =>
   makeTestApiClient(buildApp({ buildId: 'test' }))
 
-async function get(sessionId: string): Promise<{ status: number; events?: AcpEvent[] }> {
+async function get(sessionId: string, page?: string): Promise<{ status: number; events?: AcpEvent[] }> {
   const res = await client().workspace[':id']['agent-sessions'][':sessionId'].transcript.$get({
     param: { id: WORKSPACE, sessionId },
+    query: page === undefined ? {} : { page },
   })
   if (res.status !== 200) return { status: res.status }
   return { status: res.status, events: (await res.json()).events }
@@ -126,6 +127,21 @@ describe('GET /workspace/:id/agent-sessions/:sessionId/transcript', () => {
     expect(events?.map((e) => e.type)).toEqual(['user', 'agent'])
     const said = events?.[1]
     expect(said?.type === 'agent' && said.content).toEqual([{ type: 'text', text: 'the router' }])
+  })
+
+  it('serves the page asked for, the last by default, and refuses one that is not a page number', async () => {
+    await recordAcpConversation()
+    const dir = acpLogDir(DEMO_PROJECT_ID, WORKSPACE)
+    await fs.appendFile(path.join(dir, `${ACP_SESSION}.jsonl`), [
+      { jsonrpc: '2.0', method: 'session/update', params: { sessionId: ACP_SESSION, update: { sessionUpdate: 'compaction_update', compactionId: 'c1', status: 'completed' } } },
+      { jsonrpc: '2.0', method: 'session/update', params: { sessionId: ACP_SESSION, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'later' } } } },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+
+    expect((await get(ACP_SESSION)).events?.map((e) => e.type)).toEqual(['compaction', 'agent'])
+    // An empty page is a missing one: the last.
+    expect((await get(ACP_SESSION, '')).events?.map((e) => e.type)).toEqual(['compaction', 'agent'])
+    expect((await get(ACP_SESSION, '0')).events?.map((e) => e.type)).toEqual(['user', 'agent'])
+    expect((await get(ACP_SESSION, '-1')).status).toBe(400)
   })
 
   it('answers 404 for a conversation the workspace never had', async () => {

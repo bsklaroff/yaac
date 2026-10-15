@@ -10,11 +10,12 @@ import { agentEvent as agent, FakeSocket } from './harness'
  * `WebSocket` is stubbed, since everything below it belongs to the browser.
  */
 
-const hello = (events: AcpEvent[], busy = false, queued: AcpQueuedPrompt[] = []): AcpServerMessage => ({
+const hello = (events: AcpEvent[], busy = false, queued: AcpQueuedPrompt[] = [], page = 0): AcpServerMessage => ({
   type: 'hello',
   agentSessionId: 'acp-1',
   busy,
   queued,
+  page,
   events,
 })
 

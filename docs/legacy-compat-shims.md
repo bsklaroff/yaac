@@ -265,3 +265,26 @@ claimed still has a labelled Job.
 - **When it is safe to remove.** When no Job created by an older server can
   remain: every workspace running at the upgrade has since been stopped or
   restarted, since both replace the Job.
+
+## A compaction recorded as a `Compact conversation` tool call
+
+yaac declares `session.compaction`, so an adapter reports a compaction as
+`compaction_update`s. Records from before that, and the live conversations
+whose handshake ran before it, hold claude's and codex's fallback instead: a
+think call titled `Compact conversation` (claude's `_meta.claudeCode.toolName`
+is `compact`, and its `rawOutput` carries the trigger and token counts).
+`AcpProjection.applyCompaction` in
+`packages/server/src/runtime/agents/acp-protocol.ts` reads that call as a
+compaction.
+
+- **What it reads.** `tool_call` and `tool_call_update` lines of an ACP
+  record matching that call, and later updates to a call it took as one.
+- **What breaks silently if it goes too early.** Those compactions show as
+  generic thinking rows and start no page, so an older conversation shows
+  its pre-compaction history and the rest as one page.
+- **When it is safe to remove.** Once every workspace whose `acp`
+  conversation ran before the change, stopped ones included, has restarted
+  or been deleted since. A stopped workspace's view reads its last life's
+  record directly, and it may never be restarted. A restart replaces the
+  record, and the lives before it are read from the tool's own history,
+  whose translators report compactions as `compaction_update`s.

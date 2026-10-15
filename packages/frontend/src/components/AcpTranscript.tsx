@@ -9,13 +9,13 @@ import { diffTextPair, type DiffLine } from '#lib/diff'
 import { fileLinksIn, resolveFilePath, type CheckoutFiles, type FileRef } from '#lib/files'
 import { languageForFence, languageForPath } from '#lib/highlight'
 import {
-  ChevronIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
+  ChevronIcon, CompactionIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
   InterruptedIcon, MonitorIcon, MoreIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
   ThinkingIcon, ToolIcon, WarningIcon, WorkflowIcon, type Icon,
 } from '#lib/icons'
 import { stripAnsi } from '@yaac/shared/ansi'
 import type {
-  AcpDiff, AcpEvent, AcpImage, AcpStoredImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
+  AcpCompaction, AcpDiff, AcpEvent, AcpImage, AcpStoredImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
   AcpToolContent, AcpToolKind, AcpWake,
 } from '@yaac/shared/acp'
 
@@ -52,6 +52,8 @@ export type Group = ({ turn?: true; woken?: AcpWake[] } & (
   /** A subagent or task, at the point it started, with its latest state. */
   | { kind: 'subagent'; seq: number; subagent: AcpSubagent }
   | { kind: 'task'; seq: number; task: AcpTask }
+  /** A compaction, where it started, with its latest state. */
+  | { kind: 'compaction'; seq: number; compaction: AcpCompaction }
   | { kind: 'error'; seq: number; message: string }
   | { kind: 'turn-end'; seq: number; stopReason: string }
   /** A permission ask, merged with its answer once one arrives. `toolCall`
@@ -108,14 +110,15 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  * - a subagent's card goes in the thread that spawned it, in place of the
  *   call that spawned it when that is in the stream (claude's Agent call),
  *   and its final report, once it has finished, ends its own thread. Task
- *   cards and turn outcomes go in the main conversation;
+ *   cards, compactions and turn outcomes go in the main conversation;
  * - a call's streamed output is appended to it, keeping the end;
  * - a call that started a task still running is not interrupted by its turn
  *   ending: it runs on in the background;
  * - consecutive text chunks of one kind merge into one group, except that a
  *   steered message stands alone;
- * - a tool call's, subagent's or task's updates replace its group in place,
- *   keeping the latest;
+ * - a tool call's, subagent's, task's or compaction's updates replace its
+ *   group in place, keeping the latest, and so does an ask repeated by a
+ *   later page (which opens with what is still unanswered);
  * - a tool call still unfinished when its turn ends is marked interrupted. A
  *   replayed history has no turn boundaries, so the next `user` message also
  *   ends the turn before it, unless it was steered into that turn;
@@ -156,7 +159,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   let self: AcpSubagent | undefined
   const main = thread === undefined
   /** Add a card, or replace it in place once it exists. */
-  const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' }>): void => {
+  const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' | 'compaction' }>): void => {
     const at = cardIndex.get(key)
     if (at !== undefined) {
       const { turn, woken: wake } = groups[at]
@@ -202,6 +205,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
       if (main) card(`t:${e.task.id}`, { kind: 'task', seq: e.seq, task: e.task })
       continue
     }
+    if (e.type === 'compaction') {
+      if (main) card(`c:${e.compaction.id}`, { kind: 'compaction', seq: e.seq, compaction: e.compaction })
+      continue
+    }
     if (isThreaded(e) && e.thread !== thread && !(main && e.type === 'permission-request')) continue
     if (!main && (e.type === 'turn-end' || e.type === 'error')) continue
     if (e.type === 'turn-start' || (e.type === 'user' && e.steered !== true)) interruptOpenCalls()
@@ -219,6 +226,7 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     }
     if (e.type === 'commands' || e.type === 'models' || e.type === 'usage' || e.type === 'turn-start' || e.type === 'agent-turn') continue
     if (e.type === 'permission-request') {
+      if (permissionIndex.has(e.requestId)) continue
       permissionIndex.set(e.requestId, groups.length)
       if (e.toolCall !== undefined) askIndex.set(e.toolCall.toolCallId, groups.length)
       groups.push({
@@ -345,6 +353,7 @@ export function groupFindText(g: Group): [string, string] {
     case 'plan': return [g.entries.map((e) => e.content).join('\n'), '']
     case 'subagent': return [`${g.subagent.name}\n${g.subagent.task}`, '']
     case 'task': return [`${g.task.name}\n${g.task.summary ?? ''}`, '']
+    case 'compaction': return [compactionLabel(g.compaction, true), g.compaction.summary ?? '']
     case 'error': return [g.message, '']
     case 'turn-end': return [g.stopReason, '']
     case 'permission': {
@@ -365,9 +374,9 @@ interface Folded {
 }
 
 /** Groups the condensed view never hides: the user's prompts, what woke the
- *  agent into a run, and what the user must see or answer. */
+ *  agent into a run, compactions, and what the user must see or answer. */
 function alwaysShown(g: Group): boolean {
-  return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end' || g.woken !== undefined
+  return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end' || g.kind === 'compaction' || g.woken !== undefined
     || (g.kind === 'permission' && g.decided === undefined)
 }
 
@@ -823,6 +832,70 @@ function ThoughtRow({ text, reveal }: { text: string; reveal: boolean }): JSX.El
   )
 }
 
+/** A token count in short form: 53.2k, 1m. */
+export function tokenCount(n: number): string {
+  if (n >= 1e6) return `${String(Math.round(n / 1e5) / 10)}m`
+  if (n >= 1e3) return `${String(Math.round(n / 100) / 10)}k`
+  return String(n)
+}
+
+/** What a compaction's divider says. Without `live`, one still running was
+ *  cut off. */
+function compactionLabel(c: AcpCompaction, live: boolean): string {
+  if (c.status === 'running') return live ? 'Compacting the conversation…' : 'Compaction unfinished'
+  if (c.status === 'failed') return 'Compaction failed'
+  if (c.status === 'cancelled') return 'Compaction cancelled'
+  const tokens = c.tokensBefore !== undefined && c.tokensAfter !== undefined
+    ? ` · ${tokenCount(c.tokensBefore)} → ${tokenCount(c.tokensAfter)} tokens`
+    : c.tokensBefore !== undefined ? ` · from ${tokenCount(c.tokensBefore)} tokens` : ''
+  return `${c.trigger === 'auto' ? 'Conversation compacted automatically' : 'Conversation compacted'}${tokens}`
+}
+
+/**
+ * A compaction, as a divider across the column: what came before it is
+ * history the agent no longer holds, only the summary it kept. The summary
+ * (or a failure's reason) opens under it.
+ */
+function CompactionRow({ compaction: c, live, reveal }: {
+  compaction: AcpCompaction
+  live: boolean
+  reveal: boolean
+}): JSX.Element {
+  const [open, setOpen] = useOpen(reveal, false)
+  const detail = c.status === 'failed' ? c.error : c.summary
+  const expandable = detail !== undefined && detail !== ''
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-[11px] text-text-faint">
+        <span className="h-px flex-1 bg-hairline" />
+        <button
+          type="button"
+          onClick={expandable ? () => setOpen(!open) : undefined}
+          aria-disabled={!expandable || undefined}
+          aria-expanded={expandable ? open : undefined}
+          className={clsx(
+            'flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5',
+            expandable ? 'hover:bg-surface-2 hover:text-text-dim' : 'cursor-default',
+            c.status === 'failed' && 'text-error',
+          )}
+        >
+          {c.status === 'running' && live
+            ? <LoadingIcon size={12} aria-label="running" className="shrink-0 animate-spin" />
+            : <CompactionIcon size={12} className="shrink-0" />}
+          <span className="truncate">{compactionLabel(c, live)}</span>
+          {expandable && <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />}
+        </button>
+        <span className="h-px flex-1 bg-hairline" />
+      </div>
+      {open && expandable && (
+        <div className="mt-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-xs leading-relaxed text-text-dim">
+          <Markdown>{detail}</Markdown>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Whether an option allows the action. Styling only; an option with no
  *  kind is styled as a refusal. */
 function isAllow(option: AcpPermissionOption | undefined): boolean {
@@ -1178,6 +1251,8 @@ export function AcpTranscript({
               live={live}
               {...(onOpenTask !== undefined ? { onOpen: () => onOpenTask(g.task.id) } : {})}
             />
+          ) : g.kind === 'compaction' ? (
+            <CompactionRow compaction={g.compaction} live={live} reveal={found?.hidden.has(g.seq) === true} />
           ) : (
             <GroupView
               workspaceId={workspaceId}
@@ -1246,7 +1321,7 @@ function GroupView({
   onAnswerPermission,
 }: {
   workspaceId: string
-  group: Exclude<Group, { kind: 'subagent' | 'task' }>
+  group: Exclude<Group, { kind: 'subagent' | 'task' | 'compaction' }>
   /** Open the row: it holds a find match. */
   reveal: boolean
   /** How to mark an unfinished tool call; see `ToolRow`. */

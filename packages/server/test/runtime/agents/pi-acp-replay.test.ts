@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import { piTranscriptAsAcp } from '#runtime/agents/pi-acp-replay'
-import type { AcpEvent, AcpToolCall } from '@yaac/shared/acp'
+import { ACP_PAGE_SPAN, type AcpEvent, type AcpToolCall } from '@yaac/shared/acp'
 
 /**
  * A tui pi conversation replayed as ACP events. replay-fixtures/pi/session.jsonl is a real
@@ -11,7 +11,8 @@ import type { AcpEvent, AcpToolCall } from '@yaac/shared/acp'
  * request, an abort, a compaction, a model switch, a steer, an extension's
  * messages, a user `!` command, and finally a `/tree` branch from the turn
  * after the compaction. The expectations are what replaying pi-acp's live
- * record of the same prompts projects to.
+ * record of the same prompts projects to, with the compaction as yaac's
+ * pi-acp patch reports it.
  */
 
 const LINES = fs.readFileSync(new URL('replay-fixtures/pi/session.jsonl', import.meta.url), 'utf8').trimEnd().split('\n')
@@ -41,7 +42,9 @@ function conversation(events: AcpEvent[]): string[] {
 describe('piTranscriptAsAcp', () => {
   it('replays a session as the events its live pi-acp stream projects to', () => {
     const events = piTranscriptAsAcp(LINEAR)
-    expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => i))
+    // The compaction starts the conversation's second page.
+    const compacted = events.findIndex((e) => e.type === 'compaction')
+    expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => (i < compacted ? i : ACP_PAGE_SPAN + i - compacted)))
 
     // The failed request shows nothing, as live; the aborted one keeps what
     // streamed. The system prompt, model and thinking changes, the
@@ -54,15 +57,15 @@ describe('piTranscriptAsAcp', () => {
       'user: IMAGE what is this?[image/png]', '--', 'agent: That is a one-pixel image.',
       'user: ERROR trigger', '--',
       'user: ABORT this', '--', 'thought: Thinking slowly.', 'agent: Partial answer',
-      '--', 'agent: Compaction completed.',
       'user: AFTER compaction', '--', 'thought: Brief.', 'agent: Continuing after compaction.',
       'user: MODEL switched', '--', 'agent: Now on the other model.',
       'user: STEER now', '--', 'agent: Sleeping.',
       'user (steered): NUDGE extra', 'agent: Got the steer.',
       '--', 'agent: Status: all good',
     ])
-    const texts = events.flatMap((e) => (e.type === 'agent' && e.content[0].type === 'text' ? [e.content[0].text] : []))
-    expect(texts.find((t) => t.startsWith('Compaction'))).toMatch(/^Compaction completed\.\nTokens before: 1020\n\n## Goal\n/)
+    expect(events[compacted]).toMatchObject({
+      compaction: { status: 'completed', tokensBefore: 1020, summary: expect.stringMatching(/^## Goal\n/) as string },
+    })
 
     const calls = toolCalls(events)
     expect(calls.get('call_TOOLS_0_0')).toEqual({

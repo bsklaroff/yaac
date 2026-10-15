@@ -3,7 +3,8 @@ import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
 import { ActivityBar } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
-import { ChatBottomBar, ChatViewToggles, useChatColumn, useConversationView } from '#components/ConversationView'
+import { tokenCount } from '#components/AcpTranscript'
+import { ChatBottomBar, ChatViewToggles, JumpButtons, PageLoading, useChatColumn, useConversationView } from '#components/ConversationView'
 import { FileLinksContext, type FileLinks } from '#components/Markdown'
 import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
@@ -11,6 +12,7 @@ import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import { AttachImageIcon, CloseIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
+import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { useWorkspaceFiles } from '#lib/useWorkspaceChanges'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
 import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shared/acp'
@@ -23,9 +25,10 @@ import type { AcpContent, AcpEvent, AcpImage, AcpQueuedPrompt } from '@yaac/shar
  * survives the pane unmounting or a reload.
  *
  * What it shows, including the subagents and background tasks it can
- * switch to and the find bar, is `useConversationView`'s, shared with the
- * read-only pane. This component owns the stream, the draft, the composer
- * and scroll-follow; the composer's completion menu is `useComposerMenu`'s.
+ * switch to and the find bar, is `useConversationView`'s, and which pages of
+ * the conversation `useTranscriptPages`', both shared with the read-only
+ * pane. This component owns the stream, the draft, the composer and
+ * scroll-follow; the composer's completion menu is `useComposerMenu`'s.
  * A subagent's or task's title bar takes the composer's place, since the
  * agent takes messages only on its main thread.
  *
@@ -103,10 +106,12 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   const scrollRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const pages = useTranscriptPages({ workspaceId, agentSessionId, life: stream.life, last: stream.page, lastEvents: events, scrollRef })
   const { view, open, activity, groups, findBar, body, titleBar } = useConversationView({
     workspaceId,
-    events,
-    busy,
+    events: pages.events,
+    // A turn runs at the end, which an earlier page does not show.
+    busy: busy && pages.atEnd,
     stream,
     scrollRef,
     find: { chord: focused, onClose: () => inputRef.current?.focus() },
@@ -114,20 +119,26 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   })
 
   // Follow the tail only while the reader is already at it, so streaming
-  // never yanks someone who scrolled up. Switching views starts the new one
-  // at its tail.
+  // never yanks someone who scrolled up or back to an earlier page.
+  // Switching views starts the new one at its tail.
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+    pages.onScroll()
   }
   useLayoutEffect(() => {
     pinnedRef.current = true
   }, [view])
   useLayoutEffect(() => {
     const el = scrollRef.current
-    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
-  }, [groups, view, taskOutputs, condensed])
+    if (el && pinnedRef.current && pages.atEnd) el.scrollTop = el.scrollHeight
+  }, [groups, view, taskOutputs, condensed, pages.atEnd])
+
+  /** Whether the last page is shown, for the callbacks below, since a reader
+   *  on an earlier one is never moved to the tail. */
+  const pagesAtEnd = useRef(pages.atEnd)
+  pagesAtEnd.current = pages.atEnd
 
   // Grow the textarea to fit the draft, up to its CSS max-height. Reset to
   // `auto` first so scrollHeight measures the content. Growing shrinks the
@@ -139,7 +150,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     el.style.height = 'auto'
     el.style.height = `${el.scrollHeight}px`
     const list = scrollRef.current
-    if (list && pinnedRef.current) list.scrollTop = list.scrollHeight
+    if (list && pinnedRef.current && pagesAtEnd.current) list.scrollTop = list.scrollHeight
   }, [])
   useLayoutEffect(fitInput, [draft, view, fitInput])
 
@@ -168,7 +179,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     const el = scrollRef.current
     if (!el) return
     const ro = new ResizeObserver(() => {
-      if (pinnedRef.current) el.scrollTop = el.scrollHeight
+      if (pinnedRef.current && pagesAtEnd.current) el.scrollTop = el.scrollHeight
     })
     ro.observe(el)
     return () => ro.disconnect()
@@ -291,24 +302,29 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
       }}
     >
       {findBar}
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="flex-1 overflow-y-auto px-4 py-4"
-      >
-        {view === undefined && groups.length === 0 && (
-          <div className="flex h-full items-center justify-center text-xs text-text-faint">
-            {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
-          </div>
-        )}
-        <FileLinksContext.Provider value={fileLinks}>
-          <div className={column}>
-            {body}
-            {view === undefined && queued.map((q) => (
-              <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
-            ))}
-          </div>
-        </FileLinksContext.Provider>
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="flex-1 overflow-y-auto px-4 py-4"
+        >
+          {view === undefined && groups.length === 0 && pages.loading === undefined && (
+            <div className="flex h-full items-center justify-center text-xs text-text-faint">
+              {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
+            </div>
+          )}
+          <FileLinksContext.Provider value={fileLinks}>
+            <div className={column}>
+              {pages.loading === 'earlier' && <PageLoading />}
+              {body}
+              {pages.loading === 'later' && <PageLoading />}
+              {view === undefined && pages.atEnd && queued.map((q) => (
+                <QueuedMessage key={q.id} prompt={q} onRemove={() => send({ type: 'unqueue', id: q.id })} />
+              ))}
+            </div>
+          </FileLinksContext.Provider>
+        </div>
+        {view === undefined && <JumpButtons pages={pages} />}
       </div>
 
       <ChatBottomBar
@@ -461,13 +477,6 @@ function contextUsage(events: readonly AcpEvent[]): { used: number; size: number
   return undefined
 }
 
-/** A token count in short form: 53.2k, 1m. */
-function tokens(n: number): string {
-  if (n >= 1e6) return `${String(Math.round(n / 1e5) / 10)}m`
-  if (n >= 1e3) return `${String(Math.round(n / 100) / 10)}k`
-  return String(n)
-}
-
 /** How full the main conversation's context window is, as a ring and a
  *  token count, from the agent's last `usage` report. Clicking it toggles
  *  the longer form with the percentage. A narrow pane shows one step less
@@ -477,8 +486,8 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
   const [expanded, setExpanded] = useState(false)
   const fraction = Math.min(1, used / size)
   const percent = Math.round(fraction * 100)
-  const label = `Context: ${tokens(used)} of ${tokens(size)} tokens (${String(percent)}%)`
-  const short = `${tokens(used)} / ${tokens(size)}`
+  const label = `Context: ${tokenCount(used)} of ${tokenCount(size)} tokens (${String(percent)}%)`
+  const short = `${tokenCount(used)} / ${tokenCount(size)}`
   const circumference = 2 * Math.PI * 6
   return (
     <button

@@ -898,9 +898,9 @@ export class AcpConversation {
 
       const canLoad = init.agentCapabilities?.loadSession === true
       if (this.sessionId !== undefined && canLoad) {
-        // Most adapters replay the conversation as `session/update`
-        // notifications; opencode replays nothing, so acpd keeps its record
-        // (`--append`). Panes read the record either way.
+        // The adapter replays the conversation as `session/update`
+        // notifications. A pane shows the replay only where the tool's own
+        // history of it is not found (`RecordOrigin`).
         const loaded = await this.peer.request<AcpLoadSessionResult>(ACP.sessionLoad, {
           sessionId: this.sessionId,
           cwd: this.deps.cwd,

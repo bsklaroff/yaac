@@ -54,7 +54,7 @@ export { reconcileStaleWorkspaces } from './stale-workspaces'
 export { stopWorkspace } from './stop'
 export { markWaitingSeen } from './waiting-seen'
 export { listStoppedWorkspaces } from './stopped-list'
-export { getAcpStoredImage, getAgentSessionTranscript } from './transcript'
+export { getAcpStoredImage, getAgentSessionTranscript, recordOrigin } from './transcript'
 export { saveWorkspaceAttachment } from './attachments'
 export {
   createWorkspaceFolder,

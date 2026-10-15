@@ -105,18 +105,21 @@ describe('codexTranscriptAsAcp', () => {
     expect(all.find((c) => c.title.startsWith('View Image'))).toMatchObject({
       title: 'View Image /workspace/app/img.png', kind: 'read', status: 'completed', locations: [{ path: '/workspace/app/img.png' }],
     })
-    expect(all.filter((c) => c.title === 'Compact conversation').map((c) => [c.kind, c.status])).toEqual([
-      ['think', 'completed'], ['think', 'completed'],
-    ])
+    // `/compact`'s and the one a model switch ran, each started and ended.
+    const compactions = new Map(events.flatMap((e) => (e.type === 'compaction' ? [[e.compaction.id, e.compaction.status]] : [])))
+    expect([...compactions.values()]).toEqual(['completed', 'completed'])
 
     expect(events.filter((e) => e.type === 'plan')).toMatchObject([{ entries: [
       { content: 'First', status: 'completed' }, { content: 'Second', status: 'in_progress' }, { content: 'Third', status: 'pending' },
     ] }])
     // A command still running when its turn ended, or when the turn was
-    // stopped, is a background task until it exits.
+    // stopped, is a background task until it exits. Each page a compaction
+    // opens restates it while it runs.
     expect(events.flatMap((e) => (e.type === 'task' ? [[e.task.id, e.task.name, e.task.state]] : []))).toEqual([
       ['call_6', 'sleep 4; echo bg-done', 'running'],
       ['call_6', 'sleep 4; echo bg-done', 'completed'],
+      ['call_7', 'sleep 5; echo waited', 'running'],
+      ['call_7', 'sleep 5; echo waited', 'running'],
       ['call_7', 'sleep 5; echo waited', 'running'],
       ['call_7', 'sleep 5; echo waited', 'completed'],
     ])

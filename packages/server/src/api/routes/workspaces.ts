@@ -498,15 +498,20 @@ export const workspaceApp = new Hono<IdentityEnv>()
     const links = await listWorkspaceAgentSessions(projectId, workspaceId)
     return c.json(links.map((l) => toAgentSessionEntry(l)))
   })
-  // One conversation's history as chat-pane events. Resolved from the record
-  // so the stopped-workspaces view can read it.
-  .get('/:id/agent-sessions/:sessionId/transcript', async (c) => {
-    const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
-    const events = await getAgentSessionTranscript(
-      projectId, workspaceId, c.req.param('sessionId'),
-    )
-    return c.json({ events })
-  })
+  // One page of a conversation's history as chat-pane events: `page`, or
+  // the last. Resolved from the record so the stopped-workspaces view can
+  // read it.
+  .get(
+    '/:id/agent-sessions/:sessionId/transcript',
+    // An empty `page` is a missing one, not page 0.
+    zv('query', z.object({ page: z.preprocess((v) => (v === '' ? undefined : v), z.coerce.number().int().nonnegative().optional()) })),
+    async (c) => {
+      const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
+      return c.json(await getAgentSessionTranscript(
+        projectId, workspaceId, c.req.param('sessionId'), c.req.valid('query').page,
+      ))
+    },
+  )
   // An image a chat transcript names by hash (`AcpStoredImage`). The bytes
   // never change for a hash, so the browser may keep them.
   .get('/:id/acp-images/:hash', async (c) => {

@@ -826,9 +826,11 @@ describe('agentDriver', () => {
     // No fs/terminal capabilities: the agent has the real files itself. No
     // `_meta` either: claude renders tool calls differently for an AIR
     // client (a read's text is dropped), so it is never told yaac is one.
+    // Compactions come as their own updates.
     expect((init.params as { clientCapabilities: unknown }).clientCapabilities).toEqual({
       fs: { readTextFile: false, writeTextFile: false },
       terminal: false,
+      session: { compaction: {} },
     })
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } })}\n`)
 

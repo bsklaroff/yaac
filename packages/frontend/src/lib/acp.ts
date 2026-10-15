@@ -4,11 +4,12 @@
  * server translates ACP into the small `AcpEvent` union, so this module only
  * handles transport and ordering.
  *
- * History is the record acpd writes, and each attach numbers it from zero.
- * So the pane replaces its list on `hello` rather than merging, and a
- * dropped connection costs only a repaint. After that the server numbers
- * each event it sends on this socket one past the last, in send order, so
- * live events are appended as they come.
+ * History is the record acpd writes, and each attach sends its last page
+ * (`page`; the pages before it are read with `useTranscriptPages`). So the
+ * pane replaces its list on `hello` rather than merging, and a dropped
+ * connection costs only a repaint. After that the server numbers each event
+ * it sends on this socket after the last, in send order, so live events are
+ * appended as they come.
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -17,6 +18,11 @@ import type { AcpClientMessage, AcpEvent, AcpEventInit, AcpQueuedPrompt, AcpServ
 import type { PermissionMode } from '@yaac/shared/types'
 
 export interface AcpStream {
+  /** The page `events` start at; later ones follow it there as the
+   *  conversation compacts. */
+  page: number
+  /** The agent life the pages are numbered for (`AcpTranscriptPage.life`). */
+  life: string | undefined
   events: AcpEvent[]
   /** A prompt turn is in flight (the agent is working). */
   busy: boolean
@@ -57,6 +63,8 @@ export function useAcpStream(
   workspaceId: string,
   agentSessionId: string,
 ): AcpStream {
+  const [page, setPage] = useState(0)
+  const [life, setLife] = useState<string>()
   const [events, setEvents] = useState<AcpEvent[]>([])
   const [busy, setBusy] = useState(false)
   const [queued, setQueued] = useState<AcpQueuedPrompt[]>([])
@@ -73,7 +81,9 @@ export function useAcpStream(
       message: (data) => {
         const msg = JSON.parse(data as string) as AcpServerMessage
         if (msg.type === 'hello') {
-          // Replace, don't merge: each attach renumbers history from zero.
+          // Replace, don't merge: each attach resends the last page.
+          setPage(msg.page)
+          setLife(msg.life)
           setEvents(msg.events)
           setBusy(msg.busy)
           setQueued(msg.queued)
@@ -127,6 +137,8 @@ export function useAcpStream(
   }, [workspaceId, agentSessionId])
 
   return {
+    page,
+    life,
     events,
     busy,
     queued,

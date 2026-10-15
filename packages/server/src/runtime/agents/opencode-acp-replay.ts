@@ -16,10 +16,11 @@
  * spawned the subagent, with its tool call ids and titles prefixed as live,
  * and without its prompt, which live never shows.
  *
- * Two kinds of row only the TUI writes are rendered as the closest thing a
- * client could have sent: a `!command` the user ran (a `shell` row) is the
- * prompt they typed plus the shell call with its output, and a manual
- * compaction is the `/compact` prompt that starts one over ACP.
+ * A `!command` the user ran (a `shell` row), which only the TUI writes, is
+ * rendered as the closest thing a client could have sent: the prompt they
+ * typed plus the shell call with its output. A compaction, which the live
+ * stream does not report, is shown as a compaction with its summary, after
+ * the `/compact` prompt that started a manual one.
  *
  * Dropped, because neither the live stream nor yaac's projection renders
  * them: the text a slash command expands into is shown in place of the
@@ -27,8 +28,8 @@
  * reply to a command at all), and these are not shown:
  *  - a failed step's error and a turn's stop reason, which live arrive as the
  *    prompt's reply, and replay never reads;
- *  - synthetic and system messages, skills, compaction summaries, and agent,
- *    model and directory switches, which the model sees but the stream skips;
+ *  - synthetic and system messages, skills, and agent, model and directory
+ *    switches, which the model sees but the stream skips;
  *  - token usage, retries and models, which need the model catalog or are
  *    session state rather than conversation;
  *  - permission asks, which opencode does not persist.
@@ -51,7 +52,7 @@ import { workspacesSandboxed } from '#drivers/driver'
 import { ConfinedPathError } from '#lib/confined-fs'
 import { serverLog } from '#lib/log'
 import { AcpRecordWriter, MAX_ACP_RECORD_BYTES } from './acp-log'
-import { ACP } from './acp-protocol'
+import { ACP, COMPACTION_META } from './acp-protocol'
 import { asRecord, asString } from '#lib/narrow'
 import { jsonObjects, parseJson } from './jsonl'
 import { readSandboxFile } from './sandbox-fs'
@@ -230,6 +231,8 @@ function synthesizeAcpRecord(rows: Row[], rootId: string): AcpRecordWriter {
     children.set(c.parent, of)
   }
 
+  let compactions = 0
+
   const play = (s: Session, child?: Child): void => {
     const update = (u: Row): void => {
       if (child === undefined) send(ACP.sessionUpdate, { sessionId: rootId, update: u })
@@ -288,8 +291,18 @@ function synthesizeAcpRecord(rows: Row[], rootId: string): AcpRecordWriter {
             : { status: 'completed', input: { command }, content: [{ type: 'text', text: output }] },
         }
         for (const u of toolUpdates(part, cwd)) update(u)
-      } else if (type === 'compaction' && child === undefined && data.reason === 'manual') {
-        prompt([{ type: 'text', text: '/compact' }])
+      } else if (type === 'compaction' && child === undefined) {
+        if (data.reason === 'manual') prompt([{ type: 'text', text: '/compact' }])
+        const summary = asString(data.summary)
+        const error = asString(data.error)
+        update({
+          sessionUpdate: 'compaction_update',
+          compactionId: asString(data.id) ?? `compaction-${String(compactions++)}`,
+          status: data.status === 'running' ? 'in_progress' : data.status,
+          ...(summary !== undefined && summary !== '' ? { summary: [{ type: 'text', text: summary }] } : {}),
+          ...(error !== undefined ? { error } : {}),
+          _meta: { [COMPACTION_META]: { trigger: data.reason === 'manual' ? 'manual' : 'auto' } },
+        })
       } else if (type === 'assistant') {
         if (!running) status('running')
         running = true

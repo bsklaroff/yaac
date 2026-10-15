@@ -4,7 +4,7 @@ import type { IdentityEnv } from '#api/http/web-auth'
 import type { EventHub, WsLike } from '#api/events'
 import { authorizeProject } from '#domain/access'
 import { authAgentHub } from '#domain/auth'
-import { resolveWorkspaceContainer } from '#domain/workspaces'
+import { recordOrigin, resolveWorkspaceContainer } from '#domain/workspaces'
 import { findWorkspaceRow } from '#db'
 import { attachPty, type SocketLike, TUNNEL_DIAL_FAILED, attachPortTunnel } from '#runtime/terminals'
 import { attachAcp } from '#runtime/agents'
@@ -232,7 +232,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
     const agentSessionId = c.req.query('session') ?? ''
     return {
       open: ({ projectId }, socket) => {
-        attachAcp(projectId, id, agentSessionId, socket)
+        attachAcp(projectId, id, agentSessionId, socket, (life) => recordOrigin(projectId, id, agentSessionId, life))
         serverLog(`[server] acp attach: session=${id} conversation=${agentSessionId}`)
       },
       refuse: (socket) => {

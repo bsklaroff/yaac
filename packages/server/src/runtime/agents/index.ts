@@ -51,12 +51,12 @@ export { ensureAgentReporters } from './agent-reporters'
 export { ensureToolApiKeyConfig } from './tool-api-keys'
 export { buildWindowsExec } from './setup-commands'
 export { PromptNotRunError, type AcpConversation } from './acp-client'
-export { acpRecord, acpStoredImage, readAcpFirstPrompt, replayAcpLog } from './acp-log'
+export { acpPage, acpRecord, acpStoredImage, readAcpFirstPrompt, readAcpLife, readAcpPage, replayAcpLog, type AcpLife, type RecordOrigin } from './acp-log'
 export { claudeSubagentThreads, claudeTranscriptAsAcp } from './claude-acp-replay'
 export { codexTranscriptAsAcp } from './codex-acp-replay'
 export { opencodeTranscriptAsAcp } from './opencode-acp-replay'
 export { piTranscriptAsAcp } from './pi-acp-replay'
-export { type SandboxFile, openSandboxDir, readSandboxFile } from './sandbox-fs'
+export { type SandboxFile, openSandboxDir, openSandboxFile, readSandboxFile } from './sandbox-fs'
 export {
   ACP_RECORD_NAME,
   type ConversationFile,
