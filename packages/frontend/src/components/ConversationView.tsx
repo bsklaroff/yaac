@@ -9,7 +9,8 @@ import {
 import { useConversationFind, type FindOptions } from '#components/ConversationFind'
 import type { AcpStream } from '#lib/acp'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
-import { CondenseIcon, LoadingIcon, NarrowIcon, UncondenseIcon, WidenIcon } from '#lib/icons'
+import { CondenseIcon, JumpBottomIcon, JumpTopIcon, LoadingIcon, NarrowIcon, UncondenseIcon, WidenIcon } from '#lib/icons'
+import type { TranscriptPages } from '#lib/useTranscriptPages'
 import { useUiStore } from '#lib/store'
 import type { AcpEvent } from '@yaac/shared/acp'
 
@@ -175,6 +176,39 @@ function Working(): JSX.Element {
         working
         <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
       </span>
+    </div>
+  )
+}
+
+/** In place of a page of the conversation being read, at the end it joins. */
+export function PageLoading(): JSX.Element {
+  return (
+    <div className="my-3 flex items-center justify-center gap-1.5 text-xs text-text-faint">
+      <LoadingIcon size={12} className="animate-spin" />
+      Loading the conversation…
+    </div>
+  )
+}
+
+/** The buttons over a conversation that jump to its first message or back
+ *  to its latest, shown while there is more that way than fits on screen.
+ *  Its parent must be positioned. */
+export function JumpButtons({ pages }: { pages: TranscriptPages }): JSX.Element | null {
+  if (!pages.above && !pages.below) return null
+  const button = 'pointer-events-auto flex size-8 items-center justify-center rounded-full border border-border '
+    + 'bg-surface text-text-dim shadow-sm hover:bg-surface-2 hover:text-text'
+  return (
+    <div className="pointer-events-none absolute right-4 bottom-2 flex flex-col gap-1.5">
+      {pages.above && (
+        <button type="button" aria-label="Jump to the start" title="Jump to the start" onClick={pages.jumpToTop} className={button}>
+          <JumpTopIcon size={15} />
+        </button>
+      )}
+      {pages.below && (
+        <button type="button" aria-label="Jump to the latest" title="Jump to the latest" onClick={pages.jumpToBottom} className={button}>
+          <JumpBottomIcon size={15} />
+        </button>
+      )}
     </div>
   )
 }

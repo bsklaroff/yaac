@@ -12,8 +12,9 @@
  *  - An edit's diff is one block per hunk of pi's recorded patch, and a
  *    write's shows the whole file as new, where pi-acp diffs the file
  *    before and after on disk.
- *  - pi-acp's text for a manual `/compact` stands for every compaction,
- *    since the log does not say which kind ran.
+ *  - A compaction is reported as yaac's pi-acp patch reports it, with its
+ *    summary and the tokens before it, but not what started it, which the
+ *    log does not say.
  *  - What only pi's TUI shows is rendered too: a branch summary and an
  *    extension's visible message as agent text, a user `!` command as a
  *    shell call.
@@ -28,7 +29,7 @@
 
 import { isAbsolute, resolve } from 'node:path'
 import { AcpRecordWriter } from './acp-log'
-import { ACP } from './acp-protocol'
+import { ACP, COMPACTION_META } from './acp-protocol'
 import { asRecord, asString } from '#lib/narrow'
 import { unifiedDiffHunks } from './unified-diff'
 import { jsonObjects } from './jsonl'
@@ -63,8 +64,14 @@ export function piTranscriptAsAcp(raw: string): AcpEvent[] {
 
   for (const entry of activeBranch(entries)) {
     if (entry.type === 'compaction') {
-      const tokens = typeof entry.tokensBefore === 'number' ? `\nTokens before: ${String(entry.tokensBefore)}` : ''
-      agentRun(text(`Compaction completed.${tokens}\n\n${asString(entry.summary) ?? ''}`))
+      const summary = asString(entry.summary)
+      update({
+        sessionUpdate: 'compaction_update',
+        compactionId: asString(entry.id) ?? 'compaction',
+        status: 'completed',
+        ...(summary !== undefined ? { summary: text(summary) } : {}),
+        _meta: { [COMPACTION_META]: { tokensBefore: entry.tokensBefore } },
+      })
     } else if (entry.type === 'branch_summary') {
       agentRun(text(`**Branch Summary**\n\n${asString(entry.summary) ?? ''}`))
     } else if (entry.type === 'custom_message') {

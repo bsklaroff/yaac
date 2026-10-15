@@ -13,6 +13,7 @@
  */
 
 import type {
+  AcpCompaction,
   AcpContent,
   AcpEventInit,
   AcpModel,
@@ -119,13 +120,16 @@ export interface AcpPromptResult {
 /**
  * The capabilities yaac declares. `fs` and `terminal` are off (see the
  * module comment); `readTextFile`/`writeTextFile` are set explicitly so an
- * adapter cannot default them to true. `meta` is the adapter's own opt-ins
- * (`AcpAdapterProfile.capabilitiesMeta`).
+ * adapter cannot default them to true. `session.compaction` asks for
+ * compactions as `compaction_update`s (`AcpProjection.applyCompaction`)
+ * rather than a tool call, and for claude's summary with them. `meta` is the
+ * adapter's own opt-ins (`AcpAdapterProfile.capabilitiesMeta`).
  */
 export function clientCapabilities(meta?: Record<string, unknown>): Record<string, unknown> {
   return {
     fs: { readTextFile: false, writeTextFile: false },
     terminal: false,
+    session: { compaction: {} },
     ...(meta !== undefined ? { _meta: meta } : {}),
   }
 }
@@ -213,6 +217,46 @@ const NOTIFICATION_BLOCK = /^<task-notification>\n(?:(?!<\/?task-notification>)[
 function rawText(value: unknown): string {
   if (typeof value === 'string') return value
   return Array.isArray(value) ? value.map((b) => asString(asRecord(b)?.text) ?? '').join('') : ''
+}
+
+/**
+ * The `_meta` key under which yaac's own writers of `compaction_update`
+ * (the tui transcript translators and the pi-acp patch,
+ * dockerfiles/agent-patches/pi-acp.js) put a compaction's trigger and token
+ * counts, which the update itself has no fields for:
+ * `{ trigger: 'manual' | 'auto', tokensBefore, tokensAfter }`.
+ */
+export const COMPACTION_META = 'yaac/compaction'
+
+type CompactionFacts = Pick<AcpCompaction, 'trigger' | 'tokensBefore' | 'tokensAfter'>
+
+/** The well-formed facts among a compaction's reported ones. claude says
+ *  `auto` in its transcript and `automatic` through its adapter. */
+function compactionFacts(raw: Record<string, unknown> | undefined): CompactionFacts {
+  const count = (v: unknown): number | undefined => (typeof v === 'number' && v >= 0 ? v : undefined)
+  const trigger = raw?.trigger === 'manual' ? 'manual'
+    : raw?.trigger === 'auto' || raw?.trigger === 'automatic' ? 'auto' : undefined
+  const tokensBefore = count(raw?.tokensBefore)
+  const tokensAfter = count(raw?.tokensAfter)
+  return {
+    ...(trigger !== undefined ? { trigger } : {}),
+    ...(tokensBefore !== undefined ? { tokensBefore } : {}),
+    ...(tokensAfter !== undefined ? { tokensAfter } : {}),
+  }
+}
+
+/** ACP's compaction and tool call statuses, as a compaction's. */
+const COMPACTION_STATUSES: Record<string, AcpCompaction['status']> = {
+  pending: 'running',
+  in_progress: 'running',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'cancelled',
+}
+
+/** The text of a content block or list of them. */
+function textOf(value: unknown): string {
+  return toContentList(value).map((c) => (c.type === 'text' ? c.text : '')).join('')
 }
 
 /** opencode's child session statuses, as subagent states. */
@@ -536,6 +580,12 @@ export class AcpProjection {
   private readonly runningMonitors = new Map<string, AcpTask>()
   private readonly awaitingOutputFile = new Map<string, string>()
   private readonly runningClaudeTasks = new Set<string>()
+  /** Compactions by id, at their latest state. */
+  private readonly compactions = new Map<string, AcpCompaction>()
+  /** The latest compaction, which a claude boundary message describes. */
+  private lastCompaction: AcpCompaction | undefined
+  /** What a boundary reported before its compaction appeared. */
+  private pendingFacts: CompactionFacts | undefined
 
   /** Follow a state report; a run starting is an `agent-turn` boundary. */
   agentState(running: boolean): AcpEventInit[] {
@@ -654,6 +704,8 @@ export class AcpProjection {
     }
     const thread = this.threadOf(params) ?? parentToolUseId
     if (update !== undefined) {
+      const compaction = this.applyCompaction(update, thread)
+      if (compaction !== undefined) return [...out, ...compaction]
       const replayed = this.replayedWake(update, thread, asString(asRecord(params)?.sessionId))
       if (replayed !== undefined) return [...out, ...replayed]
       // Only a notification starts a run inside a held prompt; output after
@@ -700,6 +752,7 @@ export class AcpProjection {
   applyClaudeSdk(params: unknown): AcpEventInit[] {
     const m = asRecord(asRecord(params)?.message)
     if (m?.type !== 'system') return []
+    if (m.subtype === 'compact_boundary') return this.describeCompaction(asRecord(m.compact_metadata))
     if (m.subtype === 'background_tasks_changed') {
       const live = new Set((Array.isArray(m.tasks) ? m.tasks : []).map((t) => asString(asRecord(t)?.task_id)))
       // The live set is authoritative: a task or background subagent missing
@@ -997,6 +1050,106 @@ export class AcpProjection {
     const causes = this.runCauses
     this.runCauses = []
     return origin === 'task-notification' && causes.length > 0 ? { type: 'woken', causes } : undefined
+  }
+
+  /**
+   * Project a compaction's update, or undefined for any other update. An
+   * adapter told `session.compaction` (`clientCapabilities`) sends
+   * `compaction_update`s, and claude its summary as
+   * `compaction_summary_chunk`s. One that was not told sends a think call
+   * titled `Compact conversation`, which records from before yaac declared
+   * it hold, so that is read as a compaction too. A subagent's own
+   * compaction is not shown.
+   */
+  private applyCompaction(update: Record<string, unknown>, thread: string | undefined): AcpEventInit[] | undefined {
+    const kind = update.sessionUpdate
+    if (kind === 'compaction_summary_chunk') {
+      const known = this.compactions.get(asString(update.compactionId) ?? '')
+      const text = textOf(update.content)
+      if (known === undefined || thread !== undefined || text === '') return []
+      return [this.setCompaction({ ...known, summary: (known.summary ?? '') + text })]
+    }
+    let id: string | undefined
+    let facts: CompactionFacts
+    let summary: string | undefined
+    let error: string | undefined
+    if (kind === 'compaction_update') {
+      id = asString(update.compactionId)
+      facts = compactionFacts(asRecord(asRecord(update._meta)?.[COMPACTION_META]))
+      // Patch semantics: absent keeps the summary, `null` or `[]` clears it.
+      summary = update.summary === undefined ? undefined : textOf(update.summary)
+      error = asString(update.error)
+    } else if (kind === 'tool_call' || kind === 'tool_call_update') {
+      id = asString(update.toolCallId)
+      const legacy = asString(asRecord(asRecord(update._meta)?.claudeCode)?.toolName) === 'compact'
+        || (update.title === 'Compact conversation' && update.kind === 'think')
+        || this.compactions.has(id ?? '')
+      if (!legacy) return undefined
+      const raw = asRecord(update.rawOutput)
+      facts = compactionFacts(raw === undefined ? undefined : {
+        trigger: raw.trigger, tokensBefore: raw.preTokens, tokensAfter: raw.postTokens,
+      })
+      const text = toToolContent(update.content).map((c) => (c.type === 'text' ? c.text : '')).join('')
+      error = /^Compaction failed: ([\s\S]*)$/.exec(text)?.[1]
+    } else {
+      return undefined
+    }
+    if (id === undefined || thread !== undefined) return []
+    const known = this.compactions.get(id)
+    const next: AcpCompaction = {
+      ...known,
+      ...facts,
+      id,
+      status: COMPACTION_STATUSES[asString(update.status) ?? ''] ?? known?.status ?? 'running',
+      ...(error !== undefined ? { error } : {}),
+    }
+    if (summary === '') delete next.summary
+    else if (summary !== undefined) next.summary = summary
+    return [this.setCompaction(next)]
+  }
+
+  /**
+   * Add a claude boundary's facts to the compaction it ends: the latest one
+   * not yet described. The boundary can come after that compaction has
+   * already reported itself done, or before it appears at all.
+   */
+  private describeCompaction(meta: Record<string, unknown> | undefined): AcpEventInit[] {
+    const facts = compactionFacts(meta === undefined ? undefined : {
+      trigger: meta.trigger, tokensBefore: meta.pre_tokens, tokensAfter: meta.post_tokens,
+    })
+    const last = this.lastCompaction
+    if (last === undefined || last.trigger !== undefined) {
+      this.pendingFacts = facts
+      return []
+    }
+    return [this.setCompaction({ ...last, ...facts })]
+  }
+
+  /**
+   * A compaction an agent ran without reporting it, shown where the user's
+   * `/compact` was answered: opencode's adapter reports no compaction at
+   * all. Undefined when a compaction was reported since `since`
+   * (`compactionsSeen`).
+   */
+  unreportedCompaction(id: string, since: number): AcpEventInit | undefined {
+    if (this.compactions.size !== since) return undefined
+    return this.setCompaction({ id, status: 'completed', trigger: 'manual' })
+  }
+
+  /** How many compactions this stream has shown. */
+  get compactionsSeen(): number {
+    return this.compactions.size
+  }
+
+  private setCompaction(compaction: AcpCompaction): AcpEventInit {
+    let next = compaction
+    if (!this.compactions.has(compaction.id) && this.pendingFacts !== undefined) {
+      next = { ...this.pendingFacts, ...compaction }
+      this.pendingFacts = undefined
+    }
+    this.compactions.set(next.id, next)
+    this.lastCompaction = next
+    return { type: 'compaction', compaction: next }
   }
 
   private setSubagent(subagent: AcpSubagent): AcpEventInit {
@@ -1447,13 +1600,14 @@ export const CLAUDE_SDK_MESSAGE = '_claude/sdkMessage'
  * `_meta` for claude's `session/new` and `session/load`: the Agent SDK
  * messages it forwards as `CLAUDE_SDK_MESSAGE`. Besides the running/idle
  * report, the task messages are how claude reports subagents and background
- * tasks to a client that is not AIR (`AcpProjection.applyClaudeSdk`).
+ * tasks to a client that is not AIR (`AcpProjection.applyClaudeSdk`), and a
+ * compaction's boundary is where its trigger and token counts are.
  */
 export const CLAUDE_SESSION_META = {
   claudeCode: {
     emitRawSDKMessages: [
       'session_state_changed', 'task_started', 'task_updated', 'task_progress', 'task_notification',
-      'background_tasks_changed',
+      'background_tasks_changed', 'compact_boundary',
     ].map((subtype) => ({ type: 'system', subtype })),
   },
 }

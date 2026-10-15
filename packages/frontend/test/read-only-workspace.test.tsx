@@ -136,6 +136,7 @@ describe('ReadOnlyWorkspace', () => {
 
   it('carries the chat pane\'s width and condensed toggles under the conversation', async () => {
     server.route('GET /api/workspace/s1/agent-sessions/c1/transcript', {
+      page: 0,
       events: [
         userEvent(0, 'fix the parser'),
         { type: 'tool', seq: 1, call: { toolCallId: 't1', title: 'grep parse', kind: 'other', status: 'completed' } },

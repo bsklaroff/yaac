@@ -4,8 +4,8 @@
  * that outlives it), with these differences:
  *
  *  - Frames are JSON text (`AcpServerMessage` / `AcpClientMessage`).
- *  - Attaching replays: `hello` carries the conversation record so far, and
- *    the same record tail feeds all later content. The live subscription
+ *  - Attaching replays: `hello` carries the last page of the conversation's
+ *    record, and the same record tail feeds all later content. The live subscription
  *    adds only turn boundaries, errors, the queue of messages waiting for
  *    the turn to end and the permission posture, none of which the record
  *    carries in a form a pane can use.
@@ -16,7 +16,7 @@
  */
 
 import { acpConversation } from './acp-registry'
-import { tailAcpLog } from './acp-log'
+import { tailAcpLog, type AcpLife, type RecordOrigin } from './acp-log'
 import { claudeSubagentThreads } from './claude-acp-replay'
 import { sessionTranscriptPath } from './transcripts'
 import { serverLog } from '#lib/log'
@@ -75,13 +75,16 @@ function isTaskOutputPath(file: string, taskId: string): boolean {
 /**
  * Attach `sock` to the conversation, or close it if none is live. That is
  * normal (the workspace may be booting or reconnecting); the pane retries,
- * like `WorkspaceTerminal` does on a dropped PTY.
+ * like `WorkspaceTerminal` does on a dropped PTY. `origin` places the
+ * record's pages after the tool's own history of the lives before it;
+ * without one, the record is the whole conversation.
  */
 export function attachAcp(
   projectId: string,
   workspaceId: string,
   agentSessionId: string,
   sock: AcpSocket,
+  origin: (life: AcpLife | undefined) => Promise<RecordOrigin> = () => Promise.resolve({ firstPage: 0, skipReplay: false }),
 ): void {
   const conversation = acpConversation(projectId, workspaceId, agentSessionId)
   const send = (msg: AcpServerMessage): void => {
@@ -101,7 +104,6 @@ export function attachAcp(
   // All content comes from the record. The live socket carries the same
   // `session/update` notifications, but ACP gives them no ids, so merging
   // the two sources would duplicate or drop the overlap.
-  let seq = 0
   let detached = false
   /** The model ids the record last offered this pane. A switch is accepted
    *  only to one of them, so the id the session row may record is one the
@@ -116,7 +118,8 @@ export function attachAcp(
   let subagents = new Set<string>()
   const tail = tailAcpLog(
     { projectId, workspaceId, agentSessionId },
-    (events, reset) => {
+    origin,
+    (events, reset, page, life) => {
       // A read already in progress still reports after close.
       if (detached) return
       if (reset) {
@@ -130,27 +133,29 @@ export function attachAcp(
         if (event.type === 'subagent') subagents.add(event.subagent.id)
       }
       if (reset) {
-        // The first read, or a new agent life that truncated the record:
-        // the pane replaces what it holds.
-        seq = 0
+        // The first read, or a new agent life: the pane replaces what it
+        // holds with the conversation's last page, and reads the pages
+        // before it on its own.
         send({
           type: 'hello',
           agentSessionId,
           busy: conversation.isBusy,
           queued: conversation.queuedPrompts,
-          events: events.map((event) => ({ ...event, seq: seq++ })),
+          page,
+          ...(life !== undefined ? { life } : {}),
+          events,
         })
         // Standing notices from the handshake (e.g. the adapter running in a
         // looser mode than requested) predate any pane, so replay them after
         // every `hello`.
         for (const notice of conversation.standingNotices) {
-          send({ type: 'event', event: { ...notice, seq: seq++ } })
+          send({ type: 'event', event: tail.number(notice) })
         }
         send({ type: 'permission-mode', ...conversation.permissionModes })
         send({ type: 'effort', ...conversation.efforts })
         return
       }
-      for (const event of events) send({ type: 'event', event: { ...event, seq: seq++ } })
+      for (const event of events) send({ type: 'event', event })
     },
   )
 
@@ -164,7 +169,7 @@ export function attachAcp(
       .then(() => {
         // The pane may have left during the flush.
         if (detached) return
-        send({ type: 'event', event: { ...event, seq: seq++ } })
+        send({ type: 'event', event: tail.number(event) })
       }),
   )
   // Flushed like turn boundaries, so a message leaving the queue to start a
@@ -275,7 +280,7 @@ export function attachAcp(
       const images = promptImages(msg.images)
       if (typeof images === 'string') {
         // Tell the pane, which is waiting for this message's echo.
-        send({ type: 'event', event: { type: 'error', message: `message not sent: ${images}`, seq: seq++ } })
+        send({ type: 'event', event: tail.number({ type: 'error', message: `message not sent: ${images}` }) })
         return
       }
       const text = msg.text.trim() === '' ? '' : msg.text

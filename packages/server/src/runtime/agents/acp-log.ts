@@ -6,7 +6,9 @@
  * uses the same `acp-protocol` projection as live traffic. acpd writes it
  * whether or not a client is attached, onto a host-visible path, so the
  * server keeps nothing itself and a stopped workspace's conversation stays
- * readable.
+ * readable. A record holds one agent life of a conversation, since acpd
+ * starts it afresh; what came before is the tool's own history, which the
+ * record's pages follow (`RecordOrigin`).
  *
  * It is the only path by which conversation content reaches a pane (see
  * `tailAcpLog`), and because it holds both directions it also tells a
@@ -23,9 +25,9 @@ import {
   type AcpConfigOption, type AcpEffort, type AcpSessionModes,
 } from './acp-protocol'
 import { asRecord, asString } from '#lib/narrow'
-import { openSandboxFile, readSandboxFile, type SandboxFile } from './sandbox-fs'
+import { openSandboxFile, type SandboxFile } from './sandbox-fs'
 import { serverLog } from '#lib/log'
-import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
+import { ACP_PAGE_SPAN, acpPageOf, type AcpEvent, type AcpEventInit, type AcpTranscriptPage } from '@yaac/shared/acp'
 
 /** Which conversation's record; acpd names each `<agentSessionId>.jsonl`
  *  in its workspace's record dir. */
@@ -56,24 +58,24 @@ export function acpStoredImage(ref: Omit<AcpRecordRef, 'agentSessionId'>, hash: 
   return { projectId: ref.projectId, dir: acpLogDir(ref.projectId, ref.workspaceId), rel: `images/${hash}` }
 }
 
-/** Size cap for the whole-file readers below. */
+/**
+ * The largest record the readers that follow a whole conversation read: the
+ * tail, a page, and recovery. They hold one page at a time, so memory stays
+ * bounded by `PAGE_BYTES`, but reading costs time in the record's size,
+ * which is the workspace's to choose. A larger record is not read at all.
+ */
+export const MAX_ACP_SCAN_BYTES = 1024 * 1024 * 1024
+
+/** Size cap for the readers of a record's head (`readAcpFirstPrompt`) and
+ *  for a record built from a tool's own history (`AcpRecordWriter`). */
 export const MAX_ACP_RECORD_BYTES = 64 * 1024 * 1024
 
-/**
- * A whole record as text, or undefined if there is none. A missing record
- * just means no history yet; one over the cap is logged and treated as
- * absent.
- */
-async function readRecord(ref: AcpRecordRef): Promise<string | undefined> {
-  const file = acpRecord(ref)
-  if (file === undefined) return undefined
-  try {
-    return (await readSandboxFile(file, MAX_ACP_RECORD_BYTES))?.toString('utf8')
-  } catch (err) {
-    serverLog(`[server] acp log ${file.dir}/${file.rel}: ${String(err)}`)
-    return undefined
-  }
-}
+/** A record line longer than this is skipped: it holds no message worth
+ *  showing (images are kept apart), and a string this long is costly. */
+const MAX_LINE_CHARS = 64 * 1024 * 1024
+
+/** How much of a record is read at once. */
+const READ_BYTES = 1024 * 1024
 
 async function openRecord(ref: AcpRecordRef): Promise<FileHandle | null> {
   const file = acpRecord(ref)
@@ -81,15 +83,114 @@ async function openRecord(ref: AcpRecordRef): Promise<FileHandle | null> {
 }
 
 /**
- * Project recorded lines into the events a pane renders. Bad lines are
- * skipped: the record may end mid-write, and adapters may print non-JSON.
+ * Splits bytes read in order into whole lines. One decoder spans the reads,
+ * so a character split between two is not shown as U+FFFD, and each read is
+ * split once, so an endless line costs linear time until it is dropped.
+ */
+class LineReader {
+  private decoder = new StringDecoder('utf8')
+  /** The unfinished last line; undefined while skipping an overlong one. */
+  private residual: string | undefined = ''
+
+  /** The lines `buf` completes. */
+  push(buf: Buffer): string[] {
+    const text = this.decoder.write(buf)
+    const nl = text.lastIndexOf('\n')
+    if (nl === -1) {
+      if (this.residual !== undefined) this.residual += text
+      if (this.residual !== undefined && this.residual.length > MAX_LINE_CHARS) this.residual = undefined
+      return []
+    }
+    const lines = ((this.residual ?? '') + text.slice(0, nl)).split('\n')
+    if (this.residual === undefined) lines[0] = ''
+    this.residual = text.slice(nl + 1)
+    return lines
+  }
+
+  /** The last line, which no newline ended. */
+  end(): string {
+    return (this.residual ?? '') + this.decoder.end()
+  }
+}
+
+/** A record's lines, none for one past `MAX_ACP_SCAN_BYTES`. */
+async function* recordLines(handle: FileHandle): AsyncGenerator<string> {
+  if ((await handle.stat()).size > MAX_ACP_SCAN_BYTES) return
+  const reader = new LineReader()
+  const buf = Buffer.allocUnsafe(READ_BYTES)
+  for (let pos = 0; pos < MAX_ACP_SCAN_BYTES;) {
+    const { bytesRead } = await handle.read(buf, 0, Math.min(buf.length, MAX_ACP_SCAN_BYTES - pos), pos)
+    if (bytesRead === 0) break
+    pos += bytesRead
+    yield* reader.push(buf.subarray(0, bytesRead))
+  }
+  yield reader.end()
+}
+
+/**
+ * Project recorded lines into the events a pane renders, numbered by page
+ * (`Pager`). Bad lines are skipped: the record may end mid-write, and
+ * adapters may print non-JSON.
  */
 export function replayAcpLog(raw: string): AcpEvent[] {
-  const projection = new AcpProjection()
-  return raw
-    .split('\n')
-    .flatMap((line) => projectLine(line, projection))
-    .map((event, seq) => ({ ...event, seq }))
+  const projection = new RecordProjection()
+  return raw.split('\n').flatMap((line) => projection.line(line))
+}
+
+/** One page of events already projected in full: `page`, or the last one,
+ *  which a page past the end also is. */
+export function acpPage(events: AcpEvent[], page?: number): AcpTranscriptPage {
+  const last = events.length === 0 ? 0 : acpPageOf(events[events.length - 1].seq)
+  const at = Math.min(page ?? last, last)
+  return { page: at, events: events.filter((e) => acpPageOf(e.seq) === at) }
+}
+
+/**
+ * Where a record's pages go in its conversation: the history before the
+ * life it holds (the tool's own) fills the pages before `firstPage`. With that
+ * history found, the record's `session/load` replay of it is not shown
+ * (`skipReplay`); without it, the replay is all there is of it.
+ */
+export interface RecordOrigin {
+  firstPage: number
+  skipReplay: boolean
+}
+
+/** A record with no history before it. */
+const NO_HISTORY: RecordOrigin = { firstPage: 0, skipReplay: false }
+
+/**
+ * One page of a conversation's record: `page`, or the last one, which a page
+ * outside the record's also is. Reading stops at the end of the page asked
+ * for, so an early page costs less than a late one. No record is an empty
+ * page, and one past the cap is only the notice saying so.
+ */
+export async function readAcpPage(ref: AcpRecordRef, page?: number, origin = NO_HISTORY): Promise<AcpTranscriptPage> {
+  const handle = await openRecord(ref)
+  if (handle === null) return { page: origin.firstPage, events: [] }
+  try {
+    const projection = new RecordProjection(origin)
+    if ((await handle.stat()).size > MAX_ACP_SCAN_BYTES) {
+      return { page: origin.firstPage, events: [projection.number({ type: 'error', message: RECORD_TOO_LARGE })] }
+    }
+    const wanted = page !== undefined && page >= origin.firstPage ? page : undefined
+    let at = origin.firstPage
+    let events: AcpEvent[] = []
+    for await (const line of recordLines(handle)) {
+      for (const event of projection.line(line)) {
+        const p = acpPageOf(event.seq)
+        if (wanted !== undefined && p > wanted) return { page: wanted, events }
+        if (p !== at) {
+          at = p
+          events = []
+        }
+        events.push(event)
+      }
+    }
+    return { page: at, events }
+  } finally {
+    await handle.close()
+  }
 }
 
 /**
@@ -125,27 +226,54 @@ export class AcpRecordWriter {
 }
 
 /** Tail poll interval: short enough for streaming to look live, cheap when
- *  idle (one open and two small reads). */
+ *  idle (one open and a stat). */
 const TAIL_INTERVAL_MS = 150
 
-/** The most a tail reads into memory at once. */
-const TAIL_READ_BYTES = 1024 * 1024
-
-/**
- * Bytes of the record's head to read to identify the agent life that wrote
- * it. acpd's `_acpd/life` line is always first and small.
- */
-const LIFE_HEADER_BYTES = 512
-
 /** What a pane shows once its record is past the cap. */
-const RECORD_TOO_LARGE = `This conversation's record is past the ${String(MAX_ACP_RECORD_BYTES / (1024 * 1024))} MB `
+const RECORD_TOO_LARGE = `This conversation's record is past the ${String(MAX_ACP_SCAN_BYTES / (1024 * 1024 * 1024))} GB `
   + 'a chat pane can show, so nothing more of it is shown here. The agent is unaffected.'
 
 export interface AcpLogTail {
   /** Read anything appended since the last pass, now. Used before emitting
    *  something that must come after the record's contents. */
   flush(): Promise<void>
+  /** Number an event the record does not hold (a turn boundary from the
+   *  live connection) after what the tail has delivered. */
+  number(event: AcpEventInit): AcpEvent
   close(): void
+}
+
+/** The agent life a record holds, as acpd stamps its first line. */
+export interface AcpLife {
+  id: string
+  /** When acpd started; everything before it is the tool's own history. */
+  startedAt: string
+}
+
+/** Bytes of a record's head to read for its life line, which is small. */
+const LIFE_HEADER_BYTES = 512
+
+/** The life a record holds, if it has a record and acpd stamped it. */
+export async function readAcpLife(ref: AcpRecordRef): Promise<AcpLife | undefined> {
+  const handle = await openRecord(ref)
+  if (handle === null) return undefined
+  try {
+    return await lifeOf(handle)
+  } finally {
+    await handle.close()
+  }
+}
+
+async function lifeOf(handle: FileHandle): Promise<AcpLife | undefined> {
+  const buf = Buffer.alloc(LIFE_HEADER_BYTES)
+  const { bytesRead } = await handle.read(buf, 0, LIFE_HEADER_BYTES, 0)
+  const head = buf.subarray(0, bytesRead).toString('utf8')
+  const nl = head.indexOf('\n')
+  const msg = nl === -1 ? undefined : parseLine(head.slice(0, nl))
+  const params = asRecord(msg?.params)
+  const id = asString(params?.id)
+  const startedAt = asString(params?.startedAt)
+  return msg?.method === ACPD.life && id !== undefined && startedAt !== undefined ? { id, startedAt } : undefined
 }
 
 /**
@@ -155,41 +283,32 @@ export interface AcpLogTail {
  * live socket carries the same `session/update` notifications, but ACP gives
  * them no ids, so merging two sources would duplicate or drop the overlap.
  *
- * A new agent life resets the reader and flags the batch so the caller
- * replaces rather than appends. Lives are told apart by the `_acpd/life`
- * header id, not by the file shrinking: a restart whose `session/load`
- * replay regrows the file within one tick would not look like a shrink.
+ * The first delivery is the record's last page (`Pager`), flagged so the
+ * caller replaces what it holds, with `page` its number and `life` the
+ * life it is numbered for; the pages before it
+ * are read separately (`readAcpPage`, and the tool's own history before
+ * that). Each later delivery is what was appended since. acpd starts a new
+ * life with a fresh record, which the tail tells by its life line rather
+ * than by the file shrinking (a `session/load` replay can regrow it within
+ * one pass); it asks `origin` where that life's pages go and starts over
+ * with a first delivery.
  *
  * `onEvents` is always called at least once, even when no record exists
  * yet (an empty history).
  */
 export function tailAcpLog(
   record: AcpRecordRef,
-  onEvents: (events: AcpEventInit[], reset: boolean) => void,
+  origin: (life: AcpLife | undefined) => Promise<RecordOrigin>,
+  onEvents: (events: AcpEvent[], reset: boolean, page: number, life: string | undefined) => void,
   opts: { intervalMs?: number } = {},
 ): AcpLogTail {
   let pos = 0
-  let residual = ''
-  let projection = new AcpProjection()
-  // One decoder across passes: acpd's writes can split characters, and
-  // decoding each pass alone would produce U+FFFDs inside valid JSON.
-  let decoder = new StringDecoder('utf8')
-  let lifeId: string | undefined
+  let lines = new LineReader()
+  let projection = new RecordProjection(NO_HISTORY)
+  let life: string | undefined
   let closed = false
-  let first = true
+  let reset = true
   let tooLarge = false
-  // A restart seen but not yet reported. acpd empties the file first, so a
-  // pass may see size 0 and must still tell the caller to start over.
-  let pendingReset = false
-
-  const startOver = (): void => {
-    pendingReset = true
-    pos = 0
-    residual = ''
-    decoder = new StringDecoder('utf8')
-    projection = new AcpProjection()
-    tooLarge = false
-  }
 
   const runPass = async (): Promise<void> => {
     if (closed) return
@@ -201,58 +320,56 @@ export function tailAcpLog(
     }
     if (handle === null) {
       // No record yet; the first pass still reports an empty history.
-      if (first) {
-        first = false
-        onEvents([], true)
+      if (reset) {
+        reset = false
+        onEvents([], true, projection.page, life)
       }
       return
     }
 
     try {
       const size = (await handle.stat()).size
-      const life = await readLifeId(handle)
-      if (life !== lifeId) {
-        // No header on either side (a partial first write, or an unstamped
-        // log): only a change counts as a restart, with the size check as a
-        // fallback.
-        if (lifeId !== undefined || life !== undefined) startOver()
-        lifeId = life
+      const current = await lifeOf(handle)
+      if (current?.id !== life || size < pos) {
+        life = current?.id
+        pos = 0
+        lines = new LineReader()
+        projection = new RecordProjection(await origin(current))
+        reset = true
+        tooLarge = false
+        if (closed) return
       }
-      if (size < pos) startOver()
-
-      const reset = pendingReset || first
-      if (size === pos && !reset) return
-
-      const events: AcpEventInit[] = []
-      // Stop at the cap: the file size is the workspace's to choose, but
-      // memory is the server's. The pane says so rather than going blank
-      // or quiet.
-      if (size > MAX_ACP_RECORD_BYTES && !tooLarge) {
-        serverLog(`[server] acp log for ${record.agentSessionId}: past ${String(MAX_ACP_RECORD_BYTES)} bytes, no longer followed`)
+      if ((size === pos && !reset) || tooLarge) return
+      // Stop at the cap: the pane says so rather than going quiet.
+      if (size > MAX_ACP_SCAN_BYTES) {
+        serverLog(`[server] acp log for ${record.agentSessionId}: past ${String(MAX_ACP_SCAN_BYTES)} bytes, no longer followed`)
         tooLarge = true
-        events.push({ type: 'error', message: RECORD_TOO_LARGE })
+        const first = reset
+        reset = false
+        onEvents([projection.number({ type: 'error', message: RECORD_TOO_LARGE })], first, projection.page, life)
+        return
       }
-      // Read in windows, each split once, so an endless line costs linear
-      // memory and time.
-      while (!tooLarge && pos < size) {
-        const buf = Buffer.allocUnsafe(Math.min(TAIL_READ_BYTES, size - pos))
-        const { bytesRead } = await handle.read(buf, 0, buf.length, pos)
+
+      // A first delivery keeps only the last page; a later one, everything.
+      let events: AcpEvent[] = []
+      const take = (line: string): void => {
+        for (const event of projection.line(line)) {
+          if (reset && events.length > 0 && acpPageOf(events[0].seq) !== acpPageOf(event.seq)) events = []
+          events.push(event)
+        }
+      }
+      const buf = Buffer.allocUnsafe(READ_BYTES)
+      while (pos < size) {
+        const { bytesRead } = await handle.read(buf, 0, Math.min(buf.length, size - pos), pos)
         if (bytesRead === 0) break
         pos += bytesRead
-        const raw = decoder.write(buf.subarray(0, bytesRead))
-        // Hold an incomplete last line for the next pass.
-        const nl = raw.lastIndexOf('\n')
-        if (nl === -1) {
-          residual += raw
-          continue
-        }
-        for (const line of (residual + raw.slice(0, nl)).split('\n')) events.push(...projectLine(line, projection))
-        residual = raw.slice(nl + 1)
+        for (const line of lines.push(buf.subarray(0, bytesRead))) take(line)
+        if (closed) return
       }
-      first = false
       if (events.length > 0 || reset) {
-        pendingReset = false
-        onEvents(events, reset)
+        const first = reset
+        reset = false
+        onEvents(events, first, events.length > 0 ? acpPageOf(events[0].seq) : projection.page, life)
       }
     } finally {
       await handle.close()
@@ -278,29 +395,11 @@ export function tailAcpLog(
       await chain
       await pass()
     },
+    number: (event) => projection.number(event),
     close: () => {
       closed = true
       clearInterval(timer)
     },
-  }
-}
-
-/** The id acpd stamped as the record's first line, if it has one. */
-async function readLifeId(handle: FileHandle): Promise<string | undefined> {
-  const buf = Buffer.alloc(LIFE_HEADER_BYTES)
-  const { bytesRead } = await handle.read(buf, 0, LIFE_HEADER_BYTES, 0)
-  const head = buf.subarray(0, bytesRead).toString('utf8')
-  const nl = head.indexOf('\n')
-  if (nl === -1) return undefined
-  try {
-    const parsed: unknown = JSON.parse(head.slice(0, nl))
-    if (typeof parsed !== 'object' || parsed === null) return undefined
-    const msg = parsed as { method?: unknown; params?: unknown }
-    if (msg.method !== ACPD.life) return undefined
-    const id = (msg.params as { id?: unknown } | undefined)?.id
-    return typeof id === 'string' ? id : undefined
-  } catch {
-    return undefined
   }
 }
 
@@ -324,62 +423,214 @@ function lineId(msg: Record<string, unknown>): string | undefined {
   return typeof msg.id === 'string' || typeof msg.id === 'number' ? String(msg.id) : undefined
 }
 
-/** One recorded line's contribution to the rendered conversation. */
-function projectLine(line: string, projection: AcpProjection): AcpEventInit[] {
-  const msg = parseLine(line)
-  if (msg === undefined) return []
-  // An adapter's own state report, the only boundary a run the agent
-  // started itself has. A new agent life starts idle.
-  if (msg.method === ACPD.exit) {
-    projection.agentState(false)
-    projection.forgetWakes()
-    return projection.endLife()
+/** Events that are session state rather than conversation, which a skipped
+ *  replay still contributes (`RecordOrigin.skipReplay`). */
+const STATE_EVENTS: ReadonlySet<AcpEvent['type']> = new Set(['commands', 'models', 'usage'])
+
+/** The user asking the agent to compact (`AcpProjection.unreportedCompaction`). */
+const COMPACT_COMMAND = /^\/compact(?:\s|$)/
+
+/**
+ * Projects a record's lines, in order, into the events a pane renders,
+ * numbered by page (`Pager`) from the origin's first page. A `session/load`
+ * replays the history before this life; with that history read from the
+ * tool's own (`skipReplay`), the replay contributes only session state
+ * (commands, models, usage).
+ */
+export class RecordProjection {
+  private readonly projection = new AcpProjection()
+  private readonly pager: Pager
+  private readonly skipReplay: boolean
+  /** The id of the `session/load` whose replay is being skipped. */
+  private skipping: string | undefined
+  /** The user's `/compact` awaiting its reply, and how many compactions had
+   *  been shown when it was sent. */
+  private compact: { id: string; seen: number } | undefined
+  private compacts = 0
+
+  constructor(origin: RecordOrigin = NO_HISTORY) {
+    this.pager = new Pager(origin.firstPage)
+    this.skipReplay = origin.skipReplay
   }
-  const running = agentRunningReport(msg.method, msg.params)
-  if (running !== undefined) return projection.agentState(running)
-  // The client's own prompts. The agent echoes user messages only when
-  // replaying under `session/load`, so live prompts appear only here.
-  if (msg.method === ACP.sessionPrompt) {
-    projection.forgetWakes()
-    const content = toContentList(asRecord(msg.params)?.prompt)
-    return content.length === 0 ? [] : [{ type: 'user', content }]
+
+  /** The page events are being numbered into. */
+  get page(): number {
+    return this.pager.page
   }
-  // A message steered into a running turn shows once its reply says the
-  // agent took it, so one that fell back to `session/prompt` shows once.
-  if (msg.method === ACP.sessionSteer) {
+
+  line(line: string): AcpEvent[] {
+    const msg = parseLine(line)
+    if (msg === undefined) return []
+    let events = this.project(msg)
+    if (this.skipping !== undefined) {
+      events = events.filter((e) => STATE_EVENTS.has(e.type))
+      if (msg.method === undefined && lineId(msg) === this.skipping) this.skipping = undefined
+    }
+    return this.pager.number(events, line.length + 1)
+  }
+
+  /** Number an event the record does not hold, after the last one. */
+  number(event: AcpEventInit): AcpEvent {
+    return this.pager.add(event)
+  }
+
+  /** One recorded line's contribution to the rendered conversation. */
+  private project(msg: Record<string, unknown>): AcpEventInit[] {
+    const projection = this.projection
     const id = lineId(msg)
-    if (id !== undefined) projection.openSteer(id, msg.params)
+    // The agent exited: what it was doing died with it.
+    if (msg.method === ACPD.exit) {
+      this.skipping = undefined
+      projection.agentState(false)
+      projection.forgetWakes()
+      return projection.endLife()
+    }
+    // An adapter's own state report, the only boundary a run the agent
+    // started itself has.
+    const running = agentRunningReport(msg.method, msg.params)
+    if (running !== undefined) return projection.agentState(running)
+    // The client's own prompts. The agent echoes user messages only when
+    // replaying under `session/load`, so live prompts appear only here.
+    if (msg.method === ACP.sessionPrompt) {
+      projection.forgetWakes()
+      const content = toContentList(asRecord(msg.params)?.prompt)
+      const text = promptText(msg.params)
+      if (id !== undefined && text !== undefined && COMPACT_COMMAND.test(text)) {
+        this.compact = { id, seen: projection.compactionsSeen }
+      }
+      return content.length === 0 ? [] : [{ type: 'user', content }]
+    }
+    // A message steered into a running turn shows once its reply says the
+    // agent took it, so one that fell back to `session/prompt` shows once.
+    if (msg.method === ACP.sessionSteer) {
+      if (id !== undefined) projection.openSteer(id, msg.params)
+      return []
+    }
+    if (msg.method === ACP.sessionLoad) {
+      if (id !== undefined) {
+        projection.openLoad(id)
+        if (this.skipReplay) this.skipping = id
+      }
+      return []
+    }
+    if (msg.method === ACP.sessionUpdate) return projection.apply(msg.params)
+    if (msg.method === ACP.opencodeChildUpdate) return projection.applyChildUpdate(msg.params)
+    if (msg.method === CLAUDE_SDK_MESSAGE) return projection.applyClaudeSdk(msg.params)
+    // Permission asks and their answers come from the record because an ask
+    // that arrived while the relay was down exists only here, and a
+    // reattaching pane must see what the agent is blocked on.
+    if (msg.method === ACP.requestPermission) {
+      return id === undefined ? [] : [projection.openPermission(id, msg.params)]
+    }
+    // A reply settles a permission ask or a steer, carries the session's
+    // models (the handshake's `session/new` or `session/load`, or a model
+    // switch), or answers a `/compact`.
+    if (msg.method === undefined) {
+      if (id === undefined) return []
+      const event = projection.closePermission(id, msg.result) ?? projection.closeSteer(id, msg.result)
+      if (event !== undefined) return [event]
+      const models = sessionModels(msg.result)
+      const settled = projection.closeLoad(id) ?? []
+      const compact = this.compact?.id === id ? this.compact : undefined
+      if (compact !== undefined) this.compact = undefined
+      const compacted = compact !== undefined && msg.error === undefined
+        ? projection.unreportedCompaction(`compact-${String(this.compacts++)}`, compact.seen)
+        : undefined
+      return [
+        ...settled,
+        ...(models !== undefined ? [{ type: 'models' as const, ...models }] : []),
+        ...(compacted !== undefined ? [compacted] : []),
+      ]
+    }
+    // Requests and acpd's control lines carry no conversation content.
     return []
   }
-  if (msg.method === ACP.sessionLoad) {
-    const id = lineId(msg)
-    if (id !== undefined) projection.openLoad(id)
-    return []
+}
+
+/**
+ * A page's size cap, in record bytes. Past it the page ends at the next user
+ * message, or at once past twice the cap, so a conversation that never
+ * compacts still loads a page at a time.
+ */
+export const PAGE_BYTES = 16 * 1024 * 1024
+
+/**
+ * Numbers a projected stream's events, starting a new page at each
+ * compaction and at the size cap (`PAGE_BYTES`). A new page opens with the
+ * session state the pages before it left standing, so a page read alone
+ * still offers the composer its commands and models, the strip what is
+ * running, and the pane what the agent is waiting on: the latest commands,
+ * models and context usage, the subagents and tasks still running, and the
+ * permission asks not yet answered. A compaction stays first on its page.
+ */
+class Pager {
+  page: number
+  private count = 0
+  private bytes = 0
+  private readonly compactions = new Set<string>()
+  /** What a new page opens with, by what it is the state of. */
+  private readonly standing = new Map<string, AcpEventInit>()
+
+  constructor(firstPage = 0) {
+    this.page = firstPage
   }
-  if (msg.method === ACP.sessionUpdate) return projection.apply(msg.params)
-  if (msg.method === ACP.opencodeChildUpdate) return projection.applyChildUpdate(msg.params)
-  if (msg.method === CLAUDE_SDK_MESSAGE) return projection.applyClaudeSdk(msg.params)
-  // Permission asks and their answers come from the record because an ask
-  // that arrived while the relay was down exists only here, and a
-  // reattaching pane must see what the agent is blocked on.
-  if (msg.method === ACP.requestPermission) {
-    const id = lineId(msg)
-    return id === undefined ? [] : [projection.openPermission(id, msg.params)]
+
+  number(events: AcpEventInit[], bytes: number): AcpEvent[] {
+    this.bytes += bytes
+    const out: AcpEvent[] = []
+    for (const event of events) {
+      const compaction = event.type === 'compaction' && !this.compactions.has(event.compaction.id)
+      if (event.type === 'compaction') this.compactions.add(event.compaction.id)
+      const full = this.bytes > PAGE_BYTES && (event.type === 'user' || this.bytes > 2 * PAGE_BYTES)
+      if ((compaction || full) && this.count > 0) {
+        this.page++
+        this.count = 0
+        this.bytes = bytes
+        const standing = [...this.standing.values()]
+        if (compaction) out.push(this.add(event))
+        for (const e of standing) out.push(this.seq(e))
+        if (compaction) continue
+      }
+      out.push(this.add(event))
+    }
+    return out
   }
-  // A reply settles a permission ask or a steer, or carries the session's
-  // models: the handshake's `session/new` or `session/load`, or a model
-  // switch.
-  if (msg.method === undefined) {
-    const id = lineId(msg)
-    if (id === undefined) return []
-    const event = projection.closePermission(id, msg.result) ?? projection.closeSteer(id, msg.result)
-    if (event !== undefined) return [event]
-    const models = sessionModels(msg.result)
-    const settled = projection.closeLoad(id) ?? []
-    return models === undefined ? settled : [...settled, { type: 'models', ...models }]
+
+  add(event: AcpEventInit): AcpEvent {
+    this.track(event)
+    return this.seq(event)
   }
-  // Requests and acpd's control lines carry no conversation content.
-  return []
+
+  private seq(event: AcpEventInit): AcpEvent {
+    return { ...event, seq: this.page * ACP_PAGE_SPAN + this.count++ }
+  }
+
+  private track(e: AcpEventInit): void {
+    switch (e.type) {
+      case 'commands':
+      case 'models':
+        this.standing.set(e.type, e)
+        return
+      case 'usage':
+        if (e.thread === undefined) this.standing.set(e.type, e)
+        return
+      case 'subagent':
+        if (e.subagent.state === 'running') this.standing.set(`s:${e.subagent.id}`, e)
+        else this.standing.delete(`s:${e.subagent.id}`)
+        return
+      case 'task':
+        if (e.task.state === 'running' || e.task.state === 'paused') this.standing.set(`t:${e.task.id}`, e)
+        else this.standing.delete(`t:${e.task.id}`)
+        return
+      case 'permission-request':
+        this.standing.set(`p:${e.requestId}`, e)
+        return
+      case 'permission-resolved':
+        this.standing.delete(`p:${e.requestId}`)
+        return
+      default:
+    }
+  }
 }
 
 /** What a record says was running when it was last written; see
@@ -444,8 +695,16 @@ export interface AcpRecovery {
  * No record means nothing running and nothing recorded.
  */
 export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery> {
-  const raw = await readRecord(record)
-  if (raw === undefined) return { inFlight: { prompt: false }, pendingPermissions: [] }
+  const handle = await openRecord(record)
+  if (handle === null) return { inFlight: { prompt: false }, pendingPermissions: [] }
+  try {
+    return await recover(recordLines(handle))
+  } finally {
+    await handle.close()
+  }
+}
+
+async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
   let pending: string | number | undefined
   const steers = new Set<string | number>()
   let agentRunning: boolean | undefined
@@ -459,7 +718,7 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
   let effort: AcpEffort | undefined
   let model: { id: string; name?: string } | undefined
   let offered: AcpRecovery['offered']
-  for (const line of raw.split('\n')) {
+  for await (const line of lines) {
     const msg = parseLine(line)
     if (msg === undefined) continue
     const id = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
@@ -561,8 +820,8 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
  * reads at once. Adapters may write long lines before the opening message
  * (opencode's model lists), so the record is read up to that message, but
  * memory stays bounded however large the record or its lines grow. The read
- * stops at `MAX_ACP_RECORD_BYTES`, as the other record readers do, because a
- * conversation nobody has prompted is rescanned on every reconcile pass.
+ * stops at `MAX_ACP_RECORD_BYTES`, because a conversation nobody has
+ * prompted is rescanned on every reconcile pass.
  */
 const LINE_HEAD_CHARS = 64 * 1024
 

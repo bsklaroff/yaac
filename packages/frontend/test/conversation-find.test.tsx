@@ -39,7 +39,7 @@ const EVENTS: AcpEvent[] = [
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   Range.prototype.getBoundingClientRect = () => new DOMRect()
-  mockFetch({ [TRANSCRIPT]: { events: EVENTS } })
+  mockFetch({ [TRANSCRIPT]: { page: 0, events: EVENTS } })
   // Every step shown: these cases are about rows, not folded runs.
   useUiStore.setState({ chatCondensed: false })
 })

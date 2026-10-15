@@ -1,11 +1,12 @@
 import { useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { skipToken, useQuery } from '@tanstack/react-query'
-import { ChatBottomBar, useChatColumn, useConversationView } from '#components/ConversationView'
+import { ChatBottomBar, JumpButtons, PageLoading, useChatColumn, useConversationView } from '#components/ConversationView'
 import type { FindOptions } from '#components/ConversationFind'
 import { api } from '#lib/api'
+import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { ServerError } from '@yaac/shared/errors'
-import type { AcpEvent } from '@yaac/shared/acp'
+import type { AcpEvent, AcpTranscriptPage } from '@yaac/shared/acp'
 import type { AgentSessionEntry } from '@yaac/shared/types'
 
 /** How often a `live` transcript is refetched. */
@@ -24,11 +25,13 @@ const NO_EVENTS: AcpEvent[] = []
  * record, a `tui` one as the tool's own history, translated server-side.
  *
  * A workspace can have several (`/clear`, or more than one agent); they show
- * as tabs in restore order. Fetched once and cached forever, since a stopped
- * conversation cannot change, unless `live`: a running workspace a teammate
- * reads this way is refetched every few seconds, under its own cache key, so
- * a poll taken before the workspace stopped is never served as its final
- * record.
+ * as tabs in restore order. A conversation opens at its end, on its last
+ * page, and the pages before it load as the reader scrolls up or jumps to
+ * the start (`useTranscriptPages`). The last page is fetched once and cached
+ * forever, since a stopped conversation cannot change, unless `live`: a
+ * running workspace a teammate reads this way is refetched every few
+ * seconds, under its own cache key, so a poll taken before the workspace
+ * stopped is never served as its final record.
  *
  * A subagent's card opens its own transcript and a task's card what the
  * record kept of it, as in the live pane (`useConversationView`), with its
@@ -66,12 +69,12 @@ export function ReadOnlyTranscript({
   // `null` is a conversation the server has no record of (its 404).
   const { data, isPending, isError, error } = useQuery({
     queryKey: ['transcript', workspaceId, selected?.agentSessionId, live],
-    queryFn: selected === undefined ? skipToken : async () => {
+    queryFn: selected === undefined ? skipToken : async (): Promise<AcpTranscriptPage | null> => {
       try {
-        const res = await api.workspace[':id']['agent-sessions'][':sessionId'].transcript.$get({
+        return await api.workspace[':id']['agent-sessions'][':sessionId'].transcript.$get({
           param: { id: workspaceId, sessionId: selected.agentSessionId },
+          query: {},
         })
-        return res.events
       } catch (err) {
         if (err instanceof ServerError && err.code === 'NOT_FOUND') return null
         throw err
@@ -82,15 +85,23 @@ export function ReadOnlyTranscript({
   })
 
   const scrollRef = useRef<HTMLDivElement>(null)
-  const { open, groups, findBar, body, titleBar } = useConversationView({
-    workspaceId, events: data ?? NO_EVENTS, scrollRef, find,
+  const pages = useTranscriptPages({
+    workspaceId,
+    agentSessionId: selected?.agentSessionId ?? '',
+    life: data?.life,
+    last: data?.page ?? 0,
+    lastEvents: data?.events ?? NO_EVENTS,
+    scrollRef,
+  })
+  const { view, open, groups, findBar, body, titleBar } = useConversationView({
+    workspaceId, events: pages.events, scrollRef, find,
   })
 
   // Nothing readable: no conversation recorded yet (a just-stopped
   // workspace), one the server has no record of, or a history it found
   // nothing in (a checkpoint not yet exported, a tool's format changed).
   // Show the starting prompt instead.
-  const promptOnly = selected === undefined || data === null || (data?.length === 0 && !!prompt)
+  const promptOnly = selected === undefined || data === null || (data?.page === 0 && data.events.length === 0 && !!prompt)
   const bottom = titleBar ?? footer
 
   return (
@@ -119,26 +130,31 @@ export function ReadOnlyTranscript({
           ))}
         </div>
       )}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        {promptOnly ? (
-          <p className={clsx(column, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
-        ) : (
-          <div className={column}>
-            {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
-            {/* Prefer the server's message, e.g. a conversation too large to send. */}
-            {isError && (
-              <p className="text-xs text-text-faint">
-                {error instanceof ServerError
-                  ? `This conversation could not be shown: ${error.message}.`
-                  : 'The conversation could not be read.'}
-              </p>
-            )}
-            {!isPending && !isError && groups.length === 0 && (
-              <p className="text-xs text-text-faint">This conversation has no messages.</p>
-            )}
-            {body}
-          </div>
-        )}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div ref={scrollRef} onScroll={pages.onScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {promptOnly ? (
+            <p className={clsx(column, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
+          ) : (
+            <div className={column}>
+              {isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
+              {/* Prefer the server's message, e.g. a conversation too large to send. */}
+              {isError && (
+                <p className="text-xs text-text-faint">
+                  {error instanceof ServerError
+                    ? `This conversation could not be shown: ${error.message}.`
+                    : 'The conversation could not be read.'}
+                </p>
+              )}
+              {!isPending && !isError && groups.length === 0 && pages.loading === undefined && (
+                <p className="text-xs text-text-faint">This conversation has no messages.</p>
+              )}
+              {pages.loading === 'earlier' && <PageLoading />}
+              {body}
+              {pages.loading === 'later' && <PageLoading />}
+            </div>
+          )}
+        </div>
+        {!promptOnly && view === undefined && <JumpButtons pages={pages} />}
       </div>
       {bottom !== undefined && <ChatBottomBar>{bottom}</ChatBottomBar>}
     </div>

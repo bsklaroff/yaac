@@ -13,7 +13,7 @@ import {
   registerAcpConversation,
 } from '#runtime/agents/acp-registry'
 import type { JsonRpcTransport } from '#runtime/agents/acp-jsonrpc'
-import type { AcpServerMessage } from '@yaac/shared/acp'
+import { acpPageOf, type AcpServerMessage } from '@yaac/shared/acp'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
@@ -175,6 +175,35 @@ describe('attachAcp', () => {
     // The user turn comes from the client's `session/prompt` line.
     expect(hello.events.map((e) => e.type)).toEqual(['user', 'agent'])
     expect(hello.events.map((e) => e.seq)).toEqual([0, 1])
+    expect(hello.page).toBe(0)
+  })
+
+  it('greets with the last page, numbered after the tool\'s own history of the lives before', async () => {
+    await record([
+      { jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-2', startedAt: '2026-01-01T00:00:00.000Z' } },
+      { jsonrpc: '2.0', id: 1, method: 'session/load', params: { sessionId: 'acp-1' } },
+      updateLine({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'replayed' } }),
+      { jsonrpc: '2.0', id: 1, result: {} },
+      { jsonrpc: '2.0', method: 'session/prompt', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'do it' }] } },
+      updateLine({ sessionUpdate: 'compaction_update', compactionId: 'c1', status: 'completed' }),
+      updateLine({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after' } }),
+    ])
+
+    const lives: unknown[] = []
+    const sock = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', sock, (life) => {
+      lives.push(life)
+      return Promise.resolve({ firstPage: 4, skipReplay: true })
+    })
+    await waitForHello(sock)
+
+    const hello = sock.sent.find((m) => m.type === 'hello')
+    if (hello?.type !== 'hello') throw new Error('unreachable')
+    expect(lives).toEqual([{ id: 'life-2', startedAt: '2026-01-01T00:00:00.000Z' }])
+    // Page 4 holds this life up to its compaction; the replay is not in it.
+    // The pages are this life's numbering.
+    expect([hello.page, hello.life]).toEqual([5, 'life-2'])
+    expect(hello.events.map((e) => [e.type, acpPageOf(e.seq)])).toEqual([['compaction', 5], ['agent', 5]])
   })
 
   it('greets with an empty history when nothing has been recorded yet', async () => {

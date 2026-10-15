@@ -9,8 +9,9 @@ import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
 import { acpLogDir, agentHistoryDir, claudeDir, opencodeCheckpointDir } from '@yaac/shared/project-paths'
-import { getAcpStoredImage, getAgentSessionTranscript } from '#domain/workspaces/transcript'
+import { getAcpStoredImage, getAgentSessionTranscript, recordOrigin } from '#domain/workspaces/transcript'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { AcpEvent } from '@yaac/shared/acp'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
@@ -97,7 +98,7 @@ describe('getAgentSessionTranscript', () => {
       },
     ])
 
-    const events = await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)
+    const { events } = await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)
 
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
     expect(events[0].type === 'user' && events[0].content).toEqual([{ type: 'text', text: 'ship it' }])
@@ -107,10 +108,124 @@ describe('getAgentSessionTranscript', () => {
     await seedSession(TUI_SESSION)
     await writeClaudeTranscript(TUI_SESSION)
 
-    const events = await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)
+    const { events } = await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)
 
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
     expect(events[1].type === 'agent' && events[1].content).toEqual([{ type: 'text', text: 'the router' }])
+  })
+
+  it('pages a tui claude conversation at each compaction, opening the page after with the summary claude kept', async () => {
+    await seedSession(TUI_SESSION)
+    const file = path.join(claudeDir(PROJECT), 'projects', '-workspace', `${TUI_SESSION}.jsonl`)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    const entry = (fields: Record<string, unknown>): Record<string, unknown> => ({
+      sessionId: TUI_SESSION, cwd: '/workspace', timestamp: '2026-01-01T00:00:00Z', ...fields,
+    })
+    const say = (uuid: string, parentUuid: string | null, role: 'user' | 'assistant', text: string): Record<string, unknown> => entry({
+      type: role, uuid, parentUuid,
+      message: role === 'user' ? { role, content: text } : { role, model: 'claude-fable-5', content: [{ type: 'text', text }] },
+    })
+    await fs.writeFile(file, [
+      say('u1', null, 'user', 'build it'),
+      say('a1', 'u1', 'assistant', 'built'),
+      entry({
+        type: 'system', subtype: 'compact_boundary', uuid: 'b1', parentUuid: null, logicalParentUuid: 'a1',
+        content: 'Conversation compacted', compactMetadata: { trigger: 'auto', preTokens: 900, postTokens: 60 },
+      }),
+      entry({
+        type: 'user', uuid: 's1', parentUuid: 'b1', isCompactSummary: true, isVisibleInTranscriptOnly: true,
+        message: {
+          role: 'user',
+          content: 'This session is being continued from a previous conversation that ran out of context. '
+            + 'The summary below covers the earlier portion of the conversation.\n\nSummary:\nWe built it.',
+        },
+      }),
+      say('u2', 's1', 'user', 'now ship it'),
+      say('a2', 'u2', 'assistant', 'shipped'),
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+
+    const last = await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)
+    expect(last.page).toBe(1)
+    expect(last.events.map((e) => e.type)).toEqual(['compaction', 'user', 'agent'])
+    expect(last.events[0]).toMatchObject({
+      compaction: { id: 'b1', status: 'completed', trigger: 'auto', tokensBefore: 900, tokensAfter: 60, summary: expect.stringContaining('We built it.') as string },
+    })
+    const first = await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION, 0)
+    expect(first.events.map((e) => (e.type === 'user' || e.type === 'agent' ? e.content : e.type))).toEqual([
+      [{ type: 'text', text: 'build it' }], [{ type: 'text', text: 'built' }],
+    ])
+  })
+
+  it('reads an acp conversation\'s earlier lives from the tool\'s own history, and its current one from the record', async () => {
+    const restart = '2026-01-02T00:00:00.000Z'
+    const before = '2026-01-01T00:00:00.000Z'
+    const after = '2026-01-02T00:00:05.000Z'
+    const update = (u: unknown): unknown => ({ jsonrpc: '2.0', method: 'session/update', params: { update: u } })
+    const chunk = (kind: string, text: string): unknown => update({ sessionUpdate: kind, content: { type: 'text', text } })
+    // This life replays the one before, then carries on.
+    const thisLife = [
+      { jsonrpc: '2.0', method: '_acpd/life', params: { id: 'life-2', startedAt: restart } },
+      { jsonrpc: '2.0', id: 1, method: 'session/load', params: {} },
+      chunk('user_message_chunk', 'first ask'), chunk('agent_message_chunk', 'first answer'),
+      { jsonrpc: '2.0', id: 1, result: {} },
+      { jsonrpc: '2.0', id: 2, method: 'session/prompt', params: { prompt: [{ type: 'text', text: 'second ask' }] } },
+      chunk('agent_message_chunk', 'second answer'),
+    ]
+    const said = (events: AcpEvent[]): string[] =>
+      events.flatMap((e) => (e.type === 'user' || e.type === 'agent' ? e.content.map((c) => (c.type === 'text' ? c.text : '')) : []))
+
+    // claude names the conversation by the ACP session's id.
+    await seedSession(ACP_SESSION, { mode: 'acp' })
+    const claude = path.join(claudeDir(PROJECT), 'projects', '-workspace', `${ACP_SESSION}.jsonl`)
+    await fs.mkdir(path.dirname(claude), { recursive: true })
+    const say = (uuid: string, parentUuid: string | null, role: string, text: string, timestamp: string): unknown => ({
+      type: role, uuid, parentUuid, sessionId: ACP_SESSION, cwd: '/workspace', timestamp,
+      message: role === 'user' ? { role, content: text } : { role, model: 'claude-fable-5', content: [{ type: 'text', text }] },
+    })
+    await fs.writeFile(claude, [
+      say('u1', null, 'user', 'first ask', before), say('a1', 'u1', 'assistant', 'first answer', before),
+      say('u2', 'a1', 'user', 'second ask', after), say('a2', 'u2', 'assistant', 'second answer', after),
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+    // The life running now takes the file past the transcript cap, which the
+    // history before it is read without: reading stops where the life began.
+    await fs.truncate(claude, 65 * 1024 * 1024)
+    await writeAcpRecord(ACP_SESSION, thisLife)
+
+    // pi-acp names a conversation by pi's own session id.
+    const PI = '01a1110b-f851-758d-ba08-45c4ee75613f'
+    await seedSession(PI, { tool: 'pi', mode: 'acp' })
+    const logName = `2026-01-01T00-00-00-000Z_${PI}.jsonl`
+    await fs.mkdir(agentHistoryDir(PROJECT, WORKSPACE, 'pi'), { recursive: true })
+    await fs.writeFile(path.join(agentHistoryDir(PROJECT, WORKSPACE, 'pi'), logName), [
+      { type: 'session', version: 3, id: PI, cwd: '/workspace', timestamp: before },
+      { type: 'message', id: 'm1', parentId: null, timestamp: before, message: { role: 'user', content: [{ type: 'text', text: 'first ask' }] } },
+      { type: 'message', id: 'm2', parentId: 'm1', timestamp: before, message: { role: 'assistant', content: [{ type: 'text', text: 'first answer' }] } },
+      { type: 'message', id: 'm3', parentId: 'm2', timestamp: after, message: { role: 'user', content: [{ type: 'text', text: 'second ask' }] } },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+    await writeAcpRecord(PI, thisLife)
+
+    // opencode's replay holds its whole conversation, so its own history,
+    // here an export of rows from before the life, does not stand in for it.
+    const OPENCODE = 'ses_eeef51727ffedBWQdWdy0dzOE2'
+    await seedSession(OPENCODE, { tool: 'opencode', mode: 'acp' })
+    const exported = path.join(opencodeCheckpointDir(PROJECT, WORKSPACE), 'yaac-transcripts')
+    await fs.mkdir(exported, { recursive: true })
+    await fs.writeFile(path.join(exported, `${OPENCODE}.jsonl`), [
+      { session: OPENCODE, type: 'session', parent: null, directory: '/workspace' },
+      { session: OPENCODE, type: 'user', seq: 1, data: { text: 'first ask', files: [], time: { created: Date.parse(before) } } },
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+    await writeAcpRecord(OPENCODE, thisLife)
+
+    for (const id of [ACP_SESSION, PI]) {
+      const last = await getAgentSessionTranscript(PROJECT, WORKSPACE, id)
+      expect([last.page, last.life, said(last.events)], id).toEqual([1, 'life-2', ['second ask', 'second answer']])
+      const first = await getAgentSessionTranscript(PROJECT, WORKSPACE, id, 0)
+      expect([first.page, first.life, said(first.events)], id).toEqual([0, 'life-2', ['first ask', 'first answer']])
+      expect(await recordOrigin(PROJECT, WORKSPACE, id, { id: 'life-2', startedAt: restart }), id)
+        .toEqual({ firstPage: 1, skipReplay: true })
+    }
+    const replayed = await getAgentSessionTranscript(PROJECT, WORKSPACE, OPENCODE)
+    expect([replayed.page, said(replayed.events)]).toEqual([0, ['first ask', 'first answer', 'second ask', 'second answer']])
   })
 
   it('fills in a subagent\'s thread that the conversation left out from claude\'s transcript of it', async () => {
@@ -144,7 +259,7 @@ describe('getAgentSessionTranscript', () => {
     await writeClaudeTranscript(ACP_SESSION)
     await withSubagent(ACP_SESSION, 'toolu_look')
 
-    const events = await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)
+    const { events } = await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)
 
     expect(events.map((e) => [e.type, 'thread' in e ? e.thread : undefined])).toEqual([
       ['tool', undefined], ['subagent', undefined], ['agent', 'toolu_look'],
@@ -160,7 +275,7 @@ describe('getAgentSessionTranscript', () => {
       path.join(agentHistoryDir(PROJECT, WORKSPACE, 'claude'), '-workspace', `${TUI_SESSION}.jsonl`),
     )
 
-    const events = await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)
+    const { events } = await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)
 
     expect(events.map((e) => e.type)).toEqual(['user', 'agent'])
   })
@@ -177,17 +292,17 @@ describe('getAgentSessionTranscript', () => {
       transcriptPath: path.relative(path.dirname(claudeDir(PROJECT)), elsewhere),
     }])
 
-    expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).map((e) => e.type))
+    expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).events.map((e) => e.type))
       .toEqual(['user', 'agent'])
   })
 
   it('answers empty for a conversation whose file was never written', async () => {
     // An agent that never spoke has an empty history, as with acp.
     await seedSession(TUI_SESSION)
-    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).toEqual([])
+    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).toEqual({ page: 0, events: [] })
 
     await seedSession(ACP_SESSION, { mode: 'acp' })
-    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)).toEqual([])
+    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)).toEqual({ page: 0, events: [] })
   })
 
   it('translates a tui conversation of every other tool from its own history', async () => {
@@ -230,7 +345,7 @@ describe('getAgentSessionTranscript', () => {
 
     for (const [tool, id] of [['codex', CODEX], ['pi', PI], ['opencode', OPENCODE]] as const) {
       await seedSession(id, { tool })
-      const said = (await getAgentSessionTranscript(PROJECT, WORKSPACE, id))
+      const said = (await getAgentSessionTranscript(PROJECT, WORKSPACE, id)).events
         .flatMap((e) => (e.type === 'user' || e.type === 'agent' ? [`${e.type}: ${JSON.stringify(e.content)}`] : []))
       expect(said, tool).toEqual([
         'user: [{"type":"text","text":"what changed?"}]',
@@ -249,7 +364,7 @@ describe('getAgentSessionTranscript', () => {
       `${TUI_SESSION}.jsonl`,
     ))
 
-    expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).map((e) => e.type))
+    expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).events.map((e) => e.type))
       .toEqual(['user', 'agent'])
   })
 
@@ -278,14 +393,14 @@ describe('getAgentSessionTranscript', () => {
     const file = path.join(claudeDir(PROJECT), 'projects', '-workspace', `${TUI_SESSION}.jsonl`)
     await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.symlink(elsewhere, file)
-    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).toEqual([])
+    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).toEqual({ page: 0, events: [] })
 
     await fs.rm(file)
     await promisify(execFile)('mkfifo', [file])
     await fs.mkdir(acpLogDir(PROJECT, WORKSPACE), { recursive: true })
     await promisify(execFile)('mkfifo', [path.join(acpLogDir(PROJECT, WORKSPACE), `${ACP_SESSION}.jsonl`)])
-    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).toEqual([])
-    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)).toEqual([])
+    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, TUI_SESSION)).toEqual({ page: 0, events: [] })
+    expect(await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)).toEqual({ page: 0, events: [] })
   })
 
   it('refuses a conversation the workspace never had', async () => {
@@ -308,7 +423,7 @@ describe('getAgentSessionTranscript', () => {
       },
     ])
 
-    expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)).map((e) => e.type))
+    expect((await getAgentSessionTranscript(PROJECT, WORKSPACE, ACP_SESSION)).events.map((e) => e.type))
       .toEqual(['agent'])
   })
 })

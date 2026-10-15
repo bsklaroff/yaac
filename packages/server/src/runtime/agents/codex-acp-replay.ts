@@ -22,7 +22,7 @@
  *    as `terminal_output_delta`; one still running at its turn's end is an
  *    async task until it exits.
  *  - FileChange (diffs), McpToolCall, WebSearch, ImageView, ImageGeneration,
- *    ContextCompaction, CollabAgentToolCall: tool calls.
+ *    CollabAgentToolCall: tool calls. ContextCompaction: a compaction.
  *  - SubAgentActivity: a started agent is a subagent whose rollout is
  *    replayed under its own session id until its first turn ends, it is
  *    interrupted, or its parent's turn stops; like the adapter, nothing
@@ -348,7 +348,9 @@ function itemUpdates(item: Json, at: 'start' | 'end'): Json[] {
     case 'WebSearch':
       return start({ kind: 'search', title: webSearchTitle(item) })
     case 'ContextCompaction':
-      return start({ kind: 'think', title: 'Compact conversation' })
+      // As the adapter reports one to a client that declares
+      // `session.compaction`. codex keeps no summary a reader can show.
+      return [{ sessionUpdate: 'compaction_update', compactionId: toolCallId, status: at === 'start' ? 'in_progress' : 'completed' }]
     case 'CollabAgentToolCall': {
       const prompt = asString(item.prompt)
       return start({
@@ -383,8 +385,8 @@ function itemUpdates(item: Json, at: 'start' | 'end'): Json[] {
 }
 
 /** The update closing a tool call with codex's final status, as the
- *  adapter reports it; an item with no status (a web search, a compaction)
- *  always completes. */
+ *  adapter reports it; an item with no status (a web search) always
+ *  completes. */
 function toolEnd(item: Json): Json {
   return {
     sessionUpdate: 'tool_call_update',

@@ -17,7 +17,7 @@
 
 import path from 'node:path'
 import { AcpRecordWriter } from './acp-log'
-import { ACP } from './acp-protocol'
+import { ACP, COMPACTION_META } from './acp-protocol'
 import { jsonObjects } from './jsonl'
 import { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { isUuid } from '#lib/uuid'
@@ -110,11 +110,21 @@ export async function claudeSubagentThreads(
  * ACP. A record rather than events, so `replayAcpLog` also handles tool-call
  * merging, sequencing and defensive drops for synthesized conversations.
  *
+ * The SDK's parser (`getSessionMessages`) walks one `parentUuid` chain back
+ * from the leaf, which stops at a compaction's boundary, so it shows only
+ * what followed the latest compaction. claude keeps the whole conversation
+ * in the file, so the transcript is cut at each boundary and each part
+ * parsed alone. A part after a boundary opens with the compaction, as
+ * claude's adapter reports one to a client that declares
+ * `session.compaction`, carrying the summary claude kept in place of the
+ * user message that holds it, and the boundary's trigger and token counts.
+ *
  * A `subagent` transcript's entries are sidechains. They go through the same
  * parser as the main conversation, marked otherwise: the SDK's subagent
  * parser walks one `parentUuid` chain back from the leaf, which drops all
  * but one of a set of parallel tool calls (claude files each as its own
- * entry, and the chain goes on from just one of their results).
+ * entry, and the chain goes on from just one of their results). A
+ * subagent's compactions are not shown, as live.
  */
 async function synthesizeAcpRecord(
   raw: string,
@@ -134,51 +144,89 @@ async function synthesizeAcpRecord(
   const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk')
   const { stripLocalCommandMetadata, toAcpNotifications } =
     await import('@agentclientprotocol/claude-agent-acp')
+  const { compactionSummaryText } = await import('@agentclientprotocol/claude-agent-acp/dist/context-compaction.js')
   /* eslint-enable no-restricted-syntax */
 
   const sessionId = isUuid(agentSessionId) ? agentSessionId : PLACEHOLDER_SESSION_ID
-  // A read-only store holding one session. `getSessionMessages` (the SDK's
-  // parser: follows `parentUuid`, drops summaries and subagent turns) then
-  // reads bytes we supply instead of claude's config dir.
-  const sessionStore: SessionStore = {
-    load: () => Promise.resolve(entries as SessionStoreEntry[]),
-    append: () => Promise.reject(new Error('yaac reads transcripts, never writes them')),
-  }
-
-  let messages
-  try {
-    messages = await getSessionMessages(sessionId, { sessionStore })
-  } catch (err) {
-    // An unparseable transcript yields an empty conversation, not an error.
-    serverLog(`[server] claude transcript replay failed: ${String(err)}`)
-    return
-  }
-
-  // The adapter's `replaySessionHistory` loop minus live-session parts.
   // `toolUseCache` spans messages so a `tool_result` finds its `tool_use`
   // (and so a tool call gets its title and kind).
   const toolUseCache = {}
-  for (const message of messages) {
-    const api = (message as { message?: { role?: unknown; content?: unknown } }).message
-    const role = api?.role
-    if (role !== 'assistant' && role !== 'user') continue
-    // The live path turns claude's synthetic "Please run /login" message
-    // into an auth error; replaying it would show a stale login prompt.
-    if (role === 'assistant' && isSyntheticLoginMessage(api)) continue
-    let content = api?.content
-    if (role === 'user') {
-      content = stripLocalCommandMetadata(content)
-      // Slash-command bookkeeping (caveat preamble, invocation, stdout).
-      if (content === null) continue
+  for (const part of compactedParts(entries)) {
+    // A read-only store holding one part. `getSessionMessages` (follows
+    // `parentUuid`, drops subagent turns) then reads bytes we supply
+    // instead of claude's config dir.
+    const sessionStore: SessionStore = {
+      load: () => Promise.resolve(part.entries as SessionStoreEntry[]),
+      append: () => Promise.reject(new Error('yaac reads transcripts, never writes them')),
     }
-    for (const notification of toAcpNotifications(
-      content as never, role, sessionId, toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
-      // With hooks off, the adapter returns notifications instead of pushing
-      // them through a client.
-      { registerHooks: false },
-    )) {
-      record.write({ method: ACP.sessionUpdate, params: notification })
+    let messages
+    try {
+      messages = await getSessionMessages(sessionId, { sessionStore })
+    } catch (err) {
+      // An unparseable part yields nothing, not an error.
+      serverLog(`[server] claude transcript replay failed: ${String(err)}`)
+      continue
     }
+
+    const isSummary = (m: unknown): boolean => (m as { isCompactSummary?: unknown }).isCompactSummary === true
+    if (part.boundary !== undefined && !subagent) {
+      const held = (messages.find(isSummary) as { message?: { content?: unknown } } | undefined)?.message?.content
+      const summary = typeof held === 'string' ? compactionSummaryText(held) : undefined
+      record.write({ method: ACP.sessionUpdate, params: { sessionId, update: compactionUpdate(part.boundary, summary) } })
+    }
+
+    // The adapter's `replaySessionHistory` loop minus live-session parts.
+    for (const message of messages) {
+      const api = (message as { message?: { role?: unknown; content?: unknown } }).message
+      const role = api?.role
+      if (role !== 'assistant' && role !== 'user') continue
+      if (isSummary(message)) continue
+      // The live path turns claude's synthetic "Please run /login" message
+      // into an auth error; replaying it would show a stale login prompt.
+      if (role === 'assistant' && isSyntheticLoginMessage(api)) continue
+      let content = api?.content
+      if (role === 'user') {
+        content = stripLocalCommandMetadata(content)
+        // Slash-command bookkeeping (caveat preamble, invocation, stdout).
+        if (content === null) continue
+      }
+      for (const notification of toAcpNotifications(
+        content as never, role, sessionId, toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
+        // With hooks off, the adapter returns notifications instead of pushing
+        // them through a client.
+        { registerHooks: false },
+      )) {
+        record.write({ method: ACP.sessionUpdate, params: notification })
+      }
+    }
+  }
+}
+
+/**
+ * A transcript's entries cut before each compaction boundary claude wrote
+ * for the conversation itself; each part after the first carries the
+ * boundary that opens it.
+ */
+function compactedParts(entries: Record<string, unknown>[]): Array<{ boundary?: Record<string, unknown>; entries: Record<string, unknown>[] }> {
+  const parts: Array<{ boundary?: Record<string, unknown>; entries: Record<string, unknown>[] }> = [{ entries: [] }]
+  for (const entry of entries) {
+    if (entry.type === 'system' && entry.subtype === 'compact_boundary' && entry.isSidechain !== true) {
+      parts.push({ boundary: entry, entries: [] })
+    }
+    parts[parts.length - 1].entries.push(entry)
+  }
+  return parts
+}
+
+/** The `compaction_update` a boundary and the summary after it make. */
+function compactionUpdate(boundary: Record<string, unknown>, summary: string | undefined): Record<string, unknown> {
+  const meta = boundary.compactMetadata as Record<string, unknown> | undefined
+  return {
+    sessionUpdate: 'compaction_update',
+    compactionId: typeof boundary.uuid === 'string' ? boundary.uuid : 'compaction',
+    status: 'completed',
+    ...(summary !== undefined ? { summary: [{ type: 'text', text: summary }] } : {}),
+    _meta: { [COMPACTION_META]: { trigger: meta?.trigger, tokensBefore: meta?.preTokens, tokensAfter: meta?.postTokens } },
   }
 }
 

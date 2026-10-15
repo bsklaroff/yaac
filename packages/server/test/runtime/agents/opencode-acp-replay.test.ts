@@ -198,6 +198,7 @@ describe('opencodeTranscriptAsAcp', () => {
       { type: 'agent', content: [{ type: 'text', text: 'Sleeping.' }] },
       { type: 'tool', call: { title: 'sleep 30', status: 'failed', content: [{ type: 'text', text: 'Tool execution interrupted' }] } },
       { type: 'user', content: [{ type: 'text', text: '/compact' }] },
+      { type: 'compaction', compaction: { trigger: 'manual' } },
       { type: 'user', content: [{ type: 'text', text: 'after compact' }] },
       { type: 'agent', content: [{ type: 'text', text: 'Hello from the mock.' }] },
     ])

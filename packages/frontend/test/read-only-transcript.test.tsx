@@ -1,8 +1,8 @@
 import type { JSX } from 'react'
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { screen, fireEvent, cleanup } from '@testing-library/react'
-import type { AcpEvent } from '@yaac/shared/acp'
+import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { ACP_PAGE_SPAN, type AcpEvent } from '@yaac/shared/acp'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { useUiStore } from '#lib/store'
 import {
@@ -26,11 +26,11 @@ const session: typeof agentSession = (over) => agentSession({ mode: 'tui', ...ov
 let server: FetchMock
 beforeEach(() => {
   useUiStore.setState({ chatCondensed: false })
-  server = mockFetch({ [TRANSCRIPT]: { events: [asked(0, 'what changed?'), said(1, 'the router')] } })
+  server = mockFetch({ [TRANSCRIPT]: { page: 0, events: [asked(0, 'what changed?'), said(1, 'the router')] } })
 })
 
 /** Answer conversation c1's transcript with these events. */
-const transcript = (events: AcpEvent[]): void => server.route(TRANSCRIPT, { events })
+const transcript = (events: AcpEvent[]): void => server.route(TRANSCRIPT, { page: 0, events })
 
 function renderPane(props: Partial<Parameters<typeof ReadOnlyTranscript>[0]> = {}): void {
   renderWithClient(
@@ -95,7 +95,7 @@ describe('ReadOnlyTranscript', () => {
     // `/clear` starts a second conversation in the same workspace; both are
     // readable, and the one the workspace was last in opens first.
     transcript([said(0, 'the first answer')])
-    server.route(TRANSCRIPT.replace('c1', 'c2'), { events: [said(0, 'the second answer')] })
+    server.route(TRANSCRIPT.replace('c1', 'c2'), { page: 0, events: [said(0, 'the second answer')] })
     renderPane({
       sessions: [
         session({ agentSessionId: 'c1', ordinal: 0, active: false, prompt: 'first ask' }),
@@ -237,6 +237,80 @@ describe('ReadOnlyTranscript', () => {
 
     expect(await screen.findByText(/Allow Once/)).toBeTruthy()
     expect(screen.queryByText(/never answered/i)).toBeNull()
+  })
+
+  describe('a conversation in pages', () => {
+    /**
+     * jsdom lays nothing out, so the scroller gets a geometry: each rendered
+     * row is 1000px tall in a 500px window, and the scroll position is kept.
+     */
+    const at = new WeakMap<Element, number>()
+    const stubbed = ['scrollHeight', 'clientHeight', 'scrollTop'] as const
+    beforeEach(() => {
+      const rows = (el: Element): number => el.querySelectorAll('[data-seq]').length * 1000
+      Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get(this: Element) { return rows(this) } })
+      Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 500 })
+      Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+        configurable: true,
+        get(this: Element) { return at.get(this) ?? 0 },
+        set(this: Element, v: number) { at.set(this, Math.max(0, Math.min(v, rows(this) - 500))) },
+      })
+    })
+    afterEach(() => {
+      for (const key of stubbed) delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key]
+    })
+
+    const compacted = (seq: number, id: string): AcpEvent => ({
+      type: 'compaction', seq, compaction: { id, status: 'completed', trigger: 'auto', tokensBefore: 180_000, tokensAfter: 12_000, summary: `kept by ${id}` },
+    })
+    const PAGES: AcpEvent[][] = [
+      [asked(0, 'first ask'), said(1, 'first answer')],
+      [compacted(ACP_PAGE_SPAN, 'c1'), said(ACP_PAGE_SPAN + 1, 'second answer')],
+      [compacted(2 * ACP_PAGE_SPAN, 'c2'), said(2 * ACP_PAGE_SPAN + 1, 'third answer')],
+    ]
+    const scroller = (): HTMLElement => screen.getByText('third answer', { exact: false }).closest('.overflow-y-auto')!
+    const scrollTo = (el: HTMLElement, top: number): void => {
+      el.scrollTop = top
+      fireEvent.scroll(el)
+    }
+
+    it('opens at the end, reads earlier pages scrolling up, and jumps to either end', async () => {
+      server.route(TRANSCRIPT, (c: { query: URLSearchParams }) => {
+        const page = c.query.get('page')
+        return page === null ? { page: 2, events: PAGES[2] } : { page: Number(page), events: PAGES[Number(page)] }
+      })
+      renderPane()
+      expect(await screen.findByText('third answer')).toBeTruthy()
+      const el = scroller()
+      // Only the last page, at its end, with the compaction that opens it.
+      expect(screen.queryByText('second answer')).toBeNull()
+      expect(el.scrollTop).toBe(1500)
+      expect(screen.getByText('Conversation compacted automatically · 180k → 12k tokens')).toBeTruthy()
+
+      // Near the top, the page before loads above, and the reader stays put.
+      scrollTo(el, 100)
+      expect(await screen.findByText('second answer')).toBeTruthy()
+      expect(el.scrollTop).toBe(2100)
+      expect(screen.queryByText('first answer')).toBeNull()
+
+      // The start shows the first page alone; scrolling down reads on.
+      fireEvent.click(screen.getByRole('button', { name: 'Jump to the start' }))
+      expect(await screen.findByText('first answer')).toBeTruthy()
+      await waitFor(() => expect(screen.queryByText('third answer')).toBeNull())
+      expect(el.scrollTop).toBe(0)
+      scrollTo(el, 1500)
+      expect(await screen.findByText('second answer')).toBeTruthy()
+
+      // And the latest page is one jump away.
+      fireEvent.click(screen.getByRole('button', { name: 'Jump to the latest' }))
+      expect(await screen.findByText('third answer')).toBeTruthy()
+      // Each earlier page was read once: going back down reuses page 1.
+      expect(server.called(TRANSCRIPT).map((c) => c.query.get('page'))).toEqual([null, '1', '0'])
+
+      // A compaction opens to the summary the agent kept.
+      fireEvent.click(screen.getByText('Conversation compacted automatically · 180k → 12k tokens'))
+      expect(screen.getByText('kept by c2')).toBeTruthy()
+    })
   })
 
   it('never serves a live poll as the stopped record', async () => {
