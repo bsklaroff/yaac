@@ -873,10 +873,9 @@ describe('agentDriver', () => {
     }))
 
     stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: prompt.id, result: { stopReason: 'end_turn' } })}\n`)
-    await vi.waitFor(() => expect(seen).toContainEqual({ kind: 'status', handle: 'claude', status: 'waiting' }))
-
-    expect(events.map((e) => e.type)).toEqual(['turn-start', 'turn-end'])
+    await vi.waitFor(() => expect(events.map((e) => e.type)).toEqual(['turn-start', 'turn-end']))
     expect(events[1]).toMatchObject({ stopReason: 'end_turn' })
+    expect(seen.filter((o) => o.kind === 'status').at(-1)).toEqual({ kind: 'status', handle: 'claude', status: 'waiting' })
   })
 
   it("follows claude's own running/idle report, which covers turns the agent starts itself", async () => {

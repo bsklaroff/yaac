@@ -35,6 +35,7 @@ export interface AgentPackage {
 
 /** Packages yaac patches after installing; see `AgentPackage.patch`. */
 const PATCHES: Record<string, AgentPackage['patch']> = {
+  'claude-agent-acp': { script: 'claude-agent-acp.js', entry: 'dist/acp-agent.js', revision: 1 },
   'pi-acp': { script: 'pi-acp.js', entry: 'dist/index.js', revision: 3 },
 }
 

@@ -4,11 +4,9 @@
  *   node pi-acp.js <pi-acp>/dist/index.js
  *
  * Run by `dockerfiles/Dockerfile.tools` and by the containerless driver's
- * install, right after npm installs pi-acp. The edits are made by anchored
- * string replacement; an anchor that is missing or not unique fails the
- * install, so a pi-acp bump cannot silently drop the patch. Bump the
- * patch's `revision` in `@yaac/shared/tool-install` whenever this file
- * changes.
+ * install, right after npm installs pi-acp. A pi-acp bump the edits no
+ * longer fit fails the install (`applyEdits`). Bump the patch's `revision`
+ * in `@yaac/shared/tool-install` whenever its edits change.
  *
  * Three changes, each deletable on its own once a pi-acp release makes it
  * unnecessary:
@@ -53,11 +51,7 @@
  *    start.
  */
 
-import fs from 'node:fs'
-import { fileURLToPath } from 'node:url'
-
-/** Marks a patched file, so a second run is a no-op. */
-const MARKER = '/* yaac: pi-acp patch */'
+import { applyEdits, patchFileFromArgv } from './apply-edits.js'
 
 /**
  * What a bash call's `terminal_output` carries: the text that follows
@@ -266,34 +260,9 @@ const EDITS = [
   },
 ]
 
-/** The patched source. Throws naming the first edit whose anchor is missing
- *  or appears more than once. */
+/** The patched source; see `applyEdits`. */
 export function patchPiAcp(source) {
-  if (source.includes(MARKER)) return source
-  let out = source
-  for (const { name, anchor, insert, text } of EDITS) {
-    const at = out.indexOf(anchor)
-    if (at === -1 || out.indexOf(anchor, at + 1) !== -1) {
-      throw new Error(`pi-acp patch: the anchor for "${name}" is ${at === -1 ? 'missing' : 'not unique'}`)
-    }
-    const replacement = insert === 'after' ? anchor + text : insert === 'before' ? text + anchor : text
-    out = out.slice(0, at) + replacement + out.slice(at + anchor.length)
-  }
-  // After the shebang, which must stay the first line.
-  const nl = out.indexOf('\n') + 1
-  return `${out.slice(0, nl)}${MARKER}\n${out.slice(nl)}`
+  return applyEdits(source, 'pi-acp', EDITS)
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const file = process.argv[2]
-  if (file === undefined) {
-    console.error('usage: node pi-acp.js <pi-acp>/dist/index.js')
-    process.exit(2)
-  }
-  try {
-    fs.writeFileSync(file, patchPiAcp(fs.readFileSync(file, 'utf8')))
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : String(err))
-    process.exit(1)
-  }
-}
+patchFileFromArgv(import.meta.url, patchPiAcp)

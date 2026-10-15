@@ -43,12 +43,12 @@ export async function baseImageHash(dockerfilePath: string): Promise<string> {
   )
 }
 
-/** Content hash of the tools layer's Dockerfile and the patch it copies
- *  in. Shared with the test global setup so both derive identical tags. */
+/** Content hash of the tools layer's Dockerfile and the patches folder it
+ *  copies in. Shared with the test global setup so both derive identical
+ *  tags. */
 export async function toolsContentHash(): Promise<string> {
-  const files = ['Dockerfile.tools', 'agent-patches/pi-acp.js']
-  const hashes = await Promise.all(files.map((f) => fileHash(path.join(DOCKERFILES_DIR, f))))
-  return stringHash(hashes.join(':'))
+  const patches = await contextHash(path.join(DOCKERFILES_DIR, 'agent-patches'))
+  return stringHash(`${await fileHash(path.join(DOCKERFILES_DIR, 'Dockerfile.tools'))}:agent-patches=${patches}`)
 }
 
 /**

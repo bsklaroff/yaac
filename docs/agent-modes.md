@@ -297,6 +297,15 @@ typed mid-turn where its adapter allows:
     on until that message is answered before it reports `cancelled`. yaac
     sends `session/cancel` at once; the hold-up is the adapter's.
 
+    claude's adapter counts only a turn a prompt began as running, so a
+    message sent while a finished background task has woken the agent is
+    handed back and goes as a `session/prompt`. The agent then takes it
+    into the run already going, and the adapter answers the prompt only as
+    yaac patches it at install, in the image and in a host install alike
+    (`dockerfiles/agent-patches/claude-agent-acp.js`, which says when it can
+    go). Unpatched, that prompt is never answered and the conversation shows
+    as working until the workspace restarts.
+
   The request asks for `idleBehavior: promptRequired`, so a steer that
   arrives just after the turn ended is handed back. Any steer the agent does
   not take (handed back, refused, or an adapter without the method, such as
