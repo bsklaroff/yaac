@@ -82,6 +82,7 @@ const ID = {
   provisioning: '9c5d4a6e-1f7b-4c2d-8e0a-4b5c6d7e8f9a',
   group: 'g1',
   credential: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+  user: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
   // The first id the build feed hands out in a fresh process.
   build: 'build-1',
 } as const
@@ -106,6 +107,8 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/project/create', body: {}, access: 'owner', callerScoped: true, k8s: 400, containerless: 400 },
   { method: 'GET', path: '/api/project/:projectId', request: P, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/project/:projectId', request: P, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/project/:projectId/shares', request: `${P}/shares`, body: { userId: ID.user }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/project/:projectId/shares/:userId', request: `${P}/shares/${ID.user}`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/default-branch-guard', request: `${P}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // A hosted project's remote, for the user's own git; a push is the
   // owner's.

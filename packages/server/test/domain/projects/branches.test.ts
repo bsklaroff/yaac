@@ -7,7 +7,7 @@ import { promisify } from 'node:util'
 import { setDataDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { getProjectBranches } from '#domain/projects'
 import { cloneRepo } from '#domain/git'
-import { BUILT_IN_USER_ID, recordProject } from '#db'
+import { BUILT_IN_USER_ID, recordProject, setProjectShareRevoked } from '#db'
 import { git } from '@yaac/test-utils/git'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 
@@ -40,6 +40,15 @@ describe('getProjectBranches', () => {
 
   afterEach(async () => {
     await fs.rm(tmp, { recursive: true, force: true })
+  })
+
+  it('refuses to refresh a removed share, but still reads its local refs', async () => {
+    const share = '4a2f1d3b-0c9e-4f8a-b7d6-1e2f3a4b5c6d'
+    await recordProject({ id: share, name: 'demo', remoteUrl: sourceRepo, addedAt: '', hosted: true, sharedFrom: projectId }, BUILT_IN_USER_ID)
+    await cloneRepo(sourceRepo, repoDir(share), null)
+    await setProjectShareRevoked(share, true)
+    await expect(getProjectBranches(share, { refresh: true })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect((await getProjectBranches(share)).branches).toContain('main')
   })
 
   it('returns branches and the default branch', async () => {

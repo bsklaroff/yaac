@@ -20,9 +20,10 @@ import {
   createHostedProject,
   registerStagedProject,
   resolveProjectCredential,
+  shareProject,
 } from '#domain/projects'
 import { addHttpsCredential, generateSshCredential } from '#domain/auth'
-import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows, recordProject, setToolCredential } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getProjectRow, listProjectRows, recordProject, seeTailnetUser, setProjectShareRevoked, setToolCredential } from '#db'
 import {
   claudeDir,
   getProjectsDir,
@@ -239,14 +240,14 @@ describe('createHostedProject', () => {
     await expect(fs.access(claudeDir(project.id))).resolves.toBeUndefined()
   })
 
-  it('refuses a name with nothing usable in it, or one another project has', async () => {
+  it('refuses a name with nothing usable in it, but not one another project has', async () => {
     await expect(createHostedProject('!!!', BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
     expect(await projectDirs()).toEqual([])
 
-    // The name is a hosted project's only handle, so it must name one.
+    // Names need not be unique; ids tell projects apart.
     await recordProject({ id: STAGED, name: 'widgets', remoteUrl: 'https://github.com/acme/widgets.git', addedAt: '' }, BUILT_IN_USER_ID)
-    await expect(createHostedProject('Widgets', BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'CONFLICT' })
-    expect(await listProjectRows()).toHaveLength(1)
+    expect((await createHostedProject('Widgets', BUILT_IN_USER_ID)).name).toBe('widgets')
+    expect(await listProjectRows()).toHaveLength(2)
   })
 
   it('rolls back both the project dir and the remote when setup fails', async () => {
@@ -256,6 +257,57 @@ describe('createHostedProject', () => {
     expect(await projectDirs()).toEqual([])
     expect(await fs.readdir(path.dirname(hostedRepoDir('x')))).toEqual([])
     expect(await listProjectRows()).toEqual([])
+  })
+})
+
+describe('shareProject', () => {
+  const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+
+  beforeEach(async () => {
+    const real = await vi.importActual<typeof gitModule>('#domain/git')
+    mockClone.mockImplementation(real.cloneRepo)
+  })
+
+  it("gives the user a project of their own on the source's repository, once, and gives a removed one back", async () => {
+    const source = await createHostedProject('app', BUILT_IN_USER_ID)
+    const ada = await seeTailnetUser('ada@example.com', 'Ada')
+
+    const share = await shareProject(local, source.id, ada)
+
+    expect(share.id).not.toBe(source.id)
+    expect(share.name).toBe('app')
+    expect(share.remoteUrl).toBe(hostedRemoteUrl(share.id))
+    expect(await getProjectRow(share.id)).toMatchObject({
+      owner: ada, hosted: true, sharedFrom: source.id, shareRevoked: false, gitCredentialId: null,
+    })
+    // Its main clone is cloned from the source's repository; it has none.
+    expect(mockClone).toHaveBeenLastCalledWith(hostedRepoDir(source.id), repoDir(share.id), { kind: 'hosted' })
+    await expect(fs.access(hostedRepoDir(share.id))).rejects.toThrow()
+    await expect(fs.access(claudeDir(share.id))).resolves.toBeUndefined()
+
+    // Sharing again is the same share; so is sharing after a removal.
+    expect(await shareProject(local, source.id, ada)).toEqual(share)
+    await setProjectShareRevoked(share.id, true)
+    expect(await shareProject(local, source.id, ada)).toEqual(share)
+    expect((await getProjectRow(share.id))?.shareRevoked).toBe(false)
+    expect(await listProjectRows()).toHaveLength(2)
+  })
+
+  it("is the owner's alone, for a project created in yaac, with another user of the install", async () => {
+    const hosted = await createHostedProject('app', BUILT_IN_USER_ID)
+    const ada = await seeTailnetUser('ada@example.com', 'Ada')
+    const asAda = { kind: 'tailnet', userId: ada, login: 'ada@example.com', name: 'Ada' } as const
+    await recordProject({ id: STAGED, name: 'widgets', remoteUrl: 'https://github.com/acme/widgets.git', addedAt: '' }, BUILT_IN_USER_ID)
+
+    await expect(shareProject(asAda, hosted.id, ada)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(shareProject(local, STAGED, ada)).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(shareProject(local, hosted.id, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(shareProject(local, hosted.id, LOCAL)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await expect(shareProject(local, LOCAL, ada)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    // A share is not shared on.
+    const share = await shareProject(local, hosted.id, ada)
+    await expect(shareProject(asAda, share.id, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
+    expect(await listProjectRows()).toHaveLength(3)
   })
 })
 

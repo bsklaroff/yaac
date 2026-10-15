@@ -8,12 +8,13 @@ import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/
 import { git } from '@yaac/test-utils/git'
 import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
-import { BUILT_IN_USER_ID, closeDb, getProjectRow } from '#db'
+import { BUILT_IN_USER_ID, closeDb, getProjectRow, seeTailnetUser, setProjectShareRevoked } from '#db'
 import { getDefaultBranch } from '#domain/git'
 import {
   createHostedProject,
   serveHostedRepo,
   setDefaultBranchGuard,
+  shareProject,
 } from '#domain/projects'
 
 /**
@@ -22,6 +23,7 @@ import {
  * clones and pushes through the same handler the routes use:
  *   /owner/<project>/…        the project's owner
  *   /stranger/<project>/…     another user
+ *   /ada/<project>/…          a user `shareProject` can share with
  *   /ws/<caller project>/<project>/…  a workspace of <caller project>
  */
 
@@ -31,6 +33,7 @@ let tmp: string
 let server: ServerType
 let origin: string
 let projectId: string
+let ada: string
 const OTHER_PROJECT = '0a0a0a0a-0000-4000-8000-0000000000ff'
 const STRANGER = '0a0a0a0a-0000-4000-8000-0000000000aa'
 const ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' }
@@ -39,6 +42,7 @@ const run = (dir: string, args: string[]): Promise<string> => git(dir, args, { e
 
 function callerFor(segments: string[]): { caller: HostedRepoCaller; rest: string[] } {
   if (segments[0] === 'owner') return { caller: { kind: 'user', principal: { kind: 'local', userId: BUILT_IN_USER_ID } }, rest: segments.slice(1) }
+  if (segments[0] === 'ada') return { caller: { kind: 'user', principal: { kind: 'local', userId: ada } }, rest: segments.slice(1) }
   if (segments[0] === 'stranger') return { caller: { kind: 'user', principal: { kind: 'local', userId: STRANGER } }, rest: segments.slice(1) }
   return { caller: { kind: 'workspace', projectId: segments[1] }, rest: segments.slice(2) }
 }
@@ -56,9 +60,9 @@ async function handle(request: Request): Promise<Response> {
 
 /** Wait for the post-push fetch to bring the main clone's `origin/<branch>`
  *  to `sha`. */
-async function mainCloneSees(branch: string, sha: string): Promise<void> {
+async function mainCloneSees(branch: string, sha: string, project = projectId): Promise<void> {
   for (let i = 0; i < 100; i += 1) {
-    const at = await run(repoDir(projectId), ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).catch(() => '')
+    const at = await run(repoDir(project), ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).catch(() => '')
     if (at.trim() === sha) return
     await new Promise((r) => setTimeout(r, 50))
   }
@@ -69,6 +73,7 @@ beforeAll(async () => {
   tmp = await createTempDataDir()
   installFakeWorkspaceDriver({ list: () => Promise.resolve([]) })
   projectId = (await createHostedProject('Hosted App', BUILT_IN_USER_ID)).id
+  ada = await seeTailnetUser('ada@example.com', 'Ada')
   server = createAdaptorServer({ fetch: handle })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`
@@ -179,6 +184,26 @@ describe('serveHostedRepo', () => {
     expect(await run(hostedRepoDir(projectId), ['reflog', 'show', '--format=%H', 'main'])).toContain(before)
     await setDefaultBranchGuard({ kind: 'local', userId: BUILT_IN_USER_ID }, projectId, true)
   })
+
+  it("lets a share's owner and workspaces push the source's repository, into every main clone on it, until the share is removed", async () => {
+    const share = (await shareProject({ kind: 'local', userId: BUILT_IN_USER_ID }, projectId, ada)).id
+    const work = path.join(tmp, 'ada-clone')
+    await run(tmp, ['clone', '-q', `${origin}/ada/${share}`, work])
+    await run(work, ['commit', '-q', '--allow-empty', '-m', 'from ada'])
+    await run(work, ['push', '-q', 'origin', 'HEAD:ada/one'])
+
+    const tip = (await run(work, ['rev-parse', 'HEAD'])).trim()
+    expect((await run(hostedRepoDir(projectId), ['rev-parse', 'ada/one'])).trim()).toBe(tip)
+    await mainCloneSees('ada/one', tip, projectId)
+    await mainCloneSees('ada/one', tip, share)
+    await run(tmp, ['ls-remote', `${origin}/ws/${share}/${share}`])
+    // The share is its owner's: the source's owner pushes through their own.
+    await expect(run(work, ['push', '-q', `${origin}/owner/${share}`, 'HEAD:ada/two'])).rejects.toThrow(/403/)
+
+    await setProjectShareRevoked(share, true)
+    await expect(run(work, ['push', '-q', 'origin', 'HEAD:ada/two'])).rejects.toThrow(/403/)
+    await expect(run(tmp, ['ls-remote', `${origin}/ws/${share}/${share}`])).rejects.toThrow(/403/)
+  })
 })
 
 describe('setDefaultBranchGuard', () => {
@@ -192,5 +217,9 @@ describe('setDefaultBranchGuard', () => {
     await expect(setDefaultBranchGuard({ kind: 'local', userId: STRANGER }, projectId, false))
       .rejects.toMatchObject({ code: 'FORBIDDEN' })
     await expect(setDefaultBranchGuard(owner, OTHER_PROJECT, false)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    // A share pushes under its source's guard, which only the source's owner sets.
+    const share = (await shareProject(owner, projectId, await seeTailnetUser('bo@example.com', 'Bo'))).id
+    const bo = (await getProjectRow(share))?.owner ?? ''
+    await expect(setDefaultBranchGuard({ kind: 'local', userId: bo }, share, false)).rejects.toMatchObject({ code: 'VALIDATION' })
   })
 })

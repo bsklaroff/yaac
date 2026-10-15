@@ -7,7 +7,7 @@ import {
   configEditDockerfile,
   configEditUserDockerfile,
 } from '#commands/config-edit'
-import { startFakeApi, type FakeApi } from './fake-api'
+import { serveProjects, startFakeApi, type FakeApi } from './fake-api'
 
 /**
  * The config edit commands against a fake server and a stub $EDITOR, which
@@ -43,7 +43,7 @@ beforeEach(() => {
   vi.stubEnv('EDIT_WITH', '')
   process.exitCode = undefined
   // The project the user named resolves to its id once, up front.
-  api.on('GET /api/project/demo', { json: { id: 'id-demo', name: 'demo' } })
+  serveProjects(api, [['id-demo', 'demo']])
 })
 
 afterEach(() => {
@@ -113,8 +113,8 @@ describe('configEditProject', () => {
     expect(await keptEdits()).toBe('{ "nestedContainers": "yes" }')
   })
 
-  it('propagates a NOT_FOUND before opening the editor', async () => {
-    await expect(configEditProject('nope')).rejects.toThrow('no route GET /api/project/nope')
+  it('refuses a project the caller does not have before opening the editor', async () => {
+    await expect(configEditProject('nope')).rejects.toThrow('You have no project nope')
     expect(sent(RAW)).toEqual([])
   })
 })

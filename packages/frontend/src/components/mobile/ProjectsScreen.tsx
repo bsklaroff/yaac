@@ -10,7 +10,7 @@ import { EmptyState } from '#components/ui/EmptyState'
 import { WelcomePane } from '#components/WelcomePane'
 import { identityColor } from '#lib/projectIdentity'
 import type { ProjectOp } from '#lib/store'
-import { useReadOnly } from '#lib/viewer'
+import { useTeammateView } from '#lib/viewer'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
@@ -37,7 +37,7 @@ export function ProjectsScreen({
   connected: boolean
   onSelect: (projectId: string) => void
 }): JSX.Element {
-  const readOnly = useReadOnly()
+  const readOnly = useTeammateView()
   const empty = projects.length === 0 && ops.length === 0
   const welcome = empty && !readOnly
   return (

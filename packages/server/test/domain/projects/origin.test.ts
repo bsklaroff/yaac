@@ -6,7 +6,7 @@ import { handleFixture, installFakeWorkspaceDriver, snapshotFixture, workspacePa
 import { git } from '@yaac/test-utils/git'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
-import { BUILT_IN_USER_ID, recordProject } from '#db'
+import { BUILT_IN_USER_ID, recordProject, setProjectShareRevoked } from '#db'
 import { cloneRepo, createCheckout } from '#domain/git'
 import { fetchProjectOrigin, refreshProjectOrigins } from '#domain/projects'
 import { execFileAsync } from '#lib/shell'
@@ -89,5 +89,12 @@ describe('fetchProjectOrigin', () => {
     // The burst coalesces into at most two rounds.
     expect(execs.length).toBeGreaterThanOrEqual(1)
     expect(execs.length).toBeLessThanOrEqual(2)
+  })
+
+  it('refuses a removed share, whose main clone keeps what it had', async () => {
+    const share = '4a2f1d3b-0c9e-4f8a-b7d6-1e2f3a4b5c6d'
+    await recordProject({ id: share, name: 'proj', remoteUrl: source, addedAt: '', hosted: true, sharedFrom: PROJECT_ID }, BUILT_IN_USER_ID)
+    await setProjectShareRevoked(share, true)
+    await expect(fetchProjectOrigin(share)).rejects.toMatchObject({ code: 'FORBIDDEN' })
   })
 })

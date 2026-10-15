@@ -6,7 +6,7 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 
 import { listProjects } from '#domain/projects'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
-import { BUILT_IN_USER_ID } from '#db'
+import { BUILT_IN_USER_ID, recordProject, setProjectDefaultBranchGuard, setProjectShareRevoked } from '#db'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 
 const FOO = 'acbd18db-4cc2-485c-8def-654fccc4a4d8'
@@ -76,5 +76,15 @@ describe('listProjects', () => {
     await recordWorkspaceStopped(FOO, 'quit')
     await recordWorkspaceStopped(FOO, 'oom', { reason: 'oom' })
     expect((await listProjects())[0]).toMatchObject({ stoppedCount: 2, unseenDeaths: 1 })
+  })
+
+  it("says what a share was shared from and whether it was removed, with its source's guard", async () => {
+    await recordTestProject(FOO, { remoteUrl: 'http://yaac.internal/foo.git' })
+    await recordProject({ id: BAR, name: 'demo', remoteUrl: 'http://yaac.internal/bar.git', addedAt: '', hosted: true, sharedFrom: FOO }, BUILT_IN_USER_ID)
+    await setProjectDefaultBranchGuard(FOO, false)
+    await setProjectShareRevoked(BAR, true)
+    const byId = new Map((await listProjects()).map((p) => [p.id, p]))
+    expect(byId.get(FOO)?.sharedFrom).toBeUndefined()
+    expect(byId.get(BAR)).toMatchObject({ sharedFrom: { projectId: FOO, revoked: true }, guardDefaultBranch: false })
   })
 })

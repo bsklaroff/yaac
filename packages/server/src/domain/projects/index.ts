@@ -10,7 +10,7 @@
 // Adding a name here widens the interface and requires a unit test in
 // packages/server/test/domain/projects/.
 
-export { addProject, createHostedProject, registerStagedProject } from './add'
+export { addProject, createHostedProject, registerStagedProject, shareProject } from './add'
 export { serveHostedRepo, setDefaultBranchGuard } from './hosted'
 export {
   addAllowedHostToProject,

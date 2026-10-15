@@ -8,11 +8,15 @@ import { hostedCloneUrl } from '@yaac/shared/hosted-git'
  * Project settings for a project whose git remote yaac hosts
  * (docs/hosted-projects.md): the URL to clone it from on this machine, and
  * the default-branch guard. The guard's value comes from the snapshot,
- * which the server pushes again once it changes.
+ * which the server pushes again once it changes. `cliRef` names the
+ * project to `yaac project clone`; `shared` says it is a share, whose
+ * repository is the source's (docs/hosted-projects.md "Sharing").
  */
-export function HostedRemote({ projectId, name, guardDefaultBranch, readOnly }: {
+export function HostedRemote({ projectId, name, cliRef, shared, guardDefaultBranch, readOnly }: {
   projectId: string
   name: string
+  cliRef: string
+  shared: boolean
   guardDefaultBranch: boolean
   readOnly: boolean
 }): JSX.Element {
@@ -34,8 +38,11 @@ export function HostedRemote({ projectId, name, guardDefaultBranch, readOnly }: 
     <div>
       <div className="text-xs font-medium text-text">Git repository</div>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        yaac hosts this project&apos;s repository, and it is the only copy. Clone it with{' '}
-        <code className="text-text-dim">yaac project clone {name}</code>, or:
+        {shared
+          ? 'yaac hosts this project\'s repository, which it shares with the project it was shared from; '
+            + 'removing this project leaves it alone.'
+          : 'yaac hosts this project\'s repository, and it is the only copy.'}{' '}
+        Clone it with <code className="text-text-dim">yaac project clone {cliRef}</code>, or:
       </p>
       <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md bg-bg px-2.5 py-1.5">
         <code title={url} className="min-w-0 flex-1 select-all truncate font-mono text-[11px] text-text-faint">

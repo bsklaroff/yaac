@@ -25,8 +25,9 @@ import {
   resolveProjectId,
   serveHostedRepo,
   setDefaultBranchGuard,
+  shareProject,
 } from '#domain/projects'
-import { removeProject } from '#domain/workspaces'
+import { removeProject, unshareProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
@@ -123,6 +124,17 @@ export const projectApp = new Hono<IdentityEnv>()
   .get('/:projectId/git/info/refs', async (c) => serveUserGit(c, '/info/refs'))
   .post('/:projectId/git/git-upload-pack', async (c) => serveUserGit(c, '/git-upload-pack'))
   .post('/:projectId/git/git-receive-pack', async (c) => serveUserGit(c, '/git-receive-pack'))
+  // Share a hosted project with another user, or remove their share
+  // (docs/hosted-projects.md "Sharing").
+  .post(
+    '/:projectId/shares',
+    zv('json', z.object({ userId: z.uuid() })),
+    async (c) => c.json(await shareProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').userId)),
+  )
+  .delete('/:projectId/shares/:userId', async (c) => {
+    await unshareProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.param('userId'))
+    return c.body(null, 204)
+  })
   .delete('/:projectId', async (c) => {
     await removeProject(c.get('principal'), await resolveProjectId(c.req.param('projectId')))
     return c.body(null, 204)

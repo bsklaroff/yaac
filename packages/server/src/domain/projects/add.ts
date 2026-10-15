@@ -6,7 +6,8 @@ import { hostedRemoteUrl } from '@yaac/shared/hosted-git'
 import { cloneRepo, initHostedRepo, isGitAuthError } from '#domain/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { resolveCredentialForRemote } from './credentials'
-import { getProjectRow, getToolCredential, listProjectRows, recordProject } from '#db'
+import { getProjectRow, getToolCredential, listProjectRows, listUsers, recordProject, setProjectShareRevoked } from '#db'
+import { authorizeProject, type Actor } from '#domain/access'
 import {
   writeProjectClaudePlaceholder,
   writeProjectCodexPlaceholder,
@@ -85,11 +86,6 @@ export async function addProject(
 export async function createHostedProject(rawName: string, owner: string): Promise<ProjectMeta> {
   const name = projectNameFor(rawName.trim())
   if (!name) throw new ServerError('VALIDATION', `"${rawName}" is not a usable project name`)
-  // Its name is a hosted project's only handle (`yaac project clone`, the
-  // remove confirmation), so it must name one project.
-  if ((await listProjectRows()).some((r) => r.name === name)) {
-    throw new ServerError('CONFLICT', `a project named "${name}" already exists`)
-  }
   await ensureDataDir()
   return setUpProject(name, owner, { hosted: true }, async (projectId) => {
     const hosted = hostedRepoDir(projectId)
@@ -105,7 +101,39 @@ export async function createHostedProject(rawName: string, owner: string): Promi
 }
 
 /**
- * What both ways of adding a project share: a new id, the project dir,
+ * Share a hosted project with another user (docs/hosted-projects.md
+ * "Sharing"): give them a project of their own under the same name, whose
+ * remote is this project's repository. Sharing again with a user whose
+ * share was removed gives that share back, workspaces and all. Only the
+ * owner shares, and only a project created in yaac that is not itself a
+ * share.
+ */
+export async function shareProject(principal: Actor, projectId: string, userId: string): Promise<ProjectMeta> {
+  const row = await getProjectRow(projectId)
+  if (!row) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+  await authorizeProject(principal, projectId)
+  if (!row.hosted || row.sharedFrom !== undefined) {
+    throw new ServerError('VALIDATION', `"${row.name}" can't be shared: only a project created in yaac can be, by its owner.`)
+  }
+  if (userId === row.owner) throw new ServerError('VALIDATION', `"${row.name}" is already yours`)
+  if (!(await listUsers()).some((u) => u.id === userId)) throw new ServerError('NOT_FOUND', `user ${userId} not found`)
+  const existing = (await listProjectRows()).find((r) => r.sharedFrom === projectId && r.owner === userId)
+  if (existing) {
+    if (existing.shareRevoked) await setProjectShareRevoked(existing.id, false)
+    return { id: existing.id, name: existing.name, remoteUrl: existing.remoteUrl, addedAt: existing.addedAt }
+  }
+  return setUpProject(row.name, userId, { hosted: true, sharedFrom: projectId }, async (shareId) => {
+    try {
+      await cloneRepo(hostedRepoDir(projectId), repoDir(shareId), { kind: 'hosted' })
+    } catch (err) {
+      throw new ServerError('INTERNAL', `Failed to clone the repository: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    return hostedRemoteUrl(shareId)
+  })
+}
+
+/**
+ * What every way of adding a project shares: a new id, the project dir,
  * `makeRepo` to fill its main clone (returning the remote URL to record),
  * the tool-auth placeholders, and the row. A failure removes the project
  * dir and any hosted remote, since files without a row couldn't be listed,
@@ -114,7 +142,7 @@ export async function createHostedProject(rawName: string, owner: string): Promi
 async function setUpProject(
   name: string,
   owner: string,
-  record: { hosted?: boolean; gitCredential?: { id: string; knownHostsEntry: string | null } },
+  record: { hosted?: boolean; sharedFrom?: string; gitCredential?: { id: string; knownHostsEntry: string | null } },
   makeRepo: (projectId: string) => Promise<string>,
 ): Promise<ProjectMeta> {
   const projectId = crypto.randomUUID()
@@ -135,7 +163,7 @@ async function setUpProject(
       await writeProjectCodexPlaceholder(projectId, codexCreds.codexOauth)
     }
 
-    await recordProject({ ...meta, hosted: record.hosted === true }, owner, record.gitCredential)
+    await recordProject({ ...meta, hosted: record.hosted === true, sharedFrom: record.sharedFrom }, owner, record.gitCredential)
     return meta
   } catch (err) {
     await fs.rm(dir, { recursive: true, force: true })

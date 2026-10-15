@@ -1,4 +1,4 @@
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles } from '#domain/workspaces'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -45,6 +45,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // in-pod verdict, and a failed probe keeps the workspace.
     { name: 'stale-workspaces', triggers: ['workspaces', 'units', 'status-streams'],
       run: (ctx) => reconcileStaleWorkspaces(ctx.snapshot()) },
+    // A removed share runs nothing (docs/hosted-projects.md "Sharing"):
+    // removing it stops its workspaces, and this stops any that a failed
+    // stop or a create already past its owner check left running.
+    { name: 'revoked-shares', triggers: ['workspaces'],
+      run: (ctx) => reconcileRevokedShares(ctx.snapshot()) },
     // Backstop for queued workspaces: a launch interrupted by a server
     // restart, or a release whose launch never happened. `stopWorkspace`
     // launches directly, so the resync is enough.

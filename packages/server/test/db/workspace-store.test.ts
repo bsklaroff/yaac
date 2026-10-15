@@ -305,15 +305,23 @@ describe('session store', () => {
       await create('spare-1', { spare: true })
       await recordWorkspaceStopped(PROJ, 'spare-1')
 
-      const page = await listStoppedWorkspaceRows({ projectId: PROJ, excludeIds: ['b'] }, { limit: 1 })
+      const page = await listStoppedWorkspaceRows({ projectIds: [PROJ], excludeIds: ['b'] }, { limit: 1 })
       expect(page.rows.map((r) => r.workspaceId)).toEqual(['c'])
       expect(page.total).toBe(2)
       const c = page.rows[0]
       const rest = await listStoppedWorkspaceRows(
-        { projectId: PROJ, excludeIds: ['b'] },
+        { projectIds: [PROJ], excludeIds: ['b'] },
         { after: { stoppedAt: c?.stoppedAt ?? new Date(), workspaceId: 'c' } },
       )
       expect(rest.rows.map((r) => r.workspaceId)).toEqual(['a'])
+    })
+
+    it('lists only the named projects, and nothing for none', async () => {
+      await create('mine')
+      await recordWorkspaceStopped(PROJ, 'mine')
+      expect((await listStoppedWorkspaceRows({ projectIds: [PROJ] })).rows.map((r) => r.workspaceId)).toEqual(['mine'])
+      expect((await listStoppedWorkspaceRows({ projectIds: ['0a0a0a0a-0000-4000-8000-0000000000ff'] })).total).toBe(0)
+      expect((await listStoppedWorkspaceRows({ projectIds: [] })).total).toBe(0)
     })
 
     it('pages stops written with microseconds without skipping any', async () => {
@@ -332,7 +340,7 @@ describe('session store', () => {
       const seen: string[] = []
       let after: StoppedRowCursor | undefined
       for (let i = 0; i < 4; i++) {
-        const { rows } = await listStoppedWorkspaceRows({ projectId: PROJ }, { limit: 1, ...(after ? { after } : {}) })
+        const { rows } = await listStoppedWorkspaceRows({ projectIds: [PROJ] }, { limit: 1, ...(after ? { after } : {}) })
         const row = rows[0]
         if (row?.stoppedAt === undefined) break
         seen.push(row.workspaceId)

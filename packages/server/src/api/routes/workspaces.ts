@@ -162,6 +162,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     '/list-stopped',
     zv('query', z.object({
       project: optionalProjectRef,
+      owner: z.uuid().optional(),
       limit: z.coerce.number().int().positive().optional(),
       cursor: z.string().optional(),
       q: z.string().optional(),

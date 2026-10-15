@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { api } from '#commands/api'
+import { api, resolveProjectId } from '#commands/api'
 import { resolveServerTarget } from '@yaac/shared/server-api'
 import { hostedCloneUrl } from '@yaac/shared/hosted-git'
 
@@ -8,7 +8,7 @@ import { hostedCloneUrl } from '@yaac/shared/hosted-git'
  * project's name), so its code can be read and pushed from this machine.
  */
 export async function projectClone(project: string, dir?: string): Promise<void> {
-  const detail = await api.project[':projectId'].$get({ param: { projectId: project } })
+  const detail = await api.project[':projectId'].$get({ param: { projectId: await resolveProjectId(project) } })
   if (!detail.hosted) {
     throw new Error(`Project "${detail.name}" is not hosted by yaac; clone it from ${detail.remoteUrl}.`)
   }

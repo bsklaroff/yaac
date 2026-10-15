@@ -7,7 +7,7 @@ import { claimChord, cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTa
 import { deviceTimeZone } from './lib/time'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
-import { ownedBy, useReadOnly, useViewedUserId, whoamiQuery } from './lib/viewer'
+import { ownedBy, useReadOnly, useTeammateView, useViewedUserId, whoamiQuery } from './lib/viewer'
 import {
   isUnreadWaiting, mergeProvisioning, persistSelection, resolveVacantSelection,
   shortcutsSuspended, unreadWaitingByProject, useUiStore,
@@ -106,6 +106,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const all = useSnapshot()
   const viewedUserId = useViewedUserId()
   const readOnly = useReadOnly()
+  const teammateView = useTeammateView()
   const snapshot = useMemo(
     () => (all && viewedUserId !== undefined ? ownedBy(all, viewedUserId) : all),
     [all, viewedUserId],
@@ -152,7 +153,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   useLayoutEffect(() => {
     if (all) settleProjectOps(all.projects.map((p) => p.id))
   }, [all, projectOps, settleProjectOps])
-  const ops = readOnly ? [] : projectOps
+  const ops = teammateView ? [] : projectOps
   const projectOp = ops.find((o) => o.id === activeProjectId)
 
   // An active project of another user's (a link, or a reload) switches to

@@ -3,6 +3,7 @@ import { getProjectRow, listProjectRows } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { loadProjectConfig } from './config'
 import { ServerError } from '@yaac/shared/errors'
+import { resolveProjectRef } from '@yaac/shared/project-name'
 import type { ProjectMeta, YaacConfig } from '@yaac/shared/types'
 
 export interface ProjectDetail {
@@ -18,7 +19,7 @@ export interface ProjectConfigResult {
   config: YaacConfig | null
 }
 
-async function loadProjectMeta(projectId: string): Promise<ProjectMeta & { hosted: boolean }> {
+async function loadProjectMeta(projectId: string): Promise<ProjectMeta & { hosted: boolean; sharedFrom?: string; shareRevoked: boolean }> {
   const meta = await getProjectRow(projectId)
   if (!meta) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   return meta
@@ -32,32 +33,10 @@ export async function assertProjectExists(projectId: string): Promise<void> {
   await loadProjectMeta(projectId)
 }
 
-/** The shortest id prefix accepted, so a short or hex-only name that
- *  names no project is not taken for another project's id. */
-const MIN_ID_PREFIX = 8
-
-/**
- * Resolve what a client typed for a project to its id: a full id, then a
- * name, then a unique id prefix of at least `MIN_ID_PREFIX` characters.
- * Names are not unique, so a name shared by several projects is an error
- * listing them. Throws `NOT_FOUND` when nothing matches.
- */
+/** Resolve what a client typed for a project, among every user's, to its
+ *  id (`resolveProjectRef`). */
 export async function resolveProjectId(ref: string): Promise<string> {
-  const wanted = ref.trim().toLowerCase()
-  if (wanted === '') throw new ServerError('VALIDATION', 'a project is required')
-  const rows = await listProjectRows()
-  if (rows.some((r) => r.id === wanted)) return wanted
-  const named = rows.filter((r) => r.name === wanted)
-  const matches = named.length > 0 || wanted.length < MIN_ID_PREFIX
-    ? named
-    : rows.filter((r) => r.id.startsWith(wanted))
-  if (matches.length === 1) return matches[0].id
-  if (matches.length === 0) throw new ServerError('NOT_FOUND', `project ${ref.trim()} not found`)
-  throw new ServerError(
-    'VALIDATION',
-    `"${ref.trim()}" matches more than one project — use its id: `
-    + matches.map((r) => `${r.name} (${r.id})`).join(', '),
-  )
+  return resolveProjectRef(await listProjectRows(), ref)
 }
 
 /**
@@ -70,10 +49,13 @@ export async function projectRemoteUrl(projectId: string): Promise<string> {
 }
 
 /** Where the server's own git fetches the project from: the row's URL, or
- *  for a hosted project the bare repository on disk. */
+ *  for a hosted project the bare repository on disk, which a share takes
+ *  from the project it was shared from. A removed share fetches nothing,
+ *  so its main clone keeps what it had. */
 export async function projectFetchUrl(projectId: string): Promise<string> {
   const meta = await loadProjectMeta(projectId)
-  return meta.hosted ? hostedRepoDir(projectId) : meta.remoteUrl
+  if (meta.shareRevoked) throw new ServerError('FORBIDDEN', `${meta.name} is no longer shared with its owner`)
+  return meta.hosted ? hostedRepoDir(meta.sharedFrom ?? projectId) : meta.remoteUrl
 }
 
 /**

@@ -12,9 +12,9 @@ import type { AgentTool, EgressAllowlist, ProjectMeta, ToolCreateDefaults } from
  */
 
 /** Record a project, owned by `owner` if new; a known id keeps its
- *  owner. */
+ *  owner. `sharedFrom` names the project a share uses the repository of. */
 export async function recordProject(
-  meta: ProjectMeta & { hosted?: boolean },
+  meta: ProjectMeta & { hosted?: boolean; sharedFrom?: string },
   owner: string,
   gitCredential?: { id: string; knownHostsEntry: string | null },
 ): Promise<void> {
@@ -71,6 +71,10 @@ export interface ProjectRow extends ProjectMeta {
   /** Whether the server hosts the remote (docs/hosted-projects.md). */
   hosted: boolean
   guardDefaultBranch: boolean
+  /** The project this one was shared from (docs/hosted-projects.md
+   *  "Sharing"). */
+  sharedFrom?: string
+  shareRevoked: boolean
 }
 
 function toProjectRow(
@@ -106,6 +110,16 @@ export async function setProjectEgressAllowlist(
 export async function setProjectDefaultBranchGuard(projectId: string, enabled: boolean): Promise<boolean> {
   const db = await getDb()
   const rows = await db.update(projects).set({ guardDefaultBranch: enabled })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/** Remove a share from its owner, or give it back. False when there is no
+ *  such project. */
+export async function setProjectShareRevoked(projectId: string, revoked: boolean): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ shareRevoked: revoked })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0

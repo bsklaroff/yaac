@@ -20,7 +20,10 @@ export function ProjectActionsMenu({ projectId, remoteUrl }: {
 }): JSX.Element {
   const [confirm, setConfirm] = useState(false)
   const name = useProjectName()(projectId)
-  const hosted = useSnapshot()?.projects.find((p) => p.id === projectId)?.hosted === true
+  const projects = useSnapshot()?.projects ?? []
+  const project = projects.find((p) => p.id === projectId)
+  const hosted = project?.hosted === true
+  const shares = projects.filter((p) => p.sharedFrom?.projectId === projectId).length
   const readOnly = useReadOnly()
   if (readOnly) return <span className="truncate font-semibold tracking-tight">{name}</span>
 
@@ -46,11 +49,16 @@ export function ProjectActionsMenu({ projectId, remoteUrl }: {
         open={confirm}
         onOpenChange={setConfirm}
         title="Remove project?"
-        description={hosted
-          ? `Removes "${name}", all its workspaces, and its git repository, which yaac hosts and `
-            + `which is the only copy of its code. To keep the code, first run "yaac project clone ${name}". `
+        description={project?.sharedFrom
+          ? `Removes "${name}" and all its workspaces. Its repository stays with the project it was shared from. `
             + 'This can\'t be undone.'
-          : `Removes "${name}" and all its workspaces. This can't be undone.`}
+          : hosted
+            ? `Removes "${name}", all its workspaces, and its git repository, which yaac hosts and `
+              + 'which is the only copy of its code. To keep the code, first run '
+              + `"yaac project clone ${name}". `
+              + (shares > 0 ? 'Everyone it is shared with loses their copy too. ' : '')
+              + 'This can\'t be undone.'
+            : `Removes "${name}" and all its workspaces. This can't be undone.`}
         confirmText={hosted ? name : remoteUrl}
         confirmLabel="Remove"
         onConfirm={() => { setConfirm(false); removeProjectInBackground(projectId, name, remoteUrl) }}

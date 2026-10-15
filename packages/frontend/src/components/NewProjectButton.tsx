@@ -9,7 +9,7 @@ import { BUTTON } from '#components/ui/button'
 import { projectNameFor } from '@yaac/shared/project-name'
 import { Modal } from '#components/ui/Modal'
 import { useUiStore } from '#lib/store'
-import { useReadOnly } from '#lib/viewer'
+import { useTeammateView } from '#lib/viewer'
 
 /** Opens the add-project dialog. */
 export function NewProjectButton(
@@ -18,7 +18,7 @@ export function NewProjectButton(
   { variant = 'rail' }: { variant?: 'rail' | 'row' | 'cta' } = {},
 ): JSX.Element | null {
   const setAddProjectForm = useUiStore((s) => s.setAddProjectForm)
-  const readOnly = useReadOnly()
+  const readOnly = useTeammateView()
   if (readOnly) return null
   return (
     <button

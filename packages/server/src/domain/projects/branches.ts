@@ -27,6 +27,8 @@ export async function getProjectBranches(projectId: string, opts: { refresh?: bo
     try {
       await fetchProjectOrigin(projectId)
     } catch (err) {
+      // A refusal (a removed share fetches nothing) keeps its own code.
+      if (err instanceof ServerError) throw err
       const msg = err instanceof Error ? err.message : String(err)
       if (isGitAuthError(msg)) {
         throw new ServerError(
