@@ -13,9 +13,10 @@ import { fileURLToPath } from 'node:url'
 import { drizzle } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/setup'
-import { openDb, getDb, closeDb, MigrationRefusal, pingDb } from '#db/client'
+import { openDb, getDb, closeDb, DbRefusal, pingDb } from '#db/client'
 import { preferences } from '#db/schema'
 import { BUILT_IN_USER_ID } from '#db/user-store'
+import { secretKeyPath } from '@yaac/shared/project-paths'
 
 // Other unit tests share one in-memory PGlite (YAAC_TEST_SHARED_DB) for
 // speed. This file opts out because the on-disk per-dir handle is what it
@@ -187,8 +188,34 @@ describe('openDb', () => {
     )
     await closeDb()
     const refused = openDb()
-    await expect(refused).rejects.toBeInstanceOf(MigrationRefusal)
+    await expect(refused).rejects.toBeInstanceOf(DbRefusal)
     await expect(refused).rejects.toThrow(/20990101000000_from_the_future.*upgrade yaac.*rebuild or reinstall/)
+  })
+
+  // Generating a new key would leave every stored credential unreadable,
+  // which reads as signed out with nothing said. A fresh install with no
+  // secrets still generates one when it first needs it.
+  it('refuses a database holding secrets once their key is gone, unless a key is configured', async () => {
+    await freshDataDir()
+    await openDb()
+    await expect(fs.access(secretKeyPath())).rejects.toThrow()
+    await (await getDb()).$client.query(
+      'INSERT INTO tool_credentials (owner, tool, sealed_credential) VALUES ($1, $2, $3)',
+      [BUILT_IN_USER_ID, 'claude', 'sealed'],
+    )
+    await closeDb()
+
+    const refused = openDb()
+    await expect(refused).rejects.toBeInstanceOf(DbRefusal)
+    await expect(refused).rejects.toThrow(`${secretKeyPath()} is absent or empty and neither YAAC_SECRETS nor YAAC_SECRET is set`)
+    await closeDb()
+
+    vi.stubEnv('YAAC_SECRET', 'k'.repeat(40))
+    await openDb()
+    await closeDb()
+    vi.stubEnv('YAAC_SECRET', '')
+    await fs.writeFile(secretKeyPath(), 'restored\n')
+    await openDb()
   })
 
   it('reopens against the new dir when setDataDir changes it', async () => {

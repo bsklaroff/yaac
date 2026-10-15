@@ -47,7 +47,7 @@ import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
-import { workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
+import { CLAUDE_POD_CWD, projectDir, repoDir, workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
 import { projectConfigDir } from '@yaac/shared/paths'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
@@ -104,7 +104,8 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
 async function created(
   workspaceId: string,
   over: {
-    tool?: AgentTool; permissionMode?: PermissionMode; model?: string; effort?: string; mode?: AgentMode; prompt?: string
+    tool?: AgentTool; permissionMode?: PermissionMode; model?: string; effort?: string; mode?: AgentMode
+    prompt?: string; branch?: string
   } = {},
 ): Promise<void> {
   const run = await prepareStart(local, {
@@ -120,6 +121,24 @@ async function stoppedWorkspace(workspaceId: string, over: Parameters<typeof cre
   calls = []
   destroys = []
   deregistered = []
+}
+
+/** A conversation's history where its tool keeps it, recorded as the
+ *  registry would once it saw the file. Returns the file. */
+async function history(workspaceId: string, tool: 'claude' | 'codex', agentSessionId: string): Promise<string> {
+  const rel = tool === 'claude'
+    ? path.join('history', workspaceId, 'claude', CLAUDE_POD_CWD, `${agentSessionId}.jsonl`)
+    : path.join('history', workspaceId, 'codex', '2026', '10', '03', `rollout-2026-10-03T12-00-00-${agentSessionId}.jsonl`)
+  const file = path.join(projectDir(DEMO_PROJECT_ID), rel)
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, '{}\n')
+  await applyWorkspaceEvent({
+    type: 'sessions-discovered',
+    projectId: DEMO_PROJECT_ID,
+    workspaceId,
+    sessions: [{ tool, agentSessionId, transcriptPath: rel }],
+  })
+  return file
 }
 
 /** Restart as the route does: checked first, then run. */
@@ -160,6 +179,7 @@ describe('prepareRestart', () => {
       { tool: 'claude' as const, agentSessionId: 'conv-2', mode: 'tui' as const },
     ]
     await applyWorkspaceEvent({ type: 'sessions-launched', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', sessions })
+    await history('wt-1', 'claude', 'conv-2')
     live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1', jobName: 'yaac-wt-1', tool: 'codex' })
     let rowAtTeardown: ReturnType<typeof listProvisioning>[number] | undefined
     installDriver({
@@ -234,6 +254,85 @@ describe('prepareRestart', () => {
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBeUndefined()
   })
 
+  // The agent exited while an init window kept tmux alive, so the registry
+  // last saw no conversation. The workspace's first, under its id, still has
+  // its transcript, and launching it fresh under that id would be refused
+  // as in use.
+  it('resumes the first conversation when none was left active', async () => {
+    await stoppedWorkspace('wt-empty')
+    await history('wt-empty', 'claude', 'wt-empty')
+    await applyWorkspaceEvent({ type: 'sessions-active', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-empty', active: [] })
+
+    await restart('wt-empty')
+
+    expect(respawn()).toMatch(/respawn-window -k -t yaac:claude '[^']* --resume wt-empty'/)
+  })
+
+  // A spare has no row until claimed, so it cannot be restarted. A tui claim
+  // inserts the row, then records the running agent under the workspace id
+  // with the create's prompt (prewarm.ts). Neither wrote history, so nothing
+  // is lost and the agent starts fresh.
+  it('refuses an unclaimed spare, and restarts a claimed one that never got a conversation', async () => {
+    await expect(prepareRestart(local, 'wt-spare')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+
+    await applyWorkspaceEvent({
+      type: 'workspace-created', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare', permissionMode: 'bypass', mode: 'tui',
+      resume: false,
+    })
+    await applyWorkspaceEvent({
+      type: 'sessions-launched',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'wt-spare',
+      sessions: [{ tool: 'claude', agentSessionId: 'wt-spare', firstPrompt: 'fix the bug' }],
+    })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-spare' })
+
+    await restart('wt-spare')
+
+    expect(respawn()).toMatch(/respawn-window -k -t yaac:claude '[^']* --session-id wt-spare'/)
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-spare'))?.stoppedAt).toBeUndefined()
+  })
+
+  // A chat conversation that connected but was never sent anything has no
+  // history to load. It is relaunched unrecorded, so its handshake starts a
+  // fresh conversation, which takes the create's held prompt once.
+  it('hands the held prompt to the fresh conversation replacing a never-prompted chat one', async () => {
+    installDriver({
+      exec: (_jobName, cmd) => cmd.includes('list-windows -t =yaac')
+        ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
+        : Promise.resolve({ stdout: '', stderr: '' }),
+    })
+    await stoppedWorkspace('wt-quiet', { mode: 'acp', prompt: 'add shared projects' })
+    await applyWorkspaceEvent({
+      type: 'sessions-launched',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'wt-quiet',
+      sessions: [{ tool: 'claude', agentSessionId: 'acp-quiet', mode: 'acp', paneId: 'claude' }],
+    })
+
+    const prompted = vi.fn(() => Promise.resolve())
+    const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
+    installDriver({
+      exec: (_jobName, cmd) => {
+        if (cmd.includes('#{pane_pid}')) {
+          setTimeout(() => registerAcpConversation(
+            DEMO_PROJECT_ID, 'wt-quiet', { handle: 'claude', agentSessionId: 'acp-fresh', panePid: '42' }, conversation,
+          ), 20)
+          return Promise.resolve({ stdout: '42\n', stderr: '' })
+        }
+        return Promise.resolve({ stdout: '', stderr: '' })
+      },
+    })
+    await restart('wt-quiet')
+
+    // Its handle is not recorded, so the connection cannot try to load it.
+    const quiet = (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-quiet')).find((l) => l.agentSessionId === 'acp-quiet')
+    expect(quiet?.paneId).toBeUndefined()
+    await vi.waitFor(async () => expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-quiet'))?.pendingPrompt).toBeUndefined())
+    expect(prompted).toHaveBeenCalledTimes(1)
+    expect(prompted).toHaveBeenCalledWith('add shared projects')
+  })
+
   // The workspace is running by then, so a lost clear must not report it
   // as failed.
   it('succeeds when clearing the stop record fails', async () => {
@@ -273,6 +372,8 @@ describe('prepareRestart', () => {
         { tool: 'claude', agentSessionId: 'conv-3', mode: 'tui' },
       ],
     })
+    for (const id of ['wt-6', 'conv-3']) await history('wt-6', 'claude', id)
+    await history('wt-6', 'codex', 'conv-2')
 
     await restart('wt-6')
 
@@ -280,7 +381,7 @@ describe('prepareRestart', () => {
     // Quoted, since a bare `[1m]` is a shell glob.
     expect(windows).toMatch(/respawn-window -k -t yaac:claude '[^']* --model "claude-opus-5-5\[1m\]" --effort max --resume wt-6'/)
     // gpt-5.5 has no `max`, so it takes its own default.
-    expect(windows).toMatch(/-n codex-2 [^']*'[^']*model_reasoning_effort=medium[^']* --model gpt-5\.5'/)
+    expect(windows).toMatch(/-n codex-2 [^']*'[^']*model_reasoning_effort=medium[^']* resume conv-2 --model gpt-5\.5'/)
     expect(windows).toMatch(/-n claude-3 [^']*'(?:(?!--model)[^'])* --effort max --resume conv-3'/)
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-6'))?.model).toBe('claude-opus-5-5[1m]')
   })
@@ -298,6 +399,8 @@ describe('prepareRestart', () => {
         tool: 'claude' as const, agentSessionId: i === 0 ? 'wt-7' : `conv-${String(i)}`, mode: 'tui' as const, model,
       })),
     })
+
+    await history('wt-7', 'claude', 'wt-7')
 
     await restart('wt-7')
 
@@ -322,6 +425,7 @@ describe('prepareRestart', () => {
         { tool: 'codex', agentSessionId: 'conv-2', mode: 'tui', model: 'gpt-5.5' },
       ],
     })
+    for (const id of ['conv-cx', 'conv-2']) await history('wt-8', 'codex', id)
 
     await restart('wt-8')
 
@@ -401,14 +505,126 @@ describe('prepareRestart', () => {
     expect(await resumedAs('codex', 'dontAsk' as PermissionMode)).toBe('read-only')
   })
 
-  it('recreates a missing checkout', async () => {
-    await stoppedWorkspace('wt-gone')
-    await fs.rm(workspaceDir(DEMO_PROJECT_ID, 'wt-gone'), { recursive: true })
+  // The empty module dir an earlier attempt left is not the user's work.
+  it('recreates a missing checkout from its base branch, or the default once origin lost that', async () => {
+    const repo = repoDir(DEMO_PROJECT_ID)
+    const ref = async (name: string): Promise<string> => (await git(repo, ['rev-parse', name])).trim()
+    const dev = (await git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'dev'])).trim()
+    await git(repo, ['update-ref', 'refs/remotes/origin/dev', dev])
+    await stoppedWorkspace('wt-gone', { branch: 'dev' })
+    const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-gone')
+    const lose = async (): Promise<void> => {
+      await fs.rm(checkout, { recursive: true })
+      await fs.mkdir(path.join(checkout, 'node_modules'), { recursive: true })
+    }
 
+    await lose()
     await restart('wt-gone')
 
-    expect(await git(workspaceDir(DEMO_PROJECT_ID, 'wt-gone'), ['rev-parse', '--abbrev-ref', 'HEAD']))
-      .toBe('agent/wt-gone\n')
+    expect(await git(checkout, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('agent/wt-gone\n')
+    expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(dev)
+
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-gone' })
+    await lose()
+    await git(repo, ['update-ref', '-d', 'refs/remotes/origin/dev'])
+    await restart('wt-gone')
+
+    expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(await ref('origin/main'))
+  })
+
+  // A crash or partial restore can lose `.git` but keep the work. Checking
+  // out the base branch over it would overwrite every tracked file, so any
+  // file, however deep, refuses; a dir it cannot read fails without one.
+  it('refuses to check out over a checkout that has files but no .git, keeping it stopped', async () => {
+    await stoppedWorkspace('wt-nogit')
+    const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-nogit')
+    const [tracked] = (await git(checkout, ['ls-files'])).split('\n')
+    await fs.rm(path.join(checkout, '.git'), { recursive: true })
+    await fs.writeFile(path.join(checkout, tracked), 'restored work\n')
+
+    await expect(restart('wt-nogit')).rejects.toThrow(`${checkout} holds files but no .git`)
+
+    expect(await fs.readFile(path.join(checkout, tracked), 'utf8')).toBe('restored work\n')
+    await expect(fs.access(path.join(checkout, '.git'))).rejects.toThrow()
+    expect(calls.some((c) => c.startsWith('launch'))).toBe(false)
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-nogit'))?.stoppedAt).toBeInstanceOf(Date)
+    expect(listProvisioning()).toEqual([expect.objectContaining({
+      workspaceId: 'wt-nogit', error: expect.stringContaining('no .git') as unknown,
+    })])
+
+    const nested = path.join(checkout, 'notes', 'deeper', 'work.md')
+    await fs.rm(checkout, { recursive: true })
+    await fs.mkdir(path.dirname(nested), { recursive: true })
+    await fs.writeFile(nested, 'deep work\n')
+    clearAllProvisioningForTests()
+    await expect(restart('wt-nogit')).rejects.toThrow('holds files but no .git')
+    expect(await fs.readFile(nested, 'utf8')).toBe('deep work\n')
+
+    // Root reads a mode-0 dir anyway.
+    if (process.getuid?.() === 0) return
+    await fs.rm(path.join(checkout, 'notes'), { recursive: true })
+    await fs.mkdir(path.join(checkout, 'locked'), { mode: 0 })
+    clearAllProvisioningForTests()
+    try {
+      await expect(restart('wt-nogit')).rejects.toThrow('EACCES')
+    } finally {
+      await fs.chmod(path.join(checkout, 'locked'), 0o700)
+    }
+    await expect(fs.access(path.join(checkout, '.git'))).rejects.toThrow()
+    expect(calls.some((c) => c.startsWith('launch'))).toBe(false)
+  })
+
+  // History on disk is resumed, recorded or not (a pod can die before the
+  // registry's first look). A conversation whose agent never wrote anything
+  // (stopped before its first prompt, or by a crash mid-create) starts as a
+  // create's would. One that wrote history and lost it is corruption:
+  // resuming it would kill its agent and starting over would drop the work,
+  // so the restart fails, naming each, before anything launches.
+  it('resumes what is on disk, starts a never-written conversation fresh, and refuses one that lost its history', async () => {
+    await stoppedWorkspace('wt-lost')
+    await applyWorkspaceEvent({
+      type: 'sessions-launched',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'wt-lost',
+      sessions: [
+        { tool: 'claude', agentSessionId: 'wt-lost', mode: 'tui', firstPrompt: 'never delivered' },
+        { tool: 'codex', agentSessionId: 'conv-cx', mode: 'tui' },
+        { tool: 'claude', agentSessionId: 'conv-3', mode: 'tui' },
+        { tool: 'claude', agentSessionId: 'conv-4', mode: 'tui' },
+      ],
+    })
+    const written = [await history('wt-lost', 'codex', 'conv-cx'), await history('wt-lost', 'claude', 'conv-3')]
+    const unrecorded = path.join(projectDir(DEMO_PROJECT_ID), 'history', 'wt-lost', 'claude', CLAUDE_POD_CWD, 'conv-4.jsonl')
+    await fs.writeFile(unrecorded, '{}\n')
+
+    await restart('wt-lost')
+
+    const windows = respawn()!
+    expect(windows).toMatch(/respawn-window -k -t yaac:claude '[^']* --session-id wt-lost'/)
+    expect(windows).toMatch(/-n codex-2 [^']*'[^']* resume conv-cx'/)
+    expect(windows).toMatch(/-n claude-3 [^']*'[^']* --resume conv-3'/)
+    expect(windows).toMatch(/-n claude-4 [^']*'[^']* --resume conv-4'/)
+
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-lost' })
+    for (const file of written) await fs.rm(file)
+    calls = []
+    await expect(restart('wt-lost')).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringMatching(/history of Codex conversation conv-cx, Claude Code conversation conv-3 is gone/) as unknown,
+    })
+    expect(calls.some((c) => c.startsWith('launch'))).toBe(false)
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-lost'))?.stoppedAt).toBeInstanceOf(Date)
+
+    // Under acp the record shows a message was sent, so a transcript was
+    // written.
+    await stoppedWorkspace('wt-acp')
+    await applyWorkspaceEvent({
+      type: 'sessions-launched',
+      projectId: DEMO_PROJECT_ID,
+      workspaceId: 'wt-acp',
+      sessions: [{ tool: 'claude', agentSessionId: 'acp-1', mode: 'acp', firstPrompt: 'hello' }],
+    })
+    await expect(restart('wt-acp')).rejects.toThrow('history of Claude Code conversation acp-1 is gone')
   })
 
   // The user came back for this workspace, so a failed restart must not

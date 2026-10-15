@@ -114,7 +114,8 @@ can produce is one the server already tolerates.
   reads a file that no row names, so a conversation or workspace created
   during the walk is just invisible after a restore; its files are still on
   disk. The opposite order, rows newer than files, leaves rows whose files are
-  missing. Restart and resume handle that badly, and conversations start
+  missing. A restart refuses a workspace whose conversation history the rows
+  show but the disk lacks (docs/workspace-storage.md), and conversations start
   often enough that it would come up on most restores.
 
   This depends on no sweep deleting files because of a row that might be
@@ -182,15 +183,17 @@ Restoring into a new cluster means `yaac cluster install --byo`, then
 
 A restore does not check the dump's schema. A dump made by a newer yaac
 records migrations the installed server does not ship, so the server
-refuses it at startup (`MigrationRefusal`) and asks for an upgrade. The
+refuses it at startup (`DbRefusal`) and asks for an upgrade. The
 restored data stays as it is, and once yaac is upgraded the server starts
 on it. A dump made by an older yaac is migrated forward on start, like any
 upgrade.
 
-The server's own handling of rows whose files are gone (restart overwriting a
-checkout that has no `.git`, resume of a missing transcript, a silently
-regenerated `secret.key`) is being fixed separately. Those states also come
-from crashes, so the fixes are needed with or without backups.
+The server already refuses what a partial restore can leave behind, since
+crashes leave the same states: a restart will not check out over a checkout
+that has files but no `.git`, and fails when a conversation's history is gone
+(docs/workspace-storage.md); a server whose database holds encrypted rows but
+has no `secret.key` refuses to start rather than generate a new key
+(docs/environment-variables.md).
 
 ## Effect on running workspaces
 

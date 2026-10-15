@@ -15,6 +15,7 @@ import {
 } from '@yaac/shared/project-paths'
 import {
   conversationFiles,
+  hasConversationHistory,
   locateTranscript,
   openConversationFile,
   resolveProjectPath,
@@ -155,6 +156,48 @@ describe('transcripts', () => {
       await write(path.join(agentHistoryDir(projectId, wt, 'pi'), '100_psid.jsonl'))
       expect(await locateTranscript(projectId, wt, 'pi', 'psid', undefined))
         .toBe(path.join('history', wt, 'pi', '100_psid.jsonl'))
+    })
+  })
+
+  describe('hasConversationHistory', () => {
+    // Each tool is asked where it keeps history: claude's transcript in the
+    // shared home or the workspace's history, codex's rollout by thread,
+    // pi's log by id, opencode's database.
+    it('answers whether each tool would find the conversation it resumes', async () => {
+      const resumable = (tool: 'claude' | 'codex' | 'opencode' | 'pi', agentSessionId: string): Promise<boolean> =>
+        hasConversationHistory(projectId, wt, { tool, agentSessionId })
+      await write(claudeLog('c-home'))
+      await write(path.join(agentHistoryDir(projectId, wt, 'claude'), '-elsewhere', 'c-hist.jsonl'))
+      await write(path.join(agentHistoryDir(projectId, wt, 'codex'), '2026', '10', '03', 'rollout-2026-10-03T12-00-00-cx.jsonl'))
+      expect(await resumable('claude', 'c-home')).toBe(true)
+      expect(await resumable('claude', 'c-hist')).toBe(true)
+      expect(await resumable('claude', 'c-gone')).toBe(false)
+      expect(await resumable('codex', 'cx')).toBe(true)
+      expect(await resumable('codex', 'cx-gone')).toBe(false)
+      expect(await resumable('opencode', 'ses_1')).toBe(false)
+      expect(await resumable('pi', 'p-gone')).toBe(false)
+
+      await write(path.join(opencodeCheckpointDir(projectId, wt), 'opencode.db'))
+      expect(await resumable('opencode', 'ses_1')).toBe(true)
+      // The pin a self-naming tool never ran under.
+      expect(await resumable('opencode', wt)).toBe(false)
+      await write(path.join(agentHistoryDir(projectId, wt, 'pi'), '20261003T120000_p-1.jsonl'))
+      expect(await resumable('pi', 'p-1')).toBe(true)
+    })
+
+    // A history dir it cannot read is not a missing one: starting over would
+    // drop a conversation that is still there.
+    it.skipIf(process.getuid?.() === 0)('throws when it cannot look rather than answer gone', async () => {
+      await write(path.join(agentHistoryDir(projectId, wt, 'claude'), '-workspace', 'c-1.jsonl'))
+      const locked = [path.join(agentHistoryDir(projectId, wt, 'claude'), '-workspace'), agentHistoryDir(projectId, wt, 'codex')]
+      await fs.mkdir(locked[1], { recursive: true })
+      for (const dir of locked) await fs.chmod(dir, 0)
+      try {
+        await expect(hasConversationHistory(projectId, wt, { tool: 'claude', agentSessionId: 'c-1' })).rejects.toThrow('EACCES')
+        await expect(hasConversationHistory(projectId, wt, { tool: 'codex', agentSessionId: 'cx' })).rejects.toThrow('EACCES')
+      } finally {
+        for (const dir of locked) await fs.chmod(dir, 0o700)
+      }
     })
   })
 

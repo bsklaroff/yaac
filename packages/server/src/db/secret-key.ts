@@ -57,25 +57,64 @@ let cached: { dir: string; promise: Promise<string | SecretConfig> } | null = nu
 
 /**
  * Read the generated key, creating it first if missing. Written 0600 under a
- * 0700 directory via temp file + rename, so a crash can't leave a truncated
- * key. Two servers can't race here in practice, since the server lock is
- * taken before the DB opens; if they did, both re-read the renamed file.
+ * 0700 directory to a temp file, then hard-linked into place, so a crash
+ * can't leave a truncated key and a key already there is never replaced,
+ * even one a failed read could not see. Only an empty file is replaced,
+ * since it seals nothing.
  */
 async function loadOrCreateKeyFile(): Promise<string> {
   const file = secretKeyPath()
-  try {
-    const existing = (await fs.readFile(file, 'utf8')).trim()
-    if (existing !== '') return existing
-  } catch {
-    // Missing or unreadable: generate one below.
-  }
+  const existing = await readKeyFile()
+  if (existing !== undefined) return existing
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 })
   const generated = crypto.randomBytes(32).toString('base64url')
   const tmp = `${file}.${process.pid.toString()}.tmp`
   await fs.writeFile(tmp, `${generated}\n`, { mode: 0o600 })
-  await fs.rename(tmp, file)
-  serverLog(`[secrets] generated an encryption key at ${file} — back it up with the data dir`)
-  return (await fs.readFile(file, 'utf8')).trim()
+  try {
+    const placed = await fs.link(tmp, file).then(() => true, async (err: unknown) => {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      if (await readKeyFile() !== undefined) return false
+      await fs.rename(tmp, file)
+      return true
+    })
+    if (placed) serverLog(`[secrets] generated an encryption key at ${file} — back it up with the data dir`)
+  } finally {
+    await fs.rm(tmp, { force: true })
+  }
+  const key = await readKeyFile()
+  if (key === undefined) throw new Error(`${file} is empty after writing it`)
+  return key
+}
+
+/**
+ * The generated key, or undefined if there is none: no file, or an empty
+ * one. Any other failure to read it throws, so a passing read error is never
+ * taken for a missing key.
+ */
+async function readKeyFile(): Promise<string | undefined> {
+  const existing = await fs.readFile(secretKeyPath(), 'utf8').then((k) => k.trim(), (err: unknown) => {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return ''
+    throw err
+  })
+  return existing !== '' ? existing : undefined
+}
+
+/**
+ * Why the server must not start, if it would have to generate a key while
+ * the database already holds rows sealed with another: every credential
+ * would then fail to decrypt and read as signed out, with nothing said.
+ * `hasSealedRows` is asked only when no key is configured or on disk.
+ */
+export async function lostSecretKey(hasSealedRows: () => Promise<boolean>): Promise<string | undefined> {
+  if (env.secrets !== null || env.secret !== undefined || await readKeyFile() !== undefined) return undefined
+  if (!await hasSealedRows()) return undefined
+  const file = secretKeyPath()
+  return `the database holds encrypted secrets, but their key is missing: ${file} `
+    + 'is absent or empty and neither YAAC_SECRETS nor YAAC_SECRET is set. Restore the key file '
+    + 'from a backup of the data dir, or set YAAC_SECRETS or YAAC_SECRET to the key the '
+    + 'secrets were stored with. To give them up instead, write a new key to the file '
+    + `(openssl rand -base64 32 > ${file}); every stored secret then reads as unreadable `
+    + 'and must be entered again'
 }
 
 async function resolve(): Promise<string | SecretConfig> {
