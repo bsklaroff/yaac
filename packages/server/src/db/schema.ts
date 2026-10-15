@@ -161,7 +161,8 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
 /**
  * Every workspace yaac has created (see workspace-store.ts). The runtime is
  * authoritative for whether it is running; this table for whether it exists.
- * Warming a spare also inserts a row (`spare`). A stop never deletes the row:
+ * A prewarmed spare has no row until a claim inserts one. A stop never
+ * deletes the row:
  * rows with `stoppedAt` are the stopped listing, and a restart reuses the id
  * and clears it. A row matches a checkout that stays on disk while stopped.
  *
@@ -184,8 +185,8 @@ export const workspaces = snakeCase.table('workspaces', {
    *  the relay are keyed on the id alone, so a duplicate would mix two
    *  workspaces' egress rules and traffic. */
   workspaceId: text().primaryKey(),
-  /** When the workspace was handed to someone: the insert for a cold create,
-   *  the claim for a prewarmed spare (`claimSpareWorkspace`). */
+  /** When the workspace was handed to someone: the insert, which for a
+   *  prewarmed spare is its claim. */
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** Display title, user-assigned or model-generated. */
   title: text(),
@@ -199,13 +200,6 @@ export const workspaces = snakeCase.table('workspaces', {
   deathDetail: text(),
   deathSeen: boolean().notNull().default(false),
   waitingSeen: boolean().notNull().default(false),
-  /**
-   * An unclaimed prewarmed spare: a checkout and runtime not yet handed to
-   * anyone. Listings and the reaper's desired set exclude it; a claim clears
-   * the flag. A row (rather than none) lets the startup sweep tell a dead
-   * spare (delete its checkout) from a stopped workspace (keep it).
-   */
-  spare: boolean().notNull().default(false),
   /**
    * When the current runtime (a "life") came up; null when none is running.
    * `recordWorkspaceLife` sets this and clears every
@@ -226,9 +220,7 @@ export const workspaces = snakeCase.table('workspaces', {
   permissionMode: text().$type<PermissionMode>().notNull().default('bypass'),
   /**
    * The model and agent mode (`tui` / `acp`) its first agent launched with.
-   * A spare claim matches a request against these: a match is handed over
-   * as-is, otherwise the agent is respawned or the spare skipped. `model`
-   * is null when the launch named none.
+   * `model` is null when the launch named none.
    */
   model: text(),
   mode: text().$type<AgentMode>().notNull().default('acp'),
@@ -240,8 +232,7 @@ export const workspaces = snakeCase.table('workspaces', {
    */
   effort: text(),
   /**
-   * The IANA zone it launched with as `TZ`, null when none was set. A spare
-   * warmed in another zone than the user's current one is never claimed.
+   * The IANA zone it launched with as `TZ`, null when none was set.
    */
   timeZone: text(),
   /**

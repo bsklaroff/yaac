@@ -387,11 +387,11 @@ in the workspace cannot forge control-mode lines.
 ## Prewarmed spares
 
 A spare is warmed as its project's untouched create: the last agent, with its
-remembered model, posture and agent mode, recorded on the spare's row
-(`permissionMode`, `model`, `mode`). A claim prefers a spare whose launch
-matches. A spare in the same agent mode but with a different agent, model or
-posture can still be claimed; its agent is respawned with what was asked, so
-the posture is never weaker than requested. A spare in the other agent mode
-is skipped, because an `acp` pod has a mount for acpd's records that a `tui`
-pod lacks, fixed at warm time. The pool replaces spares whose mode no longer
-matches their project's.
+remembered model, posture and agent mode, which the server holds in memory
+until a claim records them on the row (docs/workspace-storage.md). A claim
+prefers a spare whose launch matches. A spare in the same agent mode but with
+a different agent, model or posture can still be claimed; its agent is
+respawned with what was asked, so the posture is never weaker than requested.
+A spare in the other agent mode is skipped, because an `acp` pod has a mount
+for acpd's records that a `tui` pod lacks, fixed at warm time. The pool
+replaces spares whose mode no longer matches their project's.

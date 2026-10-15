@@ -40,6 +40,7 @@ export function createRuntimeSnapshot(resync = true): RuntimeSnapshot {
           unitName: j.jobName,
           projectId: j.projectId,
           createdAtMs: j.createdAtMs,
+          prewarmed: j.prewarmed,
         }))
     },
   }

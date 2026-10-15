@@ -30,8 +30,9 @@ export type WorkspaceEvent =
   | WorkspaceStopped
 
 /**
- * Provisioning has begun. Emitted before anything is built, so every runtime
- * has a row.
+ * Provisioning has begun, emitted before anything is built so every user
+ * workspace's runtime has a row; or a prewarmed spare was claimed, which is
+ * the claim's commit point (a spare has no row until then).
  */
 export interface WorkspaceCreated {
   type: 'workspace-created'
@@ -44,14 +45,13 @@ export interface WorkspaceCreated {
    *  founding prompt, how it last died), so a failed resume leaves the row
    *  as it was rather than erasing it. */
   resume?: boolean
-  /** A prewarmed spare. It gets a row so a reap can tell it from a stopped
-   *  workspace once its runtime is gone, but listings hide it until claimed. */
-  spare?: boolean
+  /** The user's title and sidebar group, on a fresh create. */
+  title?: string
+  groupId?: string
   /** The permission mode its agents launch in, recorded so a restart reuses
    *  it rather than today's default. */
   permissionMode?: PermissionMode
-  /** The first agent's model and agent mode, which a spare claim matches a
-   *  request against (see `workspaces.model`). */
+  /** The first agent's model and agent mode (see `workspaces.model`). */
   model?: string
   mode?: AgentMode
   /** The effort its agents launch at, recorded so a restart reuses it. */
@@ -84,10 +84,8 @@ export interface WorkspaceLifeStarted {
   workspaceId: string
 }
 
-/**
- * The branch a workspace forks from changed: a claimed spare was
- * re-branched, or its agent ran `yaac-mama set-base`.
- */
+/** The branch a workspace forks from changed: its agent ran
+ *  `yaac-mama set-base`. */
 export interface BaseBranchResolved {
   type: 'base-branch-resolved'
   projectId: string

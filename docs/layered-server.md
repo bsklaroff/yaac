@@ -233,7 +233,7 @@ Two verbs worth knowing:
   registry), returning an opaque receipt. `launch` only applies a unit (a
   pod, or a tmux server). A failed create leaves only a unit, which
   `destroy` with `unitOnly` removes when the workspace's row survives (a
-  resume or a spare), keeping what its next launch reuses.
+  resume), keeping what its next launch reuses.
 - **`list`.** `preferCache` asks for the driver's watch-fed view. The
   snapshot path uses it every time instead of making the apiserver list
   what a watch already streams. A caller that needs the substrate's own

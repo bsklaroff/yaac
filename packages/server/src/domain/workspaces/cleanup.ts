@@ -6,12 +6,7 @@ import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/proj
 import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
 import { inFlightWorkspaceIds, listProvisioning } from './provisioning'
-import {
-  applyWorkspaceEvent,
-  deleteSpareWorkspaceRow,
-  listProjectRows,
-  listSpareWorkspaceIds,
-} from '#db'
+import { applyWorkspaceEvent, listProjectRows } from '#db'
 import {
   clearWorkspaceTerminating,
   evictWorkspaceStatus,
@@ -96,15 +91,17 @@ async function checkoutEphemeralPaths(
  * copies are the driver's sweep's.
  *
  * Not used by an ordinary stop, which keeps the checkout for restart. Used
- * when the workspace itself goes away: a reaped spare, a fresh create that
- * gave up, a claim that failed after changing its spare.
+ * when the workspace itself goes away: a fresh create or warm that gave up,
+ * or a reaped spare (`reapSpare`, which also covers a claim that failed
+ * after changing its spare).
  *
  * Callers run this only once the pod is gone, so plain recursive `rm` is
  * safe (it does not follow links, and nothing can swap one in mid-walk).
  *
  * Best-effort per path, but returns `false` if anything failed. Callers then
- * keep the row, since it is the only record of the leftover bytes; the stale
- * reaper surfaces it as a stopped workspace the user can delete.
+ * keep whatever records the leftover bytes: a row, which the stale reaper
+ * surfaces as a stopped workspace the user can delete, or a spare's unit,
+ * which the next reap retries.
  */
 export async function deleteWorkspaceState(
   projectId: string,
@@ -154,21 +151,23 @@ async function beginTeardown(params: {
  * so callers removing it must check.
  *
  * This handles the workspace bookkeeping (terminating mark, stop record,
- * status eviction, per-workspace dirs); `destroy` handles the runtime.
+ * status eviction, per-workspace dirs); `destroy` handles the runtime, and
+ * `keepRecord` is its option of that name.
  */
 export async function cleanupWorkspace(params: {
   jobName: string
   projectId: string
   workspaceId: string
+  keepRecord?: boolean
 }): Promise<boolean> {
-  const { projectId, workspaceId } = params
+  const { projectId, workspaceId, keepRecord } = params
   const target = await beginTeardown(params)
-  const runtimeGone = await workspaceDriver().destroy(target)
+  const runtimeGone = await workspaceDriver().destroy(target, keepRecord === true ? { keepRecord } : {})
 
   // Remove the workspace's mount sources only if the runtime is confirmed
   // gone; otherwise it may still be using them (an unreachable runtime may
   // leave a spare fully alive and claimable). The driver's sweep and the
-  // startup orphan sweep remove them later.
+  // orphan sweep remove them later.
   if (runtimeGone) {
     // Best-effort: a node still unmounting answers EBUSY.
     for (const p of await checkoutEphemeralPaths(projectId, workspaceId)) {
@@ -280,23 +279,6 @@ async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number):
 }
 
 /**
- * Remove the state of spares whose pod is gone (crash, reboot). The normal
- * reap only sees live pods, so these would otherwise leak. The row's `spare`
- * flag is the only record that the checkout was never a user's workspace;
- * real workspaces are never touched.
- */
-async function gcOrphanSpares(liveWorkspaceIds: Set<string>, sweepStartedAtMs: number): Promise<void> {
-  for (const { projectId, workspaceId: sid } of await listSpareWorkspaceIds()) {
-    if (liveWorkspaceIds.has(sid)) continue
-    if (await inUseBySweep(workspaceDir(projectId, sid), sid, sweepStartedAtMs)) continue
-    // Keep the row if the delete failed, so the next sweep can retry.
-    if (!await deleteWorkspaceState(projectId, sid)) continue
-    await deleteSpareWorkspaceRow(projectId, sid).catch(() => { /* next sweep */ })
-    console.log(`Removed orphan prewarmed spare ${projectId}/${sid}`)
-  }
-}
-
-/**
  * Ids of every workspace the runtime holds, stray units included: one
  * mid-recreate appears only as a stray. Both reads reject rather than
  * resolve empty on failure, which a sweep would read as "nothing is live".
@@ -324,20 +306,16 @@ export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> 
 }
 
 /**
- * Remove what workspaces that no longer exist left behind in the global
- * tier: dead spares' checkouts and `sessions/<id>` dirs. Runs every resync.
- *
- * Spares are found from their rows, never from directory names: a dir under
- * `projects/` need not be a project id, and querying a uuid column with one
- * is a database error on every pass.
+ * Remove the `sessions/<id>` staging dirs that workspaces which no longer
+ * exist left behind in the global tier. Runs every resync. A checkout is
+ * never removed here: on disk a dead spare's and a stopped workspace's look
+ * the same, so spares' are removed by `reapSpare`, from their unit's mark.
  */
 export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promise<void> {
   // A create that stages dirs before its unit exists looks like an orphan.
   // `inUseBySweep` guards against that.
   const sweepStartedAtMs = Date.now()
   const live = await liveWorkspaceIds(view)
-
-  await gcOrphanSpares(live, sweepStartedAtMs)
 
   const projectIds = await fs.readdir(getProjectsDir()).catch((): string[] => [])
 

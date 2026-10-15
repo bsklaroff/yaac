@@ -13,7 +13,7 @@
 // Each name exported here needs a unit test in
 // packages/server/test/drivers/k8s/workspaces/.
 export { runtimeHandleFromPod } from './handle'
-export { claimSpareWorkspace, registerWorkspace } from './claim'
+export { claimSpareWorkspace, registerWorkspace, unmarkClaimedJobs } from './claim'
 export { dialWorkspacePort, forwardWorkspacePort } from './forward-port'
 export { launchWorkspace, prepareWorkspaceSubstrate } from './launch'
 export { buildPodJobManifest } from './pod-job'

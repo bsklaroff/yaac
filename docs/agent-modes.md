@@ -567,7 +567,8 @@ conversation has no row until it is claimed, so a reattach after a server
 restart takes its id from the pane option `@yaac-acp-session`, which the
 connection sets to `<pane pid>:<id>` when `session/new` answers; the pid
 check discards the value once a respawn replaces the process. An adapter
-told its model over the protocol gets the workspace row's model, read once
+told its model over the protocol gets the workspace row's model (a spare's
+warm-time one, held in memory until a claim records the row), read once
 `session/new` answers, so a restart before the handshake loses nothing.
 
 The connection finds conversations through a tmux control-mode client of its

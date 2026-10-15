@@ -1,4 +1,4 @@
-import { reconcileImageSalvage } from '#drivers/k8s/workspaces'
+import { reconcileImageSalvage, unmarkClaimedJobs } from '#drivers/k8s/workspaces'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress'
 import {
   gcOrphanProjectRegistries,
@@ -54,6 +54,9 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
       // Delete registries that no live project owns.
       { name: 'orphan-registry-gc', triggers: [], every: 60 * 60_000, run: async (ctx) =>
         gcOrphanProjectRegistries(new Set(await ctx.projectIds())) },
+      // Spare labels an older server's claims left on Jobs
+      // (docs/legacy-compat-shims.md).
+      { name: 'unmark-claimed-jobs', triggers: [], run: () => unmarkClaimedJobs() },
       // Egress registrations left behind by a teardown that never ran.
       { name: 'registration-gc', triggers: [], run: (ctx) => reconcileRegistrationGc(ctx) },
       // Main registry GC: retire unused step-cache tags and image

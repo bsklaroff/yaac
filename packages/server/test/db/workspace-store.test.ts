@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { sql } from 'drizzle-orm'
@@ -16,19 +16,16 @@ import {
   listStoppedWorkspaceRows,
   listWorkspaceRows,
   listProjectWorkspaceIds,
-  listSpareWorkspaceIds,
   recordDeathSeen,
   recordWaitingSeen,
   recordWorkspaceCreated,
   recordWorkspaceStopped,
-  claimSpareWorkspace,
-  restoreSpareWorkspace,
   clearWorkspaceStopped,
   setWorkspaceTitle,
   type StoppedRowCursor,
 } from '#db/workspace-store'
-import { applyWorkspaceEvent } from '#db/apply-workspace-event'
-import { firstAgentSession, recordAgentSessions } from '#db/agent-session-store'
+import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
+import { recordAgentSessions } from '#db/agent-session-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -55,16 +52,6 @@ describe('session store', () => {
   const create = (workspaceId: string, extra = {}): Promise<void> =>
     recordWorkspaceCreated({ projectId: PROJ, workspaceId, ...extra })
 
-  /** A spare as prewarm leaves it: warming inserts the row, then stamps the
-   *  life its pod starts. */
-  const warmSpare = async (): Promise<void> => {
-    await applyWorkspaceEvent({
-      type: 'workspace-created', projectId: PROJ, workspaceId: 'spare1',
-      spare: true, baseBranch: 'main', permissionMode: 'bypass', mode: 'tui',
-    })
-    await applyWorkspaceEvent({ type: 'workspace-life-started', projectId: PROJ, workspaceId: 'spare1' })
-  }
-
   describe('recordWorkspaceCreated', () => {
     it('stores the row', async () => {
       await create('sid-1', { baseBranch: 'main' })
@@ -78,59 +65,20 @@ describe('session store', () => {
       })
       expect(row?.stoppedAt).toBeUndefined()
     })
-  })
 
-  // The calls prewarm makes, against the real table: warming inserts the
-  // row, and the claim must reuse it, since a second insert on the id is
-  // refused (which would send every claim to a cold create).
-  describe('claimSpareWorkspace', () => {
-    const warmT = new Date('2026-01-01T00:00:00Z')
-    const claimT = new Date('2026-01-01T00:05:00Z')
-    afterEach(() => { vi.useRealTimers() })
+    it('files it under its title and group, or ungrouped once the group is gone', async () => {
+      const group = await createWorkspaceGroup(PROJ, 'Team', null)
+      const gone = await createWorkspaceGroup(PROJ, 'Gone', null)
+      await deleteWorkspaceGroup(PROJ, gone.groupId)
 
-    it('hands the warmed row over with the claim\'s launch and time, and refuses a second claim', async () => {
-      vi.useFakeTimers({ toFake: ['Date'] })
-      vi.setSystemTime(warmT)
-      await warmSpare()
-      pushes = 0
-      vi.setSystemTime(claimT)
+      await create('filed', { title: '  Fix   it ', groupId: group.groupId })
+      await create('orphan', { title: ' ', groupId: gone.groupId })
 
-      await claimSpareWorkspace(PROJ, 'spare1', {
-        permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
-      })
-
-      expect(await getWorkspaceRow(PROJ, 'spare1')).toMatchObject({
-        spare: false,
-        // The workspace is born at the claim, not the warm…
-        createdAt: claimT,
-        // …but it is the warmed row: only warming stamps the life.
-        lifeStartedAt: warmT,
-        permissionMode: 'plan',
-        mode: 'acp',
-        model: 'claude-opus-5-5',
-      })
-      expect(pushes).toBe(1)
-      await expect(claimSpareWorkspace(PROJ, 'spare1')).rejects.toMatchObject({ code: 'CONFLICT' })
-      await expect(claimSpareWorkspace(PROJ, 'no-such-spare')).rejects.toMatchObject({ code: 'CONFLICT' })
-    })
-  })
-
-  describe('restoreSpareWorkspace', () => {
-    it('puts back everything the claim stamped and drops the conversation it recorded', async () => {
-      await warmSpare()
-      const warmed = (await getWorkspaceRow(PROJ, 'spare1'))!
-      await claimSpareWorkspace(PROJ, 'spare1', {
-        permissionMode: 'plan', mode: 'acp', model: 'claude-opus-5-5',
-      })
-      await applyWorkspaceEvent({
-        type: 'sessions-launched', projectId: PROJ, workspaceId: 'spare1',
-        sessions: [{ tool: 'claude', agentSessionId: 'spare1' }],
-      })
-
-      await restoreSpareWorkspace(warmed)
-
-      expect(await getWorkspaceRow(PROJ, 'spare1')).toEqual(warmed)
-      expect(await firstAgentSession(PROJ, 'spare1')).toBeUndefined()
+      expect(await getWorkspaceRow(PROJ, 'filed')).toMatchObject({ title: 'Fix it', groupId: group.groupId })
+      const orphan = await getWorkspaceRow(PROJ, 'orphan')
+      expect(orphan?.title).toBeUndefined()
+      expect(orphan?.groupId).toBeUndefined()
+      await expect(create('filed')).rejects.toMatchObject({ code: 'CONFLICT' })
     })
   })
 
@@ -295,15 +243,13 @@ describe('session store', () => {
   })
 
   describe('listStoppedWorkspaceRows', () => {
-    it('lists recorded stops newest first, leaving out spares and the excluded ids, with the full total', async () => {
+    it('lists recorded stops newest first, leaving out the excluded ids, with the full total', async () => {
       await create('live')
       for (const id of ['a', 'b', 'c']) {
         await create(id)
         await recordWorkspaceStopped(PROJ, id)
         await new Promise((r) => setTimeout(r, 5))
       }
-      await create('spare-1', { spare: true })
-      await recordWorkspaceStopped(PROJ, 'spare-1')
 
       const page = await listStoppedWorkspaceRows({ projectIds: [PROJ], excludeIds: ['b'] }, { limit: 1 })
       expect(page.rows.map((r) => r.workspaceId)).toEqual(['c'])
@@ -377,38 +323,23 @@ describe('session store', () => {
     it('finds an exact id in whichever project holds it, and nothing shorter', async () => {
       await create('abcdef-1234')
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'zzz' })
-      await create('spare-1', { spare: true })
 
       expect((await findWorkspaceRow('abcdef-1234'))?.projectId).toBe(PROJ)
       expect((await findWorkspaceRow('zzz'))?.projectId).toBe(OTHER)
       // Prefix expansion is domain's `resolveWorkspace`, never this.
       expect(await findWorkspaceRow('abcdef')).toBeUndefined()
-      expect(await findWorkspaceRow('spare-1')).toBeUndefined()
       expect(await findWorkspaceRow('nope')).toBeUndefined()
       expect(await findWorkspaceRow('')).toBeUndefined()
     })
   })
 
   describe('listProjectWorkspaceIds', () => {
-    it('lists one project\'s ids, spares included', async () => {
+    it('lists one project\'s ids', async () => {
       await create('sid-1')
-      await create('spare-1', { spare: true })
+      await create('sid-2')
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'zzz' })
 
-      expect((await listProjectWorkspaceIds(PROJ)).sort()).toEqual(['sid-1', 'spare-1'])
-    })
-  })
-
-  describe('listSpareWorkspaceIds', () => {
-    it('lists unclaimed spares across projects and nothing else', async () => {
-      await create('sid-1')
-      await create('spare-1', { spare: true })
-      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'spare-2', spare: true })
-
-      expect((await listSpareWorkspaceIds()).sort((a, b) => a.workspaceId.localeCompare(b.workspaceId))).toEqual([
-        { projectId: PROJ, workspaceId: 'spare-1' },
-        { projectId: OTHER, workspaceId: 'spare-2' },
-      ])
+      expect((await listProjectWorkspaceIds(PROJ)).sort()).toEqual(['sid-1', 'sid-2'])
     })
   })
 })

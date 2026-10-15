@@ -262,24 +262,30 @@ describe('findWorkspacePod', () => {
 })
 
 describe('listWorkspaceJobs', () => {
+  // A spare's Job carries its prewarmed mark, which outlives the pod.
   it('queries jobs scoped by install-id + workspace-id labels and maps rows', async () => {
-    serve([{
+    serve(['s1', 's2'].map((id) => ({
       metadata: {
-        name: 'yaac-demo-s1',
-        labels: { ...workspaceIdLabels('s1'), [LABEL_PROJECT_ID]: 'demo' },
+        name: `yaac-demo-${id}`,
+        labels: {
+          ...workspaceIdLabels(id),
+          [LABEL_PROJECT_ID]: 'demo',
+          ...(id === 's2' ? { [LABEL_PREWARMED]: 'true' } : {}),
+        },
         creationTimestamp: '2026-06-01T00:00:00Z',
       },
-    }])
+    })))
     const jobs = await listWorkspaceJobs()
     expect(fakeCluster.callsOf('list', 'Job')).toEqual([expect.objectContaining({
       namespace: k8sNamespace(), labelSelector: `yaac.install-id=${installId()},yaac.workspace-id`,
     })])
-    expect(jobs).toEqual([{
-      jobName: 'yaac-demo-s1',
-      workspaceId: 's1',
+    expect(jobs).toEqual(['s1', 's2'].map((id) => ({
+      jobName: `yaac-demo-${id}`,
+      workspaceId: id,
       projectId: 'demo',
       createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
-    }])
+      prewarmed: id === 's2',
+    })))
   })
 
   // The orphan-Job sweep must not act on a Job with no workspace id.

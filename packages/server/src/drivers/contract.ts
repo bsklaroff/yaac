@@ -101,6 +101,8 @@ export interface StrayUnit {
   /** Lets a sweep tell an orphan from a launch whose workspace has not
    *  appeared yet. */
   createdAtMs: number
+  /** The unit was a prewarmed spare's, never claimed. */
+  prewarmed: boolean
 }
 
 /**
@@ -646,10 +648,11 @@ export interface WorkspaceDriver {
   reviveStatusStream(jobName: string): Promise<void>
 
   /**
-   * Claim a spare as the caller's workspace, running `tool`. Compare-and-
-   * swap: of concurrent claims exactly one resolves; the others (and a
-   * claim on a vanished spare) reject, and the caller creates a fresh
-   * workspace instead. Afterwards the handle reports `declaredTool === tool`.
+   * Claim a spare as the caller's workspace, running `tool`: afterwards
+   * nothing in the runtime marks it a spare. Compare-and-swap: of
+   * concurrent claims exactly one resolves; the others (and a claim on a
+   * vanished spare) reject, and the caller creates a fresh workspace
+   * instead. Afterwards the handle reports `declaredTool === tool`.
    */
   claimSpare(workspaceId: string, tool: AgentTool): Promise<void>
 
@@ -756,10 +759,15 @@ export interface WorkspaceDriver {
    * is also being destroyed. `unitOnly` tears down only the running unit and
    * keeps what `prepareSubstrate` set up, for a create retrying its launch
    * or giving up while its row survives. Ordinary stops never pass it.
+   *
+   * `keepRecord` stops the workspace but leaves the unit's record (a k8s
+   * Job, which says it is a spare), so a spare reap can delete the files
+   * while something still identifies them, then destroy again to remove
+   * it. A driver whose units keep no such record ignores it.
    */
   destroy(
     target: TeardownTarget,
-    opts?: { salvageImages?: boolean; unitOnly?: boolean },
+    opts?: { salvageImages?: boolean; unitOnly?: boolean; keepRecord?: boolean },
   ): Promise<boolean>
   /**
    * The same teardown as an idempotent shell command, for a detached script

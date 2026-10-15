@@ -337,9 +337,10 @@ describe('prepareStart', () => {
 
     // A queued entry files under the group it was queued into, which may be
     // deleted just before its launch. Resolving the id as a name would make
-    // a stray group named after it.
+    // a stray group named after it; the workspace lands ungrouped instead.
     it('files under a given group id as is, never creating one', async () => {
-      await expect(start({ groupId: 'deleted-group' })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+      const { workspaceId } = await start({ groupId: 'deleted-group' })
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId))?.groupId).toBeUndefined()
       expect(await listWorkspaceGroupRows(DEMO_PROJECT_ID)).toEqual([])
     })
 
@@ -915,9 +916,9 @@ describe('prepareStart', () => {
       await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'tui' })
     })
 
-    it('warms a spare flagged and conversation-less, then hands it over as warmed, under its own id', async () => {
+    it('warms a spare with no row or conversation, then hands it over as warmed, under its own id', async () => {
       const spare = await warm()
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({ spare: true, mode: 'tui' })
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
       expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
       expect(specs.at(-1)?.prewarm).toBe(true)
       registrations = []
@@ -938,10 +939,10 @@ describe('prepareStart', () => {
         workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install', tool: 'claude',
       })])
       expect(ranIn(spare)).toContain("git config --global user.name 'Ada' && git config --global user.email 'ada@example.com'")
-      // Recorded as a cold create records it: no longer a spare, filed,
-      // titled, its first conversation holding the prompt.
+      // Recorded as a cold create records it: filed, titled, its first
+      // conversation holding the prompt.
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
-        spare: false, groupId: group.groupId, title: 'Bug fix', baseBranch: 'main',
+        groupId: group.groupId, title: 'Bug fix', baseBranch: 'main', mode: 'tui', permissionMode: 'bypass',
       })
       expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([
         expect.objectContaining({ tool: 'claude', agentSessionId: spare.workspaceId, firstPrompt: 'fix the bug' }),
@@ -1094,17 +1095,18 @@ describe('prepareStart', () => {
       await expect(start({ workspaceId: 'req', claimSpare: true, branch: 'ghost' }))
         .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('branch "ghost" not found') as unknown })
 
-      // No cold create was tried, and the spare is a spare again.
+      // No cold create was tried, and the spare is a spare again, with no
+      // row.
       expect(specs.filter((s) => !s.prewarm)).toEqual([])
       expect(claims).toEqual([])
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({ spare: true })
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
       expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
       expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'req', error: expect.stringContaining('ghost') as unknown })])
       // The next claim takes it.
       expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
     })
 
-    it('reaps a spare a failed respawn left half-changed, and creates cold instead', async () => {
+    it('reaps a spare a failed respawn or commit left half-changed, and creates cold instead', async () => {
       const spare = await warm()
       await saveToolAuth('codex', 'sk-oai')
       installDriver({
@@ -1121,12 +1123,20 @@ describe('prepareStart', () => {
 
       expect(result).toMatchObject({ workspaceId: 'req', tool: 'codex' })
       expect(specs.filter((s) => !s.prewarm).map((s) => s.workspaceId)).toEqual(['req'])
-      // Torn down whole: unit, checkout, then row.
+      // Torn down whole: the claim's row, then the pod, checkout and Job.
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
       await vi.waitFor(async () => {
-        expect(units.some((u) => u.workspaceId === spare.workspaceId)).toBe(false)
-        expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
+        expect(destroys).toEqual([false, false])
+        await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spare.workspaceId))).rejects.toThrow()
       }, { timeout: 30_000 })
-      await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spare.workspaceId))).rejects.toThrow()
+      expect(units.some((u) => u.workspaceId === spare.workspaceId)).toBe(false)
+
+      // A commit that lost a race looks like one whose response was lost
+      // after it landed, so that spare is reaped too.
+      installDriver({ claimSpare: () => Promise.reject(new Error('already claimed')) })
+      const next = await warm()
+      expect((await start({ claimSpare: true })).workspaceId).not.toBe(next.workspaceId)
+      await vi.waitFor(() => { expect(units.some((u) => u.workspaceId === next.workspaceId)).toBe(false) })
     })
 
     it('passes over a spare it cannot use, creating cold', async () => {
@@ -1135,7 +1145,7 @@ describe('prepareStart', () => {
         const result = await start({ claimSpare: true, ...over })
         expect(result.workspaceId).not.toBe(spare.workspaceId)
         expect(claims).toEqual([])
-        expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({ spare: true })
+        expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
       }
 
       // Its agent transport never answers: left alone, before any change.
@@ -1154,10 +1164,6 @@ describe('prepareStart', () => {
       await cold()
       _clearTmuxAliveCacheForTests()
       installDriver()
-      // The commit lost a race: the spare goes back on its warm settings.
-      installDriver({ claimSpare: () => Promise.reject(new Error('already claimed')) })
-      await cold()
-      installDriver()
       // A zone the user has left, which `TZ` fixed at warm time.
       await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
       await cold()
@@ -1168,8 +1174,9 @@ describe('prepareStart', () => {
       const spare = await warm()
       const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Gone soon', null)
       installDriver({
-        // The group goes after the start resolved it.
-        registerWorkspace: async () => { await deleteWorkspaceGroup(DEMO_PROJECT_ID, group.groupId) },
+        // The group goes after the start resolved it, before the claim
+        // records the row.
+        awaitAgentTransport: async () => { await deleteWorkspaceGroup(DEMO_PROJECT_ID, group.groupId) },
         exec: (jobName, cmd) => cmd.includes('git config --global')
           ? Promise.reject(new WorkspaceExecError('identity', 1, '', 'read-only home'))
           : Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }),
@@ -1179,9 +1186,7 @@ describe('prepareStart', () => {
       expect((await start({ claimSpare: true, group: group.groupId })).workspaceId).toBe(spare.workspaceId)
 
       expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.groupId).toBeUndefined()
-      const warned = warn.mock.calls.map(([m]) => String(m)).join('\n')
-      expect(warned).toContain('not applied')
-      expect(warned).toContain('not filed in group')
+      expect(warn.mock.calls.map(([m]) => String(m)).join('\n')).toContain('not applied')
       warn.mockRestore()
     })
 
@@ -1214,18 +1219,22 @@ describe('prepareStart', () => {
       expect((await start({ claimSpare: true })).workspaceId).toBe(newest.workspaceId)
     })
 
-    // Its row survives flagged `spare`, and the startup sweep collects the
-    // checkout from that flag.
-    it('leaves a spare that failed to warm flagged, checkout and all, and never claims it', async () => {
+    // Nothing else records a spare once its unit is gone, so a failed warm
+    // collects its own checkout, like a failed cold create.
+    it('tears down a spare that failed to warm, checkout and all, and never claims it', async () => {
       installDriver({
         awaitReady: (handle) => handle.prewarmed ? Promise.reject(new Error('pod never became ready')) : Promise.resolve(),
       })
       await reconcilePrewarmPool(snapshotFixture([user]))
-      await vi.waitFor(() => { expect(destroys).toEqual([true]) }, { timeout: 30_000 })
-      const spareId = specs[0].workspaceId
+      const spareId = await vi.waitFor(() => {
+        expect(destroys).toEqual([false])
+        return specs[0].workspaceId
+      }, { timeout: 30_000 })
 
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spareId)).toMatchObject({ spare: true })
-      await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spareId))).resolves.toBeUndefined()
+      await vi.waitFor(async () => {
+        await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spareId))).rejects.toThrow()
+      })
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spareId)).toBeUndefined()
       expect((await start({ claimSpare: true })).workspaceId).not.toBe(spareId)
     })
 

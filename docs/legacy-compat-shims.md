@@ -244,3 +244,24 @@ covers every install created since.
 - **What breaks silently if it goes too early.** The two shims above never
   see a hash, with the consequences they list.
 - **When it is safe to remove.** Together with 2.
+
+## Spare labels on claimed workspaces' Jobs
+
+A workspace Job and its pod carry one label set, so a prewarmed spare's Job
+has always had `yaac.prewarmed=true`. A claim now removes it from both, but a
+server from before that removed it from the pod only, so every workspace it
+claimed still has a labelled Job.
+
+- **What it reads.** `unmarkClaimedJobs` in
+  `packages/server/src/drivers/k8s/workspaces/claim.ts`, the k8s
+  `unmark-claimed-jobs` maintenance step, removes the label from every Job
+  whose pod is listed without it. A Job whose pod is already gone cannot be
+  told from a dead spare's and keeps the label.
+- **What breaks silently if it is deleted too early.** Once such a
+  workspace's pod goes (evicted, or deleted out of band), its Job is a stray
+  labelled as a spare, and the stale reaper hands it to `reapSpare`. Only the
+  row then keeps its checkout, so a database restored from before the row
+  existed (docs/workspace-storage.md) deletes the user's files.
+- **When it is safe to remove.** When no Job created by an older server can
+  remain: every workspace running at the upgrade has since been stopped or
+  restarted, since both replace the Job.

@@ -260,7 +260,7 @@ describe('buildSnapshot provisioning', () => {
   })
 
   it('hides a claimed spare under the create row that claimed it', async () => {
-    // A claim unhides the spare's row before the create resolves; listing it
+    // A claim inserts the spare's row before the create resolves; listing it
     // would show it beside the row still creating it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
@@ -279,8 +279,8 @@ describe('buildSnapshot provisioning', () => {
   })
 
   it('lists a claimed spare once the create that claimed it fails', async () => {
-    // The claim succeeded but the route failed afterwards (filing its group,
-    // delivering its prompt): the failed row lingers until dismissed, and
+    // The claim succeeded but the route failed afterwards (holding its
+    // prompt): the failed row lingers until dismissed, and
     // the claimed workspace must not stay hidden with it.
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{

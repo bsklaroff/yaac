@@ -67,7 +67,7 @@ describe('createRuntimeSnapshot', () => {
     expect((await snap.workspaces()).map((w) => w.workspaceId)).toEqual(['live'])
     // A Job whose pod is gone is a stray unit; one with a live pod is not.
     expect(await snap.strayUnits()).toEqual([{
-      workspaceId: 'stray', unitName: 'yaac-demo-stray', projectId: PROJECT, createdAtMs: Date.parse(CREATED),
+      workspaceId: 'stray', unitName: 'yaac-demo-stray', projectId: PROJECT, createdAtMs: Date.parse(CREATED), prewarmed: false,
     }])
     await snap.workspaces()
     await snap.strayUnits()

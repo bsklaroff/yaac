@@ -3,8 +3,9 @@ import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost, onWaitin
 import { acpLaunchModel } from '#runtime/agents'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
-import { applyWorkspaceEvent, getProjectRow, getWorkspaceRow, recordedConversationHandles } from '#db'
+import { applyWorkspaceEvent, getProjectRow, recordedConversationHandles } from '#db'
 import { resolveProjectConfig } from '#domain/projects'
+import { recordedLaunch } from '#domain/workspaces'
 import { errorText, serverLog } from '#lib/log'
 import type { ReconcileTrigger, RuntimeHandle } from '#drivers/contract'
 
@@ -45,16 +46,16 @@ export async function attachConvergence(opts: {
     recordedSessions: (session) =>
       recordedConversationHandles(session.projectId, session.workspaceId),
     // For `acp` the permission mode is sent over the protocol, so the
-    // connection needs it. A missing row yields `undefined`, not a default:
-    // assuming an unrestricted mode could auto-answer asks the user should
-    // have seen. Spare rows count: an `acp` spare handshakes while it warms,
-    // and only its first handshake sets the session's mode.
+    // connection needs it. A missing record yields `undefined`, not a
+    // default: assuming an unrestricted mode could auto-answer asks the user
+    // should have seen. Spares count: an `acp` spare handshakes while it
+    // warms, and only its first handshake sets the session's mode.
     permissionMode: async (session) =>
-      (await getWorkspaceRow(session.projectId, session.workspaceId))?.permissionMode,
+      (await recordedLaunch(session.projectId, session.workspaceId))?.permissionMode,
     effort: async (session) =>
-      (await getWorkspaceRow(session.projectId, session.workspaceId))?.effort,
+      (await recordedLaunch(session.projectId, session.workspaceId))?.effort,
     launchModel: async (session, tool) => {
-      const model = (await getWorkspaceRow(session.projectId, session.workspaceId))?.model
+      const model = (await recordedLaunch(session.projectId, session.workspaceId))?.model
       const owner = tool === 'pi' ? (await getProjectRow(session.projectId))?.owner : undefined
       const piProvider = owner !== undefined ? (await loadToolAuthEntry(owner, 'pi'))?.piProvider : undefined
       return acpLaunchModel({
