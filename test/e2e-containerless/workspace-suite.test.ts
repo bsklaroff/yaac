@@ -114,7 +114,7 @@ const FAKE_CODEX = [
   'case " $* " in *" resume "*) exec sleep 2147483647 ;; esac',
   'read -r _ || exec sleep 2147483647',
   'mkdir -p "$CODEX_HOME/sessions"',
-  'rollout="$CODEX_HOME/sessions/rollout-thread-$$.jsonl"',
+  'rollout="$CODEX_HOME/sessions/rollout-2026-10-03T12-00-00-thread-$$.jsonl"',
   ': > "$rollout"',
   'printf \'{"session_id":"thread-%s","transcript_path":"%s"}\' $$ "$rollout" | yaac-agent-links "$CODEX_HOME" codex',
   'printf \'{"session_id":"title-%s","transcript_path":null}\' $$ | yaac-agent-links "$CODEX_HOME" codex',
@@ -221,7 +221,8 @@ const ENTER_PLAN_MODE = 'enter plan mode'
 /**
  * A fake ACP adapter: line-delimited JSON-RPC on stdio that answers the
  * handshake and little else. Its session id names the tool, and it reports
- * its `cwd` to show acpd spawned it in the checkout.
+ * its `cwd` to show acpd spawned it in the checkout. As claude, a prompt
+ * writes the conversation's transcript, which a restart checks is there.
  */
 const fakeAcpAdapter = (tool: AgentTool): string => `#!/usr/bin/env node
 if (require('fs').existsSync(require('path').join(__dirname, '${ACP_ADAPTER_DIES}'))) process.exit(1)
@@ -238,6 +239,11 @@ process.stdin.on('data', (chunk) => {
     let msg
     try { msg = JSON.parse(line) } catch { continue }
     if (msg.id === undefined) continue
+    if (msg.method === 'session/prompt' && '${tool}' === 'claude') {
+      const dir = require('path').join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'e2e')
+      require('fs').mkdirSync(dir, { recursive: true })
+      require('fs').appendFileSync(require('path').join(dir, msg.params.sessionId + '.jsonl'), line + '\\n')
+    }
     if (msg.method === 'initialize') {
       reply(msg.id, { protocolVersion: 1, agentCapabilities: { loadSession: false } })
     } else if (msg.method === 'session/new') {

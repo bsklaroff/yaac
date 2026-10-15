@@ -16,7 +16,7 @@ import {
 import { agentSessionIdSchema, type AgentMode, type AgentTool } from '@yaac/shared/types'
 import { serverLog } from '#lib/log'
 import { workspacesSandboxed } from '#drivers/driver'
-import { openRoot } from '#lib/confined-fs'
+import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 import { acpRecord } from './acp-log'
 import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
 
@@ -63,6 +63,19 @@ function transcriptRoots(projectId: string, workspaceId: string, tool: AgentTool
 const under = (sub: string, rel: string): string => sub === '' ? rel : `${sub}/${rel}`
 
 /**
+ * One of a workspace's history dirs, or null when it is not there. A
+ * `strict` caller deciding that history is gone gets any other failure (an
+ * EIO on a network filesystem, say) thrown rather than read as absent.
+ */
+async function openHistoryDir(projectId: string, dir: string, strict: boolean): Promise<ConfinedRoot | null> {
+  return openSandboxDir(projectId, dir).catch((err: unknown) => {
+    const code = (err as NodeJS.ErrnoException).code
+    if (strict && code !== 'ENOENT' && code !== 'ENOTDIR') throw err
+    return null
+  })
+}
+
+/**
  * Find a claude conversation's transcript by searching, since a
  * conversation in the shared home is filed under whatever cwd claude ran in.
  * Only a fallback for when no path was recorded (e.g. the pod died before
@@ -75,16 +88,21 @@ async function findClaudeTranscript(
   projectId: string,
   workspaceId: string,
   sessionId: string,
+  strict = false,
 ): Promise<SandboxFile | undefined> {
   // Validate the id before joining it into a path.
   if (!agentSessionIdSchema.safeParse(sessionId).success) return undefined
   const name = `${sessionId}.jsonl`
   for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'claude')) {
-    const home = await openSandboxDir(projectId, dir).catch(() => null)
+    const home = await openHistoryDir(projectId, dir, strict)
     if (home === null) continue
+    // `stat` reads any failure as absent; a listing throws on all but that.
     const found = async (cwd: string): Promise<SandboxFile | undefined> => {
       const rel = under(sub, `${cwd}/${name}`)
-      return (await home.stat(rel))?.isFile() ? { projectId, dir, rel } : undefined
+      const hit = strict
+        ? (await home.readdir(under(sub, cwd))).some((e) => e.isFile() && e.name === name)
+        : (await home.stat(rel))?.isFile() === true
+      return hit ? { projectId, dir, rel } : undefined
     }
     const conventional = await found(CLAUDE_POD_CWD)
     if (conventional) return conventional
@@ -203,10 +221,10 @@ export async function locateTranscript(
  * level of subdirectories is walked. The timestamp prefix makes a basename
  * sort chronological (mtime would change as pi appends).
  */
-async function listPiJsonlFiles(projectId: string, workspaceId: string): Promise<SandboxFile[]> {
+async function listPiJsonlFiles(projectId: string, workspaceId: string, strict = false): Promise<SandboxFile[]> {
   const found: SandboxFile[] = []
   for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'pi')) {
-    const home = await openSandboxDir(projectId, dir).catch(() => null)
+    const home = await openHistoryDir(projectId, dir, strict)
     if (home === null) continue
     const walk = async (rel: string, depth: number): Promise<void> => {
       for (const e of await home.readdir(rel)) {
@@ -238,8 +256,9 @@ async function piSessionLogs(
   projectId: string,
   workspaceId: string,
   agentSessionId: string,
+  strict = false,
 ): Promise<SandboxFile[]> {
-  const files = await listPiJsonlFiles(projectId, workspaceId)
+  const files = await listPiJsonlFiles(projectId, workspaceId, strict)
   return files.filter((f) => sessionIdFromPiLog(f.rel) === agentSessionId)
 }
 
@@ -262,6 +281,27 @@ export async function sessionTranscriptPath(
     return logs[logs.length - 1]
   }
   return findClaudeTranscript(projectId, workspaceId, agentSessionId)
+}
+
+/**
+ * Whether a conversation's history is where its tool resumes it from:
+ * claude's transcript, codex's rollout, pi's log, or for opencode the
+ * workspace's database, which is as close as the host can tell without
+ * opening it (opencode never runs under the workspace-id pin). Only a
+ * missing file or dir answers false; any other failure to look throws, so a
+ * passing read error is never taken for lost history.
+ */
+export async function hasConversationHistory(
+  projectId: string,
+  workspaceId: string,
+  { tool, agentSessionId }: { tool: AgentTool; agentSessionId: string },
+): Promise<boolean> {
+  switch (tool) {
+    case 'claude': return await findClaudeTranscript(projectId, workspaceId, agentSessionId, true) !== undefined
+    case 'codex': return (await codexRolloutFiles(projectId, workspaceId, true)).has(agentSessionId)
+    case 'pi': return (await piSessionLogs(projectId, workspaceId, agentSessionId, true)).length > 0
+    case 'opencode': return agentSessionId !== workspaceId && await opencodeDatabase(projectId, workspaceId, true) !== undefined
+  }
 }
 
 /** When the agent last appended to a transcript (or conversation record),
@@ -385,9 +425,18 @@ interface Rollout {
  * listed).
  */
 async function codexRollouts(projectId: string, workspaceId: string): Promise<Rollout[]> {
+  return Promise.all([...await codexRolloutFiles(projectId, workspaceId)].map(async ([thread, file]) => ({
+    file,
+    thread,
+    parent: file.rel.endsWith('.jsonl') ? await codexRolloutParent(() => openSandboxFile(file)) : undefined,
+  })))
+}
+
+/** Each codex rollout a workspace can read, by thread. */
+async function codexRolloutFiles(projectId: string, workspaceId: string, strict = false): Promise<Map<string, SandboxFile>> {
   const found = new Map<string, SandboxFile>()
   for (const { dir, sub } of transcriptRoots(projectId, workspaceId, 'codex')) {
-    const home = await openSandboxDir(projectId, dir).catch(() => null)
+    const home = await openHistoryDir(projectId, dir, strict)
     if (home === null) continue
     const walk = async (rel: string, depth: number): Promise<void> => {
       for (const e of await home.readdir(rel)) {
@@ -400,11 +449,7 @@ async function codexRollouts(projectId: string, workspaceId: string): Promise<Ro
     // `<YYYY>/<MM>/<DD>/`.
     await walk(sub, 3)
   }
-  return Promise.all([...found].map(async ([thread, file]) => ({
-    file,
-    thread,
-    parent: file.rel.endsWith('.jsonl') ? await codexRolloutParent(() => openSandboxFile(file)) : undefined,
-  })))
+  return found
 }
 
 /** A codex conversation's rollout, then its descendants by name. */
@@ -432,9 +477,9 @@ function codexFiles(thread: string, rollouts: Rollout[]): Candidate[] {
  * pod refreshes every few minutes and at stop, under containerless the live
  * working copy.
  */
-async function opencodeDatabase(projectId: string, workspaceId: string): Promise<SandboxFile | undefined> {
+async function opencodeDatabase(projectId: string, workspaceId: string, strict = false): Promise<SandboxFile | undefined> {
   const dir = opencodeCheckpointDir(projectId, workspaceId)
-  const root = await openSandboxDir(projectId, dir).catch(() => null)
+  const root = await openHistoryDir(projectId, dir, strict)
   const db = (await root?.readdir(''))?.find((e) => e.isFile() && e.name.endsWith('.db') && !e.name.startsWith('.'))
   return db === undefined ? undefined : { projectId, dir, rel: db.name }
 }

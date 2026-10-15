@@ -18,6 +18,14 @@ clone's objects (docs/server-git.md). Teardown never removes the checkout, so a
 stopped row is a checkout still on disk, with its git state and diff, ready to
 restart.
 
+A row can outlive its checkout's files (a crash, a network filesystem fault, a
+partial restore), so a restart checks what is there. A checkout that is gone,
+or holds nothing but empty directories, is recreated from the row's base
+branch, or from origin's default branch if origin no longer has that one. A
+checkout that holds files but no `.git` is refused: checking out into it would
+overwrite every tracked file, so the restart fails naming the directory and
+the row stays stopped.
+
 Every sweep is driven by a record, a row or a prewarmed spare's runtime mark
 (below), so a checkout with neither is never collected automatically.
 Guessing "garbage" from disk alone is how a sweep deletes the only copy of
@@ -240,6 +248,17 @@ A restart brings back exactly the conversations that were live at stop, each in
 its own tmux window, in the order they were first recorded (`agentWindowName`;
 the first keeps the bare tool name so `yaac:<tool>` targets still resolve). A
 conversation started in a shell comes back in an agent window.
+
+A restart resumes each conversation whose history is where its tool keeps it
+(`hasConversationHistory` in `#runtime/agents`): claude's transcript, codex's
+rollout, pi's log, opencode's database. One whose history is not there starts
+as a create's would, unless the rows show its agent wrote some: a transcript
+the registry found, an id a self-naming tool chose rather than the pin, or
+under `acp` a first message. Then a crash or an incomplete restore lost it,
+and the restart fails naming each such conversation, rather than resume an id
+the tool cannot find (which kills the agent) or quietly start the work over.
+Only a missing file counts as gone; any other read error fails the restart as
+itself.
 
 ### Opening message and model
 

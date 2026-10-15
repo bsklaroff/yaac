@@ -951,8 +951,10 @@ describe('write routes', () => {
           },
         },
       ])
+      // With no conversation recorded, the first comes back under the
+      // workspace id, fresh since it has no history.
       expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({
-        workspaceId: 'sess-x', resume: [],
+        workspaceId: 'sess-x', resume: [{ agentSessionId: 'sess-x', tool: 'claude' }],
       }))
     })
 

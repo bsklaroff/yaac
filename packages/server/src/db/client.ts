@@ -5,7 +5,7 @@ import { migrate } from 'drizzle-orm/pglite/migrator'
 import type { PGlite } from '@electric-sql/pglite'
 import { env, testEnv } from '@yaac/shared/env'
 import { PACKAGE_ROOT, serverLocalPath } from '@yaac/shared/paths'
-import { forgetSecretConfig } from './secret-key'
+import { forgetSecretConfig, lostSecretKey } from './secret-key'
 import { BUILT_IN_USER_ID, forgetSeenUsers } from './user-store'
 
 /**
@@ -103,9 +103,9 @@ async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
 }
 
 /** Why `openDb` refused the database: it records a migration this build
- *  does not ship. The server stays up answering `/health` with the message
- *  rather than exiting. */
-export class MigrationRefusal extends Error {}
+ *  does not ship, or holds secrets whose key is gone. The server stays up
+ *  answering `/health` with the message rather than exiting. */
+export class DbRefusal extends Error {}
 
 /**
  * Refuse a database that records a migration this build does not ship.
@@ -129,7 +129,7 @@ async function refuseUnknownMigrations(db: Db, dir: string): Promise<void> {
   const known = new Set(await fs.readdir(MIGRATIONS_DIR))
   const unknown = rows.flatMap((r) => (r.name && !known.has(r.name) ? [r.name] : []))
   if (unknown.length === 0) return
-  throw new MigrationRefusal(
+  throw new DbRefusal(
     `the database at ${dir} records migrations missing from ${MIGRATIONS_DIR} (${unknown.join(', ')}). `
     + 'Either a newer yaac migrated it, so upgrade yaac, or this install\'s migration files are '
     + 'incomplete, so rebuild or reinstall it',
@@ -137,12 +137,21 @@ async function refuseUnknownMigrations(db: Db, dir: string): Promise<void> {
 }
 
 /**
- * Open the database and run pending migrations. Called by the composition
- * root once the server lock is held. Returns nothing, since the handle stays
- * private to this folder.
+ * Open the database and run pending migrations, refusing one whose secrets
+ * this install has lost the key to (`lostSecretKey`). Called by the
+ * composition root once the server lock is held. Returns nothing, since the
+ * handle stays private to this folder.
  */
 export async function openDb(): Promise<void> {
-  await getDb()
+  const db = await getDb()
+  const lost = await lostSecretKey(async () => {
+    const { rows: [row] } = await db.$client.query<{ sealed: boolean }>(
+      'SELECT EXISTS (SELECT 1 FROM git_credentials) OR EXISTS (SELECT 1 FROM tool_credentials) '
+      + 'OR EXISTS (SELECT 1 FROM project_env_vars WHERE sealed_value IS NOT NULL) AS sealed',
+    )
+    return row?.sealed === true
+  })
+  if (lost !== undefined) throw new DbRefusal(lost)
 }
 
 /**

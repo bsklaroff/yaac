@@ -102,7 +102,6 @@ import {
   effortFor,
   launchablePermissionMode,
   resolveToolCreateDefaults,
-  SELF_NAMING_TOOLS,
   SUPPORTED_PERMISSION_MODES,
   TOOL_LABELS,
   toolSupportsPermissionMode,
@@ -178,16 +177,17 @@ export interface WorkspaceCreateOptions {
   mode: AgentMode
   /**
    * Reference branch for the fresh workspace (a branch on `origin`, no
-   * `origin/` prefix); unset → the remote's default branch.
+   * `origin/` prefix); unset → the remote's default branch. A resume passes
+   * the row's base branch, used only if its checkout is gone.
    */
   branch?: string
   /**
    * Resume an existing workspace (a restart): reuse its checkout if present,
-   * and resume these conversations, in window order, each in its own tmux
-   * window (`agentWindowName`) so it loads its prior transcript, on its own
-   * model and effort where it names them. Empty resumes one conversation
-   * under the workspace id, on `model` and `effort`, or starts a fresh one
-   * where the agent mints its own id (see `launchWithSetup`).
+   * and bring back these conversations, in window order, each in its own
+   * tmux window (`agentWindowName`), on its own model and effort where it
+   * names them. One marked `resume` loads its prior history; the restart
+   * has checked it is there. Empty starts one conversation as a create
+   * would, on `model` and `effort`.
    */
   resume?: LaunchedAgent[]
   /**
@@ -239,13 +239,37 @@ export interface WorkspaceCreateOptions {
   onProgress?: (message: string) => void
 }
 
-/** One agent window to bring up: the conversation, its tool, and the model
- *  and effort it launches on. */
+/** One agent window to bring up: the conversation, its tool, the model and
+ *  effort it launches on, and whether it resumes its history. */
 interface LaunchedAgent {
   agentSessionId: string
   tool: AgentTool
   model?: string
   effort?: string
+  resume?: boolean
+}
+
+/** Refuse a resume's checkout over `dir` if it holds the user's files. */
+async function refuseCheckingOutOver(dir: string): Promise<void> {
+  if (!await holdsFiles(dir)) return
+  throw new ServerError(
+    'CONFLICT',
+    `${dir} holds files but no .git, so restarting would check out over them. `
+    + 'Restore its .git or move the files aside, then restart.',
+  )
+}
+
+/** Whether `dir` holds anything but empty directories; a missing one holds
+ *  nothing. Links count as files and are not followed. */
+async function holdsFiles(dir: string): Promise<boolean> {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch((err: unknown) => {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw err
+  })
+  for (const e of entries) {
+    if (!e.isDirectory() || await holdsFiles(path.join(dir, e.name))) return true
+  }
+  return false
 }
 
 export interface WorkspaceCreateResult {
@@ -370,14 +394,10 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   }
 
   // Open the init windows and replace the placeholder window with the agents
-  // (buildWindowsExec). A self-naming tool or an acp agent never ran under
-  // the workspace-id placeholder id, so resuming by it would find nothing
-  // (`codex resume` kills the window, `session/load` is refused); such a
-  // conversation starts fresh instead.
+  // (buildWindowsExec).
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => {
-    const resume = options.resume !== undefined
-      && !((mode === 'acp' || SELF_NAMING_TOOLS.includes(a.tool)) && a.agentSessionId === workspaceId)
+    const resume = a.resume === true
     return {
       tool: a.tool,
       ...(resume ? { resumes: a.agentSessionId } : {}),
@@ -781,14 +801,31 @@ export async function createWorkspace(
     )
   }
 
-  // A resume reuses its checkout as it stands.
+  // A resume reuses its checkout as it stands. One with files but no `.git`
+  // (lost to a crash or a partial restore) is refused: checking out into it
+  // would overwrite every tracked file with the base branch. Only a missing
+  // `.git` counts as lost, so a read error fails the restart instead.
+  const wtDir = workspaceDir(projectId, workspaceId)
+  const reuseCheckout = options.resume !== undefined && await fs.access(path.join(wtDir, '.git')).then(
+    () => true,
+    (err: unknown) => {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw err
+    },
+  )
+  if (options.resume !== undefined && !reuseCheckout) await refuseCheckingOutOver(wtDir)
   const refBranch = options.resume !== undefined
     ? undefined
     : options.branch ?? await getDefaultBranch(repo)
   // Decided here so they are recorded with the workspace row. The tool and
   // first prompt are read from the first conversation, so a workspace with
   // none could not be restarted; discovery only adds to this list.
-  const launching: LaunchedAgent[] =
+  //
+  // A conversation the restart does not resume (its agent never wrote
+  // anything) launches as a create's would. Under acp that means its record
+  // starts under the workspace id and it goes unrecorded, so its handshake
+  // runs `session/new`.
+  const launching: LaunchedAgent[] = (
     options.resume !== undefined && options.resume.length > 0
       ? options.resume
       : [{
@@ -797,6 +834,7 @@ export async function createWorkspace(
         ...(options.model !== undefined ? { model: options.model } : {}),
         ...(options.effort !== undefined ? { effort: options.effort } : {}),
       }]
+  ).map((a) => (mode === 'acp' && a.resume !== true ? { ...a, agentSessionId: workspaceId } : a))
 
   // Record the row before provisioning anything, so no user workspace's pod
   // exists without one (a rowless pod is invisible to titles, groups and
@@ -835,8 +873,6 @@ export async function createWorkspace(
     })
   }
 
-  const wtDir = workspaceDir(projectId, workspaceId)
-
   // Pre-create the checkout dir so its hostPath mount (type Directory)
   // works while the checkout is still running.
   await fs.mkdir(wtDir, { recursive: true })
@@ -855,10 +891,10 @@ export async function createWorkspace(
     })
 
     // Record the conversations now rather than leave them to discovery. A
-    // fresh acp create cannot: the agent mints the id in `session/new`, and
-    // the registry records it then. A resumed acp workspace already has ids,
-    // unless none was ever recorded, and then it launches as a fresh create.
-    if (mode === 'tui' || (options.resume?.length ?? 0) > 0) {
+    // new acp conversation cannot: the agent mints the id in `session/new`,
+    // and the registry records it then. A resumed one already has its id.
+    const recorded = launching.flatMap((a, i) => (mode === 'tui' || a.resume === true ? [{ a, i }] : []))
+    if (recorded.length > 0) {
       // Under acp the handle (window name) is known now and must be recorded,
       // or the restart's acpd handshake starts a new conversation. A tui pane
       // id is unknown until the pane exists; the registry fills it in.
@@ -866,7 +902,7 @@ export async function createWorkspace(
         type: 'sessions-launched',
         projectId,
         workspaceId,
-        sessions: launching.map((a, i) => ({
+        sessions: recorded.map(({ a, i }) => ({
           tool: a.tool,
           agentSessionId: a.agentSessionId,
           mode,
@@ -916,18 +952,25 @@ export async function createWorkspace(
       }
     }
 
-    if (options.resume !== undefined && await fs.access(path.join(wtDir, '.git')).then(() => true, () => false)) {
+    if (reuseCheckout) {
       emit(`Reusing existing workspace at ${wtDir}`, options)
       return
     }
-    // An empty repo has no branches yet, so its default is the one name
-    // that may be missing.
-    if (options.branch && !(await remoteBranchExists(repo, options.branch))
-      && !(options.branch === await getDefaultBranch(repo) && (await listRemoteBranches(repo)).length === 0)) {
-      throw new ServerError('VALIDATION', `branch "${options.branch}" not found on origin.`)
+    // A resume whose checkout is gone recreates it from its recorded base
+    // branch, or from the default if origin no longer has that. An empty
+    // repo has no branches yet, so its default is the one name a fresh
+    // create may name while it is missing.
+    let base = refBranch ?? options.branch ?? await getDefaultBranch(repo)
+    if (options.branch !== undefined && !(await remoteBranchExists(repo, options.branch))) {
+      if (options.resume !== undefined) {
+        base = await getDefaultBranch(repo)
+      } else if (!(options.branch === await getDefaultBranch(repo) && (await listRemoteBranches(repo)).length === 0)) {
+        throw new ServerError('VALIDATION', `branch "${options.branch}" not found on origin.`)
+      }
     }
-    // A resume whose checkout is gone recreates it from the default.
-    const base = refBranch ?? options.branch ?? await getDefaultBranch(repo)
+    // Again, since files may have landed while the fetch ran; the module
+    // dirs made since are empty, so they do not count.
+    if (options.resume !== undefined) await refuseCheckingOutOver(wtDir)
     emit(`Creating workspace from ${base}...`, options)
     await createCheckout(repo, wtDir, { branch: `agent/${workspaceId}`, baseBranch: base, remoteUrl })
   })()

@@ -2,7 +2,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
 import { buildApp, buildMamaRelayApp } from '#main/server'
 import { pushCredentialsToRuntime, refreshPlanUsage } from '#domain/auth'
-import { closeDb, listProjectRows, MigrationRefusal, openDb, pingDb } from '#db'
+import { closeDb, DbRefusal, listProjectRows, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub } from '#api/events'
 import { registerWebSocketRoutes } from '#api/ws-routes'
@@ -209,12 +209,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     process.once('SIGINT', quit)
   }
   // Open the DB only under the lock (PGlite's single-writer guard). A
-  // database recording a migration this build lacks is refused; any other
-  // open failure fails the start.
+  // database recording a migration this build lacks, or holding secrets
+  // whose key is gone, is refused; any other open failure fails the start.
   try {
     await openDb()
   } catch (err) {
-    if (err instanceof MigrationRefusal) {
+    if (err instanceof DbRefusal) {
       refuse(err.message)
       return
     }

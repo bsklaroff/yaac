@@ -6,7 +6,7 @@
 //
 // The handle (`client.ts`) and schema (`schema.ts`) stay off this barrel so
 // no other layer can build its own queries; only `openDb`/`closeDb`, the
-// `MigrationRefusal` that `openDb` can throw, and the `pingDb` liveness
+// `DbRefusal` that `openDb` can throw, and the `pingDb` liveness
 // check are exported, for the composition root. Observed facts enter only
 // as a `WorkspaceEvent` through `applyWorkspaceEvent`, which decides which
 // rows change. User intent (a title, a group, a preference) is written
@@ -43,7 +43,7 @@ export {
   setWorkspaceGroup,
   setWorkspaceGroupPinned,
 } from './group-store'
-export { closeDb, MigrationRefusal, openDb, pingDb } from './client'
+export { closeDb, DbRefusal, openDb, pingDb } from './client'
 export {
   deleteDraftWorkspace,
   deleteProjectDraftWorkspaces,

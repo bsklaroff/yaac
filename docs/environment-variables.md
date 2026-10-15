@@ -30,8 +30,14 @@ with a random nonce per value, keyed by the SHA-256 of a secret string, in a
 versioned envelope so keys can be rotated without re-encrypting.
 
 By default the server generates its key at `~/.yaac-server/server-local/secret.key`
-(mode 0600). **Back it up with the data dir.** Without it every stored secret
-is unreadable and must be entered again. To keep it elsewhere, set
+(mode 0600). **Back it up with the data dir.** A server that finds no key
+file and neither variable set, while its database already holds encrypted
+rows, does not generate a new key: it refuses to start, and answers `/health`
+with the key path and these variables, until the key is restored or
+configured. If the key is lost for good, write a new one to give up the stored
+secrets (`openssl rand -base64 32 > ~/.yaac-server/server-local/secret.key`):
+the server then starts, and every stored secret reads as unreadable and must
+be entered again. To keep it elsewhere, set
 `YAAC_SECRET`, or `YAAC_SECRETS` for a versioned set (`"<version>:<secret>,…"`,
 newest first):
 

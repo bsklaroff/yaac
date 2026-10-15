@@ -61,6 +61,7 @@ export {
   ACP_RECORD_NAME,
   type ConversationFile,
   conversationFiles,
+  hasConversationHistory,
   locateTranscript,
   openConversationFile,
   resolveProjectPath,
