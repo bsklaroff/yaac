@@ -39,6 +39,7 @@ import {
   createWorkspaceGroup,
   findWorkspaceRow,
   listActiveAgentSessions,
+  listWorkspaceAgentSessions,
   getWorkspaceRow,
 } from '#db'
 import { closeDb } from '#db/client'
@@ -50,8 +51,10 @@ import { workspaceDir, workspaceStateDir } from '@yaac/shared/project-paths'
 import { projectConfigDir } from '@yaac/shared/paths'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
-import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
-import type { AgentTool, PermissionMode } from '@yaac/shared/types'
+import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
+import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
+import type { AcpConversation } from '#runtime/agents'
+import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 import { BUILT_IN_USER_ID } from '#db'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 
@@ -100,7 +103,9 @@ function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
 /** A workspace created as the create route makes one. */
 async function created(
   workspaceId: string,
-  over: { tool?: AgentTool; permissionMode?: PermissionMode; model?: string; effort?: string } = {},
+  over: {
+    tool?: AgentTool; permissionMode?: PermissionMode; model?: string; effort?: string; mode?: AgentMode; prompt?: string
+  } = {},
 ): Promise<void> {
   const run = await prepareStart(local, {
     projectId: DEMO_PROJECT_ID, workspaceId, mode: 'tui', rememberDefaults: false, claimSpare: false, ...over,
@@ -130,6 +135,7 @@ beforeEach(async () => {
   clearAllProvisioningForTests()
   _clearTerminatingForTests()
   teardowns.children = []
+  _resetAcpRegistryForTests()
   live = undefined
   calls = []
   destroys = []
@@ -192,6 +198,40 @@ describe('prepareRestart', () => {
     // `buildSnapshot` hides a workspace that still has a row, so a leftover
     // would show "Starting…" forever.
     expect(listProvisioning()).toEqual([])
+  })
+
+  // A chat create whose agent never connected holds its prompt and records
+  // no conversation. The restart has none to load, so it starts a fresh one,
+  // which gets the prompt.
+  it('starts a chat workspace that never recorded a conversation afresh, handing it the held prompt', async () => {
+    installDriver({
+      exec: (_jobName, cmd) => cmd.includes('list-windows -t =yaac')
+        ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
+        : Promise.resolve({ stdout: '', stderr: '' }),
+    })
+    await stoppedWorkspace('wt-chat', { mode: 'acp', prompt: 'add shared projects' })
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('add shared projects')
+
+    const prompted = vi.fn(() => Promise.resolve())
+    const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
+    installDriver({
+      exec: (_jobName, cmd) => {
+        if (cmd.includes('#{pane_pid}')) {
+          setTimeout(() => registerAcpConversation(
+            DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'acp-fresh', panePid: '42' }, conversation,
+          ), 20)
+          return Promise.resolve({ stdout: '42\n', stderr: '' })
+        }
+        return Promise.resolve({ stdout: '', stderr: '' })
+      },
+    })
+    await restart('wt-chat')
+
+    // Nothing is recorded under the workspace-id placeholder, which the
+    // agent connection would otherwise try to load.
+    expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-chat')).toEqual([])
+    await vi.waitFor(() => expect(prompted).toHaveBeenCalledWith('add shared projects'))
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBeUndefined()
   })
 
   // The workspace is running by then, so a lost clear must not report it

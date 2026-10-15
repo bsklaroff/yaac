@@ -762,11 +762,19 @@ const RELAY_HANDSHAKE_MAX_BYTES = 4 * 1024
  * sees the refusal.
  */
 const RELAY_PRESPLICE_TIMEOUT_MS = 6_000
+/**
+ * Idle time before TCP keepalive probes start on each leg of a splice. A
+ * spliced stream can sit idle for days, and the cluster's connection
+ * tracking forgets an idle flow, after which one end's close never reaches
+ * the other. Probes keep both legs known; the server probes its own leg too.
+ */
+const RELAY_KEEPALIVE_MS = 60_000
 
 function handleRelayConnection(socket: net.Socket, podStreamPort: number): void {
   socket.on('error', () => { /* per-connection; close tears down the splice */ })
   // Traffic is already batched at each end, so Nagle only adds delay.
   socket.setNoDelay(true)
+  socket.setKeepAlive(true, RELAY_KEEPALIVE_MS)
   let buf = Buffer.alloc(0)
   // Until authenticated, a timeout closes silently.
   let authed = false
@@ -835,6 +843,7 @@ function handleRelayConnection(socket: net.Socket, podStreamPort: number): void 
       // allowHalfOpen lets an EOF from either end pass through the splice.
       const target = net.connect({ port: podStreamPort, host: ip, allowHalfOpen: true })
       target.setNoDelay(true)
+      target.setKeepAlive(true, RELAY_KEEPALIVE_MS)
       // The dial gets its own timeout on the target socket, the only handle
       // that can abort a hung connect. It lands in the error handler, so a
       // hung dial is refused like a failed one.

@@ -140,6 +140,8 @@ function ctrlTransport(child: StreamChild): JsonRpcTransport {
 interface Attached {
   handle: string
   tool: AgentTool
+  /** The window's process when attached; a respawn replaces it. */
+  panePid: string
   /** Undefined only briefly, between registration and construction (see
    *  `attach`). */
   conversation?: AcpConversation
@@ -275,9 +277,14 @@ class AcpConnection extends ControlModeConnection {
     // Still attached at a re-list means the attach held, not a dial that
     // bounced before acpd bound its socket.
     for (const handle of this.attached.keys()) this.attachFailures.delete(handle)
-    const live = new Set(windows.map((w) => w.handle))
+    const live = new Map(windows.map((w) => [w.handle, w]))
     for (const [handle, entry] of [...this.attached]) {
-      if (!live.has(handle)) this.detach(entry, 'window closed')
+      const w = live.get(handle)
+      if (w === undefined) this.detach(entry, 'window closed')
+      // A respawned agent's old stream normally closes and says so, but one
+      // that died silently would hold the window's name forever, so the new
+      // acpd would never be dialed. Handled like that close.
+      else if (w.pid !== entry.panePid) this.detach(entry, 'agent respawned', { keepQueue: true })
     }
     // A new window with a vanished one's name is a new conversation.
     for (const handle of [...this.attachFailures.keys()]) {
@@ -352,7 +359,7 @@ class AcpConnection extends ControlModeConnection {
     // Register the entry before constructing the conversation: a transport
     // failing during construction calls `onDown` synchronously, and `detach`
     // must find the entry.
-    const entry: Attached = { handle, tool, child }
+    const entry: Attached = { handle, tool, panePid: pane.pid, child }
     const panePid = pane.pid !== '' ? { panePid: pane.pid } : {}
     this.attached.set(handle, entry)
     const profile = acpAdapterFor(tool)

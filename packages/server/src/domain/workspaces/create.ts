@@ -69,6 +69,7 @@ import {
   getGitIdentity,
   getProjectRow,
   getTimeZone,
+  holdPendingPrompt,
   setWorkspaceGroup,
   setWorkspaceMamaTokenHash,
   setWorkspaceTitle,
@@ -85,7 +86,7 @@ import {
 } from '#domain/skills'
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
-import { reconcileWorkspaceAgentSessions } from './agent-session-registry'
+import { deliverPendingPrompt, reconcileWorkspaceAgentSessions } from './agent-session-registry'
 import {
   OPENCODE_CHECKPOINT_SCRIPT,
   WORKSPACE_INIT_SCRIPT,
@@ -186,7 +187,8 @@ export interface WorkspaceCreateOptions {
    * and resume these conversations, in window order, each in its own tmux
    * window (`agentWindowName`) so it loads its prior transcript, on its own
    * model and effort where it names them. Empty resumes one conversation
-   * under the workspace id, on `model` and `effort`.
+   * under the workspace id, on `model` and `effort`, or starts a fresh one
+   * where the agent mints its own id (see `launchWithSetup`).
    */
   resume?: LaunchedAgent[]
   /**
@@ -369,13 +371,14 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   }
 
   // Open the init windows and replace the placeholder window with the agents
-  // (buildWindowsExec). A self-naming tool never ran under the workspace-id
-  // placeholder id, so resuming by it would find nothing (`codex resume`
-  // kills the window); such a conversation starts fresh instead.
+  // (buildWindowsExec). A self-naming tool or an acp agent never ran under
+  // the workspace-id placeholder id, so resuming by it would find nothing
+  // (`codex resume` kills the window, `session/load` is refused); such a
+  // conversation starts fresh instead.
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => {
     const resume = options.resume !== undefined
-      && !(SELF_NAMING_TOOLS.includes(a.tool) && a.agentSessionId === workspaceId)
+      && !((mode === 'acp' || SELF_NAMING_TOOLS.includes(a.tool)) && a.agentSessionId === workspaceId)
     return {
       tool: a.tool,
       ...(resume ? { resumes: a.agentSessionId } : {}),
@@ -431,12 +434,16 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
 /**
  * The last step of a create, cold or claimed: hand the agent over.
  *
- * A fresh acp conversation has no id, and so no row or chat pane, until the
- * agent answers `session/new`. So an acp create waits for that, then
- * records the row itself rather than waiting for the reconciler's pass.
- * Then the initial prompt is delivered (pasted under `tui`,
- * `session/prompt` under `acp`) without waiting for a reply. Failures are
- * logged, not thrown: the workspace is usable either way.
+ * A `tui` prompt is pasted into the pane. A fresh acp conversation has no
+ * id, and so no row or chat pane, until the agent answers `session/new`.
+ * So an acp create holds its prompt on the row, waits for that, records the
+ * row itself rather than waiting for the reconciler's pass, and sends the
+ * held prompt (`deliverPendingPrompt`), which on a restart is one an
+ * earlier create could not deliver. A conversation that does not come up in
+ * time leaves the prompt held for the reconciler to send to whichever one
+ * does. A prompt that cannot be held fails the create, so the caller still
+ * has it; delivery failures are only logged, since the workspace is usable
+ * either way.
  */
 export async function handOverAgent(input: {
   projectId: string
@@ -449,33 +456,35 @@ export async function handOverAgent(input: {
 }): Promise<void> {
   const { projectId, workspaceId, jobName, tool, mode, prompt, emit } = input
   const window = agentWindowName(tool, 0)
-  let conversationUp = true
-  if (mode === 'acp') {
-    emit(`Connecting to ${TOOL_LABELS[tool]}...`)
-    conversationUp = await awaitConversation(projectId, workspaceId, jobName, window)
-    if (conversationUp) {
-      await reconcileWorkspaceAgentSessions(projectId, workspaceId, mode, jobName).catch((err: unknown) => {
-        serverLog(`[server] create ${workspaceId}: recording the conversation failed: ${String(err)}`)
+  if (mode === 'tui') {
+    if (prompt === undefined) return
+    emit('Sending initial prompt...')
+    await agentDriver(mode).deliverPrompt({ projectId, workspaceId, jobName, tool }, window, prompt)
+      .catch((err: unknown) => {
+        serverLog(`[server] create ${workspaceId}: initial prompt failed: ${String(err)}`)
       })
-    }
-  }
-  if (prompt === undefined) return
-  if (!conversationUp) {
-    serverLog(`[server] create ${workspaceId}: initial prompt not delivered — no conversation`)
     return
   }
-  emit('Sending initial prompt...')
-  await agentDriver(mode).deliverPrompt({ projectId, workspaceId, jobName, tool }, window, prompt)
-    .catch((err: unknown) => {
-      serverLog(`[server] create ${workspaceId}: initial prompt failed: ${String(err)}`)
-    })
+  if (prompt !== undefined) await holdPendingPrompt(projectId, workspaceId, prompt)
+  emit(`Connecting to ${TOOL_LABELS[tool]}...`)
+  const conversation = await awaitConversation(projectId, workspaceId, jobName, window)
+  if (conversation === undefined) {
+    if (prompt !== undefined) serverLog(`[server] create ${workspaceId}: initial prompt held until a conversation is up`)
+    return
+  }
+  await reconcileWorkspaceAgentSessions(projectId, workspaceId, mode, jobName).catch((err: unknown) => {
+    serverLog(`[server] create ${workspaceId}: recording the conversation failed: ${String(err)}`)
+  })
+  if (prompt !== undefined) emit('Sending initial prompt...')
+  void deliverPendingPrompt(projectId, workspaceId, conversation)
 }
 
 /**
  * Wait for the agent's conversation to complete its handshake, including
  * the launch model and mode that follow `session/new`, so the row recorded
- * next shows them; resolves whether it did. Gives up at the deadline or when the agent's window is
- * gone, which the window probe (an exec) checks every two seconds.
+ * next shows them; resolves with it, or undefined if it never did. Gives up
+ * at the deadline or when the agent's window is gone, which the window
+ * probe (an exec) checks every two seconds.
  *
  * Only a conversation with the window's current process counts. A claimed
  * spare's agent may have just been respawned (by the claim or a background
@@ -487,7 +496,7 @@ async function awaitConversation(
   workspaceId: string,
   jobName: string,
   window: string,
-): Promise<boolean> {
+): Promise<AcpConversation | undefined> {
   const runtime = workspaceDriver()
   // Unreadable: any conversation on the window will do.
   const panePid = await runtime.exec(
@@ -507,16 +516,16 @@ async function awaitConversation(
   ])
   if (outcome === 'dead') {
     serverLog(`[server] create ${workspaceId}: acp agent window exited before its handshake`)
-    return false
+    return undefined
   }
   if (outcome === undefined) {
     serverLog(`[server] create ${workspaceId}: no acp conversation after `
       + `${String(ACP_CONVERSATION_WAIT_MS / 1000)}s`)
-    return false
+    return undefined
   }
-  return outcome.whenReady(ACP_CONVERSATION_WAIT_MS).then(() => true, (err: unknown) => {
+  return outcome.whenReady(ACP_CONVERSATION_WAIT_MS).then(() => outcome, (err: unknown) => {
     serverLog(`[server] create ${workspaceId}: acp handshake did not finish: ${String(err)}`)
-    return false
+    return undefined
   })
 }
 
@@ -849,8 +858,9 @@ export async function createWorkspace(
   if (!options.prewarm) {
     // Record the conversations now rather than leave them to discovery. A
     // fresh acp create cannot: the agent mints the id in `session/new`, and
-    // the registry records it then. A resumed acp workspace already has ids.
-    if (mode === 'tui' || options.resume !== undefined) {
+    // the registry records it then. A resumed acp workspace already has ids,
+    // unless none was ever recorded, and then it launches as a fresh create.
+    if (mode === 'tui' || (options.resume?.length ?? 0) > 0) {
       // Under acp the handle (window name) is known now and must be recorded,
       // or the restart's acpd handshake starts a new conversation. A tui pane
       // id is unknown until the pane exists; the registry fills it in.

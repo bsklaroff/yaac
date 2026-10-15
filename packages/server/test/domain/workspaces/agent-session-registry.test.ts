@@ -15,10 +15,10 @@ import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-sessi
 import { applyWorkspaceEvent } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
 import { claiming } from '#domain/workspaces/prewarm'
-import { getWorkspaceRow, recordWorkspaceCreated, recordWorkspaceLife, setWorkspacePermissionMode } from '#db/workspace-store'
+import { getWorkspaceRow, holdPendingPrompt, recordWorkspaceCreated, recordWorkspaceLife, setWorkspacePermissionMode } from '#db/workspace-store'
 import { _resetCodexRolloutReadsForTests } from '#runtime/agents/codex'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
-import type { AcpConversation } from '#runtime/agents/acp-client'
+import { PromptNotRunError, type AcpConversation } from '#runtime/agents/acp-client'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
 import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
 import type { LiveAgent } from '#runtime/agents'
@@ -304,6 +304,85 @@ describe('reconcileAgentSessions', () => {
     _resetAcpRegistryForTests()
     await sweep({ mode: 'acp' })
     expect(await rows()).toEqual([['acp-1', true, 'claude']])
+  })
+
+  // A create whose conversation was not up in time holds its prompt, and the
+  // first conversation in the agent's own window to come up gets it, once.
+  it('sends a held create prompt to the first agent window\'s conversation, once', async () => {
+    await holdPendingPrompt(DEMO_PROJECT_ID, 'wt-1', 'add shared projects')
+    const conversation = (handle: string, agentSessionId: string) => {
+      const prompt = vi.fn(() => Promise.resolve())
+      registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle, agentSessionId }, {
+        whenReady: () => Promise.resolve(),
+        prompt,
+      } as unknown as AcpConversation)
+      return prompt
+    }
+
+    // Only a second window is up; it is not the create's conversation.
+    live([{ handle: 'claude-2', tool: 'claude', agentSessionId: 'acp-side' }])
+    const side = conversation('claude-2', 'acp-side')
+    await sweep({ mode: 'acp' })
+    expect(side).not.toHaveBeenCalled()
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.pendingPrompt).toBe('add shared projects')
+
+    live([
+      { handle: 'claude', tool: 'claude', agentSessionId: 'acp-1' },
+      { handle: 'claude-2', tool: 'claude', agentSessionId: 'acp-side' },
+    ])
+    const first = conversation('claude', 'acp-1')
+    await Promise.all([sweep({ mode: 'acp' }), sweep({ mode: 'acp' })])
+    await vi.waitFor(() => expect(first).toHaveBeenCalledWith('add shared projects'))
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.pendingPrompt).toBeUndefined()
+    await sweep({ mode: 'acp' })
+    expect(first).toHaveBeenCalledTimes(1)
+    expect(side).not.toHaveBeenCalled()
+  })
+
+  // Taken before it is sent, the prompt goes back only for a send no pane
+  // saw fail. A refusal is shown in the chat pane, where the user may retry
+  // by hand, so a reattach of that session must not send it again.
+  it('holds again only a prompt that was never sent, never one the agent refused', async () => {
+    const held = async (): Promise<string | undefined> => (await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.pendingPrompt
+    const conversation = (agentSessionId: string, failure?: Error) => {
+      const prompt = vi.fn(() => (failure === undefined ? Promise.resolve() : Promise.reject(failure)))
+      live([{ handle: 'claude', tool: 'claude', agentSessionId }])
+      registerAcpConversation(DEMO_PROJECT_ID, 'wt-1', { handle: 'claude', agentSessionId }, {
+        whenReady: () => Promise.resolve(),
+        prompt,
+      } as unknown as AcpConversation)
+      return prompt
+    }
+    const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 50))
+
+    await holdPendingPrompt(DEMO_PROJECT_ID, 'wt-1', 'add shared projects')
+    const refusing = conversation('acp-1', new Error('Session not found (code -32603)'))
+    await sweep({ mode: 'acp' })
+    await vi.waitFor(() => expect(refusing).toHaveBeenCalledWith('add shared projects'))
+    await settle()
+    expect(await held()).toBeUndefined()
+    // The user retries in the pane; then the stream drops and the same
+    // session reattaches as a new conversation.
+    const reattached = conversation('acp-1')
+    await sweep({ mode: 'acp' })
+    await settle()
+    expect(reattached).not.toHaveBeenCalled()
+
+    // A send the conversation closed on before routing it was never seen.
+    await holdPendingPrompt(DEMO_PROJECT_ID, 'wt-1', 'add shared projects')
+    const closing = conversation('acp-2', new PromptNotRunError('conversation is closed'))
+    await sweep({ mode: 'acp' })
+    await vi.waitFor(() => expect(closing).toHaveBeenCalledWith('add shared projects'))
+    await vi.waitFor(async () => expect(await held()).toBe('add shared projects'))
+    // That conversation is not asked again; the next one gets it.
+    await sweep({ mode: 'acp' })
+    await settle()
+    expect(closing).toHaveBeenCalledTimes(1)
+    const next = conversation('acp-3')
+    await sweep({ mode: 'acp' })
+    await vi.waitFor(() => expect(next).toHaveBeenCalledWith('add shared projects'))
+    await settle()
+    expect(await held()).toBeUndefined()
   })
 
   // A claim that respawns the agent ends the warm conversation, which stays

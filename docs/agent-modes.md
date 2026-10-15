@@ -543,8 +543,20 @@ A prewarmed `acp` spare is watched like a running workspace, so its handshake
 runs while it warms and a claim usually finds the conversation already named.
 A respawn (a claim switching tool, model or posture, or a spare moved to a
 new base tip) replaces the agent, and its old conversation stays registered
-until its stream is seen closing. So the hand-over reads the window's pane
-pid and waits only for a conversation attached to that process. The sweep
+until its stream is seen closing, or until a re-list finds the window's
+process changed, for a stream that died without a close. So the hand-over
+reads the window's pane pid and waits only for a conversation attached to
+that process. The create's prompt is held on the workspace row
+(`pendingPrompt`) for the length of that wait. If no conversation comes up
+in time, the create still succeeds and the prompt stays held: the sweep
+sends it to the first agent window's conversation once one is up, even
+after a server or workspace restart. A restart of a workspace that never
+recorded a conversation starts a fresh one, since there is none to load.
+The prompt is taken off the row before it is sent, so a crash between the
+two loses it rather than running the task twice. Only a send that was never
+made and never shown failing (the conversation closed before routing it)
+puts it back, for the next conversation; a refusal the agent replies with
+shows in the chat pane, where the user retries. The sweep
 skips a spare mid-claim, leaving that first pass to the hand-over, and
 records a new acp conversation only while its stream is connected: the live
 set keeps naming an ended conversation until the window's next agent

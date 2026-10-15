@@ -22,7 +22,7 @@ import {
 } from '#runtime/agents/acp-registry'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
-import type { AcpConversation } from '#runtime/agents/acp-client'
+import { PromptNotRunError, type AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
 import {
   AGENT_TOOLS,
@@ -2137,6 +2137,68 @@ describe('agentDriver', () => {
     third.feed(`${JSON.stringify({ jsonrpc: '2.0', id: reinit.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true } } })}\n`)
     await vi.waitFor(() => expect(third.sent().some((m) => m.method === 'session/new')).toBe(true))
     expect(third.sent().some((m) => m.method === 'session/load')).toBe(false)
+  })
+
+  // An idle stream can die without its close ever arriving; a respawn must
+  // still reach the new agent rather than leave the window on a dead one.
+  it('dials a respawned agent at the next re-list though the old stream never closed', async () => {
+    const streams: FakeStream[] = []
+    tmuxWindows = 'claude\n'
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      heartbeatIntervalMs: 50,
+      log: () => {},
+      dial: acpDial(() => {
+        const stream = new FakeStream()
+        streams.push(stream)
+        return stream
+      }),
+    }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    const stale = acpConversationByHandle('demo', 'wt-1', 'claude')
+
+    panePids.set('claude', '101')
+    await vi.waitFor(() => expect(streams).toHaveLength(2), { timeout: 5_000 })
+    expect(streams[0].killed).toBe(true)
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    expect(acpConversationByHandle('demo', 'wt-1', 'claude')).not.toBe(stale)
+    // A steady pid is left attached.
+    await new Promise((r) => setTimeout(r, 200))
+    expect(streams).toHaveLength(2)
+  })
+
+  // A held create prompt goes back on the row only for a send no pane saw
+  // fail, so it can never follow a retry the user made by hand.
+  it('tells a message that was never sent from one the agent refused', async () => {
+    await record('acp-r', [lifeLine])
+    const stream = new FakeStream()
+    tmuxWindows = 'opencode\n'
+    connections.push(agentDriver('acp').connect(session, () => {}, {
+      heartbeatIntervalMs: 60_000,
+      log: () => {},
+      recordedSessions: () => Promise.resolve([{ handle: 'opencode', agentSessionId: 'acp-r' }]),
+      dial: acpDial(() => stream),
+    }))
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-r')).toBeDefined())
+    const conversation = acpConversation('demo', 'wt-1', 'acp-r')!
+    stream.feed(helloLine(false))
+    await vi.waitFor(() => expect(conversation.status).toBe('waiting'))
+    const prompts = (): Array<Record<string, unknown>> => stream.sent().filter((m) => m.method === 'session/prompt')
+
+    const refused = conversation.prompt('first')
+    await vi.waitFor(() => expect(prompts()).toHaveLength(1))
+    stream.feed(`${JSON.stringify({
+      jsonrpc: '2.0', id: prompts()[0].id, error: { code: -32603, message: 'Session not found' },
+    })}\n`)
+    const err = await refused.then(() => undefined, (e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(PromptNotRunError)
+
+    void conversation.prompt('second').catch(() => {})
+    await vi.waitFor(() => expect(prompts()).toHaveLength(2))
+    const queued = conversation.prompt('third')
+    await vi.waitFor(() => expect(conversation.queuedPrompts).toHaveLength(1))
+    conversation.close()
+    await expect(queued).rejects.toBeInstanceOf(PromptNotRunError)
   })
 
   it('hands a queued message to the conversation that replaces a dropped one', async () => {

@@ -38,6 +38,15 @@ const DIAL_TIMEOUT_MS = 15_000
  * slow dial must not be mistaken for a dead relay.
  */
 const MIN_EXEC_TIMEOUT_MS = 5_000
+/**
+ * Idle time before TCP keepalive probes start on a relay stream. A stream
+ * can sit idle for days (a prewarmed spare's ACP conversation), and the
+ * Service's NAT forgets an idle flow (kube-proxy's conntrack keeps an
+ * established one 24h). The far end's close then never arrives, and the
+ * stream looks open while carrying nothing. Probes keep the flow known and
+ * close a stream whose peer is gone.
+ */
+const RELAY_KEEPALIVE_MS = 60_000
 /** Reply-line cap (it is one small JSON object). */
 const REPLY_MAX_BYTES = 16 * 1024
 
@@ -138,6 +147,7 @@ export async function relayDial(
     // Latency-sensitive callers already batch their writes, so Nagle would
     // only add delay.
     socket.setNoDelay(true)
+    socket.setKeepAlive(true, RELAY_KEEPALIVE_MS)
     let settled = false
     let buf = Buffer.alloc(0)
 

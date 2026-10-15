@@ -680,7 +680,7 @@ describe('prepareStart', () => {
     // A fresh chat conversation has no id until its agent answers
     // `session/new`, so the create waits for that before the prompt. Only a
     // conversation on the window's current process counts.
-    it('hands a chat workspace its prompt once its conversation is up, and gives up on an agent that dies first', async () => {
+    it('hands a chat workspace its prompt once its conversation is up, and holds it past an agent that dies first', async () => {
       const prompted = vi.fn(() => Promise.resolve())
       const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
       installDriver({
@@ -700,9 +700,10 @@ describe('prepareStart', () => {
       await start({ workspaceId: 'wt-chat', mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) })
       expect(progress).toEqual(expect.arrayContaining(['Connecting to Claude Code...', 'Sending initial prompt...']))
       await vi.waitFor(() => { expect(prompted).toHaveBeenCalledWith('go') })
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBeUndefined()
 
       // The agent's window exits before any handshake: the workspace is up,
-      // but no prompt can be delivered.
+      // and the prompt waits on its row for a conversation that comes up.
       installDriver({
         exec: (jobName, cmd) => cmd.includes('list-windows -t =yaac')
           ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
@@ -712,8 +713,9 @@ describe('prepareStart', () => {
       expect(await start({ workspaceId: 'wt-gone', mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: 'wt-gone' })
       const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
       expect(logged).toContain('acp agent window exited before its handshake')
-      expect(logged).toContain('initial prompt not delivered')
+      expect(logged).toContain('initial prompt held')
       expect(prompted).toHaveBeenCalledTimes(1)
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-gone'))?.pendingPrompt).toBe('go')
     })
 
     it('opens the init windows and declares the forwards before the agent starts', async () => {

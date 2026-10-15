@@ -9,7 +9,7 @@
  * handle (tmux window / acpd socket name), known before the handshake.
  */
 
-import type { AcpConversation, QueuedTurn } from './acp-client'
+import { PromptNotRunError, type AcpConversation, type QueuedTurn } from './acp-client'
 
 const byName = new Map<string, AcpConversation>()
 /** Handle keys whose conversation has a session id. */
@@ -157,7 +157,7 @@ export function dropAcpQueues(projectId: string, workspaceId: string, keep: Read
   for (const [key, queue] of parkedQueues) {
     if (!key.startsWith(`${projectId}/${workspaceId}/id:`) || keep.has(key.slice(key.indexOf('/id:') + 4))) continue
     parkedQueues.delete(key)
-    for (const turn of queue) turn.reject(new Error('the conversation ended before the queued message was sent'))
+    for (const turn of queue) turn.reject(new PromptNotRunError('the conversation ended before the queued message was sent'))
   }
 }
 

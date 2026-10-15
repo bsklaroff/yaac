@@ -235,6 +235,14 @@ export const workspaces = snakeCase.table('workspaces', {
    */
   timeZone: text(),
   /**
+   * An `acp` create's prompt, until a conversation in its first agent window
+   * takes it (`takePendingPrompt`). Held here rather than in memory because
+   * that conversation may come up long after the create returns: after a
+   * server restart, or only once a workspace restart replaces an agent that
+   * never connected.
+   */
+  pendingPrompt: text(),
+  /**
    * SHA-256 of the bearer token this workspace's `yaac-mama` presents, for
    * containerless workspaces that reach the server directly. Null under k8s,
    * where the proxy identifies a pod by source IP.

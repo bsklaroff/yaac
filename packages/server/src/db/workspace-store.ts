@@ -364,6 +364,30 @@ export async function setWorkspaceTitle(
   notifyWorkspaceListChanged()
 }
 
+/** Hold an `acp` create's prompt until a conversation takes it (see the
+ *  `pendingPrompt` column). Never replaces one already held. */
+export async function holdPendingPrompt(projectId: string, workspaceId: string, prompt: string): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ pendingPrompt: prompt })
+    .where(and(key(projectId, workspaceId), isNull(workspaces.pendingPrompt)))
+}
+
+/**
+ * Clear and return the held prompt, if any. The clear is conditional on the
+ * value read, so of two callers racing to deliver it only one gets it.
+ */
+export async function takePendingPrompt(projectId: string, workspaceId: string): Promise<string | undefined> {
+  const db = await getDb()
+  const [row] = await db.select({ prompt: workspaces.pendingPrompt }).from(workspaces)
+    .where(key(projectId, workspaceId))
+  const prompt = row?.prompt
+  if (prompt == null) return undefined
+  const taken = await db.update(workspaces).set({ pendingPrompt: null })
+    .where(and(key(projectId, workspaceId), eq(workspaces.pendingPrompt, prompt)))
+    .returning({ workspaceId: workspaces.workspaceId })
+  return taken[0] ? prompt : undefined
+}
+
 /** Every row of a project, keyed by workspace id, in one query. */
 export async function getProjectWorkspaceRows(
   projectId: string,
