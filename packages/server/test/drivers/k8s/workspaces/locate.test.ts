@@ -148,23 +148,28 @@ describe('findWorkspace', () => {
 
 describe('findWorkspaceForTeardown', () => {
   // A failed prewarm tears down its own spare; a stop must never reach one,
-  // even through its Job.
+  // even through its Job, which outlives a dead spare's pod.
   it('reaches a spare by its exact id only when asked for spares', async () => {
     mockList.mockResolvedValue([pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
     mockJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-abc123', workspaceId: 'abc123def456', projectId: 'proj', createdAtMs: 0 },
+      { jobName: 'yaac-proj-abc123', workspaceId: 'abc123def456', projectId: 'proj', createdAtMs: 0, prewarmed: true },
+      { jobName: 'yaac-proj-dead', workspaceId: 'dead-spare', projectId: 'proj', createdAtMs: 0, prewarmed: true },
     ])
     expect(await findWorkspaceForTeardown('abc123def456', { spares: true })).toEqual({
       projectId: 'proj', workspaceId: 'abc123def456', unitName: 'yaac-proj-abc123',
     })
     expect(await findWorkspaceForTeardown('abc123def456')).toBeUndefined()
     expect(await findWorkspaceForTeardown('abc123', { spares: true })).toBeUndefined()
+    expect(await findWorkspaceForTeardown('dead-spare')).toBeUndefined()
+    expect(await findWorkspaceForTeardown('dead-spare', { spares: true })).toEqual({
+      projectId: 'proj', workspaceId: 'dead-spare', unitName: 'yaac-proj-dead',
+    })
   })
 
   // A pod deleted out-of-band leaves its Job, which still needs deleting.
   it('falls through to the Job when the pod is gone, matching it exactly', async () => {
     mockJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-orphan', workspaceId: 'orphan-1', projectId: 'proj', createdAtMs: 0 },
+      { jobName: 'yaac-proj-orphan', workspaceId: 'orphan-1', projectId: 'proj', createdAtMs: 0, prewarmed: false },
     ])
     expect(await findWorkspaceForTeardown('orphan-1')).toEqual({
       projectId: 'proj', workspaceId: 'orphan-1', unitName: 'yaac-proj-orphan',

@@ -26,10 +26,11 @@ export const LABEL_TOOL = 'yaac.tool'
  */
 export const LABEL_MODE = 'yaac.mode'
 /**
- * Marks a workspace pod as a prewarmed spare: provisioned with its agent
- * booted, but not yet handed to a user. Spares are hidden from user views,
- * and `workspace create` claims one by removing this label. Absent on
- * normal workspace pods.
+ * Marks a workspace pod and its Job as a prewarmed spare: provisioned with
+ * its agent booted, but not yet handed to a user. Spares are hidden from
+ * user views, and `workspace create` claims one by removing this label from
+ * both. Absent on normal workspaces. The Job's copy is what still identifies
+ * a spare whose pod is gone.
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'
 /**
@@ -240,6 +241,7 @@ export function mapJobObject(obj: unknown): JobInfo | null {
     workspaceId: metadata.labels[LABEL_WORKSPACE_ID],
     projectId: metadata.labels[LABEL_PROJECT_ID],
     createdAtMs: toEpochMs(metadata.creationTimestamp),
+    prewarmed: metadata.labels[LABEL_PREWARMED] === 'true',
   }
 }
 
@@ -281,6 +283,8 @@ export interface JobInfo {
   workspaceId: string
   projectId: string
   createdAtMs: number
+  /** The Job carries `yaac.prewarmed`, which outlives a dead spare's pod. */
+  prewarmed: boolean
 }
 
 /**

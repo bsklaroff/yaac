@@ -14,7 +14,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
   },
 }))
 
-import { claimSpareWorkspace, registerWorkspace } from '#drivers/k8s/workspaces/claim'
+import { claimSpareWorkspace, registerWorkspace, unmarkClaimedJobs } from '#drivers/k8s/workspaces/claim'
 import { LABEL_INSTALL_ID, LABEL_PREWARMED, LABEL_TOOL, installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { LABEL_NPM_CACHE, NPM_CACHE_APP_NAME } from '#drivers/k8s/substrate/proxy-constants'
 import type { WorkspaceRegistration } from '#drivers/contract'
@@ -42,6 +42,26 @@ function pod(workspaceId: string, labels: Record<string, string> = {}): Paramete
   }
 }
 
+/** The spare's Job, which carries the pod's labels too. */
+function job(workspaceId: string): Parameters<typeof fakeCluster.seed>[0] {
+  return {
+    apiVersion: 'batch/v1',
+    kind: 'Job',
+    metadata: {
+      name: `yaac-proj-${workspaceId}`,
+      namespace: k8sNamespace(),
+      labels: {
+        [LABEL_INSTALL_ID]: installId(),
+        [LABEL_PREWARMED]: 'true',
+        [LABEL_TOOL]: 'claude',
+        'yaac.workspace-id': workspaceId,
+        'yaac.project-id': '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
+      },
+      creationTimestamp: '2026-06-01T00:00:00Z',
+    },
+  }
+}
+
 /** The npm cache's EndpointSlice, ready or not. */
 function cacheSlice(ready: boolean): Parameters<typeof fakeCluster.seed>[0] {
   return {
@@ -60,23 +80,31 @@ function cacheSlice(ready: boolean): Parameters<typeof fakeCluster.seed>[0] {
 const podPatches = (): Array<{ name?: string; body?: Record<string, unknown> }> =>
   fakeCluster.callsOf('patch', 'Pod').map(({ name, body }) => ({ name, body }))
 
-const labelsOf = (workspaceId: string): Record<string, string> | undefined =>
-  fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Pod', `yaac-proj-${workspaceId}-abcde`)
-    ?.metadata.labels
+const labelsOf = (workspaceId: string, kind: 'Pod' | 'Job' = 'Pod'): Record<string, string> | undefined =>
+  fakeCluster.get<{ metadata: { labels: Record<string, string> } }>(
+    kind, kind === 'Pod' ? `yaac-proj-${workspaceId}-abcde` : `yaac-proj-${workspaceId}`,
+  )?.metadata.labels
 
 beforeEach(() => {
   execArgs.length = 0
   execFailure.error = null
-  fakeCluster.seed(pod('other', { [LABEL_PREWARMED]: 'true' }), pod('s1', { [LABEL_PREWARMED]: 'true' }), cacheSlice(true))
+  fakeCluster.seed(
+    pod('other', { [LABEL_PREWARMED]: 'true' }), pod('s1', { [LABEL_PREWARMED]: 'true' }), job('other'), job('s1'),
+    cacheSlice(true),
+  )
 })
 
 describe('claimSpareWorkspace', () => {
-  it('finds the spare by workspace id, drops its prewarmed mark and stamps the tool', async () => {
+  // The Job's mark outlives a dead pod, and a spare reap deletes the files
+  // of a unit it finds marked, so the Job must lose it too.
+  it('finds the spare by workspace id, drops its prewarmed mark from pod and Job and stamps the tool', async () => {
     await claimSpareWorkspace('s1', 'codex')
-    expect(labelsOf('s1')).not.toHaveProperty(LABEL_PREWARMED)
-    expect(labelsOf('s1')?.[LABEL_TOOL]).toBe('codex')
-    // The other spare is untouched.
-    expect(labelsOf('other')?.[LABEL_PREWARMED]).toBe('true')
+    for (const kind of ['Pod', 'Job'] as const) {
+      expect(labelsOf('s1', kind)).not.toHaveProperty(LABEL_PREWARMED)
+      expect(labelsOf('s1', kind)?.[LABEL_TOOL]).toBe('codex')
+      // The other spare is untouched.
+      expect(labelsOf('other', kind)?.[LABEL_PREWARMED]).toBe('true')
+    }
   })
 
   // Always stamped, since workspaces spawned from this one read it.
@@ -114,7 +142,7 @@ describe('claimSpareWorkspace', () => {
     await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/claimed by another caller/)
 
     fakeCluster.reset()
-    fakeCluster.seed(pod('s1', { [LABEL_PREWARMED]: 'true' }))
+    fakeCluster.seed(pod('s1', { [LABEL_PREWARMED]: 'true' }), job('s1'))
     fakeCluster.intercept((c) => { if (c.verb === 'patch') throw apiError(409, 'the object has been modified') })
     await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow(/409/)
   })
@@ -122,6 +150,23 @@ describe('claimSpareWorkspace', () => {
   it('propagates a failed lookup', async () => {
     fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
     await expect(claimSpareWorkspace('s1', 'codex')).rejects.toThrow('apiserver down')
+  })
+})
+
+describe('unmarkClaimedJobs', () => {
+  // An older server's claim unlabelled only the pod. A Job with no pod left
+  // could be a dead spare's, so only one whose pod reads as claimed loses
+  // the label.
+  it('unlabels the Job of a claimed pod, and leaves spares and podless Jobs alone', async () => {
+    fakeCluster.seed(pod('claimed'), job('claimed'), job('podless'))
+
+    await unmarkClaimedJobs()
+
+    expect(labelsOf('claimed', 'Job')).not.toHaveProperty(LABEL_PREWARMED)
+    expect(labelsOf('claimed', 'Job')?.[LABEL_TOOL]).toBe('claude')
+    for (const id of ['s1', 'other', 'podless']) expect(labelsOf(id, 'Job')?.[LABEL_PREWARMED]).toBe('true')
+    await unmarkClaimedJobs()
+    expect(fakeCluster.callsOf('patch', 'Job')).toHaveLength(1)
   })
 })
 
@@ -133,7 +178,7 @@ describe('claimSpareWorkspace and the npm cache', () => {
     fakeCluster.seed(pod('s1', {
       [LABEL_PREWARMED]: 'true',
       ...(opts.admitted ? { [LABEL_NPM_CACHE]: 'true' } : {}),
-    }), cacheSlice(opts.serving))
+    }), job('s1'), cacheSlice(opts.serving))
   }
   const execArgv = (): string[] | undefined => execArgs.find((a) => a[0] === 'exec')
 

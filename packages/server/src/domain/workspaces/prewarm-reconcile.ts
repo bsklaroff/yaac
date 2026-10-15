@@ -1,29 +1,29 @@
 /**
  * Reconcile step that keeps one prewarmed spare per active project, warmed
  * with the project's default create settings. The pure `computePrewarmPlan`
- * decides; this lists pods, finds spares in an outdated agent mode or zone, and
- * spawns (`createWorkspace({ prewarm: true })`) or reaps
- * (`cleanupWorkspace`). It also keeps each spare on its base branch's
- * latest tip (`refreshSpares`).
+ * decides; this lists pods, finds spares in an outdated agent mode or zone
+ * (or warmed before a server restart), and spawns
+ * (`createWorkspace({ prewarm: true })`) or reaps (`reapSpare`). It also
+ * keeps each spare on its base branch's latest tip (`refreshSpares`).
  */
 import crypto from 'node:crypto'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
-import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
 import { createWorkspace, resolveCreate } from './create'
 import { listProvisioning } from './provisioning'
 import {
   claiming,
   computePrewarmPlan,
   inFlight,
+  reapSpare,
   reaping,
   refreshing,
   spareHeads,
-  type PrewarmReapTarget,
+  spareSettings,
 } from './prewarm'
 import { rebranchSpare } from './spare-pool'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
-import { deleteSpareWorkspaceRow, getTimeZone, getWorkspaceRow, listProjectRows, type WorkspaceRow } from '#db'
+import { getTimeZone, listProjectRows } from '#db'
 import { serverLog } from '#lib/log'
 import { repoDir } from '@yaac/shared/project-paths'
 import { DEFAULT_AGENT_MODE } from '@yaac/shared/types'
@@ -32,13 +32,15 @@ import type { RuntimeHandle } from '#drivers/contract'
 
 /**
  * Spawn a spare under `workspaceId` with what the create form would submit
- * by default, then drop it from `inFlight`.
+ * by default, then drop it from `inFlight`. A failed create has already torn
+ * its spare down.
  */
 async function spawnSpare(projectId: string, workspaceId: string): Promise<void> {
   try {
     const setup = await resolveCreate(projectId, {})
     await createWorkspace(projectId, { ...setup, prewarm: true, workspaceId })
   } catch (err) {
+    spareSettings.delete(workspaceId)
     serverLog(`[prewarm] spawn for ${projectId} failed: ${String(err)}`)
   } finally {
     inFlight.delete(workspaceId)
@@ -75,28 +77,6 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
 }
 
 /**
- * Tear a spare down. No workspace sweep collects a spare's state, so it is
- * deleted here. Uses the awaited teardown so the checkout is removed only
- * once the pod is really gone. Each step runs only if the previous
- * succeeded; the flagged row goes last, so the orphan sweep can still
- * recognize and retry what is left. Not awaited, so a slow teardown does
- * not stall the tick.
- */
-function reapSpare(target: PrewarmReapTarget): void {
-  reaping.add(target.workspaceId)
-  void cleanupWorkspace(target)
-    .then((podGone) => podGone && deleteWorkspaceState(target.projectId, target.workspaceId))
-    .then(async (removed) => {
-      if (removed) await deleteSpareWorkspaceRow(target.projectId, target.workspaceId)
-    })
-    .catch((err: unknown) => {
-      // gcOrphanSpares in cleanup.ts retries what is left.
-      serverLog(`[prewarm] reaping spare ${target.workspaceId} failed: ${String(err)}`)
-    })
-    .finally(() => { reaping.delete(target.workspaceId) })
-}
-
-/**
  * Move each spare whose base branch has a new tip up to it, in the
  * background (`rebranchSpare`: reset, init windows, agent restart), so a
  * claim finds it current instead of doing that work while the user waits.
@@ -111,13 +91,13 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
     || reaping.has(p.workspaceId) || inFlight.has(p.workspaceId)
   await Promise.all(spares.map(async (spare) => {
     if (busy(spare)) return
-    let target: { branch: string; tip: string; row: WorkspaceRow }
+    const warmed = spareSettings.get(spare.workspaceId)
+    if (!warmed) return
+    let target: { branch: string; tip: string }
     try {
-      const row = await getWorkspaceRow(spare.projectId, spare.workspaceId)
-      if (!row) return
       const repo = repoDir(spare.projectId)
-      const branch = row.baseBranch ?? await getDefaultBranch(repo)
-      target = { branch, tip: await resolveRemoteRef(repo, branch), row }
+      const branch = warmed.baseBranch ?? await getDefaultBranch(repo)
+      target = { branch, tip: await resolveRemoteRef(repo, branch) }
     } catch (err) {
       serverLog(`[prewarm] reading spare ${spare.workspaceId}'s base failed: ${String(err)}`)
       return
@@ -134,13 +114,12 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
         .stdout.trim()
       if (head !== target.tip) {
         changed = true
-        const { row } = target
         await rebranchSpare(spare, target.branch, target.tip, {
           tool: spare.tool,
-          ...(row.model !== undefined ? { model: row.model } : {}),
-          permissionMode: row.permissionMode,
-          ...(row.effort !== undefined ? { effort: row.effort } : {}),
-          mode: row.mode,
+          ...(warmed.model !== undefined ? { model: warmed.model } : {}),
+          permissionMode: warmed.permissionMode,
+          ...(warmed.effort !== undefined ? { effort: warmed.effort } : {}),
+          mode: warmed.mode,
         })
       }
       spareHeads.set(spare.workspaceId, target.tip)
@@ -155,8 +134,9 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
 /**
  * Spares warmed in a different agent mode than their project now creates in,
  * or in a zone other than the user's current one. Both are fixed at warm
- * time, so no claim takes them. An unreadable row is logged and counts as
- * not stale.
+ * time, so no claim takes them. So are spares whose warm-time settings this
+ * process never recorded (warmed before it started), which no claim can
+ * match.
  */
 async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const spares = pods.filter((p) => p.prewarmed && p.projectId && !claiming.has(p.jobName))
@@ -167,13 +147,12 @@ async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
     timeZone: (await getTimeZone(p.owner)).timeZone ?? undefined,
   }] as const)))
   const stale = new Set<string>()
-  await Promise.all(spares.map(async (p) => {
-    const row = await getWorkspaceRow(p.projectId, p.workspaceId).catch((err: unknown) => {
-      serverLog(`[prewarm] reading spare ${p.workspaceId} failed: ${String(err)}`)
-      return null
-    })
+  for (const p of spares) {
+    const warmed = spareSettings.get(p.workspaceId)
     const want = wanted.get(p.projectId)
-    if (row && want !== undefined && (row.mode !== want.mode || row.timeZone !== want.timeZone)) stale.add(p.jobName)
-  }))
+    if (!warmed || (want !== undefined && (warmed.mode !== want.mode || warmed.timeZone !== want.timeZone))) {
+      stale.add(p.jobName)
+    }
+  }
   return stale
 }

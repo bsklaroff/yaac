@@ -70,11 +70,10 @@ import {
   getProjectRow,
   getTimeZone,
   holdPendingPrompt,
-  setWorkspaceGroup,
   setWorkspaceMamaTokenHash,
-  setWorkspaceTitle,
 } from '#db'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
+import { spareSettings } from './prewarm'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
   prepareModuleDirs,
@@ -531,17 +530,13 @@ async function awaitConversation(
 
 /**
  * Whether a failed create deletes its checkout: only when this create made
- * it. Getting this wrong deletes work that exists nowhere else.
- *
- * - A resume keeps it: the checkout predates this create and holds the
- *   user's work.
- * - A prewarm keeps it: its row survives flagged `spare`, and the startup
- *   sweep collects the checkout from that flag.
+ * it, which is every create but a resume. A resume's checkout predates it
+ * and holds the user's work, which exists nowhere else.
  */
 export function failedCreateCollectsCheckout(
-  options: Pick<WorkspaceCreateOptions, 'resume' | 'prewarm'>,
+  options: Pick<WorkspaceCreateOptions, 'resume'>,
 ): boolean {
-  return options.prewarm !== true && options.resume === undefined
+  return options.resume === undefined
 }
 
 /**
@@ -803,32 +798,42 @@ export async function createWorkspace(
         ...(options.effort !== undefined ? { effort: options.effort } : {}),
       }]
 
-  // Record the row before provisioning anything, so no pod exists without
-  // one (a rowless pod is invisible to titles, groups, restart and cannot be
-  // told from a spare). The insert also claims the id: a fresh create reusing
-  // a taken id stops here, before touching that workspace's checkout.
+  // Record the row before provisioning anything, so no user workspace's pod
+  // exists without one (a rowless pod is invisible to titles, groups and
+  // restart). The insert also claims the id: a fresh create reusing a taken
+  // id stops here, before touching that workspace's checkout. Title and
+  // group go in with it, so the workspace shows in its group while it
+  // provisions.
   //
-  // A prewarmed spare is recorded flagged `spare`, which listings filter out
-  // and reaping uses to tell it from a stopped workspace. The base branch is
-  // recorded now because a workspace queued after this one defaults to it.
-  // The user's zone, as clients report it; a pod otherwise runs in UTC, and
-  // a containerless server's host need not be where the user is. Recorded so
+  // A prewarmed spare gets no row until it is claimed; its settings are
+  // kept in memory for the claim to match on. The base branch is recorded
+  // now because a workspace queued after this one defaults to it. The
+  // user's zone, as clients report it; a pod otherwise runs in UTC, and a
+  // containerless server's host need not be where the user is. Recorded so
   // a spare warmed in another zone is never claimed.
   const { timeZone } = await getTimeZone(owner)
-  throwIfProvisionStopped(workspaceId)
-  await applyWorkspaceEvent({
-    type: 'workspace-created',
-    projectId,
-    workspaceId,
+  const launch = {
     ...(refBranch !== undefined ? { baseBranch: refBranch } : {}),
     permissionMode,
     mode,
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.effort !== undefined ? { effort: options.effort } : {}),
     ...(timeZone !== null ? { timeZone } : {}),
-    resume: options.resume !== undefined,
-    ...(options.prewarm === true ? { spare: true } : {}),
-  })
+  }
+  throwIfProvisionStopped(workspaceId)
+  if (options.prewarm === true) {
+    spareSettings.set(workspaceId, launch)
+  } else {
+    await applyWorkspaceEvent({
+      type: 'workspace-created',
+      projectId,
+      workspaceId,
+      ...launch,
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
+      resume: options.resume !== undefined,
+    })
+  }
 
   const wtDir = workspaceDir(projectId, workspaceId)
 
@@ -840,22 +845,15 @@ export async function createWorkspace(
   // with the non-empty destination.
   const moduleDirs = await prepareModuleDirs(wtDir, resolveEphemeralModulesPaths(config))
 
-  // Set group and title now, so the workspace shows in its group while it
-  // provisions.
-  if (options.groupId !== undefined) {
-    await setWorkspaceGroup(projectId, workspaceId, options.groupId)
-  }
-  if (options.title !== undefined) await setWorkspaceTitle(projectId, workspaceId, options.title)
-
-  // Start a new life after the row exists and before any handle is
-  // recorded; this clears the previous life's handles.
-  await applyWorkspaceEvent({
-    type: 'workspace-life-started',
-    projectId,
-    workspaceId,
-  })
-
   if (!options.prewarm) {
+    // Start a new life after the row exists and before any handle is
+    // recorded; this clears the previous life's handles.
+    await applyWorkspaceEvent({
+      type: 'workspace-life-started',
+      projectId,
+      workspaceId,
+    })
+
     // Record the conversations now rather than leave them to discovery. A
     // fresh acp create cannot: the agent mints the id in `session/new`, and
     // the registry records it then. A resumed acp workspace already has ids,
@@ -1366,8 +1364,8 @@ export async function createWorkspace(
   } catch (err) {
     // Tear down the half-started unit, or it would list as a bogus
     // workspace and collide with a relaunch. Keep the prepared substrate
-    // (`unitOnly`) when the row survives (resume, spare). A fresh create
-    // tears down everything, since its row is about to go.
+    // (`unitOnly`) when the row survives (a resume). A fresh create or warm
+    // tears down everything, since nothing of it is kept.
     const unitOnly = !failedCreateCollectsCheckout(options)
 
     // If `launch` failed after the unit was created, `onLaunched` never
@@ -1388,25 +1386,24 @@ export async function createWorkspace(
     // Free the declared host ports for the next create.
     await workspaceDriver().deregisterWorkspace(workspaceId)
       .catch(() => { /* best-effort; the reaper covers what this misses */ })
-    if (!options.prewarm) {
-      // A fresh create deletes its own checkout (see
-      // failedCreateCollectsCheckout); no row-based sweep would find it
-      // once the row is gone. Chained after the checkout leg, which may
-      // still be running after a pod-side failure and would otherwise
-      // recreate the dir after the delete. Each step runs only if the
-      // previous one succeeded; if the row stays, the stale reaper turns it
-      // into a stopped workspace the user can delete.
-      if (failedCreateCollectsCheckout(options)) {
-        void workspaceTask
-          .catch(() => { /* the failure is already the caller's */ })
-          .then(() => podGone && deleteWorkspaceState(projectId, workspaceId))
-          .then((removed) => (removed
-            ? reportCreateFailed(projectId, workspaceId, options)
-            : undefined))
-          .catch(() => { /* best-effort; nothing else can retry it */ })
-      } else {
-        await reportCreateFailed(projectId, workspaceId, options)
-      }
+    // A fresh create or warm deletes its own checkout (see
+    // failedCreateCollectsCheckout); no sweep would find it once the row,
+    // or the spare's unit, is gone. Chained after the checkout leg, which
+    // may still be running after a pod-side failure and would otherwise
+    // recreate the dir after the delete. Each step runs only if the previous
+    // one succeeded; if the row stays, the stale reaper turns it into a
+    // stopped workspace the user can delete. A warm has no row to delete:
+    // no claim takes a spare still warming.
+    if (failedCreateCollectsCheckout(options)) {
+      void workspaceTask
+        .catch(() => { /* the failure is already the caller's */ })
+        .then(() => podGone && deleteWorkspaceState(projectId, workspaceId))
+        .then((removed) => (removed && options.prewarm !== true
+          ? reportCreateFailed(projectId, workspaceId, options)
+          : undefined))
+        .catch(() => { /* best-effort; nothing else can retry it */ })
+    } else {
+      await reportCreateFailed(projectId, workspaceId, options)
     }
     throw err
   }

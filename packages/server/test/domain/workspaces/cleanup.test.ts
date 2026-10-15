@@ -19,10 +19,9 @@ import path from 'node:path'
 import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal } from '#domain/workspaces'
 import { setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import type { NodeLocalLiveSet, RuntimeSnapshot, StrayUnit, RuntimeHandle } from '#drivers/contract'
-import { BUILT_IN_USER_ID, closeDb, listProjectRows, listProjectWorkspaceIds } from '#db'
+import { BUILT_IN_USER_ID, closeDb, listProjectRows } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
-import { getDb } from '#db/client'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
 
@@ -90,17 +89,6 @@ async function seedWorkspacesDir(projectId: string, sid: string): Promise<string
   return dir
 }
 
-/** Statements the database has rolled back, each failed one included. */
-async function rollbacks(): Promise<number> {
-  const pg = (await getDb()).$client
-  await pg.query('select pg_stat_force_next_flush()')
-  await pg.query('select 1')
-  const { rows } = await pg.query<{ n: string }>(
-    'select xact_rollback as n from pg_stat_database where datname = current_database()',
-  )
-  return Number(rows[0].n)
-}
-
 describe('gcOrphanEphemeralModuleDirs', () => {
   beforeEach(setUpSweep)
   afterEach(tearDownSweep)
@@ -120,48 +108,25 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     expect(reaped).toHaveLength(0)
   })
 
-  // Only a dead spare's checkout is disposable; a stopped workspace's is
-  // kept. The spare's project has no row, as when a create races the
-  // project's removal. A dir under projects/ that is no project id (an
-  // older install's slug) is swept on disk only, and the sweep raises no
-  // database error: PGlite before 0.5.9 broke for good after ~3,000 of
-  // those.
-  it('collects a dead spare, and keeps a stopped workspace', async () => {
+  // On disk a dead spare's checkout and a stopped workspace's look the same,
+  // and after a database restore a claimed workspace may have no row, so
+  // this sweep keeps every checkout (`reapSpare` removes a spare's). A dir
+  // under projects/ that is no project id (an older install's slug) is
+  // still swept.
+  it('keeps every checkout, with a row or without', async () => {
     const slugSession = await seedWorkspacesDir('demo', 'dead-2')
     await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'stopped-1' })
-    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: 'spare-1', spare: true })
-    // Both checkouts are stale, so only the spare flag tells them apart.
-    const [spareCheckout, stoppedCheckout] = await Promise.all(['spare-1', 'stopped-1'].map(async (sid) => {
+    const checkouts = await Promise.all(['rowless-1', 'stopped-1'].map(async (sid) => {
       const dir = workspaceDir(PROJ_A, sid)
       await fs.mkdir(dir, { recursive: true })
       await fs.utimes(dir, STALE, STALE)
       return dir
     }))
-    seeRunning([handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })])
-    const before = await rollbacks()
 
     await gcOrphanEphemeralModuleDirs(view)
 
-    expect(await rollbacks()).toBe(before)
-    await expect(fs.access(stoppedCheckout)).resolves.toBeUndefined()
-    await expect(fs.access(spareCheckout)).rejects.toThrow()
+    for (const dir of checkouts) await expect(fs.access(dir)).resolves.toBeUndefined()
     await expect(fs.access(slugSession)).rejects.toThrow()
-    expect(await listProjectWorkspaceIds(PROJ_A)).toEqual(['stopped-1'])
-  })
-
-  // An empty id names the workspaces root, which holds every checkout.
-  it('never deletes the workspaces root for a spare row with an empty id', async () => {
-    await recordWorkspaceCreated({ projectId: PROJ_A, workspaceId: '', spare: true })
-    const kept = workspaceDir(PROJ_A, 'stopped-1')
-    await fs.mkdir(kept, { recursive: true })
-    await fs.utimes(workspaceDir(PROJ_A, ''), STALE, STALE)
-
-    await gcOrphanEphemeralModuleDirs(view)
-
-    await expect(fs.access(kept)).resolves.toBeUndefined()
-    // The row stays, so the next sweep is refused again rather than retried
-    // on something else.
-    expect(await listProjectWorkspaceIds(PROJ_A)).toEqual([''])
   })
 
   it('spares a session the process is still provisioning', async () => {
@@ -176,8 +141,8 @@ describe('gcOrphanEphemeralModuleDirs', () => {
   })
 
   it('spares a dir written since the sweep took its listing', async () => {
-    // The same race for a create with no provisioning row (a spare): a
-    // fresh dir is left for the next sweep.
+    // The same race for a create with no provisioning row (a spare's warm):
+    // a fresh dir is left for the next sweep.
     const fresh = await seedWorkspacesDir(PROJ_A, 'staging-1')
     await fs.utimes(fresh, new Date(), new Date())
 
@@ -217,7 +182,7 @@ describe('reapOrphanNodeLocal', () => {
       [handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })],
       // A unit mid-recreate appears only as a stray, and its replacement is
       // about to mount its dirs.
-      [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectId: PROJ_B, createdAtMs: 0 }],
+      [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectId: PROJ_B, createdAtMs: 0, prewarmed: false }],
     )
 
     await reapOrphanNodeLocal(view)

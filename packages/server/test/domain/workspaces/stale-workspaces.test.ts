@@ -11,6 +11,9 @@ vi.mock('#runtime/status/liveness', () => ({
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({
   cleanupWorkspaceDetached: vi.fn().mockResolvedValue(undefined),
+  // A spare's reap: the awaited teardown, then its files.
+  cleanupWorkspace: vi.fn().mockResolvedValue(true),
+  deleteWorkspaceState: vi.fn().mockResolvedValue(true),
 }))
 
 
@@ -19,13 +22,15 @@ vi.mock('#domain/workspaces/cleanup', () => ({
 vi.mock('#db', () => ({
   applyWorkspaceEvent: vi.fn(),
   desiredWorkspaces: vi.fn(),
+  // A spare has no row.
+  findWorkspaceRow: vi.fn().mockResolvedValue(undefined),
   // After a death, queued children wait instead of starting
   // (docs/queued-workspaces.md).
   releaseQueuedChildren: vi.fn(),
 }))
 
 import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
-import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
+import { cleanupWorkspace, cleanupWorkspaceDetached, deleteWorkspaceState } from '#domain/workspaces/cleanup'
 import type * as CleanupModule from '#domain/workspaces/cleanup'
 import { markWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#lib/log'
@@ -81,8 +86,8 @@ function pod(workspaceId: string, running = true): RuntimeHandle {
 }
 
 /** A runtime unit with no workspace behind it. */
-function stray(workspaceId: string, createdAtMs = 1): StrayUnit {
-  return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectId: 'proj', createdAtMs }
+function stray(workspaceId: string, createdAtMs = 1, prewarmed = false): StrayUnit {
+  return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectId: 'proj', createdAtMs, prewarmed }
 }
 
 function loggedLines(): string {
@@ -319,6 +324,29 @@ describe('reconcileStaleWorkspaces', () => {
       }),
     )
     expect(loggedLines()).toContain('orphan Job')
+  })
+
+  // A spare has no row, so once its unit is gone nothing would say its
+  // files were a spare's. Its pod, then its files, then its Job go, each
+  // only after the last; a dead spare's Job alone still says what it was.
+  it('reaps a stale spare, or a dead spare\'s Job, as a spare: files before the Job', async () => {
+    const destroy = vi.fn(() => Promise.resolve(true))
+    installFakeWorkspaceDriver({ destroy })
+    mockWorkspaces.mockResolvedValue([{ ...pod('spare-1', false), prewarmed: true }])
+    mockStrays.mockResolvedValue([stray('spare-2', 1, true)])
+
+    await reconcileStaleWorkspaces(view)
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(mockCleanup).not.toHaveBeenCalled()
+    for (const id of ['spare-1', 'spare-2']) {
+      expect(cleanupWorkspace).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: id, keepRecord: true }))
+      expect(deleteWorkspaceState).toHaveBeenCalledWith('proj', id)
+      expect(destroy).toHaveBeenCalledWith(
+        { projectId: 'proj', workspaceId: id, unitName: `yaac-proj-${id}` }, { salvageImages: false },
+      )
+    }
+    expect(loggedLines()).toContain('reaping spare=spare-2')
   })
 
   it('fails without reaping when pod listing fails', async () => {

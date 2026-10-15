@@ -24,13 +24,21 @@ vi.mock('#domain/git', async (importOriginal) => ({
 vi.mock('#db', async (importOriginal) => ({
   ...(await importOriginal<typeof dbModule>()),
   getTimeZone: vi.fn(),
-  getWorkspaceRow: vi.fn(),
+  findWorkspaceRow: vi.fn(),
   listProjectRows: vi.fn(),
 }))
 
 import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 // Module state, used to set up mid-claim / mid-spawn cases and assert on.
-import { claiming, inFlight, refreshing, clearPrewarmStateForTests } from '#domain/workspaces/prewarm'
+import {
+  claiming,
+  clearPrewarmStateForTests,
+  inFlight,
+  refreshing,
+  spareHeads,
+  spareSettings,
+  type SpareSettings,
+} from '#domain/workspaces/prewarm'
 import { rebranchSpare } from '#domain/workspaces/spare-pool'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import { LABEL_PREWARMED, type PodInfo } from '#drivers/k8s/substrate/pods'
@@ -43,10 +51,12 @@ import {
 import { createWorkspace, resolveCreate, type CreateSetup } from '#domain/workspaces/create'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/workspaces/provisioning'
 import { cleanupWorkspace, deleteWorkspaceState } from '#domain/workspaces/cleanup'
-import { getTimeZone, getWorkspaceRow, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
+import { findWorkspaceRow, getTimeZone, listProjectRows, type ProjectRow, type WorkspaceRow } from '#db'
 
 /** The workspaces the runtime reports for a pass. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
+/** The driver's teardown, which a reap calls last to delete the spare's Job. */
+const destroy = vi.fn(() => Promise.resolve(true))
 const mockCreate = vi.mocked(createWorkspace)
 const mockCleanup = vi.mocked(cleanupWorkspace)
 const mockDeleteState = vi.mocked(deleteWorkspaceState)
@@ -65,8 +75,16 @@ async function pass(): Promise<void> {
   await flush()
 }
 
-function pod(o: Partial<PodInfo> & { prewarmed?: boolean } = {}): RuntimeHandle {
-  const { prewarmed, ...rest } = o
+/**
+ * A workspace pod. A prewarmed one is recorded as this process warmed it,
+ * with `warmed` (default a `tui` spare), or not at all with `warmed: null`,
+ * as for a spare warmed before a server restart.
+ */
+function pod(o: Partial<PodInfo> & { prewarmed?: boolean; warmed?: Partial<SpareSettings> | null } = {}): RuntimeHandle {
+  const { prewarmed, warmed, ...rest } = o
+  if (prewarmed === true && warmed !== null) {
+    spareSettings.set(o.workspaceId ?? 's1', { mode: 'tui', permissionMode: 'bypass', ...warmed })
+  }
   return runtimeHandleFromPod({
     jobName: 'yaac-p-s1',
     podName: 'yaac-p-s1-x',
@@ -88,11 +106,12 @@ describe('reconcilePrewarmPool', () => {
     clearPrewarmStateForTests()
     clearAllProvisioningForTests()
     mockWorkspaces.mockResolvedValue([])
-    installFakeWorkspaceDriver()
     mockResolveCreate.mockResolvedValue(SETUP)
     vi.mocked(listProjectRows).mockResolvedValue([])
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: null, pinned: false })
-    vi.mocked(getWorkspaceRow).mockResolvedValue(undefined)
+    vi.mocked(findWorkspaceRow).mockResolvedValue(undefined)
+    installFakeWorkspaceDriver({ destroy })
+    destroy.mockClear()
     mockCreate.mockResolvedValue({ workspaceId: 's', jobName: 'yaac-p-s', forwardedPorts: [], tool: 'claude', mode: 'tui' as const })
     // Default to success: each reap step waits on the previous one, so a
     // falsy default would silently skip the deletions under test.
@@ -112,15 +131,16 @@ describe('reconcilePrewarmPool', () => {
   it('reaps a spare for an idle project', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
-  it('removes the reaped spare\'s workspace state only once its pod is gone', async () => {
+  it('removes the reaped spare\'s workspace state only once its pod is gone, and its Job last', async () => {
     // The checkout must go only after the awaited teardown. The detached
     // teardown resolves before the Job delete starts, so using it would pull
     // /workspace out from under a live pod, and a crash then would leave a
-    // claimable spare with no checkout.
+    // claimable spare with no checkout. The Job goes last: it is what still
+    // marks the files as a spare's if their removal fails.
     const order: string[] = []
     let releaseTeardown = (): void => { /* replaced below */ }
     mockCleanup.mockImplementation(async () => {
@@ -130,6 +150,7 @@ describe('reconcilePrewarmPool', () => {
       return true
     })
     mockDeleteState.mockImplementation(() => { order.push('state-deleted'); return Promise.resolve(true) })
+    destroy.mockImplementation(() => { order.push('job-deleted'); return Promise.resolve(true) })
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
 
     await pass()
@@ -139,13 +160,16 @@ describe('reconcilePrewarmPool', () => {
 
     releaseTeardown()
     await flush()
-    expect(order).toEqual(['teardown-started', 'teardown-done', 'state-deleted'])
+    expect(order).toEqual(['teardown-started', 'teardown-done', 'state-deleted', 'job-deleted'])
     expect(mockDeleteState).toHaveBeenCalledWith('p', 's2')
+    expect(destroy).toHaveBeenCalledWith(
+      { projectId: 'p', workspaceId: 's2', unitName: 'yaac-p-spare' }, { salvageImages: false },
+    )
   })
 
-  it('keeps the checkout when the teardown could not confirm the pod is gone', async () => {
-    // A timed-out Job delete leaves a pod still writing to /workspace. The
-    // spare keeps its row so the startup sweep can retry.
+  it('keeps the checkout and the Job when the teardown could not confirm the pod is gone', async () => {
+    // A timed-out pod delete leaves a pod still writing to /workspace. The
+    // Job stays marked prewarmed, so a later reap retries.
     mockCleanup.mockResolvedValue(false)
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's3', prewarmed: true })])
 
@@ -153,6 +177,52 @@ describe('reconcilePrewarmPool', () => {
     await flush()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
     expect(mockDeleteState).not.toHaveBeenCalled()
+    expect(destroy).not.toHaveBeenCalled()
+  })
+
+  // A server that died between a claim's insert and its relabel leaves the
+  // user's workspace looking like a spare. The row wins: it is torn down
+  // like a stop, and its files are kept.
+  it('keeps the files of a spare that has a row, and still removes its Job', async () => {
+    vi.mocked(findWorkspaceRow).mockResolvedValue({ projectId: 'p', workspaceId: 's2' } as WorkspaceRow)
+    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
+
+    await pass()
+    await flush()
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
+    expect(findWorkspaceRow).toHaveBeenCalledWith('s2')
+    expect(mockDeleteState).not.toHaveBeenCalled()
+    expect(destroy).toHaveBeenCalledTimes(1)
+  })
+
+  // The whole rule rests on this: a lookup that fails is not "no row". The
+  // labelled Job stays, so the next reap asks again.
+  it('deletes neither files nor Job when the row lookup fails, and retries next pass', async () => {
+    vi.mocked(findWorkspaceRow).mockRejectedValueOnce(new Error('db closed'))
+    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
+
+    await pass()
+    await flush()
+    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(mockDeleteState).not.toHaveBeenCalled()
+    expect(destroy).not.toHaveBeenCalled()
+
+    await pass()
+    await flush()
+    expect(mockDeleteState).toHaveBeenCalledWith('p', 's2')
+    expect(destroy).toHaveBeenCalledTimes(1)
+  })
+
+  // Warm-time settings live in memory, so a spare from before a server
+  // restart can never be matched by a claim.
+  it('replaces a spare this process did not warm', async () => {
+    mockWorkspaces.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: null }),
+    ])
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
+    expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
   // The pod stays listed while its teardown runs. Reaping it again would
@@ -187,12 +257,16 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCreate).toHaveBeenCalledTimes(1)
   })
 
-  it('clears the in-flight counter when a spawn throws', async () => {
+  it('forgets a spawn that throws', async () => {
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-real', workspaceId: 'r1' })])
-    mockCreate.mockRejectedValue(new Error('boom'))
+    mockCreate.mockImplementation((_projectId, options) => {
+      spareSettings.set(options.workspaceId ?? '', { mode: 'tui', permissionMode: 'bypass' })
+      return Promise.reject(new Error('boom'))
+    })
     await pass()
     await flush()
     expect(inFlight.size).toBe(0)
+    expect(spareSettings.size).toBe(0)
   })
 
   it('does nothing for an empty cluster', async () => {
@@ -268,7 +342,7 @@ describe('reconcilePrewarmPool', () => {
     ])
     await pass()
     expect(mockCleanup).toHaveBeenCalledTimes(1)
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-old', projectId: 'p', workspaceId: 'old' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-old', projectId: 'p', workspaceId: 'old', keepRecord: true })
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
@@ -298,13 +372,12 @@ describe('reconcilePrewarmPool', () => {
     vi.mocked(listProjectRows).mockResolvedValue([
       { id: 'p', lastTool: 'codex', createDefaults: { codex: { mode: 'acp' } } } as unknown as ProjectRow,
     ])
-    vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'tui' } as WorkspaceRow)
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
       pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
     ])
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
@@ -315,27 +388,24 @@ describe('reconcilePrewarmPool', () => {
       { id: 'p', createDefaults: {} } as unknown as ProjectRow,
     ])
     vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
-    vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'tui' } as WorkspaceRow)
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
       pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
     ])
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
-  it('keeps a spare whose mode matches, or whose row cannot be read', async () => {
+  it('keeps a spare whose mode and zone match', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
       { id: 'p', createDefaults: {} } as unknown as ProjectRow,
     ])
-    vi.mocked(getWorkspaceRow).mockResolvedValue({ mode: 'acp' } as WorkspaceRow)
+    vi.mocked(getTimeZone).mockResolvedValue({ timeZone: 'Asia/Tokyo', pinned: false })
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
-      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { mode: 'acp', timeZone: 'Asia/Tokyo' } }),
     ])
-    await pass()
-    vi.mocked(getWorkspaceRow).mockRejectedValue(new Error('db hiccup'))
     await pass()
     expect(mockCleanup).not.toHaveBeenCalled()
     expect(mockCreate).not.toHaveBeenCalled()
@@ -381,7 +451,7 @@ describe('reconcilePrewarmPool', () => {
 
     inFlight.clear()
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: `yaac-p-${workspaceId}`, projectId: 'p', workspaceId })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: `yaac-p-${workspaceId}`, projectId: 'p', workspaceId, keepRecord: true })
   })
 
   // A restart takes its pod down before the new one runs. The project is not
@@ -398,7 +468,7 @@ describe('reconcilePrewarmPool', () => {
 
     failProvisioning('r1', 'boom')
     await pass()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2' })
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
   })
 
   describe('keeping spares on their base branch\'s tip', () => {
@@ -408,16 +478,18 @@ describe('reconcilePrewarmPool', () => {
     const exec = vi.fn(() => Promise.resolve({ stdout: `${head}\n`, stderr: '' }))
     const active = (): RuntimeHandle[] => [
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
-      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true }),
+      pod({
+        jobName: 'yaac-p-spare',
+        workspaceId: 's2',
+        prewarmed: true,
+        warmed: { baseBranch: 'dev', permissionMode: 'plan', model: 'claude-opus-5-5' },
+      }),
     ]
 
     beforeEach(() => {
       head = 'old'
       exec.mockClear()
-      installFakeWorkspaceDriver({ exec })
-      vi.mocked(getWorkspaceRow).mockResolvedValue({
-        projectId: 'p', workspaceId: 's2', baseBranch: 'dev', permissionMode: 'plan', mode: 'tui', model: 'claude-opus-5-5',
-      } as WorkspaceRow)
+      installFakeWorkspaceDriver({ exec, destroy })
       vi.mocked(getDefaultBranch).mockResolvedValue('main')
       vi.mocked(resolveRemoteRef).mockResolvedValue('new')
       mockRebranch.mockResolvedValue(undefined)
@@ -441,7 +513,7 @@ describe('reconcilePrewarmPool', () => {
       expect(mockRebranch).toHaveBeenCalledTimes(1)
 
       // A spare already at the tip is only read.
-      clearPrewarmStateForTests()
+      spareHeads.clear()
       await pass()
       await flush()
       expect(exec).toHaveBeenCalledTimes(2)
@@ -449,7 +521,7 @@ describe('reconcilePrewarmPool', () => {
 
       // Warmed on an empty repo, it has no commit yet: moved once origin
       // gets its first branch.
-      clearPrewarmStateForTests()
+      spareHeads.clear()
       head = ''
       await pass()
       await flush()

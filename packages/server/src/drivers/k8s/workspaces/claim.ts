@@ -9,6 +9,7 @@ import {
   NPM_CACHE_APP_NAME,
   patchObject,
   readObject,
+  readWorkspaceJobs,
   readWorkspacePods,
 } from '#drivers/k8s/substrate'
 import { servingNpmCacheUrl } from '#drivers/k8s/cluster'
@@ -19,13 +20,16 @@ import { serverLog } from '#lib/log'
 import { npmCacheApplies } from './launch'
 
 /**
- * The commit point of a prewarm claim, where a spare becomes the user's
- * workspace (docs/layered-server.md). Everything before it is reversible,
- * so it is one conditional write that either takes the spare or refuses.
+ * Where a claimed spare stops being one in the cluster
+ * (docs/layered-server.md): a conditional write on its pod that either
+ * takes the spare or refuses, then the same labels on its Job.
  */
 
 /**
- * Claim the spare holding `workspaceId` for `tool`.
+ * Claim the spare holding `workspaceId` for `tool`: unlabel its pod, then
+ * its Job, so neither reads as a spare again. The Job's label is what
+ * identifies a spare whose pod is gone, and a reap deletes such a spare's
+ * files.
  *
  * The write is a compare-and-swap: the pod is read fresh, and the patch
  * carries the resourceVersion that read saw, so the API server rejects a
@@ -35,9 +39,8 @@ import { npmCacheApplies } from './launch'
  * prewarm mediator also reserves spares in-process, but this keeps the
  * verb safe for any caller.
  *
- * Known gap: if the patch lands but its response is lost, a winning claim
- * reports a loss. The caller then rolls back a spare that is already
- * claimed; it stays hidden until its agent dies.
+ * If a patch lands but its response is lost, a winning claim reports a
+ * loss, so the caller reaps the spare rather than return it to the pool.
  *
  * The tool label is always written, even when unchanged, so afterwards every
  * handle reports `declaredTool === tool` (read by `yaac-mama create` from
@@ -63,12 +66,12 @@ export async function claimSpareWorkspace(
   if (live?.metadata.labels?.[LABEL_PREWARMED] !== 'true') {
     throw new Error(`spare ${podName} for ${workspaceId} was claimed by another caller`)
   }
-  await patchObject(ref, {
-    metadata: {
-      resourceVersion: live.metadata.resourceVersion,
-      labels: { [LABEL_PREWARMED]: null, [LABEL_TOOL]: tool },
-    },
-  })
+  const labels = { [LABEL_PREWARMED]: null, [LABEL_TOOL]: tool }
+  await patchObject(ref, { metadata: { resourceVersion: live.metadata.resourceVersion, labels } })
+  await patchObject(
+    { apiVersion: 'batch/v1', kind: 'Job', name: pod.jobName, namespace: k8sNamespace() },
+    { metadata: { labels } },
+  )
 
   // Re-decide the npm registry at claim time: the spare's init chose it
   // long ago, and pnpm has no fallback if the cache has since gone down
@@ -80,6 +83,24 @@ export async function claimSpareWorkspace(
     void servingNpmCacheUrl().then((url) => writeNpmRegistry(podName, url)).catch((err: unknown) => {
       serverLog(`[prewarm] could not re-decide the npm registry of ${podName}: ${String(err)}`)
     })
+  }
+}
+
+/**
+ * Remove `yaac.prewarmed` from every Job whose pod a claim has already
+ * unlabelled. A claim by an older server unlabelled only the pod, and a
+ * spare reap deletes the files of a unit it finds labelled once its row is
+ * gone (docs/legacy-compat-shims.md). A Job whose pod is gone cannot be
+ * told apart, so it is left alone.
+ */
+export async function unmarkClaimedJobs(): Promise<void> {
+  const [pods, jobs] = await Promise.all([readWorkspacePods(), readWorkspaceJobs()])
+  const claimed = new Set(pods.filter((p) => !isPrewarmed(p)).map((p) => p.jobName))
+  for (const job of jobs.filter((j) => j.prewarmed && claimed.has(j.jobName))) {
+    await patchObject(
+      { apiVersion: 'batch/v1', kind: 'Job', name: job.jobName, namespace: k8sNamespace() },
+      { metadata: { labels: { [LABEL_PREWARMED]: null } } },
+    )
   }
 }
 

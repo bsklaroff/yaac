@@ -76,7 +76,7 @@ async function applyEvent(event: WorkspaceEvent): Promise<void> {
 }
 
 async function applyCreated(event: WorkspaceCreated): Promise<void> {
-  const { projectId, workspaceId, baseBranch, resume, permissionMode, model, mode, effort, timeZone } = event
+  const { projectId, workspaceId, baseBranch, title, groupId, resume, permissionMode, model, mode, effort, timeZone } = event
   const launch = {
     ...(permissionMode !== undefined ? { permissionMode } : {}),
     ...(model !== undefined ? { model } : {}),
@@ -94,7 +94,8 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
     projectId,
     workspaceId,
     ...(baseBranch !== undefined ? { baseBranch } : {}),
-    ...(event.spare === true ? { spare: true } : {}),
+    ...(title !== undefined ? { title } : {}),
+    ...(groupId !== undefined ? { groupId } : {}),
     ...launch,
   })
 }

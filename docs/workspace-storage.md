@@ -18,10 +18,11 @@ clone's objects (docs/server-git.md). Teardown never removes the checkout, so a
 stopped row is a checkout still on disk, with its git state and diff, ready to
 restart.
 
-Every sweep is driven by rows, so a checkout without a row is never collected
-automatically. Guessing "garbage" from disk alone is how a sweep deletes the
-only copy of someone's work. The code paths that delete a row therefore delete
-its files too.
+Every sweep is driven by a record, a row or a prewarmed spare's runtime mark
+(below), so a checkout with neither is never collected automatically.
+Guessing "garbage" from disk alone is how a sweep deletes the only copy of
+someone's work. The code paths that delete a row therefore delete its files
+too.
 
 Agents inside a workspace are separate rows. `agent_sessions` has one row per
 tool-native conversation (a claude, codex, pi or opencode session, keyed by the
@@ -43,35 +44,46 @@ workspace. See "Agent workspaces" below.
 - **`recordWorkspaceCreated` is the only INSERT, and it runs first**, together
   with the first agent session (the conversation create is about to launch;
   without it the workspace has no tool or label). It runs before the Job in
-  `createWorkspace`, so no pod exists without a row. A create that fails
-  afterwards deletes its row; a failed restart marks the row stopped instead,
-  keeping the workspace's history.
+  `createWorkspace`, so no user workspace's pod exists without a row, and it
+  carries the title and sidebar group (a group deleted meanwhile leaves the
+  workspace ungrouped). A create that fails afterwards deletes its row; a
+  failed restart marks the row stopped instead, keeping the workspace's
+  history.
 - **Everything else is an UPDATE**, which does nothing when the row does not
   exist. That keeps workspaces from another data dir invisible without any
   existence check.
-- **A warming spare has a row flagged `spare`.** Listings and the reaper's
-  desired set ignore it. The flag exists because once a spare's pod is gone, a
-  reaped spare and a stopped workspace look the same on disk, and deleting the
-  wrong one loses uncommitted work.
-
-  `claimSpareWorkspace` clears the flag, and throws when no unclaimed spare
-  matched: the startup sweep deletes checkouts based on the flag, so a lost
-  clear would make the user's new workspace look reapable. The claim clears the
-  flag first. If it then fails before changing the spare, it sets the flag back
-  and the pod returns to the pool. If it fails after changing the spare, it
-  removes it in the reap's order (pod, then checkout, then row), each step only
-  if the previous one succeeded. The row is the last reference to the checkout
-  at that point, so it is deleted only once the files are really gone; whatever
-  survives shows up as an ordinary stopped workspace.
+- **A prewarmed spare has no row until it is claimed.** Its only record is
+  the `yaac.prewarmed` label on its pod and its Job. What it was warmed with
+  (agent mode, model, posture, effort, zone, base branch), which claims and
+  the pool match on, is held in the server's memory, so after a server
+  restart every spare counts as stale and is reaped and rewarmed. A claim's
+  commit point is inserting the row (`workspace-created`, with the claimed
+  settings, title, group and base branch), before it changes the spare; once
+  it has, it removes the label from the pod, then the Job. A claim that fails
+  before changing the spare deletes its row and the spare returns to the
+  pool. One that fails after deletes its row and reaps the spare.
+- **A spare's files are deleted only when its unit is labelled prewarmed and
+  no row has its id** (`reapSpare`). A failed row lookup deletes nothing. A
+  row always wins: a server that died between a claim's insert and its relabel
+  leaves a labelled unit with a row, which the reap tears down like a stop,
+  keeping the files. The reap deletes the pod, then the files, then the Job,
+  each only once the previous step succeeded, so whatever a failure leaves is
+  still labelled and the next reap retries it. A dead spare's Job
+  (`backoffLimit: 0`) outlives its pod, so the stale reaper still knows a
+  spare whose pod is gone and hands it to the same reap. Because the label
+  lives in the cluster, a database restored from before a claim cannot make
+  the claimed workspace look reapable. (A workspace an older server claimed
+  kept the label on its Job; see docs/legacy-compat-shims.md.)
 - **No stop deletes a row.** A row with `stoppedAt` set is a stopped
   workspace. A restart reuses the id and, once the new runtime is up, clears
   `stoppedAt` and any death cause, but keeps the title and sidebar group. Only
   two paths delete rows:
   - `project remove`, which also removes the checkouts and transcripts (a
     leftover row would list a workspace whose checkout no longer exists).
-  - A fresh create rolling back its own insert, which also removes its staged
-    checkout. A failed restart leaves the row stopped as it found it, since
-    its checkout is the work the user came back for.
+  - A fresh create or a spare claim rolling back its own insert. A fresh
+    create also removes its staged checkout. A failed restart leaves the row
+    stopped as it found it, since its checkout is the work the user came back
+    for.
 - Reads and writes propagate errors. A teardown logs a failed stop write and
   carries on, since a lost stop stamp degrades a listing while a skipped
   teardown leaks a runtime.

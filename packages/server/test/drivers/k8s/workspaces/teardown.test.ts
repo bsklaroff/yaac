@@ -178,6 +178,17 @@ describe('destroyWorkspace', () => {
     expect(mockSalvage).not.toHaveBeenCalled()
     expect(jobDelete()).toBeDefined()
   })
+
+  // A spare reap deletes the files between the two, so the Job and its
+  // prewarmed label must outlive the pod until then.
+  it('with keepRecord, deletes and waits out only the Job\'s pod', async () => {
+    await expect(destroyWorkspace(TARGET, { keepRecord: true })).resolves.toBe(true)
+    expect(jobDelete()).toBeUndefined()
+    expect(kubectlArgs).toContainEqual(expect.arrayContaining([
+      'delete', 'pod', '-l', 'batch.kubernetes.io/job-name=yaac-proj-s1',
+      '--ignore-not-found', '--wait=true', '--timeout=90s',
+    ]))
+  })
 })
 
   // `unitOnly` is for a failed launch or a restart: the workspace comes back,

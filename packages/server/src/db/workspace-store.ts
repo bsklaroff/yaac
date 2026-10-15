@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto'
 import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
-import { deleteWorkspaceAgentSessions } from './agent-session-store'
-import { agentSessions, workspaceAgentSessions, workspaces } from './schema'
+import { agentSessions, workspaceAgentSessions, workspaceGroups, workspaces } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
@@ -16,16 +15,13 @@ import type { AgentMode, PermissionMode, WorkspaceDeathCause } from '@yaac/share
  *
  * Write rules:
  *  - `recordWorkspaceCreated` is the only INSERT and never upserts: an id is
- *    claimed once across all projects. It also runs when warming a spare
- *    (`spare: true`, cleared by `claimSpareWorkspace`). A restart is
+ *    claimed once across all projects. A restart is
  *    `recordWorkspaceResumed`, an UPDATE.
  *  - Everything else is an UPDATE, which no-ops for a missing row, so
  *    workspaces from a foreign data dir stay invisible without checks.
- *  - Listings filter out spares, but the startup sweep can still look up a
- *    dead spare's row.
- *  - The row is written before the runtime starts, so every runtime has
- *    one; a runtime without a row is invisible to everything that reads
- *    recorded state.
+ *  - The row is written before the runtime starts, so every user workspace
+ *    has one. A prewarmed spare has none until a claim inserts it
+ *    (docs/workspace-storage.md).
  *  - A stop never deletes a row: rows with `stoppedAt` are the stopped
  *    listing, and a restart clears it. Rows are deleted only when the project
  *    is removed (`deleteProjectWorkspaces`) or a create that never came up
@@ -41,9 +37,10 @@ export interface WorkspaceCreatedInput {
   workspaceId: string
   /** Branch the workspace forked from. */
   baseBranch?: string
-  /** Record it as an unclaimed prewarmed spare. Set only when warming; only
-   *  `claimSpareWorkspace` clears it. */
-  spare?: boolean
+  /** The user's title. */
+  title?: string
+  /** The sidebar group; left ungrouped if the group no longer exists. */
+  groupId?: string
   /** The permission mode its agents launch in. */
   permissionMode?: PermissionMode
   /** The model and agent mode its first agent launches with. */
@@ -58,16 +55,12 @@ export interface WorkspaceCreatedInput {
 type Row = typeof workspaces.$inferSelect
 
 /** A workspace row as the display paths consume it (columns documented in
- *  schema.ts). Only point reads return a spare; listings filter them out. */
+ *  schema.ts). */
 export type WorkspaceRow = NullsToUndefined<Omit<Row, 'mamaTokenHash'>>
 
 function toRow({ mamaTokenHash: _, ...r }: Row): WorkspaceRow {
   return nullsToUndefined(r)
 }
-
-/** Every read except point lookups excludes unclaimed spares, which are not
- *  workspaces yet. */
-const notSpare = eq(workspaces.spare, false)
 
 const key = (projectId: string, workspaceId: string) =>
   and(eq(workspaces.projectId, projectId), eq(workspaces.workspaceId, workspaceId))
@@ -82,12 +75,24 @@ const key = (projectId: string, workspaceId: string) =>
  */
 export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Promise<void> {
   const db = await getDb()
+  const title = input.title === undefined ? '' : normalizeTitle(input.title)
   const rows = await db.insert(workspaces)
     .values({
       projectId: input.projectId,
       workspaceId: input.workspaceId,
       ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
-      ...(input.spare === true ? { spare: true } : {}),
+      ...(title !== '' ? { title } : {}),
+      // A subquery, so a group deleted since the request was resolved
+      // leaves the workspace ungrouped rather than filed under nothing.
+      ...(input.groupId !== undefined
+        ? {
+          groupId: sql`(${db.select({ groupId: workspaceGroups.groupId }).from(workspaceGroups)
+            .where(and(
+              eq(workspaceGroups.projectId, input.projectId),
+              eq(workspaceGroups.groupId, input.groupId),
+            ))})`,
+        }
+        : {}),
       ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.mode !== undefined ? { mode: input.mode } : {}),
@@ -129,85 +134,6 @@ export async function recordWorkspaceResumed(
   if (!rows[0]) {
     throw new ServerError('NOT_FOUND', `workspace ${input.workspaceId} has no record to resume`)
   }
-}
-
-/**
- * Turn an unclaimed spare into a workspace: clear the flag, clear any stop
- * or death, and stamp the claimed launch (permission mode, model, agent
- * mode). `createdAt` becomes the claim time, so the sidebar's age and order
- * match the request. (The base branch arrives separately, via
- * `base-branch-resolved`.)
- *
- * Throws when no unclaimed spare matched: the startup sweep deletes checkouts marked
- * `spare`, so a lost update would later delete the user's work. The claim
- * runs this before touching the spare, so a failure only costs a cold
- * create.
- */
-export async function claimSpareWorkspace(
-  projectId: string,
-  workspaceId: string,
-  claim: Pick<WorkspaceCreatedInput, 'permissionMode' | 'model' | 'mode' | 'effort'> = {},
-): Promise<void> {
-  const db = await getDb()
-  const rows = await db.update(workspaces).set({
-    spare: false,
-    createdAt: new Date(),
-    stoppedAt: null,
-    deathReason: null,
-    deathDetail: null,
-    deathSeen: false,
-    ...(claim.permissionMode !== undefined ? { permissionMode: claim.permissionMode } : {}),
-    ...(claim.model !== undefined ? { model: claim.model } : {}),
-    ...(claim.mode !== undefined ? { mode: claim.mode } : {}),
-    // The claimed model may have no effort setting, so this always writes.
-    effort: claim.effort ?? null,
-  }).where(and(key(projectId, workspaceId), eq(workspaces.spare, true)))
-    .returning({ workspaceId: workspaces.workspaceId })
-  if (!rows[0]) {
-    throw new ServerError('CONFLICT', `workspace ${workspaceId} is not an unclaimed spare`)
-  }
-  notifyWorkspaceListChanged()
-}
-
-/**
- * Delete a reaped spare's row. The query itself requires `spare = true`, so
- * it can never delete a real workspace's row.
- */
-export async function deleteSpareWorkspaceRow(
-  projectId: string,
-  workspaceId: string,
-): Promise<void> {
-  const db = await getDb()
-  await db.delete(workspaces).where(and(key(projectId, workspaceId), eq(workspaces.spare, true)))
-}
-
-/**
- * Roll back a claim that failed before touching the runtime: restore the row
- * to `warmed` (as read before the claim). The next claim checks `model` and
- * `permissionMode` to decide if the running agent can be handed over, so the
- * failed claim's values must not remain. Deleting the row instead would make
- * the spare unreapable, since the sweep finds dead spares through
- * `listSpareWorkspaceIds`.
- *
- * Also deletes the conversations the claim recorded. Otherwise a later claim
- * for a different tool would inherit an active ordinal-0 conversation (where
- * the tool and founding prompt are read), and nothing else would prune it.
- *
- * Restores the flag first, since that is what makes the spare reapable.
- */
-export async function restoreSpareWorkspace(warmed: WorkspaceRow): Promise<void> {
-  const { projectId, workspaceId } = warmed
-  const db = await getDb()
-  await db.update(workspaces).set({
-    spare: true,
-    createdAt: warmed.createdAt,
-    baseBranch: warmed.baseBranch ?? null,
-    permissionMode: warmed.permissionMode,
-    model: warmed.model ?? null,
-    mode: warmed.mode,
-    effort: warmed.effort ?? null,
-  }).where(key(projectId, workspaceId))
-  await deleteWorkspaceAgentSessions(projectId, workspaceId)
 }
 
 /**
@@ -394,7 +320,7 @@ export async function getProjectWorkspaceRows(
 ): Promise<Map<string, WorkspaceRow>> {
   const db = await getDb()
   const rows = await db.select().from(workspaces)
-    .where(and(eq(workspaces.projectId, projectId), notSpare))
+    .where(eq(workspaces.projectId, projectId))
   return new Map(rows.map((r) => [r.workspaceId, toRow(r)]))
 }
 
@@ -402,9 +328,8 @@ export async function getProjectWorkspaceRows(
 export async function listWorkspaceRows(projectId?: string): Promise<WorkspaceRow[]> {
   const db = await getDb()
   const rows = projectId === undefined
-    ? await db.select().from(workspaces).where(notSpare)
-    : await db.select().from(workspaces)
-      .where(and(eq(workspaces.projectId, projectId), notSpare))
+    ? await db.select().from(workspaces)
+    : await db.select().from(workspaces).where(eq(workspaces.projectId, projectId))
   return rows.map(toRow)
 }
 
@@ -446,7 +371,7 @@ export async function listStoppedWorkspaceRows(
   page: { limit?: number; after?: StoppedRowCursor } = {},
 ): Promise<{ rows: WorkspaceRow[]; total: number }> {
   const db = await getDb()
-  const conds: (SQL | undefined)[] = [isNotNull(workspaces.stoppedAt), notSpare]
+  const conds: (SQL | undefined)[] = [isNotNull(workspaces.stoppedAt)]
   if (filter.projectIds !== undefined) {
     conds.push(filter.projectIds.length > 0 ? inArray(workspaces.projectId, filter.projectIds) : sql`false`)
   }
@@ -508,24 +433,24 @@ export async function countStoppedWorkspaces(): Promise<StoppedCount[]> {
     unseenDeaths: sql<number>`count(*) filter (where ${workspaces.deathReason} is not null and not ${workspaces.deathSeen})`
       .mapWith(Number),
   }).from(workspaces)
-    .where(and(isNotNull(workspaces.stoppedAt), notSpare))
+    .where(isNotNull(workspaces.stoppedAt))
     .groupBy(workspaces.projectId, workspaces.groupId)
 }
 
 /**
  * A workspace's row by exact id, in whichever project holds it (ids are
- * unique across projects). Unclaimed spares never match. Prefix matching is
- * done by `resolveWorkspace` in domain.
+ * unique across projects). Prefix matching is done by `resolveWorkspace` in
+ * domain.
  */
 export async function findWorkspaceRow(workspaceId: string): Promise<WorkspaceRow | undefined> {
   if (workspaceId === '') return undefined
   const db = await getDb()
   const rows = await db.select().from(workspaces)
-    .where(and(eq(workspaces.workspaceId, workspaceId), notSpare))
+    .where(eq(workspaces.workspaceId, workspaceId))
   return rows[0] ? toRow(rows[0]) : undefined
 }
 
-/** One workspace's row, or undefined. Includes spares. */
+/** One workspace's row, or undefined. */
 export async function getWorkspaceRow(
   projectId: string,
   workspaceId: string,
@@ -547,8 +472,7 @@ export async function deleteWorkspaceRow(
   await db.delete(workspaces).where(key(projectId, workspaceId))
 }
 
-/** Record the branch the workspace is based on, for a claimed spare that was
- *  re-branched or a `yaac-mama set-base`. */
+/** Record the branch the workspace is based on, for a `yaac-mama set-base`. */
 export async function setWorkspaceBaseBranch(
   projectId: string,
   workspaceId: string,
@@ -583,10 +507,6 @@ export async function setWorkspaceEffort(
  * runtime. `ran` is true if the agent ever started (a captured opening
  * message or transcript exists), separating an interrupted create from a
  * workspace whose runtime was removed out-of-band.
- *
- * Unclaimed spares must be excluded: the reaper tears down anything here
- * without a workspace runtime. Spares have their own sweep
- * (`listSpareWorkspaceIds`).
  */
 export async function listLiveWorkspaceRows(): Promise<Array<{
   projectId: string
@@ -597,7 +517,7 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
   const rows = await db.select({
     projectId: workspaces.projectId,
     workspaceId: workspaces.workspaceId,
-  }).from(workspaces).where(and(isNull(workspaces.stoppedAt), notSpare))
+  }).from(workspaces).where(isNull(workspaces.stoppedAt))
   // A link alone proves nothing, since create records one before launching
   // the agent; a prompt or transcript does.
   const links = await db.select({
@@ -620,29 +540,13 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
   }))
 }
 
-/** Every workspace id of a project, spares included. */
+/** Every workspace id of a project. */
 export async function listProjectWorkspaceIds(projectId: string): Promise<string[]> {
   const db = await getDb()
   const rows = await db.select({ workspaceId: workspaces.workspaceId })
     .from(workspaces)
     .where(eq(workspaces.projectId, projectId))
   return rows.map((r) => r.workspaceId)
-}
-
-/**
- * Every unclaimed spare, whatever its project (one whose project was removed
- * mid-create included). The orphan sweep uses this to delete dead spares'
- * checkouts: on disk a reaped spare and a stopped workspace look the same,
- * and deleting the wrong one loses the user's uncommitted work.
- *
- * One query, since PGlite runs on the event loop and a query per project
- * would stall terminal relaying.
- */
-export async function listSpareWorkspaceIds(): Promise<Array<{ projectId: string; workspaceId: string }>> {
-  const db = await getDb()
-  return db.select({ projectId: workspaces.projectId, workspaceId: workspaces.workspaceId })
-    .from(workspaces)
-    .where(eq(workspaces.spare, true))
 }
 
 /**

@@ -30,6 +30,7 @@ export {
   saveDraftWorkspace,
 } from './drafts'
 export { reconcileRevokedShares, removeProject, unshareProject } from './project-teardown'
+export { recordedLaunch } from './prewarm'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export { dismissProvisioning, listProvisioning } from './provisioning'
 export {

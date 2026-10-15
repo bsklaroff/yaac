@@ -118,12 +118,10 @@ can produce is one the server already tolerates.
   often enough that it would come up on most restores.
 
   This depends on no sweep deleting files because of a row that might be
-  stale. The `spare` row flag breaks that, because `gcOrphanSpares` deletes
-  a checkout flagged spare once its pod is gone. A separate change removes
-  the flag. With it, a spare has no row until it is claimed, and its files
-  are deleted only while its Job still carries the `prewarmed` label. A
-  restore starts with no Jobs (below), so nothing it brings back qualifies.
-  This plan depends on that change.
+  stale, and none does. A spare has no row until it is claimed, and its
+  files are deleted only while its Job still carries the `prewarmed` label
+  and no row has its id (docs/workspace-storage.md). A restore starts with
+  no Jobs (below), so nothing it brings back qualifies.
 - **Git refs before git objects.** git writes an object before any ref points
   to it, and objects never change after they are written. So a ref copied in
   pass 1 names an object that exists, and pass 2, which runs later, copies that

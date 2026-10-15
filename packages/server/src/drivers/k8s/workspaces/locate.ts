@@ -66,7 +66,8 @@ export async function findWorkspaceForTeardown(
   // The pod exists but was skipped as a spare; don't match its Job instead.
   if (pods.some((p) => p.workspaceId === workspaceId)) return undefined
 
-  const job = (await unavailableOnFailure(listWorkspaceJobs())).find((j) => j.workspaceId === workspaceId)
+  const job = (await unavailableOnFailure(listWorkspaceJobs()))
+    .find((j) => j.workspaceId === workspaceId && (opts.spares === true || !j.prewarmed))
   return job
     ? { projectId: job.projectId, workspaceId: job.workspaceId, unitName: job.jobName }
     : undefined

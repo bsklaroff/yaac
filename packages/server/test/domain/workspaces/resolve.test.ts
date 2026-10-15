@@ -189,7 +189,6 @@ describe('resolveProjectWorkspace', () => {
       [PROJ, 'feed-1'],
       [OTHER, 'fe11-2'],
     ]) await recordWorkspaceCreated({ projectId, workspaceId })
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'spare-1', spare: true })
   })
 
   afterEach(async () => {
@@ -204,12 +203,12 @@ describe('resolveProjectWorkspace', () => {
   })
 
   // Unknown and ambiguous need different fixes, so they read differently.
-  it('refuses an ambiguous prefix, and finds nothing for an empty input, an unclaimed spare or another project\'s id', async () => {
+  it('refuses an ambiguous prefix, and finds nothing for an empty input or another project\'s id', async () => {
     await expect(resolveProjectWorkspace('abcdef', PROJ)).rejects.toMatchObject({
       code: 'VALIDATION',
       message: `Ambiguous workspace prefix in ${PROJ}: abcdef matches more than one workspace — use a longer prefix`,
     })
-    for (const target of ['  ', 'spare-1', 'nope', 'fe11-2']) {
+    for (const target of ['  ', 'nope', 'fe11-2']) {
       await expect(resolveProjectWorkspace(target, PROJ), target).rejects.toMatchObject({
         code: 'NOT_FOUND', message: `no workspace '${target.trim()}' in ${PROJ}`,
       })
@@ -224,7 +223,6 @@ describe('resolveWorkspaceId', () => {
     tmpDir = await createTempDataDir()
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'abcdef-1' })
     await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'abcdef-2' })
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'spare-1', spare: true })
   })
 
   afterEach(async () => {
@@ -246,7 +244,5 @@ describe('resolveWorkspaceId', () => {
   // its full id.
   it('passes an id no row knows through as-is', async () => {
     expect(await resolveWorkspaceId('unrecorded-id')).toBe('unrecorded-id')
-    // An unclaimed spare is not a workspace yet, so no prefix reaches it.
-    expect(await resolveWorkspaceId('spare')).toBe('spare')
   })
 })

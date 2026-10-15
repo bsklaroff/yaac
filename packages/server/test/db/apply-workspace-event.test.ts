@@ -61,7 +61,7 @@ describe('applyWorkspaceEvent', () => {
     })
   })
 
-  // What its first agent launched with — the facts a spare claim matches on.
+  // What its first agent launched with, which a restart relaunches.
   it('records the launch it was created with', async () => {
     await created('wt-launch', { permissionMode: 'plan', model: 'claude-opus-5-5', mode: 'acp' })
 
