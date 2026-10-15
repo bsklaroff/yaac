@@ -28,7 +28,7 @@ const LISTING: WorkspaceFilesData = {
 }
 
 const CHANGES: WorkspaceChanges = {
-  base: 'abc', baseResolved: true, branch: 'main', comparison: null, files: [], truncated: false, listing: LISTING,
+  base: 'abc', baseResolved: true, branch: 'main', comparison: null, files: [], truncated: false, listing: LISTING, readMs: 0,
 }
 
 let server: FetchMock
