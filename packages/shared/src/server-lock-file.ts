@@ -136,7 +136,7 @@ export async function isLockReady(lock: ServerLock): Promise<boolean> {
  * lock left by the killed server would otherwise read as live and the new
  * one would exit.
  */
-function isOtherLivePid(pid: number): boolean {
+export function isOtherLivePid(pid: number): boolean {
   if (pid === process.pid) return false
   try {
     process.kill(pid, 0)

@@ -373,7 +373,13 @@ without waiting for a launch. Where no proxy exists yet, the first launch
 deploys it.
 
 `yaac cluster start|stop|restart` act on the Deployment (scale to 1 and
-wait, scale to 0, `rollout restart`); `yaac cluster status` reads its lock.
+wait, scale to 0, `rollout restart`); `yaac cluster status` reads its lock,
+then asks `/health` at the install's origin (the lock's port is the pod's).
+A server that is up but refused to start (an unknown migration, a lost
+`secret.key`, another access mode) reports the reason instead of `running`,
+and one that does not answer at the origin reports that; `--json` carries
+both as `refused` and `reachable`. `yaac server status` does the same for a
+host server at its lock's port.
 `start` selects the server, as a host `yaac server start` does; `restart`
 leaves a selection of another server alone. `stop` scales to zero rather than deleting, so `start` can undo it
 without a full install. It waits for the pod to disappear, not for a

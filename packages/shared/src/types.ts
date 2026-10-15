@@ -1653,6 +1653,17 @@ export interface LocalServerStatus {
   cliBuildId: string
   /** The origin the install's server last registered at; null before it ever did. */
   origin: string | null
+  /**
+   * Why the running server refused to start, from its `/health`. It stays up
+   * serving nothing else until restarted. null when none runs or it did not refuse.
+   */
+  refused: string | null
+  /**
+   * Whether the running server's `/health` answered: false for a server that
+   * runs but hangs, or whose origin is unreachable from here. null when none
+   * runs or there is nowhere to ask (another host's lock and no cluster origin).
+   */
+  reachable: boolean | null
 }
 
 /**

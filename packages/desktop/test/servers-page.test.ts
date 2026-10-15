@@ -8,7 +8,7 @@ import type { LocalServers, LocalServerState } from '#server-control'
 /** No install: what `yaac server|cluster status --json` reports before one exists. */
 const NONE = {
   kind: 'status',
-  status: { running: false, driver: null, serverBuildId: null, cliBuildId: 'b1', origin: null },
+  status: { running: false, driver: null, serverBuildId: null, cliBuildId: 'b1', origin: null, refused: null, reachable: null },
 } satisfies LocalServerState
 const STOPPED: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'containerless' } }
 const CLUSTER_STOPPED: LocalServerState = { kind: 'status', status: { ...NONE.status, driver: 'k8s' } }

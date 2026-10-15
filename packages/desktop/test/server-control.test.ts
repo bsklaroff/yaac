@@ -9,7 +9,7 @@ import {
 } from '#server-control'
 
 const STATUS: LocalServerStatus = {
-  running: true, driver: 'containerless', serverBuildId: 'b1', cliBuildId: 'b1', origin: 'http://127.0.0.1:8787',
+  running: true, driver: 'containerless', serverBuildId: 'b1', cliBuildId: 'b1', origin: 'http://127.0.0.1:8787', refused: null, reachable: true,
 }
 
 /**

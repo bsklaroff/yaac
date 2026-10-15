@@ -1,10 +1,12 @@
 /**
- * `yaac server stop`, `start` and `logs` against locks, configs and logs
- * they did not write. `stop` must not clear a live in-cluster server's
- * lock, which would let a second server open the same database
- * (docs/server-in-cluster.md). `start` must register the server in
- * `server.json` and record its driver in the data dir's `install.json`.
- * Only the data dir and the server socket are faked.
+ * `yaac server stop`, `start`, `status` and `logs`, and `yaac cluster
+ * status`, against locks, configs and logs they did not write. `stop` must
+ * not clear a live in-cluster server's lock, which would let a second
+ * server open the same database (docs/server-in-cluster.md). `start` must
+ * register the server in `server.json` and record its driver in the data
+ * dir's `install.json`. `status` must not call a server that refused to
+ * start, or one that hangs, `running`. Only the data dir and the server
+ * socket are faked.
  */
 import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest'
 import fs from 'node:fs/promises'
@@ -18,7 +20,7 @@ import { readInstallRecord, recordInstall } from '@yaac/shared/install-record'
 import { readServerConfig, writeServerConfig } from '@yaac/shared/server-config'
 import { LEASE_STALE_MS } from '@yaac/shared/server-lock-file'
 import { serverLogPath } from '@yaac/shared/paths'
-import { serverLogs, serverStart, serverStop } from '#commands/server-lifecycle'
+import { clusterStatus, serverLogs, serverStart, serverStatus, serverStop } from '#commands/server-lifecycle'
 
 let tmpDir: string
 let stderr: string[]
@@ -39,8 +41,22 @@ async function podLock(overrides: Record<string, unknown> = {}): Promise<void> {
   })
 }
 
+/** A stand-in server answering `/health` with `body`. */
+async function fakeServer(body: object = { ok: true }) {
+  const srv = http.createServer((_req, res) => {
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify(body))
+  })
+  await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  return {
+    port: (srv.address() as AddressInfo).port,
+    close: () => new Promise<void>((resolve) => srv.close(() => resolve())),
+  }
+}
+
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
+  vi.stubEnv('YAAC_BUILD_ID', 'test-build')
   stderr = []
   vi.spyOn(console, 'error').mockImplementation((msg: unknown) => {
     stderr.push(String(msg))
@@ -51,6 +67,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
   process.exitCode = undefined
   await cleanupTempDir(tmpDir)
 })
@@ -100,22 +117,8 @@ describe('serverStop', () => {
 })
 
 describe('serverStart', () => {
-  /** A stand-in server answering `/health`. */
-  async function fakeServer() {
-    const srv = http.createServer((_req, res) => {
-      res.setHeader('content-type', 'application/json')
-      res.end('{"ok":true}')
-    })
-    await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve))
-    return {
-      port: (srv.address() as AddressInfo).port,
-      close: () => new Promise<void>((resolve) => srv.close(() => resolve())),
-    }
-  }
-
   it('registers a server that was already running, instead of no-oping', async () => {
     // e.g. a foreground `yaac server run`, which registers nothing.
-    vi.stubEnv('YAAC_BUILD_ID', 'test-build')
     const server = await fakeServer()
     try {
       await writeLock({
@@ -136,18 +139,91 @@ describe('serverStart', () => {
       expect(await readInstallRecord()).toEqual({ driver: 'containerless', origin: `http://127.0.0.1:${server.port}` })
     } finally {
       await server.close()
-      vi.unstubAllEnvs()
     }
   })
 
   it('refuses to start on a k8s install rather than registering a second server', async () => {
-    vi.stubEnv('YAAC_BUILD_ID', 'test-build')
     await recordInstall({ driver: 'k8s' })
     await writeServerConfig({ url: 'http://127.0.0.1:9999', saved: [] })
     await expect(serverStart()).rejects.toThrow(/yaac cluster start/)
     // The refusal left the selection unchanged.
     expect(await readServerConfig()).toMatchObject({ url: 'http://127.0.0.1:9999' })
-    vi.unstubAllEnvs()
+  })
+})
+
+const REFUSED = { ok: true, ready: false, refused: 'secret.key is missing' }
+
+/** What a status command printed, one entry per `console.log`. */
+async function printed(run: () => Promise<void>): Promise<string[]> {
+  const out: string[] = []
+  vi.spyOn(console, 'log').mockImplementation((msg: unknown) => { out.push(String(msg)) })
+  await run()
+  return out
+}
+
+describe('serverStatus', () => {
+  it('reports a host server that refused to start, not `running`', async () => {
+    const server = await fakeServer(REFUSED)
+    try {
+      await writeLock({ pid: process.ppid, port: server.port, startedAt: Date.now(), buildId: 'test-build', ...newLeaseFields() })
+
+      expect(await printed(() => serverStatus({}))).toEqual(['up, but refused to start: secret.key is missing'])
+      const [json] = await printed(() => serverStatus({ json: true }))
+      expect(JSON.parse(json)).toMatchObject({
+        running: true, serverBuildId: 'test-build', refused: 'secret.key is missing', reachable: true,
+      })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('reports a host server whose pid lives but whose port is silent as running and unreachable', async () => {
+    // A hung server (stopped, or blocked in a migration), not a stopped one.
+    await writeLock({ pid: process.ppid, port: 1, startedAt: Date.now(), buildId: 'test-build', ...newLeaseFields() })
+
+    expect(await printed(() => serverStatus({})))
+      .toEqual(['running, but its /api/health does not answer; see `yaac server logs`'])
+    const [json] = await printed(() => serverStatus({ json: true }))
+    expect(JSON.parse(json)).toMatchObject({ running: true, refused: null, reachable: false })
+  })
+
+  it('asks nothing for another host\'s lock on a data dir with no cluster origin', async () => {
+    // The host server's origin would be another server than the lock's.
+    await recordInstall({ driver: 'containerless', origin: 'http://127.0.0.1:1' })
+    await podLock({ buildId: 'test-build' })
+
+    expect(await printed(() => serverStatus({}))).toEqual(['running'])
+    const [json] = await printed(() => serverStatus({ json: true }))
+    expect(JSON.parse(json)).toMatchObject({ running: true, refused: null, reachable: null })
+  })
+})
+
+describe('clusterStatus', () => {
+  it('asks the pod\'s server at the install\'s origin, since its lock names a port inside the pod', async () => {
+    const server = await fakeServer(REFUSED)
+    try {
+      await recordInstall({ driver: 'k8s', origin: `http://127.0.0.1:${server.port}` })
+      await podLock()
+
+      expect(await printed(() => clusterStatus({}))).toEqual(['up, but refused to start: secret.key is missing'])
+      const [json] = await printed(() => clusterStatus({ json: true }))
+      expect(JSON.parse(json)).toMatchObject({ running: true, driver: 'k8s', refused: 'secret.key is missing', reachable: true })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('tells a live lease whose server does not answer apart from a refusal', async () => {
+    // A port nothing listens on: the origin's port mapping is gone, say.
+    const server = await fakeServer()
+    await server.close()
+    await recordInstall({ driver: 'k8s', origin: `http://127.0.0.1:${server.port}` })
+    await podLock()
+
+    expect(await printed(() => clusterStatus({})))
+      .toEqual(['running, but its /api/health does not answer; see `yaac cluster logs`'])
+    const [json] = await printed(() => clusterStatus({ json: true }))
+    expect(JSON.parse(json)).toMatchObject({ running: true, refused: null, reachable: false })
   })
 })
 
