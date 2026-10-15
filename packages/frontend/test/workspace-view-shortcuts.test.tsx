@@ -9,7 +9,8 @@ vi.mock('#components/WorkspaceTerminal', () => ({ WorkspaceTerminal: () => <text
 import { WorkspaceView } from '#components/WorkspaceView'
 import { DEFAULT_BINDINGS } from '#lib/shortcuts'
 import { shortcutsSuspended, useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient } from './harness'
+import { isPreviewTarget, previewTarget } from '#lib/preview'
+import { mockFetch, renderWithClient, type FetchMock } from './harness'
 
 
 const workspace: WorkspaceListEntry = {
@@ -27,10 +28,11 @@ const workspace: WorkspaceListEntry = {
 const snapshot = { workspaces: [workspace] } as unknown as ServerSnapshot
 
 const initial = useUiStore.getState()
+let fetchMock: FetchMock
 beforeEach(() => {
   useUiStore.setState({ ...initial, selectedWorkspaceId: 's1', layouts: {}, activeTabs: {}, findPending: null })
   // No changes, and a one-file listing for the explorer.
-  mockFetch({
+  fetchMock = mockFetch({
     'GET /api/workspace/s1/changes': {
       base: 'abc', baseResolved: true, files: [], diff: '', truncated: false, branch: 'main', comparison: null,
       listing: {
@@ -47,6 +49,7 @@ function renderView(forwardedPorts: PortMapping[] = []): void {
 
 const altE = (): void => { fireEvent.keyDown(window, { code: 'KeyE', key: 'e', altKey: true }) }
 const tabsOf = (): string[] => (useUiStore.getState().layouts.s1 ?? []).flatMap((g) => g.tabs)
+const previewTabs = (): string[] => tabsOf().filter(isPreviewTarget)
 
 describe('WorkspaceView: open-files', () => {
   it('opens the explorer on Alt+E and hands its filter the focus once mounted', async () => {
@@ -143,7 +146,7 @@ describe('WorkspaceView: open-preview', () => {
     fireEvent.keyDown(items[0], { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('menuitem')).toBeNull())
     await waitFor(() => expect(document.activeElement).toBe(terminal))
-    expect(tabsOf()).not.toContain('preview')
+    expect(previewTabs()).toEqual([])
 
     // A second Alt+P closes the menu the same way.
     altP()
@@ -158,44 +161,51 @@ describe('WorkspaceView: open-preview', () => {
     const first = (await screen.findAllByRole('menuitem'))[0]
     await waitFor(() => expect(document.activeElement).toBe(first))
     fireEvent.keyDown(first, { key: 'Enter' })
-    await waitFor(() => expect(tabsOf()).toContain('preview'))
-    expect(useUiStore.getState().previewPort.s1).toBe(3000)
+    await waitFor(() => expect(previewTabs()).toEqual([previewTarget(3000)]))
 
-    // The button's pick switches the open pane to another port.
+    // Picking another port opens a second pane beside it; picking one
+    // already open focuses it.
     fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: ':5173' }))
-    await waitFor(() => expect(useUiStore.getState().previewPort.s1).toBe(5173))
-    expect(tabsOf().filter((t) => t === 'preview')).toHaveLength(1)
+    await waitFor(() => expect(previewTabs()).toEqual([previewTarget(3000), previewTarget(5173)]))
+    fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: ':3000→:3001' }))
+    await waitFor(() => expect(useUiStore.getState().activeTabs.s1).toBe(previewTarget(3000)))
+    expect(previewTabs()).toEqual([previewTarget(3000), previewTarget(5173)])
   })
 
-  it('with one port, opens the pane on it, replacing a port no longer forwarded', () => {
-    useUiStore.setState({ previewPort: { s1: 5173 } })
+  it('with one port, opens the pane on it', () => {
     renderView([port(3000)])
     focusTerminal()
     altP()
     expect(screen.queryByRole('menuitem')).toBeNull()
-    expect(tabsOf()).toContain('preview')
-    expect(useUiStore.getState().previewPort.s1).toBe(3000)
+    expect(previewTabs()).toEqual([previewTarget(3000)])
   })
 
-  it('moves an open pane off a port that stops being forwarded elsewhere', () => {
-    // Another window stopped 5173: only the snapshot says so.
-    useUiStore.setState({ previewPort: { s1: 5173 } })
+  it('keeps a pane on its port while that port is not forwarded, and closes it when stopped', async () => {
+    // Another window stopped 5173: only the snapshot says so. A saved
+    // layout restores the pane on the port it showed.
     act(() => useUiStore.getState().openPreview('s1', 5173))
-    renderView([port(3000), port(5173)])
+    renderView([port(3000)])
     expect(screen.getAllByText('Preview :5173').length).toBeGreaterThan(0)
+    expect(screen.getByText('Waiting for the dev server on :5173…')).toBeTruthy()
 
     cleanup()
-    renderView([port(3000)])
-    expect(screen.queryAllByText('Preview :5173')).toHaveLength(0)
-    expect(screen.getAllByText('Preview :3000').length).toBeGreaterThan(0)
+    fetchMock.route('POST /api/workspace/s1/unforward-port', {})
+    act(() => useUiStore.getState().openPreview('s1', 3000))
+    renderView([port(3000), port(5173)])
+    expect(screen.queryByText(/Waiting for the dev server/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop forwarding port 3000' }))
+    await waitFor(() => expect(previewTabs()).toEqual([previewTarget(5173)]))
+    expect(fetchMock.called('POST /api/workspace/s1/unforward-port')[0].body).toEqual({ containerPort: 3000 })
   })
 
   it('with no ports, opens nothing', () => {
     renderView()
     focusTerminal()
     altP()
-    expect(tabsOf()).not.toContain('preview')
+    expect(previewTabs()).toEqual([])
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
   })
 })
@@ -219,11 +229,11 @@ describe('WorkspaceView: preview outside the desktop app', () => {
     renderView([ports[0]])
     fireEvent.keyDown(window, { code: 'KeyP', key: 'p', altKey: true })
     expect(openPreview).toHaveBeenLastCalledWith('s1', ports[0])
-    expect(tabsOf()).not.toContain('preview')
+    expect(previewTabs()).toEqual([])
   })
 
   it('drops a preview pane a saved layout restores, which could never load here', () => {
-    useUiStore.setState({ layouts: { s1: [{ tabs: ['agent', 'preview'], active: 'preview' }] } })
+    useUiStore.setState({ layouts: { s1: [{ tabs: ['agent', previewTarget(3000)], active: previewTarget(3000) }] } })
     renderView(ports)
     expect(tabsOf()).toEqual(['agent'])
   })
@@ -233,6 +243,6 @@ describe('WorkspaceView: preview outside the desktop app', () => {
     fireEvent.keyDown(window, { code: 'KeyP', key: 'p', altKey: true })
     expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
     expect(screen.queryByRole('link')).toBeNull()
-    expect(tabsOf()).not.toContain('preview')
+    expect(previewTabs()).toEqual([])
   })
 })

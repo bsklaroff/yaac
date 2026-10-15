@@ -7,7 +7,7 @@ import {
 import type {
   ListedAgentStatus, ProvisioningWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
 } from '@yaac/shared/types'
-import { PREVIEW_TARGET } from '#lib/preview'
+import { previewTarget } from '#lib/preview'
 
 const initial = useUiStore.getState()
 
@@ -472,22 +472,20 @@ describe('view mode (tiles vs tabs)', () => {
     expect(useUiStore.getState()).toBe(before)
   })
 
-  it('openPreview and openChanges add their pane once, as a focused column', () => {
+  it('openPreview (per port) and openChanges add their pane once, as a focused column', () => {
     useUiStore.getState().setPaneView(paneViewKey('s1', CHANGES_TARGET), { find: 'x', flat: false })
     useUiStore.getState().openPreview('s1', 3000)
     useUiStore.getState().openChanges('s1')
     useUiStore.getState().openPreview('s1', 4000)
-    useUiStore.getState().openPreview('s1')
+    useUiStore.getState().openPreview('s1', 3000)
     const state = useUiStore.getState()
     expect(state.layouts.s1).toEqual([
       { tabs: ['agent'], active: 'agent' },
-      { tabs: [PREVIEW_TARGET], active: PREVIEW_TARGET },
+      { tabs: [previewTarget(3000)], active: previewTarget(3000) },
       { tabs: [CHANGES_TARGET], active: CHANGES_TARGET },
+      { tabs: [previewTarget(4000)], active: previewTarget(4000) },
     ])
-    expect(state.activeTabs.s1).toBe(PREVIEW_TARGET)
-    // Reopening on another port switches the pane to it; reopening with
-    // none keeps the port it shows.
-    expect(state.previewPort.s1).toBe(4000)
+    expect(state.activeTabs.s1).toBe(previewTarget(3000))
     // The Changes pane is asked to focus its filter, cleared so it lists
     // every change; the rest of its view state stays.
     expect(state.findPending).toBe(CHANGES_TARGET)

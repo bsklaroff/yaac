@@ -2,17 +2,31 @@ import { isElectron } from '#lib/platform'
 import type { PortMapping } from '@yaac/shared/types'
 
 /**
- * The preview pane shares the layout with terminals. A workspace has at most
- * one, under the `preview` target; which forwarded port it shows is kept in
- * the store, so switching ports doesn't change the layout.
+ * Preview panes share the layout with terminals. A workspace has one per
+ * forwarded port it previews, each a `preview:<containerPort>` target, so
+ * the saved layout keeps which port each pane shows across reloads and
+ * server switches.
  */
 
-/** The one layout target a workspace's preview pane uses. */
-export const PREVIEW_TARGET = 'preview'
+const PREVIEW_PREFIX = 'preview:'
 
-/** Whether a layout target is the preview pane (vs a terminal). */
+/** The layout target of the preview pane on one workspace port. */
+export function previewTarget(containerPort: number): string {
+  return `${PREVIEW_PREFIX}${containerPort}`
+}
+
+/**
+ * Whether a layout target is a preview pane (vs a terminal). Strict, so a
+ * malformed saved target counts as a dead terminal and the window sync
+ * drops it.
+ */
 export function isPreviewTarget(target: string): boolean {
-  return target === PREVIEW_TARGET
+  return /^preview:\d+$/.test(target)
+}
+
+/** The workspace port a preview target shows. */
+export function previewTargetPort(target: string): number {
+  return Number(target.slice(PREVIEW_PREFIX.length))
 }
 
 /**
@@ -26,9 +40,14 @@ export function portLabel(p: PortMapping): string {
   return isElectron() && p.hostPort !== p.containerPort ? `:${p.containerPort}→:${p.hostPort}` : `:${p.containerPort}`
 }
 
-/** Pane/tab label for the preview, e.g. "Preview :5173" (bare when no port). */
-export function previewLabel(port: PortMapping | undefined): string {
-  return port === undefined ? 'Preview' : `Preview ${portLabel(port)}`
+/**
+ * Pane/tab label for a preview, e.g. "Preview :5173": bare when no port, and
+ * the workspace port alone when given only that (a pane whose port is not
+ * forwarded right now).
+ */
+export function previewLabel(port: PortMapping | number | undefined): string {
+  if (port === undefined) return 'Preview'
+  return `Preview ${typeof port === 'number' ? `:${port}` : portLabel(port)}`
 }
 
 /**

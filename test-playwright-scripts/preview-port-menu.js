@@ -4,9 +4,11 @@
  * the SPA checks; the webview itself does not load):
  *
  *  1. The header's Preview button is a menu listing each forwarded port, and
- *     picking one opens the preview pane on that port.
+ *     picking one opens a preview pane on that port.
  *  2. From a focused terminal, Alt+P opens the same menu with its first port
- *     highlighted, so Enter switches the open pane to that port.
+ *     highlighted, so Enter opens a second pane on that port beside the
+ *     first, and picking a port already open focuses its pane rather than
+ *     opening another.
  *  3. Alt+P then Escape, or Alt+P pressed twice, hands focus back to the
  *     terminal.
  *
@@ -68,8 +70,13 @@ try {
   await page.screenshot({ path: `${SHOTS}/preview-port-menu.png`, clip: { x: 1000, y: 0, width: 400, height: 140 } })
   await page.keyboard.press('Enter')
   await tab(first).waitFor({ state: 'visible', timeout: 5000 })
-  check(`Enter switches the open pane to ${label(first)}`, await tab(first).isVisible())
-  check('the pane did not duplicate', await page.getByText(/^Preview :\d+(→:\d+)?$/).count() === 1)
+  check(`Enter opens a pane on ${label(first)}`, await tab(first).isVisible())
+  const previewTabs = page.getByText(/^Preview :\d+(→:\d+)?$/)
+  check('both ports have a pane', await previewTabs.count() === 2)
+  await page.getByRole('button', { name: 'Open preview' }).click()
+  await items.filter({ hasText: label(second) }).click()
+  await page.waitForTimeout(300)
+  check(`re-picking ${label(second)} opens no third pane`, await previewTabs.count() === 2)
 
   // (3) Escape returns focus to the terminal.
   await page.locator('.xterm-screen').first().click()

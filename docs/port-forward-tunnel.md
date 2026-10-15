@@ -94,6 +94,14 @@ listener on the server host, a browser would refuse a plain-http link to a
 app tells the webapp it can preview by giving its bridge an `openPreview`
 call (`windowApi()` in `packages/frontend/src/components/WindowControls.tsx`).
 
+The desktop app previews each forwarded port in its own pane, so a
+workspace can show several side by side. A pane is a `preview:<port>`
+layout target (`#lib/preview`), so the saved layout remembers which port
+each pane shows across reloads and server switches. A pane whose port is
+not forwarded at the moment waits for it rather than showing another,
+including when another client stops the forward. Stopping a forward from
+the pane's own window closes the pane.
+
 ## Taken ports
 
 Another process on the client's machine may already hold an offered host

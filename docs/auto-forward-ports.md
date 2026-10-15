@@ -75,9 +75,10 @@ status bar; clients release their listener on the next snapshot and cut its
 open connections, and a port still listening comes back as a suggestion.
 The project config is untouched, so a port declared there is forwarded
 again when the server restarts. The webapp offers it as an × on the
-Preview button (or on each row of its port menu) and in the desktop
-preview pane's menu. It is hidden under `containerless`, where a forwarded
-port is the dev server's own host port.
+Preview button (or on each row of its port menu) and in that port's
+desktop preview pane menu. Stopping a forward this way also closes the
+port's preview pane. It is hidden under `containerless`, where a
+forwarded port is the dev server's own host port.
 
 A forward during workspace create is safe: the registry merges the create's
 declarations with later ones on one entry, and allocating a host port and

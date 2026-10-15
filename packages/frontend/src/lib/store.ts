@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { replaceEqualDeep } from '@tanstack/react-query'
 import { addColumn, isPaneLayout, removeTarget, renameTargets, singleColumn, withActive, type PaneLayout } from '#lib/layout'
-import { PREVIEW_TARGET } from '#lib/preview'
+import { previewTarget } from '#lib/preview'
 import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
@@ -470,14 +470,8 @@ interface UiState {
   /** Per-workspace pane layout. A missing key means the default single
    *  column (see `layoutOf`). */
   layouts: Record<string, PaneLayout>
-  /** Per-workspace port the preview pane shows; missing means the first
-   *  forwarded port. */
-  previewPort: Record<string, number>
-  /** Show another forwarded port in the preview pane. */
-  setPreviewPort: (workspaceId: string, containerPort: number) => void
-  /** Open or focus the preview pane, on `containerPort` when given and on
-   *  the port it last showed otherwise. */
-  openPreview: (workspaceId: string, containerPort?: number) => void
+  /** Open or focus the preview pane of one forwarded port. */
+  openPreview: (workspaceId: string, containerPort: number) => void
   /** Open or focus a workspace's Changes pane, its filter cleared and
    *  focused, so what it totals is every change (as the status bar does). */
   openChanges: (workspaceId: string) => void
@@ -761,7 +755,6 @@ export const useUiStore = create<UiState>((set) => ({
   focusNonce: 0,
   terminalNonces: {},
   layouts: {},
-  previewPort: {},
   sidebarOpen: true,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   mobileScreen: defaultMobileScreen(),
@@ -942,17 +935,7 @@ export const useUiStore = create<UiState>((set) => ({
   setWorkspaceLayout: (workspaceId, layout) => set((s) => ({
     layouts: { ...s.layouts, [workspaceId]: layout },
   })),
-  setPreviewPort: (workspaceId, containerPort) => set((s) => (
-    s.previewPort[workspaceId] === containerPort
-      ? s
-      : { previewPort: { ...s.previewPort, [workspaceId]: containerPort } }
-  )),
-  openPreview: (workspaceId, containerPort) => set((s) => ({
-    ...openSpecialPane(s, workspaceId, PREVIEW_TARGET),
-    ...(containerPort !== undefined
-      ? { previewPort: { ...s.previewPort, [workspaceId]: containerPort } }
-      : {}),
-  })),
+  openPreview: (workspaceId, containerPort) => set((s) => openSpecialPane(s, workspaceId, previewTarget(containerPort))),
   openChanges: (workspaceId) => set((s) => {
     const key = paneViewKey(workspaceId, CHANGES_TARGET)
     return {
