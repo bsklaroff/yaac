@@ -11,7 +11,7 @@ import { WorkspaceChat } from '#components/WorkspaceChat'
 import { TuiTranscriptSearch } from '#components/TuiTranscriptSearch'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
 import { WorkspaceFile } from '#components/WorkspaceFile'
-import { PREVIEW_TARGET, isPreviewTarget, portLabel, previewLabel } from '#lib/preview'
+import { isPreviewTarget, portLabel, previewLabel, previewTarget, previewTargetPort } from '#lib/preview'
 import {
   discardFileSavers, fileKey, fileTabLabels, fileTargetPath, flushFileSavers, isChangesTarget, isFileTarget,
   isFilesTarget,
@@ -88,11 +88,14 @@ const MOBILE_EAGER_ATTACH_MAX = 2
 function paneName(
   target: string,
   terminals: WorkspaceTerminalEntry[] | undefined,
-  previewPort?: PortMapping,
+  previewPorts?: PortMapping[],
   workspace?: WorkspaceListEntry,
   fileLabels?: Record<string, string>,
 ): string {
-  if (isPreviewTarget(target)) return previewLabel(previewPort)
+  if (isPreviewTarget(target)) {
+    const port = previewTargetPort(target)
+    return previewLabel(previewPorts?.find((p) => p.containerPort === port) ?? port)
+  }
   if (isFilesTarget(target)) return 'Files'
   if (isChangesTarget(target)) return 'Changes'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
@@ -125,8 +128,6 @@ export function WorkspaceView({
   const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
   const focusTerminal = useUiStore((s) => s.focusTerminal)
-  const previewPortMap = useUiStore((s) => s.previewPort)
-  const setPreviewPort = useUiStore((s) => s.setPreviewPort)
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
   const openFiles = useUiStore((s) => s.openFiles)
@@ -150,13 +151,6 @@ export function WorkspaceView({
   const nativePreview = windowApi()?.openPreview
   const localPorts = useLocalPorts(sid, workspace?.forwardedPorts ?? [])
   const previewPorts = embedPreview || nativePreview ? localPorts : []
-  // The preview's port: the one picked, while it is still forwarded, else
-  // the first forwarded port. A port can stop being forwarded from another
-  // window, so the pane follows the snapshot rather than the pick alone.
-  const pickedPreviewPort = sid ? previewPortMap[sid] : undefined
-  const previewPortForWorkspace = previewPorts.some((p) => p.containerPort === pickedPreviewPort)
-    ? pickedPreviewPort
-    : previewPorts[0]?.containerPort
   // Under containerless a forwarded port is the dev server's own host port,
   // so there is no forward to stop.
   const canUnforward = snapshot?.driver !== 'containerless'
@@ -201,7 +195,7 @@ export function WorkspaceView({
   useEffect(() => {
     if (!sid || !workspace?.terminals) return
     let next = syncPaneLayout(layout, workspace, workspace.terminals.map((t) => t.target))
-    if (!embedPreview && paneTargets(next).includes(PREVIEW_TARGET)) next = removeTarget(next, PREVIEW_TARGET)
+    if (!embedPreview) for (const t of paneTargets(next).filter(isPreviewTarget)) next = removeTarget(next, t)
     if (next !== layout) setWorkspaceLayout(sid, next)
     const pending = pendingFocus.current
     if (pending?.sid === sid && paneTargets(next).includes(pending.target)) {
@@ -284,27 +278,26 @@ export function WorkspaceView({
     st.setWorkspaceLayout(id, removeTarget(layoutOf(st.layouts, id), target))
     forget(`${id}|${target}`)
   }
-  // Stop forwarding one of the selected workspace's ports. Stopping the last
-  // one closes the preview pane, which would otherwise wait on a port the
-  // user just withdrew. A failure shows in the header until dismissed.
+  // Stop forwarding one of the selected workspace's ports, closing its
+  // preview pane, which would otherwise wait on a port the user just
+  // withdrew. A failure shows in the header until dismissed.
   const [stopError, setStopError] = useState<{ id: string; message: string } | null>(null)
   const stopForwarding = (id: string, containerPort: number): void => {
-    const last = previewPorts.length === 1
     setStopError(null)
     api.workspace[':id']['unforward-port'].$post({ param: { id }, json: { containerPort } })
-      .then(() => { if (last) dropPane(id, PREVIEW_TARGET) })
+      .then(() => dropPane(id, previewTarget(containerPort)))
       .catch((e: unknown) => setStopError({
         id,
         message: `Couldn’t stop forwarding :${containerPort}: ${e instanceof Error ? e.message : String(e)}`,
       }))
   }
-  /** Open the preview on `containerPort`, else on the port it last showed. */
-  const showPreview = (id: string, containerPort?: number): void => {
+  /** Open (or focus) the preview of one forwarded port. */
+  const showPreview = (id: string, containerPort: number): void => {
     if (!nativePreview) {
       openPreview(id, containerPort)
       return
     }
-    const port = previewPorts.find((p) => p.containerPort === (containerPort ?? previewPortForWorkspace))
+    const port = previewPorts.find((p) => p.containerPort === containerPort)
     if (port) nativePreview(id, port)
   }
   const closePane = (target: string): void => {
@@ -326,7 +319,7 @@ export function WorkspaceView({
     openPreview: previewPorts.length === 0 ? null : () => {
       if (!sid) return
       if (!pickPreviewPort) {
-        showPreview(sid, previewPorts.length === 1 ? previewPorts[0].containerPort : undefined)
+        showPreview(sid, previewPorts[0].containerPort)
         return
       }
       // A click with no pointer opens the menu as a keypress would, with its
@@ -385,9 +378,7 @@ export function WorkspaceView({
       : null
 
   const fileLabels = fileTabLabels(targets.filter(isFileTarget).map(fileTargetPath))
-  const tabName = (t: string): string => paneName(
-    t, terminals, previewPorts.find((p) => p.containerPort === previewPortForWorkspace), workspace, fileLabels,
-  )
+  const tabName = (t: string): string => paneName(t, terminals, previewPorts, workspace, fileLabels)
 
   /** A tab in a column strip (tiles) or the single tab bar (tabs). */
   const renderTab = (
@@ -696,7 +687,7 @@ export function WorkspaceView({
                 : lastRects.current.get(key)
           if (!ephemeral && style) lastRects.current.set(key, style)
           // Ephemeral panes only have a `style` for the selected workspace,
-          // so previewPorts and previewPortForWorkspace apply to them.
+          // so previewPorts applies to them.
           if (ephemeral && !style) return null
           return (
             <div
@@ -711,9 +702,8 @@ export function WorkspaceView({
                 <div className="h-full w-full overflow-hidden rounded-md">
                   <WorkspacePreview
                     workspaceId={id}
-                    ports={previewPorts}
-                    currentPort={previewPortForWorkspace}
-                    onSwitchPort={(p) => setPreviewPort(id, p)}
+                    containerPort={previewTargetPort(target)}
+                    hostPort={previewPorts.find((p) => p.containerPort === previewTargetPort(target))?.hostPort}
                     onStopForwarding={canUnforward ? (p) => stopForwarding(id, p) : undefined}
                   />
                 </div>
@@ -880,7 +870,7 @@ const PREVIEW_BUTTON = 'flex items-center gap-1 rounded px-1 py-0.5 text-[11px] 
 
 /**
  * The header's Preview button for a workspace with several forwarded ports:
- * a menu of them, whose pick opens the preview on that port and whose ×
+ * a menu of them, whose pick opens or focuses that port's preview and whose ×
  * (with `onStop`) stops forwarding it. A pick leaves
  * focus with the pane it opened; a dismissal returns it to `returnFocus`
  * when set (the menu was opened by shortcut), else to the button.

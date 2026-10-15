@@ -1,16 +1,20 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
-  PREVIEW_TARGET,
   isPreviewTarget,
   previewLabel,
+  previewTarget,
+  previewTargetPort,
   previewUrl,
   normalizePreviewNav,
 } from '#lib/preview'
 
-describe('isPreviewTarget', () => {
-  it('recognizes the preview target only', () => {
-    expect(isPreviewTarget(PREVIEW_TARGET)).toBe(true)
-    expect(isPreviewTarget('preview')).toBe(true)
+describe('previewTarget', () => {
+  it('names one pane per port, recognized and read back', () => {
+    expect(previewTarget(5173)).toBe('preview:5173')
+    expect(isPreviewTarget(previewTarget(5173))).toBe(true)
+    expect(previewTargetPort(previewTarget(5173))).toBe(5173)
+    expect(isPreviewTarget('preview:abc')).toBe(false)
+    expect(isPreviewTarget('preview:')).toBe(false)
     expect(isPreviewTarget('agent')).toBe(false)
     expect(isPreviewTarget('window:@3')).toBe(false)
   })
@@ -24,7 +28,8 @@ describe('previewLabel', () => {
     expect(previewLabel({ containerPort: 5173, hostPort: 5174 })).toBe('Preview :5173→:5174')
     vi.restoreAllMocks()
   })
-  it('falls back to a bare label with no port', () => {
+  it('labels a bare workspace port, and falls back to a bare label with no port', () => {
+    expect(previewLabel(5173)).toBe('Preview :5173')
     expect(previewLabel(undefined)).toBe('Preview')
   })
 })

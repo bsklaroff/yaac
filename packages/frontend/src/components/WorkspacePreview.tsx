@@ -3,13 +3,12 @@ import clsx from 'clsx'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
 import { windowApi } from '#lib/platform'
-import { portLabel, previewUrl, normalizePreviewNav } from '#lib/preview'
+import { previewUrl, normalizePreviewNav } from '#lib/preview'
 import {
   NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
   MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
   CheckIcon, CloseIcon,
 } from '#lib/icons'
-import type { PortMapping } from '@yaac/shared/types'
 
 /**
  * The part of Electron's WebviewTag API the preview uses. The element is
@@ -36,8 +35,8 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
 ]
 
 /**
- * A per-workspace embedded browser pane showing a dev server in the
- * workspace through a forwarded port, with navigation controls, an address
+ * An embedded browser pane showing a dev server in the workspace through
+ * one forwarded port, with navigation controls, an address
  * bar and a menu (home, copy URL, responsive widths, hard reload, devtools,
  * stop forwarding).
  *
@@ -47,25 +46,19 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
  */
 export function WorkspacePreview({
   workspaceId,
-  ports,
-  currentPort,
-  onSwitchPort,
+  containerPort,
+  hostPort,
   onStopForwarding,
 }: {
   workspaceId: string
-  /** Forwarded ports available to preview for the workspace. */
-  ports: PortMapping[]
-  /** Which container port the pane shows: one of `ports`, or undefined
-   *  while none is forwarded. */
-  currentPort: number | undefined
-  /** Switch the pane to another forwarded port (the toolbar dropdown). */
-  onSwitchPort: (containerPort: number) => void
+  /** The workspace port the pane shows. */
+  containerPort: number
+  /** Where this machine reaches it; undefined while it is not forwarded. */
+  hostPort: number | undefined
   /** Stop forwarding the shown port; omitted where there is no forward to
    *  stop. */
   onStopForwarding?: (containerPort: number) => void
 }): JSX.Element {
-  const mapping = ports.find((p) => p.containerPort === currentPort)
-  const hostPort = mapping?.hostPort
   const url = hostPort !== undefined ? previewUrl(hostPort) : null
 
   const hostRef = useRef<HTMLDivElement>(null)
@@ -79,7 +72,7 @@ export function WorkspacePreview({
   // Constrain the webview to a device width to check responsive layouts.
   const [deviceWidth, setDeviceWidth] = useState<number | null>(null)
 
-  // Create the webview once per workspace; wire its navigation events.
+  // Create the webview once per pane; wire its navigation events.
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
@@ -165,18 +158,6 @@ export function WorkspacePreview({
         <button onClick={reload} title="Reload" aria-label="Reload" className={iconBtn}>
           <ReloadIcon size={12} />
         </button>
-        {ports.length > 1 && (
-          <select
-            value={currentPort}
-            onChange={(e) => onSwitchPort(Number(e.target.value))}
-            aria-label="Preview port"
-            className="shrink-0 rounded bg-bg px-1 py-0.5 font-mono text-[11px] text-text-dim outline-none"
-          >
-            {ports.map((p) => (
-              <option key={p.containerPort} value={p.containerPort}>{portLabel(p)}</option>
-            ))}
-          </select>
-        )}
         <input
           value={editing ?? address}
           onChange={(e) => setEditing(e.target.value)}
@@ -237,11 +218,11 @@ export function WorkspacePreview({
             <Menu.Item className={MENU_ITEM} onClick={openDevTools}>
               <DevToolsIcon size={14} /> Open DevTools
             </Menu.Item>
-            {onStopForwarding && mapping && (
+            {onStopForwarding && hostPort !== undefined && (
               <>
                 <div className="my-1 h-px bg-border" />
-                <Menu.Item className={MENU_ITEM} onClick={() => onStopForwarding(mapping.containerPort)}>
-                  <CloseIcon size={13} /> Stop forwarding :{mapping.containerPort}
+                <Menu.Item className={MENU_ITEM} onClick={() => onStopForwarding(containerPort)}>
+                  <CloseIcon size={13} /> Stop forwarding :{containerPort}
                 </Menu.Item>
               </>
             )}
@@ -261,7 +242,7 @@ export function WorkspacePreview({
         {hostPort === undefined ? (
           <PreviewOverlay>
             <LoadingIcon size={18} className="animate-spin text-text-faint" />
-            <span>Waiting for the dev server…</span>
+            <span>Waiting for the dev server on :{containerPort}…</span>
           </PreviewOverlay>
         ) : failed ? (
           <PreviewOverlay>
