@@ -145,8 +145,8 @@ registered in `server-run`, outside `buildApp`, so
   seeds the connecting user's git identity.
 - **Plan usage** is looked up per user: the snapshot's `planUsage` and
   `codexPlanUsage` map a user id to that user's readout (a user with no
-  sign-in is absent), and the webapp's badge shows the caller's own entry
-  whoever they are viewing.
+  sign-in is absent), and the webapp's badge shows the caller's own entry,
+  hiding while they view a teammate.
 - **Creates and spawns** resolve their tool from the project owner's
   sign-ins and are refused without one, and refused until the owner has a
   git identity.

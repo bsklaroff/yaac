@@ -4,7 +4,7 @@ import { PopoverPopup } from '#components/ui/menu'
 import { Popover } from '@base-ui/react/popover'
 import { PinIcon, UsageIcon, TOOL_LABEL } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
-import { useWhoami } from '#lib/viewer'
+import { useTeammateView, useWhoami } from '#lib/viewer'
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
 import type { AgentTool, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
@@ -137,21 +137,24 @@ function usageSections(
  * subscriptions: the tightest limit, or the one the user pinned by clicking
  * a popover row. The popover breaks usage down per tool. Data comes from the
  * viewer's entry in the snapshot; the server queries upstream
- * (domain/auth/usage.ts). Hidden when no tool's usage is available.
+ * (domain/auth/usage.ts). Hidden when no tool's usage is available, and
+ * while viewing a teammate, since the readout is the caller's own plan and
+ * says nothing about the workspaces on screen.
  */
 export function UsageBadge(): JSX.Element | null {
   const snapshot = useSnapshot()
   const pinnedKey = useUiStore((s) => s.pinnedUsageMetric)
   const setPinnedUsageMetric = useUiStore((s) => s.setPinnedUsageMetric)
 
-  // The snapshot carries every user's readout. Show the caller's own, also
-  // while viewing a teammate: plan usage is a personal setting.
+  const teammate = useTeammateView()
+
+  // The snapshot carries every user's readout; the badge shows the caller's.
   const me = useWhoami()?.userId ?? ''
   const sections = usageSections({
     claude: snapshot?.planUsage[me],
     codex: snapshot?.codexPlanUsage[me],
   })
-  if (sections.length === 0) return null
+  if (teammate || sections.length === 0) return null
 
   const all = sections.flatMap((s) => s.limits.map((limit) => ({ tool: s.tool, limit })))
   // A pin whose limit is no longer reported falls back to the default but

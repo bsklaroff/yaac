@@ -212,14 +212,18 @@ describe('UsageBadge', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('shows the caller\'s own usage, also while viewing a teammate', () => {
+  it('shows the caller\'s own usage, and hides while viewing a teammate', () => {
     // The other user's slot holds an api-key readout, which would hide the
     // badge if it were shown.
     stubSnapshot(CLAUDE_USAGE)
+    renderBadge()
+    expect(pill().textContent).toBe('19%')
+    cleanup()
+
     useUiStore.setState({ viewedUserId: OTHER })
     try {
       renderBadge()
-      expect(pill().textContent).toBe('19%')
+      expect(screen.queryByRole('button')).toBeNull()
     } finally {
       useUiStore.setState({ viewedUserId: null })
     }
