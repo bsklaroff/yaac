@@ -479,9 +479,13 @@ export async function serverDeploymentExists(): Promise<boolean> {
 }
 
 /**
- * Stop any running server pod, build the image, set up storage, apply the
+ * Build the image, stop any running server pod, set up storage, apply the
  * workload, wait for the origin to answer, and register it in
  * `server.json`. Returns the origin.
+ *
+ * The build runs while the old pod still serves, so the outage is only the
+ * rollout. The stop then comes before the storage step because byo's binder
+ * pod mounts the server's attach-once claim.
  */
 export async function deployServerWorkload(
   opts: ServerEnvOptions & {
@@ -494,13 +498,13 @@ export async function deployServerWorkload(
   },
 ): Promise<string> {
   await refuseIfHostServerRunning()
+  // Built before the storage step too: the binder pod runs it.
+  opts.log('Building the server image (from the bundle)...')
+  const imageRef = await ensureServerImage()
   if (await serverDeploymentExists()) {
     opts.log('Stopping the running server pod...')
     await stopClusterServer()
   }
-  // Build the image first: the storage binder pod runs it.
-  opts.log('Building the server image (from the bundle)...')
-  const imageRef = await ensureServerImage()
   const shape: StorageShape = opts.storage.kind === 'static'
     ? {
       kind: 'static',
