@@ -163,6 +163,16 @@ answer. Any transport failure (`RelayDialError`) is `unknown`, and the
 stale reaper treats `unknown` as "do not reap". A proxy outage therefore
 degrades terminals but never ends workspaces.
 
+A stream can also die without either end seeing a close. An ACP
+conversation's stream to a prewarmed spare can sit idle for days, and the
+cluster's connection tracking forgets an idle flow (kube-proxy keeps an
+established one 24h), after which one end's close never reaches the other.
+So every relay socket (the server's dial and both sides of the proxy
+splice) turns on TCP keepalive after a minute idle, which keeps the flow
+known and closes a stream whose peer is gone. The ACP driver also drops a
+conversation whose tmux window's process changed, without waiting for its
+stream to close (docs/agent-modes.md).
+
 The status watcher restarts streamd itself: after every third consecutive
 stream failure it re-runs the boot command through `kubectl exec`
 (`bootStreamd`), since that works when no stream does.

@@ -4,7 +4,9 @@ import { isWorkspaceTerminating, liveAgents } from '#runtime/status'
 import {
   acpConversation,
   acpRecord,
+  agentWindowName,
   getAgentSessionFirstMessage,
+  PromptNotRunError,
   getCodexRolloutSettings,
   locateTranscript,
   readAcpFirstPrompt,
@@ -18,14 +20,16 @@ import {
   applyWorkspaceEvent,
   getWorkspaceRow,
   listUncapturedStoppedSessions,
+  holdPendingPrompt,
   listWorkspaceAgentSessions,
+  takePendingPrompt,
 } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
 import { claiming } from './prewarm'
 import { recordedTranscript } from './agent-session-paths'
 import { serverLog } from '#lib/log'
 import type { AgentSessionLinkRow, CapturedSession, DiscoveredSession, WorkspaceRow } from '#db'
-import type { LiveAgent } from '#runtime/agents'
+import type { AcpConversation, LiveAgent } from '#runtime/agents'
 import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
 
 /**
@@ -118,7 +122,64 @@ export async function reconcileWorkspaceAgentSessions(
     workspaceId,
     active: live.map((c) => ({ tool: c.tool, agentSessionId: c.agentSessionId, paneId: c.paneId })),
   })
+
+  // No user message can reach the conversation before the first delivery:
+  // the chat pane and `yaac-mama send` both need its row, recorded just
+  // above. A prompt is held again only after a send no pane saw fail
+  // (`deliverPendingPrompt`), so the user has had no failure to retry.
+  if (row?.pendingPrompt !== undefined) {
+    const first = observed.find((a) => a.handle === agentWindowName(a.tool, 0))
+    const conversation = first?.agentSessionId === undefined
+      ? undefined
+      : acpConversation(projectId, workspaceId, first.agentSessionId)
+    if (conversation !== undefined) void deliverPendingPrompt(projectId, workspaceId, conversation)
+  }
 }
+
+/** Conversations that refused the held prompt, which are not asked again. */
+const refusedPrompt = new WeakSet<AcpConversation>()
+
+/**
+ * Send the workspace's held create prompt (`takePendingPrompt`) to
+ * `conversation` once its handshake is done: from the create's hand-over,
+ * or from a later pass when that hand-over found no conversation. One that
+ * never finishes its handshake leaves the prompt held for the next.
+ *
+ * The prompt is taken before it is sent, so a crash between the two loses
+ * it rather than running the task twice. Only a send that was never made
+ * and never shown failing (`PromptNotRunError`) puts it back, for another
+ * conversation. A refusal the agent replies with is shown in the chat pane,
+ * where the user may already have retried, so it is left for them.
+ */
+export async function deliverPendingPrompt(
+  projectId: string,
+  workspaceId: string,
+  conversation: AcpConversation,
+): Promise<void> {
+  if (refusedPrompt.has(conversation)) return
+  let prompt: string | undefined
+  try {
+    await conversation.whenReady(PENDING_PROMPT_READY_MS)
+    prompt = await takePendingPrompt(projectId, workspaceId)
+  } catch (err) {
+    serverLog(`[server] ${workspaceId}: initial prompt still held: ${String(err)}`)
+    return
+  }
+  if (prompt === undefined) return
+  // Resolves when the turn ends, which nothing here waits for.
+  void conversation.prompt(prompt).catch(async (err: unknown) => {
+    serverLog(`[server] ${workspaceId}: initial prompt failed: ${String(err)}`)
+    if (!(err instanceof PromptNotRunError)) return
+    refusedPrompt.add(conversation)
+    await holdPendingPrompt(projectId, workspaceId, prompt).catch((holdErr: unknown) => {
+      serverLog(`[server] ${workspaceId}: initial prompt lost: ${String(holdErr)}`)
+    })
+  })
+}
+
+/** How long `deliverPendingPrompt` waits on a handshake, as a pane's send
+ *  does (`AcpConversation.prompt`). */
+const PENDING_PROMPT_READY_MS = 120_000
 
 /** How many conversations `reconcileStoppedAgentSessions` reads at a time,
  *  and for how long one pass keeps reading. A backlog (an upgraded install's

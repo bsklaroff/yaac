@@ -229,6 +229,14 @@ export interface QueuedTurn extends AcpQueuedPrompt {
  *  task view. */
 const TASK_OUTPUT_BYTES = 64 * 1024
 
+/**
+ * A message that was never sent and that no pane was shown failing: the
+ * conversation closed or had no session before it was routed, or it was
+ * dropped from a parked queue. A refusal the agent replies with is shown in
+ * the pane, where the user may already have retried, so it is not one.
+ */
+export class PromptNotRunError extends Error {}
+
 export class AcpConversation {
   private readonly peer: JsonRpcPeer
   private readonly log: (msg: string) => void
@@ -1271,7 +1279,7 @@ export class AcpConversation {
       })
       throw err
     }
-    if (this.sessionId === undefined) throw new Error('no ACP session')
+    if (this.sessionId === undefined) throw new PromptNotRunError('no ACP session')
     const blocks = [
       ...(text === '' ? [] : [{ type: 'text', text }]),
       ...images.map(({ mimeType, data }) => ({ type: 'image', mimeType, data })),
@@ -1368,8 +1376,8 @@ export class AcpConversation {
 
   /** One prompt turn. */
   private async runTurn(prompt: Array<Record<string, string>>): Promise<void> {
-    if (this.closed) throw new Error('conversation is closed')
-    if (this.sessionId === undefined) throw new Error('no ACP session')
+    if (this.closed) throw new PromptNotRunError('conversation is closed')
+    if (this.sessionId === undefined) throw new PromptNotRunError('no ACP session')
     this.setBusy(true)
     try {
       const result = await this.peer.request<AcpPromptResult>(ACP.sessionPrompt, {
