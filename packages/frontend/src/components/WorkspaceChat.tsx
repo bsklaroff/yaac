@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useAcpStream } from '#lib/acp'
 import { ActivityBar } from '#components/AcpActivity'
@@ -131,15 +131,36 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
 
   // Grow the textarea to fit the draft, up to its CSS max-height. Reset to
   // `auto` first so scrollHeight measures the content. Growing shrinks the
-  // conversation, so keep a reader at the tail pinned there.
-  useLayoutEffect(() => {
+  // conversation, so keep a reader at the tail pinned there. The textarea
+  // remounts on leaving a subagent's or task's view, so that refits too.
+  const fitInput = useCallback(() => {
     const el = inputRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${el.scrollHeight}px`
     const list = scrollRef.current
     if (list && pinnedRef.current) list.scrollTop = list.scrollHeight
-  }, [draft])
+  }, [])
+  useLayoutEffect(fitInput, [draft, view, fitInput])
+
+  /**
+   * Refit when the box's width changes too, or a box first laid out narrow
+   * (a web view sized late, a rotated phone, a tiles column since widened)
+   * keeps the height of its wrapped placeholder or draft until the next
+   * keystroke. Height changes are ignored, since the fit makes them.
+   */
+  useEffect(() => {
+    const el = inputRef.current
+    if (!el) return
+    let width = el.clientWidth
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      fitInput()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [view, fitInput])
 
   // Keep a pinned reader at the tail when the list shrinks, e.g. when a
   // phone's soft keyboard opens.
