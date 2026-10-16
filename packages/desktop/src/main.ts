@@ -16,7 +16,8 @@ import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, screen, shell, systemPreferences, Tray,
+  app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, shell,
+  systemPreferences, Tray,
   utilityProcess, WebContentsView,
 } from 'electron'
 import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
@@ -26,7 +27,7 @@ import {
 import { env } from '@yaac/shared/env'
 import type { DesktopLocalState, DesktopServerOutcome, ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
 import { AttentionMonitor, badgeText, notificationFor } from '#attention'
-import { startEventsMonitor } from '@yaac/shared/events'
+import { startEventsMonitor, type EventsMonitor } from '@yaac/shared/events'
 import { startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
 import { CLUSTER_SUPPORTED, createSetupRunner, localView, onPath, setupConfirmation } from '#local-setup'
@@ -72,7 +73,7 @@ let quitting = false
 let quitCancelsSetup = false
 // Zoom clicks are ignored during a full-screen transition (see window-zoom.ts).
 const fsGuard = createFsTransitionGuard()
-let events: { stop: () => void } | null = null
+let events: EventsMonitor | null = null
 let forwarder: DesktopForwarder | null = null
 // One monitor per server, kept across WS reconnects so ongoing waits don't
 // re-notify. Replaced on a server switch.
@@ -692,6 +693,9 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 async function boot(): Promise<void> {
+  // A connection held across a sleep is often dead without either end being
+  // told, so reconnect on wake rather than waiting out the heartbeat.
+  powerMonitor.on('resume', () => events?.reconnect())
   Menu.setApplicationMenu(Menu.buildFromTemplate(appMenuTemplate()))
   // A failed boot still shows the Servers page, so the shell keeps running.
   await openWindow()
