@@ -147,10 +147,11 @@ never stops a server.
   back up.
 - **Attention signals.** The main process follows the server's `/api/events`
   WebSocket, re-resolving the server on every reconnect so it follows a
-  change of selection. Workspaces waiting for input show as a dock badge and
-  one OS notification each time a workspace starts waiting
-  (`waitingSinceMs`). A reconnect or the first snapshot after launch does not
-  re-notify.
+  change of selection. It reconnects on wake, and a ping heartbeat drops a
+  connection that died silently, as one held across a sleep can. Workspaces
+  waiting for input show as a dock badge and one OS notification each time a
+  workspace starts waiting (`waitingSinceMs`). A reconnect or the first
+  snapshot after launch does not re-notify.
 - **Port forwarding.** The shell binds each workspace's forwarded ports on
   this machine's loopback and tunnels connections to the server, from the
   same `/api/events` stream (`src/forwarder.ts`,

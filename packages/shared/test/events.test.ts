@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { startEventsMonitor, type EventsSocket } from '#events'
+import { EVENTS_HEARTBEAT_MS, startEventsMonitor, type EventsSocket } from '#events'
 import type { ServerTarget } from '#server-api'
 
 const target = (port: number): ServerTarget =>
@@ -9,10 +9,23 @@ const target = (port: number): ServerTarget =>
 class FakeSocket implements EventsSocket {
   message: ((data: string) => void) | null = null
   closeCb: (() => void) | null = null
+  pongCb: (() => void) | null = null
   closed = false
+  open = true
+  pings = 0
   onMessage(cb: (data: string) => void): void { this.message = cb }
   onClose(cb: () => void): void { this.closeCb = cb }
+  onPong(cb: () => void): void { this.pongCb = cb }
+  ping(): boolean {
+    if (this.open) this.pings++
+    return this.open
+  }
   close(): void { this.closed = true }
+  /** Like `ws`, terminating emits close. */
+  terminate(): void {
+    this.closed = true
+    this.closeCb?.()
+  }
 }
 
 describe('startEventsMonitor', () => {
@@ -93,6 +106,40 @@ describe('startEventsMonitor', () => {
     await vi.advanceTimersByTimeAsync(100)
     expect(calls).toBe(2)
     expect(sockets).toHaveLength(1)
+  })
+
+  it('drops a connection whose ping goes unanswered and reconnects', async () => {
+    const h = harness()
+    await vi.advanceTimersByTimeAsync(0)
+    // A socket still connecting at a tick is not held to a pong it was
+    // never asked for.
+    h.sockets[0].open = false
+    await vi.advanceTimersByTimeAsync(EVENTS_HEARTBEAT_MS)
+    h.sockets[0].open = true
+    await vi.advanceTimersByTimeAsync(EVENTS_HEARTBEAT_MS)
+    expect(h.sockets[0].closed).toBe(false)
+    expect(h.sockets[0].pings).toBe(1)
+    // An answered ping keeps the connection.
+    h.sockets[0].pongCb?.()
+    await vi.advanceTimersByTimeAsync(EVENTS_HEARTBEAT_MS)
+    expect(h.sockets[0].pings).toBe(2)
+    expect(h.sockets[0].closed).toBe(false)
+    // The next tick finds no pong, as after a sleep.
+    await vi.advanceTimersByTimeAsync(EVENTS_HEARTBEAT_MS + 100)
+    expect(h.sockets[0].closed).toBe(true)
+    expect(h.opens).toHaveLength(2)
+    // The dead socket's heartbeat stopped with it.
+    await vi.advanceTimersByTimeAsync(EVENTS_HEARTBEAT_MS * 3)
+    expect(h.sockets[0].pings).toBe(2)
+  })
+
+  it('reconnect() drops the connection and opens a fresh one', async () => {
+    const h = harness()
+    await vi.runOnlyPendingTimersAsync()
+    h.monitor.reconnect()
+    expect(h.sockets[0].closed).toBe(true)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(h.opens).toHaveLength(2)
   })
 
   it('stop() closes the socket and cancels reconnects', async () => {

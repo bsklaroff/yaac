@@ -8,14 +8,34 @@ import type { ServerSnapshot } from '#types'
  * dock badge, notifications and port forwards, and `yaac forward`. The
  * target is re-resolved on every reconnect, so switching servers takes
  * effect on the next connection.
+ *
+ * The client never sends on `/events`, so a connection that died silently
+ * (the machine slept, the network changed) would otherwise never close. The
+ * monitor pings every `EVENTS_HEARTBEAT_MS` and drops a connection whose
+ * previous ping went unanswered, which hands it to the reconnect path; the
+ * server's `ws` answers pings itself. A connect that hangs is bounded by the
+ * handshake timeout instead, since there is nothing to ping until it opens.
  */
+
+export const EVENTS_HEARTBEAT_MS = 15_000
 
 /** The socket surface the monitor needs, so tests can script one. */
 export interface EventsSocket {
   onMessage(cb: (data: string) => void): void
   /** Close and error both mean "this connection is over" to the monitor. */
   onClose(cb: () => void): void
+  onPong(cb: () => void): void
+  /** Whether a ping went out: none can until the socket is open. */
+  ping(): boolean
   close(): void
+  /** Drop at once, without the closing handshake a dead peer never answers. */
+  terminate(): void
+}
+
+export interface EventsMonitor {
+  /** Drop the current connection and open a fresh one. */
+  reconnect(): void
+  stop(): void
 }
 
 export interface EventsMonitorDeps {
@@ -45,7 +65,7 @@ function parseSnapshotMessage(raw: string): ServerSnapshot | null {
 }
 
 function openWsSocket(url: string): EventsSocket {
-  const socket = new WebSocket(url)
+  const socket = new WebSocket(url, { handshakeTimeout: 2 * EVENTS_HEARTBEAT_MS })
   return {
     onMessage: (cb) => socket.on('message', (data) => {
       const buf = Array.isArray(data) ? Buffer.concat(data) : Buffer.isBuffer(data) ? data : Buffer.from(data)
@@ -55,11 +75,18 @@ function openWsSocket(url: string): EventsSocket {
       socket.on('close', cb)
       socket.on('error', cb)
     },
+    onPong: (cb) => socket.on('pong', cb),
+    ping: () => {
+      if (socket.readyState !== WebSocket.OPEN) return false
+      socket.ping()
+      return true
+    },
     close: () => socket.close(),
+    terminate: () => socket.terminate(),
   }
 }
 
-export function startEventsMonitor(deps: EventsMonitorDeps): { stop: () => void } {
+export function startEventsMonitor(deps: EventsMonitorDeps): EventsMonitor {
   const delay = deps.reconnectDelayMs ?? 1500
   const openSocket = deps.openSocket ?? openWsSocket
   let stopped = false
@@ -92,9 +119,17 @@ export function startEventsMonitor(deps: EventsMonitorDeps): { stop: () => void 
       const snapshot = parseSnapshotMessage(data)
       if (snapshot) deps.onSnapshot(snapshot)
     })
+    let awaitingPong = false
+    s.onPong(() => { awaitingPong = false })
+    const heartbeat = setInterval(() => {
+      if (awaitingPong) s.terminate()
+      else awaitingPong = s.ping()
+    }, EVENTS_HEARTBEAT_MS)
+    heartbeat.unref()
     s.onClose(() => {
       if (over) return
       over = true
+      clearInterval(heartbeat)
       if (socket === s) socket = null
       scheduleReconnect()
     })
@@ -103,6 +138,7 @@ export function startEventsMonitor(deps: EventsMonitorDeps): { stop: () => void 
   void connect()
 
   return {
+    reconnect: () => socket?.terminate(),
     stop: () => {
       stopped = true
       if (timer) clearTimeout(timer)

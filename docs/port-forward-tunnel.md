@@ -55,6 +55,12 @@ cost is a handshake per connection. Two details follow:
 - **A failed dial closes with code 4001.** The client cannot see into the
   cluster, so the close code is its only diagnosis, and it must differ from a
   dev server closing the connection.
+- **A tunnel has no heartbeat.** One that dies silently, as a connection
+  held across a laptop sleep can, is never closed, and the local end stays a
+  healthy loopback socket. A long-lived stream through it (a dev server's HMR
+  WebSocket, an SSE feed) then hangs until the browser gives up on it. New
+  connections are unaffected. The `/events` stream that decides which ports
+  are bound does have one (`startEventsMonitor`).
 
 The client lives in `@yaac/shared` because the desktop app is a forwarder
 and may import nothing else. It depends only on `ws` and `net`. The iPhone
