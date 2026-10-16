@@ -7,8 +7,8 @@ packages:
 # package.json files are npm-installed inside their image builds, and npm
 # can't resolve catalog: specifiers, so their pins stay inline.
 catalog:
-  "@agentclientprotocol/claude-agent-acp": 0.84.0
-  "@anthropic-ai/claude-agent-sdk": 0.3.284
+  "@agentclientprotocol/claude-agent-acp": 0.91.0
+  "@anthropic-ai/claude-agent-sdk": 0.3.300
   "@electric-sql/pglite": 0.5.9
   "@hono/node-server": 2.1.1
   "@hono/zod-validator": 0.9.1
@@ -51,14 +51,15 @@ minimumReleaseAgeExclude:
   # Mode ids re-verified against this release (runtime/agents/acp-adapters.ts).
   # The rest are what that adapter release pins exactly. Each is exempt at this
   # version only, so a later release still waits out the age gate.
-  - "@agentclientprotocol/claude-agent-acp@0.84.0"
-  - "@agentclientprotocol/sdk@1.5.1"
-  - "@anthropic-ai/claude-agent-sdk@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-linux-x64@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.284"
-  - "@anthropic-ai/claude-agent-sdk-win32-x64@0.3.284"
+  - "@agentclientprotocol/claude-agent-acp@0.91.0"
+  - "@agentclientprotocol/sdk@1.8.0"
+  - "@anthropic-ai/claude-agent-sdk@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-linux-x64@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.300"
+  - "@anthropic-ai/claude-agent-sdk-win32-x64@0.3.300"
+  - "zod@4.6.7"

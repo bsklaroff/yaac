@@ -570,7 +570,7 @@ describe('replayAcpLog', () => {
   })
 
   it('names what woke the agent into a run it started itself', () => {
-    // As claude-agent-acp 0.84.0 sends them: a finished task's notification
+    // As claude-agent-acp 0.91.0 sends them: a finished task's notification
     // comes after a run's result, just before the run it starts; a monitor's
     // event comes with nothing before the run, whose result names a task
     // notification as its origin. While a background subagent works, claude
@@ -634,9 +634,10 @@ describe('replayAcpLog', () => {
   })
 
   it('rebuilds subagents and tasks from a session/load replay, and what each woke', () => {
-    // As claude-agent-acp 0.84.0 replays history: no state reports or task
-    // messages, only the launching calls, and each notification a user
-    // message of markup. A monitor's event names no call.
+    // As `claudeTranscriptAsAcp` replays history through claude-agent-acp
+    // 0.91.0: no state reports or task messages, only the launching calls,
+    // and each notification a user message of markup. A monitor's event
+    // names no call.
     const call = (id: string, toolName: string, title: string, rawInput: Record<string, unknown>): string => update({
       sessionUpdate: 'tool_call', toolCallId: id, title, kind: 'other', status: 'pending', rawInput, _meta: { claudeCode: { toolName } },
     })
@@ -966,7 +967,7 @@ describe('replayAcpLog', () => {
   })
 
   it('projects pi\'s bash output, which it sends as `terminal_output` without being asked', () => {
-    // Captured from pi-acp 0.0.34 running pi 0.99.2 against a mock model.
+    // Shapes as pi-acp 0.0.34 sends them, running pi 1.3.0.
     const events = replayAcpLog([
       update({
         sessionUpdate: 'tool_call', toolCallId: 'call_1', title: 'echo hello-from-bash; echo line2', kind: 'execute', status: 'pending',
@@ -993,7 +994,7 @@ describe('replayAcpLog', () => {
   })
 
   it('builds claude\'s subagents and background shells from the Agent SDK messages it forwards', () => {
-    // Shapes as claude-agent-acp 0.84.0 sends them to a client that is not
+    // Shapes as claude-agent-acp 0.91.0 sends them to a client that is not
     // AIR, with the task messages asked for in the session's `_meta`.
     const sdk = (message: Record<string, unknown>): string =>
       line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
@@ -1073,9 +1074,9 @@ describe('replayAcpLog', () => {
   })
 
   it('shows a claude Monitor as a monitor, and marks an artifact watch ambient', () => {
-    // As claude-agent-acp 0.84.0 (claude 2.1.284) sends them: the Monitor
+    // As claude-agent-acp 0.91.0 (claude 2.1.300) sends them: the Monitor
     // call comes first, then its task, which claude reports as a backgrounded
-    // shell; the live set comes before each task's own start and end.
+    // shell; the live set comes before a task's start and after its end.
     const sdk = (message: Record<string, unknown>): string =>
       line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
     const claudeUpdate = (u: Record<string, unknown>, claudeCode: Record<string, unknown>): string =>
@@ -1113,12 +1114,12 @@ describe('replayAcpLog', () => {
       }),
       sdk({ subtype: 'task_started', task_id: 'ws1', description: 'artifact updates', task_type: 'monitor_ws', ambient: true }),
       sdk({ subtype: 'task_progress', task_id: 'bmon', tool_use_id: 'toolu_mon', description: 'PR 306 comments', usage: {} }),
-      sdk({ subtype: 'background_tasks_changed', tasks: [] }),
       sdk({ subtype: 'task_updated', task_id: 'bmon', patch: { status: 'killed', end_time: 1 } }),
       sdk({
         subtype: 'task_notification', task_id: 'bmon', tool_use_id: 'toolu_mon', status: 'stopped',
         output_file: '/tmp/c/tasks/bmon.output', summary: 'Monitor "PR 306 comments" stopped',
       }),
+      sdk({ subtype: 'background_tasks_changed', tasks: [] }),
     ].join('\n'))
 
     // The call is shown as the command it watches, once one arrives; a
@@ -1138,8 +1139,9 @@ describe('replayAcpLog', () => {
     expect(tasks[0]).toEqual({
       id: 'bmon', name: 'PR 306 comments', kind: 'monitor', description: 'PR 306 comments', state: 'running', toolCallId: 'toolu_mon',
     })
-    // A live set that lists it leaves it running; it ends once dropped.
-    expect(tasks.map((t) => t.state)).toEqual(['running', 'running', 'stopped', 'stopped', 'stopped'])
+    // A live set that lists it leaves it running; it ends at its own end,
+    // and the set dropping it after that moves nothing.
+    expect(tasks.map((t) => t.state)).toEqual(['running', 'running', 'stopped', 'stopped'])
     expect(tasks.at(-1)).toMatchObject({
       kind: 'monitor', state: 'stopped', outputFile: '/tmp/c/tasks/bmon.output', summary: 'Monitor "PR 306 comments" stopped',
     })

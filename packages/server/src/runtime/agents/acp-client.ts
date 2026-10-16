@@ -69,7 +69,7 @@ import { asRecord } from '#lib/narrow'
 import type { AcpRecovery } from './acp-log'
 import { serverLog } from '#lib/log'
 import type { AcpEventInit, AcpImage, AcpQueuedPrompt, AcpServerMessage, AcpStopReason } from '@yaac/shared/acp'
-import { PERMISSION_MODES, type AgentStatus, type PermissionMode } from '@yaac/shared/types'
+import { PERMISSION_MODES, morePermissive, type AgentStatus, type PermissionMode } from '@yaac/shared/types'
 
 /**
  * How long the end of background work waits before the status drops to
@@ -88,8 +88,8 @@ export interface AcpSessionProfile {
   /**
    * yaac postures mapped to this adapter's session mode ids. A missing
    * posture means "send nothing" (not "send the default"): it is either
-   * carried another way (opencode's rules in `OPENCODE_PERMISSION`) or has
-   * no meaning for the tool (pi).
+   * carried another way (opencode's rules in `OPENCODE_CONFIG_CONTENT`) or
+   * has no meaning for the tool (pi).
    */
   modeIds: Partial<Record<PermissionMode, string>>
   /** Mode ids no posture launches in but the session can switch to, mapped to
@@ -965,10 +965,15 @@ export class AcpConversation {
    * it to `acceptEdits`), and re-asserting would undo that on every relay
    * hiccup. The row follows the user's moves instead.
    *
-   * An unadvertised mode is reported, not thrown: create already refuses
-   * postures a tool cannot express, so this means the session clamped one
-   * (`auto` without a classifier, `bypassPermissions` as root outside a
-   * sandbox), and running in the default beats losing the conversation.
+   * A mode that is unadvertised or refused is reported, not thrown: create
+   * already refuses postures a tool cannot express, so this means the session
+   * clamped one (`auto` without a classifier, `bypassPermissions` as root
+   * outside a sandbox), and keeping the conversation beats losing it. It
+   * keeps running in a mode no looser than the posture, though, since the
+   * mode it is in may be looser: a loaded claude session starts in the mode
+   * its last life ran in, and codex-acp's default `agent` is looser than
+   * `accept-edits`. So it steps down to the most permissive offered mode
+   * that is no looser.
    */
   private async applyPermissionMode(): Promise<void> {
     // Read once: the row follows every conversation in the workspace.
@@ -981,40 +986,53 @@ export class AcpConversation {
         + ' — leaving the session in the adapter default and forwarding its asks')
       return
     }
-    const modeId = this.deps.profile?.modeIds[mode]
-    if (modeId === undefined) {
+    const profile = this.deps.profile
+    const modeId = profile?.modeIds[mode]
+    if (profile === undefined || modeId === undefined) {
       // No mode for this posture by design (opencode carries it in launch
       // env; pi has no permission system), or no adapter profile (tests).
       return
     }
     if (this.currentModeId() === modeId) return
-    if (!acpModeOffered(this.sessionState(), modeId)) {
-      this.reportModeNotSet(mode, modeId, 'offers no such mode')
-      return
+    const why = await this.setSessionMode(modeId, mode)
+    if (why === undefined) return
+    const current = this.currentModeId()
+    const currentPosture = current === undefined ? undefined : acpPermissionModeFor(profile, current)
+    if (currentPosture === undefined || morePermissive(currentPosture, mode)) {
+      for (const fallback of PERMISSION_MODES) {
+        const fallbackId = profile.modeIds[fallback]
+        if (fallback === mode || fallbackId === undefined || morePermissive(fallback, mode)) continue
+        if (await this.setSessionMode(fallbackId, fallback) === undefined) break
+      }
     }
+    this.reportModeNotSet(mode, modeId, why)
+  }
+
+  /** Switch the session to `modeId`, for `posture`. Undefined once it is in
+   *  that mode, else why it is not. */
+  private async setSessionMode(modeId: string, posture: PermissionMode): Promise<string | undefined> {
+    if (!acpModeOffered(this.sessionState(), modeId)) return 'offers no such mode'
     try {
       await this.peer.request(ACP.sessionSetMode, { sessionId: this.sessionId, modeId })
-      this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
-      this.notices.delete('mode')
-      this.log(`[server] acp: session mode set to ${modeId} for "${mode}"`)
     } catch (err) {
-      // Report it in the pane, not just the log: an adapter default is not
-      // always stricter (codex-acp's `agent` lets a reviewer model approve
-      // most actions).
-      this.reportModeNotSet(mode, modeId, err instanceof Error ? err.message : String(err))
+      return err instanceof Error ? err.message : String(err)
     }
+    this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
+    this.notices.delete('mode')
+    this.log(`[server] acp: session mode set to ${modeId} for "${posture}"`)
+    return undefined
   }
 
   /**
    * Tell the pane and the log that the conversation is not in its requested
    * posture, stating only the mode it is actually in (what happens to asks
-   * varies; codex's fallback has a reviewer model answer most). That mode is
-   * also reported upward so the row reflects it.
+   * varies by adapter). That mode is also reported upward so the row
+   * reflects it.
    */
   private reportModeNotSet(mode: PermissionMode, modeId: string, why: string): void {
     const current = this.currentModeId()
     const message = `The agent would not switch to "${modeId}" for the ${mode} posture`
-      + ` (${why}) — running in ${current ?? 'its own default'} instead.`
+      + ` (${why}) — running in ${current ?? 'a mode it did not report'} instead.`
     this.log(`[server] acp: ${message}`)
     this.notice('mode', { type: 'error', message })
     if (current !== undefined) this.deps.onModeId?.(current)
@@ -1122,11 +1140,11 @@ export class AcpConversation {
 
   /**
    * Wait until the session offers `model`, for at most `timeoutMs`. opencode
-   * answers `session/new` before it has loaded its model catalog, offering
-   * only its built-in provider's models, and announces the rest in a
-   * `config_option_update` moments later; a model asked for before then is
-   * refused as not found. A session that lists no models, or never offers
-   * this one, is asked anyway, and its answer reported.
+   * waits only a few seconds for its plugins before answering `session/new`,
+   * so a slow start can offer only its built-in provider's models and
+   * announce the rest in a `config_option_update`; a model asked for before
+   * then is refused as not found. A session that lists no models, or never
+   * offers this one, is asked anyway, and its answer reported.
    */
   private whenModelOffered(model: string, timeoutMs: number): Promise<void> {
     const offered = (): boolean =>

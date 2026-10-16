@@ -9,10 +9,10 @@ same paths, docs/effort-levels.md):
 |---|---|---|---|---|
 | `bypass` | `--permission-mode bypassPermissions` | `--yolo` | `permissions`: `*` allow | — |
 | `auto` | `--permission-mode auto` | `--approve-for-me` | — | — |
-| `accept-edits` | `--permission-mode acceptEdits` | *(its default preset)* | the `manual` rules + `edit` allow | — |
+| `accept-edits` | `--permission-mode acceptEdits` | `--sandbox workspace-write` + user asks | the `manual` rules + `edit` allow | — |
 | `manual` | `--permission-mode manual` | — | `permissions`: `*` ask, reads allow | — |
 | `plan` | `--permission-mode plan` | — | `default_agent: plan` + the `manual` rules | — |
-| `read-only` | — | `--sandbox read-only` | — | — |
+| `read-only` | — | `--sandbox read-only` + user asks | — | — |
 
 Rows run most permissive first, the order the create form and CLI list them
 in (`PERMISSION_MODES`). `plan` and `read-only` rank equal: each is the
@@ -25,12 +25,17 @@ read it. The flags are written against the pinned CLIs (`AGENT_CLIS` in
 
 ### codex
 
-codex sets a posture with two settings, an approval policy and a sandbox.
-`accept-edits` needs no flag because it is codex's default preset
-(`workspace-write` + `on-request`); that sandbox has no network, so codex
-asks before anything that reaches the network. `read-only` is codex's "Read
-Only" preset: reads and sandboxed commands run unasked, edits and network
-access ask. codex has no `manual` (its approval policy is only `on-request`
+codex sets a posture with three settings: an approval policy, who reviews
+an ask, and a sandbox. `accept-edits` is codex's default preset
+(`workspace-write` + `on-request`, the user reviewing); that sandbox has no
+network, so codex asks before anything that reaches the network. "User
+asks" in the table is `--ask-for-approval on-request` plus
+`-c approvals_reviewer=user`. Resuming a conversation restores each
+setting it last had unless the launch names it, so every posture names all
+three, even codex's defaults (`--yolo` never asks, so it needs no reviewer).
+Under `acp` they travel as `CODEX_CONFIG` (see below). `read-only` is
+codex's "Read Only" preset: reads and sandboxed commands run unasked, edits
+and network access ask. codex has no `manual` (its approval policy is only `on-request`
 or `never`) and no `plan` (its plan mode only instructs the model, and no
 flag launches into it).
 
@@ -45,8 +50,9 @@ bubblewrap that treats that `EEXIST` as success, installed as
 `/usr/bin/bwrap`, which codex prefers over its bundled copy.
 
 The sandbox's helper must also survive. Each codex process runs sandboxed
-commands through a `codex-linux-sandbox` alias under `$CODEX_HOME/tmp/arg0`,
-locked while it runs, and every codex start deletes the ones it can lock.
+commands through a `codex-linux-sandbox` alias under
+`$CODEX_HOME/tmp/arg0-linux`, locked while it runs, and every codex start
+deletes the ones it can lock.
 gVisor keeps file locks per sandbox, so a codex starting in another pod over
 the project's shared codex home would delete a running agent's helper. So in
 a pod that `tmp` is a pod-local emptyDir (`codexHomeMounts`).
@@ -73,7 +79,8 @@ the first launch's config across restarts instead.
 
 Rules go in opencode's ordered `permissions` array, after a base policy every
 agent starts from (`*` allow, then ask for `external_directory` and `.env`
-reads). A built-in agent's own rules come after; the last match wins.
+reads) and a built-in agent's own rules; the last match wins, so the
+posture's rules override the agent's.
 
 - `manual`: `*` ask, then reads allowed, then the base policy's `.env` asks
   restated. Starting with the wildcard covers everything the base policy
@@ -85,9 +92,10 @@ reads). A built-in agent's own rules come after; the last match wins.
   `shell` rule for `mkdir`/`mv` (which claude allows), because how opencode
   matches a chained command is unverified and a rule matching
   `rm x; curl …` would also allow the `curl`.
-- `plan`: opencode's plan agent (`default_agent`) for its `edit: deny`, plus
-  the `manual` rules, because the plan agent says nothing about `shell` and
-  would otherwise run commands unasked.
+- `plan`: opencode's plan agent (`default_agent`), plus the `manual` rules,
+  because the plan agent says nothing about `shell` and would otherwise run
+  commands unasked. Coming after the agent's `edit: deny`, those rules turn
+  it into an ask, so an edit under `plan` asks as under `manual`.
 - `bypass`: an explicit `*` allow, since the base policy asks for
   out-of-tree access and `.env` reads.
 
@@ -125,14 +133,19 @@ adapter covers the same postures as its TUI (`SUPPORTED_PERMISSION_MODES`):
 | `auto` | `auto` | `agent` | — | — |
 | `accept-edits` | `acceptEdits` | `workspace-write` | the TUI's config | — |
 | `manual` | `default` | — | the TUI's config | — |
-| `plan` | `plan` | — | its config, plus the `plan` agent over `session/set_mode` | — |
+| `plan` | `plan` | — | its config, whose `plan` agent is the session's mode | — |
 | `read-only` | — | `read-only` | — | — |
 
+- **codex's posture is also its launch config.** codex-acp applies a mode
+  only from the next turn it starts, and loads a thread without naming its
+  settings, so a turn the thread starts by itself (a goal continuing) would
+  run in the last life's posture. The launch therefore also passes the
+  mode's three settings in `CODEX_CONFIG` (`CODEX_POSTURE_CONFIG`).
 - **opencode's postures are config, not ACP modes.** It gets the same
   `OPENCODE_CONFIG_CONTENT` as the TUI. Its ACP modes are its agents
-  (`build`, `plan`), and `plan` also sets the `plan` agent over
-  `session/set_mode`, because a new ACP session applies `default_agent` only
-  at its first prompt.
+  (`build`, `plan`), and a new session starts in the config's
+  `default_agent`, so a `plan` conversation is in the `plan` mode from the
+  start.
 - **pi's asks are questions, not permission prompts.** No mode is sent (its
   `availableModes` are thinking levels). What arrives on
   `session/request_permission` are its extensions' questions for the user,
@@ -140,15 +153,18 @@ adapter covers the same postures as its TUI (`SUPPORTED_PERMISSION_MODES`):
   permission prompts; it does not answer questions.
 
 If a conversation can't be put in the requested mode (not advertised, or
-refused), the pane and the log say which mode the session is actually in.
-The handshake happens before any pane attaches, so the conversation keeps the
-message and shows it to every pane until a later `session/set_mode`
-succeeds. It is not fatal. The actual mode is recorded on the workspace row
-like any other move (see "Following the agent"), so a restart asks for it.
-This matters because an adapter's default can be looser than what was asked:
-codex-acp's default is `agent` (a reviewer model approves most actions), so
-an `accept-edits` codex conversation that falls back to it is recorded as
-`auto`.
+refused), it is not fatal, but the conversation never keeps running looser
+than asked. The mode it is in may be looser: codex-acp's default is `agent`
+(a reviewer model approves most actions), and claude's adapter loads a
+session in the mode its last life ran in, which can be `bypassPermissions`.
+So when the current mode is looser, the conversation steps down to the most
+permissive mode the adapter offers that is no looser than the posture (an
+`accept-edits` codex conversation to `read-only`). The pane and the log say
+which mode the session is actually in. The handshake happens before any pane
+attaches, so the conversation keeps the message and shows it to every pane
+until a later `session/set_mode` succeeds. The actual mode is recorded on
+the workspace row like any other move (see "Following the agent"), so a
+restart asks for it.
 
 ## Resolution
 
@@ -259,8 +275,7 @@ codex launches in the workspace (`-C`) with the repository root trusted,
 hook trust bypassed (`--dangerously-bypass-hook-trust`), and its update check
 off (`codexLaunchConfig`), so no startup screen swallows a pasted
 `--prompt`. Trusting the folder has a known, accepted cost: codex loads the
-repository's `.codex/` — its `config.toml` (whose `sandbox_mode` and
-`approval_policy` override a posture that sets no flag), its exec-policy
+repository's `.codex/` — its `config.toml`, its exec-policy
 rules (an `allow` rule runs a command outside the sandbox), and its MCP
 servers and hooks, which run at launch. So a repository can loosen codex's
 posture and run code at startup.
@@ -320,8 +335,8 @@ answer) as `current_mode_update`; codex-acp reports every change as a
 `config_option_update` for its `mode` option. The conversation publishes the
 mode id on the live agent set (`LiveAgent.reportedMode`), and the registry
 maps it to a posture through the adapter profile (`modeIds`, then
-`readsAs`). opencode's adapter never reports a mode, and pi's are thinking
-levels.
+`readsAs`). opencode's adapter reports its agent the same way, of which only
+`plan` names a posture, and pi's modes are thinking levels.
 
 Each conversation answers its own asks according to its adapter's current
 mode, so one conversation entering plan mode, or a user choosing "yes, and
@@ -354,12 +369,12 @@ it writes it down:
 
 - **claude.** Its hooks carry the mode as `permission_mode` (`manual` arrives
   as `default`), but no hook fires on the change itself, and its statusLine
-  input lacks the mode (checked against the pinned 2.1.286). So the reporter
+  input lacks the mode (checked against the pinned 2.1.301). So the reporter
   (`workspace-bin/yaac-agent-report`, which also reports the model) runs on
   `UserPromptSubmit` and `Stop` and sets the pane option
   `@yaac-permission-mode`. A Shift+Tab is seen at the next prompt or turn
   end, not when pressed.
-- **opencode.** Tab switches between its `build` and `plan` agents; the
+- **opencode.** Shift+Tab switches between its `build` and `plan` agents; the
   server emits `session.agent.selected` when a prompt is sent, and the plugin
   that reports the model reports it. The agent is read against the
   workspace's posture, since the rules come from the launch config: `plan`

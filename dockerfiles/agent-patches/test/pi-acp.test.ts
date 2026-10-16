@@ -28,8 +28,10 @@ const PI_ACP = path.dirname(require.resolve('pi-acp/package.json'))
  * snapshot shows.
  *
  * Like pi's extension commands, `/status` starts no run, `/ask` starts one
- * before answering and `/ask-later` 100ms after, and all answer the prompt
- * with disposition `handled`. Like pi, it refuses a prompt mid-run.
+ * before answering, `/ask-soon` while pi-acp fetches the usage stats it
+ * ends a turn with (where pi's own run preparation usually lands it), and
+ * `/ask-later` 100ms after, and all answer the prompt with disposition
+ * `handled`. Like pi, it refuses a prompt mid-run.
  *
  * Like pi, the `compact` command reports a manual compaction's start and
  * end before answering, and the prompt `auto` runs with an automatic
@@ -38,6 +40,7 @@ const PI_ACP = path.dirname(require.resolve('pi-acp/package.json'))
 const FAKE_PI = `#!/usr/bin/env node
 const SETTLE_DELAY_MS = 400
 const queue = []
+let startOnStats
 let streaming = false
 const out = (m) => process.stdout.write(JSON.stringify(m) + '\\n')
 const text = (delta) => out({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } })
@@ -80,9 +83,11 @@ process.stdin.on('data', (c) => {
     const cmd = JSON.parse(buf.slice(0, i))
     buf = buf.slice(i + 1)
     const reply = (data) => out({ type: 'response', id: cmd.id, command: cmd.type, success: true, data })
+    if (cmd.type === 'get_session_stats') { startOnStats?.(); startOnStats = undefined }
     if (cmd.type === 'prompt' && streaming) out({ type: 'response', id: cmd.id, command: 'prompt', success: false, error: 'Agent is already processing.' })
     else if (cmd.type === 'prompt' && cmd.message === '/status') reply({ disposition: 'handled' })
     else if (cmd.type === 'prompt' && cmd.message === '/ask') { void run('asked'); reply({ disposition: 'handled' }) }
+    else if (cmd.type === 'prompt' && cmd.message === '/ask-soon') { reply({ disposition: 'handled' }); startOnStats = () => void run('soon') }
     else if (cmd.type === 'prompt' && cmd.message === '/ask-later') { setTimeout(() => void run('later'), 100); reply({ disposition: 'handled' }) }
     else if (cmd.type === 'prompt' && cmd.message === 'auto') { reply({ disposition: 'started' }); out({ type: 'agent_start' }); compaction('threshold'); void run('auto') }
     else if (cmd.type === 'prompt') { reply({ disposition: 'started' }); if (cmd.message === 'bash') bash(); else void run(cmd.message) }
@@ -245,7 +250,12 @@ describe('patchPiAcp', () => {
     expect((await prompt('/ask-later')).result).toEqual({ stopReason: 'end_turn' })
     await until(() => agentText.includes('run:later;'))
     expect((await prompt('next')).result).toEqual({ stopReason: 'end_turn' })
-    expect(agentText).toBe('run:asked;run:later;run:next;')
+
+    // The run starts while the command's turn is ending; it is adopted all
+    // the same, rather than left to race the next prompt.
+    expect((await prompt('/ask-soon')).result).toEqual({ stopReason: 'end_turn' })
+    expect((await prompt('after')).result).toEqual({ stopReason: 'end_turn' })
+    expect(agentText).toBe('run:asked;run:later;run:next;run:soon;run:after;')
   })
 
   it('reports compactions, asked for or automatic, as compaction updates carrying the summary and token counts', async () => {

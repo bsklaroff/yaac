@@ -383,14 +383,25 @@ describe('agentDriver', () => {
         ...over,
       } as never)
 
-    // codex-acp takes no flags: the model goes through the environment, and
-    // browser login is disabled since a workspace cannot open one.
+    // codex-acp takes no flags: the posture's settings and the model go
+    // through the environment, so a loaded thread starts in its posture
+    // rather than the one it last ran in. Browser login is disabled since a
+    // workspace cannot open one.
+    const codexConfig = (cmd: string): unknown =>
+      JSON.parse(/CODEX_CONFIG="((?:[^"\\]|\\.)*)"/.exec(cmd)![1].replace(/\\(.)/g, '$1'))
     const codex = spec('codex')
-    expect(codex).toContain('NO_BROWSER=1 CODEX_PATH=codex node /opt/yaac/acpd/main.js')
     expect(codex).toContain('-- codex-acp')
-    expect(codex).not.toContain('CODEX_CONFIG')
-    expect(spec('codex', { model: 'gpt-5.2-codex' }))
-      .toContain('CODEX_CONFIG="{\\"model\\":\\"gpt-5.2-codex\\"}"')
+    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_CONFIG=\S+ node \/opt\/yaac\/acpd\/main\.js/)
+    expect(codexConfig(codex))
+      .toEqual({ approval_policy: 'never', approvals_reviewer: 'user', sandbox_mode: 'danger-full-access' })
+    expect(codexConfig(spec('codex', { permissionMode: 'auto' })))
+      .toEqual({ approval_policy: 'on-request', approvals_reviewer: 'auto_review', sandbox_mode: 'workspace-write' })
+    expect(codexConfig(spec('codex', { permissionMode: 'accept-edits', model: 'gpt-5.2-codex' }))).toEqual({
+      approval_policy: 'on-request', approvals_reviewer: 'user', sandbox_mode: 'workspace-write', model: 'gpt-5.2-codex',
+    })
+    // A posture codex lacks launches as its strictest, as the TUI does.
+    expect(codexConfig(spec('codex', { permissionMode: 'plan' })))
+      .toEqual({ approval_policy: 'on-request', approvals_reviewer: 'user', sandbox_mode: 'read-only' })
 
     // opencode is its own adapter, with the same posture config as its TUI.
     const opencode = spec('opencode')
@@ -1769,9 +1780,9 @@ describe('agentDriver', () => {
       .toContain(PI_DEFAULT_MODEL)
   })
 
-  // opencode answers `session/new` before its model catalog has loaded,
-  // offering only its built-in provider, and refuses any other model until
-  // the catalog arrives as a `config_option_update`.
+  // On a slow start opencode answers `session/new` before its model catalog
+  // has loaded, offering only its built-in provider, and refuses any other
+  // model until the catalog arrives as a `config_option_update`.
   it('names the launch model once the session offers it', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'opencode\n'
@@ -2035,9 +2046,10 @@ describe('agentDriver', () => {
     expect(stream.sent().some((m) => m.id === 3)).toBe(false)
   })
 
-  it('reports a mode the adapter REFUSED, which is where a codex workspace runs loose', async () => {
+  it('steps down from a refused mode rather than run looser, and reports it', async () => {
     // codex-acp's default `agent` mode is looser than `accept-edits`, so a
-    // refused `session/set_mode` must be reported to the pane.
+    // refused `session/set_mode` moves the session to the most permissive
+    // mode no looser than asked, and the pane is told.
     const stream = new FakeStream()
     const events: AcpEventInit[] = []
     tmuxWindows = 'codex\n'
@@ -2073,11 +2085,17 @@ describe('agentDriver', () => {
       jsonrpc: '2.0', id: setMode.id, error: { code: -32603, message: 'mode unavailable' },
     })}\n`)
 
+    // `agent` (auto) is looser than accept-edits; `read-only` is not.
+    await vi.waitFor(() => expect(stream.sent().filter((m) => m.method === 'session/set_mode')).toHaveLength(2))
+    const stepDown = stream.sent().filter((m) => m.method === 'session/set_mode')[1]
+    expect(stepDown.params).toEqual({ sessionId: 'acp-1', modeId: 'read-only' })
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: stepDown.id, result: {} })}\n`)
+
     await vi.waitFor(() => expect(events.some((e) => e.type === 'error')).toBe(true))
     const message = (events.find((e) => e.type === 'error') as { message: string }).message
     expect(message).toContain('workspace-write')
     // Names the mode actually in effect.
-    expect(message).toContain('agent')
+    expect(message).toContain('running in read-only')
     // The conversation survives.
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined()
   })
@@ -2828,10 +2846,14 @@ describe('agentDriver', () => {
           '-c', 'check_for_update_on_startup=false',
           // A shared background server would run yaac's hooks outside the pane.
           '-c', 'features.daemon_auto_start=false',
+          // Its worktrees would go in the project's shared codex home.
+          '-c', 'features.worktrees=false',
           // Trust the folder and run yaac's hooks without asking, so no startup
           // screen swallows the pasted prompt.
           '-c', 'projects={"/data/wt"={trust_level="trusted"}}',
           '--dangerously-bypass-hook-trust',
+          // codex's defaults, named so a resume does not restore another posture.
+          '--sandbox', 'workspace-write', '--ask-for-approval', 'on-request', '-c', 'approvals_reviewer=user',
         ])
       })
 
@@ -2932,7 +2954,7 @@ describe('agentDriver', () => {
     })
 
     // Each tool expresses postures differently, so every (tool, posture) pair
-    // is asserted. `accept-edits` is codex's default, so it adds no flag.
+    // is asserted.
     describe('permission modes', () => {
       const CASES: [AgentTool, PermissionMode, string][] = [
         ['claude', 'bypass', 'claude --permission-mode bypassPermissions'],
@@ -2942,8 +2964,8 @@ describe('agentDriver', () => {
         ['claude', 'manual', 'claude --permission-mode manual'],
         ['codex', 'bypass', ' --yolo'],
         ['codex', 'auto', ' --approve-for-me'],
-        ['codex', 'accept-edits', 'codex'],
-        ['codex', 'plan', ' --sandbox read-only'],
+        ['codex', 'accept-edits', ' --sandbox workspace-write --ask-for-approval on-request -c approvals_reviewer=user'],
+        ['codex', 'plan', ' --sandbox read-only --ask-for-approval on-request -c approvals_reviewer=user'],
       ]
 
       it.each(CASES)('%s in %s mode', (tool, permissionMode, expected) => {

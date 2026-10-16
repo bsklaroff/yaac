@@ -9,24 +9,23 @@ import { replayAcpLog, opencodeTranscriptAsAcp } from '#runtime/agents'
 import type { AcpEvent } from '@yaac/shared/acp'
 
 /*
- * The fixtures in replay-fixtures/opencode/ are real @opencode/cli 2.0.21
+ * The fixtures in replay-fixtures/opencode/ are real @opencode/cli 2.0.30
  * output, driven against a scripted model. `live.jsonl` is what
  * `opencode acp` streamed to a client declaring yaac's capabilities over one
  * conversation (shell, write, edit, read, glob, grep, webfetch, failed
- * tools, a subagent, an interrupted command, a dismissed question, an image
- * prompt, a provider error), and `rows.jsonl` is the export
+ * tools, a subagent, an interrupted command, a question the client cannot
+ * show, an image prompt, a provider error), and `rows.jsonl` is the export
  * `yaac-opencode-checkpoint` wrote from the database that same run left.
- * `tui-rows.jsonl` is part of a conversation driven through the TUI: a
- * `!command`, a subagent, an answered question, an interrupt and a manual
- * `/compact`.
+ * `tui-rows.jsonl` is a conversation driven through the TUI: a `!command`,
+ * a subagent, an answered question, an interrupt and a manual `/compact`.
  */
 const fixture = (name: string): Promise<string> =>
   fs.readFile(path.join(import.meta.dirname, 'replay-fixtures/opencode', name), 'utf8')
 const rowsOf = async (name: string): Promise<Array<Record<string, unknown>>> =>
   (await fixture(name)).trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>)
 
-const ROOT = 'ses_eeef51727ffedBWQdWdy0dzOE2'
-const TUI_ROOT = 'ses_eeef3d5d7ffe59Y8NLt9AueoWZ'
+const ROOT = 'ses_ebbc91a76ffe3FIk6JSlpGuSKi'
+const TUI_ROOT = 'ses_ebbc54393ffehl779tjDUeM6OX'
 const projectId = 'demo'
 const ws = 'ws-1'
 const checkpoint = (): string => opencodeCheckpointDir(projectId, ws)
@@ -112,7 +111,7 @@ describe('opencodeTranscriptAsAcp', () => {
     expect(events.find((e) => e.type === 'user' && e.content.length === 2)).toMatchObject({
       content: [{ type: 'text', text: 'IMAGE look' }, { type: 'image', mimeType: 'image/png' }],
     })
-    expect(calls.find((c) => c.title === 'edit' && c.status === 'completed')?.content).toContainEqual({ type: 'diff', path: 'notes.txt', oldText: 'beta', newText: 'gamma' })
+    expect(calls.find((c) => c.title === 'edit' && c.status === 'completed')?.content).toContainEqual({ type: 'diff', path: '/workspace/notes.txt', oldText: 'alpha\nbeta\n', newText: 'alpha\ngamma\n' })
     expect(calls.find((c) => c.title === 'sleep 30' && c.status !== 'pending')).toMatchObject({ shell: true, status: 'failed' })
     expect(events.filter((e) => e.type === 'subagent').at(-1)).toMatchObject({ subagent: { name: 'Inspect notes', state: 'completed' } })
     // Read immutable: no lock file or sidecar appears beside it.
@@ -150,6 +149,35 @@ describe('opencodeTranscriptAsAcp', () => {
     expect(await opencodeTranscriptAsAcp(projectId, ws, ROOT)).toEqual([])
     // Nor is an id that could name a path.
     expect(await opencodeTranscriptAsAcp(projectId, ws, '../ses_x')).toEqual([])
+
+    // An edit's patch becomes one diff per hunk, so separate regions of a
+    // file never read as one block. Compactions end as the live stream
+    // reports them: an interrupted one as cancelled, and a failure whose
+    // message spans lines as a bare "Compaction failed".
+    const patch = [
+      '--- notes.txt', '+++ notes.txt',
+      '@@ -1,2 +1,2 @@', ' alpha', '-beta', '+gamma',
+      '@@ -9,2 +9,2 @@', ' omega', '-psi', '+chi',
+    ].join('\n')
+    const edit = {
+      type: 'tool', id: 'call_edit', name: 'edit',
+      state: { status: 'completed', input: { filePath: 'notes.txt' }, content: [], metadata: { files: [{ file: 'notes.txt', patch }] } },
+    }
+    await writeExport('ses_hunks', [
+      { session: 'ses_hunks', type: 'session', parent: null, directory: '/workspace' },
+      { session: 'ses_hunks', type: 'user', seq: 0, data: { text: 'edit', files: [] } },
+      { session: 'ses_hunks', type: 'assistant', seq: 1, data: { content: [edit] } },
+      { session: 'ses_hunks', type: 'compaction', seq: 2, data: { id: 'c1', reason: 'auto', status: 'failed', error: { type: 'compaction.interrupted', message: 'stopped' } } },
+      { session: 'ses_hunks', type: 'compaction', seq: 3, data: { id: 'c2', reason: 'auto', status: 'failed', error: { type: 'compaction.failed', message: 'bad\nsummary' } } },
+    ].map((l) => JSON.stringify(l)).join('\n'))
+    const replayed = await opencodeTranscriptAsAcp(projectId, ws, 'ses_hunks')
+    expect(replayed.flatMap((e) => e.type === 'compaction' ? [[e.compaction.status, e.compaction.error]] : []))
+      .toEqual([['cancelled', undefined], ['failed', 'Compaction failed']])
+    const call = replayed.flatMap((e) => e.type === 'tool' && e.call.status === 'completed' ? [e.call] : [])[0]
+    expect(call.content?.filter((c) => c.type === 'diff')).toEqual([
+      { type: 'diff', path: '/workspace/notes.txt', oldText: 'alpha\nbeta\n', newText: 'alpha\ngamma\n' },
+      { type: 'diff', path: '/workspace/notes.txt', oldText: 'omega\npsi\n', newText: 'omega\nchi\n' },
+    ])
   })
 
   it('stays linear on a crafted export of many subagent calls and unrelated sessions', async () => {
@@ -178,17 +206,17 @@ describe('opencodeTranscriptAsAcp', () => {
     const rows = await rowsOf('tui-rows.jsonl')
     await writeExport(TUI_ROOT, rows.map((r) => JSON.stringify(r)).join('\n'))
     const events = rendered(await opencodeTranscriptAsAcp(projectId, ws, TUI_ROOT))
-    const child = 'ses_eeef395a5ffe8hMSGoDwXlBf53'
+    const child = 'ses_ebbc52032ffej3i8JvksILESSo'
 
     expect(events).toMatchObject([
       { type: 'user', content: [{ type: 'text', text: '!echo shell-from-user' }] },
       { type: 'tool', call: { title: 'echo shell-from-user', shell: true, status: 'completed', content: [{ type: 'text', text: 'shell-from-user\n' }] } },
       { type: 'user', content: [{ type: 'text', text: 'SUB tui' }] },
       { type: 'agent', content: [{ type: 'text', text: 'Delegating.' }] },
-      { type: 'tool', call: { toolCallId: 'call_22', kind: 'think', status: 'completed' } },
+      { type: 'tool', call: { toolCallId: 'call_1', kind: 'think', status: 'completed' } },
       { type: 'subagent', subagent: { id: child, name: 'Inspect notes', task: '', state: 'completed' } },
       { type: 'thought', thread: child, content: [{ type: 'text', text: 'Counting.' }] },
-      { type: 'tool', thread: child, call: { toolCallId: `${child}:call_23`, title: 'Inspect notes: wc -l notes.txt', status: 'completed' } },
+      { type: 'tool', thread: child, call: { toolCallId: `${child}:call_2`, title: 'Inspect notes: wc -l notes.txt', status: 'completed' } },
       { type: 'agent', thread: child, content: [{ type: 'text', text: 'notes.txt has 2 lines.' }] },
       { type: 'agent', content: [{ type: 'text', text: 'Subagent finished.' }] },
       { type: 'user', content: [{ type: 'text', text: 'ASK tui' }] },
@@ -198,7 +226,7 @@ describe('opencodeTranscriptAsAcp', () => {
       { type: 'agent', content: [{ type: 'text', text: 'Sleeping.' }] },
       { type: 'tool', call: { title: 'sleep 30', status: 'failed', content: [{ type: 'text', text: 'Tool execution interrupted' }] } },
       { type: 'user', content: [{ type: 'text', text: '/compact' }] },
-      { type: 'compaction', compaction: { trigger: 'manual' } },
+      { type: 'compaction', compaction: { trigger: 'manual', status: 'failed', error: 'Compaction summary did not match the required template' } },
       { type: 'user', content: [{ type: 'text', text: 'after compact' }] },
       { type: 'agent', content: [{ type: 'text', text: 'Hello from the mock.' }] },
     ])
@@ -208,7 +236,7 @@ describe('opencodeTranscriptAsAcp', () => {
     // not yet named its session, which is still played inside it.
     const running = rows.map((r) => {
       const content = (r.data as { content?: Array<Record<string, unknown>> } | undefined)?.content
-      const call = content?.find((p) => p.id === 'call_22')
+      const call = content?.find((p) => p.id === 'call_1')
       return call === undefined ? r : {
         ...r,
         data: { ...(r.data as object), content: content!.map((p) => p === call ? { ...p, state: { status: 'running', input: (call.state as { input: unknown }).input } } : p) },
@@ -216,7 +244,7 @@ describe('opencodeTranscriptAsAcp', () => {
     })
     await writeExport(TUI_ROOT, running.map((r) => JSON.stringify(r)).join('\n'))
     const replayed = rendered(await opencodeTranscriptAsAcp(projectId, ws, TUI_ROOT))
-    const callAt = replayed.findIndex((e) => (e as { call?: { toolCallId: string } }).call?.toolCallId === 'call_22')
+    const callAt = replayed.findIndex((e) => (e as { call?: { toolCallId: string } }).call?.toolCallId === 'call_1')
     expect(replayed[callAt]).toMatchObject({ call: { status: 'in_progress' } })
     expect(replayed[callAt + 1]).toMatchObject({ type: 'subagent', subagent: { id: child } })
   })

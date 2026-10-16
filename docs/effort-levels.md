@@ -82,13 +82,13 @@ Every tool saves an in-session effort change into its home: claude's
 per-model thinking levels. A project's workspaces share those homes, so a
 launch that names nothing would run at whatever another workspace last
 picked. The launch values outrank those files (checked live for claude's
-`--effort` against 2.1.286 and pi's `--thinking` against 0.99.2).
+`--effort` against 2.1.301 and pi's `--thinking` against 1.3.0).
 
 opencode is the exception both ways. Its TUI saves its per-model variant in
 its state directory (`model.json`), which is not in a shared tool home (a
 pod's own under k8s, the workspace's private `$HOME` under containerless),
 so no other workspace reaches it. But within one workspace that saved pick
-outranks the launch's agent `variant` (checked against 2.0.21): a restart
+outranks the launch's agent `variant` (checked against 2.0.30): a restart
 after a `/variants` pick runs at the pick, which is also the level the row
 followed.
 
@@ -149,9 +149,9 @@ Each tool's reporter sets the pane option `@yaac-effort`, read through the
 same filtered subscription as `@yaac-model` and `@yaac-permission-mode`
 (docs/workspace-storage.md):
 
-- **claude**: hook payloads carry `effort.level`; `yaac-agent-report` reads
-  it on `UserPromptSubmit` and `Stop`, so an `/effort` is seen at the next
-  prompt or turn end.
+- **claude**: the `Stop` hook's payload carries `effort.level`
+  (`UserPromptSubmit`'s does not), so `yaac-agent-report` sees an `/effort`
+  at the next turn end.
 - **codex**: the rollout's `turn_context.effort` (`reasoning_effort` in a
   settings change), read with the posture in the same pass and under the
   same current-life rule.

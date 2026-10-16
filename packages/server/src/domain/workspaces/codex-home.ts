@@ -8,7 +8,8 @@ export const CODEX_CONTAINER_HOME = '/home/yaac/.codex'
  * A workspace's codex home: the project's shared codex dir, plus (in a pod) a
  * pod-local `tmp` over it.
  *
- * `tmp/arg0` holds a per-process dir with the `codex-linux-sandbox` helper.
+ * `tmp/arg0-linux` holds a per-process dir with the `codex-linux-sandbox`
+ * helper.
  * Each codex start deletes every such dir whose flock it can take, and gVisor
  * keeps file locks per sandbox. With a shared `tmp`, a codex starting in
  * another pod would delete a running agent's helper, breaking its sandboxed

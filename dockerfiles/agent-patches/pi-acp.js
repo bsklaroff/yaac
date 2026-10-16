@@ -39,14 +39,18 @@
  *    it answers the `prompt` RPC with disposition `handled` and never
  *    reports `agent_settled`, the event pi-acp ends a turn on. So a turn
  *    ends on `handled` unless pi already reported `agent_start` for it, in
- *    which case that run's `agent_settled` ends it. A command can also start
- *    a run after pi answers (`sendUserMessage`, or any async hook before the
- *    run), and an extension can start one at any time. pi gives no notice
- *    of such a run before its `agent_start`, so pi-acp adopts it then as a
- *    turn of its own, with no `session/prompt` to answer: it reports the
- *    run as running, prompts queue behind it, and its `agent_settled` ends
- *    it rather than some other turn. A prompt sent between `handled` and a
- *    late run's `agent_start` still reaches pi, where it races that run.
+ *    which case that run's `agent_settled` ends it. A run a command starts
+ *    usually begins after pi answers, since pi prepares every run (its
+ *    `before_agent_start` hooks and a compaction check) before reporting
+ *    `agent_start`; only a command that awaits something after starting it
+ *    may see it begin first. An extension can also start one at any time.
+ *    pi gives no notice of such a run before its `agent_start`, so pi-acp
+ *    adopts it then (or, if that comes while the command's turn is still
+ *    settling, once it has settled) as a turn of its own, with no
+ *    `session/prompt` to answer: it reports the run as running, prompts
+ *    queue behind it, and its `agent_settled` ends it rather than some other
+ *    turn. A prompt sent between `handled` and a late run's `agent_start`
+ *    still reaches pi, where it races that run.
  *    Goes once pi-acp reads the disposition and owns the runs it did not
  *    start.
  *

@@ -12,7 +12,7 @@ import {
 describe('modelsForTool', () => {
   it('lists a vendor tool\'s models by bare id, newest first, named, with their effort levels', () => {
     const claude = modelsForTool('claude', undefined)
-    expect(claude[0]).toEqual({ id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', efforts: EFFORTS.claude['claude-sonnet-5-5'] })
+    expect(claude[0]).toEqual({ id: 'claude-haiku-5-5', name: 'Haiku 5.5', efforts: EFFORTS.claude['claude-haiku-5-5'] })
     // Only the models the pinned claude knows (docs/effort-levels.md).
     expect(claude.map((m) => m.id)).toEqual(CLAUDE_MODELS)
     expect(claude.find((m) => m.id === 'claude-opus-4-5')).not.toHaveProperty('efforts')

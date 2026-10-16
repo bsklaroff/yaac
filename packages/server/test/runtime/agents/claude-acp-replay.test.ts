@@ -162,6 +162,29 @@ describe('claudeTranscriptAsAcp', () => {
     expect(dangling[0].status === 'completed' || dangling[0].status === 'failed').toBe(false)
   })
 
+  it('settles background work at its notification, and hides what another agent told the model', async () => {
+    const file = await transcript([
+      user('run the tests in the background'),
+      assistant([{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'npm test', description: 'run tests', run_in_background: true } }]),
+      user([{
+        type: 'tool_result', tool_use_id: 'tu_1',
+        content: `Command running in background with ID: b1. Output is being written to: /t/${SESSION}/tasks/b1.output. You will be notified when it completes.`,
+      }]),
+      assistant([{ type: 'text', text: 'started' }]),
+      user('<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>tu_1</tool-use-id>\n<status>completed</status>\n<summary>tests passed</summary>\n</task-notification>', {
+        origin: { kind: 'task-notification', producer: 'session-task' },
+      }),
+      user('a message from another agent', { isMeta: true, origin: { kind: 'peer' } }),
+      assistant([{ type: 'text', text: 'the tests passed' }]),
+    ])
+
+    const events = await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)
+
+    expect(events.filter((e) => e.type === 'task').map((e) => e.task.state)).toEqual(['running', 'completed'])
+    expect(events.find((e) => e.type === 'woken')).toMatchObject({ causes: [{ kind: 'task', id: 'b1', name: 'run tests' }] })
+    expect(events.filter((e) => e.type === 'user')).toHaveLength(1)
+  })
+
   it('answers empty for a transcript that is empty or unparseable', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claude-replay-'))
     dirs.push(dir)

@@ -11,8 +11,8 @@
 # $1 the model, $2 the mode, $3 the effort, any of which may be empty. With
 # no arguments they are read from a hook payload on stdin: claude's
 # PostModelSwitch carries `to_model`, its SessionStart `model` — on an
-# interactive startup, not on a CLI `--resume` — and its UserPromptSubmit
-# and Stop `permission_mode` and `effort.level`. A value the payload does
+# interactive startup, not on a CLI `--resume` — its UserPromptSubmit and
+# Stop `permission_mode`, and its Stop `effort.level`. A value the payload does
 # not name leaves that option alone: a SessionStart for `/clear` changed no
 # model, and the option belongs to the pane, so the conversation that now
 # owns the pane inherits it.
