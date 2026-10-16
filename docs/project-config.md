@@ -75,8 +75,9 @@ created afterwards. See [workspace-egress.md](workspace-egress.md).
 
 ## Custom images (k8s)
 
-The default workspace image is Ubuntu 26.04 with Node.js, gh, tmux and the
-agent CLIs. Two files customize it:
+The default workspace image is Ubuntu 26.04 with Node.js, gh, tmux, the agent
+CLIs, and pnpm 12 through corepack (a project's own `packageManager` pin wins).
+Two files customize it:
 
 - **`Dockerfile.yaac`** (per project).
   - **Layered (recommended):** built on top of the default image. It must
