@@ -736,4 +736,8 @@ and the project's pnpm store is shared, so a worktree's install is cheap.
 
 On both drivers `createCheckout` writes `.git/info/exclude` with
 `/.claude/worktrees/`, so worktrees do not show as untracked nested repos in
-the changes list, the explorer or the agent's `git status`.
+the changes list, the explorer or the agent's `git status`. The same file
+hides `.nfs*`: on byo the checkout is on NFS, whose client renames a file
+deleted while still open to `.nfs<id>` until the last handle closes. A
+project that wants either back adds a `!` pattern to its `.gitignore`, which
+takes precedence over `info/exclude`.

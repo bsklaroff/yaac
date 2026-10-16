@@ -270,7 +270,10 @@ const CHECKOUT_WORKERS = 8
  *
  * Its `info/exclude` hides `.claude/worktrees`, where claude puts the
  * worktrees it makes, so they do not show as nested repos in the changes
- * list and explorer.
+ * list and explorer. It also hides `.nfs*`, the files an NFS client renames
+ * a deleted but still-open file to (a byo checkout is on NFS), so an agent's
+ * `git add -A` cannot commit them. A project's `.gitignore` can re-include
+ * either with a `!` pattern.
  *
  * The tree is written by `CHECKOUT_WORKERS` processes at once. Each file
  * on the shared tier costs a few network round trips, so overlapping them
@@ -314,7 +317,7 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     await fs.mkdir(path.join(gitDir, 'objects', 'info'), { recursive: true })
     await fs.writeFile(path.join(gitDir, 'objects', 'info', 'alternates'), `${path.join(repoPath, '.git', 'objects')}\n`)
     await fs.mkdir(path.join(gitDir, 'info'))
-    await fs.writeFile(path.join(gitDir, 'info', 'exclude'), '/.claude/worktrees/\n')
+    await fs.writeFile(path.join(gitDir, 'info', 'exclude'), '/.claude/worktrees/\n.nfs*\n')
     const { refs, originHead } = await mainRefs(repoPath, ['refs/remotes/origin', 'refs/tags'])
     await fs.writeFile(path.join(gitDir, 'packed-refs'), refs.map((l) => `${l}\n`).join(''))
     if (originHead !== null) {

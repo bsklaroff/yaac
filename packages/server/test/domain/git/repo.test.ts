@@ -156,12 +156,14 @@ describe('createCheckout', () => {
     await expect(git(sibling, ['config', 'core.hooksPath'])).rejects.toThrow()
   })
 
-  it('hides claude\'s worktrees from git', async () => {
+  it('hides claude\'s worktrees and NFS silly-rename files from git', async () => {
     const main = path.join(tmpDir, 'main')
     await cloneRepo(sourceRepo, main, null)
     const wtPath = path.join(tmpDir, 'workspace')
     await createCheckout(main, wtPath, { branch: 'agent/x', baseBranch: await getDefaultBranch(main), remoteUrl: sourceRepo })
     await git(wtPath, ['worktree', 'add', '-q', '-b', 'sub', path.join(wtPath, '.claude', 'worktrees', 'sub')])
+    await fs.mkdir(path.join(wtPath, 'build'))
+    await fs.writeFile(path.join(wtPath, 'build', '.nfs000000000123abcd00000001'), 'held open')
     expect(await git(wtPath, ['status', '--porcelain'])).toBe('')
   })
 
