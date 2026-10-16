@@ -182,9 +182,25 @@ describe('getAgentSessionTranscript', () => {
       type: role, uuid, parentUuid, sessionId: ACP_SESSION, cwd: '/workspace', timestamp,
       message: role === 'user' ? { role, content: text } : { role, model: 'claude-fable-5', content: [{ type: 'text', text }] },
     })
+    // The life before ends with a subagent and a background command still
+    // running.
+    const entry = (uuid: string, parentUuid: string, role: string, content: unknown[]): unknown => ({
+      type: role, uuid, parentUuid, sessionId: ACP_SESSION, cwd: '/workspace', timestamp: before,
+      message: { role, content, ...(role === 'assistant' ? { model: 'claude-fable-5' } : {}) },
+    })
+    const spawn = [
+      entry('a1t', 'a1', 'assistant', [
+        { type: 'tool_use', id: 'toolu_look', name: 'Agent', input: { description: 'look around', prompt: 'Look around' } },
+        { type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'sleep 900', description: 'wait', run_in_background: true } },
+      ]),
+      entry('u1t', 'a1t', 'user', [{
+        type: 'tool_result', tool_use_id: 'toolu_bash',
+        content: 'Command running in background with ID: b1. Output is being written to: /t/tasks/b1.output.',
+      }]),
+    ]
     await fs.writeFile(claude, [
-      say('u1', null, 'user', 'first ask', before), say('a1', 'u1', 'assistant', 'first answer', before),
-      say('u2', 'a1', 'user', 'second ask', after), say('a2', 'u2', 'assistant', 'second answer', after),
+      say('u1', null, 'user', 'first ask', before), say('a1', 'u1', 'assistant', 'first answer', before), ...spawn,
+      say('u2', 'u1t', 'user', 'second ask', after), say('a2', 'u2', 'assistant', 'second answer', after),
     ].map((l) => JSON.stringify(l)).join('\n') + '\n')
     // The life running now takes the file past the transcript cap, which the
     // history before it is read without: reading stops where the life began.
@@ -204,6 +220,27 @@ describe('getAgentSessionTranscript', () => {
     ].map((l) => JSON.stringify(l)).join('\n') + '\n')
     await writeAcpRecord(PI, thisLife)
 
+    // codex names a conversation by its thread; this one's first turn leaves
+    // a subagent working, and only what it wrote before the life is read.
+    const CODEX = '01a1111c-de75-7ce3-8999-3257b2615db0'
+    await seedSession(CODEX, { tool: 'codex', mode: 'acp' })
+    const codexLine = (timestamp: string, payload: unknown): unknown => ({ timestamp, type: 'event_msg', payload })
+    const codexItem = (timestamp: string, item: unknown): unknown => codexLine(timestamp, {
+      type: 'item_completed', thread_id: CODEX, turn_id: 't1', item,
+      started_at_ms: Date.parse(timestamp), completed_at_ms: Date.parse(timestamp),
+    })
+    const rollouts = path.join(agentHistoryDir(PROJECT, WORKSPACE, 'codex'), '2026', '01', '01')
+    await fs.mkdir(rollouts, { recursive: true })
+    await fs.writeFile(path.join(rollouts, `rollout-2026-01-01T00-00-00-${CODEX}.jsonl`), [
+      { timestamp: before, type: 'session_meta', payload: { id: CODEX, cwd: '/workspace' } },
+      codexLine(before, { type: 'task_started', turn_id: 't1' }),
+      codexItem(before, { type: 'UserMessage', id: 'u1', content: [{ type: 'text', text: 'first ask' }] }),
+      codexItem(before, { type: 'AgentMessage', id: 'a1', content: [{ type: 'Text', text: 'first answer' }] }),
+      codexItem(before, { type: 'SubAgentActivity', id: 'call_1', kind: 'started', agent_thread_id: 'child', agent_path: '/root/helper' }),
+      codexItem(after, { type: 'UserMessage', id: 'u2', content: [{ type: 'text', text: 'second ask' }] }),
+    ].map((l) => JSON.stringify(l)).join('\n') + '\n')
+    await writeAcpRecord(CODEX, thisLife)
+
     // opencode's replay holds its whole conversation, so its own history,
     // here an export of rows from before the life, does not stand in for it.
     const OPENCODE = 'ses_eeef51727ffedBWQdWdy0dzOE2'
@@ -216,7 +253,7 @@ describe('getAgentSessionTranscript', () => {
     ].map((l) => JSON.stringify(l)).join('\n') + '\n')
     await writeAcpRecord(OPENCODE, thisLife)
 
-    for (const id of [ACP_SESSION, PI]) {
+    for (const id of [ACP_SESSION, CODEX, PI]) {
       const last = await getAgentSessionTranscript(PROJECT, WORKSPACE, id)
       expect([last.page, last.life, said(last.events)], id).toEqual([1, 'life-2', ['second ask', 'second answer']])
       const first = await getAgentSessionTranscript(PROJECT, WORKSPACE, id, 0)
@@ -224,6 +261,12 @@ describe('getAgentSessionTranscript', () => {
       expect(await recordOrigin(PROJECT, WORKSPACE, id, { id: 'life-2', startedAt: restart }), id)
         .toEqual({ firstPage: 1, skipReplay: true })
     }
+    // What the life before left running died with it, so the history does
+    // not show it going.
+    const ended = async (id: string): Promise<string[]> => (await getAgentSessionTranscript(PROJECT, WORKSPACE, id, 0)).events
+      .flatMap((e) => (e.type === 'subagent' ? [`subagent ${e.subagent.state}`] : e.type === 'task' ? [`task ${e.task.state}`] : []))
+    expect(await ended(ACP_SESSION)).toEqual(['subagent running', 'task running', 'subagent cancelled', 'task stopped'])
+    expect(await ended(CODEX)).toEqual(['subagent running', 'subagent cancelled'])
     const replayed = await getAgentSessionTranscript(PROJECT, WORKSPACE, OPENCODE)
     expect([replayed.page, said(replayed.events)]).toEqual([0, ['first ask', 'first answer', 'second ask', 'second answer']])
   })

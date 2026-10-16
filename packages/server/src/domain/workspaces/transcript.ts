@@ -151,8 +151,9 @@ interface OwnHistory {
  * rollout and the rollouts of the subagents it spawned, pi's session log,
  * or opencode's history (its database, or the checkpoint's export of a
  * sandboxed one). Only what the tool wrote before `before` (epoch ms), when
- * given (`readTranscript`). What this loses against the live pane is listed
- * in docs/acp-history-differences.md.
+ * given (`readTranscript`): the agent lives before the one running, whose
+ * subagents and tasks died with them. What this loses against the live pane
+ * is listed in docs/acp-history-differences.md.
  */
 async function ownHistory(
   projectId: string,
@@ -162,17 +163,18 @@ async function ownHistory(
   before = Infinity,
 ): Promise<OwnHistory> {
   const id = session.agentSessionId
+  const ended = before !== Infinity
   switch (session.tool) {
     case 'claude': {
       const raw = await readTranscript(claudeFile, before)
       return raw === null
         ? { events: [], budget: MAX_TRANSCRIPT_BYTES }
-        : { events: await claudeTranscriptAsAcp(raw, id), budget: MAX_TRANSCRIPT_BYTES - Buffer.byteLength(raw) }
+        : { events: await claudeTranscriptAsAcp(raw, id, ended), budget: MAX_TRANSCRIPT_BYTES - Buffer.byteLength(raw) }
     }
     case 'codex': {
       const files = (await conversationFiles(projectId, workspaceId, [session])).get(id) ?? []
       const raws = await readTranscripts(files.filter((f) => f.name !== ACP_RECORD_NAME).map((f) => f.file), before)
-      return { events: raws.length === 0 ? [] : codexTranscriptAsAcp(raws), budget: 0 }
+      return { events: raws.length === 0 ? [] : codexTranscriptAsAcp(raws, ended), budget: 0 }
     }
     case 'pi': {
       const raw = await readTranscript(await sessionTranscriptPath(projectId, workspaceId, session.tool, id), before)

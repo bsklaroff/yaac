@@ -273,7 +273,9 @@ current life. So its pages are the tool's history up to the life's start,
 then the record's, whose `session/load` replay repeats that history and is
 not shown. The tool's history is read only up to the first entry stamped at
 or after the life's `startedAt`, so what is read stays the same while the
-life runs. The live pane and the transcript route both take the record's
+life runs. Every subagent and task that history leaves running is settled
+as stopped, as at an agent's exit, since it died with an earlier life. The
+live pane and the transcript route both take the record's
 first page from `recordOrigin` in `#domain/workspaces`, cached per life, and
 every page carries the life's id (`AcpTranscriptPage.life`): a restart
 numbers the pages afresh, so a pane starts over at a new life and drops a
