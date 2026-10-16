@@ -682,7 +682,7 @@ still reports success. Installs need neither endpoint: pnpm reads attestations
 only for a publish time, and falls back to the metadata's `time` field.
 
 The cache is only ever the **default** registry. The init script writes it to
-the workspace's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`). pnpm 10, 11
+the workspace's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`). pnpm 10+
 and npm all read that below a project's own `.npmrc`, so a project that names a
 registry there, globally or per scope, keeps it. That is also the opt-out:
 `registry=https://registry.npmjs.org/` in the project `.npmrc`. A project that

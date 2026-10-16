@@ -281,7 +281,7 @@ describe('launchWorkspace', () => {
     expect(env.SSL_CERT_FILE).toBe('/etc/yaac/certs/proxy-ca.pem')
   })
 
-  // pnpm 11's SQLite store index cannot be shared between pods, so each pod
+  // pnpm's SQLite store index cannot be shared between pods, so each pod
   // has its own store on the same volume as `.pnpm`, letting pnpm hardlink.
   it('backs each module dir with its own volume and keeps pnpm\'s store inside the root one', async () => {
     const plain = await prepareWorkspaceSubstrate(INTENT)

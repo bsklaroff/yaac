@@ -220,7 +220,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   // Only CA trust: interception is transparent, so no HTTP(S)_PROXY vars.
   env.push(...proxyClient.getCaTrustEnv())
   env.push(`YAAC_STREAM_TOKEN=${substrate.streamToken}`)
-  // One pnpm store per workspace: pnpm 11 indexes the store in a SQLite WAL
+  // One pnpm store per workspace: pnpm indexes the store in a SQLite WAL
   // database, which cannot be shared across pods. Put it inside the root
   // node_modules when that is a module dir, so pnpm hardlinks rather than
   // copies; otherwise on the pod's own disk. Set under both names: pnpm 11+
