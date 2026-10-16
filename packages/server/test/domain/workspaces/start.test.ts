@@ -20,6 +20,7 @@ import {
   listProvisioning,
   prepareStart,
   reconcilePrewarmPool,
+  recordedLaunch,
   saveDraftWorkspace,
 } from '#domain/workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
@@ -975,6 +976,35 @@ describe('prepareStart', () => {
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
         baseBranch: 'dev', permissionMode: 'read-only', model: FALLBACK_MODELS.codex,
       })
+    })
+
+    // An acp chat reads its effort (`recordedLaunch`) when its handshake
+    // starts, so the claim must record the claimed level before the respawn
+    // brings that chat up, or it handshakes at the warm one.
+    it('records the claimed effort before respawning an acp spare warmed at another', async () => {
+      const { levels, default: warmLevel } = EFFORTS.claude[FALLBACK_MODELS.claude]
+      const claimedLevel = levels.find((l) => l !== warmLevel)!
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'acp' })
+      const spare = await warm()
+      expect((await recordedLaunch(DEMO_PROJECT_ID, spare.workspaceId))?.effort).toBe(warmLevel)
+
+      let atRespawn: string | undefined
+      const conversation = { whenReady: () => Promise.resolve() } as unknown as AcpConversation
+      installDriver({
+        exec: async (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('respawn-window')) atRespawn = (await recordedLaunch(DEMO_PROJECT_ID, spare.workspaceId))?.effort
+          if (cmd.includes('#{pane_pid}')) {
+            registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, conversation)
+            return { stdout: '42\n', stderr: '' }
+          }
+          return { stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' }
+        },
+      })
+
+      expect(await start({ claimSpare: true, mode: 'acp', effort: claimedLevel })).toMatchObject({ workspaceId: spare.workspaceId })
+      expect(ranIn(spare).filter((c) => c.includes('respawn-window'))).toHaveLength(1)
+      expect(atRespawn).toBe(claimedLevel)
     })
 
     it('respawns a spare as pi on the owner\'s pi provider', async () => {

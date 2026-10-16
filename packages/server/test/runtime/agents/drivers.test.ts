@@ -1870,19 +1870,23 @@ describe('agentDriver', () => {
 
   // A new conversation is put at the workspace's effort, since its adapter
   // would otherwise read what another workspace saved to the shared home.
-  // Every level it then reports goes upward for the row to follow, and the
-  // pane is offered the adapter's own list.
+  // The effort is read when the handshake starts, so a level recorded after
+  // connect (a spare's claim) is the one used. Every level the conversation
+  // then reports goes upward for the row to follow, and the pane is offered
+  // the adapter's own list.
   it("puts a conversation at the workspace's effort and follows each level it reports", async () => {
     const stream = new FakeStream()
     tmuxWindows = 'pi\n'
     const seen: AgentObservation[] = []
+    let effort = 'low'
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
       dial: acpDial(() => stream),
       permissionMode: () => Promise.resolve('bypass'),
-      effort: () => Promise.resolve('high'),
+      effort: () => Promise.resolve(effort),
       log: () => {},
     }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'pi')).toBeDefined())
+    effort = 'high'
     stream.feed(helloLine(true))
     await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'initialize')).toBe(true))
     const init = stream.sent().find((m) => m.method === 'initialize')!

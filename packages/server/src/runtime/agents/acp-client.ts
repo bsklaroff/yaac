@@ -181,10 +181,10 @@ export interface AcpConversationDeps {
   launchModel?: () => Promise<string | undefined>
   /**
    * The effort level to put a new or loaded session at: the workspace's
-   * (docs/effort-levels.md), as its connection last knew it. Absent or
+   * (docs/effort-levels.md), read when the handshake starts. Absent or
    * undefined leaves the adapter's own.
    */
-  effort?: () => string | undefined
+  effort?: () => Promise<string | undefined>
   /** The session's effort level changed or was first learned. Fires only on
    *  change. */
   onEffort?: (effort: string) => void
@@ -888,9 +888,9 @@ export class AcpConversation {
         return
       }
 
-      // Read before the session reports its own level, which the accessor
-      // may then follow.
-      const launchEffort = this.deps.effort?.()
+      // Read before the session reports its own level, which the row may
+      // then follow.
+      const launchEffort = await this.deps.effort?.()
       const init = await this.peer.request<AcpInitializeResult>(ACP.initialize, {
         protocolVersion: ACP_PROTOCOL_VERSION,
         clientCapabilities: clientCapabilities(this.deps.profile?.capabilitiesMeta),

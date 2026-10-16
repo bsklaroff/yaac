@@ -175,12 +175,6 @@ class AcpConnection extends ControlModeConnection {
   private readonly readLaunchModel: (tool: AgentTool) => Promise<string | undefined>
   private readonly readEffort: () => Promise<string | undefined>
   /**
-   * The effort a new or loaded conversation is put at: the row's, read at
-   * connect, then whatever a conversation here last reported (the row
-   * follows those too).
-   */
-  private effort: string | undefined
-  /**
    * The posture, read at connect (and on each heartbeat until a read
    * succeeds) and then followed through `setAcpPermissionMode`. Cached
    * because a conversation needs it synchronously when an ask arrives.
@@ -200,11 +194,9 @@ class AcpConnection extends ControlModeConnection {
     this.start()
   }
 
-  /** Before any attach, so new conversations handshake with the posture
-   *  and effort. An unreadable effort leaves the adapter's own. */
+  /** Before any attach, so new conversations handshake with the posture. */
   protected async init(): Promise<void> {
     await this.loadPermissionMode()
-    this.effort = await this.readEffort().catch(() => undefined)
   }
 
   /** Until a read succeeds; see `permissionMode`. */
@@ -377,7 +369,10 @@ class AcpConnection extends ControlModeConnection {
         { maxAttempts: 1, timeout: this.commandTimeoutMs },
       )).stdout,
       permissionMode: () => this.permissionMode,
-      effort: () => this.effort,
+      // Read at each handshake rather than at connect, so a spare's claim,
+      // which records its effort before respawning the agent, is followed.
+      // An unreadable effort leaves the adapter's own.
+      effort: () => this.readEffort().catch(() => undefined),
       profile,
       // Without one the adapter runs its own default, for pi possibly a
       // provider whose key the proxy does not swap.
@@ -421,7 +416,6 @@ class AcpConnection extends ControlModeConnection {
       },
       onEffort: (effort) => {
         entry.effort = effort
-        this.effort = effort
         this.publishAgents()
       },
       onStatus: () => {
