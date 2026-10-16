@@ -288,3 +288,22 @@ compaction.
   record directly, and it may never be restarted. A restart replaces the
   record, and the lives before it are read from the tool's own history,
   whose translators report compactions as `compaction_update`s.
+
+## A `/compact` opencode answered without reporting a compaction
+
+The pinned opencode reports a compaction as `compaction_update`s. An older
+one (2.0.21 and before) reported none, so `RecordProjection` in
+`packages/server/src/runtime/agents/acp-log.ts` shows a completed manual
+compaction where a user's `/compact` was answered with none reported
+(`AcpProjection.unreportedCompaction` in `acp-protocol.ts`). A workspace
+started under an older yaac keeps running that opencode until it restarts.
+
+- **What it reads.** A `session/prompt` line of an ACP record whose text
+  starts with `/compact`, and the reply to it.
+- **What breaks silently if it goes too early.** Those compactions show
+  nothing and start no page, so an older conversation shows its
+  pre-compaction history and the rest as one page.
+- **When it is safe to remove.** Once every workspace whose `acp` opencode
+  conversation ran on 2.0.21 or earlier, stopped ones included, has
+  restarted or been deleted since. A stopped workspace's view reads its last
+  life's record directly, and it may never be restarted.

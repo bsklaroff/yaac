@@ -185,12 +185,13 @@ describe.each(TIERS)("codex's sandbox in a $tier workspace pod", ({ pod }) => {
 describe('a project\'s codex pods', () => {
   it('leave each other\'s sandbox helper in place', async () => {
     // Each running codex holds a lock on its helper dir under
-    // $CODEX_HOME/tmp/arg0, and each codex start deletes every dir whose lock
-    // it can take. gVisor locks are per sandbox, so over a shared home the
-    // other pod would delete this one's dir unless tmp is pod-local. The
-    // long-running app-server (what codex-acp drives) holds the lock here.
+    // $CODEX_HOME/tmp/arg0-linux, and each codex start deletes every dir
+    // whose lock it can take. gVisor locks are per sandbox, so over a shared
+    // home the other pod would delete this one's dir unless tmp is
+    // pod-local. The long-running app-server (what codex-acp drives) holds
+    // the lock here.
     const [a, b] = TIERS.map((t) => t.pod)
-    const arg0 = `${CODEX_CONTAINER_HOME}/tmp/arg0`
+    const arg0 = `${CODEX_CONTAINER_HOME}/tmp/arg0-linux`
     // Clear the unlocked dirs the cases above left behind.
     const started = await sh(a, `rm -rf ${arg0}/*; `
       + 'setsid sh -c "sleep 300 | codex app-server" >/dev/null 2>&1 </dev/null & '

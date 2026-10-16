@@ -9,7 +9,7 @@
  * test ties them together). An adapter that drops a mode does not fail; it
  * silently runs its default, so only the version check catches drift.
  */
-import { ACP_ADAPTERS, type AgentTool } from '@yaac/shared/types'
+import { ACP_ADAPTERS, launchablePermissionMode, type AgentTool, type PermissionMode } from '@yaac/shared/types'
 import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import { envJsonAssignment } from '#lib/shell'
 import { claudeModelArg, opencodeConfigArg } from './agent-command'
@@ -39,6 +39,21 @@ export interface AcpAdapterProfile extends AcpSessionProfile {
 export function acpLaunchModel(spec: Pick<AgentLaunchSpec, 'tool' | 'model' | 'piProvider'>): string | undefined {
   if (spec.tool !== 'pi') return spec.model
   return spec.model ?? piProviderInfo(spec.piProvider ?? PI_DEFAULT_PROVIDER).defaultModel
+}
+
+/**
+ * codex-acp's mode presets as codex config, sent at launch so a loaded
+ * thread starts in its posture. codex restores the approval policy, reviewer
+ * and sandbox a thread last ran with unless `thread/resume` names each, and
+ * codex-acp names none (its `session/set_mode` applies only from the next
+ * `turn/start`), so a turn the thread starts by itself, such as a goal
+ * continuing, would otherwise run in the last life's posture.
+ */
+const CODEX_POSTURE_CONFIG: Partial<Record<PermissionMode, Record<string, string>>> = {
+  bypass: { approval_policy: 'never', approvals_reviewer: 'user', sandbox_mode: 'danger-full-access' },
+  auto: { approval_policy: 'on-request', approvals_reviewer: 'auto_review', sandbox_mode: 'workspace-write' },
+  'accept-edits': { approval_policy: 'on-request', approvals_reviewer: 'user', sandbox_mode: 'workspace-write' },
+  'read-only': { approval_policy: 'on-request', approvals_reviewer: 'user', sandbox_mode: 'read-only' },
 }
 
 const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
@@ -72,7 +87,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
   },
 
   /**
-   * Configured only through env. The model goes in `CODEX_CONFIG`: there is
+   * Configured only through env. The posture's settings
+   * (`CODEX_POSTURE_CONFIG`) and the model go in `CODEX_CONFIG`: there is
    * no `--model`, and `session/set_model` ids carry an effort suffix
    * (`gpt-5.2-codex[medium]`) that `MODEL_RE` excludes. `NO_BROWSER=1` stops
    * the ChatGPT login from opening a browser. `CODEX_PATH` makes it run the
@@ -80,8 +96,8 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    *
    * Its four modes are presets of codex's approval × sandbox grid, one per
    * posture the TUI offers. Its default is `agent`, weaker than
-   * `accept-edits`, which is why a failed `session/set_mode` is shown in the
-   * pane rather than only logged.
+   * `accept-edits`, which is why a failed `session/set_mode` steps down to a
+   * stricter mode and is shown in the pane rather than only logged.
    *
    * Reports its thread's running/idle state unasked (`agentRunningReport`),
    * goal continuations included.
@@ -91,9 +107,10 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     env: (spec) => [
       'NO_BROWSER=1',
       'CODEX_PATH=codex',
-      ...(spec.model !== undefined
-        ? [envJsonAssignment('CODEX_CONFIG', { model: spec.model })]
-        : []),
+      envJsonAssignment('CODEX_CONFIG', {
+        ...CODEX_POSTURE_CONFIG[launchablePermissionMode('codex', spec.permissionMode)],
+        ...(spec.model !== undefined ? { model: spec.model } : {}),
+      }),
     ],
     modeIds: {
       bypass: 'agent-full-access',
@@ -109,15 +126,10 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
 
   /**
    * `opencode acp` is built in, so no separate package can drift from the
-   * CLI. Posture uses the same `OPENCODE_CONFIG_CONTENT` document as the TUI.
-   *
-   * A new acp session reports the server defaults (the `build` agent, the
-   * catalog's first model) and applies the config's `default_agent` and
-   * `model` only at the first prompt. So `plan` and the model are set over
-   * the protocol, which holds and reports them from the start. The
-   * permission rules still travel in the config and supply most of what
-   * `plan` means (the agent itself only adds `edit deny`). The model goes
-   * through `session/set_config_option`, since v2 removed
+   * CLI. Posture uses the same `OPENCODE_CONFIG_CONTENT` document as the TUI,
+   * and a new session starts in its `default_agent`, so `plan` is already
+   * the session's mode; mapping it lets that mode read as the posture. The
+   * model goes through `session/set_config_option`, since v2 removed
    * `session/set_model`.
    */
   opencode: {

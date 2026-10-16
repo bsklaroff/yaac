@@ -145,6 +145,7 @@ async function synthesizeAcpRecord(
   const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk')
   const { stripLocalCommandMetadata, toAcpNotifications } =
     await import('@agentclientprotocol/claude-agent-acp')
+  const { isReplayHiddenMetaMessage } = await import('@agentclientprotocol/claude-agent-acp/dist/acp-agent.js')
   const { compactionSummaryText } = await import('@agentclientprotocol/claude-agent-acp/dist/context-compaction.js')
   /* eslint-enable no-restricted-syntax */
 
@@ -181,14 +182,17 @@ async function synthesizeAcpRecord(
       const api = (message as { message?: { role?: unknown; content?: unknown } }).message
       const role = api?.role
       if (role !== 'assistant' && role !== 'user') continue
-      if (isSummary(message)) continue
+      if (isSummary(message) || isReplayHiddenMetaMessage(message)) continue
       // The live path turns claude's synthetic "Please run /login" message
       // into an auth error; replaying it would show a stale login prompt.
       if (role === 'assistant' && isSyntheticLoginMessage(api)) continue
       let content = api?.content
-      if (role === 'user') {
+      // Slash-command bookkeeping (caveat preamble, invocation, stdout) is
+      // dropped. A task notification is kept whole: the adapter's stripper
+      // removes its markup too, but the projection reads it to settle the
+      // tasks the replay rebuilt (`AcpProjection.replayedWake`).
+      if (role === 'user' && !isTaskNotification(content)) {
         content = stripLocalCommandMetadata(content)
-        // Slash-command bookkeeping (caveat preamble, invocation, stdout).
         if (content === null) continue
       }
       for (const notification of toAcpNotifications(
@@ -242,6 +246,12 @@ function isSyntheticLoginMessage(api: { model?: unknown; content?: unknown } | u
   const block = api.content[0] as { type?: unknown; text?: unknown } | undefined
   return block?.type === 'text' && typeof block.text === 'string'
     && block.text.includes('Please run /login')
+}
+
+/** A user message that is claude's report of background work ending, which
+ *  claude writes as a string opening with its markup. */
+function isTaskNotification(content: unknown): boolean {
+  return typeof content === 'string' && content.startsWith('<task-notification>')
 }
 
 /**

@@ -18,7 +18,7 @@ interface CodexEntry {
 }
 
 /**
- * A user turn's text: a `user_message` event, or (codex-cli 0.159.3) an
+ * A user turn's text: a `user_message` event, or (codex-cli 0.163.0) an
  * `item_completed` event with a `UserMessage` item. Never a user-role
  * `response_item`, which also carries injected bootstrap context
  * (AGENTS.md).
@@ -40,7 +40,7 @@ function getUserMessageText(entry: CodexEntry): string | undefined {
  * first, which disappears when the turn ends. When Codex blocks on an
  * approval the spinner is replaced by "[ ! ] Action Required", so every
  * user-blocked state reads as 'waiting' (verified against codex-cli
- * 0.142.4, codex-rs/tui/src/chatwidget/status_surfaces.rs).
+ * 0.163.0, codex-rs/tui/src/chatwidget/status_surfaces.rs).
  *
  * Before Codex sets a title the pane shows the hostname, which reads as
  * 'waiting'.
@@ -62,7 +62,7 @@ export async function getCodexFirstUserMessage(file: SandboxFile): Promise<strin
 /**
  * The items codex builds its title from: its default pair plus the model.
  * Idle reads `workspace | GPT-5.6-Sol`, a turn `⠙ workspace | GPT-5.6-Sol`,
- * and `/model` updates the last segment immediately (codex-cli 0.159.3).
+ * and `/model` updates the last segment immediately (codex-cli 0.163.0).
  * This is codex's only model-change signal: no hook fires, and the rollout
  * does not exist before the first turn.
  *
@@ -77,6 +77,13 @@ export const CODEX_TITLE_ITEMS = ['activity', 'project-name', 'model'] as const
  * shared background server (which `-c` overrides rule out anyway, with a
  * startup warning).
  *
+ * They also turn off codex's worktrees feature, which in a trusted folder
+ * gives the agent a `create_worktree` tool. Its worktrees go under
+ * `$CODEX_HOME/worktrees`, the project's shared codex home, so each one
+ * would outlive the workspace (docs/workspace-storage.md). An `acp` codex
+ * needs no setting: the tool is served by the TUI, never by
+ * `codex app-server`.
+ *
  * With `--dangerously-bypass-hook-trust` (`buildAgentCmd`) codex shows no
  * startup screen ("Trust this folder?", "Hooks need review", "Update
  * available"), any of which would swallow the pasted prompt. Known cost: a
@@ -88,6 +95,7 @@ export function codexLaunchConfig(workspaceDir: string): string[] {
   return [
     'check_for_update_on_startup=false',
     'features.daemon_auto_start=false',
+    'features.worktrees=false',
     `projects={${JSON.stringify(workspaceDir)}={trust_level="trusted"}}`,
   ]
 }
@@ -150,7 +158,7 @@ export interface CodexRolloutSettings {
  * says more: `thread_settings_applied` is written as soon as
  * `/permissions` or Shift+Tab changes anything, and `turn_context` at every
  * turn, both naming the approval policy, reviewer and permission profile
- * (codex-cli 0.159.3). The newer wins.
+ * (codex-cli 0.163.0). The newer wins.
  *
  * The profile is read rather than `sandbox_policy` (only in
  * `turn_context`): `disabled` is full access; a managed profile is

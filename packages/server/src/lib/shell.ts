@@ -38,8 +38,7 @@ export function doubleQuoted(str: string): string {
 
 /**
  * A `NAME="<json>"` prefix for a launch command, for tools configured
- * through a JSON env var (`OPENCODE_PERMISSION`, `CODEX_CONFIG`,
- * `OPENCODE_CONFIG_CONTENT`).
+ * through a JSON env var (`CODEX_CONFIG`, `OPENCODE_CONFIG_CONTENT`).
  *
  * Double-quoted because these are embedded in `respawn-window '<cmd>'`,
  * where a single quote would end the wrapper, and bare `{...}` would hit

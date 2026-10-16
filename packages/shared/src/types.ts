@@ -146,28 +146,20 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
  * depend on their CLI's version. Then run `pnpm gen:providers`: the claude
  * catalog and every tool's effort levels are read from the pinned CLIs.
  *
- * Before bumping codex to 0.162 or later, turn off its worktrees feature.
- * From 0.162 the agent can create worktrees itself (`create_worktree`) in
- * trusted projects, which yaac marks every checkout as. They go under
- * `$CODEX_HOME/worktrees`, the project's shared codex home, so each one's
- * install would land on the shared tier and outlive the workspace. Claude's
- * worktrees are denied under k8s for the same reason
- * (docs/workspace-storage.md).
- *
  * `installScriptSha256` is the SHA-256 of the `install.sh` asset of codex's
  * release, which the auth daemon's Install button runs. Release assets can
  * be replaced in place, so the daemon refuses a script that does not match.
  * Bump it with the version (`curl -fsSL <url> | shasum -a 256`).
  */
 export const AGENT_CLIS = {
-  claude: { package: '@anthropic-ai/claude-code', version: '2.1.286' },
+  claude: { package: '@anthropic-ai/claude-code', version: '2.1.301' },
   codex: {
     package: '@openai/codex',
-    version: '0.159.3',
+    version: '0.163.0',
     installScriptSha256: '150e3cf675682efeaac115aa3747add3f27887896d04ce6d0b56478d8b428bf6',
   },
-  opencode: { package: '@opencode/cli', version: '2.0.21' },
-  pi: { package: '@earendil-works/pi-coding-agent', version: '0.99.2' },
+  opencode: { package: '@opencode/cli', version: '2.0.30' },
+  pi: { package: '@earendil-works/pi-coding-agent', version: '1.3.0' },
 } as const satisfies Record<AgentTool, { package: string; version: string; installScriptSha256?: string }>
 
 /**
@@ -186,13 +178,13 @@ export const ACP_ADAPTERS = {
   claude: {
     binary: 'claude-agent-acp',
     package: '@agentclientprotocol/claude-agent-acp',
-    verified: '0.84.0',
+    verified: '0.91.0',
     needsCli: false,
   },
   codex: {
     binary: 'codex-acp',
     package: '@agentclientprotocol/codex-acp',
-    verified: '2.1.0',
+    verified: '2.2.2',
     needsCli: true,
   },
   opencode: {

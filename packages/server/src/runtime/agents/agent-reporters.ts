@@ -18,8 +18,8 @@ import { PI_MESSAGE_KEY } from './agent-command'
  * opencode's run one at a time, in order, since pane options are
  * last-write-wins.
  *
- * Verified against claude 2.1.286, codex-cli 0.159.3, pi 0.99.2 and
- * @opencode/cli 2.0.21.
+ * Verified against claude 2.1.301, codex-cli 0.163.0, pi 1.3.0 and
+ * @opencode/cli 2.0.30.
  */
 
 /**
@@ -34,11 +34,11 @@ const sessionHook = (home: string, tool: string): string => `yaac-agent-links "$
  * claude's model, mode and effort reporter. Model: `PostModelSwitch`
  * (`to_model`) and `SessionStart` (`model`), which fires on interactive
  * startup but not on `--resume` or `/clear`, so a restarted pane keeps its
- * row's model until the next `/model`. Mode and effort: `UserPromptSubmit`
- * and `Stop` (`permission_mode`, `effort.level`); no event fires on
- * Shift+Tab or `/effort`, so a change is reported at the next prompt or turn
- * end. Stdout must stay empty, because claude passes it to the model on
- * these events.
+ * row's model until the next `/model`. Mode: `UserPromptSubmit` and `Stop`
+ * (`permission_mode`). Effort: `Stop` alone (`effort.level`). No event fires
+ * on Shift+Tab or `/effort`, so a mode change is reported at the next prompt
+ * or turn end, and an effort change at the next turn end. Stdout must stay
+ * empty, because claude passes it to the model on these events.
  *
  * Guarded because claude hot-reloads this shared file, and a workspace
  * whose staged bin lacks the script would show a hook error on every
@@ -132,8 +132,8 @@ export default function (pi) {
  * launch names it (`buildAgentCmd`). The plugin ends its session on dispose.
  *
  * Model, variant and agent: the TUI tells the server about a `/models` or
- * `/variants` pick or a Tab between `build` and `plan` only when the next
- * prompt is sent (`session.model.selected`, `session.agent.selected`).
+ * `/variants` pick or a Shift+Tab between `build` and `plan` only when the
+ * next prompt is sent (`session.model.selected`, `session.agent.selected`).
  * `session.created` and each `session.step.started` also name them, which
  * covers resumed conversations and a first prompt sent before the plugin
  * loaded. The model's `variant` is the effort, `default` when it has none.

@@ -111,9 +111,9 @@ function postureFor(tool: AgentTool, mode: PermissionMode): PermissionMode {
  * win), which makes the posture per-workspace.
  *
  * Rules go in opencode's ordered `permissions` array, after a base policy
- * (`* allow`, then `ask` for `external_directory` and `.env` reads) and
- * before a built-in agent's own rules (`plan` adds `edit deny`). Last match
- * wins, so a posture states only what it changes.
+ * (`* allow`, then `ask` for `external_directory` and `.env` reads) and a
+ * built-in agent's own rules (`plan` adds `edit deny`). Last match wins, so
+ * a posture states only what it changes, and overrides the agent's rules.
  *
  * **A wrong rule fails open, silently.** An unknown action matches nothing,
  * leaving `* allow` in force. For the same reason `bypass` states `* allow`
@@ -129,7 +129,7 @@ interface OpencodeConfig {
 
 /**
  * The permission actions opencode knows, read off the pinned binary
- * (`@opencode/cli@2.0.21`): its tools plus the wildcard and
+ * (`@opencode/cli@2.0.30`): its tools plus the wildcard and
  * `external_directory`. Unknown actions are accepted silently and match
  * nothing, so `agent-command.test.ts` checks every action used below against
  * this list. Re-read it when the pin in dockerfiles/Dockerfile.tools moves.
@@ -171,8 +171,8 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
   // the table has no gaps.
   auto: OPENCODE_ACCEPT_EDITS,
   'accept-edits': OPENCODE_ACCEPT_EDITS,
-  // opencode's `plan` agent only denies edits; the ask-to-act rules keep it
-  // from running commands unprompted.
+  // opencode's `plan` agent only denies edits, which these rules turn into
+  // asks; they also keep it from running commands unprompted.
   plan: { default_agent: 'plan', permissions: OPENCODE_ASK_TO_ACT },
   manual: { permissions: OPENCODE_ASK_TO_ACT },
   // Unreachable (`postureFor` maps it to `plan`).
@@ -187,8 +187,8 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  *
  * An effort is a model variant, which opencode's config takes only on an
  * agent, beside the model it applies to (a `model#variant` there is dropped
- * as a legacy reference, checked against 2.0.21). It goes on both built-in
- * agents, so a Tab between them keeps it. `default` (no variant) needs no
+ * as a legacy reference, checked against 2.0.30). It goes on both built-in
+ * agents, so a Shift+Tab between them keeps it. `default` (no variant) needs no
  * entry.
  */
 export function opencodeConfigArg(
@@ -232,20 +232,25 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   const { tool, workspaceId, piProvider, model, effort, resume } = spec
   const mode = postureFor(tool, spec.permissionMode)
   if (tool === 'codex') {
-    // codex postures are an approval policy plus a sandbox:
-    //  - accept-edits: codex's default preset (workspace-write, on-request),
-    //    no flags. Network is off in the sandbox, so network access asks.
+    // codex postures are an approval policy, a reviewer and a sandbox:
+    //  - accept-edits: codex's default preset (workspace-write, on-request,
+    //    the user reviews). Network is off in the sandbox, so network
+    //    access asks.
     //  - auto: same sandbox, approvals by a reviewer model.
     //  - read-only: the read-only sandbox.
     //  - plan and manual map to read-only via `postureFor`, but are listed
     //    so the table has no gaps.
+    // `codex resume` restores each of the three the conversation last had
+    // unless a flag names it, so every posture names all three (`--yolo`
+    // needs no reviewer, since it never asks).
+    const userAsks = '--ask-for-approval on-request -c approvals_reviewer=user'
     const posture = {
       bypass: '--yolo',
       auto: '--approve-for-me',
-      'accept-edits': '',
-      manual: '--sandbox read-only',
-      plan: '--sandbox read-only',
-      'read-only': '--sandbox read-only',
+      'accept-edits': `--sandbox workspace-write ${userAsks}`,
+      manual: `--sandbox read-only ${userAsks}`,
+      plan: `--sandbox read-only ${userAsks}`,
+      'read-only': `--sandbox read-only ${userAsks}`,
     }[mode]
     // --model goes last so it binds to `codex resume` too.
     //

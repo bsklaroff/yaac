@@ -6,7 +6,7 @@
  * `opencode acp` would have streamed to yaac live, and replays that through
  * `replayAcpLog`.
  *
- * The mapping follows @opencode/cli 2.0.21 (the version
+ * The mapping follows @opencode/cli 2.0.30 (the version
  * dockerfiles/Dockerfile.tools installs): its `session/load` replay for each
  * message part, and its live stream where the two differ, since that is what
  * an `acp` conversation shows. So the user's prompts become `session/prompt`
@@ -18,9 +18,8 @@
  *
  * A `!command` the user ran (a `shell` row), which only the TUI writes, is
  * rendered as the closest thing a client could have sent: the prompt they
- * typed plus the shell call with its output. A compaction, which the live
- * stream does not report, is shown as a compaction with its summary, after
- * the `/compact` prompt that started a manual one.
+ * typed plus the shell call with its output. A compaction is shown with its
+ * summary, after the `/compact` prompt that started a manual one.
  *
  * Dropped, because neither the live stream nor yaac's projection renders
  * them: the text a slash command expands into is shown in place of the
@@ -294,13 +293,11 @@ function synthesizeAcpRecord(rows: Row[], rootId: string): AcpRecordWriter {
       } else if (type === 'compaction' && child === undefined) {
         if (data.reason === 'manual') prompt([{ type: 'text', text: '/compact' }])
         const summary = asString(data.summary)
-        const error = asString(data.error)
         update({
           sessionUpdate: 'compaction_update',
           compactionId: asString(data.id) ?? `compaction-${String(compactions++)}`,
-          status: data.status === 'running' ? 'in_progress' : data.status,
+          ...compactionOutcome(data),
           ...(summary !== undefined && summary !== '' ? { summary: [{ type: 'text', text: summary }] } : {}),
-          ...(error !== undefined ? { error } : {}),
           _meta: { [COMPACTION_META]: { trigger: data.reason === 'manual' ? 'manual' : 'auto' } },
         })
       } else if (type === 'assistant') {
@@ -386,7 +383,12 @@ function toolUpdates(part: Row, cwd: string): Row[] {
     case 'running':
       return [first, { sessionUpdate: 'tool_call_update', ...call, status: 'in_progress' }]
     case 'completed':
-      return [first, { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', content: completedContent(name, input, state.content) }]
+      return [first, {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: id,
+        status: 'completed',
+        content: completedContent(name, state, cwd),
+      }]
     case 'error': {
       const error = asString(asRecord(state.error)?.message) ?? ''
       return [first, {
@@ -401,23 +403,58 @@ function toolUpdates(part: Row, cwd: string): Row[] {
   }
 }
 
+/**
+ * A compaction row's status and error, as opencode's live stream reports
+ * them: an abort or interruption as `cancelled`, and a failure whose message
+ * is empty or spans lines as just "Compaction failed".
+ */
+function compactionOutcome(data: Row): Row {
+  if (data.status !== 'failed') return { status: data.status === 'running' ? 'in_progress' : data.status }
+  const error = asRecord(data.error)
+  const type = asString(error?.type)
+  if (type === 'aborted' || type === 'compaction.interrupted') return { status: 'cancelled' }
+  const message = asString(error?.message)
+  const terse = message === undefined || message === '' || (type === 'compaction.failed' && message.includes('\n'))
+  return { status: 'failed', error: terse ? 'Compaction failed' : message }
+}
+
 /** A finished call's content. A read's result is the file text opencode
- *  extracts from its JSON form, an edit's old and new strings become a diff,
- *  and images go last. */
-function completedContent(name: string, input: Row, raw: unknown): Row[] {
+ *  extracts from its JSON form, an edit's patch becomes a diff per file, and
+ *  images go last. */
+function completedContent(name: string, state: Row, cwd: string): Row[] {
+  const raw = state.content
   const content = toolContent(raw)
   const images = content.filter((c) => asRecord(c.content)?.type === 'image')
   const firstText = (Array.isArray(raw) ? raw : []).map(asRecord).find((c) => c?.type === 'text')
   const read = name.toLowerCase() === 'read' && firstText !== undefined ? readText(asString(firstText.text) ?? '') : undefined
-  const oldText = asString(input.oldString)
-  const newText = asString(input.newString)
   return [
     ...(read === undefined ? content.filter((c) => !images.includes(c)) : [{ type: 'content', content: { type: 'text', text: read } }]),
-    ...(oldText !== undefined && newText !== undefined
-      ? [{ type: 'diff', path: asString(input.path) ?? asString(input.filePath) ?? '', oldText, newText }]
-      : []),
+    ...patchDiffs(asRecord(state.metadata)?.files, cwd),
     ...images,
   ]
+}
+
+/**
+ * The diffs of the files a call changed, one per hunk of the patches
+ * opencode stores with it. Live, opencode diffs each whole file as it is on
+ * disk, which its history does not hold, so these show the changed hunks and
+ * their context: the whole file only when it is short.
+ */
+function patchDiffs(files: unknown, cwd: string): Row[] {
+  return (Array.isArray(files) ? files : []).flatMap((raw) => {
+    const file = asString(asRecord(raw)?.file)
+    const patch = asString(asRecord(raw)?.patch)
+    if (file === undefined || patch === undefined) return []
+    const hunks: Array<{ oldText: string, newText: string }> = []
+    for (const line of patch.split('\n')) {
+      if (line.startsWith('@@')) hunks.push({ oldText: '', newText: '' })
+      const hunk = hunks.at(-1)
+      if (hunk === undefined || line.startsWith('@@')) continue
+      if (line.startsWith(' ') || line.startsWith('-')) hunk.oldText += `${line.slice(1)}\n`
+      if (line.startsWith(' ') || line.startsWith('+')) hunk.newText += `${line.slice(1)}\n`
+    }
+    return hunks.map((hunk) => ({ type: 'diff', path: path.posix.resolve(cwd, file), ...hunk }))
+  })
 }
 
 /** A read result given as JSON (a text page, or a directory's entries), as
@@ -476,19 +513,19 @@ function toolKind(name: string): string {
   return TOOL_KINDS[name.toLowerCase()] ?? 'other'
 }
 
-/** The paths a call is about: a shell call's working directory, or the file
- *  or directory a read, search or edit names. */
+/** The paths a call is about, resolved against the conversation's
+ *  directory: a shell call's working directory, the files a patch names, or
+ *  the file or directory a read, search or edit names. */
 function toolLocations(name: string, input: Row, cwd: string): Array<{ path: string }> {
   const kind = toolKind(name)
-  const target = kind === 'execute'
-    ? shellCwd(input, cwd)
-    : kind === 'edit' ? asString(input.filePath) ?? asString(input.filepath)
-    : kind === 'read' || kind === 'search' ? asString(input.path)
-    : undefined
-  return target === undefined || target === '' ? [] : [{ path: target }]
-}
-
-function shellCwd(input: Row, cwd: string): string {
-  const dir = asString(input.workdir) ?? asString(input.cwd)
-  return dir === undefined || dir === '' ? cwd : path.posix.resolve(cwd, dir)
+  const patch = asString(input.patchText)
+  const targets = kind === 'execute'
+    ? [asString(input.workdir) ?? asString(input.cwd) ?? cwd]
+    : patch !== undefined && kind === 'edit'
+      ? [...patch.matchAll(/^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$/gm)].map((m) => m[1])
+      : kind === 'edit' || kind === 'read' ? [asString(input.path) ?? asString(input.filePath)]
+      : kind === 'search' ? [asString(input.path)]
+      : []
+  const paths = targets.flatMap((t) => (t === undefined || t === '' ? [] : [path.posix.resolve(cwd, t)]))
+  return [...new Set(paths)].map((p) => ({ path: p }))
 }

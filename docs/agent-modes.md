@@ -299,28 +299,25 @@ the agent is waiting on. A compaction stays first on its page.
 
 **A compaction is its own event** (`compaction`), drawn as a divider across
 the column with its trigger and token counts, which opens to the summary the
-agent kept. yaac declares `session.compaction`, so claude's and codex's
-adapters report one as `compaction_update`s (claude adds the summary,
-streamed as `compaction_summary_chunk`s, and its trigger and token counts
-come from the `compact_boundary` SDK message the handshake asks for). The
-other two are made to fit:
-
-- pi-acp listens only for event names pi no longer sends, so automatic
-  compactions are otherwise invisible; yaac's patch
-  (`dockerfiles/agent-patches/pi-acp.js`) reports every one as
-  `compaction_update`s, with the summary and the token counts under the
-  `yaac/compaction` `_meta` key.
-- opencode's adapter reports no compaction at all. A `/compact` the user
-  sends is shown as one where its reply arrives
-  (`AcpProjection.unreportedCompaction`); an automatic one is not seen live,
-  though its rows show it in a tui transcript.
+agent kept. yaac declares `session.compaction`, so claude's, codex's and
+opencode's adapters report one as `compaction_update`s (claude and opencode
+add the summary, streamed as `compaction_summary_chunk`s; claude's trigger
+and token counts come from the `compact_boundary` SDK message the handshake
+asks for). pi-acp listens only for event names pi no longer sends, so
+automatic compactions are otherwise invisible; yaac's patch
+(`dockerfiles/agent-patches/pi-acp.js`) reports every one as
+`compaction_update`s, with the summary and the token counts under the
+`yaac/compaction` `_meta` key.
 
 The tui transcript translators report compactions the same way: claude's cuts
 its transcript at each `compact_boundary` and parses each part alone, since
 the SDK's parser stops at the latest one; codex's and opencode's read theirs
 from the rollout and the database, and pi's from its log's `compaction`
 entries. A record written before yaac declared `session.compaction` holds a
-think call titled `Compact conversation`, which is read as a compaction too.
+think call titled `Compact conversation`, which is read as a compaction too,
+and a `/compact` that an older opencode answered without reporting one is
+shown as one where its reply arrives (`AcpProjection.unreportedCompaction`;
+docs/legacy-compat-shims.md).
 
 **Panes load pages as the reader moves** (`useTranscriptPages`). The live
 pane's `hello` and the read-only pane's first read are the last page, shown
@@ -392,11 +389,8 @@ typed mid-turn where its adapter allows:
     claude's adapter counts only a turn a prompt began as running, so a
     message sent while a finished background task has woken the agent is
     handed back and goes as a `session/prompt`. The agent then takes it
-    into the run already going, and the adapter answers the prompt only as
-    yaac patches it at install, in the image and in a host install alike
-    (`dockerfiles/agent-patches/claude-agent-acp.js`, which says when it can
-    go). Unpatched, that prompt is never answered and the conversation shows
-    as working until the workspace restarts.
+    into the run already going, and the adapter answers the prompt with
+    that run's result, which names the messages it consumed.
 
   The request asks for `idleBehavior: promptRequired`, so a steer that
   arrives just after the turn ended is handed back. Any steer the agent does
@@ -515,8 +509,11 @@ notification text the agent itself received is not available: the CLI
 replays it only when it joins a running turn.
 
 A `session/load` replays the history with none of these signals: no state reports, no task messages, and each
-notification a user message of `<task-notification>` markup. (The adapter
-replays subagents itself only to an AIR client.) So between the
+notification a user message of `<task-notification>` markup in the replay
+yaac makes from claude's transcript (`claudeTranscriptAsAcp`). The
+adapter's own replay leaves notifications out, so in it nothing settles
+before the reply. (The adapter replays subagents itself only to an AIR
+client.) So between the
 `session/load` request and its reply, the projection rebuilds what it can
 from the launching calls. An `Agent` call is its subagent, with its prompt
 as the task and, in the foreground, its hand-back report as the summary;

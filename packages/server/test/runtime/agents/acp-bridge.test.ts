@@ -693,8 +693,7 @@ describe('attachAcp', () => {
 
   it('greets a pane with a posture that never took, which the handshake had nobody to tell', async () => {
     // The refusal is reported during the handshake, before any pane can
-    // attach, so it must be repeated on hello. It matters for codex, whose
-    // default mode (`agent`) is looser than the `accept-edits` asked for.
+    // attach, so it must be repeated on hello.
     conversation.close()
     transport = new FakeTransport()
     conversation = new AcpConversation({
@@ -737,6 +736,13 @@ describe('attachAcp', () => {
     })
     await waitFor(() => sent('session/set_mode') !== undefined)
     reply(sent('session/set_mode')!.id, { error: { code: -32603, message: 'mode unavailable' } })
+    // It steps down from the looser `agent` to `read-only`.
+    const setModes = (): Array<{ id: number; params?: unknown }> =>
+      transport.written.map((l) => JSON.parse(l) as { id: number; method?: string; params?: unknown })
+        .filter((m) => m.method === 'session/set_mode')
+    await waitFor(() => setModes().length === 2)
+    expect(setModes()[1].params).toEqual({ sessionId: 'acp-1', modeId: 'read-only' })
+    reply(setModes()[1].id, { result: {} })
 
     // Reported while no pane was attached.
     await waitFor(() => reportedLive.length > 0)
@@ -750,7 +756,7 @@ describe('attachAcp', () => {
       .flatMap((m) => (m.type === 'event' && m.event.type === 'error' ? [m.event.message] : []))
     expect(reported.join(' ')).toContain('workspace-write')
     // Names the mode actually in effect.
-    expect(reported.join(' ')).toContain('agent')
+    expect(reported.join(' ')).toContain('running in read-only')
     // Sent after hello, so it is not mistaken for old history.
     const helloAt = sock.sent.findIndex((m) => m.type === 'hello')
     const errorAt = sock.sent.findIndex((m) => m.type === 'event' && m.event.type === 'error')

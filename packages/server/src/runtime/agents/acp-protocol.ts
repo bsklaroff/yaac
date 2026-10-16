@@ -1127,9 +1127,9 @@ export class AcpProjection {
 
   /**
    * A compaction an agent ran without reporting it, shown where the user's
-   * `/compact` was answered: opencode's adapter reports no compaction at
-   * all. Undefined when a compaction was reported since `since`
-   * (`compactionsSeen`).
+   * `/compact` was answered. Only an opencode older than the pinned one
+   * reports none (docs/legacy-compat-shims.md). Undefined when a compaction
+   * was reported since `since` (`compactionsSeen`).
    */
   unreportedCompaction(id: string, since: number): AcpEventInit | undefined {
     if (this.compactions.size !== since) return undefined

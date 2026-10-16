@@ -49,8 +49,14 @@ that mapping cannot bring back.
   calls that launched them and from the `<task-notification>` messages that
   reported them (`AcpProjection.replayedLaunch`), so a task or subagent that
   reported nothing before the restart shows as ended: a subagent cancelled,
-  a task stopped. A subagent's own
-  messages come from its separate transcript.
+  a task stopped. A subagent's own messages come from its separate
+  transcript. Past the transcript cap, the adapter's `session/load` replay
+  sends no notifications at all, so a task or background subagent it
+  rebuilds shows as ended even when it finished, and no run shows what woke
+  it.
+- **Quoted notification markup.** A message whose text quotes a
+  `<task-notification>` block after other text shows without the block,
+  since the adapter's history reader strips that markup.
 
 ## codex
 
@@ -82,11 +88,11 @@ that mapping cannot bring back.
 ## opencode
 
 In an `acp` conversation, earlier lives are opencode's `session/load`
-replay, which sends each message's text, reasoning and tool calls and
-nothing else:
+replay, which sends each message's text, reasoning and tool calls, and its
+compactions, and nothing else:
 
-- **Compactions** are not replayed, and neither is the `/compact` that asked
-  for one, so earlier lives show no divider and no page break at them.
+- **The `/compact`** that asked for a compaction is not replayed; the
+  compaction itself is.
 - **Subagents' own messages** are not replayed; the call that spawned each
   one is.
 - **A user's `!` command** is not replayed.
@@ -101,8 +107,8 @@ A `tui` conversation's transcript is read from opencode's database:
   `/command` typed. opencode stores only the expansion.
 - **Failed steps.** A failed step's error arrives live as the prompt's reply,
   which opencode does not store.
-- **Compactions** show with their summary, automatic ones included, which
-  an `acp` pane never shows: opencode's adapter reports none.
+- **Edit diffs** show the changed hunks and their context. Live, opencode
+  diffs the whole file as it is on disk, which its history does not hold.
 
 ## Adding an entry
 

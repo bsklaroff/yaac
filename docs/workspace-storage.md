@@ -189,7 +189,7 @@ hand-started one reports as well:
 Each tool also ends its conversation (claude's and codex's `SessionEnd`, pi's
 `session_shutdown`, the plugin's dispose), which clears the option when the
 agent quits. That matters in a shell pane that outlives the agent. (Verified
-against claude 2.1.286, codex-cli 0.159.3, pi 0.99.2 and @opencode/cli 2.0.21.)
+against claude 2.1.301, codex-cli 0.163.0, pi 1.3.0 and @opencode/cli 2.0.30.)
 
 A conversation is **active** exactly when a live agent names it. A pane option
 dies with its pane, and a new pod's tmux starts with none, so a previous pod's
@@ -741,3 +741,15 @@ hides `.nfs*`: on byo the checkout is on NFS, whose client renames a file
 deleted while still open to `.nfs<id>` until the last handle closes. A
 project that wants either back adds a `!` pattern to its `.gitignore`, which
 takes precedence over `info/exclude`.
+
+### Codex's worktrees
+
+codex's TUI offers its agent a `create_worktree` tool in a trusted folder,
+which yaac makes every checkout. Those worktrees go under
+`$CODEX_HOME/worktrees`, the project's shared codex home, so each one would
+outlive the workspace, and under k8s its install would land on the shared
+tier. So yaac launches every codex TUI with its worktrees feature off
+(`features.worktrees=false`, in `codexLaunchConfig`), and the image's
+`/etc/codex/requirements.toml` turns it off for a codex started by hand in a
+pod. Under containerless, a codex started by hand still has the tool. An
+`acp` codex runs `codex app-server`, which does not offer it.

@@ -263,6 +263,7 @@ function piPackageRoot(): string {
       '`npm i -g @earendil-works/pi-coding-agent` before regenerating.',
     )
   }
+  requirePinned('pi', pkgVersion(root))
   return root
 }
 
