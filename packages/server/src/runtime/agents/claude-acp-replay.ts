@@ -36,12 +36,13 @@ const PLACEHOLDER_SESSION_ID = '00000000-0000-0000-0000-000000000000'
 
 /**
  * A conversation's history from claude's transcript, as read by the caller
- * (see `getAgentSessionTranscript`).
+ * (see `getAgentSessionTranscript`); `ended` when its agent life is over
+ * (`AcpRecordWriter`).
  */
-export async function claudeTranscriptAsAcp(raw: string, agentSessionId: string): Promise<AcpEvent[]> {
+export async function claudeTranscriptAsAcp(raw: string, agentSessionId: string, ended = false): Promise<AcpEvent[]> {
   const record = new AcpRecordWriter()
   await synthesizeAcpRecord(raw, agentSessionId, record)
-  return record.replay()
+  return record.replay(ended)
 }
 
 /** Largest subagent transcript read, and the most of one meta file. */

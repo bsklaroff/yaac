@@ -201,6 +201,10 @@ export async function readAcpPage(ref: AcpRecordRef, page?: number, origin = NO_
  * characters the record ends and every later message is dropped unread, so
  * the conversation shows up to that point. A message too deeply nested to
  * serialize is skipped.
+ *
+ * The history of agent lives that have ended replays `ended`: closed by
+ * acpd's exit line, past the cap too, so what it left running shows as
+ * stopped rather than still going.
  */
 export class AcpRecordWriter {
   private readonly lines: string[] = []
@@ -220,8 +224,9 @@ export class AcpRecordWriter {
     else this.lines.push(line)
   }
 
-  replay(): AcpEvent[] {
-    return replayAcpLog(this.lines.join('\n'))
+  replay(ended = false): AcpEvent[] {
+    const exit = ended ? [JSON.stringify({ jsonrpc: '2.0', method: ACPD.exit })] : []
+    return replayAcpLog([...this.lines, ...exit].join('\n'))
   }
 }
 

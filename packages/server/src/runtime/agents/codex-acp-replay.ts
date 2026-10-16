@@ -65,10 +65,11 @@ type Json = Record<string, unknown>
 
 /**
  * A conversation's history from its rollouts: the conversation's own first,
- * then every descendant's (see `conversationFiles`).
+ * then every descendant's (see `conversationFiles`); `ended` when its agent
+ * life is over (`AcpRecordWriter`).
  */
-export function codexTranscriptAsAcp(rollouts: string[]): AcpEvent[] {
-  return synthesizeAcpRecord(rollouts).replay()
+export function codexTranscriptAsAcp(rollouts: string[], ended = false): AcpEvent[] {
+  return synthesizeAcpRecord(rollouts).replay(ended)
 }
 
 /** One point on the merged timeline. `seq` keeps file order among ties. */
