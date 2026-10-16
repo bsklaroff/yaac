@@ -3,7 +3,9 @@
 One always-on machine running the whole stack, and thin clients that
 reach it over a private [Tailscale](https://tailscale.com) tailnet.
 Workspaces keep running when every client disconnects. Several teammates
-can share the machine, each as their own user (docs/multi-user.md).
+can share the machine, each as their own user (docs/multi-user.md). A
+single user can skip Tailscale and use an SSH tunnel ("Single user over
+SSH").
 
 ```
 SERVER MACHINE (on the tailnet)
@@ -170,6 +172,33 @@ the webapp's Settings → General with the iPhone app (ios/README.md), which
 keeps a list of servers to switch between. To revoke a lost device, remove
 it from the tailnet in the Tailscale admin console; nothing on the server
 changes.
+
+## Single user over SSH
+
+Without a tailnet, one user can reach a `local` install through an SSH
+port-forward. sshd connects to the server's loopback port, and the client
+addresses it as `127.0.0.1`, so the server sees an ordinary local request
+and admits the caller as the install's owner:
+
+```sh
+ssh -N -L 9787:127.0.0.1:8787 you@srv     # 8790 for a kind install
+yaac remote add http://127.0.0.1:9787
+```
+
+The local port may differ from the server's (pick one that does not clash
+with a server on the laptop), since the Host check ignores the port and a
+browser's Origin carries the same port as its Host. The browser and the
+desktop app use the same origin. Terminals, workspace forwards
+(docs/port-forward-tunnel.md) and tool sign-ins all travel over the one
+tunnel, so it needs no other `-L`.
+
+- **It is one user.** Everyone who tunnels in is the built-in owner, which
+  is no more than SSH access to the machine already grants. Shared setups
+  use the tailnet.
+- **A `tailnet` install refuses it**, since that mode admits only requests
+  through serve.
+- **Keep the laptop's end on loopback.** A tunnel bound to a LAN address
+  and browsed by that address fails the Host check.
 
 ## What works remotely
 
