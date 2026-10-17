@@ -63,6 +63,7 @@ export function piTranscriptAsAcp(raw: string): AcpEvent[] {
   let lastRole: unknown
 
   for (const entry of activeBranch(entries)) {
+    record.time(Date.parse(asString(entry.timestamp) ?? ''))
     if (entry.type === 'compaction') {
       const summary = asString(entry.summary)
       update({

@@ -60,14 +60,15 @@ async function writeExport(root: string, body: string): Promise<string> {
  * as many chunks and a call as several updates, which a pane merges, so
  * chunks are joined and each call and subagent is shown once, where it
  * first appeared, in its last state. Session state a transcript does not
- * show (commands, models) is left out.
+ * show (commands, models) is left out, and so are times, which the live
+ * fixture's record does not hold.
  */
 function rendered(events: AcpEvent[]): unknown[] {
   const out: Array<Record<string, unknown>> = []
   const at = new Map<string, number>()
   for (const e of events) {
     if (e.type === 'commands' || e.type === 'models') continue
-    const { seq: _, ...shown } = e as AcpEvent & Record<string, unknown>
+    const { seq: _, at: _at, ...shown } = e as AcpEvent & Record<string, unknown>
     if (e.type === 'tool' || e.type === 'subagent') {
       const key = e.type === 'tool' ? e.call.toolCallId : e.subagent.id
       const i = at.get(key)
@@ -114,6 +115,10 @@ describe('opencodeTranscriptAsAcp', () => {
     expect(calls.find((c) => c.title === 'edit' && c.status === 'completed')?.content).toContainEqual({ type: 'diff', path: '/workspace/notes.txt', oldText: 'alpha\nbeta\n', newText: 'alpha\ngamma\n' })
     expect(calls.find((c) => c.title === 'sleep 30' && c.status !== 'pending')).toMatchObject({ shell: true, status: 'failed' })
     expect(events.filter((e) => e.type === 'subagent').at(-1)).toMatchObject({ subagent: { name: 'Inspect notes', state: 'completed' } })
+    // Dated by opencode's own times, to within the second a record keeps.
+    const [opening] = events.flatMap((e) => (e.type === 'user' ? [e.at] : []))
+    expect(opening).toBeGreaterThan(1792145811053 - 1000)
+    expect(opening).toBeLessThanOrEqual(1792145811053)
     // Read immutable: no lock file or sidecar appears beside it.
     expect(await fs.readdir(checkpoint())).toEqual(['opencode.db'])
 

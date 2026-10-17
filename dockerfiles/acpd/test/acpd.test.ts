@@ -82,6 +82,9 @@ function connect(sock: string): {
 const parsed = (lines: string[]): Array<Record<string, unknown>> =>
   lines.map((l) => JSON.parse(l) as Record<string, unknown>)
 
+/** A record's lines after its head: the life line and the first time mark. */
+const relayed = (logPath: string): string[] => fs.readFileSync(logPath, 'utf8').trim().split('\n').slice(2)
+
 describe('createAcpd', () => {
   it('announces firstAttach true only to the first client, so a reattach skips the handshake', async () => {
     const { sock } = await start(['cat'])
@@ -185,7 +188,8 @@ describe('createAcpd', () => {
       expect(fs.existsSync(logPath)).toBe(false)
       const lines = fs.readFileSync(adopted, 'utf8').trim().split('\n')
       expect(lines[0]).toContain('_acpd/life')
-      const said = lines.slice(1).map((l) => (JSON.parse(l) as { said: string }).said)
+      // The test runs past a second, so time marks may fall between them.
+      const said = lines.slice(1).filter((l) => !l.includes('_acpd/time')).map((l) => (JSON.parse(l) as { said: string }).said)
       expect(said).toEqual(['prompt', 'prompt', 'burst', 'burst', ...Array<string>(50).fill('out')])
       // Opened once, by path, and never again: a reopen cannot follow a rename
       // made from another node.
@@ -193,6 +197,44 @@ describe('createAcpd', () => {
     } finally {
       openSpy.mockRestore()
       syncSpy.mockRestore()
+    }
+  })
+
+  it('dates what it records to within a second, with at most one mark a second', async () => {
+    const logPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-log-')), 'c.jsonl')
+    tmpDirs.push(path.dirname(logPath))
+    let now = Date.parse('2026-10-17T12:00:00Z')
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      const { daemon } = await start(['cat'], { logPath })
+      const say = async (said: string): Promise<void> => {
+        daemon.child.stdin.write(`{"said":"${said}"}\n`)
+        await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes(said))
+      }
+      await say('at start')
+      now += 999
+      await say('within the second')
+      now += 1
+      await say('a second on')
+      await say('same instant')
+      now += 60_000
+      await say('a minute on')
+
+      const lines = parsed(fs.readFileSync(logPath, 'utf8').trim().split('\n'))
+      expect(lines[0]).toMatchObject({ method: '_acpd/life', params: { startedAt: '2026-10-17T12:00:00.000Z' } })
+      const t0 = Date.parse('2026-10-17T12:00:00Z')
+      expect(lines.slice(1)).toEqual([
+        { jsonrpc: '2.0', method: '_acpd/time', params: { at: t0 } },
+        { said: 'at start' },
+        { said: 'within the second' },
+        { jsonrpc: '2.0', method: '_acpd/time', params: { at: t0 + 1000 } },
+        { said: 'a second on' },
+        { said: 'same instant' },
+        { jsonrpc: '2.0', method: '_acpd/time', params: { at: t0 + 61_000 } },
+        { said: 'a minute on' },
+      ])
+    } finally {
+      clock.mockRestore()
     }
   })
 
@@ -211,8 +253,7 @@ describe('createAcpd', () => {
     a.socket.write('"}\n')
     await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes('long line!"}'))
 
-    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').slice(1)
-    expect(parsed(lines)).toEqual([{ agent: 'spoke' }, { user: 'a long line!' }])
+    expect(parsed(relayed(logPath))).toEqual([{ agent: 'spoke' }, { user: 'a long line!' }])
   })
 
   it('stores images beside the record and names them by hash, relaying them unchanged', async () => {
@@ -251,7 +292,7 @@ describe('createAcpd', () => {
     await a.waitFor((l) => l.length >= 2)
     expect(a.lines[1]).toBe(line.trimEnd())
 
-    await waitUntil(() => fs.readFileSync(logPath, 'utf8').trim().split('\n').length === 3)
+    await waitUntil(() => relayed(logPath).length === 2)
     const ref = `yaac-image:${hash}`
     const stored = {
       ...msg,
@@ -259,7 +300,7 @@ describe('createAcpd', () => {
       rawOutput: [{ ...msg.rawOutput[0], source: { ...msg.rawOutput[0].source, data: ref } }],
       _meta: { ...msg._meta, claudeCode: { toolResponse: { type: 'image', file: { base64: ref, type: 'image/png' } } } },
     }
-    expect(parsed(fs.readFileSync(logPath, 'utf8').trim().split('\n').slice(1))).toEqual([stored, stored])
+    expect(parsed(relayed(logPath))).toEqual([stored, stored])
     expect(fs.readFileSync(path.join(path.dirname(logPath), 'images', hash)).equals(png)).toBe(true)
     expect(fs.readdirSync(path.join(path.dirname(logPath), 'images'))).toEqual([hash])
   })

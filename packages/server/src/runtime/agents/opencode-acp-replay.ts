@@ -275,6 +275,7 @@ function synthesizeAcpRecord(rows: Row[], rootId: string): AcpRecordWriter {
     status('created')
     let running = false
     for (const { type, data } of s.messages) {
+      record.time(asRecord(data.time)?.created)
       if (type === 'user' && child === undefined) {
         const text = asString(data.text) ?? ''
         prompt([...(text === '' ? [] : [{ type: 'text', text }]), ...userImages(data.files)])

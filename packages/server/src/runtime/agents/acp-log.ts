@@ -210,6 +210,16 @@ export class AcpRecordWriter {
   private readonly lines: string[] = []
   private left = MAX_ACP_RECORD_BYTES
   private full = false
+  private marked: number | undefined
+
+  /** Note when what follows happened, as acpd's time marks do. A time
+   *  within a second of the last one noted is left out, as acpd leaves it. */
+  time(at: unknown): void {
+    if (typeof at !== 'number' || !Number.isFinite(at)) return
+    if (this.marked !== undefined && Math.abs(at - this.marked) < TIME_MARK_MS) return
+    this.marked = at
+    this.write({ method: ACPD.time, params: { at } })
+  }
 
   write(msg: Record<string, unknown>): void {
     if (this.full) return
@@ -229,6 +239,9 @@ export class AcpRecordWriter {
     return replayAcpLog([...this.lines, ...exit].join('\n'))
   }
 }
+
+/** The least time between two of acpd's time marks (`ACPD.time`). */
+const TIME_MARK_MS = 1000
 
 /** Tail poll interval: short enough for streaming to look live, cheap when
  *  idle (one open and a stat). */
@@ -435,12 +448,22 @@ const STATE_EVENTS: ReadonlySet<AcpEvent['type']> = new Set(['commands', 'models
 /** The user asking the agent to compact (`AcpProjection.unreportedCompaction`). */
 const COMPACT_COMMAND = /^\/compact(?:\s|$)/
 
+/** Events a pane dates (`AcpEvent`'s `at`). */
+const DATED_EVENTS: ReadonlySet<AcpEvent['type']> = new Set(['user', 'woken'])
+
 /**
  * Projects a record's lines, in order, into the events a pane renders,
  * numbered by page (`Pager`) from the origin's first page. A `session/load`
  * replays the history before this life; with that history read from the
  * tool's own (`skipReplay`), the replay contributes only session state
  * (commands, models, usage).
+ *
+ * The dated events get their time from the record's last time mark
+ * (`ACPD.time`), so a record with none shows them undated. A replay's lines are
+ * dated only by marks older than the `session/load` that asked for it: a
+ * history built from the tool's own (`AcpRecordWriter`) carries marks from
+ * when it happened, while acpd's marks during a live replay say only when
+ * it was replayed.
  */
 export class RecordProjection {
   private readonly projection = new AcpProjection()
@@ -452,6 +475,10 @@ export class RecordProjection {
    *  been shown when it was sent. */
   private compact: { id: string; seen: number } | undefined
   private compacts = 0
+  /** The last time mark. */
+  private mark: number | undefined
+  /** The open `session/load`, and the time mark it was sent under. */
+  private load: { id: string; sentAt: number } | undefined
 
   constructor(origin: RecordOrigin = NO_HISTORY) {
     this.pager = new Pager(origin.firstPage)
@@ -471,7 +498,16 @@ export class RecordProjection {
       events = events.filter((e) => STATE_EVENTS.has(e.type))
       if (msg.method === undefined && lineId(msg) === this.skipping) this.skipping = undefined
     }
+    if (msg.method === undefined && lineId(msg) === this.load?.id) this.load = undefined
+    const at = this.time()
+    if (at !== undefined) events = events.map((e) => (DATED_EVENTS.has(e.type) ? { ...e, at } : e))
     return this.pager.number(events, line.length + 1)
+  }
+
+  /** When the line being projected was recorded, if the record says. */
+  private time(): number | undefined {
+    if (this.load === undefined) return this.mark
+    return this.mark !== undefined && this.mark < this.load.sentAt ? this.mark : undefined
   }
 
   /** Number an event the record does not hold, after the last one. */
@@ -483,6 +519,11 @@ export class RecordProjection {
   private project(msg: Record<string, unknown>): AcpEventInit[] {
     const projection = this.projection
     const id = lineId(msg)
+    if (msg.method === ACPD.time) {
+      const at = asRecord(msg.params)?.at
+      if (typeof at === 'number' && Number.isFinite(at)) this.mark = at
+      return []
+    }
     // The agent exited: what it was doing died with it.
     if (msg.method === ACPD.exit) {
       this.skipping = undefined
@@ -513,6 +554,7 @@ export class RecordProjection {
     }
     if (msg.method === ACP.sessionLoad) {
       if (id !== undefined) {
+        this.load = { id, sentAt: this.mark ?? Infinity }
         projection.openLoad(id)
         if (this.skipReplay) this.skipping = id
       }

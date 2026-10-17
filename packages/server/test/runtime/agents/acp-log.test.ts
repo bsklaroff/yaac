@@ -851,6 +851,33 @@ describe('replayAcpLog', () => {
     expect(events[2]).toMatchObject({ content: [{ type: 'text', text: 'second ask' }] })
   })
 
+  it('dates each message by the record\'s last time mark, and a replay only by marks older than it', () => {
+    const t0 = Date.parse('2026-01-01T00:00:00.000Z')
+    const mark = (at: number): string => line({ jsonrpc: '2.0', method: '_acpd/time', params: { at } })
+    const echoed = (text: string): string => update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } })
+    const load = line({ jsonrpc: '2.0', id: 'load-1', method: 'session/load', params: {} })
+    const dated = (raw: string[]): Array<[string, number | undefined]> => replayAcpLog(raw.join('\n')).flatMap((e) => (
+      e.type === 'user' ? [[e.content.map((c) => (c.type === 'text' ? c.text : '')).join(''), e.at]] : []
+    ))
+
+    // acpd's marks during a live replay say only when it was replayed.
+    expect(dated([
+      life('life-1'), mark(t0), prompt('at start'),
+      load, mark(t0 + 1000), echoed('replayed'), line({ jsonrpc: '2.0', id: 'load-1', result: {} }),
+      prompt('after the replay'), mark(t0 + 60_000), prompt('a minute on'),
+    ])).toEqual([
+      ['at start', t0], ['replayed', undefined], ['after the replay', t0 + 1000], ['a minute on', t0 + 60_000],
+    ])
+    // A record with no marks is undated, though its life line says when it began.
+    expect(dated([life('life-1'), prompt('first'), prompt('an hour later')])).toEqual([
+      ['first', undefined], ['an hour later', undefined],
+    ])
+    // A history built from the tool's own carries marks from when it happened.
+    expect(dated([load, echoed('undated'), mark(t0), echoed('from history')])).toEqual([
+      ['undated', undefined], ['from history', t0],
+    ])
+  })
+
   it('gives each subagent its own thread and follows subagents and tasks to their latest state', () => {
     // Shapes as claude's adapter sends them once yaac opts into its AIR
     // extension: a subagent's updates arrive under its own session id.

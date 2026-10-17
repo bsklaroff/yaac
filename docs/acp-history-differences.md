@@ -35,6 +35,8 @@ that mapping cannot bring back.
   only up to the life's start, under the 64 MB transcript cap. Past it, the
   record's `session/load` replay stands in, which claude and pi send only
   from their latest compaction, so the turns before that are not shown.
+  The replayed messages are also undated, since the replay says only when
+  it was sent (docs/agent-modes.md, "Where history lives").
 
 ## claude
 
@@ -43,7 +45,7 @@ that mapping cannot bring back.
   text.
 - **Mid-turn messages.** claude keeps a message steered into a running turn as
   an ordinary user message, so it shows where claude took it, without the
-  "sent mid-turn" marker, and it ends the turn before it in the view.
+  "Sent mid-turn" marker, and it ends the turn before it in the view.
 - **Subagents and background tasks.** claude reports these live through Agent
   SDK task messages its transcript does not keep. They are rebuilt from the
   calls that launched them and from the `<task-notification>` messages that
@@ -57,6 +59,10 @@ that mapping cannot bring back.
 - **Quoted notification markup.** A message whose text quotes a
   `<task-notification>` block after other text shows without the block,
   since the adapter's history reader strips that markup.
+- **When a run was woken.** A restored "Woken by" caption is dated by the
+  `<task-notification>` entry claude wrote, which can be a few seconds
+  before the live record saw the run start, so its time can read a minute
+  earlier than it did live.
 
 ## codex
 
@@ -99,6 +105,8 @@ compactions, and nothing else:
 - **Permission asks** are not replayed.
 - **A turn opencode starts itself** reaches neither the record nor the live
   pane, but its messages are in opencode's history, so the replay shows them.
+- **Message times.** The replay carries none, so the messages of earlier
+  lives show undated.
 
 A `tui` conversation's transcript is read from opencode's database:
 

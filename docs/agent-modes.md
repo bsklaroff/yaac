@@ -114,6 +114,22 @@ replaying under `session/load`; without the client's `session/prompt` lines
 the record would show no live user turns. Nothing is buffered for an absent
 client, and the server keeps no copy.
 
+The record also dates its lines, for the times a pane shows beside each user
+message and in a "Woken by" caption. ACP messages carry no time, so acpd
+writes an `_acpd/time {at}` line right after the life line, and another
+before a relayed line once a second has passed since the last: every line
+is dated to within a second, at no more than one extra line a second. A
+record with no marks shows its messages undated.
+The projection stamps `user` and `woken` events with the last mark as `at`.
+A `session/load` replay is dated only by marks older than the load request,
+because acpd's marks during it say when it was replayed, not when the
+conversation happened. The translators that rebuild history from a tool's
+own files (`*-acp-replay`) write marks from that history's timestamps, which
+are older than their replay, so those messages are dated. A time travels as
+epoch milliseconds and the pane formats it in the viewer's own zone, never
+the session owner's: the one they pinned in settings, or else their
+device's.
+
 Images are the exception to recording lines verbatim. A screenshot is
 megabytes of base64, claude repeats each one in a tool result's `rawOutput`
 and again in `_meta.claudeCode.toolResponse.file.base64`, and pi sends each

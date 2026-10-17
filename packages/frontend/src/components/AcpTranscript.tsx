@@ -8,6 +8,7 @@ import { codeLines, unfence } from '#lib/code'
 import { diffTextPair, type DiffLine } from '#lib/diff'
 import { fileLinksIn, resolveFilePath, type CheckoutFiles, type FileRef } from '#lib/files'
 import { languageForFence, languageForPath } from '#lib/highlight'
+import { messageTime, useTimeZone } from '#lib/time'
 import {
   ChevronIcon, CompactionIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
   InterruptedIcon, MonitorIcon, MoreIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
@@ -23,8 +24,9 @@ import type {
  * Renders an ACP conversation: messages, thinking, tool calls, plans,
  * permission asks, and cards for the subagents and background tasks the
  * agent started. Shared by the live chat pane and a stopped workspace's
- * transcript, so it depends only on the events it is given and the workspace
- * they belong to, for loading stored images (no socket or store).
+ * transcript, so it depends only on the events it is given, the workspace
+ * they belong to, for loading stored images, and the viewer's time zone
+ * setting (no socket or store).
  *
  * The agent streams text in small chunks, one event each; consecutive
  * same-kind chunks are merged into one bubble at render time so a live pane
@@ -38,8 +40,9 @@ type MessageImage = AcpImage | AcpStoredImage
 /** One rendered unit of a conversation. Text groups keep images separate so
  *  they can be drawn rather than named. `turn` marks the first group of a run
  *  the agent started by itself (`agent-turn`), which ends the turn before it,
- *  and `woken` what woke the agent into that run, when known. */
-export type Group = ({ turn?: true; woken?: AcpWake[] } & (
+ *  and `woken` what woke the agent into that run, when known. `at` is when a
+ *  user message was sent or the agent was woken, when the history says. */
+export type Group = ({ turn?: true; woken?: AcpWake[]; at?: number } & (
   /** `steered` marks a message added to a running turn, which it does not end. */
   | { kind: 'user'; seq: number; text: string; images: MessageImage[]; steered?: true }
   | { kind: 'agent'; seq: number; text: string; images: MessageImage[] }
@@ -144,10 +147,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   /** That run's first group, once one has landed. */
   let turnFirst: number | undefined
   /** What woke the agent into that run, until its first group lands. */
-  let woken: AcpWake[] | undefined
+  let woken: Extract<AcpEvent, { type: 'woken' }> | undefined
   const startTurn = (): void => {
     if (turnAt === undefined || groups.length <= turnAt) return
-    groups[turnAt] = { ...groups[turnAt], turn: true, ...(woken !== undefined ? { woken } : {}) }
+    groups[turnAt] = { ...groups[turnAt], turn: true, ...(woken !== undefined ? wokenBy(woken) : {}) }
     turnFirst = turnAt
     turnAt = undefined
     woken = undefined
@@ -162,9 +165,10 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
   const card = (key: string, group: Extract<Group, { kind: 'subagent' | 'task' | 'compaction' }>): void => {
     const at = cardIndex.get(key)
     if (at !== undefined) {
-      const { turn, woken: wake } = groups[at]
+      const { turn, woken: wake, at: time } = groups[at]
       groups[at] = {
         ...group, seq: groups[at].seq, ...(turn ? { turn } : {}), ...(wake !== undefined ? { woken: wake } : {}),
+        ...(time !== undefined ? { at: time } : {}),
       }
       return
     }
@@ -220,8 +224,8 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     }
     if (e.type === 'woken') {
       if (!main) continue
-      if (turnFirst !== undefined) groups[turnFirst] = { ...groups[turnFirst], woken: e.causes }
-      else if (turnAt !== undefined) woken = e.causes
+      if (turnFirst !== undefined) groups[turnFirst] = { ...groups[turnFirst], ...wokenBy(e) }
+      else if (turnAt !== undefined) woken = e
       continue
     }
     if (e.type === 'commands' || e.type === 'models' || e.type === 'usage' || e.type === 'turn-start' || e.type === 'agent-turn') continue
@@ -300,7 +304,9 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     }
     split = false
     groups.push({
-      kind: e.type, seq: e.seq, text, images, ...(e.type === 'user' && e.steered === true ? { steered: true } : {}),
+      kind: e.type, seq: e.seq, text, images,
+      ...(e.type === 'user' && e.steered === true ? { steered: true } : {}),
+      ...(e.type === 'user' && e.at !== undefined ? { at: e.at } : {}),
     })
   }
   startTurn()
@@ -321,6 +327,11 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     groups.push({ kind: 'agent', seq: (events[events.length - 1]?.seq ?? 0) + 1, text: self.summary, images: [] })
   }
   return groups
+}
+
+/** A `woken` event as the group it marks keeps it. */
+function wokenBy(e: Extract<AcpEvent, { type: 'woken' }>): Pick<Group, 'woken' | 'at'> {
+  return { woken: e.causes, ...(e.at !== undefined ? { at: e.at } : {}) }
 }
 
 /** The groups a find bar matched (see `useConversationFind`), by seq. */
@@ -1225,6 +1236,7 @@ export function AcpTranscript({
           {g.kind !== 'folded' && g.woken !== undefined && (
             <WokenCaption
               causes={g.woken}
+              {...(g.at !== undefined ? { at: g.at } : {})}
               {...(onOpenSubagent !== undefined ? { onOpenSubagent } : {})}
               {...(onOpenTask !== undefined ? { onOpenTask } : {})}
             />
@@ -1275,15 +1287,23 @@ const WAKE_NOUNS: Record<AcpWake['kind'], string> = { task: 'background task', m
  *  fit is cut short with an ellipsis, its full name in its tooltip. */
 function WokenCaption({
   causes,
+  at,
   onOpenSubagent,
   onOpenTask,
 }: {
   causes: AcpWake[]
+  at?: number
   onOpenSubagent?: (id: string) => void
   onOpenTask?: (id: string) => void
 }): JSX.Element {
   return (
     <div className="mb-1 flex min-w-0 items-center gap-x-1 whitespace-nowrap text-[11px] text-text-faint">
+      {at !== undefined && (
+        <>
+          <MessageTime at={at} />
+          <span className="shrink-0">·</span>
+        </>
+      )}
       <span className="shrink-0">Woken by</span>
       {causes.map((c, i) => {
         const { id } = c
@@ -1304,6 +1324,22 @@ function WokenCaption({
         )
       })}
     </div>
+  )
+}
+
+/** When a message was sent, in the viewer's own zone (`useTimeZone`),
+ *  leading the faint caption above it, with the full date and zone on hover. */
+function MessageTime({ at }: { at: number }): JSX.Element {
+  const timeZone = useTimeZone()
+  const date = new Date(at)
+  return (
+    <time
+      dateTime={date.toISOString()}
+      title={date.toLocaleString(undefined, { timeZone, dateStyle: 'full', timeStyle: 'long' })}
+      className="shrink-0 whitespace-nowrap text-[11px] tabular-nums text-text-faint"
+    >
+      {messageTime(at, timeZone)}
+    </time>
   )
 }
 
@@ -1332,7 +1368,13 @@ function GroupView({
     // Rendered as plain text, not markdown.
     return (
       <div className="flex flex-col items-start gap-0.5">
-        {g.steered === true && <span className="px-1 text-[11px] text-text-faint">sent mid-turn</span>}
+        {(g.steered === true || g.at !== undefined) && (
+          <div className="flex gap-x-1 px-1 text-[11px] text-text-faint">
+            {g.at !== undefined && <MessageTime at={g.at} />}
+            {g.steered === true && g.at !== undefined && <span>·</span>}
+            {g.steered === true && <span>Sent mid-turn</span>}
+          </div>
+        )}
         <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-accent/20 bg-accent/10 px-3 py-2 text-text">
           <MessageImages images={g.images} workspaceId={workspaceId} />
           {g.text}
