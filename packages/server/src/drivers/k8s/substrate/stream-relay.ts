@@ -261,8 +261,9 @@ interface RelayExecOptions {
  * Run a shell command in a workspace pod through its streamd (as
  * `sh -c <cmd>`). Resolves `{stdout, stderr}` on exit 0; throws
  * WorkspaceExecError on a nonzero exit and RelayDialError when the pod was not
- * reached. Only the dial is retried: once streamd has the command, any
- * failure is final so a non-idempotent command is never run twice.
+ * reached or the output passed streamd's 4 MiB cap. Only the dial is
+ * retried: once streamd has the command, any failure is final so a
+ * non-idempotent command is never run twice.
  */
 export async function podExec(
   jobName: string,
@@ -293,6 +294,8 @@ export async function podExec(
         signal?: string
         /** Set when streamd could not spawn the command at all. */
         spawnFailed?: boolean
+        /** Set when the output passed streamd's cap and was cut. */
+        truncated?: boolean
       }
       try {
         result = JSON.parse(body.toString('utf8')) as typeof result
@@ -300,7 +303,7 @@ export async function podExec(
         // streamd accepted the handshake, so the command may have run.
         throw new RelayDialError('malformed exec result', true)
       }
-      const { exitCode, stdout = '', stderr = '', signal, spawnFailed } = result
+      const { exitCode, stdout = '', stderr = '', signal, spawnFailed, truncated } = result
       // Only a real exit is a verdict about the pod: the reaper treats a
       // WorkspaceExecError as `dead` and tears the workspace down. A signal
       // kill, a spawn failure, or a result with no exit code (all common
@@ -315,6 +318,11 @@ export async function podExec(
       }
       if (exitCode === undefined) {
         throw new RelayDialError(`exec result carried no exit code in ${jobName}`, true)
+      }
+      // A cut output would read as the whole of it, so it is refused; a
+      // command whose output can be larger must page it itself.
+      if (exitCode === 0 && truncated) {
+        throw new RelayDialError(`command output passed streamd's cap in ${jobName}`, true)
       }
       if (exitCode === 0) return { stdout, stderr }
       throw new WorkspaceExecError(

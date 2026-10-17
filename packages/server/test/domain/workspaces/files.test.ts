@@ -12,7 +12,7 @@ import { createCheckout } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
 import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
-import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY } from '#domain/workspaces/changes'
+import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, forgetWorkspaceChanges } from '#domain/workspaces/changes'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 import { BUILT_IN_USER_ID, recordProject } from '#db'
 import type { WorkspaceFiles } from '@yaac/shared/types'
@@ -224,6 +224,8 @@ describe('getWorkspaceChanges', () => {
         return real
       })
       try {
+        // Held, the listing would not be printed for the splice.
+        forgetWorkspaceChanges('list')
         const { version: _, ...out } = await listing('list')
         const { version: __, ...expected } = honest
         // A link through a link out of the checkout is listed, but leads

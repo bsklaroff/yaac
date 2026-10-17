@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   CHANGES_BASE_UNRESOLVED,
+  OUTPUT_PAGE_BYTES,
   parseChangesOutput,
   buildChangesScript as buildScript,
   forgetWorkspaceChanges,
@@ -276,7 +277,7 @@ describe('buildChangesScript', () => {
     expect(s).toContain('"origin/$2"')       // default fork-branch present but unused
     expect(s).toContain('add -A --ignore-errors')
     expect(s).toContain('GIT_INDEX_FILE')
-    expect(s.endsWith("yaac-changes '' '' diff '' '' '' '' '' ''")).toBe(true)
+    expect(s.endsWith("yaac-changes '' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
   })
 
   // An unpushed branch has no origin/<b>; falling through to HEAD would
@@ -314,38 +315,38 @@ describe('buildChangesScript', () => {
   it('passes an explicit base as the pod sh $1 positional (diffed against origin/$1)', () => {
     const s = buildChangesScript('dev')
     expect(s).toContain('"origin/$1"')       // the ref is derived from $1, never interpolated
-    expect(s.endsWith("yaac-changes 'dev' '' diff '' '' '' '' '' ''")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
     expect(s).not.toContain('origin/dev')    // the branch name is never spliced into the script body
   })
 
   it('passes the fork branch as the $2 default positional (graceful origin/$2 path)', () => {
     const s = buildChangesScript(undefined, 'main')
     expect(s).toContain('"origin/$2"')       // the default ref is derived from $2, never interpolated
-    expect(s.endsWith("yaac-changes '' 'main' diff '' '' '' '' '' ''")).toBe(true)
+    expect(s.endsWith("yaac-changes '' 'main' diff '' '' '' '' '' '' '' ''")).toBe(true)
     expect(s).not.toContain('origin/main')   // the branch name is never spliced into the script body
   })
 
   it('leaves the diff body out when asked, keeping the file list', () => {
     const s = buildChangesScript('dev', 'main', false)
-    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff '' '' '' '' '' ''")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' 'main' nodiff '' '' '' '' '' '' '' ''")).toBe(true)
     expect(s).toContain('[ "$3" != diff ] || { cached')
   })
 
   it('carries both an explicit base ($1) and a fork-branch default ($2)', () => {
     const s = buildChangesScript('dev', 'main')
-    expect(s.endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' ''")).toBe(true)
+    expect(s.endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' '' '' ''")).toBe(true)
   })
 
   it('single-quotes both branches so shell metacharacters cannot break out of the token', () => {
     for (const evil of ['x; rm -rf /', '$(touch pwn)', '`id`', 'a && b', '| tee x']) {
-      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' '' diff '' '' '' '' '' ''")).toBe(true)
-      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "' diff '' '' '' '' '' ''")).toBe(true)
+      expect(buildChangesScript(evil).endsWith("yaac-changes '" + evil + "' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
+      expect(buildChangesScript(undefined, evil).endsWith("yaac-changes '' '" + evil + "' diff '' '' '' '' '' '' '' ''")).toBe(true)
     }
   })
 
   it('escapes embedded single quotes in either branch', () => {
-    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' '' diff '' '' '' '' '' ''")).toBe(true)
-    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b' diff '' '' '' '' '' ''")).toBe(true)
+    expect(buildChangesScript("a'b").endsWith("yaac-changes 'a'\\''b' '' diff '' '' '' '' '' '' '' ''")).toBe(true)
+    expect(buildChangesScript(undefined, "a'b").endsWith("yaac-changes '' 'a'\\''b' diff '' '' '' '' '' '' '' ''")).toBe(true)
   })
 
   it('keeps the script body byte-identical regardless of the branches', () => {
@@ -355,7 +356,7 @@ describe('buildChangesScript', () => {
   })
 
   it('trims surrounding whitespace from both branches', () => {
-    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' ''")).toBe(true)
+    expect(buildChangesScript('  dev  ', '  main  ').endsWith("yaac-changes 'dev' 'main' diff '' '' '' '' '' '' '' ''")).toBe(true)
   })
 
   // Falling through to HEAD would hide every commit.
@@ -890,16 +891,20 @@ describe('readWorkspaceChanges', () => {
   })
 
   /** A driver whose workspace is `repo`, running the script for real; each
-   *  run's output is kept in `outputs`. */
-  function realWorkspace(repo: string, scratchDir: string): string[] {
+   *  run's output is kept in `outputs`. With `pageBytes`, the script pages
+   *  at that size, and an output over twice it fails, as one over streamd's
+   *  cap does. */
+  function realWorkspace(repo: string, scratchDir: string, pageBytes?: number): string[] {
     const outputs: string[] = []
     installFakeWorkspaceDriver({
       exec,
       workspacePaths: () => workspacePathsFixture({ workspaceDir: repo, scratchDir }),
     })
     exec.mockImplementation((_job, cmd) => {
-      const stdout = execFileSync('sh', ['-c', cmd], { encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
+      const run = pageBytes ? cmd.replaceAll(String(OUTPUT_PAGE_BYTES), String(pageBytes)) : cmd
+      const stdout = execFileSync('sh', ['-c', run], { encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
       outputs.push(stdout)
+      if (pageBytes && Buffer.byteLength(stdout) > 2 * pageBytes) return Promise.reject(new Error('output over the cap'))
       return Promise.resolve({ stdout, stderr: '' })
     })
     return outputs
@@ -930,7 +935,7 @@ describe('readWorkspaceChanges', () => {
     const request: ChangesRequest = { defaultBase: 'main', diff: true }
     const read = async (r = request): Promise<{ reading: ChangesReading; modes: string }> => {
       const reading = await readWorkspaceChanges('big', r)
-      return { reading, modes: /^MODES (.*)$/m.exec(outputs.at(-1)!)![1] }
+      return { reading, modes: /^MODES (\S+ \S+ \S+)/m.exec(outputs.at(-1)!)![1] }
     }
     /** What a server holding nothing reads, its in-workspace caches cleared. */
     const fresh = async (r = request): Promise<ChangesReading['changes']> => {
@@ -1017,6 +1022,88 @@ describe('readWorkspaceChanges', () => {
     await expectRead('full full same')
     await read()
     expect((await read({ ...request, base: 'agent/x' })).modes).toBe('same same full')
+  })
+
+  // A big checkout's first read, and any whose listing moved, prints more
+  // than an exec can carry, so it is fetched in pages. The listing is held
+  // and printed again only when a path or an ignored entry came or went.
+  it('pages an output over the exec cap, and prints the listing only when it moved', async () => {
+    const { repo, idx } = scratchRepo()
+    const dir = path.join(repo, 'a-folder-with-a-rather-long-name/and-another-one')
+    fs.mkdirSync(dir, { recursive: true })
+    for (let n = 0; n < 300; n++) fs.writeFileSync(path.join(dir, `file-${n}-also-named-at-length.txt`), `${n}\n`)
+    fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\n')
+    // A submodule whose changes git is told to ignore.
+    const sm = path.join(repo, 'sm')
+    fs.mkdirSync(sm)
+    git(sm, 'init', '-q')
+    git(sm, 'commit', '-q', '--allow-empty', '-m', 'sm')
+    fs.writeFileSync(path.join(repo, '.gitmodules'), '[submodule "sm"]\n\tpath = sm\n\turl = ./sm\n\tignore = all\n')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'files')
+    git(repo, 'checkout', '-q', '-b', 'agent/x')
+    for (let n = 0; n < 100; n++) fs.appendFileSync(path.join(dir, `file-${n}-also-named-at-length.txt`), 'edit\n')
+    fs.writeFileSync(path.join(repo, 'link'), '')
+    const pageBytes = 4096
+    const outputs = realWorkspace(repo, path.dirname(idx), pageBytes)
+    const request: ChangesRequest = { defaultBase: 'main', diff: true, listing: 'full' }
+    const read = async (r = request): Promise<{ reading: ChangesReading; modes: string; paged: boolean }> => {
+      const before = outputs.length
+      const reading = await readWorkspaceChanges('big', r)
+      const paged = outputs[before].startsWith('PAGED ')
+      const all = paged ? Buffer.concat(outputs.slice(before + 1).map((o) => Buffer.from(o, 'base64'))).toString() : outputs[before]
+      return { reading, modes: /^MODES \S+ \S+ \S+ (\S+ \S+)$/m.exec(all)![1], paged }
+    }
+    /** Read as a server holding nothing would, so nothing is reused. */
+    const fresh = async (r = request): Promise<ChangesReading> => {
+      forgetWorkspaceChanges('big')
+      return (await read(r)).reading
+    }
+    const leftovers = (): string[] => fs.readdirSync(path.dirname(idx)).filter((f) => f.includes('.out.'))
+
+    const first = await read()
+    expect(first).toMatchObject({ modes: 'full full', paged: true })
+    expect(first.reading.changes.files).toHaveLength(101)
+    expect(first.reading.changes.diff).toContain('+edit')
+    expect(first.reading.listing?.paths).toHaveLength(305)
+    expect(first.reading.listing?.ignored).toEqual([])
+    expect(leftovers()).toHaveLength(1)
+
+    // Nothing moved: no listing, no diff, and the next run clears the file.
+    const same = await read()
+    expect(same).toMatchObject({ modes: 'same same', paged: false })
+    expect(outputs.at(-1)).not.toContain('@@PATHS@@')
+    expect(same.reading).toEqual({ ...first.reading, readMs: same.reading.readMs })
+    expect(leftovers()).toEqual([])
+
+    // An edit leaves the paths as held; an ignored file reprints only
+    // those; a retyped path reprints the paths.
+    fs.appendFileSync(path.join(dir, 'file-200-also-named-at-length.txt'), 'edit\n')
+    expect((await read()).modes).toBe('same same')
+    fs.writeFileSync(path.join(repo, 'debug.log'), '')
+    const ignored = await read()
+    expect(ignored).toMatchObject({ modes: 'same full', paged: false })
+    expect(ignored.reading.listing?.ignored).toEqual(['debug.log'])
+    fs.rmSync(path.join(repo, 'link'))
+    fs.symlinkSync('.gitignore', path.join(repo, 'link'))
+    const retyped = await read()
+    expect(retyped.modes).toBe('full same')
+    expect(retyped.reading.listing?.links).toEqual(['link'])
+    expect(retyped.reading).toEqual({ ...await fresh(), readMs: retyped.reading.readMs })
+
+    // A paths listing leaves the held extras out, and keeps them.
+    const paths = await read({ ...request, listing: 'paths' })
+    expect(paths.modes).toBe('same -')
+    expect(paths.reading.listing).toEqual({ paths: retyped.reading.listing!.paths, links: ['link'], conflicted: [] })
+    expect((await read()).modes).toBe('same same')
+
+    // `ls-files` lists a gitlink whatever `.gitmodules` says, so deleting
+    // one reprints the paths.
+    fs.rmSync(sm, { recursive: true })
+    const unlinked = await read()
+    expect(unlinked.modes).toBe('full same')
+    expect(unlinked.reading.listing?.paths).not.toContain('sm')
+    expect(unlinked.reading).toEqual({ ...await fresh(), readMs: unlinked.reading.readMs })
   })
 
   // Callers map the exit code (a bad base is a 400), and a transport failure

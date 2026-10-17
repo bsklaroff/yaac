@@ -618,7 +618,8 @@ export interface WorkspaceDriver {
   /**
    * Run a shell command inside a workspace and collect its output. Rejects
    * with `WorkspaceExecError` when the command ran and exited nonzero, and
-   * with any other error when the workspace was not reached. Aborting
+   * with any other error when the workspace was not reached or the output
+   * was too large for the runtime to carry whole (k8s: 4 MiB). Aborting
    * `signal` stops the command and everything it started, and rejects with
    * an `AbortError`.
    */
