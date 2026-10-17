@@ -17,12 +17,13 @@ const DEFAULT_TIMEOUT_MS = 30_000
 export async function execInWorkspace(
   jobName: string,
   cmd: string,
-  opts?: { timeout?: number },
+  opts?: { timeout?: number; signal?: AbortSignal },
 ): Promise<{ stdout: string; stderr: string }> {
   return await runHost(['sh', '-c', cmd], {
     cwd: containerlessWorkspacePaths(jobName).workspaceDir,
     env: workspaceRunEnvironment(jobName),
     timeoutMs: opts?.timeout ?? DEFAULT_TIMEOUT_MS,
+    ...(opts?.signal ? { signal: opts.signal } : {}),
   })
 }
 

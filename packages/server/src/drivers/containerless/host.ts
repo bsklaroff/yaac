@@ -17,8 +17,12 @@ export interface RunOpts {
   cwd?: string
   env?: NodeJS.ProcessEnv
   /** Kill and reject after this long, as a transport failure (not a
-   *  `WorkspaceExecError`). */
+   *  `WorkspaceExecError`). With `signal`, everything the command started
+   *  is killed too. */
   timeoutMs?: number
+  /** Kill the command and everything it started, and reject with an
+   *  `AbortError`. The command then runs in its own process group. */
+  signal?: AbortSignal
 }
 
 /**
@@ -37,6 +41,7 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         ...(opts.env !== undefined ? { env: opts.env } : {}),
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...(opts.signal ? { detached: true } : {}),
       })
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)))
@@ -45,13 +50,33 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
     let stdout = ''
     let stderr = ''
     let settled = false
+    /** The command, and with `signal` everything it started. */
+    const kill = (sig: NodeJS.Signals): void => {
+      try {
+        if (opts.signal && child.pid !== undefined) process.kill(-child.pid, sig)
+        else child.kill(sig)
+      } catch { /* already gone */ }
+    }
     const timer = opts.timeoutMs === undefined ? null : setTimeout(() => {
       if (settled) return
       settled = true
-      child.kill('SIGKILL')
+      done()
+      kill('SIGKILL')
       reject(new Error(`host command timed out after ${String(opts.timeoutMs)}ms: ${cmd}`))
     }, opts.timeoutMs)
-    const done = (): void => { if (timer) clearTimeout(timer) }
+    const onAbort = (): void => {
+      if (settled) return
+      settled = true
+      done()
+      kill('SIGTERM')
+      reject(new DOMException(`host command abandoned: ${cmd}`, 'AbortError'))
+    }
+    const done = (): void => {
+      if (timer) clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+    }
+    if (opts.signal?.aborted) onAbort()
+    else opts.signal?.addEventListener('abort', onAbort, { once: true })
 
     child.stdout?.on('data', (c: Buffer) => { stdout += c.toString() })
     child.stderr?.on('data', (c: Buffer) => { stderr += c.toString() })

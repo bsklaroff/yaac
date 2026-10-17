@@ -527,7 +527,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // HEAD is from that branch, and with `listing` the explorer's paths
   // (`full` adds ignored entries and empty folders). `base` overrides the
   // branch; `diff=0` leaves out the diff body; `known` omits a listing the
-  // caller already holds.
+  // caller already holds. A client that hangs up leaves the read, which
+  // stops once no request wants it.
   .get(
     '/:id/changes',
     zv('query', z.object({
@@ -538,7 +539,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { base, diff, listing, known } = c.req.valid('query')
-      return c.json(await getWorkspaceChanges(c.req.param('id'), base, { diff: diff !== '0', listing, known }))
+      return c.json(await getWorkspaceChanges(c.req.param('id'), base, {
+        diff: diff !== '0', listing, known, signal: c.req.raw.signal,
+      }))
     },
   )
   // The file editor (docs/file-editor.md). Served from the server's view of

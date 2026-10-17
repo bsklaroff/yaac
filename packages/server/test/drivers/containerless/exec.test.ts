@@ -44,12 +44,14 @@ const ranWith = (): NodeJS.ProcessEnv =>
   (mockRunHost.mock.calls[0] as [string[], { env: NodeJS.ProcessEnv }])[1].env
 
 describe('execInWorkspace', () => {
-  it('runs the command in the workspace checkout, one shell pass', async () => {
-    await execInWorkspace(JOB, 'tmux -S /x has-session -t yaac')
-    const [argv, opts] = mockRunHost.mock.calls[0] as [string[], { cwd: string }]
+  it('runs the command in the workspace checkout, one shell pass, stopped by its signal', async () => {
+    const abort = new AbortController()
+    await execInWorkspace(JOB, 'tmux -S /x has-session -t yaac', { signal: abort.signal })
+    const [argv, opts] = mockRunHost.mock.calls[0] as [string[], { cwd: string; signal: AbortSignal }]
     // Callers write command text for one `sh -c` pass, not a split argv.
     expect(argv).toEqual(['sh', '-c', 'tmux -S /x has-session -t yaac'])
     expect(opts.cwd).toBe(workspaceDir('demo', UUID))
+    expect(opts.signal).toBe(abort.signal)
   })
 
   it('runs with the launch\'s own entries after a restart, over the workspace floor', async () => {

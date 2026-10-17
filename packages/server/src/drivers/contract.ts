@@ -618,12 +618,14 @@ export interface WorkspaceDriver {
   /**
    * Run a shell command inside a workspace and collect its output. Rejects
    * with `WorkspaceExecError` when the command ran and exited nonzero, and
-   * with any other error when the workspace was not reached.
+   * with any other error when the workspace was not reached. Aborting
+   * `signal` stops the command and everything it started, and rejects with
+   * an `AbortError`.
    */
   exec(
     jobName: string,
     cmd: string,
-    opts?: { timeout?: number; maxAttempts?: number },
+    opts?: { timeout?: number; maxAttempts?: number; signal?: AbortSignal },
   ): Promise<{ stdout: string; stderr: string }>
   /**
    * Wait until `exec` works, repairing the transport if possible. Rejects if

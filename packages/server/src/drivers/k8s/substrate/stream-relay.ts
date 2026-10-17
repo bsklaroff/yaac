@@ -205,23 +205,37 @@ export async function relayDial(
 
 // ── One-shot commands ──────────────────────────────────────────────────────
 
-/** Read a whole (already-handshaken) stream to its end. */
-function readAll(socket: net.Socket, timeoutMs: number): Promise<Buffer> {
+const abandoned = (): DOMException => new DOMException('exec abandoned', 'AbortError')
+
+/** Read a whole (already-handshaken) stream to its end. Closing it early,
+ *  on a timeout or an abort, has streamd kill the command's process group. */
+function readAll(socket: net.Socket, timeoutMs: number, signal?: AbortSignal): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
-    const timer = setTimeout(() => {
+    const settle = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+    const giveUp = (err: unknown): void => {
+      settle()
       socket.destroy()
-      reject(new RelayDialError(`stream read timeout after ${timeoutMs}ms`, true))
+      reject(err)
+    }
+    const onAbort = (): void => { giveUp(abandoned()) }
+    const timer = setTimeout(() => {
+      giveUp(new RelayDialError(`stream read timeout after ${timeoutMs}ms`, true))
     }, timeoutMs)
     socket.on('data', (c: Buffer) => chunks.push(c))
     socket.on('error', (err: Error) => {
-      clearTimeout(timer)
+      settle()
       reject(new RelayDialError(err.message, true))
     })
     socket.on('close', () => {
-      clearTimeout(timer)
+      settle()
       resolve(Buffer.concat(chunks))
     })
+    if (signal?.aborted) onAbort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
     socket.resume()
   })
 }
@@ -239,6 +253,8 @@ interface RelayExecOptions {
    * dispatch are never retried, since the command ran.
    */
   maxAttempts?: number
+  /** Abandon the command; see `WorkspaceDriver.exec`. Never retried. */
+  signal?: AbortSignal
 }
 
 /**
@@ -259,6 +275,7 @@ export async function podExec(
   let lastErr: Error = new RelayDialError('no attempts made')
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const started = Date.now()
+    if (opts.signal?.aborted) throw abandoned()
     try {
       // `timeout` budgets the command; the dial gets its own shorter cap so
       // a hung transport fails fast on each attempt.
@@ -267,7 +284,7 @@ export async function podExec(
         { kind: 'exec', cmd: ['sh', '-c', cmd] },
         { timeoutMs: Math.min(DIAL_TIMEOUT_MS, timeoutMs) },
       )
-      const body = await readAll(socket, Math.max(1, timeoutMs - (Date.now() - started)))
+      const body = await readAll(socket, Math.max(1, timeoutMs - (Date.now() - started)), opts.signal)
       let result: {
         exitCode?: number
         stdout?: string

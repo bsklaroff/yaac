@@ -257,7 +257,7 @@ async function findEmptyDirs(
 export async function getWorkspaceChanges(
   idOrName: string,
   base?: string,
-  opts: { diff?: boolean; listing?: 'paths' | 'full'; known?: string } = {},
+  opts: { diff?: boolean; listing?: 'paths' | 'full'; known?: string; signal?: AbortSignal } = {},
 ): Promise<WorkspaceChanges> {
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
   const forkBranch = (await getWorkspaceRow(projectId, workspaceId))?.baseBranch
@@ -267,7 +267,7 @@ export async function getWorkspaceChanges(
   try {
     reading = await readWorkspaceChanges(jobName, {
       base, defaultBase: forkBranch, diff: opts.diff ?? true, listing: opts.listing,
-    })
+    }, opts.signal)
   } catch (err) {
     if (named && err instanceof WorkspaceExecError && err.code === CHANGES_BASE_UNRESOLVED) {
       // The ref may exist but share no history with the workspace.
