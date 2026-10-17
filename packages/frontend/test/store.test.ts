@@ -190,6 +190,17 @@ describe('resolveVacantSelection', () => {
     }))).toBe('w1')
   })
 
+  it('reopens the workspace last open in a project switched into, while it is still a row', () => {
+    expect(resolveVacantSelection(args({
+      previousProjectId: 'p0', selectedWorkspaceId: null, remembered: 'w2',
+    }))).toBe('w2')
+    expect(resolveVacantSelection(args({
+      previousProjectId: 'p0', selectedWorkspaceId: null, remembered: 'gone',
+    }))).toBe('w1')
+    // Within the project, a vanished workspace still hands off to the top row.
+    expect(resolveVacantSelection(args({ selectedWorkspaceId: 'gone', remembered: 'w2' }))).toBe('w1')
+  })
+
   it('stays empty on a first paint, and on a deselect', () => {
     // Nothing persisted: no previous project, nothing selected, so nobody has
     // chosen a workspace yet.
@@ -571,5 +582,24 @@ describe('settings modal state', () => {
     useUiStore.getState().closeSettings()
     useUiStore.getState().openSettings()
     expect(useUiStore.getState().settingsFocusTool).toBeNull()
+  })
+})
+
+describe('remembered selection', () => {
+  it('records each project\'s last workspace and each owner\'s last project, kept across a cleared selection', () => {
+    const project = (id: string, owner: string) => ({ id, owner }) as ServerSnapshot['projects'][number]
+    useUiStore.setState({
+      snapshot: { projects: [project('mine', 'u-me'), project('hers', 'u-ada')] } as ServerSnapshot,
+    })
+    const s = useUiStore.getState
+    s().openWorkspace('mine', 'w1')
+    s().setActiveProject('hers')
+    s().selectWorkspace('w9')
+    s().setActiveProject('mine')
+    expect(s().lastWorkspaceOf).toEqual({ mine: 'w1', hers: 'w9' })
+    expect(s().lastProjectOf).toEqual({ 'u-me': 'mine', 'u-ada': 'hers' })
+    // A project the snapshot does not list yet (a pending add) has no owner.
+    s().setActiveProject('pending')
+    expect(s().lastProjectOf).toEqual({ 'u-me': 'mine', 'u-ada': 'hers' })
   })
 })

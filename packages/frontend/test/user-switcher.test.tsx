@@ -68,7 +68,7 @@ describe('UserSwitcher', () => {
     expect(screen.queryByRole('button', { name: /Switch user/ })).toBeNull()
   })
 
-  it('lists the caller first with each user\'s active workspace count, opens a teammate on their first project, and switches back', async () => {
+  it('lists the caller first with each user\'s active workspace count, opens a teammate on their first project, and switches back to each user\'s last', async () => {
     useUiStore.setState({ activeProjectId: 'mine', selectedWorkspaceId: 'w1' })
     renderSwitcher('k8s')
     fireEvent.click(screen.getByRole('button', { name: 'Switch user (Your projects)' }))
@@ -80,9 +80,14 @@ describe('UserSwitcher', () => {
     expect(useUiStore.getState()).toMatchObject({ viewedUserId: 'u-ada', activeProjectId: 'ada-1', selectedWorkspaceId: null })
     await waitFor(() => expect(screen.getByRole('button', { name: "Switch user (Ada's projects)" })).toBeTruthy())
 
+    // Each user reopens on the project of theirs last open.
+    useUiStore.getState().setActiveProject('ada-2')
     fireEvent.click(screen.getByRole('button', { name: "Switch user (Ada's projects)" }))
     fireEvent.click(await screen.findByRole('menuitem', { name: /Me \(you\)/ }))
     expect(useUiStore.getState()).toMatchObject({ viewedUserId: null, activeProjectId: 'mine' })
+    fireEvent.click(screen.getByRole('button', { name: 'Switch user (Your projects)' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /Ada/ }))
+    expect(useUiStore.getState()).toMatchObject({ viewedUserId: 'u-ada', activeProjectId: 'ada-2' })
   })
 
   it('says plainly that a containerless server does not separate users', async () => {
