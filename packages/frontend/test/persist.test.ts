@@ -52,6 +52,10 @@ const CASES: { field: keyof typeof initial; key: string; value: unknown; stored:
     field: 'sidebarStatuses', key: 'yaac.sidebarstatuses.v1', value: ['waiting', 'stopped'],
     stored: '["waiting","stopped"]', loads: [['["stopped","bogus","running"]', ['running', 'stopped']], ['"waiting"', undefined]],
   },
+  {
+    field: 'lastWorkspaceOf', key: 'yaac.lastworkspace.v1', value: { p1: 'w1' }, stored: '{"p1":"w1"}',
+    loads: [['{"p1":"w1","p2":7}', { p1: 'w1' }], ['[]', undefined]],
+  },
   { field: 'themePref', key: 'yaac.theme.v1', value: 'light', stored: 'light', loads: [['sepia', undefined]] },
   {
     field: 'pinnedUsageMetric', key: 'yaac.pinnedusage.v1', value: 'weekly_scoped:Fable',

@@ -14,7 +14,9 @@ import type { ServerSnapshot, User } from '@yaac/shared/types'
  * Picks whose projects the rail and sidebar show (#lib/viewer): your own, or
  * a teammate's, read-only. Only a `tailnet` install has more than one user.
  * The user list is refetched on each open, since a teammate becomes a user
- * on their first request. Each user's row counts their live workspaces.
+ * on their first request. Picking a user reopens the project of theirs last
+ * open on this device, else their first. Each user's row counts their live
+ * workspaces.
  * Under containerless it also says that the substrate does not separate
  * users (docs/containerless-driver.md).
  *
@@ -25,6 +27,7 @@ export function UserSwitcher({ variant = 'rail' }: { variant?: 'rail' | 'row' })
   const snapshot = useSnapshot()
   const viewed = useViewedUserId()
   const viewUser = useUiStore((s) => s.viewUser)
+  const lastProjectOf = useUiStore((s) => s.lastProjectOf)
   if (whoami.data?.kind !== 'tailnet') return null
   const me = whoami.data.userId
   const users = [...whoami.data.users].sort((a, b) =>
@@ -34,8 +37,9 @@ export function UserSwitcher({ variant = 'rail' }: { variant?: 'rail' | 'row' })
   const label = viewed === me ? 'Your projects' : `${current?.name ?? 'Unknown user'}'s projects`
 
   const pick = (userId: string): void => {
-    const first = projectsOf(snapshot?.projects ?? [], userId)[0]?.id ?? null
-    viewUser(userId === me ? null : userId, first)
+    const theirs = projectsOf(snapshot?.projects ?? [], userId)
+    const last = theirs.find((p) => p.id === lastProjectOf[userId])
+    viewUser(userId === me ? null : userId, (last ?? theirs[0])?.id ?? null)
   }
 
   return (
