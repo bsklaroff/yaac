@@ -128,18 +128,18 @@ that fails before the body's cap (a textconv program that is missing) is
 neither cached nor held: the answer keeps its file list and shows the body
 as truncated to nothing. A held reading
 is dropped after five minutes unread and on teardown; the scratch-dir files
-carry a workspace across a server restart.
+carry a workspace across a server restart. Each answer says how long its
+read took (`readMs`), and the webapp waits at least that long after an
+answer before polling again, but no more than 10 seconds.
 
-An exec's output is capped (streamd refuses one past 4 MiB, and `podExec`
-rejects it rather than pass on a cut one), and a big checkout's first
+An exec's output is capped (streamd cuts one at 4 MiB, and `podExec`
+rejects a cut one rather than pass it on), and a big checkout's first
 read, with every file in its listing and every change in its lists, can
 pass that. So the script writes its output to a scratch file and prints it
 only up to 2 MiB; past that it prints the file's name and size, and the
 server fetches it in base64 pages of that size, one exec each. The next
 run clears the file. Only the last 4 KiB of the script's stderr is passed
-on, since a warning per file could pass the cap too. Each answer says how long its
-read took (`readMs`), and the webapp waits at least that long after an
-answer before polling again, but no more than 10 seconds.
+on, since a warning per file could pass the cap too.
 
 The same run says how far HEAD is from the branch the base was found on
 (`rev-list --left-right --count <ref>...HEAD`), so the status bar follows

@@ -261,8 +261,9 @@ interface RelayExecOptions {
  * Run a shell command in a workspace pod through its streamd (as
  * `sh -c <cmd>`). Resolves `{stdout, stderr}` on exit 0; throws
  * WorkspaceExecError on a nonzero exit and RelayDialError when the pod was not
- * reached or the output passed streamd's 4 MiB cap. Only the dial is retried: once streamd has the command, any
- * failure is final so a non-idempotent command is never run twice.
+ * reached or the output passed streamd's 4 MiB cap. Only the dial is
+ * retried: once streamd has the command, any failure is final so a
+ * non-idempotent command is never run twice.
  */
 export async function podExec(
   jobName: string,

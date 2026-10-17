@@ -359,9 +359,10 @@ function changesScript(loc: ChangesLocation): string {
   + `elif ! { [ "$3" != patch ] && hit ${i}.lists "$base $work" && { [ "$3" = nodiff ] || hit ${i}.body "$base $work"; }; } `
   + '&& bdelta; then m=delta; fi; '
   // The listing's paths are a function of the working tree's paths and
-  // modes, so an edit leaves them as held.
+  // modes, so an edit leaves them as held. `ls-files` lists every gitlink,
+  // so this must see one even when `.gitmodules` says `ignore = all`.
   + 'pm=-; xm=-; [ -z "$4" ] || { pm=full; [ -z "${10}" ] '
-  + '|| ! git diff-tree --quiet -r --diff-filter=ADT "${10}" "$work" || pm=same; }; '
+  + '|| ! git diff-tree --quiet -r --ignore-submodules=none --diff-filter=ADT "${10}" "$work" || pm=same; }; '
   + `[ "$4" != full ] || { { printf "${M_IGNORED}\\n"; git ls-files -z --others --ignored --exclude-standard --directory `
   + `&& printf '${nulEnd}${M_DIRS}\\n' && git ls-files -z --others --exclude-standard --directory && printf '${nulEnd}'; } `
   + `> ${i}.extras && xh=$(git hash-object --no-filters ${i}.extras) || exit 6; `
@@ -917,7 +918,9 @@ export function readWorkspaceChanges(
       // Base64, since a page may end inside a character.
       const file = shSingleQuote(`${indexFile}.out.${paged[1]}`)
       const pages: Buffer[] = []
-      for (let got = 0; got < Number(paged[2]);) {
+      const size = Number(paged[2])
+      let got = 0
+      while (got < size) {
         const page = Buffer.from((await driver.exec(
           jobName, `tail -c +${got + 1} ${file} | head -c ${OUTPUT_PAGE_BYTES} | base64`, opts,
         )).stdout, 'base64')
@@ -925,6 +928,7 @@ export function readWorkspaceChanges(
         pages.push(page)
         got += page.length
       }
+      if (got !== size) throw new Error('workspace changes: the run\'s output file is not the size it printed')
       stdout = Buffer.concat(pages).toString('utf8')
     }
     const { reading, next } = readRun(stdout, offered)

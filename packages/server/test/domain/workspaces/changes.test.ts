@@ -1033,6 +1033,12 @@ describe('readWorkspaceChanges', () => {
     fs.mkdirSync(dir, { recursive: true })
     for (let n = 0; n < 300; n++) fs.writeFileSync(path.join(dir, `file-${n}-also-named-at-length.txt`), `${n}\n`)
     fs.writeFileSync(path.join(repo, '.gitignore'), '*.log\n')
+    // A submodule whose changes git is told to ignore.
+    const sm = path.join(repo, 'sm')
+    fs.mkdirSync(sm)
+    git(sm, 'init', '-q')
+    git(sm, 'commit', '-q', '--allow-empty', '-m', 'sm')
+    fs.writeFileSync(path.join(repo, '.gitmodules'), '[submodule "sm"]\n\tpath = sm\n\turl = ./sm\n\tignore = all\n')
     git(repo, 'add', '-A')
     git(repo, 'commit', '-qm', 'files')
     git(repo, 'checkout', '-q', '-b', 'agent/x')
@@ -1059,7 +1065,7 @@ describe('readWorkspaceChanges', () => {
     expect(first).toMatchObject({ modes: 'full full', paged: true })
     expect(first.reading.changes.files).toHaveLength(101)
     expect(first.reading.changes.diff).toContain('+edit')
-    expect(first.reading.listing?.paths).toHaveLength(303)
+    expect(first.reading.listing?.paths).toHaveLength(305)
     expect(first.reading.listing?.ignored).toEqual([])
     expect(leftovers()).toHaveLength(1)
 
@@ -1090,6 +1096,14 @@ describe('readWorkspaceChanges', () => {
     expect(paths.modes).toBe('same -')
     expect(paths.reading.listing).toEqual({ paths: retyped.reading.listing!.paths, links: ['link'], conflicted: [] })
     expect((await read()).modes).toBe('same same')
+
+    // `ls-files` lists a gitlink whatever `.gitmodules` says, so deleting
+    // one reprints the paths.
+    fs.rmSync(sm, { recursive: true })
+    const unlinked = await read()
+    expect(unlinked.modes).toBe('full same')
+    expect(unlinked.reading.listing?.paths).not.toContain('sm')
+    expect(unlinked.reading).toEqual({ ...await fresh(), readMs: unlinked.reading.readMs })
   })
 
   // Callers map the exit code (a bad base is a 400), and a transport failure
