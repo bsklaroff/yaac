@@ -15,14 +15,19 @@
  * reads with `--userconfig`, so the packages npm resolves below those pins
  * wait out the same release-age window as the repo's pnpm installs
  * (`minimumReleaseAge` and its excludes). It is not named `.npmrc` because
- * `npm pack` never ships a file by that name.
+ * `npm pack` never ships a file by that name. An exclude written without a
+ * version is for a package nothing installs, and the build fails once
+ * pnpm-lock.yaml installs it, since npm would then fetch it unaged.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parse as parseYaml } from 'yaml'
+import { parseAllDocuments, parse as parseYaml } from 'yaml'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+/** The package name of a `name@version` spec or lockfile key. */
+const specName = (spec: string): string => spec.replace(/(.)@.*$/, '$1')
 
 interface RootManifest {
   name: string
@@ -75,13 +80,26 @@ async function main(): Promise<void> {
   if (!workspace.minimumReleaseAge) {
     throw new Error('pnpm-workspace.yaml sets no minimumReleaseAge for the server image to follow')
   }
+  const excludes = workspace.minimumReleaseAgeExclude ?? []
+  const lockfile = parseAllDocuments(
+    await fs.readFile(path.join(repoRoot, 'pnpm-lock.yaml'), 'utf8'),
+  ).map((doc) => doc.toJS() as { packages?: Record<string, unknown> })
+  const installed = new Set(lockfile.flatMap((doc) => Object.keys(doc.packages ?? {}).map(specName)))
+  for (const name of excludes.filter((spec) => specName(spec) === spec)) {
+    if (installed.has(name)) {
+      throw new Error(
+        `pnpm-lock.yaml installs ${name}, which minimumReleaseAgeExclude exempts by bare name `
+        + 'as a package nothing installs; the server image would now fetch it unaged, '
+        + 'so revisit that exclude',
+      )
+    }
+  }
   // pnpm counts minutes and excludes `name@version`; npm counts days and
   // can exclude only by name, which exempts every version of that package.
   const npmrc = [
     '# Written by scripts/write-dist-manifest.ts from pnpm-workspace.yaml.',
     `min-release-age=${String(workspace.minimumReleaseAge / 1440)}`,
-    ...(workspace.minimumReleaseAgeExclude ?? [])
-      .map((spec) => `min-release-age-exclude[]=${spec.replace(/(.)@.*$/, '$1')}`),
+    ...excludes.map((spec) => `min-release-age-exclude[]=${specName(spec)}`),
   ]
   await fs.writeFile(path.join(repoRoot, 'dist', 'release-age.npmrc'), `${npmrc.join('\n')}\n`)
 }
