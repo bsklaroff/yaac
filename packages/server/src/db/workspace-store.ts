@@ -419,17 +419,21 @@ export interface StoppedCount {
   projectId: string
   /** Null for ungrouped workspaces. */
   groupId: string | null
+  /** Stops, less those in `excludeIds`. */
   stopped: number
-  /** Deaths the user has not viewed yet. */
+  /** Deaths the user has not viewed yet, among every stop. */
   unseenDeaths: number
 }
 
-export async function countStoppedWorkspaces(): Promise<StoppedCount[]> {
+/** `excludeIds` are the stopped workspaces the snapshot draws a row of their
+ *  own for (still stopping, held, or restarting), so each is counted once. */
+export async function countStoppedWorkspaces(excludeIds: string[] = []): Promise<StoppedCount[]> {
   const db = await getDb()
+  const counted = excludeIds.length > 0 ? notInArray(workspaces.workspaceId, excludeIds) : sql`true`
   return db.select({
     projectId: workspaces.projectId,
     groupId: workspaces.groupId,
-    stopped: count(),
+    stopped: sql<number>`count(*) filter (where ${counted})`.mapWith(Number),
     unseenDeaths: sql<number>`count(*) filter (where ${workspaces.deathReason} is not null and not ${workspaces.deathSeen})`
       .mapWith(Number),
   }).from(workspaces)

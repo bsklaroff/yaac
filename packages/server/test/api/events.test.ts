@@ -29,6 +29,8 @@ import {
   clearAllProvisioningForTests,
 } from '#domain/workspaces/provisioning'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { createWorkspaceGroup } from '#db'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
@@ -316,5 +318,42 @@ describe('buildSnapshot provisioning', () => {
     expect(snap.workspaces.map((s) => s.workspaceId)).toEqual(['prov-3'])
     expect(snap.provisioning).toEqual([])
     vi.mocked(listActiveWorkspaces).mockResolvedValue({ workspaces: [], stale: [], gitAuthFailures: {} })
+  })
+})
+
+describe('buildSnapshot stopped counts', () => {
+  beforeEach(() => { installFakeWorkspaceDriver() })
+  beforeEach(() => { clearAllProvisioningForTests() })
+  afterEach(() => { clearAllProvisioningForTests() })
+
+  const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+
+  it('leaves out the stops the snapshot draws a row of their own for', async () => {
+    // Every member's stop is recorded. One is still stopping, one is held,
+    // one is restarting, and a create stopped mid-provision keeps its failed
+    // row but is listed as stopped too.
+    const { groupId } = await createWorkspaceGroup(PROJ, 'Counts', null)
+    for (const workspaceId of ['stopping', 'held', 'back', 'failed', 'plain']) {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId, groupId })
+      await recordWorkspaceStopped(PROJ, workspaceId)
+    }
+    vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
+      workspaces: [{
+        workspaceId: 'stopping', projectId: PROJ, tool: 'claude', groupId,
+        status: 'running', stopping: true, createdAt: '2026-01-01 00:00:00', agentSessions: [],
+        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+      }],
+      stale: [],
+      gitAuthFailures: {},
+    })
+    vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
+      workspaceId: 'held', projectId: PROJ, tool: 'claude', groupId, stoppedAt: '2026-01-01 00:00:00',
+    }])
+    registerProvisioning({ workspaceId: 'back', projectId: PROJ, tool: 'claude', kind: 'restart', groupId })
+    registerProvisioning({ workspaceId: 'failed', projectId: PROJ, tool: 'claude', kind: 'create', groupId })
+    failProvisioning('failed', 'stopped')
+
+    const snap = await buildSnapshot()
+    expect(snap.workspaceGroups.find((g) => g.groupId === groupId)?.stoppedCount).toBe(2)
   })
 })

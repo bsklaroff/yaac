@@ -14,7 +14,7 @@ import { CloseIcon, LoadingIcon, SearchIcon } from '#lib/icons'
 import { usePressDrag } from '#lib/usePressDrag'
 import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
-import { stoppedSectionCount, useStoppedEntry, useStoppedMatch, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
+import { useStoppedEntry, useStoppedMatch, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { useReadOnly, useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
 import { useUiStore, type SidebarStatus } from '#lib/store'
@@ -431,10 +431,12 @@ export function WorkspaceList({
   // through the typing pause, then until the server's first page lands.
   const searchSettling = searching && stoppedOpen
     && (serverQuery !== query.trim() || stopped.settling)
+  // The snapshot's counts already leave out stops drawn as rows elsewhere.
+  const owned = groups.filter((g) => owning.has(g.groupId))
   const stoppedCount = searching
     ? stopped.total ?? 0
-    : stoppedSectionCount(project, groups, owning, held, provisioning)
-  const ownedDeaths = groups.filter((g) => owning.has(g.groupId)).reduce((n, g) => n + g.unseenDeaths, 0)
+    : (project?.stoppedCount ?? 0) - owned.reduce((n, g) => n + g.stoppedCount, 0)
+  const ownedDeaths = owned.reduce((n, g) => n + g.unseenDeaths, 0)
 
   // The open workspace, in whichever form it is listed. A plain stopped one
   // is looked up once the snapshot is in (`project`), under the same key App

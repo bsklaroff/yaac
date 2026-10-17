@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
 import { groupDisplay } from '#components/WorkspaceList'
-import { stoppedSectionCount } from '#lib/useStoppedWorkspaces'
 import type {
-  HeldWorkspaceEntry,
   ProvisioningWorkspaceEntry,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
@@ -129,14 +127,6 @@ describe('sidebarLayout', () => {
   })
 })
 
-const held = (workspaceId: string, groupId?: string): HeldWorkspaceEntry => ({
-  workspaceId,
-  projectId: 'p',
-  tool: 'claude',
-  stoppedAt: '2026-01-01 00:00:05',
-  ...(groupId !== undefined ? { groupId } : {}),
-})
-
 describe('sidebarRowIds', () => {
   it('runs provisioning, then the default list, then each shown group', () => {
     const rows = sidebarRowIds(
@@ -192,17 +182,5 @@ describe('groupDisplay', () => {
     expect(groupDisplay(ghostsOnly, { ...state, collapsed: true }))
       .toEqual({ onlyGhosts: true, expanded: true, ownsGhosts: true })
     expect(groupDisplay(ghostsOnly, { ...state, showStopped: false }).expanded).toBe(false)
-  })
-})
-
-describe('stoppedSectionCount', () => {
-  it('counts the project\'s stops less those drawn elsewhere', () => {
-    const groups = [group('g', 1, { stoppedCount: 4 }), group('h', 2, { stoppedCount: 2 })]
-    // 10 stops: g's 4 are its own ghosts; a held row and a restart outside g
-    // have rows of their own; the ones inside g are already in its 4.
-    expect(stoppedSectionCount({ stoppedCount: 10 }, groups, new Set(['g']),
-      [held('x'), held('y', 'g')],
-      [prov('r1', 1), prov('r2', 1, { groupId: 'g' }), prov('fresh', 1, { kind: 'create' })])).toBe(4)
-    expect(stoppedSectionCount(undefined, [], new Set(), [], [])).toBe(0)
   })
 })
