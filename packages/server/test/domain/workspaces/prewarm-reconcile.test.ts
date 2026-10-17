@@ -180,36 +180,35 @@ describe('reconcilePrewarmPool', () => {
     expect(destroy).not.toHaveBeenCalled()
   })
 
-  // A server that died between a claim's insert and its relabel leaves the
-  // user's workspace looking like a spare. The row wins: it is torn down
-  // like a stop, and its files are kept.
-  it('keeps the files of a spare that has a row, and still removes its Job', async () => {
-    vi.mocked(findWorkspaceRow).mockResolvedValue({ projectId: 'p', workspaceId: 's2' } as WorkspaceRow)
-    mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
-
-    await pass()
-    await flush()
-    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
-    expect(findWorkspaceRow).toHaveBeenCalledWith('s2')
-    expect(mockDeleteState).not.toHaveBeenCalled()
-    expect(destroy).toHaveBeenCalledTimes(1)
-  })
-
-  // The whole rule rests on this: a lookup that fails is not "no row". The
-  // labelled Job stays, so the next reap asks again.
-  it('deletes neither files nor Job when the row lookup fails, and retries next pass', async () => {
+  // The whole rule rests on this: a lookup that fails is neither "no row"
+  // nor "still a spare". The spare is left as it was, so the next reap asks
+  // again. Once both answer, a spare still marked with a row was left by a
+  // server that died between a claim's insert and its relabel: the row wins,
+  // so it is torn down like a stop and its files are kept.
+  it('touches nothing while either lookup fails, then stops a spare with a row, keeping its files', async () => {
+    const find = vi.fn<() => Promise<RuntimeHandle | undefined>>()
+      .mockRejectedValueOnce(new Error('cluster down'))
+      .mockResolvedValue(undefined)
+    installFakeWorkspaceDriver({ destroy, find })
     vi.mocked(findWorkspaceRow).mockRejectedValueOnce(new Error('db closed'))
     mockWorkspaces.mockResolvedValue([pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true })])
 
     await pass()
     await flush()
-    expect(mockCleanup).toHaveBeenCalledTimes(1)
+    expect(find).not.toHaveBeenCalled()
+
+    vi.mocked(findWorkspaceRow).mockResolvedValue({ projectId: 'p', workspaceId: 's2' } as WorkspaceRow)
+    await pass()
+    await flush()
+    expect(find).toHaveBeenCalledWith('s2')
+    expect(mockCleanup).not.toHaveBeenCalled()
     expect(mockDeleteState).not.toHaveBeenCalled()
     expect(destroy).not.toHaveBeenCalled()
 
     await pass()
     await flush()
-    expect(mockDeleteState).toHaveBeenCalledWith('p', 's2')
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
+    expect(mockDeleteState).not.toHaveBeenCalled()
     expect(destroy).toHaveBeenCalledTimes(1)
   })
 
@@ -526,6 +525,22 @@ describe('reconcilePrewarmPool', () => {
       await pass()
       await flush()
       expect(mockRebranch).toHaveBeenCalledTimes(2)
+    })
+
+    // A claim that finishes while the refresh reads the base's tip leaves no
+    // claim reservation behind, only the spare's settings gone. Moving the
+    // checkout then would reset the user's new workspace and restart its
+    // agent.
+    it('leaves alone a spare claimed while its base was being read', async () => {
+      vi.mocked(resolveRemoteRef).mockImplementation(() => {
+        spareSettings.delete('s2')
+        return Promise.resolve('new')
+      })
+      await pass()
+      await flush()
+      expect(exec).not.toHaveBeenCalled()
+      expect(mockRebranch).not.toHaveBeenCalled()
+      expect(refreshing.size).toBe(0)
     })
 
     it('keeps a spare mid-refresh in the pool without reaping it, and reaps one a refresh broke', async () => {

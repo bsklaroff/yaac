@@ -35,7 +35,7 @@ import type * as CleanupModule from '#domain/workspaces/cleanup'
 import { markWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#lib/log'
 import { applyWorkspaceEvent, desiredWorkspaces, releaseQueuedChildren } from '#db'
-import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
+import { claimProvisioning, clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import type { WorkspaceEvent } from '#db'
 import {
   reconcileStaleWorkspaces,
@@ -165,6 +165,24 @@ describe('reconcileStaleWorkspaces', () => {
     await reconcileStaleWorkspaces(view)
 
     expect(mockCleanup).not.toHaveBeenCalled()
+  })
+
+  // A claimed spare runs under its own id, not the create's. Once relabelled
+  // it is reaped like any workspace, so a dead one would be torn down here
+  // while the claim's own failure path tears it down too.
+  it('keeps a dead spare a create has claimed until the create settles', async () => {
+    mockWorkspaces.mockResolvedValue([pod('claimed-1')])
+    mockProbe.mockResolvedValue('dead')
+    setDesired({ provisioning: ['req-1'] })
+    claimProvisioning('req-1', 'claimed-1')
+
+    await reconcileStaleWorkspaces(view)
+    expect(mockCleanup).not.toHaveBeenCalled()
+
+    // A claim that falls back to a cold create releases it.
+    claimProvisioning('req-1', undefined)
+    await reconcileStaleWorkspaces(view)
+    expect(mockCleanup).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'claimed-1' }))
   })
 
   it('reaps a not-yet-Running pod once its create has failed', async () => {
