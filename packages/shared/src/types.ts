@@ -1008,7 +1008,9 @@ export interface WorkspaceGroupSummary {
   pinned: boolean
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) — the groups' display order. */
   createdAt: string
-  /** Stopped members, and how many of them died unseen. */
+  /** Stopped members, and how many of them died unseen. In the snapshot,
+   *  `stoppedCount` leaves out members it draws a row of their own for
+   *  (still stopping, held, or restarting). */
   stoppedCount: number
   unseenDeaths: number
 }
@@ -1319,7 +1321,9 @@ export interface ProjectSummary {
    *  its project's owner. */
   owner: string
   workspaceCount: number
-  /** Stopped workspaces, and how many of them died unseen. */
+  /** Stopped workspaces, and how many of them died unseen. In the snapshot,
+   *  `stoppedCount` leaves out workspaces it draws a row of their own for
+   *  (still stopping, held, or restarting). */
   stoppedCount: number
   unseenDeaths: number
   /** The agent last created with; the create form opens on it. Absent

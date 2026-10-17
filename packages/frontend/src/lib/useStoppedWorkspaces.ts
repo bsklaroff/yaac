@@ -11,11 +11,8 @@ import { useUiStore } from '#lib/store'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { restartWorkspace } from '#lib/createWorkspace'
 import type {
-  HeldWorkspaceEntry,
-  ProvisioningWorkspaceEntry,
   StoppedWorkspaceEntry,
   StoppedWorkspacePage,
-  WorkspaceGroupSummary,
 } from '@yaac/shared/types'
 
 /** Rows per page of the stopped listing. */
@@ -137,26 +134,6 @@ export function useStoppedWorkspaces(
     // Never restart a page already loading.
     fetchNextPage: () => { void fetchNextPage({ cancelRefetch: false }) },
   }
-}
-
-/**
- * How many workspaces the Stopped section lists, from the snapshot alone so
- * a collapsed section needs no fetch: every stop in the project, less those
- * drawn elsewhere. That is the members of groups showing their own ghosts
- * (`owning`), held workspaces, and restarts in flight (a restart keeps its
- * stop until it succeeds).
- */
-export function stoppedSectionCount(
-  project: { stoppedCount: number } | undefined,
-  groups: Pick<WorkspaceGroupSummary, 'groupId' | 'stoppedCount'>[],
-  owning: ReadonlySet<string>,
-  held: Pick<HeldWorkspaceEntry, 'groupId'>[],
-  provisioning: Pick<ProvisioningWorkspaceEntry, 'kind' | 'groupId'>[],
-): number {
-  const outside = (e: { groupId?: string }): boolean => e.groupId === undefined || !owning.has(e.groupId)
-  const owned = groups.filter((g) => owning.has(g.groupId)).reduce((n, g) => n + g.stoppedCount, 0)
-  const restarts = provisioning.filter((p) => p.kind === 'restart' && outside(p)).length
-  return Math.max(0, (project?.stoppedCount ?? 0) - owned - held.filter(outside).length - restarts)
 }
 
 /**

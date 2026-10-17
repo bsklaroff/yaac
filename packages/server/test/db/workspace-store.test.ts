@@ -297,7 +297,7 @@ describe('session store', () => {
   })
 
   describe('countStoppedWorkspaces', () => {
-    it('counts stops and unseen deaths per project and group', async () => {
+    it('counts stops and unseen deaths per project and group, less the stops excluded', async () => {
       await create('live')
       await create('quit')
       await recordWorkspaceStopped(PROJ, 'quit')
@@ -315,6 +315,11 @@ describe('session store', () => {
       expect(await countStoppedWorkspaces()).toEqual(expect.arrayContaining([
         { projectId: PROJ, groupId: null, stopped: 3, unseenDeaths: 1 },
         { projectId: OTHER, groupId: null, stopped: 1, unseenDeaths: 0 },
+      ]))
+      // An excluded stop still counts toward unseen deaths.
+      expect(await countStoppedWorkspaces(['oom', 'other'])).toEqual(expect.arrayContaining([
+        { projectId: PROJ, groupId: null, stopped: 2, unseenDeaths: 1 },
+        { projectId: OTHER, groupId: null, stopped: 0, unseenDeaths: 0 },
       ]))
     })
   })

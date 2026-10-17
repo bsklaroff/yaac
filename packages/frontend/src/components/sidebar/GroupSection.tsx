@@ -9,7 +9,7 @@ import { useInlineEdit } from '#lib/useInlineRename'
 import { RowMenu } from '#components/sidebar/RowMenu'
 import { QueuedSet } from '#components/sidebar/QueuedRows'
 import { StoppedRows } from '#components/sidebar/StoppedRows'
-import { ProvisioningRow, StoppedWorkspaceRow, WorkspaceRow, type SidebarDrag } from '#components/sidebar/WorkspaceRows'
+import { isTerminating, ProvisioningRow, StoppedWorkspaceRow, WorkspaceRow, type SidebarDrag } from '#components/sidebar/WorkspaceRows'
 import { groupDisplay, type SidebarGroupSection } from '#components/WorkspaceList'
 // The server refuses longer group names, so the name fields stop here.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
@@ -59,21 +59,19 @@ export function GroupSection({
   const { group, provisioning, members, held } = section
   const collapsed = useUiStore((s) => s.collapsedGroups.includes(group.groupId))
   const showStopped = useUiStore((s) => s.stoppedShownGroups.includes(group.groupId))
+  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const setGroupCollapsed = useUiStore((s) => s.setGroupCollapsed)
   const setGroupShowsStopped = useUiStore((s) => s.setGroupShowsStopped)
   const { onlyGhosts, expanded, ownsGhosts } = groupDisplay(section, { collapsed, showStopped, narrowed })
-  // The snapshot counts every stopped member; held ones and restarts in
-  // flight have rows of their own.
-  const restarts = provisioning.filter((p) => p.kind === 'restart').length
-  const ghostCount = Math.max(0, group.stoppedCount - held.length - restarts)
   const ghosts = useStoppedWorkspaces(group.projectId, { group: group.groupId, exclude: elsewhere }, {
     enabled: ownsGhosts,
     version: String(group.stoppedCount),
     hidden,
   })
-  // A failed provisioning row isn't counted as active.
-  const active = provisioning.filter((p) => !p.error).length + members.length
-  const total = provisioning.length + members.length + held.length + ghostCount
+  // Failed provisioning rows and stopping members aren't counted as active.
+  const active = provisioning.filter((p) => !p.error).length
+    + members.filter((w) => !isTerminating(w, pendingDeleteIds)).length
+  const total = provisioning.length + members.length + held.length + group.stoppedCount
   // Flag unseen deaths on the header, since ghost rows may be hidden.
   const died = group.unseenDeaths
   const {
@@ -153,7 +151,7 @@ export function GroupSection({
                 items={[
                   { label: 'Rename', onSelect: startRename },
                   { label: group.pinned ? 'Unpin' : 'Pin', onSelect: togglePinned },
-                  ...(ghostCount > 0 || showStopped
+                  ...(group.stoppedCount > 0 || showStopped
                     ? [{ label: showStopped ? 'Hide stopped workspaces' : 'Show stopped workspaces', onSelect: toggleStopped, view: true as const }]
                     : []),
                   'separator',

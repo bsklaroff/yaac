@@ -23,17 +23,23 @@ export interface WsLike {
  * data the HTTP reads return, in one message.
  */
 export async function buildSnapshot(): Promise<ServerSnapshot> {
-  // Shared by the project and group summaries.
-  const stoppedCounts = countStoppedWorkspaces()
+  const rows = Promise.all([listActiveWorkspaces(), listHeldWorkspaces()])
+    .then(([active, held]) => ({ active, held, provisioning: listProvisioning() }))
+  // Shared by the project and group summaries. A stop is recorded before its
+  // runtime is gone and kept through a restart, so the counts leave out every
+  // workspace drawn as a row here, whichever order the record and the row
+  // land in.
+  const stoppedCounts = rows.then(({ active, held, provisioning }) => countStoppedWorkspaces(
+    [...active.workspaces, ...held, ...provisioning.filter((p) => p.kind === 'restart')].map((w) => w.workspaceId),
+  ))
   const [
-    active, workspaceGroups, projects, usage, queuedWorkspaces, heldWorkspaces, draftWorkspaces,
+    { active, held: heldWorkspaces, provisioning }, workspaceGroups, projects, usage, queuedWorkspaces, draftWorkspaces,
   ] = await Promise.all([
-    listActiveWorkspaces(),
+    rows,
     listWorkspaceGroups(undefined, stoppedCounts),
     listProjects(stoppedCounts),
     planUsageForSnapshot(),
     listQueuedWorkspaces(),
-    listHeldWorkspaces(),
     listDraftWorkspaces(),
   ])
   const imageBuilds = workspaceDriver().listImageBuilds()
@@ -44,7 +50,6 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   // workspace in one snapshot, and no id appears in both lists. A spare
   // claimed by a create is hidden the same way, and so is a held row for a
   // workspace mid-restart, which keeps its stop until the restart succeeds.
-  const provisioning = listProvisioning()
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
     driver: workspaceDriver().kind,

@@ -274,14 +274,21 @@ describe('WorkspaceList', () => {
   it('counts a group\'s stopped members in its header, and shows them only when asked', async () => {
     stoppedRows.push(stoppedEntry('gone', { title: 'Stopped one', groupId: 'g1' }),
       stoppedEntry('gone2', { title: 'Stopped two', groupId: 'g1' }))
-    renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
+    renderList([
+      entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' }),
+      entry({ workspaceId: 'c', title: 'Dying one', groupId: 'g1', stopping: true }),
+    ], {
+      // The snapshot's counts leave out the stopping member.
       groups: [group({ stoppedCount: 2 })],
       project: { stoppedCount: 2, unseenDeaths: 0 },
     })
 
-    // Counted from the snapshot, with nothing fetched for a hidden list.
+    // Counted from the snapshot, with nothing fetched for a hidden list. The
+    // stopping member counts once, and not as active, here and in the
+    // Stopped section.
     const section = screen.getByRole('group', { name: group().name })
-    expect(section.textContent).toContain('(1/3)')
+    expect(section.textContent).toContain('(1/4)')
+    expect(screen.getByRole('button', { name: /Stopped\s*2/ })).toBeTruthy()
     expect(screen.queryByText('Stopped one')).toBeNull()
     expect(stoppedQueries()).toEqual([])
 
@@ -334,7 +341,7 @@ describe('WorkspaceList', () => {
 
     // A restart makes it live again. It must not revert to its old collapsed
     // state and hide the row the user just asked for.
-    rerender([], { ...opts, provisioning: [provisioning({ workspaceId: 'gone', groupId: 'g1' })] })
+    rerender([], { groups: [group({ pinned: true })], provisioning: [provisioning({ workspaceId: 'gone', groupId: 'g1' })] })
     expect(screen.getByRole('button', { name: /Release.*\(1\/1\)/ }).getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('Restarting workspace')).toBeTruthy()
   })
@@ -345,7 +352,7 @@ describe('WorkspaceList', () => {
       stoppedAt: '2026-08-10 01:00:00' }]
     stoppedRows.push(stoppedEntry('s', { groupId: 'g1' }))
     const rerender = renderList(live, {
-      groups: [group({ stoppedCount: 1 })], queued: [queuedEntry('q1', { parentWorkspaceId: 's' })], held,
+      groups: [group()], queued: [queuedEntry('q1', { parentWorkspaceId: 's' })], held,
     })
 
     // Held: its row stays out, with what waits on it.
@@ -370,7 +377,9 @@ describe('WorkspaceList', () => {
 
     // It gains a queued child: on screen again whatever the toggle says.
     await pickAction('Hide stopped workspaces', 'Group actions')
-    rerender(more, { groups: grown, queued: [queuedEntry('q2', { parentWorkspaceId: 's' })], held })
+    rerender(more, {
+      groups: [group({ stoppedCount: 1, unseenDeaths: 1 })], queued: [queuedEntry('q2', { parentWorkspaceId: 's' })], held,
+    })
     expect(screen.getByText('Stopped s')).toBeTruthy()
     expect(screen.queryByText('Stopped t')).toBeNull()
   })
@@ -442,11 +451,12 @@ describe('WorkspaceList', () => {
       await waitFor(() => expect(within(stoppedSection).queryByText('Grouped stop')).toBeNull())
     })
 
-    it('leaves out held workspaces and restarts, which have rows of their own, from its rows and its count', async () => {
+    it('leaves out held workspaces and restarts, which have rows of their own, from its rows', async () => {
       stoppedRows.push(stoppedEntry('held'), stoppedEntry('back'), stoppedEntry('plain'), stoppedEntry('failed'))
       useUiStore.setState({ stoppedExpanded: true })
       renderList([], {
-        project: { stoppedCount: 4, unseenDeaths: 0 },
+        // The snapshot's count leaves them out already.
+        project: { stoppedCount: 2, unseenDeaths: 0 },
         held: [{ workspaceId: 'held', projectId: 'proj', tool: 'claude', title: 'Stopped held', stoppedAt: '2026-08-10 01:00:00' }],
         queued: [queuedEntry('q1', { parentWorkspaceId: 'held' })],
         // A create stopped mid-provision keeps its failed row, and is listed
