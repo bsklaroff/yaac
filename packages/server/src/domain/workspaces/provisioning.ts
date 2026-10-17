@@ -345,11 +345,13 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
 }
 
 /**
- * Ids a sweep must not touch: workspaces still being created or restarted.
+ * Ids a sweep must not touch: workspaces still being created or restarted,
+ * including a spare a create has claimed, which runs under its own id.
  * Failed entries are excluded; their rollback already ran.
  */
 export function inFlightWorkspaceIds(): string[] {
-  return [...entries.values()].filter((e) => e.error === undefined).map((e) => e.workspaceId)
+  return [...entries.values()].filter((e) => e.error === undefined)
+    .flatMap((e) => (e.claimedId !== undefined ? [e.workspaceId, e.claimedId] : [e.workspaceId]))
 }
 
 /** Test helper: drop all tracked entries. */

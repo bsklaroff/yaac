@@ -65,9 +65,10 @@ export const inFlight = new Map<string, string>()
 /**
  * Workspace ids of spares the reconciler is reaping. The pod stays listed
  * and alive through the salvage, the Job delete and its grace period, so
- * this stops a claim from taking it (the reap would then delete the
- * claimed workspace) and later ticks from reaping it again (a second reap
- * would exec into the dying pod and race the first one's checkout removal).
+ * this keeps it out of the pool's count and stops later ticks from reaping
+ * it again (a second reap would exec into the dying pod and race the first
+ * one's checkout removal). Claims and refreshes skip it through
+ * `freeSpare`.
  */
 export const reaping = new Set<string>()
 
@@ -116,6 +117,18 @@ export function clearPrewarmStateForTests(): void {
 }
 
 /**
+ * A spare's warm-time settings if no warm or claim holds it, else
+ * undefined. Read at the moment of acting, not from an earlier listing: a
+ * claim that has since finished leaves no other mark in memory, and its
+ * pod may still be listed as a spare. A reap drops the settings as it
+ * starts, so a spare being reaped reads as taken too.
+ */
+export function freeSpare(spare: Pick<RuntimeHandle, 'jobName' | 'workspaceId'>): SpareSettings | undefined {
+  if (claiming.has(spare.jobName) || inFlight.has(spare.workspaceId)) return undefined
+  return spareSettings.get(spare.workspaceId)
+}
+
+/**
  * The settings a workspace's agents launch with: its row's, or for a spare
  * (which has none) its warm-time ones. An `acp` spare's status watcher runs
  * the ACP handshake while it warms, and needs them for it.
@@ -129,24 +142,36 @@ export async function recordedLaunch(
 
 /**
  * Tear a spare down and delete its files, in the background. The caller
- * saw its unit marked prewarmed; the files go only if no row has its id as
- * well. A row always wins: one left by a server that died between a claim's
- * insert and its relabel makes this a stop, which keeps the files.
+ * saw its unit marked prewarmed, in a listing that may predate a claim
+ * that has since finished and released its reservation. So a spare with a
+ * row is looked up again: one the runtime no longer marks is the user's
+ * workspace and is left alone. One still marked was left by a server that
+ * died between a claim's insert and its relabel, and is torn down like a
+ * stop, which keeps the files.
  *
  * Pod, then files, then the unit's record (the Job), each only if the
  * previous step succeeded, so whatever a failure leaves is still marked a
- * spare and a later reap retries it. A row lookup that fails is such a
- * failure: it must never read as "no row". A spare being claimed, warmed
- * or already reaped is left alone.
+ * spare and a later reap retries it. A lookup that fails is such a
+ * failure: it must never read as "no row" or "still a spare". A spare
+ * being claimed, warmed or already reaped is left alone.
+ *
+ * `claimFailed` is a claim's own rollback, which knows no claim stands, so
+ * a spare it left with a row is stopped even if it got as far as the
+ * relabel.
  */
-export function reapSpare(target: PrewarmReapTarget): void {
+export function reapSpare(target: PrewarmReapTarget, { claimFailed = false } = {}): void {
   const { jobName, projectId, workspaceId } = target
   if (claiming.has(jobName) || inFlight.has(workspaceId) || reaping.has(workspaceId)) return
   reaping.add(workspaceId)
   spareSettings.delete(workspaceId)
   void (async () => {
+    const hasRow = await findWorkspaceRow(workspaceId) !== undefined
+    if (hasRow && !claimFailed && await workspaceDriver().find(workspaceId) !== undefined) {
+      serverLog(`[prewarm] spare ${workspaceId} was claimed since it was listed: not reaping it`)
+      return
+    }
     if (!await cleanupWorkspace({ ...target, keepRecord: true })) return
-    if (await findWorkspaceRow(workspaceId) !== undefined) {
+    if (hasRow) {
       serverLog(`[prewarm] spare ${workspaceId} has a row, so it was claimed: keeping its files`)
     } else if (!await deleteWorkspaceState(projectId, workspaceId)) {
       return
@@ -377,11 +402,8 @@ export async function tryClaimPrewarmed(
   let claimed = false
   try {
     const workspaces = await runtime.list(projectId)
-    // A spare still warming is not claimable yet.
     const launched = new Map(workspaces.flatMap((p) => {
-      const settings = p.prewarmed && p.running && !inFlight.has(p.workspaceId)
-        ? spareSettings.get(p.workspaceId)
-        : undefined
+      const settings = p.prewarmed && p.running ? freeSpare(p) : undefined
       return settings ? [[p.jobName, settings] as const] : []
     }))
     const spares = workspaces.filter((p) => launched.has(p.jobName))
@@ -414,7 +436,7 @@ export async function tryClaimPrewarmed(
       for (let r = refreshing.get(c.jobName); r !== undefined && settled; r = refreshing.get(c.jobName)) {
         settled = await settlesBy(r, deadline)
       }
-      if (!settled || claiming.has(c.jobName) || reaping.has(c.workspaceId)) continue
+      if (!settled || freeSpare(c) === undefined) continue
       // No await between the check and the add.
       claiming.add(c.jobName)
       reserved = c.jobName
@@ -612,7 +634,7 @@ export async function tryClaimPrewarmed(
         // cold create at once.
         claiming.delete(chosen.jobName)
         reserved = undefined
-        reapSpare(chosen)
+        reapSpare(chosen, { claimFailed: true })
       } else if (inserted && warmed) {
         // An untouched spare goes back to the pool on its warm posture. The
         // row went first, so a watcher reconnecting meanwhile reads the warm

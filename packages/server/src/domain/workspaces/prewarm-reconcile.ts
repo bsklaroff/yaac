@@ -14,12 +14,14 @@ import { listProvisioning } from './provisioning'
 import {
   claiming,
   computePrewarmPlan,
+  freeSpare,
   inFlight,
   reapSpare,
   reaping,
   refreshing,
   spareHeads,
   spareSettings,
+  type SpareSettings,
 } from './prewarm'
 import { rebranchSpare } from './spare-pool'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
@@ -72,8 +74,7 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
     void spawnSpare(spawn.projectId, workspaceId)
   }
 
-  const reaped = new Set(toReap.map((t) => t.jobName))
-  await refreshSpares(pods.filter((p) => p.prewarmed && p.running && !reaped.has(p.jobName)))
+  await refreshSpares(pods.filter((p) => p.prewarmed && p.running))
 }
 
 /**
@@ -87,11 +88,12 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
   const runtime = workspaceDriver()
   const listed = new Set(spares.map((p) => p.workspaceId))
   for (const id of spareHeads.keys()) if (!listed.has(id)) spareHeads.delete(id)
-  const busy = (p: RuntimeHandle): boolean => claiming.has(p.jobName) || refreshing.has(p.jobName)
-    || reaping.has(p.workspaceId) || inFlight.has(p.workspaceId)
+  // `spares` is the pass's listing, which a claim or reap may have
+  // overtaken, so this is asked again after every await.
+  const free = (p: RuntimeHandle): SpareSettings | undefined =>
+    refreshing.has(p.jobName) ? undefined : freeSpare(p)
   await Promise.all(spares.map(async (spare) => {
-    if (busy(spare)) return
-    const warmed = spareSettings.get(spare.workspaceId)
+    const warmed = free(spare)
     if (!warmed) return
     let target: { branch: string; tip: string }
     try {
@@ -102,8 +104,7 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
       serverLog(`[prewarm] reading spare ${spare.workspaceId}'s base failed: ${String(err)}`)
       return
     }
-    // A claim may have taken it during the reads.
-    if (spareHeads.get(spare.workspaceId) === target.tip || busy(spare)) return
+    if (spareHeads.get(spare.workspaceId) === target.tip || free(spare) !== warmed) return
     let changed = false
     const refresh = (async () => {
       await runtime.awaitAgentTransport(spare.jobName, { timeoutMs: 10_000 })
@@ -139,7 +140,7 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
  * match.
  */
 async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
-  const spares = pods.filter((p) => p.prewarmed && p.projectId && !claiming.has(p.jobName))
+  const spares = pods.filter((p) => p.prewarmed && p.projectId)
   if (spares.length === 0) return new Set()
   const projects = await listProjectRows()
   const wanted = new Map(await Promise.all(projects.map(async (p) => [p.id, {

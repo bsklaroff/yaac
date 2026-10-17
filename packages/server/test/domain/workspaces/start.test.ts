@@ -24,7 +24,7 @@ import {
   saveDraftWorkspace,
 } from '#domain/workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
-import { clearPrewarmStateForTests } from '#domain/workspaces/prewarm'
+import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewarm'
 import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
 import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
@@ -953,6 +953,23 @@ describe('prepareStart', () => {
       expect(listProvisioning()).toEqual([])
     })
 
+    // A pass lists pods before it plans, so a claim can finish in between.
+    // The pass then sees a spare with no warm-time settings and no claim in
+    // progress, the only workspace of its project: stale and idle twice
+    // over. It must leave the user's workspace running.
+    it('keeps a claimed spare that a pass listed before the claim', async () => {
+      const spare = await warm()
+      const listedBefore = snapshotFixture([{ ...spare }])
+
+      await start({ claimSpare: true, prompt: 'fix the bug' })
+      await reconcilePrewarmPool(listedBefore)
+      await new Promise((r) => setTimeout(r, 50))
+
+      expect(destroys).toEqual([])
+      expect(units.map((u) => u.workspaceId)).toContain(spare.workspaceId)
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.stoppedAt).toBeUndefined()
+    })
+
     it('respawns the agent for another tool, model, posture or effort, and moves the checkout to another branch', async () => {
       const spare = await warm()
       await saveToolAuth('codex', 'sk-oai')
@@ -1236,7 +1253,11 @@ describe('prepareStart', () => {
       warn.mockRestore()
     })
 
-    it('claims the newest of several spares that match', async () => {
+    // A claim that waits (here, out a refresh) can find its first choice
+    // taken by a claim that started and finished meanwhile. It moves on to
+    // the next spare rather than reserving a workspace that is no longer a
+    // spare and falling back to a cold create.
+    it('claims the newest of several spares that match, passing over one another claim took meanwhile', async () => {
       vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '2')
       await reconcilePrewarmPool(snapshotFixture([user]))
       await vi.waitFor(() => {
@@ -1244,9 +1265,24 @@ describe('prepareStart', () => {
           .toHaveLength(2)
       }, { timeout: 30_000 })
       await new Promise((r) => setTimeout(r, 20))
-      const newest = [...units].sort((a, b) => b.createdAtMs - a.createdAtMs)[0]
+      const [newest, older] = [...units].sort((a, b) => b.createdAtMs - a.createdAtMs)
+
+      // The waiting claim subscribes to the refresh; the refresh then ends
+      // as far as later claims can see, but not yet for the waiting one.
+      let finishRefresh = (): void => {}
+      const refreshed = new Promise<void>((r) => { finishRefresh = r })
+      let waiting = false
+      refreshing.set(newest.jobName, {
+        then: (onDone: () => unknown) => { waiting = true; return refreshed.then(onDone) },
+      } as unknown as Promise<void>)
+      const late = start({ claimSpare: true })
+      await vi.waitFor(() => { expect(waiting).toBe(true) })
+      refreshing.delete(newest.jobName)
 
       expect((await start({ claimSpare: true })).workspaceId).toBe(newest.workspaceId)
+      finishRefresh()
+      expect((await late).workspaceId).toBe(older.workspaceId)
+      expect(specs.filter((s) => !s.prewarm)).toEqual([])
     })
 
     // Nothing else records a spare once its unit is gone, so a failed warm

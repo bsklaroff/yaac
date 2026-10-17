@@ -72,9 +72,12 @@ workspace. See "Agent workspaces" below.
   pool. One that fails after deletes its row and reaps the spare.
 - **A spare's files are deleted only when its unit is labelled prewarmed and
   no row has its id** (`reapSpare`). A failed row lookup deletes nothing. A
-  row always wins: a server that died between a claim's insert and its relabel
-  leaves a labelled unit with a row, which the reap tears down like a stop,
-  keeping the files. The reap deletes the pod, then the files, then the Job,
+  row always wins. The reap's listing may predate a claim that has since
+  finished, so a spare with a row is looked up again, and one no longer
+  labelled is the user's workspace and is left running. One still labelled
+  was left by a server that died between a claim's insert and its relabel;
+  the reap tears it down like a stop, keeping the files. The reap deletes the
+  pod, then the files, then the Job,
   each only once the previous step succeeded, so whatever a failure leaves is
   still labelled and the next reap retries it. A dead spare's Job
   (`backoffLimit: 0`) outlives its pod, so the stale reaper still knows a
