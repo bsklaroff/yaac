@@ -128,7 +128,16 @@ that fails before the body's cap (a textconv program that is missing) is
 neither cached nor held: the answer keeps its file list and shows the body
 as truncated to nothing. A held reading
 is dropped after five minutes unread and on teardown; the scratch-dir files
-carry a workspace across a server restart. Each answer says how long its
+carry a workspace across a server restart.
+
+An exec's output is capped (streamd refuses one past 4 MiB, and `podExec`
+rejects it rather than pass on a cut one), and a big checkout's first
+read, with every file in its listing and every change in its lists, can
+pass that. So the script writes its output to a scratch file and prints it
+only up to 2 MiB; past that it prints the file's name and size, and the
+server fetches it in base64 pages of that size, one exec each. The next
+run clears the file. Only the last 4 KiB of the script's stderr is passed
+on, since a warning per file could pass the cap too. Each answer says how long its
 read took (`readMs`), and the webapp waits at least that long after an
 answer before polling again, but no more than 10 seconds.
 
@@ -157,9 +166,16 @@ the agent across a branch rename, and, when asked, lists the checkout:
 
 The listing's sections are NUL-separated, since a path can hold a newline,
 and print before the completion marker, so a run that died partway cannot
-look like an empty checkout. It is capped at 50,000 paths (`truncated`). Its
-`version` hashes the whole listing; the client sends it back as `known`, and
-an unchanged listing is left out of the answer.
+look like an empty checkout. The server holds the last listing beside the
+rest of the reading, so a poll prints only the parts that moved, as two
+more words of `MODES`. `paths` is printed again only when a path was added,
+deleted or retyped since the working tree it was read at (`git diff-tree
+--diff-filter=ADT`, which reads trees, not files), so an edit leaves it as
+held; `ignored` and the untracked folders are walked every `full` poll but
+printed only when their hash differs from the held one. It is capped at
+50,000 paths (`truncated`). Its `version` hashes the whole listing as the
+server finishes it; the client sends it back as `known`, and an unchanged
+listing is left out of the answer.
 
 A file's original for the editor's diff modes comes from `file-at`, which
 runs `git cat-file` on `<base>:<path>` inside the workspace (the old path for
