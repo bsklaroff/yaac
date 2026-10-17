@@ -69,7 +69,7 @@ function assistant(content: unknown, extra: Record<string, unknown> = {}): unkno
 describe('claudeTranscriptAsAcp', () => {
   it('replays a conversation as the events an acp pane renders', async () => {
     const file = await transcript([
-      user('add a health route'),
+      user('add a health route', { timestamp: '2026-01-01T09:30:00Z' }),
       assistant([
         { type: 'thinking', thinking: 'The router is the place.', signature: 'sig' },
         { type: 'text', text: 'Looking at the router.' },
@@ -91,6 +91,8 @@ describe('claudeTranscriptAsAcp', () => {
 
     const [ask, thought, said] = events
     expect(ask.type === 'user' && ask.content).toEqual([{ type: 'text', text: 'add a health route' }])
+    // Dated by the entry claude wrote it in, which the SDK's message names.
+    expect(ask.type === 'user' && ask.at).toBe(Date.parse('2026-01-01T09:30:00Z'))
     expect(thought.type === 'thought' && thought.content[0])
       .toEqual({ type: 'text', text: 'The router is the place.' })
     expect(said.type === 'agent' && said.content[0])

@@ -201,11 +201,11 @@ describe('WorkspaceChat mid-turn', () => {
 
     // A steered message echoes like any other, labelled as sent mid-turn,
     // and clears the box.
-    expect(screen.queryByText('sent mid-turn')).toBeNull()
+    expect(screen.queryByText('Sent mid-turn')).toBeNull()
     stream.events = [...stream.events, { type: 'user', seq: 1, content: [{ type: 'text', text: 'use the staging config' }], steered: true }]
     rerender(pane())
     await waitFor(() => expect(box().value).toBe(''))
-    expect(screen.getAllByText('sent mid-turn')).toHaveLength(1)
+    expect(screen.getAllByText('Sent mid-turn')).toHaveLength(1)
     expect(screen.getByText('use the staging config')).toBeTruthy()
   })
 
@@ -774,6 +774,79 @@ describe('WorkspaceChat rendering', () => {
     expect(container.querySelector('strong')).toBeNull()
     expect(container.querySelector('.items-end')).toBeNull()
     expect(container.querySelector('.items-start')).toBeTruthy()
+  })
+
+  it('dates what the user sent and what woke the agent, with the whole date on hover', () => {
+    const sent = new Date(2026, 9, 17, 9, 5).getTime()
+    const woke = new Date(2026, 9, 18, 14, 30).getTime()
+    vi.setSystemTime(new Date(2026, 9, 18, 16, 0))
+    try {
+      stream.events = [
+        { type: 'user', seq: 0, content: [{ type: 'text', text: 'hi' }], at: sent },
+        agent(1, 'hello'),
+        { type: 'agent-turn', seq: 2 },
+        { type: 'woken', seq: 3, causes: [{ kind: 'monitor' }], at: woke },
+        agent(4, 'The deploy finished.'),
+        // A record that does not say when is shown undated.
+        user(5, 'undated'),
+      ]
+      const { container } = show()
+      const times = [...container.querySelectorAll('time')]
+      expect(times.map((t) => t.dateTime)).toEqual([new Date(sent).toISOString(), new Date(woke).toISOString()])
+      // Yesterday's carries its date; today's is the time alone. In the
+      // browser's own locale, so the expectations are too.
+      const label = (at: number, opts: Intl.DateTimeFormatOptions = {}): string =>
+        new Date(at).toLocaleString(undefined, { ...opts, hour: 'numeric', minute: '2-digit' })
+      expect(times.map((t) => t.textContent)).toEqual([label(sent, { month: 'short', day: 'numeric' }), label(woke)])
+      expect(times[0].title).toContain('2026')
+      // Above the message it dates, as the caption for what woke the agent is.
+      expect(times[0].parentElement?.nextElementSibling?.textContent).toBe('hi')
+      // Leading the caption it shares.
+      expect(times[1].parentElement?.textContent).toBe(`${label(woke)}·Woken bya monitor`)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows times in the zone the viewer set: the one they pinned, or else this device\'s', async () => {
+    // One instant, as the record holds it: nothing between it and the pane
+    // names a zone, so the pane formats it in the viewer's.
+    const at = Date.UTC(2026, 9, 17, 23, 30)
+    const zone = process.env.TZ
+    const local = (tz: string): string => new Date(at).toLocaleString(undefined, { timeZone: tz, hour: 'numeric', minute: '2-digit' })
+    const seenWith = async (setting: { timeZone: string | null; pinned: boolean }): Promise<HTMLTimeElement> => {
+      const server = mockFetch({ 'GET /api/config/time-zone': setting })
+      stream.events = [{ type: 'user', seq: 0, content: [{ type: 'text', text: 'hi' }], at }]
+      const { container } = show()
+      await waitFor(() => expect(server.called('GET /api/config/time-zone')).toHaveLength(1))
+      // Let the setting's answer render before reading the label.
+      await act(async () => { await Promise.resolve() })
+      const time = container.querySelector('time')
+      if (time === null) throw new Error('no time shown')
+      return time
+    }
+    // This device is in New York, where it is the evening of the 17th; in
+    // Tokyo it is the next morning. Each is today where it is seen.
+    process.env.TZ = 'America/New_York'
+    vi.setSystemTime(at)
+    try {
+      expect(local('America/New_York')).not.toBe(local('Asia/Tokyo'))
+      // Pinned: the user's choice, whatever this device's zone.
+      const pinned = await seenWith({ timeZone: 'Asia/Tokyo', pinned: true })
+      expect(pinned.textContent).toBe(local('Asia/Tokyo'))
+      expect(pinned.title).toBe(new Date(at).toLocaleString(undefined, { timeZone: 'Asia/Tokyo', dateStyle: 'full', timeStyle: 'long' }))
+      cleanup()
+      // Automatic: this device's zone, though another device reported last.
+      expect((await seenWith({ timeZone: 'Asia/Tokyo', pinned: false })).textContent).toBe(local('America/New_York'))
+      cleanup()
+      // A zone pinned from a device with newer zone data than this browser's.
+      expect((await seenWith({ timeZone: 'Mars/Olympus_Mons', pinned: true })).textContent).toBe(local('America/New_York'))
+    } finally {
+      if (zone === undefined) delete process.env.TZ
+      else process.env.TZ = zone
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
   })
 
   it('skips an event type it does not know, as a server newer than the page sends', () => {

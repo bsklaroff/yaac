@@ -217,12 +217,14 @@ export type AcpStopReason =
  * emits it; a pane joins consecutive `agent` events into one bubble.
  *
  * `thread` names the subagent (`AcpSubagent.id`) an event belongs to, and is
- * absent for the main conversation.
+ * absent for the main conversation. `at` is when it happened (epoch ms, to
+ * within a second), on the events a pane dates; absent where the history
+ * does not say.
  */
 export type AcpEvent =
   /** A user message, echoed back so live history matches a replay.
    *  `steered` marks one added to a running turn, which it does not end. */
-  | { type: 'user'; seq: number; thread?: string; content: AcpContent[]; steered?: true }
+  | { type: 'user'; seq: number; thread?: string; content: AcpContent[]; steered?: true; at?: number }
   | { type: 'agent'; seq: number; thread?: string; content: AcpContent[] }
   /** Extended thinking. Panes render it collapsed. */
   | { type: 'thought'; seq: number; thread?: string; content: AcpContent[] }
@@ -262,7 +264,7 @@ export type AcpEvent =
   | { type: 'agent-turn'; seq: number }
   /** What woke the agent into the run the last `agent-turn` began, when it
    *  started that run itself. */
-  | { type: 'woken'; seq: number; causes: AcpWake[] }
+  | { type: 'woken'; seq: number; causes: AcpWake[]; at?: number }
   /** The agent, adapter, or transport failed. Ends the turn, not the
    *  conversation; the user can retry. */
   | { type: 'error'; seq: number; message: string }

@@ -47,6 +47,10 @@ function conversation(events: AcpEvent[]): string[] {
 describe('codexTranscriptAsAcp', () => {
   it('replays a conversation as the events an acp pane renders', () => {
     const events = codexTranscriptAsAcp(SESSION)
+    // Every message is dated by the rollout's own times.
+    const dated = events.flatMap((e) => (e.type === 'user' ? [e.at] : []))
+    expect(dated.filter((at) => at === undefined)).toEqual([])
+    expect(dated[0]).toBe(Date.parse('2026-10-06T12:07:47.721Z'))
 
     expect(conversation(events)).toEqual([
       'user: t-basic please', '--',

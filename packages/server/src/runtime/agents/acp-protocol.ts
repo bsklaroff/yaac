@@ -64,6 +64,7 @@ export const ACPD = {
   hello: '_acpd/hello',
   exit: '_acpd/exit',
   life: '_acpd/life',
+  time: '_acpd/time',
 } as const
 
 export interface AcpInitializeResult {

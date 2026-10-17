@@ -268,7 +268,8 @@ function synthesizeAcpRecord(rollouts: string[]): AcpRecordWriter {
     }
   }
 
-  for (const { thread, turn, item, line } of entries) {
+  for (const { ms, thread, turn, item, line } of entries) {
+    if (ms > 0) record.time(ms)
     if (thread !== main && subagents.get(thread)?.state !== 'running') {
       // An ended subagent's background command still ends its task.
       const id = asString(item?.value.id) ?? ''

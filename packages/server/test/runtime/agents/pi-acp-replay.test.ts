@@ -42,6 +42,11 @@ function conversation(events: AcpEvent[]): string[] {
 describe('piTranscriptAsAcp', () => {
   it('replays a session as the events its live pi-acp stream projects to', () => {
     const events = piTranscriptAsAcp(LINEAR)
+    // Every message is dated by the log's own times, to within the second
+    // a record keeps.
+    const dated = events.flatMap((e) => (e.type === 'user' ? [e.at] : []))
+    expect(dated.filter((at) => at === undefined)).toEqual([])
+    expect(dated[0]).toBe(Date.parse('2026-10-06T11:49:21.982Z'))
     // The compaction starts the conversation's second page.
     const compacted = events.findIndex((e) => e.type === 'compaction')
     expect(events.map((e) => e.seq)).toEqual(events.map((_, i) => (i < compacted ? i : ACP_PAGE_SPAN + i - compacted)))

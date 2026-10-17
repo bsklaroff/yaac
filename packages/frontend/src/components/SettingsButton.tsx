@@ -19,7 +19,7 @@ import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import {
   SHORTCUTS, chordFromEvent, chordsEqual, formatChord, isModifierCode, validateChord, type Chord, type ShortcutId,
 } from '#lib/shortcuts'
-import { deviceTimeZone } from '#lib/time'
+import { deviceTimeZone, timeZoneQuery } from '#lib/time'
 import { CredentialsPane } from '#components/settings/Credentials'
 import { Field } from '#components/settings/Field'
 import { PhoneLinkField } from '#components/settings/PhoneLink'
@@ -451,24 +451,22 @@ function GitIdentityField(): JSX.Element {
 }
 
 /**
- * The time zone this server's workspaces launch with. Automatic follows the
- * device that last opened the web app or the desktop app, or created a
- * workspace from the CLI; picking a zone here pins it.
+ * The time zone this server's workspaces launch with, and chat panes show
+ * times in (`useTimeZone`). Automatic follows the device that last opened
+ * the web app or the desktop app, or created a workspace from the CLI, and
+ * a pane shows times in the zone of the device it is on; picking a zone
+ * here pins both.
  */
 function TimeZoneField(): JSX.Element {
   const zones = useMemo(() => Intl.supportedValuesOf('timeZone'), [])
   const queryClient = useQueryClient()
-  const { data: setting, error: loadError } = useQuery({
-    queryKey: ['time-zone'],
-    queryFn: () => api.config['time-zone'].$get(),
-    staleTime: 0,
-  })
+  const { data: setting, error: loadError } = useQuery({ ...timeZoneQuery, staleTime: 0 })
   /** '' is Automatic: report this device's zone and unpin. */
   const choose = useMutation({
     mutationFn: (value: string) => api.config['time-zone'].$put({
       json: { timeZone: value === '' ? deviceTimeZone() : value, pinned: value !== '' },
     }),
-    onSuccess: (saved) => queryClient.setQueryData(['time-zone'], saved),
+    onSuccess: (saved) => queryClient.setQueryData(timeZoneQuery.queryKey, saved),
   })
   const error = choose.error ?? loadError
 
@@ -478,9 +476,10 @@ function TimeZoneField(): JSX.Element {
   return (
     <Field
       label="Time zone"
-      hint={'The zone new workspaces launch in. Automatic follows whichever device last '
-        + 'connected, so it changes as you switch between machines in different zones; '
-        + 'pick a zone to pin it. A running workspace keeps the zone it started with.'}
+      hint={'The zone new workspaces launch in and chats show times in. Automatic follows '
+        + 'whichever device last connected (for chat times, the device you are on), so it '
+        + 'changes as you switch between machines in different zones; pick a zone to pin '
+        + 'it. A running workspace keeps the zone it started with.'}
     >
       <>
         <select

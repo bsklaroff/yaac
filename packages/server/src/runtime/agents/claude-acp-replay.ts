@@ -21,6 +21,7 @@ import { ACP, COMPACTION_META } from './acp-protocol'
 import { jsonObjects } from './jsonl'
 import { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { isUuid } from '#lib/uuid'
+import { asString } from '#lib/narrow'
 import { serverLog } from '#lib/log'
 import type { AcpEvent, AcpEventInit } from '@yaac/shared/acp'
 // Type-only; the lazy import below is the only runtime load.
@@ -153,6 +154,8 @@ async function synthesizeAcpRecord(
   // `toolUseCache` spans messages so a `tool_result` finds its `tool_use`
   // (and so a tool call gets its title and kind).
   const toolUseCache = {}
+  /** When each entry was written, by its uuid, which the messages keep. */
+  const times = new Map(entries.map((e: Record<string, unknown>) => [e.uuid, Date.parse(asString(e.timestamp) ?? '')]))
   for (const part of compactedParts(entries)) {
     // A read-only store holding one part. `getSessionMessages` (follows
     // `parentUuid`, drops subagent turns) then reads bytes we supply
@@ -195,6 +198,7 @@ async function synthesizeAcpRecord(
         content = stripLocalCommandMetadata(content)
         if (content === null) continue
       }
+      record.time(times.get(message.uuid))
       for (const notification of toAcpNotifications(
         content as never, role, sessionId, toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
         // With hooks off, the adapter returns notifications instead of pushing

@@ -38,6 +38,11 @@
  * Images are kept out of it (see "Images" below), and every other byte is
  * recorded verbatim.
  *
+ * The record also says when each line was written, for the pane's
+ * timestamps: its second line is `_acpd/time {at}` (epoch ms), and a line is
+ * preceded by another once a second has passed since the last. That dates
+ * every line to within a second for at most one extra line a second.
+ *
  * A conversation that cannot be recorded cannot be rendered, even though RPC
  * still works. So a record failure restarts the agent under a fresh record,
  * and the reattaching client's `session/load` replays the conversation into
@@ -88,6 +93,9 @@ const CHILD_KILL_GRACE_MS = 5_000
  *  the longest a busy record goes unsettled (see "The record"). */
 const SETTLE_QUIET_MS = 50
 const SETTLE_MAX_MS = 200
+
+/** The least time between two time marks (see "The record"). */
+const TIME_MARK_MS = 1_000
 
 /** Lines shorter than this are recorded unparsed: an image worth storing
  *  apart makes its line at least this long. */
@@ -165,6 +173,8 @@ export function createAcpd({
   /** The pending settle, and when the oldest unsettled bytes were written. */
   let settleTimer = null
   let unsettledSince = 0
+  /** When the record last noted the time. */
+  let markedAt = 0
 
   /**
    * Open (or reopen) the record with a fresh life id, which tells the
@@ -175,11 +185,9 @@ export function createAcpd({
     try {
       fs.mkdirSync(path.dirname(logPath), { recursive: true })
       logFd = fs.openSync(logPath, 'w')
-      fs.writeSync(logFd, `${JSON.stringify({
-        jsonrpc: '2.0',
-        method: '_acpd/life',
-        params: { id: crypto.randomUUID(), startedAt: new Date().toISOString() },
-      })}\n`)
+      markedAt = Date.now()
+      fs.writeSync(logFd, controlLine('_acpd/life', { id: crypto.randomUUID(), startedAt: new Date(markedAt).toISOString() })
+        + controlLine('_acpd/time', { at: markedAt }))
       fs.fdatasyncSync(logFd)
       return true
     } catch (err) {
@@ -355,6 +363,11 @@ export function createAcpd({
   function record(buf, now) {
     if (logFd === null) return
     try {
+      const at = Date.now()
+      if (at - markedAt >= TIME_MARK_MS) {
+        fs.writeSync(logFd, controlLine('_acpd/time', { at }))
+        markedAt = at
+      }
       fs.writeSync(logFd, withoutImages(buf))
     } catch (err) {
       recordFailed(err)
