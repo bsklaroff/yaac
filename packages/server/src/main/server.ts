@@ -77,10 +77,12 @@ export function buildApp(deps: ServerAppDeps) {
 }
 
 /** The wire form of a thrown error. An unexpected one is logged with its
- *  cause, which the response's message leaves out. */
+ *  cause, which the response's message leaves out, unless it is the abort
+ *  of a route that follows its request's signal and the client hung up. */
 function errorResponse(err: Error, c: Context): Response {
   const { status, body } = toErrorBody(err)
-  if (status === 500) serverLog(`[server] ${c.req.method} ${c.req.path} failed: ${errorText(err)}`)
+  const abandoned = err.name === 'AbortError' && c.req.raw.signal.aborted
+  if (status === 500 && !abandoned) serverLog(`[server] ${c.req.method} ${c.req.path} failed: ${errorText(err)}`)
   return c.json(body, status as 400 | 401 | 404 | 409 | 500 | 503)
 }
 

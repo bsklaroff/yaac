@@ -326,6 +326,26 @@ describe('podExec', () => {
     expect((err as RelayDialError).afterDispatch).toBe(true)
     expect(dials).toBe(1)
   })
+
+  it('hangs up on an abort, which streamd reads as the caller leaving, without retrying', async () => {
+    let dials = 0
+    let running!: () => void
+    const dispatched = new Promise<void>((r) => { running = r })
+    let hungUp!: () => void
+    const closed = new Promise<void>((r) => { hungUp = r })
+    await withRelay((r) => {
+      dials++
+      r.socket.on('end', hungUp)
+      r.socket.write('{"ok":true}\n', running)
+    })
+    const abort = new AbortController()
+    const run = podExec(JOB, 'sleep 60', { maxAttempts: 3, signal: abort.signal }).catch((e: unknown) => e)
+    await dispatched
+    abort.abort()
+    expect(await run).toMatchObject({ name: 'AbortError' })
+    await closed
+    expect(dials).toBe(1)
+  })
 })
 
 describe('dialCtrlStream', () => {

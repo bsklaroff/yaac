@@ -225,14 +225,15 @@ function changesScript(loc: ChangesLocation): string {
   // live holder is waited for (its run warms the index) for up to 10
   // seconds, then the run gives up with CHANGES_BUSY. A dead holder's lock
   // is cleared, and so is one over two minutes old, whose pid may since
-  // belong to an unrelated process. A killed run still removes its lock.
-  + `lk=${i}.run; echo $$ > "$lk.$$"; w=0; `
+  // belong to an unrelated process. A run killed while it waits removes its
+  // pid file, and one killed while it holds the lock removes the lock.
+  + `lk=${i}.run; trap 'rm -f "$lk.$$"' EXIT; trap 'exit 143' TERM; echo $$ > "$lk.$$"; w=0; `
   + 'while ! ln "$lk.$$" "$lk" 2>/dev/null; do '
   + 'p=$(cat "$lk" 2>/dev/null); '
   + 'if [ -n "$p" ] && kill -0 "$p" 2>/dev/null && [ -z "$(find "$lk" -mmin +2 2>/dev/null)" ]; then '
-  + `w=$((w+1)); [ $w -le 50 ] || { rm -f "$lk.$$"; exit ${CHANGES_BUSY}; }; sleep 0.2; `
+  + `w=$((w+1)); [ $w -le 50 ] || exit ${CHANGES_BUSY}; sleep 0.2; `
   + 'else rm -f "$lk"; fi; done; '
-  + 'rm -f "$lk.$$"; trap \'rm -f "$lk"\' EXIT; trap \'exit 143\' TERM; '
+  + 'rm -f "$lk.$$"; trap \'rm -f "$lk"\' EXIT; '
   // An unborn HEAD (an empty repo's checkout) reads as the empty tree.
   + 'e=$(git hash-object -t tree /dev/null) || exit 6; head=$(git rev-parse -q --verify HEAD) || head=$e; '
   + 'ref=; fork=1; '
@@ -708,6 +709,9 @@ interface ChangesRun {
   request: ChangesRequest
   started: boolean
   result: Promise<ChangesReading>
+  /** How many callers still want it; see `runChangesRead`. */
+  waiting: number
+  abandon: AbortController
 }
 
 /** Per workspace, its running read first, then the ones queued behind it. */
@@ -725,14 +729,21 @@ const listingRank = (r: ChangesRequest): number => LISTING_RANK[r.listing ?? 'un
  * queuing one of its own. It never joins the running read: that read
  * started before the request arrived, so it could miss an edit the caller
  * just made. Every caller gets back only the parts it asked for.
+ *
+ * A caller leaves by aborting `signal`. Once every caller of a read has
+ * left, the read is abandoned: a queued one never runs, and a running one
+ * is stopped, so a poll the webapp has replaced (opening the Changes pane
+ * mid-poll) does not hold up the read that replaced it. Either way its
+ * callers get an `AbortError`.
  */
 export function runChangesRead(
   jobName: string,
   request: ChangesRequest,
-  read: (request: ChangesRequest) => Promise<ChangesReading>,
+  read: (request: ChangesRequest, signal: AbortSignal) => Promise<ChangesReading>,
+  signal?: AbortSignal,
 ): Promise<ChangesReading> {
   const runs = changesRuns.get(jobName) ?? []
-  let run = runs.find((r) => !r.started
+  let run = runs.find((r) => !r.started && !r.abandon.signal.aborted
     && (r.request.base ?? '') === (request.base ?? '') && (r.request.defaultBase ?? '') === (request.defaultBase ?? ''))
   if (run) {
     run.request = {
@@ -743,12 +754,13 @@ export function runChangesRead(
   }
   if (!run) {
     const before = runs.at(-1)?.result
-    const queued = { request, started: false } as ChangesRun
+    const queued = { request, started: false, waiting: 0, abandon: new AbortController() } as ChangesRun
     queued.result = (async () => {
       await before?.catch(() => undefined)
       queued.started = true
       try {
-        return await read(queued.request)
+        queued.abandon.signal.throwIfAborted()
+        return await read(queued.request, queued.abandon.signal)
       } finally {
         runs.splice(runs.indexOf(queued), 1)
         if (runs.length === 0) changesRuns.delete(jobName)
@@ -758,7 +770,19 @@ export function runChangesRead(
     changesRuns.set(jobName, runs)
     run = queued
   }
-  return run.result.then((reading) => answerFor(reading, request))
+  const joined = run
+  joined.waiting++
+  if (signal) {
+    // No reason, so an abandoned read rejects with an `AbortError` whether
+    // it was queued or running.
+    const leave = (): void => { if (--joined.waiting === 0) joined.abandon.abort() }
+    if (signal.aborted) leave()
+    else {
+      signal.addEventListener('abort', leave, { once: true })
+      void joined.result.catch(() => undefined).finally(() => { signal.removeEventListener('abort', leave) })
+    }
+  }
+  return joined.result.then((reading) => answerFor(reading, request))
 }
 
 /** `reading` cut down to what `request` asked for. */
@@ -806,7 +830,8 @@ export function forgetWorkspaceChanges(jobName: string): void {
  * A running workspace's diff, and its listing when asked, read inside it.
  * Rejects with `WorkspaceExecError` on failure (`CHANGES_BASE_UNRESOLVED`
  * when a named base has no fork point); a transport failure passes through
- * untranslated. The private index sits at a stable path in the scratch dir,
+ * untranslated, and so does an abort of `signal`, the caller leaving (see
+ * `runChangesRead`). The private index sits at a stable path in the scratch dir,
  * so git's stat cache survives between polls.
  *
  * What each read came from is held and offered to the next one, its base
@@ -815,10 +840,12 @@ export function forgetWorkspaceChanges(jobName: string): void {
  * since, which are spliced in here. The in-workspace caches back this up
  * after a server restart.
  */
-export function readWorkspaceChanges(jobName: string, request: ChangesRequest): Promise<ChangesReading> {
+export function readWorkspaceChanges(
+  jobName: string, request: ChangesRequest, signal?: AbortSignal,
+): Promise<ChangesReading> {
   const driver = workspaceDriver()
   const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
-  return runChangesRead(jobName, request, async (req) => {
+  return runChangesRead(jobName, request, async (req, abandoned) => {
     const started = Date.now()
     for (const [name, h] of heldReadings) if (started - h.usedAt > HELD_IDLE_MS) heldReadings.delete(name)
     const held = heldReadings.get(jobName)?.held
@@ -827,10 +854,10 @@ export function readWorkspaceChanges(jobName: string, request: ChangesRequest): 
     const { stdout } = await driver.exec(
       jobName,
       buildChangesScript({ workspaceDir, indexFile: `${scratchDir}/yaac-changes.idx` }, req, offered),
-      { timeout: 20_000, maxAttempts: 2 },
+      { timeout: 20_000, maxAttempts: 2, signal: abandoned },
     )
     const { reading, next } = readRun(stdout, offered)
     heldReadings.set(jobName, { held: next, usedAt: Date.now() })
     return { ...reading, readMs: Date.now() - started }
-  })
+  }, signal)
 }

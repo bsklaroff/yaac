@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -636,6 +636,27 @@ describe('buildChangesScript', () => {
     }
   })
 
+  // An abandoned read is killed by process group, possibly while it waits
+  // out another run's lock; the pid file it would have linked in must go.
+  it('leaves no pid file when killed while waiting for the lock', async () => {
+    const { repo, idx } = scratchRepo()
+    const holder = Number(execFileSync('sh', ['-c', 'sleep 30 >/dev/null 2>&1 & echo $!'], { encoding: 'utf8' }))
+    fs.writeFileSync(`${idx}.run`, `${holder}\n`)
+    const cmd = buildChangesScript(undefined, 'main')
+      .replace('cd /workspace ', `cd ${repo} `)
+      .replaceAll('/tmp/yaac-changes.idx', idx)
+    const run = spawn('sh', ['-c', cmd], { detached: true, stdio: 'ignore', env: { ...process.env, ...GIT_ENV } })
+    const group = -(run.pid as number)
+    await new Promise((r) => setTimeout(r, 700))
+    process.kill(group, 'SIGTERM')
+    // The outer shell dies at once; the script's own shell runs its trap.
+    const alive = (): boolean => { try { process.kill(group, 0); return true } catch { return false } }
+    for (let i = 0; i < 100 && alive(); i++) await new Promise((r) => setTimeout(r, 50))
+    process.kill(holder)
+    expect(fs.readdirSync(path.dirname(idx)).filter((f) => f.startsWith(`${path.basename(idx)}.run.`))).toEqual([])
+    expect(fs.readFileSync(`${idx}.run`, 'utf8')).toBe(`${holder}\n`)
+  })
+
   it('reuses the index across runs and recovers from a lock a killed run left', () => {
     const { repo, idx } = scratchRepo()
     git(repo, 'checkout', '-q', '-b', 'agent/x')
@@ -750,10 +771,10 @@ describe('runChangesRead', () => {
     readMs: 1,
   }
 
-  /** A `read` that holds every call until `release`, logging each request
-   *  and how many ran at once. */
+  /** A `read` that holds every call until `release` or its abandonment,
+   *  logging each request and how many ran at once. */
   function gatedRead(): {
-    read: (r: ChangesRequest) => Promise<ChangesReading>
+    read: (r: ChangesRequest, signal: AbortSignal) => Promise<ChangesReading>
     asked: ChangesRequest[]
     release: () => void
     peak: () => number
@@ -767,11 +788,17 @@ describe('runChangesRead', () => {
       asked,
       peak: () => peak,
       release: () => { open(); gate = Promise.resolve() },
-      read: async (r) => {
+      read: async (r, signal) => {
         asked.push(r)
         peak = Math.max(peak, ++running)
-        await gate
-        running--
+        try {
+          await new Promise<void>((resolve, reject) => {
+            void gate.then(resolve)
+            signal.addEventListener('abort', () => { reject(signal.reason as Error) })
+          })
+        } finally {
+          running--
+        }
         if (r.base === 'bad') throw new Error('no such base')
         return FULL
       },
@@ -823,6 +850,35 @@ describe('runChangesRead', () => {
     expect(await Promise.all(reads)).toEqual(['ok', 'no such base', 'ok'])
     expect(g.asked.map((r) => r.base)).toEqual(['dev', 'bad', 'main'])
     expect(g.peak()).toBe(1)
+  })
+
+  // A poll the webapp replaced must not hold up the read replacing it, but
+  // a read stays while any caller still wants it.
+  it('abandons a read once every caller has left: a running one stops, a queued one never runs', async () => {
+    const g = gatedRead()
+    const leave = (): AbortController => new AbortController()
+    const run = (r: Partial<ChangesRequest>, signal?: AbortSignal): Promise<string> =>
+      runChangesRead('ws', { defaultBase: 'main', diff: false, ...r }, g.read, signal)
+        .then(() => 'ok', (e: unknown) => (e instanceof Error && e.name === 'AbortError' ? 'left' : String(e)))
+    const [poll, pane, other, stays] = [leave(), leave(), leave(), leave()]
+    const polled = run({ listing: 'paths' }, poll.signal)
+    await Promise.resolve()
+    const opened = run({ diff: true }, pane.signal)
+    const joined = run({ listing: 'paths' }, stays.signal)
+    const elsewhere = run({ base: 'dev' }, other.signal)
+    // @hono/node-server aborts a request with a string reason; callers
+    // still get an AbortError, queued or running.
+    const hungUp = 'Client connection prematurely closed.'
+    poll.abort(hungUp)
+    pane.abort(hungUp)
+    other.abort(hungUp)
+    expect(await polled).toBe('left')
+    g.release()
+    expect(await Promise.all([opened, joined, elsewhere])).toEqual(['ok', 'ok', 'left'])
+    expect(g.asked).toEqual([
+      { defaultBase: 'main', diff: false, listing: 'paths' },
+      { defaultBase: 'main', diff: true, listing: 'paths' },
+    ])
   })
 })
 

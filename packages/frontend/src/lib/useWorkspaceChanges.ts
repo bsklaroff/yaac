@@ -84,7 +84,9 @@ export function useWorkspaceChanges(
   const queryClient = useQueryClient()
   return useQuery({
     queryKey,
-    queryFn: async () => {
+    // Following `signal` lets a refetch that replaces a running one (a
+    // reader mounting mid-poll) stop the old read on the server too.
+    queryFn: async ({ signal }) => {
       // Readers mounted in the same commit register in their effects, all
       // of which run before this resumes, so one fetch serves them all.
       asked.set(JSON.stringify(queryKey), 'pending')
@@ -103,15 +105,16 @@ export function useWorkspaceChanges(
           ...(fetch.listing ? { listing: fetch.listing } : {}),
           ...(fetch.listing && known ? { known } : {}),
         },
-      })
+      }, { init: { signal } })
       if (fresh) queryClient.setQueryData(filesKey(workspaceId), fresh)
       return rest
     },
     enabled: poll !== false,
-    // No faster than three times the last read took, so a slow checkout is
-    // not kept busy answering one poll after another, but never past 30
-    // seconds: a slow read is usually the cold one, and the next is fast.
-    refetchInterval: poll === false ? false : (q) => Math.max(poll, Math.min(30_000, 3 * (q.state.data?.readMs ?? 0))),
+    // The wait starts when an answer lands, so waiting as long as the last
+    // read took keeps a slow checkout idle at least half the time. It stops
+    // at 10 seconds: a slow read is usually the cold one, and the next is
+    // fast.
+    refetchInterval: poll === false ? false : (q) => Math.max(poll, Math.min(10_000, q.state.data?.readMs ?? 0)),
     staleTime: 1500,
     // A new base keeps the old answer on screen until its own lands.
     placeholderData: keepPreviousData,

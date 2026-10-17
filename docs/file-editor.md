@@ -85,11 +85,11 @@ hashing every file, and `add -A` compares only mtime and size, since the
 server writes a new checkout's index and a pod sees other inode numbers.
 
 Each run takes a lock file holding its pid, since a run whose exec timed
-out could still hold the private index (streamd kills it, a host shell may
-not): a later run waits up to 10 seconds for a live holder and then answers
-`RUNTIME_UNAVAILABLE` (503), and clears the lock of a holder that is gone or
-over two minutes old. It also reads which **stages** each
-file's changes sit in: `committed` (base → HEAD), `staged` (HEAD → the
+out or was abandoned can still be exiting when the next starts (both
+drivers kill its process group, gently first): a later run waits up to 10
+seconds for a live holder and then answers `RUNTIME_UNAVAILABLE` (503),
+and clears the lock of a holder that is gone or over two minutes old. It
+also reads which **stages** each file's changes sit in: `committed` (base → HEAD), `staged` (HEAD → the
 agent's index), `modified` (the agent's index → the working tree, git's
 unstaged changes) and `untracked` (in the working tree, not the agent's
 index). Each is a tree-to-tree diff, so the working tree is walked once, by
@@ -129,7 +129,8 @@ neither cached nor held: the answer keeps its file list and shows the body
 as truncated to nothing. A held reading
 is dropped after five minutes unread and on teardown; the scratch-dir files
 carry a workspace across a server restart. Each answer says how long its
-read took (`readMs`), and the webapp polls no faster than three times that.
+read took (`readMs`), and the webapp waits at least that long after an
+answer before polling again, but no more than 10 seconds.
 
 The same run says how far HEAD is from the branch the base was found on
 (`rev-list --left-right --count <ref>...HEAD`), so the status bar follows
@@ -309,13 +310,17 @@ fetch and a reader leaving never forks the query. The listing lands in its
 own cache entry (`useWorkspaceFiles`), so the tree, the line counts and the
 colors always come from one snapshot. An answer without a diff body is one
 that did not ask for it, so the Changes pane shows its diffs as loading
-until its own fetch lands. On the server, `runChangesRead` runs one read of a checkout at a time, since each walks
-the whole working tree: a request merges into the read queued behind the
-running one, never into the running one, which could predate an edit the
-caller just made. A failed poll leaves the last answer cached, so the status
-bar shows the error in its place and both panes mark their tree "Not up to
-date". When a picked base stops resolving (its branch was pruned), they
-offer to compare with the fork branch again.
+until its own fetch lands. On the server, `runChangesRead` runs one read
+of a checkout at a time, since each walks the whole working tree: a
+request merges into the read queued behind the running one, never into
+the running one, which could predate an edit the caller just made. A fetch
+the webapp replaces is aborted, and a read every request has left is
+dropped from the queue or stopped mid-run (its process group killed), so
+opening the Changes pane during a status-bar poll waits only for its own
+read. A failed poll leaves the last answer cached, so the status bar shows
+the error in its place and both panes mark their tree "Not up to date".
+When a picked base stops resolving (its branch was pruned), they offer to
+compare with the fork branch again.
 
 - **Tree.** Only rows under expanded folders render, so a large repo needs no
   virtualization. Files get an icon and tint from `languageForPath`. A
