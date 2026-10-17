@@ -206,11 +206,13 @@ install-wide fields (image builds, plan usage, driver) pass through.
 
 - **The user switcher** (sidebar, `tailnet` installs) picks the viewed
   user, which is client state (`viewedUserId`, null for the caller), not a
-  URL parameter. A project or workspace link owned by someone else switches
-  the view to its owner. Each user's row shows how many workspaces they
-  have live (including ones being created or restarted) across all their
-  projects, or `idle`; the count is install-wide, like the snapshot it
-  reads.
+  URL parameter. Picking a user reopens the project of theirs last open on
+  that device (else their first), and each project reopens the workspace
+  last open in it. A project or workspace link owned by someone else
+  switches the view to its owner. Each user's row shows how many
+  workspaces they have live (including ones being created or restarted)
+  across all their projects, or `idle`; the count is install-wide, like
+  the snapshot it reads.
 - **A teammate's view is read-only.** Controls that write are hidden or
   disabled, and nothing attaches: a teammate's workspace, running or
   stopped, opens in the read-only pane (the same one the caller's own

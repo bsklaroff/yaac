@@ -121,6 +121,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const forgetClaim = useUiStore((s) => s.forgetClaim)
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const autoSelectWorkspace = useUiStore((s) => s.autoSelectWorkspace)
+  const lastWorkspaceOf = useUiStore((s) => s.lastWorkspaceOf)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const mobileScreen = useUiStore((s) => s.mobileScreen)
   const markWaitingSeen = useUiStore((s) => s.markWaitingSeen)
@@ -270,8 +271,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const stoppedEntry = stoppedSelection.entry
 
   // Fill the pane when the project changed or the open workspace vanished
-  // (see resolveVacantSelection). `rowIds` is in sidebar order, so "the top
-  // row" is the one the user sees first. autoSelectWorkspace, not
+  // (see resolveVacantSelection): with the project's last open workspace, or
+  // else the top row. `rowIds` is in sidebar order, so "the top row" is the
+  // one the user sees first. autoSelectWorkspace, not
   // selectWorkspace, so mobile fills the pane without navigating onto it. A
   // layout effect so the pane never paints empty during a hand-off.
   const lastProjectId = useRef(activeProjectId)
@@ -286,11 +288,12 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       stopped: stoppedEntry !== undefined || stoppedSelection.pending,
       claims,
       inFlight: inFlightProvisions,
+      remembered: activeProjectId ? lastWorkspaceOf[activeProjectId] : undefined,
     })
     if (!pick) return
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
-  }, [activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, forgetClaim, autoSelectWorkspace])
+  }, [activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, lastWorkspaceOf, forgetClaim, autoSelectWorkspace])
   // Viewing a waiting workspace marks its spell read on the server, whether
   // it was selected while waiting or started waiting while open. Only the
   // owner marks. A spell whose mark failed or was refused (it had already

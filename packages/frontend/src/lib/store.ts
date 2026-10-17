@@ -187,6 +187,8 @@ const jsonRecord = <V>(key: string, keep: (v: unknown) => v is V): Persisted<Rec
   serialize: JSON.stringify,
 })
 
+const isString = (v: unknown): v is string => typeof v === 'string'
+
 function isChatDraft(v: unknown): v is ChatDraft {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false
   const { text, sent } = v as { text?: unknown; sent?: unknown }
@@ -228,6 +230,8 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
   chatFullWidth: flag('yaac.chatfullwidth.v1'),
   chatCondensed: flag('yaac.chatcondensed.v1'),
+  lastWorkspaceOf: jsonRecord('yaac.lastworkspace.v1', isString),
+  lastProjectOf: jsonRecord('yaac.lastproject.v1', isString),
   // index.html reads this key before first paint, to avoid a theme flash.
   themePref: oneOf('yaac.theme.v1', ['system', 'light', 'dark']),
 }
@@ -366,6 +370,9 @@ export function unreadWaitingByProject(
  *   - a selection whose provision is still in flight (`inFlight`) waits,
  *     since a snapshot can briefly miss both its row and its workspace.
  *
+ * A project switched into reopens the workspace last open in it
+ * (`remembered`) while that is still one of its rows.
+ *
  * Null on a first load with nothing saved, and after a deselect.
  */
 export function resolveVacantSelection(args: {
@@ -379,12 +386,17 @@ export function resolveVacantSelection(args: {
   stopped?: boolean
   claims: Record<string, string>
   inFlight: string[]
+  /** The workspace last open in the active project (`lastWorkspaceOf`). */
+  remembered?: string
 }): string | null {
-  const { previousProjectId, activeProjectId, selectedWorkspaceId, rowIds, claims, inFlight } = args
+  const { previousProjectId, activeProjectId, selectedWorkspaceId, rowIds, claims, inFlight, remembered } = args
   if (!activeProjectId) return null
   if (selectedWorkspaceId && rowIds.includes(selectedWorkspaceId)) return null
   const switchedProject = previousProjectId !== null && previousProjectId !== activeProjectId
-  if (selectedWorkspaceId === null) return switchedProject ? rowIds[0] ?? null : null
+  if (selectedWorkspaceId === null) {
+    if (!switchedProject) return null
+    return remembered !== undefined && rowIds.includes(remembered) ? remembered : rowIds[0] ?? null
+  }
   if (!switchedProject) {
     const claimed = claims[selectedWorkspaceId]
     if (claimed !== undefined) return rowIds.includes(claimed) ? claimed : null
@@ -455,12 +467,18 @@ interface UiState {
    *  (see #lib/viewer). */
   viewedUserId: string | null
   /** Switch to another user's projects (null: the caller's), opening
-   *  `projectId`, their first. */
+   *  `projectId` (see UserSwitcher). */
   viewUser: (userId: string | null, projectId: string | null) => void
   /** Project whose workspaces the sidebar is scoped to (rail selection). */
   activeProjectId: string | null
   /** Workspace shown in the main pane. */
   selectedWorkspaceId: string | null
+  /** The workspace last open in each project, which switching back to the
+   *  project reopens (`resolveVacantSelection`). */
+  lastWorkspaceOf: Record<string, string>
+  /** Each user's last open project, keyed by owner id, which the user
+   *  switcher reopens. */
+  lastProjectOf: Record<string, string>
   /** Bumped when a workspace is selected or opened; the view then focuses
    *  its primary pane. */
   focusNonce: number
@@ -752,6 +770,8 @@ export const useUiStore = create<UiState>((set) => ({
   }),
   activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
+  lastWorkspaceOf: {},
+  lastProjectOf: {},
   focusNonce: 0,
   terminalNonces: {},
   layouts: {},
@@ -1117,7 +1137,30 @@ useUiStore.subscribe((state, prev) => {
   ) {
     persistSelection(state.activeProjectId, state.selectedWorkspaceId)
   }
+  // A restored selection's owner is known only once the snapshot lists it.
+  if (
+    state.activeProjectId !== prev.activeProjectId
+    || state.selectedWorkspaceId !== prev.selectedWorkspaceId
+    || state.snapshot !== prev.snapshot
+  ) rememberSelection(state)
 })
+
+/**
+ * Record the selection as its project's last workspace and its owner's last
+ * project. A cleared workspace keeps the one recorded, since a project
+ * switch clears the selection before the new project's is restored.
+ */
+function rememberSelection(s: UiState): void {
+  const { activeProjectId: projectId, selectedWorkspaceId: workspaceId } = s
+  if (!projectId) return
+  const owner = s.snapshot?.projects.find((p) => p.id === projectId)?.owner
+  if (workspaceId && s.lastWorkspaceOf[projectId] !== workspaceId) {
+    useUiStore.setState({ lastWorkspaceOf: { ...s.lastWorkspaceOf, [projectId]: workspaceId } })
+  }
+  if (owner !== undefined && s.lastProjectOf[owner] !== projectId) {
+    useUiStore.setState({ lastProjectOf: { ...s.lastProjectOf, [owner]: projectId } })
+  }
+}
 
 /** Delay before saving chat drafts after a change. */
 const CHAT_DRAFT_PERSIST_MS = 400
