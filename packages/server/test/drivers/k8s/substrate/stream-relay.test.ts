@@ -301,6 +301,17 @@ describe('podExec', () => {
     expect(err).not.toBeInstanceOf(WorkspaceExecError)
   })
 
+  // A cut output must not read as the whole of it.
+  it('refuses an output streamd cut at its cap, as transport', async () => {
+    await withRelay((r) => {
+      r.socket.end('{"ok":true}\n'
+        + JSON.stringify({ exitCode: 0, stdout: 'partial', stderr: '', truncated: true }) + '\n')
+    })
+    const err = await podExec(JOB, 'git ls-files', { maxAttempts: 1 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(RelayDialError)
+    expect((err as RelayDialError).afterDispatch).toBe(true)
+  })
+
   it('still reports a real command-not-found as a nonzero exit', async () => {
     await withRelay((r) => {
       r.socket.end('{"ok":true}\n'
