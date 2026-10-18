@@ -5,9 +5,11 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   CHANGES_BASE_UNRESOLVED,
+  CHANGES_READING_GONE,
   OUTPUT_PAGE_BYTES,
   parseChangesOutput,
   buildChangesScript as buildScript,
+  readChangeDiffs,
   forgetWorkspaceChanges,
   readWorkspaceChanges,
   runChangesRead,
@@ -48,7 +50,7 @@ const GIT_ENV = {
   GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
 }
 const git = (repo: string, ...args: string[]): string =>
-  execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
+  execFileSync('git', args, { cwd: repo, encoding: 'utf8', maxBuffer: 64 << 20, env: { ...process.env, ...GIT_ENV } })
 
 /**
  * A repo on `main` with one commit, plus an index path outside it (as in
@@ -101,6 +103,7 @@ describe('parseChangesOutput', () => {
     '@@ -1 +1,2 @@',
     ' existing',
     '+added line',
+    'diff --git a/src/new.ts b/src/new.ts',
   ].join('\n')
 
   it('merges name-status + numstat into files and captures base + diff', () => {
@@ -140,29 +143,29 @@ describe('parseChangesOutput', () => {
     ])
   })
 
+  // Cut on a line boundary, the cut file's part ending in the cut line.
   it('flags truncation when the diff exceeds the cap', () => {
-    const out = parse(raw, 20)
+    const out = parse(raw, 60)
     expect(out.truncated).toBe(true)
-    expect(Buffer.byteLength(out.diff ?? '')).toBe(20)
+    expect(out.diff).toBe('diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1,2 @@\n@@CUT@@\n')
     expect(out.files).toHaveLength(2)
   })
 
-  // The pod cuts with `head -c`, so the cap must be in bytes here too, or a
-  // cut multi-byte diff would not be flagged as truncated.
+  // The script's caps are in bytes, so the server's must be too, or a cut
+  // multi-byte diff would not be flagged as truncated.
   it('measures the diff cap in bytes, not UTF-16 code units', () => {
-    // 300 CJK chars = 300 code units but 900 bytes.
+    // 30 lines of 10 CJK chars: 379 code units but 979 bytes.
+    const lines = Array<string>(30).fill(`+${'交'.repeat(10)}`)
     const wide = [
-      'BASE abc', 'FORK 1', '@@NUMSTAT@@', '@@NAMESTATUS@@', '@@LISTING@@', '@@OK@@', '@@DIFF@@', '交'.repeat(300),
+      'BASE abc', 'FORK 1', '@@NUMSTAT@@', '@@NAMESTATUS@@', 'A\tw', '@@LISTING@@', '@@OK@@', '@@DIFF@@',
+      'diff --git a/w b/w', ...lines,
     ].join('\n')
     const out = parse(wide, 500)
-    expect(out.truncated).toBe(true)          // 900 bytes > 500, though 300 units < 500
-    expect(Buffer.byteLength(out.diff ?? '')).toBeLessThanOrEqual(500)
-    // Cut on a code point boundary, never over the cap.
-    expect(out.diff).toBe('交'.repeat(166))
-    expect(out.diff).not.toContain('�')
+    expect(out.truncated).toBe(true)
+    expect(out.diff).toBe(['diff --git a/w b/w', ...lines.slice(0, 15), '@@CUT@@', ''].join('\n'))
     const small = parse(wide, 5000)
     expect(small.truncated).toBe(false)
-    expect(small.diff).toBe('交'.repeat(300))
+    expect(small.diff).toBe(['diff --git a/w b/w', ...lines].join('\n'))
   })
 
   // Each stage section is its own numstat; an untracked file carries its
@@ -309,7 +312,7 @@ describe('buildChangesScript', () => {
     const s = buildChangesScript()
     expect(s).toContain('printf "FORK %s\\n" "$fork"')
     expect(s).toContain('fork=0')
-    expect(s).toContain('head -c 2000000')   // 2× the response cap — see POD_DIFF_CAP_BYTES
+    expect(s).toContain('s=0; p=250000; t=2000000;')   // per file, and 2× the response cap
   })
 
   it('passes an explicit base as the pod sh $1 positional (diffed against origin/$1)', () => {
@@ -766,7 +769,7 @@ describe('buildChangesScript', () => {
 describe('runChangesRead', () => {
   /** A read's answer with every part: a diff body and a full listing. */
   const FULL: ChangesReading = {
-    changes: { base: 'b', baseResolved: true, files: [], diff: 'body', truncated: true },
+    changes: { base: 'b', work: 'w', baseResolved: true, files: [], diff: 'body', truncated: true },
     ref: null,
     listing: { paths: ['a'], links: [], conflicted: [], ignored: ['x/'], untrackedDirs: ['d'] },
     readMs: 1,
@@ -833,7 +836,7 @@ describe('runChangesRead', () => {
     expect(c).not.toHaveProperty('listing')
     expect(d.listing).toEqual(FULL.listing)
     expect(d.changes).not.toHaveProperty('diff')
-    expect(e.changes).toEqual({ base: 'b', baseResolved: true, files: [], truncated: false })
+    expect(e.changes).toEqual({ base: 'b', work: 'w', baseResolved: true, files: [], truncated: false })
     expect(e).not.toHaveProperty('listing')
 
     // A read once finished is not reused.
@@ -883,32 +886,45 @@ describe('runChangesRead', () => {
   })
 })
 
+const exec = vi.fn<WorkspaceDriver['exec']>()
+
+/** A driver whose workspace is `repo`, running the script for real; each
+ *  run's output is kept in `outputs`. With `pageBytes`, the script pages
+ *  at that size, and an output over twice it fails, as one over streamd's
+ *  cap does. */
+function realWorkspace(repo: string, scratchDir: string, pageBytes?: number): string[] {
+  const outputs: string[] = []
+  installFakeWorkspaceDriver({
+    exec,
+    workspacePaths: () => workspacePathsFixture({ workspaceDir: repo, scratchDir }),
+  })
+  exec.mockImplementation((_job, cmd) => {
+    const run = pageBytes ? cmd.replaceAll(String(OUTPUT_PAGE_BYTES), String(pageBytes)) : cmd
+    let stdout: string
+    try {
+      stdout = execFileSync('sh', ['-c', run], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20, env: { ...process.env, ...GIT_ENV },
+      })
+    } catch (err) {
+      const e = err as { status: number; stdout: string; stderr: string }
+      return Promise.reject(new WorkspaceExecError(`command exited ${e.status}`, e.status, e.stdout, e.stderr))
+    }
+    outputs.push(stdout)
+    if (pageBytes && Buffer.byteLength(stdout) > 2 * pageBytes) return Promise.reject(new Error('output over the cap'))
+    return Promise.resolve({ stdout, stderr: '' })
+  })
+  return outputs
+}
+
+/** A unified diff's parts by destination path. */
+const partsOf = (diff = ''): Map<string, string> => new Map(diff.split(/(?=^diff --git )/m)
+  .filter(Boolean).map((p) => [/^diff --git a\/\S+ b\/(\S+)/.exec(p)![1], p]))
+
 describe('readWorkspaceChanges', () => {
-  const exec = vi.fn<WorkspaceDriver['exec']>()
   afterEach(() => {
     exec.mockReset()
     for (const name of ['yaac-proj-abc', 'big']) forgetWorkspaceChanges(name)
   })
-
-  /** A driver whose workspace is `repo`, running the script for real; each
-   *  run's output is kept in `outputs`. With `pageBytes`, the script pages
-   *  at that size, and an output over twice it fails, as one over streamd's
-   *  cap does. */
-  function realWorkspace(repo: string, scratchDir: string, pageBytes?: number): string[] {
-    const outputs: string[] = []
-    installFakeWorkspaceDriver({
-      exec,
-      workspacePaths: () => workspacePathsFixture({ workspaceDir: repo, scratchDir }),
-    })
-    exec.mockImplementation((_job, cmd) => {
-      const run = pageBytes ? cmd.replaceAll(String(OUTPUT_PAGE_BYTES), String(pageBytes)) : cmd
-      const stdout = execFileSync('sh', ['-c', run], { encoding: 'utf8', env: { ...process.env, ...GIT_ENV } })
-      outputs.push(stdout)
-      if (pageBytes && Buffer.byteLength(stdout) > 2 * pageBytes) return Promise.reject(new Error('output over the cap'))
-      return Promise.resolve({ stdout, stderr: '' })
-    })
-    return outputs
-  }
 
   // The server holds what each read came from, so a poll where nothing
   // moved reads none of it, and an edit to a few files reads just those.
@@ -1024,6 +1040,42 @@ describe('readWorkspaceChanges', () => {
     expect((await read({ ...request, base: 'agent/x' })).modes).toBe('same same full')
   })
 
+  // One huge file is cut at its own cap rather than using up the body, so
+  // the files after it keep their parts, and a delta read splices past it.
+  it('cuts a huge file\'s diff short, keeping the parts of the files after it', async () => {
+    const { repo, idx } = scratchRepo()
+    const file = (name: string): string => path.join(repo, name)
+    for (const name of ['edit.txt', 'gone.txt', 'mode.sh', 'old.txt']) fs.writeFileSync(file(name), `${name}\n`.repeat(20))
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'files')
+    fs.writeFileSync(file('big.txt'), `${'x'.repeat(60)}\n`.repeat(20_000))
+    fs.appendFileSync(file('edit.txt'), 'more\n')
+    fs.rmSync(file('gone.txt'))
+    fs.chmodSync(file('mode.sh'), 0o755)
+    fs.renameSync(file('old.txt'), file('renamed.txt'))
+    realWorkspace(repo, path.dirname(idx))
+    const request: ChangesRequest = { defaultBase: 'main', diff: true }
+    const parts = partsOf
+
+    const first = (await readWorkspaceChanges('big', request)).changes
+    expect(first.truncated).toBe(true)
+    const got = parts(first.diff)
+    expect([...got.keys()]).toEqual(['big.txt', 'edit.txt', 'gone.txt', 'mode.sh', 'renamed.txt'])
+    expect(got.get('big.txt')).toMatch(/\n\+x+\n@@CUT@@\n$/)
+    expect(Buffer.byteLength(got.get('big.txt')!)).toBeLessThan(260_000)
+    expect(got.get('edit.txt')).toContain('\n+more\n')
+    expect(got.get('gone.txt')).toContain('\n-gone.txt\n')
+    expect(got.get('mode.sh')).toContain('\nnew mode 100755\n')
+    expect(got.get('renamed.txt')).toContain('\nrename from old.txt\n')
+
+    fs.appendFileSync(file('edit.txt'), 'again\n')
+    const delta = (await readWorkspaceChanges('big', request)).changes
+    expect(parts(delta.diff).get('edit.txt')).toContain('\n+again\n')
+    forgetWorkspaceChanges('big')
+    for (const k of ['lists', 'body']) fs.rmSync(`${idx}.${k}`, { force: true })
+    expect(delta).toEqual((await readWorkspaceChanges('big', request)).changes)
+  })
+
   // A big checkout's first read, and any whose listing moved, prints more
   // than an exec can carry, so it is fetched in pages. The listing is held
   // and printed again only when a path or an ignored entry came or went.
@@ -1116,5 +1168,75 @@ describe('readWorkspaceChanges', () => {
     const dial = new Error('connection refused')
     exec.mockRejectedValueOnce(dial)
     await expect(readWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true })).rejects.toBe(dial)
+  })
+})
+
+describe('readChangeDiffs', () => {
+  afterEach(() => {
+    exec.mockReset()
+    forgetWorkspaceChanges('big')
+  })
+
+  // Past the poll's cap, the Changes pane reads the files it left out, and
+  // pages through a file it cut, from the trees the reading names. Both
+  // must give git's own parts for those files: a rename paired with its
+  // old path, and a cut file's pages adding up to its whole part.
+  it('reads the parts a reading left out, and the rest of one it cut', async () => {
+    const { repo, idx } = scratchRepo()
+    const file = (name: string): string => path.join(repo, name)
+    for (const name of ['edit.txt', 'gone.txt', 'old.txt']) fs.writeFileSync(file(name), `${name}\n`.repeat(20))
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'files')
+    for (let n = 1; n <= 5; n++) fs.writeFileSync(file(`big${n}.txt`), `${String(n).repeat(60)}\n`.repeat(5_000))
+    fs.appendFileSync(file('edit.txt'), 'more\n')
+    fs.rmSync(file('gone.txt'))
+    fs.renameSync(file('old.txt'), file('renamed.txt'))
+    realWorkspace(repo, path.dirname(idx))
+    const { changes } = await readWorkspaceChanges('big', { defaultBase: 'main', diff: true })
+    const whole = partsOf(git(repo, 'diff', '--no-ext-diff', '--submodule=short', changes.base, changes.work))
+    const polled = partsOf(changes.diff)
+    expect([...polled.keys()]).toEqual(['big1.txt', 'big2.txt', 'big3.txt', 'big4.txt'])
+    expect(polled.get('big1.txt')).toMatch(/\n@@CUT@@\n$/)
+
+    const left = changes.files.filter((f) => !polled.has(f.path))
+    const read = partsOf(await readChangeDiffs('big', { base: changes.base, work: changes.work, files: left }))
+    expect([...read.keys()]).toEqual(['big5.txt', 'edit.txt', 'gone.txt', 'renamed.txt'])
+    for (const p of ['edit.txt', 'gone.txt', 'renamed.txt']) expect(read.get(p)).toBe(whole.get(p))
+    expect(read.get('renamed.txt')).toContain('\nrename from old.txt\n')
+    expect(read.get('big5.txt')).toMatch(/\n@@CUT@@\n$/)
+
+    const held = polled.get('big1.txt')!.slice(0, -'@@CUT@@\n'.length)
+    const rest = await readChangeDiffs('big', {
+      base: changes.base, work: changes.work, files: [{ path: 'big1.txt' }], skip: held.split('\n').length - 1,
+    })
+    expect(held + rest).toBe(whole.get('big1.txt'))
+
+    await expect(readChangeDiffs('big', { base: '0'.repeat(40), work: changes.work, files: left }))
+      .rejects.toMatchObject({ code: CHANGES_READING_GONE })
+    for (const bad of ['../x', '/etc/passwd', 'a\0b', '"..\\057x"']) {
+      await expect(readChangeDiffs('big', { base: changes.base, work: changes.work, files: [{ path: bad }] }))
+        .rejects.toMatchObject({ code: 'VALIDATION' })
+    }
+  })
+
+  // A page that starts on a line of a page or more shows the line, cut to
+  // a page, then marks the part cut, so the next page goes on past it.
+  it('pages past a line of a page or more', async () => {
+    const { repo, idx } = scratchRepo()
+    // The diff lines are 1,500,001 bytes, and exactly a page.
+    fs.writeFileSync(path.join(repo, 'long.txt'), `${'h'.repeat(1_500_000)}\nsecond\n`)
+    fs.writeFileSync(path.join(repo, 'page.txt'), `${'e'.repeat(999_999)}\nafter\n`)
+    realWorkspace(repo, path.dirname(idx))
+    const { changes } = await readWorkspaceChanges('big', { defaultBase: 'main', diff: true })
+    for (const [name, char, next] of [['long.txt', 'h', '+second\n'], ['page.txt', 'e', '+after\n']]) {
+      const polled = partsOf(changes.diff).get(name)!
+      expect(polled).toMatch(/\n@@ -0,0 \+1,2 @@\n@@CUT@@\n$/)
+      const page = (skip: number): Promise<string> => readChangeDiffs('big', {
+        base: changes.base, work: changes.work, files: [{ path: name }], skip,
+      })
+      const skip = polled.split('\n').length - 2
+      expect(await page(skip)).toBe(`+${char.repeat(999_999)}\n@@CUT@@\n`)
+      expect(await page(skip + 1)).toBe(next)
+    }
   })
 })

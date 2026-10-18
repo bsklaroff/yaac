@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -50,6 +50,9 @@ const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional(
 // claimed for the request, hidden while it runs, and deleted only after
 // success, so a failure keeps the draft.
 const draftId = z.string().min(1).optional()
+
+/** A full git object id, SHA-1 or SHA-256. */
+const GIT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
 
 /** Finds the row of the calling workspace a `yaac-mama` or hosted-git
  *  request is answered for. */
@@ -543,6 +546,22 @@ export const workspaceApp = new Hono<IdentityEnv>()
         diff: diff !== '0', listing, known, signal: c.req.raw.signal,
       }))
     },
+  )
+  // More of a diff the changes poll left out, from the reading it names by
+  // its `base` and `work` trees: the parts of `files`, or with `skip` the
+  // rest of one file's part. A POST, since a batch of paths can outgrow a
+  // URL.
+  .post(
+    '/:id/changes/diff',
+    jsonBodyLimit(256 * 1024, 'too many paths in one request'),
+    zv('json', z.object({
+      base: z.string().regex(GIT_OID),
+      work: z.string().regex(GIT_OID),
+      files: z.array(z.object({ path: z.string().min(1).max(4096), oldPath: z.string().min(1).max(4096).optional() }))
+        .min(1).max(200),
+      skip: z.number().int().min(1).optional(),
+    }).refine((r) => r.skip === undefined || r.files.length === 1, 'skip reads one file')),
+    async (c) => c.json(await getWorkspaceChangeDiffs(c.req.param('id'), c.req.valid('json'))),
   )
   // The file editor (docs/file-editor.md). Served from the server's view of
   // the checkout, so stopped workspaces work too, under either driver.

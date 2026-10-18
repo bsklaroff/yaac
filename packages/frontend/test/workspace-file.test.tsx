@@ -474,6 +474,7 @@ describe('WorkspaceFile', () => {
   it('shows the file’s changes and diffs it against its text at the base', async () => {
     changes = {
       base: 'b'.repeat(40),
+      work: 'w',
       baseResolved: true,
       readMs: 0,
       branch: 'main',
