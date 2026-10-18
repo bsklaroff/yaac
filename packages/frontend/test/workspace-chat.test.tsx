@@ -592,6 +592,7 @@ describe('WorkspaceChat composer menu', () => {
   afterEach(() => {
     cleanup()
     flushChatDrafts()
+    vi.unstubAllGlobals()
   })
 
   it('lists matching commands on /, prefix matches first, and runs one that takes no argument', () => {
@@ -606,6 +607,18 @@ describe('WorkspaceChat composer menu', () => {
     // Held until the echo, like any message.
     expect(box().value).toBe('/context')
     expect(rows()).toEqual([])
+  })
+
+  it('on a phone, fills in a tapped command and waits for Send instead of running it', () => {
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener() {}, removeEventListener() {} }))
+    show()
+    type('/co')
+    fireEvent.click(within(screen.getByRole('listbox')).getByRole('option', { name: /\/context/ }))
+    expect(stream.send).not.toHaveBeenCalled()
+    expect(box().value).toBe('/context ')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(stream.send).toHaveBeenCalledWith({ type: 'prompt', text: '/context' })
   })
 
   it('ranks a fully typed command above longer ones it prefixes, so Enter runs that command', () => {

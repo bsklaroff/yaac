@@ -3,6 +3,7 @@ import {
   type JSX, type KeyboardEvent, type RefObject, type TextareaHTMLAttributes,
 } from 'react'
 import { filterSuggestions, suggestionId, SuggestionList, type TypeaheadItem } from '#components/ui/Typeahead'
+import { useIsMobile } from '#lib/viewport'
 import type { AcpCommand, AcpEvent, AcpModel } from '@yaac/shared/acp'
 
 /**
@@ -18,10 +19,12 @@ import type { AcpCommand, AcpEvent, AcpModel } from '@yaac/shared/acp'
  *
  * A command can be typed anywhere in the message, not only at its start: the
  * menu completes the word ending at the caret when that word begins with the
- * sigil. Enter runs a slash command that takes no argument only when it is
- * the whole message. Mid-message, Enter completes only once the user has
- * moved the highlight, since a message that merely ends in a slash-word is
- * more likely meant to be sent; Tab always completes. `/model` is handled
+ * sigil. Enter or a click runs a slash command that takes no argument only
+ * when it is the whole message, and never on a phone, where a picked command
+ * waits in the box for the send button like any other message. Mid-message,
+ * Enter completes only once the user has moved the highlight, since a
+ * message that merely ends in a slash-word is more likely meant to be sent;
+ * Tab always completes. `/model` is handled
  * here rather than sent, since a model switch is a protocol request, not a
  * prompt; it is offered whenever the session lists models, replacing any
  * `model` command of the agent's.
@@ -108,6 +111,7 @@ export function useComposerMenu({
    *  starts back at the top. */
   const [highlight, setHighlight] = useState({ key: '', index: 0 })
   const listId = useId()
+  const isMobile = useIsMobile()
   /** The caret, tagged with the draft it was read under. Typing changes the
    *  draft before the browser reports the new caret, so until it does the
    *  caret is taken to be at the end, where typing usually is. */
@@ -168,7 +172,7 @@ export function useComposerMenu({
       return
     }
     const command = offered.find((c) => commandText(c.name) === typed(value))
-    if (!whole || command === MODEL_COMMAND || command?.hint !== undefined || at.sigil === '$') complete(value)
+    if (isMobile || !whole || command === MODEL_COMMAND || command?.hint !== undefined || at.sigil === '$') complete(value)
     else runCommand(typed(value))
   }
 

@@ -731,6 +731,8 @@ resolves inside the message. So the composer also opens on `$` and inserts a
 
 Enter runs a command that takes no argument (it is sent as the message text,
 which is how ACP invokes one) and completes one that does; Tab completes.
+On a phone a picked command is only completed, so it waits for the send
+button like any other message.
 pi runs an extension's command without starting a run of the agent, and
 pi-acp ends that prompt's turn only as yaac patches it
 (`dockerfiles/agent-patches/pi-acp.js`).
