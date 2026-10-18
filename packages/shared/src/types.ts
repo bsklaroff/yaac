@@ -1060,14 +1060,22 @@ export interface WorkspaceDiff {
   /** False when `base` fell back to HEAD. The diff then covers only
    *  uncommitted work, and an empty `files` must not read as "no changes". */
   baseResolved: boolean
+  /** The working tree's git tree the diff was read at. With `base` it
+   *  names this reading, for `/changes/diff` to read more of it. */
+  work: string
   files: WorkspaceChange[]
   /** The combined unified diff; the client splits it into per-file hunks.
-   *  Capped for size — see `truncated`. Absent when the caller asked for no
-   *  diff body. */
+   *  Capped for size — see `truncated`. A file whose part was cut short ends
+   *  in a `DIFF_CUT_LINE` line, and a file past the cap has no part. Absent
+   *  when the caller asked for no diff body. */
   diff?: string
   /** True when the diff body was capped for size; `files` stays complete. */
   truncated: boolean
 }
+
+/** The line ending a file's part of `WorkspaceDiff.diff` that was cut short.
+ *  No line of git's diff output can equal it. */
+export const DIFF_CUT_LINE = '@@CUT@@'
 
 /**
  * Everything the webapp polls about a workspace's checkout, in one answer:

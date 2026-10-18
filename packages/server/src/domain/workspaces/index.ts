@@ -59,6 +59,7 @@ export { saveWorkspaceAttachment } from './attachments'
 export {
   createWorkspaceFolder,
   deleteWorkspaceEntry,
+  getWorkspaceChangeDiffs,
   getWorkspaceChanges,
   listWorkspaceDir,
   readWorkspaceFile,

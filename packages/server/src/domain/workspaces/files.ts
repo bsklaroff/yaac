@@ -19,7 +19,7 @@ import type {
 } from '@yaac/shared/types'
 import { workspaceDriver } from '#drivers/driver'
 import { WorkspaceExecError } from '#drivers/contract'
-import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, readWorkspaceChanges, type ChangesReading } from './changes'
+import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, CHANGES_READING_GONE, readChangeDiffs, readWorkspaceChanges, type ChangesReading } from './changes'
 import { lastFetchedAtMs } from '#domain/git'
 import { authorizeProject, type Actor } from '#domain/access'
 import {
@@ -296,6 +296,26 @@ export async function getWorkspaceChanges(
     comparison,
     ...(listing && listing.version !== opts.known ? { listing } : {}),
     readMs: reading.readMs,
+  }
+}
+
+/**
+ * More of the diff a changes answer named by `base` and `work` (see
+ * `readChangeDiffs`): the parts of `files` it left out, or with `skip` the
+ * rest of one file's part. A reading whose trees are gone is NOT_FOUND, so
+ * the caller polls again for a current one.
+ */
+export async function getWorkspaceChangeDiffs(
+  idOrName: string, request: Parameters<typeof readChangeDiffs>[1],
+): Promise<{ diff: string }> {
+  const { jobName } = await runningWorkspace(idOrName)
+  try {
+    return { diff: await readChangeDiffs(jobName, request) }
+  } catch (err) {
+    if (err instanceof WorkspaceExecError && err.code === CHANGES_READING_GONE) {
+      throw new ServerError('NOT_FOUND', 'that reading of the changes is gone; read them again')
+    }
+    throw err
   }
 }
 

@@ -41,6 +41,8 @@
  */
 
 import { workspaceDriver } from '#drivers/driver'
+import { ServerError } from '@yaac/shared/errors'
+import { DIFF_CUT_LINE } from '@yaac/shared/types'
 import type { ChangeStage, ChangeStatus, LineCounts, WorkspaceChange, WorkspaceDiff } from '@yaac/shared/types'
 
 /**
@@ -112,6 +114,30 @@ const MAX_DIFF_BYTES = 1_000_000
  *  huge diff from being buffered and sent whole; the server's cap trips
  *  first and decides `truncated`. */
 const WORKSPACE_DIFF_CAP_BYTES = MAX_DIFF_BYTES * 2
+
+/** The most of one file's diff the body carries, so one huge file cannot
+ *  use up the caps above and leave every file after it with no diff. */
+const MAX_FILE_DIFF_BYTES = MAX_DIFF_BYTES / 4
+
+/**
+ * The shell function `capped <command...>`: the diff body the command
+ * prints, bounded by whole lines in bytes (`LC_ALL=C`), failing when the
+ * command failed. It skips the first `$s` lines, then caps each file's part
+ * at `$p`, ending a cut one with the cut line, and the whole at `$t`,
+ * exiting there so git stops; git then dies of SIGPIPE (141), or xargs
+ * reports its child killed (125), and either is a whole answer. A cut
+ * between two files' parts prints no cut line, since no part was cut. A
+ * read that skips into a line of `$p` bytes or more prints its first `$p`
+ * bytes as the line, then the cut line, so the next read goes on from the
+ * line after it.
+ */
+function cappedFn(errFile: string): string {
+  const awk = '/^diff --git /{n=0} s>0{s--; next} n>p{next} {l=length($0)+1} '
+    + 'n&&n+l>p{print c; n=p+1; next} b&&b+l>t{if(n)print c; exit} '
+    + 'l>p{print substr($0,1,p); print c; n=p+1; next} {print; n+=l; b+=l}'
+  return `capped() { rm -f ${errFile}; { "$@" 2>/dev/null || { r=$?; [ $r -eq 141 ] || [ $r -eq 125 ] || : > ${errFile}; }; } `
+    + `| LC_ALL=C awk -v s="$s" -v p="$p" -v t="$t" -v c=${DIFF_CUT_LINE} '${awk}'; [ ! -e ${errFile} ]; }; `
+}
 
 const M_COMMITTED = '@@COMMITTED@@'
 const M_STAGED = '@@STAGED@@'
@@ -228,10 +254,12 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
  * against the empty tree, so all of it counts as added.
  *
  * Every command feeding the file list is status-checked, and `@@OK@@` is
- * printed only after all succeed. The diff body comes last, bounded by
- * `head -c`. A `git diff` that fails before the cap (a textconv program
- * that is missing) prints `NODIFF` instead, so the file list still stands
- * and the failed body is neither cached nor shown as the whole diff.
+ * printed only after all succeed. The diff body comes last, bounded per
+ * file and in total by `capped`. Past a file's cap git still writes the
+ * rest of that file's diff, which is read and dropped. A `git diff` that
+ * fails before the cap (a textconv program that is missing) prints
+ * `NODIFF` instead, so the file list still stands and the failed body is
+ * neither cached nor shown as the whole diff.
  *
  * The output goes to a file of this run's own. Up to `OUTPUT_PAGE_BYTES`
  * it is printed; past that, only `PAGED <pid> <bytes>`, and the file stays
@@ -324,11 +352,7 @@ function changesScript(loc: ChangesLocation): string {
   + `&& printf "${M_UNTRACKED}\\n" && git diff --name-only --no-renames --diff-filter=A "$agent" "$work"; }; `
   + `lists() { printf "${M_NUMSTAT}\\n" && git diff --numstat "$base" "$work" `
   + `&& printf "${M_NAMESTATUS}\\n" && git diff --name-status "$base" "$work"; }; `
-  // `capped <command...>`: its output up to the cap, failing when the
-  // command failed. Cut at the cap, git dies of SIGPIPE (141), or xargs
-  // reports its child killed (125); either is a whole answer.
-  + `capped() { rm -f ${i}.err; { "$@" 2>/dev/null || { r=$?; [ $r -eq 141 ] || [ $r -eq 125 ] || : > ${i}.err; }; } `
-  + `| head -c ${WORKSPACE_DIFF_CAP_BYTES}; [ ! -e ${i}.err ]; }; `
+  + `s=0; p=${MAX_FILE_DIFF_BYTES}; t=${WORKSPACE_DIFF_CAP_BYTES}; ${cappedFn(`${i}.err`)}`
   + `body() { capped git diff ${BODY_FLAGS} "$base" "$work"; }; `
   + 'hit() { [ "$(head -n 1 "$1" 2>/dev/null)" = "$2 $cf" ]; }; '
   // `pd`: run git on the changed paths, named literally.
@@ -509,7 +533,7 @@ type Counts = LineCounts & { binary: boolean }
 interface BaseDiff {
   numstat: Map<string, Counts>
   nameStatus: NameStatusEntry[]
-  /** The unified diff, at most the in-workspace cap, `whole` unless a
+  /** The unified diff within the in-workspace caps, `whole` unless a
    *  file's part is missing or cut. Unset when no body was read. */
   body?: { text: string; whole: boolean }
 }
@@ -541,23 +565,20 @@ export interface HeldReading extends BaseDiff {
   listing?: HeldListing
 }
 
-/** One file's part of a unified diff; `cut` when the cap ran through it. */
-interface Chunk { text: string; cut: boolean }
-
 /**
  * A unified diff split into its files' parts, keyed by path. git prints the
  * parts in name-status order, one `diff --git` header each, but two for a
- * typechange (a deletion, then a creation). `cut` says the text stops at
- * the cap, inside its last part.
+ * typechange (a deletion, then a creation), so a typechange the cap left
+ * one part of has none.
  */
-function chunksOf(files: NameStatusEntry[], text: string, cut: boolean): Map<string, Chunk> {
+function chunksOf(files: NameStatusEntry[], text: string): Map<string, string> {
   const parts = text ? text.split(/(?=^diff --git )/m) : []
-  const chunks = new Map<string, Chunk>()
+  const chunks = new Map<string, string>()
   let k = 0
   for (const f of files) {
-    if (k >= parts.length) break
     const n = f.status === 'typechange' ? 2 : 1
-    chunks.set(f.path, { text: parts.slice(k, k + n).join(''), cut: cut && k + n >= parts.length })
+    if (k + n > parts.length) break
+    chunks.set(f.path, parts.slice(k, k + n).join(''))
     k += n
   }
   return chunks
@@ -587,18 +608,21 @@ function pathBytes(p: string): Buffer {
 }
 
 /** The unified diff from per-file parts in file order, stopping at the
- *  first file whose part is missing or cut, or once past the cap. */
-function joinChunks(files: NameStatusEntry[], chunks: Map<string, Chunk>): { text: string; whole: boolean } {
+ *  first file whose part is missing, or once past the cap; not `whole`
+ *  when it stopped early or holds a part that was cut. */
+function joinChunks(files: NameStatusEntry[], chunks: Map<string, string>): { text: string; whole: boolean } {
   let text = ''
   let bytes = 0
+  let whole = true
   for (const [n, f] of files.entries()) {
     const c = chunks.get(f.path)
-    if (!c) return { text, whole: false }
-    text += c.text
-    bytes += Buffer.byteLength(c.text)
-    if (c.cut || (bytes >= WORKSPACE_DIFF_CAP_BYTES && n < files.length - 1)) return { text, whole: false }
+    if (c === undefined) return { text, whole: false }
+    text += c
+    bytes += Buffer.byteLength(c)
+    if (c.endsWith(`\n${DIFF_CUT_LINE}\n`)) whole = false
+    if (bytes >= WORKSPACE_DIFF_CAP_BYTES && n < files.length - 1) return { text, whole: false }
   }
-  return { text, whole: true }
+  return { text, whole }
 }
 
 /** `held` without the `changed` entries, then with `read`'s. */
@@ -619,9 +643,9 @@ function splice(held: BaseDiff, changed: Set<string>, read: BaseDiff): BaseDiff 
     .sort((a, b) => Buffer.compare(pathBytes(a.path), pathBytes(b.path)))
   let body: BaseDiff['body']
   if (held.body && read.body) {
-    const chunks = chunksOf(held.nameStatus, held.body.text, !held.body.whole)
+    const chunks = chunksOf(held.nameStatus, held.body.text)
     for (const p of changed) chunks.delete(p)
-    for (const [p, c] of chunksOf(read.nameStatus, read.body.text, !read.body.whole)) chunks.set(p, c)
+    for (const [p, c] of chunksOf(read.nameStatus, read.body.text)) chunks.set(p, c)
     body = joinChunks(nameStatus, chunks)
   }
   return { numstat, nameStatus, ...(body ? { body } : {}) }
@@ -681,10 +705,11 @@ function readRun(
   const text = d === -1 ? undefined : raw.slice(d + M_DIFF.length + 1).replace(/^\n/, '')
   let diff: BaseDiff = held!
   if (baseMode !== 'same') {
+    const nameStatus = parseNameStatus(section(head, M_NAMESTATUS))
     diff = {
       numstat: parseNumstat(section(head, M_NUMSTAT)),
-      nameStatus: parseNameStatus(section(head, M_NAMESTATUS)),
-      ...(text !== undefined ? { body: { text, whole: Buffer.byteLength(text) < WORKSPACE_DIFF_CAP_BYTES } } : {}),
+      nameStatus,
+      ...(text !== undefined ? { body: joinChunks(nameStatus, chunksOf(nameStatus, text)) } : {}),
     }
     if (baseMode === 'delta') diff = splice(held!, changed, diff)
   }
@@ -707,14 +732,14 @@ function readRun(
     return change
   })
 
-  // Measure bytes, not UTF-16 code units: the script's `head -c` cap is in
-  // bytes, so comparing `.length` could report a diff the script already
-  // cut as `truncated: false`.
+  // Measure bytes, not UTF-16 code units: the script's caps are in bytes,
+  // so comparing `.length` could report a diff the script already cut as
+  // `truncated: false`.
   // A body that failed is shown as cut short to nothing, and not held.
   const failed = raw.includes(`${M_NODIFF}\n`, ok)
   const body = failed ? { text: '', whole: false } : diff.body
   const truncated = body !== undefined && (!body.whole || Buffer.byteLength(body.text) > maxDiffBytes)
-  const shown = body && (truncated ? sliceUtf8(body.text, maxDiffBytes) : body.text)
+  const shown = body && cutDiff(body.text, maxDiffBytes)
 
   // `REF <ref> <behind>\t<ahead>`: rev-list counts the left side first.
   const refMatch = /^REF (\S+) (\d+)\s+(\d+)$/m.exec(head)
@@ -750,7 +775,7 @@ function readRun(
 
   return {
     reading: {
-      changes: { base, baseResolved, files, ...(shown !== undefined ? { diff: shown } : {}), truncated },
+      changes: { base, work, baseResolved, files, ...(shown !== undefined ? { diff: shown } : {}), truncated },
       ref,
       ...(listing ? { listing } : {}),
     },
@@ -858,18 +883,17 @@ function answerFor(reading: ChangesReading, request: ChangesRequest): ChangesRea
 }
 
 /**
- * The longest prefix of `s` that fits in `maxBytes` UTF-8 bytes, cut on a
- * code point boundary. A blind byte slice could split a multi-byte
- * sequence, producing a replacement char that pushes the result back over
- * the cap.
+ * `diff` cut to the whole lines within `maxBytes` UTF-8 bytes, as the
+ * script cuts it: the part the cut runs through ends in the cut line, which
+ * may take it a line past the cap. A line break is never inside a
+ * multi-byte character, so no character is split.
  */
-function sliceUtf8(s: string, maxBytes: number): string {
-  const buf = Buffer.from(s, 'utf8')
-  if (buf.length <= maxBytes) return s
-  // Step back off UTF-8 continuation bytes (0b10xxxxxx).
-  let end = maxBytes
-  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--
-  return buf.subarray(0, end).toString('utf8')
+function cutDiff(diff: string, maxBytes: number): string {
+  const buf = Buffer.from(diff, 'utf8')
+  if (buf.length <= maxBytes) return diff
+  const end = buf.lastIndexOf(0x0a, maxBytes - 1) + 1
+  const kept = buf.subarray(0, end).toString('utf8')
+  return buf.subarray(end, end + 11).toString() === 'diff --git ' ? kept : `${kept}${DIFF_CUT_LINE}\n`
 }
 
 /** Per workspace, what its last read came from, and when a read last used
@@ -935,4 +959,44 @@ export function readWorkspaceChanges(
     heldReadings.set(jobName, { held: next, usedAt: Date.now() })
     return { ...reading, readMs: Date.now() - started }
   }, signal)
+}
+
+/** `readChangeDiffs`'s exit code for "a tree it was given is gone". */
+export const CHANGES_READING_GONE = 4
+
+/**
+ * More of a diff the changes poll left out, for the Changes pane: the parts
+ * of `files` in the diff from `base` to the working tree `work`, both as a
+ * reading answered them, so the parts match that reading's. A renamed
+ * file's old path is diffed too, so the pair is found again. The answer is
+ * capped as the poll's body is, but with `skip`, it is the one file's part
+ * after the first `skip` lines, up to the whole cap, for a reader scrolling
+ * down a file whose part was cut.
+ *
+ * The trees stay in the checkout's object store after the reading that
+ * wrote them; a run that finds either gone fails with
+ * `CHANGES_READING_GONE`.
+ */
+export async function readChangeDiffs(jobName: string, request: {
+  base: string
+  work: string
+  files: { path: string; oldPath?: string }[]
+  skip?: number
+}): Promise<string> {
+  const driver = workspaceDriver()
+  const { workspaceDir, scratchDir } = driver.workspacePaths(jobName)
+  const { base, work, files, skip } = request
+  const [p, t] = skip === undefined ? [MAX_FILE_DIFF_BYTES, MAX_DIFF_BYTES] : [MAX_DIFF_BYTES, MAX_DIFF_BYTES]
+  const script = `cd ${workspaceDir} 2>/dev/null || exit 3; `
+    + `git cat-file -e "$1^{tree}" && git cat-file -e "$2^{tree}" || exit ${CHANGES_READING_GONE}; `
+    + `s=${skip ?? 0}; p=${p}; t=${t}; e=${scratchDir}/yaac-diff.err.$$; ${cappedFn('$e')}`
+    + `capped git --literal-pathspecs diff ${BODY_FLAGS} "$@"; r=$?; rm -f $e; exit $r`
+  // Paths are named as name-status prints them, quoted when unusual. git
+  // fails the whole run on one outside the checkout.
+  const paths = files.flatMap((f) => [f.path, ...f.oldPath ? [f.oldPath] : []]).map((f) => pathBytes(f).toString())
+  const bad = paths.find((f) => f.includes('\0') || f.startsWith('/') || f.split('/').includes('..'))
+  if (bad !== undefined) throw new ServerError('VALIDATION', `${JSON.stringify(bad)} is not a path in the checkout`)
+  const { stdout } = await driver.exec(jobName, `sh -c ${shSingleQuote(script)} yaac-diff `
+    + [base, work, '--', ...paths].map(shSingleQuote).join(' '), { timeout: 20_000 })
+  return stdout
 }

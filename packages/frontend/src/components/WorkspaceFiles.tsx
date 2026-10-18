@@ -1,5 +1,5 @@
 import {
-  Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
   type ChangeEvent, type DragEvent, type JSX, type KeyboardEvent, type ReactNode,
 } from 'react'
 import clsx from 'clsx'
@@ -20,7 +20,8 @@ import { LineCountsLabel } from '#components/ui/LineCountsLabel'
 import { PathLabel } from '#components/ui/PathLabel'
 import { TextSizeMenu } from '#components/ui/TextSizeMenu'
 import { Tip, WithTip } from '#components/ui/Tooltip'
-import { parseUnifiedDiff, type ParsedFileDiff } from '#lib/diff'
+import type { ParsedFileDiff } from '#lib/diff'
+import { useChangeDiffs, type DiffWant } from '#lib/useChangeDiffs'
 import { CHANGE_STAGES, ROW_STATUS, lineTotals, pathStatuses, stageTotals, type RowStatus } from '#lib/gitStatus'
 import { languageForPath } from '#lib/highlight'
 import { chordMatches, findChord, formatChord, textSizeStep } from '#lib/shortcuts'
@@ -209,9 +210,8 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
   const changed = useMemo(() => changes.data?.files ?? [], [changes.data?.files])
   const changeByPath = useMemo(() => new Map(changed.map((c) => [c.path, c])), [changed])
   const statuses = useMemo(() => pathStatuses(changed, data?.conflicted ?? []), [changed, data?.conflicted])
-  const diffMap = useMemo(
-    () => new Map(changedOnly ? parseUnifiedDiff(changes.data?.diff ?? '').map((f) => [f.path, f]) : []),
-    [changedOnly, changes.data?.diff],
+  const { diffs: diffMap, failed: diffFailed, want: wantDiff } = useChangeDiffs(
+    workspaceId, changedOnly ? changes.data : undefined,
   )
   // The Changes pane's filter matches paths (a rename's old one too) as
   // quick-open does.
@@ -613,7 +613,11 @@ export function WorkspaceFiles({ workspaceId, projectId, baseBranch, changedOnly
                 <ChangeDiff
                   change={row.change}
                   diff={diffMap.get(row.path)}
-                  unfetched={changes.data?.diff !== undefined ? undefined : changes.isError ? 'failed' : 'loading'}
+                  unfetched={changes.data?.diff === undefined ? (changes.isError ? 'failed' : 'loading')
+                    : changes.data.truncated && !diffMap.has(row.path) ? (diffFailed(row.path) ? 'failed' : 'loading')
+                      : undefined}
+                  restFailed={diffFailed(row.path)}
+                  {...changes.data?.truncated ? { want: wantDiff } : {}}
                   marks={marks.get(row.path)}
                   current={currentMatch?.path === row.path ? currentMatch : undefined}
                 />
@@ -1123,25 +1127,42 @@ function estimateChunkPx(lines: ParsedFileDiff['lines'], width: number): number 
  * It mounts in chunks as they come near the screen, so opening a view of
  * hundreds of changed files renders only the diffs in sight; the chunk
  * holding the current find match mounts regardless. `unfetched` says why
- * the shared changes poll holds no diff body yet: it leaves the body out
- * while no Changes pane is open, so one is `loading` until the pane's own
- * fetch lands, unless that fetch `failed`.
+ * there is no diff for the file yet: it is `loading` until the pane's own
+ * fetch lands (the shared changes poll leaves the body out while no Changes
+ * pane is open), or the part the poll's cap left out does, unless that
+ * `failed`. With a cut body, it tells `want` when it is near the screen:
+ * its top wants the file's part, and the end of a part that was cut short
+ * wants the rest.
  */
-const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks, current }: {
+const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, restFailed, want, marks, current }: {
   change: WorkspaceChange
   diff: ParsedFileDiff | undefined
   unfetched?: 'loading' | 'failed'
+  restFailed: boolean
+  want?: (path: string, kind: DiffWant, near: boolean) => void
   /** Find matches, by line index. */
   marks?: Map<number, DiffMatch[]>
   /** The current find match, when in this diff. */
   current?: DiffMatch
 }): JSX.Element {
+  // A chunk whose lines did not change keeps its array, so its measured
+  // height holds while the rest of a long diff loads below it.
+  const lastChunks = useRef<ParsedFileDiff['lines'][]>([])
   const chunks = useMemo(() => {
     const lines = diff && !diff.binary ? diff.lines : []
     const out: ParsedFileDiff['lines'][] = []
-    for (let i = 0; i < lines.length; i += DIFF_CHUNK_LINES) out.push(lines.slice(i, i + DIFF_CHUNK_LINES))
+    for (let i = 0; i < lines.length; i += DIFF_CHUNK_LINES) {
+      const chunk = lines.slice(i, i + DIFF_CHUNK_LINES)
+      const last = lastChunks.current[out.length]
+      const same = last?.length === chunk.length && last.every((l, k) => l.kind === chunk[k].kind && l.text === chunk[k].text
+        && l.oldNo === chunk[k].oldNo && l.newNo === chunk[k].newNo)
+      out.push(same ? last : chunk)
+    }
+    lastChunks.current = out
     return out
   }, [diff])
+  const top = useNear(useCallback((near: boolean) => want?.(change.path, 'part', near), [want, change.path]))
+  const end = useNear(useCallback((near: boolean) => want?.(change.path, 'rest', near), [want, change.path]))
   const chunkMarks = useMemo(() => chunks.map((_, i) => {
     const start = i * DIFF_CHUNK_LINES
     const own = [...marks ?? []].filter(([line]) => line >= start && line < start + DIFF_CHUNK_LINES)
@@ -1149,7 +1170,7 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks, cu
   }), [chunks, marks])
   const language = languageForPath(change.path)
   return (
-    <div className="border-y border-hairline bg-bg">
+    <div ref={want && top} className="border-y border-hairline bg-bg">
       {chunks.length > 0 ? chunks.map((lines, i) => (
         <NearScreen
           key={i}
@@ -1163,7 +1184,13 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks, cu
         <div className="px-3 py-1.5 text-[11px] text-text-faint">
           {change.binary ? 'Binary file, no preview'
             : unfetched === 'loading' ? 'Loading diff…'
-              : unfetched === 'failed' ? 'Diff not loaded' : 'No textual diff'}
+              : unfetched === 'failed' ? 'Diff not loaded'
+                : 'No textual diff'}
+        </div>
+      )}
+      {chunks.length > 0 && diff?.cut && (
+        <div ref={want && end} className="px-3 py-1.5 text-[11px] text-text-faint">
+          {restFailed ? 'Couldn’t load the rest of this diff' : 'Loading more…'}
         </div>
       )}
     </div>
@@ -1178,6 +1205,19 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, marks, cu
  */
 let nearObserver: IntersectionObserver | null = null
 const nearListeners = new Map<Element, (near: boolean) => void>()
+
+/** A ref callback telling `onChange` whether its element is near the
+ *  screen, and that it is not once the element goes. */
+function useNear(onChange: (near: boolean) => void): (el: Element | null) => (() => void) | undefined {
+  return useCallback((el: Element | null) => {
+    if (!el) return
+    const stop = observeNear(el, onChange)
+    return () => {
+      stop()
+      onChange(false)
+    }
+  }, [onChange])
+}
 
 function observeNear(el: Element, onChange: (near: boolean) => void): () => void {
   nearObserver ??= new IntersectionObserver((entries) => {

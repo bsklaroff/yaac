@@ -211,6 +211,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/workspace/:id/agent-sessions/:sessionId/transcript', request: `${W}/agent-sessions/s1/transcript`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/acp-images/:hash', request: `${W}/acp-images/${'0'.repeat(64)}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/changes', request: `${W}/changes`, access: 'reader', k8s: [404, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/changes/diff', request: `${W}/changes/diff`, body: { base: '0'.repeat(40), work: '0'.repeat(40), files: [{ path: 'a' }] }, access: 'reader', k8s: [404, 503], containerless: MISSING },
   // Run git inside the running workspace: 409 when stopped, 404 when
   // unknown.
   { method: 'GET', path: '/api/workspace/:id/file-at', request: `${W}/file-at?path=a&rev=${'0'.repeat(40)}`, access: 'reader', k8s: MISSING, containerless: MISSING },

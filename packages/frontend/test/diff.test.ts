@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseUnifiedDiff, diffTextPair } from '#lib/diff'
+import { diffTextPair, parseDiffPart, splitDiff } from '#lib/diff'
 
 const DIFF = [
   'diff --git a/src/app.ts b/src/app.ts',
@@ -23,16 +23,35 @@ const DIFF = [
   'Binary files a/logo.png and b/logo.png differ',
 ].join('\n')
 
-describe('parseUnifiedDiff', () => {
-  const files = parseUnifiedDiff(DIFF)
-
-  it('splits into one entry per file, with paths resolved', () => {
-    expect(files.map((f) => f.path)).toEqual(['src/app.ts', 'new.ts', 'logo.png'])
+describe('splitDiff', () => {
+  it('splits into one part per file, by path, marking a cut one', () => {
+    const cut = DIFF.replace('\ndiff --git a/new.ts', '\n@@CUT@@\ndiff --git a/new.ts')
+    const parts = splitDiff(cut)
+    expect([...parts.keys()]).toEqual(['src/app.ts', 'new.ts', 'logo.png'])
+    expect(parts.get('src/app.ts')).toEqual({ text: `${DIFF.split('\ndiff --git a/new.ts')[0]}\n`, cut: true })
+    expect(parts.get('new.ts')?.cut).toBe(false)
   })
 
+  it('keeps a typechange\'s two parts together', () => {
+    const parts = splitDiff([
+      'diff --git a/link b/link', 'deleted file mode 120000', '--- a/link', '+++ /dev/null', '@@ -1 +0,0 @@', '-target',
+      'diff --git a/link b/link', 'new file mode 100644', '--- /dev/null', '+++ b/link', '@@ -0,0 +1 @@', '+text', '',
+    ].join('\n'))
+    expect([...parts.keys()]).toEqual(['link'])
+    expect(parseDiffPart('link', parts.get('link')!).lines.map((l) => l.kind)).toEqual(['hunk', 'del', 'hunk', 'add'])
+  })
+
+  it('returns nothing for an empty diff', () => {
+    expect(splitDiff('').size).toBe(0)
+    expect(splitDiff('   \n').size).toBe(0)
+  })
+})
+
+describe('parseDiffPart', () => {
+  const parse = (path: string): ReturnType<typeof parseDiffPart> => parseDiffPart(path, splitDiff(DIFF).get(path)!)
+
   it('tracks line kinds and numbers for a modification', () => {
-    const app = files[0]
-    expect(app.lines).toEqual([
+    expect(parse('src/app.ts').lines).toEqual([
       { kind: 'hunk', text: '@@ -1,2 +1,3 @@', oldNo: null, newNo: null },
       { kind: 'context', text: 'line1', oldNo: 1, newNo: 1 },
       { kind: 'del', text: 'line2', oldNo: 2, newNo: null },
@@ -41,19 +60,13 @@ describe('parseUnifiedDiff', () => {
     ])
   })
 
-  it('resolves a new file to its b/ path', () => {
-    expect(files[1].path).toBe('new.ts')
-    expect(files[1].lines.filter((l) => l.kind === 'add')).toHaveLength(2)
+  it('reads a new file\'s added lines, past its ---/+++ header', () => {
+    expect(parse('new.ts').lines.filter((l) => l.kind === 'add')).toHaveLength(2)
+    expect(parse('new.ts').lines).toHaveLength(3)
   })
 
   it('flags binary files', () => {
-    expect(files[2].binary).toBe(true)
-    expect(files[2].lines).toEqual([])
-  })
-
-  it('returns [] for an empty diff', () => {
-    expect(parseUnifiedDiff('')).toEqual([])
-    expect(parseUnifiedDiff('   \n')).toEqual([])
+    expect(parse('logo.png')).toEqual({ path: 'logo.png', binary: true, lines: [], cut: false })
   })
 })
 

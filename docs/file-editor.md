@@ -57,7 +57,8 @@ macOS virtiofs, the same process user under containerless).
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
 | `POST /workspace/:id/rename` | moves a file, folder or symlink; 409 if the destination exists |
 | `DELETE /workspace/:id/file?path=` | deletes a file, a link (never its target) or a folder, recursively |
-| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, baseResolved, files, diff, truncated, branch, comparison, listing?, readMs }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
+| `GET /workspace/:id/changes?base=&diff=&listing=&known=` | `WorkspaceChanges`: `{ base, work, baseResolved, files, diff, truncated, branch, comparison, listing?, readMs }`; `diff=0` leaves the `diff` field out, `listing=paths\|full` adds `WorkspaceFiles` unless its version is `known` |
+| `POST /workspace/:id/changes/diff` `{ base, work, files, skip? }` | `{ diff }`: more of the reading `base` and `work` name — the parts of `files` (each `{ path, oldPath? }`, at most 200), or with `skip` one file's part after its first `skip` lines; 404 once either tree is gone |
 | `GET /workspace/:id/file-at?path=&rev=` | `{ exists, content }`: the file at commit `rev` (a full object id), `content` null when binary or over 1 MiB |
 
 ### Changes
@@ -123,7 +124,20 @@ delta only when every changed path is an edit to a file the base has too;
 an added, deleted or retyped path, or `diff.renames=copies`, reads it in
 full. More than 300 changed paths reads every part in full. A poll that
 wants no body still has a delta print its paths' body when the server holds
-one, so the body stays current for the next poll that does. A `git diff`
+one, so the body stays current for the next poll that does. The body is
+capped by whole lines at 250 KB per file and 2 MB in all in the workspace,
+and at 1 MB in the answer; a file's part the cap cuts short ends in a
+`DIFF_CUT_LINE` line, so one huge file cannot leave every file after it
+with no diff. Each answer names its reading by the base and the working
+tree's git tree (`work`), which `add -A` wrote into the checkout's object
+store, and `POST changes/diff` reads more of that reading: the parts of
+files the cap left out, under the same caps, or a page of up to 1 MB of
+one file's part past the lines the caller holds. A page that starts on a
+line over 1 MB shows that line's first megabyte, cut at a byte, and goes on
+from the next line. Both are `git diff`
+between the two trees at those paths (a rename's old path too, so it pairs
+again), so they match the poll's parts whatever the checkout has done
+since. A `git diff`
 that fails before the body's cap (a textconv program that is missing) is
 neither cached nor held: the answer keeps its file list and shows the body
 as truncated to nothing. A held reading
@@ -363,7 +377,19 @@ compare with the fork branch again.
   while any is open, and shows them all once none is. A strip shows the diff
   base with a branch picker, the shown files' totals overall and per stage,
   and what the diff leaves out (only uncommitted work when no fork point
-  resolves, a body cut at 1 MB). The filter matches paths (a rename's old
+  resolves, a body cut at 1 MB). Past the cap the pane loads the rest as
+  it scrolls (`useChangeDiffs`): a file the body left out loads its part
+  once its diff comes within a screen of view, batched with the others in
+  view, and the end of a cut part loads the next page of it, so every diff
+  can be read to its end by scrolling, any line over 1 MB shown cut. A
+  loaded part outlives its reading while later polls show the same header
+  for the file (its `index` line names both blobs), so an agent editing
+  other files does not throw away what was scrolled through. One the poll
+  left out is shown until a reader near it loads it again, and is dropped
+  if that fails, so the file says its diff did not load. Loaded parts go
+  once the poll's body is whole or the file is no longer changed. A chunk whose lines did not
+  change keeps its measured height as pages land below it. The filter
+  matches paths (a rename's old
   one too) the way quick-open does, keeping the list's order.
 - **Find in diffs** (Cmd/Ctrl-F in the Changes pane, or its header's search
   button) uses the find bar's controls (`FindControls` in `ui/FindPanel`),

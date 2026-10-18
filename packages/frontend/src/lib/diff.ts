@@ -1,4 +1,5 @@
 import { diff } from '@codemirror/merge'
+import { DIFF_CUT_LINE } from '@yaac/shared/types'
 
 /**
  * Diff lines for the panes, from two sources: a combined `git diff` (the
@@ -22,6 +23,8 @@ export interface ParsedFileDiff {
   path: string
   binary: boolean
   lines: DiffLine[]
+  /** The server cut this file's part short. */
+  cut: boolean
 }
 
 const HUNK_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
@@ -47,48 +50,70 @@ function pathForChunk(header: string[], gitLine: string): string {
   return m ? cleanPath(m[2]) : ''
 }
 
-/** Split a combined unified diff into per-file parsed diffs. */
-export function parseUnifiedDiff(diff: string): ParsedFileDiff[] {
-  if (!diff.trim()) return []
-  const files: ParsedFileDiff[] = []
-  const lines = diff.split('\n')
+/** A file's part of a combined diff: its text, without the cut line, and
+ *  whether the server cut it short. */
+export interface DiffPart {
+  text: string
+  cut: boolean
+}
 
-  let i = 0
-  while (i < lines.length) {
-    if (!lines[i].startsWith('diff --git ')) { i++; continue }
-    const gitLine = lines[i]
-    i++
-    // Header lines up to the first hunk (or the next file).
-    const header: string[] = []
-    while (i < lines.length && !lines[i].startsWith('@@') && !lines[i].startsWith('diff --git ')) {
-      header.push(lines[i])
-      i++
+/**
+ * A combined unified diff split into its files' parts, by path. A
+ * typechange prints two parts for its one path (a deletion, then a
+ * creation), which stay together as one.
+ */
+export function splitDiff(diff: string): Map<string, DiffPart> {
+  const parts = new Map<string, DiffPart>()
+  let last: { path: string; part: DiffPart } | undefined
+  for (const text of diff.split(/(?=^diff --git )/m)) {
+    if (!text.startsWith('diff --git ')) continue
+    const lines = text.split('\n')
+    const hunk = lines.findIndex((l) => l.startsWith('@@'))
+    const path = pathForChunk(lines.slice(1, hunk === -1 ? undefined : hunk), lines[0])
+    const cut = text.endsWith(`\n${DIFF_CUT_LINE}\n`)
+    const own = cut ? text.slice(0, -DIFF_CUT_LINE.length - 1) : text
+    if (last?.path === path) {
+      last.part = { text: last.part.text + own, cut }
+    } else {
+      last = { path, part: { text: own, cut } }
     }
-    const binary = header.some((l) => l.startsWith('Binary files'))
-    const file: ParsedFileDiff = { path: pathForChunk(header, gitLine), binary, lines: [] }
-
-    let oldNo = 0
-    let newNo = 0
-    while (i < lines.length && !lines[i].startsWith('diff --git ')) {
-      const line = lines[i]
-      const hunk = HUNK_RE.exec(line)
-      if (hunk) {
-        oldNo = Number(hunk[1])
-        newNo = Number(hunk[2])
-        file.lines.push({ kind: 'hunk', text: line, oldNo: null, newNo: null })
-      } else if (line.startsWith('+')) {
-        file.lines.push({ kind: 'add', text: line.slice(1), oldNo: null, newNo: newNo++ })
-      } else if (line.startsWith('-')) {
-        file.lines.push({ kind: 'del', text: line.slice(1), oldNo: oldNo++, newNo: null })
-      } else if (line.startsWith(' ')) {
-        file.lines.push({ kind: 'context', text: line.slice(1), oldNo: oldNo++, newNo: newNo++ })
-      }
-      // '\ No newline at end of file' and stray lines are ignored.
-      i++
-    }
-    files.push(file)
+    parts.set(path, last.part)
   }
-  return files
+  return parts
+}
+
+/** One file's part parsed into lines. */
+export function parseDiffPart(path: string, { text, cut }: DiffPart): ParsedFileDiff {
+  const file: ParsedFileDiff = { path, binary: false, lines: [], cut }
+  let oldNo = 0
+  let newNo = 0
+  let header = false
+  for (const line of text.split('\n')) {
+    if (line.startsWith('diff --git ')) {
+      header = true
+      continue
+    }
+    // Header lines run up to the first hunk.
+    if (header && !line.startsWith('@@')) {
+      if (line.startsWith('Binary files')) file.binary = true
+      continue
+    }
+    header = false
+    const hunk = HUNK_RE.exec(line)
+    if (hunk) {
+      oldNo = Number(hunk[1])
+      newNo = Number(hunk[2])
+      file.lines.push({ kind: 'hunk', text: line, oldNo: null, newNo: null })
+    } else if (line.startsWith('+')) {
+      file.lines.push({ kind: 'add', text: line.slice(1), oldNo: null, newNo: newNo++ })
+    } else if (line.startsWith('-')) {
+      file.lines.push({ kind: 'del', text: line.slice(1), oldNo: oldNo++, newNo: null })
+    } else if (line.startsWith(' ')) {
+      file.lines.push({ kind: 'context', text: line.slice(1), oldNo: oldNo++, newNo: newNo++ })
+    }
+    // '\ No newline at end of file' and stray lines are ignored.
+  }
+  return file
 }
 
 /**

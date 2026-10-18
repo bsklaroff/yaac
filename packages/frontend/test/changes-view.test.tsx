@@ -36,6 +36,7 @@ const LISTING: WorkspaceFilesData = {
 
 const PAYLOAD: WorkspaceChanges = {
   base: 'abc1234def',
+  work: 'w1',
   baseResolved: true,
   readMs: 0,
   branch: 'main',
@@ -317,6 +318,66 @@ describe('WorkspaceFiles changes, at scale', () => {
     expect(screen.queryByText('alpha')).toBeNull()
     act(() => intersect(false, [first]))
     expect(screen.queryByText('needle1')).toBeNull()
+  })
+
+  // Past the poll's cap, a file the body left out loads its part once its
+  // diff comes near the screen, in one batch with the others, and the end
+  // of a part the cap cut loads the rest; both name the reading they
+  // extend. A later reading keeps a loaded part while the file's header
+  // (its blobs) is the same, and loads it again once that moves.
+  it('loads what a cut diff left out as it comes near the screen, across readings', async () => {
+    const DIFF = 'POST /api/workspace/s1/changes/diff'
+    const [head, ...body] = PAYLOAD.diff!.split('\ndiff --git a/src/new.ts')[0].split('\n')
+    const poll = (work: string, index: string): void => server.route(CHANGES, reply({
+      ...PAYLOAD, work, truncated: true, diff: [head, `index ${index} 100644`, ...body, '@@CUT@@', ''].join('\n'),
+    }))
+    server.route(DIFF, ({ body: b }: { body: { work: string; skip?: number } }) => (b.work === 'w4' && !b.skip
+      ? serverError('NOT_FOUND', 'gone', 404)
+      : {
+        diff: b.skip ? ` more1\n+more2${b.work}\n` : 'diff --git a/src/new.ts b/src/new.ts\n@@ -0,0 +1 @@\n+alpha\n'
+          + `diff --git a/gone.ts b/gone.ts\n@@ -1 +0,0 @@\n-farewell${b.work}\n`,
+      }))
+    const asked = (): unknown[] => server.called(DIFF).map((c) => c.body)
+    poll('w1', '111..222')
+    useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS })
+    const client = testQueryClient()
+    renderWithClient(changesPane, client)
+    await waitFor(() => expect(screen.getByText('more2w1')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('alpha')).toBeTruthy())
+    expect(screen.getByText('farewellw1')).toBeTruthy()
+    expect(screen.getByText('needle1')).toBeTruthy()
+    expect(screen.queryByText('Loading more…')).toBeNull()
+    expect(asked()).toEqual([
+      { base: 'abc1234def', work: 'w1', files: [{ path: 'src/app.ts' }], skip: 9 },
+      { base: 'abc1234def', work: 'w1', files: [{ path: 'src/new.ts' }, { path: 'gone.ts' }] },
+    ])
+    const repoll = async (work: string, index: string): Promise<void> => {
+      poll(work, index)
+      await act(() => client.refetchQueries({ queryKey: ['changes', 's1'] }))
+    }
+
+    // The cut file's blobs are the same, so its page stays; the files the
+    // poll left out load again for the new reading.
+    await repoll('w2', '111..222')
+    await waitFor(() => expect(screen.getByText('farewellw2')).toBeTruthy())
+    expect(screen.getByText('more2w1')).toBeTruthy()
+    expect(asked().slice(2)).toEqual([
+      { base: 'abc1234def', work: 'w2', files: [{ path: 'src/new.ts' }, { path: 'gone.ts' }] },
+    ])
+
+    // A new blob: the old page goes, and the rest loads again.
+    await repoll('w3', '111..333')
+    await waitFor(() => expect(screen.getByText('more2w3')).toBeTruthy())
+    expect(screen.queryByText('more2w1')).toBeNull()
+    expect(asked()).toContainEqual({ base: 'abc1234def', work: 'w3', files: [{ path: 'src/app.ts' }], skip: 9 })
+
+    // A left-out part whose reload fails is not shown as current.
+    await repoll('w4', '111..333')
+    await waitFor(() => expect(screen.queryByText('farewellw3')).toBeNull())
+    // Both files of the failed batch say so.
+    expect(screen.getAllByText('Diff not loaded')).toHaveLength(2)
+    expect(screen.queryByText('alpha')).toBeNull()
+    expect(screen.getByText('more2w3')).toBeTruthy()
   })
 
   // Every reader of a workspace's changes shares one query, which carries
