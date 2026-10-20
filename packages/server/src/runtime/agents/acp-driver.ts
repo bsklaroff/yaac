@@ -79,13 +79,21 @@ function acpLogPath(paths: Pick<WorkspacePaths, 'acpLogDir'>, name: string): str
 }
 
 /**
- * Delay before re-dialing a window whose acpd dropped the dial. acpd binds
- * its socket a moment after tmux respawns the window into it, so the first
- * dial often finds nothing. Until a dial lands there is no handshake,
- * conversation id, row or chat pane, and session create waits on it to
- * deliver the initial prompt.
+ * Delay before re-dialing a window whose acpd dropped the dial or never
+ * bound its socket within `DIAL_WAIT`. Until a dial lands there is no
+ * handshake, conversation id, row or chat pane, and session create waits on
+ * it to deliver the initial prompt.
  */
 const ATTACH_RETRY_MS = 1_000
+
+/**
+ * How long one dial waits for acpd's socket, as socat connect options:
+ * 40 tries 50ms apart. acpd binds its socket a moment after tmux respawns
+ * the window into it, so a new window's first dial usually comes early.
+ * Waiting inside the dial connects as soon as acpd listens, where a failed
+ * dial would wait out `ATTACH_RETRY_MS`.
+ */
+const DIAL_WAIT = 'retry=40,interval=0.05'
 
 /**
  * Re-dials of one window before it waits for the heartbeat's re-list. A
@@ -340,7 +348,7 @@ class AcpConnection extends ControlModeConnection {
       // UNIX socket so it stays out of the auto-forward port scan.
       const paths = workspaceDriver().workspacePaths(this.session.jobName)
       child = this.dial(this.session, [
-        'socat', '-', `UNIX-CONNECT:${acpSockPath(paths, handle)}`,
+        'socat', '-', `UNIX-CONNECT:${acpSockPath(paths, handle)},${DIAL_WAIT}`,
       ])
     } catch (err) {
       this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: dial failed: ${String(err)}`)
@@ -550,13 +558,18 @@ export const acpDriver: AgentDriver = {
     // slots that shift when a restart drops an earlier conversation, which
     // would mix histories. A fresh create starts under the workspace id and
     // is renamed once `session/new` answers (see `adoptLog`). `--cwd` is
-    // passed because acpd cannot know the checkout path.
+    // passed because acpd cannot know the checkout path. The conversation,
+    // model and posture come over the protocol, so the pane reporters the
+    // tool's hooks run are told to skip (`YAAC_NO_PANE_REPORT`), since claude
+    // waits on its hooks at startup and around every turn.
     return [
       ...adapter.env(spec),
+      'YAAC_NO_PANE_REPORT=1',
       `node ${spec.paths.acpdEntry}`,
       `--sock ${acpSockPath(spec.paths, spec.windowName)}`,
       `--log ${acpLogPath(spec.paths, spec.agentSessionId)}`,
       `--cwd ${spec.paths.workspaceDir}`,
+      ...(spec.beforeCheckout === true ? [`--wait-for ${spec.paths.workspaceDir}/.git`] : []),
       '--',
       ...adapter.argv,
     ].join(' ')

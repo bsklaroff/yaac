@@ -1,5 +1,5 @@
 import { ServerError } from '@yaac/shared/errors'
-import { awaitAgentTransport, execInWorkspace } from './exec'
+import { execInWorkspace } from './exec'
 import { dialCtrlStream, dialPtyStream, reviveStatusStream } from './dial'
 import { awaitReady, launchWorkspace, prepareSubstrate } from './launch'
 import {
@@ -96,7 +96,8 @@ export function createContainerlessDriver(): WorkspaceDriver {
     salvageImages: () => Promise.resolve(),
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
-    awaitAgentTransport: (jobName, opts) => awaitAgentTransport(jobName, opts),
+    // `exec` is a host shell, so there is no transport to wait for.
+    awaitAgentTransport: () => Promise.resolve(),
     dialCtrl: (jobName, argv) => dialCtrlStream(jobName, argv),
     dialPty: (jobName, argv, size) => dialPtyStream(jobName, argv, size),
     reviveStatusStream: () => reviveStatusStream(),

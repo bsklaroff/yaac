@@ -29,6 +29,14 @@ describe('buildWindowsExec', () => {
     )
   })
 
+  it('opens only the init windows when the agents were started apart', () => {
+    const wins = resolveInitWindows({ initCommands: ['pnpm dev'] })
+    const cmd = buildWindowsExec(wins, 'claude', [], PATHS)
+    expect(cmd).toContain('pnpm dev')
+    expect(cmd).not.toContain('respawn-window')
+    expect(buildWindowsExec([], 'claude', [], PATHS)).toBe('')
+  })
+
   it('opens every agent past the first in its own window, in the workspace', () => {
     const cmd = buildWindowsExec([], 'claude', [
       { tool: 'claude', cmd: 'claude --resume a' },

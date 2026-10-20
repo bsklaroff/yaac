@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import { cloneRepo, createCheckout, fetchOrigin } from '@yaac/server/domain/git'
 import { git } from '@yaac/test-utils/git'
-import { buildCloneLinkExec, buildOriginRefreshExec, formatSshCommand, getGitUserConfig, torSshOpts } from '#git'
+import { buildCloneLinkExec, buildOriginRefreshExec, buildStatusWarmupExec, formatSshCommand, getGitUserConfig, gitConfigValue, torSshOpts } from '#git'
 
 const execFileAsync = promisify(execFile)
 
@@ -121,14 +121,21 @@ describe('clone refresh commands', () => {
       expect(await fs.readFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), 'utf8'))
         .toBe(`${path.join(main, '.git', 'objects')}\n`)
       expect((await git(wt, ['status', '--porcelain'])).trim()).toBe('')
-      // It ends by warming the file cache with a detached status that takes
-      // no index lock the agent's git could collide with.
-      expect(cmd).toMatch(/&& \{ setsid git -C \S+ --no-optional-locks status --porcelain <\/dev\/null >\/dev\/null 2>&1 & \}$/)
     })
 
-    it('fails when the alternates line cannot be written, warm-up or not', async () => {
+    it('fails when the alternates line cannot be written', async () => {
       const cmd = buildCloneLinkExec(path.join(main, '.git'), path.join(tmp, 'missing'))
       await expect(run(cmd)).rejects.toThrow()
+    })
+  })
+
+  describe('buildStatusWarmupExec', () => {
+    it('reads every file once in the background, taking no index lock the agent could collide with', async () => {
+      const cmd = buildStatusWarmupExec(wt)
+      expect(cmd).toMatch(/^\{ setsid git -C \S+ --no-optional-locks status --porcelain <\/dev\/null >\/dev\/null 2>&1 & \}$/)
+      // Detached, so a command it is chained into goes straight on.
+      await run(`${cmd} && echo next`)
+      await expect(fs.access(path.join(wt, '.git', 'index.lock'))).rejects.toThrow()
     })
   })
 
@@ -159,5 +166,19 @@ describe('clone refresh commands', () => {
       // No new objects: everything came through the alternate.
       expect(await git(wt, ['count-objects', '-v'])).toBe(objects)
     })
+  })
+})
+
+describe('gitConfigValue', () => {
+  it('quotes a value so git reads it back verbatim, as a value or a subsection name', async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-config-value-'))
+    try {
+      const file = path.join(tmp, 'config')
+      const value = 'a "quoted" back\\slash\nand a # not-a-comment ; nor this'
+      await fs.writeFile(file, `[remote ${gitConfigValue('we"ird\\name')}]\n\turl = ${gitConfigValue(value)}\n`)
+      expect(await git(tmp, ['config', '--file', file, '--get', 'remote.we"ird\\name.url'])).toBe(`${value}\n`)
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true })
+    }
   })
 })

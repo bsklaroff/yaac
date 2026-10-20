@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
+import { gitConfigValue } from '@yaac/shared/git'
 import { agentBinDirs } from '@yaac/shared/tool-install'
 import { serverLog } from '#lib/log'
 import { realizeGitAuth } from './git-auth'
-import { runHost, onPath } from './host'
+import { findOnPath, killPids, runHost } from './host'
 import {
   assertShellSafePaths,
   assertSocketPathsFit,
@@ -280,14 +281,21 @@ function underPrefix(value: string, prefix: string): string | null {
   return value.startsWith(prefix) ? value.slice(prefix.length) : null
 }
 
-/** The workspace's shell: `$SHELL`, else zsh, bash, then sh. */
+/**
+ * The workspace's shell: `$SHELL`, else zsh, bash, then `/bin/sh`. Always an
+ * absolute path to an executable, since tmux refuses any other
+ * `default-shell`.
+ */
 async function resolveShell(): Promise<string> {
   // eslint-disable-next-line no-process-env -- the workspace's login shell is the host user's own preference, which only the environment states
   for (const candidate of [process.env.SHELL, 'zsh', 'bash']) {
     if (candidate === undefined) continue
-    if (path.isAbsolute(candidate) || await onPath(candidate)) return candidate
+    const found = path.isAbsolute(candidate)
+      ? await fs.access(candidate, fs.constants.X_OK).then(() => candidate, () => null)
+      : await findOnPath(candidate)
+    if (found !== null) return found
   }
-  return 'sh'
+  return '/bin/sh'
 }
 
 /** See `WorkspaceDriver.launch`. */
@@ -375,51 +383,55 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   env.GIT_CONFIG_GLOBAL = gitconfigPath
 
   const shell = await resolveShell()
-  const statusRight = env.YAAC_STATUS_RIGHT ?? ''
-
   spec.onProgress?.('Starting the workspace session...')
-  // Start on a placeholder, as the pod's init script does; the agent is
-  // respawned in after setup, and the stale reaper recognizes the
-  // placeholder (PLACEHOLDER_FORMAT). macOS's sleep has no `infinity`. A
-  // large -x/-y lets tmux shrink to the client on attach, which TUIs handle
-  // better than growing.
+  // One tmux call, since each costs a process start. It starts on a
+  // placeholder, as the pod's init script does; the agent is respawned in
+  // after setup, and the stale reaper recognizes the placeholder
+  // (PLACEHOLDER_FORMAT). macOS's sleep has no `infinity`. A large -x/-y lets
+  // tmux shrink to the client on attach, which TUIs handle better than
+  // growing.
   //
   // `update-environment` is emptied before any client attaches; otherwise
   // the liveness watch (attaching with the server's env) would give the
   // panes the host's SSH_AUTH_SOCK. `history-limit` is set before the
   // session, since tmux fixes a pane's limit when it is created and the
   // agent keeps this first pane across respawns.
-  await runHost([
+  //
+  // Then the same UX options as the pod's init script, plus `default-shell`.
+  // tmux stops a command list at its first error, so these take `-q`: an
+  // option an older tmux lacks is skipped rather than failing the create.
+  // Last, the server's pid, the root of the port scan's process tree.
+  const { stdout } = await runHost([
     'tmux', '-S', paths.tmuxSock, '-u',
     'start-server', ';',
     'set-option', '-g', 'history-limit', '200000', ';',
     'new-session', '-d', '-s', 'yaac', '-n', spec.tool,
     '-x', '500', '-y', '200', '-c', paths.workspaceDir,
     'sleep 2147483647', ';',
-    'set-option', '-g', 'update-environment', '',
-  ], { cwd: paths.workspaceDir, env, timeoutMs: 30_000 })
-
-  // The same UX options as the pod's init script, plus `default-shell`.
-  await runHost([
-    'tmux', '-S', paths.tmuxSock,
-    'set-option', '-g', 'default-shell', shell, ';',
-    'set-option', '-s', 'escape-time', '10', ';',
-    'set-option', '-g', 'mouse', 'on', ';',
-    'set-option', '-g', 'focus-events', 'on', ';',
-    'set-option', '-g', 'monitor-bell', 'on', ';',
-    'set-option', '-g', 'bell-action', 'any', ';',
-    'set-option', '-g', 'visual-bell', 'off', ';',
-    'set-option', '-g', 'allow-passthrough', 'on', ';',
-    'set-option', '-g', 'extended-keys', 'on', ';',
-    'set-option', '-g', 'default-terminal', 'tmux-256color', ';',
-    'set-option', '-as', 'terminal-features', ',*:RGB', ';',
-    'set-option', '-t', 'yaac', 'status-right-length', '80', ';',
-    'set-option', '-t', 'yaac', 'status-right', statusRight, ';',
-    'bind-key', 'k', 'confirm-before', '-p', 'kill this yaac session? (y/n)', 'kill-server',
-  ], { env, timeoutMs: 30_000 }).catch((err: unknown) => {
-    // Cosmetic; do not fail the create.
-    serverLog(`[server] containerless ${spec.workspaceId}: tmux options failed: ${String(err)}`)
+    'set-option', '-g', 'update-environment', '', ';',
+    'set-option', '-gq', 'default-shell', shell, ';',
+    'set-option', '-sq', 'escape-time', '10', ';',
+    'set-option', '-gq', 'mouse', 'on', ';',
+    'set-option', '-gq', 'focus-events', 'on', ';',
+    'set-option', '-gq', 'monitor-bell', 'on', ';',
+    'set-option', '-gq', 'bell-action', 'any', ';',
+    'set-option', '-gq', 'visual-bell', 'off', ';',
+    'set-option', '-gq', 'allow-passthrough', 'on', ';',
+    'set-option', '-gq', 'extended-keys', 'on', ';',
+    'set-option', '-gq', 'default-terminal', 'tmux-256color', ';',
+    'set-option', '-gqa', 'terminal-features', ',*:RGB', ';',
+    'set-option', '-q', '-t', 'yaac', 'status-right-length', '80', ';',
+    'set-option', '-q', '-t', 'yaac', 'status-right', env.YAAC_STATUS_RIGHT ?? '', ';',
+    'bind-key', 'k', 'confirm-before', '-p', 'kill this yaac session? (y/n)', 'kill-server', ';',
+    'display-message', '-p', '#{pid}',
+  ], { cwd: paths.workspaceDir, env, timeoutMs: 30_000 }).catch(async (err: unknown) => {
+    // The session may be up even though the call failed, and with no marker
+    // yet nothing would find it or the ssh-agent to tear them down.
+    await runHost(['tmux', '-S', paths.tmuxSock, 'kill-server'], { timeoutMs: 5_000 }).catch(() => {})
+    if (gitAuth.agentPid !== undefined) killPids([gitAuth.agentPid], 'SIGTERM')
+    throw err
   })
+  const tmuxPid = Number(stdout.trim())
 
   const marker: WorkspaceMarker = {
     projectId: spec.projectId,
@@ -427,30 +439,13 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     tool: spec.tool,
     mode: spec.mode,
     createdAtMs: Date.now(),
-    ...(await tmuxServerPid(paths.tmuxSock, env)),
+    ...(Number.isInteger(tmuxPid) && tmuxPid > 0 ? { tmuxPid } : {}),
     // So teardown can kill the ssh-agent.
     ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
     launchEnv: persistableLaunchEnv(env, spec, gitAuth.env),
   }
   await writeMarker(marker)
   return rememberWorkspace(marker, env)
-}
-
-/** The tmux server's pid, for the port scan. Omitted on failure. */
-async function tmuxServerPid(
-  sock: string,
-  env: NodeJS.ProcessEnv,
-): Promise<{ tmuxPid?: number }> {
-  try {
-    const { stdout } = await runHost(
-      ['tmux', '-S', sock, 'display-message', '-p', '#{pid}'],
-      { env, timeoutMs: 10_000 },
-    )
-    const pid = Number(stdout.trim())
-    return Number.isInteger(pid) && pid > 0 ? { tmuxPid: pid } : {}
-  } catch {
-    return {}
-  }
 }
 
 /** See `WorkspaceDriver.prepareSubstrate`. Nothing to prepare here. */
@@ -464,9 +459,3 @@ export function awaitReady(): Promise<void> {
 }
 
 export { containerlessStateDir }
-
-/** Quote and escape a git-config value so it reads back verbatim and
- *  cannot break the file. */
-function gitConfigValue(value: string): string {
-  return `"${value.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\n')}"`
-}

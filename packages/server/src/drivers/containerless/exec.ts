@@ -1,4 +1,3 @@
-import { waitFor } from '@yaac/shared/wait-for'
 import { runHost } from './host'
 import { workspaceRunEnvironment } from './launch'
 import { containerlessWorkspacePaths } from './paths'
@@ -31,17 +30,4 @@ export async function execInWorkspace(
 export function tmuxAnswers(sock: string): Promise<boolean> {
   return runHost(['tmux', '-S', sock, 'has-session', '-t', 'yaac'], { timeoutMs: 5_000 })
     .then(() => true, () => false)
-}
-
-/** See `WorkspaceDriver.awaitAgentTransport`. Polls until the workspace's
- *  tmux server answers, since there is no separate transport. */
-export async function awaitAgentTransport(
-  jobName: string,
-  opts?: { timeoutMs?: number },
-): Promise<void> {
-  const { tmuxSock } = containerlessWorkspacePaths(jobName)
-  const timeoutMs = opts?.timeoutMs ?? 30_000
-  if (!await waitFor(() => tmuxAnswers(tmuxSock), { timeoutMs, intervalMs: 200 })) {
-    throw new Error(`containerless ${jobName}: tmux session did not answer within the deadline (${String(timeoutMs)}ms)`)
-  }
 }

@@ -96,13 +96,15 @@ function transportOf(url: string): string {
 }
 
 /** `extra` (or the server's env) minus variables that would point git at
- *  another repository. */
+ *  another repository or change the kind of one it creates. */
 function gitEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // eslint-disable-next-line no-process-env -- the git child needs PATH/HOME/…; `extra` already carries it when given
   const env: NodeJS.ProcessEnv = { ...(extra ?? process.env) }
   for (const name of [
     'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
     'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CEILING_DIRECTORIES',
+    // Beats `-c init.defaultRefFormat`, which `createCheckout` pins.
+    'GIT_DEFAULT_REF_FORMAT',
   ]) delete env[name]
   env.GIT_TERMINAL_PROMPT = '0'
   return env

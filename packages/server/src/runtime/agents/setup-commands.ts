@@ -24,6 +24,10 @@ import type { AgentTool } from '@yaac/shared/types'
  * Each entry has its own tool, since a codex conversation resumed into a
  * claude workspace must land in `codex-2`: the window name selects the
  * status parser.
+ *
+ * Init windows and agents may be built apart: with no agents this opens only
+ * the init windows (for agents a launch started earlier), and with neither it
+ * is the empty string.
  */
 export interface AgentWindowSpec {
   tool: AgentTool
@@ -40,7 +44,9 @@ export function buildWindowsExec(
   agents: AgentWindowSpec[],
   paths: WorkspacePaths,
 ): string {
+  const windowCmds = windows.map((win) => initWindowCommand(win, paths))
   const [primary, ...extra] = agents
+  if (primary === undefined) return windowCmds.join(' && ')
   const named = (target: string, spec?: AgentWindowSpec): string =>
     spec?.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : ''
   // One tmux invocation for all agent windows: tmux runs a client's command
@@ -49,7 +55,7 @@ export function buildWindowsExec(
   // The placeholder window has the workspace's tool name, so the primary
   // respawns into it regardless of tool (restart never makes the primary a
   // different tool, and renaming would break `yaac:<tool>` targets).
-  const agentCmds = [`respawn-window -k -t yaac:${tool} '${primary?.cmd ?? ''}'${named(`yaac:${tool}`, primary)}`]
+  const agentCmds = [`respawn-window -k -t yaac:${tool} '${primary.cmd}'${named(`yaac:${tool}`, primary)}`]
   extra.forEach((spec, i) => {
     // -d keeps the primary as the active window. -c because a new window
     // otherwise starts in this exec's cwd (`/` in a pod), and an agent
@@ -57,8 +63,5 @@ export function buildWindowsExec(
     const name = agentWindowName(spec.tool, i + 1)
     agentCmds.push(`new-window -d -t yaac -n ${name} -c ${paths.workspaceDir} '${spec.cmd}'${named(`yaac:${name}`, spec)}`)
   })
-  return [
-    ...windows.map((win) => initWindowCommand(win, paths)),
-    `${tmuxCmd(paths)} ${agentCmds.join(' \\; ')}`,
-  ].join(' && ')
+  return [...windowCmds, `${tmuxCmd(paths)} ${agentCmds.join(' \\; ')}`].join(' && ')
 }

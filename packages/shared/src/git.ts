@@ -40,24 +40,29 @@ function singleQuoted(s: string): string {
 
 /**
  * Point a checkout at the main clone's objects, then bring its `origin/*` up
- * to date from the main clone: one shell command, run in the workspace on
- * every launch and driver. `workspaceDir` is where the workspace sees its
- * checkout, and must be shell-safe (driver paths are).
+ * to date from the main clone: one shell command, run in the workspace when
+ * a launch reuses a checkout. `workspaceDir` is where the workspace sees its
+ * checkout, and must be shell-safe (driver paths are). A checkout the launch
+ * just created already has both.
  *
  * The alternates line is the checkout's only path-dependent git state
  * (docs/server-git.md). It is always the main clone's objects dir as the
  * server sees it; pods mount the main clone at that same path. Rewriting it
- * every launch heals a checkout whose data dir moved.
- *
- * Last, a detached `git status` looks up every file once, so a pod's file
- * cache is warm before the agent's or the changes poll's first status
- * (docs/nfs-checkout-performance.md). `--no-optional-locks` keeps it from
- * taking the index lock the agent's own git needs.
+ * on every reuse heals a checkout whose data dir moved.
  */
 export function buildCloneLinkExec(repoGitDir: string, workspaceDir: string): string {
   return `printf '%s\\n' ${singleQuoted(`${repoGitDir}/objects`)} > ${workspaceDir}/.git/objects/info/alternates`
     + ` && { ${buildOriginRefreshExec(repoGitDir, workspaceDir)}; }`
-    + ` && { setsid git -C ${workspaceDir} --no-optional-locks status --porcelain </dev/null >/dev/null 2>&1 & }`
+}
+
+/**
+ * A detached `git status` that looks up every file once, so a pod's file
+ * cache is warm before the agent's or the changes poll's first status
+ * (docs/nfs-checkout-performance.md). `--no-optional-locks` keeps it from
+ * taking the index lock the agent's own git needs.
+ */
+export function buildStatusWarmupExec(workspaceDir: string): string {
+  return `{ setsid git -C ${workspaceDir} --no-optional-locks status --porcelain </dev/null >/dev/null 2>&1 & }`
 }
 
 /**
@@ -70,6 +75,12 @@ export function buildCloneLinkExec(repoGitDir: string, workspaceDir: string): st
 export function buildOriginRefreshExec(repoGitDir: string, workspaceDir: string): string {
   return `git -C ${workspaceDir} fetch --quiet --no-tags --no-write-fetch-head `
     + `${singleQuoted(repoGitDir)} 'refs/remotes/origin/*:refs/remotes/origin/*' 2>/dev/null || true`
+}
+
+/** Quote and escape a git-config value or subsection name so it reads back
+ *  verbatim and cannot break the file. */
+export function gitConfigValue(value: string): string {
+  return `"${value.replace(/[\\"]/g, '\\$&').replace(/\n/g, '\\n')}"`
 }
 
 /**

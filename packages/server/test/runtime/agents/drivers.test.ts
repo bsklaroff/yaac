@@ -325,6 +325,9 @@ describe('agentDriver', () => {
     // ACP: acpd supervising the adapter, its socket named for the window.
     const acp = agentDriver('acp').launchCmd(spec)
     expect(acp).toContain('node /opt/yaac/acpd/main.js')
+    // The protocol reports the conversation, so the pane reporters skip.
+    expect(acp).toMatch(/^YAAC_NO_PANE_REPORT=1 node /)
+    expect(agentDriver('tui').launchCmd(spec)).not.toContain('YAAC_NO_PANE_REPORT')
     expect(acp).toContain('--sock /tmp/yaac-acp/claude-2.sock')
     expect(acp).toContain('-- claude-agent-acp')
     // Explicit cwd: acpd cannot know where the checkout is.
@@ -336,13 +339,18 @@ describe('agentDriver', () => {
     expect(acp).not.toContain('resume')
     // Embedded in a single-quoted respawn-window, so no quotes.
     expect(acp).not.toContain("'")
+    // Started ahead of its checkout, acpd holds the conversation until the
+    // checkout's `.git` lands.
+    expect(acp).not.toContain('--wait-for')
+    expect(agentDriver('acp').launchCmd({ ...spec, beforeCheckout: true }))
+      .toContain('--cwd /workspace --wait-for /workspace/.git --')
     // The adapter takes no flags, so the model goes in an env var.
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
-    expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 node /)
+    expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 node /)
     expect(withModel).not.toContain('--model')
     // A 1M-context model is quoted, since a bare `[1m]` is a shell glob.
     expect(agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5[1m]' }))
-      .toMatch(/^ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" node /)
+      .toMatch(/^ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" YAAC_NO_PANE_REPORT=1 node /)
     // A model reaches here from a request, a queued child's parent or a
     // restarted conversation's report, which anything in the workspace can
     // set; every launch refuses one it cannot carry.
@@ -391,7 +399,7 @@ describe('agentDriver', () => {
       JSON.parse(/CODEX_CONFIG="((?:[^"\\]|\\.)*)"/.exec(cmd)![1].replace(/\\(.)/g, '$1'))
     const codex = spec('codex')
     expect(codex).toContain('-- codex-acp')
-    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_CONFIG=\S+ node \/opt\/yaac\/acpd\/main\.js/)
+    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_CONFIG=\S+ YAAC_NO_PANE_REPORT=1 node \/opt\/yaac\/acpd\/main\.js/)
     expect(codexConfig(codex))
       .toEqual({ approval_policy: 'never', approvals_reviewer: 'user', sandbox_mode: 'danger-full-access' })
     expect(codexConfig(spec('codex', { permissionMode: 'auto' })))
@@ -416,7 +424,7 @@ describe('agentDriver', () => {
     // pi-acp takes neither; its model is set after the handshake.
     const pi = spec('pi')
     expect(pi).toContain('-- pi-acp')
-    expect(pi.slice(0, pi.indexOf('node '))).toBe('')
+    expect(pi.slice(0, pi.indexOf('node '))).toBe('YAAC_NO_PANE_REPORT=1 ')
 
     // All are embedded in a single-quoted respawn-window.
     for (const cmd of [codex, opencode, pi]) expect(cmd).not.toContain("'")
@@ -2314,24 +2322,29 @@ describe('agentDriver', () => {
     }), { timeout: 5_000 })
   })
 
-  it('re-dials a window whose acpd has not bound its socket yet', async () => {
+  it('waits in the dial for acpd to bind its socket, and re-dials one that never did', async () => {
     const streams: FakeStream[] = []
+    const dials: string[][] = []
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, {
       // A long settled interval, so only the fast retry after a drop can make
       // the second dial happen in time.
       heartbeatIntervalMs: 60_000,
       log: () => {},
-      dial: acpDial(() => {
+      dial: acpDial((_s, argv) => {
+        dials.push(argv)
         const stream = new FakeStream()
         streams.push(stream)
-        // The first dial into a new window often beats acpd's bind and closes.
+        // A dial whose wait ran out before acpd bound its socket closes.
         if (streams.length === 1) setTimeout(() => stream.emitExit(), 0)
         return stream
       }),
     }))
 
     await vi.waitFor(() => expect(streams.length).toBe(2), { timeout: 5_000 })
+    // socat retries the connect itself, so a dial landing just before acpd
+    // binds still connects once it does.
+    expect(dials[0]).toEqual(['socat', '-', expect.stringMatching(/^UNIX-CONNECT:\S+\/claude\.sock,retry=\d+,interval=[\d.]+$/)])
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
   })
 

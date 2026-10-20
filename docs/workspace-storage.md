@@ -147,6 +147,9 @@ live agent set, and the registry turns the set into `sessions-discovered` /
 where the conversation id comes from.
 
 Under `acp` the server is the ACP client, so `session/new` returns the id.
+Its launch sets `YAAC_NO_PANE_REPORT`, so the reporter hooks the tool shares
+with `tui` panes exit at once: nothing reads their pane options there, and
+claude waits on its hooks as it starts and around every turn.
 Under `tui` the tool's reporter sets the tmux pane option `@yaac-session`
 (`<tool>|<id>|<project-relative transcript>`) through
 `workspace-bin/yaac-agent-links`, which is staged onto the workspace's PATH.

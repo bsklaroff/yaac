@@ -78,8 +78,8 @@ workspace's conversation stays readable (docs/agent-modes.md).
 The review diff is plain host `git` in the checkout. The checkout is its own
 clone whose only path-dependent git state is the alternates line pointing at
 the main clone's objects (docs/server-git.md). A pod mounts the main clone at
-the same path, and every launch on either driver rewrites the line
-(`buildCloneLinkExec`).
+the same path, and a launch on either driver that reuses a checkout rewrites
+the line (`buildCloneLinkExec`).
 
 ## Storage
 
@@ -502,6 +502,12 @@ server's `YAAC_*` settings, and lifecycle scripts run only for claude and
 opencode, whose postinstall places their native binary. Prefixes are named
 by version and never change, so a pin bump installs alongside and running
 workspaces keep their version. Old prefixes are never removed.
+
+When the driver starts, it installs in the background the new pin of every
+package that has an older prefix: the agents this host has used. Pins move
+with yaac releases, so otherwise the first create after each upgrade would
+wait on npm. A create that needs a package mid-install shares that install,
+and a failed one is left for that create to retry and report.
 
 ### Missing tools
 

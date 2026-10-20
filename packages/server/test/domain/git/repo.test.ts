@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -200,6 +200,78 @@ describe('createCheckout', () => {
     await git(wtPath, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '-m', 'first'])
     await git(wtPath, ['push', '-q', 'origin', 'HEAD:trunk'])
     expect(await subjectAt(remote, 'trunk')).toBe('first')
+  })
+
+  it('checks out alongside a fetch, and ends on the refs the fetch brought', async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const base = await getDefaultBranch(main)
+    const refs = (repo: string): Promise<string> =>
+      git(repo, ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/remotes/origin', 'refs/tags'])
+
+    // The base moves on in the fetch: one file goes, one arrives, and a new
+    // branch and tag appear.
+    await git(sourceRepo, ['rm', '-q', 'hello.txt'])
+    await commitToSource('moved.txt', 'moved')
+    await git(sourceRepo, ['branch', 'pushed-later'])
+    await git(sourceRepo, ['tag', 'v2'])
+    const moved = path.join(tmpDir, 'moved')
+    await createCheckout(main, moved, {
+      branch: 'agent/m', baseBranch: base, remoteUrl: sourceRepo, fetched: fetchOrigin(main, sourceRepo, null),
+    })
+    expect((await fs.readdir(moved)).sort()).toEqual(['.git', 'moved.txt'])
+    expect(await refs(moved)).toBe(await refs(main))
+    expect(await subjectAt(moved, 'HEAD')).toBe('moved')
+    expect((await git(moved, ['status', '--porcelain'])).trim()).toBe('')
+
+    // A base only the fetch brings in waits for it.
+    await git(sourceRepo, ['branch', 'brand-new'])
+    const waited = path.join(tmpDir, 'waited')
+    await createCheckout(main, waited, {
+      branch: 'agent/w', baseBranch: 'brand-new', remoteUrl: sourceRepo, fetched: fetchOrigin(main, sourceRepo, null),
+    })
+    expect((await git(waited, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe('origin/brand-new')
+
+    // A base the fetch deletes, or a fetch that fails, leaves no `.git`.
+    await git(sourceRepo, ['branch', '-D', 'brand-new'])
+    const deleted = path.join(tmpDir, 'deleted')
+    await expect(createCheckout(main, deleted, {
+      branch: 'agent/d', baseBranch: 'brand-new', remoteUrl: sourceRepo, fetched: fetchOrigin(main, sourceRepo, null),
+    })).rejects.toThrow(/deleted on origin/)
+    await expect(fs.access(path.join(deleted, '.git'))).rejects.toThrow()
+    const failed = path.join(tmpDir, 'failed')
+    await expect(createCheckout(main, failed, {
+      branch: 'agent/f', baseBranch: base, remoteUrl: sourceRepo, fetched: Promise.reject(new Error('offline')),
+    })).rejects.toThrow('offline')
+    await expect(fs.access(path.join(failed, '.git'))).rejects.toThrow()
+    expect((await fs.readdir(tmpDir)).filter((name) => name.startsWith('.staging-'))).toEqual([])
+  })
+
+  it('builds a files-format checkout git can reconfigure, whatever the user\'s git defaults to', async () => {
+    // A reftable repo would ignore the refs and HEAD the checkout writes as
+    // files, leaving the branch unborn. Set both ways a user can ask for it.
+    const globalConfig = path.join(tmpDir, 'gitconfig')
+    await fs.writeFile(globalConfig, '[init]\n\tdefaultRefFormat = reftable\n')
+    vi.stubEnv('GIT_CONFIG_GLOBAL', globalConfig)
+    vi.stubEnv('GIT_DEFAULT_REF_FORMAT', 'reftable')
+    try {
+      const main = path.join(tmpDir, 'main')
+      await cloneRepo(sourceRepo, main, null)
+      const base = await getDefaultBranch(main)
+      const wtPath = path.join(tmpDir, 'workspace')
+      await createCheckout(main, wtPath, { branch: 'agent/rt', baseBranch: base, remoteUrl: sourceRepo })
+
+      expect((await git(wtPath, ['rev-parse', '--show-ref-format'])).trim()).toBe('files')
+      expect(await subjectAt(wtPath, 'HEAD')).toBe('initial')
+      expect((await git(wtPath, ['rev-parse', '--abbrev-ref', '@{u}'])).trim()).toBe(`origin/${base}`)
+      // One `core.bare`, so setting it works as in any repo.
+      expect((await git(wtPath, ['config', '--get-all', 'core.bare'])).trim()).toBe('false')
+      await git(wtPath, ['config', 'core.bare', 'false'])
+      // The branch starts with a reflog entry, as a clone's does.
+      expect((await git(wtPath, ['reflog', 'show', 'agent/rt'])).trim()).not.toBe('')
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('refuses a shallow main clone', async () => {

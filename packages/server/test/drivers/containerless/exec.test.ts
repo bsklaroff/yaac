@@ -13,7 +13,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
 }))
-import { awaitAgentTransport, execInWorkspace } from '#drivers/containerless/exec'
+import { execInWorkspace } from '#drivers/containerless/exec'
 import { containerlessJobName, workspaceHome } from '#drivers/containerless/paths'
 import {
   _resetRegistryForTests,
@@ -104,18 +104,5 @@ describe('execInWorkspace', () => {
     const err: unknown = await execInWorkspace(JOB, 'tmux').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(Error)
     expect(err).not.toBeInstanceOf(WorkspaceExecError)
-  })
-})
-
-describe('awaitAgentTransport', () => {
-  it('resolves once the workspace tmux answers', async () => {
-    await expect(awaitAgentTransport(JOB, { timeoutMs: 1_000 })).resolves.toBeUndefined()
-    expect((mockRunHost.mock.calls[0] as [string[]])[0]).toContain('has-session')
-  })
-
-  it('rejects when it never does, leaving the caller to decide', async () => {
-    mockRunHost.mockRejectedValue(new Error('no server running'))
-    await expect(awaitAgentTransport(JOB, { timeoutMs: 50 }))
-      .rejects.toThrow(/did not answer within the deadline/)
   })
 })

@@ -28,6 +28,8 @@
 #
 # Prints NOTHING: claude hands a hook's stdout to the model. Always exits 0 —
 # a failed report costs a stale label, never the agent.
+# Skipped where nothing reads the pane, as in yaac-agent-links.
+[ -z "${YAAC_NO_PANE_REPORT:-}" ] || exit 0
 if [ $# -gt 0 ]; then
   MODEL="${1:-}"
   MODE="${2:-}"

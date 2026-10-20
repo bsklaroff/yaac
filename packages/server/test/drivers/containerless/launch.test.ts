@@ -392,7 +392,8 @@ describe('launchWorkspace', () => {
     // Cleared when the session is created, before any attach; otherwise
     // each attach would copy the host user's SSH_AUTH_SOCK into the session.
     const newSession = tmuxCalls().find((a) => a.includes('new-session')) ?? []
-    expect(newSession.slice(-5)).toEqual([';', 'set-option', '-g', 'update-environment', ''])
+    const created = newSession.indexOf('new-session')
+    expect(newSession.slice(created).join(' ')).toMatch(/^new-session [^;]* ; set-option -g update-environment  ;/)
     const sshCmd = env.env.GIT_SSH_COMMAND ?? ''
     // `-i` with the public key and IdentitiesOnly pins ssh to the agent's
     // identity.
@@ -555,14 +556,66 @@ describe('launchWorkspace', () => {
     expect(progress.some((m) => m.startsWith('Ignoring') && m.includes('XDG_CONFIG_HOME'))).toBe(true)
   })
 
-  it('survives a tmux that refuses its cosmetic options', async () => {
-    // These options are cosmetic, so a refusal must not fail the create.
-    // (`update-environment` is set in the new-session call and is not refused
-    // here.)
-    mockRunHost.mockImplementation((argv: string[]) =>
-      argv.includes('set-option') && !argv.includes('new-session')
-        ? Promise.reject(new Error('unknown option'))
-        : Promise.resolve({ stdout: '7', stderr: '' }))
-    await expect(launchWorkspace(spec())).resolves.toBeDefined()
+  it('starts the session in one tmux call, where an option an older tmux lacks cannot fail it', async () => {
+    vi.stubEnv('SHELL', '/bin/sh')
+    await launchWorkspace(spec())
+    expect(tmuxCalls()).toHaveLength(1)
+    const [call = []] = tmuxCalls()
+    // tmux stops a command list at its first error, so every option after
+    // the session's own takes `-q`, which skips one it does not know.
+    const commands = call.join(' ').split(' ; ')
+    const cosmetic = commands.slice(commands.findIndex((c) => c.includes('update-environment')) + 1)
+      .filter((c) => c.startsWith('set-option'))
+    expect(cosmetic.length).toBeGreaterThan(5)
+    for (const c of cosmetic) expect(c.split(' ')[1]).toContain('q')
+    // tmux refuses a `default-shell` that is not an absolute path.
+    expect(commands).toContain('set-option -gq default-shell /bin/sh')
+    // The pid is read in the same call.
+    expect(commands.at(-1)).toBe('display-message -p #{pid}')
+
+    // With no $SHELL, the one found on PATH is named by its full path.
+    vi.stubEnv('SHELL', undefined)
+    mockRunHost.mockClear()
+    await launchWorkspace(spec())
+    const shell = tmuxCalls()[0]?.join(' ').split(' ; ').find((c) => c.includes('default-shell'))
+    expect(shell).toMatch(/^set-option -gq default-shell \/\S+\/(zsh|bash|sh)$/)
+  })
+
+  // `-q` would also hide a misspelled option, so the call runs against the
+  // real tmux without it: every option it sets must be one tmux knows.
+  it.skipIf(!fs.existsSync('/usr/bin/tmux') && !fs.existsSync('/opt/homebrew/bin/tmux') && !fs.existsSync('/usr/local/bin/tmux'))(
+    'sets only options tmux knows, with values it accepts',
+    async () => {
+      vi.stubEnv('SHELL', '/bin/sh')
+      await launchWorkspace(spec())
+      const [call = []] = tmuxCalls()
+      const sock = path.join(dataDir, 'real.sock')
+      // The call less its socket (`tmux -S <sock>`), with each `-q` dropped.
+      const argv = call.slice(3).flatMap((arg) => (arg === '-q' ? [] : /^-[gs]qa?$/.test(arg) ? [arg.replace('q', '')] : [arg]))
+      try {
+        const { stdout } = await execFileAsync('tmux', ['-S', sock, ...argv])
+        expect(Number(stdout.trim())).toBeGreaterThan(0)
+        expect((await execFileAsync('tmux', ['-S', sock, 'show-options', '-gv', 'mouse'])).stdout.trim()).toBe('on')
+      } finally {
+        await execFileAsync('tmux', ['-S', sock, 'kill-server']).catch(() => {})
+      }
+    },
+  )
+
+  it('tears down what it started when its tmux call fails', async () => {
+    mockRunHost.mockImplementation((argv: string[]) => {
+      if (argv.includes('new-session')) return Promise.reject(new Error('not a suitable shell'))
+      if (argv[0] === 'ssh-add' && argv[1] === '-L') return Promise.resolve({ stdout: 'ssh-ed25519 AAAAPUBLIC yaac\n', stderr: '' })
+      return Promise.resolve({ stdout: '', stderr: '' })
+    })
+    const knownHosts = path.join(dataDir, 'global', 'projects', 'demo', 'known_hosts')
+    await expect(launchWorkspace(spec({
+      gitCredential: { kind: 'ssh', privateKey: PRIVATE_KEY },
+      ssh: { knownHostsFile: knownHosts },
+    }))).rejects.toThrow('not a suitable shell')
+    // No marker exists yet, so nothing else would find either to stop it.
+    expect(tmuxCalls().some((a) => a.includes('kill-server'))).toBe(true)
+    expect(mockKillPids).toHaveBeenCalledWith([4242], 'SIGTERM')
+    expect(listWorkspaces()).toEqual([])
   })
 })

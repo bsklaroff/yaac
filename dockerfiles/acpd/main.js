@@ -10,7 +10,7 @@ import { createAcpd } from './acpd.js'
 
 function usage(msg) {
   console.error(`[acpd] ${msg}`)
-  console.error('[acpd] usage: acpd --sock <path> [--log <path>] [--cwd <path>] -- <agent argv...>')
+  console.error('[acpd] usage: acpd --sock <path> [--log <path>] [--cwd <path>] [--wait-for <path>] -- <agent argv...>')
   process.exit(2)
 }
 
@@ -23,10 +23,13 @@ let logPath
 // The agent's working directory (the workspace checkout, which differs per
 // driver). Optional: the tmux window already starts there.
 let cwd
+// Hold clients until this path exists (see createAcpd's `waitFor`).
+let waitFor
 for (let i = 0; i < sep; i++) {
   if (args[i] === '--sock') sockPath = args[++i]
   else if (args[i] === '--log') logPath = args[++i]
   else if (args[i] === '--cwd') cwd = args[++i]
+  else if (args[i] === '--wait-for') waitFor = args[++i]
   else usage(`unknown option ${args[i]}`)
 }
 const argv = args.slice(sep + 1)
@@ -38,6 +41,7 @@ const daemon = createAcpd({
   argv,
   ...(logPath ? { logPath } : {}),
   ...(cwd ? { cwd } : {}),
+  ...(waitFor ? { waitFor } : {}),
 })
 daemon.onExit((code, signal) => {
   process.exit(signal ? 1 : code)
