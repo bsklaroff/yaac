@@ -17,7 +17,7 @@
 
 import path from 'node:path'
 import { AcpRecordWriter } from './acp-log'
-import { ACP, COMPACTION_META } from './acp-protocol'
+import { ACP, CLAUDE_INTERRUPT, COMPACTION_META } from './acp-protocol'
 import { jsonObjects } from './jsonl'
 import { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { isUuid } from '#lib/uuid'
@@ -154,8 +154,8 @@ async function synthesizeAcpRecord(
   // `toolUseCache` spans messages so a `tool_result` finds its `tool_use`
   // (and so a tool call gets its title and kind).
   const toolUseCache = {}
-  /** When each entry was written, by its uuid, which the messages keep. */
-  const times = new Map(entries.map((e: Record<string, unknown>) => [e.uuid, Date.parse(asString(e.timestamp) ?? '')]))
+  /** The entries by uuid, which the messages keep. */
+  const byUuid = new Map(entries.flatMap((e: Record<string, unknown>) => typeof e.uuid === 'string' ? [[e.uuid, e] as const] : []))
   for (const part of compactedParts(entries)) {
     // A read-only store holding one part. `getSessionMessages` (follows
     // `parentUuid`, drops subagent turns) then reads bytes we supply
@@ -192,6 +192,8 @@ async function synthesizeAcpRecord(
       // shown live.
       const synthetic = role === 'assistant' ? syntheticText(api) : undefined
       if (synthetic?.includes('Please run /login') === true || synthetic === 'No response requested.') continue
+      // A stop whose prompt claude never wrote would end the turn before.
+      if (role === 'user' && promptMissing(byUuid.get(message.uuid), byUuid)) continue
       let content = api?.content
       // Slash-command bookkeeping (caveat preamble, invocation, stdout) is
       // dropped. A task notification is kept whole: the adapter's stripper
@@ -201,7 +203,7 @@ async function synthesizeAcpRecord(
         content = stripLocalCommandMetadata(content)
         if (content === null) continue
       }
-      record.time(times.get(message.uuid))
+      record.time(Date.parse(asString(byUuid.get(message.uuid)?.timestamp) ?? ''))
       for (const notification of toAcpNotifications(
         content as never, role, sessionId, toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
         // With hooks off, the adapter returns notifications instead of pushing
@@ -253,6 +255,52 @@ function syntheticText(api: { model?: unknown; content?: unknown } | undefined):
   }
   const block = api.content[0] as { type?: unknown; text?: unknown } | undefined
   return block?.type === 'text' && typeof block.text === 'string' ? block.text : undefined
+}
+
+/** A user entry's text, written as a string or as one text block. */
+function userText(entry: Record<string, unknown> | undefined): string {
+  const content = (entry?.message as { content?: unknown } | undefined)?.content
+  const text = Array.isArray(content) && content.length === 1 ? (content[0] as { text?: unknown }).text : content
+  return entry?.type === 'user' ? asString(text) ?? '' : ''
+}
+
+/** Whether `entry` is claude's message marking where the user stopped a turn. */
+function isInterrupt(entry: Record<string, unknown> | undefined): boolean {
+  return CLAUDE_INTERRUPT.test(userText(entry))
+}
+
+/**
+ * Whether `entry` is an interrupt marker whose turn has no prompt in the
+ * transcript. A prompt stopped a fraction of a second after it was sent can
+ * be left out while its attachments and the marker are kept; the marker then
+ * chains, through those attachments (and the system entries closing the turn
+ * before), to the previous turn's last message, and its `cancelled` end would
+ * read as that turn's.
+ *
+ * A marker chained to a message directly is a stop mid-reply. One chained
+ * through attachments or system entries lacks its prompt when the message
+ * they lead back to finished a turn (a reply that calls no tool, an earlier
+ * marker, or a local command's output such as `/compact`'s), or when they
+ * lead back to the start of a chain. The attachments a running turn writes
+ * follow its prompt, a tool result, or a tool call (a hook's output). A link
+ * to an entry the transcript lacks says nothing, so it keeps the stop, as
+ * does a walk past the transcript's length (a loop: the file is
+ * workspace-written).
+ */
+function promptMissing(entry: Record<string, unknown> | undefined, byUuid: Map<string, Record<string, unknown>>): boolean {
+  if (!isInterrupt(entry)) return false
+  const between = (e: Record<string, unknown> | undefined): boolean => e?.type === 'attachment' || e?.type === 'system'
+  let last = byUuid.get(asString(entry?.parentUuid) ?? '')
+  if (!between(last)) return false
+  for (let n = 0; between(last) && n < byUuid.size; n++) {
+    const parent = asString(last?.parentUuid)
+    if (parent === undefined) return true
+    last = byUuid.get(parent)
+  }
+  if (last === undefined || between(last)) return false
+  if (last.type === 'user') return isInterrupt(last) || /^<local-command-std(?:out|err)>/.test(userText(last))
+  const content = (last.message as { content?: unknown } | undefined)?.content
+  return last.type !== 'assistant' || !Array.isArray(content) || !content.some((b) => (b as { type?: unknown }).type === 'tool_use')
 }
 
 /** A user message that is claude's report of background work ending, which

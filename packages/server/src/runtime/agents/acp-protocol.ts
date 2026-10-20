@@ -216,7 +216,7 @@ const NOTIFICATION_BLOCK = /^<task-notification>\n(?:(?!<\/?task-notification>)[
 
 /** The message claude keeps in its transcript where the user stopped a
  *  turn; live, the stop is the turn's `cancelled` end. */
-const CLAUDE_INTERRUPT = /^\[Request interrupted by user(?: for tool use)?\]$/
+export const CLAUDE_INTERRUPT = /^\[Request interrupted by user(?: for tool use)?\]$/
 
 /** A tool result's text, sent as a string or as content blocks. */
 function rawText(value: unknown): string {
