@@ -271,7 +271,7 @@ function changesScript(loc: ChangesLocation): string {
   const i = loc.indexFile
   return `cd ${loc.workspaceDir} 2>/dev/null || exit 3; `
   // The run waits and retries only until 10 seconds after it starts, half
-  // the server's exec timeout, so the work after either still fits.
+  // the server's shorter exec timeout, so the work after either still fits.
   + 'd=$(($(date +%s)+10)); '
   // One run at a time per workspace, even past the server's mutex: a run
   // whose exec timed out may still be going in the workspace, holding the
@@ -913,6 +913,18 @@ const heldReadings = new Map<string, { held: HeldReading; usedAt: number }>()
 /** A held reading no read has used for this long is dropped. */
 const HELD_IDLE_MS = 5 * 60_000
 
+/**
+ * A read's exec timeout: `warm` after a read of the workspace succeeded,
+ * `cold` otherwise. A private index that is missing, freshly seeded, or
+ * left behind by a run killed mid-`add -A` (git writes the index only when
+ * `add -A` finishes) makes staging hash every changed file, which takes
+ * 20 to 45 seconds for 20,000 changes under gVisor. A run cut off
+ * there saves nothing, so every later run would pay it again; the cold
+ * timeout lets one finish and leave the index warm. A checkout whose cold
+ * staging takes longer still never warms, and every read times out.
+ */
+const READ_TIMEOUT_MS = { warm: 20_000, cold: 120_000 }
+
 /** Drop what the server holds of a workspace's changes, on teardown. */
 export function forgetWorkspaceChanges(jobName: string): void {
   heldReadings.delete(jobName)
@@ -945,8 +957,14 @@ export function readWorkspaceChanges(
     // A blank base tree tells the script the base diff is not on offer.
     const offered = held && (!req.diff || held.body ? held : { ...held, base: '' })
     const indexFile = `${scratchDir}/yaac-changes.idx`
-    const opts = { timeout: 20_000, maxAttempts: 2, signal: abandoned }
+    const opts = { timeout: READ_TIMEOUT_MS[held ? 'warm' : 'cold'], maxAttempts: 2, signal: abandoned }
+    // A failed run (most often a timeout) may have left the index cold, so
+    // the next gets the cold timeout. An abandoned one says nothing of it.
     let { stdout } = await driver.exec(jobName, buildChangesScript({ workspaceDir, indexFile }, req, offered), opts)
+      .catch((err: unknown) => {
+        if (!abandoned.aborted) heldReadings.delete(jobName)
+        throw err
+      })
     const paged = /^PAGED (\d+) (\d+)\n$/.exec(stdout)
     if (paged) {
       // Base64, since a page may end inside a character.

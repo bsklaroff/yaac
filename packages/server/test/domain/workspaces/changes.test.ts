@@ -1198,6 +1198,30 @@ describe('readWorkspaceChanges', () => {
     exec.mockRejectedValueOnce(dial)
     await expect(readWorkspaceChanges('yaac-proj-abc', { base: 'dev', diff: true })).rejects.toBe(dial)
   })
+
+  // A run cut off mid-staging saves no index, so until a read succeeds each
+  // gets the longer timeout, long enough for a cold index to be staged. An
+  // abandoned read leaves the index as warm as it was.
+  it('gives a read the longer timeout until one succeeds, and again after one fails', async () => {
+    const { repo, idx } = scratchRepo()
+    realWorkspace(repo, path.dirname(idx))
+    const timeouts = (): (number | undefined)[] => exec.mock.calls.map((c) => c[2]?.timeout)
+    const request: ChangesRequest = { defaultBase: 'main', diff: true }
+
+    await readWorkspaceChanges('big', request)
+    await readWorkspaceChanges('big', request)
+    exec.mockRejectedValueOnce(new Error('stream read timeout'))
+    await expect(readWorkspaceChanges('big', request)).rejects.toThrow('stream read timeout')
+    await readWorkspaceChanges('big', request)
+    const caller = new AbortController()
+    exec.mockImplementationOnce((_job, _cmd, opts) => new Promise((_, reject) => {
+      opts!.signal!.addEventListener('abort', () => { reject(opts!.signal!.reason as Error) })
+      caller.abort()
+    }))
+    await expect(readWorkspaceChanges('big', request, caller.signal)).rejects.toThrow()
+    await readWorkspaceChanges('big', request)
+    expect(timeouts()).toEqual([120_000, 20_000, 20_000, 120_000, 20_000, 20_000])
+  })
 })
 
 describe('readChangeDiffs', () => {
