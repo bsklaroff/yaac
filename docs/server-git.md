@@ -28,13 +28,31 @@ processes at once (`checkout.workers`, which a workspace's own git also
 gets), since each file on NFS costs network round trips
 (docs/nfs-checkout-performance.md).
 
+The git dir comes from one `git init`, kept because it probes the filesystem
+for settings such as macOS's `core.ignorecase`, with the files ref format
+pinned over the user's default: a reftable repo would ignore the refs written
+beside it. Its `origin/*` refs, tags, `HEAD` and remaining config are then
+written as files, and a `checkout -B` sets `agent/<id>` with its reflog and
+writes the tree. So a checkout costs three git processes (the `init`, the
+`for-each-ref` that reads the main clone's refs, and the `checkout`), plus a
+second `for-each-ref` once a fetch it overlapped lands.
+
+A create's checkout does not wait for the create's fetch from origin. It
+starts from the refs the main clone already has, and once the fetch lands,
+the staged refs are rewritten if any moved, and the tree is moved forward if
+the base did, before `.git` is renamed in. The fetch is usually a no-op, since
+the branch picker and the origin-refresh timer fetch too, so the checkout
+costs the create nothing beyond the fetch's own round trip. A base the main
+clone does not have yet waits for the fetch.
+
 **The alternates line** is the only path stored in a checkout's git state. It
 always holds the main clone's objects dir as the server sees it, and a pod
 mounts the main clone at that same path
 (`/yaac/global/projects/<project id>/repo/.git` under the in-cluster server), so the
-line is valid everywhere. Every create and restart rewrites it
+line is valid everywhere. A launch that reuses a checkout rewrites it
 (`buildCloneLinkExec`), which repairs a checkout last launched by a server
-that saw the data dir at another path.
+that saw the data dir at another path. A checkout the launch made has it
+already.
 
 Workspaces share no git state: branches, tags, stash, hooks and config are
 per checkout, so one agent's `git config`, `gc --prune=now` or `branch -D`
@@ -84,9 +102,12 @@ copies them over (`origin.ts` in `#domain/projects`):
 - **A timer fetches.** The `origin-refresh` reconcile step fetches every
   project that has a running workspace and was not fetched in the last five
   minutes. A failure is logged and retried next interval.
-- **Every launch refreshes**, right after rewriting the alternates line. The
-  same exec then starts a detached `git --no-optional-locks status`, which
-  fills the sandbox's file cache before anything else asks
+- **A launch that reuses a checkout refreshes**, right after rewriting the
+  alternates line, in the same exec that starts the agents. A checkout the
+  launch made was copied from the main clone after the create's fetch, so
+  it is current already. In a pod that exec also starts a detached
+  `git --no-optional-locks status` (`buildStatusWarmupExec`), which fills
+  the sandbox's file cache before anything else asks
   (docs/nfs-checkout-performance.md).
 
 The refresh (`buildOriginRefreshExec`) is a local fetch from the main clone,

@@ -350,6 +350,9 @@ describe('prepareRestart', () => {
     await restart('wt-2')
 
     expect(calls.some((c) => c.startsWith('destroy'))).toBe(false)
+    // The checkout predates this launch, so the command that starts the
+    // agent first relinks it to the main clone and brings `origin/*` up.
+    expect(respawn()).toMatch(/^printf .*\/\.git\/objects\/info\/alternates && \{ git -C \S+ fetch /)
     expect(respawn()).toContain('--permission-mode plan')
     expect(respawn()).toContain('--effort low')
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-2'))?.stoppedAt).toBeUndefined()
@@ -522,6 +525,8 @@ describe('prepareRestart', () => {
     await restart('wt-gone')
 
     expect(await git(checkout, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('agent/wt-gone\n')
+    // A checkout the launch made is linked and current already.
+    expect(respawn()).not.toContain('objects/info/alternates')
     expect((await git(checkout, ['rev-parse', 'HEAD'])).trim()).toBe(dev)
 
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-gone' })

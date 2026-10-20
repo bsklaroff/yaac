@@ -12,7 +12,7 @@ that costs, which settings make it cheap, and what stays slow.
 | `acregmin=3,acregmax=60,acdirmin=1,acdirmax=1` | the `yaac-checkouts` volume (docs/server-in-cluster.md "Storage claims") | a pod stats unchanged files from its cache; new, deleted and renamed entries still show within a second |
 | open after an overwrite | the file editor (docs/file-editor.md) | the one case the cache hides, an edit to an existing file from outside the pod, is seen at once |
 | `checkout.workers=8` | `createCheckout` and the workspace's git config | a large checkout or branch switch writes eight files at a time |
-| a detached `git status` after each launch | `buildCloneLinkExec` | the sandbox's cache fills before the agent or the changes poll needs it |
+| a detached `git status` after each launch | `buildStatusWarmupExec` | the sandbox's cache fills before the agent or the changes poll needs it |
 
 The rest of the shared tier keeps `actimeo=1`, which its cross-pod
 handoffs assume (docs/workspace-storage.md "The shared tier on a network

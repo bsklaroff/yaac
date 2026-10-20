@@ -129,6 +129,13 @@ describe('the agent reporters', () => {
     ])
   })
 
+  it('does nothing for an agent whose launch asked for no pane reports', async () => {
+    const payload = JSON.stringify({ session_id: 's', hook_event_name: 'SessionStart', model: 'opus', transcript_path: '/h/.claude/p/s.jsonl' })
+    const env = { TMUX_PANE: '%1', YAAC_TMUX: '/tmp/sock,1,0', YAAC_NO_PANE_REPORT: '1' }
+    expect((await run(payload, env)).tmux).toEqual([])
+    expect((await run(payload, env, ['/h/.claude', 'claude'], 'yaac-agent-links')).tmux).toEqual([])
+  })
+
   it('does nothing outside a pane', async () => {
     const { tmux } = await run(JSON.stringify({ to_model: 'x' }), { TMUX: '/tmp/yaac.sock,1,0' })
     expect(tmux).toEqual([])

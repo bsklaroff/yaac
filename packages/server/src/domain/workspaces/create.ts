@@ -41,7 +41,7 @@ import {
   CONTAINER_OPENCODE_DATA,
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
-import { buildCloneLinkExec } from '@yaac/shared/git'
+import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { fetchProjectOrigin, missingCredentialError, resolveEphemeralModulesPaths, resolveProjectConfig, resolveProjectCredential, resolveProjectEnv, sshKeyMaterial } from '#domain/projects'
 import { ghApiHostForGitHost } from '@yaac/shared/credentials'
@@ -334,6 +334,9 @@ interface WorkspaceSetupParams {
    * input (bad branch, fetch failure).
    */
   workspace: Promise<void>
+  /** The checkout predates this launch, so it must be relinked to the main
+   *  clone and its `origin/*` brought up to date. */
+  reusedCheckout: boolean
 }
 
 /**
@@ -344,7 +347,7 @@ interface WorkspaceSetupParams {
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
     spec, projectId, workspaceId, tool, mode, launching, initWindows, piProvider,
-    permissionMode, onLaunched, options, workspace,
+    permissionMode, onLaunched, options, workspace, reusedCheckout,
   } = params
   const runtime = workspaceDriver()
 
@@ -372,31 +375,16 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   transportReady.catch(() => { /* observed via race */ })
   await Promise.race([transportReady, workspaceFailure])
 
-  // Everything below reads the checkout, so join it now.
-  await workspace
-
-  // Link the checkout to the main clone's objects and update its `origin/*`,
-  // on every launch, so the agent starts current.
-  await runtime.exec(jobName, buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir))
-
-  // yaac-workspace-init starts the in-pod engine in the background. Wait for
-  // it so a broken engine fails the create with a clear error.
-  if (spec.nestedContainers) {
-    emit('Waiting for the in-pod container engine...', options)
-    let lastErr: unknown
-    const engineUp = await waitFor(() => runtime.exec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
-      .then(() => true, (err: unknown) => { lastErr = err; return false }), { timeoutMs: 60_000, intervalMs: 500 })
-    if (!engineUp) {
-      throw new Error(
-        'in-pod podman did not become ready within 60s — check '
-        + `/tmp/podman-service.log and /tmp/yaac-engine-setup.log in session ${workspaceId} `
-        + `(${String(lastErr)})`,
-      )
-    }
-  }
-
-  // Open the init windows and replace the placeholder window with the agents
+  // The commands that replace the placeholder window with the agents
   // (buildWindowsExec).
+  //
+  // An acp agent reads nothing from the checkout until its conversation
+  // opens, so one going into a checkout this create is writing starts now,
+  // and acpd holds the conversation until the checkout's `.git` lands. The
+  // adapter's boot then overlaps the checkout. Containerless only: there
+  // acpd ships with this server, while a pod's comes from its image, which
+  // may predate `--wait-for`.
+  const early = mode === 'acp' && runtime.kind === 'containerless' && !reusedCheckout
   const driver = agentDriver(mode)
   const agentCmds = launching.map((a, i) => {
     const resume = a.resume === true
@@ -414,12 +402,50 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
         ...(piProvider !== undefined ? { piProvider } : {}),
         ...(a.model !== undefined ? { model: a.model } : {}),
         ...(a.effort !== undefined ? { effort: a.effort } : {}),
+        ...(early ? { beforeCheckout: true } : {}),
       }),
     }
   })
-  throwIfProvisionStopped(workspaceId)
-  emit(`Starting ${TOOL_LABELS[tool]}...`, options)
-  await runtime.exec(jobName, buildWindowsExec(initWindows, tool, agentCmds, paths))
+  const announceAgents = (): void => {
+    throwIfProvisionStopped(workspaceId)
+    emit(`Starting ${TOOL_LABELS[tool]}...`, options)
+  }
+  if (early) {
+    announceAgents()
+    await runtime.exec(jobName, buildWindowsExec([], tool, agentCmds, paths))
+  }
+
+  // Everything below reads the checkout, so join it now.
+  await workspace
+
+  // yaac-workspace-init starts the in-pod engine in the background. Wait for
+  // it so a broken engine fails the create with a clear error.
+  if (spec.nestedContainers) {
+    emit('Waiting for the in-pod container engine...', options)
+    let lastErr: unknown
+    const engineUp = await waitFor(() => runtime.exec(jobName, 'docker version', { maxAttempts: 1, timeout: 10_000 })
+      .then(() => true, (err: unknown) => { lastErr = err; return false }), { timeoutMs: 60_000, intervalMs: 500 })
+    if (!engineUp) {
+      throw new Error(
+        'in-pod podman did not become ready within 60s — check '
+        + `/tmp/podman-service.log and /tmp/yaac-engine-setup.log in session ${workspaceId} `
+        + `(${String(lastErr)})`,
+      )
+    }
+  }
+
+  // Then the init windows, and the agents if they did not start early, in one
+  // command with the checkout's own setup to save round trips. A checkout
+  // this create made already borrows from the main clone and holds its
+  // current refs; a reused one is relinked so the agent starts current. A
+  // pod's file cache is warmed, which a host's needs no help with.
+  const setup = [
+    ...(reusedCheckout ? [buildCloneLinkExec(path.join(repoDir(projectId), '.git'), paths.workspaceDir)] : []),
+    ...(runtime.kind === 'containerless' ? [] : [buildStatusWarmupExec(paths.workspaceDir)]),
+    buildWindowsExec(initWindows, tool, early ? [] : agentCmds, paths),
+  ].filter((cmd) => cmd !== '')
+  if (!early) announceAgents()
+  if (setup.length > 0) await runtime.exec(jobName, setup.join(' && '))
 
   // Check the agents actually started: `respawn-window` succeeds even when
   // its command dies instantly. Not awaited, since the probe must wait for a
@@ -752,6 +778,26 @@ export async function createWorkspace(
   const credential = await resolveProjectCredential(projectId)
   if (!credential) throw missingCredentialError(projectRow.name)
 
+  // Started before anything else, since the network is the slowest leg. The
+  // checkout runs alongside it (`createCheckout`'s `fetched`). e2e fixtures
+  // pre-populate the repo, so the fetch is skipped there.
+  if (!testEnv.e2eSkipFetch) emit('Fetching latest from remote...', options)
+  const fetched = testEnv.e2eSkipFetch
+    ? Promise.resolve()
+    : fetchProjectOrigin(projectId).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (remoteHost !== null && isGitAuthError(msg)) {
+        throw new ServerError(
+          'VALIDATION',
+          `git authentication failed for ${remoteHost} — the project's credential was `
+          + 'rejected (expired or revoked?). Assign it a new one in Settings → Git credentials, '
+          + 'then retry.',
+        )
+      }
+      throw new ServerError('INTERNAL', `could not fetch from remote: ${msg}`)
+    })
+  fetched.catch(() => { /* awaited by the checkout leg */ })
+
   // Fail now rather than let the agent hit a confusing proxy 403 on fetch.
   // Containerless has no proxy, so nothing to check, and the proxy relays
   // a hosted remote before it reads the allowlist.
@@ -781,12 +827,15 @@ export async function createWorkspace(
   const { mode } = options
   // Check this runtime can run the tool in this mode (a host installs the
   // pinned version on first use). Otherwise the workspace would die seconds
-  // after reporting success.
-  await runtime.assertCanLaunch({
-    tool,
-    mode,
-    onProgress: (message) => { emit(message, options) },
-  })
+  // after reporting success. A fresh create's base branch is read alongside.
+  const [, refBranch] = await Promise.all([
+    runtime.assertCanLaunch({
+      tool,
+      mode,
+      onProgress: (message) => { emit(message, options) },
+    }),
+    options.resume !== undefined ? undefined : options.branch ?? getDefaultBranch(repo),
+  ])
 
   const permissionMode = launchPermissionMode({
     tool,
@@ -816,9 +865,6 @@ export async function createWorkspace(
     },
   )
   if (options.resume !== undefined && !reuseCheckout) await refuseCheckingOutOver(wtDir)
-  const refBranch = options.resume !== undefined
-    ? undefined
-    : options.branch ?? await getDefaultBranch(repo)
   // Decided here so they are recorded with the workspace row. The tool and
   // first prompt are read from the first conversation, so a workspace with
   // none could not be restarted; discovery only adds to this list.
@@ -936,46 +982,42 @@ export async function createWorkspace(
   imageTask.catch(() => { /* awaited at the join */ })
 
   const workspaceTask = (async (): Promise<void> => {
-    // e2e fixtures pre-populate the repo, so the fetch is skipped there.
-    if (!testEnv.e2eSkipFetch) {
-      emit('Fetching latest from remote...', options)
-      try {
-        await fetchProjectOrigin(projectId)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        if (remoteHost !== null && isGitAuthError(msg)) {
-          throw new ServerError(
-            'VALIDATION',
-            `git authentication failed for ${remoteHost} — the project's credential was `
-            + 'rejected (expired or revoked?). Assign it a new one in Settings → Git credentials, '
-            + 'then retry.',
-          )
-        }
-        throw new ServerError('INTERNAL', `could not fetch from remote: ${msg}`)
-      }
-    }
-
     if (reuseCheckout) {
+      await fetched
       emit(`Reusing existing workspace at ${wtDir}`, options)
       return
     }
-    // A resume whose checkout is gone recreates it from its recorded base
-    // branch, or from the default if origin no longer has that. An empty
-    // repo has no branches yet, so its default is the one name a fresh
-    // create may name while it is missing.
-    let base = refBranch ?? options.branch ?? await getDefaultBranch(repo)
-    if (options.branch !== undefined && !(await remoteBranchExists(repo, options.branch))) {
-      if (options.resume !== undefined) {
-        base = await getDefaultBranch(repo)
-      } else if (!(options.branch === await getDefaultBranch(repo) && (await listRemoteBranches(repo)).length === 0)) {
-        throw new ServerError('VALIDATION', `branch "${options.branch}" not found on origin.`)
-      }
+    const branch = `agent/${workspaceId}`
+    if (refBranch !== undefined) {
+      // A fresh create checks out from what the main clone has while the
+      // fetch runs, and checks the named branch once it lands. An empty repo
+      // has no branches yet, so its default is the one name a fresh create
+      // may name while it is missing.
+      emit(`Creating workspace from ${refBranch}...`, options)
+      const named = options.branch
+      await createCheckout(repo, wtDir, {
+        branch,
+        baseBranch: refBranch,
+        remoteUrl,
+        fetched: fetched.then(async () => {
+          if (named === undefined || await remoteBranchExists(repo, named)) return
+          if (named === await getDefaultBranch(repo) && (await listRemoteBranches(repo)).length === 0) return
+          throw new ServerError('VALIDATION', `branch "${named}" not found on origin.`)
+        }),
+      })
+      return
     }
+    // A resume whose checkout is gone recreates it from its recorded base
+    // branch, or from the default if origin no longer has that.
+    await fetched
+    const base = options.branch !== undefined && !(await remoteBranchExists(repo, options.branch))
+      ? await getDefaultBranch(repo)
+      : options.branch ?? await getDefaultBranch(repo)
     // Again, since files may have landed while the fetch ran; the module
     // dirs made since are empty, so they do not count.
-    if (options.resume !== undefined) await refuseCheckingOutOver(wtDir)
+    await refuseCheckingOutOver(wtDir)
     emit(`Creating workspace from ${base}...`, options)
-    await createCheckout(repo, wtDir, { branch: `agent/${workspaceId}`, baseBranch: base, remoteUrl })
+    await createCheckout(repo, wtDir, { branch, baseBranch: base, remoteUrl })
   })()
   workspaceTask.catch(() => { /* awaited later */ })
 
@@ -997,13 +1039,47 @@ export async function createWorkspace(
   substrateTask.catch(() => { /* awaited at the join */ })
 
   const prepTask = (async () => {
+    const claude = claudeDir(projectId)
+    const codex = codexDir(projectId)
+    const opencodeData = opencodeDataDir(projectId, workspaceId)
+    const opencodeCheckpoint = opencodeCheckpointDir(projectId, workspaceId)
+    const opencodeConfig = opencodeConfigDir(projectId)
+    const pi = piDir(projectId)
+    const cachedPackages = cachedPackagesDir(projectId)
+    // acpd's conversation records. Kept under the project dir (which
+    // teardown does not prune) so the server can read them after the pod is
+    // gone. Only `acp` workspaces get the dir and mount.
+    const acpLogs = mode === 'acp' ? acpLogDir(projectId, workspaceId) : undefined
+    // Pasted images (`saveWorkspaceAttachment`); must exist for its mount.
+    const attachments = workspaceAttachmentsDir(projectId, workspaceId)
+    // Pre-created so they are server-owned (and so writable in-pod) rather
+    // than root-owned. None may overlap the main clone's mount.
+    const cacheVolumeEntries = Object.entries(config.cacheVolumes ?? {})
+    const repoMount = `${repo}/.git`
+    for (const [key, p] of cacheVolumeEntries) {
+      if (p === repoMount || p.startsWith(`${repoMount}/`) || repoMount.startsWith(`${p}/`)) {
+        throw new ServerError('VALIDATION', `cacheVolumes.${key} (${p}) overlaps the project's git mount at ${repoMount}`)
+      }
+    }
+
     // Every tool's credential, not just the active one's: a prewarmed spare
-    // can be switched to any tool when claimed.
+    // can be switched to any tool when claimed. Alongside, the shared dirs
+    // the pod mounts, made before launch since the kubelet creates missing
+    // subPaths root-owned. The checkpoint holds this workspace's opencode
+    // history: a pod restores from and saves back to it, containerless uses
+    // it directly. Node-local dirs (`opencodeData`, `cachedPackages`) may not
+    // be reachable from here; the driver creates them where the workspace
+    // runs.
     const [claudeAuth, codexAuth, opencodeAuth, piAuth] = await Promise.all([
       loadToolAuthEntry(owner, 'claude'),
       loadToolAuthEntry(owner, 'codex'),
       loadToolAuthEntry(owner, 'opencode'),
       loadToolAuthEntry(owner, 'pi'),
+      ...[
+        claude, codex, opencodeConfig, opencodeCheckpoint, pi, attachments,
+        ...(acpLogs !== undefined ? [acpLogs] : []),
+        ...cacheVolumeEntries.map(([key]) => cacheVolumeDir(projectId, key)),
+      ].map((dir) => fs.mkdir(dir, { recursive: true })),
     ])
     const toolAuthByTool = {
       claude: claudeAuth, codex: codexAuth, opencode: opencodeAuth, pi: piAuth,
@@ -1014,103 +1090,60 @@ export async function createWorkspace(
       ...(piAuth?.kind === 'api-key' ? { pi: piProviderInfo(piAuth.piProvider) } : {}),
     }
 
-    const claude = claudeDir(projectId)
-    const codex = codexDir(projectId)
-    const opencodeData = opencodeDataDir(projectId, workspaceId)
-    const opencodeCheckpoint = opencodeCheckpointDir(projectId, workspaceId)
-    const opencodeConfig = opencodeConfigDir(projectId)
-    const pi = piDir(projectId)
-    const cachedPackages = cachedPackagesDir(projectId)
-
-    // Create the shared dirs the pod mounts before launch, or the kubelet
-    // creates missing subPaths root-owned. Node-local dirs (`opencodeData`,
-    // `cachedPackages`) may not be reachable from here; the driver creates
-    // them where the workspace runs.
-    await fs.mkdir(claude, { recursive: true })
-    await fs.mkdir(codex, { recursive: true })
-    await fs.mkdir(opencodeConfig, { recursive: true })
-    // Checkpoint of this workspace's opencode history. A pod restores from
-    // and saves back to it; containerless uses it directly.
-    await fs.mkdir(opencodeCheckpoint, { recursive: true })
-    await fs.mkdir(pi, { recursive: true })
-    // Put every tool's history for this workspace in the layout this driver
-    // uses (mounted over the tool homes, or linked into them).
-    await convergeAgentHistory(projectId, workspaceId, { layers: sandboxed })
-    // acpd's conversation records. Kept under the project dir (which
-    // teardown does not prune) so the server can read them after the pod is
-    // gone. Only `acp` workspaces get the dir and mount.
-    const acpLogs = mode === 'acp' ? acpLogDir(projectId, workspaceId) : undefined
-    if (acpLogs !== undefined) await fs.mkdir(acpLogs, { recursive: true })
-    // Pasted images (`saveWorkspaceAttachment`); must exist for its mount.
-    const attachments = workspaceAttachmentsDir(projectId, workspaceId)
-    await fs.mkdir(attachments, { recursive: true })
-
+    // The rest at once, since each writes files of its own (claude's
+    // settings.json, which two of them update, is locked) and the agent
+    // waits on all of it.
+    const builtinSkillsStaging = path.join(workspaceStateDir(projectId, workspaceId), 'builtin-skills')
+    const workspaceBinStaging = path.join(workspaceStateDir(projectId, workspaceId), 'bin')
     // SSH remotes need a known_hosts file, written from the host key the
     // credential was assigned with. How it reaches the workspace is the
     // driver's concern.
-    let sshKnownHostsFile: string | undefined
-    if (credential.kind === 'ssh') {
-      sshKnownHostsFile = path.join(projectDir(projectId), 'known_hosts')
-      await writeKnownHostsFile([credential.knownHostsEntry], sshKnownHostsFile)
-    }
-
-    // Write every tool's per-project credential files. With mediated egress
-    // they hold placeholders the proxy swaps; without it, the real
-    // credentials (docs/containerless-driver.md), merged so a token a running
-    // workspace refreshed is not overwritten (#domain/auth).
-    await seedProjectToolHome(projectId, owner)
-
-    // Seed every tool's config (a retooled spare needs it too). Claude gets
-    // onboarding state so it skips the first-run wizard and login, and its
-    // trusted roots as the agent will see them. The homes are writable by
-    // the workspace, so writes go through a sandboxed dir handle that
-    // replaces a planted symlink rather than following it.
-    const claudeHome = await openSandboxDir(projectId, claude)
-    await seedClaudeJson(
-      claudeHome,
-      sandboxed ? ['/workspace'] : await withResolved([wtDir]),
-    )
-    await seedClaudeSettings(claudeHome, { denyWorktrees: runtime.kind !== 'containerless' })
-    const piHome = await openSandboxDir(projectId, pi)
-    const opencodeConfigHome = await openSandboxDir(projectId, opencodeConfig)
-    // Hook up the reporters that publish each agent's conversation, model and
-    // mode on its pane. Best-effort: agents still run without them.
-    await (async () => ensureAgentReporters({
-      claude: claudeHome,
-      codex: await openSandboxDir(projectId, codex),
-      pi: piHome,
-      opencodeConfig: opencodeConfigHome,
-    }))().catch(() => {})
-    // Not best-effort: without it opencode and pi find no key.
-    const { opencodeConfigFile } = await ensureToolApiKeyConfig(
-      { opencodeConfig: opencodeConfigHome, pi: piHome }, keyProviders)
-
-    // Pre-create cacheVolumes dirs so they are server-owned (and so writable
-    // in-pod) rather than root-owned. None may overlap the main clone's
-    // mount.
-    const cacheVolumeEntries = Object.entries(config.cacheVolumes ?? {})
-    const repoMount = `${repo}/.git`
-    for (const [key, p] of cacheVolumeEntries) {
-      if (p === repoMount || p.startsWith(`${repoMount}/`) || repoMount.startsWith(`${p}/`)) {
-        throw new ServerError('VALIDATION', `cacheVolumes.${key} (${p}) overlaps the project's git mount at ${repoMount}`)
-      }
-    }
-    for (const [key] of cacheVolumeEntries) {
-      await fs.mkdir(cacheVolumeDir(projectId, key), { recursive: true })
-    }
-
-    // yaac's bundled skills: a pod gets a per-workspace copy mounted
-    // read-only into each tool's skills root; containerless links them into
-    // the project's shared skills roots instead.
-    const builtinSkillsStaging = path.join(workspaceStateDir(projectId, workspaceId), 'builtin-skills')
-    const builtinSkillNames = sandboxed
-      ? await stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
-      : await reconcileSharedSkillRoots(builtinSkillsDir(), projectId, 'link')
-
-    // In-workspace helper commands (yaac-mama, yaac-workspace-init), staged
-    // like the skills.
-    const workspaceBinStaging = path.join(workspaceStateDir(projectId, workspaceId), 'bin')
-    const workspaceBinNames = await stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging)
+    const sshKnownHostsFile = credential.kind === 'ssh' ? path.join(projectDir(projectId), 'known_hosts') : undefined
+    const [opencodeConfigFile, builtinSkillNames, workspaceBinNames] = await Promise.all([
+      (async () => {
+        // Seed every tool's config (a retooled spare needs it too). Claude
+        // gets onboarding state so it skips the first-run wizard and login,
+        // and its trusted roots as the agent will see them. The homes are
+        // writable by the workspace, so writes go through a sandboxed dir
+        // handle that replaces a planted symlink rather than following it.
+        const [claudeHome, codexHome, piHome, opencodeConfigHome] = await Promise.all([
+          openSandboxDir(projectId, claude), openSandboxDir(projectId, codex),
+          openSandboxDir(projectId, pi), openSandboxDir(projectId, opencodeConfig),
+        ])
+        const [, , , keys] = await Promise.all([
+          (sandboxed ? Promise.resolve(['/workspace']) : withResolved([wtDir]))
+            .then((roots) => seedClaudeJson(claudeHome, roots)),
+          seedClaudeSettings(claudeHome, { denyWorktrees: runtime.kind !== 'containerless' }),
+          // The reporters that publish each agent's conversation, model and
+          // mode on its pane. Best-effort: agents still run without them.
+          ensureAgentReporters({ claude: claudeHome, codex: codexHome, pi: piHome, opencodeConfig: opencodeConfigHome })
+            .catch(() => {}),
+          // Not best-effort: without it opencode and pi find no key.
+          ensureToolApiKeyConfig({ opencodeConfig: opencodeConfigHome, pi: piHome }, keyProviders),
+        ])
+        return keys.opencodeConfigFile
+      })(),
+      // yaac's bundled skills: a pod gets a per-workspace copy mounted
+      // read-only into each tool's skills root; containerless links them
+      // into the project's shared skills roots instead.
+      sandboxed
+        ? stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
+        : reconcileSharedSkillRoots(builtinSkillsDir(), projectId, 'link'),
+      // In-workspace helper commands (yaac-mama, yaac-workspace-init),
+      // staged like the skills.
+      stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging),
+      // Every tool's history for this workspace in the layout this driver
+      // uses (mounted over the tool homes, or linked into them).
+      convergeAgentHistory(projectId, workspaceId, { layers: sandboxed }),
+      // Every tool's per-project credential files. With mediated egress they
+      // hold placeholders the proxy swaps; without it, the real credentials
+      // (docs/containerless-driver.md), merged so a token a running
+      // workspace refreshed is not overwritten (#domain/auth).
+      seedProjectToolHome(projectId, owner),
+      ...(credential.kind === 'ssh' && sshKnownHostsFile !== undefined
+        ? [writeKnownHostsFile([credential.knownHostsEntry], sshKnownHostsFile)]
+        : []),
+    ])
     if (sandboxed && builtinSkillNames.length > 0) {
       // Pre-create the skills roots and per-skill mountpoints server-owned;
       // the kubelet would create them root-owned, blocking the agent's own
@@ -1405,7 +1438,7 @@ export async function createWorkspace(
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },
-      options, workspace: workspaceTask,
+      options, workspace: workspaceTask, reusedCheckout: reuseCheckout,
     })
   } catch (err) {
     // Tear down the half-started unit, or it would list as a bogus

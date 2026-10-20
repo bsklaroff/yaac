@@ -65,6 +65,15 @@ run the agent in (`/workspace` in a pod, a path under the data dir on a
 host). A missing cwd fails the spawn with `ENOENT`, the same error as a
 missing binary, so the path must be right.
 
+A containerless create starts an `acp` agent before its checkout is
+written, since the adapter reads nothing from it until a conversation opens,
+and its boot then overlaps the checkout. `--wait-for <checkout>/.git` makes
+acpd accept a client at once but hold it, sending no `_acpd/hello`, until the
+checkout's `.git` is renamed in; the client's handshake starts at the hello,
+so the conversation opens on the finished checkout. A pod's acpd comes from
+its image, which may predate the flag, so a pod's agents start after the
+checkout as a `tui` agent always does.
+
 ## The driver interface
 
 `agentDriver(mode)` in `#runtime/agents` returns an `AgentDriver` with

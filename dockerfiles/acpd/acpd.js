@@ -123,14 +123,23 @@ function isImage(bytes) {
     || (ascii(0, 'RIFF') && ascii(8, 'WEBP'))
 }
 
+/** How often a held client checks for `waitFor`. */
+const WAIT_FOR_POLL_MS = 25
+
 /**
  * Create the daemon (not yet listening). `cwd` is the workspace checkout,
  * which differs per driver; see main.js's `--cwd`.
+ *
+ * With `waitFor`, the agent starts at once but a client is held, with no
+ * hello, until that path exists. A launch can then start the agent while its
+ * checkout is still being written, and the conversation still opens on the
+ * finished checkout, since a client's handshake begins at the hello.
  */
 export function createAcpd({
   sockPath,
   argv,
   logPath,
+  waitFor,
   env = process.env,
   cwd = process.cwd(),
   logStream = process.stderr,
@@ -464,6 +473,17 @@ export function createAcpd({
   const recordReady = openRecord()
   if (recordReady) startChild()
 
+  /** Run `fn` once `waitFor` exists: at once without one. */
+  let waited = waitFor === undefined
+  function whenReady(fn) {
+    if (waited || fs.existsSync(waitFor)) {
+      waited = true
+      fn()
+      return
+    }
+    setTimeout(() => whenReady(fn), WAIT_FOR_POLL_MS).unref()
+  }
+
   function detach(sock, reason) {
     if (client !== sock) return
     client = null
@@ -554,15 +574,18 @@ export function createAcpd({
         }
         server = net.createServer({ allowHalfOpen: true }, (sock) => {
           sock.on('error', () => { /* per-client; attach() reaps it */ })
-          // During a restart, refuse: an accepted `initialize` would reach
-          // the dying child and set `everSpoke` for a handshake the new agent
-          // never saw. The server retries with backoff.
-          if (restarting || child === null) {
-            log('refusing an attach: no agent to serve it')
-            sock.destroy()
-            return
-          }
-          attach(sock)
+          whenReady(() => {
+            if (sock.destroyed) return
+            // During a restart, refuse: an accepted `initialize` would reach
+            // the dying child and set `everSpoke` for a handshake the new
+            // agent never saw. The server retries with backoff.
+            if (restarting || child === null) {
+              log('refusing an attach: no agent to serve it')
+              sock.destroy()
+              return
+            }
+            attach(sock)
+          })
         })
         server.once('error', reject)
         server.listen(sockPath, () => {

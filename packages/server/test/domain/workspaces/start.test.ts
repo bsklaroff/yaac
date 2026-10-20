@@ -401,8 +401,13 @@ describe('prepareStart', () => {
       expect(claims).toEqual([])
 
       // The clone borrows from the main clone at the path the server sees it
-      // at, mounted read-only there.
-      expect(execOf('objects/info/alternates')).toContain(`'${repoDir(DEMO_PROJECT_ID)}/.git/objects'`)
+      // at, mounted read-only there. The checkout wrote that itself, so
+      // nothing relinks it, and a pod's file cache is warmed in the command
+      // that starts the agent.
+      expect(await fs.readFile(path.join(workspaceDir(DEMO_PROJECT_ID, workspaceId), '.git', 'objects', 'info', 'alternates'), 'utf8'))
+        .toBe(`${repoDir(DEMO_PROJECT_ID)}/.git/objects\n`)
+      expect(execOf('objects/info/alternates')).toBeUndefined()
+      expect(execOf('respawn-window')).toContain('--no-optional-locks status')
       const { mounts, postStartExec, preStopExec } = specs[0]
       expect(mounts).toContainEqual({
         source: { kind: 'hostPath', path: `${repoDir(DEMO_PROJECT_ID)}/.git` },
@@ -742,6 +747,42 @@ describe('prepareStart', () => {
       expect(windows).toContain('set-option -t yaac:backend remain-on-exit on')
       expect(windows).not.toContain('yaac:frontend remain-on-exit on')
       expect(windows).toContain(`claude --permission-mode bypassPermissions --model claude-opus-4-5 --session-id ${result.workspaceId}`)
+    })
+
+    it('starts a containerless chat agent alongside its checkout, holding its conversation until the checkout lands', async () => {
+      await writeConfig({ initCommands: [{ name: 'backend', commands: ['pnpm dev:backend'] }] })
+      const conversation = { whenReady: () => Promise.resolve(), prompt: () => Promise.resolve() } as unknown as AcpConversation
+      installDriver({
+        kind: 'containerless',
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('#{pane_pid}')) {
+            setTimeout(() => {
+              registerAcpConversation(DEMO_PROJECT_ID, 'wt-early', { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, conversation)
+            }, 20)
+            return Promise.resolve({ stdout: '42\n', stderr: '' })
+          }
+          return Promise.resolve({ stdout: '', stderr: '' })
+        },
+      })
+      await start({ workspaceId: 'wt-early', mode: 'acp' })
+
+      // The agent's command goes first, on its own; acpd holds the
+      // conversation until `.git` exists. The init windows read the
+      // checkout, so they follow it.
+      const agents = execs.findIndex(({ cmd }) => cmd.includes('respawn-window'))
+      const windows = execs.findIndex(({ cmd }) => cmd.includes('-n backend'))
+      expect(execs[agents].cmd).toContain('--wait-for /workspace/.git --')
+      expect(execs[agents].cmd).not.toContain('backend')
+      expect(windows).toBeGreaterThan(agents)
+      expect(execs[windows].cmd).not.toContain('respawn-window')
+
+      // A terminal agent reads the checkout as it starts, so it waits for it.
+      execs.length = 0
+      await start({ workspaceId: 'wt-tui', mode: 'tui' })
+      const tui = execs.find(({ cmd }) => cmd.includes('respawn-window'))!.cmd
+      expect(tui).toContain('-n backend')
+      expect(tui).not.toContain('--wait-for')
     })
 
     it('refuses an init window named after any agent tool, before provisioning', async () => {

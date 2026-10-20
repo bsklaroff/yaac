@@ -493,6 +493,27 @@ describe('createAcpd', () => {
     await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes(fs.realpathSync(dir)))
   })
 
+  it('starts the agent at once but holds a client until its checkout exists', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acpd-wait-'))
+    tmpDirs.push(dir)
+    const logPath = path.join(dir, 'c.jsonl')
+    const checkout = path.join(dir, 'checkout', '.git')
+    const { sock } = await start(['sh', '-c', 'echo booted; exec cat'], { logPath, waitFor: checkout })
+    // The agent boots while the checkout is still being written.
+    await waitUntil(() => fs.readFileSync(logPath, 'utf8').includes('booted'))
+
+    // A client connects, but its handshake cannot start before the hello.
+    const a = connect(sock)
+    a.socket.write('{"jsonrpc":"2.0","id":1,"method":"initialize"}\n')
+    await new Promise((r) => setTimeout(r, 200))
+    expect(a.lines).toEqual([])
+
+    fs.mkdirSync(checkout, { recursive: true })
+    await a.waitFor((l) => l.length >= 2)
+    expect(parsed(a.lines)[0]).toMatchObject({ method: '_acpd/hello', params: { firstAttach: true } })
+    expect(parsed(a.lines)[1]).toMatchObject({ id: 1, method: 'initialize' })
+  })
+
   it('defaults to its own directory, which is the window tmux opened', async () => {
     // Every driver starts the tmux session in the workspace.
     const sock = sockPath()

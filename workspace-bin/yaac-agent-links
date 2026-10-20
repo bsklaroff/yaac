@@ -35,6 +35,10 @@
 #
 # Prints NOTHING (claude hands a hook's stdout to the model) and always exits
 # 0: a broken report must never take the agent down with it.
+# An agent whose observer reads none of this (one an `acp` launch supervises,
+# with its conversation reported over the protocol) skips it, since these
+# hooks hold up the tool's startup and every turn.
+[ -z "${YAAC_NO_PANE_REPORT:-}" ] || exit 0
 HOME_DIR="$1"
 TOOL="$2"
 END=''

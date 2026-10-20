@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
-import { access as fsAccess } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { access as fsAccess, stat } from 'node:fs/promises'
+import { delimiter, isAbsolute, join } from 'node:path'
 import { WorkspaceExecError } from '#drivers/contract'
 import { waitFor } from '@yaac/shared/wait-for'
 
@@ -193,19 +195,31 @@ export async function spawnSshAgent(sock: string): Promise<number> {
 }
 
 /**
- * Whether a binary resolves on PATH. Never throws. The name is passed as an
- * argument, not interpolated into the script.
+ * Where a binary resolves on PATH: the first executable file of that name in
+ * its absolute directories, which is what `command -v` finds for anything
+ * but a shell builtin. Always an absolute path. Looked up in-process, since a shell per check costs a
+ * process start on every create. Null if none; never throws.
  */
-export async function onPath(binary: string): Promise<boolean> {
-  try {
-    await runHost(
-      ['sh', '-c', 'command -v -- "$1"', 'onPath', binary],
-      { timeoutMs: 5_000 },
+export async function findOnPath(binary: string): Promise<string | null> {
+  if (binary === '' || binary.includes('/')) return null
+  // eslint-disable-next-line no-process-env -- the PATH every process this driver starts inherits
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
+    // A relative entry would resolve against the server's cwd, not where
+    // the caller runs it.
+    if (!isAbsolute(dir)) continue
+    const file = join(dir, binary)
+    const executable = await stat(file).then(
+      async (st) => st.isFile() && await fsAccess(file, constants.X_OK).then(() => true, () => false),
+      () => false,
     )
-    return true
-  } catch {
-    return false
+    if (executable) return file
   }
+  return null
+}
+
+/** Whether a binary resolves on PATH (`findOnPath`). */
+export async function onPath(binary: string): Promise<boolean> {
+  return await findOnPath(binary) !== null
 }
 
 /**

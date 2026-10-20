@@ -165,6 +165,12 @@ export interface AgentLaunchSpec {
   piProvider?: PiProvider
   /** The permission posture to launch in. See `AgentCmdSpec`. */
   permissionMode: PermissionMode
+  /**
+   * `acp` only: the launch runs before the checkout is complete, so the
+   * conversation must not open until its `.git` lands (acpd's `--wait-for`).
+   * The adapter boots meanwhile.
+   */
+  beforeCheckout?: boolean
 }
 
 /**

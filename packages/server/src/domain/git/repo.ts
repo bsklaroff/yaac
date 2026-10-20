@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { gitConfigValue } from '@yaac/shared/git'
 import { serverLocalPath } from '@yaac/shared/paths'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { runGit } from './run'
@@ -225,25 +226,49 @@ export async function lastFetchedAtMs(
  *  without the server's pins. */
 export const NEVER_PRUNE_KEYS = ['gc.pruneExpire', 'gc.reflogExpire', 'gc.reflogExpireUnreachable']
 
-/** `<sha> <refname>` for every main-clone ref under `prefixes`, plus the
- *  target of the symbolic `origin/HEAD`. */
-async function mainRefs(
-  repoPath: string,
-  prefixes: string[],
-): Promise<{ refs: string[]; originHead: string | null }> {
-  const out = await runGit(repo(repoPath), ['for-each-ref', '--format=%(objectname) %(refname) %(symref)', ...prefixes])
-  const refs: string[] = []
+/** A checkout's copy of the main clone's refs: `origin/*` and tags as
+ *  `[sha, refname]`, and the target of the symbolic `origin/HEAD`. */
+interface MainRefs {
+  refs: Array<[string, string]>
+  originHead: string | null
+}
+
+async function mainRefs(repoPath: string): Promise<MainRefs> {
+  const out = await runGit(repo(repoPath), [
+    'for-each-ref', '--format=%(objectname) %(refname) %(symref)', 'refs/remotes/origin', 'refs/tags',
+  ])
+  const refs: Array<[string, string]> = []
   let originHead: string | null = null
   for (const line of out.split('\n')) {
     const [sha, ref, symref] = line.split(' ')
-    if (!ref) continue
+    if (!sha || !ref) continue
     if (symref) {
       if (ref === 'refs/remotes/origin/HEAD') originHead = symref
       continue
     }
-    refs.push(`${sha} ${ref}`)
+    refs.push([sha, ref])
   }
   return { refs, originHead }
+}
+
+function remoteSha(main: MainRefs, branch: string): string | undefined {
+  return main.refs.find(([, ref]) => ref === `refs/remotes/origin/${branch}`)?.[0]
+}
+
+/**
+ * Write a staged checkout's copy of the main clone's refs as `packed-refs`
+ * (thousands of loose files per workspace otherwise), and `origin/HEAD` as
+ * the one-line symbolic ref git would write.
+ */
+async function writeCheckoutRefs(gitDir: string, main: MainRefs): Promise<void> {
+  await fs.writeFile(path.join(gitDir, 'packed-refs'), main.refs.map(([s, ref]) => `${s} ${ref}\n`).join(''))
+  const originHead = path.join(gitDir, 'refs', 'remotes', 'origin', 'HEAD')
+  if (main.originHead === null) {
+    await fs.rm(originHead, { force: true })
+  } else {
+    await fs.mkdir(path.dirname(originHead), { recursive: true })
+    await fs.writeFile(originHead, `ref: ${main.originHead}\n`)
+  }
 }
 
 /** How many processes write a checkout's files; workspace-bin/yaac-workspace-init
@@ -263,6 +288,12 @@ const CHECKOUT_WORKERS = 8
  *
  * When origin has no branches at all (an empty repo), `branch` is left
  * unborn, so the agent's first commit starts the history.
+ *
+ * `fetched`, a fetch of the main clone in flight, lets the checkout start
+ * from the refs the main clone already has instead of waiting on the
+ * network. The result still reflects the refs after the fetch: once it
+ * settles, the staged refs are rewritten if any moved, and the tree is
+ * updated if the base did. A rejected fetch fails the checkout.
  *
  * The checkout is forced: callers reuse a destination that already has a
  * `.git`, so anything else there is a crashed attempt's partial tree. A
@@ -284,51 +315,83 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
   branch: string
   baseBranch: string
   remoteUrl: string
+  fetched?: Promise<void>
 }): Promise<void> {
+  // Awaited after the checkout; until then nothing would observe a rejection.
+  params.fetched?.catch(() => { /* observed below */ })
   if (await fs.lstat(path.join(repoPath, '.git', 'shallow')).then(() => true, () => false)) {
     throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
   }
-  const startSha = await resolveRemoteRef(repoPath, params.baseBranch).catch(async (err: unknown) => {
-    if ((await listRemoteBranches(repoPath)).length > 0) throw err
-    return null
-  })
+  const { branch, baseBranch } = params
+  let fetched = params.fetched
+  let main = await mainRefs(repoPath)
+  // A branch the fetch has yet to bring in cannot be checked out early.
+  if (fetched !== undefined && remoteSha(main, baseBranch) === undefined) {
+    await fetched
+    fetched = undefined
+    main = await mainRefs(repoPath)
+  }
+  const startSha = remoteSha(main, baseBranch) ?? null
+  if (startSha === null && main.refs.some(([, ref]) => ref.startsWith('refs/remotes/origin/'))) {
+    throw new Error(`origin/${baseBranch} does not exist in ${repoPath}`)
+  }
   // Assembled beside the checkout, where no workspace mounts it.
   const staging = path.join(path.dirname(workspacePath), `.staging-${path.basename(workspacePath)}`)
   const gitDir = path.join(staging, '.git')
   await fs.rm(staging, { recursive: true, force: true })
   await fs.mkdir(staging, { recursive: true })
   try {
-    const format = (await runGit(repo(repoPath), ['rev-parse', '--show-object-format'])).trim()
-    // No template, so no sample hooks.
-    await runGit({ kind: 'none' }, ['init', '--quiet', '--bare', '--template=', `--object-format=${format}`, gitDir])
-    for (const [key, value] of [
-      ['core.bare', 'false'],
-      ['core.logallrefupdates', 'true'],
-      ['remote.origin.url', params.remoteUrl],
-      ['remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
-      [`branch.${params.branch}.remote`, 'origin'],
-      [`branch.${params.branch}.merge`, `refs/heads/${params.baseBranch}`],
-    ]) {
-      await runGit({ kind: 'none' }, ['config', '--file', path.join(gitDir, 'config'), key, value])
-    }
+    // The hash length names the object format; only a repo with no refs
+    // has to ask.
+    const anySha = main.refs[0]?.[0]
+    const format = anySha !== undefined
+      ? (anySha.length === 64 ? 'sha256' : 'sha1')
+      : (await runGit(repo(repoPath), ['rev-parse', '--show-object-format'])).trim()
+    // git init, not a hand-written dir: it probes the filesystem for
+    // settings such as macOS's `core.ignorecase`. Non-bare, with the staging
+    // dir as its work tree, so its own `[core]` is the checkout's. The files
+    // ref format is pinned over a user's default, since a reftable repo would
+    // ignore the refs written below (`gitEnv` drops the variable that would
+    // beat the pin). No template, so no sample hooks.
+    await runGit({ kind: 'private', gitDir, workTree: staging }, [
+      '-c', 'init.defaultRefFormat=files',
+      'init', '--quiet', '--template=', `--object-format=${format}`,
+    ])
+    await fs.appendFile(path.join(gitDir, 'config'), [
+      '[remote "origin"]',
+      `\turl = ${gitConfigValue(params.remoteUrl)}`,
+      '\tfetch = +refs/heads/*:refs/remotes/origin/*',
+      `[branch ${gitConfigValue(branch)}]`,
+      '\tremote = origin',
+      `\tmerge = ${gitConfigValue(`refs/heads/${baseBranch}`)}`,
+      '',
+    ].join('\n'))
+    await fs.writeFile(path.join(gitDir, 'HEAD'), `ref: refs/heads/${branch}\n`)
     // The alternates path is the server's; a pod mounts the main clone at
-    // the same path, so it resolves everywhere. Refs are written as
-    // `packed-refs` to avoid thousands of files per workspace.
+    // the same path, so it resolves everywhere.
     await fs.mkdir(path.join(gitDir, 'objects', 'info'), { recursive: true })
     await fs.writeFile(path.join(gitDir, 'objects', 'info', 'alternates'), `${path.join(repoPath, '.git', 'objects')}\n`)
     await fs.mkdir(path.join(gitDir, 'info'))
     await fs.writeFile(path.join(gitDir, 'info', 'exclude'), '/.claude/worktrees/\n.nfs*\n')
-    const { refs, originHead } = await mainRefs(repoPath, ['refs/remotes/origin', 'refs/tags'])
-    await fs.writeFile(path.join(gitDir, 'packed-refs'), refs.map((l) => `${l}\n`).join(''))
-    if (originHead !== null) {
-      await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'refs/remotes/origin/HEAD', originHead])
-    }
-    await runGit({ kind: 'private', gitDir }, ['symbolic-ref', 'HEAD', `refs/heads/${params.branch}`])
+    await writeCheckoutRefs(gitDir, main)
     await fs.mkdir(workspacePath, { recursive: true })
-    if (startSha !== null) {
-      await runGit({ kind: 'private', gitDir }, ['update-ref', `refs/heads/${params.branch}`, startSha])
-      await runGit({ kind: 'private', gitDir, workTree: workspacePath },
-        ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet'])
+    // `-B` points the branch at `sha` in the same process, with its reflog.
+    const checkOut = (sha: string): Promise<string> => runGit({ kind: 'private', gitDir, workTree: workspacePath },
+      ['-c', `checkout.workers=${String(CHECKOUT_WORKERS)}`, 'checkout', '--force', '--quiet', '-B', branch, sha])
+    if (startSha !== null) await checkOut(startSha)
+    // Checked out alongside the fetch; catch up with whatever it moved
+    // before the checkout becomes visible.
+    if (fetched !== undefined) {
+      await fetched
+      const after = await mainRefs(repoPath)
+      if (JSON.stringify(after) !== JSON.stringify(main)) {
+        const sha = remoteSha(after, baseBranch)
+        if (sha === undefined) throw new Error(`origin/${baseBranch} was deleted on origin`)
+        await writeCheckoutRefs(gitDir, after)
+        // The index still holds the old tree, so only changed files are
+        // written, and files the new tree drops are deleted.
+        if (sha !== startSha) await checkOut(sha)
+      }
     }
     await fs.rename(gitDir, path.join(workspacePath, '.git'))
   } finally {

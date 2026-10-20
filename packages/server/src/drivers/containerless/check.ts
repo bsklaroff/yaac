@@ -11,6 +11,7 @@ import {
   type CheckResult,
 } from '@yaac/shared/types'
 import { WorkspaceExecError } from '#drivers/contract'
+import { serverLog } from '#lib/log'
 import { onPath, runHost } from './host'
 import { userEnvironment } from './launch'
 import { overriddenToolHomeVars } from './tool-homes'
@@ -227,6 +228,28 @@ async function ensureAgentBinary(
     await run
   } finally {
     installsInFlight.delete(prefix)
+  }
+}
+
+/**
+ * Install the pinned version of every agent package this host has an older
+ * version of, one at a time. Pins move with yaac releases, so without this
+ * the first create after each upgrade waits on npm for the agent it uses.
+ * Only packages already used here are installed. A failure is logged and
+ * left for the next create that needs the package, which retries it and
+ * reports the error.
+ */
+export async function upgradeUsedAgents(): Promise<void> {
+  for (const [binary, pkg] of Object.entries(AGENT_PACKAGES)) {
+    const prefix = agentPackagePrefix(pkg)
+    // Prefixes are named `<package with + for />@<version>`.
+    const stem = `${pkg.package.replace('/', '+')}@`
+    const names = await fs.readdir(path.dirname(prefix)).catch((): string[] => [])
+    const usedBefore = names.some((name) => name.startsWith(stem) && !name.includes(STAGING_INFIX))
+    if (!usedBefore || names.includes(path.basename(prefix))) continue
+    await ensureAgentBinary(binary).catch((err: unknown) => {
+      serverLog(`[server] containerless: upgrading ${pkg.package} to ${pkg.version} failed: ${String(err)}`)
+    })
   }
 }
 

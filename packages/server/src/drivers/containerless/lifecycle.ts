@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
-import { runHostCheck } from './check'
+import { runHostCheck, upgradeUsedAgents } from './check'
 import { isSshAgentFor, killPids } from './host'
 import { tmuxAnswers } from './exec'
 import { containerlessJobName, containerlessWorkspacePaths, workspaceHome } from './paths'
@@ -203,6 +203,7 @@ export async function startContainerlessDriver(sinks: DriverSinks): Promise<void
   syncWatches(sinks)
   startPortSweep(() => notifyWorkspaceListChanged())
   sinks.attached()
+  void upgradeUsedAgents()
 }
 
 /** See `WorkspaceDriver.stop`. */
