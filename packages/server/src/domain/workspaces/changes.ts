@@ -270,22 +270,27 @@ const FORCE_ADD = 'for p; do shift; { [ -e "$p" ] || [ -L "$p" ]; } && set -- "$
 function changesScript(loc: ChangesLocation): string {
   const i = loc.indexFile
   return `cd ${loc.workspaceDir} 2>/dev/null || exit 3; `
+  // The run waits and retries only until 10 seconds after it starts, half
+  // the server's exec timeout, so the work after either still fits.
+  + 'd=$(($(date +%s)+10)); '
   // One run at a time per workspace, even past the server's mutex: a run
   // whose exec timed out may still be going in the workspace, holding the
   // private index. The run lock holds its pid, made by an atomic `ln`. A
-  // live holder is waited for (its run warms the index) for up to 10
-  // seconds, then the run gives up with CHANGES_BUSY. A dead holder's lock
-  // is cleared, and so is one over two minutes old, whose pid may since
-  // belong to an unrelated process. A run killed while it waits removes its
-  // pid file, and one killed while it holds the lock removes the lock.
-  + `lk=${i}.run; trap 'rm -f "$lk.$$"' EXIT; trap 'exit 143' TERM; echo $$ > "$lk.$$"; w=0; `
+  // live holder is waited for (its run warms the index) until the deadline,
+  // then the run gives up with CHANGES_BUSY. A dead holder's lock is
+  // cleared, and so is one over two minutes old, whose pid may since belong
+  // to an unrelated process. A run killed while it waits removes its pid
+  // file, and one killed while it holds the lock removes the lock.
+  + `lk=${i}.run; trap 'rm -f "$lk.$$"' EXIT; trap 'exit 143' TERM; echo $$ > "$lk.$$"; `
   + 'while ! ln "$lk.$$" "$lk" 2>/dev/null; do '
   + 'p=$(cat "$lk" 2>/dev/null); '
   + 'if [ -n "$p" ] && kill -0 "$p" 2>/dev/null && [ -z "$(find "$lk" -mmin +2 2>/dev/null)" ]; then '
-  + `w=$((w+1)); [ $w -le 50 ] || exit ${CHANGES_BUSY}; sleep 0.2; `
+  + `[ $(date +%s) -lt $d ] || exit ${CHANGES_BUSY}; sleep 0.2; `
   + 'else rm -f "$lk"; fi; done; '
   + 'rm -f "$lk.$$"; trap \'rm -f "$lk"\' EXIT; '
-  + `rm -f ${i}.out.*; o=${i}.out.$$; ( `
+  // Holding the run lock, any git lock on the private index, and any seed
+  // copy, was left by a killed run.
+  + `rm -f ${i}.out.* ${i}.lock ${i}.seed.*; o=${i}.out.$$; ( `
   // An unborn HEAD (an empty repo's checkout) reads as the empty tree.
   + 'e=$(git hash-object -t tree /dev/null) || exit 6; head=$(git rev-parse -q --verify HEAD) || head=$e; '
   + 'ref=; fork=1; '
@@ -322,22 +327,27 @@ function changesScript(loc: ChangesLocation): string {
   + `export GIT_INDEX_FILE=${i}; `
   // A missing private index starts as a copy of the agent's, whose stat
   // data spares `add -A` hashing every file on a workspace's first poll.
-  // It compares only mtime and size (`core.checkStat=minimal`): the server
-  // writes a new checkout's index, and a pod sees other inode numbers, so
-  // under the default check every seeded entry would look changed.
-  // `--ignore-errors` adds what it can past an entry git cannot index (a
-  // nested repo with no commit), exiting 1, so one such entry costs the
-  // diff and the listing only that entry. Anything else is a stale `.lock`
-  // or a broken index a killed run left, which would fail every later poll:
-  // clear both and retry once. The run lock means no live run holds them.
-  + `seed() { [ -f ${i} ] || cp ${i}.agent ${i} 2>/dev/null; }; `
-  + 'add() { git -c core.checkStat=minimal add -A --ignore-errors || [ $? -eq 1 ]; }; '
-  + `seed; add || { rm -f ${i} ${i}.lock; seed; add || exit 5; }; `
-  // `add -A` skips a tracked file that matches .gitignore (one added with
-  // `add -f`), which would then read as deleted. Force-add those the agent's
-  // index tracks that are still on disk.
-  + `{ [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -c -i --exclude-standard `
-  + `| xargs -0 sh -c ${shSingleQuote(FORCE_ADD)} yaac-force-add; } || exit 5; `
+  // The copy is made whole before it is moved in, so a killed run never
+  // leaves a broken index. `add -A` compares only mtime and size
+  // (`core.checkStat=minimal`): the server writes a new checkout's index,
+  // and a pod sees other inode numbers, so under the default check every
+  // seeded entry would look changed.
+  + `seed() { [ -f ${i} ] || { cp ${i}.agent ${i}.seed.$$ && mv ${i}.seed.$$ ${i}; } 2>/dev/null; }; seed; `
+  // `stage` writes the working tree into the private index. `--ignore-errors`
+  // adds what it can past an entry git cannot index (a nested repo with no
+  // commit), exiting 1, so one such entry costs the diff and the listing
+  // only that entry. `add -A` skips a tracked file that matches .gitignore
+  // (one added with `add -f`), which would then read as deleted, so those
+  // the agent's index tracks that are still on disk are force-added.
+  // Staging fails when a file is deleted between git listing and adding
+  // it, as a branch switch does to many, and leaves the index as it was.
+  // So staging is retried with the index kept, each retry costing only
+  // what changed, and only an index git cannot read is seeded afresh.
+  + 'stage() { { git -c core.checkStat=minimal add -A --ignore-errors || [ $? -eq 1 ]; } '
+  + `&& { [ ! -f ${i}.agent ] || GIT_INDEX_FILE=${i}.agent git ls-files -z -c -i --exclude-standard `
+  + `| xargs -0 sh -c ${shSingleQuote(FORCE_ADD)} yaac-force-add; }; }; `
+  + `until stage; do git ls-files -s >/dev/null 2>&1 || { rm -f ${i}; seed; }; `
+  + '[ $(date +%s) -lt $d ] || exit 5; sleep 0.2; done; '
   + 'work=$(git write-tree) || exit 5; '
   + 'printf "TREES %s %s %s\\n" "$head" "$agent" "$work"; '
   // The attributes files come from the private index, so their content
