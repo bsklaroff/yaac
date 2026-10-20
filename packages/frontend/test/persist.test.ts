@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  MAX_FONT_SIZE, MAX_SIDEBAR_WIDTH, MIN_FONT_SIZE, chatDraftKey, flushChatDrafts, loadPersisted,
+  MAX_FONT_SIZE, MAX_SIDEBAR_WIDTH, MIN_FONT_SIZE, chatDraftKey, flushTypedText, loadPersisted,
   loadSelection, persistSelection, useUiStore,
 } from '#lib/store'
 import { addColumn, singleColumn } from '#lib/layout'
@@ -17,14 +17,14 @@ const initial = useUiStore.getState()
 beforeEach(() => {
   // Resetting the store saves its fields, so clear storage after.
   useUiStore.setState(initial, true)
-  flushChatDrafts()
+  flushTypedText()
   localStorage.clear()
   window.history.replaceState({}, '', '/')
 })
 
 afterEach(() => {
   // Also clears the draft debounce timer, so no write lands after teardown.
-  flushChatDrafts()
+  flushTypedText()
 })
 
 const LAYOUTS = { s1: addColumn(singleColumn('agent'), 'shell:shell'), s2: [] }
@@ -152,7 +152,7 @@ describe('chat drafts', () => {
     // A huge draft isn't saved, so it can't exhaust the quota.
     useUiStore.getState().setChatDraft('w1', 'acp-1', 'x'.repeat(64 * 1024 + 1))
     useUiStore.getState().setChatDraft('w2', 'acp-1', 'small')
-    flushChatDrafts()
+    flushTypedText()
     expect(loadPersisted().chatDrafts).toEqual({ 'w2|acp-1': { text: 'small' } })
   })
 
@@ -160,7 +160,7 @@ describe('chat drafts', () => {
     const { setChatDraft } = useUiStore.getState()
     setChatDraft('w1', 'acp-1', 'first conversation')
     setChatDraft('w1', 'acp-2', 'second conversation')
-    flushChatDrafts()
+    flushTypedText()
     expect(loadPersisted().chatDrafts).toEqual({
       [chatDraftKey('w1', 'acp-1')]: { text: 'first conversation' },
       [chatDraftKey('w1', 'acp-2')]: { text: 'second conversation' },
@@ -171,7 +171,7 @@ describe('chat drafts', () => {
     const { setChatDraft } = useUiStore.getState()
     setChatDraft('w1', 'acp-1', 'typed then sent')
     setChatDraft('w1', 'acp-1', '')
-    flushChatDrafts()
+    flushTypedText()
     expect(useUiStore.getState().chatDrafts).toEqual({})
     expect(loadPersisted().chatDrafts).toEqual({})
   })

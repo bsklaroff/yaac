@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
-import { createWorkspace } from '#lib/createWorkspace'
+import { createWorkspace, type WorkspaceCreate } from '#lib/createWorkspace'
+import { useUiStore } from '#lib/store'
 import { configuredTools, useAuthList } from '#lib/useAuthList'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { useSnapshot } from '#lib/useSnapshot'
@@ -84,48 +85,32 @@ export function useCreateDefaults(projectId: string | null): CreateDefaults {
 /**
  * Start a create through the shared provisioning flow (see
  * `useProvisionWorkspace`). The id is generated here so the row is
- * selectable and survives a reload. Every setting is sent, so all of them
- * become the project's defaults for that agent.
+ * selectable and survives a reload. What the workspace must show once it is
+ * up is held as its `launches` entry: a chat create's prompt, which its chat
+ * pane shows until the conversation echoes it, and the pane to open.
  */
-export function useCreateWorkspace(): (
-  projectId: string,
-  tool: AgentTool,
-  setup: Pick<AgentSetup, 'model' | 'permissionMode' | 'effort' | 'mode'> & {
-    modelName?: string
-    prompt?: string
-    title?: string
-    /** The row's label while it provisions, when `title` is unset. */
-    shownTitle?: string
-    groupId?: string
-    /** A group to create and file it under, by name. */
-    newGroup?: string
-    draftId?: string
-  },
-  branch?: string,
-) => void {
+export function useCreateWorkspace(): (c: WorkspaceCreate) => void {
   const provision = useProvisionWorkspace()
-  return useCallback((projectId, tool, setup, branch) => {
-    const { model, modelName, permissionMode, effort, mode, prompt, title, shownTitle, groupId, newGroup, draftId } = setup
-    const label = title || shownTitle
-    provision(projectId, tool, 'create', randomUUID(),
-      (sid, onProgress) =>
-        createWorkspace(projectId, tool, onProgress, sid, {
-          ...(branch !== undefined ? { branch } : {}),
-          // Empty when the provider lists no models; launch without one.
-          ...(model !== '' ? { model } : {}),
-          permissionMode,
-          ...(effort !== undefined ? { effort } : {}),
-          mode,
-          ...(prompt ? { prompt } : {}),
-          ...(title ? { title } : {}),
-          ...((groupId ?? newGroup) !== undefined ? { group: groupId ?? newGroup } : {}),
-          ...(draftId !== undefined ? { draftId } : {}),
-        }),
-      groupId,
-      {
-        ...(label ? { title: label } : {}),
-        ...(prompt ? { prompt } : {}),
-        ...(model !== '' ? { model, ...(modelName !== undefined ? { modelName } : {}) } : {}),
+  const setLaunch = useUiStore((s) => s.setLaunch)
+  return useCallback((c) => {
+    const workspaceId = randomUUID()
+    const label = c.title || c.shownTitle
+    const prompt = c.mode === 'acp' && c.prompt ? c.prompt : undefined
+    if (prompt !== undefined || c.pane !== undefined) {
+      setLaunch(workspaceId, {
+        ...(prompt !== undefined ? { prompt } : {}),
+        ...(c.pane !== undefined ? { pane: c.pane } : {}),
       })
-  }, [provision])
+    }
+    provision({
+      workspaceId,
+      projectId: c.projectId,
+      tool: c.tool,
+      kind: 'create',
+      ...(c.groupId !== undefined ? { groupId: c.groupId } : {}),
+      ...(label ? { title: label } : {}),
+      ...(c.prompt ? { prompt: c.prompt } : {}),
+      ...(c.model ? { model: c.model, ...(c.modelName !== undefined ? { modelName: c.modelName } : {}) } : {}),
+    }, (onProgress) => createWorkspace(workspaceId, c, onProgress))
+  }, [provision, setLaunch])
 }

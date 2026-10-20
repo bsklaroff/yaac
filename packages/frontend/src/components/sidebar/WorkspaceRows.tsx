@@ -182,7 +182,7 @@ export function WorkspaceRow({
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
-  const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [grouping, setGrouping] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -340,9 +340,7 @@ export function WorkspaceRow({
               { label: 'Move to group…', onSelect: () => setGrouping(true) },
               {
                 label: 'Queue workspace after this…',
-                onSelect: () => openCreateWorkspace({
-                  projectId: workspace.projectId, parent: workspace.workspaceId, focus: 'prompt',
-                }),
+                onSelect: () => openNewWorkspace({ projectId: workspace.projectId, parent: workspace.workspaceId }),
               },
               'separator',
               { label: 'Stop…', onSelect: () => setConfirmDelete(true) },

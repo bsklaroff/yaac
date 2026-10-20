@@ -4,7 +4,10 @@ import { useAcpStream } from '#lib/acp'
 import { ActivityBar } from '#components/AcpActivity'
 import { useComposerMenu } from '#components/ComposerMenu'
 import { tokenCount } from '#components/AcpTranscript'
-import { ChatBottomBar, ChatViewToggles, JumpButtons, PageLoading, useChatColumn, useConversationView } from '#components/ConversationView'
+import {
+  ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, JumpButtons, Launching, PageLoading, ROUND_BUTTON, useChatColumn,
+  useConversationView,
+} from '#components/ConversationView'
 import { FileLinksContext, type FileLinks } from '#components/Markdown'
 import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
@@ -58,6 +61,8 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   const stream = useAcpStream(workspaceId, agentSessionId)
   const { events, busy, queued, connected, send, taskOutputs, permissionModes, efforts } = stream
   const setChatDraft = useUiStore((s) => s.setChatDraft)
+  const launchPrompt = useUiStore((s) => s.launches[workspaceId]?.prompt)
+  const endLaunch = useUiStore((s) => s.endLaunch)
   const setChatSent = useUiStore((s) => s.setChatSent)
   const condensed = useUiStore((s) => s.chatCondensed)
   const column = useChatColumn()
@@ -194,6 +199,14 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     setChatDraft(workspaceId, agentSessionId, draft)
   }, [draft, workspaceId, agentSessionId, setChatDraft])
 
+  /** The create's prompt stands in for the conversation until the agent
+   *  echoes it (or fails), so the create's spinner carries on unbroken. */
+  const started = events.some((e) => (e.type === 'user' && e.thread === undefined) || e.type === 'error')
+  const launching = launchPrompt !== undefined && !started
+  useEffect(() => {
+    if (started && launchPrompt !== undefined) endLaunch(workspaceId, 'prompt')
+  }, [started, launchPrompt, workspaceId, endLaunch])
+
   /**
    * On first connect, settle a message a previous mount sent but never saw
    * echoed. Clear the box only if it still holds that exact message (the
@@ -308,7 +321,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
           onScroll={onScroll}
           className="flex-1 overflow-y-auto px-4 py-4"
         >
-          {view === undefined && groups.length === 0 && pages.loading === undefined && (
+          {view === undefined && groups.length === 0 && pages.loading === undefined && !launching && (
             <div className="flex h-full items-center justify-center text-xs text-text-faint">
               {connected ? 'No messages yet — say something.' : 'Connecting to the agent…'}
             </div>
@@ -316,6 +329,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
           <FileLinksContext.Provider value={fileLinks}>
             <div className={column}>
               {pages.loading === 'earlier' && <PageLoading />}
+              {view === undefined && launching && <Launching prompt={launchPrompt} />}
               {body}
               {pages.loading === 'later' && <PageLoading />}
               {view === undefined && pages.atEnd && queued.map((q) => (
@@ -388,10 +402,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
               }}
               placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
               readOnly={awaitingEcho !== null}
-              // index.css raises this to 16px on phones so iOS Safari does not
-              // zoom on focus.
-              className="block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1
-                text-sm text-text placeholder:text-text-faint focus:outline-none"
+              className={COMPOSER_INPUT}
             />
             <div className="flex items-center justify-between px-2 pb-2">
               <button
@@ -443,7 +454,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
                     aria-label="Stop turn"
                     title="Stop"
                     onClick={() => send({ type: 'cancel' })}
-                    className="mr-1.5 flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90"
+                    className={clsx(ROUND_BUTTON, 'mr-1.5')}
                   >
                     <StopIcon size={11} fill="currentColor" />
                   </button>
@@ -454,8 +465,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
                   title="Send (Enter)"
                   onClick={() => submit()}
                   disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
-                  className="flex size-8 items-center justify-center rounded-full bg-text text-bg
-                    hover:opacity-90 disabled:bg-surface-3 disabled:text-text-faint"
+                  className={ROUND_BUTTON}
                 >
                   <SendIcon size={15} strokeWidth={2.5} />
                 </button>

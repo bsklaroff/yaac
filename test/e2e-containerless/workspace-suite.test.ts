@@ -1336,9 +1336,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
   }, 120_000)
 
-  // The webapp's create dialog: the title and group are recorded before
+  // The webapp's new-workspace pane: the title and group are recorded before
   // the prompt, so the auto-title sweep never replaces the title.
-  it('creates a workspace titled and filed as the create dialog asks', async () => {
+  it('creates a workspace titled and filed as the new-workspace pane asks', async () => {
     const res = await fetch(`${origin()}/api/workspace/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

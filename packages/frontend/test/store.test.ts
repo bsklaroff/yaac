@@ -379,6 +379,21 @@ describe('receiveSnapshot', () => {
     expect(useUiStore.getState().claims).toEqual({ early: 'spare-1', late: 'spare-2' })
   })
 
+  // What a create still has to show waits for the workspace it became.
+  it('moves a create\'s launch to the spare it claimed, whichever is learned first', () => {
+    const s = useUiStore.getState()
+    s.setLaunch('early', { prompt: 'first task' })
+    s.setLaunch('late', { prompt: 'second task', pane: 'files' })
+    s.receiveSnapshot(snap([], [prov('early', { claimedId: 'spare-1' })]))
+    s.recordClaim('late', 'spare-2')
+    expect(useUiStore.getState().launches)
+      .toEqual({ 'spare-1': { prompt: 'first task' }, 'spare-2': { prompt: 'second task', pane: 'files' } })
+    // Each part ends on its own; the entry goes with the last.
+    s.endLaunch('spare-2', 'pane')
+    s.endLaunch('spare-1', 'prompt')
+    expect(useUiStore.getState().launches).toEqual({ 'spare-2': { prompt: 'second task' } })
+  })
+
   it('does not mark a stop for a workspace the last snapshot no longer lists', () => {
     useUiStore.getState().receiveSnapshot(snap([live('a')]))
     useUiStore.getState().beginDelete('died-meanwhile')

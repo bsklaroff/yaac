@@ -10,7 +10,7 @@ import { useSnapshot } from './lib/useSnapshot'
 import { ownedBy, useReadOnly, useTeammateView, useViewedUserId, whoamiQuery } from './lib/viewer'
 import {
   isUnreadWaiting, mergeProvisioning, persistSelection, resolveVacantSelection,
-  shortcutsSuspended, unreadWaitingByProject, useUiStore,
+  unreadWaitingByProject, useUiStore,
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { Sidebar, sidebarRowIds } from './components/Sidebar'
@@ -26,7 +26,7 @@ import { useIsMobile, useVisualViewportHeight } from './lib/viewport'
 import { newlyWaiting, waitingKey, waitingKeys } from '@yaac/shared/waiting'
 import { playChime } from './lib/sound'
 import { isElectron } from './lib/platform'
-import { CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
+import { LeaveNewWorkspaceDialog } from './components/NewWorkspacePane'
 import { AddProjectDialog } from './components/NewProjectButton'
 import { ProjectOpPane } from './components/ProjectOpPane'
 import { WelcomePane } from './components/WelcomePane'
@@ -208,9 +208,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     workspaces: scope.workspaces, provisioning: scope.provisioning, queued: [], held: [], drafts: [],
   })
   const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scope.groups, pendingDeleteIds)
-  const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const newWorkspace = (): void => {
-    if (activeProjectId && !readOnly) openCreateWorkspace({ projectId: activeProjectId, focus: 'prompt' })
+    if (activeProjectId && !readOnly) openNewWorkspace({ projectId: activeProjectId })
   }
   const [confirmDelete, setConfirmDelete] = useState<WorkspaceListEntry | null>(null)
   const selectedWorkspace = selectedWorkspaceId && !readOnly && !pendingDeleteIds.includes(selectedWorkspaceId)
@@ -222,7 +222,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
       const state = useUiStore.getState()
-      if (shortcutsSuspended(state)) return
+      if (state.recordingShortcut) return
       const id = matchShortcut(state.bindings, e)
       switch (id) {
         case 'new-workspace':
@@ -419,7 +419,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           setConfirmDelete(null)
         }}
       />
-      <CreateWorkspaceDialog />
+      <LeaveNewWorkspaceDialog />
       <AddProjectDialog />
     </div>
   )

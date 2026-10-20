@@ -4,32 +4,18 @@ import { useUiStore } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
 
 /**
- * Opens `CreateWorkspaceDialog` with the prompt focused. `cta` is a larger,
- * labeled variant for empty states. The button blurs itself first so the
- * dialog records no opener (`useOpenerFocus`) and closing it doesn't leave a
- * focus ring on the button.
+ * Opens the new-workspace pane (`NewWorkspacePane`) with its prompt focused.
+ * The button blurs itself first so no focus ring is left on it.
  */
-export function NewWorkspaceButton(
-  { projectId, variant = 'icon' }: { projectId: string; variant?: 'icon' | 'cta' },
-): JSX.Element | null {
-  const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+export function NewWorkspaceButton({ projectId }: { projectId: string }): JSX.Element | null {
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const readOnly = useReadOnly()
   const open = (e: MouseEvent<HTMLButtonElement>): void => {
     e.currentTarget.blur()
-    openCreateWorkspace({ projectId, focus: 'prompt' })
+    openNewWorkspace({ projectId })
   }
   if (readOnly) return null
-  return variant === 'cta' ? (
-    <button
-      type="button"
-      title="New workspace"
-      onClick={open}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface-2 px-3 py-1.5
-        text-xs font-medium text-text-dim transition hover:border-accent/50 hover:text-accent"
-    >
-      <AddIcon size={14} /> New workspace
-    </button>
-  ) : (
+  return (
     <button
       type="button"
       title="New workspace"

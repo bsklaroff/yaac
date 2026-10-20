@@ -91,6 +91,10 @@ function unfinished(call: AcpToolCall): boolean {
  *  conversation. */
 const THREADED = ['user', 'agent', 'thought', 'tool', 'tool-output', 'plan', 'permission-request'] as const
 
+/** A user message, as plain text rather than markdown. */
+export const USER_BUBBLE = 'max-w-[85%] whitespace-pre-wrap rounded-xl border border-accent/20 bg-accent/10 px-3 py-2 '
+  + 'text-text'
+
 /** How much streamed output a call keeps: its end, as a terminal shows. */
 export const MAX_TOOL_OUTPUT_CHARS = 64 * 1024
 type ThreadedEvent = Extract<AcpEvent, { type: typeof THREADED[number] }>
@@ -1376,7 +1380,7 @@ function GroupView({
             {g.steered === true && <span>Sent mid-turn</span>}
           </div>
         )}
-        <div className="max-w-[85%] whitespace-pre-wrap rounded-xl border border-accent/20 bg-accent/10 px-3 py-2 text-text">
+        <div className={USER_BUBBLE}>
           <MessageImages images={g.images} workspaceId={workspaceId} />
           {g.text}
         </div>

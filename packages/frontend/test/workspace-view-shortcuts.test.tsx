@@ -8,7 +8,7 @@ vi.mock('#components/WorkspaceTerminal', () => ({ WorkspaceTerminal: () => <text
 
 import { WorkspaceView } from '#components/WorkspaceView'
 import { DEFAULT_BINDINGS } from '#lib/shortcuts'
-import { shortcutsSuspended, useUiStore } from '#lib/store'
+import { useUiStore } from '#lib/store'
 import { isPreviewTarget, previewTarget } from '#lib/preview'
 import { mockFetch, renderWithClient, type FetchMock } from './harness'
 
@@ -99,23 +99,16 @@ describe('WorkspaceView: open-changes', () => {
   })
 })
 
-describe('window shortcuts while the create dialog is open', () => {
-  it('leave the keypress to the dialog, and resume once it closes', () => {
+describe('window shortcuts while a rebind is recorded', () => {
+  it('leave the keypress to the recorder, and resume once it is done', () => {
     renderView()
-    useUiStore.getState().openCreateWorkspace({ projectId: 'proj', focus: 'prompt' })
+    useUiStore.setState({ recordingShortcut: true })
     altE()
     expect(tabsOf()).not.toContain('files')
 
-    useUiStore.getState().closeCreateWorkspace()
+    useUiStore.setState({ recordingShortcut: false })
     altE()
     expect(tabsOf()).toContain('files')
-  })
-
-  it('suspends for the dialog and for a rebind being recorded, not otherwise', () => {
-    const base = { recordingShortcut: false, createWorkspaceDialog: null }
-    expect(shortcutsSuspended(base)).toBe(false)
-    expect(shortcutsSuspended({ ...base, recordingShortcut: true })).toBe(true)
-    expect(shortcutsSuspended({ ...base, createWorkspaceDialog: { projectId: 'proj' } })).toBe(true)
   })
 })
 

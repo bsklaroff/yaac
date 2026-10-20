@@ -31,7 +31,7 @@ export function StopWorkspaceDialog({
   onConfirm: () => void
 }): JSX.Element {
   const snapshot = useSnapshot()
-  const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   // Kept through the close animation, when `workspace` is already null.
   const last = useRef(workspace)
   if (workspace !== null) last.current = workspace
@@ -57,7 +57,10 @@ export function StopWorkspaceDialog({
         </span>
         <button
           type="button"
-          onClick={() => openCreateWorkspace({ projectId: entry.projectId, editId: entry.id })}
+          onClick={() => {
+            onOpenChange(false)
+            openNewWorkspace({ projectId: entry.projectId, editId: entry.id })
+          }}
           className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-text-dim transition hover:bg-surface-3 hover:text-text"
         >
           Edit

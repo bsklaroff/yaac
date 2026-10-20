@@ -1,35 +1,24 @@
 import { useCallback } from 'react'
 import { useUiStore } from '#lib/store'
 import { formatUtcTimestamp } from '@yaac/shared/time'
-import type { AgentTool, ProvisioningWorkspaceEntry } from '@yaac/shared/types'
-
-/** A streaming provision op (create or restart) for a known id. */
-type ProvisionOp = (
-  workspaceId: string,
-  onProgress: (message: string) => void,
-) => Promise<{ workspaceId: string }>
+import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
 
 /**
- * Run a workspace create or restart optimistically: add a provisioning row
- * right away, open it so progress shows in the main pane, and stream
- * progress or errors into it until the snapshot lists the workspace (the
- * store then drops the optimistic row). A create that claims a prewarmed
- * spare is listed under the spare's id: its row stays until the spare is
- * listed, so the pane is never left empty, and the selection then follows it
- * (`claims` in the store).
+ * Run a workspace create or restart optimistically: add its provisioning
+ * `row` right away, open it so progress shows in the main pane, and stream
+ * `op`'s progress or error into it until the snapshot lists the workspace
+ * (the store then drops the optimistic row). A create that claims a
+ * prewarmed spare is listed under the spare's id: its row stays until the
+ * spare is listed, so the pane is never left empty, and the selection then
+ * follows it (`claims` in the store).
  *
- * `groupId` places the row in its sidebar group from the start (a restart
- * passes the stopped workspace's group). `named` is the title, prompt and
- * model a create launches with, so the row can show them from the start.
+ * The row carries what it shows from the start: its sidebar group (a
+ * restart's is the stopped workspace's), and a create's title, prompt and
+ * model.
  */
 export function useProvisionWorkspace(): (
-  projectId: string,
-  tool: AgentTool,
-  kind: ProvisioningWorkspaceEntry['kind'],
-  workspaceId: string,
-  op: ProvisionOp,
-  groupId?: string,
-  named?: Pick<ProvisioningWorkspaceEntry, 'title' | 'prompt' | 'model' | 'modelName'>,
+  row: Omit<ProvisioningWorkspaceEntry, 'message' | 'createdAt'>,
+  op: (onProgress: (message: string) => void) => Promise<{ workspaceId: string }>,
 ) => void {
   const addOptimisticProvisioning = useUiStore((s) => s.addOptimisticProvisioning)
   const updateOptimisticProvisioning = useUiStore((s) => s.updateOptimisticProvisioning)
@@ -37,12 +26,12 @@ export function useProvisionWorkspace(): (
   const setProvisionInFlight = useUiStore((s) => s.setProvisionInFlight)
   const openWorkspace = useUiStore((s) => s.openWorkspace)
 
-  return useCallback((projectId, tool, kind, workspaceId, op, groupId, named) => {
-    const filed = { ...(groupId !== undefined ? { groupId } : {}), ...named }
-    addOptimisticProvisioning({ workspaceId, projectId, tool, kind, ...filed, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
-    openWorkspace(projectId, workspaceId)
+  return useCallback((row, op) => {
+    const { workspaceId } = row
+    addOptimisticProvisioning({ ...row, message: 'Starting…', createdAt: formatUtcTimestamp(Date.now()) })
+    openWorkspace(row.projectId, workspaceId)
     setProvisionInFlight(workspaceId, true)
-    void op(workspaceId, (message) => updateOptimisticProvisioning(workspaceId, { message }))
+    void op((message) => updateOptimisticProvisioning(workspaceId, { message }))
       .then((res) => {
         // A create that claimed a prewarmed spare returns the spare's id.
         // The snapshot usually reports the claim first; this covers a create

@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import { ServerIcon } from '#lib/icons'
 import { windowApi } from '#lib/platform'
+import { useUiStore } from '#lib/store'
 
 /** host[:port] of the origin, or the origin as-is if it doesn't parse. */
 export function serverLabel(origin: string): string {
@@ -33,7 +34,7 @@ export function ServerBadge(): JSX.Element | null {
   return (
     <button
       type="button"
-      onClick={() => showServers()}
+      onClick={() => useUiStore.getState().navigate(showServers)}
       title={`Connected to ${origin} — choose a server`}
       aria-label="Choose a server"
       // The only shrinkable badge in the row: it truncates only when space
@@ -58,7 +59,7 @@ export function ServersButton({ variant = 'rail' }: { variant?: 'rail' | 'row' }
   if (variant === 'row') {
     return (
       <button
-        onClick={() => showServers()}
+        onClick={() => useUiStore.getState().navigate(showServers)}
         aria-label="Servers"
         className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm text-text-dim transition
           active:bg-surface-2"
@@ -73,7 +74,7 @@ export function ServersButton({ variant = 'rail' }: { variant?: 'rail' | 'row' }
   }
   return (
     <button
-      onClick={() => showServers()}
+      onClick={() => useUiStore.getState().navigate(showServers)}
       title="Servers"
       aria-label="Servers"
       className="flex h-10 w-10 items-center justify-center rounded-[20px] text-text-faint transition-all

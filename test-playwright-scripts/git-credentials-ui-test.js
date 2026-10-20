@@ -7,8 +7,9 @@
  *     proxy detects one for real; k8s/proxy/test covers that). Its popover
  *     names the host and status, and "Change git credential…" opens
  *     Settings → Credentials on the project's highlighted row.
- *  1. A project with no git credential cannot create: the create dialog's
- *     button reads "Add git authentication…", which opens that same row.
+ *  1. A project with no git credential cannot create: the new-workspace
+ *     pane offers "Add git authentication…" instead, which opens that same
+ *     row.
  *  2. Settings → Add git credential → SSH key: the name starts on a unique
  *     default, Generate shows the public key (with Copy) right away, and the
  *     key then lists among the stored credentials.
@@ -16,10 +17,11 @@
  *     Assign — the project moves under the new credential and out of the
  *     unassigned list.
  *  4. Add project with a new HTTPS token (named `<name>-token` for the
- *     project name the remote becomes). The token is stored exactly once whatever the
+ *     project name the remote becomes). The form closes at once and the add
+ *     runs in the background; the token is stored exactly once whatever the
  *     clone does. A clone that succeeds adds and selects the project; one the
- *     host refuses shows the error, with the picker now holding the stored
- *     token for a retry.
+ *     host refuses shows the error in the main area, and Try again reopens
+ *     the form on the same remote.
  *  5. Replace on step 3's token keeps the credential's name and project.
  *  6. Delete on that token: a confirmation names the project it strands, a
  *     pressed Enter does not confirm, a click does, and the project is back
@@ -169,15 +171,17 @@ try {
   await dialog.getByLabel('Token').fill(GIT_TOKEN)
   await page.screenshot({ path: path.join(SHOTS, 'add-project-new-token.png') })
   await dialog.getByRole('button', { name: 'Add' }).click()
-  const error = dialog.locator('p.text-red-400')
-  const settled = await Promise.race([
-    dialog.waitFor({ state: 'detached', timeout: 60_000 }),
-    error.waitFor({ timeout: 60_000 }),
-  ]).then(() => true, () => false)
-  check('the add settles within 60s', settled)
+  // The form closes at once and the add runs in the background, shown in
+  // the main area until the snapshot lists the project, or failed there.
+  const refused = page.getByText(`Couldn't add ${nameOf(ADD_URL)}`)
+  let added
+  const deadline = Date.now() + 60_000
+  while (Date.now() < deadline && !(added = await addedProject()) && !(await refused.isVisible())) {
+    await page.waitForTimeout(500)
+  }
+  check('the add settles within 60s', added !== undefined || await refused.isVisible())
   const stored = (await credentials()).filter((c) => c.name === newName)
   check('the token is stored exactly once', stored.length === 1, `${stored.length}`)
-  const added = await addedProject()
   if (added) {
     check('the project is added with it', stored[0]?.projects.includes(added.id) === true,
       JSON.stringify(stored[0]?.projects))
@@ -185,10 +189,11 @@ try {
     check('and the new project is selected', await holds(page,
       (projectId) => new URLSearchParams(location.search).get('project') === projectId, added.id, 5_000))
   } else {
-    console.log(`      clone refused: ${await error.textContent().catch(() => '(no error shown)')}`)
-    check('the clone\'s refusal shows', await error.isVisible())
-    check('and the picker now holds the stored token for a retry',
-      await dialog.getByLabel('Git credential').inputValue() === stored[0]?.id)
+    console.log(`      clone refused: ${await refused.locator('xpath=following-sibling::p[1]').textContent()}`)
+    check('the refusal shows in the main area', true)
+    await page.getByRole('button', { name: 'Try again' }).click()
+    check('and Try again reopens the form on the same remote',
+      await dialog.getByLabel('Repository URL').inputValue() === ADD_URL)
   }
   await page.screenshot({ path: path.join(SHOTS, 'add-project-result.png') })
   if (await dialog.isVisible()) await page.keyboard.press('Escape')

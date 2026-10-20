@@ -1,20 +1,19 @@
 /*
  * Verifies draft workspaces (docs/draft-workspaces.md) in a real browser, with
- * real pointer and keyboard events:
+ * real pointer and keyboard events, through the new-workspace pane:
  *
  *  1. With no drafts the sidebar has no Drafts section.
- *  2. Closing the create dialog with no prompt asks nothing.
- *  3. Escape with a prompt typed asks Save / Discard / Keep editing, and a
- *     second Escape (on the question) goes back to the form with the prompt
- *     intact — it does not close both dialogs.
- *  4. Save draft closes both and puts the draft in a collapsible Drafts
- *     section at the top of the sidebar; collapsing hides its rows.
- *  5. Clicking the draft reopens the dialog on its prompt and permission mode;
- *     closing it unchanged asks nothing.
- *  6. Editing its prompt and clicking × asks to save changes; saving updates
- *     the row in place (still one draft).
- *  7. Discard (on a new dialog's prompt) closes without saving anything.
- *  8. The row's Discard… deletes the draft, and the section disappears.
+ *  2. The pane's Save draft puts the prompt in a collapsible Drafts section at
+ *     the top of the sidebar and clears the form; collapsing hides its rows.
+ *  3. Leaving the pane with a prompt typed (here, by opening the draft) asks
+ *     Save / Discard / Keep editing, with Save focused; Escape on the
+ *     question keeps the form and its prompt, and Discard saves nothing and
+ *     goes on to the draft.
+ *  4. The reopened draft shows its prompt and permission mode; the + leaves
+ *     it unchanged for a blank form without asking.
+ *  5. An edited draft asks to save its changes on the +; saving updates the
+ *     row in place (still one draft).
+ *  6. The row's Discard… deletes the draft, and the section disappears.
  *
  * Creates no workspace. Drafts it saves are discarded by the end; if a check
  * fails midway, discard leftovers from the sidebar.
@@ -22,7 +21,7 @@
  * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/draft-workspaces-ui-test.js
  */
 import path from 'node:path'
-import { check, finish, origin, requirePlaywright, SHOTS, resolveProject } from './lib.js'
+import { check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
 
 if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
 const PROJECT = (await resolveProject(process.env.PROJECT)).id
@@ -40,29 +39,36 @@ try {
   const drafts = aside.getByRole('group', { name: 'Drafts' })
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
-  const open = async () => {
-    await aside.getByRole('button', { name: 'New workspace', exact: true }).click()
-    await prompt.waitFor({ state: 'visible' })
-  }
-  await aside.getByRole('button', { name: 'New workspace', exact: true }).waitFor({ timeout: 15_000 })
+  const plus = aside.getByRole('button', { name: 'New workspace', exact: true })
+  const promptIs = (text) => until(page, (t) => document.querySelector('textarea[aria-label="Prompt"]')?.value === t, text)
+  const posture = () => page.getByRole('button', { name: 'Permission mode' }).textContent()
+  await plus.waitFor({ timeout: 15_000 })
+  await plus.click()
+  // Settings load with the credential list.
+  await page.getByRole('button', { name: 'Permission mode' }).waitFor({ timeout: 15_000 })
 
   // (1) Nothing to show.
   check('no Drafts section without drafts', await drafts.count() === 0)
 
-  // (2) An empty prompt closes silently.
-  await open()
-  await page.keyboard.press('Escape')
-  await prompt.waitFor({ state: 'detached' })
-  check('an empty dialog closes without asking', await question.count() === 0)
+  // (2) Save it from the pane.
+  await prompt.fill(idea)
+  await page.getByRole('button', { name: 'Permission mode' }).click()
+  await page.getByRole('menuitemradio').filter({ hasText: 'Plan mode' }).click()
+  await page.locator('main').getByRole('button', { name: 'Save draft' }).click()
+  await drafts.waitFor({ state: 'visible', timeout: 10_000 })
+  await promptIs('')
+  check('the draft shows in a Drafts section, and the form clears', (await drafts.textContent())?.includes(idea) === true)
+  check('the section leads the list', await drafts.evaluate((el) => el.previousElementSibling === null))
+  await page.screenshot({ path: path.join(SHOTS, 'drafts-section.png') })
+  await drafts.getByRole('button', { name: /Drafts/ }).click()
+  check('collapsing hides the rows', !(await drafts.getByText(idea).isVisible()))
+  await drafts.getByRole('button', { name: /Drafts/ }).click()
 
-  // (3) A typed prompt asks; Escape on the question returns to the form.
-  await open()
-  await page.keyboard.type(idea)
-  await page.getByLabel('Permissions').selectOption('plan')
-  await prompt.click()
-  await page.keyboard.press('Escape')
+  // (3) A typed prompt asks before leaving; Escape stays, Discard goes on.
+  await prompt.fill(`${idea} throwaway`)
+  await drafts.getByText(idea).click()
   await question.waitFor({ state: 'visible' })
-  check('a typed prompt asks before closing', (await question.textContent())?.includes('Save as a draft?') === true)
+  check('a typed prompt asks before leaving', (await question.textContent())?.includes('Save as a draft?') === true)
   // Let the scale-in animation finish.
   await page.waitForTimeout(300)
   check('Save draft has focus',
@@ -70,53 +76,34 @@ try {
   await page.screenshot({ path: path.join(SHOTS, 'draft-question.png') })
   await page.keyboard.press('Escape')
   await question.waitFor({ state: 'detached' })
-  check('Escape on the question keeps the form and its prompt',
-    await prompt.isVisible() && await prompt.inputValue() === idea)
-
-  // (4) Save it.
-  await page.keyboard.press('Escape')
-  await question.getByRole('button', { name: 'Save draft' }).click()
-  await prompt.waitFor({ state: 'detached' })
-  await drafts.waitFor({ state: 'visible', timeout: 10_000 })
-  check('the draft shows in a Drafts section', (await drafts.textContent())?.includes(idea) === true)
-  check('the section leads the list', await drafts.evaluate((el) => el.previousElementSibling === null))
-  await page.screenshot({ path: path.join(SHOTS, 'drafts-section.png') })
-  await drafts.getByRole('button', { name: /Drafts/ }).click()
-  check('collapsing hides the rows', !(await drafts.getByText(idea).isVisible()))
-  await drafts.getByRole('button', { name: /Drafts/ }).click()
-
-  // (5) Reopen it; unchanged, a close asks nothing.
+  check('Escape on the question keeps the form and its prompt', await prompt.inputValue() === `${idea} throwaway`)
   await drafts.getByText(idea).click()
-  await prompt.waitFor({ state: 'visible' })
+  await question.getByRole('button', { name: 'Discard' }).click()
+  await promptIs(idea)
+  await page.waitForTimeout(500)
+  check('Discard saves nothing and goes on', await drafts.getByText(`${idea} throwaway`).count() === 0)
+
+  // (4) The reopened draft, left unchanged.
   check('reopens on its prompt', await prompt.inputValue() === idea)
-  check('and its permission mode', await page.getByLabel('Permissions').inputValue() === 'plan')
-  await page.keyboard.press('Escape')
-  await prompt.waitFor({ state: 'detached' })
-  check('closing an unchanged draft asks nothing', await question.count() === 0)
+  check('and its permission mode', await posture() === 'Plan mode', String(await posture()))
+  await plus.click()
+  await promptIs('')
+  check('the + leaves an unchanged draft without asking', await question.count() === 0)
 
-  // (6) Edit and save changes via ×.
+  // (5) Edit and save changes on the +.
   await drafts.getByText(idea).click()
-  await prompt.waitFor({ state: 'visible' })
+  await promptIs(idea)
   await prompt.fill(`${idea} edited`)
-  await page.getByRole('button', { name: 'Close' }).click()
+  await plus.click()
   await question.waitFor({ state: 'visible' })
   check('an edited draft asks to save changes',
     (await question.textContent())?.includes('Save changes to this draft?') === true)
   await question.getByRole('button', { name: 'Save changes' }).click()
-  await prompt.waitFor({ state: 'detached' })
+  await promptIs('')
   await drafts.getByText(`${idea} edited`).waitFor({ timeout: 10_000 })
   check('the row updates in place, still one draft', await drafts.getByText(idea).count() === 1)
 
-  // (7) Discard on the question keeps nothing.
-  await open()
-  await page.keyboard.type(`${idea} throwaway`)
-  await page.keyboard.press('Escape')
-  await question.getByRole('button', { name: 'Discard' }).click()
-  await prompt.waitFor({ state: 'detached' })
-  await page.waitForTimeout(500)
-  check('Discard saves nothing', await drafts.getByText(`${idea} throwaway`).count() === 0)
-
-  // (8) Discard the draft from its row.
+  // (6) Discard the draft from its row.
   const row = drafts.locator('div.group.relative', { hasText: idea })
   await row.hover()
   await row.getByRole('button', { name: 'Draft actions' }).click()

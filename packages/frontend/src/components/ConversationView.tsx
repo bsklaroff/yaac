@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type JSX, type MouseEventHandler, type ReactNode, type RefObject } from 'react'
 import clsx from 'clsx'
 import {
-  AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory, type Group,
+  AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory, USER_BUBBLE, type Group,
 } from '#components/AcpTranscript'
 import {
   ActivityTitleBar, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
@@ -167,13 +167,14 @@ export function useConversationView({
 }
 
 /** Under a running thread, in place of a TUI's spinner; not while it waits
- *  on a permission answer. */
-function Working(): JSX.Element {
+ *  on a permission answer. A workspace still being created shows its
+ *  progress as the `caption`, so the spinner carries on into the chat. */
+export function Working({ caption = 'working' }: { caption?: string }): JSX.Element {
   return (
     <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
       <LoadingIcon size={12} className="animate-spin" />
       <span>
-        working
+        {caption.replace(/(\.\.\.|…)$/, '')}
         <span className="working-dots" aria-hidden="true"><i>.</i><i>.</i><i>.</i></span>
       </span>
     </div>
@@ -212,6 +213,26 @@ export function JumpButtons({ pages }: { pages: TranscriptPages }): JSX.Element 
     </div>
   )
 }
+
+/** A create's opening prompt and its progress, drawn as the conversation it
+ *  becomes: the user's message, then the spinner. */
+export function Launching({ prompt, caption }: { prompt?: string; caption?: string }): JSX.Element {
+  return (
+    <div className="flex flex-col items-start break-words text-sm">
+      {prompt !== undefined && <div className={USER_BUBBLE}>{prompt}</div>}
+      <Working {...(caption !== undefined ? { caption } : {})} />
+    </div>
+  )
+}
+
+/** The composer's text box. index.css raises its text to 16px on phones so
+ *  iOS Safari does not zoom on focus. */
+export const COMPOSER_INPUT = 'block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 '
+  + 'text-sm text-text placeholder:text-text-faint focus:outline-none'
+
+/** The composer's round Send and Stop buttons. */
+export const ROUND_BUTTON = 'flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90 '
+  + 'disabled:bg-surface-3 disabled:text-text-faint'
 
 /** The conversation and composer share one centered column, so lines stay
  *  readable in a wide pane, unless the user picks full width. The width

@@ -2,7 +2,7 @@
  * Verifies, in a real browser, the typeaheads built on Base UI's Combobox
  * (`Typeahead` in packages/frontend/src/components/ui/Typeahead.tsx):
  *
- *  1. Create-workspace dialog, Base branch: typing opens the list with the
+ *  1. New-workspace pane, Base branch: typing opens the list with the
  *     first match highlighted; ↑/↓ move the highlight; Escape closes only
  *     the list and reverts the text; Enter picks; a hovered row takes the
  *     highlight and a click picks it; text matching nothing says "No
@@ -21,7 +21,7 @@
  *        node test-playwright-scripts/typeahead-combobox-test.js
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
 
 if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
 const PROJECT = (await resolveProject(process.env.PROJECT)).id
@@ -43,15 +43,15 @@ try {
   })
   await page.goto(`${origin}/?project=${PROJECT}`)
 
-  const dialog = page.getByRole('dialog')
+  const pane = page.locator('main')
   await page.locator('aside').getByRole('button', { name: 'New workspace', exact: true }).click()
-  await dialog.getByRole('button', { name: 'Create', exact: true }).and(page.locator(':enabled'))
-    .waitFor({ timeout: 15_000 })
+  // Ready once the branch list has filled the field.
+  await until(page, () => document.querySelector('input[aria-label="Base branch"]')?.value !== '', undefined, 15_000)
 
   // (1) Base branch.
-  const branch = dialog.getByLabel('Base branch', { exact: true })
+  const branch = pane.getByLabel('Base branch', { exact: true })
   const chosen = await branch.inputValue()
-  const list = dialog.getByRole('listbox')
+  const list = page.getByRole('listbox')
   const highlighted = () => list.locator('[role="option"][data-highlighted]').innerText().catch(() => null)
   const label = (text) => text?.split('\n')[0] ?? null
   await branch.click()
@@ -73,7 +73,7 @@ try {
   await page.screenshot({ path: path.join(SHOTS, 'typeahead-branch-open.png') })
   await page.keyboard.press('Escape')
   check('Escape closes the list', await list.count() === 0)
-  check('…keeps the dialog open', await dialog.isVisible())
+  check('…keeps the pane\'s form', await branch.isVisible())
   check('…and reverts the text to the chosen branch', await branch.inputValue() === chosen, await branch.inputValue())
   check('aria-expanded is false with the list closed', await branch.getAttribute('aria-expanded') === 'false')
 
@@ -81,7 +81,7 @@ try {
   await page.keyboard.type(prefix)
   await page.keyboard.press('Enter')
   check('Enter picks the highlighted branch', await branch.inputValue() === firstMatch, await branch.inputValue())
-  check('…closes the list and the dialog stays', await list.count() === 0 && await dialog.isVisible())
+  check('…closes the list and the form stays', await list.count() === 0 && await branch.isVisible())
 
   await branch.press('Control+a')
   await page.keyboard.type(prefix)
@@ -97,7 +97,7 @@ try {
 
   await branch.press('Control+a')
   await page.keyboard.type('zz-no-such-branch')
-  check('text matching nothing says "No matches"', await dialog.getByText('No matches').isVisible())
+  check('text matching nothing says "No matches"', await page.getByText('No matches').isVisible())
   const before = await branch.inputValue()
   await page.keyboard.press('Enter')
   await page.waitForTimeout(300)
@@ -112,18 +112,16 @@ try {
     String(next))
 
   // (2) Model.
-  const model = dialog.getByLabel('Model', { exact: true })
+  const model = pane.getByLabel('Model', { exact: true })
   if (await model.count()) {
     await model.click()
     await model.press('Control+a')
     await page.keyboard.type('sonnet')
-    const want = label(await dialog.getByRole('listbox').getByRole('option').first().innerText())
+    const want = label(await page.getByRole('listbox').getByRole('option').first().innerText())
     await page.keyboard.press('Enter')
     check('Model: typing and Enter picks the top match', await model.inputValue() === want,
       `${await model.inputValue()} vs ${want}`)
   }
-  await page.keyboard.press('Escape')
-  await dialog.waitFor({ state: 'hidden', timeout: 3000 })
 
   // (3) Provider picker.
   await page.getByTitle('Settings').first().click()

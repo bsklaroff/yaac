@@ -1,6 +1,6 @@
 /**
- * Draft workspaces (docs/draft-workspaces.md): create-dialog contents the
- * user chose to keep. Nothing runs from a draft; creating or queueing from
+ * Draft workspaces (docs/draft-workspaces.md): new-workspace pane contents
+ * the user chose to keep. Nothing runs from a draft; creating or queueing from
  * it discards it.
  */
 import { notifyWorkspaceListChanged } from '#lib/notify'

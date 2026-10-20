@@ -2,7 +2,7 @@
  * Smoke-tests the frontend's typed Hono API client (packages/frontend/src/
  * lib/api.ts and the lib/*Api modules) against a running server, through
  * the webapp in real Chromium. It drives the initial load (GET /whoami),
- * Settings, New workspace → Create (the NDJSON create stream), a header
+ * Settings, New workspace → Start without a prompt (the NDJSON create stream), a header
  * rename and a stop (Alt+D), capturing every same-origin API response, and asserts each
  * exercised endpoint answered 2xx, nothing answered 4xx/5xx and the page
  * threw no errors.
@@ -52,9 +52,9 @@ try {
   await page.keyboard.press('Escape')
 
   await page.getByTitle('New workspace').first().click()
-  const create = page.getByRole('button', { name: 'Create', exact: true })
+  const create = page.getByRole('button', { name: 'Start without a prompt', exact: true })
   await until(page, () => [...document.querySelectorAll('button')]
-    .some((b) => b.textContent === 'Create' && !b.disabled))
+    .some((b) => b.textContent === 'Start without a prompt' && !b.disabled))
   await create.click()
   console.log('create clicked; waiting for the workspace to run…')
   await until(page, () => /[?&]workspace=/.test(location.search), null, 60_000)

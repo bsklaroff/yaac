@@ -32,7 +32,7 @@ const snapshot = vi.fn((): { driver: string } | undefined => undefined)
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
-import { chatDraftKey, flushChatDrafts, useUiStore } from '#lib/store'
+import { chatDraftKey, flushTypedText, useUiStore } from '#lib/store'
 import { IS_MAC } from '#lib/platform'
 import { filesKey } from '#lib/useWorkspaceChanges'
 import { agentEvent as agent, mockFetch, testQueryClient, userEvent as user } from './harness'
@@ -83,7 +83,7 @@ describe('WorkspaceChat drafts', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   it('keeps a half-typed message when the pane is torn down and mounted again', async () => {
@@ -187,7 +187,7 @@ describe('WorkspaceChat mid-turn', () => {
     stream.busy = false
     stream.queued = []
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   it('sends with Enter while the agent works, keeping Stop on offer', async () => {
@@ -222,6 +222,48 @@ describe('WorkspaceChat mid-turn', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove queued message' }))
     expect(stream.send).toHaveBeenLastCalledWith({ type: 'unqueue', id: 'q1' })
+  })
+})
+
+// A chat create's prompt stands in for the conversation until the agent
+// echoes it, so the create's spinner carries straight on into the chat.
+describe('WorkspaceChat right after its create', () => {
+  beforeEach(() => {
+    stream.events = []
+    stream.busy = false
+    stream.connected = true
+    useUiStore.setState({ chatDrafts: {}, launches: { w1: { prompt: 'build it' } } })
+  })
+
+  afterEach(() => {
+    stream.busy = false
+    cleanup()
+  })
+
+  it('shows the prompt working until the echo, then the conversation itself', async () => {
+    const { rerender } = show()
+    expect(screen.getByText('build it')).toBeTruthy()
+    expect(screen.getByText('working')).toBeTruthy()
+    expect(screen.queryByText(/No messages yet/)).toBeNull()
+
+    stream.events = [user(0, 'build it')]
+    stream.busy = true
+    rerender(pane())
+    await waitFor(() => expect(useUiStore.getState().launches).toEqual({}))
+    expect(screen.getAllByText('build it')).toHaveLength(1)
+    expect(screen.getByText('working')).toBeTruthy()
+  })
+
+  it('leaves another workspace, and a failed start, to their own view', async () => {
+    show('w2')
+    expect(screen.getByText(/No messages yet/)).toBeTruthy()
+    cleanup()
+
+    stream.events = [{ type: 'error', seq: 0, message: 'the agent refused' }]
+    show()
+    expect(screen.getByText('the agent refused')).toBeTruthy()
+    await waitFor(() => expect(useUiStore.getState().launches).toEqual({}))
+    expect(screen.queryByText('build it')).toBeNull()
   })
 })
 
@@ -502,7 +544,7 @@ describe('WorkspaceChat images', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   it('attaches a pasted image, sends it with the words, and clears both on the echo', async () => {
@@ -591,7 +633,7 @@ describe('WorkspaceChat composer menu', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
     vi.unstubAllGlobals()
   })
 
@@ -776,7 +818,7 @@ describe('WorkspaceChat rendering', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   it('puts the user on the left, verbatim', () => {
@@ -1128,7 +1170,7 @@ describe('WorkspaceChat with hostile agent output', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   it.each<[string, string, Record<string, string[]>, string]>([
@@ -1200,7 +1242,7 @@ describe('WorkspaceChat permission asks', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   it('offers one button per option, over the call being asked about', () => {
@@ -1329,7 +1371,7 @@ describe('WorkspaceChat scroll follow', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   /** jsdom does no layout, so the scroller's metrics are set by hand. The
@@ -1381,7 +1423,7 @@ describe('WorkspaceChat focus', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
     vi.unstubAllGlobals()
     document.body.replaceChildren()
   })
@@ -1448,7 +1490,7 @@ describe('WorkspaceChat subagents and background tasks', () => {
 
   afterEach(() => {
     cleanup()
-    flushChatDrafts()
+    flushTypedText()
   })
 
   it('keeps a subagent\'s work out of the conversation, and shows it, working, without a composer, once opened', () => {

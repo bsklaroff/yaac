@@ -20,19 +20,14 @@ import { acpTargetSession, isAcpTarget } from '@yaac/shared/acp'
 import { defaultPaneTarget, isAgentPane, isSpecialPane, syncPaneLayout } from '#lib/panes'
 import { agentLabel } from '#lib/agentLabel'
 import { isElectron, windowApi } from '#lib/platform'
-import { goBackScreen } from '#lib/mobileHistory'
 import { useIsMobile } from '#lib/viewport'
 import { WorkspaceTitle } from '#components/WorkspaceTitle'
-import { CreatingPlaceholder } from '#components/CreatingPlaceholder'
+import { CreatingPane } from '#components/CreatingPane'
+import { NewWorkspacePane } from '#components/NewWorkspacePane'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import {
-  AddIcon, ChangesIcon, ChevronIcon, CloseIcon, FilesIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon, TabsIcon,
-  TerminalIcon, TilesIcon, TOOL_LABEL,
-} from '#lib/icons'
-import { EmptyState } from '#components/ui/EmptyState'
-import { projectHasWorkspaces } from '#components/WorkspaceList'
-import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
+import { ChevronIcon, CloseIcon, PreviewIcon } from '#lib/icons'
+import { PaneBarActions, PaneBarLeading, PaneOverflowMenu, paneBarClass } from '#components/PaneBar'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
@@ -125,7 +120,6 @@ export function WorkspaceView({
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const activeProjectId = useUiStore((s) => s.activeProjectId)
   const viewMode = useUiStore((s) => s.viewMode)
-  const setViewMode = useUiStore((s) => s.setViewMode)
   const activeTabs = useUiStore((s) => s.activeTabs)
   const focusTerminal = useUiStore((s) => s.focusTerminal)
   const openPreview = useUiStore((s) => s.openPreview)
@@ -161,7 +155,10 @@ export function WorkspaceView({
   const previewMenuTrigger = useRef<HTMLButtonElement>(null)
   const previewMenuReturn = useRef<HTMLElement | null>(null)
 
-  // Show the provisioning placeholder only when its row is selected and the
+  // The bar the new-workspace pane renders its controls into.
+  const [newWorkspaceBar, setNewWorkspaceBar] = useState<HTMLElement | null>(null)
+
+  // Show the provisioning pane only when its row is selected and the
   // workspace isn't listed yet.
   const creatingHere = workspace ? null : provisioning.find((p) => p.workspaceId === selectedWorkspaceId) ?? null
 
@@ -256,6 +253,17 @@ export function WorkspaceView({
       })
       .catch((e: unknown) => console.error('new shell failed', e))
   }
+
+  // A create started from the new-workspace pane's bar opens the pane it
+  // was started for once the workspace is listed (`launches`).
+  const launchPane = useUiStore((s) => (sid ? s.launches[sid]?.pane : undefined))
+  useEffect(() => {
+    if (!sid || launchPane === undefined) return
+    useUiStore.getState().endLaunch(sid, 'pane')
+    if (launchPane === 'files') openFiles(sid)
+    else if (launchPane === 'changes') openChanges(sid)
+    else openShell()
+  }, [sid, launchPane])
 
   // The pane's × or the kill shortcut asks before killing a tmux window.
   const [confirmKill, setConfirmKill] = useState<{ target: string; name: string } | null>(null)
@@ -461,40 +469,11 @@ export function WorkspaceView({
           <ContainerlessBadge />
           {!isMobile && (
             <>
-              <button
-                onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
-                title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-                className={BAR_BUTTON}
-              >
-                {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
-                <span className="max-lg:sr-only">{tiled ? 'Tab view' : 'Tile view'}</span>
-              </button>
-              <button
-                onClick={openShell}
-                title="New shell"
-                className={BAR_BUTTON}
-              >
-                <AddIcon size={13} />
-                <span className="max-lg:sr-only">New Shell</span>
-              </button>
-              <button
-                onClick={() => openFiles(workspace.workspaceId)}
-                title="Browse files"
-                aria-label="Browse files"
-                className={BAR_BUTTON}
-              >
-                <FilesIcon size={13} />
-                Files
-              </button>
-              <button
-                onClick={() => openChanges(workspace.workspaceId)}
-                title="Show changes"
-                aria-label="Show changes"
-                className={BAR_BUTTON}
-              >
-                <ChangesIcon size={13} />
-                Changes
-              </button>
+              <PaneBarActions
+                onNewShell={openShell}
+                onOpenFiles={() => openFiles(workspace.workspaceId)}
+                onOpenChanges={() => openChanges(workspace.workspaceId)}
+              />
               {pickPreviewPort ? (
                 <PreviewPortMenu
                   ports={previewPorts}
@@ -576,6 +555,12 @@ export function WorkspaceView({
             />
           )}
         </header>
+      ) : activeProjectId ? (
+        // The new-workspace pane fills this bar (`NewWorkspacePane`).
+        <header className={headerClass}>
+          {leading}
+          <div ref={setNewWorkspaceBar} className="contents" />
+        </header>
       ) : (
         <header className={clsx(headerClass, 'titlebar-drag')}>
           {leading && <div className="no-drag">{leading}</div>}
@@ -585,26 +570,13 @@ export function WorkspaceView({
       {workspace && <GitStatusBar key={workspace.workspaceId} workspaceId={workspace.workspaceId} />}
 
       {/* `isolate` keeps the z-30 provisioning overlay below from painting
-          over portaled dropdowns such as "+ New workspace". */}
+          over portaled dropdowns. */}
       <div ref={wsRef} className="relative isolate min-h-0 flex-1">
-        {!workspace && !creatingHere && (
-          <EmptyState
-            className="h-full"
-            icon={TerminalIcon}
-            title={projectHasWorkspaces(activeProjectId, {
-              workspaces,
-              provisioning,
-              queued: snapshot?.queuedWorkspaces ?? [],
-              held: snapshot?.heldWorkspaces ?? [],
-              drafts: snapshot?.draftWorkspaces ?? [],
-            }, snapshot?.projects.find((p) => p.id === activeProjectId)?.stoppedCount ?? 0)
-              ? 'No workspace open'
-              : 'No workspaces yet'}
-            description="Start a coding-agent workspace and it opens right here."
-            action={activeProjectId
-              ? <NewWorkspaceButton projectId={activeProjectId} variant="cta" />
-              : undefined}
-          />
+        {/* With nothing selected, the pane starts a new workspace. */}
+        {!workspace && !creatingHere && activeProjectId && (
+          <PaneCard headerH={headerH}>
+            <NewWorkspacePane projectId={activeProjectId} bar={newWorkspaceBar} />
+          </PaneCard>
         )}
 
         {/* Tiles mode: one card per column, with its tab strip. The panes
@@ -779,10 +751,13 @@ export function WorkspaceView({
           />
         )}
 
-        {/* Provisioning overlay, covering the pane area until ready. */}
+        {/* Provisioning overlay, covering the pane area until ready, under
+            the tab its agent's pane will have. */}
         {creatingHere && (
           <div className="absolute inset-0 z-30 bg-shell">
-            <CreatingPlaceholder creating={creatingHere} />
+            <PaneCard headerH={headerH} tab={agentLabel(creatingHere.tool, creatingHere)}>
+              <CreatingPane creating={creatingHere} />
+            </PaneCard>
           </div>
         )}
       </div>
@@ -818,52 +793,28 @@ export function WorkspaceView({
 }
 
 /**
- * The workspace bar's leading button: back to the workspace list on mobile,
- * or the show-sidebar toggle on desktop while the sidebar is hidden.
+ * One pane in a card, drawn as tabs mode draws a workspace's: under `tab`
+ * as its only tab, or with no strip.
  */
-export function PaneBarLeading(): JSX.Element | null {
-  const isMobile = useIsMobile()
-  const sidebarOpen = useUiStore((s) => s.sidebarOpen)
-  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  if (isMobile) {
-    return (
-      <button
-        onClick={goBackScreen}
-        title="Back to workspaces"
-        aria-label="Back to workspaces"
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
-          transition active:bg-surface-2"
-      >
-        <NavBackIcon size={18} />
-      </button>
-    )
-  }
-  if (sidebarOpen) return null
+function PaneCard({ headerH, tab, children }: { headerH: number; tab?: string; children: ReactNode }): JSX.Element {
   return (
-    <button
-      onClick={toggleSidebar}
-      title="Show sidebar"
-      aria-label="Show sidebar"
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-        hover:bg-surface-2 hover:text-text-dim"
+    <section
+      style={{ padding: tab === undefined ? PAD : `0 ${PAD}px ${PAD}px` }}
+      className="absolute inset-0 flex flex-col overflow-hidden rounded-lg border border-hairline bg-surface
+        shadow-[0_8px_24px_var(--shadow-color)] max-md:rounded-none max-md:border-0 max-md:shadow-none"
     >
-      <SidebarIcon size={14} />
-    </button>
+      {tab !== undefined && (
+        <div style={{ height: headerH }} className="flex shrink-0 items-center px-1.5">
+          <span className="rounded bg-surface-3 px-2 py-0.5 text-[11px] font-medium text-text
+            max-md:rounded-md max-md:px-3 max-md:text-xs">
+            {tab}
+          </span>
+        </div>
+      )}
+      <div className="min-h-0 flex-1 overflow-hidden rounded-md">{children}</div>
+    </section>
   )
 }
-
-/** The workspace bar's classes. On mobile the warning badges (git auth,
- *  blocked hosts, unforwarded ports) stay in the bar and other controls move
- *  to an overflow menu. */
-export function paneBarClass(isMobile: boolean): string {
-  return isMobile
-    ? 'flex h-12 shrink-0 items-center gap-1 border-b border-hairline pl-1 pr-1.5 text-xs'
-    : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
-}
-
-/** The workspace bar's labeled buttons: view mode, new shell, files, changes. */
-const BAR_BUTTON = 'flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] '
-  + 'text-text-dim transition hover:bg-surface-2 hover:text-text'
 
 const PREVIEW_BUTTON = 'flex items-center gap-1 rounded px-1 py-0.5 text-[11px] '
   + 'text-text-dim transition hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2'
@@ -928,61 +879,3 @@ function PreviewPortMenu({
     </Menu.Root>
   )
 }
-
-/**
- * The mobile workspace bar's ⋯ menu, holding the desktop bar's controls
- * that don't fit on a phone. Warning badges stay in the bar.
- */
-function PaneOverflowMenu({
-  tool,
-  previewPorts,
-  onNewShell,
-  onOpenChanges,
-  onOpenFiles,
-  onOpenPreview,
-}: {
-  tool: WorkspaceListEntry['tool']
-  /** Forwarded ports to preview (empty in a browser). */
-  previewPorts: WorkspaceListEntry['forwardedPorts']
-  onNewShell: () => void
-  onOpenChanges: () => void
-  onOpenFiles: () => void
-  onOpenPreview: (containerPort: number) => void
-}): JSX.Element {
-  // Taller rows than other menus: this one is for touch.
-  const ITEM = clsx(MENU_ITEM, 'py-2!')
-  return (
-    <Menu.Root>
-      <Menu.Trigger
-        title="More"
-        aria-label="More pane actions"
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
-          transition active:bg-surface-2 data-[popup-open]:bg-surface-2"
-      >
-        <MoreIcon size={18} />
-      </Menu.Trigger>
-      <MenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px]">
-        <Menu.Item className={ITEM} onClick={onNewShell}>
-          <AddIcon size={14} />
-          New shell
-        </Menu.Item>
-        <Menu.Item className={ITEM} onClick={onOpenChanges}>
-          <ChangesIcon size={14} />
-          Review changes
-        </Menu.Item>
-        <Menu.Item className={ITEM} onClick={onOpenFiles}>
-          <FilesIcon size={14} />
-          Browse files
-        </Menu.Item>
-        {previewPorts.map((p) => (
-          <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview(p.containerPort)}>
-            <PreviewIcon size={14} />
-            {previewLabel(previewPorts.length > 1 ? p : undefined)}
-          </Menu.Item>
-        ))}
-        <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{TOOL_LABEL[tool]}</div>
-      </MenuPopup>
-    </Menu.Root>
-  )
-}
-

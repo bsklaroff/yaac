@@ -1,5 +1,6 @@
 import { api } from './api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
+import type { LaunchPane } from '#lib/store'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 
 export interface CreateWorkspaceResult {
@@ -33,46 +34,58 @@ async function streamWorkspaceOp(
   return await consumeNdjsonStream<unknown>(res, onProgress)
 }
 
-/** Optional create settings. The server fills an omitted field from what
- *  this project last used, else a fallback. Only fields sent become the
- *  project's next defaults. */
-export interface CreateWorkspaceOptions {
-  branch?: string
+/**
+ * A create from the webapp: its settings, every one sent so all become the
+ * project's next defaults for that agent, plus what its provisioning row
+ * shows until the workspace is listed.
+ */
+export interface WorkspaceCreate {
+  projectId: string
+  tool: AgentTool
+  mode: AgentMode
+  permissionMode: PermissionMode
+  /** Absent or empty when the provider lists no models: it launches without one. */
   model?: string
-  mode?: AgentMode
-  permissionMode?: PermissionMode
+  modelName?: string
   /** Effort level, in the tool's words. */
   effort?: string
   /** The agent's opening message, typed into it once it is up. */
   prompt?: string
   /** The workspace's title, which turns off auto-titling it. */
   title?: string
+  /** The row's label while it provisions, when `title` is unset. */
+  shownTitle?: string
+  /** Unset forks from origin's default branch. */
+  branch?: string
   /** The sidebar group to file it under, by id. */
-  group?: string
+  groupId?: string
+  /** A group to create and file it under, by name. */
+  newGroup?: string
   /** The draft this create is made from, deleted once it has succeeded. */
   draftId?: string
+  /** A pane to open once the workspace is up. */
+  pane?: LaunchPane
 }
 
 export async function createWorkspace(
-  project: string,
-  tool: AgentTool,
+  workspaceId: string,
+  c: WorkspaceCreate,
   onProgress: (message: string) => void,
-  workspaceId?: string,
-  opts: CreateWorkspaceOptions = {},
 ): Promise<CreateWorkspaceResult> {
+  const group = c.groupId ?? c.newGroup
   const body = {
-    project,
-    tool,
-    ...(workspaceId ? { workspaceId } : {}),
-    ...(opts.branch ? { branch: opts.branch } : {}),
-    ...(opts.model !== undefined ? { model: opts.model } : {}),
-    ...(opts.mode !== undefined ? { mode: opts.mode } : {}),
-    ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
-    ...(opts.effort !== undefined ? { effort: opts.effort } : {}),
-    ...(opts.prompt ? { prompt: opts.prompt } : {}),
-    ...(opts.title ? { title: opts.title } : {}),
-    ...(opts.group !== undefined ? { group: opts.group } : {}),
-    ...(opts.draftId !== undefined ? { draftId: opts.draftId } : {}),
+    project: c.projectId,
+    workspaceId,
+    tool: c.tool,
+    mode: c.mode,
+    permissionMode: c.permissionMode,
+    ...(c.model ? { model: c.model } : {}),
+    ...(c.effort !== undefined ? { effort: c.effort } : {}),
+    ...(c.prompt ? { prompt: c.prompt } : {}),
+    ...(c.title ? { title: c.title } : {}),
+    ...(c.branch ? { branch: c.branch } : {}),
+    ...(group !== undefined ? { group } : {}),
+    ...(c.draftId !== undefined ? { draftId: c.draftId } : {}),
     // A failed create's prompt lands in the sidebar as a draft to retry from.
     draftOnFailure: true,
   }
