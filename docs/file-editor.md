@@ -94,7 +94,21 @@ it, as a branch switch does to many, so it is retried with the index kept.
 Both the wait and the retries stop 10 seconds after the run starts, the
 wait answering `RUNTIME_UNAVAILABLE` (503). A failed `add -A` leaves the
 private index as it was, so only one git cannot read is seeded afresh,
-within the same run. It also reads which **stages** each file's changes sit
+within the same run. A killed one also leaves it as it was, since git
+writes the index only when `add -A` finishes. A cold index (missing, just
+seeded, or behind a big branch switch) has `add -A` hash every changed
+file, which took 20 to 45 seconds for 20,000 changes under gVisor, and is
+slower on NFS (docs/nfs-checkout-performance.md), so a run cut off there
+would leave the next to pay it again. The exec's timeout is therefore 20
+seconds only after the workspace's last read succeeded, and 120 otherwise:
+on its first read, after a server restart or five idle minutes, and after
+a failed read (most often a timeout). An abandoned read leaves the next
+one's timeout as it was, since being cut off by its caller says nothing
+about the index. A checkout whose cold staging takes longer than 120
+seconds never warms, and every read times out; `READ_TIMEOUT_MS` in
+`changes.ts` is the limit to raise.
+
+The script also reads which **stages** each file's changes sit
 in: `committed` (base → HEAD), `staged` (HEAD → the
 agent's index), `modified` (the agent's index → the working tree, git's
 unstaged changes) and `untracked` (in the working tree, not the agent's
