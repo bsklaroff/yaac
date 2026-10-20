@@ -99,7 +99,8 @@ headed by that title, or by the generated one below.
 Without one, the title sweep (`reconcileGeneratedTitles`) handles drafts as it
 does live workspaces. A prompt long enough to need summarizing gets one model
 attempt, stored as the draft's `generatedTitle`. A workspace created from the
-draft uses it as its title; a queue entry stores it as its own
+draft keeps it as its own generated title, shown until the workspace's agent
+gives one (docs/workspace-titles.md); a queue entry stores it as its own
 `generatedTitle`. This is skipped if the user set a title or changed the
 prompt before creating.
 

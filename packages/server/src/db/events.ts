@@ -45,8 +45,10 @@ export interface WorkspaceCreated {
    *  founding prompt, how it last died), so a failed resume leaves the row
    *  as it was rather than erasing it. */
   resume?: boolean
-  /** The user's title and sidebar group, on a fresh create. */
+  /** The user's title, the title generated for the draft or queued entry it
+   *  was created from, and its sidebar group, on a fresh create. */
   title?: string
+  generatedTitle?: string
   groupId?: string
   /** The permission mode its agents launch in, recorded so a restart reuses
    *  it rather than today's default. */
@@ -147,6 +149,9 @@ export interface DiscoveredSession {
   paneId?: string
   /** Its opening message, read out of the transcript or the ACP record. */
   firstPrompt?: string
+  /** The title the agent gave it. Overwrites (the agent or a rename inside
+   *  the tool can change it); absent leaves the row unchanged. */
+  title?: string
   /** The transcript path relative to the project directory (never absolute),
    *  so it survives the data dir moving. Absent when the tool leaves no
    *  transcript or wrote one outside the project directory. */

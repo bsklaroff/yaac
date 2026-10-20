@@ -21,6 +21,29 @@ export function jsonObjects(raw: string): Array<Record<string, unknown>> {
     .filter((v): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v))
 }
 
+/**
+ * The object lines in a JSONL file's last `maxBytes`, oldest first. A read
+ * that starts mid-file drops its first line, which is likely cut. Empty when
+ * the file cannot be read.
+ */
+export async function jsonlTail(file: SandboxFile, maxBytes: number): Promise<Array<Record<string, unknown>>> {
+  let handle: FileHandle | null = null
+  try {
+    handle = await openSandboxFile(file)
+    if (handle === null) return []
+    const { size } = await handle.stat()
+    const start = Math.max(0, size - maxBytes)
+    const buf = Buffer.alloc(size - start)
+    const { bytesRead } = await handle.read(buf, 0, buf.length, start)
+    const text = buf.subarray(0, bytesRead).toString('utf8')
+    return jsonObjects(start === 0 ? text : text.slice(text.indexOf('\n') + 1))
+  } catch {
+    return []
+  } finally {
+    await handle?.close()
+  }
+}
+
 /** How far into a transcript a scan reads. The target (an opening message)
  *  is near the top; this bounds the cost of an agent-grown file. */
 const MAX_SCAN_BYTES = 64 * 1024 * 1024

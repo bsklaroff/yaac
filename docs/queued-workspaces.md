@@ -104,7 +104,8 @@ Without one, the title sweep (`reconcileGeneratedTitles`) titles the entry
 from its prompt, as it does a draft (docs/draft-workspaces.md): one model
 attempt per prompt, stored in `generatedTitle` only while the entry still has
 that prompt and is not launching. Editing the prompt clears it and gets a new
-attempt. The launched workspace uses that title.
+attempt. The launched workspace keeps that title as its generated one, shown
+until its agent gives one (docs/workspace-titles.md).
 
 ## Launching
 

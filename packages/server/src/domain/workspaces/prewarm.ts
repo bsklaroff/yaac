@@ -386,8 +386,8 @@ export async function tryClaimPrewarmed(
   requestId: string,
   setup: CreateSetup,
   emit: (message: string) => void,
-  /** The base branch, first prompt, title and group. */
-  request: { branch?: string; prompt?: string; title?: string; groupId?: string } = {},
+  /** The base branch, first prompt, titles and group. */
+  request: { branch?: string; prompt?: string; title?: string; generatedTitle?: string; groupId?: string } = {},
 ): Promise<WorkspaceCreateResult | undefined> {
   const { tool } = setup
   const { branch } = request
@@ -485,6 +485,7 @@ export async function tryClaimPrewarmed(
       workspaceId: claimedId,
       ...(baseBranch !== null ? { baseBranch } : {}),
       ...(request.title !== undefined ? { title: request.title } : {}),
+      ...(request.generatedTitle !== undefined ? { generatedTitle: request.generatedTitle } : {}),
       ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
       permissionMode: setup.permissionMode,
       mode: setup.mode,

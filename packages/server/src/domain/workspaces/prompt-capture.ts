@@ -5,11 +5,10 @@ import type { AgentTool } from '@yaac/shared/types'
 
 /**
  * First messages already read, per conversation, for this server's life. A
- * conversation's first message is read once from its transcript (for
- * opencode, probed from the pod) and then re-reported from here on each
- * sweep; the row write only fills an empty column, so repeats are free and a
- * silently failed write is retried. Unprompted conversations are not cached,
- * so the next pass tries again.
+ * conversation's first message is read once from its transcript and then
+ * re-reported from here on each sweep; the row write only fills an empty
+ * column, so repeats are free and a silently failed write is retried.
+ * Unprompted conversations are not cached, so the next pass tries again.
  */
 const known = new Map<string, string>()
 
@@ -18,13 +17,11 @@ export async function captureFirstPrompt(
   tool: AgentTool,
   agentSessionId: string,
   transcript: SandboxFile | undefined,
-  jobName: string | undefined,
 ): Promise<string | undefined> {
   const key = `${projectId}/${tool}/${agentSessionId}`
   const cached = known.get(key)
   if (cached !== undefined) return cached
-  const prompt = await getAgentSessionFirstMessage(tool, transcript, jobName, agentSessionId)
-    .catch(() => undefined)
+  const prompt = await getAgentSessionFirstMessage(tool, transcript).catch(() => undefined)
   if (prompt === undefined) return undefined
   // Cap to the recorded length so the cache and the row agree.
   const capped = prompt.slice(0, MAX_PROMPT_LENGTH)

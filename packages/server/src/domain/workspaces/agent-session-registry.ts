@@ -25,6 +25,7 @@ import {
   takePendingPrompt,
 } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
+import { captureTitle } from './title-capture'
 import { claiming } from './prewarm'
 import { recordedTranscript } from './agent-session-paths'
 import { serverLog } from '#lib/log'
@@ -246,11 +247,12 @@ async function captureStopped(l: AgentSessionLinkRow): Promise<CapturedSession> 
 }
 
 /**
- * One live conversation, plus its first message if the row lacks one, and
- * its last activity: the mtime of the file the agent appends to, recorded
- * every pass so the stopped listing can show it without a read. Under `tui`
- * that file is the tool's transcript. Under `acp` most tools leave no
- * transcript yaac can find, so acpd's record is read instead.
+ * One live conversation, plus its first message if the row lacks one, its
+ * own title (`captureTitle`), and its last activity: the mtime of the file
+ * the agent appends to, recorded every pass so the stopped listing can show
+ * it without a read. Under `tui` that file is the tool's transcript. Under
+ * `acp` most tools leave no transcript yaac can find, so acpd's record is
+ * read instead.
  *
  * The model is mapped to its catalog id, since an ACP adapter may report its
  * own naming.
@@ -270,9 +272,12 @@ async function describe(
   const transcript = stored !== undefined ? resolveProjectPath(projectId, workspaceId, tool, stored) : undefined
   const firstPrompt = recorded?.firstPrompt !== undefined ? undefined
     : mode === 'acp' ? await readAcpFirstPrompt(record)
-    : await captureFirstPrompt(projectId, tool, agentSessionId, transcript, jobName)
+    : await captureFirstPrompt(projectId, tool, agentSessionId, transcript)
   const activity = mode === 'acp' ? acpRecord(record) : transcript
   const lastActiveMs = activity !== undefined ? await transcriptLastActiveMs(activity) : undefined
+  const title = await captureTitle(
+    projectId, workspaceId, tool, agentSessionId, transcript, jobName, lastActiveMs, recorded?.title,
+  )
   return {
     tool,
     agentSessionId,
@@ -280,6 +285,7 @@ async function describe(
     mode,
     ...(transcriptPath !== undefined ? { transcriptPath } : {}),
     ...(firstPrompt !== undefined ? { firstPrompt } : {}),
+    ...(title !== undefined ? { title } : {}),
     ...(lastActiveMs !== undefined ? { lastActiveMs } : {}),
     ...(agent.model !== undefined ? { model: catalogModel(tool, agent.model, agent.modelName) } : {}),
   }

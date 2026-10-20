@@ -2,6 +2,7 @@ import {
   getProjectAgentSessions,
   getProjectRow,
   getProjectWorkspaceRows,
+  conversationTitle,
   openingPrompt,
   type AgentSessionLinkRow,
   type WorkspaceRow,
@@ -83,7 +84,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       // The recorded time survives a runtime restart; fall back if no row yet.
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),
       prompt: openingPrompt(links),
-      title: row?.title,
+      title: row?.title ?? conversationTitle(links) ?? row?.generatedTitle,
       groupId: row?.groupId,
       ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
       ...(row?.effort !== undefined ? { effort: row.effort } : {}),

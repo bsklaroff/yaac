@@ -385,7 +385,8 @@ describe('runQueuedWorkspace', () => {
     })
     await runQueuedWorkspace(local, child.id)
     await launched(2)
-    expect(mockCreate.mock.calls[1][1]).toMatchObject({ initialPrompt: 'after', title: 'Generated' })
+    expect(mockCreate.mock.calls[1][1]).toMatchObject({ initialPrompt: 'after', generatedTitle: 'Generated' })
+    expect(mockCreate.mock.calls[1][1]).not.toHaveProperty('title')
     expect(rows).toEqual([expect.objectContaining({ title: 'Generated' })])
   })
 

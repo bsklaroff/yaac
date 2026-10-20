@@ -33,6 +33,9 @@ export interface StartWorkspaceRequest {
   prompt?: string
   /** The user's title; given, the workspace is not auto-titled. */
   title?: string
+  /** The title generated for the draft or queued entry it is started from,
+   *  which heads its provisioning row when there is no `title`. */
+  generatedTitle?: string
   /** Sidebar group by id or name. An unknown name is created, once the
    *  other settings have checked out. */
   group?: string
@@ -66,7 +69,7 @@ export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
-  const { projectId, workspaceId, prompt, title, branch } = request
+  const { projectId, workspaceId, prompt, title, generatedTitle, branch } = request
   await authorizeProject(principal, projectId)
   const setup = await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
@@ -99,7 +102,7 @@ export async function prepareStart(
     tool,
     kind: 'create',
     ...(groupId !== undefined ? { groupId } : {}),
-    ...(title !== undefined ? { title } : {}),
+    ...((title ?? generatedTitle) !== undefined ? { title: title ?? generatedTitle } : {}),
     ...(prompt !== undefined ? { prompt } : {}),
     ...(setup.model !== undefined ? { model: setup.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
@@ -113,6 +116,7 @@ export async function prepareStart(
           ...(branch !== undefined ? { branch } : {}),
           ...(prompt !== undefined ? { prompt } : {}),
           ...(title !== undefined ? { title } : {}),
+          ...(generatedTitle !== undefined ? { generatedTitle } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
         })
         if (claimed) return claimed
@@ -129,6 +133,7 @@ export async function prepareStart(
         ...(branch !== undefined ? { branch } : {}),
         ...(prompt !== undefined ? { initialPrompt: prompt } : {}),
         ...(title !== undefined ? { title } : {}),
+        ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
       })
     } catch (err) {

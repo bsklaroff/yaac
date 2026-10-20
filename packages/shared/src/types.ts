@@ -961,7 +961,9 @@ export interface WorkspaceListEntry {
   /** The first user message of the workspace's first agent session;
    *  survives a `/clear`. */
   prompt?: string
-  /** User-assigned display title (falls back to `prompt` in UIs). */
+  /** The user's title, else the agent's own for its opening conversation,
+   *  else one generated from `prompt` (docs/workspace-titles.md). UIs fall
+   *  back to `prompt`. */
   title?: string
   /** Every conversation the workspace has hosted, in restore order. */
   agentSessions: AgentSessionEntry[]
@@ -1279,7 +1281,7 @@ export interface StoppedWorkspaceEntry {
   stoppedAt: string
   /** The first conversation's first user message. */
   prompt?: string
-  /** User-assigned display title. */
+  /** Resolved as for a live workspace (`WorkspaceListEntry.title`). */
   title?: string
   /** Every conversation the workspace hosted, in restore order; a restart
    *  brings back the `active` ones. */

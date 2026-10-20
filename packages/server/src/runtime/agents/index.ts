@@ -33,8 +33,10 @@ export { acpLaunchModel } from './acp-adapters'
 // The status watcher discards a stopped workspace's queued messages.
 export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-registry'
 export {
+  agentTitlesItself,
   agentWindowName,
   getAgentSessionFirstMessage,
+  getAgentSessionTitle,
   resolveAgentPermissionMode,
 } from './agent-tools'
 export {

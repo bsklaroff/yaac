@@ -2,7 +2,7 @@ import { workspaceDriver } from '#drivers/driver'
 import type { PermissionMode } from '@yaac/shared/types'
 
 /**
- * Status markers and first-message lookup for opencode.
+ * Status markers and title lookup for opencode.
  *
  * Status is read from the rendered pane, not opencode's server, whose
  * session state stays busy during a permission or question prompt (which
@@ -10,11 +10,11 @@ import type { PermissionMode } from '@yaac/shared/types'
  * status watcher subscribes to a format built from `OPENCODE_BUSY_MARKERS`,
  * so only the resolved word crosses the control-mode stream.
  *
- * The first message comes from opencode itself: `opencode api` over a
- * private `--standalone` server on the same per-workspace data dir, run from
- * the checkout to scope it to this project. It returns the session title
- * (derived from the opening prompt, as the TUI's switcher shows). It runs
- * once per session; the result is stored on the session row.
+ * The title comes from opencode itself: `opencode api` over a private
+ * `--standalone` server on the same per-workspace data dir, run from the
+ * checkout to scope it to this project. opencode titles a session from its
+ * opening message soon after it is sent, in both modes; its ACP server does
+ * not report the title.
  */
 
 /** Mostly the time for a private server to start. */
@@ -32,21 +32,24 @@ export const OPENCODE_BUSY_MARKERS: readonly string[] = [
 /** opencode's own session ids, as its plugin reports them on the pane. */
 const OPENCODE_SESSION_ID = /^ses_[A-Za-z0-9]+$/
 
+/** The title opencode gives a session until it has generated one. */
+const OPENCODE_PLACEHOLDER_TITLE = /^(New session|Child session) - \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+
 /**
- * An opencode session's first message (its title), probed once. opencode
- * keeps history in a per-workspace sqlite DB, not a host transcript; the
- * result is stored on the session row for later listings and restarts.
+ * An opencode session's title. opencode keeps history in a per-workspace
+ * sqlite DB, not a host transcript, so this needs the running workspace.
  *
  * Only an id opencode minted is looked up; anything else (such as the
  * workspace-id placeholder a create records first) yields no title. The id
  * pattern is also the shell-safety check. An exec failure (`session.get`
- * exits 1 for an unknown id) or an untitled session also yields none.
+ * exits 1 for an unknown id) or a session still on its placeholder title
+ * also yields none.
  */
-export async function getSessionOpencodeFirstUserMessage(
+export async function getOpencodeSessionTitle(
   jobName: string,
-  agentSessionId?: string,
+  agentSessionId: string,
 ): Promise<string | undefined> {
-  if (agentSessionId === undefined || !OPENCODE_SESSION_ID.test(agentSessionId)) return undefined
+  if (!OPENCODE_SESSION_ID.test(agentSessionId)) return undefined
   try {
     const { stdout } = await workspaceDriver().exec(
       jobName,
@@ -54,7 +57,8 @@ export async function getSessionOpencodeFirstUserMessage(
       { maxAttempts: 2, timeout: PROBE_TIMEOUT_MS },
     )
     const { data } = JSON.parse(stdout.trim()) as { data?: { title?: unknown } }
-    return typeof data?.title === 'string' ? data.title : undefined
+    const title = data?.title
+    return typeof title === 'string' && !OPENCODE_PLACEHOLDER_TITLE.test(title) ? title : undefined
   } catch {
     return undefined
   }
