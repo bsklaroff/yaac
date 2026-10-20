@@ -21,6 +21,7 @@ import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
   clearWorkspaceStopped,
+  setWorkspaceGeneratedTitle,
   setWorkspaceTitle,
   type StoppedRowCursor,
 } from '#db/workspace-store'
@@ -136,16 +137,15 @@ describe('session store', () => {
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.title).toBeUndefined()
     })
 
-    it('with ifUntitled, writes only a row that has no title yet', async () => {
+    // A generated title sits beside the user's, and the first one recorded
+    // (carried from a draft at create, or generated later) is kept.
+    it('records a generated title apart from the user one, only while there is none', async () => {
       await create('sid-1')
-      await create('sid-2')
       await setWorkspaceTitle(PROJ, 'sid-1', 'user rename')
-      await setWorkspaceTitle(PROJ, 'sid-1', 'generated', { ifUntitled: true })
-      await setWorkspaceTitle(PROJ, 'sid-2', 'generated', { ifUntitled: true })
-
-      const rows = await getProjectWorkspaceRows(PROJ)
-      expect(rows.get('sid-1')?.title).toBe('user rename')
-      expect(rows.get('sid-2')?.title).toBe('generated')
+      await setWorkspaceGeneratedTitle(PROJ, 'sid-1', 'Generated')
+      await setWorkspaceGeneratedTitle(PROJ, 'sid-1', 'Generated again')
+      expect((await getProjectWorkspaceRows(PROJ)).get('sid-1'))
+        .toMatchObject({ title: 'user rename', generatedTitle: 'Generated' })
     })
 
     // The rename is a snapshot input, so the writer pushes it; the route and
@@ -191,7 +191,8 @@ describe('session store', () => {
   describe('listLiveWorkspaceRows', () => {
     it('excludes stopped workspaces and reports whether each ever ran', async () => {
       // A link alone proves nothing: create records one before the agent
-      // launches. `ran` needs a captured opening message or a transcript.
+      // launches. `ran` needs a captured opening message, a transcript, or
+      // an id opencode or codex minted for itself.
       await create('never-ran')
       await recordAgentSessions(PROJ, 'never-ran', [
         { tool: 'claude', agentSessionId: 'never-ran' },
@@ -210,12 +211,18 @@ describe('session store', () => {
           transcriptPath: path.join(claudeDir(PROJ), 'projects', '-workspace', 'conv-b.jsonl'),
         },
       ])
+      await create('opencode-pin')
+      await recordAgentSessions(PROJ, 'opencode-pin', [{ tool: 'opencode', agentSessionId: 'opencode-pin' }])
+      await create('opencode-named')
+      await recordAgentSessions(PROJ, 'opencode-named', [{ tool: 'opencode', agentSessionId: 'ses_1' }])
       await create('gone')
       await recordWorkspaceStopped(PROJ, 'gone')
 
       const rows = await listLiveWorkspaceRows()
-      expect(rows.map((r) => [r.workspaceId, r.ran]).sort())
-        .toEqual([['has-prompt', true], ['has-transcript', true], ['never-ran', false]])
+      expect(rows.map((r) => [r.workspaceId, r.ran]).sort()).toEqual([
+        ['has-prompt', true], ['has-transcript', true], ['never-ran', false],
+        ['opencode-named', true], ['opencode-pin', false],
+      ])
     })
   })
 

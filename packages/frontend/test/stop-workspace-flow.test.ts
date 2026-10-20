@@ -86,8 +86,14 @@ describe('stopWorkspaceOptimistic', () => {
       { workspaceId: 'sid-1', projectId: 'proj', tool: 'claude', prompt: 'do a thing', title: 'Thing' },
     ])
 
+    // An opencode TUI workspace records no prompt, but its agent's title
+    // shows it ran.
     useUiStore.setState(initial, true)
-    stopWorkspaceOptimistic(session(), []) // no prompt → nothing to restart into
+    stopWorkspaceOptimistic(session({ title: 'Build a thing' }), [])
+    expect(useUiStore.getState().optimisticStopped).toMatchObject([{ workspaceId: 'sid-1', title: 'Build a thing' }])
+
+    useUiStore.setState(initial, true)
+    stopWorkspaceOptimistic(session(), []) // neither → nothing to restart into
     expect(useUiStore.getState().optimisticStopped).toEqual([])
   })
 

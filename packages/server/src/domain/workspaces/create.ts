@@ -218,6 +218,8 @@ export interface WorkspaceCreateOptions {
    * auto-title sweep never sees the workspace untitled.
    */
   title?: string
+  /** The title generated for the draft or queued entry it is created from. */
+  generatedTitle?: string
   /**
    * The permission mode the agents launch in. Absent means the project's
    * last-used mode, else the driver's default. An explicit value is a user
@@ -868,6 +870,7 @@ export async function createWorkspace(
       workspaceId,
       ...launch,
       ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
       resume: options.resume !== undefined,
     })

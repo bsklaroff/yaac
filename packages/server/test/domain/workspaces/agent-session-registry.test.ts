@@ -14,6 +14,7 @@ import {
 import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { applyWorkspaceEvent } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
+import { _resetTitleCaptureForTests } from '#domain/workspaces/title-capture'
 import { claiming } from '#domain/workspaces/prewarm'
 import { getWorkspaceRow, holdPendingPrompt, recordWorkspaceCreated, recordWorkspaceLife, setWorkspacePermissionMode } from '#db/workspace-store'
 import { _resetCodexRolloutReadsForTests } from '#runtime/agents/codex'
@@ -47,6 +48,7 @@ describe('reconcileAgentSessions', () => {
     installFakeWorkspaceDriver({ exec: podExec })
     _resetWorkspaceStatusStoreForTests()
     _resetPromptCaptureForTests()
+    _resetTitleCaptureForTests()
     _resetReportedModesForTests()
     _resetCodexRolloutReadsForTests()
     _resetAcpRegistryForTests()
@@ -165,23 +167,62 @@ describe('reconcileAgentSessions', () => {
     expect(await rows()).toEqual([['conv-a', true, undefined]])
   })
 
-  it('probes an opencode conversation\'s opening message in the pod', async () => {
+  it("records each conversation's own title, following the agent's changes to it", async () => {
+    const t0 = Date.now()
+    const at = (minutes: number) => vi.spyOn(Date, 'now').mockReturnValue(t0 + minutes * 60_000)
+    const transcript = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'conv-a.jsonl')
+    const append = (entry: object) => fs.appendFile(transcript, `${JSON.stringify(entry)}\n`)
+    live([await claudeOn('%0', 'conv-a', 'refactor the parser')])
+    await sweep()
+    expect((await row('conv-a'))?.title).toBeUndefined()
+
+    // claude titles it after its first turn, and a rename inside claude
+    // replaces that. Each is picked up on a later pass.
+    await append({ type: 'ai-title', aiTitle: 'Parser   refactor', sessionId: 'conv-a' })
+    at(6)
+    await sweep()
+    expect((await row('conv-a'))?.title).toBe('Parser refactor')
+    await append({ type: 'custom-title', customTitle: 'Mine', sessionId: 'conv-a' })
+    at(12)
+    await sweep()
+    expect(await row('conv-a')).toMatchObject({ title: 'Mine', firstPrompt: 'refactor the parser' })
+  })
+
+  it("reads an opencode conversation's title in the pod until it has one, ever less often", async () => {
     // opencode leaves no host transcript, so it is read in the pod by job
-    // name.
-    podExec.mockResolvedValue({
-      stdout: JSON.stringify({ data: { id: 'ses_1', title: 'build a thing', time: { updated: 1 } } }),
-      stderr: '',
-    })
+    // name. It is called by a placeholder until it titles the session.
+    const t0 = Date.now()
+    const at = (minutes: number) => vi.spyOn(Date, 'now').mockReturnValue(t0 + minutes * 60_000)
+    const titled = (title: string) => ({ stdout: JSON.stringify({ data: { id: 'ses_1', title } }), stderr: '' })
+    podExec.mockResolvedValue(titled('New session - 2026-10-20T11:22:33.456Z'))
     live([{ handle: '%0', tool: 'opencode', agentSessionId: 'ses_1', model: 'opencode/big-pickle' }])
     await sweep()
-
-    expect(await row('ses_1')).toMatchObject({ active: true, firstPrompt: 'build a thing', model: 'opencode/big-pickle' })
     expect(podExec.mock.calls[0]?.[0]).toBe('yaac-demo-wt-1')
     expect(podExec.mock.calls[0]?.[1]).toBe('opencode api --standalone session.get --param sessionID=ses_1')
+    expect((await row('ses_1'))?.title).toBeUndefined()
 
-    // Read once; the row keeps the answer.
+    // Each lookup starts a server in the pod, so the wait between them
+    // doubles from 2 minutes while the session stays untitled.
     await sweep()
     expect(podExec).toHaveBeenCalledTimes(1)
+    at(3)
+    await sweep()
+    expect(podExec).toHaveBeenCalledTimes(2)
+    at(6)
+    await sweep()
+    expect(podExec).toHaveBeenCalledTimes(2)
+    // A later one finds the title, which is then kept, also across a server
+    // restart, since the row holds it.
+    podExec.mockResolvedValue(titled('Build a thing'))
+    at(8)
+    await sweep()
+    expect(await row('ses_1')).toMatchObject({ active: true, title: 'Build a thing', model: 'opencode/big-pickle' })
+    expect((await row('ses_1'))?.firstPrompt).toBeUndefined()
+    _resetTitleCaptureForTests()
+    at(60)
+    await sweep()
+    expect(podExec).toHaveBeenCalledTimes(3)
+    expect((await row('ses_1'))?.title).toBe('Build a thing')
   })
 
   it('hands the create\'s pin to the first conversation a codex or opencode pane names', async () => {
@@ -206,6 +247,7 @@ describe('reconcileAgentSessions', () => {
     const summary = async (workspaceId: string) => (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, workspaceId))
       .map((l) => [l.agentSessionId, l.ordinal, l.active, l.firstPrompt, l.model])
     expect(await summary('wt-1')).toEqual([['ses_1', 0, true, 'build a thing', 'opencode/big-pickle']])
+    expect((await row('ses_1'))?.title).toBe('Thing builder')
     expect((await row('ses_1'))?.createdAt).toEqual(pin?.createdAt)
 
     // Only the first; a later `/new` is a separate conversation.
@@ -213,7 +255,7 @@ describe('reconcileAgentSessions', () => {
     await sweep()
     expect(await summary('wt-1')).toEqual([
       ['ses_1', 0, false, 'build a thing', 'opencode/big-pickle'],
-      ['ses_2', 1, true, 'Thing builder', undefined],
+      ['ses_2', 1, true, undefined, undefined],
     ])
 
     // With no prompt on the placeholder, the conversation's own first
@@ -276,6 +318,11 @@ describe('reconcileAgentSessions', () => {
       }),
       '',
     ].join('\n'))
+    // claude writes its generated title to its transcript under acp too;
+    // with no recorded path, the transcript is found by the conversation's id.
+    const transcript = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace', 'acp-1.jsonl')
+    await fs.mkdir(path.dirname(transcript), { recursive: true })
+    await fs.writeFile(transcript, `${JSON.stringify({ type: 'ai-title', aiTitle: 'Ship it', sessionId: 'acp-1' })}\n`)
     // claude's adapter reports its picker's model name; the row stores the
     // matching catalog id. A second conversation has no id yet, and a third
     // is still named though its stream is gone (a respawned spare's warm
@@ -295,7 +342,7 @@ describe('reconcileAgentSessions', () => {
     // The handle is the acpd window a restart uses to find the conversation.
     expect(await rows()).toEqual([['acp-1', true, 'claude']])
     const link = await row('acp-1')
-    expect(link).toMatchObject({ mode: 'acp', firstPrompt: 'ship the thing', model: 'claude-opus-5-5' })
+    expect(link).toMatchObject({ mode: 'acp', firstPrompt: 'ship the thing', title: 'Ship it', model: 'claude-opus-5-5' })
     expect(link?.transcriptPath).toBeUndefined()
     expect(link?.lastActiveAt).toBeInstanceOf(Date)
 

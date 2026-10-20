@@ -208,8 +208,10 @@ export const workspaceApp = new Hono<IdentityEnv>()
       }
       // Claimed first, so a second run of one draft is refused outright.
       const draft = await claimDraft(c.get('principal'), body.project, body.draftId)
-      // Without a title, keep the one its draft was shown under.
-      const title = normalizeTitle(body.title ?? '') || draft.generatedTitle(body.prompt)
+      const title = normalizeTitle(body.title ?? '')
+      // Without one, keep the title its draft was shown under, until its
+      // agent gives one.
+      const generatedTitle = title === '' ? draft.generatedTitle(body.prompt) : undefined
       // Checked and registered before streaming, so a bad setting or an id
       // still provisioning is a plain error rather than a failed row.
       const run = await prepareStart(c.get('principal'), {
@@ -223,6 +225,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.branch !== undefined ? { branch: body.branch } : {}),
         ...(body.prompt !== undefined ? { prompt: body.prompt } : {}),
         ...(title ? { title } : {}),
+        ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(body.group !== undefined ? { group: body.group } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,

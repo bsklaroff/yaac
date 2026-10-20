@@ -6,7 +6,7 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 import { markWorkspaceTerminating, isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { setAgentStatus, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
 import { closeDb } from '#db/client'
-import { recordWorkspaceCreated } from '#db/workspace-store'
+import { recordWorkspaceCreated, setWorkspaceTitle } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import {
   listActiveWorkspaces,
@@ -93,6 +93,28 @@ describe('listActiveWorkspaces', () => {
     // Filtered out before classify, so it never reaches the status probes.
     expect(result.workspaces).toEqual([])
     expect(result.stale).toEqual([])
+  })
+
+  it("titles a workspace the user has not named with its agent's own title, else its generated one", async () => {
+    await recordTestProject(DEMO_PROJECT_ID)
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'generated', generatedTitle: 'From the draft' })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'generated', [
+      { tool: 'pi', agentSessionId: 'generated', firstPrompt: 'the parser drops tokens' },
+    ])
+    for (const workspaceId of ['agent-titled', 'renamed']) {
+      await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId, generatedTitle: 'From the draft' })
+      await recordAgentSessions(DEMO_PROJECT_ID, workspaceId, [
+        { tool: 'claude', agentSessionId: workspaceId, firstPrompt: 'the parser drops tokens', title: 'Parser token loss' },
+      ])
+    }
+    await setWorkspaceTitle(DEMO_PROJECT_ID, 'renamed', 'Mine')
+    running([live('agent-titled'), live('renamed'), live('generated')])
+    const titles = (await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [w.workspaceId, w.title, w.prompt])
+    expect(titles).toEqual(expect.arrayContaining([
+      ['agent-titled', 'Parser token loss', 'the parser drops tokens'],
+      ['renamed', 'Mine', 'the parser drops tokens'],
+      ['generated', 'From the draft', 'the parser drops tokens'],
+    ]))
   })
 
   it('surfaces the base branch recorded at create time', async () => {

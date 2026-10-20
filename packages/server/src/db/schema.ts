@@ -188,8 +188,13 @@ export const workspaces = snakeCase.table('workspaces', {
   /** When the workspace was handed to someone: the insert, which for a
    *  prewarmed spare is its claim. */
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
-  /** Display title, user-assigned or model-generated. */
+  /** The user's title. Without one the workspace shows its agent's own
+   *  (`agent_sessions.title`), then `generatedTitle` (docs/workspace-titles.md). */
   title: text(),
+  /** Generated from the opening message by the local title model, for a
+   *  workspace whose agent titles nothing, or carried over from the draft or
+   *  queued entry it was created from. */
+  generatedTitle: text(),
   /** Branch the workspace forked from (no `origin/` prefix). */
   baseBranch: text(),
   /** The sidebar group it is filed under; null means ungrouped. Survives a
@@ -306,6 +311,9 @@ export const agentSessions = snakeCase.table('agent_sessions', {
   /** This conversation's first user message. After a `/clear` it differs
    *  from the workspace's founding prompt (the first conversation's). */
   firstPrompt: text(),
+  /** The title the agent gave this conversation, as last read from the
+   *  tool's own store (docs/workspace-titles.md). Null while it has none. */
+  title: text(),
   /** Mtime of the file the conversation appends to (its transcript, or
    *  acpd's record), recorded each pass while it runs and once after a stop;
    *  shown as last activity in the stopped listing. */

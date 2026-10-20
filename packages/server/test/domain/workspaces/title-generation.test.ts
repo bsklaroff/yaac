@@ -10,7 +10,7 @@ const Q = '7694f4a6-6316-453c-8cdd-9d9954bd611d'
 // stubbed, so calls to it can be asserted.
 vi.mock('#db/workspace-store', async (importOriginal) => ({
   ...(await importOriginal<typeof storeModule>()),
-  setWorkspaceTitle: vi.fn(),
+  setWorkspaceGeneratedTitle: vi.fn(),
 }))
 // Every download and inference is a subprocess. Faking execFileAsync lets
 // the summarizer and llama.cpp setup logic run for real.
@@ -24,7 +24,8 @@ import { _resetTitleGenerationForTests } from '#domain/workspaces/title-generati
 import { _resetTitleSummarizerForTests } from '#domain/workspaces/title-summarizer'
 import { LLAMA_CPP_TAG } from '#domain/workspaces/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
-import { getProjectWorkspaceRows, setWorkspaceTitle } from '#db/workspace-store'
+import { setWorkspaceGeneratedTitle } from '#db/workspace-store'
+import type { AgentTool } from '@yaac/shared/types'
 import {
   applyWorkspaceEvent,
   getQueuedWorkspaceRow,
@@ -41,7 +42,7 @@ import type * as shellModule from '#lib/shell'
 import { serverLog } from '#lib/log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
-const mockSetTitle = vi.mocked(setWorkspaceTitle)
+const mockSetTitle = vi.mocked(setWorkspaceGeneratedTitle)
 const mockExec = vi.mocked(execFileAsync)
 const mockLog = vi.mocked(serverLog)
 
@@ -95,6 +96,12 @@ interface Seeded {
   workspaceId: string
   prompt?: string
   title?: string
+  /** pi unless set: the tool that titles nothing itself. */
+  tool?: AgentTool
+  /** The title its agent gave the opening conversation. */
+  agentTitle?: string
+  /** One carried over from the draft it was created from. */
+  generatedTitle?: string
   stopped?: boolean
   /** Open with a conversation that captured no message, as a chat tab left
    *  blank does; the prompt then opens the second one. */
@@ -109,15 +116,21 @@ function session(overrides: Partial<Seeded> = {}): Seeded {
  *  conversation with the opening message. */
 async function seed(...workspaces: Seeded[]): Promise<void> {
   const real = await vi.importActual<typeof storeModule>('#db/workspace-store')
-  for (const { projectId, workspaceId, prompt, title, stopped, blankFirst } of workspaces) {
-    await applyWorkspaceEvent({ type: 'workspace-created', projectId, workspaceId })
+  for (const { projectId, workspaceId, prompt, title, tool = 'pi', agentTitle, generatedTitle, stopped, blankFirst } of workspaces) {
+    await applyWorkspaceEvent({ type: 'workspace-created', projectId, workspaceId, ...(generatedTitle ? { generatedTitle } : {}) })
     await applyWorkspaceEvent({
       type: 'sessions-launched', projectId, workspaceId,
       sessions: [
-        ...(blankFirst ? [{ agentSessionId: `${workspaceId}-blank`, tool: 'claude' as const }] : []),
-        { agentSessionId: `${workspaceId}-a`, tool: 'claude', firstPrompt: prompt },
+        ...(blankFirst ? [{ agentSessionId: `${workspaceId}-blank`, tool }] : []),
+        { agentSessionId: `${workspaceId}-a`, tool, firstPrompt: prompt },
       ],
     })
+    if (agentTitle !== undefined) {
+      await applyWorkspaceEvent({
+        type: 'sessions-discovered', projectId, workspaceId,
+        sessions: [{ agentSessionId: `${workspaceId}-a`, tool, title: agentTitle }],
+      })
+    }
     if (title !== undefined) await real.setWorkspaceTitle(projectId, workspaceId, title)
     if (stopped) await applyWorkspaceEvent({ type: 'workspace-stopped', projectId, workspaceId })
   }
@@ -214,7 +227,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(call.opts?.env?.LD_LIBRARY_PATH).toBe(path.dirname(bin))
     expect(call.opts?.env?.DYLD_LIBRARY_PATH).toBe(path.dirname(bin))
 
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE, { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE)
   })
 
   it('reuses a cached runtime and model instead of downloading', async () => {
@@ -226,7 +239,7 @@ describe('reconcileGeneratedTitles', () => {
     expect(downloads()).toEqual([])
     expect(inferences()).toHaveLength(1)
     expect(inferences()[0].file).toBe(bin)
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE, { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE)
   })
 
   it('fetches the macOS asset on darwin/x64', async () => {
@@ -243,7 +256,7 @@ describe('reconcileGeneratedTitles', () => {
     await seed(session({ prompt: 'the parser has a bug with nested arrays, please fix it and add a regression test' }))
     await reconcileGeneratedTitles()
     await flush()
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', 'Fix the parser bug', { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', 'Fix the parser bug')
   })
 
   it('caps a runaway title at the shared title length limit', async () => {
@@ -252,7 +265,7 @@ describe('reconcileGeneratedTitles', () => {
     await seed(session({ prompt: 'w'.repeat(300) }))
     await reconcileGeneratedTitles()
     await flush()
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', 'w'.repeat(MAX_TITLE_LENGTH), { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', 'w'.repeat(MAX_TITLE_LENGTH))
   })
 
   it('truncates a huge first message to a bounded payload', async () => {
@@ -296,8 +309,8 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
 
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 'gha', 'github action workflow set up', { ifUntitled: true })
-    expect(mockSetTitle).toHaveBeenCalledWith(Q, 'link', 'Fix it now', { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 'gha', 'github action workflow set up')
+    expect(mockSetTitle).toHaveBeenCalledWith(Q, 'link', 'Fix it now')
   })
 
   it('serializes inference across workspaces and sets the runtime up once', async () => {
@@ -336,13 +349,18 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
     expect(payloadOf(inferences()[0])).toContain(PROMPT)
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE, { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE)
   })
 
+  // A workspace whose agent titles its conversations shows that title, so
+  // only one running a tool that titles nothing (pi) is generated for.
   it('skips titled, promptless, and stopped workspaces, and prompts short enough to label themselves', async () => {
     await seedCache()
     await seed(
       session({ workspaceId: 'titled', title: 'My session' }),
+      session({ workspaceId: 'claude', tool: 'claude' }),
+      session({ workspaceId: 'agent-titled', agentTitle: 'Widget plugins' }),
+      session({ workspaceId: 'from-draft', generatedTitle: 'Plugin system' }),
       session({ workspaceId: 'no-prompt', prompt: undefined }),
       session({ workspaceId: 'short', prompt: 'x'.repeat(48) }),
       session({ workspaceId: 'stopped', stopped: true }),
@@ -381,7 +399,7 @@ describe('reconcileGeneratedTitles', () => {
 
     release(TITLE)
     await flush()
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE, { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE)
   })
 
   // A draft gets one attempt per saved prompt, unless the user titled it.
@@ -436,23 +454,6 @@ describe('reconcileGeneratedTitles', () => {
     expect(mockSetTitle).not.toHaveBeenCalled()
   })
 
-  it('keeps a rename that lands while the model is still running', async () => {
-    const real = await vi.importActual<typeof storeModule>('#db/workspace-store')
-    mockSetTitle.mockImplementation(real.setWorkspaceTitle)
-    await seedCache()
-    let release!: (title: string) => void
-    reply = () => new Promise<string>((r) => { release = r })
-    await seed(session())
-
-    await reconcileGeneratedTitles()
-    await flush()
-    await real.setWorkspaceTitle(P, 's1', 'my rename')
-    release(TITLE)
-    await flush()
-
-    expect((await getProjectWorkspaceRows(P)).get('s1')?.title).toBe('my rename')
-  })
-
   it('vendors the OpenMP runtime into the cache when the host lacks it', async () => {
     const bin = await seedCache()
     openMpPresent = false // a minimal Ubuntu: extraction succeeds, nothing runs
@@ -470,7 +471,7 @@ describe('reconcileGeneratedTitles', () => {
 
     // Re-checked after the repair, then used to title the session.
     expect(smokeChecks()).toHaveLength(2)
-    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE, { ifUntitled: true })
+    expect(mockSetTitle).toHaveBeenCalledWith(P, 's1', TITLE)
   })
 
   it('reports one actionable error when the runtime cannot run and cannot be repaired', async () => {

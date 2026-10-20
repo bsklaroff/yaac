@@ -6,6 +6,7 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
+import { SELF_NAMING_TOOLS } from '@yaac/shared/types'
 import type { AgentMode, PermissionMode, WorkspaceDeathCause } from '@yaac/shared/types'
 
 /**
@@ -39,6 +40,8 @@ export interface WorkspaceCreatedInput {
   baseBranch?: string
   /** The user's title. */
   title?: string
+  /** A title generated for the draft or queued entry it came from. */
+  generatedTitle?: string
   /** The sidebar group; left ungrouped if the group no longer exists. */
   groupId?: string
   /** The permission mode its agents launch in. */
@@ -82,6 +85,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       workspaceId: input.workspaceId,
       ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
       ...(title !== '' ? { title } : {}),
+      ...(input.generatedTitle !== undefined ? { generatedTitle: input.generatedTitle } : {}),
       // A subquery, so a group deleted since the request was resolved
       // leaves the workspace ungrouped rather than filed under nothing.
       ...(input.groupId !== undefined
@@ -269,25 +273,27 @@ export async function findWorkspaceByMamaToken(token: string): Promise<Workspace
 }
 
 /**
- * Set (or, with a blank title, clear) a workspace's display title.
- * `ifUntitled` writes only if the row still has no title, checked in the same
- * statement, so the title generator never overwrites a rename made while it
- * ran.
+ * Set (or, with a blank title, clear) a workspace's user title. A cleared
+ * workspace shows its agent's own title, or its generated one, again.
  */
-export async function setWorkspaceTitle(
-  projectId: string,
-  workspaceId: string,
-  title: string,
-  { ifUntitled = false }: { ifUntitled?: boolean } = {},
-): Promise<void> {
+export async function setWorkspaceTitle(projectId: string, workspaceId: string, title: string): Promise<void> {
   const normalized = normalizeTitle(title)
   const db = await getDb()
   await db.update(workspaces)
     .set({ title: normalized === '' ? null : normalized })
-    .where(ifUntitled
-      ? and(key(projectId, workspaceId), isNull(workspaces.title))
-      : key(projectId, workspaceId))
+    .where(key(projectId, workspaceId))
   notifyWorkspaceListChanged()
+}
+
+/** Record a generated title, only if the workspace has none yet, checked in
+ *  the same statement so a concurrent write is never replaced. */
+export async function setWorkspaceGeneratedTitle(projectId: string, workspaceId: string, title: string): Promise<void> {
+  const db = await getDb()
+  const rows = await db.update(workspaces)
+    .set({ generatedTitle: title })
+    .where(and(key(projectId, workspaceId), isNull(workspaces.generatedTitle)))
+    .returning({ workspaceId: workspaces.workspaceId })
+  if (rows.length > 0) notifyWorkspaceListChanged()
 }
 
 /** Hold an `acp` create's prompt until a conversation takes it (see the
@@ -340,8 +346,9 @@ export interface StoppedRowFilter {
   /** Ids to leave out: the ones the runtime reports running, since a
    *  restart keeps its stop until it succeeds. */
   excludeIds?: string[]
-  /** Matched case-insensitively against the title, and the first prompt and
-   *  tool of each of the workspace's conversations. */
+  /** Matched case-insensitively against the user and generated titles, and
+   *  the first prompt, agent title and tool of each of the workspace's
+   *  conversations. */
   q?: string
   groupId?: string
   /** Leave out the members of these groups. */
@@ -386,6 +393,7 @@ export async function listStoppedWorkspaceRows(
     const pattern = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
     conds.push(or(
       ilike(workspaces.title, pattern),
+      ilike(workspaces.generatedTitle, pattern),
       exists(db.select({ one: sql`1` }).from(workspaceAgentSessions)
         .innerJoin(agentSessions, and(
           eq(workspaceAgentSessions.projectId, agentSessions.projectId),
@@ -395,7 +403,11 @@ export async function listStoppedWorkspaceRows(
         .where(and(
           eq(workspaceAgentSessions.projectId, workspaces.projectId),
           eq(workspaceAgentSessions.workspaceId, workspaces.workspaceId),
-          or(ilike(agentSessions.firstPrompt, pattern), ilike(agentSessions.tool, pattern)),
+          or(
+            ilike(agentSessions.firstPrompt, pattern),
+            ilike(agentSessions.title, pattern),
+            ilike(agentSessions.tool, pattern),
+          ),
         ))),
     ))
   }
@@ -523,10 +535,13 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
     workspaceId: workspaces.workspaceId,
   }).from(workspaces).where(isNull(workspaces.stoppedAt))
   // A link alone proves nothing, since create records one before launching
-  // the agent; a prompt or transcript does.
+  // the agent; a prompt or transcript does, as does an id a self-naming tool
+  // minted (opencode keeps neither a prompt nor a transcript yaac reads).
   const links = await db.select({
     projectId: workspaceAgentSessions.projectId,
     workspaceId: workspaceAgentSessions.workspaceId,
+    tool: workspaceAgentSessions.tool,
+    agentSessionId: workspaceAgentSessions.agentSessionId,
     firstPrompt: agentSessions.firstPrompt,
     transcriptPath: agentSessions.transcriptPath,
   }).from(workspaceAgentSessions).innerJoin(agentSessions, and(
@@ -535,7 +550,8 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
     eq(workspaceAgentSessions.agentSessionId, agentSessions.agentSessionId),
   ))
   const ran = new Set(links
-    .filter((l) => l.firstPrompt !== null || l.transcriptPath !== null)
+    .filter((l) => l.firstPrompt !== null || l.transcriptPath !== null
+      || (SELF_NAMING_TOOLS.includes(l.tool) && l.agentSessionId !== l.workspaceId))
     .map((l) => `${l.projectId}/${l.workspaceId}`))
   return rows.map((r) => ({
     projectId: r.projectId,

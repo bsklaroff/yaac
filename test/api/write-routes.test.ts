@@ -1339,7 +1339,7 @@ describe('write routes', () => {
       expect(await ids()).toEqual([failed])
 
       // An untitled create keeps the draft's generated title while the
-      // prompt is unchanged.
+      // prompt is unchanged, as a generated title its agent's can replace.
       // While it runs, the draft is hidden and its provisioning row is
       // labelled with that title.
       await setDraftWorkspaceTitle(failed, 'someday', 'Someday')
@@ -1359,7 +1359,8 @@ describe('write routes', () => {
       finish()
       await created
       expect(await ids()).toEqual([])
-      expect(mockCreateWorkspace.mock.lastCall?.[1]).toMatchObject({ title: 'Someday' })
+      expect(mockCreateWorkspace.mock.lastCall?.[1]).toMatchObject({ generatedTitle: 'Someday' })
+      expect(mockCreateWorkspace.mock.lastCall?.[1]).not.toHaveProperty('title')
 
       const queued = await draft()
       await setDraftWorkspaceTitle(queued, 'someday', 'Someday')

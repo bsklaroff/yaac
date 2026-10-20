@@ -3,10 +3,14 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  agentTitlesItself,
   agentWindowName,
   getAgentSessionFirstMessage,
+  getAgentSessionTitle,
   resolveAgentPermissionMode,
 } from '#runtime/agents/agent-tools'
+import { codexDir } from '@yaac/shared/project-paths'
+import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import type { SandboxFile } from '#runtime/agents'
 import type { WorkspaceDriver } from '#drivers/contract'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
@@ -114,6 +118,8 @@ describe('getAgentSessionFirstMessage', () => {
       await expect(getAgentSessionFirstMessage(tool, undefined)).resolves.toBeUndefined()
       await expect(getAgentSessionFirstMessage(tool, { projectId: 'demo', dir, rel: 'missing.jsonl' })).resolves.toBeUndefined()
     }
+    // opencode keeps its history in a database, not a transcript.
+    await expect(getAgentSessionFirstMessage('opencode', await transcript([user('hi')]))).resolves.toBeUndefined()
   })
 
   it('scans a line that never ends in time linear in its length', async () => {
@@ -123,6 +129,58 @@ describe('getAgentSessionFirstMessage', () => {
     expect(Date.now() - started).toBeLessThan(5000)
   })
 
+})
+
+describe('getAgentSessionTitle', () => {
+  let dataDir: string
+  beforeEach(async () => { dataDir = await createTempDataDir() })
+  afterEach(async () => { await cleanupTempDir(dataDir) })
+
+  const PROJECT = 'demo'
+  const src = (agentSessionId: string, transcript?: SandboxFile) =>
+    ({ projectId: PROJECT, agentSessionId, jobName: 'container', ...(transcript ? { transcript } : {}) })
+  /** `lines` as a JSONL file under the data dir. */
+  async function jsonl(rel: string, lines: Array<Record<string, unknown> | string>): Promise<SandboxFile> {
+    const file = path.join(dataDir, rel)
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l)) + '\n').join(''))
+    return { projectId: PROJECT, dir: dataDir, rel }
+  }
+  const aiTitle = (t: string) => ({ type: 'ai-title', aiTitle: t, sessionId: 's1' })
+  const customTitle = (t: string) => ({ type: 'custom-title', customTitle: t, sessionId: 's1' })
+  const filler = (bytes: number) => ({ type: 'assistant', message: { content: 'x'.repeat(bytes) } })
+
+  // claude re-appends its title records as it writes, so the latest sit
+  // near the end; a rename (`custom-title`, also what the ACP adapter
+  // stores) wins over the TUI's generated one.
+  it("reads claude's title from its transcript's end, a rename over a generated title", async () => {
+    const title = async (lines: Array<Record<string, unknown> | string>) =>
+      getAgentSessionTitle('claude', src('s1', await jsonl(`t-${String(Math.random())}.jsonl`, lines)))
+
+    expect(await title([{ type: 'user', message: { content: 'fix it' } }])).toBeUndefined()
+    expect(await title([aiTitle('Old'), filler(100), aiTitle('Fix the login bug')])).toBe('Fix the login bug')
+    expect(await title([aiTitle('Generated'), customTitle('Mine'), aiTitle('Generated again')])).toBe('Mine')
+    // A partial line at the start of the read is skipped, not misparsed.
+    expect(await title([filler(400 * 1024), filler(10), aiTitle('Late')])).toBe('Late')
+    // One that scrolled out of the read is not found.
+    expect(await title([aiTitle('Early'), filler(400 * 1024)])).toBeUndefined()
+    // No transcript (an acp conversation not yet found), or none on disk.
+    expect(await getAgentSessionTitle('claude', src('s1'))).toBeUndefined()
+    expect(await getAgentSessionTitle('claude', src('s1', { projectId: PROJECT, dir: dataDir, rel: 'gone.jsonl' }))).toBeUndefined()
+  })
+
+  // Shared by the project's workspaces and append-only: the newest line for
+  // the thread wins, and an empty name is a cleared one.
+  it("reads codex's thread name from the project's session index", async () => {
+    const index = path.relative(dataDir, path.join(codexDir(PROJECT), 'session_index.jsonl'))
+    expect(await getAgentSessionTitle('codex', src('t-1'))).toBeUndefined()
+    const entry = (id: string, name: string) => ({ id, thread_name: name, updated_at: '2026-10-20T00:00:00Z' })
+    await jsonl(index, [entry('t-1', 'Fix login'), entry('t-2', 'Other thread'), entry('t-1', 'Fix login redirect'), entry('t-3', 'Named'), entry('t-3', ''), '{cut'])
+    expect(await getAgentSessionTitle('codex', src('t-1'))).toBe('Fix login redirect')
+    expect(await getAgentSessionTitle('codex', src('t-3'))).toBeUndefined()
+    expect(await getAgentSessionTitle('codex', src('t-4'))).toBeUndefined()
+  })
+
   // opencode has no host transcript: its title is probed in the running
   // workspace, by session id since `session.list` returns only the 50 most
   // recently updated.
@@ -130,23 +188,34 @@ describe('getAgentSessionFirstMessage', () => {
     const exec = vi.fn<WorkspaceDriver['exec']>((_job, cmd) => {
       const id = /sessionID=(\S+)$/.exec(cmd)?.[1]
       if (id === 'ses_titled') return Promise.resolve({ stdout: JSON.stringify({ data: { id, title: 'OLIVE' } }) + '\n', stderr: '' })
-      // No `title` key until opencode has titled the session.
+      // What opencode calls a session until it has generated a title.
+      if (id === 'ses_new') {
+        return Promise.resolve({ stdout: JSON.stringify({ data: { id, title: 'New session - 2026-10-20T11:22:33.456Z' } }), stderr: '' })
+      }
       if (id === 'ses_untitled') return Promise.resolve({ stdout: JSON.stringify({ data: { id } }), stderr: '' })
       return Promise.reject(new Error('HTTP 404 Not Found'))
     })
     installFakeWorkspaceDriver({ exec })
-    const first = (id: string | undefined, job: string | undefined = 'container') =>
-      getAgentSessionFirstMessage('opencode', { projectId: 'demo', dir, rel: 'ignored.jsonl' }, job, id)
+    const title = (id: string) => getAgentSessionTitle('opencode', src(id))
 
-    expect(await first('ses_titled')).toBe('OLIVE')
+    expect(await title('ses_titled')).toBe('OLIVE')
     expect(exec.mock.calls[0]?.slice(0, 2)).toEqual(['container', 'opencode api --standalone session.get --param sessionID=ses_titled'])
-    for (const id of ['ses_untitled', 'ses_gone']) expect(await first(id)).toBeUndefined()
-    // No live workspace, a workspace id, no id, or a malformed id never
-    // reaches the command line.
+    for (const id of ['ses_new', 'ses_untitled', 'ses_gone']) expect(await title(id)).toBeUndefined()
+    // A workspace id or a malformed id never reaches the command line.
     exec.mockClear()
-    for (const id of ['wt-1', undefined, 'ses_foo-bar']) expect(await first(id)).toBeUndefined()
-    expect(await getAgentSessionFirstMessage('opencode', undefined, undefined, 'ses_titled')).toBeUndefined()
+    for (const id of ['wt-1', 'ses_foo-bar']) expect(await title(id)).toBeUndefined()
     expect(exec).not.toHaveBeenCalled()
+  })
+
+  it('has no title for pi, which titles nothing', async () => {
+    expect(await getAgentSessionTitle('pi', src('p-1', await jsonl('pi.jsonl', [aiTitle('Not pi')])))).toBeUndefined()
+  })
+})
+
+describe('agentTitlesItself', () => {
+  it('is every tool with a title store but pi', () => {
+    expect(['claude', 'codex', 'opencode', 'pi'].map((t) => agentTitlesItself(t as AgentTool)))
+      .toEqual([true, true, true, false])
   })
 })
 

@@ -9,6 +9,7 @@ import {
   deleteWorkspaceAgentSessions,
   listUncapturedStoppedSessions,
   listWorkspaceAgentSessions,
+  conversationTitle,
   openingPrompt,
   recordAgentSessions,
 } from '#db/agent-session-store'
@@ -91,10 +92,10 @@ describe('recordAgentSessions', () => {
   const conversation = async (id: string) =>
     (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1')).find((l) => l.agentSessionId === id)
 
-  it('follows a model switch but keeps the opening message', async () => {
+  it('follows a model switch and a retitle but keeps the opening message', async () => {
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
     await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'ship it', model: 'claude-opus-5' },
+      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'ship it', model: 'claude-opus-5', title: 'Ship it' },
     ])
     // The same conversation, seen again after a `/model` — and after a
     // compaction that left a different message at the head of its transcript.
@@ -104,29 +105,32 @@ describe('recordAgentSessions', () => {
         agentSessionId: 'conv-a',
         firstPrompt: 'continue where we left off',
         model: 'claude-fable-5',
+        title: 'Release checklist',
       },
     ])
 
     const row = await conversation('conv-a')
-    // The model is a fact about now, so the later sighting wins; the opening
-    // message is a fact about the conversation's birth, so the first does.
+    // The model and title are facts about now, so the later sighting wins;
+    // the opening message is a fact about the conversation's birth, so the
+    // first does.
     expect(row?.model).toBe('claude-fable-5')
+    expect(row?.title).toBe('Release checklist')
     expect(row?.firstPrompt).toBe('ship it')
   })
 
-  it('leaves a recorded model alone when a sighting read none', async () => {
+  it('leaves a recorded model and title alone when a sighting read none', async () => {
     // Absent means "not read" — a sweep that could not resolve the transcript
     // this tick, or a tool that never reports one. Treating it as "no model"
     // would blank the label on every such tick.
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
     await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
-      { tool: 'claude', agentSessionId: 'conv-b', model: 'claude-opus-5' },
+      { tool: 'claude', agentSessionId: 'conv-b', model: 'claude-opus-5', title: 'Lexer port' },
     ])
     await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
       { tool: 'claude', agentSessionId: 'conv-b', paneId: '%1' },
     ])
 
-    expect((await conversation('conv-b'))?.model).toBe('claude-opus-5')
+    expect(await conversation('conv-b')).toMatchObject({ model: 'claude-opus-5', title: 'Lexer port' })
   })
 })
 
@@ -184,6 +188,42 @@ describe('openingPrompt', () => {
 
     expect(openingPrompt(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1'))).toBe('port the lexer')
     expect(openingPrompt([])).toBeUndefined()
+  })
+})
+
+describe('conversationTitle', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  // The conversation whose message labels the workspace names it too, even
+  // when an earlier, unprompted one has a title of its own.
+  it("is the opening conversation's title, else the first one any conversation has", async () => {
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-1' })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-1', [
+      { tool: 'claude', agentSessionId: 'conv-blank', title: 'Blank tab' },
+      { tool: 'claude', agentSessionId: 'conv-a', firstPrompt: 'port the lexer', title: 'Lexer port' },
+      { tool: 'claude', agentSessionId: 'conv-b', firstPrompt: 'a side question', title: 'Side question' },
+    ])
+    expect(conversationTitle(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-1'))).toBe('Lexer port')
+
+    // An opening conversation its agent has not titled yet falls back to
+    // another's title; none at all is undefined.
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-2' })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'wt-2', [
+      { tool: 'claude', agentSessionId: 'conv-c', firstPrompt: 'port the parser' },
+      { tool: 'claude', agentSessionId: 'conv-d', title: 'Parser notes' },
+    ])
+    const links = await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-2')
+    expect(conversationTitle(links)).toBe('Parser notes')
+    expect(conversationTitle(links.slice(0, 1))).toBeUndefined()
   })
 })
 

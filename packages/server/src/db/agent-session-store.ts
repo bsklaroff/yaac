@@ -28,6 +28,8 @@ export interface AgentSessionRow {
    *  file against the recording tool's home. */
   transcriptPath?: string
   firstPrompt?: string
+  /** The title the agent gave it (see the `title` column). */
+  title?: string
   lastActiveAt?: Date
   /** The model it is running (see the `model` column). Absent until the
    *  launch or the agent names one. */
@@ -56,6 +58,8 @@ export interface DiscoveredAgentSession {
    *  `toProjectRelative`). */
   transcriptPath?: string
   firstPrompt?: string
+  /** The title the agent gave it. Absent leaves a recorded one alone. */
+  title?: string
   lastActiveMs?: number
   /** The model the agent last reported. Absent means "not reported" and
    *  leaves a recorded value alone. */
@@ -112,7 +116,8 @@ export async function recordAgentSessions(
         if (pinOrdinal !== undefined) {
           // Carry over the pin's creation time and launch model (unless the
           // agent reported its own), and always its prompt: a `--prompt` is
-          // the real opening message, while opencode's is only a title.
+          // the real opening message, which opencode's own transcript does
+          // not give.
           const [pin] = await db.delete(agentSessions).where(and(
             eq(agentSessions.projectId, projectId),
             eq(agentSessions.tool, reported.tool),
@@ -145,6 +150,7 @@ export async function recordAgentSessions(
           // Overwritten, not coalesced, to follow `/model`. An absent value
           // leaves the stored one alone.
           ...(d.model !== undefined ? { model: d.model.slice(0, MAX_MODEL_LENGTH) } : {}),
+          ...(d.title !== undefined ? { title: d.title } : {}),
           ...(d.firstPrompt !== undefined
             ? {
               // Keep the first value: a compacted transcript would otherwise
@@ -161,6 +167,7 @@ export async function recordAgentSessions(
           mode: d.mode ?? 'tui',
           transcriptPath: stored,
           firstPrompt: d.firstPrompt?.slice(0, MAX_PROMPT_LENGTH) ?? null,
+          title: d.title ?? null,
           lastActiveAt: d.lastActiveMs !== undefined ? new Date(d.lastActiveMs) : null,
           model: d.model?.slice(0, MAX_MODEL_LENGTH) ?? null,
         }
@@ -265,6 +272,7 @@ function selectLinked() {
     createdAt: agentSessions.createdAt,
     transcriptPath: agentSessions.transcriptPath,
     firstPrompt: agentSessions.firstPrompt,
+    title: agentSessions.title,
     lastActiveAt: agentSessions.lastActiveAt,
     model: agentSessions.model,
   }
@@ -488,4 +496,13 @@ export async function firstAgentSession(
  */
 export function openingPrompt(links: AgentSessionLinkRow[]): string | undefined {
   return links.find((l) => l.firstPrompt !== undefined)?.firstPrompt
+}
+
+/**
+ * The title a workspace shows when the user has given it none: the agent's
+ * own title for the conversation `openingPrompt` reads, or failing that the
+ * first conversation, in ordinal order, that has one.
+ */
+export function conversationTitle(links: AgentSessionLinkRow[]): string | undefined {
+  return links.find((l) => l.firstPrompt !== undefined)?.title ?? links.find((l) => l.title !== undefined)?.title
 }

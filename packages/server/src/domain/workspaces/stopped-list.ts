@@ -3,6 +3,7 @@ import {
   getAgentSessionsFor,
   listProjectRows,
   listStoppedWorkspaceRows,
+  conversationTitle,
   openingPrompt,
   type AgentSessionLinkRow,
   type StoppedRowCursor,
@@ -19,7 +20,8 @@ export interface StoppedListQuery {
   project?: string
   /** Only the projects this user owns, when no `project` is named. */
   owner?: string
-  /** Searched in the title, first prompts and tools. */
+  /** Searched in the user, agent and generated titles, first prompts and
+   *  tools. */
   q?: string
   /** Only this group's members. */
   group?: string
@@ -79,6 +81,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
     const first = links[0]
     const prompt = openingPrompt(links)
+    const title = r.title ?? conversationTitle(links) ?? r.generatedTitle
     return {
       workspaceId: r.workspaceId,
       projectId: r.projectId,
@@ -90,7 +93,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       agentSessions: links.map((l) => toAgentSessionEntry(l)),
       seen: r.deathSeen,
       ...(prompt !== undefined ? { prompt } : {}),
-      ...(r.title !== undefined ? { title: r.title } : {}),
+      ...(title !== undefined ? { title } : {}),
       ...(r.deathReason !== undefined ? { deathReason: r.deathReason } : {}),
       ...(r.deathDetail !== undefined ? { deathDetail: r.deathDetail } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),

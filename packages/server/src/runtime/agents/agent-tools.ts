@@ -14,16 +14,17 @@ import { AGENT_TOOLS, MAX_MODEL_LENGTH, PERMISSION_MODES, agentSessionIdSchema }
 import type { AgentMode, AgentStatus, AgentTool, PermissionMode } from '@yaac/shared/types'
 import { acpPermissionModeFor } from './acp-client'
 import { acpAdapterFor } from './acp-adapters'
-import { classifyClaudeTitle, claudePermissionMode, getFirstUserMessage } from './claude'
+import { classifyClaudeTitle, claudePermissionMode, getClaudeSessionTitle, getFirstUserMessage } from './claude'
 import {
   CODEX_MODEL_FORMAT,
   classifyCodexTitle,
   codexModelSlug,
   getCodexFirstUserMessage,
+  getCodexThreadName,
 } from './codex'
 import {
   OPENCODE_BUSY_MARKERS,
-  getSessionOpencodeFirstUserMessage,
+  getOpencodeSessionTitle,
   opencodePermissionMode,
 } from './opencode'
 import { PI_BUSY_MARKERS, getPiFirstUserMessage } from './pi'
@@ -33,21 +34,49 @@ import type { SandboxFile } from './sandbox-fs'
  * A conversation's first user message, read from its recorded transcript.
  * There is no by-id variant: a `/clear` conversation has an id yaac did not
  * choose, and codex's rollout filename is not derivable from any id.
- *
- * opencode has no host transcript, so its first message comes from an HTTP
- * probe into the running workspace and is unavailable once it stops.
+ * opencode has no host transcript, so it has none.
  */
 export async function getAgentSessionFirstMessage(
   tool: AgentTool,
   transcript: SandboxFile | undefined,
-  jobName?: string,
-  agentSessionId?: string,
 ): Promise<string | undefined> {
-  if (tool === 'opencode') return jobName ? getSessionOpencodeFirstUserMessage(jobName, agentSessionId) : undefined
-  if (transcript === undefined) return undefined
+  if (tool === 'opencode' || transcript === undefined) return undefined
   if (tool === 'codex') return getCodexFirstUserMessage(transcript)
   if (tool === 'pi') return getPiFirstUserMessage(transcript)
   return getFirstUserMessage(transcript)
+}
+
+/** What `getAgentSessionTitle` reads a conversation's title from. */
+export interface AgentTitleSource {
+  projectId: string
+  agentSessionId: string
+  /** claude's transcript, under either mode. */
+  transcript?: SandboxFile
+  /** The running workspace, which opencode's lookup runs in. */
+  jobName: string
+}
+
+/**
+ * The title the agent gave its own conversation, or undefined while it has
+ * none. Each tool keeps it in its own store, which `tui` and `acp` share:
+ * claude in its transcript, codex in its session index, opencode in its
+ * database. pi titles nothing. The adapters' ACP `session_info_update`
+ * titles are not used: codex-acp sends the raw opening message before its
+ * generated title, and opencode's server sends none.
+ */
+export async function getAgentSessionTitle(tool: AgentTool, src: AgentTitleSource): Promise<string | undefined> {
+  switch (tool) {
+    case 'claude': return src.transcript !== undefined ? getClaudeSessionTitle(src.transcript) : undefined
+    case 'codex': return getCodexThreadName(src.projectId, src.agentSessionId)
+    case 'opencode': return getOpencodeSessionTitle(src.jobName, src.agentSessionId)
+    case 'pi': return undefined
+  }
+}
+
+/** Whether a tool titles its own conversations (`getAgentSessionTitle`), so
+ *  yaac has no title to generate for them. */
+export function agentTitlesItself(tool: AgentTool): boolean {
+  return tool !== 'pi'
 }
 
 /**

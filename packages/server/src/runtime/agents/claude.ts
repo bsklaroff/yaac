@@ -1,4 +1,4 @@
-import { scanJsonlForward } from './jsonl'
+import { jsonlTail, scanJsonlForward } from './jsonl'
 import type { SandboxFile } from './sandbox-fs'
 import type { PermissionMode } from '@yaac/shared/types'
 
@@ -75,6 +75,28 @@ export async function getFirstUserMessage(file: SandboxFile): Promise<string | u
     if (isCommandMessage(parsed.isMeta, text)) return undefined
     return text
   })
+}
+
+/**
+ * How much of a transcript's end `getClaudeSessionTitle` reads. claude
+ * re-appends its title records every few entries so that readers of the
+ * tail find them; this leaves room for long tool output in between.
+ */
+const TITLE_TAIL_BYTES = 256 * 1024
+
+/**
+ * The conversation's own title, from the records claude keeps near the end
+ * of its transcript under either mode: a `custom-title` (a `/rename`) wins
+ * over the `ai-title` claude generates, as in claude's own session list.
+ */
+export async function getClaudeSessionTitle(file: SandboxFile): Promise<string | undefined> {
+  let custom: string | undefined
+  let generated: string | undefined
+  for (const e of await jsonlTail(file, TITLE_TAIL_BYTES)) {
+    if (e.type === 'custom-title' && typeof e.customTitle === 'string') custom = e.customTitle
+    if (e.type === 'ai-title' && typeof e.aiTitle === 'string') generated = e.aiTitle
+  }
+  return custom ?? generated
 }
 
 /**

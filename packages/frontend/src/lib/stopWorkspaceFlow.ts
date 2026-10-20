@@ -30,9 +30,9 @@ export function stopWorkspaceOptimistic(workspace: WorkspaceListEntry, rowIds: s
     if (next) state.autoSelectWorkspace(next)
     else state.selectWorkspace(null)
   }
-  // A workspace with a prompt will be listed as stopped once cleanup
-  // finishes; show it there now.
-  if (workspace.prompt) {
+  // A workspace with history (a prompt, or a title its agent gave it) will
+  // be listed as stopped once cleanup finishes; show it there now.
+  if (workspace.prompt || workspace.title) {
     state.addOptimisticStopped({
       workspaceId: id,
       projectId: workspace.projectId,

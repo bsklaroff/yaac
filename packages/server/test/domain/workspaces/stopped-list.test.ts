@@ -9,6 +9,7 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
+  setWorkspaceGeneratedTitle,
   setWorkspaceTitle,
 } from '#db/workspace-store'
 import { createWorkspaceGroup } from '#db/group-store'
@@ -138,8 +139,13 @@ describe('listStoppedWorkspaces', () => {
     expect(removed?.deathDetail).toBeUndefined()
   })
 
-  it('carries the title and the sidebar group', async () => {
+  it("carries the title, the agent's own when the user gave none, and the sidebar group", async () => {
     await seedWorkspace(DEMO_PROJECT_ID, 'sid', { deleted: true })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'sid', [
+      { tool: 'claude', agentSessionId: 'sid', firstPrompt: 'the parser drops tokens', title: 'Parser token loss' },
+    ])
+    expect((await entries())[0]).toMatchObject({ title: 'Parser token loss', prompt: 'the parser drops tokens' })
+
     await setWorkspaceTitle(DEMO_PROJECT_ID, 'sid', 'fix the parser')
     const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'release', 'sid')
     expect((await entries())[0]).toMatchObject({
@@ -176,19 +182,23 @@ describe('listStoppedWorkspaces', () => {
     await expect(listStoppedWorkspaces({ cursor: 'nope' })).rejects.toMatchObject({ code: 'VALIDATION' })
   })
 
-  it('searches titles, first prompts and tools case-insensitively, with LIKE wildcards taken literally', async () => {
+  it('searches user, agent and generated titles, first prompts and tools case-insensitively, with LIKE wildcards taken literally', async () => {
     await seedWorkspace(DEMO_PROJECT_ID, 'titled', { deleted: true })
     await setWorkspaceTitle(DEMO_PROJECT_ID, 'titled', 'Fix the 100% parser')
     await seedWorkspace(DEMO_PROJECT_ID, 'prompted', { deleted: true })
     await recordAgentSessions(DEMO_PROJECT_ID, 'prompted', [
-      { tool: 'claude', agentSessionId: 'prompted', firstPrompt: 'port the lexer' },
+      { tool: 'claude', agentSessionId: 'prompted', firstPrompt: 'port the lexer', title: 'Tokenizer rewrite' },
     ])
     await seedWorkspace(DEMO_PROJECT_ID, 'oc', { tool: 'opencode', deleted: true })
+    await seedWorkspace(DEMO_PROJECT_ID, 'generated', { deleted: true })
+    await setWorkspaceGeneratedTitle(DEMO_PROJECT_ID, 'generated', 'Widget plugin system')
 
     expect(await ids({ project: DEMO_PROJECT_ID, q: 'PARSER' })).toEqual(['titled'])
     expect(await ids({ project: DEMO_PROJECT_ID, q: '100%' })).toEqual(['titled'])
     expect(await ids({ project: DEMO_PROJECT_ID, q: '1_0' })).toEqual([])
     expect(await ids({ project: DEMO_PROJECT_ID, q: 'lexer' })).toEqual(['prompted'])
+    expect(await ids({ project: DEMO_PROJECT_ID, q: 'TOKENIZER' })).toEqual(['prompted'])
+    expect(await ids({ project: DEMO_PROJECT_ID, q: 'widget plugin' })).toEqual(['generated'])
     expect(await listStoppedWorkspaces({ project: DEMO_PROJECT_ID, q: 'opencode' }))
       .toMatchObject({ entries: [{ workspaceId: 'oc' }], total: 1 })
   })

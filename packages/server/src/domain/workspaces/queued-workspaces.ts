@@ -273,7 +273,6 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
   }
   if (!claimed) return undefined
 
-  const title = row.title ?? row.generatedTitle
   void (async () => {
     try {
       // The server launches it: whoever queued or ran the entry was
@@ -288,7 +287,8 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
         ...(row.effort !== undefined ? { effort: row.effort } : {}),
         branch: row.branch,
         prompt: row.prompt,
-        ...(title !== undefined ? { title } : {}),
+        ...(row.title !== undefined ? { title: row.title } : {}),
+        ...(row.title === undefined && row.generatedTitle !== undefined ? { generatedTitle: row.generatedTitle } : {}),
         ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
         rememberDefaults: false,
         // Children point at `workspaceId`; a spare has a different id.

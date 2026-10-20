@@ -1,6 +1,6 @@
 import type { FileHandle } from 'node:fs/promises'
 import { codexDir } from '@yaac/shared/project-paths'
-import { scanJsonlForward } from './jsonl'
+import { jsonlTail, scanJsonlForward } from './jsonl'
 import { openSandboxDir, openSandboxFile, type SandboxFile } from './sandbox-fs'
 import { EFFORT_RE, type PermissionMode } from '@yaac/shared/types'
 
@@ -57,6 +57,24 @@ export function classifyCodexTitle(title: string): 'running' | 'waiting' {
  */
 export async function getCodexFirstUserMessage(file: SandboxFile): Promise<string | undefined> {
   return scanJsonlForward(file, (entry) => getUserMessageText(entry as CodexEntry))
+}
+
+/** How much of `session_index.jsonl`'s end `getCodexThreadName` reads: a
+ *  few thousand names, the newest ones. */
+const INDEX_TAIL_BYTES = 512 * 1024
+
+/**
+ * A thread's name, as codex records it in `session_index.jsonl` in its home
+ * (the project's shared codex dir). A thread is named by a generated title
+ * (the TUI's, once the first message is in, or codex-acp's, after the first
+ * turn) and by a rename, each appending one line; the newest line for the
+ * thread wins. An empty name is a cleared one.
+ */
+export async function getCodexThreadName(projectId: string, threadId: string): Promise<string | undefined> {
+  const index = { projectId, dir: codexDir(projectId), rel: 'session_index.jsonl' }
+  const entry = (await jsonlTail(index, INDEX_TAIL_BYTES)).filter((e) => e.id === threadId).at(-1)
+  const name = entry?.thread_name
+  return typeof name === 'string' && name !== '' ? name : undefined
 }
 
 /**

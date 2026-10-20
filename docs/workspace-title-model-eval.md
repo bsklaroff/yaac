@@ -7,8 +7,9 @@ runner is its `llama-cpp` module.
 
 ## Decision
 
-The reconcile step `reconcileGeneratedTitles` gives an untitled workspace (and
-a draft or queued one) a title that summarizes its first message. It runs the
+The reconcile step `reconcileGeneratedTitles` gives a draft, a queued entry,
+or a workspace whose agent titles nothing (docs/workspace-titles.md) a title
+that summarizes its first message. It runs the
 model through a pinned `llama-completion` binary, one short-lived process per
 title.
 
