@@ -117,8 +117,9 @@ export function active(item: AcpSubagent | AcpTask): boolean {
  * - a call's streamed output is appended to it, keeping the end;
  * - a call that started a task still running is not interrupted by its turn
  *   ending: it runs on in the background;
- * - consecutive text chunks of one kind merge into one group, except that a
- *   steered message stands alone;
+ * - consecutive agent or thought chunks merge into one group. Each user
+ *   message stands alone, so two prompts with no reply between them stay
+ *   two; only a chunk that `continues` one joins it;
  * - a tool call's, subagent's, task's or compaction's updates replace its
  *   group in place, keeping the latest, and so does an ask repeated by a
  *   later page (which opens with what is still unanswered);
@@ -295,8 +296,8 @@ export function groupEvents(events: AcpEvent[], thread?: string): Group[] {
     const last = groups[groups.length - 1]
     const text = e.content.map((c) => (c.type === 'text' ? c.text : '')).join('')
     const images = e.content.filter((c) => c.type === 'image')
-    const steer = e.type === 'user' && (e.steered === true || (last?.kind === 'user' && last.steered === true))
-    if (last !== undefined && last.kind === e.type && !split && !steer) {
+    const joins = e.type === 'user' ? e.continues === true : !split
+    if (last !== undefined && last.kind === e.type && joins) {
       groups[groups.length - 1] = {
         ...last, kind: e.type, text: last.text + text, images: [...last.images, ...images],
       }

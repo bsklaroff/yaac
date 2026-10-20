@@ -23,7 +23,8 @@ that mapping cannot bring back.
   socket, built from the `session/prompt` reply. No history holds them, the
   record included, so an unusual stop reason (`max_tokens`, `refusal`,
   `cancelled`) and an adapter error show only while the pane that saw them
-  stays open.
+  stays open. claude's history is the exception for a stopped turn: claude
+  keeps the stop as a message, which shows as the turn's `cancelled` end.
 - **Queued messages.** A message waiting for the turn to end lives in the
   server's memory and is dropped at a stop. Only one that was sent shows in
   the history.
@@ -43,6 +44,9 @@ that mapping cannot bring back.
 - **Permission asks.** claude's transcript does not keep the ask or the
   answer. A refused call shows as a failed tool call with claude's refusal
   text.
+- **A prompt stopped right after it was sent** may be missing from claude's
+  transcript, depending on how far claude got before the stop. Restored,
+  only its `cancelled` turn end shows.
 - **Mid-turn messages.** claude keeps a message steered into a running turn as
   an ordinary user message, so it shows where claude took it, without the
   "Sent mid-turn" marker, and it ends the turn before it in the view.

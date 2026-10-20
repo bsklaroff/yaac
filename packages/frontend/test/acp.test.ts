@@ -34,6 +34,20 @@ describe('groupEvents', () => {
     expect(groups.map((g) => g.kind === 'agent' && g.text)).toEqual(['started', 'finished'])
   })
 
+  it('keeps each user message apart, joining only a chunk that continues one', () => {
+    // A prompt stopped before any reply is followed straight by the next.
+    const image = { type: 'image' as const, mimeType: 'image/png', data: 'AA==' }
+    const groups = groupEvents([
+      user(0, 'one'),
+      user(1, 'two'),
+      { type: 'user', seq: 2, content: [image], continues: true },
+    ])
+    expect(groups).toEqual([
+      { kind: 'user', seq: 0, text: 'one', images: [] },
+      { kind: 'user', seq: 1, text: 'two', images: [image] },
+    ])
+  })
+
   it('keeps a user turn separate from the reply it precedes', () => {
     const groups = groupEvents([user(0, 'do it'), agent(1, 'ok'), agent(2, '!')])
     expect(groups).toEqual([

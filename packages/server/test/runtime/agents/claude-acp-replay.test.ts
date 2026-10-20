@@ -142,6 +142,27 @@ describe('claudeTranscriptAsAcp', () => {
     expect(said.type === 'agent' && said.content).toEqual([{ type: 'text', text: 'the real answer' }])
   })
 
+  it('shows a stopped prompt as its own message and a cancelled turn, apart from the next', async () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }
+    const file = await transcript([
+      user([{ type: 'text', text: 'find the article' }]),
+      user([{ type: 'text', text: '[Request interrupted by user]' }]),
+      assistant([{ type: 'text', text: 'No response requested.' }], {
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: 'No response requested.' }] },
+      }),
+      user([{ type: 'text', text: 'what is this?' }, image]),
+      assistant([{ type: 'text', text: 'a red square' }]),
+    ])
+
+    const events = await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)
+
+    expect(events.map((e) => (e.type === 'turn-end' ? `turn-end:${e.stopReason}` : e.type)))
+      .toEqual(['user', 'turn-end:cancelled', 'user', 'user', 'agent'])
+    // A message's blocks come as separate chunks; the second continues the
+    // first, while separate messages do not.
+    expect(events.filter((e) => e.type === 'user').map((e) => e.continues === true)).toEqual([false, false, true])
+  })
+
   it('reports a failed tool call as failed, and leaves an unanswered one running', async () => {
     const file = await transcript([
       user('run the tests'),

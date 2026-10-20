@@ -223,8 +223,10 @@ export type AcpStopReason =
  */
 export type AcpEvent =
   /** A user message, echoed back so live history matches a replay.
-   *  `steered` marks one added to a running turn, which it does not end. */
-  | { type: 'user'; seq: number; thread?: string; content: AcpContent[]; steered?: true; at?: number }
+   *  `steered` marks one added to a running turn, which it does not end.
+   *  `continues` marks more of the message before it: a replay may send a
+   *  message's blocks as separate chunks. */
+  | { type: 'user'; seq: number; thread?: string; content: AcpContent[]; steered?: true; continues?: true; at?: number }
   | { type: 'agent'; seq: number; thread?: string; content: AcpContent[] }
   /** Extended thinking. Panes render it collapsed. */
   | { type: 'thought'; seq: number; thread?: string; content: AcpContent[] }
