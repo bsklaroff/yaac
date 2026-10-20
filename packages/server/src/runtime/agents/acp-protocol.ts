@@ -214,6 +214,10 @@ const BACKGROUNDED = /^Command [^.]*(?:with ID: |\(ID: )(\w+)/
 /** One whole task notification as claude replays it, and nothing else. */
 const NOTIFICATION_BLOCK = /^<task-notification>\n(?:(?!<\/?task-notification>)[\s\S])*\n<\/task-notification>\s*$/
 
+/** The message claude keeps in its transcript where the user stopped a
+ *  turn; live, the stop is the turn's `cancelled` end. */
+const CLAUDE_INTERRUPT = /^\[Request interrupted by user(?: for tool use)?\]$/
+
 /** A tool result's text, sent as a string or as content blocks. */
 function rawText(value: unknown): string {
   if (typeof value === 'string') return value
@@ -559,6 +563,9 @@ export class AcpProjection {
   /** A replayed command's or monitor's input, held until its result
    *  says whether it launched a task. */
   private readonly replayedInputs = new Map<string, Record<string, unknown>>()
+  /** The `messageId` of the last user chunk, which a chunk carrying the
+   *  same one continues. */
+  private userMessageId: string | undefined
   /** The id of the `session/load` request whose reply ends its replay;
    *  set while one runs. */
   private loadRequest: string | undefined
@@ -709,6 +716,10 @@ export class AcpProjection {
       if (compaction !== undefined) return [...out, ...compaction]
       const replayed = this.replayedWake(update, thread, asString(asRecord(params)?.sessionId))
       if (replayed !== undefined) return [...out, ...replayed]
+      if (this.loadRequest !== undefined && thread === undefined && update.sessionUpdate === 'user_message_chunk'
+        && CLAUDE_INTERRUPT.test(asString(asRecord(update.content)?.text) ?? '')) {
+        return [...out, { type: 'turn-end', stopReason: 'cancelled' }]
+      }
       // Only a notification starts a run inside a held prompt; output after
       // any other result (a steer aborting the cycle it interrupts) goes on.
       const held = this.runEnded && this.agentRunning && this.wakes.length > 0
@@ -723,6 +734,12 @@ export class AcpProjection {
     const translated = translateSessionUpdate(params)
     if (!translated) return out
     const tag = thread !== undefined ? { thread } : {}
+    if (translated.kind === 'event' && translated.event.type === 'user') {
+      const messageId = asString(update?.messageId)
+      const continues = messageId !== undefined && messageId === this.userMessageId
+      this.userMessageId = messageId
+      return [...out, { ...translated.event, ...tag, ...(continues ? { continues: true as const } : {}) }]
+    }
     if (translated.kind === 'event') return [...out, { ...translated.event, ...tag }]
     const { output, ...patch } = translated.patch
     const known = this.toolCalls.get(patch.toolCallId)

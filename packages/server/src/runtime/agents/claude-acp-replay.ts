@@ -146,7 +146,7 @@ async function synthesizeAcpRecord(
   const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk')
   const { stripLocalCommandMetadata, toAcpNotifications } =
     await import('@agentclientprotocol/claude-agent-acp')
-  const { isReplayHiddenMetaMessage } = await import('@agentclientprotocol/claude-agent-acp/dist/acp-agent.js')
+  const { isReplayHiddenMetaMessage, messageIdForGrouping } = await import('@agentclientprotocol/claude-agent-acp/dist/acp-agent.js')
   const { compactionSummaryText } = await import('@agentclientprotocol/claude-agent-acp/dist/context-compaction.js')
   /* eslint-enable no-restricted-syntax */
 
@@ -188,7 +188,10 @@ async function synthesizeAcpRecord(
       if (isSummary(message) || isReplayHiddenMetaMessage(message)) continue
       // The live path turns claude's synthetic "Please run /login" message
       // into an auth error; replaying it would show a stale login prompt.
-      if (role === 'assistant' && isSyntheticLoginMessage(api)) continue
+      // The reply claude adds to a stopped turn when it resumes was never
+      // shown live.
+      const synthetic = role === 'assistant' ? syntheticText(api) : undefined
+      if (synthetic?.includes('Please run /login') === true || synthetic === 'No response requested.') continue
       let content = api?.content
       // Slash-command bookkeeping (caveat preamble, invocation, stdout) is
       // dropped. A task notification is kept whole: the adapter's stripper
@@ -202,8 +205,9 @@ async function synthesizeAcpRecord(
       for (const notification of toAcpNotifications(
         content as never, role, sessionId, toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
         // With hooks off, the adapter returns notifications instead of pushing
-        // them through a client.
-        { registerHooks: false },
+        // them through a client. The message id marks a message's chunks as
+        // one message, as the adapter's own replay does.
+        { registerHooks: false, messageId: messageIdForGrouping(message) },
       )) {
         record.write({ method: ACP.sessionUpdate, params: notification })
       }
@@ -240,16 +244,15 @@ function compactionUpdate(boundary: Record<string, unknown>, summary: string | u
 }
 
 /**
- * claude's synthetic auth message, matched like the adapter's internal
- * `isSyntheticLoginMessage`.
+ * The text of a message claude wrote itself rather than the model, matched
+ * like the adapter's internal `isSyntheticLoginMessage`.
  */
-function isSyntheticLoginMessage(api: { model?: unknown; content?: unknown } | undefined): boolean {
+function syntheticText(api: { model?: unknown; content?: unknown } | undefined): string | undefined {
   if (api?.model !== '<synthetic>' || !Array.isArray(api.content) || api.content.length !== 1) {
-    return false
+    return undefined
   }
   const block = api.content[0] as { type?: unknown; text?: unknown } | undefined
-  return block?.type === 'text' && typeof block.text === 'string'
-    && block.text.includes('Please run /login')
+  return block?.type === 'text' && typeof block.text === 'string' ? block.text : undefined
 }
 
 /** A user message that is claude's report of background work ending, which
