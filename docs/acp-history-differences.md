@@ -44,9 +44,11 @@ that mapping cannot bring back.
 - **Permission asks.** claude's transcript does not keep the ask or the
   answer. A refused call shows as a failed tool call with claude's refusal
   text.
-- **A prompt stopped right after it was sent** may be missing from claude's
-  transcript, depending on how far claude got before the stop. Restored,
-  only its `cancelled` turn end shows.
+- **A prompt stopped right after it was sent** (within about 0.2 s) may be
+  missing from claude's transcript, which still keeps its interrupt marker.
+  Restored, the turn does not show at all: the marker chains, through the
+  prompt's attachments, to the end of the turn before, so the replay drops it
+  rather than show that finished turn as stopped.
 - **Mid-turn messages.** claude keeps a message steered into a running turn as
   an ordinary user message, so it shows where claude took it, without the
   "Sent mid-turn" marker, and it ends the turn before it in the view.

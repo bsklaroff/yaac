@@ -44,18 +44,19 @@ let uuid = 0
 let parent: string | null = null
 const nextUuid = (): string => `uuid-${String(++uuid)}`
 
+function linked(fields: Record<string, unknown>): unknown {
+  const id = nextUuid()
+  const entry = { uuid: id, parentUuid: parent, sessionId: SESSION, timestamp: '2026-01-01T00:00:00Z', ...fields }
+  parent = id
+  return entry
+}
+
 function turn(
   type: 'user' | 'assistant',
   message: Record<string, unknown>,
   extra: Record<string, unknown> = {},
 ): unknown {
-  const id = nextUuid()
-  const entry = {
-    type, uuid: id, parentUuid: parent, sessionId: SESSION, cwd: '/workspace',
-    timestamp: '2026-01-01T00:00:00Z', message, ...extra,
-  }
-  parent = id
-  return entry
+  return linked({ type, cwd: '/workspace', message, ...extra })
 }
 
 function user(content: unknown, extra: Record<string, unknown> = {}): unknown {
@@ -161,6 +162,82 @@ describe('claudeTranscriptAsAcp', () => {
     // A message's blocks come as separate chunks; the second continues the
     // first, while separate messages do not.
     expect(events.filter((e) => e.type === 'user').map((e) => e.continues === true)).toEqual([false, false, true])
+  })
+
+  it('drops the cancelled end of a stopped prompt claude left out of its transcript', async () => {
+    const say = (text: string): unknown[] => [
+      user([{ type: 'text', text }]),
+      linked({ type: 'attachment', attachment: { type: 'hook_success', hookName: 'UserPromptSubmit' } }),
+    ]
+    const reply = (text: string): unknown[] => [
+      assistant([{ type: 'text', text }]),
+      linked({ type: 'system', subtype: 'stop_hook_summary' }),
+    ]
+    // What claude writes for a prompt it dropped: the queue lines, which are
+    // not in the chain, then an attachment and the marker.
+    const dropped = (): unknown[] => [
+      { type: 'queue-operation', operation: 'enqueue', timestamp: '2026-01-01T00:00:00Z', sessionId: SESSION },
+      { type: 'queue-operation', operation: 'dequeue', timestamp: '2026-01-01T00:00:00Z', sessionId: SESSION },
+      linked({ type: 'attachment', attachment: { type: 'total_tokens_reminder' } }),
+      user([{ type: 'text', text: '[Request interrupted by user]' }]),
+    ]
+    const stop = (): unknown => user([{ type: 'text', text: '[Request interrupted by user]' }])
+    const file = await transcript([
+      ...say('first'), ...reply('one'),
+      ...dropped(),
+      ...say('kept, stopped before a reply'), stop(),
+      ...dropped(),
+      ...say('stopped mid-reply'), assistant([{ type: 'text', text: 'Once upon' }]), stop(),
+      ...say('stopped in a tool call'),
+      assistant([{ type: 'tool_use', id: 'tu_1', name: 'Bash', input: { command: 'make' } }]),
+      linked({ type: 'attachment', attachment: { type: 'hook_additional_context', hookName: 'PreToolUse:Bash' } }),
+      stop(),
+      ...say('stopped after a tool result'),
+      assistant([{ type: 'tool_use', id: 'tu_2', name: 'Bash', input: { command: 'ls' } }]),
+      user([{ type: 'tool_result', tool_use_id: 'tu_2', content: 'a.txt' }]),
+      linked({ type: 'attachment', attachment: { type: 'hook_additional_context', hookName: 'PostToolUse:Bash' } }),
+      stop(),
+      ...say('last'), ...reply('two'),
+    ])
+    const shown = async (file: string): Promise<string[]> =>
+      (await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), SESSION)).flatMap((e) => {
+        if (e.type === 'turn-end') return [`end:${e.stopReason}`]
+        if (e.type === 'compaction') return ['compaction']
+        const text = e.type === 'user' || e.type === 'agent' ? e.content.find((c) => c.type === 'text') : undefined
+        return text?.type === 'text' ? [text.text] : []
+      })
+
+    expect(await shown(file)).toEqual([
+      'first', 'one',
+      'kept, stopped before a reply', 'end:cancelled',
+      'stopped mid-reply', 'Once upon', 'end:cancelled',
+      'stopped in a tool call', 'end:cancelled',
+      'stopped after a tool result', 'end:cancelled',
+      'last', 'two',
+    ])
+
+    // `/compact` ends its turn with the command's output, a user entry.
+    parent = null
+    const compacted = await transcript([
+      ...say('first'), ...reply('one'),
+      (() => { parent = null; return linked({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'manual' } }) })(),
+      user('This session is being continued from a previous conversation.', { isCompactSummary: true }),
+      user('<local-command-caveat>Caveat: …</local-command-caveat>', { isMeta: true }),
+      user('<command-name>/compact</command-name>'),
+      user('<local-command-stdout>Compacted</local-command-stdout>'),
+      ...dropped(),
+      ...say('after the compaction'), ...reply('three'),
+    ])
+    expect(await shown(compacted)).toEqual(['first', 'one', 'compaction', 'after the compaction', 'three'])
+
+    // A link to an entry the transcript lacks leaves the stop shown.
+    parent = 'not-in-the-file'
+    const dangling = await transcript([
+      linked({ type: 'attachment', attachment: { type: 'total_tokens_reminder' } }),
+      stop(),
+      ...say('next'), ...reply('four'),
+    ])
+    expect(await shown(dangling)).toEqual(['end:cancelled', 'next', 'four'])
   })
 
   it('reports a failed tool call as failed, and leaves an unanswered one running', async () => {
