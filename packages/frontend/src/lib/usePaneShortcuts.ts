@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { layoutOf, shortcutsSuspended, useUiStore } from '#lib/store'
+import { layoutOf, useUiStore } from '#lib/store'
 import { claimChord, cycleDeltaFor, matchShortcut, resolveCycleTarget } from '#lib/shortcuts'
 import { moveColumn, moveTabInStrip } from '#lib/layout'
 import { isAgentPane, isSpecialPane } from '#lib/panes'
@@ -34,8 +34,8 @@ export function usePaneShortcuts(ctx: PaneShortcutContext): void {
       const c = latest.current
       if (!c.sid) return
       const state = useUiStore.getState()
-      // A rebind being recorded, or the create dialog open.
-      if (shortcutsSuspended(state)) return
+      // A rebind being recorded.
+      if (state.recordingShortcut) return
       const id = matchShortcut(state.bindings, e)
       switch (id) {
         case 'new-shell':

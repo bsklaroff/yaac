@@ -1,15 +1,17 @@
 /*
- * Verifies that a dialog opened from a sidebar row's `…` menu does not
- * return focus to that hover-only trigger when opened by pointer, which
+ * Verifies that a dialog or pane opened from a sidebar row's `…` menu does
+ * not return focus to that hover-only trigger when opened by pointer, which
  * would leave the `…` visible after the pointer leaves:
  *
- *  1. A draft's `…` > Open… (the same RowMenu -> create-dialog path as a
- *     workspace's "Queue workspace after this…"), closed by Escape and by ×,
- *     leaves the trigger unfocused and hidden once the pointer moves away.
+ *  1. A draft's `…` > Open… (the same RowMenu -> new-workspace pane path as
+ *     a workspace's "Queue workspace after this…") reopens the draft with its
+ *     prompt focused, leaving the trigger unfocused and hidden once the
+ *     pointer moves away.
  *  2. Its `…` > Discard… > Cancel (ConfirmDialog) does the same, including
  *     when Discard… is picked by press-drag-release.
- *  3. By keyboard through the row menu, Open… and Discard… return focus to
- *     the `…` trigger on Escape, visibly.
+ *  3. By keyboard through the row menu, Open… hands focus to the reopened
+ *     draft's prompt, and Discard… returns focus to the `…` trigger on
+ *     Escape, visibly.
  *  4. A dialog from an ordinary menu item (the project header's Remove
  *     project) returns focus to that menu's trigger, by mouse and keyboard.
  *
@@ -20,7 +22,7 @@
  * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/row-menu-dialog-focus-test.js
  * (PROJECT, a project name or id, defaults to yaac)
  */
-import { requirePlaywright, origin, check, finish, resolveProject } from './lib.js'
+import { requirePlaywright, origin, check, finish, resolveProject, until } from './lib.js'
 
 const PROJECT = await resolveProject(process.env.PROJECT ?? 'yaac')
 const idea = `pw focus ${Date.now()}`
@@ -41,10 +43,9 @@ try {
   // Save a draft to hang the row menu off.
   await newButton.click()
   await prompt.waitFor({ state: 'visible' })
-  await page.keyboard.type(idea)
-  await page.keyboard.press('Escape')
-  await question.getByRole('button', { name: 'Save draft' }).click()
-  await prompt.waitFor({ state: 'detached' })
+  await prompt.fill(idea)
+  await page.locator('main').getByRole('button', { name: 'Save draft' }).click()
+  await until(page, () => document.querySelector('textarea[aria-label="Prompt"]')?.value === '')
 
   const row = aside.getByRole('group', { name: 'Drafts' }).locator('div.group.relative', { hasText: idea })
   await row.waitFor({ timeout: 10_000 })
@@ -67,36 +68,27 @@ try {
     check(name, !s.focused && s.opacity === '0', JSON.stringify(s))
   }
 
-  // A reopened draft may ask to save on close (the form fills in
-  // asynchronously); answer it if so.
-  const dismiss = async (close) => {
-    await close()
-    const asked = await Promise.race([
-      prompt.waitFor({ state: 'detached' }).then(() => false),
-      question.waitFor({ state: 'visible' }).then(() => true),
-    ])
-    if (asked) {
-      // By keyboard, to keep :focus-visible behavior consistent.
-      await question.getByRole('button', { name: 'Discard changes' }).focus()
-      await page.keyboard.press('Enter')
-      await prompt.waitFor({ state: 'detached' })
-    }
+  /** Wait for the pane to hold the draft with its prompt focused, then go
+   *  back to a blank form with the + (the draft is unchanged, so nothing
+   *  asks). */
+  const reopened = async () => {
+    await until(page, (text) => {
+      const box = document.querySelector('textarea[aria-label="Prompt"]')
+      return box?.value === text && box === document.activeElement
+    }, idea)
+  }
+  const blank = async () => {
+    await newButton.click()
+    await until(page, () => document.querySelector('textarea[aria-label="Prompt"]')?.value === '')
   }
 
-  // (1) Open… then Escape, and Open… then ×.
+  // (1) Open… by pointer.
   await pick('Open…')
-  await prompt.waitFor({ state: 'visible' })
-  await page.waitForTimeout(300)
-  await dismiss(() => page.keyboard.press('Escape'))
+  await reopened()
+  check('Open… reopens the draft with its prompt focused', true)
   await settle()
-  await expectHidden('Open… + Escape leaves the … trigger unfocused and hidden')
-
-  await pick('Open…')
-  await prompt.waitFor({ state: 'visible' })
-  await page.waitForTimeout(300)
-  await dismiss(() => page.getByRole('button', { name: 'Close' }).click())
-  await settle()
-  await expectHidden('Open… + × leaves the … trigger unfocused and hidden')
+  await expectHidden('Open… leaves the … trigger unfocused and hidden')
+  await blank()
 
   // (2) Discard… then Cancel.
   await pick('Discard…')
@@ -141,10 +133,9 @@ try {
     check(name, s.focused && Number(s.opacity) > 0.5, JSON.stringify(s))
   }
   await byKey('Open…')
-  await prompt.waitFor({ state: 'visible' })
-  await page.waitForTimeout(300)
-  await dismiss(() => page.keyboard.press('Escape'))
-  await expectFocusedVisible('keyboard Open… + Escape returns focus to the … trigger')
+  await reopened()
+  check('keyboard Open… hands focus to the reopened draft\'s prompt', true)
+  await blank()
 
   await byKey('Discard…')
   await question.waitFor({ state: 'visible' })

@@ -86,7 +86,7 @@ describe('ReadOnlyWorkspace', () => {
     // The confirm dialog's button.
     fireEvent.click((await screen.findAllByRole('button', { name: 'Restart' })).at(-1)!)
     await waitFor(() => expect(provision).toHaveBeenCalledTimes(1))
-    expect(provision.mock.calls[0]?.slice(0, 4)).toEqual(['proj', 'claude', 'restart', 's1'])
+    expect(provision.mock.calls[0]?.[0]).toEqual({ workspaceId: 's1', projectId: 'proj', tool: 'claude', kind: 'restart' })
   })
 
   it('marks an unseen death seen once, and never in a teammate\'s view', async () => {

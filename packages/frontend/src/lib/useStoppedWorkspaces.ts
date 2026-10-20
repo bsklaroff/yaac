@@ -233,8 +233,12 @@ export function useRestartStopped(): (entry: StoppedWorkspaceEntry) => void {
   const removeOptimistic = useUiStore((s) => s.removeOptimisticStopped)
   return (entry) => {
     removeOptimistic(entry.workspaceId)
-    provision(entry.projectId, entry.tool, 'restart', entry.workspaceId,
-      (sid, onProgress) => restartWorkspace(sid, onProgress),
-      entry.groupId)
+    provision({
+      workspaceId: entry.workspaceId,
+      projectId: entry.projectId,
+      tool: entry.tool,
+      kind: 'restart',
+      ...(entry.groupId !== undefined ? { groupId: entry.groupId } : {}),
+    }, (onProgress) => restartWorkspace(entry.workspaceId, onProgress))
   }
 }

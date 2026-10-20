@@ -14,7 +14,7 @@ describe('useProvisionWorkspace', () => {
     const { result } = renderHook(() => useProvisionWorkspace())
 
     act(() => {
-      result.current('proj', 'claude', 'create', 'sid-1', () => Promise.resolve({ workspaceId: 'sid-1' }))
+      result.current({ workspaceId: 'sid-1', projectId: 'proj', tool: 'claude', kind: 'create' }, () => Promise.resolve({ workspaceId: 'sid-1' }))
     })
 
     expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
@@ -32,7 +32,10 @@ describe('useProvisionWorkspace', () => {
     const { result } = renderHook(() => useProvisionWorkspace())
 
     act(() => {
-      result.current('proj', 'claude', 'restart', 'sid-g', () => Promise.resolve({ workspaceId: 'sid-g' }), 'g1')
+      result.current(
+        { workspaceId: 'sid-g', projectId: 'proj', tool: 'claude', kind: 'restart', groupId: 'g1' },
+        () => Promise.resolve({ workspaceId: 'sid-g' }),
+      )
     })
 
     expect(useUiStore.getState().optimisticProvisioning).toMatchObject([
@@ -44,7 +47,7 @@ describe('useProvisionWorkspace', () => {
     const { result } = renderHook(() => useProvisionWorkspace())
 
     act(() => {
-      result.current('proj', 'claude', 'create', 'sid-2', (_sid, onProgress) => {
+      result.current({ workspaceId: 'sid-2', projectId: 'proj', tool: 'claude', kind: 'create' }, (onProgress) => {
         onProgress('Pulling image…')
         return Promise.resolve({ workspaceId: 'sid-2' })
       })
@@ -68,7 +71,7 @@ describe('useProvisionWorkspace', () => {
 
     act(() => {
       // The op resolves with a different id than requested (a claimed spare).
-      result.current('proj', 'claude', 'create', 'requested-id', () => Promise.resolve({ workspaceId: 'spare-id' }))
+      result.current({ workspaceId: 'requested-id', projectId: 'proj', tool: 'claude', kind: 'create' }, () => Promise.resolve({ workspaceId: 'spare-id' }))
     })
 
     // In flight until the request settles. It is released only after the
@@ -80,11 +83,11 @@ describe('useProvisionWorkspace', () => {
     expect(useUiStore.getState().claims['requested-id']).toBe('spare-id')
     expect(useUiStore.getState().selectedWorkspaceId).toBe('requested-id')
 
-    // The pane keeps showing the create's progress, not its empty state.
+    // The pane keeps showing the create's progress, not a new workspace.
     const s = useUiStore.getState()
     renderWithClient(<WorkspaceView snapshot={s.snapshot} provisioning={s.optimisticProvisioning} />)
-    expect(screen.getByText('Starting…')).toBeTruthy()
-    expect(screen.queryByText('No workspaces yet')).toBeNull()
+    expect(screen.getByText('Starting')).toBeTruthy()
+    expect(screen.queryByLabelText('Prompt')).toBeNull()
 
     // Once the spare is listed, its row replaces the create's, and the claim
     // stays for the selection to follow (resolveVacantSelection).
@@ -97,7 +100,7 @@ describe('useProvisionWorkspace', () => {
     const { result } = renderHook(() => useProvisionWorkspace())
 
     act(() => {
-      result.current('proj', 'claude', 'create', 'same-id', () => Promise.resolve({ workspaceId: 'same-id' }))
+      result.current({ workspaceId: 'same-id', projectId: 'proj', tool: 'claude', kind: 'create' }, () => Promise.resolve({ workspaceId: 'same-id' }))
     })
 
     // Give the resolved promise a chance to run; the row must NOT be dropped.
@@ -110,7 +113,7 @@ describe('useProvisionWorkspace', () => {
     const { result } = renderHook(() => useProvisionWorkspace())
 
     act(() => {
-      result.current('proj', 'codex', 'restart', 'sid-3', () => Promise.reject(new Error('boom')))
+      result.current({ workspaceId: 'sid-3', projectId: 'proj', tool: 'codex', kind: 'restart' }, () => Promise.reject(new Error('boom')))
     })
 
     await waitFor(() => {

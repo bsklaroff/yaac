@@ -160,8 +160,8 @@ snapshot omits it while its provisioning row stands in for it.
 - **Snapshot.** `queuedWorkspaces` (entries not launching, oldest first) and
   `heldWorkspaces` (stopped rows that entries wait on, in a slimmer shape
   than the stopped listing, which is too slow for a snapshot).
-  `WorkspaceListEntry.permissionMode` and `effort` let the create dialog
-  seed a child from a live parent.
+  `WorkspaceListEntry.permissionMode` and `effort` let the new-workspace
+  pane seed a child from a live parent.
 - **`yaac-mama queue`** queues under the workspace or entry named by the
   required `--parent-workspace` (a follow-up to the caller passes
   `$YAAC_WORKSPACE_ID`). It takes every option `yaac-mama create` does and
@@ -176,7 +176,8 @@ snapshot omits it while its provisioning row stands in for it.
   Otherwise an agent refining a prompt would run its own words under a grant
   the user gave. Changing the tool re-resolves the posture for that tool, as
   queueing does. Discard and Run now are user-only.
-- **Webapp.** One create dialog (Alt+N, a row's `…` menu, a queued row) with
+- **Webapp.** One new-workspace pane (shown whenever no workspace is
+  selected: Alt+N, the sidebar's +, a row's `…` menu, a queued row) with
   a **Start** field: `Now`, or after a live workspace or queued entry stops.
   Setting a title with the pencil beside the heading turns off auto-titling.
   **Group** follows the Start parent's until picked, and lists the groups the
@@ -184,6 +185,6 @@ snapshot omits it while its provisioning row stands in for it.
   (a name box; the create or queue creates the group). Queued rows nest under
   their parent in the sidebar, each workspace's set (chains included) behind
   one collapsible "n queued workspaces" expander. Sets start collapsed,
-  except the one the user just queued into from the dialog. The stop dialog
+  except the one the user just queued into from the pane. The stop dialog
   lists a workspace's children so they can be edited or discarded before
   they start.

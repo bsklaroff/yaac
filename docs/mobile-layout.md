@@ -31,6 +31,7 @@ app's own choices:
 | `setActiveProject` → `workspaces` | `restoreActiveProject` (no move) |
 | `selectWorkspace` → `pane` | `autoSelectWorkspace` (no move) |
 | `openWorkspace` → `pane` (tray/notification jump, just-created workspace) | — |
+| `openNewWorkspace` → `pane` (the +, Alt+N, a draft or queued row) | — |
 
 An eslint rule allows the two right-hand actions only in `App.tsx`, the store
 and the delete flow (`lib/stopWorkspaceFlow.ts`, which selects the row below a

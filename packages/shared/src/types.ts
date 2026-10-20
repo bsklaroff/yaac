@@ -1454,8 +1454,8 @@ export const queuedWorkspaceSettingsSchema = z.object({
 })
 
 /**
- * The create dialog's fields as a draft keeps them
- * (docs/draft-workspaces.md). `model` and `branch` are absent if the dialog
+ * The new-workspace pane's fields as a draft keeps them
+ * (docs/draft-workspaces.md). `model` and `branch` are absent if the pane
  * hadn't resolved them; `startAfter` is the parent workspace or queued entry
  * id, absent for "Now"; `title` is absent if left blank.
  */
@@ -1469,7 +1469,7 @@ export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.extend
 
 export type DraftWorkspaceSettings = z.infer<typeof draftWorkspaceSettingsSchema>
 
-/** A create-dialog's contents the user kept instead of running. */
+/** A new-workspace pane's contents the user kept instead of running. */
 export interface DraftWorkspaceEntry extends DraftWorkspaceSettings {
   id: string
   projectId: string

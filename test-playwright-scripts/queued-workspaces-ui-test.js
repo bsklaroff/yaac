@@ -4,21 +4,22 @@
  *
  *  1. A sidebar row's hover icons are one `…` menu: Rename, Move to group…,
  *     Queue workspace after this…, Stop….
- *  2. "Queue workspace after this…" opens the create dialog with Start set to
- *     that workspace, the prompt focused, a Queue button, and the branch marked
- *     "latest from origin"; typing a prompt + Enter queues it, and the entry
- *     shows nested under the workspace with a "· queued" meta line.
+ *  2. "Queue workspace after this…" opens the new-workspace pane with Start
+ *     set to that workspace, the prompt focused, a Queue button, and the
+ *     branch marked "latest from origin"; typing a prompt + Enter queues it
+ *     and clears the form, and the entry shows nested under the workspace
+ *     with a "· queued" meta line.
  *  3. The queued row's own menu queues a second entry after it, which nests
  *     one step deeper (a chain).
  *  3b. The workspace's whole queued set sits behind one "2 queued workspaces"
  *     expander (the chain counted, and no expander of its own), open because
  *     the user just queued into it; clicking it hides both rows and clicking
  *     again brings them back. After a reload the set starts collapsed.
- *  4. Clicking a queued row opens the dialog in edit mode; Save updates it.
+ *  4. Clicking a queued row opens the pane on it in edit mode; Save updates it.
  *  5. The row menu's Stop… lists the queued children ("Stop and start 1
- *     queued"), marks the chained one as waiting, and its Edit opens the
- *     create dialog stacked over the stop dialog — typing reaches it, and Esc
- *     closes only it. The stop is then CANCELLED: nothing is stopped.
+ *     queued") and marks the chained one as waiting. Its Edit closes the stop
+ *     dialog, so nothing is stopped, and opens the pane on that entry; the +
+ *     then leaves the edit, unsaved, for a blank form without asking.
  *  6. Discard… on the top entry confirms where its child moves; confirming
  *     removes it and splices the child up under the workspace. The child is
  *     then discarded too, leaving nothing queued behind.
@@ -31,7 +32,7 @@
  * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/queued-workspaces-ui-test.js
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
 
 if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id> to a project with a running workspace')
 const PROJECT = (await resolveProject(process.env.PROJECT)).id
@@ -59,12 +60,21 @@ try {
     await row.getByRole('button', { name: menu }).click()
     await page.getByRole('menuitem', { name: item }).click()
   }
-  // Not waitForFunction, which the page's CSP blocks.
+  // The composer's send button, named for what it does. Not
+  // waitForFunction, which the page's CSP blocks.
   const submitWhenReady = async (label) => {
-    const button = page.locator('button:not([disabled])', { hasText: new RegExp(`^${label}$`) })
+    const button = page.locator(`button[aria-label="${label}"]:not([disabled])`)
     await button.waitFor({ timeout: 15_000 })
     return button
   }
+  const promptIs = (text) => until(page, (t) => document.querySelector('textarea[aria-label="Prompt"]')?.value === t, text)
+  // A row menu's item runs once the menu has closed, so wait for the pane to
+  // switch to it before typing.
+  const startIs = (want) => until(page, (w) => {
+    const v = document.querySelector('select[aria-label="Start"]')?.value
+    return w === null ? v !== undefined && v !== '' : v === w
+  }, want)
+  const promptFocused = () => until(page, () => document.activeElement?.getAttribute('aria-label') === 'Prompt')
 
   const parentRow = rowOf(parentName.slice(0, 30))
   await parentRow.waitFor({ state: 'visible', timeout: 15_000 })
@@ -83,15 +93,17 @@ try {
   // (2) Queue after the workspace.
   await pick(parentRow, 'Workspace actions', 'Queue workspace after this…')
   const prompt = page.getByLabel('Prompt')
-  await prompt.waitFor({ state: 'visible' })
-  check('Start is the workspace', await page.getByLabel('Start').inputValue() === parent.workspaceId)
+  await startIs(parent.workspaceId).catch(() => {})
+  await promptFocused().catch(() => {})
+  check('Start is the workspace', await page.getByLabel('Start').inputValue() === parent.workspaceId,
+    await page.getByLabel('Start').inputValue())
   check('the prompt has focus', await prompt.evaluate((el) => el === document.activeElement))
   check('the branch is marked latest from origin', await page.getByText('latest from origin when it starts').isVisible())
   await page.keyboard.type(first)
   await submitWhenReady('Queue')
-  await page.screenshot({ path: path.join(SHOTS, 'queue-dialog.png') })
+  await page.screenshot({ path: path.join(SHOTS, 'queue-pane.png') })
   await page.keyboard.press('Enter')
-  await prompt.waitFor({ state: 'detached' })
+  await promptIs('')
   const firstRow = rowOf(first)
   await firstRow.waitFor({ state: 'visible', timeout: 10_000 })
   check('the entry nests under its workspace, marked queued',
@@ -99,7 +111,11 @@ try {
 
   // (3) Chain a second after the first.
   await pick(firstRow, 'Queued workspace actions', 'Queue workspace after this…')
-  await prompt.waitFor({ state: 'visible' })
+  await until(page, (p) => {
+    const v = document.querySelector('select[aria-label="Start"]')?.value
+    return v !== undefined && v !== '' && v !== p
+  }, parent.workspaceId)
+  await promptFocused()
   await page.keyboard.type(second)
   await (await submitWhenReady('Queue')).click()
   const secondRow = rowOf(second)
@@ -130,14 +146,15 @@ try {
 
   // (4) Edit on click.
   await firstRow.getByText(first).click()
-  await page.getByRole('button', { name: 'Save' }).waitFor({ state: 'visible' })
+  await promptIs(first)
+  await page.getByRole('button', { name: 'Save', exact: true }).waitFor({ state: 'visible' })
   await prompt.fill(`${first} edited`)
   await (await submitWhenReady('Save')).click()
-  await prompt.waitFor({ state: 'detached' })
+  await promptIs('')
   const edited = await aside.getByText(`${first} edited`).waitFor({ timeout: 10_000 }).then(() => true, () => false)
   check('Save updates the queued row', edited)
 
-  // (5) The stop dialog lists them; Edit stacks over it; cancel.
+  // (5) The stop dialog lists them; its Edit leaves it for the pane.
   await pick(parentRow, 'Workspace actions', 'Stop…')
   const stopButton = page.getByRole('button', { name: 'Stop and start 1 queued' })
   check('the stop dialog counts its direct children',
@@ -146,15 +163,18 @@ try {
   check('a chained entry is marked as waiting', await page.getByText(/waits for its parent/).isVisible())
   await page.screenshot({ path: path.join(SHOTS, 'stop-dialog.png') })
   await page.getByRole('alertdialog').getByRole('button', { name: 'Edit' }).first().click()
-  await prompt.waitFor({ state: 'visible' })
+  await stopButton.waitFor({ state: 'detached' })
+  await promptIs(`${first} edited`)
+  check('Edit closes the stop dialog and opens the entry in the pane', true)
   await prompt.click()
   await page.keyboard.type(' x')
-  check('the stacked create dialog takes typing', (await prompt.inputValue()).endsWith(' x'))
-  await page.keyboard.press('Escape')
-  await prompt.waitFor({ state: 'detached' })
-  check('Esc closes only the create dialog', await stopButton.isVisible())
-  await page.getByRole('alertdialog').getByRole('button', { name: 'Cancel' }).click()
-  await stopButton.waitFor({ state: 'detached' })
+  await aside.getByRole('button', { name: 'New workspace', exact: true }).click()
+  await promptIs('')
+  check('the + leaves the edit without asking', await page.getByRole('alertdialog').count() === 0)
+  await page.waitForTimeout(500)
+  check('…and saves nothing', await aside.getByText(`${first} edited x`).count() === 0)
+  const listed = await api(`/workspace/list?project=${PROJECT}`)
+  check('nothing was stopped', listed.workspaces.some((w) => w.workspaceId === parent.workspaceId && !w.stopping))
 
   // (6) Discard, with the splice explained.
   await pick(rowOf(`${first} edited`), 'Queued workspace actions', 'Discard…')

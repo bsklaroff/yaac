@@ -121,7 +121,10 @@ try {
   // ---- 1. the settle gate on a fresh create ----
   await page.evaluate(startSampler)
   await page.locator('aside').getByTitle('New workspace').first().click()
-  await page.getByRole('button', { name: 'Create', exact: true }).click()
+  await page.getByLabel('UI').selectOption('tui')
+  await until(page, () => [...document.querySelectorAll('button')]
+    .some((b) => b.textContent === 'Start without a prompt' && !b.disabled))
+  await page.getByRole('button', { name: 'Start without a prompt', exact: true }).click()
   await until(page, () => window.__samples.some((s) => s.opacity === '1'), undefined, 120_000)
   await page.waitForTimeout(500)
   const samples = await page.evaluate(() => { window.__samplerDone = true; return window.__samples })

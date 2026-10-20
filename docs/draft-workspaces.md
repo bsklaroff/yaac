@@ -1,34 +1,49 @@
 # Draft workspaces
 
-A **draft workspace** is the contents of the create dialog, kept when the user
-closed it without creating or queueing. Like a sidebar group, it is only a
-record of intent: a row in `draft_workspaces`, with no checkout and no
-runtime. Nothing runs from a draft on its own.
+A **draft workspace** is the contents of the new-workspace pane, kept when
+the user left it without creating or queueing. Like a sidebar group, it is
+only a record of intent: a row in `draft_workspaces`, with no checkout and
+no runtime. Nothing runs from a draft on its own.
 
-## When the dialog asks
+## The new-workspace pane
 
-Closing the create dialog (the ×, Escape, or a click outside) with a non-blank
-prompt asks whether to **save** a draft, **discard**, or **keep editing**. With
-no prompt it closes silently, since the settings are already remembered as the
-project's create defaults. Editing a queued workspace never asks; it has its
-own Save.
+The webapp's main pane starts a new workspace whenever no workspace is
+selected (the sidebar's +, Alt+N, a project with none): the chat composer
+for the prompt, its permission mode and effort beside it as in a chat, and
+the other settings where the conversation would be (`NewWorkspacePane`).
+Its header bar is a workspace's: the view toggle, and New Shell, Files and
+Changes, which start the workspace now and open that pane once it is up.
+Send needs a prompt, so an Enter in an empty box starts nothing; a
+workspace starts without one only from those buttons or from "Start
+without a prompt", in whichever UI is picked.
 
-A dialog reopened on a draft asks only if something changed, and then offers
+There is at most one form, kept in the browser's localStorage
+(`yaac.newworkspace.v1`), so a reload brings back what was typed. A prompt
+too long to keep there (over 64 KB) holds the browser's leave-page prompt
+instead. The form is dropped when the user leaves the pane: by selecting a
+workspace, switching project or user, opening the desktop app's server
+list, or reopening the pane on a draft, a queued entry or a Start parent.
+The + and Alt+N leave a queued edit or a reopened draft for a blank form,
+but keep a plain one. Leaving with a non-blank
+prompt first asks whether to **save** a draft, **discard**, or **keep
+editing** (the store's `navigate` holds the navigation until the answer).
+With no prompt it leaves silently, since the settings are already
+remembered as the project's create defaults. Editing a queued workspace
+never asks; it has its own Save. Opening Settings (for a missing
+credential, say) is not leaving, so the form waits there.
+
+A pane reopened on a draft asks only if something changed, and then offers
 to save the changes or leave the draft as it was. If the draft was deleted
 meanwhile (created from or discarded in another tab), the save makes a new
 draft instead.
 
 Other exits keep the prompt too:
 
-- **Save draft**, beside Create, saves without asking and closes. It is
-  enabled once there is a prompt (and, on a reopened draft, a change), and is
-  absent when editing a queued workspace.
-- Create with a missing git or agent credential sends the user to Settings,
-  and saves the typed prompt as a draft first without asking.
-- While a prompt is unsaved, a page reload or tab close triggers the browser's
-  leave-page prompt.
+- **Save draft**, below the settings, saves without asking and clears the
+  form. It is enabled once there is a prompt (and, on a reopened draft, a
+  change), and is absent when editing a queued workspace.
 - Stopping a workspace while it is still being created (the provisioning
-  row's ■, the Stop button under its progress, `yaac workspace stop`, or
+  row's ■, the Stop button in its pane, `yaac workspace stop`, or
   `yaac-mama stop`) rolls the create back and saves its prompt as a draft,
   updating the draft it was created from if there was one. `stopWorkspace`
   marks the provisioning row stopping, and `createWorkspace` checks for that
@@ -54,12 +69,12 @@ Other exits keep the prompt too:
 
 ## What a draft holds
 
-Every field as the dialog showed it: prompt, title, agent, model, effort, UI
+Every field as the pane showed it: prompt, title, agent, model, effort, UI
 mode, permission mode, reference branch, group, and **Start**. Reopening the draft
 restores the screen.
 
-- Model and branch are empty if the dialog had not loaded them yet; reopening
-  then uses the default, as a fresh dialog does.
+- Model and branch are empty if the pane had not loaded them yet; reopening
+  then uses the default, as a fresh form does.
 - Start is the id of the workspace or queued entry the create would wait on.
   If that parent is gone when the draft reopens, Start falls back to now.
 - Deleting the draft's group clears the field. A name typed into the "+ New
@@ -77,7 +92,7 @@ restart mid-create shows the draft again too.
 
 ## Titles
 
-A title typed in the dialog's heading is the draft's `title`, and whatever is
+A title typed in the pane's heading is the draft's `title`, and whatever is
 created from the draft keeps it. The new workspace's provisioning row is
 headed by that title, or by the generated one below.
 
@@ -93,7 +108,7 @@ draft and the prompt, so a new prompt gets its own attempt, and the write only
 lands if the draft still holds the prompt it was generated from. The sweep
 runs on the reconciler's resync (every minute), so a new draft is titled
 within about a minute. Until then the sidebar shows the prompt's first line.
-The create dialog, reopened on an untitled draft or queued entry, is headed by
+The new-workspace pane, reopened on an untitled draft or queued entry, is headed by
 its generated title until the prompt is changed.
 
 ## Surfaces
@@ -106,6 +121,6 @@ its generated title until the prompt is changed.
 - **Snapshot.** `draftWorkspaces`, for every project, oldest first.
 - **Webapp.** A collapsible **Drafts** section at the top of the sidebar,
   newest first, hidden when the project has none. Clicking a draft reopens
-  the dialog on it. Its `…` menu can **Run now**, which creates from the draft
+  the new-workspace pane on it. Its `…` menu can **Run now**, which creates from the draft
   straight away with its saved settings (ignoring Start), or discard it.
 - Removing a project deletes its drafts.

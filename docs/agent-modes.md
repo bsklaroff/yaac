@@ -650,7 +650,13 @@ docs/event-driven-reconcile.md). Until the row exists an ACP workspace has no
 chat pane, only the raw agent window (acpd's log). So a fresh ACP create waits
 for the handshake to name the conversation (`whenAcpConversation`, resolved
 when the connection registers the id) and runs that workspace's sweep itself,
-and the webapp swaps its provisioning placeholder straight for the chat pane.
+and the webapp swaps its provisioning pane straight for the chat pane. The
+provisioning pane is drawn as the chat it becomes (the prompt, then the
+working spinner captioned with the create's progress), and the chat pane
+keeps showing the prompt and spinner (`launches` in the webapp's store)
+until the agent echoes the prompt, so the hand-over shows no gap. A `tui`
+create's provisioning pane is the same, and the terminal replaces it once
+the prompt is typed in.
 A prewarmed `acp` spare is watched like a running workspace, so its handshake
 runs while it warms and a claim usually finds the conversation already named.
 A respawn (a claim switching tool, model or posture, or a spare moved to a

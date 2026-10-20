@@ -15,7 +15,7 @@ import { effortLabel, PERMISSION_MODE_COPY, type PermissionMode } from '@yaac/sh
  */
 
 /** What each posture lets the agent do, for hover text and the menu. */
-export const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
+const PERMISSION_MODE_HELP: Record<PermissionMode, string> = {
   bypass: 'The agent acts without ever asking.',
   auto: 'The agent acts without asking, but a reviewer model judges each action'
     + ' and blocks the dangerous ones. Claude gates this by subscription plan.',
@@ -80,8 +80,8 @@ function Label({ head, tail }: { head: string; tail?: string }): JSX.Element {
 /**
  * The conversation's permission posture. Where it can't be switched
  * (opencode, pi) the label is plain text. Under containerless, `bypass`
- * carries the create form's warning, since there the agent then acts as the
- * user on this machine.
+ * carries a warning, since there the agent then acts as the user on this
+ * machine.
  */
 export function PermissionModeSelect({ current, available, disabled, onSelect }: {
   current: PermissionMode

@@ -5,6 +5,9 @@ import { previewTarget } from '#lib/preview'
 import { CHANGES_TARGET, FILES_TARGET, fileKey, fileTarget, placeFile } from '#lib/files'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
+import {
+  isNewWorkspaceForm, seedNewWorkspace, type NewWorkspaceForm, type NewWorkspaceOpts, type PendingDraft,
+} from '#lib/newWorkspace'
 import type {
   AgentTool, ProvisioningWorkspaceEntry, ServerSnapshot, StoppedWorkspaceEntry, WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -221,6 +224,14 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
     serialize: (drafts) => JSON.stringify(Object.fromEntries(Object.entries(drafts).filter(([, d]) =>
       d.text.length <= MAX_PERSISTED_DRAFT && (d.sent ?? '').length <= MAX_PERSISTED_DRAFT))),
   },
+  newWorkspace: {
+    key: 'yaac.newworkspace.v1',
+    parse: (raw) => {
+      const parsed: unknown = JSON.parse(raw)
+      return isNewWorkspaceForm(parsed) ? parsed : undefined
+    },
+    serialize: (form) => (form === null || form.prompt.length > MAX_PERSISTED_DRAFT ? null : JSON.stringify(form)),
+  },
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
   stoppedExpanded: flag('yaac.stoppedexpanded.v1'),
@@ -409,21 +420,6 @@ export function resolveVacantSelection(args: {
 /** Sections of the settings modal (left-nav entries). */
 export type SettingsSection =
   | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
-
-/**
- * What the create dialog was opened for. `editId` edits that queued entry;
- * `parent` (a workspace or queued entry id) sets Start to after that one
- * stops; with neither, Start is "Now".
- */
-export interface CreateWorkspaceDialogOpts {
-  projectId: string
-  parent?: string
-  editId?: string
-  /** Reopen a saved draft (docs/draft-workspaces.md) on its fields. */
-  draftId?: string
-  /** Focus the prompt field. */
-  focus?: 'prompt'
-}
 
 /**
  * A project add or remove this tab started, shown in the rail and in place
@@ -629,14 +625,29 @@ interface UiState {
   openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusProject?: string) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
-  /** The create dialog's options when open. Mounted once in App and opened
-   *  from anywhere through here. */
-  createWorkspaceDialog: CreateWorkspaceDialogOpts | null
-  openCreateWorkspace: (opts: CreateWorkspaceDialogOpts) => void
-  closeCreateWorkspace: () => void
+  /** The new-workspace pane's form, shown while no workspace is selected.
+   *  Saved. Null shows a blank one. */
+  newWorkspace: NewWorkspaceForm | null
+  setNewWorkspace: (form: NewWorkspaceForm | null) => void
+  /** Show the new-workspace pane for a project, focused. A blank open keeps
+   *  a plain create form already there for that project, but leaves a queued
+   *  edit or a reopened draft; any other open replaces the form. */
+  openNewWorkspace: (opts: NewWorkspaceOpts) => void
+  /** A navigation held while the user decides whether to save the pane's
+   *  typed prompt as a draft. `leave` drops the form and goes on. */
+  leaving: { draft: PendingDraft; leave: () => void } | null
+  stayOnNewWorkspace: () => void
+  /** Run a navigation away from what the pane shows (see `navigate`). */
+  navigate: (go: () => void) => void
+  /** What a create from the new-workspace pane still has to show once its
+   *  workspace is up, by workspace id. In memory only. */
+  launches: Record<string, Launch>
+  setLaunch: (workspaceId: string, launch: Launch) => void
+  /** Drop one part of a launch once it has been shown. */
+  endLaunch: (workspaceId: string, part: keyof Launch) => void
   /** The add-project dialog when open: the clone form with the remote to
    *  prefill, or the new-project form with the name to prefill. Mounted once
-   *  in App like the create dialog. */
+   *  in App. */
   addProjectForm: AddProjectForm | null
   setAddProjectForm: (form: AddProjectForm | null) => void
   /** Host keys from finished SSH adds. The dialog shows them once no form is
@@ -653,7 +664,7 @@ interface UiState {
    *  being viewed hands the selection to the new project; a finished remove
    *  being viewed clears it. */
   settleProjectOps: (projectIds: string[]) => void
-  /** A queued entry just created or moved from the create dialog, and its
+  /** A queued entry just created or moved from the new-workspace pane, and its
    *  new parent. The sidebar expands its set once the snapshot shows it
    *  there, then clears this. */
   revealQueued: { id: string; parent: string } | null
@@ -753,21 +764,70 @@ function toggled(list: string[], id: string, on: boolean): string[] {
   return on ? [...list, id] : list.filter((x) => x !== id)
 }
 
-/**
- * Whether shortcuts are off: while settings records a rebind, or while the
- * create dialog is open (where they could discard the prompt or queue a
- * stop, and on macOS Option chords type characters such as ñ).
- */
-export function shortcutsSuspended(state: Pick<UiState, 'recordingShortcut' | 'createWorkspaceDialog'>): boolean {
-  return state.recordingShortcut || state.createWorkspaceDialog !== null
+/** Reads the new-workspace pane's typed prompt as a draft to save, or null
+ *  if leaving would lose nothing. Set by the mounted pane. */
+let unsentNewWorkspace: () => PendingDraft | null = () => null
+
+/** Register the pane's `unsentNewWorkspace`; returns the unregister. */
+export function guardNewWorkspace(read: () => PendingDraft | null): () => void {
+  unsentNewWorkspace = read
+  return () => {
+    if (unsentNewWorkspace === read) unsentNewWorkspace = () => null
+  }
 }
 
-export const useUiStore = create<UiState>((set) => ({
+/** A pane a create asked to open once its workspace is up. */
+export type LaunchPane = 'shell' | 'files' | 'changes'
+
+/**
+ * What a create still has to show once its workspace is listed: a chat
+ * create's opening prompt, which its chat pane shows until the agent echoes
+ * it, and the pane the create was started from the bar to open.
+ */
+export interface Launch {
+  prompt?: string
+  pane?: LaunchPane
+}
+
+/** Move launches to the spares their creates claimed, so the workspace
+ *  under the spare's id finds its own. */
+function followClaims(launches: Record<string, Launch>, claims: Record<string, string>): Record<string, Launch> {
+  const moved = Object.entries(claims).filter(([from]) => from in launches)
+  if (moved.length === 0) return launches
+  const next = { ...launches }
+  for (const [from, to] of moved) {
+    next[to] = next[from]
+    delete next[from]
+  }
+  return next
+}
+
+/**
+ * Leaving the new-workspace pane (it shows while nothing is selected) drops
+ * its form, but a typed prompt is first offered as a draft: the navigation
+ * waits in `leaving` until the user answers.
+ */
+function navigate(go: () => void): void {
+  const s = useUiStore.getState()
+  if (s.selectedWorkspaceId !== null || s.newWorkspace === null) {
+    go()
+    return
+  }
+  const draft = unsentNewWorkspace()
+  const leave = (): void => {
+    useUiStore.setState({ newWorkspace: null, leaving: null })
+    go()
+  }
+  if (draft === null) leave()
+  else useUiStore.setState({ leaving: { draft, leave } })
+}
+
+export const useUiStore = create<UiState>((set, get) => ({
   snapshot: undefined,
   viewedUserId: null,
-  viewUser: (userId, projectId) => set({
+  viewUser: (userId, projectId) => navigate(() => set({
     viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, sidebarQuery: '',
-  }),
+  })),
   activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
   lastWorkspaceOf: {},
@@ -789,6 +849,7 @@ export const useUiStore = create<UiState>((set) => ({
   viewMode: defaultViewMode(),
   pinnedUsageMetric: null,
   chatDrafts: {},
+  newWorkspace: null,
   stoppedExpanded: false,
   sidebarStatuses: [],
   // Every saved field's default goes above this line, so a loaded value wins.
@@ -819,9 +880,34 @@ export const useUiStore = create<UiState>((set) => ({
   })),
   closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null, settingsFocusProject: null }),
   setSettingsSection: (section) => set({ settingsSection: section }),
-  createWorkspaceDialog: null,
-  openCreateWorkspace: (opts) => set({ createWorkspaceDialog: opts }),
-  closeCreateWorkspace: () => set({ createWorkspaceDialog: null }),
+  setNewWorkspace: (newWorkspace) => set({ newWorkspace }),
+  openNewWorkspace: (opts) => {
+    const show = (form: NewWorkspaceForm | null): void => set((s) => ({
+      activeProjectId: opts.projectId,
+      selectedWorkspaceId: null,
+      newWorkspace: form,
+      focusNonce: s.focusNonce + 1,
+      mobileScreen: 'pane',
+    }))
+    const kept = get().newWorkspace
+    const blank = opts.parent === undefined && opts.draftId === undefined && opts.editId === undefined
+    if (blank && kept?.projectId === opts.projectId && kept.editId === undefined && kept.draftId === undefined) {
+      show(kept)
+    }
+    else navigate(() => show(blank ? null : seedNewWorkspace(opts, get().snapshot)))
+  },
+  leaving: null,
+  stayOnNewWorkspace: () => set({ leaving: null }),
+  navigate,
+  launches: {},
+  setLaunch: (workspaceId, launch) => set((s) => ({ launches: { ...s.launches, [workspaceId]: launch } })),
+  endLaunch: (workspaceId, part) => set((s) => {
+    const cur = s.launches[workspaceId]
+    if (cur?.[part] === undefined) return s
+    const { [part]: _, ...rest } = cur
+    const { [workspaceId]: __, ...others } = s.launches
+    return { launches: Object.keys(rest).length === 0 ? others : { ...others, [workspaceId]: rest } }
+  }),
   addProjectForm: null,
   setAddProjectForm: (addProjectForm) => set({ addProjectForm }),
   trustedHostKeys: [],
@@ -896,9 +982,11 @@ export const useUiStore = create<UiState>((set) => ({
     })
     const sameClaims = Object.keys(claims).length === Object.keys(s.claims).length
       && Object.entries(claims).every(([k, v]) => s.claims[k] === v)
+    const launches = followClaims(s.launches, claims)
     return {
       snapshot: replaceEqualDeep(s.snapshot, snapshot),
       ...(sameClaims ? {} : { claims }),
+      ...(launches === s.launches ? {} : { launches }),
       ...(pendingDeleteIds.length === s.pendingDeleteIds.length ? {} : { pendingDeleteIds }),
       ...(optimisticProvisioning.length === s.optimisticProvisioning.length ? {} : { optimisticProvisioning }),
     }
@@ -922,33 +1010,43 @@ export const useUiStore = create<UiState>((set) => ({
   recordClaim: (workspaceId, claimedId) => set((s) => {
     if (s.claims[workspaceId] === claimedId) return s
     const listed = s.snapshot?.workspaces.some((w) => w.workspaceId === claimedId) === true
+    const claims = { ...s.claims, [workspaceId]: claimedId }
     return {
-      claims: { ...s.claims, [workspaceId]: claimedId },
+      claims,
+      launches: followClaims(s.launches, claims),
       ...(listed ? { optimisticProvisioning: s.optimisticProvisioning.filter((e) => e.workspaceId !== workspaceId) } : {}),
     }
   }),
   // Switching projects clears the selection. On mobile it shows the
   // project's workspace list, or the project list when cleared.
-  setActiveProject: (projectId) => set({
-    activeProjectId: projectId,
-    selectedWorkspaceId: null,
-    sidebarQuery: '',
-    mobileScreen: projectId ? 'workspaces' : 'projects',
-  }),
+  setActiveProject: (projectId) => {
+    const go = (): void => set({
+      activeProjectId: projectId,
+      selectedWorkspaceId: null,
+      sidebarQuery: '',
+      mobileScreen: projectId ? 'workspaces' : 'projects',
+    })
+    if (projectId === get().activeProjectId) go()
+    else navigate(go)
+  },
   restoreActiveProject: (projectId) => set({ activeProjectId: projectId, selectedWorkspaceId: null, sidebarQuery: '' }),
   // A deselect (null) doesn't change the mobile screen.
-  selectWorkspace: (id) => set((s) => ({
-    selectedWorkspaceId: id,
-    focusNonce: s.focusNonce + 1,
-    mobileScreen: id ? 'pane' : s.mobileScreen,
-  })),
+  selectWorkspace: (id) => {
+    const go = (): void => set((s) => ({
+      selectedWorkspaceId: id,
+      focusNonce: s.focusNonce + 1,
+      mobileScreen: id ? 'pane' : s.mobileScreen,
+    }))
+    if (id === null) go()
+    else navigate(go)
+  },
   autoSelectWorkspace: (id) => set((s) => ({ selectedWorkspaceId: id, focusNonce: s.focusNonce + 1 })),
-  openWorkspace: (projectId, workspaceId) => set((s) => ({
+  openWorkspace: (projectId, workspaceId) => navigate(() => set((s) => ({
     activeProjectId: projectId,
     selectedWorkspaceId: workspaceId,
     focusNonce: s.focusNonce + 1,
     mobileScreen: 'pane',
-  })),
+  }))),
   reconnectTerminal: (workspaceId) => set((s) => ({
     terminalNonces: { ...s.terminalNonces, [workspaceId]: (s.terminalNonces[workspaceId] ?? 0) + 1 },
   })),
@@ -1124,12 +1222,14 @@ export const useUiStore = create<UiState>((set) => ({
   )),
 }))
 
+/** Fields that change on every keystroke, saved on a trailing timer. */
+const TYPED_FIELDS: readonly (keyof UiState)[] = ['chatDrafts', 'newWorkspace']
+
 // Save each persisted field as it changes, and mirror the selection into
-// the URL so a link is shareable. Chat drafts change on every keystroke, so
-// they are saved on a trailing timer instead.
+// the URL so a link is shareable.
 useUiStore.subscribe((state, prev) => {
   for (const field of persistedFields) {
-    if (field !== 'chatDrafts' && state[field] !== prev[field]) savePersisted(field, state[field])
+    if (!TYPED_FIELDS.includes(field) && state[field] !== prev[field]) savePersisted(field, state[field])
   }
   if (
     state.activeProjectId !== prev.activeProjectId
@@ -1162,38 +1262,41 @@ function rememberSelection(s: UiState): void {
   }
 }
 
-/** Delay before saving chat drafts after a change. */
-const CHAT_DRAFT_PERSIST_MS = 400
+/** Delay before saving typed text after a change. */
+const TYPED_PERSIST_MS = 400
 
 let draftTimer: ReturnType<typeof setTimeout> | undefined
-let unwrittenDrafts: Record<string, ChatDraft> | null = null
+const unwrittenDrafts = new Set<keyof UiState>()
 
-/** Save any pending draft change now, e.g. when the page is closing. Does
+/** Save any pending typed text now, e.g. when the page is closing. Does
  *  nothing if there is none. */
-export function flushChatDrafts(): void {
+export function flushTypedText(): void {
   if (draftTimer !== undefined) {
     clearTimeout(draftTimer)
     draftTimer = undefined
   }
-  if (unwrittenDrafts === null) return
-  savePersisted('chatDrafts', unwrittenDrafts)
-  unwrittenDrafts = null
+  const state = useUiStore.getState()
+  for (const field of unwrittenDrafts) savePersisted(field, state[field])
+  unwrittenDrafts.clear()
 }
 
 useUiStore.subscribe((state, prev) => {
-  if (state.chatDrafts === prev.chatDrafts) return
-  unwrittenDrafts = state.chatDrafts
+  const changed = TYPED_FIELDS.filter((field) => state[field] !== prev[field])
+  if (changed.length === 0) return
+  for (const field of changed) unwrittenDrafts.add(field)
   if (draftTimer !== undefined) clearTimeout(draftTimer)
-  draftTimer = setTimeout(flushChatDrafts, CHAT_DRAFT_PERSIST_MS)
+  draftTimer = setTimeout(flushTypedText, TYPED_PERSIST_MS)
 })
 
-// Warn before leaving with unsaved editor text.
+// Warn before leaving with unsaved editor text, or a new workspace's prompt
+// too long to keep in localStorage.
 window.addEventListener('beforeunload', (e) => {
-  if (Object.keys(useUiStore.getState().dirtyFiles).length > 0) e.preventDefault()
+  const { dirtyFiles, newWorkspace } = useUiStore.getState()
+  if (Object.keys(dirtyFiles).length > 0 || (newWorkspace?.prompt.length ?? 0) > MAX_PERSISTED_DRAFT) e.preventDefault()
 })
 // Flush drafts on pagehide, and on a hidden visibilitychange, since some
 // mobile and bfcache paths skip pagehide.
-window.addEventListener('pagehide', flushChatDrafts)
+window.addEventListener('pagehide', flushTypedText)
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') flushChatDrafts()
+  if (document.visibilityState === 'hidden') flushTypedText()
 })

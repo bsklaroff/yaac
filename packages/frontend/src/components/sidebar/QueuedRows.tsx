@@ -111,11 +111,11 @@ function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextVa
  * its error until run again. Not selectable (see `sidebarRowIds`).
  */
 export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEntry; depth: number }): JSX.Element {
-  const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const context = useContext(QueueContext)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const edit = (): void => openCreateWorkspace({ projectId: entry.projectId, editId: entry.id })
+  const edit = (): void => openNewWorkspace({ projectId: entry.projectId, editId: entry.id })
   const report = (e: unknown): void => setError(e instanceof Error ? e.message : String(e))
   const failure = error ?? entry.launchError
   const readOnly = useReadOnly()
@@ -155,7 +155,7 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
           { label: 'Edit…', onSelect: edit },
           {
             label: 'Queue workspace after this…',
-            onSelect: () => openCreateWorkspace({ projectId: entry.projectId, parent: entry.id, focus: 'prompt' }),
+            onSelect: () => openNewWorkspace({ projectId: entry.projectId, parent: entry.id }),
           },
           'separator',
           { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
@@ -201,26 +201,21 @@ export function DraftsSection({ drafts }: { drafts: DraftWorkspaceEntry[] }): JS
   )
 }
 
-/** A saved draft: clicking it reopens the create dialog; its menu can also
+/** A saved draft: clicking it reopens the new-workspace pane on it; its menu can also
  *  create from it right away, ignoring its Start, or discard it. Not
  *  selectable. */
 function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Element {
-  const openCreateWorkspace = useUiStore((s) => s.openCreateWorkspace)
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const createWorkspace = useCreateWorkspace()
   const [confirmDiscard, setConfirmDiscard] = useState(false)
   const name = queuedTitle(draft)
   const readOnly = useReadOnly()
-  const open = (): void => openCreateWorkspace({ projectId: draft.projectId, draftId: draft.id, focus: 'prompt' })
-  const run = (): void => createWorkspace(draft.projectId, draft.tool, {
-    model: draft.model ?? '',
-    permissionMode: draft.permissionMode,
-    mode: draft.mode,
-    prompt: draft.prompt,
-    ...(draft.title !== undefined ? { title: draft.title } : {}),
+  const open = (): void => openNewWorkspace({ projectId: draft.projectId, draftId: draft.id })
+  const run = (): void => createWorkspace({
+    ...draft,
     ...(draft.generatedTitle !== undefined ? { shownTitle: draft.generatedTitle } : {}),
-    ...(draft.groupId !== undefined ? { groupId: draft.groupId } : {}),
     draftId: draft.id,
-  }, draft.branch)
+  })
 
   return (
     <div className="group relative mx-2">

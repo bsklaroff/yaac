@@ -4,7 +4,7 @@ import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches, type QuerySpec } from '#lib/matchCount'
 import { chordMatches, claimChord, findChord } from '#lib/shortcuts'
-import { shortcutsSuspended, useUiStore } from '#lib/store'
+import { useUiStore } from '#lib/store'
 
 /**
  * Cmd/Ctrl-F over a conversation (docs/agent-modes.md, "Find"). The search
@@ -40,7 +40,7 @@ export function useFindChord(enabled: boolean, onFind: () => void): void {
   useEffect(() => {
     if (!enabled) return
     const onKey = (e: globalThis.KeyboardEvent): void => {
-      if (!chordMatches(findChord(), e) || dialogHoldsFocus() || shortcutsSuspended(useUiStore.getState())) return
+      if (!chordMatches(findChord(), e) || dialogHoldsFocus() || useUiStore.getState().recordingShortcut) return
       claimChord(e)
       latest.current()
     }

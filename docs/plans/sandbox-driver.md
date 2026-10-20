@@ -421,7 +421,7 @@ socket egress before the apple backend exists.
 `install` checks for macOS 26, Apple silicon, the pinned `container`
 version and its system service, and needs no sudo. Memory the guest frees
 is not returned to macOS, so this backend's default memory limit may need
-to be lower than gvisor's, and the create dialog says so.
+to be lower than gvisor's, and the new-workspace pane says so.
 
 ## Phase 4: untrusted layers
 

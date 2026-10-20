@@ -1,8 +1,8 @@
 # Effort levels
 
 Effort is how hard a workspace's model thinks. It is a create setting beside
-model and permission mode: the **New workspace** dialog's Effort row (right
-below Model), `yaac workspace create --effort`, and `yaac-mama create | queue
+model and permission mode: the effort menu in the new-workspace pane's
+composer (beside its permission mode, as in a chat), `yaac workspace create --effort`, and `yaac-mama create | queue
 | edit-queued --effort`. It is remembered per (project, agent) like the
 others, carried by drafts, queued entries and spares, passed at every launch
 in both agent modes, and followed when the agent changes it. The chat pane
@@ -32,7 +32,7 @@ variant, so the provider's own default applies.
 `pnpm gen:providers` bakes each model's levels and default into
 `tool-providers.generated.ts` (`EFFORTS`, keyed like the model catalogs). A
 model without an entry has no effort setting: it launches with none and the
-dialog shows "—". Each tool's own catalog is the source, since models.dev
+new-workspace pane offers no effort menu. Each tool's own catalog is the source, since models.dev
 lists what a vendor's API accepts, which is not what each CLI offers:
 
 - **claude**: the model table built into the pinned binary. No public source
@@ -71,7 +71,7 @@ regeneration produces: claude models dropped as unknown to the pinned claude,
 and openai models codex does not bundle. A unit test pins a few rows, so a
 regeneration that quietly loses a source fails CI.
 
-The table stays on the server; the create dialog gets each model's levels on
+The table stays on the server; the new-workspace pane gets each model's levels on
 its `ModelOption`, so it and the server resolve from the same data.
 
 ## Why every launch names a level
@@ -105,7 +105,7 @@ model, most specific first:
 3. the model's default;
 4. none, for a model with no levels.
 
-Only a level the request named is remembered. A model change in the dialog
+Only a level the request named is remembered. A model change in the pane
 or an `edit-queued` keeps a picked level the new model has and re-resolves
 one it lacks. `yaac-mama` resolves the same way, with no ceiling (effort is
 not a restraint) and no inheritance from the caller, whose level may not

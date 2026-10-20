@@ -817,14 +817,15 @@ describe('WorkspaceList', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Discard' })[0])
     await waitFor(() => expect(posted(QUEUE_DISCARD)).toEqual([{ id: 'q1' }]))
     fireEvent.click(screen.getAllByRole('button', { name: 'Edit' })[1])
-    expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectId: 'proj', editId: 'q2' })
+    expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', editId: 'q2' })
+    expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
   })
 
-  it('opens the create dialog queued after a row', async () => {
+  it('opens the new-workspace pane queued after a row', async () => {
     renderList([entry({ workspaceId: 'a', title: 'Fix parser' })])
     await pickAction('Queue workspace after this…')
-    await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog)
-      .toEqual({ projectId: 'proj', parent: 'a', focus: 'prompt' }))
+    await waitFor(() => expect(useUiStore.getState().newWorkspace)
+      .toEqual({ projectId: 'proj', prompt: '', title: '', start: 'a' }))
   })
 
   describe('queued workspaces', () => {
@@ -944,14 +945,14 @@ describe('WorkspaceList', () => {
       })
       fireEvent.click(screen.getByRole('button', { name: '2 queued workspaces' }))
       fireEvent.click(screen.getByText('Step q1'))
-      expect(useUiStore.getState().createWorkspaceDialog).toEqual({ projectId: 'proj', editId: 'q1' })
+      expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', editId: 'q1' })
 
       await pickAction('Run now', 'Queued workspace actions')
       await waitFor(() => expect(posted(QUEUE_RUN)).toEqual([{ id: 'q1' }]))
 
       await pickAction('Queue workspace after this…', 'Queued workspace actions')
-      await waitFor(() => expect(useUiStore.getState().createWorkspaceDialog)
-        .toEqual({ projectId: 'proj', parent: 'q1', focus: 'prompt' }))
+      await waitFor(() => expect(useUiStore.getState().newWorkspace)
+        .toEqual({ projectId: 'proj', prompt: '', title: '', start: 'q1' }))
 
       await pickAction('Discard…', 'Queued workspace actions')
       // The confirmation says where its chain goes, and that it still runs.
@@ -995,12 +996,12 @@ describe('WorkspaceList', () => {
       expect(screen.queryByText('No workspaces yet')).toBeNull()
     })
 
-    it('reopens the create dialog on click, and discards from its menu', async () => {
-      renderList([], { drafts: [draft('d1')] })
+    it('reopens the new-workspace pane on click, and discards from its menu', async () => {
+      renderList([], { drafts: [draft('d1')], snapshot: serverSnapshot({ draftWorkspaces: [draft('d1')] }) })
       expect(screen.queryByText('No workspaces yet')).toBeNull()
       fireEvent.click(screen.getByText('Idea d1'))
-      expect(useUiStore.getState().createWorkspaceDialog)
-        .toEqual({ projectId: 'proj', draftId: 'd1', focus: 'prompt' })
+      expect(useUiStore.getState().newWorkspace)
+        .toMatchObject({ projectId: 'proj', draftId: 'd1', prompt: 'Idea d1\nmore detail' })
 
       await pickAction('Discard…', 'Draft actions')
       fireEvent.click(await screen.findByRole('button', { name: 'Discard' }))
@@ -1014,14 +1015,16 @@ describe('WorkspaceList', () => {
         drafts: [draft('d1', { generatedTitle: 'Idea one', branch: 'dev', startAfter: 's1', groupId: 'g1' })],
       })
       await pickAction('Run now', 'Draft actions')
-      expect(provision).toHaveBeenCalledWith(
-        'proj', 'codex', 'create', expect.any(String), expect.any(Function), 'g1',
-        { title: 'Idea one', prompt: 'Idea d1\nmore detail' })
-      const op = provision.mock.calls[0][4] as (id: string, onProgress: () => void) => Promise<unknown>
-      await op('w-new', () => {})
-      expect(createWorkspace).toHaveBeenCalledWith('proj', 'codex', expect.any(Function), 'w-new', {
-        branch: 'dev', permissionMode: 'manual', mode: 'tui', prompt: 'Idea d1\nmore detail', group: 'g1', draftId: 'd1',
-      })
+      expect(provision).toHaveBeenCalledWith({
+        workspaceId: expect.any(String) as string, projectId: 'proj', tool: 'codex', kind: 'create', groupId: 'g1',
+        title: 'Idea one', prompt: 'Idea d1\nmore detail',
+      }, expect.any(Function))
+      const op = provision.mock.calls[0][1] as (onProgress: () => void) => Promise<unknown>
+      await op(() => {})
+      expect(createWorkspace).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+        projectId: 'proj', tool: 'codex', branch: 'dev', permissionMode: 'manual', mode: 'tui',
+        prompt: 'Idea d1\nmore detail', groupId: 'g1', draftId: 'd1',
+      }), expect.any(Function))
     })
   })
 
