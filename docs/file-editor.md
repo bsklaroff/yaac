@@ -87,10 +87,15 @@ server writes a new checkout's index and a pod sees other inode numbers.
 
 Each run takes a lock file holding its pid, since a run whose exec timed
 out or was abandoned can still be exiting when the next starts (both
-drivers kill its process group, gently first): a later run waits up to 10
-seconds for a live holder and then answers `RUNTIME_UNAVAILABLE` (503),
-and clears the lock of a holder that is gone or over two minutes old. It
-also reads which **stages** each file's changes sit in: `committed` (base → HEAD), `staged` (HEAD → the
+drivers kill its process group, gently first): a later run waits for a live
+holder and clears the lock of one that is gone or over two minutes old.
+Staging fails when a file is deleted between `add -A` listing and adding
+it, as a branch switch does to many, so it is retried with the index kept.
+Both the wait and the retries stop 10 seconds after the run starts, the
+wait answering `RUNTIME_UNAVAILABLE` (503). A failed `add -A` leaves the
+private index as it was, so only one git cannot read is seeded afresh,
+within the same run. It also reads which **stages** each file's changes sit
+in: `committed` (base → HEAD), `staged` (HEAD → the
 agent's index), `modified` (the agent's index → the working tree, git's
 unstaged changes) and `untracked` (in the working tree, not the agent's
 index). Each is a tree-to-tree diff, so the working tree is walked once, by

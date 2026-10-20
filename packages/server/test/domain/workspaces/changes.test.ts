@@ -70,6 +70,7 @@ function scratchRepo(): { repo: string; idx: string } {
 
 function runPodScript(
   repo: string, idx: string, base?: string, defaultBase?: string, diff = true, listing?: 'paths' | 'full',
+  env: NodeJS.ProcessEnv = {},
 ): { stdout: string; code: number } {
   const cmd = buildChangesScript(base, defaultBase, diff, listing)
     .replace('cd /workspace ', `cd ${repo} `)
@@ -77,7 +78,7 @@ function runPodScript(
   try {
     return {
       stdout: execFileSync('sh', ['-c', cmd], {
-        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...GIT_ENV },
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...GIT_ENV, ...env },
       }),
       code: 0,
     }
@@ -295,8 +296,11 @@ describe('buildChangesScript', () => {
     const s = buildChangesScript()
     expect(s).toContain('export GIT_INDEX_FILE=/tmp/yaac-changes.idx')
     expect(s).not.toMatch(/GIT_INDEX_FILE=\S*\$\$/) // no per-run index: that discards git's stat cache
-    // A stale index or orphaned lock must not fail every later poll.
-    expect(s).toContain('seed; add || { rm -f /tmp/yaac-changes.idx /tmp/yaac-changes.idx.lock; seed; add || exit 5; }')
+    // An orphaned lock must not fail every later poll, and staging is
+    // retried only until the run's deadline.
+    expect(s).toContain('rm -f /tmp/yaac-changes.idx.out.* /tmp/yaac-changes.idx.lock ')
+    expect(s).toContain('until stage; do git ls-files -s >/dev/null 2>&1 || { rm -f /tmp/yaac-changes.idx; seed; }; '
+      + '[ $(date +%s) -lt $d ] || exit 5; sleep 0.2; done')
   })
 
   // The completion marker prints only after every file-list command passed.
@@ -661,7 +665,7 @@ describe('buildChangesScript', () => {
     expect(fs.readFileSync(`${idx}.run`, 'utf8')).toBe(`${holder}\n`)
   })
 
-  it('reuses the index across runs and recovers from a lock a killed run left', () => {
+  it('reuses the index across runs, past a killed run\'s lock and files deleted mid-stage', () => {
     const { repo, idx } = scratchRepo()
     git(repo, 'checkout', '-q', '-b', 'agent/x')
     fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
@@ -680,6 +684,31 @@ describe('buildChangesScript', () => {
     expect(recovered.code).toBe(0)
     expect(parse(recovered.stdout).files.map((f) => f.path)).toEqual(['b.txt'])
     expect(fs.existsSync(`${idx}.lock`)).toBe(false)
+
+    // A git whose first two stagings die the way a branch switch kills
+    // them, on a file deleted between listing and adding it.
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-changes-bin-'))
+    tmpDirs.push(bin)
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+    fs.writeFileSync(path.join(bin, 'git'), [
+      '#!/bin/sh',
+      'case " $* " in *" add -A "*)',
+      `  n=$(($(cat ${bin}/n 2>/dev/null || echo 0)+1)); echo $n > ${bin}/n`,
+      '  [ $n -gt 2 ] || { echo "fatal: unable to stat \'gone.txt\'" >&2; exit 128; };;',
+      'esac',
+      `exec ${realGit} "$@"`,
+    ].join('\n'), { mode: 0o755 })
+    fs.writeFileSync(path.join(repo, 'c.txt'), 'c\n')
+    const retried = runPodScript(repo, idx, undefined, 'main', true, undefined, { PATH: `${bin}:${process.env.PATH}` })
+    expect(retried.code).toBe(0)
+    expect(parse(retried.stdout).files.map((f) => f.path)).toEqual(['b.txt', 'c.txt'])
+    expect(fs.readFileSync(path.join(bin, 'n'), 'utf8').trim()).toBe('3')
+
+    // An index git cannot read is seeded afresh within the run.
+    fs.writeFileSync(idx, 'not an index')
+    const healed = runPodScript(repo, idx, undefined, 'main')
+    expect(healed.code).toBe(0)
+    expect(parse(healed.stdout).files.map((f) => f.path)).toEqual(['b.txt', 'c.txt'])
   })
 
   // A name that looks like a marker stays a name, and a diff git could not
