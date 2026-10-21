@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
@@ -17,15 +17,18 @@ import {
   LEASE_STALE_MS,
   isLeaseFresh,
   isLockLive,
+  isLocalLock,
   isLockReady,
-  isSameHostLock,
   isServerLock,
   parseServerLock,
   type ServerLock,
 } from '#server-lock-file'
 
-/** A lease written on this host, for locks that are not about the lease. */
-const LEASE = { instance: 'i', host: os.hostname(), heartbeatAt: Date.now() }
+/**
+ * A host server's lease, lapsed, for locks that are not about the lease: a
+ * fresh one keeps any lock live, whatever its pid and port.
+ */
+const LEASE = { instance: 'i', heartbeatAt: 0 }
 
 describe('server lock', () => {
   let tmpDir: string
@@ -35,6 +38,7 @@ describe('server lock', () => {
   })
 
   afterEach(async () => {
+    vi.unstubAllEnvs()
     await cleanupTempDir(tmpDir)
   })
 
@@ -112,8 +116,14 @@ describe('server lock', () => {
   describe('isServerLock', () => {
     const full: ServerLock = { pid: 1, port: 2, startedAt: 3, buildId: 'b', ...LEASE }
 
-    it('accepts a complete lock', () => {
+    it('accepts a complete lock, with or without a pod name', () => {
       expect(isServerLock(full)).toBe(true)
+      expect(isServerLock({ ...full, pod: 'yaac-server-abc123' })).toBe(true)
+      expect(isServerLock({ ...full, pod: 42 })).toBe(false)
+    })
+
+    it('accepts a lock from before `pod`, which named its writer\'s `host`', () => {
+      expect(isServerLock({ ...full, host: 'old-hostname' })).toBe(true)
     })
 
     it('rejects non-objects, null, and missing/mistyped fields', () => {
@@ -141,9 +151,12 @@ describe('server lock', () => {
   })
 
   describe('isLockLive', () => {
-    it('returns false for a dead pid', async () => {
+    it('frees a dead pid\'s lock only once its lease lapses', async () => {
+      // A reader in another pid namespace than its server sees a live
+      // server's pid as dead, so the dead pid alone proves nothing.
       const lock: ServerLock = { pid: 999_999, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
       expect(await isLockLive(lock)).toBe(false)
+      expect(await isLockLive({ ...lock, heartbeatAt: Date.now() })).toBe(true)
     })
 
     it('returns false when the pid is alive but no server listens', async () => {
@@ -165,18 +178,26 @@ describe('server lock', () => {
       }
     })
 
-    it('treats a same-host lock naming our own pid as stale, even if its port answers', async () => {
-      // A container restarted in place keeps its hostname and pid, so the
-      // killed server's lock names the process now reading it.
+    it('treats a lock naming this pod and our own pid as stale, even if its port and lease say live', async () => {
+      // A pod restarted in place keeps its name and pid, so the killed
+      // server's lock names the process now reading it, and its lease is
+      // still fresh. A host lock naming our pid is not proof of that: two
+      // containers sharing a data dir can both run their server as pid 1.
       const server = http.createServer((_req, res) => { res.writeHead(200).end('{"ok":true,"ready":true}') })
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
       const addr = server.address()
       if (!addr || typeof addr === 'string') throw new Error('bad address')
       try {
-        const lock: ServerLock = { pid: process.pid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE }
-        expect(await isLockLive(lock)).toBe(false)
-        expect(await isLockReady(lock)).toBe(false)
-        expect(await isLockLive({ ...lock, pid: process.ppid })).toBe(true)
+        const host: ServerLock = {
+          pid: process.pid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE, heartbeatAt: Date.now(),
+        }
+        expect(await isLockLive(host)).toBe(true)
+        expect(await isLockLive({ ...host, heartbeatAt: 0 })).toBe(false)
+        vi.stubEnv('YAAC_IN_CLUSTER', '1')
+        const pod: ServerLock = { ...host, pod: os.hostname() }
+        expect(await isLockLive(pod)).toBe(false)
+        expect(await isLockReady(pod)).toBe(false)
+        expect(await isLockLive({ ...pod, pid: process.ppid })).toBe(true)
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
@@ -187,19 +208,50 @@ describe('server lock', () => {
       // is bound inside the pod, so neither can be checked on this machine.
       const fresh: ServerLock = {
         pid: 1, port: 1, startedAt: 0, buildId: 'b',
-        instance: 'i', host: 'yaac-server-abc123', heartbeatAt: Date.now(),
+        instance: 'i', pod: 'yaac-server-abc123', heartbeatAt: Date.now(),
       }
       expect(await isLockLive(fresh)).toBe(true)
       expect(await isLockLive({ ...fresh, heartbeatAt: Date.now() - LEASE_STALE_MS - 1 }))
         .toBe(false)
     })
+
+    it('lets a host server\'s lease, and only its lease, block a pod deployed onto its data dir', async () => {
+      // Nothing else stops a pod opening a database a host server holds
+      // (docs/server-in-cluster.md "The lock is a lease").
+      // The pid is live and the port answers in this test's namespace, which
+      // would make the lock live on the host; a pod must not be fooled.
+      const server = http.createServer((_req, res) => { res.writeHead(200).end('{"ok":true}') })
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+      const addr = server.address()
+      if (!addr || typeof addr === 'string') throw new Error('bad address')
+      try {
+        const host: ServerLock = { pid: process.ppid, port: addr.port, startedAt: 0, buildId: 'b', ...LEASE }
+        expect(await isLockLive(host)).toBe(true)
+        vi.stubEnv('YAAC_IN_CLUSTER', '1')
+        expect(await isLockLive(host)).toBe(false)
+        expect(await isLockLive({ ...host, heartbeatAt: Date.now() })).toBe(true)
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+    })
   })
 
-  describe('isSameHostLock', () => {
-    it('is this host only when the lock names it', () => {
-      const lock: ServerLock = { pid: 1, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
-      expect(isSameHostLock(lock)).toBe(true)
-      expect(isSameHostLock({ ...lock, host: 'some-pod' })).toBe(false)
+  describe('isLocalLock', () => {
+    const lock: ServerLock = { pid: 1, port: 1, startedAt: 0, buildId: 'b', ...LEASE }
+
+    it('takes a host lock as local on the host, whatever the machine is called', () => {
+      // The `host` written for older readers plays no part: a machine
+      // renamed by a network change still owns its server.
+      expect(isLocalLock(lock)).toBe(true)
+      expect(isLocalLock({ ...lock, host: 'renamed-machine' })).toBe(true)
+      expect(isLocalLock({ ...lock, pod: 'yaac-server-abc123' })).toBe(false)
+    })
+
+    it('takes a pod lock as local only in the pod it names', () => {
+      vi.stubEnv('YAAC_IN_CLUSTER', '1')
+      expect(isLocalLock({ ...lock, pod: os.hostname() })).toBe(true)
+      expect(isLocalLock({ ...lock, pod: 'yaac-server-predecessor' })).toBe(false)
+      expect(isLocalLock(lock)).toBe(false)
     })
   })
 
@@ -214,13 +266,27 @@ describe('server lock', () => {
   })
 
   describe('newLeaseFields', () => {
-    it('mints the three fields together, so a pid is never read out of context', () => {
-      // Without a host, the pid could be from any namespace.
+    it('mints the lease fields together, so a pid is never read out of context', () => {
       const a = newLeaseFields()
       const b = newLeaseFields()
       expect(a.instance).not.toBe(b.instance)
-      expect(a.host).toBe(os.hostname())
+      expect(a).not.toHaveProperty('pod')
       expect(a.heartbeatAt).toBeGreaterThan(0)
+    })
+
+    it('keeps writing the hostname, so an older yaac can still parse and check the lock', () => {
+      // An older yaac drops a lock without `host` as unparseable, and its
+      // server would then delete a live server's lock and open the database
+      // beside it. Reading `host` as it always has, it checks the pid of a
+      // host server's lock and the lease of a pod's.
+      expect(newLeaseFields().host).toBe(os.hostname())
+      vi.stubEnv('YAAC_IN_CLUSTER', '1')
+      expect(newLeaseFields().host).toBe(os.hostname())
+    })
+
+    it('names the pod when the server runs in the cluster', () => {
+      vi.stubEnv('YAAC_IN_CLUSTER', '1')
+      expect(newLeaseFields().pod).toBe(os.hostname())
     })
   })
 
@@ -242,7 +308,7 @@ describe('server lock', () => {
       // caller must act on `false` rather than retry.
       await writeLock({
         pid: 2, port: 1, startedAt: 0, buildId: 'b',
-        instance: 'successor', host: 'other-pod', heartbeatAt: Date.now(),
+        instance: 'successor', pod: 'other-pod', heartbeatAt: Date.now(),
       })
       expect(await renewLease('predecessor')).toBe(false)
       expect((await readLock())?.instance).toBe('successor')
@@ -347,7 +413,7 @@ describe('server lock', () => {
     })
 
     it('reclaims a stale lock (dead pid) and acquires', async () => {
-      await writeLock(mkLock({ pid: 999_999 }))
+      await writeLock(mkLock({ pid: 999_999, heartbeatAt: 0 }))
       const fresh = mkLock()
       const result = await acquireLock(fresh)
       expect(result).toEqual({ acquired: true })

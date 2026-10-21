@@ -59,8 +59,6 @@ import { liveFronting, type RemoteHosting, type ServerFronting } from './server-
 import { ensureImageByTag, pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath } from '@yaac/shared/paths'
-import { readLock } from '@yaac/shared/lock'
-import { isLockLive, isSameHostLock } from '@yaac/shared/server-lock-file'
 import {
   IdentityRejectedError,
   probeServer,
@@ -497,7 +495,6 @@ export async function deployServerWorkload(
     log: (message: string) => void
   },
 ): Promise<string> {
-  await refuseIfHostServerRunning()
   // Built before the storage step too: the binder pod runs it.
   opts.log('Building the server image (from the bundle)...')
   const imageRef = await ensureServerImage()
@@ -533,24 +530,6 @@ export async function deployServerWorkload(
     }
   })
   return origin
-}
-
-/**
- * Refuse to deploy while a host server holds this data dir: that would be
- * two writers on one database, and the host server could even answer the
- * origin probe, making install look successful.
- */
-async function refuseIfHostServerRunning(): Promise<void> {
-  const lock = await readLock()
-  // An off-host lock is this install's own pod, which install rolls.
-  if (!lock || !isSameHostLock(lock) || !await isLockLive(lock)) return
-  throw new Error(
-    'a yaac server is already running on this data dir as a host process '
-    + `(pid ${String(lock.pid)}, port ${String(lock.port)}).\n`
-    + '    Deploying the server into the cluster now would put two servers on '
-    + 'one database.\n'
-    + '    Stop it first: `yaac server stop`, then re-run `yaac cluster install`.',
-  )
 }
 
 /**

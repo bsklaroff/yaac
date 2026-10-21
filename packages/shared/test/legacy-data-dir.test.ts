@@ -24,13 +24,16 @@ const current = (): string => path.join(home, '.yaac-server')
 const cluster = (): string => path.join(home, '.yaac-cluster')
 const exists = (p: string): Promise<boolean> => fs.stat(p).then(() => true, () => false)
 
-/** A live lock in ~/.yaac: another running pid whose port answers HTTP. */
+/**
+ * A live lock in ~/.yaac: another running pid whose port answers HTTP. Its
+ * lease has lapsed, so closing the port is what stops it counting as live.
+ */
 async function liveServer(): Promise<http.Server> {
   const server = http.createServer((_req, res) => res.end())
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const lock = {
     pid: process.ppid, port: (server.address() as net.AddressInfo).port, startedAt: 0,
-    buildId: 'b', instance: 'i', host: os.hostname(), heartbeatAt: Date.now(),
+    buildId: 'b', instance: 'i', heartbeatAt: 0,
   }
   await fs.writeFile(path.join(legacy(), 'server-local', SERVER_LOCK_FILENAME), JSON.stringify(lock))
   return server
