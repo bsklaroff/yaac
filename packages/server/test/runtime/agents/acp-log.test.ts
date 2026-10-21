@@ -423,6 +423,33 @@ describe('readAcpRecovery', () => {
     expect((await readAcpRecovery(file)).pendingPermissions).toEqual([])
   })
 
+  // A connection that went down before its posture call landed leaves the
+  // launch for the next one to finish. Only an answered mode change (even a
+  // refused one) or a prompt settles it: an effort reply can land after the
+  // connection that asked has gone, with the posture call never sent.
+  it('flags a launch until its mode change is answered or a prompt sent, whatever effort reply landed', async () => {
+    const handshake = [
+      life('l1'),
+      line({ jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/w', mcpServers: [] } }),
+      line({ jsonrpc: '2.0', id: 'h-1', result: { sessionId: 's1' } }),
+    ]
+    const effort = [
+      line({ jsonrpc: '2.0', id: 'h-2', method: 'session/set_config_option', params: { sessionId: 's1', configId: 'effort', value: 'medium' } }),
+      line({ jsonrpc: '2.0', id: 'h-2', result: { configOptions: [] } }),
+    ]
+    const setMode = line({ jsonrpc: '2.0', id: 'h-3', method: 'session/set_mode', params: { sessionId: 's1', modeId: 'plan' } })
+    const unsettled = async (lines: string[]): Promise<boolean | undefined> =>
+      (await readAcpRecovery(await write(lines))).launchUnsettled
+    expect(await unsettled(handshake)).toBe(true)
+    expect(await unsettled([...handshake, ...effort])).toBe(true)
+    expect(await unsettled([...handshake, ...effort, setMode])).toBe(true)
+    expect(await unsettled([...handshake, ...effort, setMode, line({ jsonrpc: '2.0', id: 'h-3', result: {} })])).toBeUndefined()
+    expect(await unsettled([
+      ...handshake, setMode, line({ jsonrpc: '2.0', id: 'h-3', error: { code: -32603, message: 'no' } }),
+    ])).toBeUndefined()
+    expect(await unsettled([...handshake, prompt('go')])).toBeUndefined()
+  })
+
   it('reports every ask of a batch the agent is holding at once', async () => {
     const file = await write([life('l1'), ask(1), ask(2), ask(3), answer(2, 'allow')])
     expect((await readAcpRecovery(file)).pendingPermissions).toEqual([1, 3])

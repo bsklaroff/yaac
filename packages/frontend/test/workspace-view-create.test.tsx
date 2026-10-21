@@ -12,7 +12,8 @@ import { mockFetch, renderWithClient, workspaceEntry, type FetchMock } from './h
 /*
  * What the main pane shows around a create: the new-workspace pane while
  * nothing is selected, then the create's own pane until the workspace is
- * listed. The form itself is new-workspace-pane.test.tsx's.
+ * listed, and for a chat workspace until its agent is up. The form itself
+ * is new-workspace-pane.test.tsx's.
  */
 
 const initial = useUiStore.getState()
@@ -117,5 +118,37 @@ describe('WorkspaceView around a create', () => {
     const st = useUiStore.getState()
     expect(layoutOf(st.layouts, 'w1').flatMap((c) => c.tabs)).toContain('files')
     expect(st.activeTabs.w1).toBe('files')
+  })
+
+  // A chat workspace is listed before its agent names a conversation, so
+  // there is no chat pane yet. It goes on looking like the create rather
+  // than showing acpd's log, which stays a click away. A terminal workspace
+  // shows its agent's terminal at once.
+  it('draws a chat workspace whose agent is still starting as the create, with its log a click away', () => {
+    const listed = (mode: 'acp' | 'tui'): ServerSnapshot =>
+      ({ ...snapshot, workspaces: [workspaceEntry({ workspaceId: 'w1', mode, terminals: [] })] })
+    useUiStore.setState({ activeProjectId: 'proj', selectedWorkspaceId: 'w1', launches: { w1: { prompt: 'fix the parser bug' } } })
+    renderWithClient(<WorkspaceView snapshot={listed('acp')} provisioning={[]} />)
+    expect(screen.getByText('fix the parser bug')).toBeTruthy()
+    expect(screen.getByText('Starting Claude Code')).toBeTruthy()
+    expect(screen.queryByTestId('terminal')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show log' }))
+    expect(screen.getByTestId('terminal')).toBeTruthy()
+
+    // Another client, or this one after a reload, has the prompt the
+    // workspace holds for its conversation.
+    cleanup()
+    useUiStore.setState({ launches: {} })
+    const held: ServerSnapshot = {
+      ...snapshot, workspaces: [workspaceEntry({ workspaceId: 'w1', mode: 'acp', prompt: 'port the lexer', terminals: [] })],
+    }
+    renderWithClient(<WorkspaceView snapshot={held} provisioning={[]} />)
+    // In the header, and as the chat's opening message.
+    expect(screen.getAllByText('port the lexer')).toHaveLength(2)
+
+    cleanup()
+    renderWithClient(<WorkspaceView snapshot={listed('tui')} provisioning={[]} />)
+    expect(screen.queryByText('Starting Claude Code')).toBeNull()
+    expect(screen.getByTestId('terminal')).toBeTruthy()
   })
 })

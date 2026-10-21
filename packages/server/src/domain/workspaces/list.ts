@@ -83,10 +83,10 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       tool: w.tool,
       // The recorded time survives a runtime restart; fall back if no row yet.
       createdAt: formatUtcTimestamp((row?.createdAt ?? new Date(w.createdAtMs)).getTime()),
-      prompt: openingPrompt(links),
+      prompt: openingPrompt(links) ?? row?.pendingPrompt,
       title: row?.title ?? conversationTitle(links) ?? row?.generatedTitle,
       groupId: row?.groupId,
-      ...(row !== undefined ? { permissionMode: row.permissionMode } : {}),
+      ...(row !== undefined ? { mode: row.mode, permissionMode: row.permissionMode } : {}),
       ...(row?.effort !== undefined ? { effort: row.effort } : {}),
     }
     if (w.phase === 'terminating') {

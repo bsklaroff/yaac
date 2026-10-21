@@ -1788,41 +1788,45 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       // The CLI cannot show a chat, so it points at the web app instead.
       expect(stdout).toContain(`Workspace ${id} is running in ACP mode — open it in the web app`)
 
-      // No pod events exist here, so the create itself must register the
-      // conversation. Checked right after create without polling: create
-      // waits for the row, so the webapp can show the chat pane at once.
-      const res = await fetch(`${origin()}/api/workspace/list`)
-      const { workspaces } = await res.json() as {
-        workspaces: Array<{ workspaceId: string; agentSessions: AgentSessionEntry[] }>
-      }
-      const row = workspaces.find((w) => w.workspaceId === id)
-      expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain(`e2e-acp-${tool}`)
-      expect(row?.agentSessions[0]?.mode).toBe('acp')
-      // From the record; most tools leave no transcript to read.
-      expect(row?.agentSessions[0]?.model).toBe(model)
+      // The create returns before the agent names its conversation. The
+      // registry records it then, with no pod events here to prompt it.
+      await vi.waitFor(async () => {
+        const res = await fetch(`${origin()}/api/workspace/list`)
+        const { workspaces } = await res.json() as {
+          workspaces: Array<{ workspaceId: string; mode?: string; agentSessions: AgentSessionEntry[] }>
+        }
+        const row = workspaces.find((w) => w.workspaceId === id)
+        expect(row?.mode).toBe('acp')
+        expect(row?.agentSessions.map((s) => s.agentSessionId)).toContain(`e2e-acp-${tool}`)
+        expect(row?.agentSessions[0]?.mode).toBe('acp')
+        // From the record; most tools leave no transcript to read.
+        expect(row?.agentSessions[0]?.model).toBe(model)
+      }, { timeout: 30_000, interval: 250 })
 
-      // The record is renamed to the session id once `session/new` answers,
-      // so its name shows the handshake completed.
+      // acpd records both directions, under the session id once
+      // `session/new` answers. The handshake is done once the posture is
+      // sent, where it is sent as a mode.
       const record = path.join(
         testEnv.dataDir, 'global', 'projects', projectId, 'acp', id, `e2e-acp-${tool}.jsonl`,
       )
-      await vi.waitFor(async () => {
-        expect(await fs.readFile(record, 'utf8')).toContain('initialize')
-      }, { timeout: 30_000, interval: 250 })
-
-      // acpd records both directions.
-      const relayed = (await fs.readFile(record, 'utf8')).trim().split('\n')
+      const readRecord = async (): Promise<Array<{
+        method?: string
+        params?: { modeId?: string }
+        result?: { sessionId?: string; cwd?: string }
+      }>> => (await fs.readFile(record, 'utf8').catch(() => '')).trim().split('\n')
         .flatMap((line) => {
           try {
-            return [JSON.parse(line) as {
-              method?: string
-              params?: { modeId?: string }
-              result?: { sessionId?: string; cwd?: string }
-            }]
+            return [JSON.parse(line) as { method?: string; params?: { modeId?: string }; result?: { sessionId?: string; cwd?: string } }]
           } catch {
             return []
           }
         })
+      await vi.waitFor(async () => {
+        const lines = await readRecord()
+        expect(lines.some((m) => m.result?.sessionId === `e2e-acp-${tool}`)).toBe(true)
+        if (modeId !== undefined) expect(lines.some((m) => m.method === 'session/set_mode')).toBe(true)
+      }, { timeout: 30_000, interval: 250 })
+      const relayed = await readRecord()
 
       // The adapter's own cwd must be the checkout; a nonexistent directory
       // (e.g. a container path) fails the spawn like a missing binary.
@@ -1877,7 +1881,10 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
       const mama = (...args: string[]) =>
         execFileAsync(path.join(process.cwd(), 'workspace-bin', 'yaac-mama'), args, { env })
 
-      expect((await mama('history', short)).stdout).toMatch(/e2e-acp-opencode\s+opencode\s+acp/)
+      // Listed once the registry records the conversation, after the create.
+      await vi.waitFor(async () => {
+        expect((await mama('history', short)).stdout).toMatch(/e2e-acp-opencode\s+opencode\s+acp/)
+      }, { timeout: 30_000, interval: 250 })
       const printed = (await mama('history', short, 'e2e-acp')).stdout.trim().split('\n')
         .map((line) => JSON.parse(line) as { session: string; data: { text: string } })
       expect(printed.map((l) => [l.session, l.data.text]))
@@ -2044,19 +2051,29 @@ describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
     await runYaac(serverEnv, 'workspace', 'stop', id)
   }, 180_000)
 
-  it('lets a create go once its adapter has died, rather than holding for a handshake', async () => {
-    // A dead adapter takes acpd and its window down; create must notice and
-    // return rather than wait out the handshake timeout.
+  // The create returns before the handshake, so an adapter that dies first
+  // is reported afterwards, as a failed create naming the adapter, with the
+  // prompt beside it to reuse.
+  it('reports a create whose adapter died before its handshake', async () => {
     const marker = path.join(path.dirname(managedBin('claude-agent-acp')), ACP_ADAPTER_DIES)
     await fs.writeFile(marker, '')
+    const watch = collectSnapshots(server.lock.port)
     try {
-      const started = Date.now()
+      await watch.opened
       const { exitCode, stdout, stderr } = await runYaac(
-        serverEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--mode', 'acp',
+        serverEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--mode', 'acp', '--prompt', 'fix the parser',
       )
       expect(exitCode, `${stdout}${stderr}`).toBe(0)
-      expect(Date.now() - started).toBeLessThan(30_000)
+      const id = /Workspace (\S+) is running in ACP mode/.exec(stdout)?.[1]
+      expect(id).toBeDefined()
+      await vi.waitFor(() => {
+        const failed = watch.latest()?.provisioning.find((p) => p.workspaceId === id)
+        expect(failed?.error).toMatch(/before its handshake.*claude-agent-acp/)
+        expect(failed?.prompt).toBe('fix the parser')
+      }, { timeout: 30_000, interval: 500 })
+      await fetch(`${origin()}/api/workspace/provisioning/${id!}/dismiss`, { method: 'POST' })
     } finally {
+      watch.ws.close()
       await fs.rm(marker, { force: true })
     }
   }, 120_000)

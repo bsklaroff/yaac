@@ -6,7 +6,7 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 import { markWorkspaceTerminating, isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { setAgentStatus, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
 import { closeDb } from '#db/client'
-import { recordWorkspaceCreated, setWorkspaceTitle } from '#db/workspace-store'
+import { holdPendingPrompt, recordWorkspaceCreated, setWorkspaceTitle } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import {
   listActiveWorkspaces,
@@ -115,6 +115,19 @@ describe('listActiveWorkspaces', () => {
       ['renamed', 'Mine', 'the parser drops tokens'],
       ['generated', 'From the draft', 'the parser drops tokens'],
     ]))
+  })
+
+  // A chat create returns before its agent names a conversation, so until
+  // then the prompt it holds for that conversation stands in.
+  it("carries a workspace's agent mode, and a chat's held prompt until its conversation records one", async () => {
+    await recordTestProject(DEMO_PROJECT_ID)
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'held', mode: 'acp' })
+    await holdPendingPrompt(DEMO_PROJECT_ID, 'held', 'fix the lexer')
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'term', mode: 'tui' })
+    await recordAgentSessions(DEMO_PROJECT_ID, 'term', [{ tool: 'claude', agentSessionId: 'term', firstPrompt: 'port the parser' }])
+    running([live('held'), live('term')])
+    const listed = (await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((w) => [w.workspaceId, w.mode, w.prompt])
+    expect(listed).toEqual(expect.arrayContaining([['held', 'acp', 'fix the lexer'], ['term', 'tui', 'port the parser']]))
   })
 
   it('surfaces the base branch recorded at create time', async () => {

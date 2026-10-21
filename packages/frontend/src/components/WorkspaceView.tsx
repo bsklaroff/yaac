@@ -22,7 +22,7 @@ import { agentLabel } from '#lib/agentLabel'
 import { isElectron, windowApi } from '#lib/platform'
 import { useIsMobile } from '#lib/viewport'
 import { WorkspaceTitle } from '#components/WorkspaceTitle'
-import { CreatingPane } from '#components/CreatingPane'
+import { AcpStartingPane, CreatingPane } from '#components/CreatingPane'
 import { NewWorkspacePane } from '#components/NewWorkspacePane'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
@@ -445,8 +445,10 @@ export function WorkspaceView({
   const leading: ReactNode = isMobile || !sidebarOpen ? <PaneBarLeading /> : null
   const headerClass = paneBarClass(isMobile)
 
-  // The mobile key bar, only over a terminal pane.
-  const keyBarTarget = isMobile && workspace && activeTab && !isSpecialPane(activeTab) ? activeTab : null
+  // The mobile key bar, only over a terminal pane. An `acp` workspace's
+  // `agent` pane is acpd's log at most, which takes no input.
+  const keyBarTarget = isMobile && workspace && activeTab && !isSpecialPane(activeTab)
+    && !(activeTab === 'agent' && workspace.mode === 'acp') ? activeTab : null
 
   return (
     <main className="flex h-full min-w-0 flex-col">
@@ -707,27 +709,31 @@ export function WorkspaceView({
                   })()}
                 </div>
               ) : (
-                <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
-                  {/* Its own boundary: a terminal that fails to mount (an
-                      xterm internal it reaches for has moved) takes down
-                      this pane, not the app. */}
-                  <ErrorBoundary key={`${key}:${terminalNonces[id] ?? 0}`}>
-                    <WorkspaceTerminal
-                      workspaceId={id}
-                      target={target}
-                      visible={onScreen}
-                      focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
-                    />
-                  </ErrorBoundary>
-                  {target === 'agent' && (
-                    <TuiTranscriptSearch
-                      workspaceId={id}
-                      sessions={workspaces.find((s) => s.workspaceId === id)?.agentSessions ?? []}
-                      visible={onScreen}
-                      focused={focused}
-                    />
-                  )}
-                </div>
+                <AcpStartingPane
+                  workspace={target === 'agent' ? workspaces.find((s) => s.workspaceId === id) : undefined}
+                >
+                  <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
+                    {/* Its own boundary: a terminal that fails to mount (an
+                        xterm internal it reaches for has moved) takes down
+                        this pane, not the app. */}
+                    <ErrorBoundary key={`${key}:${terminalNonces[id] ?? 0}`}>
+                      <WorkspaceTerminal
+                        workspaceId={id}
+                        target={target}
+                        visible={onScreen}
+                        focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
+                      />
+                    </ErrorBoundary>
+                    {target === 'agent' && (
+                      <TuiTranscriptSearch
+                        workspaceId={id}
+                        sessions={workspaces.find((s) => s.workspaceId === id)?.agentSessions ?? []}
+                        visible={onScreen}
+                        focused={focused}
+                      />
+                    )}
+                  </div>
+                </AcpStartingPane>
               )}
             </div>
           )

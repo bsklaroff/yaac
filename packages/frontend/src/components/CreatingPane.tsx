@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useState, type JSX, type ReactNode } from 'react'
 import { StopIcon } from '#lib/icons'
 import { USER_BUBBLE } from '#components/AcpTranscript'
 import { ChatBottomBar, Launching, ROUND_BUTTON, useChatColumn } from '#components/ConversationView'
@@ -7,7 +7,7 @@ import { useProjectName } from '#lib/projectIdentity'
 import { dismissProvisioning } from '#lib/createWorkspace'
 import { useUiStore, type LaunchPane } from '#lib/store'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
-import type { ProvisioningWorkspaceEntry } from '@yaac/shared/types'
+import { TOOL_LABELS, type ProvisioningWorkspaceEntry, type WorkspaceListEntry } from '@yaac/shared/types'
 
 const PANE_NAME: Record<LaunchPane, string> = { shell: 'a shell', files: 'Files', changes: 'Changes' }
 
@@ -80,6 +80,52 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
               <StopIcon size={11} fill="currentColor" />
             </button>
           )}
+        </div>
+      </ChatBottomBar>
+    </div>
+  )
+}
+
+/**
+ * The agent pane of an `acp` workspace that is listed before its agent has
+ * named a conversation (`session/new`): drawn as the create's pane was, the
+ * prompt it was created with and then the spinner. The chat pane
+ * replaces it once the conversation is recorded (`syncPaneLayout`) and
+ * carries the prompt and spinner on. For any other workspace, or once the
+ * user asks for it, this is `children`, the agent window's terminal, which
+ * under `acp` shows acpd's log: the place to look when the agent never
+ * comes up.
+ */
+export function AcpStartingPane({ workspace, children }: {
+  workspace: WorkspaceListEntry | undefined
+  children: ReactNode
+}): JSX.Element {
+  const [showLog, setShowLog] = useState(false)
+  const launched = useUiStore((s) => (workspace ? s.launches[workspace.workspaceId]?.prompt : undefined))
+  const prompt = launched ?? workspace?.prompt
+  const column = useChatColumn()
+  if (workspace?.mode !== 'acp' || showLog) return <>{children}</>
+
+  return (
+    <div className="flex h-full w-full flex-col overflow-hidden rounded-md bg-bg">
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div className={column}>
+          <Launching {...(prompt !== undefined ? { prompt } : {})} caption={`Starting ${TOOL_LABELS[workspace.tool]}…`} />
+        </div>
+      </div>
+      <ChatBottomBar>
+        <div className="flex items-center gap-2 py-2 pl-3 pr-2">
+          <span className="min-w-0 flex-1 truncate text-sm text-text-faint">
+            The chat opens once the agent is up.
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowLog(true)}
+            className="rounded-md bg-surface-2 px-3 py-1.5 text-xs text-text-dim transition hover:bg-surface-3
+              hover:text-text"
+          >
+            Show log
+          </button>
         </div>
       </ChatBottomBar>
     </div>

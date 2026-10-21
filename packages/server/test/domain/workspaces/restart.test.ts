@@ -51,9 +51,8 @@ import { CLAUDE_POD_CWD, projectDir, repoDir, workspaceDir, workspaceStateDir } 
 import { projectConfigDir } from '@yaac/shared/paths'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { _clearTmuxAliveCacheForTests, probeTmuxLiveness } from '#runtime/status/liveness'
-import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
-import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
-import type { AcpConversation } from '#runtime/agents'
+import type { RuntimeHandle, WorkspaceDriver } from '#drivers/contract'
+import { _resetAcpRegistryForTests } from '#runtime/agents/acp-registry'
 import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
 import { BUILT_IN_USER_ID } from '#db'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
@@ -222,36 +221,17 @@ describe('prepareRestart', () => {
 
   // A chat create whose agent never connected holds its prompt and records
   // no conversation. The restart has none to load, so it starts a fresh one,
-  // which gets the prompt.
-  it('starts a chat workspace that never recorded a conversation afresh, handing it the held prompt', async () => {
-    installDriver({
-      exec: (_jobName, cmd) => cmd.includes('list-windows -t =yaac')
-        ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
-        : Promise.resolve({ stdout: '', stderr: '' }),
-    })
+  // and the prompt stays held for the sweep to send it once that one is up.
+  it('starts a chat workspace that never recorded a conversation afresh, keeping its held prompt', async () => {
     await stoppedWorkspace('wt-chat', { mode: 'acp', prompt: 'add shared projects' })
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('add shared projects')
 
-    const prompted = vi.fn(() => Promise.resolve())
-    const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
-    installDriver({
-      exec: (_jobName, cmd) => {
-        if (cmd.includes('#{pane_pid}')) {
-          setTimeout(() => registerAcpConversation(
-            DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'acp-fresh', panePid: '42' }, conversation,
-          ), 20)
-          return Promise.resolve({ stdout: '42\n', stderr: '' })
-        }
-        return Promise.resolve({ stdout: '', stderr: '' })
-      },
-    })
     await restart('wt-chat')
 
     // Nothing is recorded under the workspace-id placeholder, which the
     // agent connection would otherwise try to load.
     expect(await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-chat')).toEqual([])
-    await vi.waitFor(() => expect(prompted).toHaveBeenCalledWith('add shared projects'))
-    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBeUndefined()
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('add shared projects')
   })
 
   // The agent exited while an init window kept tmux alive, so the registry
@@ -295,13 +275,8 @@ describe('prepareRestart', () => {
 
   // A chat conversation that connected but was never sent anything has no
   // history to load. It is relaunched unrecorded, so its handshake starts a
-  // fresh conversation, which takes the create's held prompt once.
-  it('hands the held prompt to the fresh conversation replacing a never-prompted chat one', async () => {
-    installDriver({
-      exec: (_jobName, cmd) => cmd.includes('list-windows -t =yaac')
-        ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
-        : Promise.resolve({ stdout: '', stderr: '' }),
-    })
+  // fresh conversation, and the create's prompt stays held for that one.
+  it('replaces a never-prompted chat conversation with a fresh one, keeping the held prompt', async () => {
     await stoppedWorkspace('wt-quiet', { mode: 'acp', prompt: 'add shared projects' })
     await applyWorkspaceEvent({
       type: 'sessions-launched',
@@ -310,27 +285,12 @@ describe('prepareRestart', () => {
       sessions: [{ tool: 'claude', agentSessionId: 'acp-quiet', mode: 'acp', paneId: 'claude' }],
     })
 
-    const prompted = vi.fn(() => Promise.resolve())
-    const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
-    installDriver({
-      exec: (_jobName, cmd) => {
-        if (cmd.includes('#{pane_pid}')) {
-          setTimeout(() => registerAcpConversation(
-            DEMO_PROJECT_ID, 'wt-quiet', { handle: 'claude', agentSessionId: 'acp-fresh', panePid: '42' }, conversation,
-          ), 20)
-          return Promise.resolve({ stdout: '42\n', stderr: '' })
-        }
-        return Promise.resolve({ stdout: '', stderr: '' })
-      },
-    })
     await restart('wt-quiet')
 
     // Its handle is not recorded, so the connection cannot try to load it.
     const quiet = (await listWorkspaceAgentSessions(DEMO_PROJECT_ID, 'wt-quiet')).find((l) => l.agentSessionId === 'acp-quiet')
     expect(quiet?.paneId).toBeUndefined()
-    await vi.waitFor(async () => expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-quiet'))?.pendingPrompt).toBeUndefined())
-    expect(prompted).toHaveBeenCalledTimes(1)
-    expect(prompted).toHaveBeenCalledWith('add shared projects')
+    expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-quiet'))?.pendingPrompt).toBe('add shared projects')
   })
 
   // The workspace is running by then, so a lost clear must not report it

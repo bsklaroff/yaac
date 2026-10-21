@@ -15,7 +15,7 @@ import {
 import { createWorkspaceGroup } from '#db/group-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
-import { BUILT_IN_USER_ID, recordProject, seeTailnetUser } from '#db'
+import { BUILT_IN_USER_ID, holdPendingPrompt, recordProject, seeTailnetUser } from '#db'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { listStoppedWorkspaces } from '#domain/workspaces/stopped-list'
 import type { AgentTool, StoppedWorkspaceEntry } from '@yaac/shared/types'
@@ -233,7 +233,7 @@ describe('listStoppedWorkspaces', () => {
     expect(idle?.lastActiveAt).toBe(idle?.createdAt)
   })
 
-  it('takes the prompt from the row alone, leaving it unset when never captured', async () => {
+  it('takes the prompt from the row alone: the captured one, else one still held for a chat, else unset', async () => {
     const workspacesDir = path.join(claudeDir(DEMO_PROJECT_ID), 'projects', '-workspace')
     await fs.mkdir(workspacesDir, { recursive: true })
     const first = JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello there' } })
@@ -244,8 +244,12 @@ describe('listStoppedWorkspaces', () => {
       { tool: 'claude', agentSessionId: 'captured', firstPrompt: 'port the lexer' },
     ])
 
+    await seedWorkspace(DEMO_PROJECT_ID, 'held', { deleted: true })
+    await holdPendingPrompt(DEMO_PROJECT_ID, 'held', 'fix the parser')
+
     const result = await entries()
     expect(result.find((r) => r.workspaceId === 'captured')?.prompt).toBe('port the lexer')
+    expect(result.find((r) => r.workspaceId === 'held')?.prompt).toBe('fix the parser')
     expect(result.find((r) => r.workspaceId === 'uncaptured')?.prompt).toBeUndefined()
   })
 })

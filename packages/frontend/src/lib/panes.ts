@@ -45,8 +45,9 @@ export function acpPaneTargets(workspace: WorkspaceListEntry | undefined): strin
 /**
  * The pane a workspace opens with: the agent terminal for `tui`, the first
  * conversation's chat pane for `acp`. An `acp` workspace with no
- * conversation yet (a slow handshake) falls back to the terminal, and the
- * window sync swaps in the chat pane when it appears.
+ * conversation yet (its agent still starting) has the `agent` pane, drawn
+ * as the agent starting (`AcpStartingPane`), and the window sync swaps in
+ * the chat pane when it appears.
  */
 export function defaultPaneTarget(workspace: WorkspaceListEntry | undefined): string {
   return acpPaneTargets(workspace)[0] ?? 'agent'
