@@ -23,7 +23,7 @@ import { stopProvisioning, stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlo
 import { useUiStore, isUnreadWaiting, isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
-import { useReadOnly, useTeammateName } from '#lib/viewer'
+import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
 import { useRestartStopped } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
@@ -184,7 +184,8 @@ export function WorkspaceRow({
   // No hover on touch: the actions menu is always shown and the marquee
   // never runs.
   const isMobile = useIsMobile()
-  const unread = isUnreadWaiting(workspace)
+  const me = useWhoami()?.userId
+  const unread = isUnreadWaiting(workspace, me)
   const teammate = useTeammateName()
   const stopping = isTerminating(workspace, pendingDeleteIds)
 
@@ -461,7 +462,8 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
   const restart = useRestartStopped()
   const [confirmRestart, setConfirmRestart] = useState(false)
   const readOnly = useReadOnly()
-  const unseen = isUnseenDeath(entry)
+  const me = useWhoami()?.userId
+  const unseen = isUnseenDeath(entry, me)
 
   const stopLine = entry.deathReason
     ? `died ${relativeAge(entry.stoppedAt)} — ${describeWorkspaceDeathReason(entry.deathReason)}`

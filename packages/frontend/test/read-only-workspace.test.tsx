@@ -11,7 +11,7 @@ import { ReadOnlyWorkspace, type ReadOnlySubject } from '#components/ReadOnlyWor
 import { useStoppedEntry } from '#lib/useStoppedWorkspaces'
 import { useUiStore } from '#lib/store'
 import {
-  agentEvent, agentSession, mockFetch, renderWithClient, serverError, TEST_WHOAMI, testQueryClient, userEvent, workspaceEntry,
+  agentEvent, agentSession, mockFetch, renderWithClient, serverError, TEST_USER_ID, TEST_WHOAMI, testQueryClient, userEvent, workspaceEntry,
   type FetchCall, type FetchMock,
 } from './harness'
 
@@ -32,7 +32,7 @@ const stopped = (over: Partial<StoppedWorkspaceEntry> = {}): StoppedWorkspaceEnt
   stoppedAt: '2026-07-13 01:00:00',
   title: 'OOMed run',
   prompt: 'fix the parser',
-  seen: true,
+  deathSeenBy: [TEST_USER_ID],
   agentSessions: [],
   ...over,
 })
@@ -55,7 +55,7 @@ function Selected({ projectId, workspaceId }: { projectId: string; workspaceId: 
   if (!entry) return <p>not found</p>
   return (
     <>
-      <p>{entry.seen ? 'seen' : 'unseen'}</p>
+      <p>{entry.deathSeenBy.includes(TEST_USER_ID) ? 'seen' : 'unseen'}</p>
       <ReadOnlyWorkspace subject={{ kind: 'stopped', entry }} />
     </>
   )
@@ -89,8 +89,8 @@ describe('ReadOnlyWorkspace', () => {
     expect(provision.mock.calls[0]?.[0]).toEqual({ workspaceId: 's1', projectId: 'proj', tool: 'claude', kind: 'restart' })
   })
 
-  it('marks an unseen death seen once, and never in a teammate\'s view', async () => {
-    const entry = stopped({ deathReason: 'oom', seen: false })
+  it('marks a death the caller has not seen once, in a teammate\'s view too', async () => {
+    const entry = stopped({ deathReason: 'oom', deathSeenBy: [] })
     const client = testQueryClient()
     const view = renderWithClient(<ReadOnlyWorkspace subject={{ kind: 'stopped', entry }} />, client)
     await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toEqual([{ projectId: 'proj', workspaceId: 's1' }]))
@@ -104,11 +104,16 @@ describe('ReadOnlyWorkspace', () => {
     expect(server.called(MARK)).toHaveLength(1)
     cleanup()
 
+    // A teammate's death they saw themselves is still unseen by the caller;
+    // one the caller saw is left alone.
     useUiStore.setState({ viewedUserId: 'u-ada' })
-    renderPane({ kind: 'stopped', entry: stopped({ workspaceId: 's2', deathReason: 'oom', seen: false }) })
-    await new Promise((r) => setTimeout(r, 0))
-    expect(server.called(MARK)).toHaveLength(1)
+    renderPane({ kind: 'stopped', entry: stopped({ workspaceId: 's2', deathReason: 'oom', deathSeenBy: ['u-ada'] }) })
+    await waitFor(() => expect(server.called(MARK).map((c) => c.body)).toContainEqual({ projectId: 'proj', workspaceId: 's2' }))
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+    cleanup()
+    renderPane({ kind: 'stopped', entry: stopped({ workspaceId: 's3', deathReason: 'oom' }) })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(server.called(MARK)).toHaveLength(2)
   })
 
   it('looks a selection up in the active project only', async () => {
@@ -125,7 +130,7 @@ describe('ReadOnlyWorkspace', () => {
   })
 
   it('puts a refused mark-seen back from a refetch, and does not retry it', async () => {
-    server.route('GET /api/workspace/list-stopped', listing([stopped({ deathReason: 'oom', seen: false })]))
+    server.route('GET /api/workspace/list-stopped', listing([stopped({ deathReason: 'oom', deathSeenBy: [] })]))
     server.route(MARK, serverError('FORBIDDEN', 'not yours', 403))
     renderWithClient(<Selected projectId="proj" workspaceId="s1" />)
     await waitFor(() => expect(server.called(MARK)).toHaveLength(1))

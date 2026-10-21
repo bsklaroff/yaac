@@ -7,6 +7,7 @@ import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-dr
 // never reads a transcript, which the prompt test checks by leaving one on
 // disk that the rows do not record.
 import {
+  recordDeathSeen,
   recordWorkspaceCreated,
   recordWorkspaceStopped,
   setWorkspaceGeneratedTitle,
@@ -126,14 +127,15 @@ describe('listStoppedWorkspaces', () => {
     expect(await ids()).toEqual(['second', 'first'])
   })
 
-  it('carries the recorded death cause and its seen flag on the entry', async () => {
+  it('carries the recorded death cause and who has seen it on the entry', async () => {
     await seedWorkspace(DEMO_PROJECT_ID, 'died')
     await seedWorkspace(DEMO_PROJECT_ID, 'removed')
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'died', { reason: 'oom', detail: 'exit code 137' })
     await recordWorkspaceStopped(DEMO_PROJECT_ID, 'removed')
+    await recordDeathSeen(DEMO_PROJECT_ID, 'died', BUILT_IN_USER_ID)
     const result = await entries()
     const died = result.find((r) => r.workspaceId === 'died')
-    expect(died).toMatchObject({ deathReason: 'oom', deathDetail: 'exit code 137', seen: false })
+    expect(died).toMatchObject({ deathReason: 'oom', deathDetail: 'exit code 137', deathSeenBy: [BUILT_IN_USER_ID] })
     const removed = result.find((r) => r.workspaceId === 'removed')
     expect(removed?.deathReason).toBeUndefined()
     expect(removed?.deathDetail).toBeUndefined()

@@ -92,7 +92,7 @@ const STOPPED = [{
   stoppedAt: '2026-01-01 00:06:00',
   prompt: 'why is the build cache missing?',
   title: 'build cache probe',
-  seen: true,
+  deathSeenBy: [],
   agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
 }]
 

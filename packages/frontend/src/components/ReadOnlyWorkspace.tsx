@@ -13,7 +13,7 @@ import { RestartIcon, TerminalIcon } from '#lib/icons'
 import { isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { patchStopped, refetchStopped, useRestartStopped } from '#lib/useStoppedWorkspaces'
-import { useReadOnly, useTeammateName } from '#lib/viewer'
+import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
@@ -32,11 +32,11 @@ export type ReadOnlySubject =
  * control (docs/multi-user.md "Authorization"). A bar where the live pane's
  * composer sits carries its width and condensed toggles.
  *
- * The user's own stopped workspace also gets a Restart action, and opening
- * one that died unseen marks it seen. That write is the owner's alone, so a
- * teammate's view never makes it, and it happens at most once per id per
- * page load, so a failing write (whose refetch brings the row back unseen)
- * cannot loop.
+ * The user's own stopped workspace also gets a Restart action. Opening any
+ * stopped one that died unseen marks it seen by the caller, a teammate's
+ * included, since each user has their own dot. The mark is sent at most
+ * once per id per page load, so a failing write (whose refetch brings the
+ * row back unseen) cannot loop.
  */
 export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | undefined }): JSX.Element {
   const isMobile = useIsMobile()
@@ -49,19 +49,21 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
   const stopped = subject?.kind === 'stopped' ? subject.entry : undefined
 
   const queryClient = useQueryClient()
+  const me = useWhoami()?.userId
   const { mutate: markSeen } = useMutation({
-    mutationFn: (e: StoppedWorkspaceEntry) =>
+    mutationFn: ({ entry: e }: { entry: StoppedWorkspaceEntry; me: string }) =>
       api.workspace['mark-death-seen'].$post({ json: { projectId: e.projectId, workspaceId: e.workspaceId } }),
-    onMutate: (e) => patchStopped(queryClient, e.projectId,
-      (x) => (x.workspaceId === e.workspaceId ? { ...x, seen: true } : x)),
-    onError: (_err, e) => refetchStopped(queryClient, e.projectId),
+    onMutate: ({ entry: e, me: userId }) => patchStopped(queryClient, e.projectId,
+      (x) => (x.workspaceId === e.workspaceId ? { ...x, deathSeenBy: [...x.deathSeenBy, userId] } : x)),
+    onError: (_err, { entry: e }) => refetchStopped(queryClient, e.projectId),
   })
   const marked = useRef(new Set<string>())
   useEffect(() => {
-    if (readOnly || stopped === undefined || !isUnseenDeath(stopped) || marked.current.has(stopped.workspaceId)) return
+    if (me === undefined || stopped === undefined || !isUnseenDeath(stopped, me)) return
+    if (marked.current.has(stopped.workspaceId)) return
     marked.current.add(stopped.workspaceId)
-    markSeen(stopped)
-  }, [readOnly, stopped, markSeen])
+    markSeen({ entry: stopped, me })
+  }, [me, stopped, markSeen])
 
   return (
     <main className="@container flex h-full min-w-0 flex-col">

@@ -18,8 +18,17 @@ export async function listProjects(
     workspaceDriver().count(),
     counts,
   ])
-  const stoppedIn = (projectId: string, field: 'stopped' | 'unseenDeaths'): number =>
-    stoppedCounts.filter((c) => c.projectId === projectId).reduce((n, c) => n + c[field], 0)
+  const stoppedIn = (projectId: string): Pick<ProjectSummary, 'stoppedCount' | 'deaths' | 'deathsSeenBy'> => {
+    const total = { stoppedCount: 0, deaths: 0, deathsSeenBy: {} as Record<string, number> }
+    for (const c of stoppedCounts.filter((c) => c.projectId === projectId)) {
+      total.stoppedCount += c.stopped
+      total.deaths += c.deaths
+      for (const [userId, n] of Object.entries(c.deathsSeenBy)) {
+        total.deathsSeenBy[userId] = (total.deathsSeenBy[userId] ?? 0) + n
+      }
+    }
+    return total
+  }
   const credentials = await projectCredentialNames(rows)
   return rows.map((meta) => ({
     id: meta.id,
@@ -28,8 +37,7 @@ export async function listProjects(
     addedAt: meta.addedAt,
     owner: meta.owner,
     workspaceCount: workspaceCounts[meta.id] ?? 0,
-    stoppedCount: stoppedIn(meta.id, 'stopped'),
-    unseenDeaths: stoppedIn(meta.id, 'unseenDeaths'),
+    ...stoppedIn(meta.id),
     // Remembered create defaults, so the create form opens on what an
     // untouched create would run (see `resolveToolCreateDefaults`).
     ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),

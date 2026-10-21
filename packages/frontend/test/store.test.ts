@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import { CHANGES_TARGET, FILES_TARGET } from '#lib/files'
 import {
   isUnreadWaiting, isUnseenDeath, defaultViewMode, mergeProvisioning, paneViewKey,
-  resolveVacantSelection, unreadWaitingByProject, useUiStore,
+  resolveVacantSelection, unreadWaitingByProject, unseenDeaths, useUiStore,
 } from '#lib/store'
 import type {
   ListedAgentStatus, ProvisioningWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
@@ -36,7 +36,7 @@ describe('pending-delete tracking', () => {
 describe('optimistic deleted tracking', () => {
   const entry = (workspaceId: string) => ({
     workspaceId, projectId: 'p', tool: 'claude' as const, createdAt: '2026-01-01 00:00:00',
-    stoppedAt: '2026-01-01 00:00:01', prompt: 'hi', seen: false, agentSessions: [],
+    stoppedAt: '2026-01-01 00:00:01', prompt: 'hi', deathSeenBy: [], agentSessions: [],
   })
 
   it('addOptimisticStopped prepends, with no duplicates', () => {
@@ -60,44 +60,54 @@ describe('markWaitingSeen', () => {
   it('shows the workspace as read in the held snapshot, leaving the others', () => {
     const w = (workspaceId: string) => ({ workspaceId, status: 'waiting' }) as WorkspaceListEntry
     useUiStore.setState({ snapshot: { workspaces: [w('a'), w('b')] } as unknown as ServerSnapshot })
-    useUiStore.getState().markWaitingSeen('a')
-    expect(useUiStore.getState().snapshot?.workspaces.map((x) => x.waitingSeen)).toEqual([true, undefined])
+    useUiStore.getState().markWaitingSeen('a', 'me')
+    expect(useUiStore.getState().snapshot?.workspaces.map((x) => x.waitingSeenBy)).toEqual([['me'], undefined])
   })
 
   it('is a no-op before the first snapshot', () => {
     useUiStore.setState({ snapshot: undefined })
     const before = useUiStore.getState()
-    useUiStore.getState().markWaitingSeen('a')
+    useUiStore.getState().markWaitingSeen('a', 'me')
     expect(useUiStore.getState()).toBe(before)
   })
 })
 
 describe('isUnseenDeath', () => {
-  it('flags an abnormal death the server has not marked seen', () => {
-    expect(isUnseenDeath({ deathReason: 'oom', seen: false })).toBe(true)
-    expect(isUnseenDeath({ deathReason: 'oom', seen: true })).toBe(false)
+  it('flags an abnormal death the server has not marked seen by the viewer', () => {
+    expect(isUnseenDeath({ deathReason: 'oom', deathSeenBy: [] }, 'me')).toBe(true)
+    expect(isUnseenDeath({ deathReason: 'oom', deathSeenBy: ['owner'] }, 'me')).toBe(true)
+    expect(isUnseenDeath({ deathReason: 'oom', deathSeenBy: ['owner', 'me'] }, 'me')).toBe(false)
   })
 
   it('never flags a plain user delete (no deathReason), seen or not', () => {
-    expect(isUnseenDeath({ seen: false })).toBe(false)
-    expect(isUnseenDeath({ deathReason: undefined, seen: false })).toBe(false)
+    expect(isUnseenDeath({ deathSeenBy: [] }, 'me')).toBe(false)
+    expect(isUnseenDeath({ deathReason: undefined, deathSeenBy: [] }, 'me')).toBe(false)
+  })
+})
+
+describe('unseenDeaths', () => {
+  it('counts the deaths the viewer has not seen, whoever else has', () => {
+    const counts = { deaths: 3, deathsSeenBy: { owner: 3, me: 1 } }
+    expect(unseenDeaths(counts, 'me')).toBe(2)
+    expect(unseenDeaths(counts, 'other')).toBe(3)
   })
 })
 
 describe('isUnreadWaiting', () => {
-  it('flags a waiting workspace the server has not marked seen', () => {
-    expect(isUnreadWaiting({ status: 'waiting' })).toBe(true)
-    expect(isUnreadWaiting({ status: 'waiting', waitingSeen: true })).toBe(false)
+  it('flags a waiting workspace the server has not marked seen by the viewer', () => {
+    expect(isUnreadWaiting({ status: 'waiting' }, 'me')).toBe(true)
+    expect(isUnreadWaiting({ status: 'waiting', waitingSeenBy: ['owner'] }, 'me')).toBe(true)
+    expect(isUnreadWaiting({ status: 'waiting', waitingSeenBy: ['owner', 'me'] }, 'me')).toBe(false)
   })
 
   it('never flags a running workspace', () => {
-    expect(isUnreadWaiting({ status: 'running' })).toBe(false)
+    expect(isUnreadWaiting({ status: 'running' }, 'me')).toBe(false)
   })
 })
 
 describe('unreadWaitingByProject', () => {
-  const s = (workspaceId: string, projectId: string, status: ListedAgentStatus, waitingSeen?: true) =>
-    ({ workspaceId, projectId, status, ...(waitingSeen ? { waitingSeen } : {}) })
+  const s = (workspaceId: string, projectId: string, status: ListedAgentStatus, seen?: true) =>
+    ({ workspaceId, projectId, status, ...(seen ? { waitingSeenBy: ['me'] } : {}) })
 
   it('counts only unread waiting workspaces, grouped by project', () => {
     const workspaces = [
@@ -106,17 +116,17 @@ describe('unreadWaitingByProject', () => {
       s('r1', 'p1', 'running'),
       s('w3', 'p2', 'waiting'),
     ]
-    expect(unreadWaitingByProject(workspaces)).toEqual({ p1: 1, p2: 1 })
+    expect(unreadWaitingByProject(workspaces, 'me')).toEqual({ p1: 1, p2: 1 })
   })
 
   it('counts an asking workspace even once viewed, and no background one', () => {
     const workspaces = [{ ...s('a1', 'p1', 'waiting', true), asking: true as const }, s('b1', 'p1', 'background')]
-    expect(unreadWaitingByProject(workspaces)).toEqual({ p1: 1 })
+    expect(unreadWaitingByProject(workspaces, 'me')).toEqual({ p1: 1 })
   })
 
   it('omits projects with no unread waiting workspaces', () => {
     const workspaces = [s('w1', 'p1', 'waiting', true), s('r1', 'p2', 'running')]
-    expect(unreadWaitingByProject(workspaces)).toEqual({})
+    expect(unreadWaitingByProject(workspaces, 'me')).toEqual({})
   })
 
   it('excludes workspaces whose stop is in flight or that the server marks stopping', () => {
@@ -125,7 +135,7 @@ describe('unreadWaitingByProject', () => {
       { ...s('w2', 'p1', 'waiting'), stopping: true },
       s('w3', 'p1', 'waiting'),
     ]
-    expect(unreadWaitingByProject(workspaces, ['w1'])).toEqual({ p1: 1 })
+    expect(unreadWaitingByProject(workspaces, 'me', ['w1'])).toEqual({ p1: 1 })
   })
 })
 

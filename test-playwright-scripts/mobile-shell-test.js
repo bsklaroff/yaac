@@ -55,11 +55,11 @@ const USABLE = 48
 
 const stopped = (id, title, extra = {}) => ({
   workspaceId: id, projectId: target.projectId, tool: 'claude', title,
-  createdAt: '2026-08-01 09:00:00', stoppedAt: '2026-08-01 18:00:00', seen: true, agentSessions: [], ...extra,
+  createdAt: '2026-08-01 09:00:00', stoppedAt: '2026-08-01 18:00:00', deathSeenBy: [], agentSessions: [], ...extra,
 })
 const STOPPED = [
   stopped('stub-1', 'Rework the mobile overlays so both panes fit', {
-    prompt: 'Make the overlays readable on a phone.', deathReason: 'oom', deathDetail: 'exit code 137', seen: false,
+    prompt: 'Make the overlays readable on a phone.', deathReason: 'oom', deathDetail: 'exit code 137', deathSeenBy: [],
   }),
   ...Array.from({ length: 24 }, (_, i) => stopped(`stub-fill-${i}`, `Older workspace ${i + 1}`)),
 ]

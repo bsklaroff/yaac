@@ -91,7 +91,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       lastActiveAt: formatUtcTimestamp(lastActiveMs(links) ?? r.createdAt.getTime()),
       stoppedAt: formatUtcTimestamp(stoppedAtOf(r).getTime()),
       agentSessions: links.map((l) => toAgentSessionEntry(l)),
-      seen: r.deathSeen,
+      deathSeenBy: r.deathSeenBy,
       ...(prompt !== undefined ? { prompt } : {}),
       ...(title !== undefined ? { title } : {}),
       ...(r.deathReason !== undefined ? { deathReason: r.deathReason } : {}),

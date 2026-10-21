@@ -1,13 +1,16 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { buildApp } from '@yaac/server/main/server'
-import { makeTestApiClient } from '@yaac/test-utils/api'
+import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
 import { closeDb } from '@yaac/server/db/client'
 import {
+  recordDeathSeen,
+  recordWaitingSeen,
   recordWorkspaceCreated,
   recordWorkspaceStopped,
   listWorkspaceRows,
 } from '@yaac/server/db/workspace-store'
+import { BUILT_IN_USER_ID, seeTailnetUser } from '@yaac/server/db/user-store'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
 /**
@@ -82,10 +85,8 @@ describe('workspace death read-marks', () => {
     }
   })
 
-  const seen = async (
-    projectId: string, workspaceId: string,
-  ): Promise<boolean | undefined> =>
-    (await listWorkspaceRows(projectId)).find((r) => r.workspaceId === workspaceId)?.deathSeen
+  const seen = async (projectId: string, workspaceId: string): Promise<boolean | undefined> =>
+    (await listWorkspaceRows(projectId)).find((r) => r.workspaceId === workspaceId)?.deathSeenBy.includes(BUILT_IN_USER_ID)
 
   it('marks a recorded death seen on its session row', async () => {
     // Seed an abnormal death (unseen by default).
@@ -165,11 +166,61 @@ describe('workspace waiting read-marks', () => {
     })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ marked: true })
-    expect((await listWorkspaceRows(ONE)).find((r) => r.workspaceId === 'waiting-1')?.waitingSeen).toBe(true)
+    expect((await listWorkspaceRows(ONE)).find((r) => r.workspaceId === 'waiting-1')?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
 
     const ghost = await client.workspace['mark-waiting-seen'].$post({
       json: { projectId: ONE, workspaceId: 'ghost', waitingSinceMs },
     })
     expect(ghost.status).toBe(404)
+  })
+})
+
+/**
+ * A teammate's marks on the owner's workspaces, through a tailnet server.
+ * The id recorded is the caller's, never one the body names, so a teammate
+ * can neither mark for the owner nor clear the owner's own mark.
+ */
+describe('read-marks as a teammate', () => {
+  const TEAM = '0a0a0a0a-0000-4000-8000-000000000005'
+  const HOST = 'srv.tailnet.ts.net'
+  const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'test', access: () => 'tailnet' })
+  let teammate: string
+
+  beforeAll(async () => {
+    vi.stubEnv('YAAC_ALLOWED_HOSTS', HOST)
+    teammate = await seeTailnetUser('bob@example.com', 'bob')
+    await recordTestProject(TEAM, { name: 'team' })
+    for (const id of ['team-dead', 'team-dead-2', 'team-waiting']) {
+      await recordWorkspaceCreated({ projectId: TEAM, workspaceId: id })
+    }
+    await recordWorkspaceStopped(TEAM, 'team-dead', { reason: 'oom' })
+    await recordWorkspaceStopped(TEAM, 'team-dead-2', { reason: 'evicted' })
+    await recordDeathSeen(TEAM, 'team-dead', BUILT_IN_USER_ID)
+    await recordWaitingSeen(TEAM, 'team-waiting', BUILT_IN_USER_ID)
+  })
+  afterAll(() => {
+    vi.unstubAllEnvs()
+  })
+
+  const post = (path: string, body: object): Promise<Response> => Promise.resolve(app().request(`/api/workspace/${path}`, {
+    method: 'POST',
+    headers: { ...asTailnet('bob@example.com', HOST), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, userId: BUILT_IN_USER_ID }),
+  }))
+  const row = async (workspaceId: string) =>
+    (await listWorkspaceRows(TEAM)).find((r) => r.workspaceId === workspaceId)
+
+  it('records only the caller, whatever the body names', async () => {
+    expect((await post('mark-death-seen', { projectId: TEAM, workspaceId: 'team-dead' })).status).toBe(204)
+    expect((await row('team-dead'))?.deathSeenBy).toEqual([BUILT_IN_USER_ID, teammate])
+
+    expect((await post('mark-all-deaths-seen', { projectId: TEAM })).status).toBe(204)
+    expect((await row('team-dead'))?.deathSeenBy).toEqual([BUILT_IN_USER_ID, teammate])
+    expect((await row('team-dead-2'))?.deathSeenBy).toEqual([teammate])
+
+    // Nothing watches it, so it waits in a spell with no stamp (0).
+    const waiting = await post('mark-waiting-seen', { projectId: TEAM, workspaceId: 'team-waiting', waitingSinceMs: 0 })
+    expect(await waiting.json()).toEqual({ marked: true })
+    expect((await row('team-waiting'))?.waitingSeenBy).toEqual([BUILT_IN_USER_ID, teammate])
   })
 })

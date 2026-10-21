@@ -170,14 +170,16 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
  * session, so they survive a `/clear` (which starts a second conversation).
  *
  * Every stop sets `stoppedAt`; `deathReason`/`deathDetail` are set only when
- * the stale reaper (not the user) stopped it. `deathSeen` records whether the
- * user viewed that detail (the "Stopped workspaces" dot).
+ * the stale reaper (not the user) stopped it. `deathSeenBy` lists the users
+ * who viewed that detail, each of whom no longer gets the "Stopped
+ * workspaces" dot for it.
  *
- * `waitingSeen` records whether the user has viewed the workspace's current
- * waiting spell, so the sidebar's unread dot is shared by every client. It is
- * cleared when the workspace goes back to work rather than keyed on the
- * spell's start, since spell starts are server memory and restamp on a
- * server restart.
+ * `waitingSeenBy` lists the users who have viewed the workspace's current
+ * waiting spell, so each user's unread dot is the same on every client they
+ * use, and a teammate reading the workspace has their own. It is emptied
+ * when the workspace goes back to work rather than keyed on the spell's
+ * start, since spell starts are server memory and restamp on a server
+ * restart.
  */
 export const workspaces = snakeCase.table('workspaces', {
   projectId: uuid().notNull(),
@@ -203,8 +205,8 @@ export const workspaces = snakeCase.table('workspaces', {
   stoppedAt: timestamp({ withTimezone: true }),
   deathReason: text().$type<WorkspaceDeathReason>(),
   deathDetail: text(),
-  deathSeen: boolean().notNull().default(false),
-  waitingSeen: boolean().notNull().default(false),
+  deathSeenBy: uuid().array().notNull().default([]),
+  waitingSeenBy: uuid().array().notNull().default([]),
   /**
    * When the current runtime (a "life") came up; null when none is running.
    * `recordWorkspaceLife` sets this and clears every
