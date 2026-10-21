@@ -188,6 +188,13 @@ read-only pane can show a stopped workspace's whole conversation.
     rollouts; pi its session log; opencode its database (see
     docs/workspace-storage.md, "opencode", for how a sandboxed workspace's
     database is read without the server opening it).
+  - A conversation a reader follows live (docs/multi-user.md "Following a
+    teammate's conversation") is translated by its tail once per change to
+    its files (`followHistory` in `#domain/workspaces`), and a claude
+    transcript that only grew is extended rather than translated again
+    (`ClaudeTranscriptReplay`), so following a long conversation costs what
+    each write added. The transcript route reads afresh each time and keeps
+    nothing.
 
 ### How content reaches a pane
 
@@ -1008,7 +1015,8 @@ image given by URL into text.
 | Record reader + tail | `packages/server/src/runtime/agents/acp-log.ts` |
 | JSON-RPC peer | `packages/server/src/runtime/agents/acp-jsonrpc.ts` |
 | Conversation state | `packages/server/src/runtime/agents/acp-client.ts` |
-| Pane bridge (`/acp/attach`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
+| Pane bridge (`/acp/attach`, and `/acp/observe` for `acp`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
+| A reader's follow of a `tui` conversation (`/acp/observe`) | `packages/server/src/domain/workspaces/history-tail.ts` |
 | TUI transcript replay (one per tool) | `packages/server/src/runtime/agents/*-acp-replay.ts` |
 | Agent supervisor | `dockerfiles/acpd/` (baked into the base image; run from the install under containerless) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |

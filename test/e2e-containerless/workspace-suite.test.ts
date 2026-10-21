@@ -2521,4 +2521,31 @@ describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
       method: 'POST', body: JSON.stringify({ project: projectId, tool: 'claude', mode: 'tui' }),
     })).status).toBe(403)
   }, 60_000)
+
+  it('lets alice follow bob\'s running conversation as claude writes it, without driving it', async () => {
+    const conversation = path.join(testEnv.dataDir, 'global', 'projects', bobProjectId, 'history', bobWorkspace,
+      'claude', '-workspace', `${bobWorkspace}.jsonl`)
+    const line = (uuid: string, parentUuid: string | null, content: string): string => JSON.stringify({
+      type: 'user', uuid, parentUuid, sessionId: bobWorkspace, cwd: '/workspace',
+      timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content },
+    }) + '\n'
+    await fs.mkdir(path.dirname(conversation), { recursive: true })
+    await fs.appendFile(conversation, line('u-bob-1', null, 'for alice to follow'))
+
+    const frames: Array<{ type: string }> = []
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${String(server.lock.port)}/api/acp/observe?id=${bobWorkspace}&session=${bobWorkspace}`, { headers: ALICE },
+    )
+    ws.on('message', (data: Buffer) => frames.push(JSON.parse(data.toString('utf8')) as { type: string }))
+    try {
+      await vi.waitFor(() => expect(JSON.stringify(frames), 'what alice was sent').toMatch(/"hello".*for alice to follow/),
+        { timeout: 15_000, interval: 100 })
+      expect(frames.find((f) => f.type === 'hello')).toMatchObject({ history: true })
+      await fs.appendFile(conversation, line('u-bob-2', 'u-bob-1', 'and this, as it happens'))
+      await vi.waitFor(() => expect(JSON.stringify(frames.filter((f) => f.type === 'event'))).toContain('and this, as it happens'),
+        { timeout: 15_000, interval: 100 })
+    } finally {
+      ws.close()
+    }
+  }, 60_000)
 })

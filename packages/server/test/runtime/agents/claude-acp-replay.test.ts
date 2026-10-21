@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { createRequire } from 'node:module'
-import { claudeSubagentThreads, claudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
+import { ClaudeTranscriptReplay, claudeSubagentThreads, claudeTranscriptAsAcp } from '#runtime/agents/claude-acp-replay'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
@@ -316,6 +316,60 @@ describe('claudeTranscriptAsAcp', () => {
     ])
     expect((await claudeTranscriptAsAcp(await fs.readFile(file, 'utf8'), 'not-a-uuid')).map((e) => e.type))
       .toEqual(['user', 'agent'])
+  })
+})
+
+describe('ClaudeTranscriptReplay', () => {
+  const jsonl = (entries: unknown[]): string => entries.map((e) => JSON.stringify(e)).join('\n') + '\n'
+
+  it('extends its translation as claude appends, to the conversation a read of the whole file gives', async () => {
+    const text = jsonl([
+      user('add a health route'),
+      assistant([
+        { type: 'thinking', thinking: 'The router is the place.', signature: 'sig' },
+        { type: 'text', text: 'Looking at the router.' },
+      ]),
+      assistant([{ type: 'tool_use', id: 'tu_1', name: 'Read', input: { file_path: '/workspace/router.ts' } }]),
+      user([{ type: 'tool_result', tool_use_id: 'tu_1', content: 'export const router = 1\n' }]),
+      assistant([{ type: 'text', text: 'Added it.' }]),
+      user('now test it'),
+      assistant([{ type: 'text', text: 'Tested.' }]),
+    ])
+    const replay = new ClaudeTranscriptReplay(SESSION)
+    const seen: number[] = []
+    // Pieces that cut lines anywhere, as a read racing claude's writes does.
+    for (let at = 0; at < text.length; at += 97) {
+      expect(await replay.append(text.slice(at, at + 97))).toBe(true)
+      seen.push(replay.events.length)
+    }
+    expect(replay.events).toEqual(await claudeTranscriptAsAcp(text, SESSION))
+    expect(seen[0]).toBeLessThan(replay.events.length)
+    // What was translated stays as it was: later pieces only add events.
+    const early = new ClaudeTranscriptReplay(SESSION)
+    await early.append(text.slice(0, text.length / 2))
+    expect(replay.events.slice(0, early.events.length)).toEqual(early.events)
+  })
+
+  it('answers false once an append changes what it already translated, so the caller reads it afresh', async () => {
+    // A `/rewind` writes the next prompt under an earlier message, moving
+    // the leaf the SDK walks back from.
+    const first = user('one')
+    const answer = assistant([{ type: 'text', text: 'two' }])
+    const later = [user('three'), assistant([{ type: 'text', text: 'four' }])]
+    const rewound = { ...user('three, again') as Record<string, unknown>, parentUuid: (answer as { uuid: string }).uuid }
+    const rewind = new ClaudeTranscriptReplay(SESSION)
+    expect(await rewind.append(jsonl([first, answer, ...later]))).toBe(true)
+    expect(await rewind.append(jsonl([rewound]))).toBe(false)
+
+    // A compaction shown before claude wrote its summary would lack it.
+    parent = null
+    const before = [user('one'), assistant([{ type: 'text', text: 'two' }])]
+    parent = null
+    const boundary = linked({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'manual' } })
+    const compaction = new ClaudeTranscriptReplay(SESSION)
+    expect(await compaction.append(jsonl([...before, boundary]))).toBe(true)
+    expect(compaction.events.map((e) => e.type)).toContain('compaction')
+    expect(await compaction.append(jsonl([user('The summary.', { isCompactSummary: true })]))).toBe(false)
   })
 })
 

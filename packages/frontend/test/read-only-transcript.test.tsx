@@ -1,12 +1,12 @@
 import type { JSX } from 'react'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
-import { ACP_PAGE_SPAN, type AcpEvent } from '@yaac/shared/acp'
+import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { ACP_PAGE_SPAN, type AcpEvent, type AcpServerMessage } from '@yaac/shared/acp'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { useUiStore } from '#lib/store'
 import {
-  agentEvent as said, agentSession, mockFetch, renderWithClient, serverError, testQueryClient, userEvent as asked,
+  agentEvent as said, agentSession, FakeSocket, mockFetch, renderWithClient, serverError, testQueryClient, userEvent as asked,
   type FetchMock,
 } from './harness'
 
@@ -313,9 +313,91 @@ describe('ReadOnlyTranscript', () => {
     })
   })
 
-  it('never serves a live poll as the stopped record', async () => {
-    // A teammate's running workspace is polled; once it stops, the stopped
-    // view must fetch its final record rather than reuse the last poll.
+  describe('a running workspace\'s conversation', () => {
+    beforeEach(() => {
+      FakeSocket.instances = []
+      vi.stubGlobal('WebSocket', FakeSocket)
+    })
+    afterEach(() => vi.unstubAllGlobals())
+
+    const greet = (events: AcpEvent[], over: Partial<Extract<AcpServerMessage, { type: 'hello' }>> = {}): void => {
+      const sock = FakeSocket.latest()
+      act(() => {
+        sock.open()
+        sock.deliver({ type: 'hello', agentSessionId: 'c1', busy: false, queued: [], page: 0, events, ...over })
+      })
+    }
+    const pending = { type: 'tool', seq: 2, call: { toolCallId: 't1', title: 'npm test', kind: 'execute', status: 'pending' } } as const
+
+    it('follows it as it happens, with what runs shown running while the agent works', async () => {
+      // A tui conversation, followed through its tool's history: the
+      // stream reports no turns, so the snapshot's status says it works.
+      renderPane({ live: true, sessions: [session({ status: 'running' })] })
+      expect(await screen.findByText('the router')).toBeTruthy()
+      expect(FakeSocket.latest().url).toMatch(/\/api\/acp\/observe\?.*session=c1/)
+      greet([asked(0, 'what changed?'), said(1, 'the router'), pending], { history: true })
+      expect(await screen.findByLabelText('running')).toBeTruthy()
+      expect(screen.queryByText('interrupted')).toBeNull()
+      expect(screen.getByText('working')).toBeTruthy()
+
+      act(() => FakeSocket.latest().deliver({ type: 'event', event: said(3, 'all green') }))
+      expect(await screen.findByText('all green')).toBeTruthy()
+      // The stream carries it from its first page; the route is read once.
+      expect(server.called(TRANSCRIPT)).toHaveLength(1)
+    })
+
+    it('shows an open ask as waiting on the teammate, with nothing to answer it', async () => {
+      renderPane({ live: true, owner: 'Ada', sessions: [session({ status: 'waiting', asking: true })] })
+      greet([asked(0, 'clean up'), {
+        type: 'permission-request', seq: 1, requestId: '7',
+        toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute', status: 'pending' },
+        options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+      }], { busy: true })
+      expect(await screen.findByText('Waiting for Ada\'s answer')).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Allow Once' })).toBeNull()
+      expect(FakeSocket.latest().sent).toEqual([])
+    })
+
+    it('asks for a subagent\'s transcript each time it is opened, since the server follows only the last asked for', async () => {
+      renderPane({ live: true, sessions: [session({ status: 'running' })] })
+      greet([
+        { type: 'subagent', seq: 0, subagent: { id: 'sa', name: 'Explore', task: 'find the router', state: 'running' } },
+        { type: 'subagent', seq: 1, subagent: { id: 'sb', name: 'Review', task: 'check the diff', state: 'running' } },
+      ], { history: true })
+      const sock = FakeSocket.latest()
+      const asked = (): string[] => sock.sent.map((d) => JSON.parse(d) as { type: string; subagentId?: string })
+        .flatMap((m) => (m.type === 'subagent-transcript' && m.subagentId !== undefined ? [m.subagentId] : []))
+      const visit = async (name: string, id: string): Promise<void> => {
+        fireEvent.click((await screen.findAllByRole('button', { name: new RegExp(name) }))[0])
+        await waitFor(() => expect(asked().at(-1)).toBe(id))
+        act(() => sock.deliver({ type: 'subagent-transcript', subagentId: id, events: [] }))
+        fireEvent.click(screen.getByRole('button', { name: /Back/ }))
+      }
+      await visit('Explore', 'sa')
+      await visit('Review', 'sb')
+      await visit('Explore', 'sa')
+      // Once per open: an answer does not ask again.
+      expect(asked()).toEqual(['sa', 'sb', 'sa'])
+    })
+
+    it('marks each conversation\'s tab with its own status', async () => {
+      renderPane({
+        live: true,
+        owner: 'Ada',
+        sessions: [
+          session({ status: 'running', prompt: 'first' }),
+          session({ agentSessionId: 'c2', ordinal: 1, active: false, status: 'waiting', asking: true, prompt: 'second' }),
+        ],
+      })
+      expect(await screen.findByLabelText('Waiting for Ada\'s answer')).toBeTruthy()
+      expect(screen.getByRole('button', { name: /first/ }).querySelector('.braille-spinner')).toBeTruthy()
+    })
+  })
+
+  it('never serves a page read while it ran as the stopped record', async () => {
+    // A teammate's running workspace is read once before its stream takes
+    // over; once it stops, the stopped view must fetch its final record
+    // rather than reuse that read.
     const client = testQueryClient()
     const pane = (live: boolean): JSX.Element => <ReadOnlyTranscript workspaceId="w1" sessions={[session()]} live={live} />
     const view = renderWithClient(pane(true), client)

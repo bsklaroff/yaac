@@ -127,6 +127,13 @@ describe('identity flow in tailnet mode (real server)', () => {
     }
   })
 
+  // Watching a conversation grants neither, so any user may.
+  it('admits a reader to observe a workspace the caller does not own', async () => {
+    const alice = asTailnet('alice@example.com', TAILNET_HOST)
+    const path = `/api/acp/observe?id=${WORKSPACE_ID}&session=11111111-1111-1111-1111-111111111111`
+    expect(await upgradeStatus(alice, path)).toBe(101)
+  })
+
   it('lets a containerless yaac-mama call over loopback reach its route, which checks the bearer', async () => {
     const res = await request(server.lock.port, { ...local, 'content-type': 'application/json', authorization: 'Bearer nope' }, {
       path: '/api/workspace/mama', method: 'POST', body: JSON.stringify({ command: 'list' }),

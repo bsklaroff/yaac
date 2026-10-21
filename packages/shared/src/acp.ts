@@ -1,6 +1,6 @@
 /**
  * The wire contract for an ACP conversation pane: what the server pushes
- * down `/acp/attach` and what the pane sends back.
+ * down `/acp/attach` (and `/acp/observe`) and what the pane sends back.
  *
  * These are yaac's normalized shapes, not the Agent Client Protocol's own.
  * The server's ACP client (packages/server/src/runtime/agents/acp-*.ts)
@@ -316,10 +316,28 @@ export interface AcpQueuedPrompt { id: string; text: string; images: number }
 
 /** Server → pane. */
 export type AcpServerMessage =
-  /** Sent once per attach, and again when the agent restarts, before any
-   *  event: the conversation's last page, `page`, numbered for agent life
-   *  `life`. Replaces whatever the pane held. */
-  | { type: 'hello'; agentSessionId: string; busy: boolean; queued: AcpQueuedPrompt[]; page: number; life?: string; events: AcpEvent[] }
+  /**
+   * Sent once per attach, and again when the agent restarts, before any
+   * event: the conversation's last page, `page`, numbered for agent life
+   * `life`. Replaces whatever the pane held.
+   *
+   * `history` marks a `tui` conversation followed through its tool's own
+   * history (`/acp/observe`). Its events arrive a message at a time, as
+   * the tool writes them, and it reports no turn boundaries, so `busy` is
+   * always false and the agent's status is the snapshot's. The answer to
+   * the pane's latest `subagent-transcript` request is sent again whenever
+   * that transcript grows, and there is no `task-output`.
+   */
+  | {
+    type: 'hello'
+    agentSessionId: string
+    busy: boolean
+    queued: AcpQueuedPrompt[]
+    page: number
+    life?: string
+    history?: true
+    events: AcpEvent[]
+  }
   | { type: 'event'; event: AcpEvent }
   /** The queued messages changed. Not an event: it is current state, not
    *  history, so it replaces what the pane held. */

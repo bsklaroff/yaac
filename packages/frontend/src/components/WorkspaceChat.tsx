@@ -6,7 +6,7 @@ import { useComposerMenu } from '#components/ComposerMenu'
 import { tokenCount } from '#components/AcpTranscript'
 import {
   ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, JumpButtons, Launching, PageLoading, ROUND_BUTTON, useChatColumn,
-  useConversationView,
+  useConversationView, useFollowTail,
 } from '#components/ConversationView'
 import { FileLinksContext, type FileLinks } from '#components/Markdown'
 import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
@@ -59,12 +59,11 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   focused: boolean
 }): JSX.Element {
   const stream = useAcpStream(workspaceId, agentSessionId)
-  const { events, busy, queued, connected, send, taskOutputs, permissionModes, efforts } = stream
+  const { events, busy, queued, connected, send, permissionModes, efforts } = stream
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const launchPrompt = useUiStore((s) => s.launches[workspaceId]?.prompt)
   const endLaunch = useUiStore((s) => s.endLaunch)
   const setChatSent = useUiStore((s) => s.setChatSent)
-  const condensed = useUiStore((s) => s.chatCondensed)
   const column = useChatColumn()
   /**
    * The draft is local state mirrored into the store, so typing needs no
@@ -109,7 +108,6 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   } : null, [root, paths, workspaceId])
   const usage = useMemo(() => contextUsage(events), [events])
   const scrollRef = useRef<HTMLDivElement>(null)
-  const pinnedRef = useRef(true)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pages = useTranscriptPages({ workspaceId, agentSessionId, life: stream.life, last: stream.page, lastEvents: events, scrollRef })
   const { view, open, activity, groups, findBar, body, titleBar } = useConversationView({
@@ -123,27 +121,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     visible,
   })
 
-  // Follow the tail only while the reader is already at it, so streaming
-  // never yanks someone who scrolled up or back to an earlier page.
-  // Switching views starts the new one at its tail.
-  const onScroll = (): void => {
-    const el = scrollRef.current
-    if (!el) return
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
-    pages.onScroll()
-  }
-  useLayoutEffect(() => {
-    pinnedRef.current = true
-  }, [view])
-  useLayoutEffect(() => {
-    const el = scrollRef.current
-    if (el && pinnedRef.current && pages.atEnd) el.scrollTop = el.scrollHeight
-  }, [groups, view, taskOutputs, condensed, pages.atEnd])
-
-  /** Whether the last page is shown, for the callbacks below, since a reader
-   *  on an earlier one is never moved to the tail. */
-  const pagesAtEnd = useRef(pages.atEnd)
-  pagesAtEnd.current = pages.atEnd
+  const { onScroll, keep, pin } = useFollowTail(scrollRef, pages, view)
 
   // Grow the textarea to fit the draft, up to its CSS max-height. Reset to
   // `auto` first so scrollHeight measures the content. Growing shrinks the
@@ -154,9 +132,8 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${el.scrollHeight}px`
-    const list = scrollRef.current
-    if (list && pinnedRef.current && pagesAtEnd.current) list.scrollTop = list.scrollHeight
-  }, [])
+    keep()
+  }, [keep])
   useLayoutEffect(fitInput, [draft, view, fitInput])
 
   /**
@@ -177,18 +154,6 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
     ro.observe(el)
     return () => ro.disconnect()
   }, [view, fitInput])
-
-  // Keep a pinned reader at the tail when the list shrinks, e.g. when a
-  // phone's soft keyboard opens.
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const ro = new ResizeObserver(() => {
-      if (pinnedRef.current && pagesAtEnd.current) el.scrollTop = el.scrollHeight
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
 
   useEffect(() => {
     if (!visible || dialogHoldsFocus() || focusRaisesKeyboard()) return
@@ -268,7 +233,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
       setAwaitingEcho(echoKey(text, images.length))
       // Stored so a remount before the echo knows this text was in flight.
       setChatSent(workspaceId, agentSessionId, text)
-      pinnedRef.current = true
+      pin()
     }
   }
 

@@ -55,6 +55,7 @@ export { stopWorkspace } from './stop'
 export { markWaitingSeen } from './waiting-seen'
 export { listStoppedWorkspaces } from './stopped-list'
 export { getAcpStoredImage, getAgentSessionTranscript, recordOrigin } from './transcript'
+export { observeConversation } from './history-tail'
 export { saveWorkspaceAttachment } from './attachments'
 export {
   createWorkspaceFolder,

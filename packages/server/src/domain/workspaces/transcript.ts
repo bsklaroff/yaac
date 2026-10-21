@@ -1,8 +1,9 @@
+import type { FileHandle } from 'node:fs/promises'
 import { StringDecoder } from 'node:string_decoder'
 import { ServerError } from '@yaac/shared/errors'
 import { ConfinedPathError } from '#lib/confined-fs'
 import { sniffImage } from '@yaac/shared/attachments'
-import { ACP_RECORD_NAME, acpPage, acpStoredImage, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
+import { ACP_RECORD_NAME, ClaudeTranscriptReplay, acpPage, acpStoredImage, openSandboxDir, openSandboxFile, readAcpLife, readAcpPage, claudeSubagentThreads, claudeTranscriptAsAcp, codexTranscriptAsAcp, conversationFiles, opencodeTranscriptAsAcp, piTranscriptAsAcp, sessionTranscriptPath, readSandboxFile, type AcpLife, type RecordOrigin, type SandboxFile } from '#runtime/agents'
 import { listWorkspaceAgentSessions, type AgentSessionLinkRow } from '#db'
 import { serverLog } from '#lib/log'
 import { recordedTranscript } from './agent-session-paths'
@@ -101,13 +102,13 @@ function cached<T>(map: Map<string, Promise<T>>, max: number, key: string, make:
   return value
 }
 
-async function conversation(projectId: string, workspaceId: string, agentSessionId: string): Promise<AgentSessionLinkRow | undefined> {
+export async function conversation(projectId: string, workspaceId: string, agentSessionId: string): Promise<AgentSessionLinkRow | undefined> {
   return (await listWorkspaceAgentSessions(projectId, workspaceId)).find((l) => l.agentSessionId === agentSessionId)
 }
 
 /** claude's own transcript of a conversation, at its recorded path or else
  *  the conventional one. */
-async function claudeTranscript(projectId: string, workspaceId: string, session: AgentSessionLinkRow): Promise<SandboxFile | undefined> {
+export async function claudeTranscript(projectId: string, workspaceId: string, session: AgentSessionLinkRow): Promise<SandboxFile | undefined> {
   return session.tool !== 'claude' ? undefined
     : recordedTranscript(session) ?? await sessionTranscriptPath(projectId, workspaceId, session.tool, session.agentSessionId)
 }
@@ -143,6 +144,126 @@ function historyBefore(
 interface OwnHistory {
   events: AcpEvent[]
   budget: number
+}
+
+/**
+ * A conversation's history as its tool keeps it now, as read for a reader
+ * following it (`HistoryTail`), with what the next read needs: the stamp of
+ * the files it was read from, and for claude where reading left off.
+ * `lineage` stays the same object for as long as each read only adds
+ * events to the one before it. It holds the whole parsed transcript, so
+ * only a tail keeps one, for as long as someone follows.
+ */
+export interface FollowedHistory {
+  stamp: string
+  events: AcpEvent[]
+  lineage: object
+  claude?: { replay: ClaudeTranscriptReplay; decoder: StringDecoder; offset: number; ino: number }
+}
+
+/**
+ * Read a followed conversation's history again after `prev`: the same
+ * answer while its files are unchanged, and a claude transcript that only
+ * grew extended (`ClaudeTranscriptReplay`) rather than read again, so
+ * following a long conversation costs what each write added.
+ */
+export function followHistory(
+  projectId: string,
+  workspaceId: string,
+  session: AgentSessionLinkRow,
+  claudeFile: SandboxFile | undefined,
+  prev?: FollowedHistory,
+): Promise<FollowedHistory> {
+  return session.tool === 'claude'
+    ? readClaudeHistory(claudeFile, session.agentSessionId, prev)
+    : readOtherHistory(projectId, workspaceId, session, prev)
+}
+
+/** codex's, pi's or opencode's history, read again whenever a file it is
+ *  read from changed. */
+async function readOtherHistory(
+  projectId: string,
+  workspaceId: string,
+  session: AgentSessionLinkRow,
+  prev: FollowedHistory | undefined,
+): Promise<FollowedHistory> {
+  const stamp = await historyStamp((await historyFiles(projectId, workspaceId, session)).map((f) => f.file))
+  if (prev?.stamp === stamp) return prev
+  return { stamp, events: (await ownHistory(projectId, workspaceId, session, undefined)).events, lineage: {} }
+}
+
+/** claude's history, extended by what was appended since `entry` when the
+ *  replay can follow it, else read in full. */
+async function readClaudeHistory(
+  file: SandboxFile | undefined,
+  agentSessionId: string,
+  prev: FollowedHistory | undefined,
+): Promise<FollowedHistory> {
+  const handle = file === undefined ? null : await openSandboxFile(file)
+  if (handle === null) return { stamp: '', events: [], lineage: {} }
+  try {
+    const { ino, size, mtimeMs } = await handle.stat()
+    const stamp = `${String(ino)}:${String(size)}:${String(mtimeMs)}`
+    if (prev?.stamp === stamp) return prev
+    if (size > MAX_TRANSCRIPT_BYTES) throw tooLarge(size)
+    const answer = (claude: NonNullable<FollowedHistory['claude']>, lineage: object): FollowedHistory =>
+      ({ stamp, claude, events: claude.replay.events.slice(), lineage })
+    const state = prev?.claude
+    if (prev !== undefined && state !== undefined && state.ino === ino && size >= state.offset) {
+      const bytes = await readRange(handle, state.offset, size)
+      state.offset += bytes.length
+      if (await state.replay.append(state.decoder.write(bytes))) return answer(state, prev.lineage)
+    }
+    const fresh = { replay: new ClaudeTranscriptReplay(agentSessionId), decoder: new StringDecoder('utf8'), offset: 0, ino }
+    const bytes = await readRange(handle, 0, size)
+    fresh.offset = bytes.length
+    await fresh.replay.append(fresh.decoder.write(bytes))
+    return answer(fresh, {})
+  } finally {
+    await handle.close()
+  }
+}
+
+/** The bytes from `from` up to `to`, or fewer if the file is now shorter. */
+async function readRange(handle: FileHandle, from: number, to: number): Promise<Buffer> {
+  const buf = Buffer.allocUnsafe(to - from)
+  let read = 0
+  while (read < buf.length) {
+    const { bytesRead } = await handle.read(buf, read, buf.length - read, from + read)
+    if (bytesRead === 0) break
+    read += bytesRead
+  }
+  return buf.subarray(0, read)
+}
+
+/**
+ * The files a conversation's current history is read from, whose sizes and
+ * times say when it changed: claude's transcript and its subagents' own
+ * (`thread`), codex's rollouts, pi's logs, or opencode's database and the
+ * write-ahead log a live one writes first.
+ */
+export async function historyFiles(
+  projectId: string,
+  workspaceId: string,
+  session: AgentSessionLinkRow,
+): Promise<Array<{ file: SandboxFile; thread: boolean }>> {
+  const files = (await conversationFiles(projectId, workspaceId, [session])).get(session.agentSessionId) ?? []
+  return files.flatMap(({ name, file }, i): Array<{ file: SandboxFile; thread: boolean }> => {
+    if (name === ACP_RECORD_NAME) return []
+    if (session.tool === 'opencode') return [{ file, thread: false }, { file: { ...file, rel: `${file.rel}-wal` }, thread: false }]
+    if (session.tool !== 'claude' || i === 0) return [{ file, thread: false }]
+    return /\/subagents\/agent-[^/]+\.jsonl$/.test(name) ? [{ file, thread: true }] : []
+  })
+}
+
+/** What `files` look like now, as one string that changes when any of
+ *  them does; a missing one counts as such. */
+export async function historyStamp(files: SandboxFile[]): Promise<string> {
+  const stamps = await Promise.all(files.map(async (f) => {
+    const st = await (await openSandboxDir(f.projectId, f.dir).catch(() => null))?.stat(f.rel).catch(() => null)
+    return st?.isFile() === true ? `${String(st.ino)}:${String(st.size)}:${String(st.mtimeMs)}` : '-'
+  }))
+  return stamps.join(' ')
 }
 
 /**

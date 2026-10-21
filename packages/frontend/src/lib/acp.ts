@@ -26,6 +26,9 @@ export interface AcpStream {
   events: AcpEvent[]
   /** A prompt turn is in flight (the agent is working). */
   busy: boolean
+  /** The conversation is a `tui` one followed through its tool's history
+   *  (`/acp/observe`), which reports no turns, so `busy` says nothing. */
+  history: boolean
   /** Messages the server holds until the running turn ends. */
   queued: AcpQueuedPrompt[]
   /** The pane has a live connection to the conversation. False while
@@ -52,7 +55,10 @@ export interface TaskOutput { text?: string; error?: string }
 export interface SubagentTranscript { events?: AcpEventInit[]; error?: string }
 
 /**
- * Attach to one conversation for as long as the pane is mounted.
+ * Attach to one conversation for as long as the pane is mounted, or with
+ * `observe`, watch it as a reader who cannot drive it (`/acp/observe`): the
+ * server then answers only reads. Nothing is dialed while `enabled` is
+ * false.
  *
  * A hidden pane keeps its socket, as a hidden terminal keeps its PTY: each
  * attach re-sends the whole conversation in its `hello` frame, which is slow
@@ -62,11 +68,13 @@ export interface SubagentTranscript { events?: AcpEventInit[]; error?: string }
 export function useAcpStream(
   workspaceId: string,
   agentSessionId: string,
+  { observe = false, enabled = true }: { observe?: boolean; enabled?: boolean } = {},
 ): AcpStream {
   const [page, setPage] = useState(0)
   const [life, setLife] = useState<string>()
   const [events, setEvents] = useState<AcpEvent[]>([])
   const [busy, setBusy] = useState(false)
+  const [history, setHistory] = useState(false)
   const [queued, setQueued] = useState<AcpQueuedPrompt[]>([])
   const [connected, setConnected] = useState(false)
   const [taskOutputs, setTaskOutputs] = useState<Record<string, TaskOutput>>({})
@@ -76,8 +84,9 @@ export function useAcpStream(
   const socketRef = useRef<ReconnectingSocket | null>(null)
 
   useEffect(() => {
+    if (!enabled) return
     const params = new URLSearchParams({ id: workspaceId, session: agentSessionId })
-    const sock = reconnectingSocket(() => `/api/acp/attach?${params}`, {
+    const sock = reconnectingSocket(() => `/api/acp/${observe ? 'observe' : 'attach'}?${params}`, {
       message: (data) => {
         const msg = JSON.parse(data as string) as AcpServerMessage
         if (msg.type === 'hello') {
@@ -86,6 +95,7 @@ export function useAcpStream(
           setLife(msg.life)
           setEvents(msg.events)
           setBusy(msg.busy)
+          setHistory(msg.history === true)
           setQueued(msg.queued)
           setConnected(true)
           // Only a hello is healthy: with no live conversation the server
@@ -134,13 +144,14 @@ export function useAcpStream(
       sock.close()
       socketRef.current = null
     }
-  }, [workspaceId, agentSessionId])
+  }, [workspaceId, agentSessionId, observe, enabled])
 
   return {
     page,
     life,
     events,
     busy,
+    history,
     queued,
     connected,
     taskOutputs,
