@@ -82,7 +82,9 @@ There are two access levels:
   `/file-at`), and `/acp/observe`, which follows a running conversation
   (see "Following a teammate's conversation"); its only answers are reads
   of what the conversation names, a background task's output and a
-  subagent's transcript. `/file-at` runs `git cat-file` in the running workspace,
+  subagent's transcript. Marking a waiting workspace or a death read is
+  open to readers too, since it records only that the caller saw it (see
+  "Snapshot and webapp"). `/file-at` runs `git cat-file` in the running workspace,
   but only for a full hex object id and a confined path, under the
   owner's own git config, so a reader gains no execution and, under
   `k8s`, nothing secret the workspace's files do not already show.
@@ -105,10 +107,9 @@ project that does not exist is `NOT_FOUND`, never open. A refusal is
   or group exists. A verb that needs a running workspace passes `owner` to
   `resolveWorkspaceContainer`, which checks the workspace's row before
   asking the runtime, so a non-owner gets 403 whether or not it runs.
-- Routes that write rows directly through `#db` (titles, groups,
-  group moves, death-seen and waiting-seen marks) call `authorizeProject`
-  before the write, and a provisioning entry is dismissed or stopped only
-  by its project's owner.
+- Routes that write rows directly through `#db` (titles, groups, group
+  moves) call `authorizeProject` before the write, and a provisioning
+  entry is dismissed or stopped only by its project's owner.
 - A project's build files are read at `reader` and written at `owner`: the
   build-files routes ask `resolveRoot` for the dir at the level each needs.
 - An `owner` attach is checked against the workspace's row before the
@@ -224,11 +225,19 @@ install-wide fields (image builds, plan usage, driver) pass through.
   conversation is followed live over `/acp/observe`. Its markers are the
   sidebar's (`StatusMark`, from the snapshot's per-conversation status),
   and an ask says it waits on the teammate by name. Views that write as a
-  side effect (marking a death seen, remembering create choices) skip the
-  write. The server refuses all of these anyway.
+  side effect (remembering create choices) skip the write. The server
+  refuses all of these anyway.
 - **Settings.** A teammate's project pages show read-only, env var names
   with secret values masked. Personal settings (credentials, git identity,
   shortcuts, `Dockerfile.user`) always show the caller's own.
+- **Unread dots are the viewer's.** A workspace's row lists the users who
+  have viewed its current waiting spell (`waitingSeenBy`, emptied when it
+  goes back to work) and its death (`deathSeenBy`, emptied when it stops
+  again). The snapshot carries those lists, and for a project or group its
+  deaths with how many each user has seen (`deaths`, `deathsSeenBy`), so
+  the sidebar's dots and the rail's count say whether the caller has seen
+  them, on a teammate's workspaces as on their own. Opening one, or "Mark
+  all as read", marks it for the caller only.
 - The waiting chime counts only the caller's workspaces.
 - **The CLI** cuts the same way: project names and the project, workspace
   and group listings mean the caller's own projects, or those of the user

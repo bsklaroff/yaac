@@ -263,9 +263,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.json(info)
     },
   )
-  // Record that the user viewed an abnormal death's detail, clearing the
-  // "Stopped workspaces" dot and row highlight. Stored on the workspace row,
-  // so it is shared across clients.
+  // Record that the caller viewed an abnormal death's detail, clearing the
+  // caller's "Stopped workspaces" dot and row highlight on every client.
+  // Open to every user, like the waiting mark below.
   .post(
     '/mark-death-seen',
     zv('json', z.object({
@@ -274,14 +274,14 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, workspaceId } = c.req.valid('json')
-      await authorizeProject(c.get('principal'), projectId)
-      await recordDeathSeen(projectId, workspaceId)
+      await recordDeathSeen(projectId, workspaceId, c.get('principal').userId)
       return c.body(null, 204)
     },
   )
-  // Record that the user viewed a waiting workspace's current spell,
-  // clearing its unread dot on every client. `marked` is false when the
-  // spell named is no longer the workspace's.
+  // Record that the caller viewed a waiting workspace's current spell,
+  // clearing the caller's unread dot on every client. Open to every user,
+  // since each has their own dot. `marked` is false when the spell named is
+  // no longer the workspace's.
   .post(
     '/mark-waiting-seen',
     zv('json', z.object({
@@ -294,14 +294,13 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.json({ marked: await markWaitingSeen(c.get('principal'), projectId, workspaceId, waitingSinceMs) })
     },
   )
-  // The same for every workspace in a project ("mark all as read").
+  // The same for every death in a project ("mark all as read").
   .post(
     '/mark-all-deaths-seen',
     zv('json', z.object({ projectId: projectRef })),
     async (c) => {
       const { projectId } = c.req.valid('json')
-      await authorizeProject(c.get('principal'), projectId)
-      await recordAllDeathsSeen(projectId)
+      await recordAllDeathsSeen(projectId, c.get('principal').userId)
       return c.body(null, 204)
     },
   )

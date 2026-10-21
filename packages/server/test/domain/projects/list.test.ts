@@ -7,7 +7,8 @@ import { getProjectsDir } from '@yaac/shared/project-paths'
 import { listProjects } from '#domain/projects'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { BUILT_IN_USER_ID, recordProject, setProjectDefaultBranchGuard, setProjectShareRevoked } from '#db'
-import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { recordDeathSeen, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { createWorkspaceGroup, setWorkspaceGroup } from '#db/group-store'
 
 const FOO = 'acbd18db-4cc2-485c-8def-654fccc4a4d8'
 const BAR = '37b51d19-4a75-43e4-8b56-f6524f2d51f2'
@@ -70,12 +71,21 @@ describe('listProjects', () => {
     expect((await listProjects())[0]?.workspaceCount).toBe(0)
   })
 
-  it('counts the recorded stops and unseen deaths', async () => {
+  // Who saw each death is summed over the project's groups.
+  it('counts the recorded stops, deaths and who saw them', async () => {
+    const teammate = '5b1c9d3e-2f0a-4e6b-9c7d-8a1e2f3b4c5d'
     await recordTestProject(FOO, { remoteUrl: 'https://example/foo', addedAt: '2026-01-01T00:00:00.000Z' })
-    for (const id of ['live', 'quit', 'oom']) await recordWorkspaceCreated({ projectId: FOO, workspaceId: id })
+    for (const id of ['live', 'quit', 'oom', 'evicted']) await recordWorkspaceCreated({ projectId: FOO, workspaceId: id })
+    await setWorkspaceGroup(FOO, 'evicted', (await createWorkspaceGroup(FOO, 'g', null)).groupId)
     await recordWorkspaceStopped(FOO, 'quit')
     await recordWorkspaceStopped(FOO, 'oom', { reason: 'oom' })
-    expect((await listProjects())[0]).toMatchObject({ stoppedCount: 2, unseenDeaths: 1 })
+    await recordWorkspaceStopped(FOO, 'evicted', { reason: 'evicted' })
+    await recordDeathSeen(FOO, 'oom', teammate)
+    await recordDeathSeen(FOO, 'evicted', teammate)
+    await recordDeathSeen(FOO, 'evicted', BUILT_IN_USER_ID)
+    expect((await listProjects())[0]).toMatchObject({
+      stoppedCount: 3, deaths: 2, deathsSeenBy: { [teammate]: 2, [BUILT_IN_USER_ID]: 1 },
+    })
   })
 
   it("says what a share was shared from and whether it was removed, with its source's guard", async () => {

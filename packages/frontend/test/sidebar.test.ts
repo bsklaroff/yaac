@@ -37,7 +37,7 @@ const group = (
   pinned: false,
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
   stoppedCount: 0,
-  unseenDeaths: 0,
+  deaths: 0, deathsSeenBy: {},
   ...extra,
 })
 

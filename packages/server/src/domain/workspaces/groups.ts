@@ -24,7 +24,8 @@ export async function listWorkspaceGroups(
       pinned: r.pinned,
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       stoppedCount: stopped?.stopped ?? 0,
-      unseenDeaths: stopped?.unseenDeaths ?? 0,
+      deaths: stopped?.deaths ?? 0,
+      deathsSeenBy: stopped?.deathsSeenBy ?? {},
     }
   })
 }

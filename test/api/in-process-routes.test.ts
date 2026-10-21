@@ -8,6 +8,7 @@ import {
   recordWorkspaceStopped,
   listWorkspaceRows,
 } from '@yaac/server/db/workspace-store'
+import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
 /**
@@ -82,10 +83,8 @@ describe('workspace death read-marks', () => {
     }
   })
 
-  const seen = async (
-    projectId: string, workspaceId: string,
-  ): Promise<boolean | undefined> =>
-    (await listWorkspaceRows(projectId)).find((r) => r.workspaceId === workspaceId)?.deathSeen
+  const seen = async (projectId: string, workspaceId: string): Promise<boolean | undefined> =>
+    (await listWorkspaceRows(projectId)).find((r) => r.workspaceId === workspaceId)?.deathSeenBy.includes(BUILT_IN_USER_ID)
 
   it('marks a recorded death seen on its session row', async () => {
     // Seed an abnormal death (unseen by default).
@@ -165,7 +164,7 @@ describe('workspace waiting read-marks', () => {
     })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ marked: true })
-    expect((await listWorkspaceRows(ONE)).find((r) => r.workspaceId === 'waiting-1')?.waitingSeen).toBe(true)
+    expect((await listWorkspaceRows(ONE)).find((r) => r.workspaceId === 'waiting-1')?.waitingSeenBy).toEqual([BUILT_IN_USER_ID])
 
     const ghost = await client.workspace['mark-waiting-seen'].$post({
       json: { projectId: ONE, workspaceId: 'ghost', waitingSinceMs },

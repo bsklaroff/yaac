@@ -27,10 +27,12 @@ import {
 } from '#db/workspace-store'
 import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
 import { recordAgentSessions } from '#db/agent-session-store'
+import { BUILT_IN_USER_ID } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
+const TEAMMATE = '5b1c9d3e-2f0a-4e6b-9c7d-8a1e2f3b4c5d'
 
 describe('session store', () => {
   let tmpDir: string
@@ -62,7 +64,7 @@ describe('session store', () => {
         projectId: PROJ,
         workspaceId: 'sid-1',
         baseBranch: 'main',
-        deathSeen: false,
+        deathSeenBy: [],
       })
       expect(row?.stoppedAt).toBeUndefined()
     })
@@ -93,36 +95,41 @@ describe('session store', () => {
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.stoppedAt).toBeUndefined()
     })
 
-    it('tracks whether the user has seen the death, re-flagging on a re-death', async () => {
+    it('tracks which users have seen the death, re-flagging on a re-death', async () => {
+      const seen = async () => (await getProjectWorkspaceRows(PROJ)).get('sid-1')?.deathSeenBy
       await create('sid-1')
       await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'crashed' })
-      expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.deathSeen).toBe(false)
+      expect(await seen()).toEqual([])
 
-      await recordDeathSeen(PROJ, 'sid-1')
-      expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.deathSeen).toBe(true)
+      await recordDeathSeen(PROJ, 'sid-1', TEAMMATE)
+      await recordDeathSeen(PROJ, 'sid-1', BUILT_IN_USER_ID)
+      await recordDeathSeen(PROJ, 'sid-1', TEAMMATE)
+      expect(await seen()).toEqual([TEAMMATE, BUILT_IN_USER_ID])
 
       await clearWorkspaceStopped(PROJ, 'sid-1')
       await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'evicted' })
-      expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.deathSeen).toBe(false)
+      expect(await seen()).toEqual([])
     })
 
     it('never creates a row — an unrecorded session (a prewarmed spare) stays invisible', async () => {
       await recordWorkspaceStopped(PROJ, 'spare')
-      await recordDeathSeen(PROJ, 'spare')
+      await recordDeathSeen(PROJ, 'spare', BUILT_IN_USER_ID)
       await setWorkspaceTitle(PROJ, 'spare', 'nope')
       expect(await listWorkspaceRows()).toEqual([])
     })
   })
 
   describe('recordWaitingSeen', () => {
-    it('marks the workspace read, and creates no row', async () => {
+    it('marks the workspace read by each user once, and creates no row', async () => {
       await create('sid-1')
-      const seen = async () => (await getProjectWorkspaceRows(PROJ)).get('sid-1')?.waitingSeen
-      expect(await seen()).toBe(false)
-      await recordWaitingSeen(PROJ, 'sid-1')
-      expect(await seen()).toBe(true)
+      const seen = async () => (await getProjectWorkspaceRows(PROJ)).get('sid-1')?.waitingSeenBy
+      expect(await seen()).toEqual([])
+      await recordWaitingSeen(PROJ, 'sid-1', BUILT_IN_USER_ID)
+      await recordWaitingSeen(PROJ, 'sid-1', TEAMMATE)
+      await recordWaitingSeen(PROJ, 'sid-1', BUILT_IN_USER_ID)
+      expect(await seen()).toEqual([BUILT_IN_USER_ID, TEAMMATE])
 
-      await recordWaitingSeen(PROJ, 'spare')
+      await recordWaitingSeen(PROJ, 'spare', BUILT_IN_USER_ID)
       expect((await listWorkspaceRows()).map((r) => r.workspaceId)).toEqual(['sid-1'])
     })
   })
@@ -304,7 +311,7 @@ describe('session store', () => {
   })
 
   describe('countStoppedWorkspaces', () => {
-    it('counts stops and unseen deaths per project and group, less the stops excluded', async () => {
+    it('counts stops, deaths and who saw them per project and group, less the stops excluded', async () => {
       await create('live')
       await create('quit')
       await recordWorkspaceStopped(PROJ, 'quit')
@@ -312,21 +319,23 @@ describe('session store', () => {
       await recordWorkspaceStopped(PROJ, 'oom', { reason: 'oom' })
       await create('seen')
       await recordWorkspaceStopped(PROJ, 'seen', { reason: 'oom' })
-      // The snapshot carries the unseen count, so marking one seen pushes.
+      // The snapshot carries who saw each death, so marking one seen pushes.
       const before = pushes
-      await recordDeathSeen(PROJ, 'seen')
+      await recordDeathSeen(PROJ, 'seen', BUILT_IN_USER_ID)
       expect(pushes).toBe(before + 1)
+      await recordDeathSeen(PROJ, 'seen', TEAMMATE)
+      await recordDeathSeen(PROJ, 'oom', TEAMMATE)
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'other' })
       await recordWorkspaceStopped(OTHER, 'other')
 
       expect(await countStoppedWorkspaces()).toEqual(expect.arrayContaining([
-        { projectId: PROJ, groupId: null, stopped: 3, unseenDeaths: 1 },
-        { projectId: OTHER, groupId: null, stopped: 1, unseenDeaths: 0 },
+        { projectId: PROJ, groupId: null, stopped: 3, deaths: 2, deathsSeenBy: { [BUILT_IN_USER_ID]: 1, [TEAMMATE]: 2 } },
+        { projectId: OTHER, groupId: null, stopped: 1, deaths: 0, deathsSeenBy: {} },
       ]))
-      // An excluded stop still counts toward unseen deaths.
+      // An excluded stop still counts toward deaths.
       expect(await countStoppedWorkspaces(['oom', 'other'])).toEqual(expect.arrayContaining([
-        { projectId: PROJ, groupId: null, stopped: 2, unseenDeaths: 1 },
-        { projectId: OTHER, groupId: null, stopped: 0, unseenDeaths: 0 },
+        { projectId: PROJ, groupId: null, stopped: 2, deaths: 2, deathsSeenBy: { [BUILT_IN_USER_ID]: 1, [TEAMMATE]: 2 } },
+        { projectId: OTHER, groupId: null, stopped: 0, deaths: 0, deathsSeenBy: {} },
       ]))
     })
   })

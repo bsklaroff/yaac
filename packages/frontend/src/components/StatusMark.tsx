@@ -6,8 +6,8 @@ import type { ListedAgentStatus } from '@yaac/shared/types'
  * A workspace's or conversation's status as one marker, the same in the
  * sidebar and the read-only pane: an ask waiting on an answer (which wins
  * over the rest), a spinner while running, a slow swell while only
- * background work runs, or the unread dot (waiting, not yet seen). `owner`
- * names whose answer and attention it waits on when that is not the
+ * background work runs, or the unread dot (waiting, not yet seen by the
+ * viewer). `owner` names whose answer an ask waits on when that is not the
  * viewer's (a teammate's workspace).
  */
 export function StatusMark({ status, asking, unread = false, owner }: {
@@ -34,12 +34,7 @@ export function StatusMark({ status, asking, unread = false, owner }: {
     return <BrailleDots className="braille-spinner braille-breathe text-sky-400" title="Background work running" />
   }
   if (unread) {
-    return (
-      <span
-        className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
-        {...(owner !== undefined ? { title: `${owner} hasn't seen this yet` } : {})}
-      />
-    )
+    return <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
   }
   return null
 }

@@ -79,7 +79,7 @@ const stoppedEntry = (workspaceId: string, over: Partial<StoppedWorkspaceEntry> 
   createdAt: '2026-08-10 00:00:00',
   stoppedAt: '2026-08-10 01:00:00',
   title: `Stopped ${workspaceId}`,
-  seen: true,
+  deathSeenBy: [],
   agentSessions: [],
   ...over,
 })
@@ -137,7 +137,7 @@ const group = (over: Partial<WorkspaceGroupSummary> = {}): WorkspaceGroupSummary
   pinned: false,
   createdAt: '2026-08-10 00:00:00',
   stoppedCount: 0,
-  unseenDeaths: 0,
+  deaths: 0, deathsSeenBy: {},
   ...over,
 })
 
@@ -168,7 +168,7 @@ const queuedEntry = (id: string, over: Partial<QueuedWorkspaceEntry> = {}): Queu
 
 interface ListOpts {
   /** The project's stopped counts, from the snapshot. */
-  project?: Pick<ProjectSummary, 'stoppedCount' | 'unseenDeaths'>
+  project?: Pick<ProjectSummary, 'stoppedCount' | 'deaths' | 'deathsSeenBy'>
   groups?: WorkspaceGroupSummary[]
   projectId?: string | null
   provisioning?: ProvisioningWorkspaceEntry[]
@@ -280,7 +280,7 @@ describe('WorkspaceList', () => {
     ], {
       // The snapshot's counts leave out the stopping member.
       groups: [group({ stoppedCount: 2 })],
-      project: { stoppedCount: 2, unseenDeaths: 0 },
+      project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} },
     })
 
     // Counted from the snapshot, with nothing fetched for a hidden list. The
@@ -349,7 +349,7 @@ describe('WorkspaceList', () => {
   it('keeps a held member on screen as its queue comes and goes', async () => {
     const live = [entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })]
     const held = [{ workspaceId: 's', projectId: 'proj', tool: 'claude' as const, title: 'Stopped s', groupId: 'g1',
-      stoppedAt: '2026-08-10 01:00:00' }]
+      stoppedAt: '2026-08-10 01:00:00', deathSeenBy: [] }]
     stoppedRows.push(stoppedEntry('s', { groupId: 'g1' }))
     const rerender = renderList(live, {
       groups: [group()], queued: [queuedEntry('q1', { parentWorkspaceId: 's' })], held,
@@ -367,9 +367,9 @@ describe('WorkspaceList', () => {
     // Once shown, they stay shown as another member stops. An unread death
     // shows on the header, since hidden rows would hide it.
     await pickAction('Show stopped workspaces', 'Group actions')
-    stoppedRows.push(stoppedEntry('t', { groupId: 'g1', deathReason: 'oom', seen: false }))
+    stoppedRows.push(stoppedEntry('t', { groupId: 'g1', deathReason: 'oom', deathSeenBy: [] }))
     const more = [...live, entry({ workspaceId: 'c', title: 'Other' })]
-    const grown = [group({ stoppedCount: 2, unseenDeaths: 1 })]
+    const grown = [group({ stoppedCount: 2, deaths: 1, deathsSeenBy: {} })]
     rerender(more, { groups: grown })
     expect(await screen.findByRole('button', { name: /Release.*\(1\/3\).*1 died/ })).toBeTruthy()
     expect(await screen.findByText('Stopped t')).toBeTruthy()
@@ -378,7 +378,7 @@ describe('WorkspaceList', () => {
     // It gains a queued child: on screen again whatever the toggle says.
     await pickAction('Hide stopped workspaces', 'Group actions')
     rerender(more, {
-      groups: [group({ stoppedCount: 1, unseenDeaths: 1 })], queued: [queuedEntry('q2', { parentWorkspaceId: 's' })], held,
+      groups: [group({ stoppedCount: 1, deaths: 1, deathsSeenBy: {} })], queued: [queuedEntry('q2', { parentWorkspaceId: 's' })], held,
     })
     expect(screen.getByText('Stopped s')).toBeTruthy()
     expect(screen.queryByText('Stopped t')).toBeNull()
@@ -401,7 +401,7 @@ describe('WorkspaceList', () => {
 
     it('shows the real count collapsed, then pages in more rows as the list scrolls to its end', async () => {
       stoppedRows.push(...many(120))
-      renderList([entry({ workspaceId: 'a', title: 'Live one' })], { project: { stoppedCount: 120, unseenDeaths: 0 } })
+      renderList([entry({ workspaceId: 'a', title: 'Live one' })], { project: { stoppedCount: 120, deaths: 0, deathsSeenBy: {} } })
 
       const header = screen.getByRole('button', { name: /Stopped\s*120/ })
       expect(header.getAttribute('aria-expanded')).toBe('false')
@@ -425,7 +425,7 @@ describe('WorkspaceList', () => {
       useUiStore.setState({ stoppedExpanded: true })
       renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
         groups: [group({ stoppedCount: 1 })],
-        project: { stoppedCount: 2, unseenDeaths: 0 },
+        project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} },
       })
       const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
       const groupSection = screen.getByRole('group', { name: 'Release' })
@@ -456,8 +456,8 @@ describe('WorkspaceList', () => {
       useUiStore.setState({ stoppedExpanded: true })
       renderList([], {
         // The snapshot's count leaves them out already.
-        project: { stoppedCount: 2, unseenDeaths: 0 },
-        held: [{ workspaceId: 'held', projectId: 'proj', tool: 'claude', title: 'Stopped held', stoppedAt: '2026-08-10 01:00:00' }],
+        project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} },
+        held: [{ workspaceId: 'held', projectId: 'proj', tool: 'claude', title: 'Stopped held', stoppedAt: '2026-08-10 01:00:00', deathSeenBy: [] }],
         queued: [queuedEntry('q1', { parentWorkspaceId: 'held' })],
         // A create stopped mid-provision keeps its failed row, and is listed
         // as stopped too.
@@ -484,7 +484,7 @@ describe('WorkspaceList', () => {
       stoppedRows.push(stoppedEntry('gone'))
       useUiStore.setState({ selectedWorkspaceId: 'gone' })
       const rerender = renderList([entry({ workspaceId: 'a', title: 'Live one' })], {
-        project: { stoppedCount: 1, unseenDeaths: 0 },
+        project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
       })
       const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
       expect(await within(stoppedSection).findByText('Stopped gone')).toBeTruthy()
@@ -501,21 +501,21 @@ describe('WorkspaceList', () => {
         entry({ workspaceId: 'a', title: 'Live one', groupId: 'g2' }),
         entry({ workspaceId: 'b', title: 'Filed one', groupId }),
       ]
-      rerender(live('g1'), { groups, project: { stoppedCount: 1, unseenDeaths: 0 } })
+      rerender(live('g1'), { groups, project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} } })
       expect(within(screen.getByRole('group', { name: 'Release' })).getByText('Filed one')).toBeTruthy()
       expect(useUiStore.getState().collapsedGroups).toEqual(['g2'])
 
       // Re-filed into another collapsed group, it opens that one and leaves
       // the one it left as the user set it.
       fireEvent.click(screen.getByRole('button', { name: /Release/ }))
-      rerender(live('g2'), { groups, project: { stoppedCount: 1, unseenDeaths: 0 } })
+      rerender(live('g2'), { groups, project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} } })
       expect(within(screen.getByRole('group', { name: 'Beta' })).getByText('Filed one')).toBeTruthy()
       expect(useUiStore.getState().collapsedGroups).toEqual(['g1'])
 
       // Restored onto it after it stopped: its row is in the Stopped section,
       // which opens.
       stoppedRows.unshift(stoppedEntry('b', { title: 'Stopped b' }))
-      rerender(live('g2').slice(0, 1), { groups, project: { stoppedCount: 2, unseenDeaths: 0 } })
+      rerender(live('g2').slice(0, 1), { groups, project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} } })
       expect(await within(stoppedSection).findByText('Stopped b')).toBeTruthy()
       expect(useUiStore.getState().stoppedExpanded).toBe(true)
     })
@@ -523,7 +523,7 @@ describe('WorkspaceList', () => {
     it('pins an open workspace from a page not loaded yet to its top, until that page loads', async () => {
       stoppedRows.push(...many(60))
       useUiStore.setState({ selectedWorkspaceId: 's055' })
-      const rerender = renderList([], { project: { stoppedCount: 60, unseenDeaths: 0 } })
+      const rerender = renderList([], { project: { stoppedCount: 60, deaths: 0, deathsSeenBy: {} } })
       const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
       await within(stoppedSection).findByText('Stopped s049')
       const titles = (): string[] => within(stoppedSection).getAllByText(/^Stopped s\d+$/).map((el) => el.textContent ?? '')
@@ -532,7 +532,7 @@ describe('WorkspaceList', () => {
 
       // Another workspace stops: the pin holds through the refetch.
       stoppedRows.unshift(stoppedEntry('s900'))
-      rerender([], { project: { stoppedCount: 61, unseenDeaths: 0 } })
+      rerender([], { project: { stoppedCount: 61, deaths: 0, deathsSeenBy: {} } })
       expect(titles()[0]).toBe('Stopped s055')
       expect(await within(stoppedSection).findByText('Stopped s900')).toBeTruthy()
       expect(titles().slice(0, 2)).toEqual(['Stopped s055', 'Stopped s900'])
@@ -541,7 +541,7 @@ describe('WorkspaceList', () => {
       fireEvent.click(screen.getByRole('button', { name: /Stopped\s*61/ }))
       const before = lookups()
       stoppedRows.unshift(stoppedEntry('s901'))
-      rerender([], { project: { stoppedCount: 62, unseenDeaths: 0 } })
+      rerender([], { project: { stoppedCount: 62, deaths: 0, deathsSeenBy: {} } })
       await waitFor(() => expect(lookups()).toBeGreaterThan(before))
       expect(useUiStore.getState().stoppedExpanded).toBe(false)
 
@@ -553,9 +553,9 @@ describe('WorkspaceList', () => {
     })
 
     it('marks every death seen from its menu', async () => {
-      stoppedRows.push(stoppedEntry('dead', { deathReason: 'oom', seen: false }))
+      stoppedRows.push(stoppedEntry('dead', { deathReason: 'oom', deathSeenBy: [] }))
       server.route('POST /api/workspace/mark-all-deaths-seen', undefined)
-      renderList([], { project: { stoppedCount: 1, unseenDeaths: 1 } })
+      renderList([], { project: { stoppedCount: 1, deaths: 1, deathsSeenBy: {} } })
       await pickAction('Mark all as read', 'Stopped workspaces actions')
       await waitFor(() => expect(posted('POST /api/workspace/mark-all-deaths-seen')).toEqual([{ projectId: 'proj' }]))
     })
@@ -572,7 +572,7 @@ describe('WorkspaceList', () => {
         entry({ workspaceId: 'd', title: 'Unrelated', groupId: 'g2' }),
       ], {
         groups: [group(), group({ groupId: 'g2', name: 'Pinned', pinned: true })],
-        project: { stoppedCount: 2, unseenDeaths: 0 },
+        project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} },
       })
 
       fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'PARSER' } })
@@ -621,7 +621,7 @@ describe('WorkspaceList', () => {
         laterPrompts.set(`s${i}`, 'Refactor the parser')
       }
       useUiStore.setState({ selectedWorkspaceId: 's55' })
-      renderList([], { project: { stoppedCount: 60, unseenDeaths: 0 } })
+      renderList([], { project: { stoppedCount: 60, deaths: 0, deathsSeenBy: {} } })
       const search = screen.getByRole('textbox', { name: 'Search workspaces' })
 
       // Its agent label holds "claude", but the server's search doesn't match it.
@@ -645,7 +645,7 @@ describe('WorkspaceList', () => {
       useUiStore.setState({ selectedWorkspaceId: 'ghost', stoppedShownGroups: ['g1'] })
       renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
         groups: [group({ stoppedCount: 1 })],
-        project: { stoppedCount: 1, unseenDeaths: 0 },
+        project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
       })
       expect(await within(screen.getByRole('group', { name: 'Release' })).findByText('Stopped ghost')).toBeTruthy()
       await waitFor(() => expect(stoppedQueries().some((q) => q.includes('workspace=ghost'))).toBe(true))
@@ -672,7 +672,7 @@ describe('WorkspaceList', () => {
       server.route('GET /api/workspace/list-stopped', (c: FetchCall) => c.query.get('q') === 'parser'
         ? new Promise((resolve) => { release = () => resolve(listStopped(c)) })
         : listStopped(c))
-      renderList([], { project: { stoppedCount: 2, unseenDeaths: 0 } })
+      renderList([], { project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} } })
       const search = screen.getByRole('textbox', { name: 'Search workspaces' })
 
       fireEvent.change(search, { target: { value: 'parser' } })
@@ -706,7 +706,7 @@ describe('WorkspaceList', () => {
         entry({ workspaceId: 'c', title: 'Watching', status: 'background', groupId: 'g1' }),
       ], {
         groups: [group(), group({ groupId: 'g2', name: 'Pinned', pinned: true })],
-        project: { stoppedCount: 1, unseenDeaths: 0 },
+        project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
         queued: [queuedEntry('q1', { parentWorkspaceId: 'a' }), queuedEntry('q2', { parentWorkspaceId: 'b' })],
       })
 
@@ -737,7 +737,7 @@ describe('WorkspaceList', () => {
     it('pins a stopped selection when the filter leaves out the Stopped list, though its pages are loaded', async () => {
       stoppedRows.push(stoppedEntry('old'))
       useUiStore.setState({ stoppedExpanded: true })
-      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 1, unseenDeaths: 0 } })
+      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} } })
       fireEvent.click(await screen.findByText('Stopped old'))
 
       await pick('Running')
@@ -747,7 +747,7 @@ describe('WorkspaceList', () => {
     })
 
     it('says so when nothing has a checked status', async () => {
-      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 3, unseenDeaths: 0 } })
+      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 3, deaths: 0, deathsSeenBy: {} } })
       await pick('Waiting')
       expect(screen.getByText('No matches')).toBeTruthy()
     })
@@ -868,7 +868,7 @@ describe('WorkspaceList', () => {
       })
       expect(screen.getByRole('group', { name: group().name }).textContent).toContain('Step q1')
       const held = [{ workspaceId: 'a', projectId: 'proj', tool: 'claude' as const, title: 'Parent',
-        stoppedAt: '2026-08-10 00:00:00' }]
+        stoppedAt: '2026-08-10 00:00:00', deathSeenBy: [] }]
       rerender([], { queued, held })
       expect(screen.getByText('Parent')).toBeTruthy()
       expect(screen.getByText('Step q1')).toBeTruthy()
@@ -920,7 +920,7 @@ describe('WorkspaceList', () => {
         ],
         held: [{
           workspaceId: 'dead', projectId: 'proj', tool: 'claude', title: 'Crashed one',
-          stoppedAt: '2026-08-10 00:00:00', deathReason: 'oom',
+          stoppedAt: '2026-08-10 00:00:00', deathReason: 'oom', deathSeenBy: [],
         }],
       })
       expect(screen.getByText('Crashed one')).toBeTruthy()
@@ -933,7 +933,7 @@ describe('WorkspaceList', () => {
       renderList([], {
         groups: [group()],
         queued: [queuedEntry('q1', { parentWorkspaceId: 'dead' })],
-        held: [{ workspaceId: 'dead', projectId: 'proj', tool: 'claude', groupId: 'g1', stoppedAt: '' }],
+        held: [{ workspaceId: 'dead', projectId: 'proj', tool: 'claude', groupId: 'g1', stoppedAt: '', deathSeenBy: [] }],
       })
       fireEvent.click(screen.getByRole('button', { name: '1 queued workspace' }))
       expect(screen.getByRole('group', { name: 'Release' }).textContent).toContain('Step q1')
@@ -1034,7 +1034,7 @@ describe('WorkspaceList', () => {
 
     // Only stopped workspaces: the Stopped section is something to show.
     cleanup()
-    renderList([], { project: { stoppedCount: 3, unseenDeaths: 0 } })
+    renderList([], { project: { stoppedCount: 3, deaths: 0, deathsSeenBy: {} } })
     expect(screen.queryByText('No workspaces yet')).toBeNull()
     expect(screen.getByRole('button', { name: /Stopped\s*3/ })).toBeTruthy()
 
@@ -1250,7 +1250,7 @@ describe('WorkspaceList', () => {
   it('shows a share its source\'s owner removed read-only to its own owner', () => {
     const removed = {
       id: 'proj', name: 'proj', remoteUrl: '', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0,
-      unseenDeaths: 0, createDefaults: {}, gitCredential: null, hosted: true, guardDefaultBranch: true,
+      deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: true, guardDefaultBranch: true,
       sharedFrom: { projectId: 'src', revoked: true },
     }
     useUiStore.setState({ activeProjectId: 'proj' })
@@ -1269,7 +1269,7 @@ describe('WorkspaceList', () => {
     useUiStore.setState({ viewedUserId: 'u-ada' })
     stoppedRows.push({
       workspaceId: 'ghost', projectId: 'proj', tool: 'claude', createdAt: '2026-08-09 00:00:00',
-      stoppedAt: '2026-08-09 01:00:00', title: 'Old run', seen: true, agentSessions: [], groupId: 'g1',
+      stoppedAt: '2026-08-09 01:00:00', title: 'Old run', deathSeenBy: [], agentSessions: [], groupId: 'g1',
     })
     renderList([entry({ workspaceId: 'a', title: 'Their run' }), entry({ workspaceId: 'b', title: 'Filed', groupId: 'g1' })], {
       groups: [group({ stoppedCount: 1 })],

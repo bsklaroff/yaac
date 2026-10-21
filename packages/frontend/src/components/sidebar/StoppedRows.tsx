@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChevronIcon, LoadingIcon } from '#lib/icons'
 import { api } from '#lib/api'
 import { patchStopped, refetchStopped, type StoppedList } from '#lib/useStoppedWorkspaces'
+import { useWhoami } from '#lib/viewer'
 import { RowMenu } from '#components/sidebar/RowMenu'
 import { StoppedWorkspaceRow } from '#components/sidebar/WorkspaceRows'
 
@@ -75,9 +76,11 @@ export function StoppedSection({
   list: StoppedList
 }): JSX.Element | null {
   const queryClient = useQueryClient()
+  const me = useWhoami()?.userId
   const markAll = useMutation({
     mutationFn: () => api.workspace['mark-all-deaths-seen'].$post({ json: { projectId } }),
-    onMutate: () => patchStopped(queryClient, projectId, (e) => (e.deathReason ? { ...e, seen: true } : e)),
+    onMutate: () => patchStopped(queryClient, projectId, (e) => (
+      e.deathReason && me !== undefined ? { ...e, deathSeenBy: [...e.deathSeenBy, me] } : e)),
     onError: () => refetchStopped(queryClient, projectId),
   })
   if (count === 0 && list.entries.length === 0) return null

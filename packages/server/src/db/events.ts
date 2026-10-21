@@ -235,8 +235,8 @@ export interface EffortChanged {
  * The workspace's waiting spell ended: it went back to work (including an
  * agent found mid-turn after a server restart), or the conversation whose
  * wait began the spell stopped waiting while another still waits. The
- * spell it waits in next is new to the user, so the row's `waitingSeen`
- * clears.
+ * spell it waits in next is new to every user, so the row's
+ * `waitingSeenBy` empties.
  */
 export interface WaitingEnded {
   type: 'waiting-ended'

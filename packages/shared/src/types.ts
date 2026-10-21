@@ -957,10 +957,10 @@ export interface WorkspaceListEntry {
    *  `waiting`. The earliest waiting agent's time wins. Kept in server
    *  memory, so a server restart starts a new spell. */
   waitingSinceMs?: number
-  /** The owner viewed its current waiting spell, so a `waiting` status is
-   *  already read. Stored on the workspace row, so
-   *  every client shows the same unread dot. */
-  waitingSeen?: true
+  /** The ids of the users who viewed its current waiting spell, owner and
+   *  teammates alike: a `waiting` status is read for them. Stored on the
+   *  workspace row, so each user's unread dot is the same on every client. */
+  waitingSeenBy?: string[]
   /** The first user message of the workspace's first agent session;
    *  survives a `/clear`. Before an acp conversation is up, the create's
    *  prompt waiting to be sent to it. */
@@ -1014,11 +1014,13 @@ export interface WorkspaceGroupSummary {
   pinned: boolean
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) — the groups' display order. */
   createdAt: string
-  /** Stopped members, and how many of them died unseen. In the snapshot,
-   *  `stoppedCount` leaves out members it draws a row of their own for
-   *  (still stopping, held, or restarting). */
+  /** Stopped members. In the snapshot it leaves out members it draws a row
+   *  of their own for (still stopping, held, or restarting). */
   stoppedCount: number
-  unseenDeaths: number
+  /** Stopped members that died, among every one, and how many of those
+   *  each user has viewed, by user id (absent for none). */
+  deaths: number
+  deathsSeenBy: Record<string, number>
 }
 
 /** How a file changed, mapped from git's name-status letters. */
@@ -1295,10 +1297,11 @@ export interface StoppedWorkspaceEntry {
   deathReason?: WorkspaceDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
   deathDetail?: string
-  /** Whether the user has viewed this death's detail, which clears the
-   *  notification dot. Stored on the workspace row so every client shares
-   *  it; meaningful only with `deathReason`. */
-  seen: boolean
+  /** The ids of the users who have viewed this death's detail, which
+   *  clears their notification dot. Stored on the workspace row, so each
+   *  user's dot is the same on every client; meaningful only with
+   *  `deathReason`. */
+  deathSeenBy: string[]
   /** The sidebar group it is filed under; a stopped member shows as a ghost
    *  row there. */
   groupId?: string
@@ -1336,11 +1339,13 @@ export interface ProjectSummary {
    *  its project's owner. */
   owner: string
   workspaceCount: number
-  /** Stopped workspaces, and how many of them died unseen. In the snapshot,
-   *  `stoppedCount` leaves out workspaces it draws a row of their own for
-   *  (still stopping, held, or restarting). */
+  /** Stopped workspaces. In the snapshot it leaves out workspaces it draws
+   *  a row of their own for (still stopping, held, or restarting). */
   stoppedCount: number
-  unseenDeaths: number
+  /** Stopped workspaces that died, among every one, and how many of those
+   *  each user has viewed, by user id (absent for none). */
+  deaths: number
+  deathsSeenBy: Record<string, number>
   /** The agent last created with; the create form opens on it. Absent
    *  before the first create (claude is assumed). */
   lastTool?: AgentTool
@@ -1504,6 +1509,7 @@ export interface HeldWorkspaceEntry {
   stoppedAt: string
   deathReason?: WorkspaceDeathReason
   deathDetail?: string
+  deathSeenBy: string[]
 }
 
 /** Named step in a project's image chain, in build order. */

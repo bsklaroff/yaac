@@ -47,7 +47,7 @@ function emptySnapshot(): ServerSnapshot {
 function snapshotWithProject(projectId: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ id: projectId, name: 'demo', remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, unseenDeaths: 0, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true }],
+    projects: [{ id: projectId, name: 'demo', remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true }],
   }
 }
 
@@ -253,7 +253,7 @@ describe('buildSnapshot provisioning', () => {
     // A restart keeps the row's stop until it succeeds, so the workspace is
     // still held; the provisioning row stands in for it meanwhile.
     vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
-      workspaceId: 'held-1', projectId: 'p', tool: 'claude', stoppedAt: '2026-01-01 00:00:00',
+      workspaceId: 'held-1', projectId: 'p', tool: 'claude', stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
     }])
     registerProvisioning({ workspaceId: 'held-1', projectId: 'p', tool: 'claude', kind: 'restart' })
     const snap = await buildSnapshot()
@@ -347,7 +347,7 @@ describe('buildSnapshot stopped counts', () => {
       gitAuthFailures: {},
     })
     vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
-      workspaceId: 'held', projectId: PROJ, tool: 'claude', groupId, stoppedAt: '2026-01-01 00:00:00',
+      workspaceId: 'held', projectId: PROJ, tool: 'claude', groupId, stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
     }])
     registerProvisioning({ workspaceId: 'back', projectId: PROJ, tool: 'claude', kind: 'restart', groupId })
     registerProvisioning({ workspaceId: 'failed', projectId: PROJ, tool: 'claude', kind: 'create', groupId })
