@@ -718,6 +718,17 @@ export interface AcpRecovery {
   /** The modes the session offers, from the handshake reply in either
    *  shape. Only the offer is kept; the mode the reply names is `modeId`'s. */
   offered?: { modes?: AcpSessionModes; configOptions?: AcpConfigOption[] }
+  /**
+   * The handshake was answered, but no mode change has been answered since
+   * and no prompt sent. A connection that went down before its posture call
+   * landed leaves this, and the next one makes the launch's effort and
+   * posture calls (`AcpConversation`). An answered effort change does not
+   * settle it: acpd records a reply that arrives after the connection that
+   * asked has gone. Adapters whose posture is no mode (pi, most of
+   * opencode's) stay unsettled until the first prompt, which costs a reattach
+   * only an effort call when the session's differs from the row's.
+   */
+  launchUnsettled?: true
 }
 
 /**
@@ -751,6 +762,38 @@ export async function readAcpRecovery(record: AcpRecordRef): Promise<AcpRecovery
   }
 }
 
+/**
+ * The `session/new` acpd recorded its agent being sent last: the reply's
+ * result once that is recorded, `pending` while it is not, and undefined if
+ * none was sent, it was refused, or there is no record. A server that went
+ * down mid-handshake leaves one behind for the next connection to adopt
+ * (`AcpConversationDeps.recordedSessionNew`).
+ */
+export async function readRecordedSessionNew(record: AcpRecordRef): Promise<{ result: unknown } | 'pending' | undefined> {
+  const handle = await openRecord(record)
+  if (handle === null) return undefined
+  try {
+    let sent: string | undefined
+    let reply: Record<string, unknown> | undefined
+    for await (const line of recordLines(handle)) {
+      const msg = parseLine(line)
+      const id = msg === undefined ? undefined : lineId(msg)
+      if (msg === undefined || id === undefined) continue
+      if (msg.method === ACP.sessionNew) {
+        sent = id
+        reply = undefined
+      } else if (id === sent && msg.method === undefined) {
+        reply = msg
+      }
+    }
+    if (sent === undefined) return undefined
+    if (reply === undefined) return 'pending'
+    return 'result' in reply ? { result: reply.result } : undefined
+  } finally {
+    await handle.close()
+  }
+}
+
 async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
   let pending: string | number | undefined
   const steers = new Set<string | number>()
@@ -761,16 +804,18 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
   let modeId: string | undefined
   // Requests whose reply moves the state, by id: a handshake (whose reply
   // reports it), a mode switch, or a model switch.
-  const asked = new Map<string, { handshake?: true; modeId?: string; model?: string }>()
+  const asked = new Map<string, { handshake?: true; mode?: true; modeId?: string; model?: string }>()
   let effort: AcpEffort | undefined
   let model: { id: string; name?: string } | undefined
   let offered: AcpRecovery['offered']
+  let launchUnsettled = false
   for await (const line of lines) {
     const msg = parseLine(line)
     if (msg === undefined) continue
     const id = typeof msg.id === 'string' || typeof msg.id === 'number' ? msg.id : undefined
     switch (msg.method) {
       case ACP.sessionPrompt:
+        launchUnsettled = false
         // Without an id it is a notification, which is never answered.
         if (id !== undefined) pending = id
         continue
@@ -799,7 +844,7 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
         continue
       case ACP.sessionSetMode: {
         const set = asString(asRecord(msg.params)?.modeId)
-        if (id !== undefined) asked.set(String(id), set !== undefined ? { modeId: set } : {})
+        if (id !== undefined) asked.set(String(id), { mode: true, ...(set !== undefined ? { modeId: set } : {}) })
         continue
       }
       case ACP.sessionSetConfigOption: {
@@ -825,6 +870,10 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
     if (msg.method !== undefined) continue
     const ask = id !== undefined ? asked.get(String(id)) : undefined
     if (id !== undefined) asked.delete(String(id))
+    // A refused mode change settles the launch too: asking again would be
+    // refused.
+    if (ask?.handshake === true) launchUnsettled = msg.error === undefined
+    else if (ask?.mode === true) launchUnsettled = false
     if (msg.error === undefined) {
       const result = asRecord(msg.result)
       effort = sessionEffort(result) ?? effort
@@ -859,6 +908,7 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
     ...(effort !== undefined ? { effort } : {}),
     ...(model !== undefined ? { model } : {}),
     ...(offered !== undefined ? { offered } : {}),
+    ...(launchUnsettled ? { launchUnsettled: true as const } : {}),
   }
 }
 

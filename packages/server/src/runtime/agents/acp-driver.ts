@@ -33,7 +33,7 @@ import { acpLogDir } from '@yaac/shared/project-paths'
 import { serverLog } from '#lib/log'
 import { shellQuote } from '#lib/shell'
 import { AcpConversation } from './acp-client'
-import { readAcpRecovery } from './acp-log'
+import { readAcpRecovery, readRecordedSessionNew } from './acp-log'
 import { type JsonRpcTransport } from './acp-jsonrpc'
 import {
   BOOT_SUBSCRIPTION_PREFIX,
@@ -385,6 +385,13 @@ class AcpConnection extends ControlModeConnection {
       // Without one the adapter runs its own default, for pi possibly a
       // provider whose key the proxy does not swap.
       ...(acpModelIsProtocol(profile) ? { launchModel: () => this.readLaunchModel(tool) } : {}),
+      // A handshake an earlier connection began may have opened the session
+      // already; its record is still under the name acpd was launched with.
+      ...(resumeSessionId === undefined ? {
+        recordedSessionNew: () => readRecordedSessionNew({
+          projectId: this.session.projectId, workspaceId: this.session.workspaceId, agentSessionId: this.session.workspaceId,
+        }),
+      } : {}),
       ...(resumeSessionId !== undefined ? {
         resumeSessionId,
         // Only a recorded conversation can be mid-turn on attach, and only

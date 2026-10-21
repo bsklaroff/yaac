@@ -80,7 +80,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
   return rows.map((r) => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
     const first = links[0]
-    const prompt = openingPrompt(links)
+    const prompt = openingPrompt(links) ?? r.pendingPrompt
     const title = r.title ?? conversationTitle(links) ?? r.generatedTitle
     return {
       workspaceId: r.workspaceId,

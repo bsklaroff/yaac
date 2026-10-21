@@ -96,6 +96,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { waitFor } from '@yaac/shared/wait-for'
 import {
+  ACP_ADAPTERS,
   AGENT_CLIS,
   DEFAULT_AGENT_MODE,
   defaultPermissionMode,
@@ -119,7 +120,8 @@ import {
   type PiProvider,
 } from '@yaac/shared/tool-providers'
 
-/** How long a fresh acp create waits for its conversation's row. */
+/** How long a launch's watch and a claim's hand-over wait for an acp
+ *  conversation to be named, and the hand-over for its handshake. */
 const ACP_CONVERSATION_WAIT_MS = 60_000
 
 /** In-pod claude home, where `claudeDir` is mounted. `CLAUDE_CONFIG_DIR`
@@ -450,47 +452,53 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // Check the agents actually started: `respawn-window` succeeds even when
   // its command dies instantly. Not awaited, since the probe must wait for a
   // doomed command to exit; a failure lands later as a failed provisioning
-  // row (reportAgentLaunchFailure). `tui` only: an acp launch is proven by
-  // its transport handshake.
-  if (mode === 'tui') {
-    const windows = launching.map((a, i) => agentWindowName(a.tool, i))
-    void verifyAgentWindowAlive(jobName, windows).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err)
-      serverLog(`[server] create ${workspaceId}: ${message}`)
-      // Report only a confirmed dead agent. A failed provisioning row hides
-      // the workspace, so a probe that got no answer must not report one.
-      if (!(err instanceof AgentLaunchDeadError)) return
-      // A spare has no row; the claim runs this probe again.
-      if (options.prewarm === true) return
-      void reportAgentLaunchFailure({
-        workspaceId,
-        projectId,
-        tool,
-        kind: options.resume !== undefined ? 'restart' : 'create',
-        error: runtime.kind === 'containerless'
-          ? `${message}. Check that "${tool}" runs on this host `
-            + `(yaac runs its own install of ${AGENT_CLIS[tool].package}@${AGENT_CLIS[tool].version}).`
-          : message,
-      })
+  // row (reportAgentLaunchFailure). A `tui` agent is probed once, a moment
+  // after launch. An acp adapter can also die later, before its handshake
+  // ends (claude's fails at `session/new` on a bad login), so its windows
+  // are watched until their conversations come up.
+  const windows = launching.map((a, i) => agentWindowName(a.tool, i))
+  const launched = mode === 'tui'
+    ? verifyAgentWindowAlive(jobName, windows)
+    : Promise.all(windows.map((w) => whenAcpAgentUp(projectId, workspaceId, jobName, w)))
+  const installed = mode === 'tui'
+    ? { binary: tool, package: AGENT_CLIS[tool].package, version: AGENT_CLIS[tool].version }
+    : { binary: ACP_ADAPTERS[tool].binary, package: ACP_ADAPTERS[tool].package, version: ACP_ADAPTERS[tool].verified }
+  void launched.catch((err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err)
+    serverLog(`[server] create ${workspaceId}: ${message}`)
+    // Report only a confirmed dead agent. A failed provisioning row hides
+    // the workspace, so a probe that got no answer must not report one.
+    if (!(err instanceof AgentLaunchDeadError)) return
+    // A spare has no row; the claim runs this probe again.
+    if (options.prewarm === true) return
+    void reportAgentLaunchFailure({
+      workspaceId,
+      projectId,
+      tool,
+      kind: options.resume !== undefined ? 'restart' : 'create',
+      ...(options.initialPrompt !== undefined ? { prompt: options.initialPrompt } : {}),
+      error: runtime.kind === 'containerless'
+        ? `${message}. Check that "${installed.binary}" runs on this host `
+          + `(yaac runs its own install of ${installed.package}@${installed.version}).`
+        : message,
     })
-  }
+  })
 
   return handle
 }
 
 /**
- * The last step of a create, cold or claimed: hand the agent over.
+ * The last step of a claim, and of a cold `tui` create: hand the agent over.
  *
- * A `tui` prompt is pasted into the pane. A fresh acp conversation has no
- * id, and so no row or chat pane, until the agent answers `session/new`.
- * So an acp create holds its prompt on the row, waits for that, records the
- * row itself rather than waiting for the reconciler's pass, and sends the
- * held prompt (`deliverPendingPrompt`), which on a restart is one an
- * earlier create could not deliver. A conversation that does not come up in
- * time leaves the prompt held for the reconciler to send to whichever one
- * does. A prompt that cannot be held fails the create, so the caller still
- * has it; delivery failures are only logged, since the workspace is usable
- * either way.
+ * A `tui` prompt is pasted into the pane. A claimed acp spare's conversation
+ * may be one the claim just respawned, which the sweep skips while the claim
+ * runs, so the claim holds its prompt on the row, waits for the agent to
+ * answer `session/new`, records the row itself, and sends the held prompt
+ * (`deliverPendingPrompt`). A conversation that does not come up in time
+ * leaves the prompt held for the sweep to send to whichever one does. A
+ * prompt that cannot be held fails the claim, so the caller still has it;
+ * delivery failures are only logged, since the workspace is usable either
+ * way.
  */
 export async function handOverAgent(input: {
   projectId: string
@@ -529,16 +537,37 @@ export async function handOverAgent(input: {
 /**
  * Wait for the agent's conversation to complete its handshake, including
  * the launch model and mode that follow `session/new`, so the row recorded
- * next shows them; resolves with it, or undefined if it never did. Gives up
- * at the deadline or when the agent's window is gone, which the window
- * probe (an exec) checks every two seconds.
+ * next shows them; resolves with it, or undefined if it never did.
+ */
+async function awaitConversation(
+  projectId: string,
+  workspaceId: string,
+  jobName: string,
+  window: string,
+): Promise<AcpConversation | undefined> {
+  const outcome = await whenAcpAgentUp(projectId, workspaceId, jobName, window).catch((err: unknown) => {
+    if (!(err instanceof AgentLaunchDeadError)) throw err
+    serverLog(`[server] create ${workspaceId}: ${err.message}`)
+    return undefined
+  })
+  return outcome?.whenReady(ACP_CONVERSATION_WAIT_MS).then(() => outcome, (err: unknown) => {
+    serverLog(`[server] create ${workspaceId}: acp handshake did not finish: ${String(err)}`)
+    return undefined
+  })
+}
+
+/**
+ * Wait for an acp agent window's conversation to be named (`session/new`
+ * answered). Rejects with `AgentLaunchDeadError` if the window exits first,
+ * which the window probe (an exec) checks every two seconds, and resolves
+ * with undefined at the deadline.
  *
  * Only a conversation with the window's current process counts. A claimed
  * spare's agent may have just been respawned (by the claim or a background
  * refresh), and the conversation that ended stays registered until its
  * stream is seen closing.
  */
-async function awaitConversation(
+async function whenAcpAgentUp(
   projectId: string,
   workspaceId: string,
   jobName: string,
@@ -562,18 +591,13 @@ async function awaitConversation(
     windowGone.then<AcpConversation | 'dead' | undefined>((stop) => (stop && !settled ? 'dead' : conversation)),
   ])
   if (outcome === 'dead') {
-    serverLog(`[server] create ${workspaceId}: acp agent window exited before its handshake`)
-    return undefined
+    throw new AgentLaunchDeadError(`acp agent "${window}" exited in ${jobName} before its handshake`)
   }
   if (outcome === undefined) {
-    serverLog(`[server] create ${workspaceId}: no acp conversation after `
+    serverLog(`[server] create ${workspaceId}: no acp conversation on ${window} after `
       + `${String(ACP_CONVERSATION_WAIT_MS / 1000)}s`)
-    return undefined
   }
-  return outcome.whenReady(ACP_CONVERSATION_WAIT_MS).then(() => outcome, (err: unknown) => {
-    serverLog(`[server] create ${workspaceId}: acp handshake did not finish: ${String(err)}`)
-    return undefined
-  })
+  return outcome
 }
 
 /**
@@ -963,6 +987,14 @@ export async function createWorkspace(
           ...(options.resume === undefined && a.model !== undefined ? { model: a.model } : {}),
         })),
       })
+    }
+
+    // An acp create returns before its agent names the conversation, so its
+    // prompt waits on the row. The sweep that records the conversation sends
+    // it (`reconcileWorkspaceAgentSessions`). Held before the agent starts,
+    // so no sweep can find the conversation before the prompt.
+    if (mode === 'acp' && options.initialPrompt !== undefined) {
+      await holdPendingPrompt(projectId, workspaceId, options.initialPrompt)
     }
   }
 
@@ -1487,8 +1519,9 @@ export async function createWorkspace(
     throw err
   }
 
-  // A spare's agent is handed over when it is claimed.
-  if (options.prewarm !== true) {
+  // A spare's agent is handed over when it is claimed, and an acp prompt is
+  // already held.
+  if (options.prewarm !== true && mode === 'tui') {
     await handOverAgent({
       projectId,
       workspaceId,

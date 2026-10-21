@@ -68,8 +68,8 @@ export async function reconcileAgentSessions(view: RuntimeSnapshot): Promise<voi
 
 /**
  * One workspace's pass of `reconcileAgentSessions`. Also run by an acp
- * create as soon as its conversation is named, so the row (and with it the
- * chat pane) exists when the create returns.
+ * claim's hand-over as soon as its conversation is named, since the sweep
+ * skips a spare mid-claim.
  */
 export async function reconcileWorkspaceAgentSessions(
   projectId: string,

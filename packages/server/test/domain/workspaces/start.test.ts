@@ -22,7 +22,9 @@ import {
   reconcilePrewarmPool,
   recordedLaunch,
   saveDraftWorkspace,
+  stopWorkspace,
 } from '#domain/workspaces'
+import { _clearTerminatingForTests } from '#runtime/status/terminating'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewarm'
 import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
@@ -124,6 +126,9 @@ describe('prepareStart', () => {
    *  moves it. */
   let head: string
 
+  /** The conversation an acp agent brings up, for cases about other things. */
+  const upConversation = { whenReady: () => Promise.resolve(), prompt: () => Promise.resolve() } as unknown as AcpConversation
+
   /** Install the fake runtime; `overrides` replace verbs for one case. */
   function installDriver(overrides: Partial<WorkspaceDriver> = {}): void {
     installFakeWorkspaceDriver({
@@ -151,6 +156,14 @@ describe('prepareStart', () => {
       },
       exec: (jobName, cmd) => {
         execs.push({ jobName, cmd })
+        // An acp agent's conversation is up as soon as a create looks for it,
+        // so the create's watch on its window settles.
+        const window = /display-message -p -t yaac:(\S+) '#\{pane_pid\}'/.exec(cmd)?.[1]
+        if (window !== undefined) {
+          const workspaceId = jobName.slice('yaac-demo-'.length)
+          registerAcpConversation(DEMO_PROJECT_ID, workspaceId, { handle: window, agentSessionId: `acp-${workspaceId}`, panePid: '42' }, upConversation)
+          return Promise.resolve({ stdout: '42\n', stderr: '' })
+        }
         const stdout = cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : ''
         return Promise.resolve({ stdout, stderr: '' })
       },
@@ -685,44 +698,84 @@ describe('prepareStart', () => {
     })
 
     // A fresh chat conversation has no id until its agent answers
-    // `session/new`, so the create waits for that before the prompt. Only a
-    // conversation on the window's current process counts.
-    it('hands a chat workspace its prompt once its conversation is up, and holds it past an agent that dies first', async () => {
-      const prompted = vi.fn(() => Promise.resolve())
-      const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
+    // `session/new`, so a chat create returns without waiting for it and
+    // leaves its prompt on the row, held before the agent starts so no sweep
+    // can find the conversation first. The sweep that records the
+    // conversation sends it (agent-session-registry.test.ts).
+    it('holds a chat workspace\'s prompt from before its agent starts, and returns without waiting for it', async () => {
+      let heldAtLaunch: string | undefined
+      let released!: () => void
+      const agentUp = new Promise<void>((resolve) => { released = resolve })
       installDriver({
-        exec: (jobName, cmd) => {
+        exec: async (jobName, cmd) => {
           execs.push({ jobName, cmd })
+          if (cmd.includes('respawn-window')) heldAtLaunch = (await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt
           if (cmd.includes('#{pane_pid}')) {
-            setTimeout(() => {
-              registerAcpConversation(DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'stale', panePid: '41' }, conversation)
-              registerAcpConversation(DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, conversation)
-            }, 20)
-            return Promise.resolve({ stdout: '42\n', stderr: '' })
+            void agentUp.then(() => registerAcpConversation(
+              DEMO_PROJECT_ID, 'wt-chat', { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, upConversation,
+            ))
+            return { stdout: '42\n', stderr: '' }
           }
-          return Promise.resolve({ stdout: '', stderr: '' })
+          return { stdout: '', stderr: '' }
         },
       })
       const progress: string[] = []
-      await start({ workspaceId: 'wt-chat', mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) })
-      expect(progress).toEqual(expect.arrayContaining(['Connecting to Claude Code...', 'Sending initial prompt...']))
-      await vi.waitFor(() => { expect(prompted).toHaveBeenCalledWith('go') })
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBeUndefined()
+      expect(await start({ workspaceId: 'wt-chat', mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) }))
+        .toMatchObject({ workspaceId: 'wt-chat', mode: 'acp' })
+      expect(heldAtLaunch).toBe('go')
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-chat'))?.pendingPrompt).toBe('go')
+      expect(progress).not.toContain('Connecting to Claude Code...')
+      released()
+    })
 
-      // The agent's window exits before any handshake: the workspace is up,
-      // and the prompt waits on its row for a conversation that comes up.
+    // The adapter can die after the create has returned, up to its
+    // handshake (claude's fails at `session/new` on a bad login). That is
+    // reported as a terminal agent's death is, naming the adapter, with the
+    // prompt beside it.
+    it('reports a chat agent whose adapter dies before its handshake as a failed create', async () => {
       installDriver({
-        exec: (jobName, cmd) => cmd.includes('list-windows -t =yaac')
-          ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
-          : Promise.resolve({ stdout: '', stderr: '' }),
+        kind: 'containerless',
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          return cmd.includes('list-windows -t =yaac')
+            ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
+            : Promise.resolve({ stdout: '', stderr: '' })
+        },
       })
+      expect(await start({ workspaceId: 'wt-acp-dead', mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: 'wt-acp-dead' })
+      await vi.waitFor(() => {
+        expect(listProvisioning()).toMatchObject([{ workspaceId: 'wt-acp-dead', kind: 'create', prompt: 'go' }])
+        expect(listProvisioning()[0]?.error).toMatch(/acp agent "claude" exited .*before its handshake.*@agentclientprotocol\/claude-agent-acp@/)
+      }, { timeout: 30_000 })
+    })
+
+    // The user's stop takes the agent's window down too, and its teardown
+    // mark is gone before the watch next looks, so the stop is read off the
+    // row. Filed, it would show a stopped workspace as a failed create.
+    it('does not report a chat agent the user stopped before its handshake', async () => {
+      let stopped = false
+      installDriver({
+        kind: 'containerless',
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          // A process no conversation comes up on.
+          if (cmd.includes('#{pane_pid}')) return Promise.resolve({ stdout: '44\n', stderr: '' })
+          return stopped && cmd.includes('list-windows -t =yaac')
+            ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
+            : Promise.resolve({ stdout: '', stderr: '' })
+        },
+      })
+      await start({ workspaceId: 'wt-acp-stopped', mode: 'acp', prompt: 'go' })
+      await stopWorkspace(local, 'wt-acp-stopped')
+      stopped = true
+      _clearTerminatingForTests()
       vi.mocked(serverLog).mockClear()
-      expect(await start({ workspaceId: 'wt-gone', mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: 'wt-gone' })
-      const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
-      expect(logged).toContain('acp agent window exited before its handshake')
-      expect(logged).toContain('initial prompt held')
-      expect(prompted).toHaveBeenCalledTimes(1)
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-gone'))?.pendingPrompt).toBe('go')
+
+      await vi.waitFor(() => {
+        expect(vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')).toMatch(/wt-acp-stopped.*before its handshake/)
+      }, { timeout: 10_000 })
+      await new Promise((r) => setTimeout(r, 200))
+      expect(listProvisioning()).toEqual([])
     })
 
     it('opens the init windows and declares the forwards before the agent starts', async () => {
@@ -751,20 +804,7 @@ describe('prepareStart', () => {
 
     it('starts a containerless chat agent alongside its checkout, holding its conversation until the checkout lands', async () => {
       await writeConfig({ initCommands: [{ name: 'backend', commands: ['pnpm dev:backend'] }] })
-      const conversation = { whenReady: () => Promise.resolve(), prompt: () => Promise.resolve() } as unknown as AcpConversation
-      installDriver({
-        kind: 'containerless',
-        exec: (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          if (cmd.includes('#{pane_pid}')) {
-            setTimeout(() => {
-              registerAcpConversation(DEMO_PROJECT_ID, 'wt-early', { handle: 'claude', agentSessionId: 'minted', panePid: '42' }, conversation)
-            }, 20)
-            return Promise.resolve({ stdout: '42\n', stderr: '' })
-          }
-          return Promise.resolve({ stdout: '', stderr: '' })
-        },
-      })
+      installDriver({ kind: 'containerless' })
       await start({ workspaceId: 'wt-early', mode: 'acp' })
 
       // The agent's command goes first, on its own; acpd holds the
@@ -1063,6 +1103,56 @@ describe('prepareStart', () => {
       expect(await start({ claimSpare: true, mode: 'acp', effort: claimedLevel })).toMatchObject({ workspaceId: spare.workspaceId })
       expect(ranIn(spare).filter((c) => c.includes('respawn-window'))).toHaveLength(1)
       expect(atRespawn).toBe(claimedLevel)
+    })
+
+    // A claimed chat spare's conversation may be one the claim just
+    // respawned, which the sweep skips mid-claim, so the claim waits for the
+    // conversation on the window's current process and sends the prompt
+    // itself. One whose agent dies first leaves the prompt held.
+    it('hands a claimed chat spare its prompt once its conversation is up, and holds it past an agent that dies first', async () => {
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'acp' })
+      const spare = await warm()
+      const prompted = vi.fn(() => Promise.resolve())
+      const conversation = { whenReady: () => Promise.resolve(), prompt: prompted } as unknown as AcpConversation
+      installDriver({
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('#{pane_pid}')) {
+            setTimeout(() => {
+              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'stale', panePid: '41' }, conversation)
+              registerAcpConversation(DEMO_PROJECT_ID, spare.workspaceId, { handle: 'claude', agentSessionId: 'minted', panePid: '43' }, conversation)
+            }, 20)
+            return Promise.resolve({ stdout: '43\n', stderr: '' })
+          }
+          return Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+        },
+      })
+      const progress: string[] = []
+      expect(await start({ claimSpare: true, mode: 'acp', prompt: 'go', onProgress: (m) => progress.push(m) }))
+        .toMatchObject({ workspaceId: spare.workspaceId })
+      expect(progress).toEqual(expect.arrayContaining(['Connecting to Claude Code...', 'Sending initial prompt...']))
+      await vi.waitFor(() => { expect(prompted).toHaveBeenCalledWith('go') })
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.pendingPrompt).toBeUndefined()
+
+      installDriver()
+      const next = await warm()
+      installDriver({
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          // A respawned agent, on a process no conversation is on.
+          if (cmd.includes('#{pane_pid}')) return Promise.resolve({ stdout: '44\n', stderr: '' })
+          return cmd.includes('list-windows -t =yaac')
+            ? Promise.reject(new WorkspaceExecError('probe', 1, '', 'claude'))
+            : Promise.resolve({ stdout: cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : '', stderr: '' })
+        },
+      })
+      vi.mocked(serverLog).mockClear()
+      expect(await start({ claimSpare: true, mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: next.workspaceId })
+      const logged = vi.mocked(serverLog).mock.calls.map(([m]) => m).join('\n')
+      expect(logged).toMatch(/acp agent "claude" exited .*before its handshake/)
+      expect(logged).toContain('initial prompt held')
+      expect(prompted).toHaveBeenCalledTimes(1)
+      expect((await getWorkspaceRow(DEMO_PROJECT_ID, next.workspaceId))?.pendingPrompt).toBe('go')
     })
 
     it('respawns a spare as pi on the owner\'s pi provider', async () => {

@@ -28,7 +28,10 @@
  *
  *  1. The handshake (`initialize`, `session/new`) runs once per agent
  *     process. On a reattach this class skips it and consumes notifications
- *     for the session id it already holds.
+ *     for the session id it already holds. Holding none, the server went
+ *     down mid-handshake: it adopts the session the record shows an earlier
+ *     `session/new` opened, else sends `session/new` itself, never
+ *     `initialize`.
  *  2. ACP has no way to ask whether a turn is running (turn state is tied
  *     to your own unanswered `session/prompt`). A reattach rebuilds it from
  *     the record (`recover`), which shows whether the last prompt
@@ -161,6 +164,12 @@ export interface AcpConversationDeps {
    */
   recover?: () => Promise<AcpRecovery>
   /**
+   * The `session/new` an earlier connection sent this agent, as its record
+   * shows it (`readRecordedSessionNew`), read on a reattach with no session
+   * id. Absent means none to adopt.
+   */
+  recordedSessionNew?: () => Promise<{ result: unknown } | 'pending' | undefined>
+  /**
    * The conversation's permission posture. An accessor because a restart
    * can rewrite the row while the conversation lives. `undefined` means not
    * known yet (row missing or unreadable), which differs from the accessor
@@ -228,6 +237,12 @@ export interface QueuedTurn extends AcpQueuedPrompt {
 /** How much of a task's output a pane is shown: its end, like a TUI's
  *  task view. */
 const TASK_OUTPUT_BYTES = 64 * 1024
+
+/** How long a reattach waits for an earlier connection's `session/new` to
+ *  be answered in the record, about what an adapter's cold start takes at
+ *  worst, and how often it looks. */
+const RECORDED_SESSION_WAIT_MS = 60_000
+const RECORDED_SESSION_POLL_MS = 250
 
 /**
  * A message that was never sent and that no pane was shown failing: the
@@ -336,6 +351,8 @@ export class AcpConversation {
   /** The session's effort option as last reported; on a reattach, read
    *  back from the record (`recover`). */
   private effortOption: AcpEffort | undefined
+  /** The level last reported upward (`reportEffort`). */
+  private reportedEffort: string | undefined
   /** The posture a first attach launched in; see `posture()`. Never set on
    *  a reattach. */
   private launchPosture: PermissionMode | undefined
@@ -485,9 +502,7 @@ export class AcpConversation {
     if (option === undefined) return
     const previous = this.effortOption
     this.effortOption = option
-    if (option.current !== undefined && option.current !== previous?.current) {
-      this.deps.onEffort?.(option.current)
-    }
+    if (option.current !== undefined && option.current !== previous?.current) this.reportEffort()
     if (JSON.stringify(previous) === JSON.stringify(option)) return
     const efforts = this.efforts
     for (const fn of this.effortSubscribers) fn(efforts)
@@ -857,46 +872,79 @@ export class AcpConversation {
   /**
    * Make the conversation ready for `prompt()`: the full ACP handshake on a
    * first attach, nothing on a reattach (re-running `initialize` against a
-   * live agent is undefined).
+   * live agent is undefined). A reattach with no session id is to an agent
+   * whose handshake an earlier connection began but never saw through (the
+   * server went down between `initialize` and the `session/new` reply), so
+   * this finishes it from `session/new`, adopting the session that one
+   * opened if it sent it (`recordedSessionNew`).
    */
   private async handshake(firstAttach: boolean): Promise<void> {
     try {
-      if (!firstAttach) {
-        if (this.sessionId === undefined) {
-          throw new Error('reattached to a live agent with no recorded session id')
-        }
+      if (!firstAttach && this.sessionId !== undefined) {
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
-        // Ready before recovery; a prompt still waits for it to classify
-        // the turn (`prompt`), and asks for the posture to be recovered.
+        // Ready once the record is read, before the turn is classified; a
+        // prompt still waits for that (`prompt`), and asks for the posture to
+        // be recovered.
         // A mode, effort or model the adapter reported during the read is
         // newer and wins. The offered modes are merged after the mode, since
         // the handshake's config options also name the mode it had then.
+        //
+        // The launch effort and posture are read first, before the session
+        // reports its own, which the row follows.
+        const launchEffort = this.deps.effort?.()
+        const launchPosture = this.permissionMode()
+        //
+        // A launch whose posture never landed (`launchUnsettled`) may have
+        // left the session in the adapter's defaults, which no one chose, so
+        // its mode and effort are taken in unreported until the launch's
+        // calls below have run: the row follows what is reported. Those
+        // calls read the row, which follows the user's own changes, so they
+        // never undo one.
         const recovered = this.readRecovery()
-        this.postureRecovery = recovered.then(({ modeId, offered }) => {
-          if (this.currentModeId() === undefined) this.setModeId(modeId)
+        this.postureRecovery = recovered.then(({ modeId, offered, launchUnsettled }) => {
+          if (this.currentModeId() === undefined) {
+            if (launchUnsettled !== true) this.setModeId(modeId)
+            else if (modeId !== undefined) this.sessionModes = { ...this.sessionModes, currentModeId: modeId }
+          }
           if (offered?.modes !== undefined) this.sessionModes = { ...offered.modes, ...this.sessionModes }
           this.sessionConfig ??= offered?.configOptions
           this.publishPermissionModes()
         }).finally(() => { this.postureRecovery = undefined })
-        this.markReady()
-        void recovered.then(({ effort, model }) => {
-          if (this.effortOption === undefined) this.setEffortOption(effort)
+        void recovered.then(({ effort, model, launchUnsettled }) => {
+          if (this.effortOption === undefined) {
+            if (launchUnsettled !== true) this.setEffortOption(effort)
+            else this.effortOption = effort
+          }
           if (this.currentModel === undefined) this.setModel(model)
         })
+        // An unsettled launch is finished before the conversation is ready,
+        // so a held prompt's turn runs in the launch's posture.
+        const recovery = await recovered
+        if (recovery.launchUnsettled === true) {
+          await this.postureRecovery
+          await this.applyLaunchEffort(await launchEffort)
+          await this.applyPermissionMode(launchPosture)
+          const mode = this.currentModeId()
+          if (mode !== undefined) this.deps.onModeId?.(mode)
+          this.reportEffort()
+        }
+        this.markReady()
         await this.postureRecovery
-        this.recover(await recovered)
+        this.recover(recovery)
         return
       }
 
-      // Read before the session reports its own level, which the row may
-      // then follow.
+      // Read before the session's own level is reported (`reportEffort`),
+      // which the row follows.
       const launchEffort = await this.deps.effort?.()
-      const init = await this.peer.request<AcpInitializeResult>(ACP.initialize, {
-        protocolVersion: ACP_PROTOCOL_VERSION,
-        clientCapabilities: clientCapabilities(this.deps.profile?.capabilitiesMeta),
-      })
+      const init = firstAttach
+        ? await this.peer.request<AcpInitializeResult>(ACP.initialize, {
+          protocolVersion: ACP_PROTOCOL_VERSION,
+          clientCapabilities: clientCapabilities(this.deps.profile?.capabilitiesMeta),
+        })
+        : undefined
 
-      const canLoad = init.agentCapabilities?.loadSession === true
+      const canLoad = init?.agentCapabilities?.loadSession === true
       if (this.sessionId !== undefined && canLoad) {
         // The adapter replays the conversation as `session/update`
         // notifications. A pane shows the replay only where the tool's own
@@ -910,16 +958,17 @@ export class AcpConversation {
         this.sessionModes = loaded.modes
         this.sessionConfig = loaded.configOptions
         this.setModel(sessionModel(loaded))
-        this.setEffortOption(sessionEffort(loaded))
+        this.effortOption = sessionEffort(loaded)
       } else {
         if (this.sessionId !== undefined) {
           this.log('[server] acp: adapter cannot load sessions — starting a fresh conversation')
         }
-        const created = await this.peer.request<AcpNewSessionResult>(ACP.sessionNew, {
-          cwd: this.deps.cwd,
-          mcpServers: [],
-          ...this.sessionMeta(),
-        })
+        const created = (firstAttach ? undefined : await this.recordedSessionNew())
+          ?? await this.peer.request<AcpNewSessionResult>(ACP.sessionNew, {
+            cwd: this.deps.cwd,
+            mcpServers: [],
+            ...this.sessionMeta(),
+          })
         if (typeof created.sessionId !== 'string' || created.sessionId === '') {
           throw new Error('session/new returned no session id')
         }
@@ -928,7 +977,7 @@ export class AcpConversation {
         this.sessionConfig = created.configOptions
         this.deps.onSessionId(created.sessionId)
         this.setModel(sessionModel(created))
-        this.setEffortOption(sessionEffort(created))
+        this.effortOption = sessionEffort(created)
         // An update read before this reply is newer.
         if (this.offeredModels === undefined) this.setOfferedModels(created)
         await this.applyLaunchModel()
@@ -937,6 +986,7 @@ export class AcpConversation {
       // gets it too: its new process would otherwise start at whatever the
       // tool's shared settings hold.
       await this.applyLaunchEffort(launchEffort)
+      this.reportEffort()
       await this.applyPermissionMode()
       this.markReady()
       // A fresh agent process has nothing in flight; classify it now.
@@ -947,6 +997,40 @@ export class AcpConversation {
       this.emit({ type: 'error', message: `ACP handshake failed: ${message}` })
       this.deps.onDown(`handshake failed: ${message}`)
     }
+  }
+
+  /**
+   * The session an earlier connection's `session/new` opened, from the
+   * record, waiting while its reply has yet to land; undefined if it sent
+   * none. Adopting it keeps a reattach from opening a second session, whose
+   * agent process would idle beside the first for the workspace's life.
+   */
+  private async recordedSessionNew(): Promise<AcpNewSessionResult | undefined> {
+    const read = this.deps.recordedSessionNew
+    if (read === undefined) return undefined
+    const deadline = Date.now() + RECORDED_SESSION_WAIT_MS
+    for (;;) {
+      const recorded = await read().catch(() => undefined)
+      if (recorded !== 'pending') {
+        if (recorded !== undefined) this.log('[server] acp: adopting the session an earlier connection opened')
+        return recorded?.result as AcpNewSessionResult | undefined
+      }
+      if (this.closed || Date.now() >= deadline) return undefined
+      await new Promise((resolve) => setTimeout(resolve, RECORDED_SESSION_POLL_MS))
+    }
+  }
+
+  /**
+   * Report the session's effort, which a handshake holds back until the
+   * launch's own effort call has run: the row follows what is reported, so
+   * reporting the adapter's starting level first would leave the row there
+   * if the connection dropped before that call landed.
+   */
+  private reportEffort(): void {
+    const current = this.effortOption?.current
+    if (current === undefined || current === this.reportedEffort) return
+    this.reportedEffort = current
+    this.deps.onEffort?.(current)
   }
 
   private sessionMeta(): { _meta?: Record<string, unknown> } {
@@ -960,10 +1044,11 @@ export class AcpConversation {
    * `accept-edits` would prompt for every edit (the adapter default asks
    * about everything).
    *
-   * First attach only. On a reattach the adapter may be in a mode the user
-   * chose since (accepting "auto-accept edits" when leaving plan mode moves
-   * it to `acceptEdits`), and re-asserting would undo that on every relay
-   * hiccup. The row follows the user's moves instead.
+   * First attach only, or a reattach whose record shows the handshake
+   * stopped short (`launchUnsettled`). Otherwise the adapter may be in a
+   * mode the user chose since (accepting "auto-accept edits" when leaving
+   * plan mode moves it to `acceptEdits`), and re-asserting would undo that
+   * on every relay hiccup. The row follows the user's moves instead.
    *
    * A mode that is unadvertised or refused is reported, not thrown: create
    * already refuses postures a tool cannot express, so this means the session
@@ -975,9 +1060,9 @@ export class AcpConversation {
    * `accept-edits`. So it steps down to the most permissive offered mode
    * that is no looser.
    */
-  private async applyPermissionMode(): Promise<void> {
+  private async applyPermissionMode(posture = this.permissionMode()): Promise<void> {
     // Read once: the row follows every conversation in the workspace.
-    this.launchPosture = this.permissionMode()
+    this.launchPosture = posture
     if (this.sessionId === undefined) return
     const mode = this.launchPosture
     if (mode === undefined) {

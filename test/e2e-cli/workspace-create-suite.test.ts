@@ -2007,14 +2007,16 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
         // A `session/new` reply with an id means the adapter started and
         // accepted yaac declining the `fs/*` and `terminal/*` capabilities.
+        // The create returns before the handshake, whose posture and model
+        // calls follow that reply, so the record is read until they land.
         const recorded = await vi.waitFor(async () => {
           const { stdout } = await execInJob(job, ['sh', '-c', 'cat /home/yaac/.yaac-acp/*.jsonl 2>/dev/null || true'])
           expect(stdout).toContain('"sessionId"')
+          if (modeId !== undefined) expect(stdout).toContain(`"modeId":"${modeId}"`)
+          if (method !== undefined) expect(stdout).toContain(method)
           return stdout
         }, { timeout: 180_000, interval: 2000 })
         expect(recorded).toContain('"method":"initialize"')
-        if (modeId !== undefined) expect(recorded).toContain(`"modeId":"${modeId}"`)
-        if (method !== undefined) expect(recorded).toContain(method)
         // An unrouted call gets "Method not found" and is otherwise silent.
         expect(recorded).not.toContain('-32601')
         if (defaultModeId !== undefined) {

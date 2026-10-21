@@ -12,6 +12,8 @@
  * rather than shown failed.
  */
 import { notifyWorkspaceListChanged } from '#lib/notify'
+import { isWorkspaceTerminating } from '#runtime/status'
+import { getWorkspaceRow } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { ServerError } from '@yaac/shared/errors'
@@ -151,6 +153,12 @@ export function failProvisioning(workspaceId: string, error: string): void {
  * Waits for the create's run to finish first; otherwise its
  * success path could remove this row. The workspace itself is left to the
  * liveness watch and stale reaper.
+ *
+ * Not for an agent the user stopped, whose stop takes its windows down
+ * too: one still being torn down is marked terminating, and after that the
+ * stop is on the row with no death cause (a death the server observed
+ * records one). A restart clears its stop record at the end of its run, so
+ * the row is read once that has settled.
  */
 export async function reportAgentLaunchFailure(input: {
   workspaceId: string
@@ -158,17 +166,24 @@ export async function reportAgentLaunchFailure(input: {
   tool: AgentTool
   kind: ProvisioningKind
   error: string
+  /** The create's prompt, shown beside the error so it can be reused. */
+  prompt?: string
 }): Promise<void> {
   await settledRun(input.workspaceId)
   // An existing entry is either the create's own failure (the real cause)
   // or a newer provision on this id; leave it.
   if (entries.has(input.workspaceId) || stoppedIds.has(input.workspaceId)) return
+  if (isWorkspaceTerminating(input.workspaceId)) return
+  const row = await getWorkspaceRow(input.projectId, input.workspaceId).catch(() => undefined)
+  if (row === undefined || (row.stoppedAt !== undefined && row.deathReason === undefined)) return
+  if (entries.has(input.workspaceId)) return
   registerProvisioning({
     workspaceId: input.workspaceId,
     projectId: input.projectId,
     tool: input.tool,
     kind: input.kind,
     message: input.error,
+    ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
   })
   failProvisioning(input.workspaceId, input.error)
 }

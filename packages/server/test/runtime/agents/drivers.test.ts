@@ -229,10 +229,20 @@ const lifeLine = {
 /** The log of a handshake that left the session in `modeId`, which is how a
  *  reattach learns the posture. */
 const recordMode = (agentSessionId: string, modeId: string): Promise<void> => record(agentSessionId, [
+  ...handshakeOnly(agentSessionId, 'default'),
+  { jsonrpc: '2.0', id: 'h-2', method: 'session/set_mode', params: { sessionId: agentSessionId, modeId } },
+  { jsonrpc: '2.0', id: 'h-2', result: {} },
+])
+
+/** The log of a handshake cut off after `session/new` answered, in `modeId`,
+ *  before its effort and posture calls. */
+const handshakeOnly = (agentSessionId: string, modeId: string): unknown[] => [
   lifeLine,
   { jsonrpc: '2.0', id: 'h-1', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
-  { jsonrpc: '2.0', id: 'h-1', result: { sessionId: agentSessionId, modes: { currentModeId: modeId } } },
-])
+  { jsonrpc: '2.0', id: 'h-1', result: { sessionId: agentSessionId, modes: {
+    currentModeId: modeId, availableModes: [{ id: 'default' }, { id: 'acceptEdits' }, { id: 'bypassPermissions' }],
+  } } },
+]
 
 /** A prompt as logged: the client's request, with the id its reply will use. */
 const promptLine = (agentSessionId: string, id: string, text: string): unknown => ({
@@ -1169,6 +1179,45 @@ describe('agentDriver', () => {
     expect(stream.sent().some((m) => m.method === 'session/new')).toBe(false)
   })
 
+  // The old server went down before its posture call landed, so the session
+  // is in the adapter's default. The next
+  // connection makes the call, without reporting that default for the row to
+  // follow. Once a call has landed, a reattach leaves the session's mode
+  // alone, since the user may have moved it since.
+  it('finishes the posture a dropped connection\'s handshake never set, and only then', async () => {
+    // As seen live: the old server's effort call was answered after it went.
+    await record('acp-short', [
+      ...handshakeOnly('acp-short', 'default'),
+      { jsonrpc: '2.0', id: 'h-2', method: 'session/set_config_option', params: { sessionId: 'acp-short', configId: 'effort', value: 'medium' } },
+      { jsonrpc: '2.0', id: 'h-2', result: { configOptions: [] } },
+    ])
+    const short = await attachedUnder('bypass', 'acp-short')
+    await vi.waitFor(() => expect(short.stream.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
+    const setMode = short.stream.sent().find((m) => m.method === 'session/set_mode')!
+    expect(setMode.params).toEqual({ sessionId: 'acp-short', modeId: 'bypassPermissions' })
+    // The default it was left in is no choice, so the row is not moved to it.
+    expect(reportedModes(short.seen)).not.toContain('default')
+    // Not ready until the posture lands, so a held prompt's turn runs in it.
+    const conversation = acpConversation('demo', 'wt-1', 'acp-short')!
+    await expect(conversation.whenReady(100)).rejects.toThrow()
+    short.stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: setMode.id, result: {} })}\n`)
+    await conversation.whenReady(5_000)
+
+    // A posture that is the adapter's default needs no call, so its launch
+    // looks unsettled until the first prompt. Its reattach sends nothing and
+    // still reports the mode, which is the posture's.
+    await record('acp-manual', handshakeOnly('acp-manual', 'default'))
+    const manual = await attachedUnder('manual', 'acp-manual')
+    await vi.waitFor(() => expect(reportedModes(manual.seen).at(-1)).toBe('default'))
+    expect(manual.stream.sent().some((m) => typeof m.method === 'string' && m.method.startsWith('session/'))).toBe(false)
+
+    await recordMode('acp-settled', 'acceptEdits')
+    const settled = await attachedUnder('bypass', 'acp-settled')
+    await vi.waitFor(() => expect(reportedModes(settled.seen).at(-1)).toBe('acceptEdits'))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(settled.stream.sent().some((m) => m.method === 'session/set_mode')).toBe(false)
+  })
+
   it('recovers a turn the previous connection started, and ends it on the orphan reply', async () => {
     // A reattach can land mid-turn. ACP cannot report that, since this
     // connection sent no prompt, so the log (which has both directions) is used.
@@ -1928,7 +1977,9 @@ describe('agentDriver', () => {
 
     // The user moves it in the agent's own UI; the update is the report.
     stream.feed(updateLine('pi-1', { sessionUpdate: 'config_option_update', configOptions: [thoughtLevel('low')] }))
-    await vi.waitFor(() => expect(reportedEfforts(seen)).toEqual(['low', 'high', 'low']))
+    // The adapter's starting level is never reported: the row would be left
+    // there if the connection dropped before the launch's call landed.
+    await vi.waitFor(() => expect(reportedEfforts(seen)).toEqual(['high', 'low']))
   })
 
   // A reattach runs no handshake, so the session's state comes from the
@@ -1951,6 +2002,9 @@ describe('agentDriver', () => {
       { jsonrpc: '2.0', id: 'm-1', result: {} },
       { jsonrpc: '2.0', id: 'm-2', method: 'session/set_config_option', params: { sessionId: 'acp-1', configId: 'model', value: 'haiku' } },
       { jsonrpc: '2.0', id: 'm-2', error: { code: -32602, message: 'unknown model' } },
+      // Its launch is long settled.
+      promptLine('acp-1', 'p-1', 'hi'),
+      { jsonrpc: '2.0', id: 'p-1', result: { stopReason: 'end_turn' } },
     ])
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
@@ -2108,21 +2162,50 @@ describe('agentDriver', () => {
     expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined()
   })
 
-  it('gives up on a reattach it cannot address rather than talking to the wrong session', async () => {
+  // The server went down between `initialize` and the `session/new` reply
+  // (a restart right after a create), so the agent is live but nothing names
+  // its conversation. `initialize` is not repeated on a live process.
+  it('finishes a handshake a dropped connection began, from session/new', async () => {
     const stream = new FakeStream()
     tmuxWindows = 'claude\n'
-    const seen: AgentObservation[] = []
-    connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), {
-      dial: acpDial(() => stream), log: () => {},
-    }))
+    connections.push(agentDriver('acp').connect(session, () => {}, { dial: acpDial(() => stream), log: () => {} }))
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
 
-    // Already initialized, but no recorded session id to address it by, so
-    // tear down and let the next sweep retry.
-    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', method: '_acpd/hello', params: { firstAttach: false } })}\n`)
-    await vi.waitFor(() => {
-      expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeUndefined()
-    })
+    stream.feed(helloLine(false))
+    await vi.waitFor(() => expect(stream.sent().some((m) => m.method === 'session/new')).toBe(true))
+    expect(stream.sent().some((m) => m.method === 'initialize')).toBe(false)
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'acp-late' } })}\n`)
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-late')).toBeDefined())
+    expect(paneOptions.get('%0')).toBe('100:acp-late')
+  })
+
+  // Down after sending `session/new`, the server leaves the session opened
+  // or about to be, in the record still under the workspace id. A second
+  // `session/new` would leave an agent process idling beside the first, so
+  // the reattach adopts that one, waiting for its reply if it has yet to land.
+  it('adopts the session a dropped connection\'s session/new opened, waiting for its reply', async () => {
+    const sent = [
+      lifeLine,
+      { jsonrpc: '2.0', id: 'old-1', method: 'initialize', params: { protocolVersion: 1 } },
+      { jsonrpc: '2.0', id: 'old-1', result: { protocolVersion: 1 } },
+      { jsonrpc: '2.0', id: 'old-2', method: 'session/new', params: { cwd: '/workspace', mcpServers: [] } },
+    ]
+    await record('wt-1', sent)
+    const stream = new FakeStream()
+    tmuxWindows = 'claude\n'
+    connections.push(agentDriver('acp').connect(session, () => {}, { dial: acpDial(() => stream), log: () => {} }))
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    stream.feed(helloLine(false))
+    await new Promise((resolve) => setTimeout(resolve, 400))
+
+    await record('wt-1', [...sent, { jsonrpc: '2.0', id: 'old-2', result: { sessionId: 'acp-early' } }])
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-early')).toBeDefined())
+    expect(stream.sent().filter((m) => m.method === 'initialize' || m.method === 'session/new')).toEqual([])
+    expect(paneOptions.get('%0')).toBe('100:acp-early')
+    // The record is renamed for the session, as a reply to this connection's
+    // own `session/new` would have it.
+    await vi.waitFor(() => expect(existsSync(path.join(acpLogDir('demo', 'wt-1'), 'acp-early.jsonl'))).toBe(true))
   })
 
   // A prewarmed spare's conversation has no row, so after a server restart

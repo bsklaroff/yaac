@@ -353,8 +353,8 @@ describe('reconcileAgentSessions', () => {
     expect(await rows()).toEqual([['acp-1', true, 'claude']])
   })
 
-  // A create whose conversation was not up in time holds its prompt, and the
-  // first conversation in the agent's own window to come up gets it, once.
+  // A chat create holds its prompt, and the first conversation in the
+  // agent's own window to come up gets it, once.
   it('sends a held create prompt to the first agent window\'s conversation, once', async () => {
     await holdPendingPrompt(DEMO_PROJECT_ID, 'wt-1', 'add shared projects')
     const conversation = (handle: string, agentSessionId: string) => {

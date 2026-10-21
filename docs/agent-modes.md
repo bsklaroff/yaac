@@ -655,29 +655,57 @@ through the adapter's `thought_level` option (docs/effort-levels.md).
 
 The row is written by the reconciler's conversation sweep, so the id
 appearing in the live agent set is itself a reconcile trigger (`live-agents`,
-docs/event-driven-reconcile.md). Until the row exists an ACP workspace has no
-chat pane, only the raw agent window (acpd's log). So a fresh ACP create waits
-for the handshake to name the conversation (`whenAcpConversation`, resolved
-when the connection registers the id) and runs that workspace's sweep itself,
-and the webapp swaps its provisioning pane straight for the chat pane. The
-provisioning pane is drawn as the chat it becomes (the prompt, then the
-working spinner captioned with the create's progress), and the chat pane
-keeps showing the prompt and spinner (`launches` in the webapp's store)
-until the agent echoes the prompt, so the hand-over shows no gap. A `tui`
-create's provisioning pane is the same, and the terminal replaces it once
-the prompt is typed in.
+docs/event-driven-reconcile.md). A fresh ACP create does not wait for it: it
+holds its prompt on the workspace row (`pendingPrompt`) before the agent
+starts and returns once the agent's window is launched, as a `tui` create
+does, so the adapter's start-up (about two seconds for claude) is not part of
+the create. The sweep that records the conversation sends the held prompt to
+the first agent window's conversation once its handshake is done, even after
+a server or workspace restart. A server that went down mid-handshake finds
+an agent that has answered `initialize` but whose conversation nothing names
+(acpd says the agent is not fresh, and `initialize` is not repeated on a live
+process). Its next connection adopts the session acpd's record shows the
+earlier `session/new` opened, waiting for that reply if it is still to come,
+and sends `session/new` itself only if none was sent, so the agent never
+holds a second session idling beside the first. A server that went down
+before its posture call (`session/set_mode`) was answered leaves the launch
+unsettled (`launchUnsettled`): the record shows no answered mode change and
+no prompt since the handshake. An effort reply does not settle it, since
+acpd records a reply that lands after the server that asked has gone. The
+next connection then makes the launch's effort and posture calls before the
+conversation is ready, so a held prompt runs in the posture, and reports the
+session's mode and effort only after them, so the row never follows the
+adapter's defaults. Those calls read the row, which follows the user's own
+changes, so they never undo one. For the same reason a handshake reports the
+session's effort only once its own effort call has run. The create also
+watches each agent window until its conversation is named: an adapter can
+die before that (claude's fails at `session/new` on a bad login), and one
+that does is reported as a failed create naming the adapter, as a `tui`
+agent that dies at launch is, with the prompt beside it. A window taken down
+by the user's stop is not reported: the stop is on the workspace row, with no
+death cause.
+
+Until the row exists an ACP workspace has no chat pane, only its `agent`
+window, which runs acpd. The webapp draws that pane as the agent starting
+(`AcpStartingPane`), with acpd's log a click away for an agent that never
+comes up. The provisioning pane before it and the chat pane after it look the
+same: the prompt, then the working spinner (captioned with the create's
+progress while provisioning), and the chat pane keeps showing them
+(`launches` in the webapp's store) until the agent echoes the prompt, so the
+hand-over shows no gap. A `tui` create's provisioning pane is the same, and
+the terminal replaces it once the prompt is typed in.
+
 A prewarmed `acp` spare is watched like a running workspace, so its handshake
 runs while it warms and a claim usually finds the conversation already named.
 A respawn (a claim switching tool, model or posture, or a spare moved to a
 new base tip) replaces the agent, and its old conversation stays registered
 until its stream is seen closing, or until a re-list finds the window's
-process changed, for a stream that died without a close. So the hand-over
-reads the window's pane pid and waits only for a conversation attached to
-that process. The create's prompt is held on the workspace row
-(`pendingPrompt`) for the length of that wait. If no conversation comes up
-in time, the create still succeeds and the prompt stays held: the sweep
-sends it to the first agent window's conversation once one is up, even
-after a server or workspace restart. A restart of a workspace that never
+process changed, for a stream that died without a close. So a claim's
+hand-over waits for the conversation itself (`whenAcpConversation`), only one
+attached to the window's current process (its pane pid), runs that
+workspace's sweep, and sends the prompt, holding it on the row for the length
+of that wait. If no conversation comes up in time, the claim still succeeds
+and the prompt stays held for the sweep. A restart of a workspace that never
 recorded a conversation starts a fresh one, since there is none to load.
 The prompt is taken off the row before it is sent, so a crash between the
 two loses it rather than running the task twice. Only a send that was never

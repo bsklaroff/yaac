@@ -936,6 +936,9 @@ export interface WorkspaceListEntry {
   workspaceId: string
   projectId: string
   tool: AgentTool
+  /** How its agents are driven. Absent only before the workspace has a row
+   *  (a create mid-way through recording it). */
+  mode?: AgentMode
   /**
    * The most pressing of its agent sessions' statuses: `waiting` (including
    * an ask), then `running`, then `background`.
@@ -959,7 +962,8 @@ export interface WorkspaceListEntry {
    *  every client shows the same unread dot. */
   waitingSeen?: true
   /** The first user message of the workspace's first agent session;
-   *  survives a `/clear`. */
+   *  survives a `/clear`. Before an acp conversation is up, the create's
+   *  prompt waiting to be sent to it. */
   prompt?: string
   /** The user's title, else the agent's own for its opening conversation,
    *  else one generated from `prompt` (docs/workspace-titles.md). UIs fall
@@ -1279,7 +1283,8 @@ export interface StoppedWorkspaceEntry {
   /** When it was stopped, 'YYYY-MM-DD HH:MM:SS' (UTC); the sort key, newest
    *  first. */
   stoppedAt: string
-  /** The first conversation's first user message. */
+  /** The first conversation's first user message, else the create's prompt
+   *  still waiting for an acp conversation. */
   prompt?: string
   /** Resolved as for a live workspace (`WorkspaceListEntry.title`). */
   title?: string
