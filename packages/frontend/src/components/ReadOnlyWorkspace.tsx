@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type JSX } from 'react'
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { ChatViewToggles } from '#components/ConversationView'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
+import { StatusMark, statusText } from '#components/StatusMark'
 import { PaneBarLeading, paneBarClass } from '#components/PaneBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -12,7 +13,7 @@ import { RestartIcon, TerminalIcon } from '#lib/icons'
 import { isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { patchStopped, refetchStopped, useRestartStopped } from '#lib/useStoppedWorkspaces'
-import { useReadOnly } from '#lib/viewer'
+import { useReadOnly, useTeammateName } from '#lib/viewer'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
@@ -26,10 +27,10 @@ export type ReadOnlySubject =
 /**
  * The main pane for a workspace the user can read but not drive: a title
  * bar, a line of facts about it, and its conversations. A running one is
- * refetched while it runs. Terminals, chat and files are left out, since
- * attaching to them grants control (docs/multi-user.md "Authorization").
- * A bar where the live pane's composer sits carries its width and condensed
- * toggles.
+ * followed as it happens, its status shown as the sidebar shows it.
+ * Terminals, chat and files are left out, since attaching to them grants
+ * control (docs/multi-user.md "Authorization"). A bar where the live pane's
+ * composer sits carries its width and condensed toggles.
  *
  * The user's own stopped workspace also gets a Restart action, and opening
  * one that died unseen marks it seen. That write is the owner's alone, so a
@@ -40,6 +41,7 @@ export type ReadOnlySubject =
 export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | undefined }): JSX.Element {
   const isMobile = useIsMobile()
   const readOnly = useReadOnly()
+  const owner = useTeammateName()
   const restart = useRestartStopped()
   const [confirmRestart, setConfirmRestart] = useState(false)
   const entry = subject?.entry
@@ -70,13 +72,14 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
       </header>
       {subject ? (
         <>
-          <Facts subject={subject} />
+          <Facts subject={subject} {...(owner !== undefined ? { owner } : {})} />
           <ReadOnlyTranscript
             key={subject.entry.workspaceId}
             workspaceId={subject.entry.workspaceId}
             sessions={subject.entry.agentSessions}
             {...(subject.entry.prompt !== undefined ? { prompt: subject.entry.prompt } : {})}
             live={subject.kind === 'live'}
+            {...(owner !== undefined ? { owner } : {})}
             footer={
               <div className="flex items-center p-2">
                 <ChatViewToggles />
@@ -122,14 +125,20 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
 }
 
 /** The workspace's facts as one wrapping line under the title bar. */
-function Facts({ subject }: { subject: ReadOnlySubject }): JSX.Element {
+function Facts({ subject, owner }: { subject: ReadOnlySubject; owner?: string }): JSX.Element {
   const { entry } = subject
-  const facts: [string, string][] = [
+  const facts: [string, ReactNode][] = [
     ['Agent', agentLabel(entry.tool, workspaceModel(entry))],
     ['Created', relativeAge(entry.createdAt) || '—'],
   ]
   if (subject.kind === 'live') {
-    facts.push(['Status', subject.entry.status])
+    const { status, asking } = subject.entry
+    facts.push(['Status', (
+      <span className="flex items-center gap-1.5">
+        <StatusMark status={status} asking={asking === true} {...(owner !== undefined ? { owner } : {})} />
+        {statusText(status, asking, owner)}
+      </span>
+    )])
   } else {
     const e = subject.entry
     facts.push(['Last active', relativeAge(e.lastActiveAt) || '—'])

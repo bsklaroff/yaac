@@ -7,8 +7,9 @@
  * (the version dockerfiles/Dockerfile.tools installs) exposes the two pieces
  * its `session/load` uses: the SDK's `getSessionMessages` and
  * `toAcpNotifications`. This module runs them over a transcript file and
- * feeds the result to `replayAcpLog`, so tui transcripts match what acp
- * renders and no second translation can drift. claude-acp-replay.test.ts
+ * projects the result as acpd's record is projected (`AcpRecordWriter`), so
+ * tui transcripts match what acp renders and no second translation can
+ * drift. claude-acp-replay.test.ts
  * pins the version equality.
  *
  * No adapter process runs, so this works for a stopped workspace with no
@@ -18,7 +19,7 @@
 import path from 'node:path'
 import { AcpRecordWriter } from './acp-log'
 import { ACP, CLAUDE_INTERRUPT, COMPACTION_META } from './acp-protocol'
-import { jsonObjects } from './jsonl'
+import { jsonObjects, parseJson } from './jsonl'
 import { openSandboxDir, readSandboxFile, type SandboxFile } from './sandbox-fs'
 import { isUuid } from '#lib/uuid'
 import { asString } from '#lib/narrow'
@@ -41,9 +42,9 @@ const PLACEHOLDER_SESSION_ID = '00000000-0000-0000-0000-000000000000'
  * (`AcpRecordWriter`).
  */
 export async function claudeTranscriptAsAcp(raw: string, agentSessionId: string, ended = false): Promise<AcpEvent[]> {
-  const record = new AcpRecordWriter()
-  await synthesizeAcpRecord(raw, agentSessionId, record)
-  return record.replay(ended)
+  const replay = new ClaudeTranscriptReplay(agentSessionId)
+  await replay.append(raw)
+  return replay.replay(ended)
 }
 
 /** Largest subagent transcript read, and the most of one meta file. */
@@ -98,19 +99,45 @@ export async function claudeSubagentThreads(
     const raw = await readSandboxFile(file, Math.min(left, MAX_SUBAGENT_TRANSCRIPT_BYTES)).catch(() => null)
     if (raw === null) continue
     left -= raw.length
-    const record = new AcpRecordWriter()
-    await synthesizeAcpRecord(raw.toString('utf8'), path.basename(session.rel, '.jsonl'), record, true)
-    const events = record.replay().filter((e) => THREAD_EVENTS.has(e.type))
+    const replay = new ClaudeTranscriptReplay(path.basename(session.rel, '.jsonl'), true)
+    await replay.append(raw.toString('utf8'))
+    const events = replay.events.filter((e) => THREAD_EVENTS.has(e.type))
     const body = events[0]?.type === 'user' ? events.slice(1) : events
     out.push(...body.map(({ seq: _seq, ...e }) => ({ ...e, thread: toolUseId }) as AcpEventInit))
   }
   return out
 }
 
+/** The adapter and SDK pieces a translation uses. Loaded on demand: these
+ *  packages are megabytes, needed only for the rare transcript read. A load
+ *  that fails is tried again next time. */
+let sdk: ReturnType<typeof loadSdk> | undefined
+function claudeSdk(): ReturnType<typeof loadSdk> {
+  sdk ??= loadSdk().catch((err: unknown) => {
+    sdk = undefined
+    throw err
+  })
+  return sdk
+}
+
+async function loadSdk() {
+  /* eslint-disable no-restricted-syntax -- deferring these is the point; see above */
+  const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk')
+  const { stripLocalCommandMetadata, toAcpNotifications } = await import('@agentclientprotocol/claude-agent-acp')
+  const { isReplayHiddenMetaMessage, messageIdForGrouping } = await import('@agentclientprotocol/claude-agent-acp/dist/acp-agent.js')
+  const { compactionSummaryText } = await import('@agentclientprotocol/claude-agent-acp/dist/context-compaction.js')
+  /* eslint-enable no-restricted-syntax */
+  return { getSessionMessages, stripLocalCommandMetadata, toAcpNotifications, isReplayHiddenMetaMessage, messageIdForGrouping, compactionSummaryText }
+}
+
+type Sdk = Awaited<ReturnType<typeof loadSdk>>
+type SessionMessage = Awaited<ReturnType<Sdk['getSessionMessages']>>[number]
+
 /**
- * Write a transcript's lines as the record acpd would have written over
- * ACP. A record rather than events, so `replayAcpLog` also handles tool-call
- * merging, sequencing and defensive drops for synthesized conversations.
+ * A claude transcript written as the record acpd would have written over
+ * ACP, as far as it has been read. A record rather than events, so
+ * `RecordProjection` also handles tool-call merging, sequencing and
+ * defensive drops for synthesized conversations.
  *
  * The SDK's parser (`getSessionMessages`) walks one `parentUuid` chain back
  * from the leaf, which stops at a compaction's boundary, so it shows only
@@ -121,6 +148,16 @@ export async function claudeSubagentThreads(
  * `session.compaction`, carrying the summary claude kept in place of the
  * user message that holds it, and the boundary's trigger and token counts.
  *
+ * `append` takes the transcript in pieces as claude writes them and
+ * translates only the messages each piece adds, so following a long
+ * conversation costs what was appended rather than the whole file. claude
+ * writes one entry per message, so the latest part's chain normally grows
+ * at its end. When it does not (a `/rewind` moved the leaf, or a compaction
+ * written before its summary gains one), `append` answers false and the
+ * caller starts a new replay over the whole file. `claudeTranscriptAsAcp`
+ * is one `append` of the whole file, so the two readings cannot differ.
+ * Calls must not overlap.
+ *
  * A `subagent` transcript's entries are sidechains. They go through the same
  * parser as the main conversation, marked otherwise: the SDK's subagent
  * parser walks one `parentUuid` chain back from the leaf, which drops all
@@ -128,109 +165,148 @@ export async function claudeSubagentThreads(
  * entry, and the chain goes on from just one of their results). A
  * subagent's compactions are not shown, as live.
  */
-async function synthesizeAcpRecord(
-  raw: string,
-  agentSessionId: string,
-  record: AcpRecordWriter,
-  subagent = false,
-): Promise<void> {
-  const entries = subagent ? jsonObjects(raw).map((e) => ({ ...e, isSidechain: false })) : jsonObjects(raw)
-  if (entries.length === 0) return
-  // A replay, as `session/load` would send it, so the projection rebuilds
-  // subagents and tasks; with no reply, since the conversation may be live.
-  record.write({ id: 'replay', method: ACP.sessionLoad, params: {} })
-
-  // Loaded on demand: these packages are megabytes, needed only for the
-  // rare transcript read.
-  /* eslint-disable no-restricted-syntax -- deferring these is the point; see above */
-  const { getSessionMessages } = await import('@anthropic-ai/claude-agent-sdk')
-  const { stripLocalCommandMetadata, toAcpNotifications } =
-    await import('@agentclientprotocol/claude-agent-acp')
-  const { isReplayHiddenMetaMessage, messageIdForGrouping } = await import('@agentclientprotocol/claude-agent-acp/dist/acp-agent.js')
-  const { compactionSummaryText } = await import('@agentclientprotocol/claude-agent-acp/dist/context-compaction.js')
-  /* eslint-enable no-restricted-syntax */
-
-  const sessionId = isUuid(agentSessionId) ? agentSessionId : PLACEHOLDER_SESSION_ID
-  // `toolUseCache` spans messages so a `tool_result` finds its `tool_use`
-  // (and so a tool call gets its title and kind).
-  const toolUseCache = {}
+export class ClaudeTranscriptReplay {
+  private readonly record = new AcpRecordWriter()
+  private readonly entries: Array<Record<string, unknown>> = []
   /** The entries by uuid, which the messages keep. */
-  const byUuid = new Map(entries.flatMap((e: Record<string, unknown>) => typeof e.uuid === 'string' ? [[e.uuid, e] as const] : []))
-  for (const part of compactedParts(entries)) {
+  private readonly byUuid = new Map<string, Record<string, unknown>>()
+  /** Spans messages so a `tool_result` finds its `tool_use` (and so a tool
+   *  call gets its title and kind). */
+  private readonly toolUseCache = {}
+  /** Where each compaction part starts in `entries`, and the boundary that
+   *  opens it. */
+  private readonly parts: Array<{ start: number; boundary?: Record<string, unknown> }> = [{ start: 0 }]
+  /** The part being translated, the uuids of its messages translated so far,
+   *  and whether its compaction was written, with a summary or without. */
+  private part = 0
+  private done: string[] = []
+  private compaction: 'summarized' | 'bare' | undefined
+  /** What follows the last line read whole. */
+  private rest = ''
+  private readonly sessionId: string
+
+  constructor(agentSessionId: string, private readonly subagent = false) {
+    this.sessionId = isUuid(agentSessionId) ? agentSessionId : PLACEHOLDER_SESSION_ID
+  }
+
+  /** The conversation so far. */
+  get events(): AcpEvent[] {
+    return this.record.events
+  }
+
+  /** The conversation, closed as an ended life's when `ended`; final. */
+  replay(ended = false): AcpEvent[] {
+    return this.record.replay(ended)
+  }
+
+  /** Translate `text`, the bytes claude appended since the last call. False
+   *  when the replay cannot follow what was appended (see above). */
+  async append(text: string): Promise<boolean> {
+    const lines = (this.rest + text).split('\n')
+    // A last line with no newline may be cut short mid-write. It is read
+    // once it parses; its newline then arrives as an empty line.
+    this.rest = lines.pop() ?? ''
+    if (parseJson(this.rest) !== undefined) {
+      lines.push(this.rest)
+      this.rest = ''
+    }
+    const before = this.entries.length
+    for (const line of lines) {
+      const parsed = line.trim() === '' ? undefined : parseJson(line)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue
+      const entry = this.subagent ? { ...parsed as Record<string, unknown>, isSidechain: false } : parsed as Record<string, unknown>
+      if (entry.type === 'system' && entry.subtype === 'compact_boundary' && entry.isSidechain !== true) {
+        this.parts.push({ start: this.entries.length, boundary: entry })
+      }
+      this.entries.push(entry)
+      if (typeof entry.uuid === 'string') this.byUuid.set(entry.uuid, entry)
+    }
+    if (this.entries.length === before) return true
+    // A replay, as `session/load` would send it, so the projection rebuilds
+    // subagents and tasks; with no reply, since the conversation may be live.
+    if (before === 0) this.record.write({ id: 'replay', method: ACP.sessionLoad, params: {} })
+
+    const sdk = await claudeSdk()
+    for (;;) {
+      const { start, boundary } = this.parts[this.part]
+      const messages = await this.messages(sdk, this.entries.slice(start, this.parts[this.part + 1]?.start))
+      if (this.done.some((uuid, i) => messages[i]?.uuid !== uuid)) return false
+      const summary = messages.find(isSummary)
+      if (this.compaction === 'bare' && summary !== undefined) return false
+      if (this.compaction === undefined && boundary !== undefined && !this.subagent) {
+        const held = (summary as { message?: { content?: unknown } } | undefined)?.message?.content
+        const text = typeof held === 'string' ? sdk.compactionSummaryText(held) : undefined
+        this.compaction = summary !== undefined ? 'summarized' : 'bare'
+        this.record.write({ method: ACP.sessionUpdate, params: { sessionId: this.sessionId, update: compactionUpdate(boundary, text) } })
+      }
+      for (const message of messages.slice(this.done.length)) {
+        this.translate(sdk, message)
+        this.done.push(message.uuid)
+      }
+      if (this.part === this.parts.length - 1) return true
+      this.part++
+      this.done = []
+      this.compaction = undefined
+    }
+  }
+
+  /** A part's messages; none for one the SDK cannot parse. */
+  private async messages(sdk: Sdk, entries: Array<Record<string, unknown>>): Promise<SessionMessage[]> {
     // A read-only store holding one part. `getSessionMessages` (follows
     // `parentUuid`, drops subagent turns) then reads bytes we supply
     // instead of claude's config dir.
     const sessionStore: SessionStore = {
-      load: () => Promise.resolve(part.entries as SessionStoreEntry[]),
+      load: () => Promise.resolve(entries as SessionStoreEntry[]),
       append: () => Promise.reject(new Error('yaac reads transcripts, never writes them')),
     }
-    let messages
     try {
-      messages = await getSessionMessages(sessionId, { sessionStore })
+      return await sdk.getSessionMessages(this.sessionId, { sessionStore })
     } catch (err) {
-      // An unparseable part yields nothing, not an error.
       serverLog(`[server] claude transcript replay failed: ${String(err)}`)
-      continue
+      return []
     }
+  }
 
-    const isSummary = (m: unknown): boolean => (m as { isCompactSummary?: unknown }).isCompactSummary === true
-    if (part.boundary !== undefined && !subagent) {
-      const held = (messages.find(isSummary) as { message?: { content?: unknown } } | undefined)?.message?.content
-      const summary = typeof held === 'string' ? compactionSummaryText(held) : undefined
-      record.write({ method: ACP.sessionUpdate, params: { sessionId, update: compactionUpdate(part.boundary, summary) } })
+  /** One message as the adapter's `replaySessionHistory` loop writes it,
+   *  minus its live-session parts. */
+  private translate(sdk: Sdk, message: SessionMessage): void {
+    const api = (message as { message?: { role?: unknown; content?: unknown } }).message
+    const role = api?.role
+    if (role !== 'assistant' && role !== 'user') return
+    if (isSummary(message) || sdk.isReplayHiddenMetaMessage(message)) return
+    // The live path turns claude's synthetic "Please run /login" message
+    // into an auth error; replaying it would show a stale login prompt.
+    // The reply claude adds to a stopped turn when it resumes was never
+    // shown live.
+    const synthetic = role === 'assistant' ? syntheticText(api) : undefined
+    if (synthetic?.includes('Please run /login') === true || synthetic === 'No response requested.') return
+    // A stop whose prompt claude never wrote would end the turn before.
+    if (role === 'user' && promptMissing(this.byUuid.get(message.uuid), this.byUuid)) return
+    let content = api?.content
+    // Slash-command bookkeeping (caveat preamble, invocation, stdout) is
+    // dropped. A task notification is kept whole: the adapter's stripper
+    // removes its markup too, but the projection reads it to settle the
+    // tasks the replay rebuilt (`AcpProjection.replayedWake`).
+    if (role === 'user' && !isTaskNotification(content)) {
+      content = sdk.stripLocalCommandMetadata(content)
+      if (content === null) return
     }
-
-    // The adapter's `replaySessionHistory` loop minus live-session parts.
-    for (const message of messages) {
-      const api = (message as { message?: { role?: unknown; content?: unknown } }).message
-      const role = api?.role
-      if (role !== 'assistant' && role !== 'user') continue
-      if (isSummary(message) || isReplayHiddenMetaMessage(message)) continue
-      // The live path turns claude's synthetic "Please run /login" message
-      // into an auth error; replaying it would show a stale login prompt.
-      // The reply claude adds to a stopped turn when it resumes was never
-      // shown live.
-      const synthetic = role === 'assistant' ? syntheticText(api) : undefined
-      if (synthetic?.includes('Please run /login') === true || synthetic === 'No response requested.') continue
-      // A stop whose prompt claude never wrote would end the turn before.
-      if (role === 'user' && promptMissing(byUuid.get(message.uuid), byUuid)) continue
-      let content = api?.content
-      // Slash-command bookkeeping (caveat preamble, invocation, stdout) is
-      // dropped. A task notification is kept whole: the adapter's stripper
-      // removes its markup too, but the projection reads it to settle the
-      // tasks the replay rebuilt (`AcpProjection.replayedWake`).
-      if (role === 'user' && !isTaskNotification(content)) {
-        content = stripLocalCommandMetadata(content)
-        if (content === null) continue
-      }
-      record.time(Date.parse(asString(byUuid.get(message.uuid)?.timestamp) ?? ''))
-      for (const notification of toAcpNotifications(
-        content as never, role, sessionId, toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
-        // With hooks off, the adapter returns notifications instead of pushing
-        // them through a client. The message id marks a message's chunks as
-        // one message, as the adapter's own replay does.
-        { registerHooks: false, messageId: messageIdForGrouping(message) },
-      )) {
-        record.write({ method: ACP.sessionUpdate, params: notification })
-      }
+    this.record.time(Date.parse(asString(this.byUuid.get(message.uuid)?.timestamp) ?? ''))
+    for (const notification of sdk.toAcpNotifications(
+      content as never, role, this.sessionId, this.toolUseCache, ACP_CLIENT_UNUSED, SILENT_LOGGER,
+      // With hooks off, the adapter returns notifications instead of pushing
+      // them through a client. The message id marks a message's chunks as
+      // one message, as the adapter's own replay does.
+      { registerHooks: false, messageId: sdk.messageIdForGrouping(message) },
+    )) {
+      this.record.write({ method: ACP.sessionUpdate, params: notification })
     }
   }
 }
 
-/**
- * A transcript's entries cut before each compaction boundary claude wrote
- * for the conversation itself; each part after the first carries the
- * boundary that opens it.
- */
-function compactedParts(entries: Record<string, unknown>[]): Array<{ boundary?: Record<string, unknown>; entries: Record<string, unknown>[] }> {
-  const parts: Array<{ boundary?: Record<string, unknown>; entries: Record<string, unknown>[] }> = [{ entries: [] }]
-  for (const entry of entries) {
-    if (entry.type === 'system' && entry.subtype === 'compact_boundary' && entry.isSidechain !== true) {
-      parts.push({ boundary: entry, entries: [] })
-    }
-    parts[parts.length - 1].entries.push(entry)
-  }
-  return parts
+/** The message holding a compaction's summary, which the compaction shows. */
+function isSummary(message: unknown): boolean {
+  return (message as { isCompactSummary?: unknown }).isCompactSummary === true
 }
 
 /** The `compaction_update` a boundary and the summary after it make. */

@@ -267,6 +267,52 @@ describe('attachAcp', () => {
     expect(sock.sent.length).toBe(before)
   })
 
+  it('shows a reader everything a pane sees and answers its reads, but acts on none of its frames', async () => {
+    const lines = [
+      { jsonrpc: '2.0', id: 'p-1', method: 'session/prompt', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'clean up' }] } },
+      updateLine({
+        sessionUpdate: 'async_task_spawned', asyncTaskId: 'b1', name: 'npm run dev', taskType: 'shell',
+        description: 'npm run dev', outputFilePath: '/tmp/claude-1000/w/tasks/b1.output', canStop: true,
+      }),
+      {
+        jsonrpc: '2.0', id: 55, method: 'session/request_permission',
+        params: {
+          sessionId: 'acp-1',
+          toolCall: { toolCallId: 'c1', title: 'rm -rf build', kind: 'execute' },
+          options: [{ optionId: 'allow', name: 'Allow Once', kind: 'allow_once' }],
+        },
+      },
+    ]
+    await record(lines)
+    reattach(undefined, { tailFile: () => Promise.resolve('listening on :3000\n') })
+    await waitFor(() => conversation.isAwaitingPermission)
+    const reader = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', reader, undefined, { control: false })
+    await waitForHello(reader)
+    expect(reader.sent.find((m) => m.type === 'hello')).toMatchObject({ busy: true })
+    expect(reader.sent.find((m) => m.type === 'hello')?.events.map((e) => e.type)).toContain('permission-request')
+
+    const written = transport.written.length
+    for (const msg of [
+      { type: 'prompt', text: 'rm -rf /' },
+      { type: 'cancel' },
+      { type: 'permission', requestId: '55', optionId: 'allow' },
+      { type: 'unqueue', id: 'q-1' },
+      { type: 'stop-task', taskId: 'b1' },
+      { type: 'permission-mode', mode: 'bypass' },
+      { type: 'effort', effort: 'high' },
+    ]) reader.clientSend(msg)
+    reader.clientSend({ type: 'task-output', taskId: 'b1' })
+    await waitFor(() => reader.sent.some((m) => m.type === 'task-output'))
+    expect(reader.sent.find((m) => m.type === 'task-output')).toEqual({ type: 'task-output', taskId: 'b1', text: 'listening on :3000\n' })
+    expect(transport.written.slice(written)).toEqual([])
+    expect(conversation.isAwaitingPermission).toBe(true)
+
+    // It still follows the conversation as it grows.
+    await record([...lines, updateLine({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } })])
+    await waitFor(() => reader.sent.some((m) => m.type === 'event' && m.event.type === 'agent'))
+  })
+
   it('ignores an empty prompt and a binary frame instead of forwarding garbage', async () => {
     const sock = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', sock)
@@ -496,16 +542,23 @@ describe('attachAcp', () => {
     expect(lastQueue(sock)).toEqual(conversation.queuedPrompts)
     expect(conversation.queuedPrompts.map((q) => [q.text, q.images])).toEqual([['and the lint', 0], ['then commit', 0]])
 
-    // A pane attaching now is greeted with the queue.
+    // A pane attaching now is greeted with the queue. A reader is shown none
+    // of it, since the owner may still withdraw a queued message.
     const late = new FakeSocket()
     attachAcp('demo', 'wt-1', 'acp-1', late)
     await waitForHello(late)
     expect(lastQueue(late)).toHaveLength(2)
+    const reader = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', reader, undefined, { control: false })
+    await waitForHello(reader)
+    expect(lastQueue(reader)).toEqual([])
 
     // Dropping one means the agent never sees it.
     const [dropped] = conversation.queuedPrompts
     sock.clientSend({ type: 'unqueue', id: dropped.id })
     await waitFor(() => lastQueue(late)?.length === 1)
+    expect(reader.sent.some((m) => m.type === 'queue')).toBe(false)
+    reader.clientClose()
 
     // The next queued message goes out only once panes have this turn's end,
     // so a pane never draws it inside the turn it followed.

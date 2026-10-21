@@ -24,7 +24,7 @@ export {
   type DrivenWorkspace,
   type LiveAgent,
 } from './drivers'
-export { attachAcp } from './acp-bridge'
+export { attachAcp, type AcpSocket } from './acp-bridge'
 // The webapp's terminals hold their own control-mode client; the status
 // watcher lists them over its own.
 export { ControlModeClient, listTerminals, type ControlModeNotification } from './control-mode'
@@ -54,7 +54,7 @@ export { ensureToolApiKeyConfig } from './tool-api-keys'
 export { buildWindowsExec } from './setup-commands'
 export { PromptNotRunError, type AcpConversation } from './acp-client'
 export { acpPage, acpRecord, acpStoredImage, readAcpFirstPrompt, readAcpLife, readAcpPage, replayAcpLog, type AcpLife, type RecordOrigin } from './acp-log'
-export { claudeSubagentThreads, claudeTranscriptAsAcp } from './claude-acp-replay'
+export { ClaudeTranscriptReplay, claudeSubagentThreads, claudeTranscriptAsAcp } from './claude-acp-replay'
 export { codexTranscriptAsAcp } from './codex-acp-replay'
 export { opencodeTranscriptAsAcp } from './opencode-acp-replay'
 export { piTranscriptAsAcp } from './pi-acp-replay'

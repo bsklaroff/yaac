@@ -925,7 +925,9 @@ function isAllow(option: AcpPermissionOption | undefined): boolean {
  *
  * Buttons disable on click, but the card changes only when the server's
  * `permission-resolved` arrives; a send that fails re-enables them. Without
- * `onAnswer` (a stopped workspace's transcript) no buttons are shown.
+ * `onAnswer` no buttons are shown, and the card says the ask waits on
+ * `waitingOn` (a teammate's running workspace) or, with neither, that it
+ * was never answered (a stopped workspace's transcript).
  */
 function PermissionRow({
   workspaceId,
@@ -936,6 +938,7 @@ function PermissionRow({
   options,
   decided,
   onAnswer,
+  waitingOn,
   reveal,
 }: {
   workspaceId: string
@@ -946,6 +949,7 @@ function PermissionRow({
   options: AcpPermissionOption[]
   decided?: { outcome: 'selected' | 'cancelled'; optionId?: string }
   onAnswer?: (requestId: string, optionId?: string) => boolean
+  waitingOn?: string | null
   reveal: boolean
 }): JSX.Element {
   const [sending, setSending] = useState(false)
@@ -993,7 +997,9 @@ function PermissionRow({
     <div className="space-y-2 rounded-lg border border-warning/60 bg-warning/5 px-3 py-2">
       <div className="flex items-center gap-1.5 text-xs font-medium text-warning">
         <WarningIcon size={12} className="shrink-0" />
-        {onAnswer === undefined ? 'Permission was never answered' : 'Permission needed'}
+        {onAnswer !== undefined ? 'Permission needed'
+          : waitingOn === undefined ? 'Permission was never answered'
+          : `Waiting for ${waitingOn === null ? 'an' : `${waitingOn}'s`} answer`}
       </div>
       {toolCall !== undefined && <ToolRow workspaceId={workspaceId} call={toolCall} asked />}
       {onAnswer !== undefined && (
@@ -1178,6 +1184,7 @@ export function AcpTranscript({
   busy = false,
   live = false,
   onAnswerPermission,
+  waitingOn,
   onOpenSubagent,
   onOpenTask,
   condensed = false,
@@ -1194,6 +1201,9 @@ export function AcpTranscript({
   /** Sends a permission answer; returns false if it could not be sent.
    *  Omitted for a stopped workspace, whose asks render as unanswered. */
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean
+  /** A running conversation the viewer cannot answer (a teammate's): an
+   *  open ask says it waits on this user, or on someone unnamed for null. */
+  waitingOn?: string | null
   /** Whether the conversation is running (see `StateMark`). */
   live?: boolean
   /** Show a subagent's or task's own view; a card is inert without one. */
@@ -1277,6 +1287,7 @@ export function AcpTranscript({
               reveal={found?.hidden.has(g.seq) === true}
               {...(g.kind === 'tool' ? { progress: progressOf(g) } : {})}
               {...(onAnswerPermission !== undefined ? { onAnswerPermission } : {})}
+              {...(waitingOn !== undefined ? { waitingOn } : {})}
             />
           )}
         </div>
@@ -1360,6 +1371,7 @@ function GroupView({
   reveal,
   progress,
   onAnswerPermission,
+  waitingOn,
 }: {
   workspaceId: string
   group: Exclude<Group, { kind: 'subagent' | 'task' | 'compaction' }>
@@ -1368,6 +1380,7 @@ function GroupView({
   /** How to mark an unfinished tool call; see `ToolRow`. */
   progress?: 'running' | 'interrupted'
   onAnswerPermission?: (requestId: string, optionId?: string) => boolean
+  waitingOn?: string | null
 }): JSX.Element {
   if (g.kind === 'user') {
     // Rendered as plain text, not markdown.
@@ -1420,6 +1433,7 @@ function GroupView({
         options={g.options}
         {...(g.decided !== undefined ? { decided: g.decided } : {})}
         {...(onAnswerPermission !== undefined ? { onAnswer: onAnswerPermission } : {})}
+        {...(waitingOn !== undefined ? { waitingOn } : {})}
       />
     )
   }

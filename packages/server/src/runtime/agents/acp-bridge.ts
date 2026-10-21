@@ -12,7 +12,11 @@
  *  - Detaching only unsubscribes; the driver's connection owns the
  *    conversation (which is why acpd exists).
  *
- * Several panes (tabs) may attach to one conversation at once.
+ * Several panes (tabs) may attach to one conversation at once, and so may
+ * readers who cannot drive it (`control: false`, the `/acp/observe` route):
+ * they are sent what an attached pane is bar the queued messages, and only
+ * their reads are answered (a task's output, a subagent's transcript).
+ * Every frame that would act on the conversation is dropped.
  */
 
 import { acpConversation } from './acp-registry'
@@ -85,6 +89,7 @@ export function attachAcp(
   agentSessionId: string,
   sock: AcpSocket,
   origin: (life: AcpLife | undefined) => Promise<RecordOrigin> = () => Promise.resolve({ firstPage: 0, skipReplay: false }),
+  { control = true }: { control?: boolean } = {},
 ): void {
   const conversation = acpConversation(projectId, workspaceId, agentSessionId)
   const send = (msg: AcpServerMessage): void => {
@@ -140,7 +145,7 @@ export function attachAcp(
           type: 'hello',
           agentSessionId,
           busy: conversation.isBusy,
-          queued: conversation.queuedPrompts,
+          queued: control ? conversation.queuedPrompts : [],
           page,
           ...(life !== undefined ? { life } : {}),
           events,
@@ -174,7 +179,10 @@ export function attachAcp(
   )
   // Flushed like turn boundaries, so a message leaving the queue to start a
   // turn is already in the record the pane shows.
+  // A reader is not shown the queue: those are messages the owner may still
+  // withdraw before the agent sees them.
   const unsubscribeQueue = conversation.onQueue((queued) => {
+    if (!control) return
     void tail.flush()
       .catch(() => { /* the next pass retries */ })
       .then(() => {
@@ -202,43 +210,6 @@ export function attachAcp(
     try {
       msg = JSON.parse(toText(data)) as AcpClientMessage
     } catch {
-      return
-    }
-    if (msg.type === 'cancel') {
-      conversation.cancel()
-      return
-    }
-    if (msg.type === 'unqueue' && typeof msg.id === 'string') {
-      conversation.unqueue(msg.id)
-      return
-    }
-    if (msg.type === 'permission' && typeof msg.requestId === 'string') {
-      // Nothing to echo: the recorded reply comes back through the tail as
-      // `permission-resolved`, so the pane cannot get ahead of the agent.
-      conversation.answerPermission(
-        msg.requestId,
-        typeof msg.optionId === 'string' ? msg.optionId : undefined,
-      )
-      return
-    }
-    if (msg.type === 'model' && typeof msg.modelId === 'string' && offeredModels.has(msg.modelId)) {
-      // The reply is recorded, so the pane learns the new model as a
-      // `models` event from the tail.
-      void conversation.switchModel(msg.modelId)
-      return
-    }
-    if (msg.type === 'permission-mode' && conversation.permissionModes.available.includes(msg.mode)) {
-      void conversation.switchPermissionMode(msg.mode)
-      return
-    }
-    if (msg.type === 'effort' && conversation.efforts.available.some((o) => o.value === msg.effort)) {
-      void conversation.switchEffort(msg.effort)
-      return
-    }
-    if (msg.type === 'stop-task' && typeof msg.taskId === 'string' && tasks.get(msg.taskId)?.canStop === true) {
-      void conversation.stopTask(msg.taskId).catch((err: unknown) => {
-        serverLog(`[server] acp attach ${workspaceId}/${agentSessionId}: stopping task ${msg.taskId} failed: ${String(err)}`)
-      })
       return
     }
     if (msg.type === 'task-output' && typeof msg.taskId === 'string') {
@@ -274,6 +245,44 @@ export function attachAcp(
           (events) => reply({ events }),
           (err: unknown) => reply({ error: err instanceof Error ? err.message : String(err) }),
         )
+      return
+    }
+    if (!control) return
+    if (msg.type === 'cancel') {
+      conversation.cancel()
+      return
+    }
+    if (msg.type === 'unqueue' && typeof msg.id === 'string') {
+      conversation.unqueue(msg.id)
+      return
+    }
+    if (msg.type === 'permission' && typeof msg.requestId === 'string') {
+      // Nothing to echo: the recorded reply comes back through the tail as
+      // `permission-resolved`, so the pane cannot get ahead of the agent.
+      conversation.answerPermission(
+        msg.requestId,
+        typeof msg.optionId === 'string' ? msg.optionId : undefined,
+      )
+      return
+    }
+    if (msg.type === 'model' && typeof msg.modelId === 'string' && offeredModels.has(msg.modelId)) {
+      // The reply is recorded, so the pane learns the new model as a
+      // `models` event from the tail.
+      void conversation.switchModel(msg.modelId)
+      return
+    }
+    if (msg.type === 'permission-mode' && conversation.permissionModes.available.includes(msg.mode)) {
+      void conversation.switchPermissionMode(msg.mode)
+      return
+    }
+    if (msg.type === 'effort' && conversation.efforts.available.some((o) => o.value === msg.effort)) {
+      void conversation.switchEffort(msg.effort)
+      return
+    }
+    if (msg.type === 'stop-task' && typeof msg.taskId === 'string' && tasks.get(msg.taskId)?.canStop === true) {
+      void conversation.stopTask(msg.taskId).catch((err: unknown) => {
+        serverLog(`[server] acp attach ${workspaceId}/${agentSessionId}: stopping task ${msg.taskId} failed: ${String(err)}`)
+      })
       return
     }
     if (msg.type === 'prompt' && typeof msg.text === 'string') {

@@ -77,9 +77,12 @@ calling workspace, not per user.
 There are two access levels:
 
 - **`reader`**: any user, any resource. Workspace lists and details,
-  transcripts, diffs, project pages, build files, and the file explorer's
+  transcripts, diffs, project pages, build files, the file explorer's
   reads of a teammate's working tree (`/changes`, `/dir`, `/file`,
-  `/file-at`). `/file-at` runs `git cat-file` in the running workspace,
+  `/file-at`), and `/acp/observe`, which follows a running conversation
+  (see "Following a teammate's conversation"); its only answers are reads
+  of what the conversation names, a background task's output and a
+  subagent's transcript. `/file-at` runs `git cat-file` in the running workspace,
   but only for a full hex object id and a confined path, under the
   owner's own git config, so a reader gains no execution and, under
   `k8s`, nothing secret the workspace's files do not already show.
@@ -108,9 +111,10 @@ project that does not exist is `NOT_FOUND`, never open. A refusal is
   by its project's owner.
 - A project's build files are read at `reader` and written at `owner`: the
   build-files routes ask `resolveRoot` for the dir at the level each needs.
-- An attach is checked against the workspace's row before the upgrade (a
-  real 403) and again against the unit it resolves to when the socket
-  opens, so an id with no row yet is not let through.
+- An `owner` attach is checked against the workspace's row before the
+  upgrade (a real 403) and again against the unit it resolves to when the
+  socket opens, so an id with no row yet is not let through.
+  `/acp/observe` checks only that the workspace exists and runs.
 - Routes that act only on the caller's own data need no check, and a
   second user gets their own answer rather than a 403: `/auth/*` and the
   `/agent/auth` socket, `/config/*`, `/shortcuts/*`. A git credential is
@@ -214,11 +218,14 @@ install-wide fields (image builds, plan usage, driver) pass through.
   across all their projects, or `idle`; the count is install-wide, like
   the snapshot it reads.
 - **A teammate's view is read-only.** Controls that write are hidden or
-  disabled, and nothing attaches: a teammate's workspace, running or
-  stopped, opens in the read-only pane (the same one the caller's own
-  stopped workspaces open in), a running one refetched every 5 seconds. Views
-  that write as a side effect (marking a death seen, remembering create
-  choices) skip the write. The server refuses all of these anyway.
+  disabled, and nothing that grants control attaches: a teammate's
+  workspace, running or stopped, opens in the read-only pane (the same one
+  the caller's own stopped workspaces open in), and a running one's
+  conversation is followed live over `/acp/observe`. Its markers are the
+  sidebar's (`StatusMark`, from the snapshot's per-conversation status),
+  and an ask says it waits on the teammate by name. Views that write as a
+  side effect (marking a death seen, remembering create choices) skip the
+  write. The server refuses all of these anyway.
 - **Settings.** A teammate's project pages show read-only, env var names
   with secret values masked. Personal settings (credentials, git identity,
   shortcuts, `Dockerfile.user`) always show the caller's own.
@@ -227,9 +234,45 @@ install-wide fields (image builds, plan usage, driver) pass through.
   and group listings mean the caller's own projects, or those of the user
   `--user` names (docs/cli.md "Whose projects").
 
+## Following a teammate's conversation
+
+`/acp/observe?id=&session=` sends a reader the frames a chat pane gets
+(`hello` with the last page, then events) for either mode, so the read-only
+pane has one code path. It follows only the selected conversation, and shows
+the transcript route's last page until the stream's first one arrives.
+
+- **`acp`.** The pane bridge (`attachAcp`) with `control: false`: every
+  frame that would act on the conversation (a prompt, cancel, permission
+  answer, queue, model, posture, effort or task stop) is dropped, and only
+  the two reads are answered.
+- **`tui`.** There is no record, only the tool's own history, so one
+  `HistoryTail` per conversation (`#domain/workspaces`) follows it for all
+  of its readers. It stats the history's files every 250 ms, translates them
+  when they change (`followHistory`, which for claude reads only what was
+  appended), and sends each reader the events added since; a translation
+  that changed what was sent (a `/rewind`) greets them again. A subagent's
+  transcript is followed the same way: each reader follows the last one it
+  opened, and each one followed is translated once per change and sent to
+  all its readers. The next pass waits at least four times as long as the
+  last took, so a huge history is followed less often rather than costing
+  more of the server. A conversation nobody follows costs nothing, a
+  waiting one a few stats a second, and readers past the first only the
+  frames sent to them, so readers are not capped. The tail holds what it
+  translated only while someone follows. Its `hello` carries `history`:
+  the history records no turns, so the pane takes the agent's state from
+  the snapshot.
+- **What a reader is not sent.** The messages the owner queued for the end
+  of a turn, which the owner may still withdraw: a reader's `hello` carries
+  none and no `queue` frames follow.
+
+The tools write history a message at a time, so a `tui` conversation's
+reader sees each reply, tool call and result once written, not its text
+streaming in. opencode under `k8s` is the exception: the server sees it only
+through the checkpoint's export, every few minutes (issue #465).
+
 ## Not covered
 
 - Tagged tailnet devices as callers (resolving them with `whois`).
-- Live read-only views of a teammate's chat or terminal (issue #326),
-  presence, handoff and comments.
+- A live read-only view of a teammate's terminal, presence, handoff and
+  comments.
 - Team projects, with an owner naming a team and roles within it.

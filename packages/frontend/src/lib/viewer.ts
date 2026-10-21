@@ -34,6 +34,15 @@ export function useTeammateView(): boolean {
   return viewed !== null && me !== undefined && viewed !== me
 }
 
+/** The viewed user's name while it is a teammate's data that is shown:
+ *  whose answers and attention their workspaces wait on. */
+export function useTeammateName(): string | undefined {
+  const teammate = useTeammateView()
+  const viewed = useViewedUserId()
+  const name = useWhoami()?.users.find((u) => u.id === viewed)?.name
+  return teammate ? name ?? 'its owner' : undefined
+}
+
 /**
  * Whether the active project is shown read-only: it is another user's, or a
  * share its source's owner removed, which its owner can still read but no

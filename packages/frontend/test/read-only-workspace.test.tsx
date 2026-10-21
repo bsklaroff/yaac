@@ -11,7 +11,7 @@ import { ReadOnlyWorkspace, type ReadOnlySubject } from '#components/ReadOnlyWor
 import { useStoppedEntry } from '#lib/useStoppedWorkspaces'
 import { useUiStore } from '#lib/store'
 import {
-  agentEvent, agentSession, mockFetch, renderWithClient, serverError, testQueryClient, userEvent, workspaceEntry,
+  agentEvent, agentSession, mockFetch, renderWithClient, serverError, TEST_WHOAMI, testQueryClient, userEvent, workspaceEntry,
   type FetchCall, type FetchMock,
 } from './harness'
 
@@ -161,9 +161,24 @@ describe('ReadOnlyWorkspace', () => {
 
   it('shows a teammate\'s running workspace with its status and no actions', () => {
     useUiStore.setState({ viewedUserId: 'u-ada' })
-    renderPane({ kind: 'live', entry: workspaceEntry({ workspaceId: 'w1', tool: 'codex', title: 'Their run' }) })
+    const client = testQueryClient({ ...TEST_WHOAMI, users: [...TEST_WHOAMI.users, { id: 'u-ada', login: 'ada@example.com', name: 'Ada' }] })
+    const view = renderWithClient(
+      <ReadOnlyWorkspace subject={{ kind: 'live', entry: workspaceEntry({ workspaceId: 'w1', tool: 'codex', title: 'Their run' }) }} />,
+      client,
+    )
     expect(screen.getByText('Their run')).toBeTruthy()
-    expect(screen.getByText('Status').nextElementSibling?.textContent).toBe('running')
+    expect(screen.getByText('Status').nextElementSibling?.textContent).toBe('Working')
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+
+    // Stopped on an ask, it waits on its owner, who is named.
+    view.rerender(
+      <QueryClientProvider client={client}>
+        <ReadOnlyWorkspace subject={{
+          kind: 'live',
+          entry: workspaceEntry({ workspaceId: 'w1', tool: 'codex', title: 'Their run', status: 'waiting', asking: true }),
+        }} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('Status').nextElementSibling?.textContent).toBe('?Waiting for Ada\'s answer')
   })
 })

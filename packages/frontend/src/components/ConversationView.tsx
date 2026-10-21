@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState, type JSX, type MouseEventHandler, type ReactNode, type RefObject } from 'react'
+import {
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type MouseEventHandler, type ReactNode,
+  type RefObject,
+} from 'react'
 import clsx from 'clsx'
 import {
   AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory, USER_BUBBLE, type Group,
@@ -25,21 +28,27 @@ import type { AcpEvent } from '@yaac/shared/acp'
  * differ around them: a composer or a footer, tabs, empty states.
  */
 
-/** The live pane's socket, which answers permission asks, reads a task's
- *  output and a finished subagent's own transcript, and stops a task. */
-type LiveStream = Pick<AcpStream, 'send' | 'connected' | 'taskOutputs' | 'subagentTranscripts'>
+/** The pane's socket, which reads a task's output and a subagent's own
+ *  transcript, and unless the view is `readOnly` answers permission asks
+ *  and stops a task. */
+type LiveStream = Pick<AcpStream, 'send' | 'connected' | 'history' | 'taskOutputs' | 'subagentTranscripts'>
 
 /**
- * One conversation's view. Without `stream` it is a record: nothing can be
- * answered, and anything still marked running was cut off. A subagent or
- * task the events no longer hold (a restarted agent) falls back to the
- * conversation. Esc returns to it from a pane on screen (`visible`).
+ * One conversation's view. Unless `live` (by default, while it has a
+ * `stream`) it is a record: anything still marked running was cut off.
+ * `readOnly` is a running conversation the viewer watches but cannot drive
+ * (a teammate's): nothing answers an ask or stops a task, and an open ask
+ * says it waits on `owner`. A subagent or task the events no longer hold (a
+ * restarted agent) falls back to the conversation. Esc returns to it from
+ * a pane on screen (`visible`).
  */
 export function useConversationView({
   workspaceId,
   events,
   busy = false,
   stream,
+  live = stream !== undefined,
+  readOnly,
   scrollRef,
   find,
   visible = true,
@@ -49,6 +58,8 @@ export function useConversationView({
   /** A turn of the main conversation is in flight. */
   busy?: boolean
   stream?: LiveStream
+  live?: boolean
+  readOnly?: { owner?: string }
   /** The scrolling element the find bar searches. */
   scrollRef: RefObject<HTMLElement | null>
   find: FindOptions
@@ -66,24 +77,28 @@ export function useConversationView({
    *  subagent or task is shown. */
   titleBar: JSX.Element | undefined
 } {
-  const live = stream !== undefined
   const condensed = useUiStore((s) => s.chatCondensed)
+  /** The socket that may act on the conversation. */
+  const control = readOnly === undefined ? stream : undefined
   const [opened, setOpened] = useState<ActivityTarget | undefined>()
   const activity = useMemo(() => latestActivity(events), [events])
   const subagent = opened?.kind === 'subagent' ? activity.subagents.get(opened.id) : undefined
   const task = opened?.kind === 'task' ? activity.tasks.get(opened.id) : undefined
   const view = subagent !== undefined || task !== undefined ? opened : undefined
 
-  /** A finished subagent the live record shows without its thread (a
-   *  `session/load` replay leaves it out) is read from its own transcript. */
+  /** A subagent the record shows without its thread is read from its own
+   *  transcript: a finished one a `session/load` replay left out, or any one
+   *  in a tool's history. The server sends a history's again as it grows,
+   *  but only the last one the pane asked for, so it is asked for each time
+   *  it is opened. */
   const ownThread = subagent !== undefined && events.some((e) => 'thread' in e && e.thread === subagent.id)
-  const wantsTranscript = live && subagent !== undefined && !ownThread && !active(subagent)
+  const wantsTranscript = stream !== undefined && subagent !== undefined && !ownThread
+    && (!active(subagent) || stream.history)
   const transcript = wantsTranscript ? stream.subagentTranscripts[subagent.id] : undefined
+  const ask = wantsTranscript && (transcript === undefined || stream.history)
   useEffect(() => {
-    if (wantsTranscript && stream.connected && transcript === undefined) {
-      stream.send({ type: 'subagent-transcript', subagentId: subagent.id })
-    }
-  }, [wantsTranscript, stream?.connected, transcript, subagent?.id])
+    if (ask && stream.connected) stream.send({ type: 'subagent-transcript', subagentId: subagent.id })
+  }, [ask, stream?.connected, subagent?.id])
 
   const groups = useMemo(() => {
     if (transcript?.events === undefined) return groupEvents(events, subagent?.id)
@@ -121,7 +136,7 @@ export function useConversationView({
         streamed={call.output}
         {...(stream?.taskOutputs[task.id] !== undefined ? { output: stream.taskOutputs[task.id] } : {})}
         live={live}
-        {...(live && task.outputFile !== undefined
+        {...(stream !== undefined && !stream.history && task.outputFile !== undefined
           ? { onRefresh: () => stream.send({ type: 'task-output', taskId: task.id }) }
           : {})}
       />
@@ -135,12 +150,13 @@ export function useConversationView({
           busy={working}
           live={live}
           condensed={condensed}
-          {...(live
+          {...(control !== undefined
             ? {
               onAnswerPermission: (requestId: string, optionId?: string) =>
-                stream.send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) }),
+                control.send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) }),
             }
             : {})}
+          {...(live && readOnly !== undefined ? { waitingOn: readOnly.owner ?? null } : {})}
           onOpenSubagent={(id) => setOpened({ kind: 'subagent', id })}
           onOpenTask={(id) => setOpened({ kind: 'task', id })}
         />
@@ -158,8 +174,8 @@ export function useConversationView({
       />
     ) : task !== undefined ? (
       <ActivityTitleBar category={taskCategory(task)} title={task.name} state={task.state} live={live} onBack={back}>
-        {live && active(task) && task.canStop === true && (
-          <StopTaskButton onStop={() => stream.send({ type: 'stop-task', taskId: task.id })} />
+        {control !== undefined && active(task) && task.canStop === true && (
+          <StopTaskButton onStop={() => control.send({ type: 'stop-task', taskId: task.id })} />
         )}
       </ActivityTitleBar>
     ) : undefined,
@@ -179,6 +195,48 @@ export function Working({ caption = 'working' }: { caption?: string }): JSX.Elem
       </span>
     </div>
   )
+}
+
+/**
+ * Keep a chat pane's list at its tail while the reader is there, so what
+ * arrives shows as it comes, but never move a reader who scrolled up or is
+ * on an earlier page. A new `view` starts at its tail. Gives the list's
+ * `onScroll`; `keep`, for a layout change elsewhere (the composer growing)
+ * to keep a reader at the tail there; and `pin`, to follow the tail again
+ * (the reader sent a message).
+ */
+export function useFollowTail(
+  scrollRef: RefObject<HTMLElement | null>,
+  pages: Pick<TranscriptPages, 'atEnd' | 'onScroll'>,
+  view: unknown,
+): { onScroll: () => void; keep: () => void; pin: () => void } {
+  const pinned = useRef(true)
+  const atEnd = useRef(pages.atEnd)
+  atEnd.current = pages.atEnd
+  const keep = useCallback(() => {
+    const el = scrollRef.current
+    if (el && pinned.current && atEnd.current) el.scrollTop = el.scrollHeight
+  }, [scrollRef])
+  useLayoutEffect(() => {
+    pinned.current = true
+  }, [view])
+  // After every render, since anything rendered may have grown the list.
+  useLayoutEffect(keep)
+  // And when the list shrinks, e.g. when a phone's soft keyboard opens.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(keep)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [scrollRef, keep])
+  const onScroll = (): void => {
+    const el = scrollRef.current
+    if (!el) return
+    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+    pages.onScroll()
+  }
+  return { onScroll, keep, pin: () => { pinned.current = true } }
 }
 
 /** In place of a page of the conversation being read, at the end it joins. */

@@ -4,7 +4,7 @@ import type { IdentityEnv } from '#api/http/web-auth'
 import type { EventHub, WsLike } from '#api/events'
 import { authorizeProject } from '#domain/access'
 import { authAgentHub } from '#domain/auth'
-import { recordOrigin, resolveWorkspaceContainer } from '#domain/workspaces'
+import { observeConversation, recordOrigin, resolveWorkspaceContainer } from '#domain/workspaces'
 import { findWorkspaceRow } from '#db'
 import { attachPty, type SocketLike, TUNNEL_DIAL_FAILED, attachPortTunnel } from '#runtime/terminals'
 import { attachAcp } from '#runtime/agents'
@@ -66,8 +66,10 @@ function socketOf(ws: { raw?: unknown }): SocketLike {
 type AttachTarget = Awaited<ReturnType<typeof resolveWorkspaceContainer>>
 
 /**
- * An attach: a WebSocket into one running workspace, which grants execution
- * in it or a tunnel into it, so only its owner may open one.
+ * An attach: a WebSocket into one running workspace. One that grants
+ * execution in it or a tunnel into it is `owner`-only; one that only shows
+ * what it is doing (`/acp/observe`) is open to every `reader`
+ * (docs/multi-user.md "Authorization").
  *
  * The id is exact, so a missing one is refused before any lookup, and the
  * conversation id (`session`) is validated because it is joined into a path
@@ -80,7 +82,7 @@ type AttachTarget = Awaited<ReturnType<typeof resolveWorkspaceContainer>>
 function attachRoute(
   app: Hono<IdentityEnv>,
   path: string,
-  opts: { session?: boolean },
+  opts: { session?: boolean; access: 'owner' | 'reader' },
   setup: (c: Context<IdentityEnv>) => {
     open: (target: AttachTarget, socket: SocketLike) => void
     refuse: (socket: SocketLike, err: unknown) => void
@@ -93,7 +95,7 @@ function attachRoute(
       throw new ServerError('VALIDATION', 'a valid conversation id is required')
     }
     const row = await findWorkspaceRow(id)
-    if (row) await authorizeProject(c.get('principal'), row.projectId)
+    if (row && opts.access === 'owner') await authorizeProject(c.get('principal'), row.projectId)
     await next()
   }
   app.get(path, checkQuery, upgradeWebSocket((c) => {
@@ -104,7 +106,9 @@ function attachRoute(
     return {
       onOpen: (_evt, ws) => {
         const socket = socketOf(ws)
-        void resolveWorkspaceContainer(id, { requireRunning: true, exact: true, owner: principal })
+        void resolveWorkspaceContainer(id, {
+          requireRunning: true, exact: true, ...(opts.access === 'owner' ? { owner: principal } : {}),
+        })
           .then((target) => open(target, socket), (err: unknown) => refuse(socket, err))
       },
     }
@@ -189,7 +193,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // tmux. Not under /workspace/ to avoid colliding with GET /workspace/:id.
   // attachPty validates the query and spawns the PTY at the browser's size,
   // so tmux and the client grid match from the first frame.
-  attachRoute(app, '/api/pty/attach', {}, (c) => {
+  attachRoute(app, '/api/pty/attach', { access: 'owner' }, (c) => {
     const id = c.req.query('id') ?? ''
     const query = { target: c.req.query('target'), cols: c.req.query('cols'), rows: c.req.query('rows') }
     return {
@@ -208,7 +212,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // server binds no host port on either driver; `yaac forward` or the
   // desktop app listens on the user's machine and opens one of these per
   // connection (docs/port-forward-tunnel.md).
-  attachRoute(app, '/api/forward/attach', {}, (c) => {
+  attachRoute(app, '/api/forward/attach', { access: 'owner' }, (c) => {
     const id = c.req.query('id') ?? ''
     const port = Number(c.req.query('port'))
     return {
@@ -227,7 +231,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // ACP bridge: one chat pane per connection, attached to the live
   // `AcpConversation` held by the status watcher's driver. Frames are JSON
   // events.
-  attachRoute(app, '/api/acp/attach', { session: true }, (c) => {
+  attachRoute(app, '/api/acp/attach', { session: true, access: 'owner' }, (c) => {
     const id = c.req.query('id') ?? ''
     const agentSessionId = c.req.query('session') ?? ''
     return {
@@ -239,6 +243,27 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
         const message = 'session not found or not running'
         trySend(socket, { type: 'health', connected: false }, { type: 'error', message })
         socket.close(1011, message)
+      },
+    }
+  })
+
+  // The same conversation for a reader who may watch but not drive it:
+  // an `acp` one with its controls refused, a `tui` one followed through
+  // its tool's history (`observeConversation`).
+  attachRoute(app, '/api/acp/observe', { session: true, access: 'reader' }, (c) => {
+    const id = c.req.query('id') ?? ''
+    const agentSessionId = c.req.query('session') ?? ''
+    return {
+      open: ({ projectId }, socket) => {
+        void observeConversation(projectId, id, agentSessionId, socket).catch((err: unknown) => {
+          serverLog(`[server] acp observe ${id}/${agentSessionId}: ${errorText(err)}`)
+          socket.close(1011, 'observe failed')
+        })
+        serverLog(`[server] acp observe: session=${id} conversation=${agentSessionId}`)
+      },
+      refuse: (socket) => {
+        trySend(socket, { type: 'health', connected: false })
+        socket.close(1011, 'session not found or not running')
       },
     }
   })

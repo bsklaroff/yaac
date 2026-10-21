@@ -11,6 +11,7 @@ import { useMutation } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
+import { StatusMark } from '#components/StatusMark'
 import { StopWorkspaceDialog } from '#components/StopWorkspaceDialog'
 import { RowMenu } from '#components/sidebar/RowMenu'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
@@ -22,7 +23,7 @@ import { stopProvisioning, stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlo
 import { useUiStore, isUnreadWaiting, isUnseenDeath } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
-import { useReadOnly } from '#lib/viewer'
+import { useReadOnly, useTeammateName } from '#lib/viewer'
 import { useRestartStopped } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
@@ -147,20 +148,6 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
   )
 }
 
-/** The six-dot grid the row's activity indicators animate (index.css). */
-function BrailleDots({ className, title }: { className: string; title?: string }): JSX.Element {
-  return (
-    <span className={clsx('shrink-0', className)} title={title} aria-hidden>
-      <i />
-      <i />
-      <i />
-      <i />
-      <i />
-      <i />
-    </span>
-  )
-}
-
 /** How many of a workspace's agent sessions are active. Zero reads as the
  *  ordinary single-agent case. */
 function openAgentCount(workspace: WorkspaceListEntry): number {
@@ -198,6 +185,7 @@ export function WorkspaceRow({
   // never runs.
   const isMobile = useIsMobile()
   const unread = isUnreadWaiting(workspace)
+  const teammate = useTeammateName()
   const stopping = isTerminating(workspace, pendingDeleteIds)
 
   const onConfirmDelete = (): void => {
@@ -291,25 +279,12 @@ export function WorkspaceRow({
             {/* On hover (always on mobile) the title insets to clear the
                 actions menu. */}
             <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
-              {/* One marker per status: an ask waiting on an answer (which
-                  wins over the rest), a spinner while running, a slow swell
-                  while only background work runs, or the unread dot. */}
-              {workspace.asking && (
-                <span
-                  className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-rose-500
-                    text-[9px] font-bold leading-none text-white"
-                  title="Waiting for your answer"
-                  aria-label="Waiting for your answer"
-                >
-                  ?
-                </span>
-              )}
-              {workspace.status === 'running' && <BrailleDots className="braille-spinner text-emerald-400" />}
-              {workspace.status === 'background' && (
-                <BrailleDots className="braille-spinner braille-breathe text-sky-400" title="Background work running" />
-              )}
-              {/* Unread dot: waiting and not yet viewed. */}
-              {unread && !workspace.asking && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
+              <StatusMark
+                status={workspace.status}
+                asking={workspace.asking === true}
+                unread={unread}
+                {...(teammate !== undefined ? { owner: teammate } : {})}
+              />
               <MarqueeTitle
                 text={workspace.title || workspace.prompt || 'New workspace'}
                 hovered={hovered && !isMobile}

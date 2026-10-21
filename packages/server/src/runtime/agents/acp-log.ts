@@ -205,9 +205,14 @@ export async function readAcpPage(ref: AcpRecordRef, page?: number, origin = NO_
  * The history of agent lives that have ended replays `ended`: closed by
  * acpd's exit line, past the cap too, so what it left running shows as
  * stopped rather than still going.
+ *
+ * Lines are projected as they are written, so a translation that follows a
+ * growing history keeps writing to one writer, and `events` is always the
+ * whole conversation so far.
  */
 export class AcpRecordWriter {
-  private readonly lines: string[] = []
+  private readonly projection = new RecordProjection()
+  readonly events: AcpEvent[] = []
   private left = MAX_ACP_RECORD_BYTES
   private full = false
   private marked: number | undefined
@@ -231,12 +236,14 @@ export class AcpRecordWriter {
     }
     this.left -= line.length + 1
     if (this.left < 0) this.full = true
-    else this.lines.push(line)
+    else this.events.push(...this.projection.line(line))
   }
 
+  /** The conversation's events, closed by acpd's exit line when `ended`.
+   *  Ending is final: nothing is written after it. */
   replay(ended = false): AcpEvent[] {
-    const exit = ended ? [JSON.stringify({ jsonrpc: '2.0', method: ACPD.exit })] : []
-    return replayAcpLog([...this.lines, ...exit].join('\n'))
+    if (ended) this.events.push(...this.projection.line(JSON.stringify({ jsonrpc: '2.0', method: ACPD.exit })))
+    return this.events
   }
 }
 
