@@ -186,7 +186,7 @@ export async function recordWorkspaceStopped(
     stoppedAt: new Date(),
     deathReason: cause?.reason ?? null,
     deathDetail: cause?.detail ?? null,
-    deathSeen: false,
+    deathSeenBy: [],
   }).where(and(key(projectId, workspaceId), isNull(workspaces.stoppedAt)))
 }
 
@@ -200,48 +200,60 @@ export async function clearWorkspaceStopped(
     stoppedAt: null,
     deathReason: null,
     deathDetail: null,
-    deathSeen: false,
+    deathSeenBy: [],
   }).where(key(projectId, workspaceId))
 }
 
-/** Mark an abnormal death as seen (the user opened its detail). Notifies,
- *  since the snapshot counts unseen deaths. */
-export async function recordDeathSeen(projectId: string, workspaceId: string): Promise<void> {
+/** Mark an abnormal death as seen by `userId` (they opened its detail).
+ *  Notifies, since the snapshot counts who has seen each death. */
+export async function recordDeathSeen(projectId: string, workspaceId: string, userId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ deathSeen: true }).where(key(projectId, workspaceId))
+  await db.update(workspaces).set({ deathSeenBy: appendUser(workspaces.deathSeenBy, userId) })
+    .where(and(key(projectId, workspaceId), lacksUser(workspaces.deathSeenBy, userId)))
   notifyWorkspaceListChanged()
 }
 
-/** Mark a waiting workspace as viewed, clearing its unread dot on every
- *  client. Notifies only when the flag flips, since every view sends one. */
-export async function recordWaitingSeen(projectId: string, workspaceId: string): Promise<void> {
+/** Mark a waiting workspace as viewed by `userId`, clearing that user's
+ *  unread dot on every client. Notifies only when the user is new to the
+ *  spell, since every view sends one. */
+export async function recordWaitingSeen(projectId: string, workspaceId: string, userId: string): Promise<void> {
   const db = await getDb()
-  const flipped = await db.update(workspaces).set({ waitingSeen: true })
-    .where(and(key(projectId, workspaceId), eq(workspaces.waitingSeen, false)))
+  const added = await db.update(workspaces).set({ waitingSeenBy: appendUser(workspaces.waitingSeenBy, userId) })
+    .where(and(key(projectId, workspaceId), lacksUser(workspaces.waitingSeenBy, userId)))
     .returning({ workspaceId: workspaces.workspaceId })
-  if (flipped.length > 0) notifyWorkspaceListChanged()
+  if (added.length > 0) notifyWorkspaceListChanged()
 }
 
-/** Clear `waitingSeen` when the workspace stops needing the user. Only a set
- *  flag is written, since this runs on every turn. */
+/** Forget who saw the waiting spell when the workspace stops needing the
+ *  user. Only a non-empty list is written, since this runs on every turn. */
 export async function recordWaitingUnseen(projectId: string, workspaceId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ waitingSeen: false })
-    .where(and(key(projectId, workspaceId), eq(workspaces.waitingSeen, true)))
+  await db.update(workspaces).set({ waitingSeenBy: [] })
+    .where(and(key(projectId, workspaceId), sql`cardinality(${workspaces.waitingSeenBy}) > 0`))
 }
 
 /**
- * Mark every recorded abnormal death in a project as seen ("mark all as
- * read"). Only rows that actually died are touched. Notifies, like
- * `recordDeathSeen`.
+ * Mark every recorded abnormal death in a project as seen by `userId`
+ * ("mark all as read"). Only rows that actually died are touched.
+ * Notifies, like `recordDeathSeen`.
  */
-export async function recordAllDeathsSeen(projectId: string): Promise<void> {
+export async function recordAllDeathsSeen(projectId: string, userId: string): Promise<void> {
   const db = await getDb()
-  await db.update(workspaces).set({ deathSeen: true }).where(and(
+  await db.update(workspaces).set({ deathSeenBy: appendUser(workspaces.deathSeenBy, userId) }).where(and(
     eq(workspaces.projectId, projectId),
     isNotNull(workspaces.deathReason),
+    lacksUser(workspaces.deathSeenBy, userId),
   ))
   notifyWorkspaceListChanged()
+}
+
+/** A seen-by list with `userId` added, and the check that it is not in one
+ *  yet, so a repeated mark leaves the row alone. */
+function appendUser(list: typeof workspaces.deathSeenBy, userId: string): SQL {
+  return sql`array_append(${list}, ${userId}::uuid)`
+}
+function lacksUser(list: typeof workspaces.deathSeenBy, userId: string): SQL {
+  return sql`not (${userId}::uuid = any(${list}))`
 }
 
 /**
@@ -433,8 +445,9 @@ export interface StoppedCount {
   groupId: string | null
   /** Stops, less those in `excludeIds`. */
   stopped: number
-  /** Deaths the user has not viewed yet, among every stop. */
-  unseenDeaths: number
+  /** Deaths among every stop, and how many of them each user has viewed. */
+  deaths: number
+  deathsSeenBy: Record<string, number>
 }
 
 /** `excludeIds` are the stopped workspaces the snapshot draws a row of their
@@ -442,15 +455,22 @@ export interface StoppedCount {
 export async function countStoppedWorkspaces(excludeIds: string[] = []): Promise<StoppedCount[]> {
   const db = await getDb()
   const counted = excludeIds.length > 0 ? notInArray(workspaces.workspaceId, excludeIds) : sql`true`
-  return db.select({
+  const died = sql`${workspaces.deathReason} is not null`
+  const rows = await db.select({
     projectId: workspaces.projectId,
     groupId: workspaces.groupId,
     stopped: sql<number>`count(*) filter (where ${counted})`.mapWith(Number),
-    unseenDeaths: sql<number>`count(*) filter (where ${workspaces.deathReason} is not null and not ${workspaces.deathSeen})`
-      .mapWith(Number),
+    deaths: sql<number>`count(*) filter (where ${died})`.mapWith(Number),
+    seenBy: sql<string[][] | null>`jsonb_agg(${workspaces.deathSeenBy})
+      filter (where ${died} and cardinality(${workspaces.deathSeenBy}) > 0)`,
   }).from(workspaces)
     .where(isNotNull(workspaces.stoppedAt))
     .groupBy(workspaces.projectId, workspaces.groupId)
+  return rows.map(({ seenBy, ...r }) => {
+    const deathsSeenBy: Record<string, number> = {}
+    for (const userId of (seenBy ?? []).flat()) deathsSeenBy[userId] = (deathsSeenBy[userId] ?? 0) + 1
+    return { ...r, deathsSeenBy }
+  })
 }
 
 /**

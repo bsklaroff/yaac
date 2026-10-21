@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db/group-store'
-import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { recordDeathSeen, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { BUILT_IN_USER_ID } from '#db/user-store'
 import { listWorkspaceGroups, resolveGroup } from '#domain/workspaces/groups'
 import { ServerError } from '@yaac/shared/errors'
 
@@ -44,7 +45,7 @@ describe('workspace groups (domain)', () => {
         .toEqual([OTHER, PROJ, PROJ].sort())
     })
 
-    it('counts each group\'s stopped members and their unseen deaths', async () => {
+    it('counts each group\'s stopped members, their deaths and who saw them', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'live' })
       const group = await createWorkspaceGroup(PROJ, 'g', 'live')
       for (const id of ['quit', 'oom']) {
@@ -53,11 +54,12 @@ describe('workspace groups (domain)', () => {
       }
       await recordWorkspaceStopped(PROJ, 'quit')
       await recordWorkspaceStopped(PROJ, 'oom', { reason: 'oom' })
+      await recordDeathSeen(PROJ, 'oom', BUILT_IN_USER_ID)
       const empty = await createWorkspaceGroup(PROJ, 'empty', null)
 
       const groups = await listWorkspaceGroups(PROJ)
-      expect(groups.find((g) => g.groupId === group.groupId)).toMatchObject({ stoppedCount: 2, unseenDeaths: 1 })
-      expect(groups.find((g) => g.groupId === empty.groupId)).toMatchObject({ stoppedCount: 0, unseenDeaths: 0 })
+      expect(groups.find((g) => g.groupId === group.groupId)).toMatchObject({ stoppedCount: 2, deaths: 1, deathsSeenBy: { [BUILT_IN_USER_ID]: 1 } })
+      expect(groups.find((g) => g.groupId === empty.groupId)).toMatchObject({ stoppedCount: 0, deaths: 0, deathsSeenBy: {} })
     })
   })
 

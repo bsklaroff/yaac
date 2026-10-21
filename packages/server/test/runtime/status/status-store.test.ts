@@ -274,7 +274,7 @@ describe('onLiveAgentsChanged', () => {
 })
 
 describe('onWaitingEnded', () => {
-  // Clears the row's `waitingSeen`. A workspace with no entry reads as
+  // Clears the row's `waitingSeenBy`. A workspace with no entry reads as
   // waiting, so an agent first classified mid-turn (after a server restart)
   // fires, and one first classified idle does not.
   it('fires when the workspace goes from needing the user to work', () => {

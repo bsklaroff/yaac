@@ -47,8 +47,8 @@ export function useTeammateName(): string | undefined {
  * Whether the active project is shown read-only: it is another user's, or a
  * share its source's owner removed, which its owner can still read but no
  * longer change (docs/hosted-projects.md "Sharing"). Every control is then
- * off, and views skip the writes they would make as a side effect (marking
- * a death seen), since the server refuses them.
+ * off, and views skip the writes they would make as a side effect
+ * (remembering create choices), since the server refuses them.
  */
 export function useReadOnly(): boolean {
   const teammate = useTeammateView()

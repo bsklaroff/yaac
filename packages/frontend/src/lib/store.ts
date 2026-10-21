@@ -9,7 +9,7 @@ import {
   isNewWorkspaceForm, seedNewWorkspace, type NewWorkspaceForm, type NewWorkspaceOpts, type PendingDraft,
 } from '#lib/newWorkspace'
 import type {
-  AgentTool, ProvisioningWorkspaceEntry, ServerSnapshot, StoppedWorkspaceEntry, WorkspaceListEntry,
+  AgentTool, ProjectSummary, ProvisioningWorkspaceEntry, ServerSnapshot, StoppedWorkspaceEntry, WorkspaceListEntry,
 } from '@yaac/shared/types'
 
 /** Desktop sidebar width in px: the default and the drag bounds. */
@@ -328,23 +328,36 @@ export function paneViewKey(workspaceId: string, pane: string): string {
 }
 
 /**
- * Whether a workspace is waiting and its owner hasn't viewed it since its
- * agents last started a turn. The server keeps `waitingSeen`, so every
- * client agrees.
+ * Whether a workspace is waiting and `viewerId` (the caller, whoever's
+ * workspace it is) hasn't viewed it since its agents last started a turn.
+ * The server keeps `waitingSeenBy`, so every client of one user agrees.
  */
-export function isUnreadWaiting(workspace: Pick<WorkspaceListEntry, 'status' | 'waitingSeen'>): boolean {
-  return workspace.status === 'waiting' && workspace.waitingSeen !== true
+export function isUnreadWaiting(
+  workspace: Pick<WorkspaceListEntry, 'status' | 'waitingSeenBy'>,
+  viewerId: string | undefined,
+): boolean {
+  return workspace.status === 'waiting' && (viewerId === undefined || workspace.waitingSeenBy?.includes(viewerId) !== true)
 }
 
 /**
- * Whether a stopped workspace died unexpectedly and the user hasn't seen it
- * yet. Only the stale reaper sets deathReason. `seen` is stored on the
- * server and resets when the workspace dies again.
+ * Whether a stopped workspace died unexpectedly and `viewerId` (the caller,
+ * whoever's workspace it is) hasn't seen it yet. Only the stale reaper sets
+ * deathReason. `deathSeenBy` is stored on the server and empties when the
+ * workspace dies again.
  */
 export function isUnseenDeath(
-  entry: Pick<StoppedWorkspaceEntry, 'deathReason' | 'seen'>,
+  entry: Pick<StoppedWorkspaceEntry, 'deathReason' | 'deathSeenBy'>,
+  viewerId: string | undefined,
 ): boolean {
-  return !!entry.deathReason && !entry.seen
+  return !!entry.deathReason && (viewerId === undefined || !entry.deathSeenBy.includes(viewerId))
+}
+
+/** How many of a project's or group's deaths `viewerId` hasn't seen. */
+export function unseenDeaths(
+  counts: Pick<ProjectSummary, 'deaths' | 'deathsSeenBy'>,
+  viewerId: string | undefined,
+): number {
+  return counts.deaths - (viewerId !== undefined ? counts.deathsSeenBy[viewerId] ?? 0 : 0)
 }
 
 /**
@@ -354,13 +367,14 @@ export function isUnseenDeath(
  * `pendingDeleteIds`) don't count.
  */
 export function unreadWaitingByProject(
-  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectId' | 'status' | 'waitingSeen' | 'stopping' | 'asking'>[],
+  workspaces: Pick<WorkspaceListEntry, 'workspaceId' | 'projectId' | 'status' | 'waitingSeenBy' | 'stopping' | 'asking'>[],
+  viewerId: string | undefined,
   pendingDeleteIds: string[] = [],
 ): Record<string, number> {
   const out: Record<string, number> = {}
   for (const s of workspaces) {
     if (s.stopping || pendingDeleteIds.includes(s.workspaceId)) continue
-    if (s.asking || isUnreadWaiting(s)) {
+    if (s.asking || isUnreadWaiting(s, viewerId)) {
       out[s.projectId] = (out[s.projectId] ?? 0) + 1
     }
   }
@@ -741,9 +755,9 @@ interface UiState {
   /** Drop an optimistic stopped entry, once the server's list has it or on
    *  restart. */
   removeOptimisticStopped: (workspaceId: string) => void
-  /** Show a workspace as read in the held snapshot, ahead of the server
-   *  recording it (`/workspace/mark-waiting-seen`). */
-  markWaitingSeen: (workspaceId: string) => void
+  /** Show a workspace as read by `userId` in the held snapshot, ahead of
+   *  the server recording it (`/workspace/mark-waiting-seen`). */
+  markWaitingSeen: (workspaceId: string, userId: string) => void
 }
 
 /** Open a special pane as its own column (if not already open) and focus it. */
@@ -1211,12 +1225,12 @@ export const useUiStore = create<UiState>((set, get) => ({
       ? { optimisticStopped: s.optimisticStopped.filter((e) => e.workspaceId !== workspaceId) }
       : s
   )),
-  markWaitingSeen: (workspaceId) => set((s) => (
+  markWaitingSeen: (workspaceId, userId) => set((s) => (
     s.snapshot === undefined ? s : {
       snapshot: {
         ...s.snapshot,
         workspaces: s.snapshot.workspaces.map((w) => (
-          w.workspaceId === workspaceId ? { ...w, waitingSeen: true as const } : w)),
+          w.workspaceId === workspaceId ? { ...w, waitingSeenBy: [...w.waitingSeenBy ?? [], userId] } : w)),
       },
     }
   )),

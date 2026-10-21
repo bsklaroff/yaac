@@ -55,7 +55,7 @@ const STOPPED = [{
   stoppedAt: '2026-01-01 00:06:00',
   prompt: 'where is the bug?',
   title: 'find probe',
-  seen: true,
+  deathSeenBy: [],
   agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
 }]
 

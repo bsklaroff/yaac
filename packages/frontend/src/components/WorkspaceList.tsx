@@ -17,7 +17,7 @@ import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
 import { useStoppedEntry, useStoppedMatch, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { useReadOnly, useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
-import { useUiStore, type SidebarStatus } from '#lib/store'
+import { unseenDeaths, useUiStore, type SidebarStatus } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
   GitAuthFailure,
@@ -98,7 +98,7 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
     agentSessions: [],
     ...(h.deathReason !== undefined ? { deathReason: h.deathReason } : {}),
     ...(h.deathDetail !== undefined ? { deathDetail: h.deathDetail } : {}),
-    seen: true,
+    deathSeenBy: h.deathSeenBy,
     ...(h.groupId !== undefined ? { groupId: h.groupId } : {}),
   }
 }
@@ -350,7 +350,7 @@ export function WorkspaceList({
 }: {
   projectId: string | null
   /** The active project's stopped counts, from the snapshot. */
-  project?: Pick<ProjectSummary, 'stoppedCount' | 'unseenDeaths'>
+  project?: Pick<ProjectSummary, 'stoppedCount' | 'deaths' | 'deathsSeenBy'>
   workspaces: WorkspaceListEntry[]
   /** The active project's groups, from the snapshot. */
   groups: WorkspaceGroupSummary[]
@@ -369,7 +369,9 @@ export function WorkspaceList({
   const readOnly = useReadOnly()
   const teammateView = useTeammateView()
   const viewedUserId = useViewedUserId()
-  const viewedName = useWhoami()?.users.find((u) => u.id === viewedUserId)?.name ?? 'A teammate'
+  const whoami = useWhoami()
+  const me = whoami?.userId
+  const viewedName = whoami?.users.find((u) => u.id === viewedUserId)?.name ?? 'A teammate'
   const query = useUiStore((s) => s.sidebarQuery)
   const setQuery = useUiStore((s) => s.setSidebarQuery)
   const stoppedExpanded = useUiStore((s) => s.stoppedExpanded)
@@ -436,7 +438,7 @@ export function WorkspaceList({
   const stoppedCount = searching
     ? stopped.total ?? 0
     : (project?.stoppedCount ?? 0) - owned.reduce((n, g) => n + g.stoppedCount, 0)
-  const ownedDeaths = owned.reduce((n, g) => n + g.unseenDeaths, 0)
+  const ownedDeaths = owned.reduce((n, g) => n + unseenDeaths(g, me), 0)
 
   // The open workspace, in whichever form it is listed. A plain stopped one
   // is looked up once the snapshot is in (`project`), under the same key App
@@ -762,7 +764,7 @@ export function WorkspaceList({
             <StoppedSection
               projectId={projectId}
               count={stoppedCount}
-              unseenDeaths={Math.max(0, (project?.unseenDeaths ?? 0) - ownedDeaths)}
+              unseenDeaths={Math.max(0, (project ? unseenDeaths(project, me) : 0) - ownedDeaths)}
               expanded={stoppedOpen}
               {...(stoppedHeldOpen ? {} : { onExpandedChange: setStoppedExpanded })}
               list={stoppedList}

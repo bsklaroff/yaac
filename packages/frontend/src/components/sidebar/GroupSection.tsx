@@ -3,7 +3,8 @@ import clsx from 'clsx'
 import { Collapsible } from '@base-ui/react/collapsible'
 import { ChevronIcon, PinIcon } from '#lib/icons'
 import { api } from '#lib/api'
-import { useUiStore } from '#lib/store'
+import { unseenDeaths, useUiStore } from '#lib/store'
+import { useWhoami } from '#lib/viewer'
 import { useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { RowMenu } from '#components/sidebar/RowMenu'
@@ -73,7 +74,8 @@ export function GroupSection({
     + members.filter((w) => !isTerminating(w, pendingDeleteIds)).length
   const total = provisioning.length + members.length + held.length + group.stoppedCount
   // Flag unseen deaths on the header, since ghost rows may be hidden.
-  const died = group.unseenDeaths
+  const me = useWhoami()?.userId
+  const died = unseenDeaths(group, me)
   const {
     editing,
     seed,

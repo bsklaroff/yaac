@@ -25,7 +25,7 @@ const stopped: StoppedWorkspaceEntry = {
   createdAt: '2026-08-10 00:00:00',
   stoppedAt: '2026-08-10 01:00:00',
   title: 'Stopped run',
-  seen: true,
+  deathSeenBy: [],
   agentSessions: [],
 }
 

@@ -48,7 +48,7 @@ const STOPPED = [{
   stoppedAt: '2026-01-01 00:06:00',
   prompt: 'run the tests in the background and survey the packages',
   title: 'woken caption probe',
-  seen: true,
+  deathSeenBy: [],
   agentSessions: [{ agentSessionId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true }],
 }]
 

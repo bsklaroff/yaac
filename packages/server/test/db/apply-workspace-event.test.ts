@@ -10,6 +10,7 @@ import {
   setWorkspaceTitle,
 } from '#db/workspace-store'
 import { createWorkspaceGroup } from '#db/group-store'
+import { BUILT_IN_USER_ID } from '#db/user-store'
 import { listWorkspaceAgentSessions } from '#db/agent-session-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
@@ -57,7 +58,7 @@ describe('applyWorkspaceEvent', () => {
     await created('wt-new', { baseBranch: 'main' })
 
     expect(await rowOf('wt-new')).toMatchObject({
-      projectId: PROJ, workspaceId: 'wt-new', baseBranch: 'main', deathSeen: false,
+      projectId: PROJ, workspaceId: 'wt-new', baseBranch: 'main', deathSeenBy: [],
     })
   })
 
@@ -105,14 +106,14 @@ describe('applyWorkspaceEvent', () => {
 
   // The sidebar's unread dot: going back to work makes the next waiting
   // spell unread, and a workspace restart does not.
-  it('clears waitingSeen when waiting ends, and keeps it over a resume', async () => {
-    const seen = async (): Promise<boolean | undefined> => (await rowOf('wt-w'))?.waitingSeen
+  it('clears waitingSeenBy when waiting ends, and keeps it over a resume', async () => {
+    const seen = async (): Promise<string[] | undefined> => (await rowOf('wt-w'))?.waitingSeenBy
     await created('wt-w')
-    await recordWaitingSeen(PROJ, 'wt-w')
+    await recordWaitingSeen(PROJ, 'wt-w', BUILT_IN_USER_ID)
     await created('wt-w', { resume: true })
-    expect(await seen()).toBe(true)
+    expect(await seen()).toEqual([BUILT_IN_USER_ID])
     await applyWorkspaceEvent({ type: 'waiting-ended', projectId: PROJ, workspaceId: 'wt-w' })
-    expect(await seen()).toBe(false)
+    expect(await seen()).toEqual([])
   })
 
   // A workspace id is claimed once across all projects: otherwise a create
@@ -248,7 +249,7 @@ describe('applyWorkspaceEvent', () => {
     expect(row?.deathDetail).toBe('exit code 137')
     // The user has not seen this death yet — it is what raises the
     // stopped-workspaces notification dot.
-    expect(row?.deathSeen).toBe(false)
+    expect(row?.deathSeenBy).toEqual([])
   })
 
   // A user stop is a stop with no cause: recording one would let the next

@@ -7,7 +7,7 @@ import { claimChord, cycleDeltaFor, matchShortcut, mergeBindings, resolveCycleTa
 import { deviceTimeZone } from './lib/time'
 import { useEvents } from './lib/useEvents'
 import { useSnapshot } from './lib/useSnapshot'
-import { ownedBy, useReadOnly, useTeammateView, useViewedUserId, whoamiQuery } from './lib/viewer'
+import { ownedBy, useReadOnly, useTeammateView, useViewedUserId, useWhoami, whoamiQuery } from './lib/viewer'
 import {
   isUnreadWaiting, mergeProvisioning, persistSelection, resolveVacantSelection,
   unreadWaitingByProject, useUiStore,
@@ -107,6 +107,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const viewedUserId = useViewedUserId()
   const readOnly = useReadOnly()
   const teammateView = useTeammateView()
+  const me = useWhoami()?.userId
   const snapshot = useMemo(
     () => (all && viewedUserId !== undefined ? ownedBy(all, viewedUserId) : all),
     [all, viewedUserId],
@@ -294,26 +295,27 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
   }, [activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, lastWorkspaceOf, forgetClaim, autoSelectWorkspace])
-  // Viewing a waiting workspace marks its spell read on the server, whether
-  // it was selected while waiting or started waiting while open. Only the
-  // owner marks. A spell whose mark failed or was refused (it had already
+  // Viewing a waiting workspace marks its spell read by the caller on the
+  // server, whether it was selected while waiting or started waiting while
+  // open. A teammate's workspace is marked too, since each user has their
+  // own dot. A spell whose mark failed or was refused (it had already
   // ended) is not sent again this page load, so a write whose next snapshot
   // shows it unread cannot loop; one the server accepted may be re-marked.
   const markingSpells = useRef(new Set<string>())
   useEffect(() => {
-    if (!selectedWorkspaceId || readOnly) return
+    if (!selectedWorkspaceId || me === undefined) return
     const open = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
-    if (!open || !isUnreadWaiting(open)) return
+    if (!open || !isUnreadWaiting(open, me)) return
     const spell = waitingKey(open)
     if (markingSpells.current.has(spell)) return
     markingSpells.current.add(spell)
-    markWaitingSeen(open.workspaceId)
+    markWaitingSeen(open.workspaceId, me)
     void api.workspace['mark-waiting-seen'].$post({
       json: { projectId: open.projectId, workspaceId: open.workspaceId, waitingSinceMs: open.waitingSinceMs ?? 0 },
     }).then(({ marked }) => {
       if (marked) markingSpells.current.delete(spell)
     }).catch(() => {})
-  }, [selectedWorkspaceId, readOnly, workspaces, markWaitingSeen])
+  }, [selectedWorkspaceId, me, workspaces, markWaitingSeen])
 
   // Drop chat drafts for workspaces that no longer exist (same first-snapshot
   // guard as above). Provisioning ids count as live because a restarting
@@ -326,7 +328,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     ])
   }, [all, optimisticProvisioning, syncChatDrafts])
 
-  const attention = unreadWaitingByProject(workspaces, pendingDeleteIds)
+  const attention = unreadWaitingByProject(workspaces, me, pendingDeleteIds)
 
   // What replaces the sidebar and pane when there is no project to show.
   const placeholder = projectOp
