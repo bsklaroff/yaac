@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { env } from '#env'
 import { serverLocalPath } from '#paths'
 import { SERVER_LOCK_FILENAME, isLockLive, parseServerLock, type ServerLock } from '#server-lock-file'
 
@@ -28,13 +29,15 @@ export async function writeLock(lock: ServerLock): Promise<void> {
 }
 
 /**
- * The lease fields of a fresh lock: a random instance id, this host's name,
- * and a first heartbeat. Created together so no lock carries one without
- * the others.
+ * The lease fields of a fresh lock: a random instance id, the pod name when
+ * this server runs in the cluster, the hostname an older yaac reads, and a
+ * first heartbeat. Created together so no lock carries one without the
+ * others.
  */
-export function newLeaseFields(): Pick<ServerLock, 'instance' | 'host' | 'heartbeatAt'> {
+export function newLeaseFields(): Pick<ServerLock, 'instance' | 'pod' | 'host' | 'heartbeatAt'> {
   return {
     instance: crypto.randomBytes(8).toString('hex'),
+    ...(env.inCluster && { pod: os.hostname() }),
     host: os.hostname(),
     heartbeatAt: Date.now(),
   }

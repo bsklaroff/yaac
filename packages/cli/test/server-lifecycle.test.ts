@@ -1,8 +1,6 @@
 /**
  * `yaac server stop`, `start`, `status` and `logs`, and `yaac cluster
- * status`, against locks, configs and logs they did not write. `stop` must
- * not clear a live in-cluster server's lock, which would let a second
- * server open the same database (docs/server-in-cluster.md). `start` must
+ * status`, against locks, configs and logs they did not write. `start` must
  * register the server in `server.json` and record its driver in the data
  * dir's `install.json`. `status` must not call a server that refused to
  * start, or one that hangs, `running`. Only the data dir and the server
@@ -10,7 +8,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -26,7 +23,7 @@ let tmpDir: string
 let stderr: string[]
 let stdoutWrite: MockInstance<typeof process.stdout.write>
 
-/** A lock written by a server in a pod: another host, and a live lease. */
+/** A lock written by a server in a pod, with a live lease. */
 async function podLock(overrides: Record<string, unknown> = {}): Promise<void> {
   await writeLock({
     // pid 1 also exists on this host, so the pid proves nothing here.
@@ -35,10 +32,36 @@ async function podLock(overrides: Record<string, unknown> = {}): Promise<void> {
     startedAt: Date.now(),
     buildId: 'b',
     instance: 'inst-1',
-    host: 'yaac-server-77d4f',
+    pod: 'yaac-server-77d4f',
     heartbeatAt: Date.now(),
     ...overrides,
   })
+}
+
+/**
+ * A host server's lock whose pid is not running here, with a lease fresh
+ * until `heartbeatAt` lapses: a server that just died, or one in another pid
+ * namespace (another machine, a container) when `heartbeatAt` keeps it fresh.
+ */
+async function unseenHostLock(heartbeatAt = Date.now()): Promise<void> {
+  await podLock({ pid: 999_999, pod: undefined, heartbeatAt })
+}
+
+/** Run `run` on fake time, advanced until it settles, so a lease lapses at once. */
+async function onFakeTime<T>(run: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+  try {
+    let settled = false
+    const result = run()
+    result.then(() => { settled = true }, () => { settled = true })
+    while (!settled) {
+      await vi.advanceTimersByTimeAsync(500)
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    return await result
+  } finally {
+    vi.useRealTimers()
+  }
 }
 
 /** A stand-in server answering `/health` with `body`. */
@@ -73,21 +96,6 @@ afterEach(async () => {
 })
 
 describe('serverStop', () => {
-  it('refuses a live in-cluster server rather than clearing its lock', async () => {
-    // Clearing it would make the pod exit and restart, and let a host
-    // `yaac server start` open the same data dir. The CLI refuses a data
-    // dir recorded as k8s before this; this one records no driver.
-    await podLock()
-
-    await serverStop()
-
-    expect(await readLock()).not.toBeNull()
-    expect(stderr.join('\n')).toMatch(/runs in a cluster/)
-    // Names the fix and fails, rather than silently doing nothing.
-    expect(stderr.join('\n')).toMatch(/yaac cluster stop[\s\S]*scale deployment\/yaac-server --replicas=0/)
-    expect(process.exitCode).toBe(1)
-  })
-
   it('clears an in-cluster lock whose lease went stale', async () => {
     // A pod's lock outlives a deleted Deployment; its lease shows it is dead.
     await podLock({ heartbeatAt: Date.now() - LEASE_STALE_MS * 2 })
@@ -99,15 +107,37 @@ describe('serverStop', () => {
     expect(process.exitCode).toBeUndefined()
   })
 
+  it('waits out the lease of a server that died without removing its lock, then clears it', async () => {
+    // Its dead pid alone proves nothing: a live server in another pid
+    // namespace looks the same from here.
+    await unseenHostLock()
+
+    await onFakeTime(() => serverStop())
+
+    expect(await readLock()).toBeNull()
+    expect(stderr.join('\n')).toMatch(/not running here; waiting for its lease to lapse[\s\S]*removed stale lock/)
+  })
+
+  it('refuses a lock renewed from another pid namespace rather than clearing it', async () => {
+    // Clearing it would let a second server open the same database.
+    await unseenHostLock(Date.now() + 3_600_000)
+
+    await expect(onFakeTime(() => serverStop())).rejects.toThrow(/another pid namespace[\s\S]*Stop it from there/)
+
+    expect(await readLock()).toMatchObject({ instance: 'inst-1' })
+  })
+
   it('says so when there is nothing running', async () => {
     await serverStop()
     expect(stderr.join('\n')).toMatch(/not running/)
     expect(process.exitCode).toBeUndefined()
   })
 
-  it('treats a lock naming THIS host as its own, whatever its lease says', async () => {
-    // Judged by pid and /health; nothing answers on the port, so it is stale.
-    await podLock({ pid: process.ppid, port: 1, host: os.hostname(), heartbeatAt: 0 })
+  it('judges a host server\'s lock by pid and /health, whatever its lease or hostname says', async () => {
+    // The lock names the machine as `host` for older readers; a network
+    // change that renames the machine must not make its server unstoppable.
+    // Nothing answers on the port, so it is stale.
+    await podLock({ pid: process.ppid, port: 1, pod: undefined, host: 'renamed-machine', heartbeatAt: 0 })
 
     await serverStop()
 
@@ -140,6 +170,14 @@ describe('serverStart', () => {
     } finally {
       await server.close()
     }
+  })
+
+  it('refuses to take over a lock renewed from another pid namespace', async () => {
+    await unseenHostLock(Date.now() + 3_600_000)
+
+    await expect(onFakeTime(() => serverStart())).rejects.toThrow(/another pid namespace/)
+
+    expect(await readLock()).toMatchObject({ instance: 'inst-1' })
   })
 
   it('refuses to start on a k8s install rather than registering a second server', async () => {
@@ -187,7 +225,7 @@ describe('serverStatus', () => {
     expect(JSON.parse(json)).toMatchObject({ running: true, refused: null, reachable: false })
   })
 
-  it('asks nothing for another host\'s lock on a data dir with no cluster origin', async () => {
+  it('asks nothing for a pod\'s lock on a data dir with no cluster origin', async () => {
     // The host server's origin would be another server than the lock's.
     await recordInstall({ driver: 'containerless', origin: 'http://127.0.0.1:1' })
     await podLock({ buildId: 'test-build' })

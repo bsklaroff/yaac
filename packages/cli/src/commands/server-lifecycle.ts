@@ -10,7 +10,15 @@ import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { readBuildId } from '@yaac/shared/build-id'
 import { readLock, removeLock } from '@yaac/shared/lock'
-import { isLeaseFresh, isLockLive, isOtherLivePid, isSameHostLock, type ServerLock } from '@yaac/shared/server-lock-file'
+import {
+  LEASE_HEARTBEAT_MS,
+  LEASE_STALE_MS,
+  isLeaseFresh,
+  isLockLive,
+  isLocalLock,
+  isOtherLivePid,
+  type ServerLock,
+} from '@yaac/shared/server-lock-file'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- names the data dir in a refusal; builds no path
 import { getDataDir, serverLogPath } from '@yaac/shared/paths'
@@ -130,7 +138,7 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
   await ensureDataDir()
   const cliBuildId = await readBuildId()
 
-  const existing = await readLock()
+  const existing = await readVisibleLock()
   if (existing && await isLockLive(existing)) {
     const running = (await health(`http://127.0.0.1:${existing.port}`))?.access
     if (existing.buildId === cliBuildId && running === 'tailnet' && mode === 'local') {
@@ -210,9 +218,11 @@ async function registerLocalServer(origin: string, keepSelection: boolean): Prom
 /**
  * SIGTERM the running server and wait for its shutdown handler to unlink
  * the lock. Force-removes the lock if the server doesn't exit in time.
+ * Every caller has already refused a cluster install
+ * (`refuseOnClusterInstall`), so a live lock here is a host server's.
  */
 async function stopServer(): Promise<void> {
-  const existing = await readLock()
+  const existing = await readVisibleLock()
   if (!existing) {
     console.error('[yaac] server is not running')
     return
@@ -220,22 +230,6 @@ async function stopServer(): Promise<void> {
   if (!await isLockLive(existing)) {
     await removeLock()
     console.error(`[yaac] removed stale lock (pid ${existing.pid})`)
-    return
-  }
-
-  if (!isSameHostLock(existing)) {
-    // A live lock from another host belongs to an in-cluster server
-    // (docs/server-in-cluster.md) on a data dir that records no driver.
-    // Removing the lock would make the pod exit and restart, and would let
-    // a later `yaac server start` add a second writer, so change nothing.
-    console.error(
-      `[yaac] this data dir's server runs in a cluster (lock held by `
-      + `${existing.host ?? 'another host'}, lease still being renewed), so `
-      + 'there is no host server to stop.\n'
-      + '    Stop it with `yaac cluster stop`, or scale it by hand:\n'
-      + '    kubectl -n <namespace> scale deployment/yaac-server --replicas=0',
-    )
-    process.exitCode = 1
     return
   }
 
@@ -261,6 +255,29 @@ async function stopServer(): Promise<void> {
   console.error(`[yaac] force-removed stale lock (pid ${existing.pid})`)
 }
 
+/**
+ * Read the lock, first waiting out one whose pid is not running here while
+ * its lease is fresh, which this machine can neither signal nor take over.
+ * Either its server died in the last {@link LEASE_STALE_MS} and the lease
+ * lapses, or it runs in another pid namespace and keeps renewing it, which
+ * is refused.
+ */
+async function readVisibleLock(): Promise<ServerLock | null> {
+  const lock = await readLock()
+  if (!lock || isOtherLivePid(lock.pid) || !isLeaseFresh(lock)) return lock
+  console.error(`[yaac] the server lock names pid ${lock.pid}, which is not running here; waiting for its lease to lapse`)
+  const lapsed = await waitFor(async () => {
+    const cur = await readLock()
+    return !cur || cur.instance !== lock.instance || !isLeaseFresh(cur)
+  }, { timeoutMs: LEASE_STALE_MS + LEASE_HEARTBEAT_MS, intervalMs: 250 })
+  if (lapsed) return await readLock()
+  throw new Error(
+    `the server lock names pid ${lock.pid}, which is not running here, and its lease is still being renewed: `
+    + 'its server runs in another pid namespace (another machine sharing this data dir, or a container it '
+    + 'is mounted into). Stop it from there.',
+  )
+}
+
 const NOT_RUNNING = { running: false, serverBuildId: null, refused: null, reachable: null } as const
 
 /**
@@ -277,9 +294,9 @@ async function localServerStatus(): Promise<LocalServerStatus> {
   const base = { driver: cfg?.driver ?? null, cliBuildId: await readBuildId(), origin: cfg?.origin ?? null }
   if (cfg?.byo) return { ...base, ...NOT_RUNNING, running: null }
   const lock = await readLock()
-  const sameHost = lock !== null && isSameHostLock(lock)
-  if (lock === null || !(sameHost ? isOtherLivePid(lock.pid) : isLeaseFresh(lock))) return { ...base, ...NOT_RUNNING }
-  const url = sameHost ? `http://127.0.0.1:${lock.port}` : base.driver === 'k8s' ? base.origin : null
+  const local = lock !== null && isLocalLock(lock)
+  if (lock === null || !(local ? isOtherLivePid(lock.pid) : isLeaseFresh(lock))) return { ...base, ...NOT_RUNNING }
+  const url = local ? `http://127.0.0.1:${lock.port}` : base.driver === 'k8s' ? base.origin : null
   const body = url === null ? undefined : await health(url)
   return {
     ...base,

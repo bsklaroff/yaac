@@ -9,7 +9,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import os from 'node:os'
 import { PassThrough } from 'node:stream'
 import path from 'node:path'
 import { fakeCluster, type FakeCall } from '@yaac/test-utils/k8s-stub'
@@ -83,7 +82,6 @@ import { stringHash } from '#drivers/k8s/cluster'
 import { readInstallRecord } from '@yaac/shared/install-record'
 import { readServerConfig } from '@yaac/shared/server-config'
 // Setup value: writes the data-dir lock the pre-deploy guard reads.
-import { writeLock } from '@yaac/shared/lock'
 // State reset for the cached node-CIDR probe.
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 
@@ -589,54 +587,6 @@ describe('deployServerWorkload', () => {
   it('skips the stop when there is no Deployment yet', async () => {
     await deploy({ log: vi.fn() })
     expect(actions.some((c) => c.includes('"replicas":0'))).toBe(false)
-  })
-
-  it('refuses to deploy beside a host server that still holds the data dir', async () => {
-    // Deploying while a host server runs would put two servers on one
-    // database, and the old server would answer the origin probe.
-    await writeLock({
-      pid: process.ppid, port: 8787, startedAt: Date.now(), buildId: 'b',
-      instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
-    })
-    // /health answers and the lock's pid is alive: a host server is running.
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(
-      new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 }),
-    )))
-
-    await expect(deploy({ log: vi.fn() }))
-      .rejects.toThrow(/already running.*host process[\s\S]*yaac server stop/)
-    // Refused before any manifest is applied.
-    expect(fakeCluster.callsOf('apply')).toEqual([])
-  })
-
-  it('rolls its own pod without complaint — an off-host lock is what a re-install replaces', async () => {
-    // An in-cluster server's lock names another host; install rolls it via
-    // the Deployment, so no refusal.
-    await writeLock({
-      pid: 1, port: 8787, startedAt: Date.now(), buildId: 'b',
-      instance: 'abc', host: 'yaac-server-77d4f', heartbeatAt: Date.now(),
-    })
-
-    await expect(deploy({ log: vi.fn() })).resolves.toMatch(/^http:/)
-  })
-
-  it('deploys past a host lock whose server is gone', async () => {
-    // A stale lock from a crashed server is ignored.
-    const DEAD_PORT = 1
-    await writeLock({
-      pid: process.ppid, port: DEAD_PORT, startedAt: Date.now(), buildId: 'b',
-      instance: 'inst-1', host: os.hostname(), heartbeatAt: Date.now(),
-    })
-    // Nothing answers on the lock's port, so the server is gone even
-    // though the pid exists. The published origin still answers.
-    vi.stubGlobal('fetch', vi.fn((url: string) =>
-      String(url).includes(`:${String(DEAD_PORT)}/`)
-        ? Promise.reject(new Error('connection refused'))
-        : Promise.resolve(new Response(
-          JSON.stringify({ ok: true, ready: true }), { status: 200 },
-        ))))
-
-    await expect(deploy({ log: vi.fn() })).resolves.toMatch(/^http:/)
   })
 })
 

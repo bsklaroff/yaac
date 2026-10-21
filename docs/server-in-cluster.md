@@ -308,13 +308,31 @@ A pid check or a `127.0.0.1` health probe only answers about the local
 machine, and the lock is read from both sides of a container boundary where
 every pod reuses the same low pids. So the lock also records an `instance`
 id minted per boot (used for compare-and-delete, since a pid does not
-identify a server), the writer's `host`, and a `heartbeatAt` that the
-running server renews every 5s. A
-reader on the writer's host checks the pid as usual. A reader elsewhere
-checks whether the heartbeat is younger than 20s. A server that finds it has
-lost the lease exits rather than keep writing a database another server now
-owns. On hostPath storage nothing prevents two mounts, so this lease is
-PGlite's only single-writer guard.
+identify a server), the writer's `pod` name (absent for a host process), and
+a `heartbeatAt` that the running server renews every 5s.
+
+A lock is held while its heartbeat is younger than 20s, whoever reads it.
+A reader on the writer's side of the boundary (the host reading a host
+server's lock, or the same pod restarted in place) may also find it held by
+a live pid whose port answers; the host's own hostname plays no part, so a
+network change cannot break that. A dead pid never frees a lock on its own:
+a reader in another pid namespace than a host server (a second machine
+sharing the data dir, or a container it is mounted into) cannot tell itself
+apart from the host, and sees the live server's pid as dead. So a server
+killed without removing its lock holds it for up to 20s, which `yaac server
+start|stop` wait out; one whose lease keeps being renewed from elsewhere is
+refused. The one exception is a pod's lock read in that same pod and
+naming the reader's own pid, which is stale at once: that is the pod
+restarted in place, whose server is pid 2 every time. A host lock gets no
+such shortcut, since two containers sharing a data dir can both run their
+server as pid 1.
+
+A pod reads a host server's lock by its lease alone, which is why a host
+server renews its lease too: it is what keeps a pod deployed onto its data
+dir from opening the same database. A server that finds it has lost the
+lease exits rather than keep writing a database another server now owns.
+On hostPath storage nothing prevents two mounts, so this lease is PGlite's
+only single-writer guard.
 
 The server also exits when its database fails `SELECT 1`, or leaves it
 unanswered for a minute: a PGlite instance in that state answers nothing

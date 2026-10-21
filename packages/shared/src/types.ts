@@ -1672,7 +1672,7 @@ export interface LocalServerStatus {
   /**
    * Whether the running server's `/health` answered: false for a server that
    * runs but hangs, or whose origin is unreachable from here. null when none
-   * runs or there is nowhere to ask (another host's lock and no cluster origin).
+   * runs or there is nowhere to ask (a pod's lock and no cluster origin).
    */
   reachable: boolean | null
 }

@@ -161,6 +161,31 @@ repoints it.
   pod-hosted server's lock names no host pid, it would judge the live
   cluster idle and rename `~/.yaac` out from under its hostPath volumes.
 
+## The server lock's `host` field
+
+A server in the cluster names its pod in its lock's `pod` field, and a host
+server's lock names none (docs/server-in-cluster.md "The lock is a lease").
+Older yaac had no `pod`. It compared the lock's `host` with its own
+`os.hostname()` to decide whether to check the pid or the lease, and it
+reads a lock without `host` as unparseable.
+
+- **What it reads.** Nothing reads `host`. `newLeaseFields` in
+  `packages/shared/src/lock.ts` still writes it, only for older readers.
+- **What breaks silently if it is deleted too early.** An older yaac on the
+  same data dir sees no lock. Its `yaac server start` then spawns an older
+  server, whose `acquireLock` deletes the lock it cannot parse and opens the
+  database beside the running server, so two servers write one PGlite
+  database. Its `status` and `stop` report nothing running.
+- **When it is safe to remove.** Once no yaac from before `pod` is run
+  against a data dir a newer server uses. Nothing records that, so judge it
+  by how long `pod` has shipped.
+- **The window it leaves.** A lock an older pod wrote has no `pod`, so until
+  `yaac cluster install` replaces that pod, a newer host CLI judges it by
+  its pid and its `127.0.0.1:<port>`, which belong to the pod. `yaac cluster
+  status` can then call the pod not running, or ask whatever host server
+  listens on the pod's port 8787. A pod still reads a lock without `pod` by
+  its lease, so the database's single-writer guard is unaffected.
+
 ## Cluster objects keyed by a data-dir hash
 
 An install from before install ids named and labelled its cluster objects

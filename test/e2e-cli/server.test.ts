@@ -60,13 +60,13 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
   }
 
   it('the server that answers the CLI is a pod, and the lock says so', async () => {
-    // The server is a pod, not a local process, so the lock's `host`
+    // The server is a pod, not a local process, so the lock's `pod`
     // identifies it and `pid` means nothing here.
     const pods = await serverPods()
     expect(pods).toHaveLength(1)
     const lock = await readLock()
     expect(lock).not.toBeNull()
-    expect(lock!.host).toBe(pods[0])
+    expect(lock!.pod).toBe(pods[0])
     expect(lock!.instance).toBeTypeOf('string')
     expect(lock!.heartbeatAt).toBeTypeOf('number')
 
@@ -143,9 +143,9 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
     const [after] = await serverPods()
     expect(after).not.toBe(before)
     const afterLock = await readLock()
-    // A new pod: the instance id is per boot and the host is the pod name.
+    // A new pod: the instance id is per boot and `pod` is its name.
     expect(afterLock!.instance).not.toBe(beforeLock!.instance)
-    expect(afterLock!.host).toBe(after)
+    expect(afterLock!.pod).toBe(after)
 
     const health = await fetch(`http://127.0.0.1:${server.lock.port}/api/health`)
     expect(health.status).toBe(200)
@@ -153,7 +153,7 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
   })
 
   it('`cluster stop` scales to zero, and `cluster start` brings it back, as `cluster status` reports', async () => {
-    // The pod's lock is another host's, so status judges it by its lease.
+    // The lock is a pod's, so status judges it by its lease.
     const status = async () => {
       const res = await runYaac(testEnv.env, 'cluster', 'status', '--json')
       expect(res.exitCode, res.stderr).toBe(0)
