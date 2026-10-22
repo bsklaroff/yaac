@@ -34,6 +34,10 @@ export interface AcpStream {
   /** The pane has a live connection to the conversation. False while
    *  reconnecting, or when the workspace has no live conversation yet. */
   connected: boolean
+  /** The server has closed a socket of this pane's without greeting it,
+   *  after holding it for the conversation to come up: the conversation is
+   *  missing rather than starting. */
+  refused: boolean
   /** False when the socket wasn't open, so the caller can keep the user's
    *  text rather than clearing an input whose message went nowhere. */
   send: (msg: AcpClientMessage) => boolean
@@ -77,6 +81,7 @@ export function useAcpStream(
   const [history, setHistory] = useState(false)
   const [queued, setQueued] = useState<AcpQueuedPrompt[]>([])
   const [connected, setConnected] = useState(false)
+  const [refused, setRefused] = useState(false)
   const [taskOutputs, setTaskOutputs] = useState<Record<string, TaskOutput>>({})
   const [subagentTranscripts, setSubagentTranscripts] = useState<Record<string, SubagentTranscript>>({})
   const [permissionModes, setPermissionModes] = useState<AcpStream['permissionModes']>({ available: [] })
@@ -86,10 +91,16 @@ export function useAcpStream(
   useEffect(() => {
     if (!enabled) return
     const params = new URLSearchParams({ id: workspaceId, session: agentSessionId })
+    /** Whether the current socket has been greeted. */
+    let greeted = false
     const sock = reconnectingSocket(() => `/api/acp/${observe ? 'observe' : 'attach'}?${params}`, {
+      open: () => {
+        greeted = false
+      },
       message: (data) => {
         const msg = JSON.parse(data as string) as AcpServerMessage
         if (msg.type === 'hello') {
+          greeted = true
           // Replace, don't merge: each attach resends the last page.
           setPage(msg.page)
           setLife(msg.life)
@@ -137,7 +148,10 @@ export function useAcpStream(
         }
         return false
       },
-      close: () => setConnected(false),
+      close: (opened) => {
+        setConnected(false)
+        if (opened && !greeted) setRefused(true)
+      },
     })
     socketRef.current = sock
     return () => {
@@ -154,6 +168,7 @@ export function useAcpStream(
     history,
     queued,
     connected,
+    refused,
     taskOutputs,
     subagentTranscripts,
     permissionModes,

@@ -20,6 +20,7 @@ const stream = {
   busy: false,
   queued: [] as AcpQueuedPrompt[],
   connected: true,
+  refused: false,
   send: vi.fn((_msg: AcpClientMessage) => true),
   taskOutputs: {} as Record<string, { text?: string; error?: string }>,
   subagentTranscripts: {} as Record<string, { events?: AcpEventInit[]; error?: string }>,
@@ -34,6 +35,7 @@ vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import { chatDraftKey, flushTypedText, useUiStore } from '#lib/store'
 import { IS_MAC } from '#lib/platform'
+import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
 import { filesKey } from '#lib/useWorkspaceChanges'
 import { agentEvent as agent, mockFetch, testQueryClient, userEvent as user } from './harness'
 import { resizeAll } from './setup'
@@ -164,6 +166,60 @@ describe('WorkspaceChat drafts', () => {
     show()
     await waitFor(() => expect(box().value).toBe(expected))
     expect(useUiStore.getState().chatDrafts[chatDraftKey('w1', 'acp-1')]).toEqual(expected === '' ? undefined : { text: expected })
+  })
+})
+
+/**
+ * A starting workspace's pane mounts before its conversation is live, so it
+ * reads as connecting until its first attach; only a later drop, or the
+ * server turning the pane away, that outlasts the notice delay is announced.
+ */
+describe('WorkspaceChat connection', () => {
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    stream.connected = true
+    stream.refused = false
+  })
+
+  it('says connecting before the first attach, and disconnected only after a lasting drop', () => {
+    vi.useFakeTimers()
+    const notice = (): HTMLElement | null => screen.queryByText(/^Disconnected/)
+    const set = (connected: boolean): void => {
+      stream.connected = connected
+      rerender(pane())
+    }
+    stream.connected = false
+    const { rerender } = show()
+    act(() => { vi.advanceTimersByTime(DISCONNECT_NOTICE_DELAY_MS) })
+    expect([box().placeholder, notice()]).toEqual(['Connecting…', null])
+
+    set(true)
+    expect(box().placeholder).toBe('Message the agent…')
+
+    // A drop that heals within the delay goes unannounced.
+    set(false)
+    act(() => { vi.advanceTimersByTime(DISCONNECT_NOTICE_DELAY_MS - 1) })
+    expect(notice()).toBeNull()
+    set(true)
+    set(false)
+    act(() => { vi.advanceTimersByTime(DISCONNECT_NOTICE_DELAY_MS - 1) })
+    expect(notice()).toBeNull()
+
+    act(() => { vi.advanceTimersByTime(1) })
+    expect(box().placeholder).toBe('Reconnecting…')
+    expect(notice()).not.toBeNull()
+  })
+
+  it('says disconnected once the server turns away a pane that never attached', () => {
+    // Its conversation never came up within the server's hold, so the
+    // workspace is not starting but missing it.
+    vi.useFakeTimers()
+    Object.assign(stream, { connected: false, refused: true })
+    show()
+    act(() => { vi.advanceTimersByTime(DISCONNECT_NOTICE_DELAY_MS) })
+    expect(box().placeholder).toBe('Reconnecting…')
+    expect(screen.queryByText(/^Disconnected/)).not.toBeNull()
   })
 })
 

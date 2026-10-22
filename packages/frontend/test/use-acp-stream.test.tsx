@@ -200,6 +200,32 @@ describe('useAcpStream', () => {
     expect(result.current.events).toHaveLength(1)
   })
 
+  it('reports a socket the server closed without greeting as refused, and a dropped attach as not', async () => {
+    vi.useFakeTimers()
+    const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))
+    const next = async (): Promise<void> => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    }
+    // One that never opened is a failed dial, not a refusal.
+    act(() => FakeSocket.latest().close())
+    await next()
+    act(() => {
+      FakeSocket.latest().open()
+      FakeSocket.latest().deliver(hello([]))
+      FakeSocket.latest().close()
+    })
+    expect(result.current.refused).toBe(false)
+    await next()
+
+    // The server's hold ran out with no conversation.
+    act(() => {
+      FakeSocket.latest().open()
+      FakeSocket.latest().deliver({ type: 'health', connected: false })
+      FakeSocket.latest().close()
+    })
+    expect(result.current.refused).toBe(true)
+  })
+
   it('reconnects after the socket closes', async () => {
     vi.useFakeTimers()
     const { result } = renderHook(() => useAcpStream('wt-1', 'acp-1'))

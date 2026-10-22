@@ -13,6 +13,7 @@ import { EffortSelect, PermissionModeSelect } from '#components/ComposerSelect'
 import { imageBytes, imageFiles, prepareImage, toAcpImage, useImageSrc } from '#lib/attachments'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { focusRaisesKeyboard } from '#lib/viewport'
+import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
 import { AttachImageIcon, CloseIcon, SendIcon, StopIcon } from '#lib/icons'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
@@ -59,7 +60,27 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
   focused: boolean
 }): JSX.Element {
   const stream = useAcpStream(workspaceId, agentSessionId)
-  const { events, busy, queued, connected, send, permissionModes, efforts } = stream
+  const { events, busy, queued, connected, refused, send, permissionModes, efforts } = stream
+  /**
+   * Whether to say the pane is disconnected: only once an attach it had, or
+   * the server's refusal of one, is `DISCONNECT_NOTICE_DELAY_MS` old, as a
+   * terminal does. Most drops heal sooner, and a stopping workspace's pane
+   * is replaced sooner. Until then the pane is connecting, since a starting
+   * workspace's pane mounts before its conversation is live and the server
+   * holds its attach until it is.
+   */
+  const [dropped, setDropped] = useState(false)
+  const attachedRef = useRef(false)
+  useEffect(() => {
+    if (connected) {
+      attachedRef.current = true
+      setDropped(false)
+      return
+    }
+    if (!attachedRef.current && !refused) return
+    const timer = setTimeout(() => setDropped(true), DISCONNECT_NOTICE_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [connected, refused])
   const setChatDraft = useUiStore((s) => s.setChatDraft)
   const launchPrompt = useUiStore((s) => s.launches[workspaceId]?.prompt)
   const endLaunch = useUiStore((s) => s.endLaunch)
@@ -309,7 +330,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
       <ChatBottomBar
         above={
           <>
-            {!connected && (
+            {dropped && (
               <div className="mb-1.5 px-1 text-xs text-text-faint">
                 Disconnected — the agent keeps working; this pane reattaches automatically.
               </div>
@@ -365,7 +386,7 @@ export function WorkspaceChat({ workspaceId, agentSessionId, visible, focused }:
                   submit()
                 }
               }}
-              placeholder={connected ? 'Message the agent…' : 'Reconnecting…'}
+              placeholder={connected ? 'Message the agent…' : dropped ? 'Reconnecting…' : 'Connecting…'}
               readOnly={awaitingEcho !== null}
               className={COMPOSER_INPUT}
             />

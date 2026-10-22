@@ -19,7 +19,8 @@
  * Every frame that would act on the conversation is dropped.
  */
 
-import { acpConversation } from './acp-registry'
+import { whenAcpSession } from './acp-registry'
+import type { AcpConversation } from './acp-client'
 import { tailAcpLog, type AcpLife, type RecordOrigin } from './acp-log'
 import { claudeSubagentThreads } from './claude-acp-replay'
 import { sessionTranscriptPath } from './transcripts'
@@ -77,9 +78,16 @@ function isTaskOutputPath(file: string, taskId: string): boolean {
 }
 
 /**
- * Attach `sock` to the conversation, or close it if none is live. That is
- * normal (the workspace may be booting or reconnecting); the pane retries,
- * like `WorkspaceTerminal` does on a dropped PTY. `origin` places the
+ * How long an attach waits for its conversation to come up before closing,
+ * after which the pane retries. A starting or restarting workspace's chat
+ * pane attaches before its agent is up, and waiting lets its `hello` go out
+ * the moment the conversation registers.
+ */
+export const ACP_ATTACH_WAIT_MS = 30_000
+
+/**
+ * Attach `sock` to the conversation, waiting up to `ACP_ATTACH_WAIT_MS` for
+ * it to be live and closing the socket if it is not. `origin` places the
  * record's pages after the tool's own history of the lives before it;
  * without one, the record is the whole conversation.
  */
@@ -91,19 +99,38 @@ export function attachAcp(
   origin: (life: AcpLife | undefined) => Promise<RecordOrigin> = () => Promise.resolve({ firstPage: 0, skipReplay: false }),
   { control = true }: { control?: boolean } = {},
 ): void {
-  const conversation = acpConversation(projectId, workspaceId, agentSessionId)
+  // A pane that leaves while held ends the wait.
+  const left = new AbortController()
+  sock.onClose(() => left.abort())
+  void whenAcpSession(projectId, workspaceId, agentSessionId, ACP_ATTACH_WAIT_MS, left.signal).then((conversation) => {
+    if (left.signal.aborted) return
+    if (conversation !== undefined) {
+      bridgeAcp(conversation, { projectId, workspaceId, agentSessionId }, sock, origin, control)
+      return
+    }
+    try {
+      sock.send(JSON.stringify({ type: 'health', connected: false } satisfies AcpServerMessage))
+    } catch {
+      // The pane went away meanwhile.
+    }
+    sock.close(1011, 'no live conversation')
+  })
+}
+
+/** Bridge `sock` to a live conversation until either side closes. */
+function bridgeAcp(
+  conversation: AcpConversation,
+  { projectId, workspaceId, agentSessionId }: { projectId: string; workspaceId: string; agentSessionId: string },
+  sock: AcpSocket,
+  origin: (life: AcpLife | undefined) => Promise<RecordOrigin>,
+  control: boolean,
+): void {
   const send = (msg: AcpServerMessage): void => {
     try {
       sock.send(JSON.stringify(msg))
     } catch {
       // The pane went away mid-write; the close handler unsubscribes.
     }
-  }
-
-  if (conversation === undefined) {
-    send({ type: 'health', connected: false })
-    sock.close(1011, 'no live conversation')
-    return
   }
 
   // All content comes from the record. The live socket carries the same

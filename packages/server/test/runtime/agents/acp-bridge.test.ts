@@ -4,7 +4,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { setDataDir } from '@yaac/shared/paths'
 import { acpLogDir, agentHistoryDir } from '@yaac/shared/project-paths'
-import { attachAcp } from '#runtime/agents/acp-bridge'
+import { ACP_ATTACH_WAIT_MS, attachAcp } from '#runtime/agents/acp-bridge'
 import { AcpConversation, type AcpConversationDeps } from '#runtime/agents/acp-client'
 import { acpAdapterFor, type AcpAdapterProfile } from '#runtime/agents/acp-adapters'
 import { readAcpRecovery } from '#runtime/agents/acp-log'
@@ -976,14 +976,46 @@ describe('attachAcp', () => {
     expect(requests('session/set_mode')[0].params).toEqual({ sessionId: 'acp-1', modeId: 'plan' })
   })
 
-  it('tells a pane the conversation is not live rather than hanging it open', async () => {
-    const sock = new FakeSocket()
-    attachAcp('demo', 'wt-1', 'no-such-conversation', sock)
+  it('holds a pane that attaches before its conversation is up, and greets it once it is', async () => {
+    // A starting workspace: its chat pane attaches before the agent connects.
+    _resetAcpRegistryForTests()
+    const early = new FakeSocket()
+    const left = new FakeSocket()
+    attachAcp('demo', 'wt-1', 'acp-1', early)
+    attachAcp('demo', 'wt-1', 'acp-1', left)
     await new Promise((r) => setTimeout(r, 20))
+    expect([early.sent, early.closedWith]).toEqual([[], undefined])
+    // A pane that leaves while waiting is never attached.
+    left.clientClose()
 
-    // A booting workspace or reconnecting stream; the pane retries.
-    expect(sock.sent).toEqual([{ type: 'health', connected: false }])
-    expect(sock.closedWith).toBe('no live conversation')
+    registerAcpConversation('demo', 'wt-1', { handle: 'claude', agentSessionId: 'acp-1' }, conversation)
+    await waitForHello(early)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(left.sent).toEqual([])
+  })
+
+  it('tells a pane the conversation is not live once the wait runs out, and ends the wait of one that leaves', async () => {
+    vi.useFakeTimers()
+    try {
+      const sock = new FakeSocket()
+      const left = new FakeSocket()
+      attachAcp('demo', 'wt-1', 'no-such-conversation', sock)
+      attachAcp('demo', 'wt-1', 'no-such-conversation', left)
+      expect(vi.getTimerCount()).toBe(2)
+      left.clientClose()
+      await vi.advanceTimersByTimeAsync(0)
+      expect([vi.getTimerCount(), left.sent]).toEqual([1, []])
+
+      await vi.advanceTimersByTimeAsync(ACP_ATTACH_WAIT_MS - 1)
+      expect(sock.closedWith).toBeUndefined()
+
+      // An agent that never came up; the pane retries.
+      await vi.advanceTimersByTimeAsync(1)
+      expect(sock.sent).toEqual([{ type: 'health', connected: false }])
+      expect(sock.closedWith).toBe('no live conversation')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('closes a pane whose conversation is torn down, so its re-attach finds the replacement', async () => {
