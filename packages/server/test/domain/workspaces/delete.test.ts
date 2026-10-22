@@ -1,16 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { deleteWorkspace, listProvisioning, prepareRestart, queueWorkspace } from '#domain/workspaces'
+import { deleteWorkspace, listProvisioning, prepareRestart, queueWorkspace, reconcileWorkspaceRetention } from '#domain/workspaces'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '#domain/workspaces/provisioning'
 import { getWorkspaceRow, listWorkspaceAgentSessions, BUILT_IN_USER_ID } from '#db'
-import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { recordWorkspaceCreated, recordWorkspaceLife, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
-import { seedProject } from '@yaac/test-utils/project-fixture'
-import { acpLogDir, agentHistoryDir, workspaceDir } from '@yaac/shared/project-paths'
+import { recordTestProject, seedProject } from '@yaac/test-utils/project-fixture'
+import { acpLogDir, agentHistoryDir, projectConfigDir, workspaceDir } from '@yaac/shared/project-paths'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -40,6 +40,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   vi.useRealTimers()
+  vi.unstubAllEnvs()
   resetWorkspaceDriver()
   await closeDb()
   await cleanupTempDir(tmpDir)
@@ -168,5 +169,68 @@ describe('deleteWorkspace', () => {
     expect(await getWorkspaceRow(PROJ, 'wt-doomed')).toBeUndefined()
     // Released: a second delete is a plain not-found.
     await expect(deleteWorkspace(local, 'wt-doomed')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('reconcileWorkspaceRetention', () => {
+  const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
+  const DAY_MS = 24 * 60 * 60_000
+  const running = new AbortController().signal
+
+  async function setConfig(projectId: string, config: object): Promise<void> {
+    await fs.mkdir(projectConfigDir(projectId), { recursive: true })
+    await fs.writeFile(path.join(projectConfigDir(projectId), 'yaac-config.json'), JSON.stringify(config))
+  }
+
+  const kept = async (projectId: string, ids: string[]): Promise<string[]> => {
+    const out: string[] = []
+    for (const id of ids) if (await getWorkspaceRow(projectId, id)) out.push(id)
+    return out
+  }
+
+  it('deletes only workspaces stopped past their project\'s retention, else the server\'s', async () => {
+    await recordTestProject(OTHER)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() - 10 * DAY_MS)
+    await stoppedWorkspace('wt-old')
+    await stoppedWorkspace('wt-old-parent')
+    await queueWorkspace(local, PROJ, { parent: 'wt-old-parent', prompt: 'next', tool: 'claude' }, 'user')
+    // Its stop stands from 10 days ago, but it ran again since (a restart
+    // whose clear of the stop was lost).
+    await stoppedWorkspace('wt-ran-since')
+    await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'wt-other-old' })
+    await recordWorkspaceStopped(OTHER, 'wt-other-old')
+    vi.setSystemTime(Date.now() + 8 * DAY_MS)
+    await stoppedWorkspace('wt-recent')
+    await recordWorkspaceLife(PROJ, 'wt-ran-since')
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-running' })
+    vi.setSystemTime(Date.now() + 2 * DAY_MS)
+    const all = ['wt-old', 'wt-old-parent', 'wt-ran-since', 'wt-recent', 'wt-running']
+
+    // Off by default.
+    await reconcileWorkspaceRetention(running)
+    expect(await kept(PROJ, all)).toEqual(all)
+
+    // A shutdown stops the pass before it deletes anything.
+    vi.stubEnv('YAAC_WORKSPACE_RETENTION_DAYS', '5')
+    await reconcileWorkspaceRetention(AbortSignal.abort())
+    expect(await kept(PROJ, all)).toEqual(all)
+
+    // The server's 5 days. OTHER's config is invalid, so it keeps
+    // everything rather than falling back to the server's. The parent with
+    // a queued entry is refused and kept for a later pass.
+    await setConfig(OTHER, { stoppedWorkspaceRetentionDays: '7' })
+    await reconcileWorkspaceRetention(running)
+    expect(await kept(PROJ, all)).toEqual(['wt-old-parent', 'wt-ran-since', 'wt-recent', 'wt-running'])
+    expect(await exists(workspaceDir(PROJ, 'wt-old'))).toBe(false)
+    expect(await kept(OTHER, ['wt-other-old'])).toEqual(['wt-other-old'])
+
+    // A project's own retention wins over the server's, either way: OTHER
+    // opts out with 0, PROJ shortens it to 1 day.
+    await setConfig(OTHER, { stoppedWorkspaceRetentionDays: 0 })
+    await setConfig(PROJ, { stoppedWorkspaceRetentionDays: 1 })
+    await reconcileWorkspaceRetention(running)
+    expect(await kept(PROJ, all)).toEqual(['wt-old-parent', 'wt-running'])
+    expect(await kept(OTHER, ['wt-other-old'])).toEqual(['wt-other-old'])
   })
 })

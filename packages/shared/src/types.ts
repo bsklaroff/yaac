@@ -682,6 +682,9 @@ export interface YaacConfig {
    * Removed at stop. Unset → `["node_modules"]`; empty disables.
    */
   ephemeralModulesPaths?: string[]
+  /** Days a stopped workspace is kept before it is deleted; `0` keeps it
+   *  forever. Unset → the server's `YAAC_WORKSPACE_RETENTION_DAYS`. */
+  stoppedWorkspaceRetentionDays?: number
 }
 
 /**

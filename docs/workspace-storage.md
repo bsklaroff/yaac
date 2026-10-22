@@ -100,7 +100,12 @@ workspace. See "Agent workspaces" below.
     removed. The checkout goes first (its `.git` last), then the history,
     then the rows, so the common failure (a root-owned file in the checkout)
     leaves a stopped workspace that can still restart on its committed
-    work, rather than bytes no record points at.
+    work, rather than bytes no record points at. The `workspace-retention` reconcile step makes
+    the same delete, at server start and then hourly, for each workspace
+    stopped longer than its project's retention (docs/project-config.md),
+    retrying refusals on later passes. It counts from the later of the
+    recorded stop and the last runtime's start, since a restart whose clear
+    of the stop was lost still leaves the old stop on the row.
   - A fresh create or a spare claim rolling back its own insert. A fresh
     create also removes its staged checkout. A failed restart leaves the row
     stopped as it found it, since its checkout is the work the user came back

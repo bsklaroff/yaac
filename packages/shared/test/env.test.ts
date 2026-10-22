@@ -158,6 +158,17 @@ describe('env (configuration)', () => {
     })
   })
 
+  describe('workspaceRetentionDays', () => {
+    it('is off (0) unless set to a positive integer', () => {
+      for (const v of [undefined, '', '0', '-3', '2.5', '7d']) {
+        vi.stubEnv('YAAC_WORKSPACE_RETENTION_DAYS', v)
+        expect(env.workspaceRetentionDays, String(v)).toBe(0)
+      }
+      vi.stubEnv('YAAC_WORKSPACE_RETENTION_DAYS', '14')
+      expect(env.workspaceRetentionDays).toBe(14)
+    })
+  })
+
   describe('autoTitles', () => {
     it('defaults to on when unset', () => {
       vi.stubEnv('YAAC_AUTO_TITLES', undefined)

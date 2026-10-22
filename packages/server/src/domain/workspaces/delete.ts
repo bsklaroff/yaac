@@ -2,7 +2,8 @@ import { workspaceDriver } from '#drivers/driver'
 import { deleteWorkspaceState, tearingDown } from './cleanup'
 import { claimDeletion, removeProvisioning } from './provisioning'
 import { resolveWorkspaceId } from './resolve'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
+import { resolveProjectConfig } from '#domain/projects'
 import {
   deleteWorkspaceRecords,
   findWorkspaceRow,
@@ -10,8 +11,14 @@ import {
   listProjectWorkspaceIds,
   listQueuedWorkspaceRows,
   listWorkspaceAgentSessions,
+  listWorkspaceRows,
+  type WorkspaceRow,
 } from '#db'
+import { serverLog } from '#lib/log'
+import { env } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
+
+const DAY_MS = 24 * 60 * 60_000
 
 /**
  * Delete a stopped workspace by id or prefix: its checkout (with its local
@@ -76,5 +83,47 @@ export async function deleteWorkspace(principal: Actor, idOrPrefix: string): Pro
     return workspaceId
   } finally {
     release()
+  }
+}
+
+/**
+ * Delete every workspace stopped longer than its project's retention:
+ * `stoppedWorkspaceRetentionDays` in its yaac-config.json, else the server's
+ * `YAAC_WORKSPACE_RETENTION_DAYS`. Off unless one of them is set.
+ *
+ * A workspace counts as stopped since the later of its recorded stop and its
+ * last runtime's start: the first stop recorded stands until a restart
+ * clears it, and a lost clear would otherwise age a workspace that ran since
+ * from its old stop.
+ *
+ * A project whose config cannot be read keeps everything. A workspace the
+ * delete refuses (one with queued entries waiting on it, say) is logged and
+ * tried again next pass. `signal` stops the pass between deletes, which is
+ * safe since each delete removes the files before the row.
+ */
+export async function reconcileWorkspaceRetention(signal: AbortSignal): Promise<void> {
+  const stopped = new Map<string, Array<{ row: WorkspaceRow; sinceMs: number }>>()
+  for (const row of await listWorkspaceRows()) {
+    if (row.stoppedAt === undefined) continue
+    const sinceMs = Math.max(row.stoppedAt.getTime(), row.lifeStartedAt?.getTime() ?? 0)
+    stopped.set(row.projectId, [...stopped.get(row.projectId) ?? [], { row, sinceMs }])
+  }
+  for (const [projectId, rows] of stopped) {
+    const days = await resolveProjectConfig(projectId).then(
+      (config) => config?.stoppedWorkspaceRetentionDays ?? env.workspaceRetentionDays,
+      (err: unknown) => {
+        serverLog(`[retention] keeping project ${projectId}'s workspaces: unreadable config: ${String(err)}`)
+        return 0
+      },
+    )
+    if (days === 0) continue
+    const cutoffMs = Date.now() - days * DAY_MS
+    for (const { row } of rows.filter((r) => r.sinceMs <= cutoffMs)) {
+      if (signal.aborted) return
+      await deleteWorkspace(systemPrincipal, row.workspaceId).then(
+        () => serverLog(`[retention] deleted workspace ${projectId}/${row.workspaceId}, stopped more than ${days} days`),
+        (err: unknown) => serverLog(`[retention] keeping workspace ${projectId}/${row.workspaceId}: ${String(err)}`),
+      )
+    }
   }
 }

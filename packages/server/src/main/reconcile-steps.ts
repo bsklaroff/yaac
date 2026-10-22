@@ -1,4 +1,4 @@
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles } from '#domain/workspaces'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileWorkspaceRetention } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -79,6 +79,10 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // In-flight creates are registered synchronously before staging, so
     // their dirs are never swept. Resync-only, and cheap.
     { name: 'orphan-modules-gc', triggers: [], run: (ctx) => gcOrphanEphemeralModuleDirs(ctx.snapshot()) },
+    // Delete workspaces stopped past their retention (off unless set). At
+    // server start and then hourly, since retention is counted in days.
+    { name: 'workspace-retention', triggers: [], every: 60 * 60_000,
+      run: (ctx) => reconcileWorkspaceRetention(ctx.signal) },
     // The same for node-local leftovers. Hourly, since under k8s it runs a
     // pod per node.
     { name: 'node-local-gc', triggers: [], every: 60 * 60_000, run: (ctx) => reapOrphanNodeLocal(ctx.snapshot()) },

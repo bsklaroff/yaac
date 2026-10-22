@@ -122,6 +122,7 @@ const projectConfigSchema = z.object({
   nestedContainers: BOOLEAN,
   npmCache: BOOLEAN,
   ephemeralModulesPaths: z.array(modulesPathSchema, { error: 'must be a string array' }).optional(),
+  stoppedWorkspaceRetentionDays: z.number({ error: 'must be a whole number of days' }).int().min(0).optional(),
 })
 
 /** Where an issue is, as a config key path: `initCommands[0].name`. */

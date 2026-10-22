@@ -276,6 +276,8 @@ function buildServerEnv(opts: ServerEnvOptions = {}): Array<{ name: string; valu
     ['YAAC_POD_CIDRS', env.podCidrs.length > 0 ? env.podCidrs.join(',') : undefined],
     ['YAAC_KUBE_PROXY_EXTERNAL', env.kubeProxyExternal ? '1' : undefined],
     ['YAAC_E2E_SKIP_FETCH', testEnv.e2eSkipFetch ? '1' : undefined],
+    // The server-wide retention for stopped workspaces.
+    ['YAAC_WORKSPACE_RETENTION_DAYS', env.workspaceRetentionDays > 0 ? String(env.workspaceRetentionDays) : undefined],
     // Encryption keys for stored secrets, when the operator sets them.
     ['YAAC_SECRETS', env.secrets === null
       ? undefined

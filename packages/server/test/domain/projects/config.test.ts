@@ -216,6 +216,17 @@ describe('resolveProjectConfig', () => {
     })
   })
 
+  describe('stoppedWorkspaceRetentionDays', () => {
+    it('round-trips a whole number of days, 0 included, and rejects anything else', async () => {
+      expect(await roundTrip({ stoppedWorkspaceRetentionDays: 0 })).toEqual({ stoppedWorkspaceRetentionDays: 0 })
+      expect(await roundTrip({ stoppedWorkspaceRetentionDays: 30 })).toEqual({ stoppedWorkspaceRetentionDays: 30 })
+      for (const bad of [-1, 1.5, '7', null]) {
+        await expect(roundTrip({ stoppedWorkspaceRetentionDays: bad }), String(bad))
+          .rejects.toThrow('stoppedWorkspaceRetentionDays must be a whole number of days')
+      }
+    })
+  })
+
   describe('nestedContainers', () => {
     it('round-trips the boolean', async () => {
       expect(await roundTrip({ nestedContainers: true })).toEqual({ nestedContainers: true })

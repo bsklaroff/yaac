@@ -44,6 +44,14 @@ Both are stored on the server, so this works against a remote server too.
 - **ephemeralModulesPaths:** dependency directories (relative to the checkout)
   that live with the workspace's runtime instead of the shared checkout, and
   are removed at stop. Default `["node_modules"]`; `[]` turns it off.
+- **stoppedWorkspaceRetentionDays:** days a stopped workspace is kept before
+  the server deletes it, with its checkout (including unpushed and
+  uncommitted work) and conversation history. `0` keeps stopped workspaces
+  forever. Unset, the server's `YAAC_WORKSPACE_RETENTION_DAYS` applies
+  ([environment-variables.md](environment-variables.md)); an invalid value
+  keeps everything. The server checks at start and then hourly, so a change
+  takes effect within the hour, and turning retention on deletes the whole
+  backlog of expired workspaces at once. Sidebar groups are not exempt.
 
 There is no way to mount a host directory into a workspace, since a client on
 another machine can't name a path on the server. Use `cacheVolumes`, or bake

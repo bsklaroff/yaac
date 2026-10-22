@@ -186,6 +186,17 @@ export const env = {
   },
 
   /**
+   * `YAAC_WORKSPACE_RETENTION_DAYS` — days a stopped workspace is kept before
+   * it is deleted with everything it holds. Unset, `0`, or anything but a
+   * non-negative integer → never. A project's `stoppedWorkspaceRetentionDays`
+   * overrides it.
+   */
+  get workspaceRetentionDays(): number {
+    const parsed = Number(process.env.YAAC_WORKSPACE_RETENTION_DAYS ?? '')
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : 0
+  },
+
+  /**
    * `YAAC_IMAGE_PREWARM` — background per-project image prewarm builds.
    * Unset → on; empty, "0", and "false" (case-insensitive) → off.
    */
