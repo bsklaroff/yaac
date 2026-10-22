@@ -108,6 +108,7 @@ const CONFIG: NetdConfig = {
   sshSentinelPort: 10259,
   transparentPorts: { https: 10256, http: 10257, tunnel: 10258 },
   listenerRange: { base: 15100, slots: 300 },
+  cgroupRoot: '/host/cgroup',
 }
 
 const SESSION_POD: NetdPod = {

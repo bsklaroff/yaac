@@ -12,7 +12,9 @@ Two components share the work:
   allow and deny, written as plain `networking.k8s.io/v1` NetworkPolicy.
 - **netd** (`k8s/netd/`, a DaemonSet) only *redirects*: it steers a
   workspace's outbound 443, 80 and SSH-sentinel traffic into the proxy. It
-  decides nothing about what is allowed.
+  decides nothing about what is allowed. (It also writes each pod's swap
+  bound, a job unrelated to egress: docs/cluster-setup.md "Memory
+  pressure".)
 
 This split is the security argument. netd's rules can only add a path toward
 the proxy, so if netd is down, late or wrong, workspaces lose egress rather than

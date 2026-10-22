@@ -1,6 +1,7 @@
 /**
- * The pod and Service watches that feed netd's reconcile, both scoped to
- * the install namespace so netd needs only a namespaced Role.
+ * The pod and Service watches that feed netd's reconcile and its swap
+ * bounds, all scoped to the install namespace so netd needs only a
+ * namespaced Role.
  *
  * Built on `@kubernetes/client-node` informers, which handle list/watch,
  * relist on 410, and keep the object store; netd maps that store on each
@@ -22,6 +23,7 @@ import {
   type KubernetesListObject,
   type KubernetesObject,
 } from '@kubernetes/client-node'
+import { podMemoryRequestBytes, type NodePod } from 'yaac-netd/swap'
 
 /**
  * The pods netd redirects: workspace pods, never the proxy itself (a
@@ -44,9 +46,9 @@ export interface NetdService {
 }
 
 interface RawObject {
-  metadata?: { name?: string; namespace?: string }
-  status?: { podIP?: string }
-  spec?: { clusterIP?: string }
+  metadata?: { name?: string; namespace?: string; uid?: string }
+  status?: { podIP?: string; phase?: string }
+  spec?: { clusterIP?: string } & Parameters<typeof podMemoryRequestBytes>[0]
 }
 
 /**
@@ -60,6 +62,18 @@ export function mapPod(raw: unknown): NetdPod | null {
   const podIp = status?.podIP
   if (!name || !namespace || !podIp) return null
   return { name, namespace, podIp }
+}
+
+/**
+ * Map one API Pod on netd's node to the swap bound's shape; null unless it
+ * is running, since only a running pod is sure to have its cgroup.
+ */
+export function mapNodePod(raw: unknown): NodePod | null {
+  const { metadata, status, spec } = raw as RawObject
+  const name = metadata?.name
+  const uid = metadata?.uid
+  if (!name || !uid || status?.phase !== 'Running') return null
+  return { name, uid, memoryRequestBytes: podMemoryRequestBytes(spec ?? {}) }
 }
 
 /** Map one API Service object to netd's shape; null when unusable. */
@@ -88,31 +102,43 @@ export function inClusterClient(namespace: string): WatchClient {
 /** Watch this namespace's workspace pods; returns a reader of the store. */
 export function watchPods(client: WatchClient, onChange: () => void): () => NetdPod[] {
   const { core, namespace } = client
-  return watch(client, 'pods', WORKSPACE_POD_SELECTOR, mapPod, onChange,
+  return watch(client, 'pods', { labelSelector: WORKSPACE_POD_SELECTOR }, mapPod, onChange,
     () => core.listNamespacedPod({ namespace, labelSelector: WORKSPACE_POD_SELECTOR }))
+}
+
+/**
+ * Watch every pod of this install on one node, builders and infrastructure
+ * included, for their swap bounds (swap.ts).
+ */
+export function watchNodePods(client: WatchClient, nodeName: string, onChange: () => void): () => NodePod[] {
+  const { core, namespace } = client
+  const fieldSelector = `spec.nodeName=${nodeName}`
+  return watch(client, 'pods', { fieldSelector }, mapNodePod, onChange,
+    () => core.listNamespacedPod({ namespace, fieldSelector }))
 }
 
 /** Watch this namespace's Services, where the proxy's ClusterIP lives. */
 export function watchServices(client: WatchClient, onChange: () => void): () => NetdService[] {
   const { core, namespace } = client
-  return watch(client, 'services', undefined, mapService, onChange,
+  return watch(client, 'services', {}, mapService, onChange,
     () => core.listNamespacedService({ namespace }))
 }
 
 function watch<T>(
   client: WatchClient,
   resource: string,
-  labelSelector: string | undefined,
+  selectors: { labelSelector?: string; fieldSelector?: string },
   map: (raw: unknown) => T | null,
   onChange: () => void,
-  // client-node applies the selector to the watch only; the list needs it too.
+  // client-node applies the selectors to the watch only; the list needs them too.
   listFn: () => Promise<KubernetesListObject<KubernetesObject>>,
 ): () => T[] {
   const path = `/api/v1/namespaces/${client.namespace}/${resource}`
   // Reconnect at once: the watch request times out every 30s, and
   // client-node's informer otherwise waits a growing delay (up to 30s)
   // before reconnecting while nothing changes, holding back the next event.
-  const informer = new ListWatch(path, new Watch(client.kubeConfig), listFn, false, labelSelector, undefined, {
+  const informer = new ListWatch(path, new Watch(client.kubeConfig), listFn, false,
+    selectors.labelSelector, selectors.fieldSelector, {
     delayFn: () => Promise.resolve(),
   })
   informer.on('add', onChange)

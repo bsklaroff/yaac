@@ -34,6 +34,10 @@ locals {
   # Both node groups share their image, disk and kubelet settings. At the
   # default 10s housekeeping interval, cAdvisor walks every fd of every
   # gVisor sandbox on each tick (docs/cluster-setup.md "What it wires up").
+  # The CRI stats gate keeps pod stats fresh anyway, so memory eviction
+  # ranks the workspace that grew first; evictionHard lists AL2023's disk
+  # signals beside its memory threshold (docs/cluster-setup.md "Memory
+  # pressure").
   # maxPods is the prefix-delegation ceiling (see the vpc-cni addon), which
   # is what lets a 2-vCPU system node hold every add-on pod. The nodes sit in
   # one AZ, since the EBS volumes yaac's server and registries use are zonal.
@@ -69,6 +73,12 @@ locals {
           kubelet:
             config:
               maxPods: 110
+              featureGates:
+                PodAndContainerStatsFromCRI: true
+              evictionHard:
+                memory.available: 200Mi
+                nodefs.available: 10%
+                nodefs.inodesFree: 5%
             flags:
               - --housekeeping-interval=300s
       EOT

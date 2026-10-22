@@ -141,9 +141,13 @@ interface NetdDaemonSetOptions {
  *   (which admit exactly that range).
  * - Only netd has a readiness probe; it goes ready only once Envoy is
  *   serving the current config.
+ * - netd mounts the host's cgroup tree to write each pod's swap bound
+ *   (k8s/netd/swap.ts). It is mounted outside /sys, where the runtime's
+ *   AppArmor profile denies writes.
  */
 function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, unknown> {
   const envoyDir = '/etc/yaac-envoy'
+  const cgroupDir = '/host/cgroup'
   return {
     apiVersion: 'apps/v1',
     kind: 'DaemonSet',
@@ -188,6 +192,7 @@ function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, 
                 { name: 'SSH_TUNNEL_SENTINEL', value: SSH_TUNNEL_SENTINEL },
                 { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
                 { name: 'NETD_ENVOY_DIR', value: envoyDir },
+                { name: 'NETD_CGROUP_ROOT', value: cgroupDir },
                 {
                   name: 'NODE_NAME',
                   valueFrom: { fieldRef: { fieldPath: 'spec.nodeName' } },
@@ -205,7 +210,10 @@ function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, 
                 periodSeconds: 5,
                 failureThreshold: 3,
               },
-              volumeMounts: [{ name: 'envoy-config', mountPath: envoyDir }],
+              volumeMounts: [
+                { name: 'envoy-config', mountPath: envoyDir },
+                { name: 'cgroup', mountPath: cgroupDir },
+              ],
             },
             {
               name: 'envoy',
@@ -225,7 +233,10 @@ function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, 
               volumeMounts: [{ name: 'envoy-config', mountPath: envoyDir }],
             },
           ],
-          volumes: [{ name: 'envoy-config', emptyDir: {} }],
+          volumes: [
+            { name: 'envoy-config', emptyDir: {} },
+            { name: 'cgroup', hostPath: { path: '/sys/fs/cgroup', type: 'Directory' } },
+          ],
         },
       },
     },

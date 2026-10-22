@@ -26,7 +26,7 @@
 # off the control plane (all kind node containers share the one host
 # filesystem). The `nodes:` list must therefore hold exactly one entry. Everything else is
 # cluster-scoped and kind applies it to every node already: the containerd
-# registry patch, the kubelet swap patch, and disableDefaultCNI.
+# registry patch, the kubelet memory patch, and disableDefaultCNI.
 #
 # Anything added to the node entry is therefore copied to every worker too,
 # so it must be a per-node property. A HOST-scoped one — extraPortMappings
@@ -64,13 +64,23 @@ kubeadmConfigPatches:
 # *tolerates* swap on the node (failSwapOn: false); without a swapBehavior
 # the default is NoSwap, which pins every pod's memory. LimitedSwap (the
 # only supported behavior since NodeSwap went GA) grants swap to Burstable
-# pods proportionally to their memory request — yaac session pods request
-# less memory than their limit, so they qualify.
+# pods proportionally to their memory request; netd applies the same bound
+# to gVisor pods, which LimitedSwap misses.
+#
+# Memory eviction, which kind's own evictionHard (disk signals only) leaves
+# out: at 200Mi the kubelet evicts the pod furthest over its request, and
+# the CRI stats gate keeps the pod stats it ranks by fresh despite the 300s
+# housekeeping fixup (docs/cluster-setup.md "Memory pressure"). The patch
+# merges into kind's map, so its disk signals stay.
 - |
   kind: KubeletConfiguration
   apiVersion: kubelet.config.k8s.io/v1beta1
   memorySwap:
     swapBehavior: LimitedSwap
+  featureGates:
+    PodAndContainerStatsFromCRI: true
+  evictionHard:
+    memory.available: 200Mi
 nodes:
 - role: control-plane
   # Pinned so a kind upgrade never silently moves new clusters to another

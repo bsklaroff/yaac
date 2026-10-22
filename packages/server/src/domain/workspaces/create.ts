@@ -295,7 +295,9 @@ const WORKSPACE_RESOURCES: WorkspaceResources = {
   // plus room to spike. Less, and a node fills with workspaces whose idle
   // use alone nearly exhausts it, and one burst OOM-kills its neighbours.
   memoryRequestBytes: 2 * 1024 ** 3,
-  memoryLimitBytes: 8 * 1024 ** 3,
+  // Room for a workspace driving a headless browser, which reaches
+  // 11-19 GiB. Eviction, not this cap, handles a node full of workspaces.
+  memoryLimitBytes: 16 * 1024 ** 3,
   // Matches the 2Gi memory request at 4 GB/core, so cpu and memory cap
   // concurrent workspaces at about the same count (16 on 8 cores/32 GB).
   cpuRequestMillis: 500,

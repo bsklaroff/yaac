@@ -41,7 +41,7 @@ variable "control_system_reserved" {
 }
 
 variable "worker_system_reserved" {
-  description = "kubelet system-reserved on every worker, manual or autoscaled: the cpu and memory kept for the k3s agent and containerd, so workspaces using memory past their requests are evicted before those run short. The autoscaler plans a new node from its full size, so it may count one workspace more than fits."
+  description = "kubelet system-reserved on every worker, manual or autoscaled: the cpu and memory kept for the k3s agent and containerd. The autoscaler plans a new node from its full size, so it may count one workspace more than fits."
   type        = string
   default     = "cpu=500m,memory=1Gi"
 }

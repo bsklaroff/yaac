@@ -99,8 +99,10 @@ export const NODE_PIDS_LIMIT = 32768
  * kubelet cAdvisor housekeeping interval (default 10s). Each tick readlinks
  * every open fd in each container, and a gVisor sandbox holds ~9k host fds,
  * so at the default (and even at 60s) kubelet burned 1-2 cores. At 300s
- * node-level stats are slower; workspace OOMs are enforced by the pod's
- * memory cgroup and are unaffected.
+ * cAdvisor's pod stats are up to five minutes old, too stale for memory
+ * eviction to rank pods by, so nodes also enable the
+ * `PodAndContainerStatsFromCRI` gate (docs/cluster-setup.md "Memory
+ * pressure").
  */
 export const NODE_KUBELET_HOUSEKEEPING_INTERVAL = '300s'
 /** kubeadm's kubelet flags file on the kind node, edited by the fixup. */

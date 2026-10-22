@@ -153,8 +153,8 @@ prints these steps when the socket is unreachable.
 
 If `swapon --show` prints nothing, add swap before `yaac cluster install`.
 gVisor keeps a workspace's memory in shared memory, which the kernel can only
-reclaim by swapping, so without swap a workspace under memory pressure is
-OOM-killed. The kubelet only enables swap (`LimitedSwap` in
+reclaim by swapping, so without swap an idle workspace's pages stay in RAM
+for good. The kubelet only enables swap (`LimitedSwap` in
 `k8s/kind-config.yaml`) when kind creates the node, so add swap first.
 
 ```sh
@@ -166,8 +166,9 @@ sudo mkswap /swapfile && sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
-Each pod gets `memoryRequest / nodeRAM × totalSwap`, so swap about the size of
-RAM gives a workspace roughly its memory request again. If you use swap
+Each pod gets `memoryRequest / nodeRAM × totalSwap` (see "Memory pressure"),
+so swap about the size of RAM gives a workspace roughly its memory request
+again. If you use swap
 heavily, check that `systemd-oomd` (`SwapUsedLimit=90%` by default) won't kill
 the kind node container first.
 
@@ -352,7 +353,7 @@ into `N-1` worker entries, so every node has both mounts. Because all kind
 nodes share this host's filesystem, the claims' volumes resolve to the same
 bytes whichever node a workspace lands on, and the "node-local" tier is one
 host folder. The rest of the config (the containerd `config_path` patch,
-the kubelet swap patch, `disableDefaultCNI`) is cluster-wide.
+the kubelet memory patch, `disableDefaultCNI`) is cluster-wide.
 
 Host-side loops over the node list apply the kind node fixups and write
 the main registry's `hosts.toml`. A node added later gets its `hosts.toml`
@@ -733,7 +734,7 @@ status.
 ## What a workspace reserves
 
 Each workspace container requests **500m cpu, 2Gi memory and 2Gi
-ephemeral storage**, and is limited to **8 cores, 8Gi memory and 16Gi
+ephemeral storage**, and is limited to **8 cores, 16Gi memory and 16Gi
 ephemeral storage**. A nested-containers workspace adds its podman
 graphroot volume's size to the storage limit, since kubelet charges it
 there. A workspace with module dirs (the default, `node_modules`) adds 2Gi
@@ -751,7 +752,10 @@ workspace never waits, and the autoscaler never adds a node, just to even
 out the count.
 
 Memory and disk are capped because they cannot be throttled, and one
-workspace must not take the node down. The cpu limit is for gVisor: runsc
+workspace must not take the node down. The memory limit leaves room for a
+workspace driving a headless browser; a node that runs out before its
+workspaces reach their limits is handled by eviction (see "Memory
+pressure"). The cpu limit is for gVisor: runsc
 sizes the sandbox's virtual cpu count from the cpu quota
 (`-cpu-num-from-quota`), and starts one systrap stub process per virtual
 cpu. With no limit, every sandbox sees all host cores, and one
@@ -763,6 +767,49 @@ of memory ÷ 2`, whichever is lower, less the install's own infra. The npm
 cache's Verdaccio alone requests a full core, two workspaces' worth, so
 that a burst of installs cannot starve the metadata parsing they wait on. A workspace that does not fit sits
 `Pending` with an `Insufficient cpu` (or memory) event rather than failing.
+
+## Memory pressure
+
+A workspace requests 2Gi and may use 16Gi, so a node of workspaces that
+all grow needs far more than its RAM. Four settings keep that safe.
+
+- **A cap per workspace.** gVisor enforces only the pod cgroup's
+  `memory.max`, since the whole sandbox runs in the pod's pause scope, and
+  reports it inside the sandbox as `MemTotal`. kubelet sets it only when
+  every container in the pod, init containers included, declares a memory
+  limit. A workspace past its limit and its swap bound is OOM-killed alone,
+  and shows `oom`.
+- **Swap with a bound per pod.** Swap is what lets an idle workspace's cold
+  pages leave RAM. `LimitedSwap` bounds a runc container's swap by
+  `memoryRequest / nodeRAM × totalSwap`, but on the container's cgroup,
+  where a gVisor sandbox does not run. netd writes the same bound on the
+  pod cgroup of every pod of its install on its node (k8s/netd/swap.ts),
+  so the bounds add up to at most the node's swap and no workspace crowds
+  the others out of it.
+- **Eviction at 200Mi.** When the node's available memory drops under
+  200Mi, the kubelet evicts one pod: pods over their request first, then
+  the lowest priority, then the furthest over its request. That is usually
+  the workspace that grew, and it shows `evicted`. Workspaces have yaac's
+  lowest priority, so a DaemonSet the cluster runs below it (priority 0 is
+  the default) is evicted, and recreated, in a workspace's place: give
+  such DaemonSets `system-node-critical`. The threshold is low because a
+  node that is swapping idle pages runs a few hundred MB from empty, and a
+  higher one would evict while swap is still absorbing the pressure.
+- **Fresh pod stats.** Eviction ranks pods by working set. With the 300s
+  housekeeping interval, cAdvisor's pod stats are up to five minutes old
+  and a workspace that just grew looks idle, so the
+  `PodAndContainerStatsFromCRI` gate has the kubelet read them from the
+  runtime instead.
+
+The kernel's OOM killer remains the backstop. kubelet caps all pods
+together at the node's capacity less `system-reserved`, and if they fill
+that faster than eviction's ten-second loop, the kernel picks a process by
+its own score.
+
+kind sets the kubelet's part in `k8s/kind-config.yaml`, which applies only
+when kind creates the node. Hetzner nodes get it with an encrypted swap file
+the size of RAM behind zswap (`infra/hetzner-k3s/node-memory.sh`), and EKS
+nodes, which have no swap, through their nodeadm config.
 
 ## Runtimes and uids
 

@@ -3,6 +3,8 @@
  * into the yaac proxy: nat DNAT rules at each pod's host-side veth, plus
  * the co-located Envoy's listeners and clusters.
  *
+ * It also bounds each pod's swap (swap.ts), on the same passes.
+ *
  * netd does not decide what is allowed; NetworkPolicy (enforced by
  * Calico) does, and netd's rules only add a path to the proxy. A pod netd
  * has not yet programmed has its egress dropped by policy, never let out.
@@ -22,6 +24,7 @@ import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import {
   inClusterClient,
+  watchNodePods,
   watchPods,
   watchServices,
   type NetdPod,
@@ -35,6 +38,7 @@ import {
   teardownChain,
 } from 'yaac-netd/iptables'
 import { normalizeVethPrefix, parsePodVeths } from 'yaac-netd/routes'
+import { applySwapBounds } from 'yaac-netd/swap'
 import { DEFAULT_LISTENER_RANGE, type ListenerRange, type ListenerTrio, trioPorts } from 'yaac-netd/ports'
 import { createTrioAllocator, fileTrioStore, probeTrioFree } from 'yaac-netd/listeners'
 import { redirectChainName, renderNatRestore, renderRedirectRules } from 'yaac-netd/rules'
@@ -103,6 +107,8 @@ export interface NetdConfig {
   sshSentinelPort: number
   transparentPorts: TransparentPorts
   listenerRange: ListenerRange
+  /** Where the host's cgroup2 tree is mounted, for the swap bounds. */
+  cgroupRoot: string
 }
 
 export function loadConfig(): NetdConfig {
@@ -132,6 +138,7 @@ export function loadConfig(): NetdConfig {
       base: envInt('NETD_LISTENER_PORT_BASE', DEFAULT_LISTENER_RANGE.base),
       slots: envInt('NETD_LISTENER_SLOTS', DEFAULT_LISTENER_RANGE.slots),
     },
+    cgroupRoot: process.env.NETD_CGROUP_ROOT ?? '/host/cgroup',
   }
 }
 
@@ -288,6 +295,7 @@ async function run(): Promise<void> {
   const client = inClusterClient(config.installNamespace)
   const pods = watchPods(client, request)
   const services = watchServices(client, request)
+  const nodePods = watchNodePods(client, config.nodeName, request)
   const memo: ReconcileMemo = {}
   const deps: ReconcileDeps = {
     config,
@@ -340,6 +348,18 @@ async function run(): Promise<void> {
       // Retry sooner than the resync tick: a failed pass means no egress.
       dirty = true
       await sleep(RETRY_DELAY_MS)
+    }
+    // Apart from the reconcile, so a cgroup write never costs egress.
+    try {
+      const bounded = await applySwapBounds({
+        pods: nodePods,
+        meminfo: () => fs.readFile('/proc/meminfo', 'utf8'),
+        read: (file) => fs.readFile(path.join(config.cgroupRoot, file), 'utf8').catch(() => null),
+        write: (file, value) => fs.writeFile(path.join(config.cgroupRoot, file), value),
+      })
+      if (bounded.length > 0) log(`[netd] swap bounds ${bounded.join(' ')}`)
+    } catch (err) {
+      log(`[netd] swap bounds failed: ${String(err)}`)
     }
   }
 }

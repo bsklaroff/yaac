@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as clientNode from '@kubernetes/client-node'
 import type { KubernetesObject } from '@kubernetes/client-node'
-import { inClusterClient, mapPod, mapService, watchPods, watchServices } from 'yaac-netd/k8s-watch'
+import { inClusterClient, mapNodePod, mapPod, mapService, watchNodePods, watchPods, watchServices } from 'yaac-netd/k8s-watch'
 
 /**
  * Fake client-node informer, driven by the test. `ListWatch` is the API
@@ -17,6 +17,7 @@ class FakeInformer {
     readonly path: string,
     readonly listFn: () => Promise<unknown>,
     readonly labelSelector: string | undefined,
+    readonly fieldSelector: string | undefined,
   ) {}
 
   on(verb: string, cb: (arg?: unknown) => void): void {
@@ -40,8 +41,11 @@ class FakeInformer {
 const informers = vi.hoisted(() => [] as FakeInformer[])
 vi.mock('@kubernetes/client-node', async (importOriginal) => ({
   ...(await importOriginal<typeof clientNode>()),
-  ListWatch: function (path: string, _watch: unknown, listFn: () => Promise<unknown>, _autoStart: boolean, labelSelector?: string) {
-    const informer = new FakeInformer(path, listFn, labelSelector)
+  ListWatch: function (
+    path: string, _watch: unknown, listFn: () => Promise<unknown>, _autoStart: boolean,
+    labelSelector?: string, fieldSelector?: string,
+  ) {
+    const informer = new FakeInformer(path, listFn, labelSelector, fieldSelector)
     informers.push(informer)
     return informer
   },
@@ -79,6 +83,24 @@ describe('mapPod', () => {
   })
 })
 
+describe('mapNodePod', () => {
+  it('maps a running pod to its uid and memory request, init containers included', () => {
+    expect(mapNodePod({
+      metadata: { name: 'ws', uid: 'a1-b2' },
+      status: { phase: 'Running' },
+      spec: {
+        containers: [{ resources: { requests: { memory: '2Gi' } } }],
+        initContainers: [{ resources: { requests: { memory: '16Mi' } } }],
+      },
+    })).toEqual({ name: 'ws', uid: 'a1-b2', memoryRequestBytes: 2 * 1024 ** 3 })
+  })
+
+  it('drops a pod that is not running or has no uid', () => {
+    expect(mapNodePod({ metadata: { name: 'p', uid: 'u' }, status: { phase: 'Pending' } })).toBeNull()
+    expect(mapNodePod({ metadata: { name: 'p' }, status: { phase: 'Running' } })).toBeNull()
+  })
+})
+
 describe('mapService', () => {
   it('maps an API Service to netd\'s shape', () => {
     expect(mapService({
@@ -90,6 +112,21 @@ describe('mapService', () => {
   it('drops a Service with no ClusterIP or no name', () => {
     expect(mapService({ metadata: { name: 's' }, spec: {} })).toBeNull()
     expect(mapService({ metadata: {}, spec: { clusterIP: '10.96.0.1' } })).toBeNull()
+  })
+})
+
+describe('watchNodePods', () => {
+  beforeEach(() => { informers.length = 0 })
+
+  it('watches and lists every pod of this install on this node, by field selector', async () => {
+    const { client, listNamespacedPod } = fakeClient()
+    watchNodePods(client, 'node-a', () => { /* unused */ })
+    const [informer] = informers
+    expect(informer.path).toBe('/api/v1/namespaces/yaac/pods')
+    expect(informer.labelSelector).toBeUndefined()
+    expect(informer.fieldSelector).toBe('spec.nodeName=node-a')
+    await informer.listFn()
+    expect(listNamespacedPod).toHaveBeenCalledWith({ namespace: 'yaac', fieldSelector: 'spec.nodeName=node-a' })
   })
 })
 

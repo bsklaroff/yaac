@@ -65,12 +65,27 @@ locals {
         }
       }
       # The default class, hcloud-volumes: yaac-server-local, the
-      # registries and the npm cache.
+      # registries and the npm cache. The chart leaves its node plugin at
+      # priority 0 with no requests, which ranks it ahead of every
+      # workspace when a node runs short of memory, and its DaemonSet
+      # recreates it to be evicted again. Critical priority exempts it from
+      # eviction, and requests keep it off BestEffort for the kernel's OOM
+      # killer.
       hcloud-csi = {
         chart     = "https://github.com/hetznercloud/csi-driver/releases/download/v2.23.0/hcloud-csi-2.23.0.tgz"
         namespace = "kube-system"
         bootstrap = false
-        values    = { controller = { hcloudVolumeDefaultLocation = var.location } }
+        values = {
+          controller = { hcloudVolumeDefaultLocation = var.location }
+          node = {
+            priorityClassName = "system-node-critical"
+            resources = {
+              csiNodeDriverRegistrar = { requests = { cpu = "5m", memory = "16Mi" } }
+              livenessProbe          = { requests = { cpu = "5m", memory = "16Mi" } }
+              hcloudCSIDriver        = { requests = { cpu = "10m", memory = "32Mi" } }
+            }
+          }
+        }
       }
       csi-driver-nfs = {
         chart     = "https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts/v4.13.4/csi-driver-nfs-4.13.4.tgz"

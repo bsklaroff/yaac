@@ -115,7 +115,11 @@ export interface PodJobParams {
    * the full limit per workspace.
    */
   memoryRequestBytes: number
-  /** Hard cgroup cap; exceeding it OOM-kills the container. */
+  /**
+   * The pod cgroup's memory cap, which is also the sandbox's `MemTotal`.
+   * Past it, and past the swap netd allows the pod, the workspace is
+   * OOM-killed alone.
+   */
   memoryLimitBytes: number
   /**
    * CPU request in millicores, so the scheduler accounts for the pod. Also
@@ -371,6 +375,10 @@ export const PRE_STOP_GRACE_SECONDS = 60
  * `DirectoryOrCreate` leaves as root. Symlinks are replaced with
  * directories, since other pods of the project can write this tree and
  * could plant one.
+ *
+ * It declares limits like every container in the pod: kubelet sets the pod
+ * cgroup's memory cap only when all of them do, and gVisor enforces no
+ * other (docs/cluster-setup.md "Memory pressure").
  */
 function nodeDirsInitContainer(
   image: string,
@@ -401,6 +409,10 @@ function nodeDirsInitContainer(
     image,
     imagePullPolicy: 'IfNotPresent',
     securityContext: { runAsUser: 0, runAsGroup: 0 },
+    resources: {
+      requests: { cpu: '10m', memory: '16Mi' },
+      limits: { cpu: '100m', memory: '64Mi' },
+    },
     command: [
       'sh', '-c', `${script}
 `, '--',

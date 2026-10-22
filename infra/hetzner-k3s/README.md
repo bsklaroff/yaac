@@ -18,7 +18,8 @@ yaac cluster install --byo --rwx-storage-class yaac-nfs
 | A control node (`control_server_type`, default cx43) running the k3s server | It also runs yaac's server and infrastructure and the first few workspaces, and it is where install runs: yaac builds its images with rootful podman on the machine running install, for that machine's architecture. |
 | k3s on Ubuntu, against the host's containerd from apt rather than k3s's embedded one | The gVisor installer writes `/etc/containerd/config.toml` and restarts containerd through systemd. k3s's embedded containerd regenerates its config on every start and is refused by install. |
 | kubelet `--housekeeping-interval=300s`, the iptables kube-proxy | The setting a kind install applies itself, and the kube-proxy mode netd's redirect sits beside (docs/workspace-egress.md). |
-| kubelet `system-reserved` on every node (`control_system_reserved`, default 1 cpu and 2Gi; `worker_system_reserved`, default 500m and 1Gi) | The k3s server or agent, containerd and, on the control node, the datastore and the NFS server are host processes, outside the reach of yaac's PriorityClasses. A workspace may use memory far past its request, so the reservation keeps workspaces out of their room and makes the kubelet evict a workspace before they run short of memory. |
+| kubelet `system-reserved` on every node (`control_system_reserved`, default 1 cpu and 2Gi; `worker_system_reserved`, default 500m and 1Gi) | The k3s server or agent, containerd and, on the control node, the datastore and the NFS server are host processes, outside the reach of yaac's PriorityClasses. The reservation keeps workspaces from being scheduled into their room, and caps what all pods together may hold. |
+| On every node (node-memory.sh): an encrypted swap file the size of RAM behind zswap, `system.slice` kept off swap, and a kubelet drop-in with `LimitedSwap`, the `PodAndContainerStatsFromCRI` gate and `evictionHard` `memory.available<200Mi` | Workspaces request a quarter of their limit, so a node is overcommitted on purpose. Swap takes idle workspaces' cold pages, netd bounds each pod's share of it, and when RAM still runs out the kubelet evicts the workspace furthest over its request (docs/cluster-setup.md "Memory pressure"). |
 | Calico from the Tigera operator: VXLAN, the iptables dataplane, MTU 1400 | yaac's egress wall is Calico NetworkPolicy plus netd's iptables redirect. Hetzner's network routes only the addresses it assigned, so pod traffic is encapsulated. |
 | The Hetzner cloud controller | Sets node addresses and provider IDs (the autoscaler finds servers by them) and removes the Node of a deleted server. Its network routes are off. |
 | The Hetzner volume driver; `hcloud-volumes` is the default class | `yaac-server-local`, the registries and the npm cache. |
@@ -193,6 +194,16 @@ done by hand.
   the control node. New autoscaled workers join on the new version; a
   manual worker moves when you drain it and
   `tofu apply -replace='hcloud_server.worker["<name>"]'`.
+- **Swap and memory eviction**: user data runs only at a node's first
+  boot, so a node bootstrapped before node-memory.sh has neither. Run it
+  on each such node, workers first; the control node gets it from the next
+  apply. It restarts k3s only if the kubelet's settings changed, which
+  leaves running pods alone:
+
+  ```sh
+  ssh root@<node> 'bash -s' < node-memory.sh
+  ```
+
 - **NFS delegations off**: tofu never re-runs the control node's user data,
   so a control node bootstrapped before this setting still grants
   delegations. Turn them off there by hand:

@@ -91,6 +91,7 @@ interface Manifest {
           env: Array<{ name: string; value: string }>
           startupProbe?: { exec: { command: string[] } }
           volumeMounts?: Array<{ name: string; mountPath: string }>
+          resources?: { requests?: Record<string, string>; limits?: Record<string, string> }
         }>
         containers: Array<{
           name: string
@@ -361,6 +362,18 @@ describe('buildPodJobManifest', () => {
     const { runAsUser, runAsGroup } = installSecurityContext()
     expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
     expect(init.command?.[2]).toContain(`\n    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
+  })
+
+  it('limits every container, init included, so kubelet caps the pod cgroup gVisor relies on', () => {
+    const m = build({
+      nodeLocalRoot: '/var/lib/yaac/node/ddh',
+      nodeLocalDirs: ['/var/lib/yaac/node/ddh/projects/demo/.cached-packages'],
+    })
+    const { initContainers = [], containers } = m.spec.template.spec
+    expect(initContainers).toHaveLength(1)
+    for (const c of [...initContainers, ...containers]) {
+      expect(Object.keys(c.resources?.limits ?? {}), c.name).toEqual(expect.arrayContaining(['memory', 'cpu']))
+    }
   })
 
   it('runs the node-dirs script for real: a leaf kubelet already created is chowned, parents are made', async () => {

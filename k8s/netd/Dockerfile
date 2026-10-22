@@ -21,6 +21,7 @@ COPY envoy-config.ts /app/envoy-config.ts
 COPY envoy-admin.ts /app/envoy-admin.ts
 COPY listeners.ts /app/listeners.ts
 COPY k8s-watch.ts /app/k8s-watch.ts
+COPY swap.ts /app/swap.ts
 # Runs as root in the host network namespace. Writing nat rules needs
 # CAP_NET_ADMIN, which the DaemonSet grants without privileged: true.
 CMD ["node_modules/.bin/tsx", "/app/netd.ts"]
