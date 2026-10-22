@@ -22,6 +22,21 @@ contextBridge.exposeInMainWorld('yaacWindow', {
     void ipcRenderer.invoke('forward:remaps').then(cb)
     return () => { ipcRenderer.removeListener('forward:remaps', listener) }
   },
+  // A hidden preview pane's lifecycle, for the <webview> guest with this
+  // webContents id (preview-lifecycle.ts).
+  setPreviewFrozen: (id: number, frozen: boolean) => ipcRenderer.invoke('preview:set-frozen', id, frozen),
+  canDiscardPreview: (id: number) => ipcRenderer.invoke('preview:can-discard', id),
+  // Called on each check that finds critical memory pressure, which the main
+  // process makes only while subscribed. Returns an unsubscribe.
+  onMemoryPressure: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('preview:memory-pressure', listener)
+    ipcRenderer.send('preview:watch-memory-pressure', true)
+    return () => {
+      ipcRenderer.removeListener('preview:memory-pressure', listener)
+      ipcRenderer.send('preview:watch-memory-pressure', false)
+    }
+  },
 })
 
 // The Servers page's bridge (servers-page.ts). The main process answers it

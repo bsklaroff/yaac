@@ -35,6 +35,19 @@ interface YaacWindow {
    * "Previews"). The desktop app previews in a pane instead.
    */
   openPreview?: (workspaceId: string, port: PortMapping) => void
+  /**
+   * Freeze or thaw a hidden preview's page, by its `<webview>`'s
+   * webContents id. Resolves whether it took effect.
+   */
+  setPreviewFrozen?: (webContentsId: number, frozen: boolean) => Promise<boolean>
+  /** Whether a hidden preview may be discarded without losing what the
+   *  user did in it (docs/preview-lifecycle.md). */
+  canDiscardPreview?: (webContentsId: number) => Promise<boolean>
+  /**
+   * Be called whenever the desktop app finds critical memory pressure. The
+   * app checks only while subscribed. Returns an unsubscribe.
+   */
+  onMemoryPressure?: (cb: () => void) => () => void
 }
 
 /** The bridge, or undefined in a browser. */
