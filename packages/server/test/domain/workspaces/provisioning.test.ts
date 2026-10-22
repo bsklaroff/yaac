@@ -60,7 +60,7 @@ describe('listProvisioning', () => {
     expect('model' in a).toBe(false)
     // An id still provisioning is refused, and stays as it was.
     expect(() => registerProvisioning(entry('b'))).toThrow(expect.objectContaining({ code: 'CONFLICT' }) as Error)
-    expect(inFlightWorkspaceIds().sort()).toEqual(['a', 'b'])
+    expect(inFlightWorkspaceIds(Date.now()).sort()).toEqual(['a', 'b'])
 
     release()
     expect(await result).toEqual({ workspaceId: 'b' })
@@ -82,7 +82,7 @@ describe('listProvisioning', () => {
     notify.mockClear()
     lateProgress('Creating workspace from main...')
     expect(listProvisioning()).toMatchObject([{ workspaceId: 'a', error: 'missing', message: 'Starting…' }])
-    expect(inFlightWorkspaceIds()).toEqual([])
+    expect(inFlightWorkspaceIds(Date.now())).toEqual([])
     expect(notify).not.toHaveBeenCalled()
 
     let during: unknown

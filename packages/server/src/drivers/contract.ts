@@ -113,6 +113,9 @@ export interface StrayUnit {
 export interface RuntimeSnapshot {
   /** Whether this is the periodic run-everything pass. */
   resync: boolean
+  /** When the view was taken. Every listing it answers is read at or after
+   *  this, so a workspace whose create settled since may be missing. */
+  takenAtMs: number
   /** Every workspace the runtime is holding, spares included. */
   workspaces(): Promise<RuntimeHandle[]>
   /** Units whose workspace is gone — see `StrayUnit`. */

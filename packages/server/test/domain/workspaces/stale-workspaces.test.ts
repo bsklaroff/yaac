@@ -46,7 +46,7 @@ import {
  *  directly through `mockStrays`. */
 const mockWorkspaces = vi.fn<() => Promise<RuntimeHandle[]>>()
 const mockStrays = vi.fn<() => Promise<StrayUnit[]>>()
-const view = { resync: true, workspaces: mockWorkspaces, strayUnits: mockStrays }
+const view = { resync: true, takenAtMs: 0, workspaces: mockWorkspaces, strayUnits: mockStrays }
 const mockProbe = vi.mocked(probeTmuxLiveness)
 const mockPaneProbe = vi.mocked(probeAgentPaneState)
 const mockCleanup = vi.mocked(cleanupWorkspaceDetached)

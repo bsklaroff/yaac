@@ -5,7 +5,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
-import { inFlightWorkspaceIds, listProvisioning } from './provisioning'
+import { inFlightWorkspaceIds } from './provisioning'
 import { applyWorkspaceEvent, listProjectRows } from '#db'
 import {
   clearWorkspaceTerminating,
@@ -257,22 +257,23 @@ export async function cleanupWorkspaceDetached(params: {
 }
 
 /**
- * How long before the sweep started a write still counts as "in use". The
- * data dir may be on a filesystem with coarse timestamps, so allow slack;
- * too little could delete a live workspace's dirs.
+ * How long before the listing a write still counts as "in use". The data
+ * dir may be on a filesystem with coarse timestamps, so allow slack; too
+ * little could delete a live workspace's dirs.
  */
 const RECENT_WRITE_SLACK_MS = 10_000
 
 /**
  * Whether the orphan sweep must skip this workspace dir: the workspace is
- * still provisioning (not yet visible to the runtime), or the dir was
- * written since the sweep's listing. An unreadable stat counts as in use.
+ * in flight or settled after the listing was read (so it may be missing
+ * from it), or the dir was written since. An unreadable stat counts as in
+ * use.
  */
-async function inUseBySweep(dir: string, sid: string, sweepStartedAtMs: number): Promise<boolean> {
-  if (inFlightWorkspaceIds().includes(sid)) return true
+async function inUseBySweep(dir: string, sid: string, listedAtMs: number): Promise<boolean> {
+  if (inFlightWorkspaceIds(listedAtMs).includes(sid)) return true
   try {
     const st = await fs.stat(dir)
-    return st.mtimeMs >= sweepStartedAtMs - RECENT_WRITE_SLACK_MS
+    return st.mtimeMs >= listedAtMs - RECENT_WRITE_SLACK_MS
   } catch {
     return true
   }
@@ -294,14 +295,12 @@ async function liveWorkspaceIds(view: RuntimeSnapshot): Promise<Set<string>> {
 /**
  * The node-local tier of the orphan sweep, handed to the driver's
  * `reapNodeLocal` since those bytes are on whichever node the workspace ran
- * on. Provisioning workspaces count as live.
+ * on. Workspaces in flight count as live.
  */
 export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> {
   const workspaceIds = await liveWorkspaceIds(view)
   const projectIds = new Set((await listProjectRows()).map((r) => r.id))
-  for (const { workspaceId, error } of listProvisioning()) {
-    if (error === undefined) workspaceIds.add(workspaceId)
-  }
+  for (const id of inFlightWorkspaceIds(view.takenAtMs)) workspaceIds.add(id)
   await workspaceDriver().reapNodeLocal({ projectIds, workspaceIds })
 }
 
@@ -312,9 +311,8 @@ export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> 
  * the same, so spares' are removed by `reapSpare`, from their unit's mark.
  */
 export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promise<void> {
-  // A create that stages dirs before its unit exists looks like an orphan.
-  // `inUseBySweep` guards against that.
-  const sweepStartedAtMs = Date.now()
+  // A create the listing missed looks like an orphan. `inUseBySweep`
+  // guards against that.
   const live = await liveWorkspaceIds(view)
 
   const projectIds = await fs.readdir(getProjectsDir()).catch((): string[] => [])
@@ -329,7 +327,7 @@ export async function gcOrphanEphemeralModuleDirs(view: RuntimeSnapshot): Promis
     for (const sid of workspaceEntries) {
       if (live.has(sid)) continue
       const dir = path.join(workspacesRoot, sid)
-      if (await inUseBySweep(dir, sid, sweepStartedAtMs)) continue
+      if (await inUseBySweep(dir, sid, view.takenAtMs)) continue
       try {
         await fs.rm(dir, { recursive: true, force: true })
         console.log(`Removed orphan session dir ${dir}`)

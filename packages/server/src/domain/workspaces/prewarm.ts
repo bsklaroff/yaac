@@ -19,7 +19,7 @@
  */
 import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspace, deleteWorkspaceState } from './cleanup'
-import { claimProvisioning } from './provisioning'
+import { claimProvisioning, spawningSpares } from './provisioning'
 import { rebranchSpare, retoolSpare } from './spare-pool'
 import {
   applyWorkspaceEvent,
@@ -54,13 +54,6 @@ import type { RuntimeHandle } from '#drivers/contract'
  * claims cannot take the same spare and the reconciler does not reap it.
  */
 export const claiming = new Set<string>()
-
-/**
- * In-flight spawns, workspace id → project id. A spawn is not listed by the
- * runtime for seconds, so this stops ticks from spawning duplicates. Its pod
- * is also never reaped while the create is still running.
- */
-export const inFlight = new Map<string, string>()
 
 /**
  * Workspace ids of spares the reconciler is reaping. The pod stays listed
@@ -109,7 +102,7 @@ export const spareSettings = new Map<string, SpareSettings>()
 /** Test helper: reset all shared prewarm state. */
 export function clearPrewarmStateForTests(): void {
   claiming.clear()
-  inFlight.clear()
+  spawningSpares.clear()
   reaping.clear()
   refreshing.clear()
   spareHeads.clear()
@@ -124,7 +117,7 @@ export function clearPrewarmStateForTests(): void {
  * starts, so a spare being reaped reads as taken too.
  */
 export function freeSpare(spare: Pick<RuntimeHandle, 'jobName' | 'workspaceId'>): SpareSettings | undefined {
-  if (claiming.has(spare.jobName) || inFlight.has(spare.workspaceId)) return undefined
+  if (claiming.has(spare.jobName) || spawningSpares.has(spare.workspaceId)) return undefined
   return spareSettings.get(spare.workspaceId)
 }
 
@@ -161,7 +154,7 @@ export async function recordedLaunch(
  */
 export function reapSpare(target: PrewarmReapTarget, { claimFailed = false } = {}): void {
   const { jobName, projectId, workspaceId } = target
-  if (claiming.has(jobName) || inFlight.has(workspaceId) || reaping.has(workspaceId)) return
+  if (claiming.has(jobName) || spawningSpares.has(workspaceId) || reaping.has(workspaceId)) return
   reaping.add(workspaceId)
   spareSettings.delete(workspaceId)
   void (async () => {
@@ -199,7 +192,7 @@ export interface PrewarmPlan {
 
 /** What the planner reads besides the listing and the pool size. */
 export interface PrewarmState {
-  /** In-flight spawns, workspace id → project id (`inFlight`). */
+  /** In-flight spawns, workspace id → project id (`spawningSpares`). */
   inFlight: ReadonlyMap<string, string>
   /** Job names of spares mid-claim (`claiming`). */
   claiming: ReadonlySet<string>

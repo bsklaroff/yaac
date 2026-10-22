@@ -59,7 +59,8 @@ export function substrateFixture(): WorkspaceSubstrate {
 }
 
 /**
- * A snapshot over fixed lists. Not memoized, so a test can count reads.
+ * A snapshot over fixed lists, taken now. Not memoized, so a test can count
+ * reads.
  */
 export function snapshotFixture(
   workspaces: RuntimeHandle[] = [],
@@ -68,6 +69,7 @@ export function snapshotFixture(
 ): RuntimeSnapshot {
   return {
     resync,
+    takenAtMs: Date.now(),
     workspaces: () => Promise.resolve(workspaces),
     strayUnits: () => Promise.resolve(strayUnits),
   }
