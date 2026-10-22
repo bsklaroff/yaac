@@ -204,6 +204,14 @@ done by hand.
   ssh root@<node> 'bash -s' < node-memory.sh
   ```
 
+- **Shared claim size**: raise `nfs_volume_gb` (volumes only grow) and
+  apply. Hetzner grows the disk in place; then grow its ext4 online on the
+  control node, which needs no unmount or restart:
+
+  ```sh
+  ssh root@<control> resize2fs "$(findmnt -no SOURCE /srv/yaac-nfs)"
+  ```
+
 - **NFS delegations off**: tofu never re-runs the control node's user data,
   so a control node bootstrapped before this setting still grants
   delegations. Turn them off there by hand:
