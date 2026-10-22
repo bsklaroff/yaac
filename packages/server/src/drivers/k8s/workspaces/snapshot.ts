@@ -21,6 +21,7 @@ export function createRuntimeSnapshot(resync = true): RuntimeSnapshot {
   const jobs = (): ReturnType<typeof readWorkspaceJobs> => (jobsRead ??= readWorkspaceJobs())
   return {
     resync,
+    takenAtMs: Date.now(),
     async workspaces(): Promise<RuntimeHandle[]> {
       return (await pods()).map(runtimeHandleFromPod)
     },

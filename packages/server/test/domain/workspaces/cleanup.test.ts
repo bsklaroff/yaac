@@ -22,7 +22,13 @@ import type { NodeLocalLiveSet, RuntimeSnapshot, StrayUnit, RuntimeHandle } from
 import { BUILT_IN_USER_ID, closeDb, listProjectRows } from '#db'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
-import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
+import {
+  clearAllProvisioningForTests,
+  provision,
+  registerProvisioning,
+  settleSpare,
+  spawningSpares,
+} from '#domain/workspaces/provisioning'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
 
 let gcDataDir: string
@@ -49,6 +55,7 @@ function seeRunning(workspaces: RuntimeHandle[], strays: StrayUnit[] = []): void
 function seeNothing(): void {
   view = {
     resync: true,
+    takenAtMs: Date.now(),
     workspaces: () => Promise.reject(new Error('cluster offline')),
     strayUnits: () => Promise.reject(new Error('cluster offline')),
   }
@@ -129,20 +136,49 @@ describe('gcOrphanEphemeralModuleDirs', () => {
     await expect(fs.access(slugSession)).rejects.toThrow()
   })
 
-  it('spares a session the process is still provisioning', async () => {
-    // The create records its row before anything is launched, so no
-    // listing shows it yet; sweeping would delete dirs it is about to mount.
+  it('spares a session the process is still creating, a spare included', async () => {
+    // No listing shows a create until its unit exists, and a spare's dirs
+    // can sit unwritten for longer than the sweep's slack while it warms;
+    // sweeping either would delete dirs its pod is about to mount.
     const staging = await seedWorkspacesDir(PROJ_A, 'creating-1')
+    const warming = await seedWorkspacesDir(PROJ_A, 'spare-1')
     publishInFlight(['creating-1'])
+    spawningSpares.set('spare-1', PROJ_A)
 
     await gcOrphanEphemeralModuleDirs(view)
 
     await expect(fs.access(staging)).resolves.toBeUndefined()
+    await expect(fs.access(warming)).resolves.toBeUndefined()
+  })
+
+  // A pass reads its listing before the pool step warms a spare, and sweeps
+  // after it. A create that settles in between is in neither the listing
+  // nor the registry, and its pod has already mounted these dirs.
+  it('spares a session whose create settled after the listing was read', async () => {
+    const spare = await seedWorkspacesDir(PROJ_A, 'spare-1')
+    const created = await seedWorkspacesDir(PROJ_A, 'created-1')
+    spawningSpares.set('spare-1', PROJ_A)
+    const run = provision({ workspaceId: 'created-1', projectId: PROJ_A, tool: 'claude', kind: 'create' },
+      () => Promise.resolve({ workspaceId: 'created-1' }))
+    const before = view
+    settleSpare('spare-1')
+    await run()
+
+    await gcOrphanEphemeralModuleDirs(before)
+    await expect(fs.access(spare)).resolves.toBeUndefined()
+    await expect(fs.access(created)).resolves.toBeUndefined()
+
+    // A listing read after they settled would show them if they were alive.
+    await new Promise((resolve) => setTimeout(resolve, 2))
+    seeRunning([])
+    await gcOrphanEphemeralModuleDirs(view)
+    await expect(fs.access(spare)).rejects.toThrow()
+    await expect(fs.access(created)).rejects.toThrow()
   })
 
   it('spares a dir written since the sweep took its listing', async () => {
-    // The same race for a create with no provisioning row (a spare's warm):
-    // a fresh dir is left for the next sweep.
+    // A create that stages before it registers: a fresh dir is left for the
+    // next sweep.
     const fresh = await seedWorkspacesDir(PROJ_A, 'staging-1')
     await fs.utimes(fresh, new Date(), new Date())
 

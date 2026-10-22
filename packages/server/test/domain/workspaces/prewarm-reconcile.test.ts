@@ -33,12 +33,12 @@ import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
 import {
   claiming,
   clearPrewarmStateForTests,
-  inFlight,
   refreshing,
   spareHeads,
   spareSettings,
   type SpareSettings,
 } from '#domain/workspaces/prewarm'
+import { spawningSpares } from '#domain/workspaces/provisioning'
 import { rebranchSpare } from '#domain/workspaces/spare-pool'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import { LABEL_PREWARMED, type PodInfo } from '#drivers/k8s/substrate/pods'
@@ -264,7 +264,7 @@ describe('reconcilePrewarmPool', () => {
     })
     await pass()
     await flush()
-    expect(inFlight.size).toBe(0)
+    expect(spawningSpares.size).toBe(0)
     expect(spareSettings.size).toBe(0)
   })
 
@@ -421,12 +421,12 @@ describe('reconcilePrewarmPool', () => {
       .mockReturnValue(new Promise<never>(() => { /* never resolves */ }))
 
     await pass()
-    expect([...inFlight.values()]).toEqual(['p', 'p'])
+    expect([...spawningSpares.values()]).toEqual(['p', 'p'])
 
     settleFirst()
     await flush()
     // The unsettled spawn stays, so the next tick does not start another.
-    expect([...inFlight.values()]).toEqual(['p'])
+    expect([...spawningSpares.values()]).toEqual(['p'])
   })
 
   // A spawn's pod is listed well before its create settles. Reaping it then
@@ -448,7 +448,7 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCreate).toHaveBeenCalledTimes(1)
     expect(mockCleanup).not.toHaveBeenCalled()
 
-    inFlight.clear()
+    spawningSpares.clear()
     await pass()
     expect(mockCleanup).toHaveBeenCalledWith({ jobName: `yaac-p-${workspaceId}`, projectId: 'p', workspaceId, keepRecord: true })
   })

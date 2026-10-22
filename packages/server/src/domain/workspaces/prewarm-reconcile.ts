@@ -10,12 +10,11 @@ import crypto from 'node:crypto'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
 import { createWorkspace, resolveCreate } from './create'
-import { listProvisioning } from './provisioning'
+import { listProvisioning, settleSpare, spawningSpares } from './provisioning'
 import {
   claiming,
   computePrewarmPlan,
   freeSpare,
-  inFlight,
   reapSpare,
   reaping,
   refreshing,
@@ -34,8 +33,8 @@ import type { RuntimeHandle } from '#drivers/contract'
 
 /**
  * Spawn a spare under `workspaceId` with what the create form would submit
- * by default, then drop it from `inFlight`. A failed create has already torn
- * its spare down.
+ * by default, then settle it out of `spawningSpares`. A failed create has
+ * already torn its spare down.
  */
 async function spawnSpare(projectId: string, workspaceId: string): Promise<void> {
   try {
@@ -45,7 +44,7 @@ async function spawnSpare(projectId: string, workspaceId: string): Promise<void>
     spareSettings.delete(workspaceId)
     serverLog(`[prewarm] spawn for ${projectId} failed: ${String(err)}`)
   } finally {
-    inFlight.delete(workspaceId)
+    settleSpare(workspaceId)
   }
 }
 
@@ -58,7 +57,7 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
   const pods = (await view.workspaces()).filter((p) => !reaping.has(p.workspaceId))
 
   const { toSpawn, toReap } = computePrewarmPlan(pods, poolSize, {
-    inFlight,
+    inFlight: spawningSpares,
     claiming,
     refreshing: new Set(refreshing.keys()),
     provisioning: new Set(listProvisioning().filter((e) => e.error === undefined).map((e) => e.projectId)),
@@ -70,7 +69,7 @@ export async function reconcilePrewarmPool(view: RuntimeSnapshot): Promise<void>
   for (const spawn of toSpawn) {
     // Recorded before any await so a concurrent tick sees it.
     const workspaceId = crypto.randomUUID()
-    inFlight.set(workspaceId, spawn.projectId)
+    spawningSpares.set(workspaceId, spawn.projectId)
     void spawnSpare(spawn.projectId, workspaceId)
   }
 

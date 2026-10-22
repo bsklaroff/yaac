@@ -254,6 +254,7 @@ export function throwIfProvisionStopped(workspaceId: string): void {
 
 /** Drop an entry (resolved or dismissed); notifies only if one was removed. */
 export function removeProvisioning(workspaceId: string): void {
+  markSettled(workspaceId)
   if (entries.delete(workspaceId)) notifyWorkspaceListChanged()
 }
 
@@ -360,13 +361,45 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
 }
 
 /**
- * Ids a sweep must not touch: workspaces still being created or restarted,
- * including a spare a create has claimed, which runs under its own id.
+ * Prewarmed spares being created, workspace id → project id. A spare gets
+ * no registry entry, since nothing shows it until a create claims it. The
+ * prewarm reconciler counts these against its pool, and never claims or
+ * reaps one mid-create.
+ */
+export const spawningSpares = new Map<string, string>()
+
+/** A spare's create has returned, so it leaves `spawningSpares`. */
+export function settleSpare(workspaceId: string): void {
+  spawningSpares.delete(workspaceId)
+  markSettled(workspaceId)
+}
+
+/**
+ * When each create or warm last left the registry. A sweep's listing can
+ * predate that, and then shows neither the entry nor the workspace that
+ * replaced it. Kept far longer than any reconcile pass runs.
+ */
+const settledAt = new Map<string, number>()
+const SETTLED_KEEP_MS = 10 * 60_000
+
+function markSettled(workspaceId: string): void {
+  const now = Date.now()
+  for (const [id, at] of settledAt) if (at < now - SETTLED_KEEP_MS) settledAt.delete(id)
+  settledAt.set(workspaceId, now)
+}
+
+/**
+ * Ids a sweep acting on a listing taken at `listedAtMs` must not touch:
+ * workspaces still being created or restarted, including a spare a create
+ * has claimed, which runs under its own id, and a spare still being warmed;
+ * and any of those that settled since the listing, which may not show it.
  * Failed entries are excluded; their rollback already ran.
  */
-export function inFlightWorkspaceIds(): string[] {
+export function inFlightWorkspaceIds(listedAtMs: number): string[] {
   return [...entries.values()].filter((e) => e.error === undefined)
     .flatMap((e) => (e.claimedId !== undefined ? [e.workspaceId, e.claimedId] : [e.workspaceId]))
+    .concat([...spawningSpares.keys()])
+    .concat([...settledAt].filter(([, at]) => at >= listedAtMs).map(([id]) => id))
 }
 
 /** Test helper: drop all tracked entries. */
@@ -374,4 +407,6 @@ export function clearAllProvisioningForTests(): void {
   entries.clear()
   stoppedIds.clear()
   runs.clear()
+  spawningSpares.clear()
+  settledAt.clear()
 }

@@ -152,9 +152,11 @@ export function countWorkspaces(): Record<string, number> {
 /** A pass's view of the runtime. `strayUnits` is always empty: the tmux
  *  server is the unit, so nothing can outlive it. */
 export function createRuntimeSnapshot(resync = false): RuntimeSnapshot {
+  const takenAtMs = Date.now()
   const workspaces = listWorkspaces()
   return {
     resync,
+    takenAtMs,
     workspaces: () => Promise.resolve(workspaces),
     strayUnits: () => Promise.resolve<StrayUnit[]>([]),
   }

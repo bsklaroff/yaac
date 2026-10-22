@@ -53,7 +53,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
   // Workspaces still being created are exempt from every sweep, whatever
   // their age: reaping mid-create would delete dirs the pod is about to
   // mount. (A pod not yet Running reads as stopped to the classifier.)
-  const provisioningIds = new Set(inFlightWorkspaceIds())
+  const provisioningIds = new Set(inFlightWorkspaceIds(view.takenAtMs))
 
   const stale = staleAll.filter((s) => !s.workspaceId || !provisioningIds.has(s.workspaceId))
 
