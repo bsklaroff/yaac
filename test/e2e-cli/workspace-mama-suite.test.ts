@@ -27,7 +27,8 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * The in-workspace command channel: a workspace pod runs `yaac-mama`, whose
  * request travels over HTTP egress to the proxy's magic host, which relays
  * it to the server. The server runs it against the caller's project: creating a sibling
- * with a prompt, listing workspaces, managing groups, and stopping.
+ * with a prompt, listing workspaces, managing groups, stopping, and finding
+ * and restarting a stopped one.
  */
 describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () => {
   const NAME = 'spawner'
@@ -414,7 +415,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     }
     expect(gone).toBe(true)
 
-    // It stays in the stopped listing, so the user can restart it.
+    // It stays in the stopped listing, so it can be restarted.
     const listed = await runYaac(serverEnv, 'workspace', 'list', '--stopped')
     expect(listed.exitCode).toBe(0)
     expect(listed.stdout).toContain(shortId)
@@ -424,7 +425,54 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(mine.output).toContain('(you)')
   }, 240_000)
 
+  it('finds the stopped sibling, reads it as it is, and restarts it with its conversation', async () => {
+    const shortId = spawnedWorkspaceId.slice(0, 8)
+
+    const found = await runMama('list --stopped --search "spawned BY" --group "release train" --limit 5')
+    expect(found.exitCode, found.output).toBe(0)
+    expect(found.output).toMatch(new RegExp(`^${shortId}\\s+claude\\s+\\S+ \\S+\\s+stopped\\s+release train\\s+Spawned by e2e`, 'm'))
+    const shown = await runMama(`list ${shortId}`)
+    expect(shown.output).toContain('Stopped workspaces:')
+    expect(shown.output).toContain('hello from spawn e2e')
+
+    // Its conversation and branches stay readable while it is stopped.
+    const history = await runMama(`history ${shortId}`)
+    expect(history.exitCode, history.output).toBe(0)
+    expect(history.output).toMatch(/\sclaude\s+tui\s/)
+    const fetched = await runMama(`fetch ${shortId}`)
+    expect(fetched.exitCode, fetched.output).toBe(0)
+    expect(fetched.output).toContain(`yaac/peers/${shortId}/HEAD`)
+
+    const unsent = await runMama(`send ${shortId} "are you there"`)
+    expect(unsent.exitCode).toBe(1)
+    expect(unsent.output).toContain(`restart it with yaac-mama restart ${shortId}`)
+
+    const restarted = await runMama(`restart ${shortId}`)
+    expect(restarted.exitCode, restarted.output).toBe(0)
+    expect(restarted.output).toContain(`Restarting ${shortId}`)
+    let back: PodInfo | undefined
+    for (let i = 0; i < 180 && !back?.running; i++) {
+      back = (await listWorkspacePods(PROJECT_ID)).find((p) => p.workspaceId === spawnedWorkspaceId)
+      if (!back?.running) await sleep(1000)
+    }
+    expect(back?.running).toBe(true)
+    // It comes back in the posture it had.
+    let startCmd = ''
+    for (let i = 0; i < 60 && !startCmd.includes('--permission-mode'); i++) {
+      startCmd = await execInJob(back!.jobName, ['sh', '-c',
+        `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}" 2>&1`,
+      ], { timeout: 10_000 }).then((r) => r.stdout, () => '')
+      if (!startCmd.includes('--permission-mode')) await sleep(1000)
+    }
+    expect(startCmd).toContain('--permission-mode plan')
+  }, 420_000)
+
   it('stops ITSELF when no workspace is named, starting what it queued after itself', async () => {
+    // A running workspace is never restarted from here, itself least of all.
+    const self = await runMama('restart "$YAAC_WORKSPACE_ID"')
+    expect(self.exitCode).toBe(1)
+    expect(self.output).toContain('cannot restart this workspace itself')
+
     // Queue a follow-up under the caller's id, edit it, then let the
     // caller's own stop start it.
     const queued = await runMama('queue --parent-workspace "$YAAC_WORKSPACE_ID" "draft follow-up"')

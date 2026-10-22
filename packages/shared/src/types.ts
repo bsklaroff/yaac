@@ -1772,12 +1772,13 @@ export const MAX_MODEL_LENGTH = 128
  * (`runMamaCommand`), so no transport can widen it.
  *
  * `stop` is allowed because a stop is reversible: the checkout, row, title,
- * group and conversation are kept, so the user can restart it. Anything that
- * deletes, restarts or reconfigures stays the user's. `fetch` reads another
- * workspace's branches into the caller's checkout, and `history` its
- * conversations, never writing to theirs. `send` messages a running one's
- * agent, held to the caller's permission mode. `set-base` changes only the
- * caller's own reference branch.
+ * group and conversation are kept, so it can be restarted. `restart` only
+ * undoes a stop, and only for a workspace at or below the caller's
+ * permission mode. Anything that deletes or reconfigures stays the user's.
+ * `fetch` reads another workspace's branches into the caller's checkout, and
+ * `history` its conversations, never writing to theirs. `send` messages a
+ * running one's agent, held to the caller's permission mode. `set-base`
+ * changes only the caller's own reference branch.
  */
 export const MAMA_COMMANDS = [
   'list',
@@ -1785,6 +1786,7 @@ export const MAMA_COMMANDS = [
   'rename',
   'set-base',
   'stop',
+  'restart',
   'group-create',
   'group-move',
   'models',

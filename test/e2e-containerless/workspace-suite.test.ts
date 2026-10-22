@@ -1004,7 +1004,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // arrive as sent rather than as newlines and tabs.
     const unknown = await runMama('list', workspaceId.slice(0, 8), 'C:\\new\\temp')
     expect(unknown.code).not.toBe(0)
-    expect(unknown.out).toContain("no running or queued workspace 'C:\\new\\temp'")
+    expect(unknown.out).toContain("no workspace 'C:\\new\\temp'")
   })
 
   it('makes a group and files itself into it, without a proxy anywhere', async () => {
@@ -1148,7 +1148,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(await post('not-a-real-token', 'list')).toBe(401)
   })
 
-  it('stops a workspace it names, stops ITSELF when it names none, and the stopped one stays fetchable and readable', async () => {
+  it('stops a workspace it names, stops ITSELF when it names none, and the stopped one stays readable, findable and restartable', async () => {
     // Its own subject: the self-stop takes down the tmux server the command
     // runs in.
     const doomed = await createWorkspace()
@@ -1212,7 +1212,35 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(written).toContain(`${saved}/${doomed}/${doomed}/subagents/agent-e2e.jsonl`)
     expect(await fs.readFile(path.join(saved, doomed, doomed, 'subagents', 'agent-e2e.jsonl'), 'utf8'))
       .toBe('{"sub":"agent"}\n')
-  }, 180_000)
+
+    // It is found by what it was about, and a message waits for a restart.
+    await mama('rename', short, 'left behind by the e2e')
+    const found = (await mama('list', '--stopped', '--search', 'LEFT BEHIND', '--limit', '5')).stdout
+    expect(found).toMatch(new RegExp(`^${short}\\s+claude\\s+\\S+ \\S+\\s+stopped\\s+left behind by the e2e`, 'm'))
+    expect((await mama('list', short)).stdout).toContain('Stopped workspaces:')
+    // Earlier cases stopped others, so a one-row page leads on to the next.
+    const page = (await mama('list', '--stopped', '--limit', '1')).stdout
+    const more = /^More: yaac-mama (list --stopped --limit 1 --cursor \S+)$/m.exec(page)?.[1]
+    expect(more, page).toBeDefined()
+    const next = (await mama(...more!.split(' '))).stdout
+    const firstId = /^([0-9a-f]{8})\s/m.exec(page)?.[1]
+    expect(next).toMatch(/^[0-9a-f]{8}\s+\S+\s+\S+ \S+\s/m)
+    expect(next).not.toMatch(new RegExp(`^${firstId!}\\s`, 'm'))
+    const unsent = await runMama('send', short, 'hello')
+    expect(unsent.code).toBe(1)
+    expect(unsent.out).toContain(`restart it with yaac-mama restart ${short}`)
+
+    // Restarted, it is back on a live tmux server under the same id.
+    expect((await mama('restart', short)).stdout).toContain(`Restarting ${short}`)
+    try {
+      await vi.waitFor(async () => { await tmux(doomed, 'has-session', '-t', 'yaac') }, { timeout: 60_000, interval: 1_000 })
+      expect((await mama('list', '--stopped', '--search', 'LEFT BEHIND')).stdout).not.toContain(short)
+      const again = await runMama('restart', short)
+      expect(again.code).toBe(1)
+    } finally {
+      await runYaac(serverEnv, 'workspace', 'stop', doomed)
+    }
+  }, 240_000)
 
   it('offers yaac\'s builtin skills where the agent\'s own HOME looks for them', async () => {
     // A pod mounts the skills; here they are symlinked into the project's

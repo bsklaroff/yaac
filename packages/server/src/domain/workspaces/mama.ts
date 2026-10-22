@@ -3,19 +3,23 @@
  * and the containerless route) end here, so `MAMA_COMMANDS` is enforced for
  * both.
  *
- * An agent may list the project's workspaces, create or queue one, edit what
- * it queued, send a running one a message, retitle, group, stop one (its own
- * included), fetch another's branches and read another's conversation
- * history, and change its own reference branch. Stopping is allowed because
- * it is reversible: the checkout, row and conversations are kept. Deleting, restarting and reconfiguring stay
- * the user's.
+ * An agent may list the project's workspaces (running, queued or stopped),
+ * create or queue one, edit what it queued, send a running one a message,
+ * retitle, group, stop one (its own included), restart a stopped one, fetch
+ * another's branches and read another's conversation history, and change
+ * its own reference branch. Stopping is allowed because it is reversible:
+ * the checkout, row and conversations are kept. Restarting a stopped
+ * workspace only undoes a stop, and is held to the caller's own permission
+ * mode. Deleting and reconfiguring stay the user's.
  *
  * The caller's identity comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
  * command is scoped to the caller's project.
  */
-import { decideSpawn, type SpawnRequest } from './spawn-policy'
+import { decideRestart, decideSpawn, type SpawnRequest } from './spawn-policy'
+import { listStoppedWorkspaces, toStoppedEntries } from './stopped-list'
 import { listActiveWorkspaces } from './list'
+import { inFlightWorkspaceIds } from './provisioning'
 import { listWorkspaceGroups, resolveGroup } from './groups'
 import { queueWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
 import { resolveProjectWorkspace, resolveWorkspaceContainer } from './resolve'
@@ -48,6 +52,7 @@ import {
   type AgentTool,
   type PermissionMode,
   type MamaCommand,
+  type StoppedWorkspaceEntry,
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
 import { loadToolAuthEntry, modelsForTool } from '#domain/auth'
@@ -112,6 +117,14 @@ export type MamaOutcome =
  */
 const MAX_GROUP_NAME_CHARS = MAX_TITLE_LENGTH
 
+/** The options `list` takes only with `--stopped`. */
+const STOPPED_ARGS = ['search', 'group', 'limit', 'cursor'] as const
+
+/** Stopped workspaces `list --stopped` shows per page, as `yaac workspace
+ *  list -s` does, and the most one page may ask for. */
+const STOPPED_PAGE_DEFAULT = 25
+const STOPPED_PAGE_MAX = 200
+
 /** The options every command that makes a workspace takes. */
 const CREATE_ARGS = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'group', 'title'] as const
 
@@ -121,11 +134,12 @@ const CREATE_ARGS = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'b
  * transports behave the same.
  */
 const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
-  list: [],
+  list: ['stopped', ...STOPPED_ARGS],
   create: CREATE_ARGS,
   rename: ['workspace'],
   'set-base': [],
   stop: ['workspace'],
+  restart: ['workspace'],
   'group-create': [],
   'group-move': ['workspace'],
   models: [],
@@ -170,6 +184,7 @@ export async function runMamaCommand(
       case 'rename': return await runRename(caller, request)
       case 'set-base': return await runSetBase(caller, request)
       case 'stop': return await runStop(caller, request)
+      case 'restart': return await runRestart(caller, request)
       case 'group-create': return await runGroupCreate(caller, request)
       case 'group-move': return await runGroupMove(caller, request)
       case 'models': return await runModels(caller)
@@ -185,36 +200,54 @@ export async function runMamaCommand(
 }
 
 /**
- * The caller's project, as it would look in the sidebar. Ids (or unique
- * prefixes) in the body, whitespace-separated, narrow it to those running or
- * queued workspaces and add each one's full prompt, which the table cuts
- * short, indented under a header.
+ * The caller's project, as it would look in the sidebar: what runs, what is
+ * queued, and how many are stopped. Ids (or unique prefixes) in the body,
+ * whitespace-separated, narrow it to those workspaces, running, queued or
+ * stopped, and add each one's full prompt, which the table cuts short,
+ * indented under a header. `--stopped` lists the stopped ones instead.
  */
 async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const [active, groups, allQueued] = await Promise.all([
+  if (request.args.stopped !== undefined) return await runListStopped(caller, request)
+  const stray = STOPPED_ARGS.find((a) => request.args[a] !== undefined)
+  if (stray !== undefined) return { ok: false, error: `list takes '--${stray}' only with --stopped` }
+
+  const [active, groups, allQueued, rows] = await Promise.all([
     listActiveWorkspaces(caller.projectId),
     listWorkspaceGroups(caller.projectId),
     listQueuedWorkspaceRows(caller.projectId),
+    getProjectWorkspaceRows(caller.projectId),
   ])
   let workspaces = active.workspaces
   let queued = allQueued
+  // A restart keeps its stop until it succeeds, so one under way is left
+  // out as the webapp's sidebar leaves it out.
+  const notStopped = new Set([...workspaces.map((w) => w.workspaceId), ...inFlightWorkspaceIds(Date.now())])
+  const allStopped = [...rows.values()].filter((r) => r.stoppedAt !== undefined && !notStopped.has(r.workspaceId))
+  let stopped: StoppedWorkspaceEntry[] = []
   const names = new Map(groups.map((g) => [g.groupId, g.name]))
 
   const wanted = request.body.split(/\s+/).filter((t) => t !== '')
   const prompts: Array<{ id: string; prompt: string }> = []
   if (wanted.length > 0) {
-    const entries = [
+    // Stopped prompts are read only for the ones asked about.
+    const entries: Array<{ id: string; prompt?: string }> = [
       ...workspaces.map((w) => ({ id: w.workspaceId, prompt: w.prompt ?? '' })),
       ...queued.map((r) => ({ id: r.id, prompt: r.prompt })),
+      ...allStopped.map((r) => ({ id: r.workspaceId })),
     ]
+    const picked: Array<{ id: string; prompt?: string }> = []
     for (const token of wanted) {
-      const picked = pickOne(entries, token, 'running or queued workspace')
-      if (!picked.ok) return picked
-      if (!prompts.some((p) => p.id === picked.entry.id)) prompts.push(picked.entry)
+      const one = pickOne(entries, token, 'workspace')
+      if (!one.ok) return one
+      if (!picked.some((p) => p.id === one.entry.id)) picked.push(one.entry)
     }
-    const ids = new Set(prompts.map((p) => p.id))
+    const ids = new Set(picked.map((p) => p.id))
     workspaces = workspaces.filter((w) => ids.has(w.workspaceId))
     queued = queued.filter((r) => ids.has(r.id))
+    stopped = await toStoppedEntries(allStopped.filter((r) => ids.has(r.workspaceId)))
+    for (const p of picked) {
+      prompts.push({ id: p.id, prompt: p.prompt ?? stopped.find((e) => e.workspaceId === p.id)?.prompt ?? '' })
+    }
   }
 
   const lines: string[] = []
@@ -224,12 +257,20 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     lines.push('Running workspaces in this project:', '')
     lines.push(...renderWorkspaces(workspaces, names, caller.workspaceId))
   }
+  if (stopped.length > 0) {
+    if (lines.length > 0) lines.push('')
+    lines.push('Stopped workspaces:', '', ...renderStopped(stopped, names))
+  }
   if (queued.length > 0) {
     if (lines.length > 0) lines.push('')
     lines.push('Queued workspaces (each starts when what it is under is stopped):', '')
     lines.push(...renderQueued(queued, caller.workspaceId))
   }
   lines.push('')
+  if (wanted.length === 0 && allStopped.length > 0) {
+    lines.push(`${allStopped.length} stopped ${allStopped.length === 1 ? 'workspace' : 'workspaces'}: `
+      + 'yaac-mama list --stopped')
+  }
   lines.push(groups.length === 0
     ? 'No groups yet. Make one with: yaac-mama group create "<name>"'
     : `Groups: ${groups.map((g) => g.name).join(', ')}`)
@@ -239,6 +280,62 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     lines.push('', `Prompt of ${p.id.slice(0, 8)}:`, ...body.map((l) => `  ${l}`))
   }
   return { ok: true, output: lines.join('\n') }
+}
+
+/**
+ * The caller's project's stopped workspaces, newest stop first, a page at a
+ * time: `--search` matches titles, first prompts and tools, `--group` keeps
+ * one group's, and `--cursor` continues where the last page ended.
+ */
+async function runListStopped(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  if (request.body.trim() !== '') {
+    return { ok: false, error: 'list --stopped takes no workspace ids (list <workspace> shows a stopped one)' }
+  }
+  const { search, group, cursor } = request.args
+  const limit = request.args.limit ?? String(STOPPED_PAGE_DEFAULT)
+  if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > STOPPED_PAGE_MAX) {
+    return { ok: false, error: `--limit must be a whole number from 1 to ${STOPPED_PAGE_MAX}` }
+  }
+  const [groups, groupId] = await Promise.all([
+    listWorkspaceGroups(caller.projectId),
+    group === undefined ? undefined : resolveGroup(caller.projectId, group).then((g) => g.groupId),
+  ])
+  const page = await listStoppedWorkspaces({
+    project: caller.projectId,
+    ...(search !== undefined ? { q: search } : {}),
+    ...(groupId !== undefined ? { group: groupId } : {}),
+    ...(cursor !== undefined ? { cursor } : {}),
+    exclude: inFlightWorkspaceIds(Date.now()),
+    limit: Number(limit),
+  })
+  const matching = search !== undefined ? ` matching "${flatten(search, 40)}"` : ''
+  if (page.entries.length === 0) {
+    return {
+      ok: true,
+      output: cursor !== undefined ? `No more stopped workspaces${matching}.` : `No stopped workspaces in this project${matching}.`,
+    }
+  }
+  const lines = [
+    `Stopped workspaces in this project${matching} (${page.entries.length} of ${page.total}, newest stop first):`,
+    '',
+    ...renderStopped(page.entries, new Map(groups.map((g) => [g.groupId, g.name]))),
+    '',
+  ]
+  if (page.nextCursor !== undefined) {
+    const kept = (['search', 'group', 'limit'] as const).flatMap((a) =>
+      request.args[a] === undefined ? [] : [`--${a} ${shellQuote(request.args[a])}`])
+    lines.push(`More: yaac-mama list --stopped ${[...kept, `--cursor ${page.nextCursor}`].join(' ')}`)
+  }
+  lines.push(
+    'Show one with its full prompt: yaac-mama list <workspace>',
+    'Restart one:                   yaac-mama restart <workspace>',
+  )
+  return { ok: true, output: lines.join('\n') }
+}
+
+/** A value as one single-quoted shell word, for a command line to copy. */
+function shellQuote(value: string): string {
+  return /^[\w./:@-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 function renderWorkspaces(
@@ -256,24 +353,46 @@ function renderWorkspaces(
       title: flatten(w.title ?? '', 40),
       prompt: flatten(w.prompt ?? '', 60),
     }))
-
-  const width = (header: string, pick: (r: typeof rows[number]) => string): number =>
-    Math.max(header.length, ...rows.map((r) => pick(r).length))
-  const idW = width('WORKSPACE', (r) => r.id)
-  const toolW = width('TOOL', (r) => r.tool)
-  const statusW = width('STATUS', (r) => r.status)
-  const groupW = width('GROUP', (r) => r.group)
   // Titles let an agent see its `rename` results; the column is shown only
   // when some workspace has one.
   const hasTitles = rows.some((r) => r.title !== '')
-  const titleW = hasTitles ? width('TITLE', (r) => r.title) : 0
-  const titleCell = (v: string): string => hasTitles ? `${v.padEnd(titleW)}  ` : ''
+  return table(
+    ['WORKSPACE', 'TOOL', 'STATUS', 'GROUP', ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
+    rows.map((r) => [r.id, r.tool, r.status, r.group, ...(hasTitles ? [r.title] : []), r.prompt]),
+  )
+}
 
-  return [
-    `${'WORKSPACE'.padEnd(idW)}  ${'TOOL'.padEnd(toolW)}  ${'STATUS'.padEnd(statusW)}  ${'GROUP'.padEnd(groupW)}  ${titleCell('TITLE')}PROMPT`,
-    ...rows.map((r) =>
-      `${r.id.padEnd(idW)}  ${r.tool.padEnd(toolW)}  ${r.status.padEnd(statusW)}  ${r.group.padEnd(groupW)}  ${titleCell(r.title)}${r.prompt}`),
-  ]
+/**
+ * Stopped workspaces as listed: HOW is `stopped` for a stop, or the cause
+ * the reaper recorded for a death (`oom`, `crashed`, …), which tells a
+ * restart that resumes from one that recovers.
+ */
+function renderStopped(entries: StoppedWorkspaceEntry[], groupNames: Map<string, string>): string[] {
+  const rows = entries.map((e) => ({
+    id: e.workspaceId.slice(0, 8),
+    tool: e.tool,
+    stopped: e.stoppedAt.slice(0, 16),
+    how: e.deathReason === undefined ? 'stopped'
+      : e.deathDetail !== undefined ? `${e.deathReason}: ${flatten(e.deathDetail, 40)}`
+      : e.deathReason,
+    group: e.groupId !== undefined ? groupNames.get(e.groupId) ?? '' : '',
+    title: flatten(e.title ?? '', 40),
+    prompt: flatten(e.prompt ?? '', 60),
+  }))
+  const hasTitles = rows.some((r) => r.title !== '')
+  return table(
+    ['WORKSPACE', 'TOOL', 'STOPPED (UTC)', 'HOW', 'GROUP', ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
+    rows.map((r) => [r.id, r.tool, r.stopped, r.how, r.group, ...(hasTitles ? [r.title] : []), r.prompt]),
+  )
+}
+
+/** Rows under a header, every column but the last padded to its widest
+ *  cell. */
+function table(header: string[], rows: string[][]): string[] {
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
+  const line = (cells: string[]): string =>
+    cells.map((c, i) => i === cells.length - 1 ? c : c.padEnd(widths[i])).join('  ').trimEnd()
+  return [line(header), ...rows.map(line)]
 }
 
 /** Queued entries as a tree under the workspace each waits on. */
@@ -360,8 +479,17 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
     prompt: request.body,
     ...queueFields(settings.settings),
   }, { ceiling: caller.permissionMode })
-  // The id alone, so `a=$(yaac-mama queue …)` can chain the next one after it.
-  return { ok: true, output: entry.id }
+  // The id alone on the first line, so `a=$(yaac-mama queue …)` can chain
+  // the next one after it; the script prints any note after it to stderr.
+  const parentId = entry.parentWorkspaceId
+  const stopped = parentId !== undefined
+    && (await getWorkspaceRow(caller.projectId, parentId))?.stoppedAt !== undefined
+  return {
+    ok: true,
+    output: stopped
+      ? `${entry.id}\nnote: ${parentId.slice(0, 8)} is stopped, so this starts only after it is restarted and stopped again`
+      : entry.id,
+  }
 }
 
 /**
@@ -435,7 +563,14 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
       if (err instanceof ServerError && (err.code === 'NOT_FOUND' || err.code === 'CONFLICT')) return undefined
       throw err
     })
-  if (!running) return { ok: false, error: `workspace ${short} is not running` }
+  if (!running) {
+    return {
+      ok: false,
+      error: targetRow?.stoppedAt !== undefined
+        ? `workspace ${short} is stopped; restart it with yaac-mama restart ${short}, then send once it is running`
+        : `workspace ${short} is not running`,
+    }
+  }
 
   const live = (await listActiveAgentSessions(caller.projectId, workspaceId))
     .flatMap((r) => r.paneId === undefined ? [] : [{ ...r, handle: r.paneId }])
@@ -656,16 +791,45 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
   } catch (err) {
     // The id resolved against rows, so NOT_FOUND here means not running.
     if (err instanceof ServerError && err.code === 'NOT_FOUND') {
-      return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} is not running` }
+      const already = (await getWorkspaceRow(caller.projectId, workspaceId))?.stoppedAt !== undefined
+      return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} is ${already ? 'already stopped' : 'not running'}` }
     }
     throw err
   }
+  const short = workspaceId.slice(0, 8)
   return {
     ok: true,
     output: stopped.provisioning === true
-      ? `Stopped ${workspaceId.slice(0, 8)} while it was starting.`
-      : `Stopped ${workspaceId.slice(0, 8)}. Its checkout is kept — `
-        + 'the user can restart it from the yaac webapp.',
+      ? `Stopped ${short} while it was starting.`
+      : `Stopped ${short}. Its checkout is kept, with its conversations, so it can be `
+        + `restarted: yaac-mama restart ${short}`,
+  }
+}
+
+/**
+ * Restart a stopped sibling, resuming the conversations it had, as the
+ * webapp's Restart does (`decideRestart`). It runs detached, so the reply
+ * comes before the workspace is up.
+ */
+async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const workspace = request.args.workspace?.trim() ?? ''
+  if (workspace === '') return { ok: false, error: 'restart needs a workspace id' }
+  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
+  const decision = await decideRestart({
+    principal: caller.principal,
+    callerWorkspaceId: caller.workspaceId,
+    callerProjectId: caller.projectId,
+    callerPermissionMode: caller.permissionMode,
+    workspaceId,
+  })
+  if (!decision.ok) return decision
+  const short = workspaceId.slice(0, 8)
+  const n = decision.conversations
+  return {
+    ok: true,
+    output: `Restarting ${short}, resuming ${n === 1 ? 'its conversation' : `its ${n} conversations`}. `
+      + 'It shows as running in yaac-mama list once it is up; if the launch fails after this, '
+      + 'the user sees why in the yaac webapp.',
   }
 }
 
@@ -812,14 +976,10 @@ function renderHistory(workspaceId: string, conversations: HistoryConversation[]
     ]
   })
   const header = ['CONVERSATION', 'TOOL', 'MODE', 'ACTIVE', 'MODEL', 'LAST ACTIVE (UTC)', 'FILES', 'SIZE', 'OPENING']
-  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
-  const line = (cells: string[]): string =>
-    cells.map((c, i) => i === cells.length - 1 ? c : c.padEnd(widths[i])).join('  ').trimEnd()
   return [
     `Conversations of ${short}, first held first:`,
     '',
-    line(header),
-    ...rows.map(line),
+    ...table(header, rows),
     '',
     `Print one's transcripts: yaac-mama history ${short} <conversation>`,
     `Save every file:         yaac-mama history ${short} [<conversation>] -o <dir>`,

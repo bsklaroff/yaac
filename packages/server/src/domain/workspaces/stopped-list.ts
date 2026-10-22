@@ -60,17 +60,20 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
     workspaceId: query.workspace,
     excludeIds: [...await runningIds(), ...query.exclude ?? []],
   }, {
-    limit: query.limit,
+    // One past the page, so a page that ends with the last row offers no
+    // next one.
+    limit: query.limit !== undefined ? query.limit + 1 : undefined,
     after: query.cursor ? parseCursor(query.cursor) : undefined,
   })
 
-  const entries = await toStoppedEntries(rows)
-  const last = rows.at(-1)
-  const more = query.limit !== undefined && last !== undefined && rows.length === query.limit
+  const more = query.limit !== undefined && rows.length > query.limit
+  const page = more ? rows.slice(0, query.limit) : rows
+  const entries = await toStoppedEntries(page)
+  const last = page.at(-1)
   return {
     entries,
     total,
-    ...(more ? { nextCursor: `${stoppedAtOf(last).getTime()}:${last.workspaceId}` } : {}),
+    ...(more && last !== undefined ? { nextCursor: `${stoppedAtOf(last).getTime()}:${last.workspaceId}` } : {}),
   }
 }
 

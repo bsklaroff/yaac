@@ -3,6 +3,7 @@
 #
 # Usage:
 #   yaac-mama list [<workspace>...]
+#   yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 #   yaac-mama create [opts] "<prompt>"
 #   yaac-mama queue --parent-workspace W [opts] "<prompt>"
 #   yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
@@ -12,18 +13,21 @@
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama set-base <branch>
 #   yaac-mama stop [<workspace>]
+#   yaac-mama restart <workspace>
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
 #   yaac-mama models
 #   yaac-mama fetch <workspace>
 #   yaac-mama history <workspace> [<conversation>] [-o <dir>]
 #
-# A strict subset of the `yaac` CLI: see what this project is running, start
-# another workspace, message a running one's agent, file workspaces into named
-# groups, and stop one. Stopping is
-# in reach because it is reversible — the checkout and the conversation
-# survive it. Nothing here deletes or restarts anything, and the one setting
-# it changes is the caller's own base branch; the rest stays with the user.
+# A strict subset of the `yaac` CLI: see what this project is running or has
+# stopped, start another workspace, message a running one's agent, file
+# workspaces into named groups, and stop or restart one. Stopping is in reach
+# because it is reversible — the checkout and the conversation survive it —
+# and restarting a stopped workspace only undoes a stop, in a permission mode
+# no more permissive than the caller's. Nothing here deletes anything, and the
+# one setting it changes is the caller's own base branch; the rest stays with
+# the user.
 # `fetch` reads another workspace's branches into this
 # checkout and `history` its conversations; neither writes to theirs.
 #
@@ -54,6 +58,8 @@ yaac-mama — ask the yaac server running this workspace to do something.
 Usage:
   yaac-mama list                                   # workspaces + groups here
   yaac-mama list <workspace>...                    # just those, full prompts
+  yaac-mama list --stopped [--search <text>] [--group <name>] [--limit <n>]
+                                                   # stopped ones, newest first
   yaac-mama create [opts] "<prompt>"               # start another workspace
   yaac-mama queue --parent-workspace <id> [opts] "<prompt>"
                                                    # start one when <id> stops
@@ -64,6 +70,7 @@ Usage:
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
   yaac-mama set-base <branch>                      # change your base branch
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
+  yaac-mama restart <workspace>                    # restart a stopped one
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
   yaac-mama models                                 # tools/models available
@@ -119,9 +126,15 @@ queue saves a workspace to start when its parent is STOPPED — by
 start it; it waits for the user. It forks from the latest origin tip of the
 parent's reference branch.
 
-list with ids (running or queued, or unique prefixes) shows only those, then
-each one's full prompt, which the table cuts short: a "Prompt of <id>:" line,
-then the prompt with every line indented two spaces.
+list with ids (running, queued or stopped, or unique prefixes) shows only
+those, then each one's full prompt, which the table cuts short: a "Prompt of
+<id>:" line, then the prompt with every line indented two spaces.
+
+list --stopped lists this project's stopped workspaces, newest stop first,
+25 at a time (--limit up to 200). HOW says whether one was stopped or died
+(oom, crashed, evicted, …). --search matches titles, first prompts and tool
+names; --group keeps one group's. A page that has more ends with the command
+for the next one (--cursor).
 
 create prints the new workspace's id and queue the queued workspace's id;
 a create provisions in the background (watch it in the yaac webapp).
@@ -163,10 +176,16 @@ branch. It does not touch this checkout: rebase onto origin/<branch>
 yourself (`git fetch origin <branch>` first if git does not have it yet).
 
 stop ends a workspace's running container/tmux server and keeps its checkout,
-title, group and conversation, so the user can restart it. Stopping YOURSELF
+title, group and conversation, so it can be restarted. Stopping YOURSELF
 tears down what this command's own reply travels over, so the confirmation
 may never print — the workspace ending is the confirmation. Do everything that
 must outlive the workspace (commit, push, report) before you run it.
+
+restart brings a stopped workspace back under its id, resuming the
+conversations it had, in its recorded permission mode — so one more
+permissive than this workspace is refused, as is a running one (restarting
+it would end its agent's turn). It prints once the restart is under way;
+watch `yaac-mama list` for it to run, then `send` it what to do next.
 EOF
 }
 
@@ -362,7 +381,26 @@ fetch_workspace() {
 case "$1" in
   -h|--help) usage; exit 0 ;;
 
-  list) shift; run list "$*" ;;
+  list)
+    shift
+    ids=""; stopped=""; search=""; group=""; limit=""; cursor=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --stopped) stopped=1; shift; continue ;;
+        --search|--group|--limit|--cursor)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
+        *) ids="$ids $1"; shift; continue ;;
+      esac
+      case "$1" in
+        --search) search=$2 ;;
+        --group) group=$2 ;;
+        --limit) limit=$2 ;;
+        --cursor) cursor=$2 ;;
+      esac
+      shift 2
+    done
+    run list "$ids" stopped "$stopped" search "$search" group "$group" limit "$limit" cursor "$cursor"
+    ;;
 
   models) run models '' ;;
 
@@ -486,8 +524,15 @@ EOF
         queued=$1; prompt=${2:-}
         ;;
     esac
-    run "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" tool "$tool" model "$model" \
+    set -- "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" tool "$tool" model "$model" \
       effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
+    [ "$cmd" = queue ] || run "$@"
+    # The queued id alone on stdout, for `id=$(yaac-mama queue …)`; any note
+    # the server adds after it goes to stderr.
+    ask "$@"
+    printf '%s\n' "$text" | head -n 1
+    printf '%s\n' "$text" | sed 1d >&2
+    exit 0
     ;;
 
   send)
@@ -545,6 +590,15 @@ EOF
     run stop '' workspace "${1:-}"
     ;;
 
+  restart)
+    shift
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama restart <workspace>' >&2
+      exit 2
+    fi
+    run restart '' workspace "$1"
+    ;;
+
   group)
     shift
     [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move …' >&2; exit 2; }
@@ -575,7 +629,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, send, rename, stop, group, models, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, send, rename, stop, restart, group, models, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;
