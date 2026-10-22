@@ -100,12 +100,11 @@ workspace. See "Agent workspaces" below.
     removed. The checkout goes first (its `.git` last), then the history,
     then the rows, so the common failure (a root-owned file in the checkout)
     leaves a stopped workspace that can still restart on its committed
-    work, rather than bytes no record points at. The `workspace-retention` reconcile step makes
-    the same delete, at server start and then hourly, for each workspace
-    stopped longer than its project's retention (docs/project-config.md),
-    retrying refusals on later passes. It counts from the later of the
-    recorded stop and the last runtime's start, since a restart whose clear
-    of the stop was lost still leaves the old stop on the row.
+    work, rather than bytes no record points at. The `workspace-retention`
+    reconcile step makes the same delete, at server start and then hourly,
+    for each workspace stopped longer than its project's retention
+    (docs/project-config.md), retrying refusals on later passes. It counts
+    from `stoppedAt`.
   - A fresh create or a spare claim rolling back its own insert. A fresh
     create also removes its staged checkout. A failed restart leaves the row
     stopped as it found it, since its checkout is the work the user came back
@@ -119,11 +118,14 @@ workspace. See "Agent workspaces" below.
 `deathDetail`. That is how the UI tells "you stopped it" from "it ran out of
 memory".
 
-A stop is written only to a live row, so the first stop recorded stands until
-a restart clears it. A reaper pass can probe a workspace while a user stop is
-killing it, find tmux gone, and tear it down again with `agent-exited`; the
-user's stop must not be relabelled a death. A teardown resumed after a lost
-terminating mark keeps its recorded cause the same way.
+A stop is written only to a live row, so the first stop recorded in a life
+stands. A reaper pass can probe a workspace while a user stop is killing it,
+find tmux gone, and tear it down again with `agent-exited`; the user's stop
+must not be relabelled a death. A teardown resumed after a lost terminating
+mark keeps its recorded cause the same way. A stop recorded before the
+current life began (`lifeStartedAt`) is overwritten, so a restart whose
+clear of it was lost does not leave the old date for retention to age the
+workspace by.
 
 ## Reads
 

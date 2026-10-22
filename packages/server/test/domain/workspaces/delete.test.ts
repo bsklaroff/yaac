@@ -195,14 +195,16 @@ describe('reconcileWorkspaceRetention', () => {
     await stoppedWorkspace('wt-old')
     await stoppedWorkspace('wt-old-parent')
     await queueWorkspace(local, PROJ, { parent: 'wt-old-parent', prompt: 'next', tool: 'claude' }, 'user')
-    // Its stop stands from 10 days ago, but it ran again since (a restart
-    // whose clear of the stop was lost).
+    // Stopped 10 days ago, then restarted without the stop being cleared (a
+    // lost write). It ran for 8 days and stopped again 2 days ago.
     await stoppedWorkspace('wt-ran-since')
+    vi.setSystemTime(Date.now() + 1)
+    await recordWorkspaceLife(PROJ, 'wt-ran-since')
     await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'wt-other-old' })
     await recordWorkspaceStopped(OTHER, 'wt-other-old')
     vi.setSystemTime(Date.now() + 8 * DAY_MS)
     await stoppedWorkspace('wt-recent')
-    await recordWorkspaceLife(PROJ, 'wt-ran-since')
+    await recordWorkspaceStopped(PROJ, 'wt-ran-since')
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'wt-running' })
     vi.setSystemTime(Date.now() + 2 * DAY_MS)
     const all = ['wt-old', 'wt-old-parent', 'wt-ran-since', 'wt-recent', 'wt-running']

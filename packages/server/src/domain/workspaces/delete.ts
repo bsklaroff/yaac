@@ -12,7 +12,6 @@ import {
   listQueuedWorkspaceRows,
   listWorkspaceAgentSessions,
   listWorkspaceRows,
-  type WorkspaceRow,
 } from '#db'
 import { serverLog } from '#lib/log'
 import { env } from '@yaac/shared/env'
@@ -91,22 +90,17 @@ export async function deleteWorkspace(principal: Actor, idOrPrefix: string): Pro
  * `stoppedWorkspaceRetentionDays` in its yaac-config.json, else the server's
  * `YAAC_WORKSPACE_RETENTION_DAYS`. Off unless one of them is set.
  *
- * A workspace counts as stopped since the later of its recorded stop and its
- * last runtime's start: the first stop recorded stands until a restart
- * clears it, and a lost clear would otherwise age a workspace that ran since
- * from its old stop.
- *
  * A project whose config cannot be read keeps everything. A workspace the
  * delete refuses (one with queued entries waiting on it, say) is logged and
  * tried again next pass. `signal` stops the pass between deletes, which is
  * safe since each delete removes the files before the row.
  */
 export async function reconcileWorkspaceRetention(signal: AbortSignal): Promise<void> {
-  const stopped = new Map<string, Array<{ row: WorkspaceRow; sinceMs: number }>>()
-  for (const row of await listWorkspaceRows()) {
-    if (row.stoppedAt === undefined) continue
-    const sinceMs = Math.max(row.stoppedAt.getTime(), row.lifeStartedAt?.getTime() ?? 0)
-    stopped.set(row.projectId, [...stopped.get(row.projectId) ?? [], { row, sinceMs }])
+  const stopped = new Map<string, Array<{ workspaceId: string; stoppedMs: number }>>()
+  for (const { projectId, workspaceId, stoppedAt } of await listWorkspaceRows()) {
+    if (stoppedAt !== undefined) {
+      stopped.set(projectId, [...stopped.get(projectId) ?? [], { workspaceId, stoppedMs: stoppedAt.getTime() }])
+    }
   }
   for (const [projectId, rows] of stopped) {
     const days = await resolveProjectConfig(projectId).then(
@@ -118,11 +112,11 @@ export async function reconcileWorkspaceRetention(signal: AbortSignal): Promise<
     )
     if (days === 0) continue
     const cutoffMs = Date.now() - days * DAY_MS
-    for (const { row } of rows.filter((r) => r.sinceMs <= cutoffMs)) {
+    for (const { workspaceId } of rows.filter((r) => r.stoppedMs <= cutoffMs)) {
       if (signal.aborted) return
-      await deleteWorkspace(systemPrincipal, row.workspaceId).then(
-        () => serverLog(`[retention] deleted workspace ${projectId}/${row.workspaceId}, stopped more than ${days} days`),
-        (err: unknown) => serverLog(`[retention] keeping workspace ${projectId}/${row.workspaceId}: ${String(err)}`),
+      await deleteWorkspace(systemPrincipal, workspaceId).then(
+        () => serverLog(`[retention] deleted workspace ${projectId}/${workspaceId}, stopped more than ${days} days`),
+        (err: unknown) => serverLog(`[retention] keeping workspace ${projectId}/${workspaceId}: ${String(err)}`),
       )
     }
   }
