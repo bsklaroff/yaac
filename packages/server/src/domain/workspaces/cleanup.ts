@@ -55,6 +55,11 @@ function detachedTeardownSettled(workspaceId: string): Promise<void> {
   return detachedTeardowns.get(workspaceId) ?? Promise.resolve()
 }
 
+/** Whether a detached teardown is still running for the workspace. */
+export function tearingDown(workspaceId: string): boolean {
+  return detachedTeardowns.has(workspaceId)
+}
+
 /**
  * The ephemeral-modules paths inside the checkout, to remove at stop. Under
  * containerless they hold the real contents; under a pod they are empty

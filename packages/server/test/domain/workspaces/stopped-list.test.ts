@@ -172,6 +172,9 @@ describe('listStoppedWorkspaces', () => {
     const last = await listStoppedWorkspaces({ project: DEMO_PROJECT_ID, limit: 2, cursor: second.nextCursor })
     expect(last.entries.map((e) => e.workspaceId)).toEqual(['s0'])
     expect(last.nextCursor).toBeUndefined()
+    // A page that ends exactly at the last row offers no next one.
+    expect(await listStoppedWorkspaces({ project: DEMO_PROJECT_ID, limit: 6 })).toMatchObject({ total: 6 })
+    expect((await listStoppedWorkspaces({ project: DEMO_PROJECT_ID, limit: 6 })).nextCursor).toBeUndefined()
   })
 
   it('returns every entry without a limit', async () => {

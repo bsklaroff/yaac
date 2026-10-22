@@ -220,6 +220,13 @@ Both the target's row and the conversation's own reported mode are checked,
 since the row records only the last change any of its agents reported; a
 reported mode that maps to no posture is refused.
 
+`yaac-mama restart`, which brings a stopped sibling back, holds the
+target's posture to the ceiling too. Every conversation relaunches in the
+row's posture, or the nearest its tool has (`launchablePermissionMode`, which
+gives pi `bypass` whatever the row says), so an agent may restart only a
+workspace whose every conversation would come back at or below its own
+(`decideRestart` in `#domain/workspaces`).
+
 The check sees a mode as the agent reported it, and a `tui` agent reports a
 change late: claude on its next prompt or stop, codex in its next turn's
 rollout, opencode's agent with its next prompt. So a mode the target's user

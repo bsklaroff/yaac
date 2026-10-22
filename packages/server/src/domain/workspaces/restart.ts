@@ -1,4 +1,4 @@
-import { teardownForRestart } from './cleanup'
+import { tearingDown, teardownForRestart } from './cleanup'
 import { createWorkspace, type WorkspaceCreateResult } from './create'
 import { resolveWorkspaceId } from './resolve'
 import { provision, type ProvisionRun } from './provisioning'
@@ -16,12 +16,20 @@ import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { hasConversationHistory } from '#runtime/agents'
 import { projectDir } from '@yaac/shared/project-paths'
-import { effortFor, launchableModel, SELF_NAMING_TOOLS, TOOL_LABELS, type AgentTool } from '@yaac/shared/types'
+import {
+  effortFor,
+  launchableModel,
+  SELF_NAMING_TOOLS,
+  TOOL_LABELS,
+  type AgentMode,
+  type AgentTool,
+} from '@yaac/shared/types'
 
 /**
  * Check a restart of a workspace id or prefix, running or stopped, and
  * register its provisioning row, filed under the workspace's group so it
- * keeps its place in the sidebar. Refuses a caller who does not own it.
+ * keeps its place in the sidebar. Refuses a caller who does not own it, and
+ * with `stoppedOnly` a workspace that is running.
  *
  * The run tears down any running unit (keeping the checkout) and launches a
  * new one that resumes the conversations active when the workspace stopped,
@@ -32,6 +40,7 @@ import { effortFor, launchableModel, SELF_NAMING_TOOLS, TOOL_LABELS, type AgentT
 export async function prepareRestart(
   principal: Actor,
   idOrPrefix: string,
+  opts: { stoppedOnly?: boolean } = {},
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   // The runtime is asked directly, never skipped when unreachable: a unit
   // this missed would keep running beside the relaunch.
@@ -46,10 +55,19 @@ export async function prepareRestart(
   }
   const { projectId, workspaceId } = row
   await authorizeProject(principal, projectId)
+  if (unit && opts.stoppedOnly === true) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is running; only a stopped one can be restarted`)
+  }
   const jobName = unit?.jobName
   // The unit's tool, else the first conversation's; claude if none was
   // recorded (an `acp` launch whose handshake failed).
   const tool = unit?.tool ?? (await firstAgentSession(projectId, workspaceId))?.tool ?? 'claude'
+  // With nothing running or shutting down, nothing can still write history,
+  // so a lost one is refused before the provisioning row exists: a plain
+  // error rather than a failed row.
+  const settled = !unit && !tearingDown(workspaceId)
+    && await workspaceDriver().findForTeardown(workspaceId) === undefined
+  const planned = settled ? await resumePlan(projectId, workspaceId, tool, row.mode) : undefined
 
   // The row also keeps `inFlightWorkspaceIds` reporting the workspace, which
   // stops the stale reaper deleting the dirs the new launch is about to
@@ -65,24 +83,9 @@ export async function prepareRestart(
     // Always: it also clears a leftover terminating mark.
     await teardownForRestart({ jobName: jobName ?? null, projectId, workspaceId })
 
-    // Each conversation resumes under its own tool if its history is on
-    // disk. One the rows say wrote history but whose history is gone was lost
-    // to a crash or an incomplete restore, so the restart fails rather than
-    // kill the agent with a resume it cannot load or quietly start the work
-    // over. One with neither starts as a create's would. Checked after the
-    // teardown, which checkpoints opencode's database. With none active (an
-    // agent exited while an init window kept tmux alive, or an acp handshake
-    // never finished), the one brought back is the workspace's first, under
-    // its id, which may have history of its own.
-    const recorded = await listActiveAgentSessions(projectId, workspaceId)
-    const active: Conversation[] = recorded.length > 0 ? recorded : [{ tool, agentSessionId: workspaceId, mode: row.mode }]
-    const resumes = await Promise.all(active.map((a) => hasConversationHistory(projectId, workspaceId, a)))
-    const lost = active.filter((a, i) => !resumes[i] && wroteHistory(a, workspaceId))
-    if (lost.length > 0) {
-      throw new ServerError('CONFLICT', `cannot restart: the history of ${lost.map((a) =>
-        `${TOOL_LABELS[a.tool]} conversation ${a.agentSessionId}`).join(', ')} is gone from `
-        + `${projectDir(projectId)}. Restore it from a backup to resume the workspace.`)
-    }
+    // Otherwise planned after the teardown, which checkpoints opencode's
+    // database.
+    const { active, resumes } = planned ?? await resumePlan(projectId, workspaceId, tool, row.mode)
     if (active.length > 1) onProgress(`Restoring ${active.length} agent sessions...`)
 
     // Relaunch in the recorded permission mode (e.g. `plan` must not come
@@ -131,6 +134,36 @@ export async function prepareRestart(
     })
     return result
   })
+}
+
+/**
+ * The conversations a restart brings back, and whether each resumes.
+ *
+ * Each resumes under its own tool if its history is on disk. One the rows
+ * say wrote history but whose history is gone was lost to a crash or an
+ * incomplete restore, so the restart fails rather than kill the agent with a
+ * resume it cannot load or quietly start the work over. One with neither
+ * starts as a create's would. With none active (an agent exited while an
+ * init window kept tmux alive, or an acp handshake never finished), the one
+ * brought back is the workspace's first, under its id, which may have
+ * history of its own.
+ */
+async function resumePlan(
+  projectId: string,
+  workspaceId: string,
+  tool: AgentTool,
+  mode: AgentMode,
+): Promise<{ active: Conversation[]; resumes: boolean[] }> {
+  const recorded = await listActiveAgentSessions(projectId, workspaceId)
+  const active: Conversation[] = recorded.length > 0 ? recorded : [{ tool, agentSessionId: workspaceId, mode }]
+  const resumes = await Promise.all(active.map((a) => hasConversationHistory(projectId, workspaceId, a)))
+  const lost = active.filter((a, i) => !resumes[i] && wroteHistory(a, workspaceId))
+  if (lost.length > 0) {
+    throw new ServerError('CONFLICT', `cannot restart: the history of ${lost.map((a) =>
+      `${TOOL_LABELS[a.tool]} conversation ${a.agentSessionId}`).join(', ')} is gone from `
+      + `${projectDir(projectId)}. Restore it from a backup to resume the workspace.`)
+  }
+  return { active, resumes }
 }
 
 /** What a restart reads of a conversation it brings back. */

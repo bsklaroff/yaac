@@ -85,8 +85,10 @@ describe('yaac-mama skill', () => {
     // confirmation may never arrive.
     expect(body).toContain('yaac-mama stop [<workspace>]')
     expect(body).toContain('the workspace ending is the confirmation')
+    expect(body).toContain('yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]')
+    expect(body).toContain('yaac-mama restart <workspace>')
     // The skill must say it is a subset, so an agent does not look for
-    // delete or restart.
+    // a delete.
     expect(body).toContain('strict subset')
   })
 })

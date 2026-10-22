@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces, start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -12,6 +12,7 @@ same project**. Use it directly — this skill is just the manual.
 ```
 yaac-mama list                                    # workspaces + groups here
 yaac-mama list <workspace>...                     # just those, with full prompts
+yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 yaac-mama create [opts] "<prompt>"
 yaac-mama queue --parent-workspace W [opts] "<prompt>"
 yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
@@ -20,6 +21,7 @@ yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agen
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama set-base <branch>                         # your base branch, on origin
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
+yaac-mama restart <workspace>                       # a stopped one, resumed
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
 yaac-mama models                                  # tools/models available
@@ -32,11 +34,12 @@ yaac-mama --help
 
 That list is the whole surface. `yaac-mama` is a **strict subset** of the
 `yaac` CLI, enforced by the server: it observes, labels, makes one new thing
-(now or queued for later), messages a running one, and stops one. Stopping
-is in reach precisely because it is reversible — a stopped workspace keeps
-its checkout and its conversation, and the user can restart it. There is no
-delete, no restart, and no config beyond your own base branch. If a task needs one of those, ask the user
-rather than looking for a way around it.
+(now or queued for later), messages a running one, and stops or restarts
+one. Stopping is in reach precisely because it is reversible — a stopped
+workspace keeps its checkout and its conversation — and restarting a
+stopped one only undoes a stop, never in a more permissive mode than yours.
+There is no delete, and no config beyond your own base branch. If a task
+needs one of those, ask the user rather than looking for a way around it.
 
 Everything is scoped to **this workspace's project**, which is not a flag you
 pass — the server resolves who is calling and answers for that project only.
@@ -47,11 +50,26 @@ pass — the server resolves who is calling and answers for that project only.
   filed under and the prompt it started from; your own row is marked
   `(you)`. Then a line naming the project's groups. This is how you find a
   workspace id to pass to `group move`; ids print as their first 8 characters,
-  and that prefix is what the other commands accept. `list <workspace>...`
-  (running or queued ids) shows only those rows, then each one's full prompt,
-  which the table cuts to 60 characters: a `Prompt of <id>:` line, then the
-  prompt with every line indented two spaces. Only an unindented header line
-  is the server's; a prompt's own text is always indented.
+  and that prefix is what the other commands accept. A last line counts the
+  project's stopped workspaces. `list <workspace>...` (running, queued or
+  stopped ids) shows only those rows, then each one's full prompt, which the
+  table cuts to 60 characters: a `Prompt of <id>:` line, then the prompt with
+  every line indented two spaces. Only an unindented header line is the
+  server's; a prompt's own text is always indented.
+
+- **`list --stopped`** — this project's stopped workspaces, newest stop
+  first, 25 to a page. Use it to find earlier work by what it was about,
+  then read it with `history` or `fetch`, or bring it back with `restart`.
+  `STOPPED` is when it stopped (UTC), and `HOW` is `stopped` for a stop
+  (by you, another agent or the user) or what killed it (`oom`, `crashed`,
+  `evicted`, `agent-exited`, … with the evidence after a colon).
+  - **`--search <text>`**: case-insensitive substring of a title, the first
+    prompt of any of its conversations, or a tool name.
+  - **`--group <name>`**: only that group's (an existing group; this one
+    never creates one).
+  - **`--limit <n>`**: page size, 1 to 200.
+  - A page with more after it ends with a `More:` line giving the exact
+    command for the next one (`--cursor`, plus the options you passed).
 
 - **`create "<prompt>"`** — start a **new sibling workspace** in this project
   and deliver the prompt to its agent. Prints the new workspace's id on stdout
@@ -106,6 +124,8 @@ pass — the server resolves who is calling and answers for that project only.
     whose agent simply exits does **not** start what is queued after it; that
     waits in the sidebar for the user.
   - `list` shows what is queued, indented under what it waits on.
+  - A **stopped** parent is allowed, with a note on stderr: what is queued
+    under it starts only once it is restarted and then stopped again.
 
 - **`edit-queued <queued> ["<prompt>"]`** — change a queued workspace before
   it starts: a prompt given replaces the stored one (omit it to keep it),
@@ -120,9 +140,10 @@ pass — the server resolves who is calling and answers for that project only.
   the result.
 
 - **`send <workspace> "<message>"`** — hand a message to another **running**
-  workspace's agent, exactly as if the user had typed it into its terminal or
-  chat pane. It goes to the workspace's first running conversation, or the
-  one **`--conversation`** names (an id or unique prefix from `history`).
+  workspace's agent (a stopped one is refused; `restart` it first), exactly
+  as if the user had typed it into its terminal or chat pane. It goes to the
+  workspace's first running conversation, or the one **`--conversation`**
+  names (an id or unique prefix from `history`).
   - An agent mid-turn is not interrupted: a chat-pane (`acp`) agent folds it
     into the turn or queues it, and a terminal (`tui`) agent's own UI queues
     what is typed while it works. Anything its user left unsent in the input
@@ -167,18 +188,35 @@ pass — the server resolves who is calling and answers for that project only.
 
 - **`stop [<workspace>]`** — end a workspace's running container (or tmux
   server): its agent stops, and its checkout, title, group and conversation
-  all stay, so the user can restart it from the webapp. This is a stop, not a
-  delete — but it is still a visible interruption, and the workspace's
-  uncommitted work becomes reachable only by restarting it. **Omit the
+  all stay, so it can be restarted (`restart`, or the webapp). This is a
+  stop, not a delete — but it is still a visible interruption, and the
+  workspace's uncommitted work becomes reachable only by restarting it. **Omit the
   workspace to stop yourself**, which is the common use: a workspace spawned to
   do one job can wind itself down when the job is done. A workspace that exists
-  but is not running is reported as such rather than as unknown.
+  but is not running is reported as such (or as already stopped) rather than
+  as unknown.
   - **Stopping yourself is the last thing you do.** It tears down the very
     channel this command's reply comes back over, so the confirmation may
     never print — *the workspace ending is the confirmation*, and a missing
     reply is not an error and not something to retry. Commit and push
     anything worth keeping, and say whatever you need to say to the user,
     **before** you run it; nothing after it happens.
+
+- **`restart <workspace>`** — bring a **stopped** workspace back under the
+  same id, as the webapp's Restart does: its checkout as it was left, and
+  the conversations that were open when it stopped, each resumed from its
+  history in a window of its own. Its tool, model, effort and permission
+  mode are the ones it had. Prints once the restart is under way; it then
+  provisions in the background like a `create`, and shows as running in
+  `list` once it is up. Its agent resumes idle — `send` it what to do next.
+  - Refused for a workspace that is running (restarting it would end its
+    agent's turn), for yourself, for one whose permission mode is **more
+    permissive than yours** (counting a tool that lacks its mode, which comes
+    back in the nearest one it has: pi only has `bypass`), for one whose tool
+    the project's owner is no longer signed in to, and for one whose
+    conversation history is gone from the host (the user must restore it). A
+    launch that fails after the reply is shown to the user in the webapp, not
+    to you; if `list` never shows it running, tell the user.
 
 - **`group create "<name>"`** — make an empty group. Idempotent: naming one
   that already exists just resolves to it, so you never need to check first.
@@ -267,8 +305,8 @@ pass a lower `--permission-mode` rather than retrying the same request.
 
 - Prompt: non-empty, ≤ 10,000 characters.
 - At most 8 requests queued per workspace (and 32 in total), and at most 8
-  spawn-started workspaces provisioning at once per caller — over that is an
-  **HTTP 429**; wait and retry.
+  workspaces you created or restarted provisioning at once — over that is
+  refused with an **HTTP 422** saying so; wait and retry.
 - **HTTP 422** is a server-side refusal with the reason in the text: an
   unknown command or option, a malformed `--model`, a `--permission-mode`
   more permissive than yours, a workspace id that names
@@ -282,8 +320,9 @@ pass a lower `--permission-mode` rather than retrying the same request.
   (every one mints a new workspace), so on that message run `yaac-mama list`
   and look for the workspace before retrying, or you will get a duplicate. The
   others are safe to repeat — a second `stop` just answers that the workspace
-  is not running. A `stop` on yourself is the exception to all of this: no
-  reply at all is the expected outcome, not a timeout to interpret.
+  is not running, and a second `restart` that it is already starting or
+  running. A `stop` on yourself is the exception to all of this: no reply at
+  all is the expected outcome, not a timeout to interpret.
 - "cannot reach the yaac proxy" / "cannot reach the yaac server" means the
   path itself is broken — report it to the user rather than retrying.
 
@@ -298,6 +337,9 @@ pass a lower `--permission-mode` rather than retrying the same request.
 - Stop a sibling when the user asked or when work you started there is
   finished — not to tidy up unasked. It interrupts a whole agent mid-turn,
   and any work it had not committed is only reachable by restarting it.
+- Restart a stopped workspace when the user asked, or when its own agent and
+  conversation are what the work needs (to carry on where it stopped). To
+  read what it did, `history` and `fetch` work on it as it is, stopped.
 - Stop yourself only when the user asked, or when the prompt that spawned
   this workspace said to wind down when done. Finish first: commit, push,
   report. Never stop yourself just because you ran out of things to do —

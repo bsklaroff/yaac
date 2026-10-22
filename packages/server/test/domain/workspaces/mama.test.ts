@@ -13,13 +13,17 @@ vi.mock('#domain/workspaces/create', async (importOriginal) => ({
   ...(await importOriginal<typeof createModule>()),
   createWorkspace: vi.fn(),
 }))
-vi.mock('#domain/workspaces/cleanup', () => ({ cleanupWorkspaceDetached: vi.fn() }))
+vi.mock('#domain/workspaces/cleanup', () => ({
+  cleanupWorkspaceDetached: vi.fn(),
+  teardownForRestart: vi.fn(),
+  tearingDown: () => false,
+}))
 import type * as createModule from '#domain/workspaces/create'
 import { createWorkspace } from '#domain/workspaces/create'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
 import { closeDb } from '#db/client'
 import { createWorkspaceGroup, listWorkspaceGroupRows } from '#db/group-store'
-import { getProjectWorkspaceRows, recordWorkspaceCreated } from '#db/workspace-store'
+import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
@@ -33,7 +37,7 @@ import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { deleteToolCredential, getWorkspaceRow, setToolCredential } from '#db'
+import { applyWorkspaceEvent, deleteToolCredential, getWorkspaceRow, setToolCredential, setWorkspaceGroup } from '#db'
 import { cloneRepo } from '#domain/git'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
@@ -124,7 +128,7 @@ describe('runMamaCommand', () => {
   it('refuses a command outside the allowlist, naming what is allowed', async () => {
     // This is the one place the allowed commands are enforced for both
     // transports; the proxy relays requests without interpreting them.
-    for (const forbidden of ['delete', 'restart', 'workspace-stop', 'config', '']) {
+    for (const forbidden of ['delete', 'workspace-stop', 'config', '']) {
       const outcome = await run(forbidden)
       expect(outcome.ok, forbidden).toBe(false)
       if (!outcome.ok) expect(outcome.error).toContain('unknown command')
@@ -145,7 +149,7 @@ describe('runMamaCommand', () => {
     expect(wrong.ok).toBe(false)
     if (!wrong.ok) expect(wrong.error).toContain("does not take '--group'")
 
-    const none = await run('list', '', { workspace: 'x' })
+    const none = await run('models', '', { workspace: 'x' })
     expect(none.ok).toBe(false)
     if (!none.ok) expect(none.error).toContain('takes no options')
 
@@ -229,12 +233,88 @@ describe('runMamaCommand', () => {
 
       // Every id must name exactly one workspace.
       expect(await run('list', 'nope')).toEqual({
-        ok: false, error: "no running or queued workspace 'nope' in this project",
+        ok: false, error: "no workspace 'nope' in this project",
       })
       expect(await run('list', 'sibling')).toEqual({
-        ok: false, error: "'sibling' matches more than one running or queued workspace in this project — use a longer prefix",
+        ok: false, error: "'sibling' matches more than one workspace in this project — use a longer prefix",
       })
       expect(await run('list', '')).toMatchObject({ ok: true })
+    })
+
+    it('finds stopped workspaces by search, group and page, newest stop first, saying how each stopped', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+      const group = await createWorkspaceGroup(PROJ, 'parsers', null)
+      const stops: Array<[string, string, Parameters<typeof recordWorkspaceStopped>[2]?]> = [
+        ['aaaa1111-old', 'port the lexer to rust'],
+        ['bbbb2222-mid', 'fix the flaky parser test', { reason: 'oom', detail: 'exit code 137\nOOMKilled' }],
+        ['cccc3333-new', 'write the parser docs'],
+      ]
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        for (const [i, [id, prompt, cause]] of stops.entries()) {
+          vi.setSystemTime(Date.UTC(2026, 9, 20 + i, 12))
+          await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
+          await recordAgentSessions(PROJ, id, [{ tool: 'claude', agentSessionId: `${id}-conv`, firstPrompt: prompt }])
+          await recordWorkspaceStopped(PROJ, id, cause)
+        }
+      } finally {
+        vi.useRealTimers()
+      }
+      await setWorkspaceGroup(PROJ, 'bbbb2222-mid', group.groupId)
+      // Another project's stop, and a running workspace, are never listed.
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'dddd4444-foreign' })
+      await recordWorkspaceStopped(OTHER, 'dddd4444-foreign')
+      running = [podFor('caller-workspace')]
+
+      const all = await output('list', '', { stopped: '1' })
+      expect(all).toContain('Stopped workspaces in this project (3 of 3, newest stop first):')
+      expect(all).toMatch(/WORKSPACE\s+TOOL\s+STOPPED \(UTC\)\s+HOW\s+GROUP\s+PROMPT/)
+      expect(all.indexOf('cccc3333')).toBeLessThan(all.indexOf('bbbb2222'))
+      expect(all.indexOf('bbbb2222')).toBeLessThan(all.indexOf('aaaa1111'))
+      expect(all).toMatch(/cccc3333\s+claude\s+2026-10-22 12:00\s+stopped\s+write the parser docs/)
+      expect(all).toMatch(/bbbb2222\s+claude\s+2026-10-21 12:00\s+oom: exit code 137 OOMKilled\s+parsers\s+fix the flaky/)
+      expect(all).not.toContain('dddd4444')
+      expect(all).not.toContain('caller-w')
+      expect(all).toContain('yaac-mama restart <workspace>')
+
+      const found = await output('list', '', { stopped: '1', search: 'PARSER' })
+      expect(found).toContain('matching "PARSER" (2 of 2')
+      expect(found).not.toContain('aaaa1111')
+      expect(await output('list', '', { stopped: '1', group: 'parsers' })).toMatch(/\(1 of 1[^]*bbbb2222/)
+      expect(await output('list', '', { stopped: '1', search: 'nothing like it' }))
+        .toBe('No stopped workspaces in this project matching "nothing like it".')
+
+      // A page that has more says how to ask for the next, keeping the search.
+      const first = await output('list', '', { stopped: '1', search: 'parser', limit: '1' })
+      expect(first).toContain('(1 of 2')
+      const next = /^More: yaac-mama list --stopped --search parser --limit 1 --cursor (\S+)$/m.exec(first)?.[1]
+      expect(next).toBeDefined()
+      const second = await output('list', '', { stopped: '1', search: 'parser', limit: '1', cursor: next! })
+      expect(second).toContain('bbbb2222')
+      expect(second).not.toContain('cccc3333')
+      expect(second).not.toContain('More:')
+      expect(await output('list', '', { stopped: '1', search: 'parser', cursor: next! })).not.toContain('More:')
+
+      // The unfiltered listing points at it, and an id shows a stopped one
+      // in full.
+      const plain = await output('list')
+      expect(plain).toContain('3 stopped workspaces: yaac-mama list --stopped')
+      const one = await output('list', 'bbbb')
+      expect(one).toContain('Stopped workspaces:')
+      expect(one).toContain('Prompt of bbbb2222:\n  fix the flaky parser test')
+      expect(one).not.toContain('cccc3333')
+      expect(one).not.toContain('stopped workspaces: yaac-mama')
+
+      const refusals: Array<[string, Record<string, string>, string]> = [
+        ['', { search: 'x' }, "list takes '--search' only with --stopped"],
+        ['bbbb', { stopped: '1' }, 'list --stopped takes no workspace ids (list <workspace> shows a stopped one)'],
+        ['', { stopped: '1', limit: '0' }, '--limit must be a whole number from 1 to 200'],
+        ['', { stopped: '1', limit: '201' }, '--limit must be a whole number from 1 to 200'],
+        ['', { stopped: '1', group: 'nope' }, `No such workspace group in ${PROJ}: nope`],
+        ['', { stopped: '1', cursor: 'junk' }, 'invalid cursor: junk'],
+        ['dddd', {}, "no workspace 'dddd' in this project"],
+      ]
+      for (const [body, args, error] of refusals) expect(await run('list', body, args)).toEqual({ ok: false, error })
     })
 
     it('never shows another project\'s workspaces', async () => {
@@ -465,7 +545,7 @@ describe('runMamaCommand', () => {
 
       const decisions = await Promise.all(Array.from({ length: 2 * SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE }, () => run('create', 'x')))
       expect(decisions.filter((d) => d.ok)).toHaveLength(SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE)
-      expect(decisions.find((d) => !d.ok)).toMatchObject({ error: expect.stringContaining('too many concurrent spawns') as unknown })
+      expect(decisions.find((d) => !d.ok)).toMatchObject({ error: expect.stringContaining('too many workspaces starting at once') as unknown })
 
       // Each slot comes back once its create settles.
       release()
@@ -539,6 +619,14 @@ describe('runMamaCommand', () => {
         tool: 'claude', model: 'opus', permissionMode: 'manual', mode: 'acp',
         branch: 'feature/x', groupId: group?.groupId, title: 'Step two',
       })
+    })
+
+    it('notes on stderr that a stopped parent must be restarted before its child starts', async () => {
+      await recordWorkspaceStopped(PROJ, 'loose-sibling')
+      const text = await output('queue', 'x', { 'parent-workspace': 'loose', tool: 'claude' })
+      const [id, note] = text.split('\n')
+      expect(id).toMatch(/^[0-9a-f-]{36}$/)
+      expect(note).toBe('note: loose-si is stopped, so this starts only after it is restarted and stopped again')
     })
 
     it('never grants more than the caller has, and refuses rather than queueing', async () => {
@@ -788,6 +876,7 @@ describe('runMamaCommand', () => {
       // The reply must say a stop is reversible, or an agent may treat it as
       // a delete.
       expect(text).toContain('checkout is kept')
+      expect(text).toContain('yaac-mama restart sibling-')
     })
 
     it('stops the CALLER when no workspace is named', async () => {
@@ -807,6 +896,9 @@ describe('runMamaCommand', () => {
       const outcome = await run('stop', '', { workspace: 'sibling' })
 
       expect(outcome).toEqual({ ok: false, error: 'workspace sibling- is not running' })
+      await recordWorkspaceStopped(PROJ, 'sibling-workspace')
+      expect(await run('stop', '', { workspace: 'sibling' }))
+        .toEqual({ ok: false, error: 'workspace sibling- is already stopped' })
       expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
     })
 
@@ -830,6 +922,131 @@ describe('runMamaCommand', () => {
       // typed too little of it.
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
       expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
+    })
+  })
+
+  /**
+   * A restart runs for real up to the relaunch, which is stubbed: the
+   * provisioning row, the stop record and the history check are the real
+   * ones.
+   */
+  describe('restart', () => {
+    beforeEach(async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits' })
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'sibling-workspace', permissionMode: 'manual', model: 'opus',
+      })
+      await recordAgentSessions(PROJ, 'sibling-workspace', [
+        { tool: 'claude', agentSessionId: 'first-conv' },
+        { tool: 'claude', agentSessionId: 'second-conv' },
+      ])
+      await setActiveAgentSessions(PROJ, 'sibling-workspace', [
+        { tool: 'claude', agentSessionId: 'first-conv', paneId: '%3' },
+        { tool: 'claude', agentSessionId: 'second-conv', paneId: '%7' },
+      ])
+      await recordWorkspaceStopped(PROJ, 'sibling-workspace')
+      running = [podFor('caller-workspace')]
+    })
+
+    it('relaunches a stopped sibling under its id, resuming its conversations in its recorded posture', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      vi.mocked(createWorkspace).mockImplementation(async (_projectId, opts) => {
+        await gate
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }
+      })
+      expect(await output('list')).toContain('1 stopped workspace: yaac-mama list --stopped')
+
+      const text = await output('restart', '', { workspace: 'sibling' })
+
+      expect(text).toContain('Restarting sibling-, resuming its 2 conversations.')
+      // Registered before the reply, so the sidebar shows it at once.
+      expect(listProvisioning()).toMatchObject([{ workspaceId: 'sibling-workspace', kind: 'restart' }])
+      await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
+      // It keeps its stop until the relaunch succeeds, but is no longer
+      // listed as stopped, so an agent watching does not restart it again.
+      expect((await getWorkspaceRow(PROJ, 'sibling-workspace'))?.stoppedAt).toBeInstanceOf(Date)
+      expect(await output('list', '', { stopped: '1' })).toBe('No stopped workspaces in this project.')
+      expect(await output('list')).not.toContain('stopped workspace')
+      release()
+      expect(vi.mocked(createWorkspace).mock.calls[0]).toMatchObject([PROJ, {
+        workspaceId: 'sibling-workspace',
+        tool: 'claude',
+        permissionMode: 'manual',
+        resume: [{ agentSessionId: 'first-conv', tool: 'claude' }, { agentSessionId: 'second-conv', tool: 'claude' }],
+      }])
+      await vi.waitFor(async () => {
+        expect((await getWorkspaceRow(PROJ, 'sibling-workspace'))?.stoppedAt).toBeUndefined()
+      })
+      await vi.waitFor(() => { expect(listProvisioning()).toEqual([]) })
+    })
+
+    it('refuses what it must not restart, starting nothing', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'bypass-workspace', permissionMode: 'bypass' })
+      await recordWorkspaceStopped(PROJ, 'bypass-workspace')
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'running-workspace', permissionMode: 'manual' })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'opencode-workspace', permissionMode: 'manual' })
+      await recordAgentSessions(PROJ, 'opencode-workspace', [{ tool: 'opencode', agentSessionId: 'ses_1' }])
+      await recordWorkspaceStopped(PROJ, 'opencode-workspace')
+      // Its stop is recorded but its unit is back (a restart under way).
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'restarting-workspace', permissionMode: 'manual' })
+      await recordWorkspaceStopped(PROJ, 'restarting-workspace')
+      // It wrote a transcript the host no longer has.
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'lost-workspace', permissionMode: 'manual' })
+      await applyWorkspaceEvent({
+        type: 'sessions-launched', projectId: PROJ, workspaceId: 'lost-workspace',
+        sessions: [{ tool: 'claude', agentSessionId: 'lost-conv', mode: 'acp', firstPrompt: 'hello' }],
+      })
+      await recordWorkspaceStopped(PROJ, 'lost-workspace')
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', permissionMode: 'manual' })
+      await recordWorkspaceStopped(OTHER, 'foreign-workspace')
+      // Recorded as `manual`, but pi has only `bypass`, which its
+      // conversation would come back in.
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'pi-workspace', permissionMode: 'manual' })
+      await recordAgentSessions(PROJ, 'pi-workspace', [
+        { tool: 'claude', agentSessionId: 'claude-conv' },
+        { tool: 'pi', agentSessionId: 'pi-conv' },
+      ])
+      await setActiveAgentSessions(PROJ, 'pi-workspace', [
+        { tool: 'claude', agentSessionId: 'claude-conv', paneId: '%1' },
+        { tool: 'pi', agentSessionId: 'pi-conv', paneId: '%2' },
+      ])
+      await recordWorkspaceStopped(PROJ, 'pi-workspace')
+      running = [podFor('caller-workspace'), podFor('running-workspace'), podFor('restarting-workspace')]
+      const refusal = async (workspace: string): Promise<string> => {
+        const outcome = await run('restart', '', { workspace })
+        if (outcome.ok) throw new Error(`expected a refusal for ${workspace}`)
+        return outcome.error
+      }
+
+      expect(await refusal('caller')).toBe('restart cannot restart this workspace itself')
+      expect(await refusal('running')).toBe('workspace running- is not stopped')
+      expect(await refusal('restarting')).toBe('workspace restarti is running; only a stopped one can be restarted')
+      expect(await refusal('bypass')).toBe("bypass-w runs in permission mode 'bypass', more than this workspace's own "
+        + "('accept-edits'); only one at or below it can be restarted")
+      expect(await refusal('pi-work')).toBe("pi-works's pi conversation would come back in permission mode 'bypass', "
+        + "the nearest pi has to 'manual', more than this workspace's own ('accept-edits'); only one at or below it "
+        + 'can be restarted')
+      expect(await refusal('opencode')).toContain('opencode is not signed in for this project\'s owner')
+      expect(await refusal('lost')).toContain('the history of Claude Code conversation lost-conv is gone')
+      expect(await refusal('foreign-workspace')).toBe(`no workspace 'foreign-workspace' in ${PROJ}`)
+      expect(await run('restart')).toEqual({ ok: false, error: 'restart needs a workspace id' })
+      expect(listProvisioning()).toEqual([])
+      expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
+    })
+
+    it('counts against the cap a caller\'s creates do', async () => {
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      vi.mocked(createWorkspace).mockImplementation(async (_projectId, opts) => {
+        await gate
+        return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [], tool: 'claude', mode: 'tui' }
+      })
+      for (let i = 1; i < SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE; i++) expect(await run('create', 'x')).toMatchObject({ ok: true })
+      expect((await run('restart', '', { workspace: 'sibling' })).ok).toBe(true)
+      expect(await run('create', 'x')).toMatchObject({ ok: false, error: expect.stringContaining('too many workspaces') as unknown })
+      release()
+      await vi.waitFor(async () => { expect((await run('create', 'x')).ok).toBe(true) })
     })
   })
 
@@ -967,6 +1184,9 @@ describe('runMamaCommand', () => {
 
       expect(await refusal('go', { workspace: 'caller-workspace' })).toContain('itself')
       expect(await refusal('go', { workspace: 'stopped' })).toBe('workspace stopped- is not running')
+      await recordWorkspaceStopped(PROJ, 'stopped-workspace')
+      expect(await refusal('go', { workspace: 'stopped' }))
+        .toBe('workspace stopped- is stopped; restart it with yaac-mama restart stopped-, then send once it is running')
       expect(await refusal('go', { workspace: 'foreign-workspace' })).toContain('no workspace')
       expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toContain('no running conversation')
       expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')

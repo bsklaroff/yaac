@@ -169,7 +169,9 @@ snapshot omits it while its provisioning row stands in for it.
   prints the entry id, so an agent can script a chain. Its permission mode
   defaults to the parent's and is capped at the caller's own
   (docs/permission-modes.md). `yaac-mama list` shows entries indented under
-  their parents.
+  their parents. A stopped parent is accepted, with a note on stderr that the
+  entry starts only once the parent is restarted (`yaac-mama restart` or the
+  user) and then stopped again.
 - **`yaac-mama edit-queued`** changes an entry's prompt, settings or parent,
   by id or prefix within the caller's project. The stored permission mode is
   held to the same cap, as if the edit had asked for it, so an entry above the
