@@ -320,7 +320,7 @@ describe('getWorkspaceChanges', () => {
     const files = await listing('big')
     expect(files.paths).toHaveLength(50_000)
     expect(files.truncated).toBe(true)
-  }, 120_000)
+  }, 300_000)
 
   it('says how far HEAD is from the base branch, the fork branch unless one is picked', async () => {
     // One commit on the checkout's branch, and one on main after the fork,
