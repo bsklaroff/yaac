@@ -8,8 +8,9 @@
  *     credential list, a project's env and yaac-config.json) without errors.
  *  3. A preference (Sounds) is saved under its existing localStorage key and
  *     survives a reload.
- *  4. The skills overlay opens as a titled sheet whose Close button works,
- *     and the add-project dialog opens as a form.
+ *  4. Settings opens full-screen, its Skills section is headed by the
+ *     project, its Close button works, and the add-project dialog opens as
+ *     a form.
  *  5. With the server down long enough for the events socket's backoff to
  *     grow, an `online` event reconnects it at once after the server returns.
  *
@@ -88,14 +89,19 @@ check('Sounds stays off after a reload', (await page.getByRole('switch', { name:
 await page.getByRole('switch', { name: 'Sounds' }).click()
 await page.keyboard.press('Escape')
 
-// 4. Sheet and form dialogs.
-await page.getByRole('button', { name: 'Skills' }).click()
+// 4. Full-screen and form dialogs.
+await page.getByTitle('Settings').first().click()
 const sheet = page.getByRole('dialog')
 await sheet.waitFor()
-check('skills sheet is titled', await sheet.getByText(/^Skills/).first().isVisible())
+await sheet.getByRole('button', { name: 'Skills', exact: true }).click()
 await page.waitForTimeout(500)
+check('settings fills the window', await sheet.evaluate((e) => {
+  const r = e.getBoundingClientRect()
+  return r.width === innerWidth && r.height === innerHeight
+}))
+check('skills are headed by the project', await sheet.getByRole('combobox', { name: 'Project' }).isVisible())
 await shot('skills')
-await sheet.getByRole('button', { name: 'Close' }).click()
+await sheet.getByRole('button', { name: 'Close settings' }).click()
 await sheet.waitFor({ state: 'detached' })
 check('its Close button closes it', true)
 

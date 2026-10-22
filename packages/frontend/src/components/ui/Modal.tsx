@@ -28,6 +28,8 @@ const VARIANT = {
     'flex flex-col gap-3 rounded-xl border border-hairline bg-surface p-4',
     'max-md:inset-0 max-md:rounded-none max-md:safe-area-inset',
   ],
+  // The whole window, edge to edge, for settings.
+  full: 'inset-0 flex bg-surface safe-area-inset',
   // A small form the caller sizes, like a confirm dialog; a card on every
   // screen.
   form: 'left-1/2 top-1/2 max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-lg '
@@ -35,7 +37,7 @@ const VARIANT = {
 }
 
 /**
- * A modal over a dimmed backdrop, in one of three shapes (`VARIANT`).
+ * A modal over a dimmed backdrop, in one of four shapes (`VARIANT`).
  * Callers control `open`, usually from the UI store so any surface can open
  * it, and add size and layout in `className`.
  *

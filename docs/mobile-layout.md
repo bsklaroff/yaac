@@ -104,7 +104,7 @@ server, since this screen has no status row for the server badge.
 
 **Workspaces** reuses the desktop sidebar's `WorkspaceList` as is, so list
 order matches the Alt+K/J cycle order. It sits under a mobile header with the
-project menu, skills and new-workspace, over the sidebar's status row (usage,
+project menu and new-workspace, over the sidebar's status row (usage,
 and the server badge inside the iPhone app). Touch has no hover, so below `md` each
 row's rename, group and delete actions are always shown and finger-sized, and
 the title's hover marquee is off. Dragging rows between groups is mouse-only
@@ -258,23 +258,23 @@ variants clear the insets themselves: full screen they take the same
 transparent border (`max-md:safe-area-inset`, a Tailwind utility so it takes
 variants), and in the desktop shapes their margins grow by the insets.
 
-Below `md`, fixed-size dialogs go full screen. Settings' left nav becomes a
-scrolling row of chips, and the `inset-4` overlays (skills, image builds)
-go edge to edge.
+Below `md`, fixed-size dialogs go full screen. Settings (full screen on
+every width) turns its left nav into a scrolling row of chips, and the
+`inset-4` image builds overlay goes edge to edge.
 
-Those two overlays are list/detail layouts, and a 20rem list leaves the
-detail a few dozen pixels at 390px. `components/ui/MasterDetail` is their
-shared body: side by side above `md`, one at a time below it (the list until
+Settings' Skills section and the image builds overlay are list/detail
+layouts, and a 20rem list leaves the detail a few dozen pixels at 390px.
+`components/ui/MasterDetail` is their shared body: side by side above `md`, one at a time below it (the list until
 a row is tapped, then the detail with a back chevron).
 
 - **The hidden side uses `max-md:hidden`** (`display: none`). Here that is
-  right: the visible side needs the full width, and nothing in these overlays
+  right: the visible side needs the full width, and nothing in these views
   measures itself while hidden.
 - **The list keeps its scroll and query** across drill-down and back, since
-  both sides stay rendered. What the detail keeps is up to the caller (the
-  skills overlay remounts its detail each time).
+  both sides stay rendered. What the detail keeps is up to the caller
+  (Skills remounts its detail each time).
 - **`detailOpen` means "the user picked a row"**, not "a row is selected".
-  Each overlay auto-selects its first row so the desktop detail is never
+  Each view auto-selects its first row so the desktop detail is never
   blank; below the breakpoint that auto-pick is skipped. Only reads may ride
   on the auto-picked row.
 

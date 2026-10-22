@@ -35,9 +35,11 @@ const PI_ACP = path.dirname(require.resolve('pi-acp/package.json'))
  *
  * Like pi, the `compact` command reports a manual compaction's start and
  * end before answering, and the prompt `auto` runs with an automatic
- * compaction inside it.
+ * compaction inside it. It records the flags it was started with in
+ * `argv.json` beside itself.
  */
 const FAKE_PI = `#!/usr/bin/env node
+require('fs').writeFileSync(__dirname + '/argv.json', JSON.stringify(process.argv.slice(2)))
 const SETTLE_DELAY_MS = 400
 const queue = []
 let startOnStats
@@ -280,6 +282,13 @@ describe('patchPiAcp', () => {
     // The manual one is reported before its prompt is answered, and never as text.
     expect(log.indexOf('compaction completed')).toBeLessThan(log.indexOf(`reply ${String(compactId)}`))
     expect(log).not.toContain('compaction text')
+  })
+
+  it('starts pi trusting the project, as the TUI launch does', async () => {
+    await start()
+    const argv = JSON.parse(fs.readFileSync(path.join(dir, 'argv.json'), 'utf8')) as string[]
+    expect(argv.slice(0, 2)).toEqual(['--mode', 'rpc'])
+    expect(argv).toContain('--approve')
   })
 
   it('is tested against the release the image installs', () => {

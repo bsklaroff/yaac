@@ -17,7 +17,7 @@ import {
 
 afterEach(() => {
   cleanup()
-  useUiStore.setState({ viewedUserId: null })
+  useUiStore.setState({ viewedUserId: null, settingsProjectId: null })
 })
 
 /** A project keyed by `id-<name>`, so a test can tell the key from the

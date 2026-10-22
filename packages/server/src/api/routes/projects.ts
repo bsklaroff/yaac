@@ -214,34 +214,31 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.json(await getProjectBranches(projectId, { refresh }))
     },
   )
-  // Personal, plugin and project SKILL.md files the given tool (default
-  // claude) can use. Read on the host, so no running workspace is needed.
+  // Every SKILL.md the project's agents can use, each naming the agents that
+  // load it. Read on the host, so no running workspace is needed.
   .get(
     '/:projectId/skills',
     zv('query', z.object({
-      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       // Origin branch to read repo skills and repo plugin settings from
       // (default: the remote's default branch). Host tiers ignore it.
       branch: z.string().optional(),
     })),
     async (c) => {
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      const { tool, branch } = c.req.valid('query')
-      return c.json(await getProjectSkills(tool ?? 'claude', projectId, branch))
+      return c.json(await getProjectSkills(projectId, c.req.valid('query').branch))
     },
   )
-  // The full SKILL.md for one skill, fetched on demand when a row is expanded.
+  // The full SKILL.md for one skill, fetched on demand when a row is picked.
   .get(
     '/:projectId/skills/body',
     zv('query', z.object({
       id: z.string().min(1),
-      tool: z.enum(['claude', 'codex', 'opencode', 'pi']).optional(),
       branch: z.string().optional(),
     })),
     async (c) => {
       const projectId = await resolveProjectId(c.req.param('projectId'))
-      const { id, tool, branch } = c.req.valid('query')
-      return c.json(await getSkillDetail(tool ?? 'claude', projectId, id, branch))
+      const { id, branch } = c.req.valid('query')
+      return c.json(await getSkillDetail(projectId, id, branch))
     },
   )
   // Support files next to Dockerfile.yaac in the project's build dir: its

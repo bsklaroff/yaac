@@ -21,7 +21,7 @@ docs/permission-modes.md) all read that one table:
 | claude | `claude-agent-acp` | bundles its own SDK |
 | codex | `codex-acp` | drives `codex app-server` (the CLI on PATH, via `CODEX_PATH`), so the CLI must be installed too |
 | opencode | `opencode acp` | a subcommand of the CLI |
-| pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be installed too |
+| pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be installed too; yaac's patch adds `--approve`, so pi trusts the project and loads its `.pi/` and `.agents/skills` as the TUI does |
 
 How the adapters differ is described by per-tool profiles in
 `#runtime/agents/acp-adapters.ts`: the argv, the environment that carries a

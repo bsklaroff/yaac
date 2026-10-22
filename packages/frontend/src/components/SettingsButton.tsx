@@ -13,6 +13,7 @@ import {
   KeyIcon,
   ProjectConfigIcon,
   SettingsIcon,
+  SkillsIcon,
 } from '#lib/icons'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
@@ -24,6 +25,7 @@ import { CredentialsPane } from '#components/settings/Credentials'
 import { Field } from '#components/settings/Field'
 import { PhoneLinkField } from '#components/settings/PhoneLink'
 import { ProjectSettings } from '#components/settings/ProjectSettings'
+import { SkillsSettings } from '#components/settings/Skills'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
@@ -43,6 +45,7 @@ const SECTIONS: { key: SettingsSection; label: string; Icon: typeof GeneralIcon 
   { key: 'shortcuts', label: 'Shortcuts', Icon: KeyboardIcon },
   { key: 'credentials', label: 'Credentials', Icon: KeyIcon },
   { key: 'project', label: 'Project Config', Icon: ProjectConfigIcon },
+  { key: 'skills', label: 'Skills', Icon: SkillsIcon },
   { key: 'userDockerfile', label: 'User Dockerfile', Icon: DockerIcon },
 ]
 
@@ -52,8 +55,8 @@ function visibleSections(buildsImages: boolean): typeof SECTIONS {
 }
 
 /**
- * The settings button and its modal: a left nav of sections beside a
- * scrollable content pane. Open state lives in the store so other surfaces
+ * The settings button and its full-screen modal: a left nav of sections
+ * beside the content pane. Open state lives in the store so other surfaces
  * (e.g. the new-workspace menu's "Sign in") can open it on a given section.
  */
 export function SettingsButton(
@@ -94,14 +97,15 @@ export function SettingsButton(
         {variant === 'row' && <span>Settings</span>}
       </button>
 
-      {/* On small screens the dialog goes full-screen and the nav becomes
-          a scrolling row of chips above the content. */}
+      {/* On small screens the nav becomes a scrolling row of chips above
+          the content. */}
       <Modal
         open={open}
         onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}
-        className="flex h-[480px] w-[720px] max-md:flex-col"
+        variant="full"
+        className="max-md:flex-col"
       >
-        <div className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2
+        <div className="flex w-52 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2
           max-md:w-full max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:border-r-0">
           <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
             Settings
@@ -124,79 +128,88 @@ export function SettingsButton(
           ))}
         </div>
 
-        <div className="relative min-w-0 flex-1 overflow-y-auto p-6 max-md:p-4 max-md:pt-10">
+        {/* Skills fills the pane with its own scrolling list and detail; the
+            other sections scroll as one column of readable width. */}
+        <div className={clsx(
+          'relative flex min-h-0 min-w-0 flex-1 flex-col p-6 max-md:p-4 max-md:pt-10',
+          section !== 'skills' && 'overflow-y-auto',
+        )}>
           <Dialog.Close className="absolute right-3 top-3 flex h-6 w-6 items-center justify-center rounded
             text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
             aria-label="Close settings">
             <CloseIcon size={14} />
           </Dialog.Close>
 
-          {section === 'general' && (
-            <section>
-              <h2 className="text-sm font-semibold">General</h2>
-              <Field
-                label="Theme"
-                hint="Follows your system appearance unless you pick one."
-              >
-                <RadioGroup
-                  value={themePref}
-                  onValueChange={(value) => setThemePref(value)}
-                  className="flex flex-col gap-1"
+          {section === 'skills' && <SkillsSettings />}
+
+          {section !== 'skills' && <div className="mx-auto w-full max-w-3xl">
+            {section === 'general' && (
+              <section>
+                <h2 className="text-sm font-semibold">General</h2>
+                <Field
+                  label="Theme"
+                  hint="Follows your system appearance unless you pick one."
                 >
-                  {THEMES.map((t) => (
-                    <label
-                      key={t.value}
-                      className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
-                        text-text-dim transition hover:text-text"
-                    >
-                      <Radio.Root
-                        value={t.value}
-                        className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
-                          transition data-[checked]:border-accent data-[checked]:bg-accent"
+                  <RadioGroup
+                    value={themePref}
+                    onValueChange={(value) => setThemePref(value)}
+                    className="flex flex-col gap-1"
+                  >
+                    {THEMES.map((t) => (
+                      <label
+                        key={t.value}
+                        className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
+                          text-text-dim transition hover:text-text"
                       >
-                        <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
-                      </Radio.Root>
-                      {t.label}
-                    </label>
-                  ))}
-                </RadioGroup>
-              </Field>
-              <Field
-                label="Sounds"
-                hint="Play a chime when a workspace needs your input."
-              >
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={soundEnabled}
-                  aria-label="Sounds"
-                  onClick={() => setSoundEnabled(!soundEnabled)}
-                  className={clsx(
-                    'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-                    soundEnabled ? 'bg-accent' : 'bg-surface-3',
-                  )}
+                        <Radio.Root
+                          value={t.value}
+                          className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
+                            transition data-[checked]:border-accent data-[checked]:bg-accent"
+                        >
+                          <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
+                        </Radio.Root>
+                        {t.label}
+                      </label>
+                    ))}
+                  </RadioGroup>
+                </Field>
+                <Field
+                  label="Sounds"
+                  hint="Play a chime when a workspace needs your input."
                 >
-                  <span
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={soundEnabled}
+                    aria-label="Sounds"
+                    onClick={() => setSoundEnabled(!soundEnabled)}
                     className={clsx(
-                      'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-                      soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+                      'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
+                      soundEnabled ? 'bg-accent' : 'bg-surface-3',
                     )}
-                  />
-                </button>
-              </Field>
-              <GitIdentityField />
-              <TimeZoneField />
-              <PhoneLinkField />
-            </section>
-          )}
+                  >
+                    <span
+                      className={clsx(
+                        'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                        soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
+                      )}
+                    />
+                  </button>
+                </Field>
+                <GitIdentityField />
+                <TimeZoneField />
+                <PhoneLinkField />
+              </section>
+            )}
 
-          {section === 'shortcuts' && <ShortcutsPane />}
+            {section === 'shortcuts' && <ShortcutsPane />}
 
-          {section === 'credentials' && <CredentialsPane />}
+            {section === 'credentials' && <CredentialsPane />}
 
-          {section === 'project' && <ProjectSettings />}
+            {section === 'project' && <ProjectSettings />}
 
-          {section === 'userDockerfile' && <UserDockerfilePane />}
+            {section === 'userDockerfile' && <UserDockerfilePane />}
+          </div>}
         </div>
       </Modal>
     </>

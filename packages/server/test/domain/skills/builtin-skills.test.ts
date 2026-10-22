@@ -1,6 +1,6 @@
 /**
  * Contract tests for the shipped `builtin-skills/<name>/SKILL.md` dirs that
- * yaac stages into every session as the `system`/`yaac` tier. They cover
+ * yaac stages into every session as the `yaac` tier. They cover
  * files, not a module, so the one-describe-per-barrel-function rule does not
  * apply.
  *
@@ -31,7 +31,7 @@ beforeAll(async () => {
   setDataDir(tmp)
   installFakeWorkspaceDriver()
   staged = await stageBuiltinSkills(builtinSkillsDir(), path.join(tmp, 'stage'))
-  shipped = (await getProjectSkills('claude', projectId)).skills
+  shipped = (await getProjectSkills(projectId)).skills
 })
 
 afterAll(async () => {
@@ -43,16 +43,16 @@ afterAll(async () => {
 function expectShipped(name: string): SkillSummary {
   expect(staged).toContain(name)
   const skill = shipped.find((s) => s.name === name)
-  expect(skill).toMatchObject({ id: `system:yaac:${name}`, source: 'system', sourceLabel: 'yaac' })
+  expect(skill).toMatchObject({ id: `yaac:${name}`, source: 'yaac' })
   expect(skill?.description.length ?? 0).toBeGreaterThan(0)
   return skill as SkillSummary
 }
 
 const bodyOf = async (name: string): Promise<string> =>
-  (await getSkillDetail('claude', projectId, `system:yaac:${name}`)).body
+  (await getSkillDetail(projectId, `yaac:${name}`)).body
 
 describe('builtin-skills/', () => {
-  it('ships only skills — every staged dir is discovered as system/yaac', () => {
+  it('ships only skills — every staged dir is discovered as yaac', () => {
     expect(staged.length).toBeGreaterThan(0)
     expect(shipped.map((s) => s.name).sort()).toEqual([...staged].sort())
     // The dir's README.md is a loose file, not a skill dir.
