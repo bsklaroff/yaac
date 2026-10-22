@@ -1,6 +1,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import { StatusWatcherManager, onLiveAgentsChanged, onStreamHealthLost, onWaitingEnded } from '#runtime/status'
 import { acpLaunchModel } from '#runtime/agents'
+import { startUsageSampler, stopUsageSampler } from '#runtime/usage'
 import { loadToolAuthEntry } from '#domain/auth'
 import { restoreAllWorkspaceForwarders } from '#main/restore-forwarders'
 import { applyWorkspaceEvent, getProjectRow, recordedConversationHandles } from '#db'
@@ -31,7 +32,8 @@ function fireChange(source: ReconcileTrigger): void {
 }
 
 /**
- * Start the driver and wire what it reports into the machinery.
+ * Start the driver, wire what it reports into the machinery, and start the
+ * usage history sampler.
  *
  * `onAttached` fires once actually attached, which may be after this
  * resolves if the driver defers attaching. The reconcile loop starts from
@@ -98,6 +100,7 @@ export async function attachConvergence(opts: {
     },
     attached: opts.onAttached,
   })
+  startUsageSampler()
 }
 
 /**
@@ -110,6 +113,7 @@ export function stopConvergence(): void {
   // Stop watchers first; their streams run over the driver's transport.
   statusWatchers?.stopAll()
   statusWatchers = null
+  stopUsageSampler()
   workspaceDriver().stop()
 }
 

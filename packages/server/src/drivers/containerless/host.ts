@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access as fsAccess, stat } from 'node:fs/promises'
+import { access as fsAccess, readFile, stat, statfs } from 'node:fs/promises'
+import os from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import { WorkspaceExecError } from '#drivers/contract'
 import { waitFor } from '@yaac/shared/wait-for'
@@ -222,25 +223,61 @@ export async function onPath(binary: string): Promise<boolean> {
   return await findOnPath(binary) !== null
 }
 
+/** One process in a `ProcessTable`. */
+export interface ProcessRow {
+  ppid: number
+  rssBytes: number
+  /** CPU time used so far. Whole seconds on Linux, whose `ps` rounds. */
+  cpuSeconds: number
+}
+
+/** Every process on the host at one instant, by pid. */
+export interface ProcessTable {
+  at: number
+  rows: Map<number, ProcessRow>
+}
+
+/** `ps`'s `time` column, `[dd-][hh:]mm:ss[.cc]`, in seconds. */
+function parseCpuTime(text: string): number {
+  const [days, clock] = text.includes('-') ? text.split('-') : ['0', text]
+  return Number(days) * 86_400
+    + clock.split(':').reduce((sum, part) => sum * 60 + Number(part), 0)
+}
+
 /**
- * Every descendant of `roots`, roots included: the workspace's process tree.
- * Uses one `ps` snapshot (portable to Linux and macOS); a process forked
- * mid-walk is missed until the next sweep.
+ * One `ps` snapshot of every process (portable to Linux and macOS), or null
+ * if `ps` failed. The port sweep takes one per tick and the usage report
+ * reads the same ones, so neither spawns its own.
  */
-export async function descendantPids(roots: number[]): Promise<number[]> {
-  if (roots.length === 0) return []
+export async function processTable(): Promise<ProcessTable | null> {
   let out: string
   try {
-    ({ stdout: out } = await runHost(['ps', '-axo', 'pid=,ppid='], { timeoutMs: 10_000 }))
+    ({ stdout: out } = await runHost(['ps', '-axo', 'pid=,ppid=,rss=,time='], { timeoutMs: 10_000 }))
   } catch {
-    return roots
+    return null
   }
-  const children = new Map<number, number[]>()
+  const rows = new Map<number, ProcessRow>()
   for (const line of out.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line)
     if (!m) continue
-    const pid = Number(m[1])
-    const ppid = Number(m[2])
+    rows.set(Number(m[1]), {
+      ppid: Number(m[2]),
+      rssBytes: Number(m[3]) * 1024,
+      cpuSeconds: parseCpuTime(m[4]) || 0,
+    })
+  }
+  return { at: Date.now(), rows }
+}
+
+/**
+ * Every descendant of `roots` in `table`, roots included: the workspace's
+ * process tree. Just the roots without a table. A process forked after the
+ * snapshot is missed until the next.
+ */
+export function descendantPids(table: ProcessTable | null, roots: number[]): number[] {
+  if (!table) return roots
+  const children = new Map<number, number[]>()
+  for (const [pid, { ppid }] of table.rows) {
     children.set(ppid, [...(children.get(ppid) ?? []), pid])
   }
   const seen = new Set<number>(roots)
@@ -254,6 +291,71 @@ export async function descendantPids(roots: number[]): Promise<number[]> {
     }
   }
   return [...seen]
+}
+
+/** The host's memory and swap. */
+export interface HostMemory {
+  totalBytes: number
+  usedBytes: number
+  swapTotalBytes: number
+  swapUsedBytes: number
+}
+
+/**
+ * Read from `/proc/meminfo` on Linux and `vm_stat` / `sysctl vm.swapusage`
+ * on macOS, because `os.freemem()` on macOS leaves out reclaimable cache
+ * and so reads as nearly full.
+ */
+export async function hostMemory(): Promise<HostMemory> {
+  const totalBytes = os.totalmem()
+  if (process.platform === 'linux') {
+    const info = new Map<string, number>()
+    for (const line of (await readFile('/proc/meminfo', 'utf8')).split('\n')) {
+      const m = /^(\w+):\s+(\d+)/.exec(line)
+      if (m) info.set(m[1], Number(m[2]) * 1024)
+    }
+    const swapTotalBytes = info.get('SwapTotal') ?? 0
+    return {
+      totalBytes,
+      usedBytes: totalBytes - (info.get('MemAvailable') ?? os.freemem()),
+      swapTotalBytes,
+      swapUsedBytes: swapTotalBytes - (info.get('SwapFree') ?? swapTotalBytes),
+    }
+  }
+  if (process.platform === 'darwin') {
+    const [vm, swap] = await Promise.all([
+      runHost(['vm_stat'], { timeoutMs: 5_000 }),
+      runHost(['sysctl', '-n', 'vm.swapusage'], { timeoutMs: 5_000 }),
+    ])
+    const pageSize = Number(/page size of (\d+) bytes/.exec(vm.stdout)?.[1] ?? 4096)
+    const pages = (label: string): number =>
+      Number(new RegExp(`${label}:\\s+(\\d+)`).exec(vm.stdout)?.[1] ?? 0) * pageSize
+    // What Activity Monitor calls "Memory Used": app, wired and compressed.
+    const usedBytes = pages('Pages active') + pages('Pages wired down')
+      + pages('Pages occupied by compressor')
+    const mib = (label: string): number =>
+      Number(new RegExp(`${label} = ([\\d.]+)M`).exec(swap.stdout)?.[1] ?? 0) * 1024 * 1024
+    return { totalBytes, usedBytes, swapTotalBytes: mib('total'), swapUsedBytes: mib('used') }
+  }
+  return { totalBytes, usedBytes: totalBytes - os.freemem(), swapTotalBytes: 0, swapUsedBytes: 0 }
+}
+
+/** CPU time the host has spent, summed over its cores, in ms. */
+export function hostCpuTimes(): { idleMs: number; totalMs: number; cores: number } {
+  const cpus = os.cpus()
+  let idleMs = 0
+  let totalMs = 0
+  for (const { times } of cpus) {
+    idleMs += times.idle
+    totalMs += times.user + times.nice + times.sys + times.idle + times.irq
+  }
+  return { idleMs, totalMs, cores: cpus.length }
+}
+
+/** Used and total bytes of the filesystem holding `dir`. */
+export async function diskUsage(dir: string): Promise<{ usedBytes: number; capacityBytes: number }> {
+  const st = await statfs(dir)
+  return { usedBytes: (st.blocks - st.bfree) * st.bsize, capacityBytes: st.blocks * st.bsize }
 }
 
 /** One TCP listener: its port, and the address to dial it on (the bound

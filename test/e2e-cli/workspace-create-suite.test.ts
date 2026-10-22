@@ -22,6 +22,7 @@ import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api
 import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_CLIS } from '@yaac/shared/types'
+import type { ResourceReport } from '@yaac/shared/types'
 import {
   startMockLLM,
   startMockGit,
@@ -637,6 +638,28 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(body.workspaces).toHaveLength(1)
       const got = new Map(body.workspaces[0].forwardedPorts.map((p) => [p.containerPort, p.hostPort]))
       expect(got).toEqual(hostPortFor)
+    }, 30_000)
+
+    it('reports the workspace\'s memory, the nodes, and the server and proxy rows on the server health report', async () => {
+      // The kubelet's Summary, read through the node proxy the server's
+      // ClusterRole grants.
+      const res = await fetch(`${base}/api/server/usage`)
+      expect(res.status).toBe(200)
+      const report = await res.json() as ResourceReport
+      expect(report.driver).toBe('k8s')
+      expect(report.nodes.length).toBeGreaterThan(0)
+      expect(report.nodes.filter((n) => n.error !== undefined)).toEqual([])
+      expect(report.totals.memoryBytes).toBeGreaterThan(0)
+      expect(report.totals.scheduled?.memoryRequestBytes).toBeGreaterThan(0)
+      const byKey = new Map(report.components.map((c) => [c.key, c]))
+      expect(byKey.get('server')?.memoryBytes).toBeGreaterThan(0)
+      // A test namespace runs no main registry of its own, but the proxy
+      // this workspace egresses through is its namespace's.
+      expect(byKey.get('proxy')?.memoryBytes).toBeGreaterThan(0)
+      const mine = report.workspaces.find((w) => w.workspaceId === workspaceId)
+      expect(mine).toMatchObject({ running: true, projectName: 'kitchen' })
+      expect(mine?.memoryBytes).toBeGreaterThan(0)
+      expect(mine?.memoryLimitBytes).toBeGreaterThan(0)
     }, 30_000)
 
     // `yaac forward`: one case per argument and option.

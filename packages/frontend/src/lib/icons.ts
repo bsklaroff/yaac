@@ -65,6 +65,7 @@ export {
   ListFilter as FilterIcon,
   Sparkles as SkillsIcon,
   Server as ServerIcon,
+  Activity as HealthIcon,
   Plug as PortIcon,
   FolderTree as FilesIcon,
   Folder as FolderIcon,

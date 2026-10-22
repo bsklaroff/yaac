@@ -24,7 +24,13 @@ one mounts two (see "Storage claims").
    registry namespaces at runtime and applies the cluster-scoped
    builder-role admission guard. It has full verbs on what the server owns
    and read-only access to what it only observes (nodes, events, storage
-   classes).
+   classes). It also has `get` on `nodes/proxy`, which is how it reads
+   each kubelet's Summary API for the server health view
+   (docs/server-health.md). That is not a narrow read: through the API
+   server's node proxy it reaches every kubelet endpoint, exec included,
+   which adds nothing to a role that already has cluster-wide `pods/exec`.
+   A rule added here reaches a running install at its next
+   `yaac cluster install`, the step that also rolls the server.
 4. **The two ingress NetworkPolicies**, before the Service, so the server's
    port is never reachable from pods before the policy exists (see "The
    ingress policy is the wall").

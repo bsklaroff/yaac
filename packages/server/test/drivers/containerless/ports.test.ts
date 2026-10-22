@@ -8,14 +8,8 @@ import { PassThrough } from 'node:stream'
 import { setDataDir } from '@yaac/shared/paths'
 
 import type * as childProcess from 'node:child_process'
-import type * as hostModule from '#drivers/containerless/host'
 
-const mockDescendants = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/containerless/host', async (importOriginal) => ({
-  ...(await importOriginal<typeof hostModule>()),
-  descendantPids: mockDescendants,
-}))
-// The sweep spawns lsof; this fake answers it.
+// The sweep spawns ps and lsof; this fake answers both.
 const mockSpawn = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof childProcess>()),
@@ -24,6 +18,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 import {
   _resetPortsForTests,
   dialWorkspacePort,
+  processWindow,
   sweepPorts,
   workspacePorts,
 } from '#drivers/containerless/ports'
@@ -54,17 +49,33 @@ function fakeChild(stdout: string, code: number): EventEmitter {
   return child
 }
 
+/**
+ * The host's processes: the workspace's tmux server (4242) and its
+ * descendants, and an unrelated process. `time` comes in procps's
+ * `hh:mm:ss`, with a `d-` prefix past a day of CPU, and BSD's `m:ss.cc`
+ * (macOS); a row that failed to parse would drop its whole subtree.
+ */
+const PS_OUTPUT = [
+  '    1     0  1000 00:00:09',
+  ' 4242     1  2048 00:00:01',
+  ' 5150  4242  4096 00:00:03',
+  ' 5151  5150  1024 1-02:03:04',
+  ' 5152  5151   512 123:45.67',
+  ' 7777     1  8192 00:01:00',
+].join('\n')
+
 /** Make lsof report these listeners, or exit 1 as it does when nothing
  *  matches. */
 function listening(...listeners: Array<[family: 'IPv4' | 'IPv6', name: string]>): void {
-  mockSpawn.mockImplementation(() => listeners.length === 0
-    ? fakeChild('', 1)
-    : fakeChild(lsofOutput(...listeners), 0))
+  mockSpawn.mockImplementation((cmd: string) => {
+    if (cmd === 'ps') return fakeChild(PS_OUTPUT, 0)
+    return listeners.length === 0 ? fakeChild('', 1) : fakeChild(lsofOutput(...listeners), 0)
+  })
 }
 
-/** The argv of the command the sweep spawned. */
-function spawnedArgv(): string[] {
-  const [cmd, args] = mockSpawn.mock.calls[0] as [string, string[]]
+/** The argv of the lsof the sweep spawned. */
+function lsofArgv(): string[] {
+  const [cmd, args] = mockSpawn.mock.calls.find(([c]) => c === 'lsof') as [string, string[]]
   return [cmd, ...args]
 }
 
@@ -80,9 +91,7 @@ beforeEach(() => {
   setDataDir(dataDir)
   _resetRegistryForTests()
   _resetPortsForTests()
-  mockDescendants.mockReset()
   mockSpawn.mockReset()
-  mockDescendants.mockResolvedValue([4242, 5150])
   listening()
 })
 
@@ -95,11 +104,13 @@ describe('sweepPorts', () => {
     running()
     await sweepPorts()
     // Only listeners in the workspace's own process tree count.
-    expect(mockDescendants).toHaveBeenCalledWith([4242])
-    const argv = spawnedArgv()
-    expect(argv[0]).toBe('lsof')
+    const argv = lsofArgv()
     expect(argv).toContain('-a')
-    expect(argv[argv.indexOf('-p') + 1]).toBe('4242,5150')
+    expect(argv[argv.indexOf('-p') + 1]).toBe('4242,5150,5151,5152')
+    // The same table feeds usage, CPU time and all.
+    const rows = processWindow()?.last.rows
+    expect(rows?.get(5151)).toEqual({ ppid: 5150, rssBytes: 1024 * 1024, cpuSeconds: 93_784 })
+    expect(rows?.get(5152)?.cpuSeconds).toBeCloseTo(7_425.67)
   })
 
   it('asks lsof for listeners without stat-ing any path', async () => {
@@ -108,7 +119,7 @@ describe('sweepPorts', () => {
     // Without `-b`, lsof stats every mount first, and one hung network
     // mount makes the sweep time out and report no ports. The hang cannot
     // be reproduced here, so the test guards the flag.
-    const argv = spawnedArgv()
+    const argv = lsofArgv()
     expect(argv.slice(1, 3)).toEqual(['-b', '-w'])
     expect(argv).toContain('-Ftn')
   })

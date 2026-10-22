@@ -2,6 +2,7 @@ import type { CSSProperties, JSX } from 'react'
 import clsx from 'clsx'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { ServersButton } from '#components/ServerBadge'
+import { ServerHealthButton } from '#components/ServerHealthOverlay'
 import { SettingsButton } from '#components/SettingsButton'
 import { UserSwitcher } from '#components/UserSwitcher'
 import { WindowControls } from '#components/WindowControls'
@@ -115,6 +116,7 @@ export function ProjectRail({
       <NewProjectButton />
 
       <div className="flex-1" />
+      <ServerHealthButton />
       <ServersButton />
       <SettingsButton />
     </div>

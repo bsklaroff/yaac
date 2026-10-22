@@ -1,7 +1,10 @@
 import { shellQuote } from '#lib/shell'
 import {
+  GVISOR_NODE_LABEL,
   RUNTIME_CLASS_GVISOR,
+  GVISOR_PENDING_TAINT,
   RUNTIME_CLASS_GVISOR_NESTED,
+  WORKSPACE_POOL_KEY,
   type PodToleration,
 } from '#drivers/k8s/substrate'
 import { NODE_SYSTEMD_CONF_DIR, nodeTuningScript } from './node-tuning'
@@ -33,34 +36,10 @@ export const GVISOR_VERSION = '20261005.0'
 export const GVISOR_RELEASE_BASE =
   `https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}`
 
-/**
- * Node labels the installer sets once the runtime works on a node. The
- * RuntimeClasses schedule only on `GVISOR_NODE_LABEL`; the version label
- * shows which nodes still run an older runsc. A node labelled
- * `yaac.workspaces=false` never gets them (see WORKSPACE_POOL_KEY).
- */
-export const GVISOR_NODE_LABEL = 'yaac.gvisor'
+/** Node label naming the runsc version the installer put on a node, so a
+ *  node still running an older one shows. */
 export const GVISOR_NODE_VERSION_LABEL = 'yaac.gvisor-version'
 
-/**
- * A taint a node pool may register its nodes with, to keep every pod off a
- * node until the runtime is installed. The installer removes it after
- * labelling the node. A cluster autoscaler told it is a startup taint
- * counts the node as still starting until then, rather than scaling up
- * again for the pods it cannot yet take (infra/aws-eks, infra/hetzner-k3s).
- */
-export const GVISOR_PENDING_TAINT = 'yaac.gvisor/pending'
-
-/**
- * The key a node uses to declare its share of the work (docs/cluster-setup.md
- * "A dedicated workspace node pool"). Every node runs workspaces and yaac's
- * infrastructure unless it says otherwise:
- *  - a taint with this key (conventionally `yaac.workspaces=true:NoSchedule`)
- *    keeps infrastructure off, since only sandboxed pods tolerate it;
- *  - the label `yaac.workspaces=false` keeps workspaces off, since the
- *    installer leaves such a node without the gVisor labels.
- */
-export const WORKSPACE_POOL_KEY = 'yaac.workspaces'
 const WORKSPACE_POOL_TOLERATION: PodToleration = { key: WORKSPACE_POOL_KEY, operator: 'Exists' }
 
 /** The labels the installer patches onto its node after a successful pass. */

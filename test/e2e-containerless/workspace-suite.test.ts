@@ -25,7 +25,7 @@ import { ACP_ADAPTERS, AGENT_TOOLS } from '@yaac/shared/types'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type {
-  AgentSessionEntry, AgentTool, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
+  AgentSessionEntry, AgentTool, ResourceReport, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
 } from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -534,6 +534,20 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const res = await fetch(`${origin()}/api/config/time-zone`)
     expect(await res.json()).toEqual({ timeZone: CLI_TIME_ZONE, pinned: false })
     expect((await paneEnv(workspaceId)).TZ).toBe(CLI_TIME_ZONE)
+  })
+
+  it('reports the running workspace\'s memory, and the host\'s, on the server health report', async () => {
+    // The port sweep's `ps` tables feed it, so wait out a sweep or two.
+    await vi.waitFor(async () => {
+      const report = await (await fetch(`${origin()}/api/server/usage`)).json() as ResourceReport
+      expect(report.driver).toBe('containerless')
+      expect(report.totals.memoryCapacityBytes).toBeGreaterThan(0)
+      expect(report.totals.disks[0]?.capacityBytes).toBeGreaterThan(0)
+      expect(report.components.find((c) => c.key === 'server')?.memoryBytes).toBeGreaterThan(0)
+      const mine = report.workspaces.find((w) => w.workspaceId === workspaceId)
+      expect(mine).toMatchObject({ running: true, projectName: NAME })
+      expect(mine?.memoryBytes).toBeGreaterThan(0)
+    }, { timeout: 20_000, interval: 1_000 })
   })
 
   it('gives the workspace a real checkout on the host, which is what the agent sees', async () => {

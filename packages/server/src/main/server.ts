@@ -12,6 +12,7 @@ import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
 import { imageApp } from '#routes/images'
+import { serverApp } from '#routes/server'
 import { workspaceDriver } from '#drivers/driver'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import type { AccessMode, Whoami } from '@yaac/shared/types'
@@ -139,6 +140,7 @@ function apiRoutes(
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)
     .route('/image', imageApp)
+    .route('/server', serverApp)
 }
 
 export type AppType = ReturnType<typeof apiRoutes>

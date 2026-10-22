@@ -103,6 +103,15 @@ export async function listObjects<T = KubernetesObject>(
   return list.items ?? []
 }
 
+/**
+ * GET an API path that is not an object (e.g. a node's kubelet Summary,
+ * `/api/v1/nodes/<node>/proxy/stats/summary`), as JSON. One attempt, given
+ * up after `timeoutMs`; see `ObjectClient.getPath`.
+ */
+export async function readPath<T>(path: string, query: Record<string, string>, timeoutMs: number): Promise<T> {
+  return await getObjectApi().getPath(path, query, timeoutMs) as T
+}
+
 /** JSON merge patch (RFC 7386): a `null` value deletes the field. */
 export async function patchObject(ref: ObjectRef, patch: { metadata?: object; [key: string]: unknown }): Promise<void> {
   await getObjectApi().send(HttpMethod.PATCH, header(ref), 'read', {

@@ -1571,6 +1571,118 @@ export interface CheckResult {
 export type DriverKind = 'k8s' | 'containerless'
 
 /**
+ * What the server health overlay shows (`GET /server/usage`,
+ * docs/server-health.md): the install's CPU, memory and disk, split by node,
+ * infrastructure component and workspace, each with an hour of history.
+ */
+
+/** CPU, memory and swap in use at one instant. Memory is the working set
+ *  under `k8s` and RSS under `containerless`. */
+export interface ResourceUse {
+  cpuCores: number
+  memoryBytes: number
+  swapBytes: number
+}
+
+/** One minute's sample of a series. */
+export interface UsagePoint extends ResourceUse {
+  /** Epoch ms. */
+  at: number
+}
+
+/** One filesystem or volume. `usedBytes` is null for a volume that reports
+ *  no usage (hostPath, kind's local-path), whose capacity alone is known. */
+export interface VolumeUsage {
+  name: string
+  usedBytes: number | null
+  capacityBytes: number | null
+}
+
+export interface UsageTotals extends ResourceUse {
+  cpuCapacityCores: number
+  memoryCapacityBytes: number
+  swapCapacityBytes: number
+  /** One per filesystem, since a summed number would mean nothing. */
+  disks: VolumeUsage[]
+  /** `k8s` only: pod requests against allocatable capacity, which decides
+   *  whether the next workspace can be scheduled. */
+  scheduled?: {
+    cpuRequestCores: number
+    cpuAllocatableCores: number
+    memoryRequestBytes: number
+    memoryAllocatableBytes: number
+  }
+}
+
+/** Which work a node takes (docs/cluster-setup.md "A dedicated workspace
+ *  node pool"); `gvisor-pending` until its sandbox runtime is installed. */
+export type NodeRole = 'infrastructure' | 'workspaces' | 'both' | 'gvisor-pending'
+
+export interface NodeUsage extends ResourceUse {
+  name: string
+  role: NodeRole
+  cpuCapacityCores: number
+  memoryCapacityBytes: number
+  /** Conditions that are not as they should be (`NotReady`,
+   *  `MemoryPressure`, …). */
+  conditions: string[]
+  /** When the kubelet took the node's sample, epoch ms. */
+  sampledAt: number | null
+  /** Why the node's stats are missing. */
+  error?: string
+}
+
+/** One infrastructure row: a yaac component, or what is left of the host
+ *  or node once yaac's own usage is taken out. */
+export interface ComponentUsage extends ResourceUse {
+  /** Stable across samples; keys the history series. */
+  key: string
+  label: string
+  /** Pods or processes summed into the row, for a row that sums several. */
+  count?: number
+  /** The volumes it owns. A volume several components mount is listed
+   *  under the first. */
+  volumes: VolumeUsage[]
+  /** Per-project rows, under the project registries. */
+  children?: Array<ComponentUsage & { projectId: string }>
+}
+
+/** What the substrate reports for one workspace. */
+export interface WorkspaceResourceUse extends ResourceUse {
+  memoryLimitBytes: number | null
+  ephemeralStorageBytes: number | null
+  node?: string
+}
+
+export type WithHistory<T> = T & { history: UsagePoint[] }
+
+/** A workspace row: live while it runs, then its last hour until that
+ *  history ages out. */
+export interface WorkspaceUsageRow extends WorkspaceResourceUse {
+  workspaceId: string
+  running: boolean
+  title?: string
+  projectId?: string
+  projectName?: string
+  /** The owning user's display name. */
+  owner?: string
+  peakMemoryBytes: number
+  deathReason?: WorkspaceDeathReason
+  deathDetail?: string
+  history: UsagePoint[]
+}
+
+export interface ResourceReport {
+  driver: DriverKind
+  /** Epoch ms. */
+  sampledAt: number
+  totals: WithHistory<UsageTotals>
+  nodes: Array<WithHistory<NodeUsage>>
+  components: Array<WithHistory<ComponentUsage>>
+  workspaces: WorkspaceUsageRow[]
+}
+
+/**
  * Which callers an install admits (docs/remote-hosting.md "Access modes"):
  * `local` admits only loopback, as the one built-in user; `tailnet` admits
  * only requests through `tailscale serve`, each as its tailnet user. Recorded

@@ -164,6 +164,10 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'DELETE', path: '/api/image/builds/:id', request: `/api/image/builds/${ID.build}`, access: 'owner', why: 'builds no images', k8s: 204, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/image/builds/:id/retry', request: `/api/image/builds/${ID.build}/retry`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
 
+  // ── server health ─────────────────────────────────────────────────────
+  // Both drivers report their usage: the host's, or the cluster's.
+  { method: 'GET', path: '/api/server/usage', access: 'reader', k8s: 200, containerless: 200 },
+
   // ── workspaces: the driver-neutral half ────────────────────────────────
   { method: 'GET', path: '/api/workspace/list', access: 'reader', k8s: [200, 503], containerless: 200 },
   { method: 'GET', path: '/api/workspace/list-stopped', access: 'reader', k8s: 200, containerless: 200 },
