@@ -2,12 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react'
 import type { JSX } from 'react'
-import type { ImageBuildEntry, ProjectSkills, SkillDetail } from '@yaac/shared/types'
+import type { ImageBuildEntry } from '@yaac/shared/types'
 
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
-import { SkillsButton } from '#components/SkillsButton'
 import { MasterDetail } from '#components/ui/MasterDetail'
-import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
 
 
@@ -29,7 +27,6 @@ function setMobileViewport(mobile: boolean): void {
 
 const flushEffects = (): Promise<void> => act(async () => { await Promise.resolve() })
 
-const SKILL_BODY = 'GET /api/project/proj/skills/body'
 const BUILD_LOG = 'GET /api/image/builds/build-1/log'
 
 let server: FetchMock
@@ -91,55 +88,6 @@ describe('MasterDetail', () => {
     expect(back.className).toContain('md:hidden')
     fireEvent.click(back)
     expect(onBack).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('SkillsButton on a phone', () => {
-  const SKILLS: ProjectSkills = {
-    skills: [
-      { id: 'p:deploy', name: 'deploy', description: 'ship it', source: 'project', userInvocable: true, modelInvocable: true },
-      { id: 'p:lint', name: 'lint', description: 'tidy it', source: 'project', userInvocable: true, modelInvocable: true },
-    ],
-  }
-  const BODY: SkillDetail = {
-    id: 'p:deploy',
-    name: 'deploy',
-    source: 'project',
-    frontmatter: { name: 'deploy', description: 'ship it' },
-    body: 'Run the deploy script.',
-  }
-
-  const openOverlay = (): void => {
-    useUiStore.setState({ skillsOverlayOpen: false })
-    renderWithClient(<SkillsButton projectId="proj" />)
-    fireEvent.click(screen.getByRole('button', { name: 'Skills' }))
-  }
-
-  beforeEach(() => {
-    server.route('GET /api/project/proj/skills', SKILLS)
-    server.route(SKILL_BODY, BODY)
-    server.route('GET /api/project/proj/branches', { branches: ['main'], defaultBranch: 'main' })
-  })
-
-  it('opens on the list and fetches no SKILL.md until one is tapped', async () => {
-    openOverlay()
-    await screen.findByText('/deploy')
-    expect(screen.getByText('/lint')).toBeTruthy()
-    await flushEffects()
-    // The body is fetched only when the detail pane opens.
-    expect(server.called(SKILL_BODY)).toEqual([])
-  })
-
-  it('drills into a skill and comes back to the list', async () => {
-    openOverlay()
-    fireEvent.click(await screen.findByText('/deploy'))
-    await waitFor(() => expect(screen.getByText('Run the deploy script.')).toBeTruthy())
-    expect(server.called(SKILL_BODY).map((c) => Object.fromEntries(c.query)))
-      .toEqual([{ id: 'p:deploy', tool: 'claude', branch: 'main' }])
-
-    fireEvent.click(screen.getByRole('button', { name: 'Back to skills' }))
-    await waitFor(() => expect(screen.queryByText('Run the deploy script.')).toBeNull())
-    expect(screen.getByText('/lint')).toBeTruthy()
   })
 })
 

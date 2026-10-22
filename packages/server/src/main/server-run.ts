@@ -8,7 +8,6 @@ import { EventHub } from '#api/events'
 import { registerWebSocketRoutes } from '#api/ws-routes'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorkspaceListChanged } from '#lib/notify'
-import { refreshClaudeBundledSkills } from '#domain/skills'
 import { readBuildId } from '@yaac/shared/build-id'
 import {
   acquireLock,
@@ -335,9 +334,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
   process.on('SIGINT', () => void shutdown('SIGINT'))
-
-  // Best-effort fetch of Claude's bundled-skills list for the skills viewer.
-  void refreshClaudeBundledSkills()
 
   // Attach to the substrate (informers, status watchers, port detector).
   // The reconcile loop starts from `onAttached`, since a driver may defer

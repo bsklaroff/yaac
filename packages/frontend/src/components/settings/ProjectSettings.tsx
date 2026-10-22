@@ -1,4 +1,4 @@
-import { useMemo, useState, type JSX } from 'react'
+import { useMemo, type JSX } from 'react'
 import { remoteKind } from '#components/GitCredentialPicker'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
@@ -6,12 +6,12 @@ import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
+import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import { useSnapshot } from '#lib/useSnapshot'
-import { useUiStore } from '#lib/store'
-import { projectsOf, useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
+import { useTeammateView, useWhoami } from '#lib/viewer'
 
 const project = api.project[':projectId']
 
@@ -32,24 +32,14 @@ async function saveConfig(projectId: string, text: string): Promise<void> {
 
 /**
  * Settings section for a project's overlay files: `yaac-config.json` and
- * `Dockerfile.yaac`. A picker chooses the project, defaulting to the active
- * one, among the viewed user's (#lib/viewer); a teammate's show read-only.
+ * `Dockerfile.yaac`, for the project `useSettingsProject` picks; a teammate's
+ * show read-only.
  */
 export function ProjectSettings(): JSX.Element {
-  const viewedUserId = useViewedUserId()
   const teammateView = useTeammateView()
   const whoami = useWhoami()
   const all = useSnapshot()?.projects ?? []
-  const projects = projectsOf(all, viewedUserId)
-  const activeProjectId = useUiStore((s) => s.activeProjectId)
-  // The dialog unmounts on close, so this re-defaults to the active project
-  // each time settings open.
-  const [picked, setPicked] = useState<string | null>(activeProjectId)
-
-  // If the pick disappears, fall back to the active project, then the first.
-  const selected = projects.find((p) => p.id === picked)
-    ?? projects.find((p) => p.id === activeProjectId)
-    ?? projects[0]
+  const { projects, selected, pick } = useSettingsProject()
   const projectId = selected?.id ?? null
   const sharedFrom = selected?.sharedFrom
   // A removed share stays readable by its owner, like a teammate's project.
@@ -77,16 +67,7 @@ export function ProjectSettings(): JSX.Element {
         <>
           <div className="mt-6">
             <div className="text-xs font-medium text-text">Project</div>
-            <select
-              value={projectId}
-              onChange={(e) => setPicked(e.target.value)}
-              className="mt-2 w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
-                outline-none focus:border-border-strong"
-            >
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+            <ProjectSelect projects={projects} value={projectId} onChange={pick} className="mt-2 w-full" />
             <p className="mt-1.5 flex min-w-0 items-center gap-2 text-[11px]">
               <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 font-medium text-text-dim">
                 {selected.hosted ? 'HOSTED BY YAAC' : remoteKind(selected.remoteUrl).toUpperCase()}

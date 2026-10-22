@@ -8,7 +8,7 @@
  * longer fit fails the install (`applyEdits`). Bump the patch's `revision`
  * in `@yaac/shared/tool-install` whenever its edits change.
  *
- * Four changes, each deletable on its own once a pi-acp release makes it
+ * Five changes, each deletable on its own once a pi-acp release makes it
  * unnecessary:
  *
  * 1. Steering. pi-acp gains the `_session/steering` extension claude's and
@@ -64,6 +64,12 @@
  *    update, and the trigger and token counts in its `_meta` under
  *    `yaac/compaction`, as the server reads them (`COMPACTION_META`). Goes
  *    once pi-acp reports compactions this way itself.
+ *
+ * 5. pi trusts the workspace's project, as the TUI launch's `--approve`
+ *    makes it. pi asks before loading a project's `.pi/` resources and
+ *    `.agents/skills`, and in RPC mode, with no one to ask, it loads none
+ *    of them, so the repo skills the Skills view lists for pi would be
+ *    missing. Goes once pi-acp can pass pi flags through.
  */
 
 import { applyEdits, patchFileFromArgv } from './apply-edits.js'
@@ -305,6 +311,14 @@ const EDITS = [
     insert: 'after',
     text: `        await session.flushEmits();
         return { stopReason: "end_turn" };
+`,
+  },
+  {
+    name: 'pi trusts the project',
+    anchor: `    const args = ["--mode", "rpc", "--no-themes"];
+`,
+    insert: 'replace',
+    text: `    const args = ["--mode", "rpc", "--no-themes", "--approve"];
 `,
   },
   {

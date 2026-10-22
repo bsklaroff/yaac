@@ -6,7 +6,6 @@ import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ServerBadge } from '#components/ServerBadge'
-import { SkillsButton } from '#components/SkillsButton'
 import { UsageBadge } from '#components/UsageBadge'
 import { agentLabel, workspaceModel } from '#lib/agentLabel'
 import { api } from '#lib/api'
@@ -129,12 +128,11 @@ export function ListTitle({ scope }: { scope: ProjectScope }): JSX.Element {
     : <span className="font-semibold tracking-tight">yaac</span>
 }
 
-/** The list header's actions: a reconnect notice, skills and new workspace. */
+/** The list header's actions: a reconnect notice and new workspace. */
 export function ListActions({ projectId, connected }: { projectId: string | null; connected: boolean }): JSX.Element {
   return (
     <>
       {!connected && <span className="text-xs text-amber-400 max-md:pr-1">reconnecting…</span>}
-      {projectId && <SkillsButton projectId={projectId} />}
       {projectId && <NewWorkspaceButton projectId={projectId} />}
     </>
   )

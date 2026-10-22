@@ -1209,16 +1209,16 @@ export interface WorkspaceDeathCause {
 }
 
 /**
- * Where a skill was found. Personal/plugin/project are loose `SKILL.md`
- * files. `system` is built in: an agent's bundled skills (`sourceLabel`
- * `bundled`) and the skills yaac injects into every workspace
- * (`sourceLabel` `yaac`; see packages/server/src/domain/skills).
+ * Where a skill was found. `personal` and `plugin` skills live in one agent's
+ * config dir (`home`), and `repo` ones in the project's repository. `yaac`
+ * skills are the ones yaac injects into every workspace (see
+ * packages/server/src/domain/skills).
  */
-export type SkillSource = 'personal' | 'plugin' | 'project' | 'system'
+export type SkillSource = 'personal' | 'plugin' | 'repo' | 'yaac'
 
 /** One discovered agent skill (a `SKILL.md`), summarized for a listing. */
 export interface SkillSummary {
-  /** Stable, source-qualified id used to fetch the full body. */
+  /** Stable, location-qualified id used to fetch the full body. */
   id: string
   /** Invocation name — frontmatter `name`, else the skill directory name. */
   name: string
@@ -1226,19 +1226,27 @@ export interface SkillSummary {
    *  absent or malformed (the skill still loads, per Claude Code semantics). */
   description: string
   source: SkillSource
-  /** For plugin skills, the plugin the skill came from. */
+  /** The agent whose config dir holds a personal or plugin skill. */
+  home?: AgentTool
+  /** The plugin a plugin skill came from, or the repo dir a repo skill was
+   *  read from (`.claude/skills`). */
   sourceLabel?: string
+  /** The agents that read this skill's dir. Every skill from one dir has
+   *  the same list. */
+  agents: AgentTool[]
+  /** Those of `agents` that load a same-named skill from another dir
+   *  instead. Which dir wins differs per agent (see
+   *  packages/server/src/domain/skills/discover.ts); codex loads both. */
+  overriddenFor: AgentTool[]
   /** False when frontmatter sets `user-invocable: false` (hidden from `/`). */
   userInvocable: boolean
   /** False when frontmatter sets `disable-model-invocation: true`. */
   modelInvocable: boolean
   /** Parsed `allowed-tools` (space/comma string or YAML list), if present. */
   allowedTools?: string[]
-  /** Set when a higher-precedence skill shares this name (personal > project). */
-  shadowedBy?: SkillSource
 }
 
-/** All personal + plugin + project skills available to a project's agent. */
+/** Every skill any agent can use in a project. */
 export interface ProjectSkills {
   skills: SkillSummary[]
 }

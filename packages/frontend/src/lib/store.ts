@@ -433,7 +433,7 @@ export function resolveVacantSelection(args: {
 
 /** Sections of the settings modal (left-nav entries). */
 export type SettingsSection =
-  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'userDockerfile'
+  | 'general' | 'shortcuts' | 'credentials' | 'project' | 'skills' | 'userDockerfile'
 
 /**
  * A project add or remove this tab started, shown in the rail and in place
@@ -634,6 +634,10 @@ interface UiState {
   /** Project whose git-credential row the credentials section scrolls to,
    *  when opened from "Add git authentication". Cleared on close. */
   settingsFocusProject: string | null
+  /** Project the project-scoped sections (Project Config, Skills) show, one
+   *  pick shared by both; null follows the active project. Cleared on close. */
+  settingsProjectId: string | null
+  setSettingsProjectId: (projectId: string) => void
   /** Open settings, optionally onto a section, tool or project. Without
    *  args it reopens the last section. */
   openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusProject?: string) => void
@@ -701,10 +705,6 @@ interface UiState {
   /** The sidebar search box's text. Cleared when the project changes. */
   sidebarQuery: string
   setSidebarQuery: (query: string) => void
-  /** Whether the skills overlay is open (for the active project). */
-  skillsOverlayOpen: boolean
-  openSkillsOverlay: () => void
-  closeSkillsOverlay: () => void
   /** Add an optimistic provisioning row (deduplicated by id). */
   addOptimisticProvisioning: (entry: ProvisioningWorkspaceEntry) => void
   /** Update an optimistic row's message or error, if it exists. */
@@ -886,13 +886,17 @@ export const useUiStore = create<UiState>((set, get) => ({
   settingsSection: 'general',
   settingsFocusTool: null,
   settingsFocusProject: null,
+  settingsProjectId: null,
+  setSettingsProjectId: (projectId) => set({ settingsProjectId: projectId }),
   openSettings: (section, focusTool, focusProject) => set((s) => ({
     settingsOpen: true,
     settingsSection: section ?? s.settingsSection,
     settingsFocusTool: focusTool ?? null,
     settingsFocusProject: focusProject ?? null,
   })),
-  closeSettings: () => set({ settingsOpen: false, settingsFocusTool: null, settingsFocusProject: null }),
+  closeSettings: () => set({
+    settingsOpen: false, settingsFocusTool: null, settingsFocusProject: null, settingsProjectId: null,
+  }),
   setSettingsSection: (section) => set({ settingsSection: section }),
   setNewWorkspace: (newWorkspace) => set({ newWorkspace }),
   openNewWorkspace: (opts) => {
@@ -959,9 +963,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   sidebarQuery: '',
   setSidebarQuery: (sidebarQuery) => set({ sidebarQuery }),
 
-  skillsOverlayOpen: false,
-  openSkillsOverlay: () => set({ skillsOverlayOpen: true }),
-  closeSkillsOverlay: () => set({ skillsOverlayOpen: false }),
   addOptimisticProvisioning: (entry) => set((s) => (
     s.optimisticProvisioning.some((e) => e.workspaceId === entry.workspaceId)
       ? s

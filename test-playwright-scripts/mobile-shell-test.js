@@ -8,8 +8,8 @@
  *     back/forward walk between them.
  *  2. The pane is in tabs mode with the key bar below it; row actions show
  *     without a hover and are finger-sized.
- *  3. The Skills overlay shows one MasterDetail pane at a time, at full
- *     width, with no sideways scroll and >=32px header targets. The
+ *  3. Settings' Skills section shows one MasterDetail pane at a time, at
+ *     full width, with no sideways scroll and >=32px targets. The
  *     workspace list's Stopped section header is finger-sized, and tapping
  *     a stopped row opens it read-only on the pane screen. Stopped
  *     workspaces are stubbed.
@@ -17,7 +17,7 @@
  *     iOS Safari zoom in for good), spills off screen, or is crushed narrow.
  *     A control the walk could not open is listed, not passed.
  *  5. Widening to desktop restores the sidebar with the same pane element
- *     mounted, and the overlays go back to side by side.
+ *     mounted, and Skills goes back to list and detail side by side.
  *  6. With a faked `window.visualViewport` (Chromium has no soft keyboard),
  *     `#root` tracks the band above the keyboard via `--app-top` /
  *     `--app-height`, ignores a pinch-zoom pan, and is left alone on desktop.
@@ -74,11 +74,15 @@ function layerReport() {
   })
 }
 
-/** The open dialog's two MasterDetail panes and whether it scrolls sideways. */
+/** The open dialog's two MasterDetail panes and whether it scrolls sideways.
+ *  The body is looked up inside Settings' Skills section, past the content
+ *  pane that wraps it with the Close button. */
 function panesReport() {
   const popup = document.querySelector('[role="dialog"]')
   if (!popup) return { error: 'no dialog' }
-  const body = [...popup.querySelectorAll('div')].find((el) => el.children.length === 2
+  const section = popup.querySelector('section')
+  if (!section) return { error: 'no settings section' }
+  const body = [...section.querySelectorAll('div')].find((el) => el.children.length === 2
     && getComputedStyle(el).display === 'flex' && el.className.includes('min-h-0') && el.className.includes('flex-1'))
   if (!body) return { error: 'no master/detail body' }
   const panes = [...body.children].map((el) => ({
@@ -269,11 +273,13 @@ try {
   await paneLayer.getByLabel('Back to workspaces').tap()
   await page.waitForTimeout(500)
 
-  await workspacesLayer.getByLabel('Skills').tap()
+  await page.getByLabel('Back to projects').tap()
+  await projectsLayer.getByText('Settings', { exact: true }).tap()
+  await page.getByRole('dialog').getByRole('button', { name: 'Skills', exact: true }).tap()
   await page.locator('[role="dialog"] li button').first().waitFor({ state: 'visible', timeout: 15_000 })
   await phonePanes('skills list')
   const smallSkills = await page.evaluate(smallTargets)
-  check('skills overlay targets are >=32px', smallSkills.length === 0, smallSkills.join(', '))
+  check('skills section targets are >=32px', smallSkills.length === 0, smallSkills.join(', '))
   await sweep('skills')
   await page.locator('[role="dialog"] li button').first().tap()
   await page.waitForTimeout(1500)
@@ -281,6 +287,7 @@ try {
   await shot('3-skills-detail')
   await page.getByLabel('Back to skills').tap()
   await escape()
+  await projectRow.tap()
 
   // ---- 4. the pane ----
   await liveRow.tap()
@@ -343,10 +350,11 @@ try {
   await page.waitForTimeout(1500)
   check('widening restores the desktop sidebar', await page.locator('aside').count() === 1)
   check('the pane element survived the switch (rotation keeps terminals)', await page.locator('[data-probe="1"]').count() === 1)
-  await page.locator('aside').getByLabel('Skills').click()
+  await page.getByTitle('Settings').first().click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Skills', exact: true }).click()
   await page.locator('[role="dialog"] li button').first().waitFor({ state: 'visible', timeout: 15_000 })
   const wide = await page.evaluate(panesReport)
-  check('desktop overlays show list and detail side by side', wide.shown?.length === 2,
+  check('desktop Skills shows list and detail side by side', wide.shown?.length === 2,
     JSON.stringify(wide.panes?.map((p) => `${p.display} ${p.w}`)))
   await shot('5-desktop')
   await escape()

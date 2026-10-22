@@ -1,6 +1,15 @@
 /**
- * Lists the skills a project's agent can use by reading `SKILL.md` files
- * from its host-side config and repo, so no running workspace is needed.
+ * Lists the skills a project's agents can use by reading `SKILL.md` files
+ * from their host-side config and the repo, so no running workspace is
+ * needed. One skill dir read by several agents (a repo's `.agents/skills`,
+ * Claude's home, which opencode also reads) is listed once with every agent
+ * that reads it.
+ *
+ * Each agent's readers are listed highest precedence first, as measured
+ * against its binary, which decides which of two same-named skills it loads:
+ * Claude prefers its home over the repo, opencode and pi the repo over their
+ * homes, and codex loads both (it lists both, and `$name` is then
+ * ambiguous).
  *
  * Only each agent's known skill roots are read, one level deep
  * (`<root>/<name>/SKILL.md`), never scanning whole trees.
@@ -10,35 +19,36 @@
  * records enabled plugins in `enabledPlugins` across its settings.json tiers;
  * Codex in the `[plugins]` table of `config.toml`.
  *
- * Project (repo) tiers are read from `origin/<branch>` (the main clone's
+ * Repo tiers are read from `origin/<branch>` (the main clone's
  * working tree is stale), falling back to the working tree when no such ref
  * exists. Host tiers always read from disk.
  *
- * System tiers: Codex's `.system/` dir on disk, and Claude's bundled skills,
- * listed from the cached commands reference (see claude-bundled.ts).
+ * yaac's own built-ins are listed too. The agents' bundled skills are not:
+ * Claude's live in its binary, and readSkills skips Codex's dot-dir
+ * (`skills/.system/`).
  */
 
 import path from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { claudeDir, codexDir, opencodeConfigDir, piDir, projectDir, repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
-import type { AgentTool, ProjectSkills, SkillDetail, SkillSummary, SkillSource } from '@yaac/shared/types'
+import { AGENT_TOOLS, type AgentTool, type ProjectSkills, type SkillDetail, type SkillSummary } from '@yaac/shared/types'
 import { getDefaultBranch, listTreeSubdirs, readBlobAt, remoteBranchExists } from '#domain/git'
 import { workspacesSandboxed } from '#drivers/driver'
 import { openAgentDir, openRoot, type ConfinedRoot } from '#lib/confined-fs'
-import { getClaudeBundledSkills } from './claude-bundled'
 import { builtinSkillsDir, isBuiltinSkillLink } from './builtin'
 import { parseSkillMd, fmString, fmBool, fmList, flattenFrontmatter } from './parse'
+
+/** Where a reader's skills come from. `key` names the location, so two
+ *  agents' readers of one dir share it; it prefixes each skill's id. */
+type ReaderMeta = Pick<SkillSummary, 'source' | 'home' | 'sourceLabel'> & { key: string }
 
 /**
  * A source of `<name>/SKILL.md` skill dirs, backed by a host directory
  * (`fsReader`) or a git ref (`gitReader`). `list()` yields skill-dir names;
  * `read(name)` yields that dir's `SKILL.md` or null.
  */
-interface SkillReader {
-  source: SkillSource
-  /** For plugin readers, the plugin the skills came from. */
-  sourceLabel?: string
+interface SkillReader extends ReaderMeta {
   list: () => Promise<string[]>
   read: (name: string) => Promise<string | null>
 }
@@ -81,10 +91,9 @@ async function subdirs(root: HostRoot, rel: string): Promise<string[]> {
 }
 
 /** A reader over `<rel>/<name>/SKILL.md` dirs under a host root. */
-function fsReader(root: HostRoot, rel: string, source: SkillSource, sourceLabel?: string): SkillReader {
+function fsReader(root: HostRoot, rel: string, meta: ReaderMeta): SkillReader {
   return {
-    source,
-    sourceLabel,
+    ...meta,
     list: () => subdirs(root, rel),
     read: (name) => readText(root, `${rel === '' ? '' : `${rel}/`}${name}/SKILL.md`, MAX_SKILL_MD_BYTES),
   }
@@ -93,10 +102,10 @@ function fsReader(root: HostRoot, rel: string, source: SkillSource, sourceLabel?
 /**
  * A personal-tier reader over one tool's skills root, excluding yaac's
  * builtin links. Under containerless the builtins are linked into these roots
- * (builtin.ts), and the `system`/`yaac` reader already lists them.
+ * (builtin.ts), and the `yaac` reader already lists them.
  */
-function personalReader(root: HostRoot, homeDir: string, rel: string): SkillReader {
-  const base = fsReader(root, rel, 'personal')
+function personalReader(tool: AgentTool, root: HostRoot, homeDir: string, rel: string): SkillReader {
+  const base = fsReader(root, rel, { key: `${tool}/${rel}`, source: 'personal', home: tool })
   return {
     ...base,
     list: async () => {
@@ -107,40 +116,27 @@ function personalReader(root: HostRoot, homeDir: string, rel: string): SkillRead
   }
 }
 
-/** A reader over `<treePath>/<name>/SKILL.md` dirs at a git ref. */
-function gitReader(
-  repoPath: string,
-  ref: string,
-  treePath: string,
-  source: SkillSource,
-  sourceLabel?: string,
-): SkillReader {
-  return {
-    source,
-    sourceLabel,
-    list: () => listTreeSubdirs(repoPath, ref, treePath),
-    read: (name) => readBlobAt(repoPath, ref, `${treePath}/${name}/SKILL.md`),
+/** A repo tier over `<treePath>/<name>/SKILL.md`: read at `origin/<branch>`
+ *  when `ref` resolves, else from the on-disk working tree (local-only or
+ *  unfetched repos). */
+function repoReader(repoPath: string, ref: string | null, treePath: string): SkillReader {
+  const meta: ReaderMeta = { key: `repo/${treePath}`, source: 'repo', sourceLabel: treePath }
+  if (ref) {
+    return {
+      ...meta,
+      list: () => listTreeSubdirs(repoPath, ref, treePath),
+      read: (name) => readBlobAt(repoPath, ref, `${treePath}/${name}/SKILL.md`),
+    }
   }
-}
-
-/** A project (repo) tier: `origin/<branch>` when `ref` resolves, else the
- *  on-disk working tree (local-only/unfetched repos). */
-function repoReader(
-  repoPath: string,
-  ref: string | null,
-  treePath: string,
-  source: SkillSource,
-): SkillReader {
-  if (ref) return gitReader(repoPath, ref, treePath, source)
   const root = hostDir(repoPath)
   return {
-    source,
+    ...meta,
     list: async () => subdirs(await root, treePath),
     read: async (name) => readText(await root, `${treePath}/${name}/SKILL.md`, MAX_SKILL_MD_BYTES),
   }
 }
 
-/** Read a project (repo) file from `origin/<branch>` when `ref` is set, else
+/** Read a repo file from `origin/<branch>` when `ref` is set, else
  *  from the working tree; null when absent. */
 async function readRepoFile(repoPath: string, ref: string | null, relPath: string): Promise<string | null> {
   return ref
@@ -151,7 +147,7 @@ async function readRepoFile(repoPath: string, ref: string | null, relPath: strin
 /** More than any settings file or `config.toml` a person writes. */
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
-/** The `origin/<branch>` ref for project tiers (`branch` defaults to the
+/** The `origin/<branch>` ref for repo tiers (`branch` defaults to the
  *  remote default), or null to use the working tree when there is no such
  *  remote-tracking ref. */
 async function resolveRepoRef(repoPath: string, branch?: string): Promise<string | null> {
@@ -193,6 +189,10 @@ async function claudeEnabledPluginIds(projectId: string, claude: HostRoot, ref: 
   return new Set(Object.entries(merged).filter(([, on]) => on).map(([id]) => id))
 }
 
+function pluginMeta(tool: AgentTool, plugin: string): ReaderMeta {
+  return { key: `${tool}-plugin/${plugin}`, source: 'plugin', home: tool, sourceLabel: plugin }
+}
+
 /** Readers for enabled plugins under Claude's
  *  `plugins/marketplaces/<marketplace>/{plugins,external_plugins}/<plugin>/skills/`,
  *  keeping only dirs whose `<plugin>@<marketplace>` is in `enabledIds`. */
@@ -204,7 +204,7 @@ async function claudePluginReaders(claude: HostRoot, enabledIds: Set<string>): P
       const groupDir = `${marketplaces}/${mkt}/${group}`
       for (const plugin of await subdirs(claude, groupDir)) {
         if (!enabledIds.has(`${plugin}@${mkt}`)) continue
-        out.push(fsReader(claude, `${groupDir}/${plugin}/skills`, 'plugin', plugin))
+        out.push(fsReader(claude, `${groupDir}/${plugin}/skills`, pluginMeta('claude', plugin)))
       }
     }
   }
@@ -238,7 +238,7 @@ async function codexPluginReaders(codex: HostRoot, enabledNames: Set<string>): P
   const pluginsDir = '.tmp/plugins/plugins'
   for (const plugin of await subdirs(codex, pluginsDir)) {
     if (!enabledNames.has(plugin)) continue
-    out.push(fsReader(codex, `${pluginsDir}/${plugin}/skills`, 'plugin', plugin))
+    out.push(fsReader(codex, `${pluginsDir}/${plugin}/skills`, pluginMeta('codex', plugin)))
   }
   return out
 }
@@ -247,22 +247,19 @@ async function claudeReaders(projectId: string, ref: string | null): Promise<Ski
   const dir = claudeDir(projectId)
   const claude = await toolHome(projectId, dir)
   return [
-    personalReader(claude, dir, 'skills'),
+    personalReader('claude', claude, dir, 'skills'),
     ...(await claudePluginReaders(claude, await claudeEnabledPluginIds(projectId, claude, ref))),
-    repoReader(repoDir(projectId), ref, '.claude/skills', 'project'),
+    repoReader(repoDir(projectId), ref, '.claude/skills'),
   ]
 }
 
 async function codexReaders(projectId: string, ref: string | null): Promise<SkillReader[]> {
   const dir = codexDir(projectId)
   const codex = await toolHome(projectId, dir)
-  // readSkills skips dot-dirs, so `skills/.system/` isn't listed as
-  // personal; a separate `system` reader is rooted at it.
   return [
-    personalReader(codex, dir, 'skills'),
-    fsReader(codex, 'skills/.system', 'system'),
+    personalReader('codex', codex, dir, 'skills'),
     ...(await codexPluginReaders(codex, await codexEnabledPluginNames(codex))),
-    repoReader(repoDir(projectId), ref, '.agents/skills', 'project'),
+    repoReader(repoDir(projectId), ref, '.agents/skills'),
   ]
 }
 
@@ -273,16 +270,17 @@ async function opencodeReaders(projectId: string, ref: string | null): Promise<S
   const claude = await toolHome(projectId, claudeHome)
   const repo = repoDir(projectId)
   // No plugin tier (opencode plugins are JS modules). It reads `skill/` and
-  // `skills/` plus the Claude- and agents-compatible locations, listed in
-  // precedence order for the dedupe.
+  // `skills/` in its own config dirs plus the Claude- and agents-compatible
+  // locations, the last loaded of a name winning: `skills/` after `skill/`,
+  // the repo after the home, `.agents` after `.claude`.
   return [
-    personalReader(cfg, cfgDir, 'skill'),
-    personalReader(cfg, cfgDir, 'skills'),
-    personalReader(claude, claudeHome, 'skills'),
-    repoReader(repo, ref, '.opencode/skill', 'project'),
-    repoReader(repo, ref, '.opencode/skills', 'project'),
-    repoReader(repo, ref, '.claude/skills', 'project'),
-    repoReader(repo, ref, '.agents/skills', 'project'),
+    repoReader(repo, ref, '.opencode/skills'),
+    repoReader(repo, ref, '.opencode/skill'),
+    personalReader('opencode', cfg, cfgDir, 'skills'),
+    personalReader('opencode', cfg, cfgDir, 'skill'),
+    repoReader(repo, ref, '.agents/skills'),
+    repoReader(repo, ref, '.claude/skills'),
+    personalReader('claude', claude, claudeHome, 'skills'),
   ]
 }
 
@@ -290,11 +288,12 @@ async function piReaders(projectId: string, ref: string | null): Promise<SkillRe
   const repo = repoDir(projectId)
   const dir = piDir(projectId)
   // pi's `~/.pi` is per project (piDir), so `agent/skills` is readable;
-  // `~/.agents/skills` is not mounted. No plugin tier.
+  // `~/.agents/skills` is not mounted. No plugin tier. A trusted project's
+  // dirs come first, as the launch's `--approve` makes it.
   return [
-    personalReader(await toolHome(projectId, dir), dir, 'agent/skills'),
-    repoReader(repo, ref, '.pi/skills', 'project'),
-    repoReader(repo, ref, '.agents/skills', 'project'),
+    repoReader(repo, ref, '.pi/skills'),
+    repoReader(repo, ref, '.agents/skills'),
+    personalReader('pi', await toolHome(projectId, dir), dir, 'agent/skills'),
   ]
 }
 
@@ -307,26 +306,21 @@ async function readersFor(tool: AgentTool, projectId: string, ref: string | null
   }
 }
 
-/** A stable, source-qualified id: `<source>[:<plugin>]:<name>`. */
-function skillId(source: SkillSource, sourceLabel: string | undefined, name: string): string {
-  return sourceLabel ? `${source}:${sourceLabel}:${name}` : `${source}:${name}`
-}
-
 /** Build a summary from a parsed SKILL.md and its location. */
-function toSummary(
-  raw: string,
-  ctx: { id: string; dirName: string; source: SkillSource; sourceLabel?: string },
-): SkillSummary {
+function toSummary(raw: string, dirName: string, reader: SkillReader): SkillSummary {
   const { frontmatter } = parseSkillMd(raw)
   const description = [fmString(frontmatter, 'description'), fmString(frontmatter, 'when_to_use')]
     .filter((s): s is string => !!s && s.length > 0)
     .join(' ')
   return {
-    id: ctx.id,
-    name: fmString(frontmatter, 'name') || ctx.dirName,
+    id: `${reader.key}:${dirName}`,
+    name: fmString(frontmatter, 'name') || dirName,
     description,
-    source: ctx.source,
-    sourceLabel: ctx.sourceLabel,
+    source: reader.source,
+    home: reader.home,
+    sourceLabel: reader.sourceLabel,
+    agents: [],
+    overriddenFor: [],
     userInvocable: fmBool(frontmatter, 'user-invocable') !== false,
     modelInvocable: fmBool(frontmatter, 'disable-model-invocation') !== true,
     allowedTools: fmList(frontmatter, 'allowed-tools'),
@@ -340,83 +334,63 @@ async function readSkills(reader: SkillReader): Promise<DiscoveredSkill[]> {
     if (name.startsWith('.')) continue // e.g. .system, .git
     const raw = await reader.read(name)
     if (raw == null) continue // a subdir without a SKILL.md is not a skill
-    const summary = toSummary(raw, {
-      id: skillId(reader.source, reader.sourceLabel, name),
-      dirName: name,
-      source: reader.source,
-      sourceLabel: reader.sourceLabel,
-    })
-    out.push({ ...summary, raw })
+    out.push({ ...toSummary(raw, name, reader), raw })
   }
   return out
 }
 
-/** Keep the first skill per id; readers are in precedence order. */
-function dedupeById(skills: DiscoveredSkill[]): DiscoveredSkill[] {
-  const seen = new Set<string>()
-  return skills.filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)))
-}
-
-/**
- * Mark project skills overridden by a same-named personal skill. Plugin
- * skills are namespaced and never collide. Shadowed skills stay listed.
- */
-function markShadowed(skills: DiscoveredSkill[]): void {
-  const personalNames = new Set(skills.filter((s) => s.source === 'personal').map((s) => s.name))
-  for (const s of skills) {
-    if (s.source === 'project' && personalNames.has(s.name)) s.shadowedBy = 'personal'
+/** List sections, in order: repo dirs, each agent's personal skills, each
+ *  agent's plugins, then yaac's built-ins. */
+function groupRank(s: SkillSummary): number {
+  const tool = s.home ? AGENT_TOOLS.indexOf(s.home) : 0
+  switch (s.source) {
+    case 'repo': return 0
+    case 'personal': return 1 + tool
+    case 'plugin': return 10 + tool
+    case 'yaac': return 20
   }
 }
 
-const SOURCE_ORDER: Record<SkillSource, number> = { personal: 0, plugin: 1, project: 2, system: 3 }
-
-/** Sort rank by source, with yaac's built-ins above the agent's bundled
- *  ones within `system`, so the viewer can show them as two groups. */
-function groupRank(s: SkillSummary): number {
-  if (s.source !== 'system') return SOURCE_ORDER[s.source]
-  return s.sourceLabel === 'yaac' ? SOURCE_ORDER.system : SOURCE_ORDER.system + 1
-}
-
-/** Body shown for a bundled skill, whose full SKILL.md isn't available. */
-const BUNDLED_BODY =
-  'Built-in Claude Code skill. This summary is from Claude\'s official commands '
-  + 'reference (code.claude.com/docs/en/commands); the full instructions are '
-  + 'bundled in the Claude binary and load on demand when the skill runs.'
-
-/** Claude's bundled skills from the cache, as `system` skills with a
- *  placeholder body. */
-function claudeBundledDiscovered(): DiscoveredSkill[] {
-  return getClaudeBundledSkills().map((s): DiscoveredSkill => ({
-    id: skillId('system', 'bundled', s.name),
-    name: s.name,
-    description: s.description,
-    source: 'system',
-    sourceLabel: 'bundled',
-    userInvocable: true,
-    modelInvocable: true,
-    raw: BUNDLED_BODY,
-  }))
-}
-
-async function discover(tool: AgentTool, projectId: string, branch?: string): Promise<DiscoveredSkill[]> {
+/**
+ * Walk each agent's readers, highest precedence first, crediting every skill
+ * to the agents that read its dir. Personal and repo skills share one
+ * namespace per agent, where the first of a name wins and later ones are
+ * overridden, except for codex, which loads them all; plugin and yaac skills
+ * never collide.
+ */
+async function discover(projectId: string, branch?: string): Promise<DiscoveredSkill[]> {
   const ref = await resolveRepoRef(repoDir(projectId), branch)
-  const readers = await readersFor(tool, projectId, ref)
-  // yaac's built-ins (builtin.ts), read from the install dir since in-pod
-  // mounts aren't visible here.
-  readers.push(fsReader(await hostDir(builtinSkillsDir()), '', 'system', 'yaac'))
-  const perReader = await Promise.all(readers.map(readSkills))
-  const flat = perReader.flat()
-  if (tool === 'claude') flat.push(...claudeBundledDiscovered())
-  const all = dedupeById(flat)
-  markShadowed(all)
-  all.sort((a, b) => groupRank(a) - groupRank(b) || a.name.localeCompare(b.name))
-  return all
+  // yaac's built-ins, read from the install dir since in-pod mounts aren't
+  // visible here.
+  const yaac = fsReader(await hostDir(builtinSkillsDir()), '', { key: 'yaac', source: 'yaac' })
+  const perTool = await Promise.all(AGENT_TOOLS.map(async (tool) => [...await readersFor(tool, projectId, ref), yaac]))
+  const reads = new Map<string, Promise<DiscoveredSkill[]>>()
+  const lists = await Promise.all(perTool.map((readers) => Promise.all(readers.map((r) => {
+    if (!reads.has(r.key)) reads.set(r.key, readSkills(r))
+    return reads.get(r.key)!
+  }))))
+
+  const byId = new Map<string, DiscoveredSkill>()
+  AGENT_TOOLS.forEach((tool, i) => {
+    const loaded = new Set<string>()
+    for (const skill of lists[i].flat()) {
+      byId.set(skill.id, skill)
+      skill.agents.push(tool)
+      const named = tool !== 'codex' && (skill.source === 'personal' || skill.source === 'repo')
+      if (named && loaded.has(skill.name)) skill.overriddenFor.push(tool)
+      else if (named) loaded.add(skill.name)
+    }
+  })
+  // Repo skills sort by dir first, so each dir is one section.
+  const dir = (s: SkillSummary): string => (s.source === 'repo' ? s.sourceLabel ?? '' : '')
+  return [...byId.values()].sort((a, b) => groupRank(a) - groupRank(b)
+    || dir(a).localeCompare(dir(b)) || a.name.localeCompare(b.name))
 }
 
-/** Every skill available to a project's agent. `branch` picks the origin
- *  branch for project tiers (default: the remote's default branch). */
-export async function getProjectSkills(tool: AgentTool, projectId: string, branch?: string): Promise<ProjectSkills> {
-  const discovered = await discover(tool, projectId, branch)
+/** Every skill any of a project's agents can use. `branch` picks the origin
+ *  branch for repo tiers (default: the remote's default branch). */
+export async function getProjectSkills(projectId: string, branch?: string): Promise<ProjectSkills> {
+  const discovered = await discover(projectId, branch)
   const skills: SkillSummary[] = discovered.map(({ raw: _raw, ...summary }) => summary)
   return { skills }
 }
@@ -424,8 +398,8 @@ export async function getProjectSkills(tool: AgentTool, projectId: string, branc
 /** The full `SKILL.md` for one skill, found by re-running discovery and
  *  matching the id, so the client never supplies a path. `branch` must match
  *  the listing's. */
-export async function getSkillDetail(tool: AgentTool, projectId: string, id: string, branch?: string): Promise<SkillDetail> {
-  const match = (await discover(tool, projectId, branch)).find((s) => s.id === id)
+export async function getSkillDetail(projectId: string, id: string, branch?: string): Promise<SkillDetail> {
+  const match = (await discover(projectId, branch)).find((s) => s.id === id)
   if (!match) throw new ServerError('NOT_FOUND', `skill "${id}" not found`)
   const { frontmatter, body } = parseSkillMd(match.raw)
   return {

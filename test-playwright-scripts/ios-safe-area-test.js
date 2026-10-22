@@ -9,7 +9,7 @@
  * shell's own children (the phone shell's absolutely positioned screens) must
  * clear it too, except that their top edge may sit TOP_SLACK into it, the
  * empty edge `safe-area-inset` gives back (index.css).
- * Then opens the settings, new-workspace and skills dialogs, which are
+ * Then opens the settings and new-workspace dialogs, which are
  * portaled outside the shell, and checks each of them the same way.
  * Screenshots go to $SCREENSHOT_DIR (default /tmp/yaac-shots).
  *
@@ -89,7 +89,6 @@ try {
     const dialogs = [
       ['settings', '[title="Settings"]'],
       ['new-workspace', '[title="New workspace"]'],
-      ['skills', '[aria-label="Skills"]'],
     ]
     for (const [dialog, opener] of dialogs) {
       /* On the phone the workspace openers are on the project's screen. */

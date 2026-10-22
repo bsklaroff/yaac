@@ -3,8 +3,8 @@ import clsx from 'clsx'
 import { NavBackIcon } from '#lib/icons'
 
 /**
- * The list-beside-detail body shared by the full-screen overlays (skills,
- * stopped workspaces, image builds).
+ * The list-beside-detail body shared by settings' Skills section and the
+ * image builds overlay.
  *
  * On small screens only one pane shows: the list until a row is picked, then
  * the detail with a back chevron. Both stay mounted so going back keeps
