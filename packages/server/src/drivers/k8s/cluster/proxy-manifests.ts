@@ -12,6 +12,7 @@ import {
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   PROXY_CA_SECRET_NAME,
+  PROXY_CLOUD_CREDS_SECRET_NAME,
   PROXY_CREDENTIALS_SECRET_NAME,
   PROXY_OWNER_KEY_PATTERN,
   PROXY_PORT,
@@ -37,7 +38,7 @@ import {
 } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
 import { OPENCODE_PROVIDERS, PI_PROVIDERS, type ToolProviderInfo } from '@yaac/shared/tool-providers'
-import type { CredentialBundle } from '#drivers/contract'
+import type { CloudCredential, CredentialBundle } from '#drivers/contract'
 
 /**
  * Runs the proxy as the host's uid/gid, like the server
@@ -320,6 +321,25 @@ export function buildProxyCredentialsSecretManifest(bundles: Record<string, Cred
     },
     type: 'Opaque',
     data: secretData(files),
+  }
+}
+
+/**
+ * The cloud credentials Secret: `creds.json`, each project's access token
+ * by project id (docs/cloud-identity.md). Replaced whole, so a cleared
+ * identity disappears.
+ */
+export function buildProxyCloudCredsSecretManifest(byProject: Record<string, CloudCredential>): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    metadata: {
+      name: PROXY_CLOUD_CREDS_SECRET_NAME,
+      namespace: k8sNamespace(),
+      labels: proxyLabels({ [LABEL_PROXY_INPUT]: 'cloud' }),
+    },
+    type: 'Opaque',
+    data: secretData({ 'creds.json': JSON.stringify(byProject) }),
   }
 }
 

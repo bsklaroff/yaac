@@ -20,11 +20,12 @@ import {
   readProxyAuthSecret,
   waitForRollout,
 } from '#drivers/k8s/substrate'
-import type { CredentialBundle } from '#drivers/contract'
+import type { CloudCredential, CredentialBundle } from '#drivers/contract'
 import { serverLog } from '#lib/log'
 import {
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
+  buildProxyCloudCredsSecretManifest,
   buildProjectSecretsManifest,
   buildProxyCredentialsSecretManifest,
   buildProxyDeploymentManifest,
@@ -203,6 +204,12 @@ export async function syncProxyCredentials(bundles: Record<string, CredentialBun
     serverLog(`[server] proxy credentials of ${owner}: ${signedIn.length ? signedIn.join(', ') : 'no tools'} signed in, `
       + `${String(bundle.git.length)} git token(s), ${String(bundle.ssh.length)} ssh key(s)`)
   }
+}
+
+/** Replace every project's cloud credential for the proxy. Never logs
+ *  tokens. */
+export async function syncProxyCloudCredentials(byProject: Record<string, CloudCredential>): Promise<void> {
+  await applyObject(buildProxyCloudCredsSecretManifest(byProject))
 }
 
 /** Replace one project's secret values for the proxy (an empty set is

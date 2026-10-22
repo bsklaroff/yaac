@@ -7,6 +7,7 @@ import {
   listProjectRows,
   recordProject,
   recordProjectCreate,
+  setProjectCloudIdentity,
   setProjectDefaultBranchGuard,
   setProjectEgressAllowlist,
   setProjectGitCredential,
@@ -272,6 +273,29 @@ describe('setProjectDefaultBranchGuard', () => {
     expect(await setProjectDefaultBranchGuard(APP, false)).toBe(true)
     expect(await getProjectRow(APP)).toMatchObject({ guardDefaultBranch: false })
     expect(await setProjectDefaultBranchGuard('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
+  })
+})
+
+describe('setProjectCloudIdentity', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('records no identity, sets and clears one, and reports an unknown projectId', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://x/app.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    expect((await getProjectRow(APP))?.cloudIdentity).toBeUndefined()
+
+    expect(await setProjectCloudIdentity(APP, 'host')).toBe(true)
+    expect(await getProjectRow(APP)).toMatchObject({ cloudIdentity: 'host' })
+    expect(await setProjectCloudIdentity(APP, null)).toBe(true)
+    expect((await getProjectRow(APP))?.cloudIdentity).toBeUndefined()
+    expect(await setProjectCloudIdentity('0a0a0a0a-0000-4000-8000-0000000000ff', 'host')).toBe(false)
   })
 })
 

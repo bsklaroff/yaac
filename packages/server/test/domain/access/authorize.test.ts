@@ -3,6 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser, setProjectShareRevoked } from '#db'
 import {
+  authorizeInstallOwner,
   authorizeProject,
   systemPrincipal,
   workspacePrincipal,
@@ -36,6 +37,20 @@ beforeAll(async () => {
 afterAll(async () => {
   await closeDb()
   await cleanupTempDir(tmpDir)
+})
+
+describe('authorizeInstallOwner', () => {
+  it('admits only a person acting as the built-in user', () => {
+    expect(() => authorizeInstallOwner({ kind: 'local', userId: BUILT_IN_USER_ID })).not.toThrow()
+    expect(() => authorizeInstallOwner(user(BUILT_IN_USER_ID))).not.toThrow()
+    for (const actor of [
+      user(owner),
+      systemPrincipal,
+      { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const,
+    ]) {
+      expect(() => authorizeInstallOwner(actor)).toThrow(expect.objectContaining({ code: 'FORBIDDEN' }))
+    }
+  })
 })
 
 describe('authorizeProject', () => {

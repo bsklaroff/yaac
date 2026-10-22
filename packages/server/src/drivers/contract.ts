@@ -3,6 +3,7 @@ import type {
   AgentMode,
   AgentStatus,
   AgentTool,
+  CloudProvider,
   DriverKind,
   EgressAllowlist,
   GitAuthFailure,
@@ -181,6 +182,22 @@ export interface SshCredentialEntry {
 export interface CredentialBundle extends ToolCredentialBundle {
   git: HttpsCredentialEntry[]
   ssh: SshCredentialEntry[]
+}
+
+/**
+ * A short-lived cloud access token for one project's workspaces, which the
+ * egress path serves from a stand-in metadata server
+ * (docs/cloud-identity.md).
+ */
+export interface CloudCredential {
+  provider: CloudProvider
+  /** The identity the token is for (GCP: a service account email). */
+  identity: string
+  accessToken: string
+  /** Epoch ms. */
+  expiresAt: number
+  /** The cloud project the server runs in (GCP: its id and number). */
+  hostProject: { id: string; number: string }
 }
 
 /**
@@ -724,6 +741,9 @@ export interface WorkspaceDriver {
    * sign-in. A no-op without mediated egress.
    */
   syncCredentials(bundles: Record<string, CredentialBundle>): Promise<void>
+  /** Replace every project's cloud credential, keyed by project id. A
+   *  no-op without mediated egress, where workspaces use the host's own. */
+  syncCloudCredentials(byProject: Record<string, CloudCredential>): Promise<void>
   /** Replace one project's proxied secret values. A no-op without mediated
    *  egress, where values go into the workspace at launch. */
   syncProjectSecrets(projectId: string, values: Record<string, string>): Promise<void>

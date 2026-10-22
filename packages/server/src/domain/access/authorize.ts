@@ -1,4 +1,4 @@
-import { getProjectRow } from '#db'
+import { BUILT_IN_USER_ID, getProjectRow } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import type { Principal } from '@yaac/shared/types'
 
@@ -47,6 +47,19 @@ export async function authorizeProject(principal: Actor, projectId: string): Pro
   if (principal.kind !== 'system' && principal.userId !== owner) {
     throw new ServerError('FORBIDDEN', 'only the owner of this project may do that')
   }
+}
+
+/**
+ * Refuse with FORBIDDEN unless `principal` is a person acting as the
+ * install's owner (the built-in user, docs/remote-hosting.md "Access
+ * modes"): the check for settings that spend the install's own authority
+ * rather than one user's. A workspace acting for its owner is refused too.
+ */
+export function authorizeInstallOwner(principal: Actor): void {
+  if (principal.kind === 'local' || principal.kind === 'tailnet') {
+    if (principal.userId === BUILT_IN_USER_ID) return
+  }
+  throw new ServerError('FORBIDDEN', 'only the owner of this install may do that')
 }
 
 /**

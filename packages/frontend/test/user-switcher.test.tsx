@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 const project = (id: string, owner: string): ProjectSummary =>
-  ({ id, name: id, remoteUrl: '', addedAt: '', owner, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true })
+  ({ id, name: id, remoteUrl: '', addedAt: '', owner, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, cloudIdentity: null })
 
 const ME: Whoami = {
   kind: 'tailnet', userId: 'u-me', login: 'me@x.com', name: 'Me',

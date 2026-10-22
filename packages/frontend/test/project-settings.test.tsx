@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type { ProjectEnvVar, ProjectSummary, Whoami } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; the config editor gets a textarea.
@@ -23,7 +23,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true })
+  ({ id: `id-${name}`, name, remoteUrl, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, cloudIdentity: null })
 
 /** Show settings for `alpha` (and `beta`) on a containerless server, whose
  *  env routes keep `vars` in memory. */
@@ -185,6 +185,47 @@ describe('ProjectSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete FOO' }))
     await waitFor(() => expect(screen.queryByText('FOO')).toBeNull())
     expect(server.called('DELETE /api/project/id-alpha/env/v1')).toHaveLength(1)
+  })
+
+  it('lends a project the server\'s cloud identity, naming it with a warning first', async () => {
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    const snapshot = serverSnapshot({ driver: 'k8s', projects: [project('alpha', 'https://github.com/o/alpha.git')] })
+    const server = mockFetch({
+      'GET /api/server/cloud-identity': { provider: 'gcp', hostIdentity: 'vm@demo.iam.gserviceaccount.com', canSet: true },
+      'PUT /api/project/id-alpha/cloud-identity': { identity: 'vm@demo.iam.gserviceaccount.com' },
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+
+    const select = await screen.findByLabelText('Cloud identity')
+    const section = within(select.closest('div')!.parentElement!)
+    expect(screen.queryByText(/inherit all of its permissions/)).toBeNull()
+    fireEvent.change(select, { target: { value: 'host' } })
+    expect(screen.getByRole('note').textContent)
+      .toMatch(/run as vm@demo\.iam\.gserviceaccount\.com and inherit all of its permissions/)
+    fireEvent.click(section.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(server.called('PUT /api/project/id-alpha/cloud-identity')).toHaveLength(1))
+    expect(server.called('PUT /api/project/id-alpha/cloud-identity')[0].body).toEqual({ identity: 'host' })
+  })
+
+  it('shows a project\'s cloud identity read-only to anyone but the install owner, and nothing off a cloud', async () => {
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    const snapshot = serverSnapshot({
+      driver: 'k8s',
+      projects: [{ ...project('alpha', 'https://github.com/o/alpha.git'), cloudIdentity: 'agents@demo.iam.gserviceaccount.com' }],
+    })
+    mockFetch({ 'GET /api/server/cloud-identity': { provider: 'gcp', hostIdentity: 'vm@demo.iam.gserviceaccount.com', canSet: false } })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, snapshot))
+    const select = await screen.findByLabelText<HTMLSelectElement>('Cloud identity')
+    expect(select.disabled).toBe(true)
+    expect(screen.getByLabelText<HTMLInputElement>('Service account email').value).toBe('agents@demo.iam.gserviceaccount.com')
+    expect(screen.getByText(/Only the owner of this install can change it/)).toBeTruthy()
+    cleanup()
+
+    mockFetch({ 'GET /api/server/cloud-identity': { provider: null, hostIdentity: null, canSet: true } })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({ driver: 'k8s', projects: [project('alpha', 'x')] })))
+    await screen.findByText('x')
+    await new Promise((r) => setTimeout(r, 50))
+    expect(screen.queryByLabelText('Cloud identity')).toBeNull()
   })
 
   it('shows a teammate\'s project read-only', async () => {

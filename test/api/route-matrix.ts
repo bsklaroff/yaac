@@ -116,6 +116,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/project/:projectId/git/git-upload-pack', request: `${P}/git/git-upload-pack`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/project/:projectId/git/git-receive-pack', request: `${P}/git/git-receive-pack`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/git-credential', request: `${P}/git-credential`, body: { credentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/cloud-identity', request: `${P}/cloud-identity`, body: { identity: 'host' }, access: 'owner', why: 'workspaces use the host\'s own cloud credentials', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/project/:projectId/config', request: `${P}/config`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/config/raw', request: `${P}/config/raw`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/config', request: `${P}/config`, body: { config: {} }, access: 'owner', k8s: MISSING, containerless: MISSING },
@@ -167,6 +168,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   // ── server health ─────────────────────────────────────────────────────
   // Both drivers report their usage: the host's, or the cluster's.
   { method: 'GET', path: '/api/server/usage', access: 'reader', k8s: 200, containerless: 200 },
+  { method: 'GET', path: '/api/server/cloud-identity', access: 'reader', why: 'workspaces use the host\'s own cloud credentials', k8s: 200, containerless: UNSUPPORTED },
 
   // ── workspaces: the driver-neutral half ────────────────────────────────
   { method: 'GET', path: '/api/workspace/list', access: 'reader', k8s: [200, 503], containerless: 200 },

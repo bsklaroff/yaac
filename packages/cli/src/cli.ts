@@ -21,6 +21,7 @@ import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
+import { configCloudIdentity } from '#commands/config-cloud-identity'
 import { configGitIdentity } from '#commands/config-git-identity'
 import { authFake } from '#commands/auth-fake'
 import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
@@ -413,6 +414,14 @@ config
   .option('--name <name>', 'Git user.name to set')
   .option('--email <email>', 'Git user.email to set')
   .action(configGitIdentity)
+
+config
+  .command('cloud-identity')
+  .description('Show the cloud identity a project\'s workspaces act as, or set it: `host` for this server\'s own (they inherit all of its permissions), or a service account email it may impersonate')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[identity]', '`host`, or a service account email')
+  .option('--clear', 'Remove the project\'s cloud identity')
+  .action(configCloudIdentity)
 
 // Top-level, not under `workspace`: with no workspace named it forwards all
 // running ones, as the desktop app does from its tray.

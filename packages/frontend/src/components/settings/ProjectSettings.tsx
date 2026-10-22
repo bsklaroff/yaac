@@ -4,6 +4,7 @@ import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
+import { CloudIdentity } from '#components/settings/CloudIdentity'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
@@ -123,6 +124,10 @@ export function ProjectSettings(): JSX.Element {
 
           {mediatedEgress && <div className="mt-6">
             <EgressAllowlist key={`allowlist:${projectId}`} projectId={projectId} readOnly={readOnly} />
+          </div>}
+
+          {mediatedEgress && <div className="mt-6 empty:hidden">
+            <CloudIdentity key={`cloud:${projectId}:${selected.cloudIdentity ?? ''}`} projectId={projectId} current={selected.cloudIdentity} />
           </div>}
 
           <div className="mt-6">

@@ -29,7 +29,7 @@ import {
   readAllGitAuthFailures,
   refreshedCredentials,
 } from '#drivers/k8s/egress'
-import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
+import { syncProjectSecrets, syncProxyCloudCredentials, syncProxyCredentials } from '#drivers/k8s/cluster'
 import {
   dismissImageBuild,
   getImageBuildLog,
@@ -114,6 +114,7 @@ export function createK8sDriver(): WorkspaceDriver {
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
     syncCredentials: (bundle) => syncProxyCredentials(bundle),
     syncProjectSecrets: (projectId, values) => syncProjectSecrets(projectId, values),
+    syncCloudCredentials: (byProject) => syncProxyCloudCredentials(byProject),
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
     awaitReady: (handle) => waitForJobPodReady(handle.jobName),

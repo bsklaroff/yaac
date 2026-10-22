@@ -27,6 +27,7 @@ import {
   removeProjectSecrets,
   resetProxyClusterIpCache,
   syncProjectSecrets,
+  syncProxyCloudCredentials,
   syncProxyCredentials,
   vapAvailable,
   ENVOY_MIRROR_TAG,
@@ -658,6 +659,24 @@ describe('syncProjectSecrets', () => {
     // An emptied set is applied as such, so a deleted secret stops being injected.
     await syncProjectSecrets(PROJECT_ID, {})
     expect(JSON.parse(b64d(applied()[1].data!['values.json']))).toEqual({})
+  })
+})
+
+describe('syncProxyCloudCredentials', () => {
+  it('writes every project\'s credential into one labelled Secret, replacing the set whole', async () => {
+    const cred = {
+      provider: 'gcp', identity: 'agents@p.iam.gserviceaccount.com', accessToken: 'ya29.x',
+      expiresAt: 1, hostProject: { id: 'p', number: '42' },
+    } as const
+    await syncProxyCloudCredentials({ [PROJECT_ID]: cred })
+    const secret = applied()[0]
+    expect(secret.metadata.name).toBe('yaac-proxy-cloud-creds')
+    expect(secret.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-input': 'cloud' })
+    expect(JSON.parse(b64d(secret.data!['creds.json']))).toEqual({ [PROJECT_ID]: cred })
+
+    // A cleared identity is applied as an empty set.
+    await syncProxyCloudCredentials({})
+    expect(JSON.parse(b64d(applied()[1].data!['creds.json']))).toEqual({})
   })
 })
 

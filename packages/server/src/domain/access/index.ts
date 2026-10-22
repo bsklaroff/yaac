@@ -7,6 +7,7 @@
 // packages/server/test/domain/access/.
 
 export {
+  authorizeInstallOwner,
   authorizeProject,
   systemPrincipal,
   workspacePrincipal,

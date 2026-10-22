@@ -75,6 +75,7 @@ export interface ProjectRow extends ProjectMeta {
    *  "Sharing"). */
   sharedFrom?: string
   shareRevoked: boolean
+  cloudIdentity?: string
 }
 
 function toProjectRow(
@@ -110,6 +111,16 @@ export async function setProjectEgressAllowlist(
 export async function setProjectDefaultBranchGuard(projectId: string, enabled: boolean): Promise<boolean> {
   const db = await getDb()
   const rows = await db.update(projects).set({ guardDefaultBranch: enabled })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/** Set or clear the project's cloud identity. False when there is no
+ *  such project. */
+export async function setProjectCloudIdentity(projectId: string, identity: string | null): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ cloudIdentity: identity })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0

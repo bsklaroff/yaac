@@ -72,6 +72,9 @@ export function createContainerlessDriver(): WorkspaceDriver {
     // refreshes are harvested from the tool home instead.
     syncCredentials: () => Promise.resolve(),
     syncProjectSecrets: () => Promise.resolve(),
+    // Workspaces are host processes, so they use the host's own cloud
+    // credentials.
+    syncCloudCredentials: () => Promise.resolve(),
     refreshedCredentials: () => ({}),
 
     // Workspaces bind host ports directly, so every port maps to itself and

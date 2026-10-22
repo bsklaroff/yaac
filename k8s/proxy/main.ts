@@ -12,6 +12,8 @@
  * - MITMs TLS when rules match a host, and tunnels it otherwise.
  * - Swaps placeholder tokens for real OAuth credentials and saves refreshed
  *   tokens to the `yaac-proxy-refreshed` Secret.
+ * - Stands in for the cloud metadata server, handing a project's workspaces
+ *   a placeholder for its cloud token (cloud-metadata.ts).
  * - Records blocked hosts and rejected git credentials in the
  *   `yaac-proxy-state` ConfigMap.
  *
@@ -67,6 +69,7 @@ import { errorReply, type TokenReply } from './oauth-swap'
 import { ObservedState } from './observed-state'
 import { generateCA, handleMitm, handleTunnel, type CA, type MitmContext } from './mitm'
 import { MAMA_MAGIC_HOST, MAMA_PATH, relayHeaders, relayTarget } from './yaac-relay'
+import { answerMetadata, isMetadataHost } from './cloud-metadata'
 
 // Control API: the health probe. All input from the server arrives as
 // objects (object-watch.ts).
@@ -658,6 +661,16 @@ const internalHttpServer = http.createServer({ requestTimeout: 0 }, (req, res) =
   }
   if (target.hostname === MAMA_MAGIC_HOST) {
     relayMamaRequest(req, res, workspaceId)
+    return
+  }
+  // Never forwarded: the real metadata server would hand out the node's
+  // identity (docs/cloud-identity.md).
+  if (isMetadataHost(target.hostname)) {
+    const flavor = req.headers['metadata-flavor']
+    const answer = answerMetadata(req.method ?? 'GET', req.url ?? '/', Array.isArray(flavor) ? flavor[0] : flavor,
+      objects.cloudCredential(workspaceId))
+    res.writeHead(answer.status, answer.headers)
+    res.end(answer.body)
     return
   }
   forwardPlainHttp(req, res, workspaceId, {

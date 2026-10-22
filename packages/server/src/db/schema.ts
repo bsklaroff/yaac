@@ -138,6 +138,9 @@ export const projects = snakeCase.table('projects', {
   /** Set when the source project's owner removes the share. The row, its
    *  workspaces and its sessions stay; its owner can no longer use them. */
   shareRevoked: boolean().notNull().default(false),
+  /** The cloud identity the project's workspaces act as
+   *  (docs/cloud-identity.md): `host`, a named identity, or null for none. */
+  cloudIdentity: text(),
 }, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
 
 /**

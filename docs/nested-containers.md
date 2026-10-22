@@ -261,7 +261,9 @@ come in two incompatible shapes:
 - **Replacing** variables name a single file that becomes the tool's whole
   trust set: `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `CARGO_HTTP_CAINFO`,
   `GIT_SSL_CAINFO`. These are the only settings curl, Python `requests`,
-  Cargo and git honor.
+  Cargo and git honor. A workspace (not a nested container) also gets
+  gcloud's `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE`, for the Google APIs the
+  proxy intercepts to swap a cloud token (docs/cloud-identity.md).
 
 Pointing a replacing variable at the proxy CA alone breaks every tunnelled
 host (npm, PyPI, crates.io, distro mirrors, docker.io, quay). Pointing it

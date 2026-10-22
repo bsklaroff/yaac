@@ -51,6 +51,7 @@ export {
   removeProjectSecrets,
   resetProxyClusterIpCache,
   syncProjectSecrets,
+  syncProxyCloudCredentials,
   syncProxyCredentials,
   vapAvailable,
 } from './proxy-apply'

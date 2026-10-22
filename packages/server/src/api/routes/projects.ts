@@ -29,6 +29,7 @@ import {
 } from '#domain/projects'
 import { removeProject, unshareProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
+import { assignProjectCloudIdentity } from '#domain/cloud-identity'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { DEFAULT_ALLOWED_HOSTS } from '#lib/allowed-hosts'
@@ -107,6 +108,17 @@ export const projectApp = new Hono<IdentityEnv>()
       const result = await assignProjectCredential(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').credentialId)
       await pushCredentialsToRuntime()
       return c.json(result)
+    },
+  )
+  // The cloud identity the project's workspaces act as, or null for none
+  // (docs/cloud-identity.md). Answers the identity they now act as.
+  .put(
+    '/:projectId/cloud-identity',
+    zv('json', z.object({ identity: z.string().min(1).nullable() })),
+    async (c) => {
+      requireDriverFeature('cloudIdentity')
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      return c.json(await assignProjectCloudIdentity(c.get('principal'), projectId, c.req.valid('json').identity))
     },
   )
   // A hosted project's default-branch guard (docs/hosted-projects.md).

@@ -13,11 +13,13 @@ import { workspaceDriver } from '#drivers/driver'
 
 /** The features a route can require, in product vocabulary rather than
  *  substrate vocabulary. */
-export type DriverFeature = 'images' | 'egress' | 'portRelay'
+export type DriverFeature = 'images' | 'egress' | 'portRelay' | 'cloudIdentity'
 
 const WHY: Record<DriverFeature, string> = {
   images: 'builds no images — its workspaces run on this host, from the checkout itself',
   egress: 'mediates no egress — a workspace reaches whatever the user running the server can',
+  cloudIdentity: 'lends workspaces no cloud identity — they run on this host and use its own '
+    + 'cloud credentials',
   portRelay: 'relays no ports — a workspace binds host ports itself, so its listeners are '
     + 'already reachable at their own port',
 }

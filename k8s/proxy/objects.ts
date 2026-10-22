@@ -2,7 +2,7 @@
  * Names, labels and codecs for the Kubernetes objects the proxy reads and
  * writes (docs/workspace-egress.md). The server writes the inputs (the
  * credentials Secret, a secrets Secret per project, a registration ConfigMap
- * per workspace); the proxy writes the outputs (refreshed OAuth bundles, the
+ * per workspace, the cloud credentials Secret); the proxy writes the outputs (refreshed OAuth bundles, the
  * CA, blocked-host and git-auth-failure records). Each object has one writer.
  *
  * Kept pure so tests can pin the shapes: a broken decoder fails silently
@@ -12,8 +12,9 @@
  * proxy-constants.ts (the proxy cannot import server code).
  */
 
-/** Label naming which input an object is: `credentials`, `secrets` or
- *  `registration`. The server stamps it; the three informers select on it. */
+/** Label naming which input an object is: `credentials`, `secrets`,
+ *  `registration` or `cloud`. The server stamps it; the informers select on
+ *  it. */
 export const LABEL_PROXY_INPUT = 'yaac.proxy-input'
 /** Label naming which output an object is: `refreshed`, `ca` or `state`.
  *  The server pre-creates these, since RBAC cannot scope `create` by name. */
@@ -23,6 +24,7 @@ export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
 
 export const CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
+export const CLOUD_CREDS_SECRET_NAME = 'yaac-proxy-cloud-creds'
 export const REFRESHED_SECRET_NAME = 'yaac-proxy-refreshed'
 export const CA_SECRET_NAME = 'yaac-proxy-ca'
 export const STATE_CONFIGMAP_NAME = 'yaac-proxy-state'
@@ -94,6 +96,21 @@ export const EMPTY_CREDENTIALS: ProxyCredentials = {
  * workspace is served only from that owner's set.
  */
 export type OwnerCredentials = Map<string, ProxyCredentials>
+
+/**
+ * A project's cloud access token and what the stand-in metadata server
+ * answers about it (docs/cloud-identity.md). Mirrors `CloudCredential` in
+ * the server's driver contract.
+ */
+export type CloudCredential = {
+  provider: 'gcp'
+  /** GCP: the service account email. */
+  identity: string
+  accessToken: string
+  /** Epoch ms. */
+  expiresAt: number
+  hostProject: { id: string; number: string }
+}
 
 // ── Registration shapes ────────────────────────────────────────────────
 
@@ -391,6 +408,27 @@ export function decodeProjectSecrets(secret: RawObject): Record<string, string> 
   if (!o) return out
   for (const [ref, value] of Object.entries(o)) {
     if (typeof value === 'string' && value !== '') out[ref] = value
+  }
+  return out
+}
+
+/**
+ * The cloud credentials Secret: `creds.json` maps a project id to its
+ * credential. A malformed entry is dropped, so that project's workspaces
+ * get no identity.
+ */
+export function decodeCloudCredentials(secret: RawObject): Map<string, CloudCredential> {
+  const out = new Map<string, CloudCredential>()
+  for (const [projectId, raw] of Object.entries(parseJson(secretString(secret, 'creds.json')) ?? {})) {
+    if (!raw || typeof raw !== 'object') continue
+    const c = raw as Record<string, unknown>
+    const project = c.hostProject as Record<string, unknown> | undefined
+    if (c.provider !== 'gcp' || !nonEmpty(c.identity) || !nonEmpty(c.accessToken)
+      || typeof c.expiresAt !== 'number' || !nonEmpty(project?.id) || !nonEmpty(project?.number)) continue
+    out.set(projectId, {
+      provider: c.provider, identity: c.identity, accessToken: c.accessToken, expiresAt: c.expiresAt,
+      hostProject: { id: project.id, number: project.number },
+    })
   }
   return out
 }

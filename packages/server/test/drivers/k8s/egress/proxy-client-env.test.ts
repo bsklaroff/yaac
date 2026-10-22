@@ -19,13 +19,14 @@ describe('ProxyClient.getCaTrustEnv', () => {
   })
 
   it('points the own-bundle (replace-semantics) vars at the combined bundle', () => {
-    // curl, requests, cargo and git ignore SSL_CERT_FILE and replace their
-    // whole trust set with this file, so it must hold the public roots plus
-    // the proxy CA.
+    // curl, requests, cargo, git and gcloud ignore SSL_CERT_FILE and replace
+    // their whole trust set with this file, so it must hold the public roots
+    // plus the proxy CA.
     expect(env).toContain(`CURL_CA_BUNDLE=${PROXY_CA_BUNDLE_PATH}`)
     expect(env).toContain(`REQUESTS_CA_BUNDLE=${PROXY_CA_BUNDLE_PATH}`)
     expect(env).toContain(`CARGO_HTTP_CAINFO=${PROXY_CA_BUNDLE_PATH}`)
     expect(env).toContain(`GIT_SSL_CAINFO=${PROXY_CA_BUNDLE_PATH}`)
+    expect(env).toContain(`CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE=${PROXY_CA_BUNDLE_PATH}`)
     expect(PROXY_CA_BUNDLE_PATH).not.toBe(PROXY_CA_PATH)
   })
 

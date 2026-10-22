@@ -1371,6 +1371,9 @@ export interface ProjectSummary {
   /** For a hosted project, whether pushes may not delete or rewind the
    *  default branch. */
   guardDefaultBranch: boolean
+  /** The cloud identity its workspaces act as (docs/cloud-identity.md):
+   *  `host` for the server's own, a named identity, or null for none. */
+  cloudIdentity: string | null
   /** For a project shared with its owner (docs/hosted-projects.md
    *  "Sharing"): the hosted project it was shared from, and whether that
    *  project's owner has since removed the share. */
@@ -1569,6 +1572,22 @@ export interface CheckResult {
  * says when callers may branch on it.
  */
 export type DriverKind = 'k8s' | 'containerless'
+
+/** A cloud whose metadata server the k8s driver can stand in for
+ *  (docs/cloud-identity.md). */
+export type CloudProvider = 'gcp'
+
+/** What `GET /server/cloud-identity` answers. */
+export interface CloudIdentityInfo {
+  /** The cloud the server found itself on at start; null for none. */
+  provider: CloudProvider | null
+  /** The server's own identity there (GCP: its service account email),
+   *  which a project set to `host` acts as. */
+  hostIdentity: string | null
+  /** Whether the caller may set a project's cloud identity: only the
+   *  install owner, since it spends the server's own cloud authority. */
+  canSet: boolean
+}
 
 /**
  * What the server health overlay shows (`GET /server/usage`,

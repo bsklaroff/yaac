@@ -2,6 +2,7 @@ import { serve, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
 import { buildApp, buildMamaRelayApp } from '#main/server'
 import { pushCredentialsToRuntime, refreshPlanUsage } from '#domain/auth'
+import { startCloudIdentity } from '#domain/cloud-identity'
 import { closeDb, DbRefusal, listProjectRows, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub } from '#api/events'
@@ -348,6 +349,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
         void convergeRuntimeCredentials()
           .catch((err: unknown) => serverLog(`[server] credential push failed: ${errorText(err)}`))
       }
+      void startCloudIdentity(abortCtrl.signal)
+        .catch((err: unknown) => serverLog(`[server] cloud identity start failed: ${errorText(err)}`))
     },
   })
 }

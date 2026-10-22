@@ -173,6 +173,7 @@ function defaultRuntime(): WorkspaceDriver {
     prepareSubstrate: () => Promise.resolve(substrateFixture()),
     syncCredentials: () => Promise.resolve(),
     syncProjectSecrets: () => Promise.resolve(),
+    syncCloudCredentials: () => Promise.resolve(),
     refreshedCredentials: () => ({}),
     // Echoes the spec back as a handle, as a real launch does, so a later
     // exec addresses the workspace that was asked for.

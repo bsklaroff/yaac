@@ -98,9 +98,10 @@ export class ProxyClient {
    * goes in env:
    *  - SSL_CERT_FILE and NODE_EXTRA_CA_CERTS get the bare proxy CA; their
    *    tools still consult the default roots too.
-   *  - CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE, CARGO_HTTP_CAINFO and
-   *    GIT_SSL_CAINFO replace the default roots, so they get the combined
-   *    bundle, or they would reject hosts the proxy tunnels untouched.
+   *  - CURL_CA_BUNDLE, REQUESTS_CA_BUNDLE, CARGO_HTTP_CAINFO,
+   *    GIT_SSL_CAINFO and gcloud's CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE
+   *    replace the default roots, so they get the combined bundle, or they
+   *    would reject hosts the proxy tunnels untouched.
    * See docs/nested-containers.md.
    */
   getCaTrustEnv(): string[] {
@@ -111,6 +112,7 @@ export class ProxyClient {
       `REQUESTS_CA_BUNDLE=${PROXY_CA_BUNDLE_PATH}`,
       `CARGO_HTTP_CAINFO=${PROXY_CA_BUNDLE_PATH}`,
       `GIT_SSL_CAINFO=${PROXY_CA_BUNDLE_PATH}`,
+      `CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE=${PROXY_CA_BUNDLE_PATH}`,
       'GIT_TERMINAL_PROMPT=0',
     ]
   }

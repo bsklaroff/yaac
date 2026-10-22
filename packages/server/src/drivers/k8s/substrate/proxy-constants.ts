@@ -118,6 +118,8 @@ export const LABEL_PROXY_INPUT = 'yaac.proxy-input'
 export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
 /** Secret: the tool credential files and the ssh keys, replaced whole. */
 export const PROXY_CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
+/** Secret: each project's cloud access token (docs/cloud-identity.md). */
+export const PROXY_CLOUD_CREDS_SECRET_NAME = 'yaac-proxy-cloud-creds'
 /** Secret the proxy writes captured OAuth rotations into. */
 export const PROXY_REFRESHED_SECRET_NAME = 'yaac-proxy-refreshed'
 /**

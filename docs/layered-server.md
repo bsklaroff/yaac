@@ -147,7 +147,9 @@ happens a layer up, in `recordedTranscript`.
   and what each keeps on disk: the clone's branches, the two config
   layers, which git credential it uses, Dockerfiles and build files), `git/`
   (domain's one process boundary onto git; docs/server-git.md),
-  `auth/` (each user's tool sign-ins and git credentials), `skills/`,
+  `auth/` (each user's tool sign-ins and git credentials),
+  `cloud-identity/` (the cloud tokens projects' workspaces act with;
+  docs/cloud-identity.md), `skills/`,
   `access/` (who may act on what: the verbs that make a user-caused write
   take the caller and `authorize` it).
 

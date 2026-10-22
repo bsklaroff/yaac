@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { serverUsageReport } from '#domain/workspaces'
+import { cloudIdentityInfo } from '#domain/cloud-identity'
+import { requireDriverFeature } from '#api/http/driver-features'
 import type { ResourceReport } from '@yaac/shared/types'
 import type { IdentityEnv } from '#api/http/web-auth'
 
@@ -38,3 +40,9 @@ function usageReport(): Promise<ResourceReport> {
 
 export const serverApp = new Hono<IdentityEnv>()
   .get('/usage', async (c) => c.json(await usageReport()))
+  // The cloud the server found itself on, for the project setting that
+  // lends its workspaces an identity there (docs/cloud-identity.md).
+  .get('/cloud-identity', (c) => {
+    requireDriverFeature('cloudIdentity')
+    return c.json(cloudIdentityInfo(c.get('principal')))
+  })

@@ -15,6 +15,7 @@ import {
   buildDynamicRules,
   hostNeedsDynamicMitm,
 } from 'yaac-proxy-sidecar/injection'
+import { PLACEHOLDER_CLOUD_TOKEN } from 'yaac-proxy-sidecar/cloud-metadata'
 
 /**
  * The credential swaps, driven through the proxy's real object view: each
@@ -226,7 +227,38 @@ describe('buildDynamicRules', () => {
   })
 })
 
+/** A cloud credential for project `cloudy`'s workspaces. */
+function withCloud(objects: ProxyObjects): ProxyObjects {
+  objects.applyCloudCredentials({
+    metadata: { name: 'yaac-proxy-cloud-creds' },
+    data: { 'creds.json': b64({ cloudy: {
+      provider: 'gcp', identity: 'a@p.iam.gserviceaccount.com', accessToken: 'ya29.real',
+      expiresAt: 1, hostProject: { id: 'p', number: '42' },
+    } }) },
+  })
+  return objects
+}
+
+describe('buildDynamicRules: cloud token', () => {
+  it('swaps the placeholder on Google API hosts for a project with a credential, and nothing else', async () => {
+    const objects = withCloud(await load({}, { gc: { projectId: 'cloudy' }, plain: {} }))
+    const bearer = { authorization: `Bearer ${PLACEHOLDER_CLOUD_TOKEN}` }
+    expect(send(objects, 'storage.googleapis.com', bearer, 'gc').authorization).toBe('Bearer ya29.real')
+    // Not to another host, nor for another project, nor over a real token.
+    expect(send(objects, 'example.com', bearer, 'gc').authorization).toBe(bearer.authorization)
+    expect(send(objects, 'storage.googleapis.com', bearer, 'plain').authorization).toBe(bearer.authorization)
+    expect(send(objects, 'storage.googleapis.com', { authorization: 'Bearer mine' }, 'gc').authorization)
+      .toBe('Bearer mine')
+  })
+})
+
 describe('hostNeedsDynamicMitm', () => {
+  it('opens Google API hosts only for a project with a cloud credential', async () => {
+    const objects = withCloud(await load({}, { gc: { projectId: 'cloudy' }, plain: {} }))
+    expect(hostNeedsDynamicMitm(objects, 'gc', 'compute.googleapis.com', 443)).toBe(true)
+    expect(hostNeedsDynamicMitm(objects, 'plain', 'compute.googleapis.com', 443)).toBe(false)
+  })
+
   it('opens the tool hosts always, a provider host whatever the workspace\'s tool, and never port 22', async () => {
     const objects = await load(
       {

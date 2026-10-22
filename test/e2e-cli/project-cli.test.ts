@@ -277,6 +277,32 @@ describe('yaac config (real CLI + real server)', () => {
     expect(stderr).toMatch(/no-such-project|not found/i)
   })
 
+  // Off a cloud, which is where tests run, nothing can be lent: a k8s server
+  // answers that it found no cloud, and a containerless one that its
+  // workspaces use the host's own credentials (docs/cloud-identity.md).
+  it('config cloud-identity shows, refuses and clears a project\'s cloud identity', async () => {
+    await seedProject('demo-cloud')
+    const show = await runYaac(testEnv.env, 'config', 'cloud-identity', 'demo-cloud')
+    const set = await runYaac(testEnv.env, 'config', 'cloud-identity', 'demo-cloud', 'not-an-email')
+    const clear = await runYaac(testEnv.env, 'config', 'cloud-identity', 'demo-cloud', '--clear')
+    const both = await runYaac(testEnv.env, 'config', 'cloud-identity', 'demo-cloud', 'host', '--clear')
+    expect(both.exitCode).not.toBe(0)
+    expect(both.stderr).toMatch(/not both/)
+    expect(set.exitCode).not.toBe(0)
+    if (process.env.YAAC_DRIVER === 'containerless') {
+      for (const run of [show, set, clear]) {
+        expect(run.exitCode).not.toBe(0)
+        expect(run.stderr).toMatch(/lends workspaces no cloud identity/)
+      }
+      return
+    }
+    expect(show.exitCode, show.stderr).toBe(0)
+    expect(show.stdout).toMatch(/demo-cloud: no cloud identity/)
+    expect(set.stderr).toMatch(/found no cloud identity to lend|not a service account email/)
+    expect(clear.exitCode, clear.stderr).toBe(0)
+    expect(clear.stdout).toMatch(/Cloud identity removed/)
+  })
+
   // Adding the same remote twice gives two projects with one name.
   it('config edit and edit-dockerfile refuse a name two projects share, listing both', async () => {
     const first = await seedProject('demo-twin')

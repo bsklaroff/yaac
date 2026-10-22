@@ -2,11 +2,11 @@
  * The proxy's live view of its input objects, and its writes to its output
  * objects (shapes in objects.ts; design in docs/workspace-egress.md).
  *
- * Three informers, selected by the `yaac.proxy-input` label, feed
- * `ProxyObjects`: the credentials Secret, the per-project secrets Secrets and
- * the per-workspace registration ConfigMaps. The pod keeps no state of its
- * own; a replacement rebuilds everything from the initial lists. Until all
- * three lists have landed, `ready()` is false and the readiness probe keeps
+ * Four informers, selected by the `yaac.proxy-input` label, feed
+ * `ProxyObjects`: the credentials Secret, the per-project secrets Secrets,
+ * the per-workspace registration ConfigMaps and the cloud credentials
+ * Secret. The pod keeps no state of its own; a replacement rebuilds
+ * everything from the initial lists. Until every list has landed, `ready()` is false and the readiness probe keeps
  * the pod out of its Service.
  */
 
@@ -15,17 +15,20 @@ import { inClusterClient, makeInformer, superviseInformer } from './pod-watch'
 import { agentIdentities, type AgentIdentity } from './agent-keys'
 import {
   CA_SECRET_NAME,
+  CLOUD_CREDS_SECRET_NAME,
   CREDENTIALS_SECRET_NAME,
   EMPTY_CREDENTIALS,
   LABEL_PROXY_INPUT,
   LABEL_WORKSPACE_ID,
   REFRESHED_SECRET_NAME,
   STATE_CONFIGMAP_NAME,
+  decodeCloudCredentials,
   decodeCredentials,
   decodeProjectSecrets,
   decodeRegistration,
   sshGrantsForProject,
   type ClaudeOAuthBundle,
+  type CloudCredential,
   type CodexOAuthBundle,
   type OwnerCredentials,
   type OwnerRefreshedBundles,
@@ -61,6 +64,9 @@ function pushedOAuth<B>(creds: { kind: 'oauth'; bundle: B } | { kind: 'api-key' 
   return creds?.kind === 'oauth' ? creds.bundle : null
 }
 
+const INPUTS = ['credentials', 'secrets', 'registration', 'cloud'] as const
+type Input = typeof INPUTS[number]
+
 export class ProxyObjects {
   private creds: OwnerCredentials = new Map()
   /** `<projectId>/<NAME>` -> value, across every project's Secret. */
@@ -69,6 +75,8 @@ export class ProxyObjects {
    *  forgets exactly those. */
   private readonly refsByObject = new Map<string, string[]>()
   private readonly registrations = new Map<string, ProxyRegistration>()
+  /** Project id -> its cloud credential. */
+  private cloud = new Map<string, CloudCredential>()
   /** Object name -> workspace id, so a DELETE (which may arrive without
    *  data) still evicts the right registration. */
   private readonly workspaceByObject = new Map<string, string>()
@@ -128,6 +136,12 @@ export class ProxyObjects {
     return sshGrantsForProject(this.credentials(this.ownerOf(workspaceId)).ssh, projectId)
   }
 
+  /** The cloud credential of a workspace's project, if it has one. */
+  cloudCredential(workspaceId: string): CloudCredential | undefined {
+    const projectId = this.registrations.get(workspaceId)?.projectId
+    return projectId !== undefined ? this.cloud.get(projectId) : undefined
+  }
+
   secret(ref: string): string | undefined {
     return this.secrets.get(ref)
   }
@@ -142,12 +156,12 @@ export class ProxyObjects {
 
   /** Every initial list has landed — the pod may serve. */
   ready(): boolean {
-    return (['credentials', 'secrets', 'registration'] as const).every((k) => this.seeded.has(k))
+    return INPUTS.every((k) => this.seeded.has(k))
   }
 
   // ── Writes from the informers ──────────────────────────────────────
 
-  markSeeded(kind: 'credentials' | 'secrets' | 'registration'): void {
+  markSeeded(kind: Input): void {
     this.seeded.add(kind)
   }
 
@@ -183,6 +197,13 @@ export class ProxyObjects {
       this.loadedSsh = null
       this.log(`[proxy] ssh-agent reload failed: ${String(err)}`)
     })
+  }
+
+  /** The cloud credentials Secret changed or went. Never logs tokens. */
+  applyCloudCredentials(secret: RawObject, gone = false): void {
+    if (secret.metadata?.name !== CLOUD_CREDS_SECRET_NAME) return
+    this.cloud = gone ? new Map<string, CloudCredential>() : decodeCloudCredentials(secret)
+    this.log(`[proxy] cloud credentials: ${this.cloud.size} project(s)`)
   }
 
   /** A project's secrets Secret changed or went. */
@@ -237,12 +258,12 @@ export class ProxyObjects {
 
 type Client = ReturnType<typeof inClusterClient>
 
-function selector(input: 'credentials' | 'secrets' | 'registration'): string {
+function selector(input: Input): string {
   return `${LABEL_PROXY_INPUT}=${input}`
 }
 
 /**
- * Feed `objects` from three informers for the proxy's lifetime. Each relist
+ * Feed `objects` from four informers for the proxy's lifetime. Each relist
  * emits `delete` for objects that vanished meanwhile.
  */
 export function startObjectWatch(objects: ProxyObjects, client: Client = inClusterClient()): void {
@@ -279,7 +300,17 @@ export function startObjectWatch(objects: ProxyObjects, client: Client = inClust
   registrations.on('update', (obj) => { objects.applyRegistration(obj) })
   registrations.on('delete', (obj) => { objects.applyRegistration(obj, true) })
 
+  const cloud = makeInformer(
+    client.kubeConfig, secretsPath,
+    () => client.core.listNamespacedSecret({ namespace: ns, labelSelector: selector('cloud') }),
+    selector('cloud'),
+  )
+  cloud.on('add', (obj) => { objects.applyCloudCredentials(obj) })
+  cloud.on('update', (obj) => { objects.applyCloudCredentials(obj) })
+  cloud.on('delete', (obj) => { objects.applyCloudCredentials(obj, true) })
+
   superviseInformer(credentials, 'credentials', () => objects.markSeeded('credentials'))
+  superviseInformer(cloud, 'cloud', () => objects.markSeeded('cloud'))
   superviseInformer(secrets, 'secrets', () => objects.markSeeded('secrets'))
   superviseInformer(registrations, 'registrations', () => objects.markSeeded('registration'))
 }

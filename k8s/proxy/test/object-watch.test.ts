@@ -288,7 +288,30 @@ describe('ProxyObjects', () => {
     objects.markSeeded('secrets')
     expect(objects.ready()).toBe(false)
     objects.markSeeded('registration')
+    expect(objects.ready()).toBe(false)
+    objects.markSeeded('cloud')
     expect(objects.ready()).toBe(true)
+  })
+
+  it('serves a workspace its own project\'s cloud credential, dropping malformed ones', () => {
+    const objects = new ProxyObjects({ loadSshKeys: () => Promise.resolve(), log: () => {} })
+    objects.applyRegistration(registrationObject('w1', { projectId: 'p1' }))
+    objects.applyRegistration(registrationObject('w2', { projectId: 'p2' }))
+    const cred = {
+      provider: 'gcp', identity: 'a@p.iam.gserviceaccount.com', accessToken: 'ya29.real',
+      expiresAt: 1, hostProject: { id: 'p', number: '42' },
+    }
+    const secret = (creds: unknown) => ({ metadata: { name: 'yaac-proxy-cloud-creds' }, data: { 'creds.json': b64(creds) } })
+    objects.applyCloudCredentials(secret({ p1: cred, p2: { ...cred, accessToken: '' } }))
+    expect(objects.cloudCredential('w1')).toEqual(cred)
+    expect(objects.cloudCredential('w2')).toBeUndefined()
+    expect(objects.cloudCredential('unregistered')).toBeUndefined()
+
+    // Another object carrying the label is ignored; deleting the Secret drops all.
+    objects.applyCloudCredentials({ metadata: { name: 'other' }, data: { 'creds.json': b64({}) } })
+    expect(objects.cloudCredential('w1')).toEqual(cred)
+    objects.applyCloudCredentials({ metadata: { name: 'yaac-proxy-cloud-creds' } }, true)
+    expect(objects.cloudCredential('w1')).toBeUndefined()
   })
 })
 

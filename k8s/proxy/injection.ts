@@ -8,6 +8,7 @@
 import type http from 'node:http'
 import type { ProxyObjects } from './object-watch'
 import type { HostInjectionRule, ProxyCredentials } from './objects'
+import { PLACEHOLDER_CLOUD_TOKEN, isCloudApiHost } from './cloud-metadata'
 
 export const CLAUDE_TOKEN_URL_HOST = 'platform.claude.com'
 export const CLAUDE_TOKEN_URL_PATH = '/v1/oauth/token'
@@ -275,6 +276,7 @@ export function hostNeedsDynamicMitm(
   if (workspaceHasHttpsCredentialForHost(objects, workspaceId, hostname)) return true
   // gh CLI talks to api.github.com, not the git remote host.
   if (resolveGithubApiTokenForWorkspace(objects, workspaceId, hostname) !== null) return true
+  if (isCloudApiHost(hostname) && objects.cloudCredential(workspaceId)) return true
   return false
 }
 
@@ -448,6 +450,17 @@ export function buildDynamicRules(
         }],
       })
     }
+  }
+
+  // The project's cloud token, in place of the placeholder the stand-in
+  // metadata server handed out (cloud-metadata.ts).
+  const cloud = objects.cloudCredential(workspaceId)
+  if (cloud && isCloudApiHost(hostname)
+    && headerValue(reqHeaders, 'authorization') === 'Bearer ' + PLACEHOLDER_CLOUD_TOKEN) {
+    rules.push({
+      pathPattern: '*',
+      injections: [{ action: 'replace_header', name: 'Authorization', value: 'Bearer ' + cloud.accessToken }],
+    })
   }
 
   return rules

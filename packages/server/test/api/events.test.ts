@@ -47,7 +47,7 @@ function emptySnapshot(): ServerSnapshot {
 function snapshotWithProject(projectId: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ id: projectId, name: 'demo', remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true }],
+    projects: [{ id: projectId, name: 'demo', remoteUrl: 'https://example.com/r.git', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, gitCredential: null, hosted: false, guardDefaultBranch: true, cloudIdentity: null }],
   }
 }
 
