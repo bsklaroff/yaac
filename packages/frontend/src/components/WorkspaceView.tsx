@@ -628,11 +628,12 @@ export function WorkspaceView({
           const explorer = isFilesTarget(target) || isChangesTarget(target)
           const file = isFileTarget(target)
           const chat = acpTargetSession(target)
-          // Panes unmounted when off-screen, since they poll the workspace.
-          // Chat panes stay mounted (re-attaching replays the conversation),
-          // and so do file panes (unmounting loses undo history, cursor and
-          // unsaved text).
-          const ephemeral = preview || explorer
+          // Explorer panes unmount when off-screen, since they poll the
+          // workspace. Chat panes stay mounted (re-attaching replays the
+          // conversation), as do file panes (unmounting loses undo history,
+          // cursor and unsaved text) and previews (unmounting reloads the
+          // page from scratch).
+          const ephemeral = explorer
           // In tiles mode, a column's active tab is on-screen in its body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
           // Hidden panes never change size, since a resize round-trips to
@@ -660,8 +661,6 @@ export function WorkspaceView({
                 ? undefined
                 : lastRects.current.get(key)
           if (!ephemeral && style) lastRects.current.set(key, style)
-          // Ephemeral panes only have a `style` for the selected workspace,
-          // so previewPorts applies to them.
           if (ephemeral && !style) return null
           return (
             <div
@@ -677,7 +676,12 @@ export function WorkspaceView({
                   <WorkspacePreview
                     workspaceId={id}
                     containerPort={previewTargetPort(target)}
-                    hostPort={previewPorts.find((p) => p.containerPort === previewTargetPort(target))?.hostPort}
+                    // previewPorts are the selected workspace's; a hidden
+                    // preview keeps its page, since only a new port reloads.
+                    hostPort={id === sid
+                      ? previewPorts.find((p) => p.containerPort === previewTargetPort(target))?.hostPort
+                      : undefined}
+                    visible={onScreen}
                     onStopForwarding={canUnforward ? (p) => stopForwarding(id, p) : undefined}
                   />
                 </div>

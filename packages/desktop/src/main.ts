@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url'
 import {
   app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, shell,
   systemPreferences, Tray,
-  utilityProcess, WebContentsView,
+  utilityProcess, webContents, WebContentsView, type WebContents,
 } from 'electron'
 import { isLoopbackOrigin, resolveServerTarget } from '@yaac/shared/server-api'
 import {
@@ -45,6 +45,8 @@ import {
 } from '#server-switch'
 import { backgroundColorFor } from '#theme-bg'
 import { buildTrayBitmap } from '#tray-icon'
+import { canDiscardPreview, setPreviewFrozen, trackPreviewGuest } from '#preview-lifecycle'
+import { watchMemoryPressure } from '#memory-pressure'
 import { hardenGuestWebPreferences, isAllowedPreviewUrl, isSameOriginNavigation, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
 import { createFsTransitionGuard, zoomAction } from '#window-zoom'
@@ -676,10 +678,33 @@ ipcMain.on('window:open-external', (_e, url: unknown) => {
 // channel.
 ipcMain.handle('forward:remaps', () => forwarder?.remaps() ?? [])
 
+// A hidden preview pane's lifecycle (preview-lifecycle.ts), for guests the
+// asking window embeds.
+const previewGuestOf = (sender: WebContents, id: unknown): WebContents | undefined => {
+  const guest = typeof id === 'number' ? webContents.fromId(id) : undefined
+  return guest?.getType() === 'webview' && guest.hostWebContents === sender ? guest : undefined
+}
+ipcMain.handle('preview:set-frozen', (e, id: unknown, frozen: unknown) => {
+  const guest = previewGuestOf(e.sender, id)
+  return guest ? setPreviewFrozen(guest, frozen === true) : false
+})
+ipcMain.handle('preview:can-discard', (e, id: unknown) => {
+  const guest = previewGuestOf(e.sender, id)
+  return guest ? canDiscardPreview(guest) : false
+})
+// Watched only while the window's page has a hidden preview to discard.
+let stopPressureWatch: (() => void) | undefined
+ipcMain.on('preview:watch-memory-pressure', (e, on: unknown) => {
+  if (e.sender !== win?.webContents) return
+  stopPressureWatch?.()
+  stopPressureWatch = on === true ? watchMemoryPressure(e.sender) : undefined
+})
+
 // Preview <webview> guests stay on loopback; new windows and off-loopback
 // navigations open in the system browser instead.
 app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() !== 'webview') return
+  trackPreviewGuest(contents)
   contents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url)
     return { action: 'deny' }

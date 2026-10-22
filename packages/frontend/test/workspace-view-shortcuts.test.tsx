@@ -194,6 +194,32 @@ describe('WorkspaceView: open-preview', () => {
     expect(fetchMock.called('POST /api/workspace/s1/unforward-port')[0].body).toEqual({ containerPort: 3000 })
   })
 
+  it('keeps a hidden preview\'s page across tab and workspace switches', () => {
+    const s2 = { ...workspace, workspaceId: 's2', forwardedPorts: [{ containerPort: 4000, hostPort: 4001 }] }
+    renderWithClient(<WorkspaceView
+      snapshot={{ workspaces: [{ ...workspace, forwardedPorts: [port(4000)] }, s2] } as unknown as ServerSnapshot}
+      provisioning={[]}
+    />)
+    focusTerminal()
+    altP()
+    const wv = document.querySelector('webview')
+    expect(wv?.getAttribute('src')).toBe('http://127.0.0.1:4000/')
+
+    // Electron rewrites `src` as the page navigates.
+    wv?.setAttribute('src', 'http://127.0.0.1:4000/settings')
+
+    act(() => useUiStore.getState().focusTerminal('s1', 'agent'))
+    expect(document.querySelector('webview')).toBe(wv)
+    // s2 forwards the same container port at another host port, which the
+    // hidden s1 preview must not navigate to.
+    act(() => useUiStore.setState({ selectedWorkspaceId: 's2' }))
+    act(() => useUiStore.setState({ selectedWorkspaceId: 's1' }))
+    act(() => useUiStore.getState().focusTerminal('s1', previewTarget(4000)))
+    expect(document.querySelectorAll('webview')).toHaveLength(1)
+    expect(document.querySelector('webview')).toBe(wv)
+    expect(wv?.getAttribute('src')).toBe('http://127.0.0.1:4000/settings')
+  })
+
   it('with no ports, opens nothing', () => {
     renderView()
     focusTerminal()

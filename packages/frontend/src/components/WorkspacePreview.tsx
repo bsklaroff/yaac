@@ -25,6 +25,50 @@ interface PreviewWebview extends HTMLElement {
   getURL(): string
   loadURL(url: string): Promise<void>
   openDevTools(): void
+  getWebContentsId(): number
+}
+
+/*
+ * A hidden preview follows Chrome's background-tab lifecycle
+ * (docs/preview-lifecycle.md): it is frozen after FREEZE_AFTER_MS hidden,
+ * and discarded after DISCARD_AFTER_MS hidden unless it has been shown again
+ * more than MAX_REVISITS_TO_DISCARD times. Under critical memory pressure,
+ * one hidden for at least PRESSURE_PROTECTION_MS may be discarded sooner.
+ */
+const FREEZE_AFTER_MS = 5 * 60_000
+const DISCARD_AFTER_MS = 4 * 60 * 60_000
+const MAX_REVISITS_TO_DISCARD = 15
+const PRESSURE_PROTECTION_MS = 10 * 60_000
+
+/** A hidden preview: when it was hidden, and its discard, which resolves
+ *  whether the page went. */
+interface HiddenPreview { since: number; discard: () => Promise<boolean> }
+
+/*
+ * Every hidden preview, so that each critical memory pressure signal
+ * discards one: the longest hidden that may go, as Chrome picks a tab. The
+ * desktop app watches for pressure only while one is listed.
+ */
+const hiddenPreviews = new Set<HiddenPreview>()
+let stopPressureWatch: (() => void) | undefined
+
+async function discardLongestHidden(): Promise<void> {
+  const now = Date.now()
+  const candidates = [...hiddenPreviews]
+    .filter((p) => now - p.since >= PRESSURE_PROTECTION_MS)
+    .sort((a, b) => a.since - b.since)
+  for (const p of candidates) if (await p.discard()) return
+}
+
+function listHidden(p: HiddenPreview): () => void {
+  hiddenPreviews.add(p)
+  stopPressureWatch ??= windowApi()?.onMemoryPressure?.(() => void discardLongestHidden())
+  return () => {
+    hiddenPreviews.delete(p)
+    if (hiddenPreviews.size > 0) return
+    stopPressureWatch?.()
+    stopPressureWatch = undefined
+  }
 }
 
 /** Viewport-width presets for the responsive control. `null` = fill the pane. */
@@ -41,13 +85,16 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
  * stop forwarding).
  *
  * The <webview> is managed imperatively through a ref, because letting React
- * reconcile it would reload the page on every parent render. Electron only:
- * the iPhone app previews in a native view, and a browser has no preview.
+ * reconcile it would reload the page on every parent render. While the pane
+ * is hidden the page is frozen and later discarded, and showing the pane
+ * again thaws it or reloads it at the URL it was on. Electron only: the
+ * iPhone app previews in a native view, and a browser has no preview.
  */
 export function WorkspacePreview({
   workspaceId,
   containerPort,
   hostPort,
+  visible,
   onStopForwarding,
 }: {
   workspaceId: string
@@ -55,6 +102,8 @@ export function WorkspacePreview({
   containerPort: number
   /** Where this machine reaches it; undefined while it is not forwarded. */
   hostPort: number | undefined
+  /** Whether the pane is on screen. */
+  visible: boolean
   /** Stop forwarding the shown port; omitted where there is no forward to
    *  stop. */
   onStopForwarding?: (containerPort: number) => void
@@ -71,11 +120,13 @@ export function WorkspacePreview({
   const [failed, setFailed] = useState(false)
   // Constrain the webview to a device width to check responsive layouts.
   const [deviceWidth, setDeviceWidth] = useState<number | null>(null)
+  const [discarded, setDiscarded] = useState(false)
 
-  // Create the webview once per pane; wire its navigation events.
+  // Create the webview once per pane, and again after a discard; wire its
+  // navigation events.
   useEffect(() => {
     const host = hostRef.current
-    if (!host) return
+    if (!host || discarded) return
     const wv = document.createElement('webview') as unknown as PreviewWebview
     wv.setAttribute('partition', `persist:preview-${workspaceId}`)
     wv.setAttribute('allowpopups', 'true')
@@ -116,17 +167,80 @@ export function WorkspacePreview({
       wv.remove()
       wvRef.current = null
     }
-  }, [workspaceId])
+  }, [workspaceId, discarded])
 
-  // Point the webview at the current forwarded port when it (re)appears.
+  // Point the webview at the forwarded port when it changes, or a new
+  // webview back at the page it was discarded on. Compared with the last
+  // port URL applied rather than `src`, which Electron rewrites on every
+  // navigation: a port that drops and comes back must not reset the page
+  // the user navigated to.
+  const appliedUrl = useRef<string | null>(null)
+  const resumeUrl = useRef<string | null>(null)
   useEffect(() => {
     const wv = wvRef.current
     if (!wv || !url) return
-    if (wv.getAttribute('src') !== url) {
-      wv.setAttribute('src', url)
-      setAddress(url)
+    const dest = appliedUrl.current === url ? resumeUrl.current : url
+    if (dest === null) return
+    appliedUrl.current = url
+    resumeUrl.current = null
+    wv.setAttribute('src', dest)
+    setAddress(dest)
+  }, [url, discarded])
+
+  // While hidden, freeze the page and later discard it, as Chrome does a
+  // background tab. A page revisited often is not discarded on the timer.
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+  const freezeRequested = useRef(false)
+  const revisits = useRef(0)
+  const wasHidden = useRef(false)
+  useEffect(() => {
+    const bridge = windowApi()
+    const guestId = (): number | undefined => {
+      try {
+        return wvRef.current?.getWebContentsId()
+      } catch {
+        return undefined // not attached yet
+      }
     }
-  }, [url])
+    if (visible) {
+      if (wasHidden.current) revisits.current++
+      wasHidden.current = false
+      setDiscarded(false)
+      const id = guestId()
+      if (freezeRequested.current && id !== undefined) void bridge?.setPreviewFrozen?.(id, false)
+      freezeRequested.current = false
+      return
+    }
+    wasHidden.current = true
+    const freeze = setTimeout(() => {
+      const id = guestId()
+      if (id === undefined || !bridge?.setPreviewFrozen) return
+      freezeRequested.current = true
+      void bridge.setPreviewFrozen(id, true)
+    }, FREEZE_AFTER_MS)
+    const discard = async (): Promise<boolean> => {
+      const id = guestId()
+      if (id === undefined || !bridge?.canDiscardPreview) return false
+      const wv = wvRef.current
+      if (!(await bridge.canDiscardPreview(id)) || visibleRef.current || !wv || wv !== wvRef.current) return false
+      try {
+        resumeUrl.current = wv.getURL() || null
+      } catch {
+        resumeUrl.current = null
+      }
+      if (resumeUrl.current === null) appliedUrl.current = null
+      freezeRequested.current = false
+      wvRef.current = null
+      setDiscarded(true)
+      return true
+    }
+    const discardTimer = revisits.current > MAX_REVISITS_TO_DISCARD
+      ? undefined
+      : setTimeout(() => void discard(), DISCARD_AFTER_MS)
+    const unlist = listHidden({ since: Date.now(), discard })
+    return () => { clearTimeout(freeze); clearTimeout(discardTimer); unlist() }
+  }, [visible])
 
   const reload = (): void => wvRef.current?.reload?.()
   const hardReload = (): void => wvRef.current?.reloadIgnoringCache?.()
