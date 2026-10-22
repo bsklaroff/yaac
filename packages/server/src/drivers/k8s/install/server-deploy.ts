@@ -176,6 +176,12 @@ export function buildServerClusterRoleManifest(): Record<string, unknown> {
         verbs: ['*'],
       },
       { apiGroups: [''], resources: ['nodes', 'events'], verbs: ['get', 'list', 'watch'] },
+      // The kubelet's Summary API, read through the API server for the
+      // server health view (docs/server-health.md). This reaches every
+      // kubelet endpoint, exec included, so it is as broad as the
+      // cluster-wide pods/exec above: drop it too if that is ever narrowed.
+      // `nodes/stats` only authorizes dialing a kubelet directly.
+      { apiGroups: [''], resources: ['nodes/proxy'], verbs: ['get'] },
       { apiGroups: ['apps'], resources: ['deployments', 'daemonsets', 'replicasets'], verbs: ['*'] },
       { apiGroups: ['batch'], resources: ['jobs'], verbs: ['*'] },
       { apiGroups: ['networking.k8s.io'], resources: ['networkpolicies'], verbs: ['*'] },

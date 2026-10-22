@@ -51,6 +51,7 @@ import {
 } from '#drivers/k8s/substrate'
 import { k8sReconcileSteps } from '#drivers/k8s/steps'
 import { releaseK8sDriver, startK8sDriver, stopK8sDriver } from '#drivers/k8s/lifecycle'
+import { k8sUsage } from '#drivers/k8s/usage'
 import type { WorkspaceDriver } from '#drivers/contract'
 
 /**
@@ -88,6 +89,7 @@ export function createK8sDriver(): WorkspaceDriver {
     forwardPort: (target, port, opts) => forwardWorkspacePort(target, port, opts),
     unforwardPort: (target, port) => removeWorkspaceForwarder(target.workspaceId, target.jobName, port),
     dismissPort: (workspaceId, port) => dismissWorkspacePort(workspaceId, port),
+    resourceUsage: (opts) => k8sUsage(opts),
 
     listImageBuilds: () => listImageBuilds(),
     imageBuildLog: (id) => getImageBuildLog(id),

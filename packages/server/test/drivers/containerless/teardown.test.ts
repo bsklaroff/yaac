@@ -20,6 +20,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   runHost: mockRunHost,
   killPids: mockKillPids,
   descendantPids: mockDescendants,
+  processTable: () => Promise.resolve(null),
   isSshAgentFor: mockIsSshAgentFor,
   livePids: mockLivePids,
 }))
@@ -72,7 +73,7 @@ beforeEach(() => {
   mockKillPids.mockReset()
   mockLivePids.mockReset().mockReturnValue([])
   mockDescendants.mockReset()
-  mockDescendants.mockResolvedValue([4242])
+  mockDescendants.mockReturnValue([4242])
   mockIsSshAgentFor.mockReset()
   mockIsSshAgentFor.mockResolvedValue(true)
   sessionGone()
@@ -114,7 +115,7 @@ describe('destroyWorkspace', () => {
     // naming an unrelated user process, such as their editor.
     registered()
     observeLiveness(UUID, false, { reason: 'agent-exited' })
-    mockDescendants.mockResolvedValue([4242, 5150])
+    mockDescendants.mockReturnValue([4242, 5150])
     await destroyWorkspace(TARGET)
     expect(mockDescendants).not.toHaveBeenCalled()
     expect(mockKillPids).not.toHaveBeenCalled()
@@ -124,7 +125,7 @@ describe('destroyWorkspace', () => {
     registered()
     // Killing tmux does not reach a dev server that left its process group,
     // and it would hold its port forever.
-    mockDescendants.mockResolvedValue([4242, 5150, 5151])
+    mockDescendants.mockReturnValue([4242, 5150, 5151])
     await destroyWorkspace(TARGET)
     expect(mockKillPids).toHaveBeenCalledWith([5150, 5151], 'SIGTERM')
   })
@@ -133,7 +134,7 @@ describe('destroyWorkspace', () => {
     // An agent still exiting writes its last lines into paths the caller is
     // about to delete or move.
     registered()
-    mockDescendants.mockResolvedValue([4242, 5150])
+    mockDescendants.mockReturnValue([4242, 5150])
     mockLivePids.mockReturnValueOnce([5150]).mockReturnValue([])
     await expect(destroyWorkspace(TARGET)).resolves.toBe(true)
     expect(mockLivePids).toHaveBeenCalledTimes(2)

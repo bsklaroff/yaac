@@ -157,6 +157,33 @@ export const RUNTIME_CLASS_GVISOR = 'gvisor'
 export const RUNTIME_CLASS_GVISOR_NESTED = 'gvisor-nested'
 
 /**
+ * Node label the gVisor installer sets once the runtime works on a node;
+ * the RuntimeClasses schedule only on it. A node labelled
+ * `yaac.workspaces=false` never gets it (see WORKSPACE_POOL_KEY).
+ */
+export const GVISOR_NODE_LABEL = 'yaac.gvisor'
+
+/**
+ * A taint a node pool may register its nodes with, to keep every pod off a
+ * node until the runtime is installed. The installer removes it after
+ * labelling the node. A cluster autoscaler told it is a startup taint
+ * counts the node as still starting until then, rather than scaling up
+ * again for the pods it cannot yet take (infra/aws-eks, infra/hetzner-k3s).
+ */
+export const GVISOR_PENDING_TAINT = 'yaac.gvisor/pending'
+
+/**
+ * The key a node uses to declare its share of the work (docs/cluster-setup.md
+ * "A dedicated workspace node pool"). Every node runs workspaces and yaac's
+ * infrastructure unless it says otherwise:
+ *  - a taint with this key (conventionally `yaac.workspaces=true:NoSchedule`)
+ *    keeps infrastructure off, since only sandboxed pods tolerate it;
+ *  - the label `yaac.workspaces=false` keeps workspaces off, since the
+ *    installer leaves such a node without the gVisor labels.
+ */
+export const WORKSPACE_POOL_KEY = 'yaac.workspaces'
+
+/**
  * Pod-spec fragment choosing the RuntimeClass for a pod that runs untrusted
  * code (workspace pods and the check probes that mimic them): `gvisor`, or
  * `gvisor-nested` when the pod runs a container engine.

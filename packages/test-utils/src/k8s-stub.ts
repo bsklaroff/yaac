@@ -131,6 +131,13 @@ class FakeCluster {
   calls: FakeCall[] = []
   /** Logs `readNamespacedPodLog` returns, by pod name. */
   podLogs = new Map<string, string>()
+  /**
+   * Answers to GETs of paths that are not objects (a node's Summary, by its
+   * node-proxy path), by path. An `ApiException` answer fails the request.
+   */
+  paths = new Map<string, unknown>()
+  /** Every such GET, as `path?query`. */
+  pathGets: string[] = []
   /** When set, the version probe (`ensureKubernetes`) fails with it. */
   unreachable: Error | null = null
   /** When set, answers `Watch.watch` (path, query, event callback). */
@@ -143,6 +150,8 @@ class FakeCluster {
     this.missingKinds.clear()
     this.calls = []
     this.podLogs.clear()
+    this.paths.clear()
+    this.pathGets = []
     this.unreachable = null
     this.onWatch = null
     this.nextUid = 1
@@ -261,6 +270,7 @@ class FakeRequest {
   setQueryParam(k: string, v: string): void { this.query[k] = v }
   setHeaderParam(k: string, v: string): void { this.headers[k] = v }
   setBody(body: string): void { this.body = body }
+  setSignal(): void { /* answers are synchronous, so nothing to abort */ }
 }
 
 const response = (status: number, data: unknown, headers: Record<string, string> = {}) => ({
@@ -275,6 +285,16 @@ const response = (status: number, data: unknown, headers: Record<string, string>
  * an HTTP error response, as the API server would send it.
  */
 function respond(req: FakeRequest): ReturnType<typeof response> {
+  // `ObjectClient.getPath` sends a real path; the stubbed `specUriPath` sends JSON.
+  if (req.path.startsWith('/')) {
+    const query = new URLSearchParams(req.query).toString()
+    fakeCluster.pathGets.push(query ? `${req.path}?${query}` : req.path)
+    const answer = fakeCluster.paths.get(req.path)
+    if (answer instanceof ApiException) return response(answer.code, answer.body, answer.headers)
+    return answer === undefined
+      ? response(404, { kind: 'Status', code: 404, message: `no answer seeded for ${req.path}` })
+      : response(200, answer)
+  }
   const at = JSON.parse(req.path) as Pick<FakeCall, 'apiVersion' | 'kind' | 'name' | 'namespace'>
   const body = req.body === undefined ? undefined : JSON.parse(req.body) as Record<string, unknown>
   const contentType = req.headers['Content-Type']

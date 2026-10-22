@@ -2,7 +2,7 @@ import {
   ApiException,
   BatchV1Api,
   CoreV1Api,
-  type HttpMethod,
+  HttpMethod,
   KubeConfig,
   KubernetesObjectApi,
   VersionApi,
@@ -49,6 +49,7 @@ interface SendOptions {
   query?: Record<string, string>
   body?: unknown
   contentType?: string
+  signal?: AbortSignal
 }
 
 const MAX_ATTEMPTS = 5
@@ -105,7 +106,7 @@ export class ObjectClient extends KubernetesObjectApi {
   ): Promise<unknown> {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.sendOnce(method, spec, action, opts)
+        return await this.sendOnce(method, await this.specUriPath(spec, action), opts)
       } catch (err) {
         const delay = attempt < MAX_ATTEMPTS ? transientDelayMs(err, attempt) : null
         if (delay === null) throw err
@@ -114,15 +115,20 @@ export class ObjectClient extends KubernetesObjectApi {
     }
   }
 
-  private async sendOnce(
-    method: HttpMethod,
-    spec: KubernetesObject,
-    action: PathAction,
-    opts: SendOptions,
-  ): Promise<unknown> {
-    const ctx = this.configuration.baseServer.makeRequestContext(await this.specUriPath(spec, action), method)
+  /**
+   * GET an API path that names no object kind, such as a node's kubelet
+   * stats through the node proxy. One attempt, abandoned after `timeoutMs`
+   * and never retried, for a caller that reads again on its next tick.
+   */
+  getPath(path: string, query: Record<string, string>, timeoutMs: number): Promise<unknown> {
+    return this.sendOnce(HttpMethod.GET, path, { query, signal: AbortSignal.timeout(timeoutMs) })
+  }
+
+  private async sendOnce(method: HttpMethod, path: string, opts: SendOptions): Promise<unknown> {
+    const ctx = this.configuration.baseServer.makeRequestContext(path, method)
     for (const [k, v] of Object.entries(opts.query ?? {})) ctx.setQueryParam(k, v)
     ctx.setHeaderParam('Accept', 'application/json')
+    if (opts.signal) ctx.setSignal(opts.signal)
     if (opts.body !== undefined) {
       ctx.setHeaderParam('Content-Type', opts.contentType ?? 'application/json')
       ctx.setBody(JSON.stringify(opts.body))

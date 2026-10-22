@@ -26,6 +26,7 @@ import {
   listObjects,
   patchObject,
   readObject,
+  readPath,
 } from '#drivers/k8s/substrate'
 
 const cm = (name: string, labels: Record<string, string> = {}, data: Record<string, string> = {}) => ({
@@ -120,6 +121,22 @@ describe('listObjects', () => {
     expect(await names({ namespace: 'yaac' })).toEqual(['a', 'b'])
     expect(await names({ labelSelector: 'app=x' })).toEqual(['a', 'c'])
     expect(await names({ namespace: 'yaac', fieldSelector: 'metadata.name=b' })).toEqual(['b'])
+  })
+})
+
+describe('readPath', () => {
+  it('GETs a path that names no object, with its query, in one attempt even when the failure is transient', async () => {
+    const path = '/api/v1/nodes/node-a/proxy/stats/summary'
+    fakeCluster.paths.set(path, { node: { nodeName: 'node-a' } })
+    await expect(readPath(path, { only_cpu_and_memory: 'true' }, 5_000)).resolves.toEqual({ node: { nodeName: 'node-a' } })
+    expect(fakeCluster.pathGets).toEqual([`${path}?only_cpu_and_memory=true`])
+
+    // The node proxy's answer for a kubelet it cannot reach. The caller
+    // reads again on its next tick, so waiting out retries buys nothing.
+    fakeCluster.paths.set(path, apiError(503, 'error trying to reach service: dial tcp: i/o timeout'))
+    const err: unknown = await readPath(path, {}, 5_000).catch((e: unknown) => e)
+    expect(apiStatus(err)).toBe(503)
+    expect(fakeCluster.pathGets).toHaveLength(2)
   })
 })
 

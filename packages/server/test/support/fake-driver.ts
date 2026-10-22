@@ -146,6 +146,16 @@ function defaultRuntime(): WorkspaceDriver {
     unforwardPort: () => Promise.resolve(false),
     // By default no port has an unforwarded listener.
     dismissPort: () => false,
+    // An empty host: no load, no workspaces.
+    resourceUsage: () => Promise.resolve({
+      totals: {
+        cpuCores: 0, cpuCapacityCores: 1, memoryBytes: 0, memoryCapacityBytes: 1,
+        swapBytes: 0, swapCapacityBytes: 0, disks: [],
+      },
+      nodes: [],
+      components: [],
+      workspaces: {},
+    }),
     listImageBuilds: () => [],
     imageBuildLog: () => undefined,
     dismissImageBuild: () => false,

@@ -30,11 +30,9 @@ import type { CheckResult } from '@yaac/shared/types'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { registryReachable, registryTagState } from '#drivers/k8s/cluster/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
-import { buildPriorityClassManifests } from '#drivers/k8s/substrate'
+import { GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY, buildPriorityClassManifests } from '#drivers/k8s/substrate'
 // Setup values, not units under test.
-import {
-  buildRuntimeClassManifests, GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY,
-} from '#drivers/k8s/install/gvisor-runtime'
+import { buildRuntimeClassManifests } from '#drivers/k8s/install/gvisor-runtime'
 import type { NodeTaint } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { globalRoot, serverLocalRoot } from '@yaac/shared/paths'

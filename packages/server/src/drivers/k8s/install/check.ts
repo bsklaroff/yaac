@@ -56,11 +56,12 @@ import {
   installSecurityContext,
   untoleratedTaints,
   workspaceIdLabels,
+  GVISOR_NODE_LABEL,
+  WORKSPACE_POOL_KEY,
 } from '#drivers/k8s/substrate'
 import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode } from './cni-adopt'
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
-import { GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY } from './gvisor-runtime'
 import { deployedInstallIdentity } from './server-deploy'
 import { isNfsFamily } from './storage'
 import { YAAC_CLUSTER_INSTALL } from './arg-guards'

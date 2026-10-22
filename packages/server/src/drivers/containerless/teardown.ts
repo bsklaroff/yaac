@@ -4,7 +4,7 @@ import { imageStoreDir, nodeLocalPath, nodeLocalProjectPath } from '@yaac/shared
 import { serverLog } from '#lib/log'
 import { shellQuote } from '#lib/shell'
 import { waitFor } from '@yaac/shared/wait-for'
-import { descendantPids, isSshAgentFor, killPids, livePids, runHost } from './host'
+import { descendantPids, isSshAgentFor, killPids, livePids, processTable, runHost } from './host'
 import { tmuxAnswers } from './exec'
 import {
   containerlessWorkspacePaths,
@@ -44,7 +44,7 @@ export async function destroyWorkspace(
   // Captured before the kill, and only for a workspace seen running: after a
   // reboot the recorded pid may be an unrelated process of the user's.
   const rootPid = wasRunning ? tmuxPidOf(workspaceId) : undefined
-  const strays = rootPid === undefined ? [] : await descendantPids([rootPid])
+  const strays = rootPid === undefined ? [] : descendantPids(await processTable(), [rootPid])
 
   try {
     await runHost(['tmux', '-S', paths.tmuxSock, 'kill-server'], { timeoutMs: 10_000 })

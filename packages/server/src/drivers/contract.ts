@@ -6,13 +6,17 @@ import type {
   DriverKind,
   EgressAllowlist,
   GitAuthFailure,
+  ComponentUsage,
   ImageBuildEntry,
+  NodeUsage,
   PortForwardConfig,
   PortMapping,
   RefreshedToolCredentials,
   SecretProxyRule,
   ToolCredentialBundle,
+  UsageTotals,
   WorkspaceDeathCause,
+  WorkspaceResourceUse,
   YaacConfig,
 } from '@yaac/shared/types'
 
@@ -455,6 +459,19 @@ export interface DriverReconcileSteps {
 }
 
 /**
+ * The substrate's resource usage right now (docs/server-health.md): totals,
+ * nodes, infrastructure components, and each workspace's usage keyed by
+ * workspace id. Names and owners are joined on above.
+ */
+export interface SubstrateUsage {
+  totals: UsageTotals
+  /** Empty for a driver with no nodes. */
+  nodes: NodeUsage[]
+  components: ComponentUsage[]
+  workspaces: Record<string, WorkspaceResourceUse>
+}
+
+/**
  * Which substrate this process runs on. A kind rather than feature flags:
  * every container feature (images, egress mediation, sandboxing, nested
  * engines, the spare pool) exists under `k8s` and not under
@@ -617,6 +634,12 @@ export interface WorkspaceDriver {
    * In memory: a restart shows the port again.
    */
   dismissPort(workspaceId: string, containerPort: number): boolean
+
+  /**
+   * See `SubstrateUsage`. Without `full`, the cheaper read the history
+   * sampler takes: disks, volumes and the scheduling totals are left empty.
+   */
+  resourceUsage(opts: { full: boolean }): Promise<SubstrateUsage>
 
   /**
    * Run a shell command inside a workspace and collect its output. Rejects

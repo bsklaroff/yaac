@@ -161,7 +161,7 @@ happens a layer up, in `recordedTranscript`.
   `client.ts` (the PGlite handle) and `schema.ts` (the drizzle tables) are
   internal, off the barrel, so no other layer can name a table or build a
   query. The database driver packages are eslint-banned everywhere else.
-- **`runtime/`**: three sealed folders.
+- **`runtime/`**: four sealed folders.
   - `agents/`: the tui/acp drivers over one control-mode connection,
     per-tool launch commands and status classifiers, the acp pane bridge,
     the Agent Client Protocol (one conversation over acpd's socket, and
@@ -174,6 +174,8 @@ happens a layer up, in `recordedTranscript`.
   - `terminals/`: the PTY bridge, listing, creating and killing a
     workspace's tmux windows, and the port tunnel
     (docs/port-forward-tunnel.md).
+  - `usage/`: the server health overlay's hour of CPU and memory history,
+    sampled from the driver every minute (docs/server-health.md).
 
   All of it runs on whichever driver is registered, so the containerless
   driver gets conduction, observation, attach and report assembly without
@@ -196,7 +198,8 @@ happens a layer up, in `recordedTranscript`.
   client, and every image tag), and `substrate` (client, informers, exec,
   pod-spec fragments, the streaming child-process runner, the datapath's
   names and ports). Beside them are only `lifecycle.ts` (attach and
-  detach) and `steps.ts` (the driver's reconcile steps). The assembly can
+  detach), `steps.ts` (the driver's reconcile steps) and `usage.ts` (the
+  cluster's resource usage, docs/server-health.md). The assembly can
   be the barrel because the contract sits below the folders: assembly →
   folders → contract.
 

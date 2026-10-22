@@ -10,6 +10,7 @@ import {
 } from './lifecycle'
 import { assertHostCanLaunch } from './check'
 import { containerlessWorkspacePaths } from './paths'
+import { containerlessUsage } from './usage'
 import { dialWorkspacePort, forgetPorts, workspacePorts } from './ports'
 import {
   countWorkspaces,
@@ -80,6 +81,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     forwardPort: () => unsupported('forwarding a port'),
     unforwardPort: () => unsupported('stopping a forward'),
     dismissPort: () => false,
+    resourceUsage: (opts) => containerlessUsage(opts),
     declareForwards: (_workspaceId, forwards) =>
       forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
     // For a client on another machine; local clients dial directly.

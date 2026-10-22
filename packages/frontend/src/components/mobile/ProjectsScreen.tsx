@@ -4,6 +4,7 @@ import { MobileHeader } from '#components/mobile/MobileHeader'
 import { NewProjectButton } from '#components/NewProjectButton'
 import { listedProjects, ProjectChip } from '#components/ProjectRail'
 import { ServersButton } from '#components/ServerBadge'
+import { ServerHealthButton } from '#components/ServerHealthOverlay'
 import { SettingsButton } from '#components/SettingsButton'
 import { UserSwitcher } from '#components/UserSwitcher'
 import { EmptyState } from '#components/ui/EmptyState'
@@ -96,6 +97,7 @@ export function ProjectsScreen({
           <UserSwitcher variant="row" />
           {/* The welcome has its own Add project button. */}
           {!welcome && <NewProjectButton variant="row" />}
+          <ServerHealthButton variant="row" />
           <ServersButton variant="row" />
           <SettingsButton variant="row" />
         </div>

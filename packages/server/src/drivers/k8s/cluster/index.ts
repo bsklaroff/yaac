@@ -29,6 +29,7 @@ export {
 export { reconcileNodeSet } from './node-sync'
 export {
   PROJECT_REGISTRY_PORT,
+  REGISTRY_APP_LABEL,
   REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
   buildRegistryRetentionScript,
@@ -81,6 +82,7 @@ export {
   type ImageLayer,
 } from './image-tags'
 export {
+  MAIN_REGISTRY_APP_LABEL,
   ensureMainRegistry,
   mainRegistryExec,
 } from './main-registry'

@@ -32,6 +32,7 @@ export {
   listObjects,
   patchObject,
   readObject,
+  readPath,
 } from './api'
 export type { ObjectRef } from './api'
 export { bindInstall, installId, installNameKey, legacyDataDirHash, legacyNameKey } from './install-id'
@@ -49,6 +50,8 @@ export {
   CA_BUNDLE_KEY,
   CA_CONFIGMAP_KEY,
   CA_CONFIGMAP_NAME,
+  GVISOR_NODE_LABEL,
+  GVISOR_PENDING_TAINT,
   NESTED_ENGINE_CAPS,
   NESTED_GRAPHROOT_PATH,
   NESTED_GRAPHROOT_VOLUME,
@@ -56,6 +59,7 @@ export {
   SSH_AGENT_SOCKET_PATH,
   RUNTIME_CLASS_GVISOR,
   RUNTIME_CLASS_GVISOR_NESTED,
+  WORKSPACE_POOL_KEY,
   runtimeClassSpec,
   sentryTmpfsAnnotations,
   installSecurityContext,
