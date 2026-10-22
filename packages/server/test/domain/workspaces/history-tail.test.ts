@@ -7,6 +7,7 @@ import { recordAgentSessions } from '#db/agent-session-store'
 import { closeDb } from '#db/client'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { observeConversation, stopHistoryTails } from '#domain/workspaces/history-tail'
+import { ACP_ATTACH_WAIT_MS } from '#runtime/agents/acp-bridge'
 import type { AcpServerMessage } from '@yaac/shared/acp'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
@@ -169,9 +170,15 @@ describe('observeConversation', () => {
     expect(unknown.closedWith).toBe('no such conversation')
 
     // An acp conversation is the chat bridge's, which closes a socket when
-    // no agent is connected, as it does an owner's pane.
+    // no agent comes up, as it does an owner's pane.
     const acp = new FakeSocket()
-    await observeConversation(PROJECT, WORKSPACE, ACP_SESSION, acp)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      await observeConversation(PROJECT, WORKSPACE, ACP_SESSION, acp)
+      await vi.advanceTimersByTimeAsync(ACP_ATTACH_WAIT_MS)
+    } finally {
+      vi.useRealTimers()
+    }
     expect(acp.sent).toEqual([{ type: 'health', connected: false }])
     expect(acp.closedWith).toBe('no live conversation')
   })

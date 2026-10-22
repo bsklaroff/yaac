@@ -17,8 +17,9 @@ const named = new Set<string>()
 /** Handle keys → the pid of the pane process the conversation attached to,
  *  where known. */
 const panePids = new Map<string, string>()
-/** Callers of `whenAcpConversation` waiting on a handle key, each for any
- *  conversation or only one attached to a given pane pid. */
+/** Callers waiting on a handle key (`whenAcpConversation`) or a session key
+ *  (`whenAcpSession`), each for any conversation or only one attached to a
+ *  given pane pid. */
 const waiters = new Map<string, Set<{ panePid?: string; wake: (conversation: AcpConversation) => void }>>()
 
 function sessionKey(projectId: string, workspaceId: string, agentSessionId: string): string {
@@ -45,10 +46,13 @@ export function registerAcpConversation(
   if (names.panePid !== undefined) panePids.set(handle, names.panePid)
   else panePids.delete(handle)
   if (names.agentSessionId === undefined) return
-  byName.set(sessionKey(projectId, workspaceId, names.agentSessionId), conversation)
+  const session = sessionKey(projectId, workspaceId, names.agentSessionId)
+  byName.set(session, conversation)
   named.add(handle)
-  for (const waiter of [...waiters.get(handle) ?? []]) {
-    if (waiter.panePid === undefined || waiter.panePid === names.panePid) waiter.wake(conversation)
+  for (const key of [handle, session]) {
+    for (const waiter of [...waiters.get(key) ?? []]) {
+      if (waiter.panePid === undefined || waiter.panePid === names.panePid) waiter.wake(conversation)
+    }
   }
 }
 
@@ -106,11 +110,41 @@ export function whenAcpConversation(
   if (found !== undefined && named.has(key) && (panePid === undefined || panePids.get(key) === panePid)) {
     return Promise.resolve(found)
   }
+  return nextRegistered(key, timeoutMs, { panePid })
+}
+
+/**
+ * The live conversation for a pane's `acp:<id>` target: at once, or once a
+ * starting or reconnecting workspace registers it. Resolves `undefined` if
+ * none is registered within `timeoutMs`, or at once when `signal` aborts
+ * (the pane left).
+ */
+export function whenAcpSession(
+  projectId: string,
+  workspaceId: string,
+  agentSessionId: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<AcpConversation | undefined> {
+  const key = sessionKey(projectId, workspaceId, agentSessionId)
+  const found = byName.get(key)
+  return found !== undefined ? Promise.resolve(found) : nextRegistered(key, timeoutMs, { signal })
+}
+
+/** The next conversation registered under `key` (attached to `panePid`,
+ *  when given), or `undefined` after `timeoutMs` or once `signal` aborts. */
+function nextRegistered(
+  key: string,
+  timeoutMs: number,
+  { panePid, signal }: { panePid?: string | undefined; signal?: AbortSignal | undefined } = {},
+): Promise<AcpConversation | undefined> {
   return new Promise((resolve) => {
+    const abort = (): void => waiter.wake(undefined)
     const waiter = {
       ...(panePid !== undefined ? { panePid } : {}),
       wake: (conversation: AcpConversation | undefined): void => {
         clearTimeout(timer)
+        signal?.removeEventListener('abort', abort)
         pending.delete(waiter)
         if (pending.size === 0 && waiters.get(key) === pending) waiters.delete(key)
         resolve(conversation)
@@ -120,6 +154,7 @@ export function whenAcpConversation(
     waiters.set(key, pending)
     pending.add(waiter)
     const timer = setTimeout(() => waiter.wake(undefined), timeoutMs)
+    signal?.addEventListener('abort', abort)
   })
 }
 

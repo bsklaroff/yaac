@@ -11,10 +11,10 @@ const INITIAL_RECONNECT_DELAY_MS = 500
 const MAX_RECONNECT_DELAY_MS = 10_000
 
 /**
- * How long a terminal must stay disconnected before WorkspaceTerminal shows
- * a notice. Most drops heal within a second (the terminal re-attaches and
- * tmux repaints), so this must outlast the first reconnect attempt (the
- * initial delay plus an attach) to avoid announcing them.
+ * How long a terminal or chat pane must stay disconnected before it shows a
+ * notice. Most drops heal within a second (the pane re-attaches and
+ * repaints), so this must outlast the first reconnect attempt (the initial
+ * delay plus an attach) to avoid announcing them.
  */
 export const DISCONNECT_NOTICE_DELAY_MS = 1_500
 
