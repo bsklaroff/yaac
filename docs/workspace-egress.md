@@ -236,8 +236,9 @@ Inputs carry the label `yaac.proxy-input=<kind>` and outputs
 **When a registration changes**, the proxy re-checks the workspace's open
 tunnels and in-flight plain-HTTP requests (it checks the allowlist and picks
 injection rules only once per tunnel or request). A connection whose host is no
-longer allowed, or whose rules or redirect changed, is dropped and reconnects
-under the new registration. Others stay up, so widening drops nothing, while a
+longer allowed, or whose rules, redirect or exact entry (which alone admits
+a non-public address) changed, is dropped and reconnects under the new
+registration. Others stay up, so widening drops little, while a
 warm-time process holding a tunnel across a narrowing claim loses it. The npm
 cache is the exception: its policy keeps an established flow after the label is
 removed, and that flow only brings npm content in.
@@ -316,6 +317,184 @@ hosts, at `http://yaac.internal/api/workspace/git/<project id>.git`
 (docs/hosted-projects.md). The proxy forwards only those smart-HTTP paths,
 with the headers git needs (`yaac-relay.ts`). The server checks that the
 named workspace belongs to that project.
+
+## Non-public destinations
+
+Two layers keep workspaces and builds off the cluster's internal network and
+the cloud's metadata services. Reaching an internal address through the proxy
+takes both: an exact entry for it in the project's allowlist, and the network
+operator opening it. The two exceptions are below.
+
+**The proxy refuses** (`k8s/proxy/upstream.ts`). Before every upstream dial a
+workspace can steer (transparent HTTPS, tunneled or MITM'd; plain HTTP; the
+SSH tunnel's CONNECT), the proxy resolves the destination once and refuses it
+if any address is not publicly routable. That is anything in the IANA IPv4
+special-purpose registry (private, CGNAT, loopback, link-local,
+documentation, benchmarking, multicast and the rest), plus Azure's
+WireServer at 168.63.129.16, a metadata service on a public address. The
+dial then goes to exactly the addresses checked, so a name that answers
+differently the second time (DNS rebinding) cannot slip past.
+
+A refused CONNECT or plain-HTTP request gets a 403 with the reason, and
+transparent TLS, which has nowhere to put one, is dropped. Both are logged.
+A refusal is not recorded as a blocked host, since the allowlist did admit
+it.
+
+The exception is an **exact** allowlist entry for the host, a hostname or an
+IPv4 address. Neither `*` nor a wildcard such as `*.corp.example` admits a
+non-public address: a wildcard covers names in zones others control, and
+plenty of public names answer privately (an AWS internal load balancer
+under `*.amazonaws.com`, or CoreDNS's `169-254-169-254.default.pod.cluster.local`).
+A dial admitted this way:
+
+- has a 5-second connect timeout, because the floor below drops it silently
+  unless the operator opened it. Its error says so and points here;
+- gets a connection of its own, outside the proxy's shared keep-alive pool,
+  which is keyed by host and port, not by workspace.
+
+Destinations the server names, not a workspace, are not checked: an e2e
+upstream redirect's target, the mama relay, the stream relay into a workspace
+pod, and the proxy's own apiserver and DNS traffic. Under `USE_TOR`, a
+destination Tor carries is not resolved locally, since that would leak the
+name, and Tor dials from its exit, off the cluster's network. Internal names
+and non-public addresses skip Tor and are checked like any direct dial.
+
+**The network floor** (`wideEgress` in `drivers/k8s/cluster/policy-manifests.ts`)
+is shared by the proxy's and the builder pods' egress policies. It allows
+public addresses only: 0.0.0.0/0 less the same special-purpose ranges and
+168.63.129.16, and IPv6 global unicast (2000::/3) less its special-purpose
+blocks. That leaves out ULA, where AWS (fd00:ec2::254, and EKS Pod Identity
+at fd00:ec2::23) and GCE (fd20:ce::254) serve IPv6 metadata, and
+link-local. It allows back only what yaac needs:
+
+- DNS on port 53: the cluster resolver by selector (`k8s-app: kube-dns` in
+  `kube-system`), that Service's own ClusterIP, and 169.254.0.0/16. The last
+  two are for NodeLocal DNSCache. In kube-proxy-iptables mode it answers on
+  the ClusterIP and skips kube-proxy's DNAT, so no selector matches; in IPVS
+  mode it answers on a link-local address;
+- the nodes, on every port but NFS and the kind fronting's
+  (docs/server-in-cluster.md "The ingress policy is the wall");
+- for the proxy, the server's mama listener and workspace pods' streamd by
+  selector, and the apiserver its watches read, at the real endpoints the
+  `kubernetes` Service's EndpointSlices list (re-read by node-sync, so a
+  moved control plane is followed);
+- for builders, the main registry by selector, which their parent pulls,
+  pushes and step cache all use.
+
+Selector rules also match a dial to a Service address, because policy sees
+the destination after kube-proxy's DNAT. The gateway Calico gives every pod
+(169.254.1.1, and an fe80:: address on IPv6) is a next hop, not a
+destination, so the floor does not affect it.
+
+The two allowances above that are not selectors are where "takes both" does
+not hold. An exact allowlist entry naming a node address reaches it, on any
+port but NFS and the fronting's, with no operator opening; a CONNECT on the
+SSH tunnel listener chooses its port, so that includes the kubelet and, on
+kind and k3s, the apiserver. An exact entry naming a DNS address reaches
+port 53 on it. Under `*` the proxy refuses both, as it does every non-public
+address.
+
+**What this changes for an existing install.** A `*` workspace is refused a
+public name that resolves privately, and builders can no longer reach
+private addresses at all. A name that worked silently before now fails:
+AWS interface VPC endpoints with private DNS (ECR, S3, STS and the rest),
+Azure Private Link, corporate mirrors and git servers. Each needs an exact
+allowlist entry and an operator opening, below.
+
+### IPv4 only
+
+The proxy dials IPv4 only. It refuses an IPv6 destination outright, so
+`http://[fd00::5]/` or a CONNECT to `[2606:4700::1111]:22` gets a 403. A
+name is resolved to its IPv4 addresses only. An allowlist cannot name an IPv6
+address either: an entry may hold only letters, digits, `.`, `-`, `_` and
+`*`. The datapath could not deliver IPv6 anyway: netd redirects IPv4 only,
+and the proxy's DNS stub answers A queries only, so a workspace never
+learns an IPv6 address to dial.
+
+### HTTPS to an IP address
+
+A request to `https://10.20.0.5/` does not work, whatever the allowlist
+says. TLS clients send no SNI for an IP address, and the transparent HTTPS
+listener routes by SNI alone, so it drops a ClientHello without one. Plain
+HTTP (routed by the Host header) and SSH (by the CONNECT target) reach an
+allowlisted address. For HTTPS, allowlist a hostname that resolves to it, in
+the proxy's DNS, and use that name.
+
+An allowlist entry and the destination are compared in one spelling: the
+destination is read as a URL parser reads it, so `0x0a.20.0.5` or
+`169082885` match the entry `10.20.0.5`, and names are lowercased.
+
+### Opening an internal destination
+
+Only the network operator can open one, by applying a NetworkPolicy of their
+own in yaac's namespace. NetworkPolicy allows add up across every policy that
+selects a pod, so a separate policy selecting the proxy (`app: yaac-proxy`)
+or builders (`yaac.role: builder`) widens their egress without touching
+yaac's. yaac never writes, prunes or deletes a policy it does not own, so the
+opening survives server restarts and reinstalls (`yaac cluster delete`
+removes it with the namespace). Creating one takes kubectl access to the
+namespace, which no workspace has.
+
+An opening admits nothing on its own: the project's allowlist must still
+hold an exact entry for the destination, not `*` or a wildcard. For an
+internal git server at `git.corp.example` (10.20.0.5):
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: operator-git-internal
+  namespace: yaac
+spec:
+  podSelector:
+    matchLabels:
+      app: yaac-proxy
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.20.0.5/32
+      ports:
+        - protocol: TCP
+          port: 443
+```
+
+and `git.corp.example` in the project's allowlist. Builds that need an
+internal package mirror get the same kind of policy with `podSelector:
+{matchLabels: {yaac.role: builder}}`. Builds do not pass through the proxy,
+so the opening alone admits them.
+
+On GCP, a project whose workspaces need the metadata server (for workload
+credentials, say) opens it for the proxy:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: operator-gce-metadata
+  namespace: yaac
+spec:
+  podSelector:
+    matchLabels:
+      app: yaac-proxy
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+```
+
+and names `metadata.google.internal` in its allowlist. Every workspace of
+every project whose allowlist names it then reads what the metadata server
+hands the node, so open it only where that is what is wanted. Never open it
+on Hetzner, where a worker's metadata holds the cluster join token
+(infra/hetzner-k3s/README.md "Security notes").
+
+The e2e suites open their mock pods to the proxy the same way
+(`openToProxy` in `test/support/cluster.ts`).
 
 ## Which pods are redirected
 

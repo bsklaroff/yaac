@@ -2,8 +2,6 @@ import { describe, it, expect } from 'vitest'
 import net from 'node:net'
 import tls from 'node:tls'
 import {
-  isInternalUpstream,
-  normalizeRemoteAddr,
   parseSniFromClientHello,
   peekClientHelloSni,
   splitHostHeader,
@@ -133,44 +131,6 @@ describe('parseSniFromClientHello', () => {
     expect(parseSniFromClientHello(Buffer.from('SSH-2.0-OpenSSH\r\n'))).toBeNull()
     expect(parseSniFromClientHello(buildClientHello())).toBeNull()
     expect(parseSniFromClientHello(buildClientHello('x.test').subarray(0, 10))).toBeNull()
-  })
-})
-
-describe('normalizeRemoteAddr', () => {
-  it('unwraps IPv4-mapped IPv6 addresses', () => {
-    expect(normalizeRemoteAddr('::ffff:10.244.0.12')).toBe('10.244.0.12')
-    expect(normalizeRemoteAddr('::FFFF:192.168.0.1')).toBe('192.168.0.1')
-  })
-
-  it('passes plain addresses through', () => {
-    expect(normalizeRemoteAddr('10.244.0.12')).toBe('10.244.0.12')
-    expect(normalizeRemoteAddr('::1')).toBe('::1')
-  })
-
-  it('maps absent addresses to null (fail closed)', () => {
-    expect(normalizeRemoteAddr(undefined)).toBeNull()
-    expect(normalizeRemoteAddr(null)).toBeNull()
-    expect(normalizeRemoteAddr('')).toBeNull()
-  })
-})
-
-describe('isInternalUpstream', () => {
-  it.each([
-    'localhost', 'foo.localhost', '127.0.0.1', '127.1.2.3', '0.0.0.0',
-    '10.96.227.19', '172.16.0.1', '172.31.255.255', '192.168.1.1',
-    '169.254.1.1', '100.64.0.1', '100.127.255.255',
-    '::1', '::', '[::1]', 'fc00::1', 'fd12::3', 'fe80::1', '::ffff:10.0.0.1',
-    'yaac-proxy.yaac.svc', 'echo.yaac-test.svc.cluster.local', 'foo.cluster.local',
-  ])('treats %s as internal', (host) => {
-    expect(isInternalUpstream(host)).toBe(true)
-  })
-
-  it.each([
-    'example.com', 'api.anthropic.com', 'github.com',
-    '8.8.8.8', '1.1.1.1', '172.32.0.1', '100.128.0.1', '169.255.0.1',
-    '2606:4700::1111', 'svc.example.com',
-  ])('treats %s as external', (host) => {
-    expect(isInternalUpstream(host)).toBe(false)
   })
 })
 

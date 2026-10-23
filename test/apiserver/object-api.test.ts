@@ -25,6 +25,7 @@ import {
   buildWorkspaceEgressNpManifest,
   buildWorkspaceIngressLockNpManifest,
 } from '@yaac/server/drivers/k8s/cluster/policy-manifests'
+import { PROXY_APP_NAME, PROXY_EGRESS_NP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 
 const NS = 'yaac'
 let kubectlBin = ''
@@ -54,7 +55,7 @@ describe('object writes and reads', () => {
       buildWorkspaceEgressNpManifest(cidrs),
       buildWorkspaceIngressLockNpManifest(),
       buildProxyIngressNpManifest(cidrs),
-      buildProxyEgressNpManifest(cidrs),
+      buildProxyEgressNpManifest(cidrs, ['10.96.0.10/32'], { cidrs: ['172.18.0.3/32'], ports: [6443] }),
       buildServerIngressNpManifest(cidrs),
       buildServerFrontIngressNpManifest([{ podSelector: { matchLabels: { app: 'fronting' } } }]),
       buildEgressWorldDenyNpManifest(),
@@ -73,6 +74,33 @@ describe('object writes and reads', () => {
       expect(peers(read!), name).toEqual(peers(manifest))
       expect(JSON.stringify(read)).not.toContain('"_from"')
     }
+  })
+
+  // An internal destination is opened by the network operator's own policy
+  // (docs/workspace-egress.md "Opening an internal destination"). Allows add
+  // up across every policy selecting a pod, so the opening only has to
+  // outlive yaac re-applying its own policies, which leave it untouched.
+  it('keeps an operator policy opening a CIDR to the proxy across yaac\'s re-apply', async () => {
+    const opening = {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata: { name: 'operator-git-internal', namespace: NS },
+      spec: {
+        podSelector: { matchLabels: { app: PROXY_APP_NAME } },
+        policyTypes: ['Egress'],
+        egress: [{ to: [{ ipBlock: { cidr: '10.20.0.5/32' } }], ports: [{ protocol: 'TCP', port: 443 }] }],
+      },
+    }
+    execFileSync(kubectlBin, ['apply', '-f', '-'], { input: JSON.stringify(opening) })
+    await applyObject(buildProxyEgressNpManifest(['172.18.0.2/32'], [], { cidrs: [], ports: [] }))
+    await applyObject(buildEgressWorldDenyNpManifest())
+
+    type Policy = { spec: { podSelector: unknown; egress: Array<{ to: Array<{ ipBlock?: { except?: string[] } }> }> } }
+    expect(stored<Policy>('networkpolicy', 'operator-git-internal').spec).toEqual(opening.spec)
+    // yaac's own policy still denies the range; the opening is the operator's.
+    const own = stored<Policy>('networkpolicy', PROXY_EGRESS_NP_NAME)
+    expect(own.spec.podSelector).toEqual(opening.spec.podSelector)
+    expect(own.spec.egress[0].to[0].ipBlock?.except).toContain('10.0.0.0/8')
   })
 
   it('prunes what yaac stops sending, but keeps what a merge patch set', async () => {

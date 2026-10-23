@@ -49,7 +49,8 @@ import {
   runStreamingProcess,
 } from '#drivers/k8s/substrate'
 import {
-  wideEgress,
+  builderEgress,
+  clusterDnsCidrs,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
@@ -409,11 +410,8 @@ async function streamContextToPod(
   }
 }
 
-/** Builder egress: anywhere but what `wideEgress` cuts out, each of which
- *  would give a `RUN` step the server's or a node's authority. The
- *  world-deny policy excludes builders, so this is the policy that applies
- *  to them. */
-function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<string, unknown> {
+/** The NetworkPolicy applying `builderEgress` to every builder pod. */
+function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[], dnsCidrs: string[]): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
@@ -424,7 +422,7 @@ function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<st
     spec: {
       podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
       policyTypes: ['Egress'],
-      egress: wideEgress(nodeCidrs),
+      egress: builderEgress(nodeCidrs, dnsCidrs),
     },
   }
 }
@@ -432,7 +430,7 @@ function buildBuilderEgressNetworkPolicyManifest(nodeCidrs: string[]): Record<st
 /** Apply the builder-role admission guard and egress policy. */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
-  await applyObject(buildBuilderEgressNetworkPolicyManifest(await nodeIpBlocks()))
+  await applyObject(buildBuilderEgressNetworkPolicyManifest(await nodeIpBlocks(), await clusterDnsCidrs()))
 }
 
 /**

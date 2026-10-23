@@ -5,7 +5,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { requireCluster, useTestNamespace, createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { requirePodman, TEST_PROXY_CONFIG } from '#support/cluster'
+import { openTestPodsToProxy, requirePodman, TEST_PROXY_CONFIG } from '#support/cluster'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { resolveTestBaseImageRef } from '#support/test-pods'
 import { startWorkspacePod, waitForPod } from '#support/test-pods'
@@ -274,6 +274,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
     })
     await client.ensureRunning()
     const proxyHost = await proxyServiceClusterIp()
+    await openTestPodsToProxy()
     const echo = await startEchoPod(echoName)
     echoHost = echo.host
     const redirect = { host: echoHost, port: ECHO_PORT, tls: false }

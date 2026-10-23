@@ -6,7 +6,8 @@ import { promisify } from 'node:util'
 import { projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/install/podman'
-import { deleteObjects, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { applyObject, deleteObjects, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { installId } from '@yaac/server/drivers/k8s/substrate/install-id'
 import { LABEL_WORKSPACE_ID } from '@yaac/server/drivers/k8s/substrate/pods'
 import { LABEL_INSTALL_ID } from '@yaac/server/drivers/k8s/substrate/storage-constants'
@@ -37,6 +38,30 @@ export const TEST_PROXY_CONFIG: ProxyClientConfig = {
 }
 
 let proxyControlForward: Promise<KubectlForward> | null = null
+
+/**
+ * Open `to` to the egress proxy, the way a network operator opens an
+ * internal destination (docs/workspace-egress.md "Opening an internal
+ * destination"). The e2e mocks are internal addresses, which the proxy's
+ * own egress denies. `name` names the policy, so a repeat call replaces it.
+ */
+export async function openToProxy(name: string, to: Array<Record<string, unknown>>): Promise<void> {
+  await ensureNamespace()
+  await applyObject({
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    metadata: { name, namespace: k8sNamespace() },
+    spec: { podSelector: { matchLabels: { app: PROXY_APP_NAME } }, policyTypes: ['Egress'], egress: [{ to }] },
+  })
+}
+
+/** The policy `openTestPodsToProxy` applies. */
+export const TEST_PODS_OPENING = 'e2e-test-pods'
+
+/** Open every pod labelled `yaac.test` (mocks, echo servers) to the proxy. */
+export function openTestPodsToProxy(): Promise<void> {
+  return openToProxy(TEST_PODS_OPENING, [{ podSelector: { matchLabels: { 'yaac.test': 'true' } } }])
+}
 
 /** The port-forwarded proxy control origin (see TEST_PROXY_CONFIG). */
 async function testProxyControlOrigin(): Promise<string> {

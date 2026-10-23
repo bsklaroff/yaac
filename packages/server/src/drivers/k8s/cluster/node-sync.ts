@@ -1,6 +1,6 @@
 import { applyObject, listObjects } from '#drivers/k8s/substrate'
 import { serverLog } from '#lib/log'
-import { nodeIpBlocks } from './cluster-cidrs'
+import { apiserverEndpoints, clusterDnsCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
 import { syncNpmCacheNodes } from './npm-cache'
 import {
@@ -27,7 +27,7 @@ import { applyProjectRegistryIngress } from './project-registry'
  *    pod never holds up the reconcile pass; it is retried on later passes.
  */
 
-/** The node address set the policies last rendered. */
+/** The node, DNS and apiserver address sets the policies last rendered. */
 let renderedAddresses: string | null = null
 /** Nodes (`name/uid`) whose hosts.toml files are written. */
 const hostsWritten = new Set<string>()
@@ -40,18 +40,21 @@ interface RawNode {
 }
 
 /**
- * Re-render the node-address policies if the address set changed, and
+ * Re-render the node-address policies if the address set (or the DNS
+ * Service's or apiserver's, which the proxy's egress names) changed, and
  * start writing hosts.toml to Ready nodes that do not have it yet.
  */
 export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
   const nodeCidrs = await nodeIpBlocks({ fresh: true })
-  const addresses = nodeCidrs.join(',')
+  const dnsCidrs = await clusterDnsCidrs()
+  const apiserver = await apiserverEndpoints()
+  const addresses = JSON.stringify([nodeCidrs, dnsCidrs, apiserver])
   if (addresses !== renderedAddresses) {
     for (const manifest of [
       buildServerIngressNpManifest(nodeCidrs),
       buildWorkspaceEgressNpManifest(nodeCidrs),
       buildProxyIngressNpManifest(nodeCidrs),
-      buildProxyEgressNpManifest(nodeCidrs),
+      buildProxyEgressNpManifest(nodeCidrs, dnsCidrs, apiserver),
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)
     await applyMainRegistryIngress(nodeCidrs)

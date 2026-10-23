@@ -4,11 +4,11 @@ import path from 'node:path'
 import os from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { applyObject, deleteObject, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { kubectl } from '@yaac/test-utils/kubectl'
 import { resolveTestBaseImageRef, waitForPod } from '#support/test-pods'
+import { openTestPodsToProxy } from '#support/cluster'
 
 const execFileAsync = promisify(execFile)
 
@@ -78,7 +78,7 @@ async function startMockPod(
   opts: MockPodOpts = {},
 ): Promise<string> {
   const ns = k8sNamespace()
-  await ensureNamespace()
+  await openTestPodsToProxy()
   const image = await resolveTestBaseImageRef()
 
   await applyObject({

@@ -6,11 +6,12 @@ beforeEach(() => { vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns') })
 
 import {
   buildEgressWorldDenyNpManifest,
+  buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
-  wideEgress,
+  builderEgress,
 } from '#drivers/k8s/cluster'
 import {
   EGRESS_WORLD_DENY_NAME,
@@ -23,6 +24,7 @@ import {
   SERVER_INGRESS_NP_NAME,
   SERVER_MAMA_PORT,
   SERVER_POD_PORT,
+  POD_STREAM_PORT,
   WORKSPACE_EGRESS_NP_NAME,
 } from '#drivers/k8s/substrate/proxy-constants'
 import { LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
@@ -162,27 +164,49 @@ describe('buildServerFrontIngressNpManifest', () => {
   })
 })
 
-describe('wideEgress', () => {
+describe('builderEgress', () => {
   // A builder RUN step or proxy upstream reaching the kind fronting's node
   // port would reach the server as if it were the node, and one reaching a
-  // node-hosted NFS export or the metadata service could read what only
-  // nodes may. Everything else stays open.
-  const rules = wideEgress(['10.89.0.2/32', '192.168.1.1/32']) as Array<{
-    to: Array<{ ipBlock: { cidr: string; except?: string[] } }>
+  // node-hosted NFS export, a metadata service or any other internal
+  // address could read what only the cluster may. Only public addresses,
+  // DNS and the nodes stay open; the operator opens anything else.
+  const rules = builderEgress(['10.89.0.2/32', '192.168.1.1/32'], ['10.96.0.10/32']) as Array<{
+    to: Array<{ ipBlock?: { cidr: string; except?: string[] } }>
     ports?: Array<{ protocol: string; port: number; endPort: number }>
   }>
 
-  it('reaches everything off the nodes but the metadata service, on every port', () => {
+  it('reaches public addresses on every port, and no special-purpose range', () => {
     const [world] = rules
     expect(world.ports).toBeUndefined()
-    expect(world.to).toContainEqual({
-      ipBlock: { cidr: '0.0.0.0/0', except: ['10.89.0.2/32', '192.168.1.1/32', '169.254.169.254/32'] },
+    const [v4, v6] = world.to.map((p) => p.ipBlock!)
+    expect(v4.cidr).toBe('0.0.0.0/0')
+    for (const cidr of [
+      '10.89.0.2/32', '192.168.1.1/32', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+      '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '168.63.129.16/32', '224.0.0.0/3',
+    ]) expect(v4.except).toContain(cidr)
+    // ULA (fd00:ec2::254, fd20:ce::254) and link-local lie outside it.
+    expect(v6).toEqual({ cidr: '2000::/3', except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20'] })
+  })
+
+  // NodeLocal DNSCache answers on the DNS Service's own ClusterIP (no DNAT
+  // to a CoreDNS pod) or on link-local, depending on its mode.
+  it('reaches DNS by selector, at the DNS Service, and on link-local', () => {
+    expect(rules[1]).toEqual({
+      to: [
+        {
+          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+          podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+        },
+        { ipBlock: { cidr: '10.96.0.10/32' } },
+        { ipBlock: { cidr: '169.254.0.0/16' } },
+      ],
+      ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
     })
   })
 
   it('reaches the nodes on every port but the fronting\'s and NFS', () => {
-    const [, nodes] = rules
-    expect(nodes.to.map((p) => p.ipBlock.cidr)).toEqual(['10.89.0.2/32', '192.168.1.1/32'])
+    const [, , nodes] = rules
+    expect(nodes.to.map((p) => p.ipBlock?.cidr)).toEqual(['10.89.0.2/32', '192.168.1.1/32'])
     const covers = (protocol: string, port: number): boolean => (nodes.ports ?? [])
       .some((p) => p.protocol === protocol && p.port <= port && port <= p.endPort)
     for (const [protocol, port] of [['TCP', SERVER_FRONT_PORT], ['TCP', 2049], ['UDP', 2049]] as const) {
@@ -192,5 +216,40 @@ describe('wideEgress', () => {
       expect(covers('TCP', port), String(port)).toBe(true)
     }
     for (const port of [1, 53, 2048, 2050, 65535]) expect(covers('UDP', port), String(port)).toBe(true)
+  })
+
+  it('reaches the main registry by selector, in its own namespace', () => {
+    expect(rules[3]).toEqual({
+      to: [{
+        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'yaac' } },
+        podSelector: { matchLabels: { app: 'yaac-main-registry' } },
+      }],
+      ports: [{ protocol: 'TCP', port: 5000 }],
+    })
+  })
+})
+
+describe('buildProxyEgressNpManifest', () => {
+  const egressOf = (apiserver: { cidrs: string[]; ports: number[] }) =>
+    (buildProxyEgressNpManifest(['10.89.0.2/32'], [], apiserver) as unknown as { spec: Spec }).spec.egress!
+
+  it('adds the proxy\'s in-cluster peers to the builders\' floor, by selector', () => {
+    const egress = egressOf({ cidrs: [], ports: [] })
+    // The same floor, less the builders' registry rule.
+    expect(egress.slice(0, 3)).toEqual(builderEgress(['10.89.0.2/32'], []).slice(0, 3))
+    expect(egress.slice(3)).toEqual([
+      { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [{ protocol: 'TCP', port: SERVER_MAMA_PORT }] },
+      {
+        to: [{ podSelector: { matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }] } }],
+        ports: [{ protocol: 'TCP', port: POD_STREAM_PORT }],
+      },
+    ])
+  })
+
+  it('reaches the apiserver at its real endpoints when they are published', () => {
+    expect(egressOf({ cidrs: ['172.20.0.10/32', '172.20.0.11/32'], ports: [443] }).at(-1)).toEqual({
+      to: [{ ipBlock: { cidr: '172.20.0.10/32' } }, { ipBlock: { cidr: '172.20.0.11/32' } }],
+      ports: [{ protocol: 'TCP', port: 443 }],
+    })
   })
 })

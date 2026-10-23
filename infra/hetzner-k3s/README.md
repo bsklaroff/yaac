@@ -231,11 +231,13 @@ done by hand.
 
 - **User data is readable from the node's metadata service**, and a
   worker's holds the k3s agent token. Pods cannot reach it: builder and
-  proxy egress exclude the metadata address. Workspaces reach the internet
-  only through yaac's proxy, which dials whatever a workspace's allowlist
-  admits, the metadata address included under `*`, so the proxy's egress
-  NetworkPolicy is the only barrier on that path. The control node's user
-  data holds no secret.
+  proxy egress deny every non-public address, the metadata service's
+  included. Workspaces reach the internet only through yaac's proxy, which
+  refuses a non-public address unless the project's allowlist has an exact
+  entry for it, and even then its egress policy drops the dial unless an
+  operator opens it (docs/workspace-egress.md "Non-public destinations").
+  Never open 169.254.169.254 to the proxy or builders here. The control
+  node's user data holds no secret.
 - **The NFS export trusts client-claimed uids** (`no_root_squash`) and is
   open to the node subnet. A pod on another node reaches it SNATed to that
   node's address, so the export list cannot keep pods out. NetworkPolicy

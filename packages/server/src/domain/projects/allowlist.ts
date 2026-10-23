@@ -11,8 +11,9 @@ import { authorizeProject, type Actor } from '#domain/access'
  * registered with the proxy, at create or claim.
  */
 
-/** A bare hostname or wildcard pattern as `hostMatchesPattern` reads it; no
- *  scheme, path or port. */
+/** A bare hostname, IPv4 address or wildcard pattern as `hostMatchesPattern`
+ *  reads it; no scheme, path or port, and no IPv6 address, since the proxy
+ *  dials IPv4 only (docs/workspace-egress.md "IPv4 only"). */
 const HOST_PATTERN = /^[a-z0-9*._-]+$/
 
 /** The project's allowlist. */

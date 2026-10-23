@@ -259,7 +259,8 @@ reach the server as the node and, with a loopback `Host`, be its owner.
 Workspace pods cannot: their egress reaches node addresses only on the netd
 listener range. The two kinds of pod that may dial node addresses carry
 egress policies that allow every node port except that one and NFS, and
-every address but the metadata service (`wideEgress`):
+public addresses but no other internal ones (`wideEgress`,
+docs/workspace-egress.md "Non-public destinations"):
 
 - builder pods, which run `RUN` steps from agent-editable Dockerfiles, get
   it with each build;

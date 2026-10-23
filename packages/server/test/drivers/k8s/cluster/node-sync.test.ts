@@ -18,6 +18,7 @@ interface Applied {
   spec?: {
     nodeName?: string
     ingress?: Array<{ from?: Array<{ ipBlock?: { cidr: string } }> }>
+    egress?: Array<{ to?: Array<{ ipBlock?: { cidr: string } }>; ports?: Array<{ port: number }> }>
     volumes?: Array<{ hostPath?: { path: string } }>
   }
 }
@@ -45,12 +46,33 @@ function serveCluster(): void {
       metadata: { name: projectRegistryName('p1'), namespace: 'test-ns' }, spec: { clusterIP: '10.96.0.61' },
     },
   )
+  seedApiserver('172.20.0.10')
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Service', metadata: { name: 'kube-dns', namespace: 'kube-system' },
+    spec: { clusterIP: '10.96.0.10', clusterIPs: ['10.96.0.10'] },
+  })
   fakeCluster.intercept((call) => {
     if (call.verb !== 'read' || call.kind !== 'Pod' || !call.name) return
     const pod = fakeCluster.get<Applied>('Pod', call.name, call.namespace)
     if (!pod) return
     return { ...pod, status: { phase: failingNodes.has(pod.spec?.nodeName ?? '') ? 'Failed' : 'Succeeded' } }
   })
+}
+
+/** The `kubernetes` Service's EndpointSlice: a managed control plane off the nodes. */
+function seedApiserver(address: string): void {
+  fakeCluster.seed({
+    apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice',
+    metadata: { name: 'kubernetes', namespace: 'default', labels: { 'kubernetes.io/service-name': 'kubernetes' } },
+    addressType: 'IPv4', endpoints: [{ addresses: [address] }], ports: [{ name: 'https', port: 443 }],
+  })
+}
+
+/** The addresses the proxy's egress names on `port`, in the last apply of it. */
+function proxyPeers(port: number): string[] {
+  const np = applied().filter((m) => m.kind === 'NetworkPolicy' && m.metadata.name === 'yaac-proxy-egress').pop()
+  return (np?.spec?.egress ?? []).filter((r) => r.ports?.some((p) => p.port === port))
+    .flatMap((r) => r.to ?? []).flatMap((t) => (t.ipBlock ? [t.ipBlock.cidr] : []))
 }
 
 /** (Re)seed the Node objects from `nodes`, replacing any removed one. */
@@ -125,6 +147,9 @@ describe('reconcileNodeSet', () => {
       'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress',
     ]))
     expect(hostsWrites()).toEqual(['node-a yaac-registry.yaac.svc.cluster.local:5000'])
+    // The apiserver at its real endpoint, and DNS at the kube-dns Service.
+    expect(proxyPeers(443)).toEqual(['172.20.0.10/32'])
+    expect(proxyPeers(53)).toEqual(['10.96.0.10/32', '169.254.0.0/16'])
 
     // Nothing changed: no writes at all.
     clearCalls()
@@ -145,6 +170,11 @@ describe('reconcileNodeSet', () => {
     await pass()
     expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-b'])
     expect(applied().some((m) => m.kind === 'NetworkPolicy')).toBe(false)
+
+    // The proxy's watches follow the apiserver's endpoint when it moves.
+    seedApiserver('172.20.0.11')
+    await pass()
+    expect(proxyPeers(443)).toEqual(['172.20.0.11/32'])
   })
 
   it('writes to a replacement node that reuses a departed node\'s name and address', async () => {

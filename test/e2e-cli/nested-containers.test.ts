@@ -24,7 +24,7 @@ import { serverLogPath } from '@yaac/shared/paths'
 import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
 import { assignTestGitCredential, makeServerApiClient, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { requireCluster, testContainerOwnerLabel } from '@yaac/test-utils/setup'
-import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster'
+import { requirePodman, execInJob, cleanupWorkspaceJobs, openToProxy } from '#support/cluster'
 import {
   startMockLLM,
   startMockGit,
@@ -111,6 +111,8 @@ async function startMockUpstreamRegistry(): Promise<MockUpstreamRegistry> {
       `127.0.0.1:${hostPort}/library/probe-busybox:1`,
     ], { timeout: 120_000 })
 
+    // The proxy's egress denies the kind network; open this one address.
+    await openToProxy('e2e-mock-upstream-registry', [{ ipBlock: { cidr: `${networkIp}/32` } }])
     return { host: networkIp, port: UPSTREAM_REGISTRY_PORT, stop }
   } catch (err) {
     await stop()

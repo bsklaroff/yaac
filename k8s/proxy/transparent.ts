@@ -94,68 +94,6 @@ export function parseSniFromClientHello(buf: Buffer): string | null {
 }
 
 /**
- * Normalize a socket remoteAddress for use as a pod-IP lookup key: unwrap
- * IPv4-mapped IPv6 (`::ffff:10.0.0.1` → `10.0.0.1`) and map an empty address
- * to null so callers fail closed.
- */
-export function normalizeRemoteAddr(addr: string | null | undefined): string | null {
-  if (!addr) return null
-  const v4mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(addr)
-  if (v4mapped) return v4mapped[1]
-  return addr
-}
-
-/** Dotted-quad IPv4 → 32-bit int, or null when not an IPv4 literal. */
-function parseIpv4(host: string): number | null {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
-  if (!m) return null
-  const parts = m.slice(1).map(Number)
-  if (parts.some((o) => o > 255)) return null
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0
-}
-
-function inCidr(ip: number, base: number, maskBits: number): boolean {
-  const mask = maskBits === 0 ? 0 : (~0 << (32 - maskBits)) >>> 0
-  return (ip & mask) === (base & mask)
-}
-
-/**
- * True for upstreams Tor cannot dial (loopback, private, link-local IPs) or
- * should not (in-cluster service names). Under USE_TOR these are dialed
- * directly. This changes routing only; the host must still be on the
- * workspace's allowlist.
- */
-export function isInternalUpstream(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, '')
-  if (host === 'localhost' || host.endsWith('.localhost')) return true
-  if (host.endsWith('.svc') || host.endsWith('.svc.cluster.local') || host.endsWith('.cluster.local')) {
-    return true
-  }
-
-  // IPv6 literals: loopback, unspecified, unique-local, link-local, and
-  // IPv4-mapped (recursed on the embedded IPv4).
-  if (host.includes(':')) {
-    const bare = host.replace(/^\[|\]$/g, '')
-    if (bare === '::1' || bare === '::') return true
-    if (/^f[cd]/.test(bare)) return true // fc00::/7
-    if (/^fe[89ab]/.test(bare)) return true // fe80::/10
-    const mapped = normalizeRemoteAddr(bare)
-    if (mapped !== null && mapped !== bare) return isInternalUpstream(mapped)
-    return false
-  }
-
-  const ip = parseIpv4(host)
-  if (ip === null) return false
-  return inCidr(ip, 0x7f000000, 8) // 127.0.0.0/8
-    || inCidr(ip, 0x0a000000, 8) // 10.0.0.0/8
-    || inCidr(ip, 0xac100000, 12) // 172.16.0.0/12
-    || inCidr(ip, 0xc0a80000, 16) // 192.168.0.0/16
-    || inCidr(ip, 0xa9fe0000, 16) // 169.254.0.0/16
-    || inCidr(ip, 0x64400000, 10) // 100.64.0.0/10 (CGNAT)
-    || ip === 0 // 0.0.0.0
-}
-
-/**
  * Split an HTTP/1.1 Host header into hostname and port. On the transparent
  * HTTP listener this header is the only record of the destination, so a
  * malformed value returns null rather than a guess.

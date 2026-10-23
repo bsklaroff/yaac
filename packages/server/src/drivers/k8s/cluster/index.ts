@@ -19,9 +19,10 @@ export {
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
-  wideEgress,
+  builderEgress,
 } from './policy-manifests'
 export {
+  clusterDnsCidrs,
   nodeIpBlocks,
   podCidrSources,
   resetClusterCidrCache,
