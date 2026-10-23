@@ -113,9 +113,28 @@ function historyDestination(workspaceId: string, stored: string): string | undef
  * Delete a workspace's history and the links into it from the shared homes,
  * which would otherwise dangle. Only for a workspace being removed; a stop
  * keeps everything.
+ *
+ * Also removes the `session-env/<id>` dir claude makes in the shared home
+ * for every conversation (usually empty, never cleaned up by claude), for
+ * each conversation in the history and the workspace id a `tui` agent's
+ * first conversation takes. The ids come from the history rather than the
+ * workspace's rows because rows also name conversations it only resumed,
+ * whose dir a sibling may still be using; one in the history it started,
+ * and `deleteWorkspace` refuses while a sibling has resumed that.
  */
 export async function removeAgentHistory(projectId: string, workspaceId: string): Promise<void> {
   const history = agentHistoryDir(projectId, workspaceId)
+  const conversations = (await fs.readdir(path.join(history, 'claude', CLAUDE_POD_CWD)).catch(() => []))
+    .filter((name) => name.endsWith('.jsonl'))
+    .map((name) => name.slice(0, -'.jsonl'.length))
+  const home = await openRoot(claudeDir(projectId), 'no-links').catch(() => null)
+  for (const sid of new Set([workspaceId, ...conversations])) {
+    if (!agentSessionIdSchema.safeParse(sid).success) continue
+    await home?.removeTree(`session-env/${sid}`).catch((err: unknown) => {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return
+      serverLog(`[agent-history] ${projectId}/${workspaceId}: remove session-env/${sid}: ${String(err)}`)
+    })
+  }
   const links = [
     ...(await checkoutForms(projectId, workspaceId))
       .map((form) => path.join(claudeDir(projectId), 'projects', claudeProjectDirName(form))),
