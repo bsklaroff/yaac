@@ -95,6 +95,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     assertCanLaunch: (opts) => assertHostCanLaunch(opts),
     ensureRuntimeReachable: () => Promise.resolve(),
     prepareImage: () => unsupported('building a workspace image'),
+    currentImage: () => unsupported('resolving a workspace image'),
     salvageImages: () => Promise.resolve(),
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),

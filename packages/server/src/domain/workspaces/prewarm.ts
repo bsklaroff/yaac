@@ -11,8 +11,9 @@
  * Spares are warmed with the project's default create settings, but any
  * spare in the right agent mode can serve a claim: a different tool, model or
  * permission mode is fixed by respawning the agent (`retoolSpare`), and a
- * different or moved base branch by `rebranchSpare`. Only the agent mode is
- * fixed at warm time. Each claim re-registers egress from the current config.
+ * different or moved base branch by `rebranchSpare`. The agent mode, the
+ * zone and the image are fixed at warm time. Each claim re-registers egress
+ * from the current config.
  *
  * The server is a single process, so module-level state is enough mutual
  * exclusion.
@@ -89,6 +90,8 @@ export interface SpareSettings {
   timeZone?: string
   /** Its checkout's upstream; absent on an empty repo. */
   baseBranch?: string
+  /** The image it runs; absent for a driver that runs none. */
+  image?: string
 }
 
 /**
@@ -131,6 +134,19 @@ export async function recordedLaunch(
   workspaceId: string,
 ): Promise<Pick<SpareSettings, 'permissionMode' | 'model' | 'effort'> | undefined> {
   return await getWorkspaceRow(projectId, workspaceId) ?? spareSettings.get(workspaceId)
+}
+
+/**
+ * The image a create in the project would launch on now, which a spare must
+ * match to be claimed: a Dockerfile edit or a `nestedContainers` toggle
+ * changes it, and a pod's image is fixed. Undefined for a driver that runs
+ * none.
+ */
+export async function currentSpareImage(projectId: string, owner: string): Promise<string | undefined> {
+  const runtime = workspaceDriver()
+  if (runtime.kind === 'containerless') return undefined
+  const nestedContainers = (await resolveProjectConfig(projectId))?.nestedContainers === true
+  return await runtime.currentImage({ projectId, owner, nestedContainers })
 }
 
 /**
@@ -200,8 +216,8 @@ export interface PrewarmState {
   refreshing: ReadonlySet<string>
   /** Projects with a workspace being created or restarted. */
   provisioning: ReadonlySet<string>
-  /** Spares warmed in an agent mode the project no longer creates in, or a
-   *  zone the user is no longer in. */
+  /** Spares warmed in an agent mode the project no longer creates in, a
+   *  zone the user is no longer in, or an image it no longer builds. */
   stale: ReadonlySet<string>
 }
 
@@ -215,8 +231,8 @@ export interface PrewarmState {
  * - A project with a running user workspace gets `poolSize` spares: spawn to
  *   fill, reap the oldest excess. A different tool, model or permission mode
  *   does not make a spare stale (a claim can retool it).
- * - Spares in `stale` (wrong agent mode or zone, which a claim cannot
- *   convert) are reaped and do not count.
+ * - Spares in `stale` (wrong agent mode, zone or image, which a claim
+ *   cannot convert) are reaped and do not count.
  * - A project with no running user workspace loses all its spares, unless a
  *   workspace is provisioning (e.g. mid-restart).
  */
@@ -400,20 +416,25 @@ export async function tryClaimPrewarmed(
       return settings ? [[p.jobName, settings] as const] : []
     }))
     const spares = workspaces.filter((p) => launched.has(p.jobName))
+    if (spares.length === 0) return undefined
     const owner = (await getProjectRow(projectId))?.owner
     if (owner === undefined) return undefined
-    const timeZone = (await getTimeZone(owner)).timeZone ?? undefined
+    const [timeZone, image] = await Promise.all([
+      getTimeZone(owner).then((z) => z.timeZone ?? undefined),
+      currentSpareImage(projectId, owner),
+    ])
     const matches = (p: RuntimeHandle): boolean => {
       const settings = launched.get(p.jobName)
       return settings !== undefined && p.tool === tool && settings.model === setup.model
         && settings.permissionMode === setup.permissionMode && settings.effort === setup.effort
     }
     const candidates = spares
-      // Neither the mode nor the zone can be converted: an `acp` pod has a
-      // mount a `tui` one lacks, the pod spec is fixed, and `TZ` is set at
-      // launch.
+      // None of the mode, the zone or the image can be converted: an `acp`
+      // pod has a mount a `tui` one lacks, the pod spec is fixed, and `TZ`
+      // is set at launch.
       .filter((p) => launched.get(p.jobName)?.mode === setup.mode
-        && launched.get(p.jobName)?.timeZone === timeZone)
+        && launched.get(p.jobName)?.timeZone === timeZone
+        && launched.get(p.jobName)?.image === image)
       // Prefer a matching agent (no respawn), then newest.
       .sort((a, b) =>
         Number(matches(b)) - Number(matches(a))

@@ -62,7 +62,7 @@ workspace. See "Agent workspaces" below.
   existence check.
 - **A prewarmed spare has no row until it is claimed.** Its only record is
   the `yaac.prewarmed` label on its pod and its Job. What it was warmed with
-  (agent mode, model, posture, effort, zone, base branch), which claims and
+  (agent mode, model, posture, effort, zone, base branch, image), which claims and
   the pool match on, is held in the server's memory, so after a server
   restart every spare counts as stale and is reaped and rewarmed. A claim's
   commit point is inserting the row (`workspace-created`, with the claimed

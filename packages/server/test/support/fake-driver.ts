@@ -170,6 +170,7 @@ function defaultRuntime(): WorkspaceDriver {
     assertCanLaunch: () => Promise.resolve(),
     ensureRuntimeReachable: () => Promise.resolve(),
     prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),
+    currentImage: () => Promise.resolve('registry.test/fake-image:latest'),
     prepareSubstrate: () => Promise.resolve(substrateFixture()),
     syncCredentials: () => Promise.resolve(),
     syncProjectSecrets: () => Promise.resolve(),

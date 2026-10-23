@@ -918,11 +918,11 @@ export async function createWorkspace(
   // provisions.
   //
   // A prewarmed spare gets no row until it is claimed; its settings are
-  // kept in memory for the claim to match on. The base branch is recorded
-  // now because a workspace queued after this one defaults to it. The
-  // user's zone, as clients report it; a pod otherwise runs in UTC, and a
-  // containerless server's host need not be where the user is. Recorded so
-  // a spare warmed in another zone is never claimed.
+  // kept in memory for the claim to match on, once its image is known. The
+  // base branch is recorded now because a workspace queued after this one
+  // defaults to it. The user's zone, as clients report it; a pod otherwise
+  // runs in UTC, and a containerless server's host need not be where the
+  // user is. Recorded so a spare warmed in another zone is never claimed.
   const { timeZone } = await getTimeZone(owner)
   const launch = {
     ...(refBranch !== undefined ? { baseBranch: refBranch } : {}),
@@ -933,9 +933,7 @@ export async function createWorkspace(
     ...(timeZone !== null ? { timeZone } : {}),
   }
   throwIfProvisionStopped(workspaceId)
-  if (options.prewarm === true) {
-    spareSettings.set(workspaceId, launch)
-  } else {
+  if (options.prewarm !== true) {
     await applyWorkspaceEvent({
       type: 'workspace-created',
       projectId,
@@ -1198,6 +1196,10 @@ export async function createWorkspace(
   })()
 
   const [imageRef, substrate, prep] = await Promise.all([imageTask, substrateTask, prepTask])
+  // The image too, so a spare that outlives an image change is never claimed.
+  if (options.prewarm === true) {
+    spareSettings.set(workspaceId, { ...launch, ...(imageRef !== undefined ? { image: imageRef } : {}) })
+  }
   const {
     toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,

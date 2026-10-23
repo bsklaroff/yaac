@@ -1341,6 +1341,9 @@ describe('prepareStart', () => {
       } })
       await cold()
       _clearTmuxAliveCacheForTests()
+      // An image the project no longer builds (its Dockerfile was edited).
+      installDriver({ currentImage: () => Promise.resolve('registry.test/fake-image:edited') })
+      await cold()
       installDriver()
       // A zone the user has left, which `TZ` fixed at warm time.
       await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)

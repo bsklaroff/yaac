@@ -415,5 +415,8 @@ prefers a spare whose launch matches. A spare in the same agent mode but with
 a different agent, model or posture can still be claimed; its agent is
 respawned with what was asked, so the posture is never weaker than requested.
 A spare in the other agent mode is skipped, because an `acp` pod has a mount
-for acpd's records that a `tui` pod lacks, fixed at warm time. The pool
-replaces spares whose mode no longer matches their project's.
+for acpd's records that a `tui` pod lacks, fixed at warm time. So is one
+running another image than the project now builds (a Dockerfile edit or a
+`nestedContainers` toggle since it was warmed), since a pod's image is fixed
+too. The pool replaces spares whose mode or image no longer matches their
+project's.

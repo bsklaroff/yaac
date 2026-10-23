@@ -1,8 +1,8 @@
 /**
  * Reconcile step that keeps one prewarmed spare per active project, warmed
  * with the project's default create settings. The pure `computePrewarmPlan`
- * decides; this lists pods, finds spares in an outdated agent mode or zone
- * (or warmed before a server restart), and spawns
+ * decides; this lists pods, finds spares in an outdated agent mode, zone or
+ * image (or warmed before a server restart), and spawns
  * (`createWorkspace({ prewarm: true })`) or reaps (`reapSpare`). It also
  * keeps each spare on its base branch's latest tip (`refreshSpares`).
  */
@@ -14,6 +14,7 @@ import { listProvisioning, settleSpare, spawningSpares } from './provisioning'
 import {
   claiming,
   computePrewarmPlan,
+  currentSpareImage,
   freeSpare,
   reapSpare,
   reaping,
@@ -133,24 +134,31 @@ async function refreshSpares(spares: RuntimeHandle[]): Promise<void> {
 
 /**
  * Spares warmed in a different agent mode than their project now creates in,
- * or in a zone other than the user's current one. Both are fixed at warm
- * time, so no claim takes them. So are spares whose warm-time settings this
- * process never recorded (warmed before it started), which no claim can
- * match.
+ * in a zone other than the user's current one, or on an image other than
+ * the one the project now builds. All are fixed at warm time, so no claim
+ * takes them. So are spares whose warm-time settings this process never
+ * recorded (warmed before it started), which no claim can match. A project
+ * whose image cannot be resolved keeps its spares, which a claim then
+ * passes over.
  */
 async function staleSpares(pods: RuntimeHandle[]): Promise<Set<string>> {
   const spares = pods.filter((p) => p.prewarmed && p.projectId)
   if (spares.length === 0) return new Set()
-  const projects = await listProjectRows()
+  const projects = (await listProjectRows()).filter((p) => spares.some((s) => s.projectId === p.id))
   const wanted = new Map(await Promise.all(projects.map(async (p) => [p.id, {
     mode: p.createDefaults[p.lastTool ?? 'claude']?.mode ?? DEFAULT_AGENT_MODE,
     timeZone: (await getTimeZone(p.owner)).timeZone ?? undefined,
+    image: await currentSpareImage(p.id, p.owner).then((ref) => ({ ref }), (err: unknown) => {
+      serverLog(`[prewarm] resolving ${p.id}'s image failed: ${String(err)}`)
+      return undefined
+    }),
   }] as const)))
   const stale = new Set<string>()
   for (const p of spares) {
     const warmed = spareSettings.get(p.workspaceId)
     const want = wanted.get(p.projectId)
-    if (!warmed || (want !== undefined && (warmed.mode !== want.mode || warmed.timeZone !== want.timeZone))) {
+    if (!warmed || (want !== undefined && (warmed.mode !== want.mode || warmed.timeZone !== want.timeZone
+      || (want.image !== undefined && warmed.image !== want.image.ref)))) {
       stale.add(p.jobName)
     }
   }

@@ -32,6 +32,7 @@ import {
 } from '#drivers/k8s/egress'
 import { syncProjectSecrets, syncProxyCredentials } from '#drivers/k8s/cluster'
 import {
+  currentWorkspaceImage,
   dismissImageBuild,
   getImageBuildLog,
   listImageBuilds,
@@ -112,6 +113,7 @@ export function createK8sDriver(): WorkspaceDriver {
     assertCanLaunch: () => Promise.resolve(),
     ensureRuntimeReachable: () => ensureKubernetes(),
     prepareImage: (opts) => prepareWorkspaceImage(opts),
+    currentImage: (opts) => currentWorkspaceImage(opts),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
     syncCredentials: (bundle) => syncProxyCredentials(bundle),
     syncProjectSecrets: (projectId, values) => syncProjectSecrets(projectId, values),
