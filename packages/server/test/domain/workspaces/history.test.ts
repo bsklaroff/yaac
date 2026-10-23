@@ -241,7 +241,11 @@ describe('removeAgentHistory', () => {
     await write(history('claude-file-history', 'k1', 'edit@v1'))
     await write(history('claude-file-history', 'k2', 'edit@v1'))
     await rollout(history('codex'), 'kt')
+    await write(history('claude', '-workspace', 'k1.jsonl'))
     const sibling = await write(shared('codex', 'sessions', 'theirs.jsonl'))
+    // claude's per-conversation env dirs: the pinned first conversation's,
+    // one with a transcript in the history, and a sibling's.
+    for (const sid of [WT, 'k1', 'theirs']) await fs.mkdir(shared('claude', 'session-env', sid), { recursive: true })
     await convergeAgentHistory(SLUG, WT, { layers: false })
     const checkout = path.join(shared('claude', 'projects'), claudeProjectDirName(workspaceDir(SLUG, WT)))
     expect(await exists(checkout)).toBe(true)
@@ -257,8 +261,11 @@ describe('removeAgentHistory', () => {
       checkout,
       shared('claude', 'file-history', 'k1'),
       shared('codex', 'sessions', ROLLOUT_REL('kt')),
+      shared('claude', 'session-env', WT),
+      shared('claude', 'session-env', 'k1'),
     ]) expect(await exists(gone), gone).toBe(false)
     expect(await exists(sibling)).toBe(true)
+    expect(await exists(shared('claude', 'session-env', 'theirs'))).toBe(true)
     expect((await fs.lstat(retargeted)).isSymbolicLink()).toBe(true)
     // Nothing there is no error.
     await removeAgentHistory(SLUG, WT)

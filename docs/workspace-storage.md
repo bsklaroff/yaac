@@ -532,9 +532,11 @@ the history and then the shared homes, so a file is readable wherever it is;
 only resuming needs the move.
 
 A stop keeps the history. `deleteWorkspaceState` removes it along with every
-link in the shared homes that points into it; `project remove` takes it with the
-project dir. Because claude's history is deleted with its workspace, `seed.ts`
-raises claude's `cleanupPeriodDays` so claude never prunes it.
+link in the shared homes that points into it, and the `session-env/<id>` dir
+claude makes in its shared home for each conversation in it. `project remove`
+takes the history with the project dir. Because claude's history is deleted
+with its workspace, `seed.ts` raises claude's `cleanupPeriodDays` so claude
+never prunes it.
 
 ## Sandbox-writable dirs
 
