@@ -1089,13 +1089,25 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(unoffered.code).toBe(1)
     expect(unoffered.out).toContain('no "xhigh" effort')
 
+    // A brief past what an argument holds, multibyte, from a file.
+    const brief = `plan the work\n${'Pläase ✓ the 🙂 step\n'.repeat(7_000)}`
+    expect(Buffer.byteLength(brief)).toBeGreaterThan(128 * 1024)
+    const briefFile = path.join(testEnv.dataDir, 'sibling-brief.md')
+    await fs.writeFile(briefFile, brief)
     const made = await runMama(
       'create', '--permission-mode', 'plan', '--effort', 'low', '--ui-mode', 'tui', '--branch', branch.trim(),
-      'plan the work',
+      '--prompt-file', briefFile,
     )
     expect(made.code).toBe(0)
     const sibling = made.out.trim()
     try {
+      // Recorded whole, as its first conversation's prompt.
+      await vi.waitFor(async () => {
+        const listed = await (await fetch(`${origin()}/api/workspace/list?project=${projectId}`)).json() as {
+          workspaces: Array<{ workspaceId: string; prompt?: string }>
+        }
+        expect(listed.workspaces.find((w) => w.workspaceId === sibling)?.prompt === brief).toBe(true)
+      }, { timeout: 60_000, interval: 500 })
       // The id comes back before launch; wait for the launch command.
       await vi.waitFor(async () => {
         const cmd = await tmux(sibling, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}')
@@ -2326,7 +2338,9 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         ((await (await fetch(`${origin()}/api/workspace/prompt?id=${id}`)).json()) as { prompt: string }).prompt
       const big = await mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief)
       expect(await fullPrompt(big) === long).toBe(true)
-      await fs.writeFile(brief, `${long.slice(1)}!`)
+      // A NUL, which no argument can carry, is dropped like any other
+      // control character.
+      await fs.writeFile(brief, `${long.slice(1)}\0!`)
       await mamaFrom(parent, brief, 'edit-queued', big.slice(0, 8), '-')
       expect(await fullPrompt(big) === `${long.slice(1)}!`).toBe(true)
       await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief, 'x'))
@@ -2387,9 +2401,29 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       const sender = await createWorkspace('--permission-mode', 'accept-edits')
       try {
         const child = childWorkspace!
+        const sent = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `sent-${child}`)
+        // One past what an argument holds, multibyte, from a file; each of
+        // its lines reaches the agent as typed. The fake codex echoes a paste
+        // line by line, reprinting its prompt after each, where the real
+        // tools collapse it. So the message is a few long lines, which the
+        // fake keeps up with, ending in one holding the 20 characters a send
+        // looks for on screen; and it goes first, before an earlier header
+        // on screen could scroll off and hide that it showed.
+        const message = [
+          ...Array.from({ length: 40 }, (_, i) => `${'Pläase ✓ the 🙂 brief '.repeat(125)}line ${String(i)}`),
+          'that-is-the-whole-brief-✓',
+        ].join('\n')
+        expect(Buffer.byteLength(message)).toBeGreaterThan(128 * 1024)
+        const messageFile = path.join(testEnv.dataDir, 'message.md')
+        await fs.writeFile(messageFile, message)
+        expect(await mamaAs(sender, 'send', '--prompt-file', messageFile, child.slice(0, 8)))
+          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
+        await vi.waitFor(async () => {
+          expect((await fs.readFile(sent, 'utf8').catch(() => '')).includes(`\n${message}\n`)).toBe(true)
+        }, { timeout: 30_000, interval: 500 })
+
         expect(await mamaAs(sender, 'send', child.slice(0, 8), 'a message from a peer'))
           .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
-        const sent = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `sent-${child}`)
         await vi.waitFor(async () => {
           expect(await fs.readFile(sent, 'utf8').catch(() => ''))
             .toContain(`Sent from ${sender} via yaac-mama:\n\na message from a peer\n`)

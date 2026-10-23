@@ -2647,7 +2647,7 @@ describe('agentDriver', () => {
       // One attempt: a retried paste would submit the prompt twice.
       expect(opts).toEqual({ maxAttempts: 1, timeout: 15_000, stdin: expect.any(String) as string })
       // The script arrives on stdin, so the command line stays small.
-      expect(cmd).toMatch(/^cat > \/tmp\/\.yaac-prompt\.sh && \[ -s \/tmp\/\.yaac-prompt\.sh \] \|\| /)
+      expect(cmd).toMatch(/^cat > \/tmp\/\.yaac-prompt\.sh \|\| exit 1; /)
       // Detached, by setsid where the host has it and nohup on macOS.
       expect(cmd).toContain('then setsid sh /tmp/.yaac-prompt.sh; else nohup sh /tmp/.yaac-prompt.sh; fi; }'
         + ' >/tmp/yaac-prompt.log 2>&1 </dev/null &')

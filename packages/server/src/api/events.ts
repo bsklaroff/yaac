@@ -11,12 +11,8 @@ import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { errorText, serverLog } from '#lib/log'
-import {
-  CONVERSATION_PROMPT_PREVIEW_LENGTH,
-  PROMPT_PREVIEW_LENGTH,
-  type ServerEvent,
-  type ServerSnapshot,
-} from '@yaac/shared/types'
+import { previewed, withPreviews } from '#api/prompt-previews'
+import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
 export interface WsLike {
@@ -58,11 +54,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
     driver: workspaceDriver().kind,
-    workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId))
-      .map((w) => ({
-        ...previewed(w),
-        agentSessions: w.agentSessions.map((a) => previewed(a, CONVERSATION_PROMPT_PREVIEW_LENGTH)),
-      })),
+    workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)).map(withPreviews),
     workspaceGroups,
     stale: active.stale,
     projects,
@@ -74,16 +66,6 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     imageBuilds,
     ...usage,
   }
-}
-
-/**
- * `entry` with its prompt cut to `max` characters, never ending in half a
- * surrogate pair.
- */
-function previewed<T extends { prompt?: string }>(entry: T, max = PROMPT_PREVIEW_LENGTH): T {
-  const { prompt } = entry
-  if (prompt === undefined || prompt.length <= max) return entry
-  return { ...entry, prompt: prompt.slice(0, max).replace(/[\uD800-\uDBFF]$/, '') }
 }
 
 /**

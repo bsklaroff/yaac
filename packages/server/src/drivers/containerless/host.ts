@@ -83,8 +83,9 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
     if (opts.signal?.aborted) onAbort()
     else opts.signal?.addEventListener('abort', onAbort, { once: true })
 
-    child.stdout?.on('data', (c: Buffer) => { stdout += c.toString() })
-    child.stderr?.on('data', (c: Buffer) => { stderr += c.toString() })
+    // Decoded as a stream, so a character split across two reads survives.
+    child.stdout?.setEncoding('utf8').on('data', (c: string) => { stdout += c })
+    child.stderr?.setEncoding('utf8').on('data', (c: string) => { stderr += c })
     child.on('error', (err) => {
       if (settled) return
       settled = true

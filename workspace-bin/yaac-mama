@@ -207,9 +207,10 @@ EOF
 # a long prompt. RS is a byte the input loses anyway, so awk sees it whole,
 # trailing newlines included. Control characters JSON has no short escape
 # for are dropped, as a message would lose them anyway (pasted terminal
-# output carries escape sequences).
+# output carries escape sequences). NUL goes first, through tr, since awks
+# disagree about it (macOS's ends a string there).
 json_string() {
-  LC_ALL=C awk 'BEGIN { RS = "\001"; printf "\"" }
+  tr -d '\000' | LC_ALL=C awk 'BEGIN { RS = "\001"; printf "\"" }
   {
     s = $0
     gsub(/[\001-\010\013\014\016-\037\177]/, "", s)

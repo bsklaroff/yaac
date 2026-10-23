@@ -7,8 +7,16 @@ import { recordProject } from '#db/project-store'
 import { insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace } from '#db/draft-workspace-store'
 import { closeDb } from '#db/client'
+import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { recordAgentSessions } from '#db/agent-session-store'
+import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
+import {
+  CONVERSATION_PROMPT_PREVIEW_LENGTH,
+  MAX_PROMPT_LENGTH,
+  PROMPT_PREVIEW_LENGTH,
+  type StoppedWorkspacePage,
+} from '@yaac/shared/types'
 
 // Only the root app's onError serializes a ServerError, so wrap the routes
 // with the same handler.
@@ -85,5 +93,22 @@ describe('GET /prompt', () => {
       expect(((await res.json()) as { prompt: string }).prompt === prompt).toBe(true)
     }
     expect((await app.request('/prompt?id=7a3b2e4c-9d5f-4a0b-8c8e-2f3a4b5c6d7e')).status).toBe(404)
+  })
+})
+
+describe('GET /list-stopped', () => {
+  it('carries a preview of each prompt, as the snapshot does', async () => {
+    installFakeWorkspaceDriver()
+    const workspaceId = '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d'
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId })
+    await recordAgentSessions(PROJ, workspaceId, [{ tool: 'claude', agentSessionId: workspaceId, firstPrompt: LONG }])
+    await recordWorkspaceStopped(PROJ, workspaceId)
+
+    const res = await app.request(`/list-stopped?project=${PROJ}`)
+    expect(res.status).toBe(200)
+    const [entry] = ((await res.json()) as StoppedWorkspacePage).entries
+    const prompts = [entry?.prompt ?? '', entry?.agentSessions[0]?.prompt ?? '']
+    expect(prompts.map((p) => p.length)).toEqual([PROMPT_PREVIEW_LENGTH, CONVERSATION_PROMPT_PREVIEW_LENGTH])
+    expect(prompts.every((p) => LONG.startsWith(p))).toBe(true)
   })
 })

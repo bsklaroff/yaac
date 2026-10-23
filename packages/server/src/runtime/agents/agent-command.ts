@@ -470,7 +470,10 @@ export function buildMessageCmd(
   conversation: { tool: AgentTool; agentSessionId: string },
 ): StdinScript {
   return {
-    cmd: `script=$(cat) && ${noScriptGuard('[ -n "$script" ]')}; eval "$script"`,
+    // A pod whose streamd predates exec stdin hands the command an empty one;
+    // refuse rather than report the message sent (docs/legacy-compat-shims.md).
+    cmd: 'script=$(cat) && [ -n "$script" ] '
+      + '|| { echo "the delivery script did not arrive on stdin" >&2; exit 2; }; eval "$script"',
     stdin: messageScript(target, message, paths, conversation),
   }
 }
@@ -705,16 +708,6 @@ export interface StdinScript {
 }
 
 /**
- * Refuse to go on when `test` shows no script arrived on stdin, rather than
- * run an empty one and report the prompt delivered. A pod whose streamd
- * predates exec stdin hands the command an empty one
- * (docs/legacy-compat-shims.md).
- */
-function noScriptGuard(test: string): string {
-  return `${test} || { echo "the delivery script did not arrive on stdin" >&2; exit 2; }`
-}
-
-/**
  * In-workspace command that runs `promptPasteScript` detached: write the
  * script from stdin to a workspace-local file and setsid it, so the exec
  * returns at once instead of waiting through the script's polling (5s+ on
@@ -730,7 +723,9 @@ export function buildPromptPasteBgCmd(
   const script = `${paths.scratchDir}/.yaac-prompt.sh`
   const log = `${paths.scratchDir}/yaac-prompt.log`
   return {
-    cmd: `cat > ${script} && ${noScriptGuard(`[ -s ${script} ]`)}; `
+    // `cat` stays out of the backgrounded list, whose stdin sh replaces with
+    // /dev/null.
+    cmd: `cat > ${script} || exit 1; `
       + `{ if command -v setsid >/dev/null; then setsid sh ${script}; else nohup sh ${script}; fi; }`
       + ` >${log} 2>&1 </dev/null &`,
     stdin: promptPasteScript(target, prompt, paths),

@@ -23,6 +23,7 @@ import {
   type WorkspaceRow,
 } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
+import { withPreviews } from '#api/prompt-previews'
 import { requireDriverFeature } from '#api/http/driver-features'
 import type { IdentityEnv } from '#api/http/web-auth'
 import { authorizeProject, workspacePrincipal } from '#domain/access'
@@ -184,7 +185,10 @@ export const workspaceApp = new Hono<IdentityEnv>()
       exclude: z.string().optional().transform((v) => v ? v.split(',') : undefined),
       workspace: z.string().optional(),
     })),
-    async (c) => c.json(await listStoppedWorkspaces(c.req.valid('query'))),
+    async (c) => {
+      const page = await listStoppedWorkspaces(c.req.valid('query'))
+      return c.json({ ...page, entries: page.entries.map(withPreviews) })
+    },
   )
   .post(
     '/create',

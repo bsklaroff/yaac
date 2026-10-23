@@ -1469,13 +1469,15 @@ export const PROMPT_TOO_LONG = `the prompt is over the ${MAX_PROMPT_LENGTH.toLoc
 export const promptText = z.string().refine((s) => s.length <= MAX_PROMPT_LENGTH, PROMPT_TOO_LONG)
 
 /**
- * How much of a prompt the `/events` snapshot carries. The snapshot goes to
- * every client on every change, so full prompts would resend up to
+ * How much of a prompt the `/events` snapshot and the stopped list carry.
+ * The snapshot goes to every client on every change, and a stopped page
+ * holds dozens of rows, so full prompts would send up to
  * `MAX_PROMPT_LENGTH` per row each time. A row's prompt keeps 10,000
  * characters, which the sidebar's search matches against; a conversation's
  * first prompt, which nothing searches, keeps only enough for its tab label
  * and tooltip. A client needing the whole text fetches it:
- * `GET /workspace/prompt` for a queued entry or draft.
+ * `GET /workspace/prompt` for a queued entry or draft; `yaac-mama list`
+ * prints any workspace's whole.
  */
 export const PROMPT_PREVIEW_LENGTH = 10_000
 export const CONVERSATION_PROMPT_PREVIEW_LENGTH = 300
