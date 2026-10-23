@@ -39,9 +39,7 @@ import type {
 /**
  * `WorkspaceDriver.resourceUsage` for the cluster (docs/server-health.md).
  * Reads only what Kubernetes already collects: node, pod and claim objects,
- * and each node's kubelet Summary through the API server's node proxy. A
- * pod's figures are its containers' sums, which the kubelet reads fresh from
- * the runtime; its pod-level figures come from a cache minutes old.
+ * and each node's kubelet Summary through the API server's node proxy.
  *
  * Pods in the install namespace are yaac's, classified by their labels into
  * the overlay's components; whatever else a node runs is "Kubernetes system
@@ -95,11 +93,8 @@ interface Summary {
   }
   pods?: Array<{
     podRef: { name: string; namespace: string }
-    containers?: Array<{
-      cpu?: { usageNanoCores?: number }
-      memory?: { workingSetBytes?: number }
-      swap?: { swapUsageBytes?: number }
-    }>
+    memory?: { workingSetBytes?: number }
+    containers?: Array<{ cpu?: { usageNanoCores?: number }; memory?: { workingSetBytes?: number } }>
     volume?: Array<FsStats & { pvcRef?: { name: string; namespace: string } }>
     'ephemeral-storage'?: FsStats
   }>
@@ -131,22 +126,24 @@ const NODE_PROXY_DENIED = 'the server may not read node stats yet; '
  */
 const SUMMARY_TIMEOUT_MS = 5_000
 
-const ZERO: ResourceUse = { cpuCores: 0, memoryBytes: 0, swapBytes: 0 }
+const ZERO: ResourceUse = { cpuCores: 0, memoryBytes: 0 }
 
 function add(a: ResourceUse, b: ResourceUse): ResourceUse {
   return {
     cpuCores: a.cpuCores + b.cpuCores,
     memoryBytes: a.memoryBytes + b.memoryBytes,
-    swapBytes: a.swapBytes + b.swapBytes,
   }
 }
 
+/** A pod's use: its containers' CPU, and its pod cgroup's memory until
+ *  that reads 0 (docs/server-health.md). */
 function podUse(stats: PodStats): ResourceUse {
-  return (stats.containers ?? []).reduce<ResourceUse>((sum, c) => add(sum, {
-    cpuCores: (c.cpu?.usageNanoCores ?? 0) / 1e9,
-    memoryBytes: c.memory?.workingSetBytes ?? 0,
-    swapBytes: c.swap?.swapUsageBytes ?? 0,
-  }), ZERO)
+  const containers = stats.containers ?? []
+  return {
+    cpuCores: containers.reduce((sum, c) => sum + (c.cpu?.usageNanoCores ?? 0), 0) / 1e9,
+    memoryBytes: stats.memory?.workingSetBytes
+      || containers.reduce((sum, c) => sum + (c.memory?.workingSetBytes ?? 0), 0),
+  }
 }
 
 function nodeRole(node: NodeObject): NodeRole {
@@ -371,7 +368,6 @@ export async function k8sUsage(opts: { full: boolean }): Promise<SubstrateUsage>
     label: 'Kubernetes system and other',
     cpuCores: Math.max(0, nodeTotal.cpuCores - yaacTotal.cpuCores),
     memoryBytes: Math.max(0, nodeTotal.memoryBytes - yaacTotal.memoryBytes),
-    swapBytes: Math.max(0, nodeTotal.swapBytes - yaacTotal.swapBytes),
     volumes: [],
   })
 
@@ -396,6 +392,7 @@ export async function k8sUsage(opts: { full: boolean }): Promise<SubstrateUsage>
   return {
     totals: {
       ...nodeTotal,
+      swapBytes: live.reduce((sum, n) => sum + n.swapBytes, 0),
       cpuCapacityCores: live.reduce((sum, n) => sum + n.cpuCapacityCores, 0),
       memoryCapacityBytes: live.reduce((sum, n) => sum + n.memoryCapacityBytes, 0),
       swapCapacityBytes,

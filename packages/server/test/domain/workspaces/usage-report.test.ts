@@ -25,11 +25,11 @@ function usage(workspaces: SubstrateUsage['workspaces']): SubstrateUsage {
     },
     nodes: [],
     components: [{
-      key: 'project-registries', label: 'project registries', cpuCores: 0, memoryBytes: GIB, swapBytes: 0,
+      key: 'project-registries', label: 'project registries', cpuCores: 0, memoryBytes: GIB,
       count: 1, volumes: [],
       children: [{
         key: `project-registry:${DEMO_PROJECT_ID}`, label: DEMO_PROJECT_ID, projectId: DEMO_PROJECT_ID,
-        cpuCores: 0, memoryBytes: GIB, swapBytes: 0, volumes: [],
+        cpuCores: 0, memoryBytes: GIB, volumes: [],
       }],
     }],
     workspaces,
@@ -37,7 +37,7 @@ function usage(workspaces: SubstrateUsage['workspaces']): SubstrateUsage {
 }
 
 const use = (memoryBytes: number) => ({
-  cpuCores: 0.5, memoryBytes, swapBytes: 0, memoryLimitBytes: 8 * GIB, ephemeralStorageBytes: null, node: 'node-a',
+  cpuCores: 0.5, memoryBytes, memoryLimitBytes: 8 * GIB, ephemeralStorageBytes: null, node: 'node-a',
 })
 
 describe('serverUsageReport', () => {

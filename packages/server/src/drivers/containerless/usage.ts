@@ -57,7 +57,7 @@ function processUse(window: { first: ProcessTable; last: ProcessTable }, pids: n
     memoryBytes += now.rssBytes
     cpuSeconds += Math.max(0, now.cpuSeconds - (window.first.rows.get(pid)?.cpuSeconds ?? 0))
   }
-  return { cpuCores: span > 0 ? cpuSeconds / span : 0, memoryBytes, swapBytes: 0 }
+  return { cpuCores: span > 0 ? cpuSeconds / span : 0, memoryBytes }
 }
 
 /** See `WorkspaceDriver.resourceUsage`. */
@@ -83,8 +83,8 @@ export async function containerlessUsage(opts: { full: boolean }): Promise<Subst
   const agentPids = handles
     .map((h) => sshAgentPidOf(h.workspaceId))
     .filter((pid): pid is number => pid !== undefined && window?.last.rows.has(pid) === true)
-  const agents = window ? processUse(window, agentPids) : { cpuCores: 0, memoryBytes: 0, swapBytes: 0 }
-  const server = { cpuCores: cpu.server, memoryBytes: process.memoryUsage().rss, swapBytes: 0 }
+  const agents = window ? processUse(window, agentPids) : { cpuCores: 0, memoryBytes: 0 }
+  const server = { cpuCores: cpu.server, memoryBytes: process.memoryUsage().rss }
 
   const disks: VolumeUsage[] = disk ? [{ name: 'data dir', ...disk }] : []
   const ours = [server, agents, ...Object.values(workspaces)]
@@ -96,7 +96,6 @@ export async function containerlessUsage(opts: { full: boolean }): Promise<Subst
       label: 'other host processes',
       cpuCores: Math.max(0, cpu.host - ours.reduce((sum, u) => sum + u.cpuCores, 0)),
       memoryBytes: Math.max(0, memory.usedBytes - ours.reduce((sum, u) => sum + u.memoryBytes, 0)),
-      swapBytes: 0,
       volumes: [],
     },
   ]

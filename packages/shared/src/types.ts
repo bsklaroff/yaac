@@ -1576,12 +1576,11 @@ export type DriverKind = 'k8s' | 'containerless'
  * infrastructure component and workspace, each with an hour of history.
  */
 
-/** CPU, memory and swap in use at one instant. Memory is the working set
- *  under `k8s` and RSS under `containerless`. */
+/** CPU and memory in use at one instant. Memory is the working set under
+ *  `k8s` and RSS under `containerless`. */
 export interface ResourceUse {
   cpuCores: number
   memoryBytes: number
-  swapBytes: number
 }
 
 /** One minute's sample of a series. */
@@ -1601,6 +1600,7 @@ export interface VolumeUsage {
 export interface UsageTotals extends ResourceUse {
   cpuCapacityCores: number
   memoryCapacityBytes: number
+  swapBytes: number
   swapCapacityBytes: number
   /** One per filesystem, since a summed number would mean nothing. */
   disks: VolumeUsage[]
@@ -1623,6 +1623,7 @@ export interface NodeUsage extends ResourceUse {
   role: NodeRole
   cpuCapacityCores: number
   memoryCapacityBytes: number
+  swapBytes: number
   /** Conditions that are not as they should be (`NotReady`,
    *  `MemoryPressure`, …). */
   conditions: string[]

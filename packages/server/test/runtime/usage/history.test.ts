@@ -13,17 +13,20 @@ vi.mock('#lib/log', async (importOriginal) => ({
 }))
 
 const MINUTE = SAMPLE_MS
-const ZERO = { cpuCores: 0, memoryBytes: 0, swapBytes: 0 }
+const ZERO = { cpuCores: 0, memoryBytes: 0 }
 
 /** A sample: `n` as every figure, so points can be told apart. */
 function usage(n: number, opts: { workspaces?: string[]; nodeError?: boolean } = {}): SubstrateUsage {
-  const use = { cpuCores: n, memoryBytes: n, swapBytes: n }
+  const use = { cpuCores: n, memoryBytes: n }
   return {
-    totals: { ...use, cpuCapacityCores: 8, memoryCapacityBytes: 8, swapCapacityBytes: 0, disks: [] },
+    totals: { ...use, cpuCapacityCores: 8, memoryCapacityBytes: 8, swapBytes: 0, swapCapacityBytes: 0, disks: [] },
     nodes: [
-      { name: 'node-a', role: 'both', ...use, cpuCapacityCores: 8, memoryCapacityBytes: 8, conditions: [], sampledAt: n },
       {
-        name: 'node-b', role: 'workspaces', ...ZERO, cpuCapacityCores: 8, memoryCapacityBytes: 8,
+        name: 'node-a', role: 'both', ...use, cpuCapacityCores: 8, memoryCapacityBytes: 8, swapBytes: 0,
+        conditions: [], sampledAt: n,
+      },
+      {
+        name: 'node-b', role: 'workspaces', ...ZERO, cpuCapacityCores: 8, memoryCapacityBytes: 8, swapBytes: 0,
         conditions: [], sampledAt: null, ...(opts.nodeError ? { error: 'forbidden' } : {}),
       },
     ],

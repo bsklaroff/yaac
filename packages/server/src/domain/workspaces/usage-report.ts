@@ -55,7 +55,6 @@ export async function serverUsageReport(): Promise<ResourceReport> {
       running: live !== undefined,
       cpuCores: live?.cpuCores ?? 0,
       memoryBytes: live?.memoryBytes ?? 0,
-      swapBytes: live?.swapBytes ?? 0,
       memoryLimitBytes: live?.memoryLimitBytes ?? null,
       ephemeralStorageBytes: live?.ephemeralStorageBytes ?? null,
       peakMemoryBytes: Math.max(live?.memoryBytes ?? 0, ...series.map((p) => p.memoryBytes)),

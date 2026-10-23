@@ -4,7 +4,7 @@ import type { SubstrateUsage } from '#drivers/contract'
 import type { ResourceUse, UsagePoint } from '@yaac/shared/types'
 
 /**
- * An hour of CPU, memory and swap history for the server health overlay
+ * An hour of CPU and memory history for the server health overlay
  * (docs/server-health.md), sampled every minute whenever the server runs,
  * since history that started when the overlay opened would be of little
  * use. Kept in memory, so it starts over when the server restarts; storing
@@ -51,7 +51,7 @@ export function _resetUsageHistoryForTests(): void {
 }
 
 function append(series: UsagePoint[], use: ResourceUse, at: number): void {
-  series.push({ at, cpuCores: use.cpuCores, memoryBytes: use.memoryBytes, swapBytes: use.swapBytes })
+  series.push({ at, cpuCores: use.cpuCores, memoryBytes: use.memoryBytes })
   while (series.length > MAX_POINTS || (series.length > 0 && at - series[0].at > RETAIN_MS)) series.shift()
 }
 
