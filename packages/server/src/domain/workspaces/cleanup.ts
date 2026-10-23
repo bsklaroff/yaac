@@ -96,17 +96,21 @@ async function checkoutEphemeralPaths(
  * copies are the driver's sweep's.
  *
  * Not used by an ordinary stop, which keeps the checkout for restart. Used
- * when the workspace itself goes away: a fresh create or warm that gave up,
- * or a reaped spare (`reapSpare`, which also covers a claim that failed
- * after changing its spare).
+ * when the workspace itself goes away: a user's or the retention's delete
+ * (`deleteWorkspace`), a fresh create or warm that gave up, or a reaped
+ * spare (`reapSpare`, which also covers a claim that failed after changing
+ * its spare).
  *
  * Callers run this only once the pod is gone, so plain recursive `rm` is
  * safe (it does not follow links, and nothing can swap one in mid-walk).
  *
- * Best-effort per path, but returns `false` if anything failed. Callers then
- * keep whatever records the leftover bytes: a row, which the stale reaper
- * surfaces as a stopped workspace the user can delete, or a spare's unit,
- * which the next reap retries.
+ * The checkout goes first and the rest only once it is gone, since the
+ * checkout is what most often fails (a root-owned file a workspace left).
+ * Its `.git` goes last, so that failure leaves the git state and the
+ * history, and so a workspace that still restarts on its committed work.
+ * Returns `false` if anything failed. Callers then keep whatever records the
+ * leftover bytes: a row, which still lists a stopped workspace, or a spare's
+ * unit, which the next reap retries.
  */
 export async function deleteWorkspaceState(
   projectId: string,
@@ -117,15 +121,28 @@ export async function deleteWorkspaceState(
     serverLog(`[server] delete workspace state ${projectId}: refused an empty workspace id`)
     return false
   }
+  const removed = (p: Promise<unknown>): Promise<boolean> => p.then(() => true, (err: unknown) => {
+    serverLog(`[server] delete workspace state ${projectId}/${workspaceId}: ${String(err)}`)
+    return false
+  })
+  const checkout = workspaceDir(projectId, workspaceId)
+  const rmTree = (p: string): Promise<boolean> => removed(fs.rm(p, { recursive: true, force: true }))
+  // Only a real directory is listed: a link is unlinked, never followed.
+  const isDir = await fs.lstat(checkout).then((st) => st.isDirectory(), () => false)
+  let entries: string[] = []
+  try {
+    if (isDir) entries = await fs.readdir(checkout)
+  } catch (err) {
+    return removed(Promise.reject(err))
+  }
+  const outside = entries.filter((e) => e !== '.git').map((e) => rmTree(path.join(checkout, e)))
+  if (!(await Promise.all(outside)).every(Boolean)) return false
+  if (!await rmTree(checkout)) return false
   const outcomes = await Promise.all([
-    fs.rm(workspaceDir(projectId, workspaceId), { recursive: true, force: true }),
     fs.rm(opencodeCheckpointDir(projectId, workspaceId), { recursive: true, force: true }),
     fs.rm(acpLogDir(projectId, workspaceId), { recursive: true, force: true }),
     removeAgentHistory(projectId, workspaceId),
-  ].map((p) => p.then(() => true, (err: unknown) => {
-    serverLog(`[server] delete workspace state ${projectId}/${workspaceId}: ${String(err)}`)
-    return false
-  })))
+  ].map(removed))
   return outcomes.every(Boolean)
 }
 

@@ -2,8 +2,8 @@
 // SEALED_FOLDERS).
 //
 // This feature owns a workspace's life: creating, starting, restarting,
-// stopping and reaping it, and its rows; the `yaac-mama` commands an agent
-// runs against its siblings; and the file editor's reads and writes of a
+// stopping, reaping and deleting it, and its rows; the `yaac-mama` commands
+// an agent runs against its siblings; and the file editor's reads and writes of a
 // workspace's checkout. It drives the runtime only through
 // `#drivers/driver` and `#drivers/contract`, and uses `#runtime/agents` and
 // `#runtime/status`. The reconcile entry points are idempotent, since the
@@ -15,6 +15,7 @@
 export { reconcileAgentSessions, reconcileStoppedAgentSessions } from './agent-session-registry'
 export { toAgentSessionEntry } from './agent-session-entry'
 export { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal } from './cleanup'
+export { deleteWorkspace } from './delete'
 export {
   getWorkspaceBlockedHosts,
   getWorkspaceDetail,

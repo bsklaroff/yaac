@@ -441,8 +441,8 @@ export async function deleteProjectAgentSessions(projectId: string): Promise<voi
 
 /**
  * Delete one workspace's links, plus any conversation no other workspace
- * links. Used by create rollback, since nothing else prunes these rows. A
- * conversation resumed into another workspace is kept.
+ * links. Used by `removeWorkspaceRecords`, since nothing else prunes these
+ * rows. A conversation resumed into another workspace is kept.
  */
 export async function deleteWorkspaceAgentSessions(
   projectId: string,

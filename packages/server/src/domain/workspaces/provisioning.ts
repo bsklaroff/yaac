@@ -74,10 +74,34 @@ interface ProvisioningInput {
 }
 
 /**
- * Refuse an id that is still provisioning (`CONFLICT`). A failed entry is
- * not refused: registering again is a retry.
+ * Ids a `deleteWorkspace` holds, from before it reads the workspace's state
+ * until its rows are gone, so no restart or queued child can start on a
+ * workspace whose files are being removed.
+ */
+const deleting = new Set<string>()
+
+/** Refuse an id a delete holds (`CONFLICT`). */
+export function refuseDeleting(workspaceId: string): void {
+  if (deleting.has(workspaceId)) throw new ServerError('CONFLICT', `workspace ${workspaceId} is being deleted`)
+}
+
+/**
+ * Hold an id for a delete, refusing one that is provisioning or already
+ * held (`CONFLICT`). Synchronous, so nothing can register between the check
+ * and the hold. Returns the release.
+ */
+export function claimDeletion(workspaceId: string): () => void {
+  refuseLiveProvision(workspaceId)
+  deleting.add(workspaceId)
+  return () => { deleting.delete(workspaceId) }
+}
+
+/**
+ * Refuse an id that is still provisioning or being deleted (`CONFLICT`). A
+ * failed entry is not refused: registering again is a retry.
  */
 export function refuseLiveProvision(workspaceId: string): void {
+  refuseDeleting(workspaceId)
   const existing = entries.get(workspaceId)
   if (existing !== undefined && existing.error === undefined) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId} is already provisioning`)
@@ -405,6 +429,7 @@ export function inFlightWorkspaceIds(listedAtMs: number): string[] {
 /** Test helper: drop all tracked entries. */
 export function clearAllProvisioningForTests(): void {
   entries.clear()
+  deleting.clear()
   stoppedIds.clear()
   runs.clear()
   spawningSpares.clear()

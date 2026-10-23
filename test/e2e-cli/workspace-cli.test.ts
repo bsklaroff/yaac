@@ -15,6 +15,8 @@ import {
   setActiveAgentSessions,
 } from '@yaac/server/db/agent-session-store'
 import { setDataDir } from '@yaac/shared/paths'
+import { workspaceDir } from '@yaac/shared/project-paths'
+import fs from 'node:fs/promises'
 import { closeDb } from '@yaac/server/db/client'
 import type { ServerSnapshot } from '@yaac/shared/types'
 
@@ -350,10 +352,17 @@ describe('with seeded projects', () => {
     })
   })
 
-  /** `yaac workspace rename`: titles are recorded state, so stopped workspaces work. */
-  describe('yaac workspace rename (real CLI + real server)', () => {
+  /**
+   * `yaac workspace rename` and `delete`: both act on recorded state, so
+   * stopped workspaces work.
+   */
+  describe('yaac workspace rename and delete (real CLI + real server)', () => {
     const REN_NAME = 'proj-rename'
     const renameId = crypto.randomUUID()
+    // A stopped workspace with a checkout on disk, and one never stopped.
+    const doomedId = crypto.randomUUID()
+    const liveId = crypto.randomUUID()
+    let checkout: string
     // Two ids sharing a prefix, for the terminal commands' ambiguity check.
     const twinIds = ['feedface-0000-4000-8000-000000000001', 'feedface-0000-4000-8000-000000000002']
 
@@ -365,10 +374,14 @@ describe('with seeded projects', () => {
       setDataDir(testEnv.dataDir)
       await recordWorkspaceCreated({ projectId, workspaceId: renameId })
       await recordWorkspaceStopped(projectId, renameId)
-      for (const id of twinIds) {
+      for (const id of [...twinIds, doomedId]) {
         await recordWorkspaceCreated({ projectId, workspaceId: id })
         await recordWorkspaceStopped(projectId, id)
       }
+      await recordWorkspaceCreated({ projectId, workspaceId: liveId })
+      checkout = workspaceDir(projectId, doomedId)
+      await fs.mkdir(checkout, { recursive: true })
+      await fs.writeFile(path.join(checkout, 'unpushed.txt'), 'work')
       await closeDb()
       server = await spawnYaacServer(testEnv.env)
     })
@@ -394,11 +407,33 @@ describe('with seeded projects', () => {
     })
 
     it('404s for an id no workspace has', async () => {
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'rename', crypto.randomUUID(), 'nope',
-      )
+      for (const args of [['rename', crypto.randomUUID(), 'nope'], ['delete', crypto.randomUUID(), '--yes']]) {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', ...args)
+        expect(exitCode, args[0]).not.toBe(0)
+        expect(stderr.toLowerCase(), args[0]).toContain('not found')
+      }
+    })
+
+    it('delete refuses a workspace that is not stopped', async () => {
+      const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'delete', liveId, '--yes')
       expect(exitCode).not.toBe(0)
-      expect(stderr.toLowerCase()).toContain('not found')
+      expect(stderr).toMatch(/stop it first/)
+    })
+
+    it('delete fails without --yes when there is no terminal to confirm on', async () => {
+      const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'delete', doomedId)
+      expect(exitCode).not.toBe(0)
+      expect(stderr).toMatch(/pass --yes/)
+      await expect(fs.stat(checkout)).resolves.toBeDefined()
+    })
+
+    it('delete --yes removes a stopped workspace\u2019s checkout and its listing', async () => {
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'delete', doomedId.slice(0, 13), '-y')
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain(`Workspace ${doomedId} deleted.`)
+      await expect(fs.stat(checkout)).rejects.toThrow()
+      const listed = await runYaac(testEnv.env, 'workspace', 'list', REN_NAME, '--stopped')
+      expect(listed.stdout).not.toContain(doomedId.slice(0, 8))
     })
   })
 
