@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { claudeDir } from '@yaac/shared/project-paths'
 import { sql } from 'drizzle-orm'
@@ -19,6 +19,7 @@ import {
   recordDeathSeen,
   recordWaitingSeen,
   recordWorkspaceCreated,
+  recordWorkspaceLife,
   recordWorkspaceStopped,
   clearWorkspaceStopped,
   setWorkspaceGeneratedTitle,
@@ -93,6 +94,31 @@ describe('session store', () => {
 
       await clearWorkspaceStopped(PROJ, 'sid-1')
       expect((await getProjectWorkspaceRows(PROJ)).get('sid-1')?.stoppedAt).toBeUndefined()
+    })
+
+    it('keeps the first stop of a life, but replaces one recorded before the current life', async () => {
+      const stoppedAt = async () => (await getProjectWorkspaceRows(PROJ)).get('sid-1')?.stoppedAt?.getTime()
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        vi.setSystemTime(1_000_000)
+        await create('sid-1')
+        await recordWorkspaceLife(PROJ, 'sid-1')
+        vi.setSystemTime(2_000_000)
+        await recordWorkspaceStopped(PROJ, 'sid-1')
+        // A second stop in the same life (a reaper probing a user stop).
+        vi.setSystemTime(3_000_000)
+        await recordWorkspaceStopped(PROJ, 'sid-1', { reason: 'crashed' })
+        expect(await stoppedAt()).toBe(2_000_000)
+
+        // A restart whose clear of the stop was lost, then a stop much later.
+        vi.setSystemTime(4_000_000)
+        await recordWorkspaceLife(PROJ, 'sid-1')
+        vi.setSystemTime(9_000_000)
+        await recordWorkspaceStopped(PROJ, 'sid-1')
+        expect(await stoppedAt()).toBe(9_000_000)
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('tracks which users have seen the death, re-flagging on a re-death', async () => {

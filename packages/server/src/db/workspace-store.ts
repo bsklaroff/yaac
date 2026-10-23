@@ -169,10 +169,12 @@ export async function recordWorkspaceLife(
 
 /**
  * Stamp the stop time, plus the cause when a reaper (not the user) stopped
- * it. Only a live row is written: the first stop recorded stands until a
- * restart clears it. A stale-reaper pass that probed the workspace while a
- * user stop was killing it would otherwise relabel that stop as a death,
- * and a resumed teardown would wipe the cause it is resuming.
+ * it. Only a live row is written: the first stop recorded in a life stands.
+ * A stale-reaper pass that probed the workspace while a user stop was
+ * killing it would otherwise relabel that stop as a death, and a resumed
+ * teardown would wipe the cause it is resuming. A stop recorded before the
+ * current life began is overwritten: a restart whose clear of it was lost
+ * would otherwise keep the old date, which retention ages the workspace by.
  *
  * Leaves `workspace_agent_sessions.active` alone: that last observed set is
  * what a restart brings back.
@@ -188,7 +190,8 @@ export async function recordWorkspaceStopped(
     deathReason: cause?.reason ?? null,
     deathDetail: cause?.detail ?? null,
     deathSeenBy: [],
-  }).where(and(key(projectId, workspaceId), isNull(workspaces.stoppedAt)))
+  }).where(and(key(projectId, workspaceId),
+    or(isNull(workspaces.stoppedAt), lt(workspaces.stoppedAt, workspaces.lifeStartedAt))))
 }
 
 /** Clear a workspace's stop (its id is live again after a restart). */

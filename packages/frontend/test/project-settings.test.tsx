@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
+import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type { ProjectEnvVar, ProjectSummary, Whoami } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; the config editor gets a textarea.
@@ -90,6 +90,62 @@ describe('ProjectSettings', () => {
     fireEvent.click(guard)
     await waitFor(() => expect(server.called('PUT /api/project/id-gamma/default-branch-guard').map((c) => c.body))
       .toEqual([{ enabled: false }]))
+  })
+
+  it('confirms a stopped-workspace auto-delete with the count it deletes at once, and turns it off without asking', async () => {
+    const server = renderAlpha()
+    const before = '2026-10-16T12:00:00.000Z'
+    server.route('GET /api/project/id-alpha/workspace-auto-delete', ({ query }: FetchCall) => ({ expired: query.get('days') === '7' ? 3 : 0, before }))
+    server.route('PUT /api/project/id-alpha/workspace-auto-delete', {
+      deleted: 2, kept: [{ workspaceId: 'w1', reason: 'workspace w1 is running or still stopping; stop it first' }],
+    })
+    const days = screen.getByRole<HTMLInputElement>('textbox', { name: 'Days stopped before a workspace is deleted' })
+    expect(days.value).toBe('')
+    const save = (): boolean => fireEvent.click(within(days.closest('form')!).getByRole('button', { name: 'Save' }))
+
+    fireEvent.change(days, { target: { value: '7' } })
+    save()
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog.textContent).toContain('Delete up to 3 stopped workspaces now?')
+    expect(dialog.textContent).toContain('Up to 3 stopped workspaces already past that will be deleted irretrievably')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(server.called('PUT /api/project/id-alpha/workspace-auto-delete')).toEqual([])
+
+    save()
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete up to 3 stopped workspaces' }))
+    await waitFor(() => expect(server.called('PUT /api/project/id-alpha/workspace-auto-delete').map((c) => c.body))
+      .toEqual([{ days: 7, before }]))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(screen.getByText(/^Deleted 2 stopped workspaces\./).textContent).toBe('Deleted 2 stopped workspaces. Kept 1 stopped '
+      + 'workspace for now, deleted once they can be: workspace w1 is running or still stopping; stop it first')
+
+    cleanup()
+    useUiStore.setState({ activeProjectId: 'id-alpha' })
+    const kept = mockFetch({
+      'GET /api/project/id-alpha/env': { vars: [] },
+      'GET /api/project/id-alpha/config': { config: null },
+      'GET /api/project/id-alpha/workspace-auto-delete': { expired: 0, before: '2026-08-24T12:00:00.000Z' },
+      'PUT /api/project/id-alpha/workspace-auto-delete': { deleted: 0, kept: [] },
+    })
+    renderWithClient(<ProjectSettings />, testQueryClient(undefined, serverSnapshot({
+      driver: 'containerless',
+      projects: [{ ...project('alpha', 'https://github.com/o/alpha.git'), stoppedWorkspaceRetentionDays: 30 }],
+    })))
+    const on = screen.getByRole<HTMLInputElement>('textbox', { name: 'Days stopped before a workspace is deleted' })
+    expect(on.value).toBe('30')
+    // Already on, so a change that deletes nothing yet is a plain save.
+    fireEvent.change(on, { target: { value: '60' } })
+    fireEvent.click(within(on.closest('form')!).getByRole('button', { name: 'Save' }))
+    const change = await screen.findByRole('alertdialog')
+    expect(change.textContent).toContain('None is past that yet.')
+    fireEvent.click(within(change).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off' }))
+    await waitFor(() => expect(kept.called('PUT /api/project/id-alpha/workspace-auto-delete').map((c) => c.body))
+      .toEqual([{ days: 60, before: '2026-08-24T12:00:00.000Z' }, { days: null }]))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('shares a hosted project with another user and stops sharing it', async () => {

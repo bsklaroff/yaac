@@ -75,6 +75,8 @@ export interface ProjectRow extends ProjectMeta {
    *  "Sharing"). */
   sharedFrom?: string
   shareRevoked: boolean
+  /** Days a stopped workspace is kept; absent keeps them forever. */
+  stoppedWorkspaceRetentionDays?: number
 }
 
 function toProjectRow(
@@ -110,6 +112,16 @@ export async function setProjectEgressAllowlist(
 export async function setProjectDefaultBranchGuard(projectId: string, enabled: boolean): Promise<boolean> {
   const db = await getDb()
   const rows = await db.update(projects).set({ guardDefaultBranch: enabled })
+    .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
+  notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/** Set how many days the project's stopped workspaces are kept (null:
+ *  forever). False when there is no such project. */
+export async function setProjectWorkspaceRetention(projectId: string, days: number | null): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(projects).set({ stoppedWorkspaceRetentionDays: days })
     .where(eq(projects.id, projectId)).returning({ projectId: projects.id })
   notifyWorkspaceListChanged()
   return rows.length > 0

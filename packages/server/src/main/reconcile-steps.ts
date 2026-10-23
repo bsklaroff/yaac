@@ -1,4 +1,4 @@
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles } from '#domain/workspaces'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileWorkspaceRetention } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -82,6 +82,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // The same for node-local leftovers. Hourly, since under k8s it runs a
     // pod per node.
     { name: 'node-local-gc', triggers: [], every: 60 * 60_000, run: (ctx) => reapOrphanNodeLocal(ctx.snapshot()) },
+    // Delete workspaces stopped past their project's retention (off unless
+    // its owner sets one). At server start and then hourly, since retention
+    // is counted in days; setting it deletes the backlog itself.
+    { name: 'workspace-retention', triggers: [], every: 60 * 60_000,
+      run: (ctx) => reconcileWorkspaceRetention(ctx.signal) },
     ...credentialSync,
     // Keep running workspaces' `origin/*` within minutes of origin
     // (docs/server-git.md); nothing else fetches a project with no new

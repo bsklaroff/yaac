@@ -49,6 +49,7 @@ export {
   resolveWorkspaceId,
   resolveWorkspaceRecord,
 } from './resolve'
+export { previewWorkspaceRetention, reconcileWorkspaceRetention, setWorkspaceRetention } from './retention'
 export { prepareRestart } from './restart'
 export { prepareStart } from './start'
 export { reconcileStaleWorkspaces } from './stale-workspaces'

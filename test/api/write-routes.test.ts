@@ -12,7 +12,7 @@ import { assignProjectCredential } from '@yaac/server/domain/projects/credential
 import { getToolCredential, setToolCredential } from '@yaac/server/db/tool-credential-store'
 import { seeTailnetUser } from '@yaac/server/db/user-store'
 import { buildAuthPayload } from '@yaac/shared/tool-auth-interactive'
-import { getProjectWorkspaceRows, recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
+import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '@yaac/server/db/workspace-store'
 import { getProjectRow, recordProject } from '@yaac/server/db/project-store'
 import { listWorkspaceGroups } from '@yaac/server/domain/workspaces/groups'
 import { getQueuedWorkspaceRow, listQueuedWorkspaceRows } from '@yaac/server/db/queued-workspace-store'
@@ -1095,6 +1095,37 @@ describe('write routes', () => {
       expect((await guard.$put({ param: { projectId: project.id }, json: { enabled: false } })).status).toBe(204)
       expect((await getProjectRow(project.id))?.guardDefaultBranch).toBe(false)
       expect((await guard.$put({ param: { projectId: DEMO }, json: { enabled: false } })).status).toBe(400)
+    })
+  })
+
+  describe('workspace retention routes', () => {
+    it('previews the backlog a retention would delete, then sets it and deletes that backlog', async () => {
+      const app = buildApp({ buildId: 'test' })
+      const client = makeTestApiClient(app)
+      const retention = client.project[':projectId']['workspace-auto-delete']
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        vi.setSystemTime(Date.now() - 10 * 24 * 60 * 60_000)
+        await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-old' })
+        await recordWorkspaceStopped(DEMO, 'sess-old')
+      } finally {
+        vi.useRealTimers()
+      }
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'sess-new' })
+      await recordWorkspaceStopped(DEMO, 'sess-new')
+
+      const preview = await (await retention.$get({ param: { projectId: DEMO }, query: { days: '7' } })).json()
+      expect(preview.expired).toBe(1)
+      expect((await app.request(`/api/project/${DEMO}/workspace-auto-delete?days=0`)).status).toBe(400)
+
+      const set = await retention.$put({ param: { projectId: DEMO }, json: { days: 7, before: preview.before } })
+      expect(await set.json()).toEqual({ deleted: 1, kept: [] })
+      expect([...(await getProjectWorkspaceRows(DEMO)).keys()]).toEqual(['sess-new'])
+      const listed = await (await client.project.list.$get()).json()
+      expect(listed.find((p) => p.id === DEMO)?.stoppedWorkspaceRetentionDays).toBe(7)
+
+      expect(await (await retention.$put({ param: { projectId: DEMO }, json: { days: null } })).json()).toEqual({ deleted: 0, kept: [] })
+      expect((await getProjectRow(DEMO))?.stoppedWorkspaceRetentionDays).toBeUndefined()
     })
   })
 
