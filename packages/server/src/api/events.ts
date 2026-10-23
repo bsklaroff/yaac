@@ -11,7 +11,12 @@ import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { errorText, serverLog } from '#lib/log'
-import { PROMPT_PREVIEW_LENGTH, type ServerEvent, type ServerSnapshot } from '@yaac/shared/types'
+import {
+  CONVERSATION_PROMPT_PREVIEW_LENGTH,
+  PROMPT_PREVIEW_LENGTH,
+  type ServerEvent,
+  type ServerSnapshot,
+} from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
 export interface WsLike {
@@ -54,14 +59,17 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   return {
     driver: workspaceDriver().kind,
     workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId))
-      .map((w) => ({ ...previewed(w), agentSessions: w.agentSessions.map(previewed) })),
+      .map((w) => ({
+        ...previewed(w),
+        agentSessions: w.agentSessions.map((a) => previewed(a, CONVERSATION_PROMPT_PREVIEW_LENGTH)),
+      })),
     workspaceGroups,
     stale: active.stale,
     projects,
-    provisioning: provisioning.map(previewed),
-    queuedWorkspaces: queuedWorkspaces.map(previewed),
-    heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)).map(previewed),
-    draftWorkspaces: draftWorkspaces.map(previewed),
+    provisioning: provisioning.map((p) => previewed(p)),
+    queuedWorkspaces: queuedWorkspaces.map((e) => previewed(e)),
+    heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)).map((h) => previewed(h)),
+    draftWorkspaces: draftWorkspaces.map((d) => previewed(d)),
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     ...usage,
@@ -69,13 +77,13 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
 }
 
 /**
- * `entry` with its prompt cut to `PROMPT_PREVIEW_LENGTH`, never ending in
- * half a surrogate pair.
+ * `entry` with its prompt cut to `max` characters, never ending in half a
+ * surrogate pair.
  */
-function previewed<T extends { prompt?: string }>(entry: T): T {
+function previewed<T extends { prompt?: string }>(entry: T, max = PROMPT_PREVIEW_LENGTH): T {
   const { prompt } = entry
-  if (prompt === undefined || prompt.length <= PROMPT_PREVIEW_LENGTH) return entry
-  return { ...entry, prompt: prompt.slice(0, PROMPT_PREVIEW_LENGTH).replace(/[\uD800-\uDBFF]$/, '') }
+  if (prompt === undefined || prompt.length <= max) return entry
+  return { ...entry, prompt: prompt.slice(0, max).replace(/[\uD800-\uDBFF]$/, '') }
 }
 
 /**

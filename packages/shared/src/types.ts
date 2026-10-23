@@ -1458,14 +1458,16 @@ export interface QueuedWorkspaceEntry {
 export const MAX_PROMPT_LENGTH = 200_000
 
 /**
- * How much of each prompt the `/events` snapshot carries. The snapshot goes
- * to every client on every change, so full prompts would resend up to
- * `MAX_PROMPT_LENGTH` per row each time. The sidebar shows about 60
- * characters; a few hundred also serve tooltips, the search box and the
- * desktop notification. A client needing the whole text fetches it:
+ * How much of a prompt the `/events` snapshot carries. The snapshot goes to
+ * every client on every change, so full prompts would resend up to
+ * `MAX_PROMPT_LENGTH` per row each time. A row's prompt keeps 10,000
+ * characters, which the sidebar's search matches against; a conversation's
+ * first prompt, which nothing searches, keeps only enough for its tab label
+ * and tooltip. A client needing the whole text fetches it:
  * `GET /workspace/prompt` for a queued entry or draft.
  */
-export const PROMPT_PREVIEW_LENGTH = 300
+export const PROMPT_PREVIEW_LENGTH = 10_000
+export const CONVERSATION_PROMPT_PREVIEW_LENGTH = 300
 
 /**
  * A queued workspace's settings as a queue write takes them. A present field
@@ -1725,7 +1727,7 @@ export type Whoami = Principal & { users: User[] }
 /**
  * All server-owned state the webapp renders, sent as a `snapshot` event on
  * connect and replaced whole on each later one. Every `prompt` in it is a
- * preview (`PROMPT_PREVIEW_LENGTH`).
+ * preview (`PROMPT_PREVIEW_LENGTH`, `CONVERSATION_PROMPT_PREVIEW_LENGTH`).
  */
 export interface ServerSnapshot {
   /** Which substrate this server runs — see `DriverKind`. */

@@ -33,7 +33,9 @@ import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-st
 import { createWorkspaceGroup } from '#db'
 import { insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace } from '#db/draft-workspace-store'
-import { MAX_PROMPT_LENGTH, PROMPT_PREVIEW_LENGTH, type ServerSnapshot } from '@yaac/shared/types'
+import {
+  CONVERSATION_PROMPT_PREVIEW_LENGTH, MAX_PROMPT_LENGTH, PROMPT_PREVIEW_LENGTH, type ServerSnapshot,
+} from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
   return {
@@ -331,13 +333,15 @@ describe('buildSnapshot prompts', () => {
 
   it('carries only a preview of every prompt, never cutting a character in half', async () => {
     // An emoji straddles the cut, so a plain slice would end in half of it.
-    const long = `${'x'.repeat(PROMPT_PREVIEW_LENGTH - 1)}🙂${'y'.repeat(MAX_PROMPT_LENGTH - PROMPT_PREVIEW_LENGTH - 1)}`
+    const cutAt = (n: number): string => `${'x'.repeat(n - 1)}🙂${'y'.repeat(MAX_PROMPT_LENGTH - n - 1)}`
+    const long = cutAt(PROMPT_PREVIEW_LENGTH)
     const preview = 'x'.repeat(PROMPT_PREVIEW_LENGTH - 1)
+    const conversationPrompt = cutAt(CONVERSATION_PROMPT_PREVIEW_LENGTH)
     vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
       workspaces: [{
         workspaceId: 'w-1', projectId: 'p', tool: 'claude', prompt: long,
         status: 'running', createdAt: '2026-01-01 00:00:00',
-        agentSessions: [{ agentSessionId: 'a-1', tool: 'claude', ordinal: 0, active: true, prompt: long }],
+        agentSessions: [{ agentSessionId: 'a-1', tool: 'claude', ordinal: 0, active: true, prompt: conversationPrompt }],
         blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
       }],
       stale: [],
@@ -353,14 +357,15 @@ describe('buildSnapshot prompts', () => {
     await insertDraftWorkspace(PROJ, { prompt: long, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
 
     const snap = await buildSnapshot()
+    // Nothing searches a conversation's prompt, so it keeps less.
+    expect(snap.workspaces[0]?.agentSessions[0]?.prompt).toBe('x'.repeat(CONVERSATION_PROMPT_PREVIEW_LENGTH - 1))
     expect([
       snap.workspaces[0]?.prompt,
-      snap.workspaces[0]?.agentSessions[0]?.prompt,
       snap.heldWorkspaces[0]?.prompt,
       snap.provisioning[0]?.prompt,
       snap.queuedWorkspaces[0]?.prompt,
       snap.draftWorkspaces[0]?.prompt,
-    ]).toEqual(Array<string>(6).fill(preview))
+    ]).toEqual(Array<string>(5).fill(preview))
   })
 })
 

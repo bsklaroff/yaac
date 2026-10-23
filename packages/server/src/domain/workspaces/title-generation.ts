@@ -15,6 +15,7 @@
  * allows one attempt per workspace (or per draft/entry prompt) per server
  * run.
  */
+import { createHash } from 'node:crypto'
 import {
   getAgentSessionsFor,
   listDraftWorkspaceRows,
@@ -31,6 +32,11 @@ import { env } from '@yaac/shared/env'
 
 /** Keys already attempted this server run. */
 const attempted = new Set<string>()
+
+/** A draft's or entry's key: its id and a hash of its prompt, which can run
+ *  to `MAX_PROMPT_LENGTH` and would otherwise be held here for good. */
+const promptKey = (kind: string, id: string, prompt: string): string =>
+  `${kind}:${id}:${createHash('sha256').update(prompt).digest('base64url')}`
 
 /** Sweep live workspaces, drafts and queued entries once, firing detached
  *  title-generation tasks. Reads only rows; the runtime isn't consulted. */
@@ -52,11 +58,11 @@ export async function reconcileGeneratedTitles(): Promise<void> {
   // its own attempt.
   for (const { id, prompt, title, generatedTitle } of await listDraftWorkspaceRows()) {
     if (title !== undefined || generatedTitle !== undefined) continue
-    void generateOnce(`draft:${id}:${prompt}`, `draft ${id}`, prompt, (t) => setDraftWorkspaceTitle(id, prompt, t))
+    void generateOnce(promptKey('draft', id, prompt), `draft ${id}`, prompt, (t) => setDraftWorkspaceTitle(id, prompt, t))
   }
   for (const { id, prompt, title, generatedTitle, launchWorkspaceId } of await listQueuedWorkspaceRows()) {
     if (title !== undefined || generatedTitle !== undefined || launchWorkspaceId !== undefined) continue
-    void generateOnce(`queued:${id}:${prompt}`, `queued ${id}`, prompt, (t) => setQueuedWorkspaceTitle(id, prompt, t))
+    void generateOnce(promptKey('queued', id, prompt), `queued ${id}`, prompt, (t) => setQueuedWorkspaceTitle(id, prompt, t))
   }
 }
 
