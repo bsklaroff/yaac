@@ -12,7 +12,7 @@ export { deleteLeakedBuilderPods } from './builder-pod'
 export { dismissImageBuild, getImageBuildLog, listImageBuilds } from './image-builds'
 export { reconcileImagePrewarm, retryImageBuild } from './image-prewarm'
 export { salvageJobImages } from './image-promoter'
-export { prepareWorkspaceImage } from './workspace-image'
+export { currentWorkspaceImage, prepareWorkspaceImage } from './workspace-image'
 export {
   ensureNodeImageStore,
   nodeImageStoreMount,

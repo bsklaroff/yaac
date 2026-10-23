@@ -709,6 +709,14 @@ export interface WorkspaceDriver {
     nestedContainers: boolean
     onProgress?: (message: string) => void
   }): Promise<string>
+  /** The ref `prepareImage` would answer now, from the chain's build inputs
+   *  alone: nothing is built or looked up. A spare launched on another ref
+   *  predates an image change. */
+  currentImage(opts: {
+    projectId: string
+    owner: string
+    nestedContainers: boolean
+  }): Promise<string>
   /**
    * Set up what a workspace needs around it; the result goes on the launch
    * spec. Once per create, not per launch attempt: it is slow, runs

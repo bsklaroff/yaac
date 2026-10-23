@@ -66,6 +66,9 @@ const mockResolveCreate = vi.mocked(resolveCreate)
 const SETUP: CreateSetup = { tool: 'claude', model: 'claude-opus-5-5', permissionMode: 'bypass', mode: 'tui' }
 const WARM = { ...SETUP, prewarm: true, workspaceId: expect.any(String) as string }
 
+/** The image the fake driver says the project builds now. */
+const IMAGE = 'registry.test/fake-image:latest'
+
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 /** Run one reconcile pass, then wait for its spawns to reach
@@ -83,7 +86,7 @@ async function pass(): Promise<void> {
 function pod(o: Partial<PodInfo> & { prewarmed?: boolean; warmed?: Partial<SpareSettings> | null } = {}): RuntimeHandle {
   const { prewarmed, warmed, ...rest } = o
   if (prewarmed === true && warmed !== null) {
-    spareSettings.set(o.workspaceId ?? 's1', { mode: 'tui', permissionMode: 'bypass', ...warmed })
+    spareSettings.set(o.workspaceId ?? 's1', { mode: 'tui', permissionMode: 'bypass', image: IMAGE, ...warmed })
   }
   return runtimeHandleFromPod({
     jobName: 'yaac-p-s1',
@@ -396,7 +399,23 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
-  it('keeps a spare whose mode and zone match', async () => {
+  // A pod's image is fixed too, so a spare warmed before a Dockerfile edit
+  // would hand the user the old toolchain.
+  it('replaces a spare warmed on an image the project no longer builds', async () => {
+    vi.mocked(listProjectRows).mockResolvedValue([
+      { id: 'p', createDefaults: {} } as unknown as ProjectRow,
+    ])
+    installFakeWorkspaceDriver({ destroy, currentImage: () => Promise.resolve(`${IMAGE}-edited`) })
+    mockWorkspaces.mockResolvedValue([
+      pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
+      pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { mode: 'acp' } }),
+    ])
+    await pass()
+    expect(mockCleanup).toHaveBeenCalledWith({ jobName: 'yaac-p-spare', projectId: 'p', workspaceId: 's2', keepRecord: true })
+    expect(mockCreate).toHaveBeenCalledWith('p', WARM)
+  })
+
+  it('keeps a spare whose mode, zone and image match', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
       { id: 'p', createDefaults: {} } as unknown as ProjectRow,
     ])
