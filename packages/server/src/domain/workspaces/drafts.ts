@@ -107,9 +107,11 @@ export async function listDraftWorkspaces(): Promise<DraftWorkspaceEntry[]> {
   return (await listDraftWorkspaceRows()).filter((d) => !launching.has(d.id)).map(toEntry)
 }
 
-function toEntry({ createdAt, updatedAt, ...rest }: DraftWorkspaceRow): DraftWorkspaceEntry {
+function toEntry({ createdAt, updatedAt, startAt, timeoutMinutes, ...rest }: DraftWorkspaceRow): DraftWorkspaceEntry {
   return {
     ...rest,
+    ...(startAt !== undefined ? { startAt: startAt.toISOString() } : {}),
+    ...(timeoutMinutes !== undefined ? { timeout: timeoutMinutes } : {}),
     createdAt: formatUtcTimestamp(createdAt.getTime()),
     updatedAt: formatUtcTimestamp(updatedAt.getTime()),
   }

@@ -66,16 +66,48 @@ yaac workspace
     --permission-mode <mode>    bypass, auto, accept-edits, manual, plan or
                                 read-only (permission-modes.md)
     -g, --group <group>         File it under a sidebar group (created if new)
-  list [project]                List running workspaces of your projects
+    --timeout <duration>        Stop it this long after it starts (45m, 2h,
+                                1h30m; whole minutes; routines.md)
+    --start-at <time>           Queue it for HH:MM, YYYY-MM-DD HH:MM or ISO 8601,
+                                read in your yaac time zone (needs --prompt)
+    --start-in <duration>       Queue it to start this long from now
+  list [project]                List running workspaces of your projects, then
+                                those scheduled for later
     -s, --stopped               List stopped ones instead
     -n, --num <n>               With -s, show at most n (default 25)
     -a, --all                   With -s, show all
   rename <workspace-id> <title>
   stop <workspace-id>           Tear down the runtime; keep the checkout and diff
+  delete <workspace-id> [-y]    Delete a stopped workspace for good, or discard
+                                a queued one
   restart <workspace-id>        Restart, resuming the agents that were running
+    --timeout <duration>        Stop it this long after the restart (a restart
+                                otherwise clears its timeout)
+  timeout <workspace-id> <duration|none>
+                                Stop a running workspace this long from now, or never
   agents <workspace-id>         List the workspace's agent sessions
   attach <workspace-id>         Attach to the workspace's tmux session
   shell <workspace-id>          Open a shell in the workspace
+
+yaac routine                    Workspaces started on a cron schedule (routines.md)
+  create <project>              --name, --cron and --prompt required
+    --name <name>               Heads each run's title; names its default group
+    --cron <expr>               5-field cron or a nickname like @daily
+    -p, --prompt <text>         Each run's prompt
+    --tz <zone>                 Zone the cron is read in (default: yours)
+    --timeout <duration|next>   Stop each run this long after it starts;
+                                next (the default) stops it at the next tick
+    -t/-m/-e/-b, --mode, --permission-mode
+                                As for workspace create
+    -g, --group <group>         Group runs are filed under (default: one named
+                                after the routine)
+    --no-group                  File runs in the default list
+  list [project]                Routines with their next and last runs
+  edit <routine-id>             The same options; a new cron or zone takes
+                                effect from its next tick
+  pause | resume <routine-id>   Resuming does not catch up missed ticks
+  run <routine-id>              Start a run now, stopped at the next tick
+  delete <routine-id>           Running runs keep going until their stop time
 
 yaac group                      Named sidebar groups of workspaces
   create <project> <name>

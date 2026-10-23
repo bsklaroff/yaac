@@ -9,6 +9,7 @@ import {
   deleteProjectDraftWorkspaces,
   deleteProjectEnvVars,
   deleteProjectQueuedWorkspaces,
+  deleteProjectRoutines,
   deleteProjectRow,
   deleteProjectWorkspaceGroups,
   deleteProjectWorkspaces,
@@ -115,7 +116,9 @@ async function deleteProject(projectId: string): Promise<void> {
   await deleteProjectWorkspaces(projectId)
   await deleteProjectAgentSessions(projectId)
   await deleteProjectWorkspaceGroups(projectId)
+  // Entries first: a run's entry references its routine.
   await deleteProjectQueuedWorkspaces(projectId)
+  await deleteProjectRoutines(projectId)
   await deleteProjectDraftWorkspaces(projectId)
   await deleteProjectEnvVars(projectId)
   await deleteProjectRow(projectId)

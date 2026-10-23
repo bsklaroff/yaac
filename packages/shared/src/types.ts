@@ -996,6 +996,11 @@ export interface WorkspaceListEntry {
   /** The effort its agents run at, in the tool's words; a workspace queued
    *  after this one defaults to it. Absent when it runs at none. */
   effort?: string
+  /** When the server stops it (ISO), absent with no timeout
+   *  (docs/routines.md "Timeouts"). */
+  deadline?: string
+  /** The routine it is a run of. */
+  routineId?: string
 }
 
 /**
@@ -1305,6 +1310,8 @@ export interface StoppedWorkspaceEntry {
   deathReason?: WorkspaceDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
   deathDetail?: string
+  /** The server stopped it at its timeout. */
+  timedOut?: true
   /** The ids of the users who have viewed this death's detail, which
    *  clears their notification dot. Stored on the workspace row, so each
    *  user's dot is the same on every client; meaningful only with
@@ -1421,8 +1428,16 @@ export interface ProvisioningWorkspaceEntry {
 export interface QueuedWorkspaceEntry {
   id: string
   projectId: string
+  /** Exactly one of these three: the workspace or entry it waits on, or
+   *  when it starts (ISO). */
   parentWorkspaceId?: string
   parentQueuedId?: string
+  startAt?: string
+  /** Minutes the launched workspace runs before the server stops it,
+   *  counted from `startAt` if set, else from the launch. */
+  timeoutMinutes?: number
+  /** The routine it is a run of. */
+  routineId?: string
   prompt: string
   tool: AgentTool
   model: string
@@ -1458,6 +1473,12 @@ export interface QueuedWorkspaceEntry {
 export const MAX_PROMPT_LENGTH = 10000
 
 /**
+ * A timeout in whole minutes (docs/routines.md "Timeouts"), up to a year.
+ * The server acts on its minute resync, so nothing finer is offered.
+ */
+export const timeoutMinutesSchema = z.number().int().min(1).max(525_600)
+
+/**
  * A queued workspace's settings as a queue write takes them. A present field
  * overrides what would otherwise be resolved at launch; blank `title` leaves
  * the workspace to be auto-titled.
@@ -1471,7 +1492,89 @@ export const queuedWorkspaceSettingsSchema = z.object({
   effort: effortSchema.optional(),
   branch: z.string().min(1).max(255).optional(),
   title: z.string().max(500).optional(),
+  /** Minutes until the server stops the workspace. */
+  timeout: timeoutMinutesSchema.optional(),
 })
+
+/** Most runs one page of `GET /routine/runs` returns. */
+export const ROUTINE_RUNS_PAGE_MAX = 100
+
+/**
+ * A routine as a create or update takes it (docs/routines.md). Settings
+ * left out resolve as a scheduled workspace's do. An absent `group` on a
+ * create files runs under a group named after the routine; null is the
+ * default list. A null `timeout` stops each run at the next tick.
+ */
+export const routineSettingsSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  cron: z.string().trim().min(1).max(100),
+  /** IANA zone the cron is read in; absent is the user's. */
+  timeZone: z.string().min(1).max(64).optional(),
+  prompt: z.string().min(1).max(MAX_PROMPT_LENGTH),
+  tool: z.enum(AGENT_TOOLS).optional(),
+  model: z.string().regex(MODEL_RE).max(100).optional(),
+  mode: z.enum(AGENT_MODES).optional(),
+  permissionMode: z.enum(PERMISSION_MODES).optional(),
+  effort: effortSchema.optional(),
+  branch: z.string().min(1).max(255).optional(),
+  group: z.string().min(1).max(500).nullable().optional(),
+  timeout: timeoutMinutesSchema.nullable().optional(),
+})
+
+export type RoutineSettings = z.infer<typeof routineSettingsSchema>
+
+/** A routine as the snapshot carries it. */
+export interface RoutineEntry {
+  id: string
+  projectId: string
+  name: string
+  cron: string
+  timeZone: string
+  prompt: string
+  tool: AgentTool
+  model: string
+  modelName?: string
+  mode: AgentMode
+  permissionMode: PermissionMode
+  effort?: string
+  branch: string
+  groupId?: string
+  /** Each run's timeout; absent stops each run at the next tick. */
+  timeoutMinutes?: number
+  paused: boolean
+  /** The next three ticks (ISO); empty while paused. */
+  nextRuns: string[]
+  /** The last tick that fired (ISO). */
+  lastRunAt?: string
+  /** Why its newest run has not launched, if that run failed. */
+  lastError?: string
+  /** 'YYYY-MM-DD HH:MM:SS' (UTC). */
+  createdAt: string
+}
+
+/** One run of a routine, as its history lists it. */
+export interface RoutineRunEntry {
+  /** The queued entry the run was. */
+  id: string
+  /** The tick it was for (ISO). */
+  startAt?: string
+  title?: string
+  /** `waiting`: not launched yet. `failed`: its launch failed. The rest
+   *  describe the workspace it became. */
+  state: 'waiting' | 'failed' | 'running' | 'stopped' | 'timed-out' | 'died'
+  launchError?: string
+  workspaceId?: string
+  /** When the server stops it (ISO), while running. */
+  deadline?: string
+  deathReason?: WorkspaceDeathReason
+}
+
+/** One page of `GET /routine/runs`, newest first. */
+export interface RoutineRunPage {
+  runs: RoutineRunEntry[]
+  /** Pass back as `cursor` for the next page; absent on the last one. */
+  nextCursor?: string
+}
 
 /**
  * The new-workspace pane's fields as a draft keeps them
@@ -1485,6 +1588,12 @@ export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.extend
   permissionMode: z.enum(PERMISSION_MODES),
   startAfter: z.string().min(1).optional(),
   groupId: z.string().min(1).optional(),
+  /** An `At a time…` Start, as an ISO instant. */
+  startAt: z.iso.datetime({ offset: true }).optional(),
+  /** An `On a schedule…` Start: the routine's cron and zone, checked only
+   *  when a routine is created from the draft. */
+  cron: z.string().min(1).max(100).optional(),
+  timeZone: z.string().min(1).max(64).optional(),
 })
 
 export type DraftWorkspaceSettings = z.infer<typeof draftWorkspaceSettingsSchema>
@@ -1517,6 +1626,7 @@ export interface HeldWorkspaceEntry {
   stoppedAt: string
   deathReason?: WorkspaceDeathReason
   deathDetail?: string
+  timedOut?: true
   deathSeenBy: string[]
 }
 
@@ -1734,6 +1844,8 @@ export interface ServerSnapshot {
   heldWorkspaces: HeldWorkspaceEntry[]
   /** Every project's draft workspaces, oldest first. */
   draftWorkspaces: DraftWorkspaceEntry[]
+  /** Every project's routines, oldest first. */
+  routines: RoutineEntry[]
   /** See `ActiveWorkspacesResult.gitAuthFailures`. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
   imageBuilds: ImageBuildEntry[]

@@ -1,5 +1,5 @@
 import { useState, type JSX } from 'react'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor } from '@testing-library/react'
 import type {
   AuthListResult, DraftWorkspaceEntry, QueuedWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
@@ -7,7 +7,7 @@ import type {
 import { LeaveNewWorkspaceDialog, NewWorkspacePane } from '#components/NewWorkspacePane'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { flushTypedText, loadPersisted, useUiStore } from '#lib/store'
-import type { NewWorkspaceOpts } from '#lib/newWorkspace'
+import { SCHEDULE, START_AT, START_IN, type NewWorkspaceOpts } from '#lib/newWorkspace'
 import type { ProjectBranches } from '#lib/useProjectBranches'
 import { mockFetch, renderWithClient, serverError, typeInto, type FetchMock } from './harness'
 
@@ -46,6 +46,7 @@ function project(memory: Record<string, unknown> = {}, driver = 'k8s', extra: Re
     queuedWorkspaces: [],
     heldWorkspaces: [],
     draftWorkspaces: [],
+    routines: [],
     provisioning: [],
     ...extra,
   } as unknown as ServerSnapshot
@@ -175,7 +176,8 @@ async function openReady(): Promise<void> {
 
 const promptInput = (): HTMLTextAreaElement => screen.getByLabelText<HTMLTextAreaElement>('Prompt')
 const typePrompt = (text: string): void => { fireEvent.change(promptInput(), { target: { value: text } }) }
-const sendButton = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: /^(Create|Queue|Save)$/ })
+const sendButton = (): HTMLButtonElement =>
+  screen.getByRole<HTMLButtonElement>('button', { name: /^(Create|Queue|Save|Create routine)$/ })
 const emptyButton = (): HTMLButtonElement =>
   screen.getByRole<HTMLButtonElement>('button', { name: 'Start without a prompt' })
 const barButton = (name: 'New Shell' | 'Browse files' | 'Show changes'): HTMLButtonElement =>
@@ -809,7 +811,7 @@ describe('NewWorkspacePane', () => {
       expect(branchInput().value).toBe('release/2.x')
       // Itself and its descendants would form a chain that never starts.
       const offered = [...select('Start').options].map((o) => o.value)
-      expect(offered).toEqual(['', 'w-parent', 'q1', 'q4'])
+      expect(offered).toEqual(['', 'w-parent', 'q1', 'q4', START_AT, START_IN])
       expect(sendButton().getAttribute('aria-label')).toBe('Save')
       expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
 
@@ -822,7 +824,7 @@ describe('NewWorkspacePane', () => {
       fireEvent.click(sendButton())
       await waitFor(() => expect(sent(UPDATE)).toEqual([{
         id: 'q2', prompt: 'step q2', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'manual',
-        branch: 'release/2.x', title: '', group: null, parent: 'q4',
+        branch: 'release/2.x', title: '', group: null, timeout: null, parent: 'q4',
       }]))
       expect(sent(RUN)).toHaveLength(0)
       // The sidebar opens the set the server says it landed in.
@@ -1087,6 +1089,196 @@ describe('NewWorkspacePane', () => {
       await waitFor(() => expect(sent(QUEUE)).toEqual([expect.objectContaining({
         project: 'proj', parent: 'w-parent', prompt: 'half an idea', permissionMode: 'read-only', draftId: 'd1',
       })]))
+    })
+  })
+
+  describe('scheduling', () => {
+    const ZONE = 'GET /api/config/time-zone'
+    beforeEach(() => server.route(ZONE, { timeZone: 'America/New_York', pinned: true }))
+
+    // The time is typed in the user's zone, whatever the browser's, and
+    // sent as the instant it names there.
+    it('queues at a time or after a delay, with a timeout, and refuses what is not a duration', async () => {
+      await openReady()
+      typePrompt('nightly report')
+      fireEvent.change(select('Start'), { target: { value: START_AT } })
+      const time = await screen.findByLabelText<HTMLInputElement>('Start time (America/New_York)')
+      expect(sendButton().title).toBe('Pick a start time')
+      fireEvent.change(time, { target: { value: '2026-10-24T09:00' } })
+      fireEvent.change(screen.getByLabelText('Timeout'), { target: { value: 'soon' } })
+      expect(sendButton().title).toBe('Give the timeout as a duration like 1h30m')
+      fireEvent.change(screen.getByLabelText('Timeout'), { target: { value: '1h30m' } })
+      expect(barButton('New Shell').disabled).toBe(true)
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(QUEUE)).toEqual([expect.objectContaining({
+        project: 'proj', startAt: '2026-10-24T13:00:00.000Z', timeout: 90, prompt: 'nightly report',
+      })]))
+      expect(sent(QUEUE)[0]).not.toHaveProperty('parent')
+      // A scheduled entry heads its own chain: there is no queued set to open.
+      expect(useUiStore.getState().revealQueued).toBeNull()
+
+      forget()
+      act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj' }))
+      typePrompt('later')
+      fireEvent.change(select('Start'), { target: { value: START_IN } })
+      fireEvent.change(screen.getByLabelText('Delay'), { target: { value: 'tomorrow' } })
+      expect(sendButton().title).toBe('Give the delay as a duration like 2h30m')
+      fireEvent.change(screen.getByLabelText('Delay'), { target: { value: '2h' } })
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(QUEUE)).toEqual([expect.objectContaining({ startIn: 120 })]))
+      expect(sent(QUEUE)[0]).not.toHaveProperty('timeout')
+    })
+
+    it('creates now with a timeout', async () => {
+      await openReady()
+      typePrompt('quick look')
+      fireEvent.change(screen.getByLabelText('Timeout'), { target: { value: '45m' } })
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(CREATE)).toEqual([expect.objectContaining({ prompt: 'quick look', timeout: 45 })]))
+    })
+
+    it('reopens a scheduled entry on its time and timeout, saving neither unless changed', async () => {
+      setSnapshot(project({}, 'k8s', {
+        queuedWorkspaces: [entry('q1', { parentWorkspaceId: undefined, startAt: '2026-10-24T13:00:00.000Z', timeoutMinutes: 90 })],
+      }))
+      await openWith({ editId: 'q1' })
+      expect(select('Start').value).toBe(START_AT)
+      await waitFor(() => expect(screen.getByLabelText<HTMLInputElement>('Start time (America/New_York)').value)
+        .toBe('2026-10-24T09:00'))
+      expect(screen.getByLabelText<HTMLInputElement>('Timeout').value).toBe('1h30m')
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(UPDATE)).toEqual([expect.objectContaining({ id: 'q1', timeout: 90 })]))
+      expect(sent(UPDATE)[0]).not.toHaveProperty('startAt')
+
+      forget()
+      act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', editId: 'q1' }))
+      fireEvent.change(screen.getByLabelText('Start time (America/New_York)'), { target: { value: '2026-10-25T10:30' } })
+      fireEvent.change(screen.getByLabelText('Timeout'), { target: { value: '' } })
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(UPDATE)).toEqual([expect.objectContaining({
+        startAt: '2026-10-25T14:30:00.000Z', timeout: null,
+      })]))
+    })
+  })
+
+  describe('routines', () => {
+    const ZONE = 'GET /api/config/time-zone'
+    const CREATE_ROUTINE = 'POST /api/routine/create'
+    const UPDATE_ROUTINE = 'POST /api/routine/update'
+    const routineButton = (name: 'Create routine' | 'Save'): HTMLButtonElement =>
+      screen.getByRole<HTMLButtonElement>('button', { name })
+    const nextLine = (): string => screen.getByRole('status').textContent ?? ''
+
+    beforeEach(() => {
+      server.route(ZONE, { timeZone: 'America/New_York', pinned: true })
+      server.route(CREATE_ROUTINE, { id: 'r-new' })
+      server.route(UPDATE_ROUTINE, { id: 'r1' })
+      server.route('POST /api/workspace/draft/discard', undefined)
+      // Fri Oct 23 2026, 08:00 in New York.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-23T12:00:00Z'))
+    })
+    afterEach(() => { vi.useRealTimers() })
+
+    it('turns into a routine form: named, scheduled from a preset or cron, previewed, and created', async () => {
+      await openReady()
+      fireEvent.change(select('Start'), { target: { value: SCHEDULE } })
+      // The name is required, so its box is already open.
+      const name = screen.getByLabelText<HTMLInputElement>('Routine name')
+      expect(document.activeElement).toBe(name)
+      fireEvent.change(name, { target: { value: 'Nightly triage' } })
+      fireEvent.keyDown(name, { key: 'Enter' })
+      expect(heading()).toBe('Nightly triage')
+
+      expect(select('Repeats').value).toBe('weekdays')
+      expect(screen.getByRole('button', { name: 'cron: 0 9 * * 1-5' })).toBeTruthy()
+      await waitFor(() => expect(nextLine()).toBe('Next: Fri Oct 23 09:00 · Mon Oct 26 09:00 · Tue Oct 27 09:00'))
+      expect(select('Group').value).not.toBe('')
+      expect(option('Group', 'New group').textContent).toBe('New group: Nightly triage')
+      expect(screen.getByText(/^Runs start unattended/)).toBeTruthy()
+      expect(barButton('New Shell').disabled).toBe(true)
+      expect(routineButton('Create routine').title).toBe('Type a prompt')
+
+      typePrompt('triage new issues')
+      fireEvent.change(select('Repeats'), { target: { value: 'daily' } })
+      fireEvent.change(screen.getByLabelText('Time of day'), { target: { value: '07:30' } })
+      fireEvent.click(screen.getByRole('button', { name: 'cron: 30 7 * * *' }))
+      expect(select('Repeats').value).toBe('custom')
+      const cron = screen.getByLabelText<HTMLInputElement>('Cron expression')
+      expect(cron.value).toBe('30 7 * * *')
+      fireEvent.change(cron, { target: { value: 'nope' } })
+      expect(routineButton('Create routine').disabled).toBe(true)
+      expect(nextLine()).toBe(routineButton('Create routine').title)
+
+      fireEvent.change(cron, { target: { value: '*/30 * * * *' } })
+      fireEvent.change(screen.getByLabelText('Timeout'), { target: { value: '1h' } })
+      expect(screen.getByText('Runs may overlap')).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Time zone: America/New_York' }))
+      typeInto(screen.getByLabelText('Time zone'), 'Europe/Pari')
+      fireEvent.keyDown(screen.getByLabelText('Time zone'), { key: 'Enter' })
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Time zone: Europe/Paris' })).toBeTruthy())
+
+      fireEvent.click(routineButton('Create routine'))
+      await waitFor(() => expect(sent(CREATE_ROUTINE)).toEqual([expect.objectContaining({
+        project: 'proj', name: 'Nightly triage', cron: '*/30 * * * *', timeZone: 'Europe/Paris',
+        prompt: 'triage new issues', tool: 'claude', model: 'claude-opus-5-5', branch: 'main', timeout: 60,
+      })]))
+      // Left unset, the server files runs under a group named after it.
+      expect(sent(CREATE_ROUTINE)[0]).not.toHaveProperty('group')
+      await waitFor(() => expect(useUiStore.getState()).toMatchObject({ selectedRoutineId: 'r-new', newWorkspace: null }))
+    })
+
+    it('reopens a routine on its preset, zone and group, and saves an edit', async () => {
+      server.route(AUTH_LIST, SIGNED_IN)
+      setSnapshot(project({}, 'k8s', {
+        workspaceGroups: GROUPS,
+        routines: [{
+          id: 'r1', projectId: 'proj', name: 'Standup notes', cron: '0 9 * * 1,3', timeZone: 'Europe/Paris',
+          prompt: 'summarize yesterday', tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'accept-edits',
+          branch: 'dev', groupId: 'g-review', paused: false, nextRuns: [], createdAt: '2026-10-01 00:00:00',
+        }],
+      }))
+      await openWith({ routineId: 'r1' })
+      expect([...select('Start').options].map((o) => o.value)).toEqual([SCHEDULE])
+      expect(heading()).toBe('Standup notes')
+      expect(select('Repeats').value).toBe('weekly')
+      expect(screen.getByRole('button', { name: 'Mon' }).getAttribute('aria-pressed')).toBe('true')
+      expect(screen.getByRole('button', { name: 'Tue' }).getAttribute('aria-pressed')).toBe('false')
+      expect(screen.getByRole('button', { name: 'Time zone: Europe/Paris' })).toBeTruthy()
+      expect(select('Group').value).toBe('g-review')
+      expect(screen.getByLabelText<HTMLInputElement>('Timeout').placeholder).toBe('until next run')
+      expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Fri' }))
+      fireEvent.click(routineButton('Save'))
+      await waitFor(() => expect(sent(UPDATE_ROUTINE)).toEqual([expect.objectContaining({
+        id: 'r1', name: 'Standup notes', cron: '0 9 * * 1,3,5', timeZone: 'Europe/Paris', tool: 'codex',
+        model: 'gpt-5.5', branch: 'dev', group: 'g-review', timeout: null,
+      })]))
+      await waitFor(() => expect(useUiStore.getState().selectedRoutineId).toBe('r1'))
+    })
+
+    it('keeps the schedule in a draft, and a passed start time goes back to now', async () => {
+      const kept: DraftWorkspaceEntry[] = [
+        { id: 'd1', projectId: 'proj', prompt: 'hourly sweep', tool: 'claude', mode: 'tui', permissionMode: 'manual',
+          model: 'claude-opus-5-5', branch: 'main', title: 'Sweep', cron: '15 * * * *', timeZone: 'Asia/Tokyo',
+          timeout: 20, createdAt: '', updatedAt: '' },
+        { id: 'd2', projectId: 'proj', prompt: 'missed', tool: 'claude', mode: 'tui', permissionMode: 'manual',
+          startAt: '2026-10-22T09:00:00.000Z', createdAt: '', updatedAt: '' },
+      ]
+      setSnapshot(project({}, 'k8s', { draftWorkspaces: kept }))
+      await openWith({ draftId: 'd1' })
+      expect(select('Repeats').value).toBe('hourly')
+      expect(screen.getByLabelText<HTMLInputElement>('Minute past the hour').value).toBe('15')
+      expect(screen.getByRole('button', { name: 'Time zone: Asia/Tokyo' })).toBeTruthy()
+      expect(screen.getByLabelText<HTMLInputElement>('Timeout').value).toBe('20m')
+      // Unchanged from the draft, so leaving keeps it without asking.
+      leave()
+      expect(useUiStore.getState().leaving).toBeNull()
+
+      act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', draftId: 'd2' }))
+      expect(select('Start').value).toBe('')
     })
   })
 })

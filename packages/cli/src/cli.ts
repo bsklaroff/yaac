@@ -15,6 +15,8 @@ import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
 import { workspaceDelete } from '#commands/workspace-delete'
 import { workspaceRestart } from '#commands/workspace-restart'
+import { workspaceTimeout } from '#commands/workspace-timeout'
+import { routineCreate, routineDelete, routineEdit, routineList, routinePause, routineResume, routineRun, type RoutineOptions } from '#commands/routine'
 import { workspaceAttach } from '#commands/workspace-attach'
 import { forward } from '#commands/forward'
 import { workspaceAgents } from '#commands/workspace-agents'
@@ -338,6 +340,9 @@ workspace
   .addOption(new Option('--mode <mode>', 'How the agent is driven: tui runs its terminal UI, acp drives it over the Agent Client Protocol and renders a chat pane in the web app. Every tool has an adapter; a tool\'s adapter may offer fewer permission modes than its terminal UI. Defaults to this project\'s last choice for the tool, else acp; an acp workspace is not attached, so open it in the web app').choices([...AGENT_MODES]))
   .addOption(new Option('--permission-mode <mode>', 'How much the agent may do before it asks: bypass acts freely, auto lets a reviewer model judge each action, accept-edits edits without asking but asks for the rest, manual asks for everything, plan explores and asks to act on a plan, read-only (codex\'s strictest, in place of plan) asks before any edit. Defaults to this project\'s last choice for the tool, else bypass in a container and accept-edits on the host. Not every tool has every mode (pi has only bypass)').choices([...PERMISSION_MODES]))
   .option('-g, --group <group>', 'File the workspace under this sidebar group (by name; created if it does not exist)')
+  .option('--timeout <duration>', 'Stop the workspace this long after it starts, like 45m, 2h or 1h30m (whole minutes; the server checks every minute)')
+  .option('--start-at <time>', 'Queue it to start at this time instead of now: HH:MM (its next occurrence), YYYY-MM-DD HH:MM, or ISO 8601, read in your yaac time zone. Needs --prompt')
+  .option('--start-in <duration>', 'Queue it to start this long from now, like 30m or 2h. Needs --prompt')
   .action(workspaceCreate)
 
 workspace
@@ -364,8 +369,8 @@ workspace
 
 workspace
   .command('delete')
-  .description('Delete a stopped workspace: its checkout and local branches (anything pushed stays on the remote), unpushed commits, uncommitted changes and conversation history')
-  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .description('Delete a stopped workspace: its checkout and local branches (anything pushed stays on the remote), unpushed commits, uncommitted changes and conversation history. Given a queued workspace\'s id (one scheduled for later, say), discards it')
+  .argument('<workspace-id>', 'Workspace or queued workspace ID, or unique prefix')
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(workspaceDelete)
 
@@ -373,7 +378,15 @@ workspace
   .command('restart')
   .description('Restart a workspace: kill its container, reuse its checkout, resume the agents that were running')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .option('--timeout <duration>', 'Stop it this long after the restart, like 2h; without one the restart clears any timeout it had')
   .action(workspaceRestart)
+
+workspace
+  .command('timeout')
+  .description('Stop a running workspace this long from now, or never')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .argument('<duration>', 'Like 45m, 2h or 1h30m, or "none" to clear its timeout')
+  .action(workspaceTimeout)
 
 workspace
   .command('agents')
@@ -393,6 +406,70 @@ workspace
   .description('Open an interactive zsh shell in the workspace container')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .action((workspaceId: string) => workspaceAttach(workspaceId, 'shell'))
+
+const routine = program
+  .command('routine')
+  .description('Manage routines: workspaces started on a cron schedule, each stopped by the next run unless given a timeout')
+
+/** The options `routine create` and `routine edit` share. */
+function routineOptions(cmd: Command): Command {
+  return cmd
+    .option('--name <name>', 'Its name: heads each run\'s title, and names the group runs are filed under by default')
+    .option('--cron <expr>', 'When it runs: a 5-field cron expression (minute hour day month weekday, e.g. "0 9 * * 1-5") or a nickname like @daily')
+    .option('-p, --prompt <text>', 'The prompt each run starts with')
+    .option('--tz <zone>', 'IANA time zone the cron is read in (default: your yaac time zone)')
+    .option('--timeout <duration>', 'Stop each run this long after it starts, like 2h; "next" (the default) stops it when the next run starts')
+    .option('-t, --tool <tool>', 'Agent tool (claude, codex, opencode, or pi); defaults as for workspace create')
+    .option('-m, --model <model>', 'Model for the agent; defaults as for workspace create')
+    .option('-e, --effort <level>', 'Effort level, which the model must offer')
+    .addOption(new Option('--mode <mode>', 'How the agent is driven (tui or acp)').choices([...AGENT_MODES]))
+    .addOption(new Option('--permission-mode <mode>', 'How much each run may do before it asks; a run that asks waits until it is stopped').choices([...PERMISSION_MODES]))
+    .option('-b, --branch <branch>', 'Reference branch each run forks from')
+    .option('-g, --group <group>', 'Sidebar group runs are filed under (by name or id; created if it does not exist). Defaults to a group named after the routine')
+    .option('--no-group', 'File runs in the default list instead of a group')
+}
+
+routineOptions(routine
+  .command('create')
+  .description('Create a routine in a project')
+  .argument('<project>', 'Project name, id, or id prefix'))
+  .action((project: string, opts: RoutineOptions) => routineCreate(project, opts))
+
+routine
+  .command('list')
+  .description('List your projects\' (or --user\'s) routines with their next runs')
+  .argument('[project]', 'Filter by project name, id, or id prefix')
+  .action(routineList)
+
+routineOptions(routine
+  .command('edit')
+  .description('Change a routine; a new cron or zone takes effect from its next tick, and runs already started are unaffected')
+  .argument('<routine-id>', 'Routine ID or unique prefix'))
+  .action((id: string, opts: RoutineOptions) => routineEdit(id, opts))
+
+routine
+  .command('pause')
+  .description('Stop a routine from starting runs until it is resumed')
+  .argument('<routine-id>', 'Routine ID or unique prefix')
+  .action(routinePause)
+
+routine
+  .command('resume')
+  .description('Resume a paused routine from its next tick (missed ticks are not caught up)')
+  .argument('<routine-id>', 'Routine ID or unique prefix')
+  .action(routineResume)
+
+routine
+  .command('run')
+  .description('Start a run now, outside the schedule; it stops at the next scheduled run unless the routine has a timeout')
+  .argument('<routine-id>', 'Routine ID or unique prefix')
+  .action(routineRun)
+
+routine
+  .command('delete')
+  .description('Delete a routine; runs already started keep going until their stop time')
+  .argument('<routine-id>', 'Routine ID or unique prefix')
+  .action(routineDelete)
 
 const config = program
   .command('config')

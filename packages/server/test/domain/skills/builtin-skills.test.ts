@@ -75,9 +75,10 @@ describe('yaac-mama skill', () => {
     const body = await bodyOf('yaac-mama')
     expect(body).toContain('yaac-mama create [opts] "<prompt>"')
     expect(body).toContain('yaac-mama queue --parent-workspace W [opts] "<prompt>"')
-    expect(body).toContain('yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]')
+    expect(body).toContain('yaac-mama queue (--start-at T | --start-in D) [opts] "<prompt>"')
+    expect(body).toContain('yaac-mama edit-queued [--parent-workspace W | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]')
     expect(body).toContain(
-      '# opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')
+      '# opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]')
     expect(body).toContain('yaac-mama list')
     expect(body).toContain('yaac-mama group create "<name>"')
     expect(body).toContain('yaac-mama set-base <branch>')
@@ -86,7 +87,7 @@ describe('yaac-mama skill', () => {
     expect(body).toContain('yaac-mama stop [<workspace>]')
     expect(body).toContain('the workspace ending is the confirmation')
     expect(body).toContain('yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]')
-    expect(body).toContain('yaac-mama restart <workspace>')
+    expect(body).toContain('yaac-mama restart [--timeout D] <workspace>')
     // The skill must say it is a subset, so an agent does not look for
     // a delete.
     expect(body).toContain('strict subset')

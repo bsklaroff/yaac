@@ -9,7 +9,9 @@ a user stop from the webapp or `yaac workspace stop`, or an agent's
 the agent exiting); it waits until the user runs or discards it.
 
 The parent can be a workspace or another entry, so requests chain to any
-depth. An entry under an entry waits for its parent to launch and then stop
+depth. An entry can instead start at a time, with no parent; scheduled
+starts, the timeout an entry can give what it launches, and the routines
+that queue one per cron tick are in docs/routines.md. An entry under an entry waits for its parent to launch and then stop
 naturally. Entries are not workspaces: they have no `workspaces` row,
 checkout or runtime until they launch, and the UI never calls them sessions
 (docs/naming.md). This feature's modules and table are `queued-workspace*` /
@@ -148,8 +150,8 @@ snapshot omits it while its provisioning row stands in for it.
   refused. The check walks up from the new parent, stepping from a workspace
   that some entry launched to that entry, so a launching entry cannot hide
   its ancestry.
-- **Discard** deletes the entry and moves its children up to its parent, so
-  the rest of the chain runs one link sooner.
+- **Discard** deletes the entry and moves its children up to its parent (or
+  its start time), so the rest of the chain runs one link sooner.
 - **Run now** releases one entry regardless of its parent. Mid-chain, it
   leaves the chain once its launch succeeds, and its children follow it to
   the new workspace.

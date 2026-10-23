@@ -1,4 +1,4 @@
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles } from '#domain/workspaces'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceTimeouts } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -50,9 +50,16 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // stop or a create already past its owner check left running.
     { name: 'revoked-shares', triggers: ['workspaces'],
       run: (ctx) => reconcileRevokedShares(ctx.snapshot()) },
-    // Backstop for queued workspaces: a launch interrupted by a server
-    // restart, or a release whose launch never happened. `stopWorkspace`
-    // launches directly, so the resync is enough.
+    // Timeouts, routine ticks and scheduled starts all run on the resync,
+    // whose minute is the resolution they promise (docs/routines.md). In
+    // this order, so a routine's previous run is stopped in the pass that
+    // launches the next.
+    { name: 'workspace-timeouts', triggers: [], run: (ctx) => reconcileWorkspaceTimeouts(ctx.snapshot()) },
+    // Due routine ticks become scheduled entries, launched by the next step.
+    { name: 'routines', triggers: [], run: () => reconcileRoutines() },
+    // Due scheduled starts, a launch interrupted by a server restart, or a
+    // release whose launch never happened. `stopWorkspace` launches the
+    // children it releases directly.
     { name: 'queued-workspaces', triggers: [], run: () => reconcileQueuedWorkspaces() },
     // Runtime work that must precede the pool: a spare's create should join
     // image builds already running, and anything holding capacity should be

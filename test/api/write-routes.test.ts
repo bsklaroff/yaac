@@ -1292,6 +1292,62 @@ describe('write routes', () => {
     })
   })
 
+  // Scheduled starts, timeouts and routines (docs/routines.md) through the
+  // routes: what each takes and refuses, and whose zone a time is read in.
+  describe('schedule routes', () => {
+    const post = (route: string, body: unknown): Promise<Response> =>
+      Promise.resolve(buildApp({ buildId: 'test' }).request(`/api/${route}`, rawInit({
+        method: 'POST', body: JSON.stringify(body),
+      })))
+    const json = async <T>(res: Response | Promise<Response>): Promise<T> => {
+      const r = await res
+      expect(r.status, await r.clone().text()).toBe(200)
+      return await r.json() as T
+    }
+
+    it('reads an offset-less start time in the user\'s zone, else UTC, and takes one start only', async () => {
+      const base = { project: DEMO, prompt: 'later', tool: 'claude', branch: 'main' }
+      const utc = await json<{ startAt: string }>(post('workspace/queue/create', { ...base, startAt: '2099-03-04T09:30', timeout: 45 }))
+      expect(utc).toMatchObject({ startAt: '2099-03-04T09:30:00.000Z', timeoutMinutes: 45 })
+      await json(buildApp({ buildId: 'test' }).request('/api/config/time-zone', rawInit({
+        method: 'PUT', body: JSON.stringify({ timeZone: 'Asia/Tokyo', pinned: true }),
+      })))
+      const tokyo = await json<{ startAt: string }>(post('workspace/queue/create', { ...base, startAt: '2099-03-04T09:30' }))
+      expect(tokyo.startAt).toBe('2099-03-04T00:30:00.000Z')
+      expect((await (await client().workspace.queue.list.$get()).json()).map((e) => e.startAt))
+        .toEqual([utc.startAt, tokyo.startAt])
+
+      expect((await post('workspace/queue/create', { ...base, startAt: '10:00', startIn: 5 })).status).toBe(400)
+      expect((await post('workspace/queue/create', { ...base, parent: 'parent', startIn: 5 })).status).toBe(400)
+      expect((await post('workspace/queue/create', base)).status).toBe(400)
+      expect((await post('workspace/queue/create', { ...base, startAt: 'soonish' })).status).toBe(400)
+      expect((await post('workspace/queue/create', { ...base, startIn: 5, timeout: 0 })).status).toBe(400)
+    })
+
+    it('creates, edits, pauses and deletes a routine, refusing a bad cron or zone', async () => {
+      const base = { project: DEMO, name: 'Nightly', prompt: 'triage', tool: 'claude', branch: 'main' }
+      expect((await post('routine/create', { ...base, cron: 'every night' })).status).toBe(400)
+      expect((await post('routine/create', { ...base, cron: '@daily', timeZone: 'Mars/Olympus' })).status).toBe(400)
+      const created = await json<{ id: string; groupId?: string; timeZone: string; nextRuns: string[] }>(
+        post('routine/create', { ...base, cron: '0 9 * * 1-5', timeout: 120 }))
+      expect(created).toMatchObject({ timeZone: 'UTC' })
+      expect(created.nextRuns).toHaveLength(3)
+      expect(await listWorkspaceGroups(DEMO)).toContainEqual(expect.objectContaining({ groupId: created.groupId, name: 'Nightly' }))
+      expect(await json(post('routine/update', { id: created.id, timeout: null, group: null })))
+        .not.toHaveProperty('groupId')
+      expect(await json(post('routine/pause', { id: created.id }))).toMatchObject({ paused: true, nextRuns: [] })
+      expect(await json(post('routine/resume', { id: created.id }))).toMatchObject({ paused: false })
+      expect((await (await client().routine.list.$get()).json()).map((r) => r.id)).toEqual([created.id])
+      expect(await json(buildApp({ buildId: 'test' }).request(`/api/routine/runs?id=${created.id}`))).toEqual({ runs: [] })
+      expect((await post('routine/delete', { id: created.id })).status).toBe(204)
+      expect((await post('routine/delete', { id: created.id })).status).toBe(404)
+    })
+
+    function client(): ReturnType<typeof makeTestApiClient> {
+      return makeTestApiClient(buildApp({ buildId: 'test' }))
+    }
+  })
+
   // Drafts through the routes (docs/draft-workspaces.md): a save without an
   // id makes one, with an id replaces it, and the snapshot carries them.
   describe('draft workspace routes', () => {

@@ -768,6 +768,101 @@ describe('with seeded projects', () => {
     })
   })
 
+  // Scheduling a workspace and managing routines need no running workspace
+  // (docs/routines.md); what happens when one starts or stops is in the
+  // containerless workspace suite.
+  describe('yaac routine and scheduled workspaces (real CLI + real server)', () => {
+    const NAME = 'repo-routines'
+    beforeAll(async () => {
+      const repo = path.join(testEnv.scratchDir, NAME)
+      await createTestRepo(repo)
+      await addTestProject(server, repo)
+    })
+
+    it('queues a workspace for a time, lists it as scheduled, and discards it by prefix', async () => {
+      const queued = await runYaac(testEnv.env, 'workspace', 'create', NAME, '--prompt', 'far off',
+        '--start-at', '2099-01-02T03:04+13:00', '--timeout', '1h30m')
+      expect(queued.exitCode, queued.stderr).toBe(0)
+      const id = /Queued workspace ([0-9a-f-]{36}): starts at about /.exec(queued.stdout)?.[1] ?? ''
+      const list = await runYaac(testEnv.env, 'workspace', 'list', NAME)
+      expect(list.stdout).toContain('Scheduled:')
+      expect(list.stdout).toMatch(new RegExp(`${id.slice(0, 8)}.*1h 30m.*far off`))
+      const discarded = await runYaac(testEnv.env, 'workspace', 'delete', id.slice(0, 8))
+      expect(discarded.stdout).toContain(`Queued workspace ${id} discarded.`)
+      expect((await runYaac(testEnv.env, 'workspace', 'list', NAME)).stdout).not.toContain('far off')
+    })
+
+    it('refuses two start times, a start without a prompt, and durations under a minute', async () => {
+      const refusals: Array<[string[], RegExp]> = [
+        [['--prompt', 'x', '--start-at', '10:00', '--start-in', '5m'], /not both/],
+        [['--start-in', '5m'], /needs --prompt/],
+        [['--prompt', 'x', '--start-in', '30s'], /whole minutes/],
+        [['--prompt', 'x', '--start-at', 'soonish'], /not a start time/],
+      ]
+      for (const [args, error] of refusals) {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', NAME, ...args)
+        expect(exitCode, args.join(' ')).not.toBe(0)
+        expect(stderr).toMatch(error)
+      }
+      const restart = await runYaac(testEnv.env, 'workspace', 'restart', 'nope', '--timeout', '1h')
+      expect(restart.exitCode).not.toBe(0)
+      const timeout = await runYaac(testEnv.env, 'workspace', 'timeout', 'nope', '1h')
+      expect(timeout.exitCode).not.toBe(0)
+      expect(timeout.stderr).toMatch(/No workspace|not found|no record/i)
+    })
+
+    it('creates, lists, edits, pauses, resumes and deletes a routine', async () => {
+      const created = await runYaac(testEnv.env, 'routine', 'create', NAME, '--name', 'Nightly sweep',
+        '--cron', '0 3 * * *', '--tz', 'Pacific/Auckland', '--prompt', 'sweep', '--tool', 'claude', '--mode', 'tui',
+        '--permission-mode', 'manual', '--model', 'opus', '--effort', 'high')
+      expect(created.exitCode, created.stderr).toBe(0)
+      expect(created.stdout).toContain('Next runs (Pacific/Auckland): ')
+      const id = /Created routine ([0-9a-f-]{36})/.exec(created.stdout)?.[1] ?? ''
+      const routineOf = async () => ((await (await fetch(`http://127.0.0.1:${server.lock.port}/api/routine/list`)).json()) as Array<{
+        id: string; cron: string; timeZone: string; groupId?: string; timeoutMinutes?: number; paused: boolean
+        nextRuns: string[]; name: string; prompt: string
+      }>).find((r) => r.id === id)
+      const groupOf = async (): Promise<string | undefined> => {
+        const groupId = (await routineOf())?.groupId
+        const { groups } = await (await fetch(`http://127.0.0.1:${server.lock.port}/api/workspace/group/list`)).json() as {
+          groups: Array<{ groupId: string; name: string }>
+        }
+        return groups.find((g) => g.groupId === groupId)?.name
+      }
+      // Runs are filed under a group named after it.
+      expect(await groupOf()).toBe('Nightly sweep')
+
+      const listed = await runYaac(testEnv.env, 'routine', 'list', NAME)
+      expect(listed.stdout).toMatch(/Nightly sweep\s+0 3 \* \* \*\s+Pacific\/Auckland/)
+      expect(listed.stdout).toContain('at next run')
+
+      const edited = await runYaac(testEnv.env, 'routine', 'edit', id.slice(0, 8), '--cron', '*/30 * * * *',
+        '--tz', 'Europe/Paris', '--timeout', '20m', '--no-group', '--name', 'Half-hourly', '--prompt', 'sweep again',
+        '--branch', 'master')
+      expect(edited.exitCode, edited.stderr).toBe(0)
+      expect(await routineOf()).toMatchObject({
+        cron: '*/30 * * * *', timeZone: 'Europe/Paris', timeoutMinutes: 20, name: 'Half-hourly', prompt: 'sweep again',
+      })
+      expect((await routineOf())?.groupId).toBeUndefined()
+      await runYaac(testEnv.env, 'routine', 'edit', id, '--group', 'Sweeps', '--timeout', 'next')
+      expect(await groupOf()).toBe('Sweeps')
+      expect((await routineOf())?.timeoutMinutes).toBeUndefined()
+      const bad = await runYaac(testEnv.env, 'routine', 'edit', id, '--cron', 'every night')
+      expect(bad.exitCode).not.toBe(0)
+      expect(bad.stderr).toContain('invalid cron')
+
+      expect((await runYaac(testEnv.env, 'routine', 'pause', id)).stdout).toContain('Paused routine')
+      expect(await routineOf()).toMatchObject({ paused: true, nextRuns: [] })
+      expect((await runYaac(testEnv.env, 'routine', 'resume', id)).stdout).toContain('Next runs (Europe/Paris)')
+
+      expect((await runYaac(testEnv.env, 'routine', 'delete', id.slice(0, 8))).stdout).toContain('Deleted routine')
+      expect(await routineOf()).toBeUndefined()
+      const gone = await runYaac(testEnv.env, 'routine', 'run', id)
+      expect(gone.exitCode).not.toBe(0)
+      expect(gone.stderr).toContain('No routine')
+    })
+  })
+
   /**
    * Adding the same remote twice gives two projects with one name, which
    * every `<project>` argument then refuses, listing both ids.

@@ -8,6 +8,7 @@ import type {
   ProvisioningWorkspaceEntry,
   ProjectSummary,
   QueuedWorkspaceEntry,
+  RoutineEntry,
   ServerSnapshot,
   StoppedWorkspaceEntry,
   StoppedWorkspacePage,
@@ -175,6 +176,7 @@ interface ListOpts {
   queued?: QueuedWorkspaceEntry[]
   held?: HeldWorkspaceEntry[]
   drafts?: DraftWorkspaceEntry[]
+  routines?: RoutineEntry[]
   /** The stop dialog lists what is queued, off the snapshot. */
   snapshot?: ServerSnapshot
 }
@@ -197,6 +199,7 @@ function renderList(
         queued={o.queued ?? []}
         held={o.held ?? []}
         drafts={o.drafts ?? []}
+        routines={o.routines ?? []}
       />
     </QueryClientProvider>
   )
@@ -1025,6 +1028,80 @@ describe('WorkspaceList', () => {
         projectId: 'proj', tool: 'codex', branch: 'dev', permissionMode: 'manual', mode: 'tui',
         prompt: 'Idea d1\nmore detail', groupId: 'g1', draftId: 'd1',
       }), expect.any(Function))
+    })
+  })
+
+  describe('scheduled workspaces and routines', () => {
+    const inMinutes = (m: number): string => new Date(Date.now() + m * 60_000).toISOString()
+    const routine = (id: string, over: Partial<RoutineEntry> = {}): RoutineEntry => ({
+      id, projectId: 'proj', name: `Routine ${id}`, cron: '0 9 * * 1-5', timeZone: 'UTC', prompt: 'triage',
+      tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'bypass', branch: 'main',
+      paused: false, nextRuns: [inMinutes(180)], createdAt: '2026-08-10 00:00:00', ...over,
+    })
+
+    it('lists scheduled workspaces soonest first with their chains, and a discard hands the chain its time', async () => {
+      renderList([], {
+        queued: [
+          queuedEntry('s1', { parentWorkspaceId: undefined, startAt: inMinutes(130), prompt: 'Later' }),
+          queuedEntry('s2', { parentWorkspaceId: undefined, startAt: inMinutes(10), prompt: 'Sooner' }),
+          queuedEntry('c1', { parentWorkspaceId: undefined, parentQueuedId: 's1', prompt: 'After later' }),
+          // A routine's run shows on the routine, not here.
+          queuedEntry('run', { parentWorkspaceId: undefined, startAt: inMinutes(-1), routineId: 'r1', prompt: 'A run' }),
+        ],
+      })
+      const section = screen.getByRole('group', { name: 'Scheduled' })
+      expect(section.textContent).toMatch(/Sooner.*in ~10m.*Later.*in ~2h 10m.*After later/)
+      expect(screen.queryByText('A run')).toBeNull()
+      expect(screen.queryByText('parent gone')).toBeNull()
+
+      await pickAction('Discard…', 'Queued workspace actions', 1)
+      expect(await screen.findByText(
+        /^“Later” will not run\. The workspace queued after it will start at about \w{3} \w{3} \d+ \d\d:\d\d instead\.$/,
+      )).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+      await waitFor(() => expect(posted(QUEUE_DISCARD)).toEqual([{ id: 's1' }]))
+    })
+
+    it('lists routines with their schedule, next run, pause and failure, and acts on them', async () => {
+      const routines = [
+        routine('r1', { name: 'Triage' }),
+        routine('r2', { name: 'Weekly', cron: '30 8 * * 1', paused: true, nextRuns: [] }),
+        routine('r3', { name: 'Odd', cron: '0 0 1 1 *', lastError: 'no credential' }),
+      ]
+      for (const action of ['run', 'resume', 'delete']) server.route(`POST /api/routine/${action}`, undefined)
+      renderList([], { routines, snapshot: serverSnapshot({ routines }) })
+      expect(screen.queryByText('No workspaces yet')).toBeNull()
+      const section = screen.getByRole('group', { name: 'Routines' })
+      expect(section.textContent).toMatch(/Triage.*Weekdays 09:00.*in ~3h.*Weekly.*Mon 08:30.*Paused.*Odd.*0 0 1 1 \*/)
+      expect(screen.getByRole('img', { name: 'Last run failed: no credential' })).toBeTruthy()
+
+      fireEvent.click(screen.getByText('Triage'))
+      expect(useUiStore.getState().selectedRoutineId).toBe('r1')
+      await pickAction('Run now', 'Routine actions', 0)
+      await waitFor(() => expect(posted('POST /api/routine/run')).toEqual([{ id: 'r1' }]))
+      await pickAction('Resume', 'Routine actions', 1)
+      await waitFor(() => expect(posted('POST /api/routine/resume')).toEqual([{ id: 'r2' }]))
+      await pickAction('Edit…', 'Routine actions', 0)
+      expect(useUiStore.getState()).toMatchObject({
+        selectedRoutineId: null, newWorkspace: expect.objectContaining({ editRoutineId: 'r1', title: 'Triage' }) as unknown,
+      })
+
+      await pickAction('Delete…', 'Routine actions', 2)
+      expect(await screen.findByText(/Runs already started keep going until their stop time\.$/)).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+      await waitFor(() => expect(posted('POST /api/routine/delete')).toEqual([{ id: 'r3' }]))
+    })
+
+    it('marks a running workspace that will be stopped, and a stop that was a timeout', () => {
+      renderList([entry({ title: 'Live', deadline: inMinutes(42) })], {
+        queued: [queuedEntry('q1', { parentWorkspaceId: 'done' })],
+        held: [{
+          workspaceId: 'done', projectId: 'proj', tool: 'claude', title: 'Ran out', stoppedAt: '2026-08-10 00:00:00',
+          timedOut: true, deathSeenBy: [],
+        }],
+      })
+      expect(screen.getByRole('img', { name: 'Stops in 42m' })).toBeTruthy()
+      expect(screen.getByText(/^timed out /)).toBeTruthy()
     })
   })
 

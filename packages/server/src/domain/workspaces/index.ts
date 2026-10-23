@@ -42,6 +42,7 @@ export {
   reconcileQueuedWorkspaces,
   runQueuedWorkspace,
   updateQueuedWorkspace,
+  type QueueStart,
 } from './queued-workspaces'
 export {
   resolveProjectWorkspace,
@@ -53,6 +54,17 @@ export { prepareRestart } from './restart'
 export { prepareStart } from './start'
 export { reconcileStaleWorkspaces } from './stale-workspaces'
 export { stopWorkspace } from './stop'
+export {
+  createRoutine,
+  deleteRoutine,
+  listRoutineRunPage,
+  listRoutines,
+  reconcileRoutines,
+  runRoutineNow,
+  setRoutinePaused,
+  updateRoutine,
+} from './routines'
+export { reconcileWorkspaceTimeouts, setWorkspaceTimeout } from './timeouts'
 export { markWaitingSeen } from './waiting-seen'
 export { listStoppedWorkspaces } from './stopped-list'
 export { getAcpStoredImage, getAgentSessionTranscript, recordOrigin } from './transcript'

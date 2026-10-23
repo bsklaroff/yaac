@@ -49,11 +49,11 @@ describe('ownedBy', () => {
       projects: [project('mine', 'u-me'), project('hers', 'u-ada')],
       workspaces: [row('mine'), row('hers')], workspaceGroups: [row('hers')], stale: [row('mine')],
       provisioning: [row('hers')], queuedWorkspaces: [row('hers')], heldWorkspaces: [row('mine')],
-      draftWorkspaces: [row('hers')],
+      draftWorkspaces: [row('hers')], routines: [row('mine'), row('hers')],
     } as unknown as ServerSnapshot
     const hers = ownedBy(all, 'u-ada')
     expect(hers.projects.map((p) => p.id)).toEqual(['hers'])
-    for (const key of ['workspaces', 'workspaceGroups', 'provisioning', 'queuedWorkspaces', 'draftWorkspaces'] as const) {
+    for (const key of ['workspaces', 'workspaceGroups', 'provisioning', 'queuedWorkspaces', 'draftWorkspaces', 'routines'] as const) {
       expect(hers[key].map((r) => r.projectId)).toEqual(['hers'])
     }
     expect(hers.stale).toEqual([])

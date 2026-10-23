@@ -15,13 +15,14 @@ yaac-mama list <workspace>...                     # just those, with full prompt
 yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 yaac-mama create [opts] "<prompt>"
 yaac-mama queue --parent-workspace W [opts] "<prompt>"
-yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
-  # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
+yaac-mama queue (--start-at T | --start-in D) [opts] "<prompt>"
+yaac-mama edit-queued [--parent-workspace W | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
+  # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]
 yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama set-base <branch>                         # your base branch, on origin
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
-yaac-mama restart <workspace>                       # a stopped one, resumed
+yaac-mama restart [--timeout D] <workspace>         # a stopped one, resumed
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
 yaac-mama models                                  # tools/models available
@@ -56,6 +57,13 @@ pass — the server resolves who is calling and answers for that project only.
   table cuts to 60 characters: a `Prompt of <id>:` line, then the prompt with
   every line indented two spaces. Only an unindented header line is the
   server's; a prompt's own text is always indented.
+  - A **STOPS** column shows when the server will stop a workspace that has a
+    timeout, in the user's yaac time zone, including your own row:
+    `yaac-mama list "$YAAC_WORKSPACE_ID"` is how you find your own deadline.
+    Leave time to commit and push before it. You cannot extend it; ask the
+    user if you need longer.
+  - A queued workspace with a start time is listed under an `at <time>:`
+    heading; stopped ones that ran out of time say `timed out`.
 
 - **`list --stopped`** — this project's stopped workspaces, newest stop
   first, 25 to a page. Use it to find earlier work by what it was about,
@@ -106,6 +114,11 @@ pass — the server resolves who is calling and answers for that project only.
     if it does not exist. Good for a fan-out you want kept together.
   - **`--title`**: the label the sidebar shows for it. Omitted, it is
     titled automatically from its prompt.
+  - **`--timeout`**: stop the new workspace this long after it starts —
+    whole minutes or more, like `45m`, `2h` or `1h30m`. The server checks
+    every minute, so it stops up to a minute late. Its checkout is kept and
+    what is queued after it starts, as for any stop. A sibling that might
+    run away is a good candidate.
 
 - **`queue --parent-workspace <id> "<prompt>"`** — save a workspace to start
   **when a workspace stops**. Prints the queued workspace's id.
@@ -126,12 +139,22 @@ pass — the server resolves who is calling and answers for that project only.
   - `list` shows what is queued, indented under what it waits on.
   - A **stopped** parent is allowed, with a note on stderr: what is queued
     under it starts only once it is restarted and then stopped again.
+- **`queue --start-at <time>` / `queue --start-in <duration>`** — save a
+  workspace to start **at a time** instead: `HH:MM` (its next occurrence),
+  `YYYY-MM-DD HH:MM` or ISO 8601 with an offset, read in the **user's** yaac
+  time zone (not this workspace's `TZ`), or a duration from now. It starts up
+  to a minute late. Options it omits take the project's defaults, not yours,
+  except the permission mode, which is still capped at your own. A
+  `--timeout` on it counts from its start time. Prints the id, then a note on
+  stderr with the time it starts. Exactly one of `--parent-workspace`,
+  `--start-at` and `--start-in`.
 
 - **`edit-queued <queued> ["<prompt>"]`** — change a queued workspace before
   it starts: a prompt given replaces the stored one (omit it to keep it),
   each `create` option given replaces that setting (a new tool without a
   model takes that tool's default), and `--parent-workspace` moves it under
-  another parent. `<queued>` is its id or 8-character prefix from `list` —
+  another parent (`--start-at` / `--start-in` give it a time instead).
+  `<queued>` is its id or 8-character prefix from `list` —
   any queued workspace in this project, not only yours, so edit one you did
   not queue only when the user asked. One whose stored permission mode is
   above your own is refused until you pass a `--permission-mode` at or below
@@ -209,6 +232,8 @@ pass — the server resolves who is calling and answers for that project only.
   mode are the ones it had. Prints once the restart is under way; it then
   provisions in the background like a `create`, and shows as running in
   `list` once it is up. Its agent resumes idle — `send` it what to do next.
+  A restart clears any timeout it had; `--timeout` gives it a new one,
+  counted from the restart.
   - Refused for a workspace that is running (restarting it would end its
     agent's turn), for yourself, for one whose permission mode is **more
     permissive than yours** (counting a tool that lacks its mode, which comes

@@ -236,6 +236,9 @@ export interface WorkspaceCreateOptions {
    * instead.
    */
   effort?: string
+  /** When the server stops it (`workspaces.deadline`). A resume without one
+   *  clears the deadline the workspace had. */
+  deadline?: Date
   /**
    * Called with each user-visible progress message. The HTTP route streams
    * them to the CLI as NDJSON events.
@@ -942,6 +945,7 @@ export async function createWorkspace(
       ...(options.title !== undefined ? { title: options.title } : {}),
       ...(options.generatedTitle !== undefined ? { generatedTitle: options.generatedTitle } : {}),
       ...(options.groupId !== undefined ? { groupId: options.groupId } : {}),
+      ...(options.deadline !== undefined ? { deadline: options.deadline } : {}),
       resume: options.resume !== undefined,
     })
   }

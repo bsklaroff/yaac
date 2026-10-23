@@ -33,6 +33,10 @@ function columns(s: DraftWorkspaceSettings): Omit<typeof draftWorkspaces.$inferI
     startAfter: s.startAfter ?? null,
     title: s.title ?? null,
     groupId: s.groupId ?? null,
+    startAt: s.startAt !== undefined ? new Date(s.startAt) : null,
+    timeoutMinutes: s.timeout ?? null,
+    cron: s.cron ?? null,
+    timeZone: s.timeZone ?? null,
   }
 }
 
