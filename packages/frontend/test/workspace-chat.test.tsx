@@ -1625,6 +1625,18 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.getByText('The router is in src/router.ts.')).toBeTruthy()
   })
 
+  it('shows subagent and task cards in the condensed view, folding the steps around them', () => {
+    stream.busy = false
+    stream.events = [user(-1, 'start it'), ...stream.events, subagent(5, 'completed'), shell(6, 'stopped'), agent(7, 'Both done.')]
+    useUiStore.setState({ chatCondensed: true })
+    show()
+    expect(screen.getByRole('button', { name: /Explore/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /npm run dev/ })).toBeTruthy()
+    expect(screen.queryByText('Delegating.')).toBeNull()
+    expect(screen.getByRole('button', { name: '1 message' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '1 tool call' })).toBeTruthy()
+  })
+
   it('opens a finished subagent from its card, though it has left the strip', () => {
     stream.events = [...stream.events, subagent(5, 'completed')]
     show()
