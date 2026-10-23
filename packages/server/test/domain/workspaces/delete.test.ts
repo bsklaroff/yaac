@@ -11,6 +11,10 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import { acpLogDir, agentHistoryDir, workspaceDir } from '@yaac/shared/project-paths'
+import { globalRoot } from '@yaac/shared/paths'
+import { removeAsRoot } from '#drivers/k8s/workspaces'
+import { appliedRootPods, podsRunAsRoot } from '#test/support/root-pods'
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -102,26 +106,41 @@ describe('deleteWorkspace', () => {
     expect(await exists(workspaceDir(PROJ, 'wt-mine'))).toBe(true)
   })
 
-  it('keeps .git, the history and the row when part of the checkout cannot be removed', async () => {
+  it('hands what the server cannot remove to a root pod, a .git whole and last, keeping everything when that fails', async () => {
+    installFakeWorkspaceDriver({ findForTeardown: () => Promise.resolve(undefined), removeAsRoot })
     const [checkout, history] = await stoppedWorkspace('wt-stuck')
-    await fs.mkdir(path.join(checkout, '.git'))
-    await fs.writeFile(path.join(checkout, '.git', 'HEAD'), 'ref: refs/heads/main')
-    await fs.mkdir(path.join(checkout, 'rootdir'))
-    // As a root-owned file left by the workspace answers the server.
-    const realRm = fs.rm
-    const rm = vi.spyOn(fs, 'rm').mockImplementation((p, opts) => String(p).endsWith('rootdir')
-      ? Promise.reject(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }))
-      : realRm(p, opts))
+    const git = path.join(checkout, '.git')
+    // As root-owned files a workspace left answer the server: one beside
+    // .git, one inside it, as `sudo git commit` leaves.
+    for (const dir of [path.join(checkout, 'rootdir'), path.join(git, 'objects')]) {
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, 'x'), 'x')
+      await fs.chmod(dir, 0o555)
+    }
+    await fs.writeFile(path.join(git, 'HEAD'), 'ref: refs/heads/main')
+    const kept = async (): Promise<void> => {
+      await expect(deleteWorkspace(local, 'wt-stuck')).rejects.toMatchObject({ code: 'INTERNAL', message: /can be retried/ })
+      // The server never starts on a .git it cannot finish.
+      for (const p of [path.join(git, 'HEAD'), path.join(git, 'objects', 'x'), history]) expect(await exists(p), p).toBe(true)
+      expect(await getWorkspaceRow(PROJ, 'wt-stuck')).toBeDefined()
+    }
 
-    await expect(deleteWorkspace(local, 'wt-stuck')).rejects.toMatchObject({ code: 'INTERNAL', message: /can be retried/ })
-    expect(await exists(path.join(checkout, '.git', 'HEAD'))).toBe(true)
+    podsRunAsRoot('Failed')
+    await kept()
+    expect(await exists(path.join(checkout, 'rootdir', 'x'))).toBe(true)
     expect(await exists(path.join(checkout, 'f'))).toBe(false)
-    expect(await exists(history)).toBe(true)
-    expect(await getWorkspaceRow(PROJ, 'wt-stuck')).toBeDefined()
 
-    rm.mockRestore()
+    fakeCluster.reset()
+    podsRunAsRoot('Succeeded', 'Failed')
+    await kept()
+    expect(await exists(path.join(checkout, 'rootdir'))).toBe(false)
+
+    fakeCluster.reset()
+    podsRunAsRoot('Succeeded')
     expect(await deleteWorkspace(local, 'wt-stuck')).toBe('wt-stuck')
-    expect(await exists(checkout)).toBe(false)
+    for (const dir of [checkout, history]) expect(await exists(dir), dir).toBe(false)
+    // Each pod mounts no more than the checkout.
+    expect(appliedRootPods()).toEqual([{ subPath: path.relative(globalRoot(), checkout), names: ['.git'], runAsUser: 0 }])
   })
 
   it('refuses the workspace a sibling-resumed conversation started in, but not the one that resumed it', async () => {

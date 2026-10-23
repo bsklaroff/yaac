@@ -387,6 +387,18 @@ supplementary group 0, the other half of that contract, comes from the same
 helper. `proxyRunAsSecurityContext` runs the proxy as the install uid too,
 through the same shared helper.
 
+A workspace's agent can still `sudo`, and what it writes as root lands on
+the claim as real uid 0, which the server cannot delete. The server stays
+unprivileged: it holds every credential and mounts the whole data dir, and
+anything it created as root would be root-owned on the host. When its own
+removal of a checkout or project tree is refused, it asks the driver's
+`removeAsRoot` instead, which runs a one-shot root pod (runc, the builder
+image) mounting only the refused entries' directory, as a subPath of
+`yaac-global`, and removes just those entries. It mounts the claim rather
+than a hostPath, so it works on byo storage too, except on an export that
+squashes root, where its root is mapped to an unprivileged uid and may be
+refused just as the server was.
+
 ## Lifecycle
 
 `yaac cluster install` is the one command that converges an install, and it

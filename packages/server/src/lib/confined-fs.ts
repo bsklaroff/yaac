@@ -575,3 +575,12 @@ export async function openRoot(
 export function openAgentDir(project: string, dir: string, sandboxed: boolean): Promise<ConfinedRoot> {
   return sandboxed ? openRoot(dir, 'no-links') : openRoot(project, 'inside', { base: dir })
 }
+
+/**
+ * Whether `name` is one plain entry of a directory: not empty, `.` or `..`,
+ * and holding no `/` or NUL. A whole-tree delete takes only such names, so
+ * none can reach the directory itself, its parent, or below an entry.
+ */
+export function isEntryName(name: string): boolean {
+  return name !== '' && name !== '.' && name !== '..' && !/[/\0]/.test(name)
+}

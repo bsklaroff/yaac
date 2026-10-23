@@ -19,6 +19,7 @@ import {
   prepareWorkspaceSubstrate,
   reapNodeLocal,
   registerWorkspace,
+  removeAsRoot,
   removeWorkspaceForwarder,
   salvageWorkspaceImages,
 } from '#drivers/k8s/workspaces'
@@ -127,6 +128,7 @@ export function createK8sDriver(): WorkspaceDriver {
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
     reapNodeLocal: (live) => reapNodeLocal(live),
+    removeAsRoot: (dir, names) => removeAsRoot(dir, names),
 
     mamaRelay: { port: SERVER_MAMA_PORT, authenticate: (bearer) => isProxyAuthSecret(bearer) },
   }

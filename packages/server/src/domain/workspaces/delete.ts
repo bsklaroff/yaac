@@ -65,7 +65,7 @@ export async function deleteWorkspace(principal: Actor, idOrPrefix: string): Pro
 
     if (!await deleteWorkspaceState(projectId, workspaceId)) {
       throw new ServerError('INTERNAL', `could not remove all of workspace ${short}'s files (see the server log); `
-        + 'its record is kept so the delete can be retried once they are removable, and a restart '
+        + 'its record is kept so the delete can be retried, and a restart '
         + 'reuses its .git (run `git restore .` there to bring back its tracked files)')
     }
     await deleteWorkspaceRecords(projectId, workspaceId)
