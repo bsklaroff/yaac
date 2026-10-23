@@ -258,6 +258,26 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     return projectPath
   }
 
+  /**
+   * Pre-seed claude's onboarding state in a project, so its workspaces skip
+   * the first-run wizard and trust dialog and a prompt lands in the input.
+   * The claude home is CLAUDE_CONFIG_DIR in the pod, so its config is
+   * `.claude.json` there, keyed by the checkout path /workspace.
+   */
+  async function skipClaudeOnboarding(projectPath: string): Promise<void> {
+    await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
+      hasCompletedOnboarding: true,
+      lastOnboardingVersion: AGENT_CLIS.claude.version,
+      customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
+      projects: {
+        '/workspace': { hasTrustDialogAccepted: true },
+      },
+    }) + '\n')
+    await fs.writeFile(path.join(projectPath, 'claude', 'settings.json'), JSON.stringify({
+      skipDangerousModePermissionPrompt: true,
+    }) + '\n')
+  }
+
   /** The kind node (a podman container) a workspace's pod runs on. */
   async function podNode(workspaceId: string): Promise<string> {
     const { stdout } = await kubectl([
@@ -435,20 +455,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(res.status).toBe(200)
       }
 
-      // Pre-seed claude's onboarding state to skip the first-run wizard.
-      // The claude home is CLAUDE_CONFIG_DIR in the pod, so its config is
-      // `.claude.json` there, keyed by the checkout path /workspace.
-      await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
-        hasCompletedOnboarding: true,
-        lastOnboardingVersion: AGENT_CLIS.claude.version,
-        customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
-        projects: {
-          '/workspace': { hasTrustDialogAccepted: true },
-        },
-      }) + '\n')
-      await fs.writeFile(path.join(projectPath, 'claude', 'settings.json'), JSON.stringify({
-        skipDangerousModePermissionPrompt: true,
-      }) + '\n')
+      await skipClaudeOnboarding(projectPath)
 
       // An install provides the npm cache; this namespace needs its own for
       // the pnpm install in the last test.
@@ -1713,22 +1720,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     const marker = 'summarize the pinned issues'
 
     beforeAll(async () => {
-      const projectPath = await setupProject(NAME, {
+      await skipClaudeOnboarding(await setupProject(NAME, {
         extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
-      })
-      // Skip claude's onboarding, as in the kitchen-sink workspace.
-      await fs.mkdir(path.join(projectPath, 'claude'), { recursive: true })
-      await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
-        hasCompletedOnboarding: true,
-        lastOnboardingVersion: AGENT_CLIS.claude.version,
-        customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
-        projects: {
-          '/workspace': { hasTrustDialogAccepted: true },
-        },
-      }) + '\n')
-      await fs.writeFile(path.join(projectPath, 'claude', 'settings.json'), JSON.stringify({
-        skipDangerousModePermissionPrompt: true,
-      }) + '\n')
+      }))
 
       const created = await createWorkspace(
         NAME, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8', '--effort', 'xhigh',
@@ -1824,6 +1818,67 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       workspaceId = ''
     }, 240_000)
   })
+  /**
+   * A prompt past what one argument holds (Linux: 128 KiB), multibyte, from
+   * a file and from stdin. It reaches the agent whole: in the pod over the
+   * exec stream's stdin, and on to the model.
+   */
+  describe('long prompts (--prompt-file, --prompt -)', () => {
+    const brief = (tag: string): string => `${tag}\n${'Pläase ✓ the 🙂 "brief" line\n'.repeat(5_000)}${tag} ends`
+    const workspaceIds: string[] = []
+    const outputs: Record<string, string> = {}
+
+    beforeAll(async () => {
+      const dir = path.join(testEnv.dataDir, `brief-${randomUUID().slice(0, 8)}`)
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, 'brief.md'), brief('from-file'))
+      expect(Buffer.byteLength(brief('from-file'))).toBeGreaterThan(128 * 1024)
+      await Promise.all(['brief-file', 'brief-stdin'].map(async (name) => skipClaudeOnboarding(await setupProject(name))))
+      // Relative to the CLI's working directory.
+      const runs = await Promise.all([
+        runYaac(serverEnv, 'workspace', 'create', 'brief-file', '--tool', 'claude', '--mode', 'tui',
+          '--prompt-file', 'brief.md', { cwd: dir }),
+        runYaac(serverEnv, 'workspace', 'create', 'brief-stdin', '--tool', 'claude', '--mode', 'tui',
+          '--prompt', '-', { stdin: brief('from-stdin') }),
+      ])
+      for (const [i, name] of ['brief-file', 'brief-stdin'].entries()) {
+        const { stdout, stderr, exitCode } = runs[i]
+        if (exitCode !== 0) throw new Error(`${name} create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+        outputs[name] = stdout
+        workspaceIds.push((await findWorkspacePod(name)).workspaceId)
+      }
+    }, 240_000)
+
+    afterAll(() => Promise.all(workspaceIds.map((id) => stopWorkspace(id))))
+
+    it('hands the agent the whole prompt, and leaves stdin unattached', async () => {
+      await vi.waitFor(async () => {
+        const sent = (await mockLLM!.transcript())
+          .filter((e) => e.method === 'POST' && e.url.startsWith('/v1/messages'))
+          .map((e) => JSON.stringify(JSON.parse(e.body)))
+        for (const tag of ['from-file', 'from-stdin']) {
+          expect(sent.some((body) => body.includes(JSON.stringify(brief(tag)).slice(1, -1)))).toBe(true)
+        }
+      }, { timeout: 120_000, interval: 1000 })
+      expect(outputs['brief-stdin']).toMatch(/attach with `yaac workspace attach [0-9a-f-]{36}`/)
+    }, 180_000)
+
+    it('refuses a prompt given twice, or one that is empty or unreadable, before creating anything', async () => {
+      const refused = async (opts: { stdin?: string }, ...args: string[]): Promise<string> => {
+        const { stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'create', 'brief-file', ...args, opts)
+        expect(exitCode).not.toBe(0)
+        return stderr
+      }
+      const empty = path.join(testEnv.dataDir, `empty-${randomUUID().slice(0, 8)}.md`)
+      await fs.writeFile(empty, '')
+      expect(await refused({}, '--prompt', 'x', '--prompt-file', empty)).toContain('not both')
+      expect(await refused({}, '--prompt-file', empty)).toContain(`The prompt from ${empty} is empty.`)
+      expect(await refused({}, '--prompt-file', `${empty}.missing`)).toContain('Cannot read the prompt from')
+      expect(await refused({ stdin: '' }, '--prompt', '-')).toContain('The prompt from stdin is empty.')
+      expect((await listWorkspacePods(idOf('brief-file'))).length).toBe(1)
+    }, 60_000)
+  })
+
   describe('agent mode (--mode acp)', () => {
     const NAME = 'acped'
     let jobName = ''
@@ -2165,14 +2220,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       aliceSession = acp.agentSessions.find((a) => a.mode === 'acp')!.agentSessionId
       aliceJob = (await listWorkspacePods(idOf('acped'))).find((p) => p.workspaceId === aliceWorkspace)!.jobName
 
-      const projectPath = await setupProject(BOB_PROJECT, { headers: BOB })
-      // Skip claude's onboarding, as in the kitchen-sink workspace.
-      await fs.writeFile(path.join(projectPath, 'claude', '.claude.json'), JSON.stringify({
-        hasCompletedOnboarding: true,
-        lastOnboardingVersion: AGENT_CLIS.claude.version,
-        customApiKeyResponses: { approved: ['yaac-ph-api-key'], rejected: [] },
-        projects: { '/workspace': { hasTrustDialogAccepted: true } },
-      }) + '\n')
+      await skipClaudeOnboarding(await setupProject(BOB_PROJECT, { headers: BOB }))
       await signInTestTool(server, 'claude', { kind: 'api-key', apiKey: BOB_KEY }, BOB)
       expect((await as(BOB, '/config/git-identity', {
         method: 'PUT', body: JSON.stringify({ name: 'Bob', email: 'bob@example.com' }),

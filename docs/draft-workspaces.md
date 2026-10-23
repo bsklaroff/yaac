@@ -80,6 +80,13 @@ restores the screen.
 - Deleting the draft's group clears the field. A name typed into the "+ New
   group" box is not saved, because that group does not exist until a create
   or queue makes it; the draft keeps the group picked before the box opened.
+- The `/events` snapshot carries only the first few hundred characters of
+  the prompt (`PROMPT_PREVIEW_LENGTH`), as it does of every prompt, since it
+  is resent to every client on each change and a prompt can run to 200,000
+  characters. Reopening a draft, or editing a queued entry, fetches the
+  whole prompt from `GET /workspace/prompt`; until it arrives the prompt is
+  read-only and nothing can be sent, so a save never cuts it short. The
+  sidebar's "Run now" on a draft fetches it the same way.
 
 Creating or queueing from a draft deletes it. The request names the draft
 (`draftId`), which claims it (`claimDraft`): a second request naming a draft

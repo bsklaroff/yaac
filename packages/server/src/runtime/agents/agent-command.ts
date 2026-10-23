@@ -460,17 +460,19 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/
  *     raised.
  *  4. Put the draft back.
  *
- * The script contains quotes, so it travels base64-encoded and is decoded
- * into `sh -c`.
+ * The script, which holds the whole message, is read from stdin and
+ * evaluated, so its size never meets the argument limit (`StdinScript`).
  */
 export function buildMessageCmd(
   target: string,
   message: string,
   paths: WorkspacePaths,
   conversation: { tool: AgentTool; agentSessionId: string },
-): string {
-  const script = messageScript(target, message, paths, conversation)
-  return `sh -c "$(printf %s ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d)"`
+): StdinScript {
+  return {
+    cmd: `script=$(cat) && ${noScriptGuard('[ -n "$script" ]')}; eval "$script"`,
+    stdin: messageScript(target, message, paths, conversation),
+  }
 }
 
 function messageScript(
@@ -692,24 +694,47 @@ function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: str
 export const OPENCODE_TUI_KEYBINDS = { 'prompt.stash': 'f9', 'prompt.stash.pop': 'f10' } as const
 
 /**
+ * A command run in a workspace with a script on its stdin. A script holding
+ * a prompt (up to `MAX_PROMPT_LENGTH`) can pass the 128 KiB a single
+ * argument may hold on Linux, and the command line is one argument of
+ * `sh -c`. Pass `stdin` to `WorkspaceDriver.exec`.
+ */
+export interface StdinScript {
+  cmd: string
+  stdin: string
+}
+
+/**
+ * Refuse to go on when `test` shows no script arrived on stdin, rather than
+ * run an empty one and report the prompt delivered. A pod whose streamd
+ * predates exec stdin hands the command an empty one
+ * (docs/legacy-compat-shims.md).
+ */
+function noScriptGuard(test: string): string {
+  return `${test} || { echo "the delivery script did not arrive on stdin" >&2; exit 2; }`
+}
+
+/**
  * In-workspace command that runs `promptPasteScript` detached: write the
- * script to a workspace-local file and setsid it, so the exec returns at
- * once instead of waiting through the script's polling (5s+ on a fresh
- * agent). The script survives the exec
- * stream closing and logs to `yaac-prompt.log` in the scratch dir. macOS has
- * no setsid, so a containerless host there detaches it with nohup.
+ * script from stdin to a workspace-local file and setsid it, so the exec
+ * returns at once instead of waiting through the script's polling (5s+ on
+ * a fresh agent). The script survives the exec stream closing and logs to
+ * `yaac-prompt.log` in the scratch dir. macOS has no setsid, so a
+ * containerless host there detaches it with nohup.
  */
 export function buildPromptPasteBgCmd(
   target: string,
   prompt: string,
   paths: WorkspacePaths,
-): string {
-  const b64 = Buffer.from(promptPasteScript(target, prompt, paths), 'utf8').toString('base64')
+): StdinScript {
   const script = `${paths.scratchDir}/.yaac-prompt.sh`
   const log = `${paths.scratchDir}/yaac-prompt.log`
-  return `printf %s ${b64} | base64 -d > ${script}`
-    + ` && { if command -v setsid >/dev/null; then setsid sh ${script}; else nohup sh ${script}; fi; }`
-    + ` >${log} 2>&1 </dev/null &`
+  return {
+    cmd: `cat > ${script} && ${noScriptGuard(`[ -s ${script} ]`)}; `
+      + `{ if command -v setsid >/dev/null; then setsid sh ${script}; else nohup sh ${script}; fi; }`
+      + ` >${log} 2>&1 </dev/null &`,
+    stdin: promptPasteScript(target, prompt, paths),
+  }
 }
 
 /**

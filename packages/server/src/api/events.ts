@@ -11,7 +11,7 @@ import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { errorText, serverLog } from '#lib/log'
-import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
+import { PROMPT_PREVIEW_LENGTH, type ServerEvent, type ServerSnapshot } from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
 export interface WsLike {
@@ -53,18 +53,29 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
     driver: workspaceDriver().kind,
-    workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)),
+    workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId))
+      .map((w) => ({ ...previewed(w), agentSessions: w.agentSessions.map(previewed) })),
     workspaceGroups,
     stale: active.stale,
     projects,
-    provisioning,
-    queuedWorkspaces,
-    heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)),
-    draftWorkspaces,
+    provisioning: provisioning.map(previewed),
+    queuedWorkspaces: queuedWorkspaces.map(previewed),
+    heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)).map(previewed),
+    draftWorkspaces: draftWorkspaces.map(previewed),
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     ...usage,
   }
+}
+
+/**
+ * `entry` with its prompt cut to `PROMPT_PREVIEW_LENGTH`, never ending in
+ * half a surrogate pair.
+ */
+function previewed<T extends { prompt?: string }>(entry: T): T {
+  const { prompt } = entry
+  if (prompt === undefined || prompt.length <= PROMPT_PREVIEW_LENGTH) return entry
+  return { ...entry, prompt: prompt.slice(0, PROMPT_PREVIEW_LENGTH).replace(/[\uD800-\uDBFF]$/, '') }
 }
 
 /**

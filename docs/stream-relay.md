@@ -54,9 +54,12 @@ starts with one JSON handshake line (`{token, kind, …params}`) and gets one
   raw duplex. Because closing the socket kills the child, the ACP agent
   itself runs under acpd in a tmux window, not as this stream's child
   (docs/agent-modes.md).
-- `exec {cmd}`: run a command once, reply with one JSON line
+- `exec {cmd, stdin?}`: run a command once, reply with one JSON line
   `{exitCode, stdout, stderr}` (size-bounded), and close. This is what
-  `podExec` uses. The command leads its own process group, and a stream the
+  `podExec` uses. With `stdin: n`, the next n bytes the client sends are the
+  command's standard input; a long prompt's delivery script travels this
+  way, since the handshake line is capped at 16 KiB and a command line at
+  128 KiB. The command leads its own process group, and a stream the
   client closes before it finishes (a timed-out exec) kills the whole
   group, so nothing the command started keeps running.
 - `pty {cmd, cols, rows}`: run a command under a PTY. Both directions are

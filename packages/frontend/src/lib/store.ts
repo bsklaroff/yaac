@@ -230,7 +230,9 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
       const parsed: unknown = JSON.parse(raw)
       return isNewWorkspaceForm(parsed) ? parsed : undefined
     },
-    serialize: (form) => (form === null || form.prompt.length > MAX_PERSISTED_DRAFT ? null : JSON.stringify(form)),
+    serialize: (form) => (form === null || form.prompt.length + (form.savedPrompt?.length ?? 0) > MAX_PERSISTED_DRAFT
+      ? null
+      : JSON.stringify(form)),
   },
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),

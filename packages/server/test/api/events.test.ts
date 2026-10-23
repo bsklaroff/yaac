@@ -31,7 +31,9 @@ import {
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { createWorkspaceGroup } from '#db'
-import type { ServerSnapshot } from '@yaac/shared/types'
+import { insertQueuedWorkspace } from '#db/queued-workspace-store'
+import { insertDraftWorkspace } from '#db/draft-workspace-store'
+import { MAX_PROMPT_LENGTH, PROMPT_PREVIEW_LENGTH, type ServerSnapshot } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
   return {
@@ -318,6 +320,47 @@ describe('buildSnapshot provisioning', () => {
     expect(snap.workspaces.map((s) => s.workspaceId)).toEqual(['prov-3'])
     expect(snap.provisioning).toEqual([])
     vi.mocked(listActiveWorkspaces).mockResolvedValue({ workspaces: [], stale: [], gitAuthFailures: {} })
+  })
+})
+
+describe('buildSnapshot prompts', () => {
+  beforeEach(() => { installFakeWorkspaceDriver() })
+  afterEach(() => { clearAllProvisioningForTests() })
+
+  const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+
+  it('carries only a preview of every prompt, never cutting a character in half', async () => {
+    // An emoji straddles the cut, so a plain slice would end in half of it.
+    const long = `${'x'.repeat(PROMPT_PREVIEW_LENGTH - 1)}🙂${'y'.repeat(MAX_PROMPT_LENGTH - PROMPT_PREVIEW_LENGTH - 1)}`
+    const preview = 'x'.repeat(PROMPT_PREVIEW_LENGTH - 1)
+    vi.mocked(listActiveWorkspaces).mockResolvedValueOnce({
+      workspaces: [{
+        workspaceId: 'w-1', projectId: 'p', tool: 'claude', prompt: long,
+        status: 'running', createdAt: '2026-01-01 00:00:00',
+        agentSessions: [{ agentSessionId: 'a-1', tool: 'claude', ordinal: 0, active: true, prompt: long }],
+        blockedHosts: [], forwardedPorts: [], unforwardedPorts: [],
+      }],
+      stale: [],
+      gitAuthFailures: {},
+    })
+    vi.mocked(listHeldWorkspaces).mockResolvedValueOnce([{
+      workspaceId: 'held', projectId: 'p', tool: 'claude', prompt: long, stoppedAt: '2026-01-01 00:00:00', deathSeenBy: [],
+    }])
+    registerProvisioning({ workspaceId: 'req-1', projectId: 'p', tool: 'claude', kind: 'create', prompt: long })
+    await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'w-1' }, {
+      prompt: long, tool: 'claude', model: 'opus', mode: 'tui', permissionMode: 'manual', branch: 'main',
+    })
+    await insertDraftWorkspace(PROJ, { prompt: long, tool: 'claude', mode: 'tui', permissionMode: 'manual' })
+
+    const snap = await buildSnapshot()
+    expect([
+      snap.workspaces[0]?.prompt,
+      snap.workspaces[0]?.agentSessions[0]?.prompt,
+      snap.heldWorkspaces[0]?.prompt,
+      snap.provisioning[0]?.prompt,
+      snap.queuedWorkspaces[0]?.prompt,
+      snap.draftWorkspaces[0]?.prompt,
+    ]).toEqual(Array<string>(6).fill(preview))
   })
 })
 

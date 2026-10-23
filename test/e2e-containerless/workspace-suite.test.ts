@@ -21,7 +21,7 @@ import {
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
-import { ACP_ADAPTERS, AGENT_TOOLS } from '@yaac/shared/types'
+import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type {
@@ -2282,8 +2282,13 @@ describe.skipIf(!CAN_RUN)('a create that fails', () => {
 describe.skipIf(!CAN_RUN)('queued workspaces', () => {
   /** `yaac-mama` as the workspace `id` runs it, with its own credentials. */
   async function mamaAs(id: string, ...args: string[]): Promise<string> {
+    return await mamaFrom(id, '/dev/null', ...args)
+  }
+
+  /** `mamaAs` with the file `stdin` as its standard input. */
+  async function mamaFrom(id: string, stdin: string, ...args: string[]): Promise<string> {
     const env = await paneEnv(id)
-    const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+    const quoted = [...args, '<', stdin].map((a, i) => (i === args.length ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(' ')
     const { stdout } = await execFileAsync('sh', ['-c',
       `YAAC_MAMA_URL='${env.YAAC_MAMA_URL}' YAAC_MAMA_TOKEN='${env.YAAC_MAMA_TOKEN}' `
       + `${path.join(process.cwd(), 'workspace-bin', 'yaac-mama')} ${quoted}`,
@@ -2311,6 +2316,29 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       // The fake codex reports a conversation only once it gets a prompt,
       // and logs its launch arguments. All of these come from the edit.
       const child = await mamaAs(parent, 'queue', '--parent-workspace', parent, 'draft')
+
+      // A prompt longer than any argument can hold travels by file or stdin,
+      // whole and multibyte, and reads back in full.
+      const long = 'Pläase ✓ the 🙂 "brief"\\n\n'.repeat(MAX_PROMPT_LENGTH).slice(0, MAX_PROMPT_LENGTH)
+      const brief = path.join(testEnv.dataDir, 'brief.md')
+      await fs.writeFile(brief, long)
+      const fullPrompt = async (id: string): Promise<string> =>
+        ((await (await fetch(`${origin()}/api/workspace/prompt?id=${id}`)).json()) as { prompt: string }).prompt
+      const big = await mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief)
+      expect(await fullPrompt(big) === long).toBe(true)
+      await fs.writeFile(brief, `${long.slice(1)}!`)
+      await mamaFrom(parent, brief, 'edit-queued', big.slice(0, 8), '-')
+      expect(await fullPrompt(big) === `${long.slice(1)}!`).toBe(true)
+      await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief, 'x'))
+        .rejects.toThrow(/not both/)
+      await fs.writeFile(brief, '')
+      await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief))
+        .rejects.toThrow(/the prompt from .* is empty/)
+      await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '-')).rejects.toThrow(/the prompt from stdin is empty/)
+      // Off the queue again, so the parent's stop below launches only `child`.
+      expect((await fetch(`${origin()}/api/workspace/queue/discard`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: big }),
+      })).ok).toBe(true)
       await expect(mamaAs(parent, 'edit-queued', child.slice(0, 8), ''))
         .rejects.toThrow(/usage: yaac-mama edit-queued/)
       expect(await mamaAs(

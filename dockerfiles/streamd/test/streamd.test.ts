@@ -137,6 +137,24 @@ describe('exec streams', () => {
     expect(result).toMatchObject({ exitCode: 0, stdout: 'out\n', stderr: 'err\n' })
   })
 
+  it('feeds the command the byte count its handshake names as stdin, however it arrives', async () => {
+    const port = await startDaemon()
+    // Multibyte and past any pipe buffer; part of it rides with the
+    // handshake, and bytes past the count are not the command's.
+    const input = Buffer.from('é✓🙂 line\n'.repeat(60_000), 'utf8')
+    const socket = dial(port)
+    socket.on('connect', () => {
+      socket.write(JSON.stringify({ token: TOKEN, kind: 'exec', cmd: ['sh', '-c', 'cat'], stdin: input.length }) + '\n')
+      socket.write(input.subarray(0, 1000))
+      setTimeout(() => socket.write(Buffer.concat([input.subarray(1000), Buffer.from('extra')])), 50)
+    })
+    const [reply, result] = (await readAll(socket)).toString('utf8').trim().split('\n')
+    expect(JSON.parse(reply!)).toEqual({ ok: true })
+    const parsed = JSON.parse(result!) as { exitCode: number; stdout: string }
+    expect(parsed.exitCode).toBe(0)
+    expect(parsed.stdout === input.toString('utf8')).toBe(true)
+  })
+
   it('reports a nonzero exit code', async () => {
     const port = await startDaemon()
     const { socket } = await handshake(port, {

@@ -332,3 +332,23 @@ started under an older yaac keeps running that opencode until it restarts.
   conversation ran on 2.0.21 or earlier, stopped ones included, has
   restarted or been deleted since. A stopped workspace's view reads its last
   life's record directly, and it may never be restarted.
+
+## A prompt's delivery script that arrives empty
+
+A `tui` prompt or `yaac-mama send` message is delivered by a script the
+server writes to the exec's stdin (`buildPromptPasteBgCmd` and
+`buildMessageCmd` in `packages/server/src/runtime/agents/agent-command.ts`).
+Under k8s, a pod's streamd only passes stdin on since exec learned its
+`stdin` byte count (docs/stream-relay.md). An older streamd, baked into the
+base image of a pod started before then, ignores the count and runs the
+command with an empty stdin. The command therefore checks that a script
+arrived and exits 2 if none did (`noScriptGuard`).
+
+- **What it reads.** The script the command read from stdin.
+- **What breaks silently if it goes too early.** In a workspace still
+  running an older pod, an empty script runs and exits 0, so a create's
+  prompt or a send is reported delivered and never reaches the agent.
+- **When it is safe to remove.** Once no running workspace pod predates the
+  streamd that reads exec stdin. A restart moves a workspace onto the
+  current base image, so it suffices that every workspace running then has
+  stopped or restarted since. Containerless workspaces never needed it.
