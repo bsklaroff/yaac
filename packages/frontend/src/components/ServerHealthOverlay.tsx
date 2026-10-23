@@ -367,7 +367,6 @@ function WorkspaceRow({ w, showNode }: { w: WorkspaceUsageRow; showNode: boolean
           </>
         )}
       </td>
-      <td className="pr-3 tabular-nums text-text-dim">{w.running ? formatBytes(w.swapBytes) : '—'}</td>
       <td className="pr-3 tabular-nums text-text-dim">
         {w.ephemeralStorageBytes === null ? '—' : formatBytes(w.ephemeralStorageBytes)}
       </td>
@@ -388,12 +387,6 @@ function Workspaces({ report }: { report: ResourceReport }): JSX.Element {
   const showNode = report.driver === 'k8s'
   return (
     <Section title={`Workspaces (${String(report.workspaces.filter((w) => w.running).length)} running)`}>
-      {showNode && (
-        <p className="text-[11px] text-text-faint">
-          A workspace&apos;s memory is gVisor&apos;s own count of its sandbox, which can differ by a few hundred MiB
-          from what its memory limit is enforced against.
-        </p>
-      )}
       {report.workspaces.length === 0
         ? <p className="text-xs text-text-faint">No workspace has run in the last hour.</p>
         : (
@@ -406,7 +399,6 @@ function Workspaces({ report }: { report: ResourceReport }): JSX.Element {
                   {showNode && <th className="font-normal">Node</th>}
                   <th className="font-normal">CPU (cores)</th>
                   <th className="font-normal">Memory</th>
-                  <th className="font-normal">Swap</th>
                   <th className="font-normal">Ephemeral</th>
                   <th className="font-normal">Peak (1h)</th>
                   <th className="font-normal">Memory, last hour</th>

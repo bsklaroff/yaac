@@ -79,17 +79,11 @@ function pvc(name: string, storage: string) {
   }
 }
 
-/** A pod's Summary entry: one container using `cores` and `mib`. */
+/** A pod's Summary entry: its pod cgroup, and one container, using
+ *  `cores` and `mib`. */
 function podStats(name: string, cores: number, mib: number, extra: object = {}, namespace = k8sNamespace()) {
-  return {
-    podRef: { name, namespace },
-    containers: [{
-      cpu: { usageNanoCores: cores * 1e9 },
-      memory: { workingSetBytes: mib * MIB },
-      swap: { swapUsageBytes: 0 },
-    }],
-    ...extra,
-  }
+  const use = { cpu: { usageNanoCores: cores * 1e9 }, memory: { workingSetBytes: mib * MIB } }
+  return { podRef: { name, namespace }, ...use, containers: [use], ...extra }
 }
 
 function seed(): void {
@@ -149,8 +143,17 @@ function seed(): void {
       runtime: { imageFs: { usedBytes: 20 * GIB, capacityBytes: 200 * GIB, availableBytes: 180 * GIB } },
     },
     pods: [
-      podStats('netd-b', 0.1, 200),
-      podStats('ws-1', 1.5, 3072, { 'ephemeral-storage': { usedBytes: 2 * GIB } }),
+      // Without the stats gate, a pod cAdvisor has not sampled yet reads 0
+      // at the pod level, so its containers' sum stands in.
+      podStats('netd-b', 0.1, 200, { memory: { workingSetBytes: 0 } }),
+      // The container is gVisor's own count of the sandbox; the pod cgroup
+      // adds the sentry and gofer and leaves out what is swapped. Its CPU
+      // rate is the containers'.
+      podStats('ws-1', 1.5, 2560, {
+        'ephemeral-storage': { usedBytes: 2 * GIB },
+        cpu: { usageNanoCores: 0 },
+        containers: [{ cpu: { usageNanoCores: 1.5e9 }, memory: { workingSetBytes: 3072 * MIB } }],
+      }),
       podStats('spare-1', 0.01, 300),
     ],
   })
@@ -222,7 +225,7 @@ describe('k8sUsage', () => {
     expect(byKey['project-registries']).toMatchObject({ count: 1, memoryBytes: 50 * MIB, volumes: [] })
     expect(byKey['project-registries'].children).toEqual([{
       key: `project-registry:${PROJECT}`, label: PROJECT, projectId: PROJECT,
-      cpuCores: 0.05, memoryBytes: 50 * MIB, swapBytes: 0,
+      cpuCores: 0.05, memoryBytes: 50 * MIB,
       volumes: [{ name: 'yaac-reg-storage', usedBytes: null, capacityBytes: 50 * GIB }],
     }])
     expect(byKey.netd).toMatchObject({ count: 2, memoryBytes: 400 * MIB })
@@ -230,14 +233,13 @@ describe('k8sUsage', () => {
     expect(byKey.spares).toMatchObject({ count: 1, memoryBytes: 300 * MIB })
     expect(byKey.maintenance).toMatchObject({ count: 1, memoryBytes: 10 * MIB })
     // What the nodes use beyond yaac's pods, kube-system's among it.
-    const yaacMib = 400 + 100 + 50 + 200 + 1000 + 10 + 200 + 3072 + 300
+    const yaacMib = 400 + 100 + 50 + 200 + 1000 + 10 + 200 + 2560 + 300
     expect(byKey.system.memoryBytes).toBe(10 * GIB - yaacMib * MIB)
 
     expect(usage.workspaces).toEqual({
       [WORKSPACE]: {
         cpuCores: 1.5,
-        memoryBytes: 3 * GIB,
-        swapBytes: 0,
+        memoryBytes: 2560 * MIB,
         memoryLimitBytes: 8 * GIB,
         ephemeralStorageBytes: 2 * GIB,
         node: 'node-b',

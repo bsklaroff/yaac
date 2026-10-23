@@ -22,7 +22,8 @@ already collects, so watching it adds almost no load to the nodes.
   both, or gVisor pending, read from the `yaac.workspaces` and
   `yaac.gvisor` labels and taints), any condition that is not as it should
   be (`NotReady`, `MemoryPressure`, …), and the age of the kubelet's sample.
-  A node whose stats cannot be read shows why instead.
+  A node whose stats cannot be read shows why instead. Swap is shown only
+  here and in the totals (see "What it does not do").
 - **Infrastructure.** One row per component, with its CPU, memory, an
   hour of memory, and the volumes it owns.
 
@@ -31,7 +32,7 @@ already collects, so watching it adds almost no load to the nodes.
   | yaac server, main registry, project registries (one row each when expanded), npm cache, egress proxy, netd (summed over nodes), server front, image builders, prewarmed spares, maintenance pods (the installers, GC and sweeps), and "Kubernetes system and other" (what the nodes use beyond yaac's pods) | the yaac server process (PGlite runs inside it), the workspaces' ssh-agents, and "other host processes" (the host's usage beyond yaac's) |
 
 - **Workspaces.** One row per workspace, sorted by memory: title, project,
-  owner, node, CPU, memory against its limit, swap, ephemeral storage, peak
+  owner, node, CPU, memory against its limit, ephemeral storage, peak
   memory over the hour, and an hour of memory. A workspace that stopped
   keeps its row, with why it died, until its history ages out, so after an
   eviction or OOM kill the overlay still shows what it was doing.
@@ -64,18 +65,22 @@ included, and the overlay says how many that is.
   already sets: `app=` for the Deployments and DaemonSets, `yaac.role=builder`
   for builder pods, `yaac.workspace-id` for workspaces (and
   `yaac.prewarmed` for spares). Any other pod there is maintenance.
-- **A pod's CPU and memory** are the sums of its containers, which is also
-  what the kubelet ranks pods by when it evicts. The kubelet reads container
-  stats fresh from the runtime on each request, while its pod-level figures
-  are refreshed only at the housekeeping interval (300s on a yaac node,
-  `NODE_KUBELET_HOUSEKEEPING_INTERVAL`) and report no CPU rate. CPU rates
-  are never recomputed by a read, so the overlay cannot disturb the
-  eviction manager's own calculation. Node totals are fresh.
-- **A sandboxed workspace's memory** is runsc's own count of the sandbox,
-  not the pod cgroup the kernel charges, which also holds the sentry and
-  gofer. On kind the two differ by a few hundred MiB in either direction,
-  so the overlay says so beside the workspace table. Reading the cgroup
-  would need a process on the node.
+- **A pod's memory** is its pod cgroup's working set. The nodes yaac sets
+  up run the kubelet's `PodAndContainerStatsFromCRI` gate, so containerd
+  reads it from the cgroup on each request. Without the gate (a `--byo`
+  pool, or a kind cluster created before yaac set it) the kubelet reads the
+  same cgroup through cAdvisor, as old as its housekeeping interval, and a
+  new pod's reads 0 until cAdvisor first samples it; the overlay shows the
+  containers' sum until then. It is what the kubelet ranks pods by when it
+  evicts. For a gVisor sandbox it is
+  what the kernel charges and the limit is enforced against: the sentry and
+  gofer included, and pages swapped to disk left out. The containers' sum
+  would be runsc's own count of the sandbox, which still counts swapped
+  pages, so a node that swaps would show its workspaces using more memory
+  than the node.
+- **A pod's CPU** is the sum of its containers. Without the gate the pod
+  level reports no CPU rate: cAdvisor computes one from consecutive samples,
+  and at a 300s housekeeping interval it reports 0.
 - **Volumes.** Each claim is listed once, under the first component that
   mounts it. `yaac-checkouts` is a second mount of `yaac-global`
   (`substrate/storage-constants.ts`) and is merged into it. hostPath and
@@ -99,8 +104,7 @@ included, and the overlay says how many that is.
   Usage reads the same tables, so it spawns nothing of its own. CPU is the
   CPU time between the oldest and newest table, because Linux `ps` reports
   whole seconds. Memory is RSS, which counts a page shared by several
-  processes once for each, so the overlay calls it approximate. `ps` has no
-  per-process swap, so swap shows only in the host's total.
+  processes once for each, so the overlay calls it approximate.
 - **The server** is `process.memoryUsage()` and `process.cpuUsage()`.
 - **The host** is `os.cpus()` (CPU time since the previous read), `statfs`
   on the global tier's filesystem, and memory from `/proc/meminfo` on Linux
@@ -116,8 +120,8 @@ under `k8s` the Summary with `only_cpu_and_memory=true`, the install
 namespace's pods only, and no claims or cluster-wide pod list. The full read
 happens only while someone has the overlay open.
 
-It keeps CPU, memory and swap for the totals, each node, each component and
-each workspace, 60 points per series in memory. Disk is not kept: it moves
+It keeps CPU and memory for the totals, each node, each component and each
+workspace, 60 points per series in memory. Disk is not kept: it moves
 slowly and is shown live. A keyed series is dropped once its newest point is
 over an hour old, which is what keeps a stopped workspace's last hour
 visible. History starts over when the server restarts (under `k8s`, at each
@@ -151,6 +155,12 @@ reads.
 - Sizes per project or per checkout. Kubernetes reports a volume as one
   total, and a directory walk would load the shared volume.
 - Usage per agent conversation.
+- Swap per pod. The kubelet's runtime stats have no pod-level swap, and
+  runsc reports none for a sandbox's containers, so a gVisor workspace's
+  swap would always read 0. Its pod cgroup's figure is reachable only
+  through cAdvisor's metrics, minutes stale, or from a process on the
+  node such as netd, which has no channel to the server. `ps` has no
+  per-process swap either.
 - Alerts, such as a workspace nearing its memory limit or a disk passing
   90%.
 - A CLI command.

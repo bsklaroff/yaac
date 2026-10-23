@@ -103,7 +103,6 @@ describe('containerlessUsage', () => {
     expect(usage.workspaces[LIVE]).toEqual({
       cpuCores: 0.6,
       memoryBytes: 260 * MIB,
-      swapBytes: 0,
       memoryLimitBytes: null,
       ephemeralStorageBytes: null,
     })
@@ -115,9 +114,6 @@ describe('containerlessUsage', () => {
     // Whatever yaac does not account for.
     expect(byKey.other.memoryBytes).toBe(6 * GIB - byKey.server.memoryBytes - 5 * MIB - 260 * MIB)
     expect(byKey.other.cpuCores).toBeCloseTo(2 - byKey.server.cpuCores - 0.6)
-    // `ps` has no swap per process, so the host's swap is not pinned on
-    // any row; it shows only in the total.
-    expect(usage.components.map((c) => c.swapBytes)).toEqual([0, 0, 0])
   })
 
   it('reads no disk for the sampler, and reports no workspace before the first sweep', async () => {
