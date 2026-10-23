@@ -390,10 +390,11 @@ interface Folded {
 }
 
 /** Groups the condensed view never hides: the user's prompts, what woke the
- *  agent into a run, compactions, and what the user must see or answer. */
+ *  agent into a run, compactions, subagent and task cards (the way into
+ *  their own views), and what the user must see or answer. */
 function alwaysShown(g: Group): boolean {
   return g.kind === 'user' || g.kind === 'error' || g.kind === 'turn-end' || g.kind === 'compaction' || g.woken !== undefined
-    || (g.kind === 'permission' && g.decided === undefined)
+    || g.kind === 'subagent' || g.kind === 'task' || (g.kind === 'permission' && g.decided === undefined)
 }
 
 /**
@@ -440,8 +441,6 @@ const FOLDED_NOUNS: [Group['kind'], string, string][] = [
   ['tool', 'tool call', 'tool calls'],
   ['thought', 'thought', 'thoughts'],
   ['plan', 'plan update', 'plan updates'],
-  ['subagent', 'subagent', 'subagents'],
-  ['task', 'task', 'tasks'],
   ['permission', 'answered ask', 'answered asks'],
 ]
 
