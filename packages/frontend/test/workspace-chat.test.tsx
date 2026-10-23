@@ -1464,6 +1464,40 @@ describe('WorkspaceChat scroll follow', () => {
     resizeAll()
     expect(top()).toBe(0)
   })
+
+  it('leaves a reader who starts scrolling up from the tail while events stream', () => {
+    const { container, rerender } = show()
+    const list = container.querySelector('.overflow-y-auto') as HTMLElement
+    const top = scroller(container, 200, 800)
+    fireEvent.scroll(list)
+    // A zoom or sideways wheel scrolls nothing up, so the pane keeps following
+    // the list as it grows. The stub's height is fixed, so a lower scrollTop
+    // stands for the growth.
+    list.scrollTop = 800
+    fireEvent.wheel(list, { deltaY: -100, ctrlKey: true })
+    fireEvent.wheel(list, { deltaY: -100, shiftKey: true })
+    stream.events = [...stream.events, agent(1, 'zoomed')]
+    rerender(pane())
+    expect(top()).toBe(1000)
+    // The jsdom stub doesn't clamp, so put the reader back at the tail.
+    list.scrollTop = 800
+    fireEvent.scroll(list)
+
+    // A smooth scroll's first frame, still near the tail.
+    list.scrollTop = 790
+    fireEvent.scroll(list)
+    stream.events = [...stream.events, agent(2, 'streamed')]
+    rerender(pane())
+    expect(top()).toBe(790)
+
+    // Back at the tail, a wheel up unpins before any scroll event arrives.
+    list.scrollTop = 800
+    fireEvent.scroll(list)
+    fireEvent.wheel(list, { deltaY: -100 })
+    stream.events = [...stream.events, agent(3, 'more')]
+    rerender(pane())
+    expect(top()).toBe(800)
+  })
 })
 
 /**

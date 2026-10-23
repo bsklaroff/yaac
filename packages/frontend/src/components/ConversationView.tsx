@@ -204,6 +204,13 @@ export function Working({ caption = 'working' }: { caption?: string }): JSX.Elem
  * `onScroll`; `keep`, for a layout change elsewhere (the composer growing)
  * to keep a reader at the tail there; and `pin`, to follow the tail again
  * (the reader sent a message).
+ *
+ * Any move up unpins at once, however small. A trackpad's first steps, or a
+ * smooth scroll's first frames, stay near the tail, and a render then (one
+ * per streamed event) would snap back to it and cancel the scroll. The
+ * wheel and keys unpin before the scroll starts, since a render can land
+ * before its first scroll event. A zoom (ctrl+wheel, a pinch) or sideways
+ * (shift+wheel) wheel scrolls nothing up, and so leaves the pane pinned.
  */
 export function useFollowTail(
   scrollRef: RefObject<HTMLElement | null>,
@@ -211,6 +218,7 @@ export function useFollowTail(
   view: unknown,
 ): { onScroll: () => void; keep: () => void; pin: () => void } {
   const pinned = useRef(true)
+  const fromBottom = useRef(0)
   const atEnd = useRef(pages.atEnd)
   atEnd.current = pages.atEnd
   const keep = useCallback(() => {
@@ -223,20 +231,49 @@ export function useFollowTail(
   // After every render, since anything rendered may have grown the list.
   useLayoutEffect(keep)
   // And when the list shrinks, e.g. when a phone's soft keyboard opens.
+  // The reader's wheel and keys are heard here too, to unpin.
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
     const ro = new ResizeObserver(keep)
     ro.observe(el)
-    return () => ro.disconnect()
+    const onWheel = (e: WheelEvent): void => {
+      if (e.deltaY < 0 && !e.ctrlKey && !e.shiftKey && scrollsList(el, e.target)) pinned.current = false
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (UP_KEYS.has(e.key) && scrollsList(el, e.target)) pinned.current = false
+    }
+    el.addEventListener('wheel', onWheel, { passive: true })
+    el.addEventListener('keydown', onKey)
+    return () => {
+      ro.disconnect()
+      el.removeEventListener('wheel', onWheel)
+      el.removeEventListener('keydown', onKey)
+    }
   }, [scrollRef, keep])
+  // A pixel's slack, since a zoomed page's tail can sit a fraction off. The
+  // floor at 0 keeps WebKit's bounce past the tail from reading as a move up.
   const onScroll = (): void => {
     const el = scrollRef.current
     if (!el) return
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+    const now = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight)
+    pinned.current = now < 60 && now - fromBottom.current <= 1
+    fromBottom.current = now
     pages.onScroll()
   }
   return { onScroll, keep, pin: () => { pinned.current = true } }
+}
+
+/** Keys that scroll a focused list up. */
+const UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
+
+/** Whether scrolling up from `target` moves `list` itself: it is not at its
+ *  top, and no box between them (a tool's output) can scroll up first. */
+function scrollsList(list: HTMLElement, target: EventTarget | null): boolean {
+  for (let node = target instanceof Element ? target : null; node && node !== list; node = node.parentElement) {
+    if (node.scrollTop > 0 && /auto|scroll/.test(getComputedStyle(node).overflowY)) return false
+  }
+  return list.scrollTop > 0
 }
 
 /** In place of a page of the conversation being read, at the end it joins. */
