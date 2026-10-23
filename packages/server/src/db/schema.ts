@@ -138,6 +138,10 @@ export const projects = snakeCase.table('projects', {
   /** Set when the source project's owner removes the share. The row, its
    *  workspaces and its sessions stay; its owner can no longer use them. */
   shareRevoked: boolean().notNull().default(false),
+  /** Days a stopped workspace is kept before the server deletes it for
+   *  good (#domain/workspaces retention). Null keeps them forever. Set by
+   *  the project's owner, so it covers only their own workspaces. */
+  stoppedWorkspaceRetentionDays: integer(),
 }, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
 
 /**

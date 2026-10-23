@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "stopped_workspace_retention_days" integer;

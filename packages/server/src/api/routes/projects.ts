@@ -27,7 +27,7 @@ import {
   setDefaultBranchGuard,
   shareProject,
 } from '#domain/projects'
-import { removeProject, unshareProject } from '#domain/workspaces'
+import { previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
@@ -64,6 +64,9 @@ async function serveUserGit(c: Context<IdentityEnv>, pathInfo: string): Promise<
   const projectId = await resolveProjectId(c.req.param('projectId') ?? '')
   return serveHostedRepo(projectId, c.req.raw, pathInfo, { kind: 'user', principal: c.get('principal') })
 }
+
+/** A stopped-workspace retention, in days; a century is plenty. */
+const RETENTION_DAYS = z.number().int().min(1).max(36_500)
 
 export const projectApp = new Hono<IdentityEnv>()
   .get('/list', async (c) => c.json(await listProjects()))
@@ -116,6 +119,28 @@ export const projectApp = new Hono<IdentityEnv>()
     async (c) => {
       await setDefaultBranchGuard(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').enabled)
       return c.body(null, 204)
+    },
+  )
+  // Stopped-workspace auto-delete. The GET counts what a retention of `days`
+  // would delete right away, and the cutoff it counted by, which clients
+  // show before they confirm the PUT. The PUT deletes no workspace stopped
+  // after that cutoff, so the count is an upper bound, and answers what it
+  // deleted and what it kept for later.
+  .get(
+    '/:projectId/workspace-auto-delete',
+    zv('query', z.object({ days: z.coerce.number().pipe(RETENTION_DAYS) })),
+    async (c) => {
+      const { expired, before } = await previewWorkspaceRetention(await resolveProjectId(c.req.param('projectId')), c.req.valid('query').days)
+      return c.json({ expired, before: before.toISOString() })
+    },
+  )
+  .put(
+    '/:projectId/workspace-auto-delete',
+    zv('json', z.object({ days: RETENTION_DAYS.nullable(), before: z.iso.datetime().optional() })),
+    async (c) => {
+      const { days, before } = c.req.valid('json')
+      const projectId = await resolveProjectId(c.req.param('projectId'))
+      return c.json(await setWorkspaceRetention(c.get('principal'), projectId, days, before === undefined ? undefined : new Date(before)))
     },
   )
   // A hosted project's remote, for the user's own git: `git clone

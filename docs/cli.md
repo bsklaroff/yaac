@@ -72,6 +72,8 @@ yaac workspace
     -a, --all                   With -s, show all
   rename <workspace-id> <title>
   stop <workspace-id>           Tear down the runtime; keep the checkout and diff
+  delete <workspace-id>         Delete a stopped workspace's checkout and history
+    -y, --yes                   Without the confirmation prompt
   restart <workspace-id>        Restart, resuming the agents that were running
   agents <workspace-id>         List the workspace's agent sessions
   attach <workspace-id>         Attach to the workspace's tmux session
@@ -95,6 +97,10 @@ yaac config
   edit-user-dockerfile          Edit your Dockerfile.user
   git-identity                  Show the git identity workspaces commit as
     --name <name> --email <email>  Set it
+  workspace-auto-delete <project> [days|off]
+                                Show or set after how many days the project's
+                                stopped workspaces are deleted (setting it asks
+                                for confirmation, so it needs a terminal)
 
 yaac auth
   list                          List credentials (masked; git credentials by name)

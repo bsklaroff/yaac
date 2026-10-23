@@ -6,6 +6,7 @@ import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { ProjectSharing } from '#components/settings/ProjectSharing'
+import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
 import { api } from '#lib/api'
 import { WarningIcon } from '#lib/icons'
@@ -124,6 +125,16 @@ export function ProjectSettings(): JSX.Element {
           {mediatedEgress && <div className="mt-6">
             <EgressAllowlist key={`allowlist:${projectId}`} projectId={projectId} readOnly={readOnly} />
           </div>}
+
+          <div className="mt-6">
+            <WorkspaceAutoDelete
+              key={`auto-delete:${projectId}`}
+              projectId={projectId}
+              name={selected.name}
+              days={selected.stoppedWorkspaceRetentionDays}
+              readOnly={readOnly}
+            />
+          </div>
 
           <div className="mt-6">
             <div className="text-xs font-medium text-text">yaac-config.json</div>

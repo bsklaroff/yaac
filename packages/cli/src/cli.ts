@@ -23,6 +23,7 @@ import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
 import { configEditProject, configEditDockerfile, configEditUserDockerfile } from '#commands/config-edit'
 import { configGitIdentity } from '#commands/config-git-identity'
+import { configWorkspaceAutoDelete } from '#commands/config-workspace-auto-delete'
 import { authFake } from '#commands/auth-fake'
 import { remoteAdd, remoteConnect, remoteDisconnect, remoteList, remoteRemove } from '#commands/remote'
 import {
@@ -421,6 +422,13 @@ config
   .option('--name <name>', 'Git user.name to set')
   .option('--email <email>', 'Git user.email to set')
   .action(configGitIdentity)
+
+config
+  .command('workspace-auto-delete')
+  .description('Show after how many days a project\'s stopped workspaces are deleted, or set it: once stopped that long, the server deletes a workspace for good (checkout, unpushed commits, uncommitted changes, conversation history). Setting it asks for confirmation, so it needs a terminal')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[days]', 'Days a workspace stays stopped before it is deleted, or off to keep stopped workspaces until deleted by hand')
+  .action(configWorkspaceAutoDelete)
 
 // Top-level, not under `workspace`: with no workspace named it forwards all
 // running ones, as the desktop app does from its tray.

@@ -8,6 +8,7 @@ import {
   recordProject,
   recordProjectCreate,
   setProjectDefaultBranchGuard,
+  setProjectWorkspaceRetention,
   setProjectEgressAllowlist,
   setProjectGitCredential,
   setProjectShareRevoked,
@@ -272,6 +273,29 @@ describe('setProjectDefaultBranchGuard', () => {
     expect(await setProjectDefaultBranchGuard(APP, false)).toBe(true)
     expect(await getProjectRow(APP)).toMatchObject({ guardDefaultBranch: false })
     expect(await setProjectDefaultBranchGuard('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
+  })
+})
+
+describe('setProjectWorkspaceRetention', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('sets and clears the retention, and reports an unknown projectId', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://example.com/x.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    expect((await getProjectRow(APP))?.stoppedWorkspaceRetentionDays).toBeUndefined()
+
+    expect(await setProjectWorkspaceRetention(APP, 30)).toBe(true)
+    expect(await getProjectRow(APP)).toMatchObject({ stoppedWorkspaceRetentionDays: 30 })
+    expect(await setProjectWorkspaceRetention(APP, null)).toBe(true)
+    expect((await getProjectRow(APP))?.stoppedWorkspaceRetentionDays).toBeUndefined()
+    expect(await setProjectWorkspaceRetention('0a0a0a0a-0000-4000-8000-0000000000ff', 30)).toBe(false)
   })
 })
 

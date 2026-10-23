@@ -48,5 +48,7 @@ export async function listProjects(
     // A share pushes under the guard of the project it was shared from.
     guardDefaultBranch: (rows.find((r) => r.id === meta.sharedFrom) ?? meta).guardDefaultBranch,
     ...(meta.sharedFrom !== undefined ? { sharedFrom: { projectId: meta.sharedFrom, revoked: meta.shareRevoked } } : {}),
+    ...(meta.stoppedWorkspaceRetentionDays !== undefined
+      ? { stoppedWorkspaceRetentionDays: meta.stoppedWorkspaceRetentionDays } : {}),
   }))
 }

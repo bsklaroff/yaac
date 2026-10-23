@@ -107,6 +107,7 @@ export {
   setProjectEgressAllowlist,
   setProjectGitCredential,
   setProjectShareRevoked,
+  setProjectWorkspaceRetention,
   type ProjectRow,
 } from './project-store'
 export {

@@ -104,6 +104,8 @@ workspace. See "Agent workspaces" below.
     `.git` the server cannot remove all of goes to that pod whole, so a
     failure leaves a stopped workspace that can be deleted again or still
     restart on its committed work, rather than bytes no record points at.
+    Stopped-workspace auto-delete makes the same delete (see "Retention"
+    below).
   - A fresh create or a spare claim rolling back its own insert. A fresh
     create also removes its staged checkout. A failed restart leaves the row
     stopped as it found it, since its checkout is the work the user came back
@@ -117,11 +119,38 @@ workspace. See "Agent workspaces" below.
 `deathDetail`. That is how the UI tells "you stopped it" from "it ran out of
 memory".
 
-A stop is written only to a live row, so the first stop recorded stands until
-a restart clears it. A reaper pass can probe a workspace while a user stop is
-killing it, find tmux gone, and tear it down again with `agent-exited`; the
-user's stop must not be relabelled a death. A teardown resumed after a lost
-terminating mark keeps its recorded cause the same way.
+A stop is written only to a live row, so the first stop recorded in a life
+stands. A reaper pass can probe a workspace while a user stop is killing it,
+find tmux gone, and tear it down again with `agent-exited`; the user's stop
+must not be relabelled a death. A teardown resumed after a lost terminating
+mark keeps its recorded cause the same way. A stop recorded before the
+current life began (`lifeStartedAt`) is overwritten, so a restart whose
+clear of it was lost does not leave the old date for retention to age the
+workspace by.
+
+### Retention
+
+A project's owner can have its stopped workspaces deleted once they have
+been stopped a number of days (`projects.stoppedWorkspaceRetentionDays`),
+which the settings page and `yaac config workspace-auto-delete` call
+"stopped workspace auto-delete". It is off unless set, and is a setting of
+that one project: every workspace in a project is its owner's, and a share
+is a project of its own (docs/multi-user.md), so it never reaches another
+user's workspaces. Both clients first ask the server how many workspaces
+the new value would delete at once and make the user confirm that count,
+since the delete is the full one above and nothing brings it back. The CLI
+has no flag to skip that, so it is only ever set from a terminal.
+
+Setting it deletes that backlog in the same request, and both clients report
+what it deleted and what it kept for now, with the reason. The count comes
+with the cutoff it was taken at, and the set deletes nothing stopped after
+that cutoff, so a dialog left open while more workspaces age past it never
+deletes more than it named; a stop is always stamped with the current time,
+so no workspace can move to before the cutoff. After that the
+`workspace-retention` reconcile step, at server start and then hourly,
+deletes each workspace once its `stoppedAt` is older than the retention. A
+workspace the delete refuses (one with queued entries waiting on it, say)
+is logged and tried again on a later pass. Sidebar groups are not exempt.
 
 ## Reads
 

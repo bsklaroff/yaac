@@ -295,6 +295,20 @@ export interface RunYaacOptions {
   stdinOnPrompt?: Array<{ when: RegExp; send: string }>
   /** Working directory (default: the test process's). */
   cwd?: string
+  /**
+   * Run it on a pseudo-terminal, through `script`, for a command that only
+   * acts once a user answers its prompt. Its stdout and stderr both arrive
+   * as `stdout`, with the terminal's line endings and echoed input.
+   */
+  tty?: boolean
+}
+
+/** `argv` wrapped in `script`, which runs it on a pty and exits with its
+ *  code. util-linux's takes a shell command; BSD's (macOS) the argv itself. */
+function onPty(argv: string[]): [string, string[]] {
+  if (process.platform === 'darwin') return ['script', ['-q', '/dev/null', ...argv]]
+  const quoted = argv.map((a) => `'${a.replaceAll("'", "'\\''")}'`).join(' ')
+  return ['script', ['-qec', quoted, '/dev/null']]
 }
 
 /**
@@ -312,7 +326,8 @@ export async function runYaac(
   const args = argsWithOpts as string[]
 
   const wantsStdin = opts.stdin !== undefined || opts.stdinOnPrompt !== undefined
-  const child = spawn(process.execPath, [ENTRY, ...args], {
+  const [command, argv] = opts.tty ? onPty([process.execPath, ENTRY, ...args]) : [process.execPath, [ENTRY, ...args]]
+  const child = spawn(command, argv, {
     env,
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     stdio: [wantsStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],

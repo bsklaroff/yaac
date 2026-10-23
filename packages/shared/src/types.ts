@@ -1375,6 +1375,9 @@ export interface ProjectSummary {
    *  "Sharing"): the hosted project it was shared from, and whether that
    *  project's owner has since removed the share. */
   sharedFrom?: { projectId: string; revoked: boolean }
+  /** Days a stopped workspace is kept before the server deletes it, set by
+   *  the owner; absent keeps them forever. */
+  stoppedWorkspaceRetentionDays?: number
 }
 
 /**

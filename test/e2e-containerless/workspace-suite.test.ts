@@ -7,7 +7,7 @@ import WebSocket from 'ws'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { TEST_CLI_ENTRY, createYaacTestEnv, spawnYaacServer, runYaac, type YaacTestEnv } from '#support/cli'
+import { TEST_CLI_ENTRY, createYaacTestEnv, spawnYaacServer, runYaac, type RunYaacOptions, type YaacTestEnv } from '#support/cli'
 import { asTailnet, assignTestGitCredential, makeServerApiClient, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { createTestRepo } from '@yaac/test-utils/setup'
@@ -506,6 +506,35 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(set.stdout).toContain('Git identity: Test <test@test.com>')
     expect((await runYaac(serverEnv, 'config', 'git-identity')).stdout)
       .toContain('Test <test@test.com>')
+  })
+
+  it('yaac config workspace-auto-delete shows the setting, sets it only once confirmed on a terminal, and turns it off', async () => {
+    const run = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> =>
+      runYaac(serverEnv, 'config', 'workspace-auto-delete', NAME, ...args)
+    const answer = (send: string): RunYaacOptions => ({ tty: true, stdinOnPrompt: [{ when: /Continue\? \[y\/N\]/, send }] })
+    expect((await run()).stdout).toContain(`${NAME} keeps stopped workspaces until you delete them.`)
+
+    // With no terminal to confirm on it refuses; on one, Enter means no.
+    const unconfirmed = await run('30')
+    expect(unconfirmed.exitCode).toBe(1)
+    expect(unconfirmed.stderr).toContain('only turned on from a terminal')
+    const declined = await run('30', answer('\r'))
+    expect(declined.stdout).toContain('0 workspace(s) are already past that and will be deleted irretrievably')
+    expect(declined.stdout).toContain('Aborted — nothing was changed or deleted.')
+    expect((await run()).stdout).toContain('keeps stopped workspaces')
+
+    // None has been stopped a day yet, so nothing goes.
+    const set = await run('30', answer('y\r'))
+    expect(set.exitCode, set.stdout).toBe(0)
+    expect(set.stdout).toContain('once it has been stopped 30 days; deleted 0 now')
+    expect((await run()).stdout).toContain(`${NAME} deletes a workspace once it has been stopped 30 days.`)
+
+    const off = await run('off')
+    expect(off.exitCode).toBe(0)
+    expect((await run()).stdout).toContain('keeps stopped workspaces')
+    const bad = await run('0')
+    expect(bad.exitCode).toBe(1)
+    expect(bad.stderr).toContain('not a whole number of days')
   })
 
   it('creates a workspace as a tmux session on this host', async () => {
