@@ -249,9 +249,12 @@ unwrap_output() {
   text=$(printf '%s' "$1" | sed -n 's/^{"output":"\(.*\)"}$/\1/p' | json_unescape)
 }
 
-# Pull the message out of {"error":"…"}, for a refusal the server described.
+# Pull the message out of a refusal the server described: {"error":"…"} from
+# a command, or {"error":{"code":…,"message":"…"}} from the route itself (an
+# oversized or malformed request).
 error_text() {
-  printf '%s' "$1" | sed -n 's/.*"error":"\(.*\)"}$/\1/p' | json_unescape
+  printf '%s' "$1" | sed -n -e 's/^{"error":{.*"message":"\(.*\)"}}$/\1/p' -e t \
+    -e 's/.*"error":"\(.*\)"}$/\1/p' | json_unescape
 }
 
 # One command's JSON envelope. $1 command, $2 body (or the file $body_file

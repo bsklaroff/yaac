@@ -38,6 +38,7 @@ import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
   draftWorkspaceSettingsSchema,
   MAX_PROMPT_LENGTH,
+  promptText,
   queuedWorkspaceSettingsSchema,
 } from '@yaac/shared/types'
 
@@ -97,7 +98,7 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
     zv('json', z.object({
       command: z.string().min(1).max(32),
       args: z.record(z.string(), z.string()).optional(),
-      body: z.string().max(MAX_PROMPT_LENGTH).optional(),
+      body: promptText.optional(),
     })),
     async (c) => {
       const caller = await callerOf(c)

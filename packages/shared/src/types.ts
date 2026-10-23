@@ -1457,6 +1457,17 @@ export interface QueuedWorkspaceEntry {
  */
 export const MAX_PROMPT_LENGTH = 200_000
 
+/** Why a prompt over `MAX_PROMPT_LENGTH` is refused. */
+export const PROMPT_TOO_LONG = `the prompt is over the ${MAX_PROMPT_LENGTH.toLocaleString('en-US')}-character limit`
+
+/**
+ * A prompt as a write takes it, at most `MAX_PROMPT_LENGTH` UTF-16 units:
+ * the length JavaScript reports, which every other bound on a prompt (and
+ * the yaac-mama body limit) counts. Zod's own `max` counts code points, so
+ * an emoji would count once here and twice everywhere else.
+ */
+export const promptText = z.string().refine((s) => s.length <= MAX_PROMPT_LENGTH, PROMPT_TOO_LONG)
+
 /**
  * How much of a prompt the `/events` snapshot carries. The snapshot goes to
  * every client on every change, so full prompts would resend up to
@@ -1475,7 +1486,7 @@ export const CONVERSATION_PROMPT_PREVIEW_LENGTH = 300
  * the workspace to be auto-titled.
  */
 export const queuedWorkspaceSettingsSchema = z.object({
-  prompt: z.string().min(1).max(MAX_PROMPT_LENGTH),
+  prompt: promptText.min(1),
   tool: z.enum(AGENT_TOOLS).optional(),
   model: z.string().regex(MODEL_RE).max(100).optional(),
   mode: z.enum(AGENT_MODES).optional(),

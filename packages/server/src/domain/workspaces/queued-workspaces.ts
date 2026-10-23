@@ -52,6 +52,7 @@ import { normalizeTitle } from '@yaac/shared/titles'
 import {
   agentPermissionMode,
   MAX_PROMPT_LENGTH,
+  PROMPT_TOO_LONG,
   launchableModel,
   toolSupportsPermissionMode,
   type AgentMode,
@@ -333,7 +334,7 @@ function checkPrompt(prompt: string): void {
     throw new ServerError('VALIDATION', 'a queued workspace needs a prompt — nobody is watching it start')
   }
   if (prompt.length > MAX_PROMPT_LENGTH) {
-    throw new ServerError('VALIDATION', `prompt exceeds ${MAX_PROMPT_LENGTH} characters`)
+    throw new ServerError('VALIDATION', PROMPT_TOO_LONG)
   }
 }
 

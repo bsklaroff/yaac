@@ -26,6 +26,7 @@ import { claudeSubagentThreads } from './claude-acp-replay'
 import { sessionTranscriptPath } from './transcripts'
 import { serverLog } from '#lib/log'
 import { MAX_ATTACHMENT_BYTES, sniffImage } from '@yaac/shared/attachments'
+import { MAX_PROMPT_LENGTH, PROMPT_TOO_LONG } from '@yaac/shared/types'
 import type { AcpClientMessage, AcpEventInit, AcpImage, AcpServerMessage, AcpTask } from '@yaac/shared/acp'
 
 /** The socket this bridge needs; same shape as the PTY bridge's, kept
@@ -313,10 +314,16 @@ function bridgeAcp(
       return
     }
     if (msg.type === 'prompt' && typeof msg.text === 'string') {
+      // Told to the pane, which is waiting for this message's echo.
+      const refuse = (why: string): void =>
+        send({ type: 'event', event: tail.number({ type: 'error', message: `message not sent: ${why}` }) })
+      if (msg.text.length > MAX_PROMPT_LENGTH) {
+        refuse(PROMPT_TOO_LONG)
+        return
+      }
       const images = promptImages(msg.images)
       if (typeof images === 'string') {
-        // Tell the pane, which is waiting for this message's echo.
-        send({ type: 'event', event: tail.number({ type: 'error', message: `message not sent: ${images}` }) })
+        refuse(images)
         return
       }
       const text = msg.text.trim() === '' ? '' : msg.text

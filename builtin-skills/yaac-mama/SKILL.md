@@ -311,8 +311,9 @@ pass a lower `--permission-mode` rather than retrying the same request.
 
 ## Limits and errors
 
-- Prompt: non-empty, ≤ 200,000 characters. Pass a long one with
-  `--prompt-file` (or `-` and stdin) rather than as an argument.
+- Prompt: non-empty, ≤ 200,000 characters, counted as UTF-16 units (an
+  emoji counts as two). Pass a long one with `--prompt-file` (or `-` and
+  stdin) rather than as an argument.
 - At most 8 requests queued per workspace (and 32 in total), and at most 8
   workspaces you created or restarted provisioning at once — over that is
   refused with an **HTTP 422** saying so; wait and retry.

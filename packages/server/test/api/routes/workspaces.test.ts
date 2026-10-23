@@ -44,14 +44,14 @@ describe('POST /mama', () => {
     headers: { 'content-type': 'application/json' },
     body,
   }))
-  /** A queue envelope whose prompt is JSON-escaped as `\uXXXX`, the largest
+  /** A queue envelope whose prompt is JSON-escaped as `\uXXXX` per UTF-16 unit, the largest
    *  any client can send it. */
   const envelope = (prompt: string): string => JSON.stringify({
     command: 'queue',
     args: { 'parent-workspace': 'a'.repeat(36), tool: 'claude', title: 't'.repeat(500) },
     body: '__BODY__',
-  }).replace('__BODY__', [...prompt].map((c) => [...c].map((u) =>
-    `\\u${u.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')).join(''))
+  }).replace('__BODY__', Array.from({ length: prompt.length }, (_, n) =>
+    `\\u${prompt.charCodeAt(n).toString(16).padStart(4, '0')}`).join(''))
 
   it('takes a prompt of the maximum length however it is escaped, and refuses more', async () => {
     const maximal = envelope('é'.repeat(MAX_PROMPT_LENGTH))
@@ -60,7 +60,15 @@ describe('POST /mama', () => {
     // A raw multibyte prompt passes the same way.
     expect((await post(JSON.stringify({ command: 'queue', body: LONG }))).status).toBe(401)
 
-    expect((await post(envelope('é'.repeat(MAX_PROMPT_LENGTH + 1)))).status).toBe(400)
+    // Counted in UTF-16 units, as every bound on a prompt is: an emoji
+    // counts twice.
+    for (const prompt of ['é'.repeat(MAX_PROMPT_LENGTH + 1), '🙂'.repeat(MAX_PROMPT_LENGTH / 2 + 1)]) {
+      const over = await post(envelope(prompt))
+      expect(over.status).toBe(400)
+      expect(await over.json()).toMatchObject({
+        error: { message: 'body: the prompt is over the 200,000-character limit' },
+      })
+    }
     expect((await post(JSON.stringify({ command: 'queue', body: ' '.repeat(MAMA_BODY_LIMIT) }))).status).toBe(413)
   })
 })
