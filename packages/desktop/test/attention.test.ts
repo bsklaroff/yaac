@@ -12,6 +12,7 @@ const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   queuedWorkspaces: [],
   heldWorkspaces: [],
   draftWorkspaces: [],
+  routines: [],
   workspaces: entries.map((s, i): WorkspaceListEntry => ({
     workspaceId: s.workspaceId ?? `s${i}`,
     projectId: s.projectId ?? 'proj',

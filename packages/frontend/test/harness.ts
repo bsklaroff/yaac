@@ -109,6 +109,7 @@ export const serverSnapshot = (over: Partial<ServerSnapshot> = {}): ServerSnapsh
   queuedWorkspaces: [],
   heldWorkspaces: [],
   draftWorkspaces: [],
+  routines: [],
   gitAuthFailures: {},
   imageBuilds: [],
   planUsage: {},

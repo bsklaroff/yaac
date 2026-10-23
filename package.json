@@ -65,6 +65,7 @@
     "@lydell/node-pty": "catalog:",
     "better-auth": "catalog:",
     "commander": "catalog:",
+    "croner": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
     "smol-toml": "catalog:",

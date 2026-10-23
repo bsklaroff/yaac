@@ -32,6 +32,7 @@ app's own choices:
 | `selectWorkspace` → `pane` | `autoSelectWorkspace` (no move) |
 | `openWorkspace` → `pane` (tray/notification jump, just-created workspace) | — |
 | `openNewWorkspace` → `pane` (the +, Alt+N, a draft or queued row) | — |
+| `openRoutine` → `pane` (a routine row, or a run's "from" link) | — |
 
 An eslint rule allows the two right-hand actions only in `App.tsx`, the store
 and the delete flow (`lib/stopWorkspaceFlow.ts`, which selects the row below a

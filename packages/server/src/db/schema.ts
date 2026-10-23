@@ -242,6 +242,10 @@ export const workspaces = snakeCase.table('workspaces', {
    * The IANA zone it launched with as `TZ`, null when none was set.
    */
   timeZone: text(),
+  /** When the server stops it (docs/routines.md "Timeouts"); null for no
+   *  timeout. A restart replaces it. A stopped workspace whose `stoppedAt`
+   *  is at or after it was timed out. */
+  deadline: timestamp({ withTimezone: true }),
   /**
    * An `acp` create's prompt, until a conversation in its first agent window
    * takes it (`takePendingPrompt`). Held here rather than in memory because
@@ -437,11 +441,19 @@ export const toolCredentials = snakeCase.table('tool_credentials', {
 export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
   projectId: uuid().notNull(),
-  /** Exactly one is set: the workspace this entry waits on, or the entry it
-   *  is chained after. Claiming a parent entry's launch re-points its
-   *  children at the launching workspace. */
+  /** Exactly one of these three is set: the workspace this entry waits on,
+   *  the entry it is chained after, or the time it starts at. Claiming a
+   *  parent entry's launch re-points its children at the launching
+   *  workspace. */
   parentWorkspaceId: text(),
   parentQueuedId: uuid(),
+  startAt: timestamp({ withTimezone: true }),
+  /** The launched workspace's timeout, counted from `startAt` if set, else
+   *  from the launch. */
+  timeoutMinutes: integer(),
+  /** The routine this entry is a run of. Kept on the launched record, so
+   *  a routine's entries are its run history. */
+  routineId: uuid().references((): AnyPgColumn => routines.id, { onDelete: 'set null' }),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   prompt: text().notNull(),
   tool: text().$type<AgentTool>().notNull(),
@@ -476,7 +488,40 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
 }, (t) => [
   index().on(t.projectId, t.parentWorkspaceId),
   index().on(t.parentQueuedId),
+  index().on(t.routineId),
 ])
+
+/**
+ * Cron-scheduled workspaces (docs/routines.md). Each tick inserts a queued
+ * entry with `startAt` at the tick, which the queue launches. Settings are
+ * stored resolved, as a queued entry's are.
+ */
+export const routines = snakeCase.table('routines', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid().notNull(),
+  /** Heads each run's title; the group runs default to is named after it. */
+  name: text().notNull(),
+  /** A 5-field cron expression or `@daily`-style nickname. */
+  cron: text().notNull(),
+  /** The IANA zone the cron is read in. */
+  timeZone: text().notNull(),
+  prompt: text().notNull(),
+  tool: text().$type<AgentTool>().notNull(),
+  model: text().notNull(),
+  mode: text().$type<AgentMode>().notNull(),
+  permissionMode: text().$type<PermissionMode>().notNull(),
+  effort: text(),
+  branch: text().notNull(),
+  /** Null is the default list; cleared when the group is deleted. */
+  groupId: text(),
+  /** Each run's timeout; null means "until the next tick". */
+  timeoutMinutes: integer(),
+  paused: boolean().notNull().default(false),
+  /** The next tick; null while paused. */
+  nextRunAt: timestamp({ withTimezone: true }),
+  lastRunAt: timestamp({ withTimezone: true }),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index().on(t.projectId)])
 
 /**
  * Create-dialog contents the user saved instead of running
@@ -510,4 +555,13 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   startAfter: text(),
   /** The dialog's Group field; cleared when the group is deleted. */
   groupId: text(),
+  /** The dialog's `At a time…` Start; null for any other. */
+  startAt: timestamp({ withTimezone: true }),
+  /** The dialog's Timeout field; null for no limit (for a routine, until
+   *  the next run). */
+  timeoutMinutes: integer(),
+  /** Set when the dialog's Start was `On a schedule…`: the routine's
+   *  cron and zone. */
+  cron: text(),
+  timeZone: text(),
 }, (t) => [index().on(t.projectId)])

@@ -60,6 +60,9 @@ export interface WorkspaceCreated {
   effort?: string
   /** The zone it launches with as `TZ` (see `workspaces.timeZone`). */
   timeZone?: string
+  /** When the server stops it (see `workspaces.deadline`). A resume without
+   *  one clears the deadline. */
+  deadline?: Date
 }
 
 /**

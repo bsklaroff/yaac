@@ -483,6 +483,12 @@ interface UiState {
   activeProjectId: string | null
   /** Workspace shown in the main pane. */
   selectedWorkspaceId: string | null
+  /** The routine shown in the main pane instead (docs/routines.md), while
+   *  no workspace is selected. Anything that selects a workspace or opens
+   *  the new-workspace pane clears it. */
+  selectedRoutineId: string | null
+  /** Show a routine's pane. */
+  openRoutine: (projectId: string, routineId: string) => void
   /** The workspace last open in each project, which switching back to the
    *  project reopens (`resolveVacantSelection`). */
   lastWorkspaceOf: Record<string, string>
@@ -840,10 +846,19 @@ export const useUiStore = create<UiState>((set, get) => ({
   snapshot: undefined,
   viewedUserId: null,
   viewUser: (userId, projectId) => navigate(() => set({
-    viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, sidebarQuery: '',
+    viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, selectedRoutineId: null, sidebarQuery: '',
   })),
   activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
+  selectedRoutineId: null,
+  openRoutine: (projectId, routineId) => navigate(() => set((s) => ({
+    activeProjectId: projectId,
+    selectedWorkspaceId: null,
+    selectedRoutineId: routineId,
+    newWorkspace: null,
+    focusNonce: s.focusNonce + 1,
+    mobileScreen: 'pane',
+  }))),
   lastWorkspaceOf: {},
   lastProjectOf: {},
   focusNonce: 0,
@@ -903,13 +918,16 @@ export const useUiStore = create<UiState>((set, get) => ({
     const show = (form: NewWorkspaceForm | null): void => set((s) => ({
       activeProjectId: opts.projectId,
       selectedWorkspaceId: null,
+      selectedRoutineId: null,
       newWorkspace: form,
       focusNonce: s.focusNonce + 1,
       mobileScreen: 'pane',
     }))
     const kept = get().newWorkspace
     const blank = opts.parent === undefined && opts.draftId === undefined && opts.editId === undefined
-    if (blank && kept?.projectId === opts.projectId && kept.editId === undefined && kept.draftId === undefined) {
+      && opts.routineId === undefined
+    if (blank && kept?.projectId === opts.projectId && kept.editId === undefined && kept.draftId === undefined
+      && kept.editRoutineId === undefined) {
       show(kept)
     }
     else navigate(() => show(blank ? null : seedNewWorkspace(opts, get().snapshot)))
@@ -1038,27 +1056,32 @@ export const useUiStore = create<UiState>((set, get) => ({
     const go = (): void => set({
       activeProjectId: projectId,
       selectedWorkspaceId: null,
+      selectedRoutineId: null,
       sidebarQuery: '',
       mobileScreen: projectId ? 'workspaces' : 'projects',
     })
     if (projectId === get().activeProjectId) go()
     else navigate(go)
   },
-  restoreActiveProject: (projectId) => set({ activeProjectId: projectId, selectedWorkspaceId: null, sidebarQuery: '' }),
+  restoreActiveProject: (projectId) => set({
+    activeProjectId: projectId, selectedWorkspaceId: null, selectedRoutineId: null, sidebarQuery: '',
+  }),
   // A deselect (null) doesn't change the mobile screen.
   selectWorkspace: (id) => {
     const go = (): void => set((s) => ({
       selectedWorkspaceId: id,
+      selectedRoutineId: null,
       focusNonce: s.focusNonce + 1,
       mobileScreen: id ? 'pane' : s.mobileScreen,
     }))
     if (id === null) go()
     else navigate(go)
   },
-  autoSelectWorkspace: (id) => set((s) => ({ selectedWorkspaceId: id, focusNonce: s.focusNonce + 1 })),
+  autoSelectWorkspace: (id) => set((s) => ({ selectedWorkspaceId: id, selectedRoutineId: null, focusNonce: s.focusNonce + 1 })),
   openWorkspace: (projectId, workspaceId) => navigate(() => set((s) => ({
     activeProjectId: projectId,
     selectedWorkspaceId: workspaceId,
+    selectedRoutineId: null,
     focusNonce: s.focusNonce + 1,
     mobileScreen: 'pane',
   }))),

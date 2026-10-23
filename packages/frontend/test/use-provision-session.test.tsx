@@ -64,7 +64,7 @@ describe('useProvisionWorkspace', () => {
     // create's result can arrive before any snapshot lists either.
     const snapshot = (workspaces: Partial<WorkspaceListEntry>[]): ServerSnapshot => ({
       workspaces, provisioning: [], projects: [{ id: 'proj', stoppedCount: 0 }],
-      queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [],
+      queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], routines: [],
     }) as unknown as ServerSnapshot
     act(() => useUiStore.getState().receiveSnapshot(snapshot([])))
     const { result } = renderHook(() => useProvisionWorkspace())

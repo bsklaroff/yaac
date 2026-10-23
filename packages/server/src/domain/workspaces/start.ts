@@ -42,6 +42,8 @@ export interface StartWorkspaceRequest {
   /** A group id filed under as is, never resolved or created: the group a
    *  queued entry was filed into. One deleted since fails the create. */
   groupId?: string
+  /** When the server stops it (docs/routines.md "Timeouts"). */
+  deadline?: Date
   /** Remember the named settings as project defaults (user creates only). */
   rememberDefaults: boolean
   /** Try a prewarmed spare first. A spare has its own id, so callers that
@@ -118,6 +120,7 @@ export async function prepareStart(
           ...(title !== undefined ? { title } : {}),
           ...(generatedTitle !== undefined ? { generatedTitle } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
+          ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
         })
         if (claimed) return claimed
       }
@@ -135,6 +138,7 @@ export async function prepareStart(
         ...(title !== undefined ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
+        ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
       })
     } catch (err) {
       const { draft } = request

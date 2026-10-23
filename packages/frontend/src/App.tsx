@@ -192,6 +192,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     queued: inProject(snapshot?.queuedWorkspaces),
     held: inProject(snapshot?.heldWorkspaces),
     drafts: inProject(snapshot?.draftWorkspaces),
+    routines: inProject(snapshot?.routines),
     gitAuthFailures: (activeProjectId && snapshot?.gitAuthFailures?.[activeProjectId]) || [],
   }
 

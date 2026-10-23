@@ -1,6 +1,6 @@
 import { and, eq, isNull } from 'drizzle-orm'
 import { getDb } from './client'
-import { draftWorkspaces, queuedWorkspaces, workspaceGroups, workspaces } from './schema'
+import { draftWorkspaces, queuedWorkspaces, routines, workspaceGroups, workspaces } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { ServerError } from '@yaac/shared/errors'
 import { normalizeTitle } from '@yaac/shared/titles'
@@ -117,6 +117,8 @@ export async function deleteWorkspaceGroup(
       ))
     await tx.update(draftWorkspaces).set({ groupId: null })
       .where(and(eq(draftWorkspaces.projectId, projectId), eq(draftWorkspaces.groupId, groupId)))
+    await tx.update(routines).set({ groupId: null })
+      .where(and(eq(routines.projectId, projectId), eq(routines.groupId, groupId)))
     await tx.delete(workspaceGroups).where(key(projectId, groupId))
   })
   notifyWorkspaceListChanged()

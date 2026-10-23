@@ -1,4 +1,4 @@
-import { useEffect, type JSX } from 'react'
+import { useEffect, type JSX, type ReactNode } from 'react'
 import { RenameIcon } from '#lib/icons'
 import { oneLine, useInlineRename } from '#lib/useInlineRename'
 
@@ -12,12 +12,14 @@ export { oneLine }
  * In Electron the wrapper is a window-drag region; the interactive children
  * opt out with `.no-drag`, which also keeps the label's text selectable.
  */
-export function WorkspaceTitle({ workspaceId, title, prompt }: {
+export function WorkspaceTitle({ workspaceId, title, prompt, after }: {
   workspaceId: string
   /** Stored display title; empty when the workspace has none yet. */
   title: string
   /** First user prompt, shown when there's no title. */
   prompt: string
+  /** Shown after the pencil, such as the routine a run came from. */
+  after?: ReactNode
 }): JSX.Element {
   // Editing an untitled workspace starts from its prompt, not the
   // 'New workspace' placeholder.
@@ -62,6 +64,7 @@ export function WorkspaceTitle({ workspaceId, title, prompt }: {
           >
             <RenameIcon size={12} />
           </button>
+          {after}
         </>
       )}
     </div>

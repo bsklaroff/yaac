@@ -63,6 +63,8 @@ export interface WorkspaceCreate {
   newGroup?: string
   /** The draft this create is made from, deleted once it has succeeded. */
   draftId?: string
+  /** Minutes until the server stops it. */
+  timeout?: number
   /** A pane to open once the workspace is up. */
   pane?: LaunchPane
 }
@@ -86,6 +88,7 @@ export async function createWorkspace(
     ...(c.branch ? { branch: c.branch } : {}),
     ...(group !== undefined ? { group } : {}),
     ...(c.draftId !== undefined ? { draftId: c.draftId } : {}),
+    ...(c.timeout !== undefined ? { timeout: c.timeout } : {}),
     // A failed create's prompt lands in the sidebar as a draft to retry from.
     draftOnFailure: true,
   }
@@ -112,3 +115,4 @@ export async function stopWorkspace(workspaceId: string): Promise<void> {
 export async function renameWorkspace(workspaceId: string, title: string): Promise<void> {
   await api.workspace[':id'].title.$post({ param: { id: workspaceId }, json: { title } })
 }
+

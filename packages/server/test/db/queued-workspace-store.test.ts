@@ -10,6 +10,7 @@ import {
   getQueuedWorkspaceRow,
   insertQueuedWorkspace,
   listQueuedWorkspaceRows,
+  releaseDueQueuedWorkspaces,
   releaseQueuedChildren,
   releaseQueuedWorkspace,
   setQueuedWorkspaceTitle,
@@ -104,7 +105,7 @@ describe('queued workspace store', () => {
     expect(await titleOf()).toBeUndefined()
 
     // An insert carries a draft's generated title.
-    const fromDraft = await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'wt-a' }, settings, 'From draft')
+    const fromDraft = await insertQueuedWorkspace(PROJ, { parentWorkspaceId: 'wt-a' }, settings, { generatedTitle: 'From draft' })
     expect(fromDraft.generatedTitle).toBe('From draft')
   })
 
@@ -225,5 +226,30 @@ describe('queued workspace store', () => {
     await deleteProjectQueuedWorkspaces(PROJ)
     expect(await listQueuedWorkspaceRows(PROJ)).toEqual([])
     expect(await listQueuedWorkspaceRows()).toHaveLength(1)
+  })
+
+  it('releases a scheduled entry once due, never one that failed, and keeps the time for a discarded one\'s children', async () => {
+    const at = new Date('2026-10-24T09:00:00Z')
+    const due = await insertQueuedWorkspace(PROJ, { startAt: at }, { ...settings, prompt: 'due', timeoutMinutes: 30 })
+    const child = await queue({ parentQueuedId: due.id }, 'child')
+    const failed = await queue({ startAt: at }, 'failed')
+    await claimQueuedLaunch(failed.id, 'wt-f')
+    await failQueuedLaunch(failed.id, 'wt-f', 'boom')
+    await queue({ startAt: new Date('2026-10-24T10:00:00Z') }, 'later')
+
+    expect(due).toMatchObject({ startAt: at, timeoutMinutes: 30 })
+    expect(await releaseDueQueuedWorkspaces(new Date('2026-10-24T08:59:00Z'))).toEqual([])
+    const released = await releaseDueQueuedWorkspaces(new Date('2026-10-24T09:00:30Z'))
+    expect(released.map((r) => r.prompt)).toEqual(['due'])
+    // Released once: a second pass finds nothing new.
+    expect(await releaseDueQueuedWorkspaces(new Date('2026-10-24T09:01:30Z'))).toEqual([])
+
+    // A new start time is a new attempt, so the failure goes and it is due.
+    await updateQueuedWorkspace(failed.id, { ...settings, prompt: 'failed', parent: { startAt: at } })
+    expect((await releaseDueQueuedWorkspaces(new Date('2026-10-24T09:02:00Z'))).map((r) => r.prompt)).toEqual(['failed'])
+
+    // Discarding a scheduled entry schedules its children at its time.
+    expect(await deleteQueuedWorkspace(due.id)).toBe(true)
+    expect((await getQueuedWorkspaceRow(child.id))?.startAt).toEqual(at)
   })
 })

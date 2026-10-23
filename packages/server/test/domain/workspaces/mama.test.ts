@@ -37,7 +37,8 @@ import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { agentHistoryDir, opencodeCheckpointDir, repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { recordAgentSessions, setActiveAgentSessions } from '#db/agent-session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
-import { applyWorkspaceEvent, deleteToolCredential, getWorkspaceRow, setToolCredential, setWorkspaceGroup } from '#db'
+import { applyWorkspaceEvent, deleteToolCredential, getWorkspaceRow, setTimeZone, setToolCredential, setWorkspaceGroup } from '#db'
+import { formatInZone } from '@yaac/shared/schedule'
 import { cloneRepo } from '#domain/git'
 import { _resetWorkspaceStatusStoreForTests, setLiveAgents } from '#runtime/status/status-store'
 import { WorkspaceExecError, type RuntimeHandle, type WorkspaceDriver } from '#drivers/contract'
@@ -187,6 +188,24 @@ describe('runMamaCommand', () => {
       // The group column shows what `group move` would change.
       expect(text).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+PROMPT/)
       expect(group.name).toBe('review')
+    })
+
+    it('shows deadlines in the owner\'s zone, scheduled workspaces under their time, and timeouts', async () => {
+      await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', true)
+      const soon = new Date(Date.now() + 38 * 60_000 + 30_000)
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', deadline: soon })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'timed-out', deadline: new Date(Date.now() - 60_000) })
+      await recordWorkspaceStopped(PROJ, 'timed-out')
+      running = [podFor('caller-workspace')]
+      const queued = await output('queue', 'nightly sweep', { 'start-in': '2h', timeout: '1h30m', tool: 'claude', branch: 'main' })
+      expect(queued).toMatch(/^[0-9a-f-]{36}\nnote: starts at about .+ \(in 2h\) Asia\/Tokyo$/)
+
+      const text = await output('list', 'caller timed')
+      expect(text).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+STOPS \(Asia\/Tokyo\)\s+PROMPT/)
+      expect(text).toContain(`${formatInZone(soon, 'Asia/Tokyo')} (in 39m)`)
+      expect(text).toMatch(/timed-ou\s+claude\s+\S+ \S+\s+timed out/)
+      const all = await output('list')
+      expect(all).toMatch(/\nat .+ \(in 2h\):\n  [0-9a-f]{8}  claude  queued  stops after 1h 30m  nightly sweep/)
     })
 
     it('says so plainly when there is nothing to report', async () => {
@@ -358,6 +377,16 @@ describe('runMamaCommand', () => {
       if (!outcome.ok) return outcome
       return (await createdWith())[0]
     }
+
+    it('gives the workspace a timeout from now, and refuses one under a minute', async () => {
+      const before = Date.now()
+      const created = await spawn({ timeout: '2h' })
+      if ('ok' in created) throw new Error(created.error)
+      const deadline = created.deadline?.getTime() ?? 0
+      expect(deadline).toBeGreaterThanOrEqual(before + 120 * 60_000)
+      expect(deadline).toBeLessThanOrEqual(Date.now() + 120 * 60_000)
+      expect(await spawn({ timeout: '30s' })).toMatchObject({ ok: false, error: expect.stringContaining('invalid timeout') as string })
+    })
 
     it('starts a workspace in the caller\'s project under the id it answers with, never a spare\'s', async () => {
       const list = vi.fn(() => Promise.resolve([]))
@@ -654,6 +683,27 @@ describe('runMamaCommand', () => {
       expect(await run('queue', '  ', ME)).toMatchObject({ ok: false })
       expect(await listQueuedWorkspaceRows(PROJ)).toHaveLength(1)
     })
+
+    it('starts at a time instead, held to the caller\'s posture, and refuses a bad time or two starts', async () => {
+      await setTimeZone(BUILT_IN_USER_ID, 'America/New_York', true)
+      const id = (await output('queue', 'later', { 'start-at': '2099-03-04 09:30', timeout: '45m', tool: 'claude', branch: 'main' })).split('\n')[0]
+      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)).toMatchObject({
+        startAt: new Date('2099-03-04T14:30:00Z'), timeoutMinutes: 45, permissionMode: 'accept-edits',
+      })
+      await output('edit-queued', '', { queued: id.slice(0, 8), 'start-in': '10m' })
+      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)?.startAt?.getTime())
+        .toBeLessThan(Date.now() + 11 * 60_000)
+      const refusals: Array<Record<string, string>> = [
+        { ...ME, 'start-in': '5m' },
+        { 'start-at': '10:00', 'start-in': '5m' },
+        { 'start-at': 'soonish' },
+        { 'start-in': '30s' },
+        { 'start-in': '5m', timeout: 'forever' },
+      ]
+      for (const args of refusals) {
+        expect((await run('queue', 'x', args)).ok, JSON.stringify(args)).toBe(false)
+      }
+    })
   })
 
   describe('edit-queued', () => {
@@ -946,6 +996,16 @@ describe('runMamaCommand', () => {
       ])
       await recordWorkspaceStopped(PROJ, 'sibling-workspace')
       running = [podFor('caller-workspace')]
+    })
+
+    it('restarts with a timeout counted from the restart', async () => {
+      const before = Date.now()
+      await output('restart', '', { workspace: 'sibling', timeout: '1h' })
+      await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
+      const deadline = vi.mocked(createWorkspace).mock.calls[0][1].deadline?.getTime() ?? 0
+      expect(deadline).toBeGreaterThanOrEqual(before + 60 * 60_000)
+      expect(await run('restart', '', { workspace: 'sibling', timeout: 'soon' }))
+        .toMatchObject({ ok: false, error: expect.stringContaining('invalid timeout') as string })
     })
 
     it('relaunches a stopped sibling under its id, resuming its conversations in its recorded posture', async () => {
