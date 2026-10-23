@@ -302,13 +302,15 @@ export const tuiDriver: AgentDriver = {
     const driver = workspaceDriver()
     const paths = driver.workspacePaths(session.jobName)
     if (opts.running === undefined) {
-      await driver.exec(session.jobName, buildPromptPasteBgCmd(handle, text, paths), { maxAttempts: 1, timeout: 15_000 })
+      const { cmd, stdin } = buildPromptPasteBgCmd(handle, text, paths)
+      await driver.exec(session.jobName, cmd, { maxAttempts: 1, timeout: 15_000, stdin })
       return
     }
-    const cmd = buildMessageCmd(handle, text, paths, { tool: session.tool, agentSessionId: opts.running.agentSessionId })
+    const { cmd, stdin } = buildMessageCmd(handle, text, paths, { tool: session.tool, agentSessionId: opts.running.agentSessionId })
     await driver.exec(session.jobName, cmd, {
       maxAttempts: 1,
       timeout: 30_000,
+      stdin,
     }).catch((err: unknown) => {
       if (!(err instanceof WorkspaceExecError) || MESSAGE_REFUSALS[err.code] === undefined) throw err
       // The script's own last line names the cause where there are several.

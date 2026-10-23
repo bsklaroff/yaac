@@ -2,7 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { formatSshCommand } from '@yaac/shared/git'
 import { HOSTED_REMOTE_PREFIX } from '@yaac/shared/hosted-git'
-import { killPids, runHost, runHostWithInput, spawnSshAgent } from './host'
+import { killPids, runHost, spawnSshAgent } from './host'
 import type { WorkspaceGitCredential } from '#drivers/contract'
 
 /**
@@ -136,7 +136,7 @@ async function startWorkspaceSshAgent(params: {
   const pid = await spawnSshAgent(agentSock)
   const env = { SSH_AUTH_SOCK: agentSock }
   try {
-    await runHostWithInput(['ssh-add', '-'], privateKey, { env, timeoutMs: 15_000 })
+    await runHost(['ssh-add', '-'], { env, timeoutMs: 15_000, input: privateKey })
     const { stdout } = await runHost(['ssh-add', '-L'], { env, timeoutMs: 10_000 })
     const sshDir = path.join(home, '.ssh')
     await fs.mkdir(sshDir, { recursive: true, mode: 0o700 })

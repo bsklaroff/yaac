@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises'
 import { api, resolveProjectId } from '#commands/api'
 import { attachWorkspacePty } from '#commands/ws-terminal'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
@@ -12,8 +13,11 @@ export interface WorkspaceCreateOptions {
    * branch.
    */
   branch?: string
-  /** Initial prompt typed into the agent pane once the workspace is up. */
+  /** Initial prompt typed into the agent pane once the workspace is up;
+   *  `-` reads it from stdin. */
   prompt?: string
+  /** A file to read the initial prompt from, in place of `prompt`. */
+  promptFile?: string
   /**
    * Model override: an id or alias for claude/codex, `provider/model` for
    * opencode/pi.
@@ -47,19 +51,55 @@ export async function workspaceCreate(project: string, options: WorkspaceCreateO
   // Best-effort, so a CLI-only user's workspaces get their zone too.
   await reportDeviceTimeZone().catch(() => {})
 
-  await attachStarted(await api.workspace.create.$post({
+  const source = promptSource(options)
+  const prompt = source !== undefined ? await readPrompt(source) : options.prompt
+  const res = await api.workspace.create.$post({
     json: {
       project: await resolveProjectId(project),
       tool: options.tool,
       branch: options.branch,
-      prompt: options.prompt,
+      prompt,
       model: options.model,
       effort: options.effort,
       mode: options.mode,
       permissionMode: options.permissionMode,
       group: options.group,
     },
-  }))
+  })
+  // Stdin carried the prompt and has ended, so it cannot drive a terminal.
+  await attachStarted(res, { attach: source !== '-' })
+}
+
+/**
+ * Where the prompt is read from, if not from `--prompt` itself: a file
+ * (`--prompt-file`), or `-` for stdin (`--prompt -`). These carry a long
+ * prompt, which a single argument cannot: Linux caps one at 128 KiB.
+ */
+function promptSource(options: WorkspaceCreateOptions): string | undefined {
+  if (options.prompt !== undefined && options.promptFile !== undefined) {
+    throw new Error('Give the prompt with --prompt or --prompt-file, not both.')
+  }
+  return options.promptFile ?? (options.prompt === '-' ? '-' : undefined)
+}
+
+/** The prompt `source` holds. An empty or unreadable one is refused rather
+ *  than sent as no prompt. */
+async function readPrompt(source: string): Promise<string> {
+  const name = source === '-' ? 'stdin' : source
+  let text: string
+  try {
+    text = source === '-' ? await readStdin() : await fs.readFile(source, 'utf8')
+  } catch (err) {
+    throw new Error(`Cannot read the prompt from ${name}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  if (text === '') throw new Error(`The prompt from ${name} is empty.`)
+  return text
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+  return Buffer.concat(chunks).toString('utf8')
 }
 
 /**
@@ -68,10 +108,12 @@ export async function workspaceCreate(project: string, options: WorkspaceCreateO
  * chat pane (its tmux window only shows the acpd supervisor's log), and e2e
  * runs have no TTY to attach.
  */
-export async function attachStarted(res: Response): Promise<void> {
+export async function attachStarted(res: Response, { attach = true } = {}): Promise<void> {
   const { workspaceId, mode } = await consumeNdjsonStream<{ workspaceId: string; mode: AgentMode }>(res)
   if (mode === 'acp') {
     console.log(`Workspace ${workspaceId} is running in ACP mode — open it in the web app to chat with the agent.`)
+  } else if (!attach) {
+    console.log(`Workspace ${workspaceId} is running — attach with \`yaac workspace attach ${workspaceId}\`.`)
   } else if (!testEnv.e2eNoAttach) {
     await attachWorkspacePty(workspaceId, 'native')
   }

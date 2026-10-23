@@ -26,6 +26,9 @@ export interface NewWorkspaceForm {
   draftId?: string
   /** The queued entry it edits. */
   editId?: string
+  /** The whole prompt of that draft or entry, fetched once the pane opens:
+   *  the snapshot, which seeds `prompt`, holds only a preview of it. */
+  savedPrompt?: string
 }
 
 /** What opens the pane on something other than a blank form: `parent` sets

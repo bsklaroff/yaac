@@ -14,7 +14,7 @@ import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { shownGroups } from '#lib/groups'
 import type { NewWorkspaceForm, PendingDraft } from '#lib/newWorkspace'
 import { useProjectBranches } from '#lib/useProjectBranches'
-import { clip, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
+import { clip, fetchFullPrompt, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useCreateDefaults, useCreateWorkspace } from '#lib/useCreateDefaults'
 import { useInlineEdit } from '#lib/useInlineRename'
@@ -191,6 +191,21 @@ export function NewWorkspacePane({ projectId, bar }: {
   const draft = form.draftId !== undefined
     ? (snapshot?.draftWorkspaces ?? []).find((d) => d.id === form.draftId)
     : undefined
+  const fromRow = editing ?? draft
+
+  // Replace the seeded preview with the whole prompt. Until it arrives the
+  // prompt is read-only and nothing is sent, so a save can never cut it.
+  const loadingPrompt = fromRow !== undefined && form.savedPrompt === undefined
+  const fromRowId = fromRow?.id
+  useEffect(() => {
+    if (!loadingPrompt || fromRowId === undefined) return
+    let current = true
+    fetchFullPrompt(fromRowId).then(
+      (full) => { if (current) update({ prompt: full, savedPrompt: full }) },
+      (err: unknown) => { if (current) setError(err instanceof Error ? err.message : String(err)) },
+    )
+    return () => { current = false }
+  }, [loadingPrompt, fromRowId])
 
   // Start options: now, each live workspace (newest first), then each queued
   // entry in sidebar order. An edit excludes the entry and its descendants
@@ -306,8 +321,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   // An untitled edit or draft is headed by the title generated from its
   // prompt until the prompt changes.
   const text = prompt.trim()
-  const fromRow = editing ?? draft
-  const generatedTitle = text === fromRow?.prompt ? fromRow.generatedTitle : undefined
+  const generatedTitle = text === form.savedPrompt ? fromRow?.generatedTitle : undefined
   const shownTitle = titleText || generatedTitle || (editing !== undefined ? 'Queued workspace' : 'New workspace')
   const current: DraftWorkspaceSettings = {
     prompt: text,
@@ -323,8 +337,9 @@ export function NewWorkspacePane({ projectId, bar }: {
   }
   // Leaving loses a typed prompt on a create (not an edit of a queued
   // entry), unless it matches the reopened draft exactly.
+  const saved = draft !== undefined ? { ...draft, prompt: form.savedPrompt ?? draft.prompt } : undefined
   const pending: PendingDraft | null = form.editId === undefined && text !== ''
-    && (draft === undefined || DRAFT_FIELDS.some((k) => current[k] !== draft[k]))
+    && (saved === undefined || DRAFT_FIELDS.some((k) => current[k] !== saved[k]))
     ? { projectId, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
   const pendingRef = useRef(pending)
@@ -335,7 +350,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   // search, not a pick, so it blocks. A queued entry stores concrete
   // settings, so it also needs a model and a branch.
   const storesEntry = queued || editing !== undefined
-  const blocked = !defaults.ready ? 'Loading…'
+  const blocked = !defaults.ready || loadingPrompt ? 'Loading…'
     : needsGitAuth ? 'Add git authentication first'
     : !signedIn ? `Sign in to ${TOOL_LABEL[tool]} first`
     : modelQuery !== null ? 'Pick a model from the list'
@@ -685,6 +700,7 @@ export function NewWorkspacePane({ projectId, bar }: {
           aria-label="Prompt"
           rows={1}
           value={prompt}
+          readOnly={loadingPrompt}
           onChange={(e) => update({ prompt: e.target.value })}
           placeholder={queued || editing !== undefined ? 'What should it do?' : 'Message the agent…'}
           className={COMPOSER_INPUT}

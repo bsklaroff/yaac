@@ -1,3 +1,4 @@
+import { api } from '#lib/api'
 import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
@@ -5,6 +6,12 @@ import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
  * Each entry waits on one parent (a workspace or another entry), so the
  * entries form trees rooted at workspace ids.
  */
+
+/** A queued entry's or draft's whole prompt, which the snapshot holds only
+ *  a preview of (`PROMPT_PREVIEW_LENGTH`). */
+export async function fetchFullPrompt(id: string): Promise<string> {
+  return (await api.workspace.prompt.$get({ query: { id } })).prompt
+}
 
 /** The id an entry waits on, whichever kind it is. */
 export function queuedParentId(entry: QueuedWorkspaceEntry): string {

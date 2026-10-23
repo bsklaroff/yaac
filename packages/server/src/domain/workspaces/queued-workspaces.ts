@@ -52,6 +52,7 @@ import { normalizeTitle } from '@yaac/shared/titles'
 import {
   agentPermissionMode,
   MAX_PROMPT_LENGTH,
+  PROMPT_TOO_LONG,
   launchableModel,
   toolSupportsPermissionMode,
   type AgentMode,
@@ -218,7 +219,8 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
   const projectIds = [...new Set(waiting.map((r) => r.projectId))]
   const held = (await Promise.all(projectIds.map((projectId) => listWorkspaceRows(projectId)))).flat()
     .filter((w) => w.stoppedAt !== undefined && parents.has(`${w.projectId}/${w.workspaceId}`))
-  return await toStoppedEntries(held)
+  // Only the held entry's own fields: the snapshot carries every one.
+  return (await toStoppedEntries(held)).map(({ agentSessions: _, createdAt: __, lastActiveAt: ___, ...entry }) => entry)
 }
 
 /**
@@ -332,7 +334,7 @@ function checkPrompt(prompt: string): void {
     throw new ServerError('VALIDATION', 'a queued workspace needs a prompt — nobody is watching it start')
   }
   if (prompt.length > MAX_PROMPT_LENGTH) {
-    throw new ServerError('VALIDATION', `prompt exceeds ${MAX_PROMPT_LENGTH} characters`)
+    throw new ServerError('VALIDATION', PROMPT_TOO_LONG)
   }
 }
 

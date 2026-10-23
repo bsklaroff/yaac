@@ -11,6 +11,8 @@ import {
   deleteWorkspaceGroup,
   findWorkspaceByMamaToken,
   findWorkspaceRow,
+  getQueuedWorkspaceRow,
+  listDraftWorkspaceRows,
   listWorkspaceAgentSessions,
   recordAllDeathsSeen,
   recordDeathSeen,
@@ -21,6 +23,7 @@ import {
   type WorkspaceRow,
 } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
+import { withPreviews } from '#api/prompt-previews'
 import { requireDriverFeature } from '#api/http/driver-features'
 import type { IdentityEnv } from '#api/http/web-auth'
 import { authorizeProject, workspacePrincipal } from '#domain/access'
@@ -36,6 +39,7 @@ import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
   draftWorkspaceSettingsSchema,
   MAX_PROMPT_LENGTH,
+  promptText,
   queuedWorkspaceSettingsSchema,
 } from '@yaac/shared/types'
 
@@ -58,6 +62,13 @@ const GIT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
  *  request is answered for. */
 type IdentifyCaller = (bearer: string, header: (name: string) => string | undefined)
   => Promise<WorkspaceRow | undefined>
+
+/**
+ * The largest yaac-mama request: a body of `MAX_PROMPT_LENGTH` UTF-16 units,
+ * each at most 6 bytes of JSON (a `\uXXXX` escape; raw UTF-8 takes at most
+ * 3), plus room for the command and its args.
+ */
+export const MAMA_BODY_LIMIT = MAX_PROMPT_LENGTH * 6 + 64 * 1024
 
 /**
  * The endpoints a workspace calls: `yaac-mama`, and the remote of a project
@@ -84,12 +95,11 @@ function mamaRoute(identifyCaller: IdentifyCaller) {
   }
   return new Hono().post(
     '/mama',
-    // Bounds what is parsed; the envelope below is far smaller.
-    jsonBodyLimit(64 * 1024, 'the yaac-mama request is too large'),
+    jsonBodyLimit(MAMA_BODY_LIMIT, 'the yaac-mama request is too large'),
     zv('json', z.object({
       command: z.string().min(1).max(32),
       args: z.record(z.string(), z.string()).optional(),
-      body: z.string().max(MAX_PROMPT_LENGTH).optional(),
+      body: promptText.optional(),
     })),
     async (c) => {
       const caller = await callerOf(c)
@@ -175,7 +185,10 @@ export const workspaceApp = new Hono<IdentityEnv>()
       exclude: z.string().optional().transform((v) => v ? v.split(',') : undefined),
       workspace: z.string().optional(),
     })),
-    async (c) => c.json(await listStoppedWorkspaces(c.req.valid('query'))),
+    async (c) => {
+      const page = await listStoppedWorkspaces(c.req.valid('query'))
+      return c.json({ ...page, entries: page.entries.map(withPreviews) })
+    },
   )
   .post(
     '/create',
@@ -357,6 +370,20 @@ export const workspaceApp = new Hono<IdentityEnv>()
     '/queue/run',
     zv('json', z.object({ id: z.string().min(1) })),
     async (c) => c.json(await runQueuedWorkspace(c.get('principal'), c.req.valid('json').id)),
+  )
+  // A queued entry's or draft's whole prompt, which the snapshot carries
+  // only a preview of (`PROMPT_PREVIEW_LENGTH`). Open to every user, as the
+  // snapshot is.
+  .get(
+    '/prompt',
+    zv('query', z.object({ id: z.string().min(1) })),
+    async (c) => {
+      const { id } = c.req.valid('query')
+      const prompt = (await getQueuedWorkspaceRow(id))?.prompt
+        ?? (await listDraftWorkspaceRows()).find((d) => d.id === id)?.prompt
+      if (prompt === undefined) throw new ServerError('NOT_FOUND', `no queued workspace or draft ${id}`)
+      return c.json({ prompt })
+    },
   )
   // Draft workspaces (docs/draft-workspaces.md): saved create-dialog contents.
   // A save without an id creates a draft; with one it replaces all fields.

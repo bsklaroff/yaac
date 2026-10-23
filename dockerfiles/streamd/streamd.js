@@ -14,8 +14,10 @@
  * - ctrl {cmd: [argv]}  spawn argv with piped stdio, no TTY; stdin/stdout
  *                       spliced raw (tmux control mode is a line
  *                       protocol). Socket close ⇔ process kill/exit.
- * - exec {cmd: [argv]}  one-shot: run argv, then send a single JSON line
- *                       {exitCode, stdout, stderr} (bounded) and close.
+ * - exec {cmd: [argv], stdin?: n}  one-shot: run argv, then send a single
+ *                       JSON line {exitCode, stdout, stderr} (bounded) and
+ *                       close. With `stdin`, the next n bytes the client
+ *                       sends are the command's stdin; without, it is empty.
  * - pty  {cmd, cols, rows}  spawn argv under a PTY; framed both ways
  *                       (see framing.js). Resize frames drive TIOCSWINSZ.
  * - ports {}            push the pod's localhost-reachable LISTEN ports
@@ -126,21 +128,32 @@ function handleCtrl(socket, params, leftover) {
  * closes before it finishes: a caller that gave up (a timed-out changes
  * read) must not leave a script's children running and holding its locks.
  */
-function handleExec(socket, params) {
+function handleExec(socket, params, leftover) {
   if (!isArgv(params.cmd)) return { ok: false, error: 'exec: cmd must be a non-empty argv array' }
-  const child = spawn(params.cmd[0], params.cmd.slice(1), { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
-  let stdout = ''
-  let stderr = ''
-  let truncated = false
-  const collect = (current, chunk) => {
-    if (current.length + chunk.length > EXEC_OUTPUT_MAX_BYTES) {
-      truncated = true
-      return current + chunk.toString('utf8').slice(0, EXEC_OUTPUT_MAX_BYTES - current.length)
-    }
-    return current + chunk.toString('utf8')
+  const stdinBytes = params.stdin ?? null
+  if (stdinBytes !== null && !(Number.isSafeInteger(stdinBytes) && stdinBytes >= 0)) {
+    return { ok: false, error: 'exec: stdin must be a byte count' }
   }
-  child.stdout.on('data', (chunk) => { stdout = collect(stdout, chunk) })
-  child.stderr.on('data', (chunk) => { stderr = collect(stderr, chunk) })
+  const child = spawn(params.cmd[0], params.cmd.slice(1), {
+    stdio: [stdinBytes === null ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+    detached: true,
+  })
+  if (stdinBytes !== null) feedStdin(socket, child.stdin, stdinBytes, leftover)
+  // Kept as bytes and decoded once at the end, so a character split across
+  // two chunks survives.
+  const output = { stdout: [], stderr: [] }
+  const sizes = { stdout: 0, stderr: 0 }
+  let truncated = false
+  const collect = (name) => (chunk) => {
+    const room = EXEC_OUTPUT_MAX_BYTES - sizes[name]
+    if (chunk.length > room) truncated = true
+    const part = chunk.subarray(0, Math.max(0, room))
+    sizes[name] += part.length
+    output[name].push(part)
+  }
+  const text = (name) => Buffer.concat(output[name]).toString('utf8')
+  child.stdout.on('data', collect('stdout'))
+  child.stderr.on('data', collect('stderr'))
   child.on('error', (err) => {
     // spawn itself failed (ENOMEM, EMFILE). `spawnFailed` lets the server
     // tell this from a real command-not-found, which also exits 127.
@@ -154,8 +167,8 @@ function handleExec(socket, params) {
     const exitCode = code ?? 1
     socket.end(JSON.stringify({
       exitCode,
-      stdout,
-      stderr,
+      stdout: text('stdout'),
+      stderr: text('stderr'),
       ...(signal ? { signal } : {}),
       ...(truncated ? { truncated: true } : {}),
     }) + '\n')
@@ -166,6 +179,27 @@ function handleExec(socket, params) {
   socket.on('close', abandon)
   socket.on('error', abandon)
   return { ok: true }
+}
+
+/**
+ * Copy the first `n` bytes the client sends (starting with `leftover`, what
+ * arrived with the handshake) into `stdin`, then close it. A client never
+ * half-closes an exec stream, so the count is what says the input is whole.
+ */
+function feedStdin(socket, stdin, n, leftover) {
+  let remaining = n
+  // A command that exits without reading its input raises EPIPE here.
+  stdin.on('error', () => {})
+  const feed = (chunk) => {
+    const part = chunk.subarray(0, remaining)
+    remaining -= part.length
+    if (part.length > 0) stdin.write(part)
+    if (remaining > 0) return
+    socket.removeListener('data', feed)
+    stdin.end()
+  }
+  feed(leftover)
+  if (remaining > 0) socket.on('data', feed)
 }
 
 /**

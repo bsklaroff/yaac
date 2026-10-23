@@ -226,6 +226,24 @@ describe('podExec', () => {
     expect(handshake.cmd).toEqual(['sh', '-c', 'echo hi'])
   })
 
+  it('sends stdin after the handshake that names its byte length', async () => {
+    // Multibyte and far past the handshake line's cap, as a long prompt's
+    // delivery script is.
+    const input = 'Pläase ✓ the 🙂 brief\n'.repeat(30_000)
+    await withRelay((r) => {
+      const want = r.handshake.stdin as number
+      let got = r.leftover
+      r.socket.write('{"ok":true}\n')
+      r.socket.on('data', (c: Buffer) => {
+        got = Buffer.concat([got, c])
+        if (got.length < want) return
+        r.socket.end(JSON.stringify({ exitCode: 0, stdout: got.toString('utf8'), stderr: '' }) + '\n')
+      })
+    })
+    const { stdout } = await podExec(JOB, 'cat', { stdin: input })
+    expect(stdout === input).toBe(true)
+  })
+
   it('throws WorkspaceExecError (code + stderr) on a nonzero exit, without retrying', async () => {
     let dials = 0
     await withRelay((r) => {

@@ -1455,7 +1455,32 @@ export interface QueuedWorkspaceEntry {
  * message is recorded. Shared so routes, the store and the discovery sweeps
  * apply the same bound.
  */
-export const MAX_PROMPT_LENGTH = 10000
+export const MAX_PROMPT_LENGTH = 200_000
+
+/** Why a prompt over `MAX_PROMPT_LENGTH` is refused. */
+export const PROMPT_TOO_LONG = `the prompt is over the ${MAX_PROMPT_LENGTH.toLocaleString('en-US')}-character limit`
+
+/**
+ * A prompt as a write takes it, at most `MAX_PROMPT_LENGTH` UTF-16 units:
+ * the length JavaScript reports, which every other bound on a prompt (and
+ * the yaac-mama body limit) counts. Zod's own `max` counts code points, so
+ * an emoji would count once here and twice everywhere else.
+ */
+export const promptText = z.string().refine((s) => s.length <= MAX_PROMPT_LENGTH, PROMPT_TOO_LONG)
+
+/**
+ * How much of a prompt the `/events` snapshot and the stopped list carry.
+ * The snapshot goes to every client on every change, and a stopped page
+ * holds dozens of rows, so full prompts would send up to
+ * `MAX_PROMPT_LENGTH` per row each time. A row's prompt keeps 10,000
+ * characters, which the sidebar's search matches against; a conversation's
+ * first prompt, which nothing searches, keeps only enough for its tab label
+ * and tooltip. A client needing the whole text fetches it:
+ * `GET /workspace/prompt` for a queued entry or draft; `yaac-mama list`
+ * prints any workspace's whole.
+ */
+export const PROMPT_PREVIEW_LENGTH = 10_000
+export const CONVERSATION_PROMPT_PREVIEW_LENGTH = 300
 
 /**
  * A queued workspace's settings as a queue write takes them. A present field
@@ -1463,7 +1488,7 @@ export const MAX_PROMPT_LENGTH = 10000
  * the workspace to be auto-titled.
  */
 export const queuedWorkspaceSettingsSchema = z.object({
-  prompt: z.string().min(1).max(MAX_PROMPT_LENGTH),
+  prompt: promptText.min(1),
   tool: z.enum(AGENT_TOOLS).optional(),
   model: z.string().regex(MODEL_RE).max(100).optional(),
   mode: z.enum(AGENT_MODES).optional(),
@@ -1715,7 +1740,8 @@ export type Whoami = Principal & { users: User[] }
 
 /**
  * All server-owned state the webapp renders, sent as a `snapshot` event on
- * connect and replaced whole on each later one.
+ * connect and replaced whole on each later one. Every `prompt` in it is a
+ * preview (`PROMPT_PREVIEW_LENGTH`, `CONVERSATION_PROMPT_PREVIEW_LENGTH`).
  */
 export interface ServerSnapshot {
   /** Which substrate this server runs — see `DriverKind`. */

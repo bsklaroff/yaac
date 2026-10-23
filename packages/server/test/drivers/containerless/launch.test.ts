@@ -17,14 +17,12 @@ import type { WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 import type * as hostModule from '#drivers/containerless/host'
 
 const mockRunHost = vi.hoisted(() => vi.fn())
-const mockRunHostWithInput = vi.hoisted(() => vi.fn())
 const mockOnPath = vi.hoisted(() => vi.fn())
 const mockSpawnSshAgent = vi.hoisted(() => vi.fn())
 const mockKillPids = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
-  runHostWithInput: mockRunHostWithInput,
   onPath: mockOnPath,
   spawnSshAgent: mockSpawnSshAgent,
   killPids: mockKillPids,
@@ -76,8 +74,6 @@ beforeEach(() => {
     argv[0] === 'ssh-add' && argv[1] === '-L'
       ? Promise.resolve({ stdout: 'ssh-ed25519 AAAAPUBLIC yaac\n', stderr: '' })
       : Promise.resolve({ stdout: '4242', stderr: '' }))
-  mockRunHostWithInput.mockReset()
-  mockRunHostWithInput.mockResolvedValue({ stdout: '', stderr: '' })
   mockSpawnSshAgent.mockReset()
   mockSpawnSshAgent.mockResolvedValue(4242)
   mockKillPids.mockReset()
@@ -379,8 +375,8 @@ describe('launchWorkspace', () => {
     }))
 
     // Piped in, never written to disk.
-    expect(mockRunHostWithInput).toHaveBeenCalledWith(
-      ['ssh-add', '-'], PRIVATE_KEY, expect.anything(),
+    expect(mockRunHost).toHaveBeenCalledWith(
+      ['ssh-add', '-'], expect.objectContaining({ input: PRIVATE_KEY }),
     )
     const home = path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'home')
     const pub = path.join(home, '.ssh', 'id.pub')

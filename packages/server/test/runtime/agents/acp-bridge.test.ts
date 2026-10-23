@@ -15,6 +15,7 @@ import {
 import type { JsonRpcTransport } from '#runtime/agents/acp-jsonrpc'
 import { acpPageOf, type AcpServerMessage } from '@yaac/shared/acp'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
+import { MAX_PROMPT_LENGTH } from '@yaac/shared/types'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
 // installs its own.
@@ -326,7 +327,7 @@ describe('attachAcp', () => {
     expect(transport.written.some((l) => l.includes('session/prompt'))).toBe(false)
   })
 
-  it('sends a message\'s images after its words, typed by their bytes, and refuses a non-image', async () => {
+  it('sends a message\'s images after its words, typed by their bytes, and refuses a non-image or an overlong one', async () => {
     const png = Buffer.from('\x89PNG\r\n\x1a\n', 'latin1').toString('base64')
     const prompts = (): Array<{ id: string; params: unknown }> => transport.written
       .map((l) => JSON.parse(l.trim()) as { id: string; method?: string; params: unknown })
@@ -362,6 +363,15 @@ describe('attachAcp', () => {
       images: [1, 2].map(() => ({ type: 'image', mimeType: 'image/png', data: big.toString('base64') })),
     })
     await waitFor(() => errors() === 2)
+    expect(prompts()).toHaveLength(1)
+
+    // As may words past the prompt limit, whatever images come with them.
+    // Counted in UTF-16 units, so an emoji counts twice.
+    sock.clientSend({ type: 'prompt', text: '🙂'.repeat(MAX_PROMPT_LENGTH / 2 + 1) })
+    await waitFor(() => errors() === 3)
+    expect(sock.sent.at(-1)).toMatchObject({
+      type: 'event', event: { type: 'error', message: 'message not sent: the prompt is over the 200,000-character limit' },
+    })
     expect(prompts()).toHaveLength(1)
 
     // A message may be an image alone.

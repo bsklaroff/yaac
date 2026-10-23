@@ -1030,7 +1030,7 @@ describe('prepareStart', () => {
         expect.objectContaining({ tool: 'claude', agentSessionId: spare.workspaceId, firstPrompt: 'fix the bug' }),
       ])
       // The prompt was pasted into the spare's agent.
-      expect(ranIn(spare).some((c) => c.includes('base64 -d'))).toBe(true)
+      expect(ranIn(spare).some((c) => c.includes('.yaac-prompt.sh'))).toBe(true)
       expect(listProvisioning()).toEqual([])
     })
 
