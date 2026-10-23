@@ -13,6 +13,7 @@ import { scopeToUser } from '#commands/api'
 import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
 import { workspaceStop } from '#commands/workspace-stop'
+import { workspaceDelete } from '#commands/workspace-delete'
 import { workspaceRestart } from '#commands/workspace-restart'
 import { workspaceAttach } from '#commands/workspace-attach'
 import { forward } from '#commands/forward'
@@ -360,6 +361,13 @@ workspace
   .description('Stop a workspace: tear down its container, keep its checkout and diff')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .action(workspaceStop)
+
+workspace
+  .command('delete')
+  .description('Delete a stopped workspace: its checkout and local branches (anything pushed stays on the remote), unpushed commits, uncommitted changes and conversation history')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action(workspaceDelete)
 
 workspace
   .command('restart')

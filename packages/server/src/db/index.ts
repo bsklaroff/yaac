@@ -126,6 +126,7 @@ export {
   clearWorkspaceStopped,
   countStoppedWorkspaces,
   deleteProjectWorkspaces,
+  deleteWorkspaceRecords,
   findWorkspaceRow,
   getProjectWorkspaceRows,
   getWorkspaceRow,

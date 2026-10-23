@@ -6,7 +6,7 @@ import { sql } from 'drizzle-orm'
 import { closeDb, getDb } from '#db/client'
 import {
   deleteProjectWorkspaces,
-  deleteWorkspaceRow,
+  deleteWorkspaceRecords,
   findWorkspaceRow,
   listLiveWorkspaceRows,
   setWorkspaceBaseBranch,
@@ -26,7 +26,7 @@ import {
   type StoppedRowCursor,
 } from '#db/workspace-store'
 import { createWorkspaceGroup, deleteWorkspaceGroup } from '#db/group-store'
-import { recordAgentSessions } from '#db/agent-session-store'
+import { listWorkspaceAgentSessions, recordAgentSessions } from '#db/agent-session-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
@@ -167,16 +167,20 @@ describe('session store', () => {
     })
   })
 
-  describe('deleteWorkspaceRow', () => {
-    it('removes one session and leaves its siblings', async () => {
+  describe('deleteWorkspaceRecords', () => {
+    it('removes one workspace and its conversation links, leaving its siblings', async () => {
       await create('sid-1')
       await create('sid-2')
-      await deleteWorkspaceRow(PROJ, 'sid-1')
+      await recordAgentSessions(PROJ, 'sid-1', [{ tool: 'claude', agentSessionId: 'conv-1' }])
+      const before = pushes
+      await deleteWorkspaceRecords(PROJ, 'sid-1')
       expect((await listWorkspaceRows(PROJ)).map((r) => r.workspaceId)).toEqual(['sid-2'])
+      expect(await listWorkspaceAgentSessions(PROJ, 'sid-1')).toEqual([])
+      expect(pushes - before).toBe(1)
     })
 
-    it('is a no-op for a session that was never recorded', async () => {
-      await expect(deleteWorkspaceRow(PROJ, 'ghost')).resolves.toBeUndefined()
+    it('is a no-op for a workspace that was never recorded', async () => {
+      await expect(deleteWorkspaceRecords(PROJ, 'ghost')).resolves.toBeUndefined()
     })
   })
 

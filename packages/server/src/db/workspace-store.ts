@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
 import { agentSessions, workspaceAgentSessions, workspaceGroups, workspaces } from './schema'
+import { deleteWorkspaceAgentSessions } from './agent-session-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
@@ -25,8 +26,8 @@ import type { AgentMode, PermissionMode, WorkspaceDeathCause } from '@yaac/share
  *    (docs/workspace-storage.md).
  *  - A stop never deletes a row: rows with `stoppedAt` are the stopped
  *    listing, and a restart clears it. Rows are deleted only when the project
- *    is removed (`deleteProjectWorkspaces`) or a create that never came up
- *    rolls back (`deleteWorkspaceRow`).
+ *    is removed (`deleteProjectWorkspaces`), or one workspace is deleted or
+ *    its create rolls back (`deleteWorkspaceRecords`).
  *
  * Every read and write propagates errors; a caller that must carry on (a
  * teardown) catches them itself.
@@ -497,15 +498,29 @@ export async function getWorkspaceRow(
 }
 
 /**
- * Roll back a failed create's insert. Only for workspaces that never came
- * up; one that ran is recorded as stopped instead.
+ * Delete a workspace's row and its conversation links, plus any conversation
+ * no other workspace links. For a deleted workspace.
  */
-export async function deleteWorkspaceRow(
+export async function deleteWorkspaceRecords(
+  projectId: string,
+  workspaceId: string,
+): Promise<void> {
+  await removeWorkspaceRecords(projectId, workspaceId)
+  notifyWorkspaceListChanged()
+}
+
+/**
+ * `deleteWorkspaceRecords` without the push, for a create that never came up,
+ * whose event already pushes. The row goes first, since it is what makes the
+ * workspace visible.
+ */
+export async function removeWorkspaceRecords(
   projectId: string,
   workspaceId: string,
 ): Promise<void> {
   const db = await getDb()
   await db.delete(workspaces).where(key(projectId, workspaceId))
+  await deleteWorkspaceAgentSessions(projectId, workspaceId)
 }
 
 /** Record the branch the workspace is based on, for a `yaac-mama set-base`. */

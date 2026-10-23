@@ -16,6 +16,7 @@ import {
   inFlightCreate,
   listProvisioning,
   ProvisionStoppedError,
+  refuseDeleting,
   removeProvisioning,
 } from './provisioning'
 import { resolveWorkspace } from './resolve'
@@ -116,6 +117,7 @@ export async function queueWorkspace(
   checkPrompt(request.prompt)
   const parent = await resolveParent(projectId, request.parent)
   const settings = await resolveSettings(projectId, parent, request, source)
+  refuseDeletedParent(parent.pointer)
   const row = await insertQueuedWorkspace(projectId, parent.pointer, settings, generatedTitle)
   return (await toEntries([row]))[0]
 }
@@ -153,6 +155,7 @@ export async function updateQueuedWorkspace(
       : retooled ? {} : { permissionMode: row.permissionMode }),
     ...(keptEffort !== undefined ? { effort: keptEffort } : {}),
   }, source)
+  refuseDeletedParent(parent.pointer)
   const updated = await updateQueuedWorkspaceRow(id, {
     ...settings,
     ...(patch.parent !== undefined ? { parent: parent.pointer } : {}),
@@ -331,6 +334,14 @@ function checkPrompt(prompt: string): void {
   if (prompt.length > MAX_PROMPT_LENGTH) {
     throw new ServerError('VALIDATION', `prompt exceeds ${MAX_PROMPT_LENGTH} characters`)
   }
+}
+
+/**
+ * Refuse a parent workspace a delete holds, right before the write, since an
+ * entry under it would wait on a parent that can never stop.
+ */
+function refuseDeletedParent(pointer: QueuedParent): void {
+  if ('parentWorkspaceId' in pointer) refuseDeleting(pointer.parentWorkspaceId)
 }
 
 function pointerOf(row: QueuedWorkspaceRow): QueuedParent {

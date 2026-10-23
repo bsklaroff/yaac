@@ -13,7 +13,6 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import readline from 'node:readline/promises'
 import { spawn } from 'node:child_process'
 import { isIPv4 } from 'node:net'
 import { parse as parseToml } from 'smol-toml'
@@ -71,6 +70,7 @@ import { ensureTailnetOperator, verifyTailnetOperator } from './tailscale-operat
 import { PACKAGE_ROOT, getDataDir, nodeLocalRoot } from '@yaac/shared/paths'
 import { CALICO_DIR } from '@yaac/shared/project-paths'
 import { DEFAULT_CLUSTER_SERVER_PORT } from '@yaac/shared/server-port'
+import { confirmDefault } from '@yaac/shared/confirm'
 import { env } from '@yaac/shared/env'
 
 /**
@@ -194,17 +194,6 @@ function runStreamingDefault(
       else reject(new Error(`${file} ${args.join(' ')} exited with code ${code}`))
     })
   })
-}
-
-export async function confirmDefault(question: string): Promise<boolean> {
-  if (!process.stdin.isTTY) return false
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    const answer = (await rl.question(`${question} [y/N] `)).trim().toLowerCase()
-    return answer === 'y' || answer === 'yes'
-  } finally {
-    rl.close()
-  }
 }
 
 /** The real host processes and filesystem. */

@@ -1,4 +1,5 @@
-import { confirmDefault, kindEnv } from './install'
+import { kindEnv } from './install'
+import { confirmDefault } from '@yaac/shared/confirm'
 import {
   BUILDER_ROLE_GUARD_NAME,
   LABEL_INSTALL_ID,

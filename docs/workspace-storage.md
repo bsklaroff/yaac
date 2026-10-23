@@ -88,9 +88,19 @@ workspace. See "Agent workspaces" below.
 - **No stop deletes a row.** A row with `stoppedAt` set is a stopped
   workspace. A restart reuses the id and, once the new runtime is up, clears
   `stoppedAt` and any death cause, but keeps the title and sidebar group. Only
-  two paths delete rows:
+  three paths delete rows:
   - `project remove`, which also removes the checkouts and transcripts (a
     leftover row would list a workspace whose checkout no longer exists).
+  - `yaac workspace delete` (`deleteWorkspace`), for one stopped workspace
+    with no unfinished teardown or queued entry waiting on it, and no
+    conversation it started that a sibling has resumed (the transcript
+    lives in this workspace's history). The delete holds the id from before it reads the
+    workspace's state until its rows are gone, so a restart or queue
+    arriving meanwhile is refused rather than started on files being
+    removed. The checkout goes first (its `.git` last), then the history,
+    then the rows, so the common failure (a root-owned file in the checkout)
+    leaves a stopped workspace that can still restart on its committed
+    work, rather than bytes no record points at.
   - A fresh create or a spare claim rolling back its own insert. A fresh
     create also removes its staged checkout. A failed restart leaves the row
     stopped as it found it, since its checkout is the work the user came back

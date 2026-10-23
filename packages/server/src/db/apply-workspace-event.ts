@@ -1,15 +1,14 @@
 import {
-  deleteWorkspaceAgentSessions,
   recordAgentSessionCaptures,
   recordAgentSessions,
   setActiveAgentSessions,
 } from './agent-session-store'
 import {
-  deleteWorkspaceRow,
   recordWorkspaceCreated,
   recordWorkspaceLife,
   recordWorkspaceResumed,
   recordWorkspaceStopped,
+  removeWorkspaceRecords,
   recordWaitingUnseen,
   setWorkspaceBaseBranch,
   setWorkspaceEffort,
@@ -108,7 +107,5 @@ async function applyCreated(event: WorkspaceCreated): Promise<void> {
  */
 async function applyCreateFailed({ projectId, workspaceId, resume }: WorkspaceCreateFailed): Promise<void> {
   if (resume) return
-  // The row first, since it is what makes the workspace visible.
-  await deleteWorkspaceRow(projectId, workspaceId)
-  await deleteWorkspaceAgentSessions(projectId, workspaceId)
+  await removeWorkspaceRecords(projectId, workspaceId)
 }
