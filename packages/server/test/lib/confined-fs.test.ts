@@ -7,7 +7,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type * as nodeFs from 'node:fs'
 import * as confinedFs from '#lib/confined-fs'
-import { openExactDir, openRoot, type ConfinedPathError } from '#lib/confined-fs'
+import { isEntryName, openExactDir, openRoot, type ConfinedPathError } from '#lib/confined-fs'
 
 type ConfinedFs = typeof confinedFs
 
@@ -228,5 +228,12 @@ describe('openExactDir', () => {
     } finally {
       await top.close()
     }
+  })
+})
+
+describe('isEntryName', () => {
+  it('admits one plain entry, including ones a shell would mangle, and nothing that reaches past it', () => {
+    for (const name of ['f', '.git', '..foo', '-rf', ' ', '*', '$(x)', 'é']) expect(isEntryName(name), name).toBe(true)
+    for (const name of ['', '.', '..', 'a/b', '/', 'a\0']) expect(isEntryName(name), JSON.stringify(name)).toBe(false)
   })
 })

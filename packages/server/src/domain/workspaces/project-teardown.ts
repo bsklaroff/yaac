@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises'
 import { workspaceDriver } from '#drivers/driver'
 import type { RuntimeHandle, RuntimeSnapshot } from '#drivers/contract'
-import { hostedRepoDir, projectDir } from '@yaac/shared/project-paths'
-import { cleanupWorkspaceDetached } from './cleanup'
+import { hostedRepoDir } from '@yaac/shared/project-paths'
+import { getProjectsDir } from '@yaac/shared/paths'
+import { cleanupWorkspaceDetached, removeEntries } from './cleanup'
 import {
   deleteProjectAgentSessions,
   deleteProjectDraftWorkspaces,
@@ -156,7 +157,7 @@ async function purgeProjectBytes(projectId: string): Promise<void> {
 
   // Safe after the teardowns above: `rm` does not follow links, and no pod
   // is left to swap one in mid-walk.
-  await fs.rm(projectDir(projectId), { recursive: true, force: true })
+  await removeEntries(getProjectsDir(), [projectId])
   // A hosted project's remote is its only authoritative copy; the remove
   // confirmation says so. A share has none of its own.
   await fs.rm(hostedRepoDir(projectId), { recursive: true, force: true })

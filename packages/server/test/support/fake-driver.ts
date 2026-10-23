@@ -200,6 +200,7 @@ function defaultRuntime(): WorkspaceDriver {
     detachedTeardownCommand: () => 'true',
     destroyProjectSubstrate: () => Promise.resolve(),
     reapNodeLocal: () => Promise.resolve(),
+    removeAsRoot: () => Promise.resolve(false),
     mamaRelay: null,
   }
 }

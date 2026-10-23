@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { constants as fsConstants } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
@@ -21,7 +22,7 @@ import {
   workspaceDir,
   workspaceStateDir,
 } from '@yaac/shared/project-paths'
-import { openRoot } from '#lib/confined-fs'
+import { isEntryName, openRoot } from '#lib/confined-fs'
 import { shellQuote } from '#lib/shell'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
 import type { RuntimeSnapshot, TeardownTarget } from '#drivers/contract'
@@ -91,6 +92,46 @@ async function checkoutEphemeralPaths(
 }
 
 /**
+ * Remove `names` from `dir`, recursively and following no link. Entries the
+ * server's uid may not remove, which a sandboxed workspace's root wrote, go
+ * to the driver's `removeAsRoot` together once the rest are gone. Rejects
+ * with the first failure, or with the refusal when the driver cannot help.
+ * A name that is not one plain entry (an empty id) is refused.
+ */
+export async function removeEntries(dir: string, names: string[]): Promise<void> {
+  if (!names.every(isEntryName)) throw new Error(`refusing to remove ${JSON.stringify(names)} from ${dir}`)
+  const results = await Promise.allSettled(names.map((n) => fs.rm(path.join(dir, n), { recursive: true, force: true })))
+  const denied: string[] = []
+  let refusal: unknown
+  for (const [i, r] of results.entries()) {
+    if (r.status === 'fulfilled') continue
+    const code = (r.reason as NodeJS.ErrnoException).code
+    if (code !== 'EACCES' && code !== 'EPERM') throw r.reason
+    denied.push(names[i])
+    refusal ??= r.reason
+  }
+  if (denied.length > 0 && !await workspaceDriver().removeAsRoot(dir, denied)) throw refusal
+}
+
+/**
+ * Whether the server's uid can remove everything under `dir`: every real
+ * directory in it is readable, writable and searchable. A missing `dir`, or
+ * one that is not a directory, counts as removable.
+ */
+async function removableTree(dir: string): Promise<boolean> {
+  if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return true
+  try {
+    await fs.access(dir, fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK)
+    for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+      if (e.isDirectory() && !await removableTree(path.join(dir, e.name))) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Remove everything on disk that belongs to one workspace: the checkout, the
  * opencode checkpoint, ACP records and agent history. Node-local working
  * copies are the driver's sweep's.
@@ -105,9 +146,12 @@ async function checkoutEphemeralPaths(
  * safe (it does not follow links, and nothing can swap one in mid-walk).
  *
  * The checkout goes first and the rest only once it is gone, since the
- * checkout is what most often fails (a root-owned file a workspace left).
+ * checkout is what most often fails: a root-owned file a workspace left
+ * needs the driver's `removeAsRoot` (`removeEntries`), which may fail.
  * Its `.git` goes last, so that failure leaves the git state and the
  * history, and so a workspace that still restarts on its committed work.
+ * A `.git` the server cannot remove all of goes whole to `removeAsRoot`,
+ * since Node's walk would first delete what it could and leave it broken.
  * Returns `false` if anything failed. Callers then keep whatever records the
  * leftover bytes: a row, which still lists a stopped workspace, or a spare's
  * unit, which the next reap retries.
@@ -126,7 +170,6 @@ export async function deleteWorkspaceState(
     return false
   })
   const checkout = workspaceDir(projectId, workspaceId)
-  const rmTree = (p: string): Promise<boolean> => removed(fs.rm(p, { recursive: true, force: true }))
   // Only a real directory is listed: a link is unlinked, never followed.
   const isDir = await fs.lstat(checkout).then((st) => st.isDirectory(), () => false)
   let entries: string[] = []
@@ -135,9 +178,12 @@ export async function deleteWorkspaceState(
   } catch (err) {
     return removed(Promise.reject(err))
   }
-  const outside = entries.filter((e) => e !== '.git').map((e) => rmTree(path.join(checkout, e)))
-  if (!(await Promise.all(outside)).every(Boolean)) return false
-  if (!await rmTree(checkout)) return false
+  if (!await removed(removeEntries(checkout, entries.filter((e) => e !== '.git')))) return false
+  if (isDir && !await removableTree(path.join(checkout, '.git'))
+    && !await removed(workspaceDriver().removeAsRoot(checkout, ['.git']).then((gone) => {
+      if (!gone) throw new Error('its .git holds entries the server cannot remove')
+    }))) return false
+  if (!await removed(removeEntries(path.dirname(checkout), [path.basename(checkout)]))) return false
   const outcomes = await Promise.all([
     fs.rm(opencodeCheckpointDir(projectId, workspaceId), { recursive: true, force: true }),
     fs.rm(acpLogDir(projectId, workspaceId), { recursive: true, force: true }),

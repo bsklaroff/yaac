@@ -817,6 +817,18 @@ export interface WorkspaceDriver {
    * a pod per node. Never rejects.
    */
   reapNodeLocal(live: NodeLocalLiveSet): Promise<void>
+  /**
+   * Remove `names`, entries of `dir` under the GLOBAL root, when the
+   * server's own removal was refused: a sandboxed workspace's root writes
+   * files the server's uid cannot delete. Each entry goes recursively,
+   * following no link. Resolves `true` once they are gone, or `false` when
+   * this runtime has no such means (containerless, whose workspaces write
+   * as the server's own user). Rejects if the removal failed.
+   *
+   * No pod may be able to write `dir` or any directory above it, since a
+   * link swapped in there would redirect the removal.
+   */
+  removeAsRoot(dir: string, names: string[]): Promise<boolean>
 
   /**
    * Where a sandboxed workspace's `yaac-mama` calls arrive, or null when

@@ -98,9 +98,12 @@ workspace. See "Agent workspaces" below.
     workspace's state until its rows are gone, so a restart or queue
     arriving meanwhile is refused rather than started on files being
     removed. The checkout goes first (its `.git` last), then the history,
-    then the rows, so the common failure (a root-owned file in the checkout)
-    leaves a stopped workspace that can still restart on its committed
-    work, rather than bytes no record points at.
+    then the rows. Under k8s a root-owned file a workspace's `sudo` left in
+    the checkout is handed to a root pod (docs/server-in-cluster.md "The uid
+    everything runs as"), so it fails the delete only if that pod does. A
+    `.git` the server cannot remove all of goes to that pod whole, so a
+    failure leaves a stopped workspace that can be deleted again or still
+    restart on its committed work, rather than bytes no record points at.
   - A fresh create or a spare claim rolling back its own insert. A fresh
     create also removes its staged checkout. A failed restart leaves the row
     stopped as it found it, since its checkout is the work the user came back
@@ -557,7 +560,9 @@ file plus rename, and deletes by walking descriptors.
   excludes its `.git`).
 - **Whole-tree deletes** of a workspace or project run only once no pod can
   write under them, so Node's recursive `rm` (which follows no link) cannot be
-  redirected mid-walk.
+  redirected mid-walk. What that `rm` is refused goes to the driver's root
+  remover, which takes only plain entry names of a directory strictly inside
+  the global root and reached through no link.
 
 An ACP agent's `sessionId` is checked against `agentSessionIdSchema` too before
 it is recorded or used in a path.

@@ -14,6 +14,8 @@ import { nodeLocalProjectPath, projectDir } from '@yaac/shared/project-paths'
 import { getProjectsDir } from '@yaac/shared/paths'
 import { DEMO_PROJECT_ID, recordTestProject } from '@yaac/test-utils/project-fixture'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '#db'
+import { removeAsRoot } from '#drivers/k8s/workspaces'
+import { appliedRootPods, podsRunAsRoot } from '#test/support/root-pods'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -146,6 +148,25 @@ describe('removeProject', () => {
 
     expect((await listWorkspaceRows()).map((r) => r.workspaceId)).toEqual(['a'])
     expect((await listProjectRows()).map((p) => p.id)).toEqual([DEMO_PROJECT_ID])
+  })
+
+  it('hands a tree the server cannot remove to a root pod', async () => {
+    installFakeWorkspaceDriver({ list: mockList, removeAsRoot })
+    podsRunAsRoot('Succeeded')
+    await recordTestProject(DEMO_PROJECT_ID)
+    await recordTestProject(KEEPER)
+    // As a root-owned dir a workspace left in its checkout.
+    const rootDir = path.join(projectDir(DEMO_PROJECT_ID), 'workspaces', 'a', 'rootdir')
+    await fs.mkdir(rootDir, { recursive: true })
+    await fs.writeFile(path.join(rootDir, 'x'), 'x')
+    await fs.chmod(rootDir, 0o555)
+
+    await removeProject(local, DEMO_PROJECT_ID)
+
+    await expect(fs.access(projectDir(DEMO_PROJECT_ID))).rejects.toThrow()
+    await expect(fs.access(projectDir(KEEPER))).resolves.toBeUndefined()
+    expect(appliedRootPods()).toEqual([{ subPath: 'projects', names: [DEMO_PROJECT_ID], runAsUser: 0 }])
+    expect((await listProjectRows()).map((p) => p.id)).toEqual([KEEPER])
   })
 
   it('removes every share of the project with it, since they use its repository', async () => {

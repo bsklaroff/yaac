@@ -157,7 +157,7 @@ export async function deleteObject(
 export async function deleteObjects(
   apiVersion: string,
   kind: string,
-  opts: { namespace?: string; labelSelector: string; wait?: boolean },
+  opts: { namespace?: string; labelSelector: string; fieldSelector?: string; wait?: boolean },
 ): Promise<void> {
   const items = await listObjects(apiVersion, kind, opts)
   await Promise.all(items.map((item) => deleteObject({

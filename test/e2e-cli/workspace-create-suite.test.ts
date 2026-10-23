@@ -1807,6 +1807,22 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await vi.waitFor(async () => expect(await ls(workspacesRoot)).toEqual(checkoutsBefore),
         { timeout: 5_000, interval: 100 })
     }, 60_000)
+
+    // Last, since it deletes the workspace.
+    it('deletes the stopped workspace past a root-owned dir its sudo left, through a root pod', async () => {
+      await execInJob(jobName, ['sh', '-c', 'cd /workspace && sudo mkdir rootdir && sudo touch rootdir/x'])
+      await stopWorkspace(workspaceId)
+      const checkout = path.join(testEnv.dataDir, 'global', 'projects', idOf(NAME), 'workspaces', workspaceId)
+      let deleted: { exitCode: number | null; stderr: string } = { exitCode: null, stderr: '' }
+      // Refused while the pod is still going away.
+      await vi.waitFor(async () => {
+        deleted = await runYaac(serverEnv, 'workspace', 'delete', workspaceId, '--yes')
+        expect(deleted.stderr).not.toMatch(/still stopping/)
+      }, { timeout: 120_000, interval: 2000 })
+      expect(deleted.exitCode, deleted.stderr).toBe(0)
+      await expect(fs.lstat(checkout)).rejects.toThrow()
+      workspaceId = ''
+    }, 240_000)
   })
   describe('agent mode (--mode acp)', () => {
     const NAME = 'acped'

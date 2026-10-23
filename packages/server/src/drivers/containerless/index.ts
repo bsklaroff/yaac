@@ -130,6 +130,9 @@ export function createContainerlessDriver(): WorkspaceDriver {
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),
     destroyProjectSubstrate: (project) => destroyProjectSubstrate(project),
     reapNodeLocal: (live) => reapNodeLocal(live),
+    // A workspace writes as the server's own user, so nothing it leaves
+    // needs more than that user to remove.
+    removeAsRoot: () => Promise.resolve(false),
 
     // yaac-mama posts directly to `/workspace/mama` here.
     mamaRelay: null,
