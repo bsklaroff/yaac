@@ -1,12 +1,14 @@
 /**
  * Tracks each workspace's open tunnels and plain-HTTP requests, with the
- * admission (allowlist result plus injection rules) each was accepted under.
+ * admission (allowlist result, injection rules, redirect, and whether an
+ * exact entry names the host) each was accepted under.
  *
  * Admission is decided once per connection, so a connection can outlive a
  * registration change. On a change, every connection is re-admitted; any
  * whose host is no longer allowed or whose admission differs is destroyed,
  * and the client reconnects. Unchanged admissions keep their connection, so
- * widening an allowlist drops nothing.
+ * widening an allowlist drops nothing but connections to a host that gains
+ * an exact entry, which reconnect.
  */
 
 import type { Readable, Writable } from 'node:stream'

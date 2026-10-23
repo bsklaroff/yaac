@@ -27,6 +27,8 @@ import {
   TRANSPARENT_TUNNEL_PORT,
   k8sNamespace,
 } from '#drivers/k8s/substrate'
+import { MAIN_REGISTRY_APP_LABEL } from './main-registry'
+import { REGISTRY_NAMESPACE, REGISTRY_SERVICE_PORT } from './registry'
 
 /**
  * Every yaac network policy, as plain `networking.k8s.io/v1` NetworkPolicy
@@ -160,12 +162,28 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
 }
 
 /**
- * The cloud metadata service, at the same link-local address on every
- * major provider. On Hetzner it serves a node's user data, which holds the
- * cluster join token, to any pod that asks, with no hop limit. Only this
- * address: NodeLocal DNSCache listens elsewhere in 169.254/16.
+ * IPv4 addresses that are not publicly routable: the IANA special-purpose
+ * registry (private, CGNAT, loopback, link-local, documentation,
+ * benchmarking, multicast, reserved), plus Azure's WireServer, a metadata
+ * service on a public address. Link-local and CGNAT hold every major cloud's
+ * IPv4 metadata service. The proxy refuses the same set itself
+ * (k8s/proxy/upstream.ts).
  */
-const METADATA_CIDR = '169.254.169.254/32'
+const NON_PUBLIC_V4 = [
+  '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16',
+  '172.16.0.0/12', '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16',
+  '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/3', '168.63.129.16/32',
+]
+
+/**
+ * Public IPv6: global unicast less its special-purpose blocks. Everything
+ * else falls outside it, ULA (where AWS and GCE serve IPv6 metadata) and
+ * link-local included.
+ */
+const PUBLIC_V6 = { cidr: '2000::/3', except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20'] }
+
+/** Where NodeLocal DNSCache listens in IPVS mode (typically 169.254.20.10). */
+const LINK_LOCAL_V4 = '169.254.0.0/16'
 
 /** Every port in 1..65535 but `excluded`, as NetworkPolicy port ranges. */
 function portsExcept(protocol: 'TCP' | 'UDP', excluded: number[]): Array<Record<string, unknown>> {
@@ -180,25 +198,43 @@ function portsExcept(protocol: 'TCP' | 'UDP', excluded: number[]): Array<Record<
 }
 
 /**
- * Egress for pods that may dial almost anything: builder pods (running
- * agent-editable Dockerfiles) and the proxy. Three things are cut out:
- *  - the kind fronting's node port. That forwarder's dial into the server
- *    comes from the node, which the server's ingress admits, and a
- *    loopback-`Host` request arriving there is treated as the owner
- *    (docs/remote-hosting.md);
- *  - NFS on node addresses, for a shared tier served from a node
- *    (infra/hetzner-k3s). Traffic to another node is SNATed to the sending
- *    node's address, so the server's export list cannot tell such a pod
- *    from a node's kernel mount;
- *  - the metadata service.
+ * Egress for pods that may dial the internet: builder pods (running
+ * agent-editable Dockerfiles) and the proxy. Public addresses are open;
+ * non-public ones are not, except:
+ *  - DNS: the cluster's resolver by selector, and port 53 on its Service
+ *    addresses (`dnsCidrs`) and on link-local, where NodeLocal DNSCache
+ *    answers in its two modes;
+ *  - the nodes, on every port but two. The kind fronting's node port is
+ *    cut, because that forwarder's dial into the server comes from the
+ *    node, which the server's ingress admits, and a loopback-`Host`
+ *    request arriving there is treated as the owner
+ *    (docs/remote-hosting.md). NFS is cut for a shared tier served from a
+ *    node (infra/hetzner-k3s): traffic to another node is SNATed to the
+ *    sending node's address, so the server's export list cannot tell such a
+ *    pod from a node's kernel mount.
+ * Each caller adds selector rules for the in-cluster peers it needs.
+ * Selectors match a Service dial too, as policy sees the destination after
+ * kube-proxy's DNAT. Anything else internal is opened only by the network
+ * operator's own policy (docs/workspace-egress.md "Opening an internal
+ * destination").
  */
-export function wideEgress(nodeCidrs: string[]): Array<Record<string, unknown>> {
+export function wideEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Record<string, unknown>> {
   return [
     {
       to: [
-        { ipBlock: { cidr: '0.0.0.0/0', except: [...nodeCidrs, METADATA_CIDR] } },
-        { ipBlock: { cidr: '::/0' } },
+        { ipBlock: { cidr: '0.0.0.0/0', except: [...nodeCidrs, ...NON_PUBLIC_V4] } },
+        { ipBlock: PUBLIC_V6 },
       ],
+    },
+    {
+      to: [
+        {
+          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+          podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+        },
+        ...ipBlocks([...dnsCidrs, LINK_LOCAL_V4]),
+      ],
+      ports: [udp(53), tcp(53)],
     },
     {
       to: ipBlocks(nodeCidrs),
@@ -207,13 +243,46 @@ export function wideEgress(nodeCidrs: string[]): Array<Record<string, unknown>> 
   ]
 }
 
-/** Proxy EGRESS: its upstream dials, anywhere `wideEgress` allows. */
-export function buildProxyEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
+/**
+ * Proxy EGRESS: its upstream dials, anywhere `wideEgress` allows, plus its
+ * in-cluster peers: the server's mama listener, workspace pods' streamd
+ * (the stream relay), and the apiserver its watches read, at its real
+ * endpoints (`apiserverEndpoints`). On kind and k3s those are node
+ * addresses, which `wideEgress` already admits.
+ */
+export function buildProxyEgressNpManifest(
+  nodeCidrs: string[],
+  dnsCidrs: string[],
+  apiserver: { cidrs: string[]; ports: number[] },
+): Record<string, unknown> {
   return np(PROXY_EGRESS_NP_NAME, k8sNamespace(), {
     podSelector: { matchLabels: { app: PROXY_APP_NAME } },
     policyTypes: ['Egress'],
-    egress: wideEgress(nodeCidrs),
+    egress: [
+      ...wideEgress(nodeCidrs, dnsCidrs),
+      { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [tcp(SERVER_MAMA_PORT)] },
+      { to: [{ podSelector: workspacePodSelector }], ports: [tcp(POD_STREAM_PORT)] },
+      ...(apiserver.cidrs.length > 0 ? [{ to: ipBlocks(apiserver.cidrs), ports: apiserver.ports.map(tcp) }] : []),
+    ],
   })
+}
+
+/**
+ * Builder egress: anywhere `wideEgress` allows, plus the main registry its
+ * builds pull parents from and push layers to. The world-deny policy
+ * excludes builders, so this is the policy that applies to them.
+ */
+export function builderEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Record<string, unknown>> {
+  return [
+    ...wideEgress(nodeCidrs, dnsCidrs),
+    {
+      to: [{
+        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': REGISTRY_NAMESPACE } },
+        podSelector: { matchLabels: { app: MAIN_REGISTRY_APP_LABEL } },
+      }],
+      ports: [tcp(REGISTRY_SERVICE_PORT)],
+    },
+  ]
 }
 
 /**

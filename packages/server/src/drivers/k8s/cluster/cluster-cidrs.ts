@@ -1,4 +1,4 @@
-import { isAbsent, k8sErrorSummary, listObjects } from '#drivers/k8s/substrate'
+import { isAbsent, k8sErrorSummary, listObjects, readObject } from '#drivers/k8s/substrate'
 import { env } from '@yaac/shared/env'
 import { serverLog } from '#lib/log'
 
@@ -76,6 +76,44 @@ export async function nodeIpBlocks(opts: { fresh?: boolean } = {}): Promise<stri
   }
   nodeCidrCache = unique
   return unique
+}
+
+/**
+ * The cluster DNS Service's addresses (`kube-system/kube-dns`), as `/32` or
+ * `/128` CIDRs. NodeLocal DNSCache in its kube-proxy-iptables mode answers
+ * on this ClusterIP itself and skips kube-proxy's DNAT, so policy sees the
+ * Service address rather than a CoreDNS pod. Empty when there is no such
+ * Service.
+ */
+export async function clusterDnsCidrs(): Promise<string[]> {
+  const svc = await readObject<{ spec?: { clusterIPs?: string[] } }>({
+    apiVersion: 'v1', kind: 'Service', name: 'kube-dns', namespace: 'kube-system',
+  })
+  return (svc?.spec?.clusterIPs ?? [])
+    .filter((ip) => ip !== 'None')
+    .map((ip) => `${ip}/${ip.includes(':') ? 128 : 32}`)
+}
+
+interface RawEndpointSlice {
+  addressType?: string
+  endpoints?: Array<{ addresses?: string[] }>
+  ports?: Array<{ port?: number }>
+}
+
+/**
+ * The apiserver's real endpoints, as `/32` or `/128` CIDRs and ports, from
+ * the `kubernetes` Service's EndpointSlices. Policy sees a destination after
+ * kube-proxy's DNAT, so the proxy's egress must name these, not the Service
+ * address. Empty when none are published.
+ */
+export async function apiserverEndpoints(): Promise<{ cidrs: string[]; ports: number[] }> {
+  const slices = await listObjects<RawEndpointSlice>('discovery.k8s.io/v1', 'EndpointSlice', {
+    namespace: 'default', labelSelector: 'kubernetes.io/service-name=kubernetes',
+  })
+  const cidrs = slices.flatMap((s) => (s.endpoints ?? []).flatMap((e) => e.addresses ?? [])
+    .map((a) => `${a}/${s.addressType === 'IPv6' ? 128 : 32}`))
+  const ports = slices.flatMap((s) => (s.ports ?? []).flatMap((p) => p.port ?? []))
+  return { cidrs: [...new Set(cidrs)].sort(), ports: [...new Set(ports)].sort((a, b) => a - b) }
 }
 
 /** kind's default cluster CIDR, and the last resort when nothing answers. */

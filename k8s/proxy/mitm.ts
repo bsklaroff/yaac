@@ -16,7 +16,7 @@ import { SocksClient } from 'socks'
 import type { ProxyObjects } from './object-watch'
 import type { HostInjectionRule, RefreshedBundles, UpstreamRedirect } from './objects'
 import type { RefreshFlights } from './refresh-flight'
-import { isInternalUpstream } from './transparent'
+import { dialOptions, failFastIfNonPublic, pinnedLookup, type DirectUpstream } from './upstream'
 import {
   CLAUDE_TOKEN_URL_HOST,
   CLAUDE_TOKEN_URL_PATH,
@@ -149,6 +149,11 @@ function leafCert(ca: CA, hostname: string): { key: string; cert: string } {
   return { key: keyPem, cert: certPem }
 }
 
+/**
+ * Terminate a workspace's TLS with a leaf for `hostname` and forward each
+ * request upstream: to `upstreamRedirect` when one is registered, else to
+ * `direct`, the addresses upstream.ts checked, else (null) through Tor.
+ */
 export function handleMitm(
   ctx: MitmContext,
   clientSocket: Duplex,
@@ -157,6 +162,7 @@ export function handleMitm(
   workspaceId: string,
   rules: HostInjectionRule[],
   upstreamRedirect: UpstreamRedirect | null,
+  direct: DirectUpstream | null,
 ): void {
   const { ca, objects } = ctx
   const leaf = leafCert(ca, hostname)
@@ -195,21 +201,27 @@ export function handleMitm(
   }
 
   // A registered redirect (a test mock) is plain HTTP unless it says
-  // otherwise. Tor refuses the loopback mocks, so skip it for them.
+  // otherwise.
   const useHttp = upstreamRedirect !== null && upstreamRedirect.tls !== true
+  const route = direct !== null ? dialOptions(direct)
+    : upstreamRedirect !== null ? {} : { agent: ctx.torAgent ?? undefined }
   function openUpstream(
     req: http.IncomingMessage,
     reqPath: string,
     headers: http.OutgoingHttpHeaders,
   ): http.ClientRequest {
-    return (useHttp ? http : https).request({
+    const upstreamReq = (useHttp ? http : https).request({
       hostname: upstreamRedirect?.host ?? hostname,
       port: upstreamRedirect?.port ?? (parseInt(port ?? '', 10) || 443),
       path: reqPath,
       method: req.method,
       headers,
-      ...(ctx.torAgent !== null && upstreamRedirect === null ? { agent: ctx.torAgent } : {}),
+      ...route,
     })
+    if (direct !== null) {
+      upstreamReq.once('socket', (socket) => failFastIfNonPublic(socket, hostname, direct))
+    }
+    return upstreamReq
   }
 
   const mitmServer = http.createServer((req, res) => {
@@ -375,22 +387,44 @@ function responseHead(res: http.IncomingMessage): string {
   return lines.join('\r\n') + '\r\n\r\n'
 }
 
-export function handleTunnel(clientSocket: Duplex, hostname: string, port: string | undefined, useTor: boolean): void {
+/**
+ * Splice a workspace's connection to `hostname` untouched: directly to the
+ * addresses upstream.ts checked, or through Tor when `upstream` is null.
+ * With `connectReply` (a CONNECT tunnel) the client gets its 200 once
+ * upstream connects, or a 502 with the reason.
+ */
+export function handleTunnel(
+  clientSocket: Duplex,
+  hostname: string,
+  port: string | undefined,
+  upstream: DirectUpstream | null,
+  connectReply: boolean,
+): void {
   const destPort = parseInt(port ?? '', 10) || 443
-  const splice = (upstream: net.Socket): void => {
-    upstream.on('error', (err: Error) => {
-      console.error(`[proxy] Tunnel error for ${hostname}:`, err.message)
-      clientSocket.end()
-    })
-    clientSocket.on('close', () => { upstream.destroy() })
-    clientSocket.pipe(upstream)
-    upstream.pipe(clientSocket)
+  let connected = false
+  const fail = (message: string): void => {
+    console.error(`[proxy] Tunnel error for ${hostname}:`, message)
+    clientSocket.end(connectReply && !connected
+      ? `HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n\r\n${message}\n`
+      : undefined)
+  }
+  const splice = (socket: net.Socket): void => {
+    socket.on('error', (err: Error) => fail(err.message))
+    clientSocket.on('close', () => { socket.destroy() })
+    const ready = (): void => {
+      connected = true
+      if (connectReply) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+      clientSocket.pipe(socket)
+      socket.pipe(clientSocket)
+    }
+    if (socket.connecting) socket.once('connect', ready)
+    else ready()
   }
 
-  // Tor refuses loopback and private upstreams, so internal destinations
-  // go direct.
-  if (!useTor || isInternalUpstream(hostname)) {
-    splice(net.connect(destPort, hostname))
+  if (upstream !== null) {
+    const socket = net.connect({ port: destPort, host: hostname, lookup: pinnedLookup(upstream.addrs) })
+    failFastIfNonPublic(socket, hostname, upstream)
+    splice(socket)
     return
   }
   void SocksClient.createConnection({
@@ -400,8 +434,7 @@ export function handleTunnel(clientSocket: Duplex, hostname: string, port: strin
     timeout: TOR_TUNNEL_TIMEOUT_MS,
   }, (err, info) => {
     if (err || !info) {
-      console.error(`[proxy] Tor tunnel error for ${hostname}:`, err?.message ?? 'no socket')
-      clientSocket.end()
+      fail(`Tor: ${err?.message ?? 'no socket'}`)
       return
     }
     splice(info.socket)

@@ -80,10 +80,9 @@ locals {
 
   # User data for every worker, manual or autoscaled. It carries the agent
   # token, which only lets a machine join as a worker. Pods cannot read it
-  # from the metadata service: yaac's builder and proxy egress excludes its
-  # address. Workspaces reach the internet only through the proxy, which
-  # dials whatever their allowlist admits (`*` admits the metadata
-  # address), so the proxy's egress policy is what keeps them off it.
+  # from the metadata service: yaac's builder and proxy egress denies every
+  # non-public address, and the proxy refuses one unless an exact allowlist
+  # entry names it (docs/workspace-egress.md "Non-public destinations").
   worker_user_data = templatefile("${path.module}/node.sh.tftpl", {
     role            = "agent"
     subnet_prefix   = local.subnet_prefix

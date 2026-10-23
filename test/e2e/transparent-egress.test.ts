@@ -6,7 +6,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { requireCluster, useTestNamespace, createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { requirePodman, TEST_PROXY_CONFIG } from '#support/cluster'
+import { openTestPodsToProxy, requirePodman, TEST_PODS_OPENING, TEST_PROXY_CONFIG } from '#support/cluster'
 import { resolveTestBaseImageRef } from '#support/test-pods'
 import { startWorkspacePod, waitForPod } from '#support/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
@@ -14,6 +14,7 @@ import {
   allowWorkspaceHost,
   applyProxyRegistration,
   deregisterWorkspaceEgress,
+  type ProxyRegistration,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { proxyServiceClusterIp } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import {
@@ -205,6 +206,18 @@ async function curlUntilSuccess(
   }
 }
 
+/** Retry a curl until its output contains `needle`: a registration or policy change takes a moment to apply. */
+async function curlUntilOutput(
+  pod: string, curlArgs: string, needle: string, timeoutMs = 60_000,
+): Promise<{ exit: number; out: string }> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const last = await curlInPod(pod, curlArgs)
+    if (last.out.includes(needle) || Date.now() >= deadline) return last
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+}
+
 describe('node-level transparent egress (source-IP identity)', () => {
   const client = new ProxyClient(TEST_PROXY_CONFIG)
   const suffix = crypto.randomBytes(4).toString('hex')
@@ -219,11 +232,13 @@ describe('node-level transparent egress (source-IP identity)', () => {
 
   let echoHost = ''
   let tlsHost = ''
+  let registrationA: ProxyRegistration
   let proxyHost = ''
 
   beforeAll(async () => {
     await client.ensureRunning()
     proxyHost = await proxyServiceClusterIp()
+    await openTestPodsToProxy()
 
     const [echo, tlsEcho] = await Promise.all([
       startEchoPod(echoName),
@@ -234,13 +249,14 @@ describe('node-level transparent egress (source-IP identity)', () => {
 
     // Workspace A: MITM api.anthropic.com to the HTTP echo, plus plain HTTP
     // to the echo host. Workspace B: only the TLS echo (for the tunnel test).
-    await applyProxyRegistration(workspaceA, {
+    registrationA = {
       rules: [],
       allowedHosts: [MITM_HOST, echoHost],
       tool: 'claude',
       projectId: 'egress-a', owner: 'e2e',
       upstreamRedirects: { [MITM_HOST]: { host: echoHost, port: ECHO_PORT, tls: false } },
-    })
+    }
+    await applyProxyRegistration(workspaceA, registrationA)
     await applyProxyRegistration(workspaceB, {
       rules: [], allowedHosts: [tlsHost], tool: 'claude', projectId: 'egress-b', owner: 'e2e',
     })
@@ -383,4 +399,34 @@ describe('node-level transparent egress (source-IP identity)', () => {
     )
     expect(r.exit).not.toBe(0)
   }, 60_000)
+
+  // Last: it rewrites A's registration and the test pods' opening, and
+  // restores both. The echo's ClusterIP is a non-public address
+  // (docs/workspace-egress.md "Non-public destinations").
+  it('keeps `*` off an internal address, and an exact entry off it until the operator opens it', async () => {
+    const internal = `--resolve ${echoHost}:80:${FAKE_IP_A} "http://${echoHost}/internal"`
+
+    // `*` never admits it, though the network is open to the proxy.
+    await applyProxyRegistration(workspaceA, { ...registrationA, allowedHosts: ['*'] })
+    try {
+      const star = await curlUntilOutput(podA, internal, 'non-public address')
+      expect(star.out).toContain('non-public address')
+    } finally {
+      await applyProxyRegistration(workspaceA, registrationA)
+    }
+
+    // A's exact entry admits it, but without the opening the floor drops
+    // the dial, and the proxy says so within its connect timeout.
+    await deleteObject({
+      apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', name: TEST_PODS_OPENING, namespace: k8sNamespace(),
+    })
+    try {
+      const closed = await curlUntilOutput(podA, internal, 'egress policy')
+      expect(closed.out).toContain('blocked by the cluster\'s egress policy unless the network operator opens them')
+    } finally {
+      await openTestPodsToProxy()
+    }
+    const reopened = await curlUntilOutput(podA, internal, '"/internal"')
+    expect(reopened.out).toContain('"url":"/internal"')
+  }, 300_000)
 })

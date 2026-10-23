@@ -127,6 +127,7 @@ vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  clusterDnsCidrs: vi.fn().mockResolvedValue(['10.96.0.10/32']),
   resetClusterCidrCache: vi.fn(),
 }))
 
@@ -177,7 +178,7 @@ import {
   BUILDER_MEMORY_REQUEST_BYTES,
 } from '#drivers/k8s/images/builder-pod'
 import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
-import { wideEgress } from '#drivers/k8s/cluster/policy-manifests'
+import { builderEgress } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
 import { installId, k8sNamespace } from '#drivers/k8s/substrate'
@@ -556,8 +557,8 @@ describe('ensureImage', () => {
     expect(np.spec.podSelector.matchLabels).toEqual({ 'yaac.role': 'builder' })
     expect(np.spec.policyTypes).toEqual(['Egress'])
     // A RUN step comes from an agent-editable Dockerfile, so it gets the
-    // shared reach-almost-anything egress (policy-manifests.test.ts).
-    expect(np.spec.egress).toEqual(wideEgress(['10.89.0.7/32']))
+    // public-only floor plus the main registry (policy-manifests.test.ts).
+    expect(np.spec.egress).toEqual(builderEgress(['10.89.0.7/32'], ['10.96.0.10/32']))
 
     // storage.conf bootstrap, parent pull, extract, grant, build, push — in order.
     const remote = remoteCommands()

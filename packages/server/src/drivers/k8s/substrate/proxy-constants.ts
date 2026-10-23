@@ -91,7 +91,7 @@ export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
 export const WORKSPACE_EGRESS_NP_NAME = 'yaac-workspace-egress'
 /** NetworkPolicy locking the proxy's ingress (transparent ports = node only). */
 export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
-/** NetworkPolicy keeping the proxy off the kind fronting's node port, node NFS and metadata. */
+/** NetworkPolicy keeping the proxy off non-public addresses but its peers, and off the kind fronting's node port and node NFS. */
 export const PROXY_EGRESS_NP_NAME = 'yaac-proxy-egress'
 /** NetworkPolicy locking workspace-pod ingress to the proxy's relay dials. */
 export const WORKSPACE_INGRESS_LOCK_NP_NAME = 'yaac-workspace-ingress-lock'

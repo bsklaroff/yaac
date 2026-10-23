@@ -143,6 +143,28 @@ export function isHostAllowed(objects: ProxyObjects, workspaceId: string, hostna
 }
 
 /**
+ * True when an allowlist entry is exactly `hostname`. Only such an entry
+ * admits a non-public destination (upstream.ts): a wildcard covers names in
+ * zones others control, any of which may answer with a private address.
+ */
+export function isHostNamedExactly(objects: ProxyObjects, workspaceId: string, hostname: string): boolean {
+  return objects.registration(workspaceId)?.allowedHosts.includes(hostname) ?? false
+}
+
+/**
+ * The rules, redirect and exactness a connection to `hostname` is accepted
+ * under, as a comparable string, or null when the host is not allowed.
+ */
+export function admissionFor(objects: ProxyObjects, workspaceId: string, hostname: string): string | null {
+  if (!isHostAllowed(objects, workspaceId, hostname)) return null
+  return JSON.stringify([
+    findRulesForHost(objects, workspaceId, hostname),
+    objects.registration(workspaceId)?.upstreamRedirects?.[hostname] ?? null,
+    isHostNamedExactly(objects, workspaceId, hostname),
+  ])
+}
+
+/**
  * True for git smart-HTTP endpoints (`info/refs` and the upload/receive-pack
  * RPCs), so a 401 from another API on the same host does not flag the git
  * credential.

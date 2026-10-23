@@ -340,18 +340,21 @@ new key or gate also triggers a roll.
 ## Security hardening
 
 - **Builder egress.** Builder pods are excluded from the world-deny
-  NetworkPolicy and get their own egress policy, `yaac-builder-egress`,
-  which allows everything except three destinations. The kind fronting's
-  node port, from which a `RUN` step could reach the server with its
-  owner's authority (docs/server-in-cluster.md "The ingress policy is the
-  wall"). NFS on node addresses, because a shared tier served from a node
-  sees another node's pods arrive SNATed to that node's address and
-  cannot tell them from its kernel mounts. And the metadata service
-  (`169.254.169.254`), which on some clouds hands out a node's join
-  credentials. That
-  is still stricter than a local build's unfiltered host network. Builds
-  could later be routed through the workspace proxy using the combined CA
-  bundle (docs/nested-containers.md), as nested builds already are.
+  NetworkPolicy and get their own egress policy, `yaac-builder-egress`
+  (`builderEgress`). It allows public addresses, DNS and the main registry.
+  Node addresses are allowed on every port except two. The kind fronting's
+  node port is cut, because from it a `RUN` step could reach the server
+  with its owner's authority (docs/server-in-cluster.md "The ingress
+  policy is the wall"). NFS on node addresses is cut, because a shared
+  tier served from a node sees another node's pods arrive SNATed to that
+  node's address and cannot tell them from its kernel mounts. Every other
+  internal address is denied, including the cloud metadata services, which
+  on some clouds hand out a node's join credentials. The network operator
+  can open one (docs/workspace-egress.md "Opening an internal
+  destination"). That is still stricter than a local build's unfiltered
+  host network. Builds could later be routed through the workspace proxy
+  using the combined CA bundle (docs/nested-containers.md), as nested
+  builds already are.
 - **The `yaac.role=builder` label** exempts a pod from the world-deny
   policy, so a cluster-wide ValidatingAdmissionPolicy
   (`yaac-builder-role-guard`) reserves it. Only a ServiceAccount named

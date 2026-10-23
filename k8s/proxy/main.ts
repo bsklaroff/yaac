@@ -10,14 +10,16 @@
  *   secret values from per-project Secrets, and tool credentials plus ssh
  *   keys from the credentials Secret. Changes apply on the next request.
  * - MITMs TLS when rules match a host, and tunnels it otherwise.
+ * - Refuses a non-public destination unless an exact allowlist entry names
+ *   it, and every IPv6 destination (upstream.ts).
  * - Swaps placeholder tokens for real OAuth credentials and saves refreshed
  *   tokens to the `yaac-proxy-refreshed` Secret.
  * - Records blocked hosts and rejected git credentials in the
  *   `yaac-proxy-state` ConfigMap.
  *
  * This module reads the environment and runs the listeners; what they do
- * with a connection lives in importable modules (mitm.ts, injection.ts,
- * oauth-swap.ts, observed-state.ts).
+ * with a connection lives in importable modules (dispatch.ts, upstream.ts,
+ * mitm.ts, injection.ts, oauth-swap.ts, observed-state.ts).
  */
 
 import http from 'node:http'
@@ -26,10 +28,9 @@ import dgram from 'node:dgram'
 import dns from 'node:dns'
 import fs from 'node:fs'
 import path from 'node:path'
-import type { Duplex } from 'node:stream'
 import forge from 'node-forge'
 import { SocksProxyAgent } from 'socks-proxy-agent'
-import { isInternalUpstream, peekClientHelloSni, splitHostHeader } from './transparent'
+import { peekClientHelloSni, splitHostHeader } from './transparent'
 import { parsePp2Header } from './pp2'
 import {
   CA_SECRET_NAME,
@@ -43,7 +44,6 @@ import {
   encodeState,
   type OwnerRefreshedBundles,
   type RefreshedBundles,
-  type UpstreamRedirect,
 } from './objects'
 import {
   ProxyObjects,
@@ -62,10 +62,11 @@ import { createSshAgentServer } from './ssh-agent-relay'
 import { timingSafeStrEqual } from './secure-compare'
 import { RefreshFlights } from './refresh-flight'
 import { LiveTunnels } from './live-tunnels'
-import { findRulesForHost, hostNeedsDynamicMitm, isHostAllowed } from './injection'
+import { admissionFor, isHostAllowed } from './injection'
 import { errorReply, type TokenReply } from './oauth-swap'
 import { ObservedState } from './observed-state'
-import { generateCA, handleMitm, handleTunnel, type CA, type MitmContext } from './mitm'
+import { generateCA, type CA } from './mitm'
+import { dispatchToUpstream, forwardPlainHttp, type DispatchContext } from './dispatch'
 import { MAMA_MAGIC_HOST, MAMA_PATH, relayHeaders, relayTarget } from './yaac-relay'
 
 // Control API: the health probe. All input from the server arrives as
@@ -190,7 +191,7 @@ const objects = new ProxyObjects({
   // Drop tunnels the new registration no longer admits, and clear
   // newly allowed hosts from the blocked record.
   onRegistration: (workspaceId, registration) => {
-    const dropped = liveTunnels.revoke(workspaceId, registration && ((host) => admissionFor(workspaceId, host)))
+    const dropped = liveTunnels.revoke(workspaceId, registration && ((host) => admissionFor(objects, workspaceId, host)))
     if (dropped.length > 0) {
       console.log(`[proxy] dropped ${dropped.length} tunnel(s) of ${workspaceId.slice(0, 8)}... `
         + `the registration no longer admits: ${[...new Set(dropped)].join(', ')}`)
@@ -200,18 +201,6 @@ const objects = new ProxyObjects({
 })
 
 const liveTunnels = new LiveTunnels()
-
-/**
- * The rules and redirect a connection to `hostname` is accepted under, as a
- * comparable string, or null when the host is not allowed.
- */
-function admissionFor(workspaceId: string, hostname: string): string | null {
-  if (!isHostAllowed(objects, workspaceId, hostname)) return null
-  return JSON.stringify([
-    findRulesForHost(objects, workspaceId, hostname),
-    objects.registration(workspaceId)?.upstreamRedirects?.[hostname] ?? null,
-  ])
-}
 
 /**
  * Record a token rotation from a refresh in one of `owner`'s workspaces. It
@@ -254,82 +243,6 @@ const refreshFlights = new RefreshFlights<TokenReply>(
   (reply) => reply.rotatedTo,
   () => errorReply(504, 'token refresh is taking too long upstream'),
 )
-
-// ── Upstream Dispatch (shared by CONNECT + transparent listeners) ─────
-
-/**
- * Check `hostname` against the workspace's allowlist and hand the socket to
- * the MITM or tunnel path. With `writeConnectOk` (a CONNECT tunnel) the
- * client gets an HTTP 200 or 403; a transparent TLS socket is destroyed when
- * blocked.
- *
- * MITM applies when the workspace has rules for the host, the proxy injects
- * credentials there, or a redirect is registered for it.
- */
-function dispatchToUpstream(
-  clientSocket: Duplex,
-  hostname: string,
-  port: string | undefined,
-  workspaceId: string,
-  opts: { writeConnectOk: boolean; head?: Buffer },
-): void {
-  // The client hung up during the workspace lookup.
-  if (clientSocket.destroyed) return
-
-  // Upstream connects asynchronously. Pause so bytes sent right after the 200
-  // (the ClientHello) wait for the pipe instead of being dropped.
-  clientSocket.pause()
-
-  // yaac-mama is HTTP-only. Refuse other attempts without recording the
-  // magic host as blocked.
-  if (hostname === MAMA_MAGIC_HOST) {
-    console.log(`[proxy] yaac magic host dialed on ${opts.writeConnectOk ? 'CONNECT' : 'HTTPS'} — use http://${MAMA_MAGIC_HOST}${MAMA_PATH}`)
-    if (opts.writeConnectOk) {
-      clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
-      clientSocket.end()
-    } else {
-      clientSocket.destroy()
-    }
-    return
-  }
-
-  const admission = admissionFor(workspaceId, hostname)
-  if (admission === null) {
-    const label = opts.writeConnectOk ? 'CONNECT' : 'transparent HTTPS'
-    console.log(`[proxy] BLOCKED ${label} to ${hostname}:${port ?? '443'} (not in allowlist)`)
-    observed.recordBlockedHost(workspaceId, hostname)
-    if (opts.writeConnectOk) {
-      clientSocket.write('HTTP/1.1 403 Forbidden\r\n\r\n')
-      clientSocket.end()
-    } else {
-      clientSocket.destroy()
-    }
-    return
-  }
-
-  liveTunnels.add(workspaceId, clientSocket, hostname, admission)
-  const rules = findRulesForHost(objects, workspaceId, hostname)
-
-  const destPort = parseInt(port ?? '', 10) || 443
-  const needsDynMitm = hostNeedsDynamicMitm(objects, workspaceId, hostname, destPort)
-
-  const redirect: UpstreamRedirect | null =
-    objects.registration(workspaceId)?.upstreamRedirects?.[hostname] ?? null
-
-  if (opts.writeConnectOk) {
-    clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
-  }
-
-  if (opts.head && opts.head.length > 0) {
-    clientSocket.unshift(opts.head)
-  }
-
-  if (rules.length > 0 || needsDynMitm || redirect) {
-    handleMitm(mitmContext, clientSocket, hostname, port, workspaceId, rules, redirect)
-  } else {
-    handleTunnel(clientSocket, hostname, port, USE_TOR)
-  }
-}
 
 // ── API Request Handler ────────────────────────────────────────────────
 
@@ -379,7 +292,7 @@ const agentKeys = createAgentKeyLoader({ agentSock: AGENT_SOCK, knownHostsFile: 
 
 // ── Server ─────────────────────────────────────────────────────────────
 
-const mitmContext: MitmContext = {
+const dispatchContext: DispatchContext = {
   ca: await loadOrGenerateCA(),
   objects,
   torAgent,
@@ -387,67 +300,15 @@ const mitmContext: MitmContext = {
   captureRefreshed,
   noteGitUpstreamStatus: (workspaceId, hostname, requestPath, status) => observed.noteGitUpstreamStatus(
     objects.registration(workspaceId)?.projectId, hostname, requestPath, status),
+  liveTunnels,
+  recordBlockedHost: (workspaceId, hostname) => observed.recordBlockedHost(workspaceId, hostname),
+  lookup: (hostname) => dns.promises.lookup(hostname, { all: true, family: 4 }),
 }
 // Restore what the previous pod left: its observed state, and any token
 // rotation the server has not picked up yet.
 observed.seed(decodeState(await readOutputObject('configmap', STATE_CONFIGMAP_NAME)))
 for (const [owner, bundles] of decodeRefreshed(await readOutputObject('secret', REFRESHED_SECRET_NAME))) {
   objects.capture(owner, bundles)
-}
-
-// ── Plain-HTTP Forward ────────────────────────────────────────────────
-
-/**
- * Forward a plain-HTTP request from the transparent HTTP listener. No
- * credentials are ever injected here, since they would travel unencrypted.
- */
-function forwardPlainHttp(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  workspaceId: string,
-  target: { hostname: string; port: number; path: string },
-): void {
-  const admission = admissionFor(workspaceId, target.hostname)
-  if (admission === null) {
-    console.log(`[proxy] BLOCKED HTTP forward to ${target.hostname} (not in allowlist)`)
-    observed.recordBlockedHost(workspaceId, target.hostname)
-    res.writeHead(403, { 'Content-Type': 'text/plain' })
-    res.end(`Blocked by URL allowlist: ${target.hostname} is not in the allowed hosts`)
-    return
-  }
-
-  const headers: http.OutgoingHttpHeaders = { ...req.headers }
-  delete headers['proxy-connection']
-
-  // Internal destinations skip Tor, as in handleTunnel.
-  const useTorAgent = torAgent !== null && !isInternalUpstream(target.hostname)
-  const upstream = http.request({
-    hostname: target.hostname,
-    port: target.port,
-    path: target.path,
-    method: req.method,
-    headers,
-    ...(useTorAgent ? { agent: torAgent } : {}),
-  }, (upstreamRes) => {
-    res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
-    upstreamRes.pipe(res)
-  })
-
-  upstream.on('error', (err: Error) => {
-    console.error(`[proxy] HTTP forward error for ${target.hostname}${target.path}:`, err.message)
-    if (!res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'text/plain' })
-    }
-    res.end(err.message)
-  })
-
-  // Track both halves: the request body can still be streaming after an
-  // early response closes. Either half cut short aborts the upstream.
-  liveTunnels.add(workspaceId, req, target.hostname, admission)
-  liveTunnels.add(workspaceId, res, target.hostname, admission)
-  req.once('close', () => { if (!req.complete) upstream.destroy() })
-  res.once('close', () => { if (!res.writableFinished) upstream.destroy() })
-  req.pipe(upstream)
 }
 
 // ── Server ─────────────────────────────────────────────────────────────
@@ -576,7 +437,7 @@ function peekSniAndDispatch(socket: net.Socket, workspaceId: string, initial: Bu
     socket.pause()
     if (buf.length > 0) socket.unshift(buf)
     // Only port-443 traffic is redirected to this listener.
-    dispatchToUpstream(socket, peek.serverName, '443', workspaceId, { writeConnectOk: false })
+    void dispatchToUpstream(dispatchContext, socket, peek.serverName, '443', workspaceId, { writeConnectOk: false })
     return true
   }
 
@@ -660,7 +521,7 @@ const internalHttpServer = http.createServer({ requestTimeout: 0 }, (req, res) =
     relayMamaRequest(req, res, workspaceId)
     return
   }
-  forwardPlainHttp(req, res, workspaceId, {
+  void forwardPlainHttp(dispatchContext, req, res, workspaceId, {
     hostname: target.hostname,
     port: target.port,
     path: req.url ?? '/',
@@ -711,7 +572,7 @@ function readConnectAndDispatch(socket: net.Socket, workspaceId: string, initial
     }
     // Normally empty, since ncat waits for the 200.
     const rest = buf.subarray(end + 4)
-    dispatchToUpstream(socket, m[1], m[2], workspaceId, {
+    void dispatchToUpstream(dispatchContext, socket, m[1], m[2], workspaceId, {
       writeConnectOk: true,
       head: rest.length > 0 ? rest : undefined,
     })

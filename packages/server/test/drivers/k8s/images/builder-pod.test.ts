@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
+  clusterDnsCidrs: vi.fn().mockResolvedValue(['10.96.0.10/32']),
   resetClusterCidrCache: vi.fn(),
 }))
 

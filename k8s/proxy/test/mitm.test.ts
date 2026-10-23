@@ -63,7 +63,7 @@ beforeAll(async () => {
   const redirect = { host: '127.0.0.1', port: (upstream.address() as AddressInfo).port }
   for (const ws of ['wa', 'wb']) {
     const mitm = net.createServer((socket) => {
-      handleMitm(ctx, socket, 'platform.claude.com', '443', ws, [], redirect)
+      handleMitm(ctx, socket, 'platform.claude.com', '443', ws, [], redirect, null)
     })
     await new Promise<void>((r) => mitm.listen(0, '127.0.0.1', r))
     servers.push(mitm)

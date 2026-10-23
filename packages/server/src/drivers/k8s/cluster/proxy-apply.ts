@@ -43,7 +43,7 @@ import {
   buildWorkspaceEgressNpManifest,
   buildWorkspaceIngressLockNpManifest,
 } from './policy-manifests'
-import { nodeIpBlocks } from './cluster-cidrs'
+import { apiserverEndpoints, clusterDnsCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { ensureNetd } from './netd'
 
 /**
@@ -133,7 +133,7 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
     buildWorkspaceEgressNpManifest(nodeCidrs),
     buildWorkspaceIngressLockNpManifest(),
     buildProxyIngressNpManifest(nodeCidrs),
-    buildProxyEgressNpManifest(nodeCidrs),
+    buildProxyEgressNpManifest(nodeCidrs, await clusterDnsCidrs(), await apiserverEndpoints()),
     buildEgressWorldDenyNpManifest(),
   ]) await applyObject(manifest)
   await ensureNetd()
