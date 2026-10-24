@@ -1177,16 +1177,13 @@ describe('runMamaCommand', () => {
       _resetWorkspaceStatusStoreForTests()
     })
 
-    /** The delivery script a command carries, base64-encoded. */
-    const scriptOf = (cmd: string): string =>
-      Buffer.from(/^sh -c "\$\(printf %s (\S+) \| base64 -d\)"$/.exec(cmd)![1], 'base64').toString('utf8')
-
     /** The pane the paste script targets, and whether it carries the
      *  message. It runs in the foreground, so the reply can say whether the
      *  message landed. */
     const delivered = (message: string): { jobName: string; pane?: string; carries: boolean } => {
-      const [jobName, cmd] = exec.mock.calls.at(-1)!
-      const script = scriptOf(cmd)
+      // The delivery script travels on the exec's stdin.
+      const [jobName, , opts] = exec.mock.calls.at(-1)!
+      const script = opts?.stdin ?? ''
       return {
         jobName,
         pane: / -t (%\d+)/.exec(script)?.[1],
@@ -1205,11 +1202,11 @@ describe('runMamaCommand', () => {
       expect(text).toContain('first-co')
 
       // Each delivery checks its own conversation for a dialog first.
-      expect(scriptOf(exec.mock.calls.at(-1)![1])).toContain('first-conv')
+      expect(exec.mock.calls.at(-1)![2]?.stdin).toContain('first-conv')
 
       await output('send', 'and you', { workspace: 'sibling', conversation: 'second' })
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you').pane).toBe('%7')
-      expect(scriptOf(exec.mock.calls.at(-1)![1])).toContain('second-conv')
+      expect(exec.mock.calls.at(-1)![2]?.stdin).toContain('second-conv')
     })
 
     it('strips control characters before any tool sees them, pi\'s editor-free path included', async () => {

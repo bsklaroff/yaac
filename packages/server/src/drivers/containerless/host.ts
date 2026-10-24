@@ -26,6 +26,8 @@ export interface RunOpts {
   /** Kill the command and everything it started, and reject with an
    *  `AbortError`. The command then runs in its own process group. */
   signal?: AbortSignal
+  /** Written to the command's stdin, which is otherwise `/dev/null`. */
+  input?: string
 }
 
 /**
@@ -43,7 +45,7 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
       child = spawn(cmd, args, {
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         ...(opts.env !== undefined ? { env: opts.env } : {}),
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [opts.input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
         ...(opts.signal ? { detached: true } : {}),
       })
     } catch (err) {
@@ -81,8 +83,9 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
     if (opts.signal?.aborted) onAbort()
     else opts.signal?.addEventListener('abort', onAbort, { once: true })
 
-    child.stdout?.on('data', (c: Buffer) => { stdout += c.toString() })
-    child.stderr?.on('data', (c: Buffer) => { stderr += c.toString() })
+    // Decoded as a stream, so a character split across two reads survives.
+    child.stdout?.setEncoding('utf8').on('data', (c: string) => { stdout += c })
+    child.stderr?.setEncoding('utf8').on('data', (c: string) => { stderr += c })
     child.on('error', (err) => {
       if (settled) return
       settled = true
@@ -102,62 +105,11 @@ export function runHost(argv: string[], opts: RunOpts = {}): Promise<RunResult> 
         `command exited ${String(code)}`, code ?? -1, stdout, stderr,
       ))
     })
-  })
-}
-
-/** `runHost` with `input` on stdin (used to pipe a private key to
- *  `ssh-add -` so it never touches disk). */
-export function runHostWithInput(
-  argv: string[],
-  input: string,
-  opts: RunOpts = {},
-): Promise<RunResult> {
-  const [cmd, ...args] = argv
-  if (cmd === undefined) return Promise.reject(new Error('runHostWithInput: empty argv'))
-  return new Promise<RunResult>((resolve, reject) => {
-    let child: ChildProcess
-    try {
-      child = spawn(cmd, args, {
-        ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-        ...(opts.env !== undefined ? { env: opts.env } : {}),
-        stdio: ['pipe', 'pipe', 'pipe'],
-      })
-    } catch (err) {
-      reject(err instanceof Error ? err : new Error(String(err)))
-      return
-    }
-    let stdout = ''
-    let stderr = ''
-    let timer: NodeJS.Timeout | undefined
-    if (opts.timeoutMs !== undefined) {
-      timer = setTimeout(() => {
-        child.kill('SIGKILL')
-        reject(new Error(`${cmd} timed out after ${String(opts.timeoutMs)}ms`))
-      }, opts.timeoutMs)
-    }
-    child.stdout?.on('data', (c: Buffer) => { stdout += c.toString('utf8') })
-    child.stderr?.on('data', (c: Buffer) => { stderr += c.toString('utf8') })
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer)
-      reject(err)
-    })
-    child.on('close', (code) => {
-      if (timer) clearTimeout(timer)
-      if (code === 0) {
-        resolve({ stdout, stderr })
-        return
-      }
-      reject(new WorkspaceExecError(
-        `${cmd} exited ${String(code)}: ${stderr.trim()}`,
-        code ?? 1,
-        stdout,
-        stderr,
-      ))
-    })
+    if (opts.input === undefined) return
     // A child that exits before reading raises EPIPE on stdin, which would
     // crash the server with no listener; `close` reports the failure.
     child.stdin?.on('error', () => { /* reported via close */ })
-    child.stdin?.end(input)
+    child.stdin?.end(opts.input)
   })
 }
 

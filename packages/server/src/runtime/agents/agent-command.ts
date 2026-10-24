@@ -455,22 +455,28 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/
  *  2. Paste once (`pasteParts`) and wait for it to show; the agent is past
  *     startup, so there is no wait before it and no re-paste.
  *  3. A second after it shows (codex drops an Enter that follows a paste at
- *     once), check again for a dialog and that the text still shows, then
- *     send Enter, once: a second Enter could answer a prompt the first one
- *     raised.
+ *     once), check again for a dialog and that the text still shows, for a
+ *     few seconds: a long paste can still be arriving, its start scrolled
+ *     away and its end not yet in. Then send Enter, once: a second Enter
+ *     could answer a prompt the first one raised.
  *  4. Put the draft back.
  *
- * The script contains quotes, so it travels base64-encoded and is decoded
- * into `sh -c`.
+ * The script, which holds the whole message, is read from stdin and
+ * evaluated, so its size never meets the argument limit (`StdinScript`).
  */
 export function buildMessageCmd(
   target: string,
   message: string,
   paths: WorkspacePaths,
   conversation: { tool: AgentTool; agentSessionId: string },
-): string {
-  const script = messageScript(target, message, paths, conversation)
-  return `sh -c "$(printf %s ${Buffer.from(script, 'utf8').toString('base64')} | base64 -d)"`
+): StdinScript {
+  return {
+    // A pod whose streamd predates exec stdin hands the command an empty one;
+    // refuse rather than report the message sent (docs/legacy-compat-shims.md).
+    cmd: 'script=$(cat) && [ -n "$script" ] '
+      + '|| { echo "the delivery script did not arrive on stdin" >&2; exit 2; }; eval "$script"',
+    stdin: messageScript(target, message, paths, conversation),
+  }
 }
 
 function messageScript(
@@ -516,7 +522,10 @@ i=0; while [ "$(copies)" -le "$before" ]; do
   i=$((i+1)); sleep 1
 done
 sleep 1
-at_input && [ "$(copies)" -gt "$before" ] || { echo "a prompt opened after the message was typed" >&2; exit 4; }
+i=0; until at_input && [ "$(copies)" -gt "$before" ]; do
+  [ $i -ge 8 ] && { echo "a prompt opened after the message was typed" >&2; exit 4; }
+  i=$((i+1)); sleep 0.5
+done
 tm send-keys ${target} Enter
 ${draft.finish}
 exit 0`
@@ -692,24 +701,39 @@ function draftHandling(tool: Exclude<AgentTool, 'pi'>, TMUX: string, target: str
 export const OPENCODE_TUI_KEYBINDS = { 'prompt.stash': 'f9', 'prompt.stash.pop': 'f10' } as const
 
 /**
+ * A command run in a workspace with a script on its stdin. A script holding
+ * a prompt (up to `MAX_PROMPT_LENGTH`) can pass the 128 KiB a single
+ * argument may hold on Linux, and the command line is one argument of
+ * `sh -c`. Pass `stdin` to `WorkspaceDriver.exec`.
+ */
+export interface StdinScript {
+  cmd: string
+  stdin: string
+}
+
+/**
  * In-workspace command that runs `promptPasteScript` detached: write the
- * script to a workspace-local file and setsid it, so the exec returns at
- * once instead of waiting through the script's polling (5s+ on a fresh
- * agent). The script survives the exec
- * stream closing and logs to `yaac-prompt.log` in the scratch dir. macOS has
- * no setsid, so a containerless host there detaches it with nohup.
+ * script from stdin to a workspace-local file and setsid it, so the exec
+ * returns at once instead of waiting through the script's polling (5s+ on
+ * a fresh agent). The script survives the exec stream closing and logs to
+ * `yaac-prompt.log` in the scratch dir. macOS has no setsid, so a
+ * containerless host there detaches it with nohup.
  */
 export function buildPromptPasteBgCmd(
   target: string,
   prompt: string,
   paths: WorkspacePaths,
-): string {
-  const b64 = Buffer.from(promptPasteScript(target, prompt, paths), 'utf8').toString('base64')
+): StdinScript {
   const script = `${paths.scratchDir}/.yaac-prompt.sh`
   const log = `${paths.scratchDir}/yaac-prompt.log`
-  return `printf %s ${b64} | base64 -d > ${script}`
-    + ` && { if command -v setsid >/dev/null; then setsid sh ${script}; else nohup sh ${script}; fi; }`
-    + ` >${log} 2>&1 </dev/null &`
+  return {
+    // `cat` stays out of the backgrounded list, whose stdin sh replaces with
+    // /dev/null.
+    cmd: `cat > ${script} || exit 1; `
+      + `{ if command -v setsid >/dev/null; then setsid sh ${script}; else nohup sh ${script}; fi; }`
+      + ` >${log} 2>&1 </dev/null &`,
+    stdin: promptPasteScript(target, prompt, paths),
+  }
 }
 
 /**

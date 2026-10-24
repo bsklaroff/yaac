@@ -200,6 +200,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/queue/update', body: { id: ID.queued, prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/discard', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/run', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/prompt', request: `/api/workspace/prompt?id=${ID.queued}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/draft/save', body: { project: ID.project, prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/draft/discard', body: { id: ID.draft }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/group/list', access: 'reader', k8s: 200, containerless: 200 },

@@ -19,6 +19,7 @@ yaac-mama edit-queued [--parent-workspace W | --no-parent] [opts] <queued> ["<pr
 yaac-mama run-queued <queued>                       # start a queued one now
   # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
 yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
+  # any "<prompt>" or "<message>": also - (stdin) or --prompt-file F before the arguments
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
 yaac-mama set-base <branch>                         # your base branch, on origin
 yaac-mama stop [<workspace>]                        # omit the workspace to stop yourself
@@ -77,6 +78,13 @@ pass — the server resolves who is calling and answers for that project only.
 - **`create "<prompt>"`** — start a **new sibling workspace** in this project
   and deliver the prompt to its agent. Prints the new workspace's id on stdout
   and exits 0, so `id=$(yaac-mama create "…")` works.
+  - **`--prompt-file <path>`** in place of `"<prompt>"`: read the prompt from
+    a file (relative to your working directory). **Hand over a long brief
+    this way** — write it to a file, then `yaac-mama create --prompt-file
+    brief.md` — since one argument holds at most 128 KiB, so
+    `"$(cat brief.md)"` fails for a long one before yaac-mama even runs. A
+    prompt of `-` reads it from stdin instead. `queue`, `edit-queued` and
+    `send` take both forms too. An empty or unreadable file is an error.
   - **`--tool`**: `claude`, `codex`, `opencode`, or `pi`. Omitted, it
     defaults to this workspace's own tool, then the project default, then
     `claude`. **Run `yaac-mama models` before choosing** — a tool with no
@@ -351,7 +359,9 @@ pass a lower `--permission-mode` rather than retrying the same request.
 
 ## Limits and errors
 
-- Prompt: non-empty, ≤ 10,000 characters.
+- Prompt: non-empty, ≤ 200,000 characters, counted as UTF-16 units (an
+  emoji counts as two). Pass a long one with `--prompt-file` (or `-` and
+  stdin) rather than as an argument.
 - At most 8 requests queued per workspace (and 32 in total), and at most 8
   workspaces you created or restarted provisioning at once — over that is
   refused with an **HTTP 422** saying so; wait and retry.

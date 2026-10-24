@@ -96,6 +96,7 @@ const QUEUE = 'POST /api/workspace/queue/create'
 const UPDATE = 'POST /api/workspace/queue/update'
 const RUN = 'POST /api/workspace/queue/run'
 const SAVE_DRAFT = 'POST /api/workspace/draft/save'
+const PROMPT = 'GET /api/workspace/prompt'
 
 type Body = Record<string, unknown>
 let server: FetchMock
@@ -113,6 +114,13 @@ beforeEach(() => {
   server = mockFetch({
     [AUTH_LIST]: CLAUDE_ONLY,
     [BRANCH_LIST]: BRANCHES,
+    // A queued entry's or draft's whole prompt, here the snapshot's own.
+    [PROMPT]: ({ query }: { query: URLSearchParams }) => {
+      const snapshot = useUiStore.getState().snapshot
+      const row = [...snapshot?.queuedWorkspaces ?? [], ...snapshot?.draftWorkspaces ?? []]
+        .find((r) => r.id === query.get('id'))
+      return row !== undefined ? { prompt: row.prompt } : serverError('NOT_FOUND', 'gone', 404)
+    },
     // The create's NDJSON stream, cut to its terminal event: a cold create,
     // listed under the id it was given.
     [CREATE]: ({ body }: { body: Body }) => (
@@ -871,6 +879,26 @@ describe('NewWorkspacePane', () => {
       fireEvent.click(sendButton())
       await waitFor(() => expect(sent(UPDATE)).toHaveLength(1))
       expect(sent(UPDATE)[0]).toMatchObject({ id: 'qp', parent: null, group: 'g-review' })
+    })
+
+    it('edits the whole prompt, of which the snapshot holds only a preview', async () => {
+      const full = `${'a long brief '.repeat(40)}the end`
+      setSnapshot(project({}, 'k8s', { workspaces: [PARENT], queuedWorkspaces: [entry('q1', { prompt: full.slice(0, 300) })] }))
+      let answer = (_reply: unknown): void => {}
+      server.route(PROMPT, () => new Promise((resolve) => { answer = resolve }))
+      act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', editId: 'q1' }))
+      mount()
+      // Nothing can be typed over the preview or saved until it is whole.
+      await waitFor(() => expect(server.called(PROMPT)).toHaveLength(1))
+      expect(promptInput().readOnly).toBe(true)
+      expect(sendButton().title).toBe('Loading…')
+
+      act(() => answer({ prompt: full }))
+      await waitFor(() => expect(promptInput().value).toBe(full))
+      expect(promptInput().readOnly).toBe(false)
+      server.route(UPDATE, entry('q1', { prompt: full }))
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(UPDATE)).toMatchObject([{ id: 'q1', prompt: full }]))
     })
 
     it('offers a held parent it already waits on, and "Now" saves then runs', async () => {

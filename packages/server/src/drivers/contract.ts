@@ -647,12 +647,14 @@ export interface WorkspaceDriver {
    * with any other error when the workspace was not reached or the output
    * was too large for the runtime to carry whole (k8s: 4 MiB). Aborting
    * `signal` stops the command and everything it started, and rejects with
-   * an `AbortError`.
+   * an `AbortError`. `stdin` is written to the command's standard input,
+   * which is otherwise empty: text too large for a command line (a long
+   * prompt) travels there, since the command is one argument of `sh -c`.
    */
   exec(
     jobName: string,
     cmd: string,
-    opts?: { timeout?: number; maxAttempts?: number; signal?: AbortSignal },
+    opts?: { timeout?: number; maxAttempts?: number; signal?: AbortSignal; stdin?: string },
   ): Promise<{ stdout: string; stderr: string }>
   /**
    * Wait until `exec` works, repairing the transport if possible. Rejects if

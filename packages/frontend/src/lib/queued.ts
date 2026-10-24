@@ -1,3 +1,4 @@
+import { api } from '#lib/api'
 import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
@@ -10,6 +11,12 @@ import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
 /** What entries with no parent nest under: their group's section. */
 export function roomKey(groupId: string | undefined): string {
   return `room:${groupId ?? ''}`
+}
+
+/** A queued entry's or draft's whole prompt, which the snapshot holds only
+ *  a preview of (`PROMPT_PREVIEW_LENGTH`). */
+export async function fetchFullPrompt(id: string): Promise<string> {
+  return (await api.workspace.prompt.$get({ query: { id } })).prompt
 }
 
 /** The id an entry waits on, whichever kind it is. */

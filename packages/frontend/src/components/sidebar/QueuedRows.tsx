@@ -6,7 +6,7 @@ import { RowMenu } from '#components/sidebar/RowMenu'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
-import { queuedTitle, clip } from '#lib/queued'
+import { fetchFullPrompt, queuedTitle, clip } from '#lib/queued'
 import { useUiStore } from '#lib/store'
 import { useCreateWorkspace } from '#lib/useCreateDefaults'
 import { relativeAge } from '#lib/time'
@@ -216,11 +216,16 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
   const name = queuedTitle(draft)
   const readOnly = useReadOnly()
   const open = (): void => openNewWorkspace({ projectId: draft.projectId, draftId: draft.id })
-  const run = (): void => createWorkspace({
-    ...draft,
-    ...(draft.generatedTitle !== undefined ? { shownTitle: draft.generatedTitle } : {}),
-    draftId: draft.id,
-  })
+  // The snapshot holds only a preview of the prompt. A failed fetch opens
+  // the draft instead, whose pane reports it.
+  const run = (): void => {
+    fetchFullPrompt(draft.id).then((prompt) => createWorkspace({
+      ...draft,
+      prompt,
+      ...(draft.generatedTitle !== undefined ? { shownTitle: draft.generatedTitle } : {}),
+      draftId: draft.id,
+    }), open)
+  }
 
   return (
     <div className="group relative mx-2">
