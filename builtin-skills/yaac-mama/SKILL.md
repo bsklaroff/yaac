@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), edit or discard a queued workspace, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change or drop one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -17,6 +17,7 @@ yaac-mama create [opts] "<prompt>"
 yaac-mama queue [--parent-workspace W] [opts] "<prompt>"
 yaac-mama edit-queued [--parent-workspace W | --no-parent] [opts] <queued> ["<prompt>"]
 yaac-mama run-queued <queued>                       # start a queued one now
+yaac-mama delete-queued <queued>                    # discard a queued one
   # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
 yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
@@ -40,7 +41,8 @@ That list is the whole surface. `yaac-mama` is a **strict subset** of the
 one. Stopping is in reach precisely because it is reversible — a stopped
 workspace keeps its checkout and its conversation — and restarting a
 stopped one only undoes a stop, never in a more permissive mode than yours.
-There is no delete, and no config beyond your own base branch. If a task
+Nothing that has run can be deleted (only a queued workspace can be
+discarded), and there is no config beyond your own base branch. If a task
 needs one of those, ask the user rather than looking for a way around it.
 
 Everything is scoped to **this workspace's project**, which is not a flag you
@@ -168,6 +170,14 @@ pass — the server resolves who is calling and answers for that project only.
   workspace limit (it keeps waiting), and for one whose permission mode is
   above your own (lower it with `edit-queued --permission-mode` first).
   Prints the new workspace's id prefix.
+
+- **`delete-queued <queued>`** — discard a queued workspace, as the user's
+  Discard does. It cannot be undone, though nothing is lost but its prompt
+  and settings. Whatever was queued after it moves up to wait on its parent
+  (or, with none, waits for room in its group), so the rest of the chain
+  runs one link sooner. Like `edit-queued` it takes any queued workspace
+  in this project, so discard one you did not queue only when the user
+  asked. One that is already starting cannot be discarded.
 
 - **`send <workspace> "<message>"`** — hand a message to another **running**
   workspace's agent (a stopped one is refused; `restart` it first), exactly

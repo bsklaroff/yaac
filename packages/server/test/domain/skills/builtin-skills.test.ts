@@ -77,6 +77,7 @@ describe('yaac-mama skill', () => {
     expect(body).toContain('yaac-mama queue [--parent-workspace W] [opts] "<prompt>"')
     expect(body).toContain('yaac-mama edit-queued [--parent-workspace W | --no-parent] [opts] <queued> ["<prompt>"]')
     expect(body).toContain('yaac-mama run-queued <queued>')
+    expect(body).toContain('yaac-mama delete-queued <queued>')
     expect(body).toContain('yaac-mama group set-limit "<group>" <limit|none>')
     expect(body).toContain(
       '# opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]')

@@ -482,8 +482,13 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
       `edit-queued --title "Follow-up" ${queued.output.trim().slice(0, 8)} "follow-up from queue e2e"`)
     expect(edited.exitCode).toBe(0)
     expect(edited.output).toContain('follow-up from queue e2e')
+    const dropped = await runMama('queue --parent-workspace "$YAAC_WORKSPACE_ID" "dropped follow-up"')
+    const discarded = await runMama(`delete-queued ${dropped.output.trim().slice(0, 8)}`)
+    expect(discarded.exitCode).toBe(0)
+    expect(discarded.output).toContain(`Discarded queued workspace ${dropped.output.trim().slice(0, 8)}.`)
     const listedQueue = await runMama('list')
     expect(listedQueue.output).toContain('follow-up from queue e2e')
+    expect(listedQueue.output).not.toContain('dropped follow-up')
 
     // A self-stop tears down the pod its reply travels through, so assert
     // that the workspace went away, not what printed. Not via `runMama`,

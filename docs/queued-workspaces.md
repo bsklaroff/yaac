@@ -200,7 +200,9 @@ snapshot omits it while its provisioning row stands in for it.
   queueing does.
 - **`yaac-mama run-queued`** is Run now for an agent, held to the same cap:
   an entry above the caller's posture is refused, since running it would
-  start the user's grant on the agent's say. Discard is user-only.
+  start the user's grant on the agent's say.
+- **`yaac-mama delete-queued`** is Discard for an agent, with no cap: it
+  starts nothing the agent could not already start by stopping the parent.
 - **Webapp.** One new-workspace pane (shown whenever no workspace is
   selected: Alt+N, the sidebar's +, a row's `…` menu, a queued row) with
   a **Start** field: `Now`, after a live workspace or queued entry stops,
