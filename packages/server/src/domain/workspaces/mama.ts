@@ -21,7 +21,8 @@ import { listStoppedWorkspaces, toStoppedEntries } from './stopped-list'
 import { listActiveWorkspaces } from './list'
 import { inFlightWorkspaceIds } from './provisioning'
 import { listWorkspaceGroups, resolveGroup } from './groups'
-import { queueWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
+import { moveWorkspaceToGroup, setGroupWorkspaceLimit } from './group-edits'
+import { queueWorkspace, runQueuedWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
 import { resolveProjectWorkspace, resolveWorkspaceContainer } from './resolve'
 import { stopWorkspace } from './stop'
 import {
@@ -32,7 +33,6 @@ import {
   listActiveAgentSessions,
   listQueuedWorkspaceRows,
   listWorkspaceAgentSessions,
-  setWorkspaceGroup,
   setWorkspaceTitle,
   type QueuedWorkspaceRow,
 } from '#db'
@@ -142,9 +142,11 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   restart: ['workspace'],
   'group-create': [],
   'group-move': ['workspace'],
+  'group-set-limit': ['limit'],
   models: [],
   queue: ['parent-workspace', ...CREATE_ARGS],
-  'edit-queued': ['queued', 'parent-workspace', ...CREATE_ARGS],
+  'edit-queued': ['queued', 'parent-workspace', 'no-parent', ...CREATE_ARGS],
+  'run-queued': ['queued'],
   fetch: ['workspace'],
   history: ['workspace', 'conversation', 'files', 'file'],
   send: ['workspace', 'conversation'],
@@ -187,9 +189,11 @@ export async function runMamaCommand(
       case 'restart': return await runRestart(caller, request)
       case 'group-create': return await runGroupCreate(caller, request)
       case 'group-move': return await runGroupMove(caller, request)
+      case 'group-set-limit': return await runGroupSetLimit(caller, request)
       case 'models': return await runModels(caller)
       case 'queue': return await runQueue(caller, request)
       case 'edit-queued': return await runEditQueued(caller, request)
+      case 'run-queued': return await runRunQueued(caller, request)
       case 'fetch': return await runFetch(caller, request)
       case 'history': return await runHistory(caller, request)
       case 'send': return await runSend(caller, request)
@@ -263,8 +267,8 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   }
   if (queued.length > 0) {
     if (lines.length > 0) lines.push('')
-    lines.push('Queued workspaces (each starts when what it is under is stopped):', '')
-    lines.push(...renderQueued(queued, caller.workspaceId))
+    lines.push('Queued workspaces (each starts when what it is under is stopped, or when its group has room):', '')
+    lines.push(...renderQueued(queued, names, caller.workspaceId))
   }
   lines.push('')
   if (wanted.length === 0 && allStopped.length > 0) {
@@ -273,7 +277,7 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   }
   lines.push(groups.length === 0
     ? 'No groups yet. Make one with: yaac-mama group create "<name>"'
-    : `Groups: ${groups.map((g) => g.name).join(', ')}`)
+    : `Groups: ${groups.map((g) => g.workspaceLimit !== undefined ? `${g.name} (limit ${g.workspaceLimit})` : g.name).join(', ')}`)
   // Every prompt line is indented, so a prompt cannot fake another's header.
   for (const p of prompts) {
     const body = p.prompt === '' ? ['(none yet)'] : p.prompt.split('\n')
@@ -395,11 +399,17 @@ function table(header: string[], rows: string[][]): string[] {
   return [line(header), ...rows.map(line)]
 }
 
-/** Queued entries as a tree under the workspace each waits on. */
-function renderQueued(rows: QueuedWorkspaceRow[], callerId: string): string[] {
+/** Queued entries as a tree under the workspace each waits on, or under
+ *  the group one with no parent waits for room in. */
+function renderQueued(rows: QueuedWorkspaceRow[], groupNames: Map<string, string>, callerId: string): string[] {
   const children = new Map<string, QueuedWorkspaceRow[]>()
+  const rooms = new Map<string, string>()
   for (const r of rows) {
-    const parent = r.parentQueuedId ?? r.parentWorkspaceId ?? ''
+    let parent = r.parentQueuedId ?? r.parentWorkspaceId
+    if (parent === undefined) {
+      parent = `room:${r.groupId ?? ''}`
+      rooms.set(parent, `waiting for room in "${groupNames.get(r.groupId ?? '') ?? 'no group'}":`)
+    }
     children.set(parent, [...(children.get(parent) ?? []), r])
   }
   const ids = new Set(rows.map((r) => r.id))
@@ -408,6 +418,7 @@ function renderQueued(rows: QueuedWorkspaceRow[], callerId: string): string[] {
     for (const r of children.get(parent) ?? []) {
       const status = r.launchWorkspaceId !== undefined ? `launching as ${r.launchWorkspaceId.slice(0, 8)}`
         : r.launchError !== undefined ? `failed: ${flatten(r.launchError, 60)}`
+        : r.releasedAt !== undefined || (r.parentWorkspaceId ?? r.parentQueuedId) === undefined ? 'waiting for room'
         : 'queued'
       lines.push(`${'  '.repeat(depth + 1)}${r.id.slice(0, 8)}  ${r.tool}  ${status}  ${flatten(r.prompt, 60)}`)
       walk(r.id, depth + 1)
@@ -415,7 +426,7 @@ function renderQueued(rows: QueuedWorkspaceRow[], callerId: string): string[] {
   }
   for (const parent of children.keys()) {
     if (ids.has(parent)) continue
-    lines.push(`after ${parent.slice(0, 8)}${parent === callerId ? ' (you)' : ''}:`)
+    lines.push(rooms.get(parent) ?? `after ${parent.slice(0, 8)}${parent === callerId ? ' (you)' : ''}:`)
     walk(parent, 0)
   }
   return lines
@@ -466,17 +477,21 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
 
 /**
  * Queue a workspace to start when its parent (a workspace in this project,
- * often the caller itself, or another queued entry) stops. Settings default
- * from the parent; the permission mode is capped at the caller's own.
+ * often the caller itself, or another queued entry) stops, or with no
+ * parent when `--group` names a group with a workspace limit, to start once
+ * that group has room (docs/workspace-groups.md). Settings default from the
+ * parent, or with none as `create`'s do; the permission mode is capped at
+ * the caller's own.
  */
 async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const parent = request.args['parent-workspace']?.trim() ?? ''
-  if (parent === '') return { ok: false, error: 'queue needs --parent-workspace' }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
   const entry = await queueWorkspace(caller.principal, caller.projectId, {
-    parent,
     prompt: request.body,
+    ...(parent !== ''
+      ? { parent }
+      : { ...(caller.tool !== undefined ? { tool: caller.tool } : {}), mode: caller.mode }),
     ...queueFields(settings.settings),
   }, { ceiling: caller.permissionMode })
   // The id alone on the first line, so `a=$(yaac-mama queue …)` can chain
@@ -494,9 +509,10 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
 
 /**
  * Edit a queued workspace in the caller's project: prompt (an empty body
- * keeps it), settings or parent. The permission mode is capped at the
- * caller's own, as in `queue`, so an agent cannot reuse a higher grant the
- * user gave an entry.
+ * keeps it), settings or parent, or `--no-parent` to have it wait for room
+ * in a group with a workspace limit instead. The permission mode is capped
+ * at the caller's own, as in `queue`, so an agent cannot reuse a higher
+ * grant the user gave an entry.
  */
 async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.queued?.trim() ?? ''
@@ -506,9 +522,14 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
   const parent = request.args['parent-workspace']?.trim()
+  const noParent = request.args['no-parent'] !== undefined
+  if (noParent && parent !== undefined) {
+    return { ok: false, error: 'edit-queued takes --parent-workspace or --no-parent, not both' }
+  }
   const patch: Partial<QueueRequest> = {
     ...(request.body !== '' ? { prompt: request.body } : {}),
     ...(parent !== undefined && parent !== '' ? { parent } : {}),
+    ...(noParent ? { parent: null } : {}),
     ...queueFields(settings.settings),
   }
   if (Object.keys(patch).length === 0) {
@@ -520,6 +541,30 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
     output: `Updated queued workspace ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `
       + `${entry.permissionMode} — ${flatten(entry.prompt, 60)}`,
   }
+}
+
+/**
+ * Start a queued workspace in the caller's project now, as the webapp's Run
+ * now does: refused while its group is at its workspace limit, and for one
+ * whose permission mode is above the caller's own, as `restart` is.
+ */
+async function runRunQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const target = request.args.queued?.trim() ?? ''
+  if (target === '') return { ok: false, error: 'run-queued needs a queued workspace id' }
+  const picked = pickOne(await listQueuedWorkspaceRows(caller.projectId), target, 'queued workspace')
+  if (!picked.ok) return picked
+  const { id, permissionMode } = picked.entry
+  const short = id.slice(0, 8)
+  if (!isRankedPermissionMode(permissionMode) || !isRankedPermissionMode(caller.permissionMode)
+    || morePermissive(permissionMode, caller.permissionMode)) {
+    return {
+      ok: false,
+      error: `${short} runs in permission mode '${permissionMode}', more than this workspace's own `
+        + `('${caller.permissionMode}'); lower it with edit-queued --permission-mode first`,
+    }
+  }
+  const { workspaceId } = await runQueuedWorkspace(caller.principal, id)
+  return { ok: true, output: `Started queued workspace ${short} as ${workspaceId.slice(0, 8)}.` }
 }
 
 /** Deliveries under way, by sender and by target conversation. */
@@ -859,12 +904,31 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   const resolved = target === '--' || target === ''
     ? null
     : await resolveGroup(caller.projectId, target, { create: true })
-  await setWorkspaceGroup(caller.projectId, workspaceId, resolved?.groupId ?? null)
+  await moveWorkspaceToGroup(caller.projectId, workspaceId, resolved?.groupId ?? null)
   return {
     ok: true,
     output: resolved === null
       ? `Moved ${workspaceId.slice(0, 8)} out of its group.`
       : `Moved ${workspaceId.slice(0, 8)} into "${resolved.name}".`,
+  }
+}
+
+/** Set or clear (`none`) how many of a group's workspaces may run at once.
+ *  The group must exist; this creates none. */
+async function runGroupSetLimit(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const name = request.body.trim()
+  const limit = request.args.limit?.trim() ?? ''
+  if (name === '') return { ok: false, error: 'group set-limit needs a group' }
+  if (limit !== 'none' && !/^[1-9]\d{0,5}$/.test(limit)) {
+    return { ok: false, error: 'the limit must be a whole number of workspaces from 1, or none' }
+  }
+  const group = await resolveGroup(caller.projectId, name)
+  await setGroupWorkspaceLimit(caller.projectId, group.groupId, limit === 'none' ? null : Number(limit))
+  return {
+    ok: true,
+    output: limit === 'none'
+      ? `Group "${group.name}" has no workspace limit now.`
+      : `Group "${group.name}" now runs at most ${limit} ${limit === '1' ? 'workspace' : 'workspaces'} at once.`,
   }
 }
 

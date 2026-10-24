@@ -22,7 +22,7 @@ import type * as createModule from '#domain/workspaces/create'
 import { createWorkspace } from '#domain/workspaces/create'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
 import { closeDb } from '#db/client'
-import { createWorkspaceGroup, listWorkspaceGroupRows } from '#db/group-store'
+import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroupLimit } from '#db/group-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordProject } from '#db/project-store'
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
@@ -512,6 +512,17 @@ describe('runMamaCommand', () => {
       expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(1)
     })
 
+    it('refuses a group at its workspace limit, starting nothing', async () => {
+      const group = await createWorkspaceGroup(PROJ, 'Workers', null)
+      await setWorkspaceGroupLimit(PROJ, group.groupId, 1)
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'member', groupId: group.groupId })
+      running.push(podFor('member'))
+      expect(await spawn({ group: 'Workers' })).toEqual({
+        ok: false, error: expect.stringContaining('group "Workers" is at its workspace limit of 1 (running or starting)') as string,
+      })
+      expect(listProvisioning()).toEqual([])
+    })
+
     it('refuses a malformed option or an empty prompt without creating', async () => {
       const refusals: Array<[Record<string, string>, string]> = [
         [{ tool: 'not-a-tool' }, "invalid tool 'not-a-tool'"],
@@ -654,6 +665,35 @@ describe('runMamaCommand', () => {
       expect(await run('queue', '  ', ME)).toMatchObject({ ok: false })
       expect(await listQueuedWorkspaceRows(PROJ)).toHaveLength(1)
     })
+
+    // docs/workspace-groups.md
+    it('queues with no parent only into a group with a workspace limit, defaulting as create does', async () => {
+      await createWorkspaceGroup(PROJ, 'open', null)
+      const workers = await createWorkspaceGroup(PROJ, 'Workers', null)
+      await setWorkspaceGroupLimit(PROJ, workers.groupId, 1)
+      await setWorkspaceGroup(PROJ, 'loose-sibling', workers.groupId)
+      running.push(podFor('loose-sibling'))
+      for (const args of [{}, { group: 'nowhere' }, { group: 'open' }] as Array<Record<string, string>>) {
+        const outcome = await run('queue', 'x', args)
+        expect(outcome.ok, JSON.stringify(args)).toBe(false)
+        if (!outcome.ok) expect(outcome.error).toMatch(/Use create to start it now, or give it a parent/)
+      }
+      // An unknown name is not made into a group here.
+      expect((await listWorkspaceGroupRows(PROJ)).map((g) => g.name).sort()).toEqual(['Workers', 'open'])
+
+      const id = await output('queue', 'worker task', { group: 'Workers', branch: 'main' })
+      const row = (await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)
+      // The caller's tool, as create picks it, not any workspace's settings.
+      expect(row).toMatchObject({ tool: CALLER.tool, mode: (await callerFor()).mode, groupId: workers.groupId })
+      expect(row?.parentWorkspaceId).toBeUndefined()
+      await settle()
+      expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
+
+      const listed = await output('list')
+      expect(listed).toContain('waiting for room in "Workers":')
+      expect(listed).toMatch(new RegExp(`\\n  ${id.slice(0, 8)}  codex  waiting for room  worker task`))
+      expect(listed).toMatch(/Groups: .*Workers \(limit 1\)/)
+    })
   })
 
   describe('edit-queued', () => {
@@ -730,6 +770,65 @@ describe('runMamaCommand', () => {
       }
       expect(await rowOf(foreign.id, OTHER)).toMatchObject({ prompt: 'theirs' })
       expect(await rowOf(id)).toMatchObject({ prompt: 'mine', parentWorkspaceId: 'caller-workspace' })
+    })
+  })
+
+  // docs/workspace-groups.md
+  describe('edit-queued --no-parent', () => {
+    beforeEach(async () => {
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'busy', baseBranch: 'main' })
+    })
+
+    it('has it wait for room in a group with a workspace limit instead of its parent', async () => {
+      const workers = await createWorkspaceGroup(PROJ, 'Workers', null)
+      await setWorkspaceGroupLimit(PROJ, workers.groupId, 1)
+      await setWorkspaceGroup(PROJ, 'busy', workers.groupId)
+      running.push(podFor('busy'))
+      const id = await output('queue', 'step 2', { 'parent-workspace': 'caller-workspace', tool: 'claude' })
+
+      for (const args of [{ 'no-parent': '1' }, { 'no-parent': '1', 'parent-workspace': 'busy', group: 'Workers' }] as Array<Record<string, string>>) {
+        expect((await run('edit-queued', '', { queued: id, ...args })).ok, JSON.stringify(args)).toBe(false)
+      }
+      await output('edit-queued', '', { queued: id, 'no-parent': '1', group: 'Workers' })
+      const row = (await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)
+      expect(row).toMatchObject({ groupId: workers.groupId })
+      expect(row?.parentWorkspaceId).toBeUndefined()
+      expect(await output('list')).toContain('waiting for room in "Workers":')
+    })
+  })
+
+  describe('run-queued', () => {
+    beforeEach(async () => {
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+    })
+
+    it('starts one now by short id, refusing it above the caller\'s posture or into a full group', async () => {
+      const id = await output('queue', 'step 2', { 'parent-workspace': 'caller-workspace', tool: 'claude' })
+      const above = await queueWorkspace(local, PROJ, {
+        parent: 'caller-workspace', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
+      }, 'user')
+      expect(await run('run-queued', '', { queued: above.id })).toEqual({
+        ok: false, error: expect.stringContaining("runs in permission mode 'bypass', more than this workspace's own") as string,
+      })
+
+      const workers = await createWorkspaceGroup(PROJ, 'Workers', null)
+      await setWorkspaceGroupLimit(PROJ, workers.groupId, 1)
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'member', groupId: workers.groupId })
+      running.push(podFor('member'))
+      await output('edit-queued', '', { queued: id, group: 'Workers' })
+      expect(await run('run-queued', '', { queued: id.slice(0, 8) })).toEqual({
+        ok: false, error: expect.stringContaining('group "Workers" is at its workspace limit of 1') as string,
+      })
+
+      await setWorkspaceGroupLimit(PROJ, workers.groupId, null)
+      expect(await output('run-queued', '', { queued: id.slice(0, 8) })).toMatch(new RegExp(`^Started queued workspace ${id.slice(0, 8)} as `))
+      await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
+      expect(vi.mocked(createWorkspace).mock.calls[0][1]).toMatchObject({ initialPrompt: 'step 2', groupId: workers.groupId })
     })
   })
 
@@ -946,6 +1045,17 @@ describe('runMamaCommand', () => {
       ])
       await recordWorkspaceStopped(PROJ, 'sibling-workspace')
       running = [podFor('caller-workspace')]
+    })
+
+    it('refuses a sibling whose group is at its workspace limit', async () => {
+      const group = await createWorkspaceGroup(PROJ, 'Workers', 'sibling-workspace')
+      await setWorkspaceGroupLimit(PROJ, group.groupId, 1)
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'member', groupId: group.groupId })
+      running.push(podFor('member'))
+      expect(await run('restart', '', { workspace: 'sibling' })).toEqual({
+        ok: false, error: expect.stringContaining('group "Workers" is at its workspace limit of 1 (running or starting)') as string,
+      })
+      expect(listProvisioning()).toEqual([])
     })
 
     it('relaunches a stopped sibling under its id, resuming its conversations in its recorded posture', async () => {
@@ -1239,6 +1349,25 @@ describe('runMamaCommand', () => {
     })
   })
 
+  describe('group-set-limit', () => {
+    it('sets and clears an existing group\'s workspace limit, refusing a bad limit or unknown group', async () => {
+      const group = await createWorkspaceGroup(PROJ, 'Workers', null)
+      expect(await output('group-set-limit', 'workers', { limit: '3' }))
+        .toBe('Group "Workers" now runs at most 3 workspaces at once.')
+      expect((await listWorkspaceGroupRows(PROJ))[0].workspaceLimit).toBe(3)
+      expect(await output('list')).toMatch(/Groups: Workers \(limit 3\)/)
+
+      for (const [body, limit] of [['Workers', '0'], ['Workers', '2.5'], ['Workers', ''], ['Nowhere', '2'], ['', '2']]) {
+        expect((await run('group-set-limit', body, { limit })).ok, `${body} ${limit}`).toBe(false)
+      }
+      expect(await listWorkspaceGroupRows(PROJ)).toHaveLength(1)
+
+      expect(await output('group-set-limit', group.groupId, { limit: 'none' }))
+        .toBe('Group "Workers" has no workspace limit now.')
+      expect((await listWorkspaceGroupRows(PROJ))[0].workspaceLimit).toBeNull()
+    })
+  })
+
   describe('group-move', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'aaaabbbb-1111-2222' })
@@ -1292,6 +1421,17 @@ describe('runMamaCommand', () => {
       // The message asks for a longer prefix rather than sending the caller
       // back to `list`.
       if (!outcome.ok) expect(outcome.error).toContain('use a longer prefix')
+    })
+
+    it('refuses a running workspace into a group at its workspace limit', async () => {
+      const group = await createWorkspaceGroup(PROJ, 'Workers', null)
+      await setWorkspaceGroupLimit(PROJ, group.groupId, 1)
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'member', groupId: group.groupId })
+      running.push(podFor('member'))
+      expect(await run('group-move', 'Workers', { workspace: 'aaaabbbb' })).toEqual({
+        ok: false, error: expect.stringContaining('group "Workers" is at its workspace limit of 1 (running or starting)') as string,
+      })
+      expect(await groupOf('aaaabbbb-1111-2222')).toBeUndefined()
     })
 
     it('needs a workspace to move', async () => {

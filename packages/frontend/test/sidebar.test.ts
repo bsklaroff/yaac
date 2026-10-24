@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { sidebarLayout, sidebarRowIds } from '#components/Sidebar'
 import { groupDisplay } from '#components/WorkspaceList'
+import { roomKey } from '#lib/queued'
 import type {
   ProvisioningWorkspaceEntry,
+  QueuedWorkspaceEntry,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -53,6 +55,20 @@ const prov = (
   kind: 'restart',
   message: 'Starting…',
   createdAt: `2026-01-01 00:00:${String(at).padStart(2, '0')}`,
+  ...extra,
+})
+
+/** A queued workspace; with no parent given, it waits for room in its group. */
+const queued = (id: string, extra: Partial<QueuedWorkspaceEntry> = {}): QueuedWorkspaceEntry => ({
+  id,
+  projectId: 'p',
+  prompt: 'do it',
+  tool: 'claude',
+  model: 'm',
+  mode: 'tui',
+  permissionMode: 'bypass',
+  branch: 'main',
+  createdAt: '2026-01-01 00:00:00',
   ...extra,
 })
 
@@ -127,6 +143,21 @@ describe('sidebarLayout', () => {
   })
 })
 
+describe('sidebarLayout with queued workspaces', () => {
+  it('nests one with no parent in its group, which it keeps shown, else at the top', () => {
+    const groups = [group('limited', 1, { workspaceLimit: 2 })]
+    const waiting = queued('q1', { groupId: 'limited' })
+    const lost = queued('q2', { groupId: 'deleted' })
+    const after = queued('q3', { parentQueuedId: 'q1' })
+    const layout = sidebarLayout([], groups, [], [waiting, lost, after])
+    // No live member, unpinned, yet shown for what waits in it.
+    expect(layout.groups.map((s) => [s.group.groupId, s.waiting.map((e) => e.id)])).toEqual([['limited', ['q1']]])
+    expect(layout.queuedChildren.get(roomKey('limited'))).toEqual([waiting])
+    expect(layout.queuedChildren.get('q1')).toEqual([after])
+    expect(layout.orphans.map((e) => e.id)).toEqual(['q2'])
+  })
+})
+
 describe('sidebarRowIds', () => {
   it('runs provisioning, then the default list, then each shown group', () => {
     const rows = sidebarRowIds(
@@ -164,8 +195,8 @@ describe('sidebarRowIds', () => {
 })
 
 describe('groupDisplay', () => {
-  const live = { provisioning: [], members: [entry('a', 1)], held: [] }
-  const ghostsOnly = { provisioning: [], members: [], held: [] }
+  const live = { provisioning: [], members: [entry('a', 1)], held: [], waiting: [] }
+  const ghostsOnly = { provisioning: [], members: [], held: [], waiting: [] }
   const state = { collapsed: false, showStopped: true, narrowed: false }
 
   it('owns its ghosts only while they are on screen', () => {
@@ -182,5 +213,8 @@ describe('groupDisplay', () => {
     expect(groupDisplay(ghostsOnly, { ...state, collapsed: true }))
       .toEqual({ onlyGhosts: true, expanded: true, ownsGhosts: true })
     expect(groupDisplay(ghostsOnly, { ...state, showStopped: false }).expanded).toBe(false)
+    // Workspaces waiting for room are rows of its own, not ghosts.
+    expect(groupDisplay({ ...ghostsOnly, waiting: [queued('q', { groupId: 'g' })] }, { ...state, collapsed: true }))
+      .toMatchObject({ onlyGhosts: false, expanded: false })
   })
 })

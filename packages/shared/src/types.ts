@@ -1012,6 +1012,9 @@ export interface WorkspaceGroupSummary {
   name: string
   /** Keep the group listed even with no live workspace in it. */
   pinned: boolean
+  /** Most live workspaces it may hold at once; absent is unlimited
+   *  (docs/workspace-groups.md). */
+  workspaceLimit?: number
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) — the groups' display order. */
   createdAt: string
   /** Stopped members. In the snapshot it leaves out members it draws a row
@@ -1418,8 +1421,9 @@ export interface ProvisioningWorkspaceEntry {
 /**
  * A create request saved to run when its parent stops naturally
  * (docs/queued-workspaces.md). Every setting is concrete, so the sidebar
- * shows exactly what will launch. Exactly one parent field is set: a
- * workspace, or another queued entry.
+ * shows exactly what will launch. At most one parent field is set: a
+ * workspace, or another queued entry. With neither, it waits for room in
+ * its group (docs/workspace-groups.md).
  */
 export interface QueuedWorkspaceEntry {
   id: string
@@ -1451,6 +1455,9 @@ export interface QueuedWorkspaceEntry {
   /** Its parent workspace has no row (its create failed), so it renders at
    *  the top level. */
   orphaned?: boolean
+  /** It starts as soon as its group has room: its parent has released it,
+   *  or it has no parent. */
+  waitingForRoom?: boolean
 }
 
 /**
@@ -1898,7 +1905,12 @@ export const MAX_MODEL_LENGTH = 128
  * `stop` is allowed because a stop is reversible: the checkout, row, title,
  * group and conversation are kept, so it can be restarted. `restart` only
  * undoes a stop, and only for a workspace at or below the caller's
- * permission mode. Anything that deletes or reconfigures stays the user's.
+ * permission mode, as does `run-queued` for a queued one. `group-set-limit`
+ * caps how many of a group's workspaces run at once, which an orchestrating
+ * agent sets for the workers it queues there (docs/workspace-groups.md). Any
+ * agent may raise or clear a limit, its own group's included, so a limit
+ * schedules agents and does not contain them. Anything that deletes stays
+ * the user's.
  * `fetch` reads another workspace's branches into the caller's checkout, and
  * `history` its conversations, never writing to theirs. `send` messages a
  * running one's agent, held to the caller's permission mode. `set-base`
@@ -1913,9 +1925,11 @@ export const MAMA_COMMANDS = [
   'restart',
   'group-create',
   'group-move',
+  'group-set-limit',
   'models',
   'queue',
   'edit-queued',
+  'run-queued',
   'fetch',
   'history',
   'send',

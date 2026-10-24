@@ -518,10 +518,31 @@ describe('with seeded projects', () => {
 
       const { stdout, exitCode } = await runYaac(testEnv.env, 'group', 'list', GRP_NAME)
       expect(exitCode).toBe(0)
-      expect(stdout).toMatch(/GROUP\s+PROJECT\s+RUNNING\s+PINNED\s+CREATED/)
+      expect(stdout).toMatch(/GROUP\s+PROJECT\s+RUNNING\s+LIMIT\s+PINNED\s+CREATED/)
       expect(stdout).toContain('release train')
       // An empty group is pinned so it still shows.
       expect(stdout).toMatch(/release train\s+proj-groups\s+0\s+yes/)
+    })
+
+    // docs/workspace-groups.md
+    it('group set-limit caps a group, which group list shows, and none clears it', async () => {
+      const set = await runYaac(testEnv.env, 'group', 'set-limit', GRP_NAME, 'release train', '2')
+      expect(set.exitCode).toBe(0)
+      expect(set.stdout).toContain('"release train" now runs at most 2 workspaces at once')
+      expect((await runYaac(testEnv.env, 'group', 'list', GRP_NAME)).stdout)
+        .toMatch(/release train\s+proj-groups\s+0\s+2\s+yes/)
+
+      for (const [group, limit, why] of [['release train', '0', 'whole number'], ['nope', '2', 'No such group']]) {
+        const refused = await runYaac(testEnv.env, 'group', 'set-limit', GRP_NAME, group, limit)
+        expect(refused.exitCode).not.toBe(0)
+        expect(`${refused.stdout}${refused.stderr}`).toContain(why)
+      }
+
+      const cleared = await runYaac(testEnv.env, 'group', 'set-limit', grpId.slice(0, 8), 'release train', 'none')
+      expect(cleared.exitCode).toBe(0)
+      expect(cleared.stdout).toContain('"release train" has no workspace limit now')
+      expect((await runYaac(testEnv.env, 'group', 'list', GRP_NAME)).stdout)
+        .toMatch(/release train\s+proj-groups\s+0\s+yes/)
     })
 
     it('group move files a workspace by name, and omitting one ungroups it', async () => {

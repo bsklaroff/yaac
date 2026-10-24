@@ -23,6 +23,7 @@ import { ensureDataDir } from '@yaac/shared/project-paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { pushProjectSecrets } from '#domain/projects'
+import { resumeQueuedWorkspaces } from '#domain/workspaces'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -341,6 +342,10 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await attachConvergence({
     onAttached: () => {
       loopDone = startReconciler({ signal: abortCtrl.signal })
+      // Once per start, since everything after it launches queued
+      // workspaces as it happens (docs/queued-workspaces.md).
+      void resumeQueuedWorkspaces()
+        .catch((err: unknown) => serverLog(`[server] resuming queued workspaces failed: ${errorText(err)}`))
       // Egress-mediating drivers get the full credential set and every
       // project's secrets once per start. Without mediation the reconciler's
       // first pass runs the credential sync.

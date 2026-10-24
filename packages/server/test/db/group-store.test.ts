@@ -8,6 +8,7 @@ import {
   listWorkspaceGroupRows,
   renameWorkspaceGroup,
   setWorkspaceGroup,
+  setWorkspaceGroupLimit,
   setWorkspaceGroupPinned,
 } from '#db/group-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
@@ -124,6 +125,22 @@ describe('workspace group store', () => {
       await setWorkspaceGroupPinned(PROJ, group.groupId, false)
       expect((await listWorkspaceGroupRows(PROJ))[0]?.pinned).toBe(false)
       expect(pushes - before).toBe(2)
+    })
+  })
+
+  describe('setWorkspaceGroupLimit', () => {
+    it('sets and clears the limit, starting unlimited, and refuses a group the project lacks', async () => {
+      const group = await createWorkspaceGroup(PROJ, 'workers', null)
+      expect((await listWorkspaceGroupRows(PROJ))[0]?.workspaceLimit).toBeNull()
+      const before = pushes
+
+      await setWorkspaceGroupLimit(PROJ, group.groupId, 3)
+      expect((await listWorkspaceGroupRows(PROJ))[0]?.workspaceLimit).toBe(3)
+      await setWorkspaceGroupLimit(PROJ, group.groupId, null)
+      expect((await listWorkspaceGroupRows(PROJ))[0]?.workspaceLimit).toBeNull()
+      expect(pushes - before).toBe(2)
+
+      await expect(setWorkspaceGroupLimit(OTHER, group.groupId, 2)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     })
   })
 

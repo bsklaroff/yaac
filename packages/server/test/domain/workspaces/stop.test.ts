@@ -25,14 +25,15 @@ import {
   listProvisioning,
   prepareRestart,
   prepareStart,
+  listQueuedWorkspaces,
   queueWorkspace,
   stopWorkspace,
 } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { getWorkspaceRow, listWorkspaceAgentSessions } from '#db'
-import { recordWorkspaceCreated } from '#db/workspace-store'
+import { createWorkspaceGroup, getWorkspaceRow, listWorkspaceAgentSessions, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
+import { clearWorkspaceStopped, recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
@@ -134,6 +135,56 @@ describe('stopWorkspace', () => {
     const waiting = await getQueuedWorkspaceRow(grandchild.id)
     expect(waiting).toMatchObject({ parentWorkspaceId: becameId })
     expect(waiting?.releasedAt).toBeUndefined()
+  })
+
+  // docs/workspace-groups.md: a stop frees a slot in its group.
+  describe('in a group with a workspace limit', () => {
+    let groupId: string
+    beforeEach(async () => {
+      installFakeWorkspaceDriver({
+        findForTeardown: (id) => Promise.resolve(['parent', 'other'].includes(id)
+          ? { workspaceId: id, projectId: PROJ, unitName: `yaac-proj-${id}` }
+          : undefined),
+        // Their runtimes, which is what makes a member hold its slot.
+        list: () => Promise.resolve(['parent', 'other'].map((id) =>
+          handleFixture({ workspaceId: id, projectId: PROJ, jobName: `yaac-proj-${id}` }))),
+        launch: (spec) => {
+          launched.push(spec.workspaceId)
+          return Promise.resolve(handleFixture({ workspaceId: spec.workspaceId, projectId: PROJ }))
+        },
+      })
+      ;({ groupId } = await createWorkspaceGroup(PROJ, 'Workers', null))
+      await setWorkspaceGroupLimit(PROJ, groupId, 1)
+    })
+
+    it('launches what was queued with no parent once a member stops', async () => {
+      await setWorkspaceGroup(PROJ, 'parent', groupId)
+      const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: 'Workers', mode: 'tui' }, 'user')
+      expect(launched).toEqual([])
+
+      await stopWorkspace(local, 'parent')
+      await vi.waitFor(async () => { expect(await launchedWith('waiting')).toBeDefined() }, { timeout: 60_000 })
+      // Its record goes once the launch settles, after the prompt lands.
+      await vi.waitFor(async () => { expect(await getQueuedWorkspaceRow(waiting.id)).toBeUndefined() })
+    })
+
+    it('keeps a child released into a full group waiting for room, not for its parent, until any member stops', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'other', groupId })
+      const child = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'child', group: groupId }, 'user')
+
+      await stopWorkspace(local, 'parent')
+      const released = await getQueuedWorkspaceRow(child.id)
+      expect(released).toMatchObject({ parentWorkspaceId: 'parent' })
+      expect(released?.releasedAt).toBeInstanceOf(Date)
+      expect(released?.launchWorkspaceId).toBeUndefined()
+      expect((await listQueuedWorkspaces()).find((e) => e.id === child.id)).toMatchObject({ waitingForRoom: true })
+
+      // The parent coming back does not put it back to waiting on its stop.
+      await clearWorkspaceStopped(PROJ, 'parent')
+      await stopWorkspace(local, 'other')
+      await vi.waitFor(async () => { expect(await launchedWith('child')).toBeDefined() }, { timeout: 60_000 })
+      expect(launched).toHaveLength(1)
+    })
   })
 
   /**

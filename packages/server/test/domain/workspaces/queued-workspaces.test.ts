@@ -26,7 +26,7 @@ import {
   listHeldWorkspaces,
   listQueuedWorkspaces,
   queueWorkspace,
-  reconcileQueuedWorkspaces,
+  resumeQueuedWorkspaces,
   runQueuedWorkspace,
   updateQueuedWorkspace,
 } from '#domain/workspaces'
@@ -37,7 +37,15 @@ import {
   ProvisionStoppedError,
   registerProvisioning,
 } from '#domain/workspaces/provisioning'
-import { BUILT_IN_USER_ID, setToolCredential, applyWorkspaceEvent, createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db'
+import {
+  BUILT_IN_USER_ID,
+  setToolCredential,
+  applyWorkspaceEvent,
+  createWorkspaceGroup,
+  listWorkspaceGroupRows,
+  setWorkspaceGroup,
+  setWorkspaceGroupLimit,
+} from '#db'
 import {
   claimQueuedLaunch,
   failQueuedLaunch,
@@ -45,11 +53,11 @@ import {
   releaseQueuedWorkspace,
   setQueuedWorkspaceTitle,
 } from '#db/queued-workspace-store'
-import { recordProject } from '#db/project-store'
-import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
+import { recordProject, recordProjectCreate } from '#db/project-store'
+import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
-import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
+import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
@@ -63,7 +71,13 @@ let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
-  installFakeWorkspaceDriver()
+  // The runtime runs every workspace with no stop: the create is stubbed,
+  // so a row is all a workspace here has.
+  installFakeWorkspaceDriver({
+    list: async (projectId) => [...(await getProjectWorkspaceRows(projectId ?? PROJ)).values()]
+      .filter((r) => r.stoppedAt === undefined)
+      .map((r) => handleFixture({ workspaceId: r.workspaceId, projectId: r.projectId })),
+  })
   clearAllProvisioningForTests()
   clearQueuedLaunchesForTests()
   await fs.mkdir(projectDir(PROJ), { recursive: true })
@@ -72,7 +86,9 @@ beforeEach(async () => {
   // Record the row as the real create does; a launched entry has a foreign
   // key to it.
   mockCreate.mockReset().mockImplementation(async (projectId, opts) => {
-    await recordWorkspaceCreated({ projectId: projectId, workspaceId: opts.workspaceId ?? 'minted' })
+    await recordWorkspaceCreated({
+      projectId: projectId, workspaceId: opts.workspaceId ?? 'minted', ...(opts.groupId !== undefined ? { groupId: opts.groupId } : {}),
+    })
     return {
       workspaceId: opts.workspaceId ?? 'minted', jobName: 'j', forwardedPorts: [], tool: opts.tool ?? 'claude', mode: 'tui',
     }
@@ -128,7 +144,6 @@ async function settled(id: string, gone: boolean): Promise<void> {
     expect(gone ? row : row?.launchWorkspaceId).toBeUndefined()
   })
 }
-
 
 describe('queueWorkspace', () => {
   it('stores every setting concrete, defaulted from the parent workspace', async () => {
@@ -263,7 +278,44 @@ describe('queueWorkspace', () => {
     await expect(queueWorkspace(local, PROJ, { parent: 'sibling', prompt: 'x', tool: 'pi' }, ceiling))
       .rejects.toThrow(/pi has no permission mode/)
   })
+
+  // With no parent, it waits for room in its group (docs/workspace-groups.md).
+  it('needs an existing group with a workspace limit, creating none', async () => {
+    await createWorkspaceGroup(PROJ, 'open', null)
+    await expect(queueWorkspace(local, PROJ, { prompt: 'go' }, 'user'))
+      .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/needs a group with a workspace limit.*Use create/) as string })
+    await expect(queueWorkspace(local, PROJ, { prompt: 'go', group: 'nowhere' }, 'user'))
+      .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/no group "nowhere".*Use create/) as string })
+    await expect(queueWorkspace(local, PROJ, { prompt: 'go', group: 'open' }, { ceiling: 'bypass' }))
+      .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringMatching(/"open" has no workspace limit.*Use create/) as string })
+    expect((await listWorkspaceGroupRows(PROJ)).map((g) => g.name)).toEqual(['open'])
+  })
+
+  it('defaults as a create does, waits while its group is full, and launches at once when it has room', async () => {
+    await recordProjectCreate(PROJ, 'codex', { model: 'gpt-5.5', permissionMode: 'read-only' })
+    const { groupId } = await createWorkspaceGroup(PROJ, 'workers', null)
+    await setWorkspaceGroupLimit(PROJ, groupId, 1)
+    await workspace(P, { tool: 'claude', permissionMode: 'auto' })
+    await setWorkspaceGroup(PROJ, P, groupId)
+
+    const entry = await queueWorkspace(local, PROJ, { prompt: 'wait', group: 'workers' }, 'user')
+    // The project's remembered create settings, not any workspace's.
+    expect(entry).toMatchObject({ tool: 'codex', model: 'gpt-5.5', permissionMode: 'read-only', groupId, waitingForRoom: true })
+    expect(entry).not.toHaveProperty('parentWorkspaceId')
+    expect(entry).not.toHaveProperty('parentQueuedId')
+    expect(mockCreate).not.toHaveBeenCalled()
+
+    // One slot frees with no trigger; the next queue fills it, oldest first.
+    await setWorkspaceGroupLimit(PROJ, groupId, 2)
+    const later = await queueWorkspace(local, PROJ, { prompt: 'later', group: groupId }, 'user')
+    await launched(1)
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ initialPrompt: 'wait', groupId })
+    await settled(entry.id, true)
+    expect(await getQueuedWorkspaceRow(later.id)).toMatchObject({ prompt: 'later' })
+  })
 })
+
+// docs/workspace-groups.md
 
 describe('updateQueuedWorkspace', () => {
   it('replaces what it names, re-resolving a new tool\'s model and posture', async () => {
@@ -328,6 +380,26 @@ describe('updateQueuedWorkspace', () => {
     const moved = await updateQueuedWorkspace(local, e.id, { parent: 'elsewhere' }, 'user')
     expect(moved.parentWorkspaceId).toBe('elsewhere')
     expect((await getQueuedWorkspaceRow(c.id))?.parentQueuedId).toBe(e.id)
+  })
+
+  it('needs a group with a workspace limit, and keeps checking one it moves to', async () => {
+    const { groupId } = await createWorkspaceGroup(PROJ, 'workers', null)
+    await setWorkspaceGroupLimit(PROJ, groupId, 1)
+    await createWorkspaceGroup(PROJ, 'open', null)
+    await workspace(P)
+    await setWorkspaceGroup(PROJ, P, groupId)
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'go', group: null }, 'user')
+
+    await expect(updateQueuedWorkspace(local, entry.id, { parent: null }, 'user'))
+      .rejects.toMatchObject({ code: 'VALIDATION' })
+    const moved = await updateQueuedWorkspace(local, entry.id, { parent: null, group: 'workers' }, 'user')
+    expect(moved).toMatchObject({ groupId, waitingForRoom: true })
+    expect(moved).not.toHaveProperty('parentWorkspaceId')
+    await expect(updateQueuedWorkspace(local, entry.id, { group: 'open' }, 'user'))
+      .rejects.toMatchObject({ code: 'VALIDATION' })
+    // Other edits leave it waiting where it is.
+    expect(await updateQueuedWorkspace(local, entry.id, { prompt: 'go on' }, 'user')).toMatchObject({ groupId, prompt: 'go on' })
+    expect(mockCreate).not.toHaveBeenCalled()
   })
 })
 
@@ -411,6 +483,20 @@ describe('runQueuedWorkspace', () => {
     expect((await getQueuedWorkspaceRow(entry.id))?.launchError).toBeUndefined()
     expect((await getQueuedWorkspaceRow(child.id))?.parentQueuedId).toBe(entry.id)
   })
+
+  it('refuses while the group is at its workspace limit, leaving the entry as it was', async () => {
+    const { groupId } = await createWorkspaceGroup(PROJ, 'workers', null)
+    await setWorkspaceGroupLimit(PROJ, groupId, 1)
+    await workspace(P)
+    await setWorkspaceGroup(PROJ, P, groupId)
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'go' }, 'user')
+
+    await expect(runQueuedWorkspace(local, entry.id)).rejects.toMatchObject({
+      code: 'CONFLICT', message: expect.stringMatching(/group "workers" is at its workspace limit of 1 \(running or starting\)/) as string,
+    })
+    expect((await getQueuedWorkspaceRow(entry.id))?.releasedAt).toBeUndefined()
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
 })
 
 describe('listQueuedWorkspaces', () => {
@@ -452,7 +538,7 @@ describe('listHeldWorkspaces', () => {
   })
 })
 
-describe('reconcileQueuedWorkspaces', () => {
+describe('resumeQueuedWorkspaces', () => {
   it('puts an interrupted launch back with the error, whether or not its workspace came up', async () => {
     await workspace(P)
     const up = await queueWorkspace(local, PROJ, { parent: P, prompt: 'up' }, 'user')
@@ -461,7 +547,7 @@ describe('reconcileQueuedWorkspaces', () => {
     // not prove the agent started or got its prompt, so it is not done.
     await claimQueuedLaunch(up.id, 'came-up')
 
-    await reconcileQueuedWorkspaces()
+    await resumeQueuedWorkspaces()
 
     expect(await getQueuedWorkspaceRow(up.id)).toMatchObject({
       prompt: 'up', launchError: expect.stringContaining('interrupted by a server restart') as string,
@@ -473,18 +559,60 @@ describe('reconcileQueuedWorkspaces', () => {
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
-  // The backstop runs every resync, but only the first pass can tell a
-  // claim a previous server left from one this process holds.
-  it('puts back only the claims a previous server left', async () => {
+  // docs/workspace-groups.md: only what the runtime runs holds a slot.
+  it('leaves the half-made workspace of an interrupted launch holding no slot', async () => {
     await workspace(P)
-    await reconcileQueuedWorkspaces()
+    const { groupId } = await createWorkspaceGroup(PROJ, 'workers', null)
+    const interrupted = await queueWorkspace(local, PROJ, { parent: P, prompt: 'was launching', group: groupId }, 'user')
+    await claimQueuedLaunch(interrupted.id, 'half-made')
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'half-made', groupId })
+    await setWorkspaceGroupLimit(PROJ, groupId, 1)
+    // A restart: nothing of the half-made workspace runs.
+    installFakeWorkspaceDriver({ list: () => Promise.resolve([]) })
+
+    await resumeQueuedWorkspaces()
+    const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: groupId }, 'user')
+    await launched(1)
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ initialPrompt: 'waiting', groupId })
+    await settled(waiting.id, true)
+  })
+
+  // Requests are served before it runs, so a Run now can beat it.
+  it('leaves a launch this server already started', async () => {
+    await workspace(P)
     const mine = await queueWorkspace(local, PROJ, { parent: P, prompt: 'mine' }, 'user')
-    await claimQueuedLaunch(mine.id, 'launching-here')
+    const create = mockCreate.getMockImplementation()!
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    mockCreate.mockImplementationOnce(async (projectId, opts) => { await gate; return create(projectId, opts) })
+    const { workspaceId } = await runQueuedWorkspace(local, mine.id)
+    await launched(1)
 
-    await reconcileQueuedWorkspaces()
+    await resumeQueuedWorkspaces()
 
-    expect(await getQueuedWorkspaceRow(mine.id)).toMatchObject({ launchWorkspaceId: 'launching-here' })
+    expect(await getQueuedWorkspaceRow(mine.id)).toMatchObject({ launchWorkspaceId: workspaceId })
     expect((await getQueuedWorkspaceRow(mine.id))?.launchError).toBeUndefined()
+    release()
+    await settled(mine.id, true)
+  })
+
+  // docs/workspace-groups.md
+  it('fills the slots freed while no server ran, oldest first, never past the limit', async () => {
+    const { groupId } = await createWorkspaceGroup(PROJ, 'workers', null)
+    await setWorkspaceGroupLimit(PROJ, groupId, 2)
+    for (const id of ['busy-1', 'busy-2']) await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id, groupId })
+    const entries = []
+    for (const prompt of ['a', 'b', 'c']) entries.push(await queueWorkspace(local, PROJ, { prompt, group: groupId }, 'user'))
+    // Stops no running server saw.
+    await recordWorkspaceStopped(PROJ, 'busy-1')
+    await recordWorkspaceStopped(PROJ, 'busy-2')
+
+    await resumeQueuedWorkspaces()
+    await launched(2)
+    await settled(entries[0].id, true)
+    await settled(entries[1].id, true)
+    expect(mockCreate.mock.calls.map((c) => c[1].initialPrompt)).toEqual(['a', 'b'])
+    expect(await getQueuedWorkspaceRow(entries[2].id)).toMatchObject({ prompt: 'c' })
   })
 
   it('launches a release a restart lost, and leaves a stop-released chain\'s lower links waiting', async () => {
@@ -493,13 +621,10 @@ describe('reconcileQueuedWorkspaces', () => {
     const b = await queueWorkspace(local, PROJ, { parent: a.id, prompt: 'b' }, 'user')
     await releaseQueuedWorkspace(a.id)
 
-    await reconcileQueuedWorkspaces()
+    await resumeQueuedWorkspaces()
     await launched(1)
     await settled(a.id, true)
     expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('a')
     expect((await getQueuedWorkspaceRow(b.id))?.releasedAt).toBeUndefined()
-
-    await reconcileQueuedWorkspaces()
-    expect(mockCreate).toHaveBeenCalledTimes(1)
   })
 })

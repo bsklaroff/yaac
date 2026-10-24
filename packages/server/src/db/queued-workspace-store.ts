@@ -12,8 +12,9 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  * naturally (docs/queued-workspaces.md).
  *
  * Nothing observes an entry, so every write here notifies the snapshot hub
- * itself. Every write keeps exactly one parent column set: an entry waits on
- * a workspace or on another entry.
+ * itself. Every write keeps at most one parent column set: an entry waits on
+ * a workspace, on another entry, or with neither for room in its group
+ * (docs/workspace-groups.md).
  *
  * A set `launchWorkspaceId` means the entry is mid-launch. Every edit
  * requires it to be null, so nothing changes an entry under a running create.
@@ -23,8 +24,9 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  * skip it, and every read here filters it out.
  */
 
-/** What an entry waits on: a workspace or another entry. */
-export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string }
+/** What an entry waits on: a workspace, another entry, or (`null`) room in
+ *  its group. */
+export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string } | null
 
 /** An entry's settings: what an insert takes and an update replaces. An
  *  absent title, group or effort is stored as null. */
@@ -49,8 +51,9 @@ function toRow({ launchedWorkspaceId: _, ...r }: Row): QueuedWorkspaceRow {
   return nullsToUndefined(r)
 }
 
-/** Both parent columns: one set, the other null. */
+/** Both parent columns: at most one set. */
 function parentColumns(parent: QueuedParent): { parentWorkspaceId: string | null; parentQueuedId: string | null } {
+  if (parent === null) return { parentWorkspaceId: null, parentQueuedId: null }
   return 'parentWorkspaceId' in parent
     ? { parentWorkspaceId: parent.parentWorkspaceId, parentQueuedId: null }
     : { parentWorkspaceId: null, parentQueuedId: parent.parentQueuedId }
@@ -134,15 +137,16 @@ function closesCycle(id: string, parent: QueuedParent, entries: QueuedWorkspaceR
   const seen = new Set<string>()
   let cur: QueuedParent = parent
   for (;;) {
+    if (cur === null) return false
     const next: QueuedWorkspaceRow | undefined = 'parentQueuedId' in cur
       ? byId.get(cur.parentQueuedId)
       : byLaunch.get(cur.parentWorkspaceId)
     if (next === undefined || seen.has(next.id)) return false
     if (next.id === id) return true
     seen.add(next.id)
-    cur = next.parentQueuedId !== undefined
-      ? { parentQueuedId: next.parentQueuedId }
-      : { parentWorkspaceId: next.parentWorkspaceId ?? '' }
+    cur = next.parentQueuedId !== undefined ? { parentQueuedId: next.parentQueuedId }
+      : next.parentWorkspaceId !== undefined ? { parentWorkspaceId: next.parentWorkspaceId }
+      : null
   }
 }
 

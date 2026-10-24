@@ -283,6 +283,9 @@ export const workspaceGroups = snakeCase.table('workspace_groups', {
   /** Keep the group listed even with no live workspace in it. */
   pinned: boolean().notNull().default(false),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** Most live workspaces the group may hold at once; null is unlimited
+   *  (docs/workspace-groups.md). */
+  workspaceLimit: integer(),
 }, (t) => [primaryKey({ columns: [t.projectId, t.groupId] })])
 
 /**
@@ -441,9 +444,10 @@ export const toolCredentials = snakeCase.table('tool_credentials', {
 export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   id: uuid().primaryKey().defaultRandom(),
   projectId: uuid().notNull(),
-  /** Exactly one is set: the workspace this entry waits on, or the entry it
+  /** At most one is set: the workspace this entry waits on, or the entry it
    *  is chained after. Claiming a parent entry's launch re-points its
-   *  children at the launching workspace. */
+   *  children at the launching workspace. Neither is set on an entry that
+   *  waits for room in its group (docs/workspace-groups.md). */
   parentWorkspaceId: text(),
   parentQueuedId: uuid(),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),

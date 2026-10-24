@@ -1,7 +1,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import { cleanupWorkspaceDetached } from './cleanup'
 import { resolveWorkspaceId } from './resolve'
-import { startQueuedChildren } from './queued-workspaces'
+import { startQueuedChildren, startWaitingWorkspaces } from './queued-workspaces'
 import { listProvisioning, stopProvisioning } from './provisioning'
 import { authorizeProject, type Actor } from '#domain/access'
 import { findWorkspaceRow } from '#db'
@@ -22,7 +22,8 @@ export interface StoppedWorkspaceInfo {
  * Stop a workspace by id or prefix: schedule a detached teardown, keeping the
  * checkout for restart. This is the only natural stop (user or `yaac-mama
  * stop`; deaths and restarts do not come here), so it also launches the
- * workspaces queued after this one (docs/queued-workspaces.md). Throws
+ * workspaces queued after this one (docs/queued-workspaces.md), along with
+ * any waiting for the slot it frees in its group. Throws
  * `NOT_FOUND` or `RUNTIME_UNAVAILABLE`.
  *
  * A workspace still provisioning is stopped by rolling its create back
@@ -38,8 +39,12 @@ export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promi
   if (recorded) await authorizeProject(principal, recorded.projectId)
   const provisioning = stopProvisioning(workspaceId)
   if (provisioning !== undefined) {
+    // A rolled-back create or restart frees its slot in its group.
     void provisioning.ranAs
-      .then((ranAs) => (ranAs === undefined ? undefined : stopRunning(principal, ranAs, ranAs)))
+      .then(async (ranAs) => {
+        if (ranAs === undefined) await startWaitingWorkspaces(provisioning.projectId)
+        else await stopRunning(principal, ranAs, ranAs)
+      })
       .catch((err: unknown) => serverLog(`[server] stopping ${workspaceId} once provisioned failed: ${String(err)}`))
     return { workspaceId, projectId: provisioning.projectId, provisioning: true }
   }
@@ -67,8 +72,8 @@ async function stopRunning(principal: Actor, workspaceId: string, idOrPrefix: st
     projectId: target.projectId,
     workspaceId: target.workspaceId,
   })
-  // No need to wait for the runtime to be gone. On failure, the reconcile
-  // step launches whatever was released.
+  // No need to wait for the runtime to be gone. What a failure here leaves
+  // released launches at the project's next freed slot, or the next boot.
   await startQueuedChildren(target.projectId, target.workspaceId)
     .catch((err: unknown) => serverLog(`[server] starting queued workspaces on stop failed: ${String(err)}`))
   return {

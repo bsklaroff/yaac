@@ -84,6 +84,9 @@ yaac group                      Named sidebar groups of workspaces
   list [project]
   move <workspace-id> [group]   Omit the group to ungroup
     --project <project>         Required for a stopped workspace
+  set-limit <project> <group> <limit>
+                                Most workspaces running at once, or none
+                                (docs/workspace-groups.md)
   delete <project> <group>      Its workspaces return to the default list
 
 yaac forward [workspace-id]     Bind a workspace's forwarded ports here (all

@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), edit a queued workspace's prompt or settings, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -14,8 +14,9 @@ yaac-mama list                                    # workspaces + groups here
 yaac-mama list <workspace>...                     # just those, with full prompts
 yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 yaac-mama create [opts] "<prompt>"
-yaac-mama queue --parent-workspace W [opts] "<prompt>"
-yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
+yaac-mama queue [--parent-workspace W] [opts] "<prompt>"
+yaac-mama edit-queued [--parent-workspace W | --no-parent] [opts] <queued> ["<prompt>"]
+yaac-mama run-queued <queued>                       # start a queued one now
   # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]
 yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
@@ -24,6 +25,7 @@ yaac-mama stop [<workspace>]                        # omit the workspace to stop
 yaac-mama restart <workspace>                       # a stopped one, resumed
 yaac-mama group create "<name>"
 yaac-mama group move <workspace> ["<group>"]       # omit the group to ungroup
+yaac-mama group set-limit "<group>" <limit|none>   # cap how many run at once
 yaac-mama models                                  # tools/models available
 yaac-mama fetch <workspace>                       # its branches, into your git
 yaac-mama history <workspace>                     # its conversations
@@ -48,7 +50,8 @@ pass — the server resolves who is calling and answers for that project only.
 
 - **`list`** — every running workspace in this project, with the group each is
   filed under and the prompt it started from; your own row is marked
-  `(you)`. Then a line naming the project's groups. This is how you find a
+  `(you)`. Then a line naming the project's groups, each with its workspace
+  limit if it has one (`Workers (limit 3)`). This is how you find a
   workspace id to pass to `group move`; ids print as their first 8 characters,
   and that prefix is what the other commands accept. A last line counts the
   project's stopped workspaces. `list <workspace>...` (running, queued or
@@ -103,15 +106,21 @@ pass — the server resolves who is calling and answers for that project only.
     sibling work from here. A branch that is not on origin is not caught
     here: the id comes back and the workspace then fails to provision.
   - **`--group`**: file the new workspace in this group, creating the group
-    if it does not exist. Good for a fan-out you want kept together.
+    if it does not exist. Good for a fan-out you want kept together. A
+    group with a **workspace limit** runs at most that many workspaces at
+    once: a create into one that is full is refused, naming the group and
+    its limit (so is a `restart` of a stopped member, or a `group move` of a
+    running workspace into it). To run more than the limit, `queue` them
+    with no parent instead (below).
   - **`--title`**: the label the sidebar shows for it. Omitted, it is
     titled automatically from its prompt.
 
 - **`queue --parent-workspace <id> "<prompt>"`** — save a workspace to start
   **when a workspace stops**. Prints the queued workspace's id.
-  - **`--parent-workspace`** (required): what it waits on — a workspace in
+  - **`--parent-workspace`**: what it waits on — a workspace in
     this project (`"$YAAC_WORKSPACE_ID"` is this one), or a queued workspace's
-    id to **chain** after it.
+    id to **chain** after it. Required, except with a limited `--group`
+    (next item).
   - Takes every option `create` does. The ones it omits default from the
     parent — its tool, current model, UI mode, permission mode, group, and the
     branch it forked from (the child starts from that branch's *latest* tip
@@ -126,18 +135,39 @@ pass — the server resolves who is calling and answers for that project only.
   - `list` shows what is queued, indented under what it waits on.
   - A **stopped** parent is allowed, with a note on stderr: what is queued
     under it starts only once it is restarted and then stopped again.
+  - If its group is at its workspace limit when the parent stops, it waits for
+    room in the group instead, and starts as soon as a slot frees.
+
+- **`queue --group <name> "<prompt>"`** (no `--parent-workspace`) — save a
+  workspace to start **once a group with a workspace limit has room**: when
+  the group runs fewer workspaces than its limit, oldest queued first. It
+  starts at once if there is room already. The group must already exist and
+  have a limit (`group set-limit`, or the user in the webapp; `list` shows
+  it); a group
+  with no limit is refused (use `create`, since nothing would ever wait), and
+  so is a name that matches no group (queue does not make one). Options it
+  omits default as `create`'s do, and its permission mode is capped at yours.
+  `list` shows these under `waiting for room in "<group>":`.
 
 - **`edit-queued <queued> ["<prompt>"]`** — change a queued workspace before
   it starts: a prompt given replaces the stored one (omit it to keep it),
   each `create` option given replaces that setting (a new tool without a
-  model takes that tool's default), and `--parent-workspace` moves it under
-  another parent. `<queued>` is its id or 8-character prefix from `list` —
+  model takes that tool's default), `--parent-workspace` moves it under
+  another parent, and `--no-parent` has it wait for room in its group
+  instead (pass `--group` to move it to one; it needs a workspace limit).
+  `<queued>` is its id or 8-character prefix from `list` —
   any queued workspace in this project, not only yours, so edit one you did
   not queue only when the user asked. One whose stored permission mode is
   above your own is refused until you pass a `--permission-mode` at or below
   yours — or a new `--tool`, whose permission mode is then worked out afresh,
   at or below yours. One that is already starting cannot be edited. Prints
   the result.
+
+- **`run-queued <queued>`** — start a queued workspace **now**, whatever it
+  waits on, as the user's Run now does. Refused while its group is at its
+  workspace limit (it keeps waiting), and for one whose permission mode is
+  above your own (lower it with `edit-queued --permission-mode` first).
+  Prints the new workspace's id prefix.
 
 - **`send <workspace> "<message>"`** — hand a message to another **running**
   workspace's agent (a stopped one is refused; `restart` it first), exactly
@@ -228,6 +258,12 @@ pass — the server resolves who is calling and answers for that project only.
   moving workspaces is a real, visible edit — do it when it helps them, not to
   tidy up unasked.
 
+- **`group set-limit "<group>" <limit|none>`** — cap how many of a group's
+  workspaces run or start at once; `none` removes the cap. The group must
+  exist (`group create` first). Lowering it stops nothing. While the group
+  is full, `create`, `restart` and `group move` into it are refused, and
+  what is queued into it with no parent starts as room frees, oldest first.
+
 - **`models`** — which agent tools have host credentials (with kind and
   provider) and each one's accepted model ids. The workspace cannot see host
   credentials itself, so this is the only way to know what is usable.
@@ -298,7 +334,19 @@ yaac-mama queue --parent-workspace "$a" "step 3: …"
 
 A chain moves on only when each link's agent calls `yaac-mama stop` (or the
 user stops it) — tell each link's prompt to stop itself when done, or the
-chain waits there. When a queue or create is refused for its permission mode,
+chain waits there.
+
+To fan out many workers but run only a few at once, make a group with a
+workspace limit, then queue every worker into it with no parent:
+
+```
+yaac-mama group create "Workers"
+yaac-mama group set-limit "Workers" 3
+for task in …; do yaac-mama queue --group Workers "…$task…"; done
+```
+
+yaac starts the oldest waiting one whenever a worker in the group stops for
+any reason, including a crash. When a queue or create is refused for its permission mode,
 pass a lower `--permission-mode` rather than retrying the same request.
 
 ## Limits and errors
@@ -310,7 +358,8 @@ pass a lower `--permission-mode` rather than retrying the same request.
 - **HTTP 422** is a server-side refusal with the reason in the text: an
   unknown command or option, a malformed `--model`, a `--permission-mode`
   more permissive than yours, a workspace id that names
-  nothing in this project, a group name that matches two groups. Read the
+  nothing in this project, a group name that matches two groups, a group at
+  its workspace limit, a `queue` with no parent outside a limited group. Read the
   message — it says what to pass instead.
 - **HTTP 504** (containerized workspaces) means the request timed out waiting
   for the server, and the message says which of two things happened. *"did

@@ -5,8 +5,9 @@
 #   yaac-mama list [<workspace>...]
 #   yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 #   yaac-mama create [opts] "<prompt>"
-#   yaac-mama queue --parent-workspace W [opts] "<prompt>"
-#   yaac-mama edit-queued [--parent-workspace W] [opts] <queued> ["<prompt>"]
+#   yaac-mama queue [--parent-workspace W] [opts] "<prompt>"
+#   yaac-mama edit-queued [--parent-workspace W | --no-parent] [opts] <queued> ["<prompt>"]
+#   yaac-mama run-queued <queued>
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
 #                 [--ui-mode U] [--branch B] [--group G] [--title T]
 #   yaac-mama send [--conversation C] <workspace> "<message>"
@@ -16,6 +17,7 @@
 #   yaac-mama restart <workspace>
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
+#   yaac-mama group set-limit "<group>" <limit|none>
 #   yaac-mama models
 #   yaac-mama fetch <workspace>
 #   yaac-mama history <workspace> [<conversation>] [-o <dir>]
@@ -25,9 +27,10 @@
 # workspaces into named groups, and stop or restart one. Stopping is in reach
 # because it is reversible — the checkout and the conversation survive it —
 # and restarting a stopped workspace only undoes a stop, in a permission mode
-# no more permissive than the caller's. Nothing here deletes anything, and the
-# one setting it changes is the caller's own base branch; the rest stays with
-# the user.
+# no more permissive than the caller's. Nothing here deletes anything. The
+# settings it changes are the caller's own base branch and a group's
+# workspace limit, which an orchestrator sets for the workers it queues
+# there; the rest stays with the user.
 # `fetch` reads another workspace's branches into this
 # checkout and `history` its conversations; neither writes to theirs.
 #
@@ -63,8 +66,13 @@ Usage:
   yaac-mama create [opts] "<prompt>"               # start another workspace
   yaac-mama queue --parent-workspace <id> [opts] "<prompt>"
                                                    # start one when <id> stops
+  yaac-mama queue --group <name> [opts] "<prompt>"
+                                                   # start one once a group
+                                                   # with a workspace limit
+                                                   # has room
   yaac-mama edit-queued [opts] <queued> ["<prompt>"]
                                                    # change a queued one
+  yaac-mama run-queued <queued>                    # start a queued one now
   yaac-mama send [--conversation <c>] <workspace> "<message>"
                                                    # message its running agent
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
@@ -73,6 +81,7 @@ Usage:
   yaac-mama restart <workspace>                    # restart a stopped one
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
+  yaac-mama group set-limit "<group>" <n|none>     # cap how many run at once
   yaac-mama models                                 # tools/models available
   yaac-mama fetch <workspace>                      # read its branches into git
   yaac-mama history <workspace>                    # list its conversations
@@ -107,24 +116,41 @@ Options for create, queue and edit-queued:
   --group <name>   file the new workspace in this group, creating it if needed.
   --title <title>  the sidebar title; omitted, it is titled from its prompt.
 
-queue also takes, and requires:
+queue also takes:
   --parent-workspace <id>
                    what the queued workspace waits on: a workspace in this
                    project ("$YAAC_WORKSPACE_ID" for this one), or a queued
                    workspace's id (to chain after it). Options it omits
                    default to that parent's settings; the permission mode is
                    still never more permissive than this workspace's own.
+                   Required unless --group names an existing group with a
+                   workspace limit (see group set-limit; `yaac-mama list`
+                   shows it): then the queued workspace waits for room
+                   in that group, starting once it runs fewer than its limit,
+                   oldest first. Its omitted options default as create's do.
+                   A group without a limit is refused (use create), and so is
+                   a group name that matches none: queue does not create one.
 
 edit-queued changes the queued workspace <queued> names: each option given
-replaces its setting (--parent-workspace re-parents it), and a prompt given
-replaces its prompt. A queued workspace more permissive than this one is
+replaces its setting (--parent-workspace re-parents it; --no-parent has it
+wait for room in its --group, which needs a workspace limit), and a prompt
+given replaces its prompt. A queued workspace more permissive than this one is
 refused until the edit names a permission mode at or below this workspace's,
 or a new --tool (whose permission mode is then resolved at or below it).
+
+run-queued starts a queued workspace now, whatever it waits on. It is
+refused while its group is at its workspace limit, and for one more
+permissive than this workspace (lower it with edit-queued first).
+
+group set-limit caps how many of a group's workspaces run or start at once
+(none removes the cap). Create, restart and group move into a full group are
+refused; workspaces queued into it with no parent start as room frees.
 
 queue saves a workspace to start when its parent is STOPPED — by
 `yaac-mama stop` or by the user. A parent that crashes or exits does not
 start it; it waits for the user. It forks from the latest origin tip of the
-parent's reference branch.
+parent's reference branch. If its group is at its workspace limit when the
+parent stops, it waits for room in the group instead.
 
 list with ids (running, queued or stopped, or unique prefixes) shows only
 those, then each one's full prompt, which the table cuts short: a "Prompt of
@@ -476,9 +502,10 @@ EOF
 
   create|queue|edit-queued)
     cmd=$1; shift
-    tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""
+    tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""
     while [ $# -gt 0 ]; do
       case "$1" in
+        --no-parent) no_parent=1; shift; continue ;;
         --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
@@ -507,8 +534,10 @@ EOF
         prompt=$1
         ;;
       queue)
-        if [ -z "$parent" ] || [ $# -ne 1 ] || [ -z "$1" ]; then
-          echo "usage: yaac-mama queue --parent-workspace W $opts \"<prompt>\"" >&2
+        # Whether a missing parent is allowed (a group with a workspace
+        # limit) is the server's to say.
+        if [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama queue [--parent-workspace W] $opts \"<prompt>\"" >&2
           exit 2
         fi
         prompt=$1
@@ -518,13 +547,13 @@ EOF
         # is present and empty is refused: `edit-queued "$id" "$p"` with $p
         # unset meant to change the prompt, not to leave it.
         if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ] || { [ $# -eq 2 ] && [ -z "$2" ]; }; then
-          echo "usage: yaac-mama edit-queued [--parent-workspace W] $opts <queued> [\"<prompt>\"]" >&2
+          echo "usage: yaac-mama edit-queued [--parent-workspace W | --no-parent] $opts <queued> [\"<prompt>\"]" >&2
           exit 2
         fi
         queued=$1; prompt=${2:-}
         ;;
     esac
-    set -- "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" tool "$tool" model "$model" \
+    set -- "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" no-parent "$no_parent" tool "$tool" model "$model" \
       effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
     [ "$cmd" = queue ] || run "$@"
     # The queued id alone on stdout, for `id=$(yaac-mama queue …)`; any note
@@ -599,9 +628,18 @@ EOF
     run restart '' workspace "$1"
     ;;
 
+  run-queued)
+    shift
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama run-queued <queued>' >&2
+      exit 2
+    fi
+    run run-queued '' queued "$1"
+    ;;
+
   group)
     shift
-    [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move …' >&2; exit 2; }
+    [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move|set-limit …' >&2; exit 2; }
     sub=$1; shift
     case "$sub" in
       create)
@@ -621,8 +659,15 @@ EOF
         fi
         run group-move "${2:-}" workspace "$1"
         ;;
+      set-limit)
+        if [ $# -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
+          echo 'usage: yaac-mama group set-limit "<group>" <limit|none>' >&2
+          exit 2
+        fi
+        run group-set-limit "$1" limit "$2"
+        ;;
       *)
-        echo "yaac-mama: unknown group subcommand '$sub' (expected: create, move)" >&2
+        echo "yaac-mama: unknown group subcommand '$sub' (expected: create, move, set-limit)" >&2
         exit 2
         ;;
     esac

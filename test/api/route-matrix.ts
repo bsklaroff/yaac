@@ -207,6 +207,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/group/move', body: { projectId: ID.project, workspaceId: ID.workspace, group: null }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/rename', body: { projectId: ID.project, groupId: ID.group, name: 'g' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/set-pinned', body: { projectId: ID.project, groupId: ID.group, pinned: true }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/group/set-limit', body: { projectId: ID.project, groupId: ID.group, workspaceLimit: 2 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/delete', body: { projectId: ID.project, groupId: ID.group }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // Idempotent for an id with no entry.
   { method: 'POST', path: '/api/workspace/provisioning/:id/dismiss', request: `/api/workspace/provisioning/${ID.provisioning}/dismiss`, access: 'owner', k8s: 204, containerless: 204 },

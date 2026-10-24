@@ -12,7 +12,7 @@ import { api } from '#lib/api'
 import { CloseIcon, LoadingIcon, SearchIcon } from '#lib/icons'
 import { usePressDrag } from '#lib/usePressDrag'
 import { shownGroups } from '#lib/groups'
-import { queuedChildren, queuedParentId, queuedTitle } from '#lib/queued'
+import { queuedChildren, queuedParentId, queuedTitle, roomKey } from '#lib/queued'
 import { useStoppedEntry, useStoppedMatch, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { useReadOnly, useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
@@ -65,6 +65,8 @@ export interface SidebarGroupSection {
    *  first, shown as stopped rows after the live ones. Other stopped members
    *  are the group's ghost rows, fetched by `GroupSection`. */
   held: StoppedWorkspaceEntry[]
+  /** Queued workspaces with no parent, waiting for room in the group. */
+  waiting: QueuedWorkspaceEntry[]
 }
 
 export interface SidebarLayout {
@@ -175,8 +177,9 @@ export function ListBadges({ scope, className }: { scope: ProjectScope; classNam
  *
  * A held workspace (stopped, with queued workspaces waiting on it) keeps a
  * stopped row in its usual place and keeps its group shown, so its queue
- * stays visible. Each queued workspace nests under the row it waits on;
- * those without one go in `orphans`.
+ * stays visible. Each queued workspace nests under the row it waits on, or
+ * with no parent under its group's header, which it keeps shown; those
+ * without either go in `orphans`.
  */
 export function sidebarLayout(
   workspaces: WorkspaceListEntry[],
@@ -194,19 +197,21 @@ export function sidebarLayout(
   const shownHeld = held.filter((h) => !liveIds.has(h.workspaceId))
   const heldIds = new Set(shownHeld.map((h) => h.workspaceId))
   const heldRows = shownHeld.map(heldAsStopped).sort(byCreatedAt)
+  const parentless = queued.filter((e) => e.parentWorkspaceId === undefined && e.parentQueuedId === undefined)
   // Provisioning rows keep the order they were started in (the caller sorts
   // them), so they don't move under the pointer.
-  const sections = shownGroups(groups, [...workspaces, ...provisioning, ...shownHeld])
+  const sections = shownGroups(groups, [...workspaces, ...provisioning, ...shownHeld, ...parentless])
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.groupId.localeCompare(a.groupId))
     .map((group) => ({
       group,
       provisioning: provisioning.filter((p) => filedIn(p) === group.groupId),
       members: live.filter((w) => filedIn(w) === group.groupId),
       held: heldRows.filter((d) => filedIn(d) === group.groupId),
+      waiting: parentless.filter((e) => filedIn(e) === group.groupId),
     }))
   const defaultHeld = heldRows.filter((d) => filedIn(d) === null)
 
-  const onScreen = new Set([...liveIds, ...heldIds])
+  const onScreen = new Set([...liveIds, ...heldIds, ...sections.map((s) => roomKey(s.group.groupId))])
   const queuedIds = new Set(queued.map((e) => e.id))
   return {
     provisioning: provisioning.filter((p) => filedIn(p) === null),
@@ -216,7 +221,7 @@ export function sidebarLayout(
     queuedChildren: queuedChildren(queued),
     orphans: queued.filter((e) => e.parentQueuedId !== undefined
       ? !queuedIds.has(e.parentQueuedId)
-      : e.orphaned === true || !onScreen.has(e.parentWorkspaceId ?? '')),
+      : e.orphaned === true || !onScreen.has(queuedParentId(e))),
   }
 }
 
@@ -254,10 +259,11 @@ export function sidebarRowIds(
  * workspace appears in one place.
  */
 export function groupDisplay(
-  section: Pick<SidebarGroupSection, 'provisioning' | 'members' | 'held'>,
+  section: Pick<SidebarGroupSection, 'provisioning' | 'members' | 'held' | 'waiting'>,
   state: { collapsed: boolean; showStopped: boolean; narrowed: boolean },
 ): { onlyGhosts: boolean; expanded: boolean; ownsGhosts: boolean } {
-  const onlyGhosts = section.provisioning.length + section.members.length + section.held.length === 0
+  const onlyGhosts = section.provisioning.length + section.members.length + section.held.length
+    + section.waiting.length === 0
   const expanded = state.narrowed || (onlyGhosts ? state.showStopped : !state.collapsed)
   return { onlyGhosts, expanded, ownsGhosts: !state.narrowed && expanded && state.showStopped }
 }
@@ -397,7 +403,7 @@ export function WorkspaceList({
   const layout = sidebarLayout(shown.workspaces, groups, shown.provisioning, shown.queued, shown.held)
   const orphans = filtering ? [] : layout.orphans
   const sections = narrowed
-    ? layout.groups.filter((s) => s.provisioning.length + s.members.length + s.held.length > 0)
+    ? layout.groups.filter((s) => s.provisioning.length + s.members.length + s.held.length + s.waiting.length > 0)
     : layout.groups
 
   const owning = new Set(sections.filter((s) => groupDisplay(s, {
@@ -486,7 +492,7 @@ export function WorkspaceList({
   const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
   // Every queued row nests under a counted row or is an orphan.
   const visibleCount = layout.defaultList.length + layout.defaultHeld.length + orphans.length
-    + sections.reduce((n, s) => n + s.members.length + s.held.length, 0)
+    + sections.reduce((n, s) => n + s.members.length + s.held.length + s.waiting.length, 0)
   const nothingLive = visibleCount === 0 && shown.provisioning.length === 0 && shown.drafts.length === 0
   // Names of possible parents, for a queued row's discard dialog.
   const names = new Map<string, QueueParent>([
@@ -538,6 +544,7 @@ export function WorkspaceList({
   // On-screen drop zones by group id (null = the default list). Rects are
   // read on each move, so they are never stale.
   const zones = useRef(new Map<string | null, HTMLElement>())
+  const [dropNotice, setDropNotice] = useState<{ groupId: string; message: string } | null>(null)
   const zoneRef = (groupId: string | null) => (el: HTMLDivElement | null): void => {
     if (el) zones.current.set(groupId, el)
     else zones.current.delete(groupId)
@@ -552,10 +559,16 @@ export function WorkspaceList({
     },
     onDrop: ({ item, over }) => {
       if (over === undefined || over === item.from) return
-      // Not optimistic: the next snapshot moves the row. If the group was
-      // deleted mid-drag the server answers NOT_FOUND.
+      // Not optimistic: the next snapshot moves the row. A refusal (the
+      // group deleted mid-drag, or at its workspace limit) shows under the
+      // group's header for a few seconds.
       api.workspace.group.move.$post({ json: { projectId: item.projectId, workspaceId: item.workspaceId, group: over } })
-        .catch((e: unknown) => console.error('group move failed', e))
+        .catch((e: unknown) => {
+          if (over === null) return
+          const notice = { groupId: over, message: e instanceof Error ? e.message : String(e) }
+          setDropNotice(notice)
+          setTimeout(() => setDropNotice((cur) => cur === notice ? null : cur), 6000)
+        })
     },
   })
   // Mouse only, so touch can scroll; on touch the group dialog moves
@@ -755,6 +768,7 @@ export function WorkspaceList({
               narrowed={narrowed}
               elsewhere={elsewhere}
               hidden={hidden}
+              {...(dropNotice?.groupId === section.group.groupId ? { notice: dropNotice.message } : {})}
             />
           ))}
 

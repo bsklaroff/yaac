@@ -75,6 +75,26 @@ export async function groupMove(
 }
 
 export async function groupDelete(project: string, group: string): Promise<void> {
+  const { projectId, match } = await findGroup(project, group)
+  await api.workspace.group.delete.$post({ json: { projectId, groupId: match.groupId } })
+  console.log(`Deleted group "${match.name}". Its workspaces are back in the default list.`)
+}
+
+/** Set or clear (`none`) a group's workspace limit (docs/workspace-groups.md). */
+export async function groupSetLimit(project: string, group: string, limit: string): Promise<void> {
+  if (limit !== 'none' && !/^[1-9]\d{0,5}$/.test(limit)) {
+    throw new Error(`The limit must be a whole number of workspaces from 1, or "none" (got "${limit}")`)
+  }
+  const { projectId, match } = await findGroup(project, group)
+  const workspaceLimit = limit === 'none' ? null : Number(limit)
+  await api.workspace.group['set-limit'].$post({ json: { projectId, groupId: match.groupId, workspaceLimit } })
+  console.log(workspaceLimit === null
+    ? `Group "${match.name}" has no workspace limit now.`
+    : `Group "${match.name}" now runs at most ${workspaceLimit} workspace${workspaceLimit === 1 ? '' : 's'} at once.`)
+}
+
+/** The one group `group` names in a project, by id or name. */
+async function findGroup(project: string, group: string): Promise<{ projectId: string; match: WorkspaceGroupSummary }> {
   const projectId = await resolveProjectId(project)
   const { groups } = await api.workspace.group.list.$get({ query: { project: projectId } })
   const matches = resolveLocally(groups, group)
@@ -85,9 +105,7 @@ export async function groupDelete(project: string, group: string): Promise<void>
       + `(${matches.map((g) => g.groupId).join(', ')})`,
     )
   }
-  const match = matches[0]
-  await api.workspace.group.delete.$post({ json: { projectId, groupId: match.groupId } })
-  console.log(`Deleted group "${match.name}". Its workspaces are back in the default list.`)
+  return { projectId, match: matches[0] }
 }
 
 /**
@@ -107,8 +125,8 @@ async function projectOfWorkspace(workspaceId: string): Promise<string | undefin
 }
 
 /**
- * Find groups by exact id or by name, client-side, for `create` and
- * `delete`. Returns every name match so callers can detect ambiguity. Names
+ * Find groups by exact id or by name, client-side, for `create`, `delete`
+ * and `set-limit`. Returns every name match so callers can detect ambiguity. Names
  * are compared after `normalizeTitle`, the normalization the server applies
  * when storing them.
  */
@@ -138,7 +156,13 @@ function renderGroups(
     .sort((a, b) => a.project.localeCompare(b.project)
       || a.createdAt.localeCompare(b.createdAt))
   printTable(
-    [{ header: 'GROUP' }, { header: 'PROJECT' }, { header: 'RUNNING' }, { header: 'PINNED' }, { header: 'CREATED' }],
-    rows.map((g) => [g.name, g.project, String(counts.get(g.groupId) ?? 0), g.pinned ? 'yes' : '', g.createdAt]),
+    [
+      { header: 'GROUP' }, { header: 'PROJECT' }, { header: 'RUNNING' }, { header: 'LIMIT' }, { header: 'PINNED' },
+      { header: 'CREATED' },
+    ],
+    rows.map((g) => [
+      g.name, g.project, String(counts.get(g.groupId) ?? 0), g.workspaceLimit !== undefined ? String(g.workspaceLimit) : '',
+      g.pinned ? 'yes' : '', g.createdAt,
+    ]),
   )
 }
