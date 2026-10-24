@@ -1634,6 +1634,7 @@ export interface NodeUsage extends ResourceUse {
   cpuCapacityCores: number
   memoryCapacityBytes: number
   swapBytes: number
+  swapCapacityBytes: number
   /** Conditions that are not as they should be (`NotReady`,
    *  `MemoryPressure`, …). */
   conditions: string[]
