@@ -1,0 +1,1 @@
+ALTER TABLE "workspace_groups" ADD COLUMN "workspace_limit" integer;

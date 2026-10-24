@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
-import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup } from '#db/group-store'
+import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db/group-store'
 import { recordDeathSeen, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { BUILT_IN_USER_ID } from '#db/user-store'
 import { listWorkspaceGroups, resolveGroup } from '#domain/workspaces/groups'
@@ -38,6 +38,10 @@ describe('workspace groups (domain)', () => {
       expect(groups.find((g) => g.groupId === founded.groupId)).toMatchObject({
         projectId: PROJ, name: 'release train', pinned: false,
       })
+      // A workspace limit is sent only where one is set.
+      expect(groups.find((g) => g.groupId === founded.groupId)).not.toHaveProperty('workspaceLimit')
+      await setWorkspaceGroupLimit(PROJ, empty.groupId, 4)
+      expect((await listWorkspaceGroups(PROJ)).find((g) => g.groupId === empty.groupId)?.workspaceLimit).toBe(4)
       // UTC 'YYYY-MM-DD HH:MM:SS'; groups display in this order.
       expect(groups[0].createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
 
@@ -75,6 +79,10 @@ describe('workspace groups (domain)', () => {
       // stored name is returned either way.
       expect(await resolveGroup(PROJ, '  release   train '))
         .toEqual({ groupId: group.groupId, name: 'Release Train' })
+      // With its workspace limit, for callers that wait on one.
+      await setWorkspaceGroupLimit(PROJ, group.groupId, 2)
+      expect(await resolveGroup(PROJ, 'release train'))
+        .toEqual({ groupId: group.groupId, name: 'Release Train', workspaceLimit: 2 })
     })
 
     it('refuses an unknown name rather than inventing one', async () => {

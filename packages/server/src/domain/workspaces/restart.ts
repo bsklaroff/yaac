@@ -2,6 +2,7 @@ import { tearingDown, teardownForRestart } from './cleanup'
 import { createWorkspace, type WorkspaceCreateResult } from './create'
 import { resolveWorkspaceId } from './resolve'
 import { provision, type ProvisionRun } from './provisioning'
+import { readGroupRoom, refuseFullGroup } from './group-limits'
 import {
   clearWorkspaceStopped,
   findWorkspaceRow,
@@ -28,8 +29,9 @@ import {
 /**
  * Check a restart of a workspace id or prefix, running or stopped, and
  * register its provisioning row, filed under the workspace's group so it
- * keeps its place in the sidebar. Refuses a caller who does not own it, and
- * with `stoppedOnly` a workspace that is running.
+ * keeps its place in the sidebar. Refuses a caller who does not own it, a
+ * group at its workspace limit, and with `stoppedOnly` a workspace that is
+ * running.
  *
  * The run tears down any running unit (keeping the checkout) and launches a
  * new one that resumes the conversations active when the workspace stopped,
@@ -68,6 +70,9 @@ export async function prepareRestart(
   const settled = !unit && !tearingDown(workspaceId)
     && await workspaceDriver().findForTeardown(workspaceId) === undefined
   const planned = settled ? await resumePlan(projectId, workspaceId, tool, row.mode) : undefined
+  // A stopped workspace takes a slot in its group again; a running one
+  // already holds its own.
+  refuseFullGroup(await readGroupRoom(projectId, row.groupId), workspaceId)
 
   // The row also keeps `inFlightWorkspaceIds` reporting the workspace, which
   // stops the stale reaper deleting the dirs the new launch is about to

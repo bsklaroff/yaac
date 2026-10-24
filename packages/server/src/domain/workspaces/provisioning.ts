@@ -293,6 +293,18 @@ export async function dismissProvisioning(principal: Actor, workspaceId: string)
   removeProvisioning(workspaceId)
 }
 
+/**
+ * Called with the project of a provision filed in a group that fails, since
+ * that frees its slot if the group has a workspace limit
+ * (docs/workspace-groups.md). An ungrouped one frees nothing anything waits
+ * on. The queue sets it: it launches through here, so this cannot import it.
+ */
+let provisionFailed: (projectId: string) => void = () => {}
+
+export function onProvisionFailed(fn: (projectId: string) => void): void {
+  provisionFailed = fn
+}
+
 /** A create or restart that passed its checks and holds its row: called
  *  once, it runs the provision and settles the row. */
 export type ProvisionRun<T> = (onProgress?: (message: string) => void) => Promise<T>
@@ -322,12 +334,14 @@ export function provision<T extends { workspaceId: string }>(
         onProgress?.(message)
       })
       ranAs = result.workspaceId
+      noteWentLive(input, ranAs)
       // Drop the row before returning, so the snapshot shows the workspace.
       removeProvisioning(workspaceId)
       notifyWorkspaceListChanged()
       return result
     } catch (err) {
       failProvisioning(workspaceId, err instanceof Error ? err.message : String(err))
+      if (input.groupId !== undefined) provisionFailed(input.projectId)
       throw err
     } finally {
       // Only if not already replaced by a newer run on the same id.
@@ -413,6 +427,30 @@ function markSettled(workspaceId: string): void {
 }
 
 /**
+ * Provisions that succeeded lately, under the id they run as (a claimed
+ * spare's, for a create that claimed one). A workspace-limit check that read
+ * the rows and runtime before one settled finds it in neither, nor in the
+ * registry any more, so it counts these instead (docs/workspace-groups.md).
+ */
+const wentLive: Array<{ workspaceId: string; projectId: string; groupId?: string; at: number }> = []
+
+function noteWentLive(input: ProvisioningInput, ranAs: string): void {
+  const now = Date.now()
+  while (wentLive.length > 0 && wentLive[0].at < now - SETTLED_KEEP_MS) wentLive.shift()
+  wentLive.push({
+    workspaceId: ranAs,
+    projectId: input.projectId,
+    ...(input.groupId !== undefined ? { groupId: input.groupId } : {}),
+    at: now,
+  })
+}
+
+/** The provisions that went live at or after `sinceMs`. */
+export function wentLiveSince(sinceMs: number): Array<{ workspaceId: string; projectId: string; groupId?: string }> {
+  return wentLive.filter((w) => w.at >= sinceMs)
+}
+
+/**
  * Ids a sweep acting on a listing taken at `listedAtMs` must not touch:
  * workspaces still being created or restarted, including a spare a create
  * has claimed, which runs under its own id, and a spare still being warmed;
@@ -434,4 +472,5 @@ export function clearAllProvisioningForTests(): void {
   runs.clear()
   spawningSpares.clear()
   settledAt.clear()
+  wentLive.length = 0
 }

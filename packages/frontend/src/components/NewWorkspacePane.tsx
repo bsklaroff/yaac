@@ -12,7 +12,7 @@ import { Typeahead } from '#components/ui/Typeahead'
 import { api } from '#lib/api'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { shownGroups } from '#lib/groups'
-import type { NewWorkspaceForm, PendingDraft } from '#lib/newWorkspace'
+import { entryStart, START_WHEN_ROOM, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
 import { useProjectBranches } from '#lib/useProjectBranches'
 import { clip, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
@@ -210,7 +210,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       seed: entrySeed(e),
     })),
   ]
-  if (start !== '' && !options.some((o) => o.value === start)) {
+  if (start !== '' && start !== START_WHEN_ROOM && !options.some((o) => o.value === start)) {
     const held = (snapshot?.heldWorkspaces ?? []).find((h) => h.workspaceId === start)
     const provisioning = (snapshot?.provisioning ?? []).find((p) => p.workspaceId === start)
     options.splice(1, 0, {
@@ -233,6 +233,14 @@ export function NewWorkspacePane({ projectId, bar }: {
   // A group deleted since it was chosen falls back to none.
   const wantedGroup = form.groupId !== undefined ? form.groupId : seed?.groupId ?? null
   const groupId = groups.some((g) => g.groupId === wantedGroup) ? wantedGroup : null
+  // With no parent, an entry waits for room in a group with a workspace limit.
+  const limited = groups.find((g) => g.groupId === groupId && g.workspaceLimit !== undefined)
+  if (limited !== undefined || start === START_WHEN_ROOM) {
+    options.splice(1, 0, {
+      value: START_WHEN_ROOM,
+      label: limited !== undefined ? `When “${clip(limited.name, 40)}” has room` : 'When its group has room',
+    })
+  }
   // Offer the sidebar's groups, groups queued workspaces will launch into
   // (the sidebar doesn't show those yet), and the current choice.
   const offeredGroups = shownGroups(groups, [
@@ -317,7 +325,7 @@ export function NewWorkspacePane({ projectId, bar }: {
     ...(model !== '' ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(branchValue !== '' ? { branch: branchValue } : {}),
-    ...(start !== '' ? { startAfter: start } : {}),
+    ...(start !== '' && start !== START_WHEN_ROOM ? { startAfter: start } : {}),
     ...(titleText !== '' ? { title: titleText } : {}),
     ...(groupId !== null ? { groupId } : {}),
   }
@@ -404,13 +412,19 @@ export function NewWorkspacePane({ projectId, bar }: {
     // Expand the sidebar section the entry lands in.
     const reveal = (e: QueuedWorkspaceEntry): void =>
       useUiStore.getState().setRevealQueued({ id: e.id, parent: queuedParentId(e) })
-    const moved = editing !== undefined && queued && start !== queuedParentId(editing)
+    const moved = editing !== undefined && queued && start !== entryStart(editing)
+    const parent = start === START_WHEN_ROOM ? null : start
     const queue = api.workspace.queue
     run(editing === undefined
       ? queue.create.$post({
-        json: { project: projectId, parent: start, ...settings, ...(draft !== undefined ? { draftId: draft.id } : {}) },
+        json: {
+          project: projectId,
+          ...(parent !== null ? { parent } : {}),
+          ...settings,
+          ...(draft !== undefined ? { draftId: draft.id } : {}),
+        },
       }).then(reveal)
-      : queue.update.$post({ json: { id: editing.id, ...settings, ...(moved ? { parent: start } : {}) } })
+      : queue.update.$post({ json: { id: editing.id, ...settings, ...(moved ? { parent } : {}) } })
         .then(async (e) => {
           // "Now" on a queued workspace is Save then Run now.
           if (!queued) await queue.run.$post({ json: { id: editing.id } })

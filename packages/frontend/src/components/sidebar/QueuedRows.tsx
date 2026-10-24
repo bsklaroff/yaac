@@ -40,8 +40,10 @@ export const QueueContext = createContext<QueueContextValue>({
 
 /** Everything queued under a workspace row, behind one expander that counts
  *  entries at every depth, including failed launches (which would otherwise
- *  be hidden when collapsed). Chains inside it always show in full. */
-export function QueuedSet({ parentId }: { parentId: string }): JSX.Element | null {
+ *  be hidden when collapsed). Chains inside it always show in full. A
+ *  group's set of entries `waiting` for room says so, since it follows the
+ *  group's last row rather than belonging to it. */
+export function QueuedSet({ parentId, waiting = false }: { parentId: string; waiting?: boolean }): JSX.Element | null {
   const { children, expanded, setOpen } = useContext(QueueContext)
   if (!children.has(parentId)) return null
   const entries: QueuedWorkspaceEntry[] = []
@@ -60,7 +62,7 @@ export function QueuedSet({ parentId }: { parentId: string }): JSX.Element | nul
       <Collapsible.Trigger className="mx-2 flex items-center gap-1 pl-5 pr-2 py-1 text-xs
         text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-        {n} queued workspace{n === 1 ? '' : 's'}
+        {waiting ? `${n} waiting for room` : `${n} queued workspace${n === 1 ? '' : 's'}`}
         {failed > 0 && <span className="text-danger">· {failed} failed</span>}
       </Collapsible.Trigger>
       <Collapsible.Panel>
@@ -94,6 +96,9 @@ function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextVa
   const n = context.children.get(entry.id)?.length ?? 0
   if (n === 0) return lost
   const them = n === 1 ? 'The workspace queued after it' : `The ${n} workspaces queued after it`
+  if (entry.parentWorkspaceId === undefined && entry.parentQueuedId === undefined) {
+    return `${lost} ${them} will wait for room in ${n === 1 ? 'its' : 'their'} group instead.`
+  }
   const parent = context.parent(entry.parentWorkspaceId ?? entry.parentQueuedId ?? '')
   const name = `“${clip(parent.name, 40)}”`
   switch (parent.kind) {
@@ -137,7 +142,7 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
         <span className="flex items-center gap-2 text-xs text-text-faint">
           {failure !== undefined
             ? <span className="truncate text-danger" title={failure}>{failure}</span>
-            : <span className="truncate">{agentLabel(entry.tool, entry)} · queued</span>}
+            : <span className="truncate">{agentLabel(entry.tool, entry)} · {entry.waitingForRoom === true ? 'waiting for room' : 'queued'}</span>}
           {entry.orphaned === true && <span className="ml-auto shrink-0">parent gone</span>}
         </span>
       </button>

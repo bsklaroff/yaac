@@ -41,6 +41,8 @@ import {
   listActiveAgentSessions,
   listWorkspaceAgentSessions,
   getWorkspaceRow,
+  setWorkspaceGroup,
+  setWorkspaceGroupLimit,
 } from '#db'
 import { closeDb } from '#db/client'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
@@ -624,6 +626,26 @@ describe('prepareRestart', () => {
     await expect(prepareRestart(local, 'wt-4')).rejects.toMatchObject({ code: 'CONFLICT' })
     await run()
     expect(listProvisioning()).toEqual([])
+  })
+
+  // docs/workspace-groups.md
+  it('refuses a stopped workspace into its group at its workspace limit, but not a running member', async () => {
+    await stoppedWorkspace('wt-cap')
+    await created('wt-busy')
+    const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Workers', 'wt-cap')
+    await setWorkspaceGroup(DEMO_PROJECT_ID, 'wt-busy', group.groupId)
+    await setWorkspaceGroupLimit(DEMO_PROJECT_ID, group.groupId, 1)
+    const busy = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-busy', jobName: 'yaac-wt-busy' })
+    installDriver({ list: () => Promise.resolve([busy]) })
+
+    await expect(prepareRestart(local, 'wt-cap')).rejects.toMatchObject({
+      code: 'CONFLICT', message: expect.stringMatching(/group "Workers" is at its workspace limit of 1 \(running or starting\);/) as string,
+    })
+    expect(listProvisioning()).toEqual([])
+
+    // A running member already holds its slot.
+    live = busy
+    await expect(restart('wt-busy')).resolves.toMatchObject({ workspaceId: 'wt-busy' })
   })
 
   it('expands a unique prefix before asking the runtime, and refuses an ambiguous or unknown one', async () => {

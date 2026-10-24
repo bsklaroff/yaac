@@ -7,7 +7,7 @@ import { projectAdd } from '#commands/project-add'
 import { projectList } from '#commands/project-list'
 import { projectCreate } from '#commands/project-create'
 import { projectClone } from '#commands/project-clone'
-import { groupCreate, groupDelete, groupList, groupMove } from '#commands/group'
+import { groupCreate, groupDelete, groupList, groupMove, groupSetLimit } from '#commands/group'
 import { workspaceCreate } from '#commands/workspace-create'
 import { scopeToUser } from '#commands/api'
 import { workspaceList } from '#commands/workspace-list'
@@ -302,7 +302,7 @@ group
 
 group
   .command('list')
-  .description('List your projects\' (or --user\'s) workspace groups and how many running workspaces each holds')
+  .description('List your projects\' (or --user\'s) workspace groups, how many running workspaces each holds, and its workspace limit')
   .argument('[project]', 'Filter by project name, id, or id prefix')
   .action(groupList)
 
@@ -315,6 +315,14 @@ group
   .argument('[group]', 'Group name; omit it to return the workspace to the default list')
   .option('--project <project>', 'Project (name, id, or id prefix) the workspace belongs to (required for a stopped workspace)')
   .action(groupMove)
+
+group
+  .command('set-limit')
+  .description('Cap how many of a group\'s workspaces run or start at once; queued workspaces with no parent wait for room')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<group>', 'Group name')
+  .argument('<limit>', 'A whole number of workspaces, or "none" to remove the cap')
+  .action(groupSetLimit)
 
 group
   .command('delete')

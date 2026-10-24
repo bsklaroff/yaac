@@ -1,20 +1,24 @@
 /**
  * Queued workspaces (docs/queued-workspaces.md): create requests that run
  * when their parent (a workspace or another entry) stops naturally, so they
- * chain to any depth.
+ * chain to any depth, or that wait with no parent for room in a group with
+ * a workspace limit (docs/workspace-groups.md).
  *
  * Settings are resolved when queued, so the sidebar shows exactly what will
  * launch. Launches go through `prepareStart` without claiming a spare,
  * since children already point at the new id. Only `stopWorkspace` releases
  * children; a workspace that died holds them until the user runs or discards
- * them.
+ * them. A released entry, or one with no parent, launches once its group
+ * has room (`startWaitingWorkspaces`).
  */
 import crypto from 'node:crypto'
 import { resolveCreate } from './create'
 import { resolveGroup } from './groups'
+import { groupFull, readGroupRoom, refuseFullGroup, reserveGroupSlot } from './group-limits'
 import {
   inFlightCreate,
   listProvisioning,
+  onProvisionFailed,
   ProvisionStoppedError,
   refuseDeleting,
   removeProvisioning,
@@ -64,8 +68,10 @@ import {
 /** What a queue write asks for. Every field but the prompt is optional and
  *  resolved from the parent, then from the project's create defaults. */
 export interface QueueRequest {
-  /** A workspace id, or a queued entry's id — or a unique prefix of either. */
-  parent: string
+  /** A workspace id, or a queued entry's id — or a unique prefix of either.
+   *  Absent or null, the entry waits for room in `group`, which must name a
+   *  group with a workspace limit. */
+  parent?: string | null
   prompt: string
   tool?: AgentTool
   model?: string
@@ -90,7 +96,7 @@ export interface QueueRequest {
 export type QueueSource = 'user' | { ceiling: PermissionMode }
 
 /** A resolved parent and the settings it supplies as defaults (absent when
- *  not yet known). */
+ *  not yet known, or with no parent). */
 interface ParentInfo {
   pointer: QueuedParent
   tool?: AgentTool
@@ -105,6 +111,9 @@ interface ParentInfo {
  *  interrupted by a server restart. */
 const launching = new Set<string>()
 
+// A failed create or restart frees a slot that no stop reports.
+onProvisionFailed((projectId) => { void startWaitingWorkspaces(projectId) })
+
 /** Queue a create request under a workspace or another entry. */
 export async function queueWorkspace(
   principal: Actor,
@@ -115,11 +124,18 @@ export async function queueWorkspace(
 ): Promise<QueuedWorkspaceEntry> {
   await authorizeProject(principal, projectId)
   checkPrompt(request.prompt)
-  const parent = await resolveParent(projectId, request.parent)
-  const settings = await resolveSettings(projectId, parent, request, source)
+  const parent = request.parent == null
+    ? await roomToWaitIn(projectId, request.group)
+    : await resolveParent(projectId, request.parent)
+  const settings = await resolveSettings(projectId, parent, {
+    ...request,
+    ...(parent.pointer === null ? { group: parent.groupId ?? null } : {}),
+  }, source)
   refuseDeletedParent(parent.pointer)
   const row = await insertQueuedWorkspace(projectId, parent.pointer, settings, generatedTitle)
-  return (await toEntries([row]))[0]
+  const [entry] = await toEntries([row])
+  await startWaitingWorkspaces(projectId)
+  return entry
 }
 
 /**
@@ -137,9 +153,13 @@ export async function updateQueuedWorkspace(
 ): Promise<QueuedWorkspaceEntry> {
   const row = await editableRow(principal, id)
   if (patch.prompt !== undefined) checkPrompt(patch.prompt)
-  const parent = patch.parent !== undefined
-    ? await resolveParent(row.projectId, patch.parent)
-    : await parentInfo(row.projectId, pointerOf(row))
+  // An entry left with no parent must still have a limited group to wait in.
+  const parentless = patch.parent === null || (patch.parent === undefined && pointerOf(row) === null)
+  const parent = parentless && (patch.parent === null || patch.group !== undefined)
+    ? await roomToWaitIn(row.projectId, patch.group !== undefined ? patch.group : row.groupId ?? null)
+    : patch.parent != null
+      ? await resolveParent(row.projectId, patch.parent)
+      : await parentInfo(row.projectId, pointerOf(row))
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
   const keptEffort = patch.effort ?? (retooled ? undefined : keepableEffort(row, patch.model))
   const settings = await resolveSettings(row.projectId, parent, {
@@ -148,7 +168,8 @@ export async function updateQueuedWorkspace(
     mode: patch.mode ?? row.mode,
     branch: patch.branch ?? row.branch,
     title: patch.title ?? row.title ?? '',
-    group: patch.group !== undefined ? patch.group : row.groupId ?? null,
+    group: parent.pointer === null && parent.groupId !== undefined ? parent.groupId
+      : patch.group !== undefined ? patch.group : row.groupId ?? null,
     ...(patch.model !== undefined ? { model: patch.model } : retooled ? {} : { model: row.model }),
     ...(patch.permissionMode !== undefined
       ? { permissionMode: patch.permissionMode }
@@ -161,7 +182,9 @@ export async function updateQueuedWorkspace(
     ...(patch.parent !== undefined ? { parent: parent.pointer } : {}),
   })
   if (!updated) throw launchingConflict()
-  return (await toEntries([updated]))[0]
+  const [entry] = await toEntries([updated])
+  await startWaitingWorkspaces(row.projectId)
+  return entry
 }
 
 /** An entry's stored effort, if the model it will run (a new one, or its
@@ -172,30 +195,71 @@ function keepableEffort(row: QueuedWorkspaceRow, model: string | undefined): str
   return levels?.includes(row.effort) === true ? row.effort : undefined
 }
 
-/** Discard an entry. Its children splice up to its own parent. */
+/** Discard an entry. Its children splice up to its own parent, so the
+ *  children of one with no parent then wait for room themselves. */
 export async function discardQueuedWorkspace(principal: Actor, id: string): Promise<void> {
-  await editableRow(principal, id)
+  const row = await editableRow(principal, id)
   if (!await deleteQueuedWorkspace(id)) throw launchingConflict()
+  await startWaitingWorkspaces(row.projectId)
 }
 
 /**
  * Run an entry now. Returns the new workspace id once the launch is claimed;
- * the launch continues detached as a provisioning row.
+ * the launch continues detached as a provisioning row. Refused while its
+ * group is at its workspace limit.
  */
 export async function runQueuedWorkspace(principal: Actor, id: string): Promise<{ workspaceId: string }> {
-  await editableRow(principal, id)
+  const row = await editableRow(principal, id)
+  refuseFullGroup(await readGroupRoom(row.projectId, row.groupId), '')
   const released = await releaseQueuedWorkspace(id)
   if (!released) throw launchingConflict()
-  const workspaceId = await launch(released)
-  if (workspaceId === undefined) throw launchingConflict()
-  return { workspaceId }
+  const launched = await launch(released)
+  if (launched === undefined) throw launchingConflict()
+  // Released, so it starts as soon as a slot frees.
+  if (launched === 'full') throw new ServerError('CONFLICT', 'its group filled up meanwhile; it starts once there is room')
+  return launched
 }
 
-/** Launch every entry waiting directly on a workspace that stopped. */
+/** Release every entry waiting directly on a workspace that stopped, and
+ *  launch what now has room, the stop's own slot included. */
 export async function startQueuedChildren(projectId: string, workspaceId: string): Promise<void> {
-  for (const row of await releaseQueuedChildren(projectId, workspaceId)) {
-    await launch(row)
+  await releaseQueuedChildren(projectId, workspaceId)
+  await startWaitingWorkspaces(projectId)
+}
+
+/**
+ * Launch every entry that waits only for room, oldest first, while its
+ * group has a free slot: one released by its parent's stop or a "Run now",
+ * and one queued with no parent. A group without a limit always has room.
+ * Called wherever a slot may have freed (a stop or death, a failed create
+ * or restart, a move out, a raised or cleared limit, a deleted group), and
+ * once at boot (`resumeQueuedWorkspaces`).
+ * A launch takes its slot before it claims the entry, so concurrent calls
+ * cannot over-launch. One that failed waits for the user, as any failed
+ * launch does. Never throws, since its callers' own writes have succeeded:
+ * an entry it could not launch waits for the next slot that frees.
+ */
+export async function startWaitingWorkspaces(projectId?: string): Promise<void> {
+  const rows = await listQueuedWorkspaceRows(projectId).catch((err: unknown) => {
+    serverLog(`[queue] listing queued workspaces failed: ${String(err)}`)
+    return []
+  })
+  // Once a group is full, its newer entries wait behind the older one.
+  const full = new Set<string>()
+  for (const row of rows.filter(waitsForRoom)) {
+    const key = `${row.projectId}/${row.groupId ?? ''}`
+    if (full.has(key)) continue
+    try {
+      if (await launch(row) === 'full') full.add(key)
+    } catch (err) {
+      serverLog(`[queue] launching queued workspace ${row.id.slice(0, 8)}... failed: ${String(err)}`)
+    }
   }
+}
+
+function waitsForRoom(row: QueuedWorkspaceRow): boolean {
+  return row.launchWorkspaceId === undefined && row.launchError === undefined
+    && (row.releasedAt !== undefined || pointerOf(row) === null)
 }
 
 /**
@@ -222,61 +286,57 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
 }
 
 /**
- * Whether this process has put back every launch a previous server left
- * claimed. Only then: a claimed launch seen later is this process's own.
+ * Pick the queue up where a previous server left it, once at boot:
+ * - A claimed launch not running here was interrupted, so it is marked
+ *   failed rather than guessed at (a live workspace does not prove the
+ *   launch finished). The stale reaper handles any half-made workspace.
+ * - Then whatever waits only for room is launched where there is room
+ *   (`startWaitingWorkspaces`): a release the previous server never
+ *   launched, and slots freed while no server ran.
+ * After this, stops, deaths, failures and group edits launch directly.
  */
-let restartLaunchesSwept = false
-
-/**
- * The queue's backstop, run every resync:
- * - A released entry that never launched is launched. A release can be left
- *   so by a restart, or by a launch that threw while the server ran.
- * - Until it has once succeeded, a claimed launch not running here is
- *   marked failed rather than guessed at (a live workspace does not prove
- *   the launch finished). The stale reaper handles any half-made workspace.
- */
-export async function reconcileQueuedWorkspaces(): Promise<void> {
-  const rows = (await listQueuedWorkspaceRows()).filter((r) => r.launchWorkspaceId === undefined
-    ? r.releasedAt !== undefined
-    : !restartLaunchesSwept)
-  let swept = true
-  for (const row of rows) {
+export async function resumeQueuedWorkspaces(): Promise<void> {
+  for (const row of await listQueuedWorkspaceRows()) {
     // Per row: a "Run now" may have started since the read.
-    if (launching.has(row.id)) continue
-    try {
-      if (row.launchWorkspaceId === undefined) await launch(row)
-      else {
-        await failQueuedLaunch(
-          row.id, row.launchWorkspaceId,
-          'interrupted by a server restart; run it again once you have checked what it left',
-        )
-      }
-    } catch (err) {
-      if (row.launchWorkspaceId !== undefined) swept = false
-      serverLog(`[queue] reconciling queued workspace ${row.id.slice(0, 8)}... failed: ${String(err)}`)
-    }
+    if (row.launchWorkspaceId === undefined || launching.has(row.id)) continue
+    await failQueuedLaunch(
+      row.id, row.launchWorkspaceId,
+      'interrupted by a server restart; run it again once you have checked what it left',
+    ).catch((err: unknown) => {
+      serverLog(`[queue] putting back queued workspace ${row.id.slice(0, 8)}... failed: ${String(err)}`)
+    })
   }
-  restartLaunchesSwept ||= swept
+  await startWaitingWorkspaces()
 }
 
 /**
- * Claim an entry's launch, then start it detached. Returns the new workspace
- * id, or undefined if another launcher claimed it. Claiming first means a
+ * Take a slot in the entry's group and claim its launch, then start it
+ * detached. Returns the new workspace's id, `'full'` if the group has no
+ * room, or undefined if another launcher claimed it. Claiming first means a
  * double-click or a race starts only one workspace.
  */
-async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
+async function launch(row: QueuedWorkspaceRow): Promise<{ workspaceId: string } | 'full' | undefined> {
   if (launching.has(row.id)) return undefined
-  launching.add(row.id)
+  const room = await readGroupRoom(row.projectId, row.groupId)
   const workspaceId = crypto.randomUUID()
+  // Synchronous from here to the reservation, so the slot is ours.
+  if (launching.has(row.id)) return undefined
+  if (groupFull(room, workspaceId)) return 'full'
+  launching.add(row.id)
+  const freeSlot = room !== undefined ? reserveGroupSlot(room.projectId, room.groupId, workspaceId) : () => {}
   let claimed = false
   try {
     claimed = await claimQueuedLaunch(row.id, workspaceId)
   } finally {
-    if (!claimed) launching.delete(row.id)
+    if (!claimed) {
+      launching.delete(row.id)
+      freeSlot()
+    }
   }
   if (!claimed) return undefined
 
   void (async () => {
+    let failed = false
     try {
       // The server launches it: whoever queued or ran the entry was
       // authorized then.
@@ -300,18 +360,24 @@ async function launch(row: QueuedWorkspaceRow): Promise<string | undefined> {
       await run()
       await finishQueuedLaunch(row.id, workspaceId)
     } catch (err) {
+      failed = true
       // Show the error on the queued row only, not as a provisioning row. A
-      // stop is no error: the entry just goes back to waiting.
-      const error = err instanceof ProvisionStoppedError ? null
+      // stop is no error: the entry just goes back to waiting, except one
+      // with no parent, which would relaunch at once.
+      const error = err instanceof ProvisionStoppedError
+        ? pointerOf(row) === null ? 'stopped before its agent started' : null
         : err instanceof Error ? err.message : String(err)
       await failQueuedLaunch(row.id, workspaceId, error)
         .catch((e: unknown) => serverLog(`[queue] recording a failed launch failed: ${String(e)}`))
       removeProvisioning(workspaceId)
     } finally {
       launching.delete(row.id)
+      freeSlot()
     }
+    // Its slot is free only now that its reservation is gone.
+    if (failed) await startWaitingWorkspaces(row.projectId)
   })()
-  return workspaceId
+  return { workspaceId }
 }
 
 /** An entry that exists and is not mid-launch — what every edit needs. */
@@ -341,13 +407,35 @@ function checkPrompt(prompt: string): void {
  * entry under it would wait on a parent that can never stop.
  */
 function refuseDeletedParent(pointer: QueuedParent): void {
-  if ('parentWorkspaceId' in pointer) refuseDeleting(pointer.parentWorkspaceId)
+  if (pointer !== null && 'parentWorkspaceId' in pointer) refuseDeleting(pointer.parentWorkspaceId)
 }
 
 function pointerOf(row: QueuedWorkspaceRow): QueuedParent {
-  return row.parentQueuedId !== undefined
-    ? { parentQueuedId: row.parentQueuedId }
-    : { parentWorkspaceId: row.parentWorkspaceId ?? '' }
+  return row.parentQueuedId !== undefined ? { parentQueuedId: row.parentQueuedId }
+    : row.parentWorkspaceId !== undefined ? { parentWorkspaceId: row.parentWorkspaceId }
+    : null
+}
+
+/**
+ * An entry with no parent waits for room in a group, so the group must
+ * exist and have a workspace limit: an unlimited group never needs waiting
+ * for. `group` is an id or name; an unknown name is refused, not created.
+ */
+async function roomToWaitIn(projectId: string, group: string | null | undefined): Promise<ParentInfo> {
+  const instead = 'Use create to start it now, or give it a parent workspace to queue after.'
+  if (group == null) {
+    throw new ServerError('VALIDATION', `a queued workspace with no parent needs a group with a workspace limit to wait in. ${instead}`)
+  }
+  const resolved = await resolveGroup(projectId, group).catch((err: unknown) => {
+    if (!(err instanceof ServerError && err.code === 'NOT_FOUND')) throw err
+    throw new ServerError('VALIDATION', `no group "${group}" in this project; a queued workspace with no parent `
+      + `waits for room in an existing group with a workspace limit. ${instead}`)
+  })
+  if (resolved.workspaceLimit === undefined) {
+    throw new ServerError('VALIDATION', `group "${resolved.name}" has no workspace limit, so a workspace never `
+      + `waits for room in it. ${instead}`)
+  }
+  return { pointer: null, groupId: resolved.groupId }
 }
 
 /**
@@ -396,6 +484,7 @@ async function resolveParent(projectId: string, parent: string): Promise<ParentI
  *  conversation (current model) and row, falling back to what an in-flight
  *  create asked for. */
 async function parentInfo(projectId: string, pointer: QueuedParent): Promise<ParentInfo> {
+  if (pointer === null) return { pointer }
   if ('parentQueuedId' in pointer) {
     const entry = await getQueuedWorkspaceRow(pointer.parentQueuedId)
     return { pointer, ...(entry !== undefined ? settingsOf(entry) : {}) }
@@ -532,6 +621,7 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       ...(r.launchError !== undefined ? { launchError: r.launchError } : {}),
       ...(orphaned ? { orphaned: true } : {}),
+      ...(waitsForRoom(r) ? { waitingForRoom: true } : {}),
     }
   })
 }
@@ -539,5 +629,4 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
 /** Test helper: forget which launches this process is running. */
 export function clearQueuedLaunchesForTests(): void {
   launching.clear()
-  restartLaunchesSwept = false
 }

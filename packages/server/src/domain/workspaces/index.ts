@@ -22,6 +22,7 @@ export {
 } from './detail'
 export { allowWorkspaceHost } from './allow-host'
 export { listWorkspaceGroups, resolveGroup } from './groups'
+export { moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit } from './group-edits'
 export { dismissWorkspacePort, forwardWorkspacePort, unforwardWorkspacePort } from './forward-port'
 export { listActiveWorkspaces } from './list'
 export {
@@ -39,7 +40,7 @@ export {
   listHeldWorkspaces,
   listQueuedWorkspaces,
   queueWorkspace,
-  reconcileQueuedWorkspaces,
+  resumeQueuedWorkspaces,
   runQueuedWorkspace,
   updateQueuedWorkspace,
 } from './queued-workspaces'

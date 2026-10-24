@@ -1,5 +1,11 @@
 import { queuedParentId } from '#lib/queued'
-import type { AgentTool, DraftWorkspaceSettings, ServerSnapshot, ToolCreateDefaults } from '@yaac/shared/types'
+import type {
+  AgentTool,
+  DraftWorkspaceSettings,
+  QueuedWorkspaceEntry,
+  ServerSnapshot,
+  ToolCreateDefaults,
+} from '@yaac/shared/types'
 
 /**
  * The new-workspace pane's form (`NewWorkspacePane`), kept in the ui store
@@ -13,7 +19,8 @@ export interface NewWorkspaceForm {
   projectId: string
   prompt: string
   title: string
-  /** '' starts now; anything else is the workspace or queued entry it waits on. */
+  /** '' starts now, `START_WHEN_ROOM` once its group has room; anything
+   *  else is the workspace or queued entry it waits on. */
   start: string
   tool?: AgentTool
   /** Model, mode, posture and effort picks, which apply only to the agent
@@ -26,6 +33,17 @@ export interface NewWorkspaceForm {
   draftId?: string
   /** The queued entry it edits. */
   editId?: string
+}
+
+/** Start's value for an entry with no parent, which waits for room in a
+ *  group with a workspace limit (docs/workspace-groups.md). */
+export const START_WHEN_ROOM = '\u0000room'
+
+/** The Start an existing entry has. */
+export function entryStart(entry: QueuedWorkspaceEntry): string {
+  return entry.parentWorkspaceId === undefined && entry.parentQueuedId === undefined
+    ? START_WHEN_ROOM
+    : queuedParentId(entry)
 }
 
 /** What opens the pane on something other than a blank form: `parent` sets
@@ -79,7 +97,7 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
     ].find((p) => p.id === draft.startAfter)
     start = parent?.id ?? ''
     if (draft.groupId === parent?.groupId) groupId = undefined
-  } else if (entry !== undefined) start = queuedParentId(entry)
+  } else if (entry !== undefined) start = entryStart(entry)
   return {
     projectId: opts.projectId,
     prompt: from.prompt,

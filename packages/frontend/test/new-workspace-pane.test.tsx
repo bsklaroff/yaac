@@ -773,6 +773,24 @@ describe('NewWorkspacePane', () => {
         .toEqual(['None', 'Review', 'Other', '+ New group'])
     })
 
+    // docs/workspace-groups.md
+    it('queues with no parent to wait for room in a group with a workspace limit', async () => {
+      server.route(AUTH_LIST, SIGNED_IN)
+      const limited = GROUPS.map((g) => g.groupId === 'g-review' ? { ...g, workspaceLimit: 2 } : g)
+      setSnapshot(project({}, 'k8s', { workspaces: [{ ...PARENT, groupId: 'g-review' }], workspaceGroups: limited }))
+      await openReady()
+      // Offered only for a group that has a limit.
+      expect(option('Start', 'When')).toBeUndefined()
+      fireEvent.change(select('Group'), { target: { value: 'g-review' } })
+      fireEvent.change(select('Start'), { target: { value: option('Start', 'When “Review” has room').value } })
+      expect(sendButton().getAttribute('aria-label')).toBe('Queue')
+      typePrompt('pooled')
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(QUEUE)).toHaveLength(1))
+      expect(sent(QUEUE)[0]).toMatchObject({ project: 'proj', prompt: 'pooled', group: 'g-review' })
+      expect(sent(QUEUE)[0]).not.toHaveProperty('parent')
+    })
+
     it('surfaces a refused queue and keeps the form', async () => {
       server.route(AUTH_LIST, SIGNED_IN)
       setSnapshot(project({}, 'k8s', { workspaces: [PARENT] }))
@@ -828,6 +846,31 @@ describe('NewWorkspacePane', () => {
       // The sidebar opens the set the server says it landed in.
       await waitFor(() => expect(useUiStore.getState().revealQueued).toEqual({ id: 'q2', parent: 'q4' }))
       expect(useUiStore.getState().newWorkspace).toBeNull()
+    })
+
+    it('keeps one waiting for room there, and moves it under a parent or back', async () => {
+      server.route(AUTH_LIST, SIGNED_IN)
+      const limited = GROUPS.map((g) => g.groupId === 'g-review' ? { ...g, workspaceLimit: 2 } : g)
+      setSnapshot(project({}, 'k8s', {
+        workspaces: [PARENT],
+        queuedWorkspaces: [entry('qr', { parentWorkspaceId: undefined, groupId: 'g-review' }), entry('qp')],
+        workspaceGroups: limited,
+      }))
+      await openWith({ editId: 'qr' })
+      expect(select('Start').selectedOptions[0].textContent).toBe('When “Review” has room')
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(UPDATE)).toHaveLength(1))
+      expect(sent(UPDATE)[0]).not.toHaveProperty('parent')
+      expect(sent(RUN)).toHaveLength(0)
+      cleanup()
+
+      forget()
+      await openWith({ editId: 'qp' })
+      fireEvent.change(select('Group'), { target: { value: 'g-review' } })
+      fireEvent.change(select('Start'), { target: { value: option('Start', 'When “Review” has room').value } })
+      fireEvent.click(sendButton())
+      await waitFor(() => expect(sent(UPDATE)).toHaveLength(1))
+      expect(sent(UPDATE)[0]).toMatchObject({ id: 'qp', parent: null, group: 'g-review' })
     })
 
     it('offers a held parent it already waits on, and "Now" saves then runs', async () => {

@@ -25,6 +25,8 @@ export interface WorkspaceGroupRow {
   name: string
   pinned: boolean
   createdAt: Date
+  /** Null is unlimited. */
+  workspaceLimit: number | null
 }
 
 const key = (projectId: string, groupId: string) =>
@@ -56,6 +58,7 @@ export async function createWorkspaceGroup(
     name: groupName(name),
     pinned: workspaceId === null,
     createdAt: new Date(),
+    workspaceLimit: null,
   }
   const db = await getDb()
   await db.transaction(async (tx) => {
@@ -92,6 +95,20 @@ export async function setWorkspaceGroupPinned(
 ): Promise<void> {
   const db = await getDb()
   await db.update(workspaceGroups).set({ pinned }).where(key(projectId, groupId))
+  notifyWorkspaceListChanged()
+}
+
+/** Set or clear (`null`) how many live workspaces a group may hold. Lowering
+ *  it below the live count stops nothing. */
+export async function setWorkspaceGroupLimit(
+  projectId: string,
+  groupId: string,
+  workspaceLimit: number | null,
+): Promise<void> {
+  const db = await getDb()
+  const rows = await db.update(workspaceGroups).set({ workspaceLimit }).where(key(projectId, groupId))
+    .returning({ groupId: workspaceGroups.groupId })
+  if (rows.length === 0) throw new ServerError('NOT_FOUND', `No such workspace group: ${groupId}`)
   notifyWorkspaceListChanged()
 }
 

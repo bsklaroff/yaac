@@ -18,7 +18,9 @@ import path from 'node:path'
 import {
   listDraftWorkspaces,
   listProvisioning,
+  listQueuedWorkspaces,
   prepareStart,
+  queueWorkspace,
   reconcilePrewarmPool,
   recordedLaunch,
   saveDraftWorkspace,
@@ -73,11 +75,13 @@ import {
   setProjectEgressAllowlist,
   setProjectGitCredential,
   setTimeZone,
+  setWorkspaceGroupLimit,
   seeTailnetUser,
   setToolCredential,
   type WorkspaceRow,
 } from '#db'
 import { getProjectRow, recordProject, recordProjectCreate } from '#db/project-store'
+import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 import { ServerError } from '@yaac/shared/errors'
@@ -198,6 +202,12 @@ describe('prepareStart', () => {
       ...request,
     })
     return await run(onProgress)
+  }
+
+  /** A member of `groupId` the runtime runs, as a create leaves one. */
+  async function running(groupId: string): Promise<void> {
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'running', groupId })
+    units.push(handleFixture({ workspaceId: 'running', projectId: DEMO_PROJECT_ID, jobName: 'yaac-demo-running' }))
   }
 
   const env = (): string[] => specs.at(-1)!.env
@@ -366,6 +376,51 @@ describe('prepareStart', () => {
         .rejects.toMatchObject({ code: 'CONFLICT' })
       expect(await listWorkspaceGroupRows(DEMO_PROJECT_ID)).toEqual([])
       expect((await getProjectRow(DEMO_PROJECT_ID))?.lastTool).toBeUndefined()
+    })
+  })
+
+  // docs/workspace-groups.md
+  describe('into a group with a workspace limit', () => {
+    async function limited(limit: number): Promise<string> {
+      const { groupId } = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Workers', null)
+      await setWorkspaceGroupLimit(DEMO_PROJECT_ID, groupId, limit)
+      return groupId
+    }
+    const prepare = (groupId: string, over: Partial<StartWorkspaceRequest> = {}) => prepareStart(local, {
+      projectId: DEMO_PROJECT_ID, workspaceId: randomUUID(), mode: 'tui', rememberDefaults: false, claimSpare: false,
+      groupId, ...over,
+    })
+
+    it('counts running members and creates in flight, not stopped members, and frees a failed create\'s slot at once', async () => {
+      const groupId = await limited(3)
+      await running(groupId)
+      await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'stopped', groupId })
+      await recordWorkspaceStopped(DEMO_PROJECT_ID, 'stopped')
+      await prepare(groupId)
+      const failing = await prepare(groupId)
+      const shown = listProvisioning().length
+
+      await expect(prepare(groupId, { tool: 'codex', rememberDefaults: true })).rejects.toMatchObject({
+        code: 'CONFLICT', message: expect.stringMatching(/group "Workers" is at its workspace limit of 3 \(running or starting\)/) as string,
+      })
+      // Refused before anything shows or is remembered.
+      expect(listProvisioning()).toHaveLength(shown)
+      expect((await getProjectRow(DEMO_PROJECT_ID))?.lastTool).toBeUndefined()
+
+      // The failure frees its slot, and what waits for room takes it.
+      const waiting = await queueWorkspace(local, DEMO_PROJECT_ID, { prompt: 'waiting', group: groupId, mode: 'tui' }, 'user')
+      installDriver({ prepareImage: () => { installDriver(); throw new Error('no image') } })
+      await expect(failing()).rejects.toThrow('no image')
+      await vi.waitFor(async () => { expect((await listQueuedWorkspaces()).map((e) => e.id)).not.toContain(waiting.id) })
+      await vi.waitFor(() => { expect(listProvisioning().some((p) => p.prompt === 'waiting')).toBe(false) }, { timeout: 30_000 })
+    })
+
+    it('lets only one of two concurrent creates take the last free slot', async () => {
+      const groupId = await limited(2)
+      await running(groupId)
+      const outcomes = await Promise.allSettled([prepare(groupId), prepare(groupId), prepare(groupId)])
+      expect(outcomes.map((o) => o.status).sort()).toEqual(['fulfilled', 'rejected', 'rejected'])
+      expect(listProvisioning().filter((p) => p.groupId === groupId)).toHaveLength(1)
     })
   })
 
@@ -1032,6 +1087,17 @@ describe('prepareStart', () => {
       // The prompt was pasted into the spare's agent.
       expect(ranIn(spare).some((c) => c.includes('base64 -d'))).toBe(true)
       expect(listProvisioning()).toEqual([])
+    })
+
+    it('leaves the spare alone for a create into a group at its workspace limit', async () => {
+      const spare = await warm()
+      const { groupId } = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Workers', null)
+      await setWorkspaceGroupLimit(DEMO_PROJECT_ID, groupId, 1)
+      await running(groupId)
+
+      await expect(start({ claimSpare: true, group: 'Workers' })).rejects.toMatchObject({ code: 'CONFLICT' })
+      expect(claims).toEqual([])
+      expect(units.find((u) => u.workspaceId === spare.workspaceId)?.prewarmed).toBe(true)
     })
 
     // A pass lists pods before it plans, so a claim can finish in between.

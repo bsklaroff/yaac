@@ -1,4 +1,4 @@
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileQueuedWorkspaces, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileWorkspaceRetention } from '#domain/workspaces'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileWorkspaceRetention } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -50,10 +50,6 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // stop or a create already past its owner check left running.
     { name: 'revoked-shares', triggers: ['workspaces'],
       run: (ctx) => reconcileRevokedShares(ctx.snapshot()) },
-    // Backstop for queued workspaces: a launch interrupted by a server
-    // restart, or a release whose launch never happened. `stopWorkspace`
-    // launches directly, so the resync is enough.
-    { name: 'queued-workspaces', triggers: [], run: () => reconcileQueuedWorkspaces() },
     // Runtime work that must precede the pool: a spare's create should join
     // image builds already running, and anything holding capacity should be
     // freed first.

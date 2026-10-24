@@ -2335,8 +2335,9 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       const parent = await createWorkspace('--permission-mode', 'accept-edits')
       await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--tool', 'codex', '--permission-mode', 'bypass', 'x'))
         .rejects.toThrow(/more permissive than this workspace's own \('accept-edits'\)/)
-      // The parent is never implied.
-      await expect(mamaAs(parent, 'queue', 'x')).rejects.toThrow(/usage: yaac-mama queue --parent-workspace/)
+      // The parent is implied by nothing: with no group to wait in, it is
+      // refused.
+      await expect(mamaAs(parent, 'queue', 'x')).rejects.toThrow(/needs a group with a workspace limit/)
       // The fake codex reports a conversation only once it gets a prompt,
       // and logs its launch arguments. All of these come from the edit.
       const child = await mamaAs(parent, 'queue', '--parent-workspace', parent, 'draft')
@@ -2414,6 +2415,63 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       if (childWorkspace !== undefined) await runYaac(serverEnv, 'workspace', 'stop', childWorkspace)
     }
   }, 240_000)
+
+  // docs/workspace-groups.md: a death frees a slot like a stop does.
+  it('starts a workspace waiting for room in a limited group once a member dies', async () => {
+    const watch = collectSnapshots(server.lock.port)
+    await watch.opened
+    const latest = (): ServerSnapshot => {
+      const snap = watch.latest()
+      if (!snap) throw new Error('no snapshot yet')
+      return snap
+    }
+    let pooled: string | undefined
+    try {
+      const member = await createWorkspace('--permission-mode', 'accept-edits')
+      await mamaAs(member, 'group', 'move', member, 'Pool')
+      expect(await mamaAs(member, 'group', 'set-limit', 'Pool', '1'))
+        .toBe('Group "Pool" now runs at most 1 workspace at once.')
+      const { groups } = await (await fetch(`${origin()}/api/workspace/group/list?project=${NAME}`)).json() as {
+        groups: Array<{ groupId: string; name: string; workspaceLimit?: number }>
+      }
+      const groupId = groups.find((g) => g.name === 'Pool' && g.workspaceLimit === 1)!.groupId
+      await expect(createWorkspace('--group', 'Pool')).rejects.toThrow(/"Pool" is at its workspace limit of 1 \(running or starting\)/)
+
+      const id = await mamaAs(member, 'queue', '--group', 'Pool', '--ui-mode', 'tui', 'pooled hello')
+      await vi.waitFor(() => {
+        expect(latest().queuedWorkspaces.find((q) => q.id === id)).toMatchObject({ groupId, waitingForRoom: true })
+      }, { timeout: 10_000, interval: 250 })
+      await expect(mamaAs(member, 'run-queued', id.slice(0, 8))).rejects.toThrow(/"Pool" is at its workspace limit of 1/)
+      // A follow-up queued after the member, then set to wait for room too.
+      const follow = await mamaAs(member, 'queue', '--parent-workspace', member, '--ui-mode', 'tui', 'pooled later')
+      expect(await mamaAs(member, 'edit-queued', '--no-parent', follow.slice(0, 8)))
+        .toContain(`Updated queued workspace ${follow.slice(0, 8)}`)
+      await vi.waitFor(() => {
+        const entry = latest().queuedWorkspaces.find((q) => q.id === follow)
+        expect(entry).toMatchObject({ groupId, waitingForRoom: true })
+        expect(entry?.parentWorkspaceId).toBeUndefined()
+      }, { timeout: 10_000, interval: 250 })
+      expect(await mamaAs(member, 'list')).toMatch(new RegExp(`waiting for room in "Pool":\\n.*${id.slice(0, 8)}[^\\n]*\\n.*${follow.slice(0, 8)}`))
+
+      await new Promise((r) => setTimeout(r, STARTING_GRACE_MS))
+      await tmux(member, 'kill-server').catch(() => undefined)
+      await vi.waitFor(() => {
+        pooled = latest().workspaces.find((w) => w.prompt === 'pooled hello')?.workspaceId
+        expect(pooled).toBeDefined()
+      }, { timeout: 60_000, interval: 250 })
+      expect(latest().workspaces.find((w) => w.workspaceId === pooled)?.groupId).toBe(groupId)
+      // The limit is one, so the newer entry still waits behind it.
+      expect(latest().queuedWorkspaces.find((q) => q.id === follow)).toMatchObject({ waitingForRoom: true })
+      await fetch(`${origin()}/api/workspace/queue/discard`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: follow }),
+      })
+    } finally {
+      watch.ws.close()
+      if (pooled !== undefined) await runYaac(serverEnv, 'workspace', 'stop', pooled)
+    }
+  }, 180_000)
 
   it('keeps a dead parent\'s child queued and the parent held, until the child is discarded', async () => {
     const watch = collectSnapshots(server.lock.port)

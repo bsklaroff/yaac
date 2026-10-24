@@ -42,7 +42,9 @@ export {
   listWorkspaceGroupRows,
   renameWorkspaceGroup,
   setWorkspaceGroup,
+  setWorkspaceGroupLimit,
   setWorkspaceGroupPinned,
+  type WorkspaceGroupRow,
 } from './group-store'
 export { closeDb, DbRefusal, openDb, pingDb } from './client'
 export {

@@ -28,7 +28,7 @@ vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => prov
 import { WorkspaceList } from '#components/WorkspaceList'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
+import { mockFetch, serverError, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
 import { intersect, intersection } from './setup'
 
 /** Scroll every load-more marker into view: jsdom has no layout, so the
@@ -44,6 +44,7 @@ const GROUP_CREATE = 'POST /api/workspace/group/create'
 const GROUP_RENAME = 'POST /api/workspace/group/rename'
 const GROUP_PIN = 'POST /api/workspace/group/set-pinned'
 const GROUP_DELETE = 'POST /api/workspace/group/delete'
+const GROUP_LIMIT = 'POST /api/workspace/group/set-limit'
 const QUEUE_RUN = 'POST /api/workspace/queue/run'
 const QUEUE_DISCARD = 'POST /api/workspace/queue/discard'
 const DRAFT_DISCARD = 'POST /api/workspace/draft/discard'
@@ -106,6 +107,7 @@ beforeEach(() => {
     [GROUP_RENAME]: undefined,
     [GROUP_PIN]: undefined,
     [GROUP_DELETE]: undefined,
+    [GROUP_LIMIT]: undefined,
     [QUEUE_RUN]: { workspaceId: 'w-run' },
     [QUEUE_DISCARD]: undefined,
     [DRAFT_DISCARD]: undefined,
@@ -287,7 +289,8 @@ describe('WorkspaceList', () => {
     // stopping member counts once, and not as active, here and in the
     // Stopped section.
     const section = screen.getByRole('group', { name: group().name })
-    expect(section.textContent).toContain('(1/4)')
+    expect(section.textContent).toContain('(1)')
+    expect(section.textContent).toContain('· 2 stopped')
     expect(screen.getByRole('button', { name: /Stopped\s*2/ })).toBeTruthy()
     expect(screen.queryByText('Stopped one')).toBeNull()
     expect(stoppedQueries()).toEqual([])
@@ -309,7 +312,7 @@ describe('WorkspaceList', () => {
     stoppedRows.push(stoppedEntry('gone', { title: 'Stopped one', groupId: 'g1' }))
     renderList([], { groups: [group({ pinned: true, stoppedCount: 1 })] })
 
-    const caret = await screen.findByRole('button', { name: /Release.*\(0\/1\)/ })
+    const caret = await screen.findByRole('button', { name: /Release.*\(0\).*1 stopped/ })
     expect(caret.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(caret)
     expect(await screen.findByText('Stopped one')).toBeTruthy()
@@ -327,14 +330,14 @@ describe('WorkspaceList', () => {
     // Collapsed while it still has a live member...
     const rerender = renderList([entry({ workspaceId: 'gone', title: 'Live one', groupId: 'g1' })],
       { groups: [group({ pinned: true })] })
-    fireEvent.click(screen.getByRole('button', { name: /Release.*\(1\/1\)/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Release.*\(1\)/ }))
     expect(screen.queryByText('Live one')).toBeNull()
 
     // ...then it stops, leaving only stopped members, and the caret opens it.
     stoppedRows.push(stoppedEntry('gone', { title: 'Stopped one', groupId: 'g1' }))
     const opts = { groups: [group({ pinned: true, stoppedCount: 1 })] }
     rerender([], opts)
-    const caret = await screen.findByRole('button', { name: /Release.*\(0\/1\)/ })
+    const caret = await screen.findByRole('button', { name: /Release.*\(0\).*1 stopped/ })
     expect(caret.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(caret)
     expect(await screen.findByText('Stopped one')).toBeTruthy()
@@ -342,7 +345,7 @@ describe('WorkspaceList', () => {
     // A restart makes it live again. It must not revert to its old collapsed
     // state and hide the row the user just asked for.
     rerender([], { groups: [group({ pinned: true })], provisioning: [provisioning({ workspaceId: 'gone', groupId: 'g1' })] })
-    expect(screen.getByRole('button', { name: /Release.*\(1\/1\)/ }).getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('button', { name: /Release.*\(1\)/ }).getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('Restarting workspace')).toBeTruthy()
   })
 
@@ -371,7 +374,7 @@ describe('WorkspaceList', () => {
     const more = [...live, entry({ workspaceId: 'c', title: 'Other' })]
     const grown = [group({ stoppedCount: 2, deaths: 1, deathsSeenBy: {} })]
     rerender(more, { groups: grown })
-    expect(await screen.findByRole('button', { name: /Release.*\(1\/3\).*1 died/ })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /Release.*\(1\).*2 stopped.*1 died/ })).toBeTruthy()
     expect(await screen.findByText('Stopped t')).toBeTruthy()
     expect(screen.getByText('Stopped s')).toBeTruthy()
 
@@ -775,7 +778,7 @@ describe('WorkspaceList', () => {
     expect(screen.getByText('Fix the parser')).toBeTruthy()
     // Counted as active alongside the live row; a failed one is shown but has
     // nothing running.
-    expect(screen.getByText('(2/3)')).toBeTruthy()
+    expect(screen.getByText('(2)')).toBeTruthy()
   })
 
   it('keeps a group on screen while its last workspace restarts', () => {
@@ -829,6 +832,17 @@ describe('WorkspaceList', () => {
   })
 
   describe('queued workspaces', () => {
+    // docs/workspace-groups.md
+    it('sets one with no parent in its group\'s section, which it keeps on screen', () => {
+      renderList([], {
+        groups: [group({ workspaceLimit: 1 })],
+        queued: [queuedEntry('qr', { parentWorkspaceId: undefined, groupId: 'g1', waitingForRoom: true })],
+      })
+      const section = screen.getByRole('group', { name: 'Release' })
+      fireEvent.click(within(section).getByRole('button', { name: '1 waiting for room' }))
+      expect(within(section).getByText('Claude · Sonnet 5 · waiting for room')).toBeTruthy()
+    })
+
     it('nests each under the row it waits on, a chain one step deeper per link', () => {
       renderList([entry({ workspaceId: 'a', title: 'Parent' }), entry({ workspaceId: 'b', title: 'Other' })], {
         queued: [
@@ -1107,6 +1121,43 @@ describe('WorkspaceList', () => {
       await pickAction('Delete group', 'Group actions')
       await waitFor(() => expect(posted(GROUP_DELETE)).toEqual([{ projectId: 'proj', groupId: 'g1' }]))
     })
+
+    it('asks before a delete that would start what waits for room in the group', async () => {
+      renderList([], {
+        groups: [group({ workspaceLimit: 1 })],
+        queued: [queuedEntry('qr', { parentWorkspaceId: undefined, groupId: 'g1', waitingForRoom: true })],
+      })
+      await pickAction('Delete group', 'Group actions')
+      expect(await screen.findByText('1 queued workspace waits for room in “Release”. With the group gone, it starts now.'))
+        .toBeTruthy()
+      expect(posted(GROUP_DELETE)).toEqual([])
+      fireEvent.click(screen.getByRole('button', { name: 'Delete and start them' }))
+      await waitFor(() => expect(posted(GROUP_DELETE)).toEqual([{ projectId: 'proj', groupId: 'g1' }]))
+    })
+
+    // docs/workspace-groups.md
+    it('shows live workspaces out of the workspace limit, and sets or clears it from the menu', async () => {
+      renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
+        groups: [group({ workspaceLimit: 2, stoppedCount: 3 })],
+      })
+      const section = screen.getByRole('group', { name: 'Release' })
+      expect(section.textContent).toContain('(1/2)')
+      expect(section.textContent).toContain('· 3 stopped')
+
+      await pickAction('Workspace limit…', 'Group actions')
+      const input = await screen.findByRole<HTMLInputElement>('spinbutton', { name: 'Workspace limit' })
+      expect(input.value).toBe('2')
+      fireEvent.change(input, { target: { value: '4' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(posted(GROUP_LIMIT)).toEqual([{ projectId: 'proj', groupId: 'g1', workspaceLimit: 4 }]))
+      await waitFor(() => expect(screen.queryByRole('spinbutton', { name: 'Workspace limit' })).toBeNull())
+
+      await pickAction('Workspace limit…', 'Group actions')
+      fireEvent.change(await screen.findByRole('spinbutton', { name: 'Workspace limit' }), { target: { value: '' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(posted(GROUP_LIMIT)).toHaveLength(2))
+      expect(posted(GROUP_LIMIT)[1]).toMatchObject({ workspaceLimit: null })
+    })
   })
 
   describe('drag between the list and a group', () => {
@@ -1174,6 +1225,20 @@ describe('WorkspaceList', () => {
       // replay the move.
       fireEvent.pointerUp(window, { clientX: 10, clientY: 150 })
       expect(posted(GROUP_MOVE)).toEqual([])
+    })
+
+    it('says under the group why a drop into it was refused', async () => {
+      server.route(GROUP_MOVE, serverError('CONFLICT', 'group "Release" is at its workspace limit of 1 (running or starting)', 409))
+      renderList([
+        entry({ workspaceId: 'a', title: 'Loose one' }),
+        entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' }),
+      ], { groups: [group({ workspaceLimit: 1 })] })
+      stubZones()
+
+      press('Loose one', 10)
+      dropAt(150)
+      const section = screen.getByRole('group', { name: 'Release' })
+      expect(await within(section).findByText('group "Release" is at its workspace limit of 1 (running or starting)')).toBeTruthy()
     })
 
     it('ignores a drop back where the workspace started', () => {

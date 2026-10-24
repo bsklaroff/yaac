@@ -2,6 +2,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { createWorkspace, resolveCreate, type WorkspaceCreateResult } from './create'
 import { saveDraftWorkspace } from './drafts'
 import { resolveGroup } from './groups'
+import { readGroupRoom, refuseFullGroup } from './group-limits'
 import {
   provision,
   ProvisionStoppedError,
@@ -57,8 +58,8 @@ export interface StartWorkspaceRequest {
 
 /**
  * Check a start and resolve its settings, then register its provisioning
- * row and return the run that claims a spare or creates cold. A bad setting
- * is refused here, before anything shows. Used by the create route,
+ * row and return the run that claims a spare or creates cold. A bad setting,
+ * or a group at its workspace limit, is refused here, before anything shows. Used by the create route,
  * `yaac-mama create` and queued launches.
  *
  * A create that the user stops before its agent runs, or that fails, is
@@ -85,6 +86,10 @@ export async function prepareStart(
   const groupId = request.groupId ?? (request.group === undefined
     ? undefined
     : (await resolveGroup(projectId, request.group, { create: true })).groupId)
+  // Checked once before the defaults are recorded, and again where the
+  // provisioning row takes the slot (docs/workspace-groups.md).
+  const room = await readGroupRoom(projectId, groupId)
+  refuseFullGroup(room, workspaceId)
   if (request.rememberDefaults) {
     // Only the named fields, so a resolved default never overwrites a pick.
     await recordProjectCreate(projectId, tool, {
@@ -96,6 +101,7 @@ export async function prepareStart(
   }
 
   const modelName = setup.model !== undefined ? modelDisplayName(tool, setup.model) : undefined
+  refuseFullGroup(room, workspaceId)
   return provision({
     workspaceId,
     projectId,

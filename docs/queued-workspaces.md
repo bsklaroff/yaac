@@ -8,6 +8,11 @@ a user stop from the webapp or `yaac workspace stop`, or an agent's
 `yaac-mama stop`. It does not run when the parent dies (OOM, crash, eviction,
 the agent exiting); it waits until the user runs or discards it.
 
+An entry can also have no parent. It then waits for room in its group, which
+must have a workspace limit, and runs once the group has a free slot
+(docs/workspace-groups.md). This lets an orchestrator queue many workers
+into one group and have at most N run at once.
+
 The parent can be a workspace or another entry, so requests chain to any
 depth. An entry under an entry waits for its parent to launch and then stop
 naturally. Entries are not workspaces: they have no `workspaces` row,
@@ -25,7 +30,10 @@ tell these apart, so the call site is the trigger.
 
 Release happens once the stop is recorded, not once the runtime is gone,
 since a child has its own checkout and runtime. All of a parent's direct
-children launch together. An agent exiting (`/exit`) counts as a death, since
+children launch together, as far as their groups have room. A released
+child whose group is full waits for room from then on, like an entry with
+no parent: it keeps its release, and launches when any slot in its group
+frees, not at its parent's next stop. An agent exiting (`/exit`) counts as a death, since
 the reaper records `agent-exited` and can't tell it from a crash, so an agent
 that is done should call `yaac-mama stop`.
 
@@ -40,7 +48,8 @@ then stopped normally, which releases them.
 A stopped workspace with entries is **held**: the sidebar keeps it as a
 stopped row (with its death reason, if it died) and nests its entries under
 it until the last one has launched or been discarded. Restarting a held
-parent keeps its children queued for its next natural stop.
+parent keeps its children queued for its next natural stop, except those
+already released, which wait only for room in their group.
 
 ## Chains
 
@@ -65,8 +74,10 @@ released by a stop. The parent pointer moves down the chain as it runs:
 ## Settings
 
 Every setting is resolved to a concrete value when the entry is queued, so
-the sidebar and edit dialog show exactly what will run. Defaults come from
-the parent:
+the sidebar and edit dialog show exactly what will run. With no parent,
+defaults come from where a create's would: the project's remembered create
+settings (and for `yaac-mama queue`, the caller's tool and agent mode, as
+`yaac-mama create` takes them). Otherwise they come from the parent:
 
 - A **workspace** parent supplies its first conversation's tool, mode and
   *current* model (which follows a `/model` switch), its permission mode and
@@ -128,31 +139,35 @@ and delivers the prompt like any create.
   Stopping the launching workspace before its agent starts takes the same
   path without an error, so the entry goes back on the queue rather than
   becoming a draft.
-- **Server restart mid-launch.** The `queued-workspaces` reconcile step
-  handles it. On its first successful pass, an entry claimed by nothing in
-  this process is put back with an "interrupted" error, prompt and children
-  intact, for the user to check and rerun. Later passes leave claims alone,
-  since any claim then is this process's own. The step does not guess whether the launch finished, because the
-  workspace exists long before a create is done; any half-made workspace is
-  the stale reaper's job. A released entry that never launched is launched.
-  The step has no triggers: `stopWorkspace` launches directly, and the resync
-  retries a release whose launch threw.
+- **Server restart mid-launch.** `resumeQueuedWorkspaces` handles it, once
+  at boot, when the driver has attached. An entry claimed by nothing in this
+  process is put back with an "interrupted" error, prompt and children
+  intact, for the user to check and rerun. A claim made since boot (a Run
+  now served first) is this process's own and is left alone. It does not
+  guess whether the launch finished, because the workspace exists long
+  before a create is done; any half-made workspace is the stale reaper's
+  job. A released entry that never launched, or one with no parent, is then
+  launched where its group has room. After boot nothing polls: stops,
+  deaths, failed launches and group edits launch directly.
 
 An entry mid-launch cannot be edited or discarded (`CONFLICT`), and the
 snapshot omits it while its provisioning row stands in for it.
 
 ## Editing, discarding, running now
 
-- **Edit** changes any stored field, including the parent. A new parent that
+- **Edit** changes any stored field, including the parent, or (through the
+  route) clears it to wait for room in a group with a limit. A new parent that
   is the entry itself or one of its descendants would create a cycle and is
   refused. The check walks up from the new parent, stepping from a workspace
   that some entry launched to that entry, so a launching entry cannot hide
   its ancestry.
 - **Discard** deletes the entry and moves its children up to its parent, so
-  the rest of the chain runs one link sooner.
+  the rest of the chain runs one link sooner. With no parent, they wait for
+  room in their own groups.
 - **Run now** releases one entry regardless of its parent. Mid-chain, it
   leaves the chain once its launch succeeds, and its children follow it to
-  the new workspace.
+  the new workspace. It is refused while the entry's group is at its
+  workspace limit.
 
 ## Surfaces
 
@@ -163,31 +178,40 @@ snapshot omits it while its provisioning row stands in for it.
   than the stopped listing, which is too slow for a snapshot).
   `WorkspaceListEntry.permissionMode` and `effort` let the new-workspace
   pane seed a child from a live parent.
-- **`yaac-mama queue`** queues under the workspace or entry named by the
-  required `--parent-workspace` (a follow-up to the caller passes
-  `$YAAC_WORKSPACE_ID`). It takes every option `yaac-mama create` does and
+- **`yaac-mama queue`** queues under the workspace or entry named by
+  `--parent-workspace` (a follow-up to the caller passes
+  `$YAAC_WORKSPACE_ID`). The parent may be left out only when `--group`
+  names an existing group with a workspace limit; the route
+  (`/workspace/queue/create`) has the same rule. It takes every option `yaac-mama create` does and
   prints the entry id, so an agent can script a chain. Its permission mode
   defaults to the parent's and is capped at the caller's own
   (docs/permission-modes.md). `yaac-mama list` shows entries indented under
-  their parents. A stopped parent is accepted, with a note on stderr that the
+  their parents, and those with none under the group they wait in. A
+  stopped parent is accepted, with a note on stderr that the
   entry starts only once the parent is restarted (`yaac-mama restart` or the
   user) and then stopped again.
 - **`yaac-mama edit-queued`** changes an entry's prompt, settings or parent,
-  by id or prefix within the caller's project. The stored permission mode is
+  by id or prefix within the caller's project; `--no-parent` leaves it
+  waiting for room in a group with a workspace limit. The stored permission mode is
   held to the same cap, as if the edit had asked for it, so an entry above the
   caller's posture is refused until the edit names one at or below it.
   Otherwise an agent refining a prompt would run its own words under a grant
   the user gave. Changing the tool re-resolves the posture for that tool, as
-  queueing does. Discard and Run now are user-only.
+  queueing does.
+- **`yaac-mama run-queued`** is Run now for an agent, held to the same cap:
+  an entry above the caller's posture is refused, since running it would
+  start the user's grant on the agent's say. Discard is user-only.
 - **Webapp.** One new-workspace pane (shown whenever no workspace is
   selected: Alt+N, the sidebar's +, a row's `…` menu, a queued row) with
-  a **Start** field: `Now`, or after a live workspace or queued entry stops.
+  a **Start** field: `Now`, after a live workspace or queued entry stops,
+  or, for a group with a workspace limit, once that group has room.
   Setting a title with the pencil beside the heading turns off auto-titling.
   **Group** follows the Start parent's until picked, and lists the groups the
   sidebar shows, those queued entries will launch into, and "+ New group"
   (a name box; the create or queue creates the group). Queued rows nest under
   their parent in the sidebar, each workspace's set (chains included) behind
-  one collapsible "n queued workspaces" expander. Sets start collapsed,
+  one collapsible "n queued workspaces" expander; entries with no parent
+  form an "n waiting for room" set at the foot of their group's section. Sets start collapsed,
   except the one the user just queued into from the pane. The stop dialog
   lists a workspace's children so they can be edited or discarded before
   they start.

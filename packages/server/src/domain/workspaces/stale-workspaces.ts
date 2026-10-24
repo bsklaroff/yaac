@@ -8,6 +8,7 @@ import {
 import { cleanupWorkspaceDetached } from './cleanup'
 import { reapSpare } from './prewarm'
 import { inFlightWorkspaceIds } from './provisioning'
+import { startWaitingWorkspaces } from './queued-workspaces'
 import { applyWorkspaceEvent, desiredWorkspaces } from '#db'
 import { serverLog } from '#lib/log'
 import { testEnv } from '@yaac/shared/env'
@@ -190,10 +191,15 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
     serverLog(`[server] stale-reaper: reaping spare=${t.workspaceId} job=${t.jobName} (${why})`)
     reapSpare(t)
   }
-  await Promise.all(targets.filter((t) => !spares.has(t.workspaceId)).map(({ why, ...t }) => {
+  const reaped = targets.filter((t) => !spares.has(t.workspaceId))
+  await Promise.all(reaped.map(({ why, ...t }) => {
     serverLog(`[server] stale-reaper: reaping session=${t.workspaceId} job=${t.jobName} (${why})`)
     return cleanupWorkspaceDetached(t).catch((err: unknown) => {
       serverLog(`[server] stale-reaper: teardown of session=${t.workspaceId} failed: ${String(err)}`)
     })
   }))
+  // A workspace whose runtime went away holds no slot in its group, whether
+  // or not a death is recorded yet, so look on every pass: this step runs
+  // whenever the runtime changes (docs/workspace-groups.md).
+  await startWaitingWorkspaces()
 }

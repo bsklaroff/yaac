@@ -25,8 +25,10 @@ vi.mock('#db', () => ({
   // A spare has no row.
   findWorkspaceRow: vi.fn().mockResolvedValue(undefined),
   // After a death, queued children wait instead of starting
-  // (docs/queued-workspaces.md).
+  // (docs/queued-workspaces.md), while what waits for room in a group is
+  // looked for (docs/workspace-groups.md).
   releaseQueuedChildren: vi.fn(),
+  listQueuedWorkspaceRows: vi.fn().mockResolvedValue([]),
 }))
 
 import { probeTmuxLiveness, probeAgentPaneState } from '#runtime/status/liveness'
@@ -34,7 +36,7 @@ import { cleanupWorkspace, cleanupWorkspaceDetached, deleteWorkspaceState } from
 import type * as CleanupModule from '#domain/workspaces/cleanup'
 import { markWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#lib/log'
-import { applyWorkspaceEvent, desiredWorkspaces, releaseQueuedChildren } from '#db'
+import { applyWorkspaceEvent, desiredWorkspaces, listQueuedWorkspaceRows, releaseQueuedChildren } from '#db'
 import { claimProvisioning, clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import type { WorkspaceEvent } from '#db'
 import {
@@ -129,8 +131,18 @@ describe('reconcileStaleWorkspaces', () => {
     const log = loggedLines()
     expect(log).toContain('reaping session=zombie-1')
     expect(log).toContain('tmux gone')
-    // Its queued workspaces stay queued until the user acts.
+    // Its queued workspaces stay queued until the user acts, but its slot
+    // in its group is offered to what waits for room.
     expect(releaseQueuedChildren).not.toHaveBeenCalled()
+    expect(listQueuedWorkspaceRows).toHaveBeenCalled()
+  })
+
+  it('looks for what waits for room on every pass, since a runtime going away frees a slot', async () => {
+    vi.mocked(listQueuedWorkspaceRows).mockClear()
+    mockWorkspaces.mockResolvedValue([pod('alive')])
+    mockProbe.mockResolvedValue('alive')
+    await reconcileStaleWorkspaces(view)
+    expect(listQueuedWorkspaceRows).toHaveBeenCalled()
   })
 
   // The driver derives the cause; the reaper must pass it to the teardown,

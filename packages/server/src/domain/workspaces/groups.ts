@@ -1,4 +1,10 @@
-import { countStoppedWorkspaces, createWorkspaceGroup, listWorkspaceGroupRows, type StoppedCount } from '#db'
+import {
+  countStoppedWorkspaces,
+  createWorkspaceGroup,
+  listWorkspaceGroupRows,
+  type StoppedCount,
+  type WorkspaceGroupRow,
+} from '#db'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { normalizeTitle } from '@yaac/shared/titles'
 import { ServerError } from '@yaac/shared/errors'
@@ -22,6 +28,7 @@ export async function listWorkspaceGroups(
       projectId: r.projectId,
       name: r.name,
       pinned: r.pinned,
+      ...(r.workspaceLimit !== null ? { workspaceLimit: r.workspaceLimit } : {}),
       createdAt: formatUtcTimestamp(r.createdAt.getTime()),
       stoppedCount: stopped?.stopped ?? 0,
       deaths: stopped?.deaths ?? 0,
@@ -33,6 +40,8 @@ export async function listWorkspaceGroups(
 export interface ResolvedGroup {
   groupId: string
   name: string
+  /** Absent when unlimited. */
+  workspaceLimit?: number
 }
 
 /**
@@ -49,12 +58,17 @@ export async function resolveGroup(
   opts: { create?: boolean } = {},
 ): Promise<ResolvedGroup> {
   const rows = await listWorkspaceGroupRows(projectId)
+  const resolved = (r: WorkspaceGroupRow): ResolvedGroup => ({
+    groupId: r.groupId,
+    name: r.name,
+    ...(r.workspaceLimit !== null ? { workspaceLimit: r.workspaceLimit } : {}),
+  })
   const byId = rows.find((r) => r.groupId === group)
-  if (byId) return { groupId: byId.groupId, name: byId.name }
+  if (byId) return resolved(byId)
 
   const wanted = normalizeTitle(group).toLowerCase()
   const byName = rows.filter((r) => r.name.toLowerCase() === wanted)
-  if (byName.length === 1) return { groupId: byName[0].groupId, name: byName[0].name }
+  if (byName.length === 1) return resolved(byName[0])
   if (byName.length > 1) {
     throw new ServerError(
       'VALIDATION',

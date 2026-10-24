@@ -4,18 +4,16 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
-  deleteWorkspaceGroup,
   findWorkspaceByMamaToken,
   findWorkspaceRow,
   listWorkspaceAgentSessions,
   recordAllDeathsSeen,
   recordDeathSeen,
   renameWorkspaceGroup,
-  setWorkspaceGroup,
   setWorkspaceGroupPinned,
   setWorkspaceTitle,
   type WorkspaceRow,
@@ -43,7 +41,8 @@ const queuedSettings = queuedWorkspaceSettingsSchema.shape
 
 // The group a queued workspace launches into, by id or name (an unknown name
 // creates the group); null means ungrouped. If omitted, a queue takes its
-// parent's group and an update keeps the entry's.
+// parent's group and an update keeps the entry's. An entry with no parent
+// names an existing group with a workspace limit, which it waits for room in.
 const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional()
 
 // The draft a create or queue is made from (docs/draft-workspaces.md). It is
@@ -319,7 +318,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
     zv('json', z.object({
       project: projectRef,
       // A workspace id or queued entry id, or a unique prefix of either.
-      parent: z.string().min(1),
+      // Omitted, the entry waits for room in its group
+      // (docs/workspace-groups.md).
+      parent: z.string().min(1).optional(),
       ...queuedSettings,
       group: queuedGroup,
       draftId,
@@ -335,7 +336,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
     '/queue/update',
     zv('json', z.object({
       id: z.string().min(1),
-      parent: z.string().min(1).optional(),
+      // null leaves it waiting for room in its group, as a queue with no
+      // parent does.
+      parent: z.string().min(1).nullable().optional(),
       ...queuedSettings,
       prompt: queuedSettings.prompt.optional(),
       group: queuedGroup,
@@ -449,7 +452,23 @@ export const workspaceApp = new Hono<IdentityEnv>()
     async (c) => {
       const { projectId, groupId } = c.req.valid('json')
       await authorizeProject(c.get('principal'), projectId)
-      await deleteWorkspaceGroup(projectId, groupId)
+      await removeWorkspaceGroup(projectId, groupId)
+      return c.body(null, 204)
+    },
+  )
+  // Set or clear (null) how many live workspaces a group may hold
+  // (docs/workspace-groups.md).
+  .post(
+    '/group/set-limit',
+    zv('json', z.object({
+      projectId: projectRef,
+      groupId: z.string().min(1),
+      workspaceLimit: z.number().int().positive().nullable(),
+    })),
+    async (c) => {
+      const { projectId, groupId, workspaceLimit } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId)
+      await setGroupWorkspaceLimit(projectId, groupId, workspaceLimit)
       return c.body(null, 204)
     },
   )
@@ -476,7 +495,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const target = group === null
         ? null
         : await resolveGroup(projectId, group, { create: create ?? false })
-      await setWorkspaceGroup(projectId, resolved, target?.groupId ?? null)
+      await moveWorkspaceToGroup(projectId, resolved, target?.groupId ?? null)
       // Include the name, since the caller may have passed an id.
       return c.json({ groupId: target?.groupId ?? null, name: target?.name ?? null })
     },

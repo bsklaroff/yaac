@@ -1199,6 +1199,32 @@ describe('write routes', () => {
       expect(res.status).toBe(404)
     })
 
+    // docs/workspace-groups.md
+    it('sets and clears a workspace limit, refusing a move of a live workspace into a full group', async () => {
+      await seed('sess-a', 'sess-b')
+      const groupId = await createGroup('sess-a')
+      const setLimit = (workspaceLimit: unknown): Promise<Response> => Promise.resolve(buildApp({ buildId: 'test' })
+        .request('/api/workspace/group/set-limit', rawInit({
+          method: 'POST', body: JSON.stringify({ projectId: DEMO, groupId, workspaceLimit }),
+        })))
+
+      expect((await setLimit(1)).status).toBe(204)
+      // A create in flight there holds the one slot.
+      registerProvisioning({ workspaceId: 'creating', projectId: DEMO, tool: 'claude', kind: 'create', groupId })
+      expect(await listWorkspaceGroups(DEMO)).toEqual([expect.objectContaining({ groupId, workspaceLimit: 1 })])
+      for (const bad of [0, -1, 1.5, '2']) expect((await setLimit(bad)).status, String(bad)).toBe(400)
+
+      const move = await buildApp({ buildId: 'test' }).request('/api/workspace/group/move', rawInit({
+        method: 'POST', body: JSON.stringify({ projectId: DEMO, workspaceId: 'sess-b', group: groupId }),
+      }))
+      expect(move.status).toBe(409)
+      expect(((await move.json()) as { error: { message: string } }).error.message)
+        .toContain('group "Release" is at its workspace limit of 1 (running or starting)')
+
+      expect((await setLimit(null)).status).toBe(204)
+      expect((await listWorkspaceGroups(DEMO))[0]).not.toHaveProperty('workspaceLimit')
+    })
+
     it('404s a group created around a workspace that is not there', async () => {
       // Otherwise the group has no member, so the sidebar never shows it and
       // it can't be deleted.
@@ -1303,6 +1329,28 @@ describe('write routes', () => {
       // The entry became the workspace; there is nothing left to run.
       await vi.waitFor(async () => { expect(await getQueuedWorkspaceRow(queued.id)).toBeUndefined() })
       expect((await post('run', { id: queued.id })).status).toBe(404)
+    })
+
+    // docs/workspace-groups.md
+    it('queues with no parent only into a group with a workspace limit', async () => {
+      const { groupId } = await (await client().workspace.group.create.$post({
+        json: { projectId: DEMO, name: 'workers' },
+      })).json()
+      await client().workspace.group.create.$post({ json: { projectId: DEMO, name: 'open' } })
+      registerProvisioning({ workspaceId: 'creating', projectId: DEMO, tool: 'claude', kind: 'create', groupId })
+      for (const group of [undefined, 'nowhere', 'open']) {
+        const res = await post('create', { project: DEMO, prompt: 'p', ...(group !== undefined ? { group } : {}) })
+        expect(res.status, String(group)).toBe(400)
+      }
+      expect((await client().workspace.group['set-limit'].$post({ json: { projectId: DEMO, groupId, workspaceLimit: 1 } })).status).toBe(204)
+
+      // A branch, since the fixture project has no clone to read a default from.
+      const waiting = await (await post('create', { project: DEMO, prompt: 'p', group: 'workers', branch: 'main' })).json() as { id: string }
+      expect(waiting).toMatchObject({ groupId, waitingForRoom: true })
+      expect(waiting).not.toHaveProperty('parentWorkspaceId')
+      // Run now is refused while the group is full.
+      expect((await post('run', { id: waiting.id })).status).toBe(409)
+      expect(mockCreateWorkspace).not.toHaveBeenCalled()
     })
 
     it('refuses a cycle in a chain, and splices a discarded link\'s children up', async () => {
