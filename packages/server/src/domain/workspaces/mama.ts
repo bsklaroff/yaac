@@ -4,13 +4,14 @@
  * both.
  *
  * An agent may list the project's workspaces (running, queued or stopped),
- * create or queue one, edit what it queued, send a running one a message,
- * retitle, group, stop one (its own included), restart a stopped one, fetch
- * another's branches and read another's conversation history, and change
- * its own reference branch. Stopping is allowed because it is reversible:
+ * create or queue one, edit, run or discard a queued one, send a running
+ * one a message, retitle, group, stop one (its own included), restart a
+ * stopped one, fetch another's branches and read another's conversation
+ * history, and change its own reference branch. Stopping is allowed because it is reversible:
  * the checkout, row and conversations are kept. Restarting a stopped
  * workspace only undoes a stop, and is held to the caller's own permission
- * mode. Deleting and reconfiguring stay the user's.
+ * mode. Discarding a queued workspace loses only a prompt and settings that
+ * never ran. Deleting a workspace and reconfiguring stay the user's.
  *
  * The caller's identity comes from the transport (pod IP under k8s, a
  * per-workspace token under containerless), never the request, and every
@@ -22,7 +23,13 @@ import { listActiveWorkspaces } from './list'
 import { inFlightWorkspaceIds } from './provisioning'
 import { listWorkspaceGroups, resolveGroup } from './groups'
 import { moveWorkspaceToGroup, setGroupWorkspaceLimit } from './group-edits'
-import { queueWorkspace, runQueuedWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
+import {
+  discardQueuedWorkspace,
+  queueWorkspace,
+  runQueuedWorkspace,
+  updateQueuedWorkspace,
+  type QueueRequest,
+} from './queued-workspaces'
 import { resolveProjectWorkspace, resolveWorkspaceContainer } from './resolve'
 import { stopWorkspace } from './stop'
 import {
@@ -147,6 +154,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   queue: ['parent-workspace', ...CREATE_ARGS],
   'edit-queued': ['queued', 'parent-workspace', 'no-parent', ...CREATE_ARGS],
   'run-queued': ['queued'],
+  'delete-queued': ['queued'],
   fetch: ['workspace'],
   history: ['workspace', 'conversation', 'files', 'file'],
   send: ['workspace', 'conversation'],
@@ -194,6 +202,7 @@ export async function runMamaCommand(
       case 'queue': return await runQueue(caller, request)
       case 'edit-queued': return await runEditQueued(caller, request)
       case 'run-queued': return await runRunQueued(caller, request)
+      case 'delete-queued': return await runDeleteQueued(caller, request)
       case 'fetch': return await runFetch(caller, request)
       case 'history': return await runHistory(caller, request)
       case 'send': return await runSend(caller, request)
@@ -565,6 +574,21 @@ async function runRunQueued(caller: MamaCaller, request: MamaRequestInput): Prom
   }
   const { workspaceId } = await runQueuedWorkspace(caller.principal, id)
   return { ok: true, output: `Started queued workspace ${short} as ${workspaceId.slice(0, 8)}.` }
+}
+
+/**
+ * Discard a queued workspace in the caller's project, as the webapp's
+ * Discard does: its children move up to its own parent. No permission
+ * ceiling applies, since a discard starts nothing an agent could not
+ * already start by stopping the parent.
+ */
+async function runDeleteQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const target = request.args.queued?.trim() ?? ''
+  if (target === '') return { ok: false, error: 'delete-queued needs a queued workspace id' }
+  const picked = pickOne(await listQueuedWorkspaceRows(caller.projectId), target, 'queued workspace')
+  if (!picked.ok) return picked
+  await discardQueuedWorkspace(caller.principal, picked.entry.id)
+  return { ok: true, output: `Discarded queued workspace ${picked.entry.id.slice(0, 8)}.` }
 }
 
 /** Deliveries under way, by sender and by target conversation. */
