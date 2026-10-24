@@ -176,6 +176,7 @@ describe('k8sUsage', () => {
     ])
     expect(usage.nodes[0]).toMatchObject({
       cpuCores: 3, memoryBytes: 6 * GIB, swapBytes: GIB, cpuCapacityCores: 8, memoryCapacityBytes: 16 * GIB,
+      swapCapacityBytes: 4 * GIB,
       sampledAt: Date.parse('2026-10-22T12:00:00Z'),
     })
     expect(usage.nodes[2].error).toMatch(/yaac cluster install/)

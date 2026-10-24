@@ -18,10 +18,12 @@ already collects, so watching it adds almost no load to the nodes.
   `containerless`. A single summed disk number would mean nothing. Under
   `k8s` there is also **Scheduled**: pod requests against allocatable
   capacity, which decides whether the next workspace can start.
-- **Nodes** (`k8s` only). Usage, role (infrastructure only, workspaces,
-  both, or gVisor pending, read from the `yaac.workspaces` and
-  `yaac.gvisor` labels and taints), any condition that is not as it should
-  be (`NotReady`, `MemoryPressure`, …), and the age of the kubelet's sample.
+- **Nodes** (`k8s` only). Usage, swap in use out of the node's swap,
+  role (infrastructure only, workspaces, both, or gVisor pending, read
+  from the `yaac.workspaces` and `yaac.gvisor` labels and taints), how
+  many running workspaces it holds (prewarmed spares are counted under
+  Infrastructure), any condition that is not as it should be (`NotReady`,
+  `MemoryPressure`, …), and the age of the kubelet's sample.
   A node whose stats cannot be read shows why instead. Swap is shown only
   here and in the totals (see "What it does not do").
 - **Infrastructure.** One row per component, with its CPU, memory, an
@@ -81,6 +83,11 @@ included, and the overlay says how many that is.
 - **A pod's CPU** is the sum of its containers. Without the gate the pod
   level reports no CPU rate: cAdvisor computes one from consecutive samples,
   and at a 300s housekeeping interval it reports 0.
+- **A node's swap** is the kubelet's root-cgroup figure, whose limit is the
+  machine's `SwapTotal` whatever the kubelet's `swapBehavior`. So a node can
+  show swap that its pods may not use, and `none` means the machine has none.
+- **A node's workspace count** comes from the workspace rows, which need the
+  kubelet's stats, so a node whose stats are missing shows no count.
 - **Volumes.** Each claim is listed once, under the first component that
   mounts it. `yaac-checkouts` is a second mount of `yaac-global`
   (`substrate/storage-constants.ts`) and is merged into it. hostPath and

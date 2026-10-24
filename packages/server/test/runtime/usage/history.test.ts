@@ -22,11 +22,12 @@ function usage(n: number, opts: { workspaces?: string[]; nodeError?: boolean } =
     totals: { ...use, cpuCapacityCores: 8, memoryCapacityBytes: 8, swapBytes: 0, swapCapacityBytes: 0, disks: [] },
     nodes: [
       {
-        name: 'node-a', role: 'both', ...use, cpuCapacityCores: 8, memoryCapacityBytes: 8, swapBytes: 0,
-        conditions: [], sampledAt: n,
+        name: 'node-a', role: 'both', ...use, cpuCapacityCores: 8, memoryCapacityBytes: 8,
+        swapBytes: 0, swapCapacityBytes: 0, conditions: [], sampledAt: n,
       },
       {
-        name: 'node-b', role: 'workspaces', ...ZERO, cpuCapacityCores: 8, memoryCapacityBytes: 8, swapBytes: 0,
+        name: 'node-b', role: 'workspaces', ...ZERO, cpuCapacityCores: 8, memoryCapacityBytes: 8,
+        swapBytes: 0, swapCapacityBytes: 0,
         conditions: [], sampledAt: null, ...(opts.nodeError ? { error: 'forbidden' } : {}),
       },
     ],

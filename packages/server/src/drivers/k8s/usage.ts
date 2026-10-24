@@ -281,6 +281,7 @@ export async function k8sUsage(opts: { full: boolean }): Promise<SubstrateUsage>
       memoryBytes: s?.memory?.workingSetBytes ?? 0,
       memoryCapacityBytes: parseQuantity(node.status?.capacity?.memory),
       swapBytes: s?.swap?.swapUsageBytes ?? 0,
+      swapCapacityBytes: (s?.swap?.swapUsageBytes ?? 0) + (s?.swap?.swapAvailableBytes ?? 0),
       conditions: badConditions(node),
       sampledAt: s?.memory?.time ? Date.parse(s.memory.time) : null,
       ...(error !== undefined ? { error } : {}),
@@ -384,8 +385,6 @@ export async function k8sUsage(opts: { full: boolean }): Promise<SubstrateUsage>
   }
   disks.push(...volumes.values())
 
-  const swapCapacityBytes = summaries.reduce((sum, { summary }) =>
-    sum + (summary?.node.swap?.swapUsageBytes ?? 0) + (summary?.node.swap?.swapAvailableBytes ?? 0), 0)
   const requests = scheduledPods.filter((p) => p.spec?.nodeName)
     .flatMap((p) => p.spec?.containers ?? [])
     .map((c) => c.resources?.requests ?? {})
@@ -395,7 +394,7 @@ export async function k8sUsage(opts: { full: boolean }): Promise<SubstrateUsage>
       swapBytes: live.reduce((sum, n) => sum + n.swapBytes, 0),
       cpuCapacityCores: live.reduce((sum, n) => sum + n.cpuCapacityCores, 0),
       memoryCapacityBytes: live.reduce((sum, n) => sum + n.memoryCapacityBytes, 0),
-      swapCapacityBytes,
+      swapCapacityBytes: live.reduce((sum, n) => sum + n.swapCapacityBytes, 0),
       disks,
       ...(opts.full
         ? {

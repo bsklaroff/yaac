@@ -206,17 +206,22 @@ const ROLE_LABEL = {
 } as const
 
 function Nodes({ report }: { report: ResourceReport }): JSX.Element {
+  const running = new Map<string, number>()
+  for (const w of report.workspaces) {
+    if (w.running && w.node !== undefined) running.set(w.node, (running.get(w.node) ?? 0) + 1)
+  }
   return (
     <details open={report.nodes.length <= 3} className="flex flex-col gap-2">
       <summary className="cursor-pointer text-xs font-semibold text-text-dim">
         Nodes ({report.nodes.length})
       </summary>
       <div className="mt-2 overflow-x-auto">
-        <table className="w-full min-w-[720px] text-xs">
+        <table className="w-full min-w-[800px] text-xs">
           <thead>
             <tr className="text-left text-[11px] text-text-faint">
               <th className="py-1 font-normal">Node</th>
               <th className="font-normal">Role</th>
+              <th className="font-normal">Workspaces</th>
               <th className="font-normal">CPU</th>
               <th className="font-normal">Memory</th>
               <th className="font-normal">Swap</th>
@@ -230,9 +235,10 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
                 <td className="py-1.5 pr-2 font-mono text-[11px]">{n.name}</td>
                 <td className="pr-2 text-text-dim">{ROLE_LABEL[n.role]}</td>
                 {n.error !== undefined
-                  ? <td colSpan={5} className="text-warning">{n.error}</td>
+                  ? <td colSpan={6} className="text-warning">{n.error}</td>
                   : (
                     <>
+                      <td className="pr-2 tabular-nums text-text-dim">{running.get(n.name) ?? 0}</td>
                       <td className="w-40 pr-3">
                         <span className="tabular-nums text-text-dim">{formatCores(n.cpuCores)} / {formatCores(n.cpuCapacityCores)}</span>
                         <Meter used={n.cpuCores} capacity={n.cpuCapacityCores} label={`${n.name} CPU`} />
@@ -241,7 +247,11 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
                         <span className="tabular-nums text-text-dim">{formatBytes(n.memoryBytes)} / {formatBytes(n.memoryCapacityBytes)}</span>
                         <Meter used={n.memoryBytes} capacity={n.memoryCapacityBytes} label={`${n.name} memory`} />
                       </td>
-                      <td className="pr-2 tabular-nums text-text-dim">{formatBytes(n.swapBytes)}</td>
+                      <td className="pr-2 tabular-nums text-text-dim">
+                        {n.swapCapacityBytes > 0
+                          ? `${formatBytes(n.swapBytes)} / ${formatBytes(n.swapCapacityBytes)}`
+                          : <span className="text-text-faint">none</span>}
+                      </td>
                       <td className="pr-2">
                         {n.conditions.length === 0
                           ? <span className="text-text-faint">healthy</span>
