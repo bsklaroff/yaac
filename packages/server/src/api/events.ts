@@ -11,6 +11,7 @@ import { listProjects } from '#domain/projects'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { errorText, serverLog } from '#lib/log'
+import { previewed, withPreviews } from '#api/prompt-previews'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
 /** Minimal surface the hub needs from a WebSocket connection. */
@@ -53,14 +54,14 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   const hidden = new Set(provisioning.flatMap((p) => [p.workspaceId, p.claimedId]))
   return {
     driver: workspaceDriver().kind,
-    workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)),
+    workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)).map(withPreviews),
     workspaceGroups,
     stale: active.stale,
     projects,
-    provisioning,
-    queuedWorkspaces,
-    heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)),
-    draftWorkspaces,
+    provisioning: provisioning.map((p) => previewed(p)),
+    queuedWorkspaces: queuedWorkspaces.map((e) => previewed(e)),
+    heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)).map((h) => previewed(h)),
+    draftWorkspaces: draftWorkspaces.map((d) => previewed(d)),
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     ...usage,

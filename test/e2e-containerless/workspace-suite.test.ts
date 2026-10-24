@@ -21,7 +21,7 @@ import {
 import { builtinSkillsDir, sharedSkillRoots } from '@yaac/server/domain/skills'
 import { defaultModelFor } from '@yaac/server/domain/auth'
 import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
-import { ACP_ADAPTERS, AGENT_TOOLS } from '@yaac/shared/types'
+import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_LENGTH } from '@yaac/shared/types'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type {
@@ -1118,13 +1118,25 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(unoffered.code).toBe(1)
     expect(unoffered.out).toContain('no "xhigh" effort')
 
+    // A brief past what an argument holds, multibyte, from a file.
+    const brief = `plan the work\n${'Pläase ✓ the 🙂 step\n'.repeat(7_000)}`
+    expect(Buffer.byteLength(brief)).toBeGreaterThan(128 * 1024)
+    const briefFile = path.join(testEnv.dataDir, 'sibling-brief.md')
+    await fs.writeFile(briefFile, brief)
     const made = await runMama(
       'create', '--permission-mode', 'plan', '--effort', 'low', '--ui-mode', 'tui', '--branch', branch.trim(),
-      'plan the work',
+      '--prompt-file', briefFile,
     )
     expect(made.code).toBe(0)
     const sibling = made.out.trim()
     try {
+      // Recorded whole, as its first conversation's prompt.
+      await vi.waitFor(async () => {
+        const listed = await (await fetch(`${origin()}/api/workspace/list?project=${projectId}`)).json() as {
+          workspaces: Array<{ workspaceId: string; prompt?: string }>
+        }
+        expect(listed.workspaces.find((w) => w.workspaceId === sibling)?.prompt === brief).toBe(true)
+      }, { timeout: 60_000, interval: 500 })
       // The id comes back before launch; wait for the launch command.
       await vi.waitFor(async () => {
         const cmd = await tmux(sibling, 'display', '-p', '-t', 'yaac:claude', '#{pane_start_command}')
@@ -2311,8 +2323,13 @@ describe.skipIf(!CAN_RUN)('a create that fails', () => {
 describe.skipIf(!CAN_RUN)('queued workspaces', () => {
   /** `yaac-mama` as the workspace `id` runs it, with its own credentials. */
   async function mamaAs(id: string, ...args: string[]): Promise<string> {
+    return await mamaFrom(id, '/dev/null', ...args)
+  }
+
+  /** `mamaAs` with the file `stdin` as its standard input. */
+  async function mamaFrom(id: string, stdin: string, ...args: string[]): Promise<string> {
     const env = await paneEnv(id)
-    const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+    const quoted = [...args, '<', stdin].map((a, i) => (i === args.length ? a : `'${a.replace(/'/g, "'\\''")}'`)).join(' ')
     const { stdout } = await execFileAsync('sh', ['-c',
       `YAAC_MAMA_URL='${env.YAAC_MAMA_URL}' YAAC_MAMA_TOKEN='${env.YAAC_MAMA_TOKEN}' `
       + `${path.join(process.cwd(), 'workspace-bin', 'yaac-mama')} ${quoted}`,
@@ -2341,6 +2358,34 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       // The fake codex reports a conversation only once it gets a prompt,
       // and logs its launch arguments. All of these come from the edit.
       const child = await mamaAs(parent, 'queue', '--parent-workspace', parent, 'draft')
+
+      // A prompt longer than any argument can hold travels by file or stdin,
+      // whole and multibyte, and reads back in full.
+      const long = 'Pläase ✓ the 🙂 "brief"\\n\n'.repeat(MAX_PROMPT_LENGTH).slice(0, MAX_PROMPT_LENGTH)
+      const brief = path.join(testEnv.dataDir, 'brief.md')
+      await fs.writeFile(brief, long)
+      const fullPrompt = async (id: string): Promise<string> =>
+        ((await (await fetch(`${origin()}/api/workspace/prompt?id=${id}`)).json()) as { prompt: string }).prompt
+      const big = await mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief)
+      expect(await fullPrompt(big) === long).toBe(true)
+      // A NUL, which no argument can carry, is dropped like any other
+      // control character.
+      await fs.writeFile(brief, `${long.slice(1)}\0!`)
+      await mamaFrom(parent, brief, 'edit-queued', big.slice(0, 8), '-')
+      expect(await fullPrompt(big) === `${long.slice(1)}!`).toBe(true)
+      await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief, 'x'))
+        .rejects.toThrow(/not both/)
+      await fs.writeFile(brief, `${long}!`)
+      await expect(mamaFrom(parent, brief, 'queue', '--parent-workspace', parent, '-'))
+        .rejects.toThrow(/yaac-mama: body: the prompt is over the 200,000-character limit \(HTTP 400\)/)
+      await fs.writeFile(brief, '')
+      await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '--prompt-file', brief))
+        .rejects.toThrow(/the prompt from .* is empty/)
+      await expect(mamaAs(parent, 'queue', '--parent-workspace', parent, '-')).rejects.toThrow(/the prompt from stdin is empty/)
+      // Off the queue again, so the parent's stop below launches only `child`.
+      expect((await fetch(`${origin()}/api/workspace/queue/discard`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: big }),
+      })).ok).toBe(true)
       await expect(mamaAs(parent, 'edit-queued', child.slice(0, 8), ''))
         .rejects.toThrow(/usage: yaac-mama edit-queued/)
       expect(await mamaAs(
@@ -2386,9 +2431,29 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
       const sender = await createWorkspace('--permission-mode', 'accept-edits')
       try {
         const child = childWorkspace!
+        const sent = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `sent-${child}`)
+        // One past what an argument holds, multibyte, from a file; each of
+        // its lines reaches the agent as typed. The fake codex echoes a paste
+        // line by line, reprinting its prompt after each, where the real
+        // tools collapse it. So the message is a few long lines, which the
+        // fake keeps up with, ending in one holding the 20 characters a send
+        // looks for on screen; and it goes first, before an earlier header
+        // on screen could scroll off and hide that it showed.
+        const message = [
+          ...Array.from({ length: 40 }, (_, i) => `${'Pläase ✓ the 🙂 brief '.repeat(125)}line ${String(i)}`),
+          'that-is-the-whole-brief-✓',
+        ].join('\n')
+        expect(Buffer.byteLength(message)).toBeGreaterThan(128 * 1024)
+        const messageFile = path.join(testEnv.dataDir, 'message.md')
+        await fs.writeFile(messageFile, message)
+        expect(await mamaAs(sender, 'send', '--prompt-file', messageFile, child.slice(0, 8)))
+          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
+        await vi.waitFor(async () => {
+          expect((await fs.readFile(sent, 'utf8').catch(() => '')).includes(`\n${message}\n`)).toBe(true)
+        }, { timeout: 30_000, interval: 500 })
+
         expect(await mamaAs(sender, 'send', child.slice(0, 8), 'a message from a peer'))
           .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex conversation thread-`))
-        const sent = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `sent-${child}`)
         await vi.waitFor(async () => {
           expect(await fs.readFile(sent, 'utf8').catch(() => ''))
             .toContain(`Sent from ${sender} via yaac-mama:\n\na message from a peer\n`)

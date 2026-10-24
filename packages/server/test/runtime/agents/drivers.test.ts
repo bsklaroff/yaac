@@ -21,11 +21,14 @@ import {
   acpConversationByHandle,
 } from '#runtime/agents/acp-registry'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
+import { execInWorkspace } from '#drivers/containerless/exec'
+import { containerlessJobName, containerlessWorkspacePaths, workspaceHome } from '#drivers/containerless/paths'
 import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
 import { PromptNotRunError, type AcpConversation } from '#runtime/agents/acp-client'
 import type { AcpEventInit } from '@yaac/shared/acp'
 import {
   AGENT_TOOLS,
+  MAX_PROMPT_LENGTH,
   SUPPORTED_PERMISSION_MODES,
 } from '@yaac/shared/types'
 import { _ACP_PROFILES, acpLaunchModel } from '#runtime/agents/acp-adapters'
@@ -2642,12 +2645,13 @@ describe('agentDriver', () => {
       const [jobName, cmd, opts] = podExec.mock.calls.at(-1)!
       expect(jobName).toBe(session.jobName)
       // One attempt: a retried paste would submit the prompt twice.
-      expect(opts).toEqual({ maxAttempts: 1, timeout: 15_000 })
-      const b64 = /^printf %s ([A-Za-z0-9+/=]+) \| base64 -d > \/tmp\/\.yaac-prompt\.sh && /.exec(cmd)?.[1]
+      expect(opts).toEqual({ maxAttempts: 1, timeout: 15_000, stdin: expect.any(String) as string })
+      // The script arrives on stdin, so the command line stays small.
+      expect(cmd).toMatch(/^cat > \/tmp\/\.yaac-prompt\.sh \|\| exit 1; /)
       // Detached, by setsid where the host has it and nohup on macOS.
       expect(cmd).toContain('then setsid sh /tmp/.yaac-prompt.sh; else nohup sh /tmp/.yaac-prompt.sh; fi; }'
         + ' >/tmp/yaac-prompt.log 2>&1 </dev/null &')
-      return Buffer.from(b64!, 'base64').toString('utf8')
+      return opts!.stdin!
     }
 
     /**
@@ -2699,6 +2703,39 @@ describe('agentDriver', () => {
       // A startup dialog (claude's folder trust) swallows the paste, and
       // Enter there would pick its preselected "No, exit".
       expect(await run('none')).toEqual({ status: 1, calls: Array<string>(10).fill('paste') })
+    })
+
+    it('gets a prompt of the maximum length to the pane whole through a containerless workspace', async () => {
+      // Real host processes: the containerless exec runs the delivery as
+      // `sh -c`, so only `tmux` and `sleep` are stubbed, on the workspace's
+      // own PATH. Its multibyte text is far past what one argument holds.
+      const workspaceId = '4bfc59c6-1e83-4dd0-80f1-735294d5d2bb'
+      const jobName = containerlessJobName('demo', workspaceId)
+      const paths = containerlessWorkspacePaths(jobName)
+      const stubs = path.join(workspaceHome('demo', workspaceId), '.local', 'bin')
+      for (const dir of [paths.workspaceDir, paths.scratchDir, stubs]) mkdirSync(dir, { recursive: true })
+      writeFileSync(path.join(stubs, 'sleep'), '#!/bin/sh\n', { mode: 0o755 })
+      writeFileSync(path.join(stubs, 'tmux'), [
+        '#!/bin/sh',
+        `S=${bin}; shift 2`,
+        'case "$1" in',
+        '  display) echo 1 ;;',
+        '  capture-pane) cat "$S/screen" 2>/dev/null ;;',
+        '  load-buffer) cat > "$S/buffer" ;;',
+        '  paste-buffer) echo paste >> "$S/calls"; cp "$S/buffer" "$S/screen" ;;',
+        '  send-keys) echo "send-keys $4" >> "$S/calls" ;;',
+        'esac',
+        '',
+      ].join('\n'), { mode: 0o755 })
+      installFakeWorkspaceDriver({ exec: execInWorkspace, workspacePaths: containerlessWorkspacePaths })
+      const prompt = 'Pläase fix ✓ the 🙂 build\n'.repeat(MAX_PROMPT_LENGTH).slice(0, MAX_PROMPT_LENGTH)
+      expect(Buffer.byteLength(prompt)).toBeGreaterThan(128 * 1024)
+
+      await agentDriver('tui').deliverPrompt({ ...session, workspaceId, jobName }, '%3', prompt)
+      const calls = path.join(bin, 'calls')
+      await vi.waitFor(() => expect(existsSync(calls) && readFileSync(calls, 'utf8'))
+        .toBe('paste\nsend-keys Enter\nsend-keys Enter\n'), { timeout: 15_000 })
+      expect(readFileSync(path.join(bin, 'buffer'), 'utf8') === prompt).toBe(true)
     })
 
     it('pastes a whitespace-only prompt once, blind', async () => {
@@ -2790,7 +2827,7 @@ describe('agentDriver', () => {
     } = {}) {
       await agentDriver('tui').deliverPrompt({ ...session, tool }, '%3', MESSAGE, { running: { agentSessionId: 'conv-1' } })
       const [, cmd, execOpts] = podExec.mock.calls.at(-1)!
-      expect(execOpts).toEqual({ maxAttempts: 1, timeout: 30_000 })
+      expect(execOpts).toEqual({ maxAttempts: 1, timeout: 30_000, stdin: expect.any(String) as string })
       const file = (name: string): string => path.join(bin, name)
       for (const name of ['calls', 'input', 'transcript', 'history', 'stack', 'stash', 'kill', 'ups']) rmSync(file(name), { force: true })
       writeFileSync(file('input'), opts.draft ?? '')
@@ -2806,6 +2843,7 @@ describe('agentDriver', () => {
       mkdirSync(file('pi'), { recursive: true })
       const res = spawnSync('sh', ['-c', cmd], {
         encoding: 'utf8',
+        input: execOpts!.stdin,
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,

@@ -11,6 +11,7 @@
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
 #                 [--ui-mode U] [--branch B] [--group G] [--title T]
 #   yaac-mama send [--conversation C] <workspace> "<message>"
+#   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama set-base <branch>
 #   yaac-mama stop [<workspace>]
@@ -75,6 +76,8 @@ Usage:
   yaac-mama run-queued <queued>                    # start a queued one now
   yaac-mama send [--conversation <c>] <workspace> "<message>"
                                                    # message its running agent
+  Any "<prompt>" or "<message>" can instead be - (read from stdin) or
+  --prompt-file <path>, given before the other arguments.
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
   yaac-mama set-base <branch>                      # change your base branch
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
@@ -115,6 +118,13 @@ Options for create, queue and edit-queued:
                    the project's default branch.
   --group <name>   file the new workspace in this group, creating it if needed.
   --title <title>  the sidebar title; omitted, it is titled from its prompt.
+  --prompt-file <path>
+                   read the prompt from this file (relative to the current
+                   directory), in place of the "<prompt>" argument. The way to
+                   hand over a long brief: an argument holds at most 128 KiB,
+                   and a prompt can be up to 200,000 characters. A prompt of
+                   - reads it from stdin instead. An empty or unreadable file
+                   is an error.
 
 queue also takes:
   --parent-workspace <id>
@@ -194,6 +204,7 @@ conversation, or the one --conversation names (an id or
 unique prefix from `yaac-mama history <workspace>`). An agent mid-turn takes
 it when its turn allows, or queues it. Read its answer with `yaac-mama
 history`. The workspace may not run in a more permissive mode than this one.
+send takes --prompt-file <path> or - for the message, as create does.
 
 set-base makes <branch>, a branch on origin, this workspace's base: what
 the yaac webapp diffs it against, and what a workspace queued under it from
@@ -215,22 +226,28 @@ watch `yaac-mama list` for it to run, then `send` it what to do next.
 EOF
 }
 
-# JSON-encode one string as a quoted scalar. Byte-oriented and locale-proof:
-# the shell hands awk raw bytes, and only the characters JSON requires are
-# rewritten, so any UTF-8 in a prompt or group name passes through whole.
-# Control characters JSON has no short escape for are dropped, as a message
-# would lose them anyway (pasted terminal output carries escape sequences).
+# JSON-encode stdin as one quoted scalar. Byte-oriented and locale-proof:
+# awk reads raw bytes in the C locale, and only the characters JSON requires
+# are rewritten, so any UTF-8 in a prompt or group name passes through whole.
+# The input comes on stdin rather than as an argument, which could not hold
+# a long prompt. RS is a byte the input loses anyway, so awk sees it whole,
+# trailing newlines included. Control characters JSON has no short escape
+# for are dropped, as a message would lose them anyway (pasted terminal
+# output carries escape sequences). NUL goes first, through tr, since awks
+# disagree about it (macOS's ends a string there).
 json_string() {
-  awk 'BEGIN{
-    s = ARGV[1]
+  tr -d '\000' | LC_ALL=C awk 'BEGIN { RS = "\001"; printf "\"" }
+  {
+    s = $0
     gsub(/[\001-\010\013\014\016-\037\177]/, "", s)
     gsub(/\\/, "\\\\", s)
     gsub(/"/, "\\\"", s)
     gsub(/\n/, "\\n", s)
     gsub(/\r/, "\\r", s)
     gsub(/\t/, "\\t", s)
-    printf "%s", "\"" s "\""
-  }' "$1"
+    printf "%s", s
+  }
+  END { printf "\"" }'
 }
 
 # Undo JSON string escaping on stdin in one left-to-right pass, so `\\n` (an
@@ -259,26 +276,60 @@ unwrap_output() {
   text=$(printf '%s' "$1" | sed -n 's/^{"output":"\(.*\)"}$/\1/p' | json_unescape)
 }
 
-# Pull the message out of {"error":"…"}, for a refusal the server described.
+# Pull the message out of a refusal the server described: {"error":"…"} from
+# a command, or {"error":{"code":…,"message":"…"}} from the route itself (an
+# oversized or malformed request).
 error_text() {
-  printf '%s' "$1" | sed -n 's/.*"error":"\(.*\)"}$/\1/p' | json_unescape
+  printf '%s' "$1" | sed -n -e 's/^{"error":{.*"message":"\(.*\)"}}$/\1/p' -e t \
+    -e 's/.*"error":"\(.*\)"}$/\1/p' | json_unescape
 }
 
-# One command's JSON envelope. $1 command, $2 body, then alternating arg
-# name/value pairs (a pair with an empty value is omitted, so an unset option
-# is absent rather than blank).
+# One command's JSON envelope. $1 command, $2 body (or the file $body_file
+# holds, when set), then alternating arg name/value pairs (a pair with an
+# empty value is omitted, so an unset option is absent rather than blank).
 envelope() {
   cmd=$1; body=$2; shift 2
   args=""
   sep=""
   while [ $# -gt 1 ]; do
     if [ -n "$2" ]; then
-      args="$args$sep$(json_string "$1"):$(json_string "$2")"
+      args="$args$sep$(printf '%s' "$1" | json_string):$(printf '%s' "$2" | json_string)"
       sep=","
     fi
     shift 2
   done
-  printf '%s' "{\"command\":$(json_string "$cmd"),\"args\":{$args},\"body\":$(json_string "$body")}"
+  printf '%s' "{\"command\":$(printf '%s' "$cmd" | json_string),\"args\":{$args},\"body\":"
+  if [ -n "${body_file:-}" ]; then json_string < "$body_file"; else printf '%s' "$body" | json_string; fi
+  printf '}'
+}
+
+# A temporary directory in $tmp, removed on exit.
+scratch() {
+  if [ -z "${tmp:-}" ]; then
+    tmp=$(mktemp -d) || exit 1
+    trap 'rm -rf "$tmp"' EXIT
+  fi
+}
+
+# Take a prompt given as a file: --prompt-file's path in $prompt_file, or a
+# prompt of - (stdin). It is copied to a file that envelope sends as the body
+# ($body_file), so its text is never an argument, which could not hold a long
+# one. An unreadable or empty one is refused rather than sent as no prompt.
+read_prompt() {
+  src=$prompt_file
+  [ -n "$src" ] || [ "$prompt" != - ] || src=-
+  [ -n "$src" ] || return 0
+  name=$src; [ "$src" != - ] || name=stdin
+  scratch
+  cat -- "$src" > "$tmp/prompt" || { echo "yaac-mama: cannot read the prompt from $name" >&2; exit 2; }
+  [ -s "$tmp/prompt" ] || { echo "yaac-mama: the prompt from $name is empty" >&2; exit 2; }
+  body_file=$tmp/prompt; prompt=""
+}
+
+# Refuse a prompt given both ways.
+both_prompts() {
+  echo "yaac-mama: give the prompt as an argument or with --prompt-file, not both" >&2
+  exit 2
 }
 
 # Run one command whose answer is text, into $text. Arguments as envelope.
@@ -316,10 +367,7 @@ run() {
 # workspace it is about in $id. Arguments as envelope. A partial download
 # fails (curl exits non-zero), so $tmp/body is only ever whole.
 download() {
-  if [ -z "${tmp:-}" ]; then
-    tmp=$(mktemp -d) || exit 1
-    trap 'rm -rf "$tmp"' EXIT
-  fi
+  scratch
   code=$(envelope "$@" | curl -sS --max-time 3600 \
       -H 'Content-Type: application/json' \
       -H "Authorization: Bearer ${YAAC_MAMA_TOKEN:-}" \
@@ -502,15 +550,16 @@ EOF
 
   create|queue|edit-queued)
     cmd=$1; shift
-    tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""
+    tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace)
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
       case "$1" in
+        --prompt-file) prompt_file=$2 ;;
         --tool) tool=$2 ;;
         --model) model=$2 ;;
         --effort) effort=$2 ;;
@@ -525,34 +574,40 @@ EOF
     done
     opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]'
     queued=""; prompt=""
+    # The positional arguments after <queued>, if any: the prompt.
+    given=$#; [ "$cmd" != edit-queued ] || given=$(($# - 1))
+    [ -z "$prompt_file" ] || [ "$given" -lt 1 ] || both_prompts
     case "$cmd" in
       create)
-        if [ $# -ne 1 ] || [ -z "$1" ]; then
-          echo "usage: yaac-mama create $opts \"<prompt>\"" >&2
+        if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
+        elif [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama create $opts \"<prompt>\" | - | --prompt-file F" >&2
           exit 2
         fi
-        prompt=$1
+        prompt=${1:-}
         ;;
       queue)
         # Whether a missing parent is allowed (a group with a workspace
         # limit) is the server's to say.
-        if [ $# -ne 1 ] || [ -z "$1" ]; then
-          echo "usage: yaac-mama queue [--parent-workspace W] $opts \"<prompt>\"" >&2
+        if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
+        elif [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama queue [--parent-workspace W] $opts \"<prompt>\" | - | --prompt-file F" >&2
           exit 2
         fi
-        prompt=$1
+        prompt=${1:-}
         ;;
       edit-queued)
         # The prompt is optional (omitted keeps the stored one), but one that
         # is present and empty is refused: `edit-queued "$id" "$p"` with $p
         # unset meant to change the prompt, not to leave it.
         if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ] || { [ $# -eq 2 ] && [ -z "$2" ]; }; then
-          echo "usage: yaac-mama edit-queued [--parent-workspace W | --no-parent] $opts <queued> [\"<prompt>\"]" >&2
+          echo "usage: yaac-mama edit-queued [--parent-workspace W | --no-parent] $opts <queued> [\"<prompt>\" | - | --prompt-file F]" >&2
           exit 2
         fi
         queued=$1; prompt=${2:-}
         ;;
     esac
+    read_prompt
     set -- "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" no-parent "$no_parent" tool "$tool" model "$model" \
       effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
     [ "$cmd" = queue ] || run "$@"
@@ -566,16 +621,28 @@ EOF
 
   send)
     shift
-    conversation=""
-    if [ "${1:-}" = --conversation ]; then
-      [ $# -ge 2 ] && [ -n "$2" ] || { echo 'yaac-mama: --conversation needs a value' >&2; exit 2; }
-      conversation=$2; shift 2
-    fi
-    if [ $# -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
-      echo 'usage: yaac-mama send [--conversation C] <workspace> "<message>"' >&2
+    conversation=""; prompt_file=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --conversation|--prompt-file)
+          [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
+        *) break ;;
+      esac
+      case "$1" in
+        --conversation) conversation=$2 ;;
+        --prompt-file) prompt_file=$2 ;;
+      esac
+      shift 2
+    done
+    [ -z "$prompt_file" ] || [ $# -lt 2 ] || both_prompts
+    if [ -z "${1:-}" ] || { [ -n "$prompt_file" ] && [ $# -ne 1 ]; } \
+      || { [ -z "$prompt_file" ] && { [ $# -ne 2 ] || [ -z "$2" ]; }; }; then
+      echo 'usage: yaac-mama send [--conversation C] <workspace> "<message>" | - | --prompt-file F' >&2
       exit 2
     fi
-    run send "$2" workspace "$1" conversation "$conversation"
+    prompt=${2:-}
+    read_prompt
+    run send "$prompt" workspace "$1" conversation "$conversation"
     ;;
 
   rename)

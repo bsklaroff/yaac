@@ -141,6 +141,12 @@ export interface ChatDraft {
  *  where they could exhaust the quota for every other key. */
 const MAX_PERSISTED_DRAFT = 64 * 1024
 
+/** Whether the new-workspace form is too long to keep in localStorage, so
+ *  leaving the page would lose it. */
+function formTooLongToKeep(form: NewWorkspaceForm): boolean {
+  return form.prompt.length + (form.savedPrompt?.length ?? 0) > MAX_PERSISTED_DRAFT
+}
+
 /**
  * How one store field is saved in localStorage. Each field has its own key,
  * which is the key existing installs already hold. `parse` returns undefined
@@ -230,7 +236,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
       const parsed: unknown = JSON.parse(raw)
       return isNewWorkspaceForm(parsed) ? parsed : undefined
     },
-    serialize: (form) => (form === null || form.prompt.length > MAX_PERSISTED_DRAFT ? null : JSON.stringify(form)),
+    serialize: (form) => (form === null || formTooLongToKeep(form) ? null : JSON.stringify(form)),
   },
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
@@ -1307,7 +1313,7 @@ useUiStore.subscribe((state, prev) => {
 // too long to keep in localStorage.
 window.addEventListener('beforeunload', (e) => {
   const { dirtyFiles, newWorkspace } = useUiStore.getState()
-  if (Object.keys(dirtyFiles).length > 0 || (newWorkspace?.prompt.length ?? 0) > MAX_PERSISTED_DRAFT) e.preventDefault()
+  if (Object.keys(dirtyFiles).length > 0 || (newWorkspace !== null && formTooLongToKeep(newWorkspace))) e.preventDefault()
 })
 // Flush drafts on pagehide, and on a hidden visibilitychange, since some
 // mobile and bfcache paths skip pagehide.

@@ -1024,20 +1024,22 @@ describe('WorkspaceList', () => {
 
     // Its Start is ignored, and the row is headed by the generated title
     // until the server reports it.
-    it('runs a draft now from its menu', async () => {
+    it('runs a draft now from its menu, with the whole prompt the snapshot previews', async () => {
       renderList([], {
         drafts: [draft('d1', { generatedTitle: 'Idea one', branch: 'dev', startAfter: 's1', groupId: 'g1' })],
       })
+      const full = 'Idea d1\nmore detail, and the rest of a long brief'
+      server.route('GET /api/workspace/prompt', (c: FetchCall) => (c.query.get('id') === 'd1' ? { prompt: full } : undefined))
       await pickAction('Run now', 'Draft actions')
-      expect(provision).toHaveBeenCalledWith({
+      await waitFor(() => expect(provision).toHaveBeenCalledWith({
         workspaceId: expect.any(String) as string, projectId: 'proj', tool: 'codex', kind: 'create', groupId: 'g1',
-        title: 'Idea one', prompt: 'Idea d1\nmore detail',
-      }, expect.any(Function))
+        title: 'Idea one', prompt: full,
+      }, expect.any(Function)))
       const op = provision.mock.calls[0][1] as (onProgress: () => void) => Promise<unknown>
       await op(() => {})
       expect(createWorkspace).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
         projectId: 'proj', tool: 'codex', branch: 'dev', permissionMode: 'manual', mode: 'tui',
-        prompt: 'Idea d1\nmore detail', groupId: 'g1', draftId: 'd1',
+        prompt: full, groupId: 'g1', draftId: 'd1',
       }), expect.any(Function))
     })
   })
