@@ -473,6 +473,18 @@ the checkout itself (`/workspace` in a pod). So the project's
 to it instead. The folder-name munging is claude's own rule
 (`claudeProjectDirName`, pinned against the binary by a test).
 
+claude's `sessions/` is not history but is per-pod too. claude keeps a
+presence file there per process, `<pid>.json`, naming its conversation and
+whether it is idle, busy or showing a dialog, which `yaac-mama send` reads
+before typing (`atInputTest`). claude writes the file once at startup, merges
+later updates into whatever the file holds, and deletes it on exit. Each pod
+numbers its processes from 1, so claudes in different pods often get the same
+pid, and in a shared `sessions/` one pod's file would be overwritten or
+deleted by another's. A pod therefore mounts the project's
+`sessions/<id>/claude-sessions` at `~/.claude/sessions`, inside the
+per-workspace dir a stop removes. A host keeps the shared one, since host
+processes have distinct pids.
+
 Isolation is per workspace, not per conversation. Conversations in one
 workspace run in one pod as one uid, so one can delete another's transcript, as
 it can delete the checkout. Under containerless there is no isolation at all.

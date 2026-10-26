@@ -545,7 +545,10 @@ export const PI_MESSAGE_KEY = 'f9'
  *  - claude keeps a presence file per process in
  *    `$CLAUDE_CONFIG_DIR/sessions/`, naming its conversation and a
  *    `status` of `idle` or `busy` at its input, and `waiting` under any
- *    dialog (`waitingFor` says which). The newest naming the conversation
+ *    dialog (`waitingFor` says which). The file is named by pid, and each
+ *    pod numbers its processes from 1, so claudes in different pods often
+ *    get the same pid; a pod therefore has a `sessions/` of its own
+ *    (docs/workspace-storage.md). The newest naming the conversation
  *    is read, since a resumed conversation leaves its old process's behind;
  *    there is none until the TUI is past its startup dialogs.
  *  - codex titles its pane "Action Required" under an approval or a

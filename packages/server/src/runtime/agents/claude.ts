@@ -14,8 +14,8 @@ import type { PermissionMode } from '@yaac/shared/types'
  * see `buildAgentCmd`): since 2.1.259 claude pins the idle glyph under a
  * multiplexer, which would read as permanently `waiting`. (The fixtures
  * below come from 2.1.229.) Fallbacks if this breaks: claude's
- * `~/.claude/sessions/<pid>.json` (`status`, `waitingFor`), though that
- * directory is shared by a project's workspaces so pids need a per-pane
+ * `~/.claude/sessions/<pid>.json` (`status`, `waitingFor`), though a
+ * pane's file is named by its claude's pid, so finding it needs a per-pane
  * script; or a pane content search like opencode and pi use, though one
  * footer phrase ("Waiting for … to finish") also shows while idle.
  *

@@ -55,6 +55,7 @@ export async function convergeAgentHistory(
     await fs.mkdir(path.join(claudeDir(projectId), 'projects', CLAUDE_POD_REPO, 'memory'), { recursive: true })
     await fs.mkdir(path.join(history, 'claude', CLAUDE_POD_CWD, 'memory'), { recursive: true })
     await fs.mkdir(path.join(claudeDir(projectId), 'file-history'), { recursive: true })
+    await fs.mkdir(path.join(claudeDir(projectId), 'sessions'), { recursive: true })
     await fs.mkdir(path.join(codexDir(projectId), 'sessions'), { recursive: true })
     return
   }

@@ -1088,6 +1088,14 @@ export async function createWorkspace(
     const acpLogs = mode === 'acp' ? acpLogDir(projectId, workspaceId) : undefined
     // Pasted images (`saveWorkspaceAttachment`); must exist for its mount.
     const attachments = workspaceAttachmentsDir(projectId, workspaceId)
+    // A pod's own claude `sessions/`, where claude keeps a presence file per
+    // process named by its pid. Every pod of a project shares the claude
+    // home, and each pod numbers its processes from 1, so claudes in
+    // different pods often get the same pid and would share one file in a
+    // shared `sessions/`. Kept in the state dir so it goes when the pod
+    // does. Host processes have distinct pids, so containerless keeps the
+    // shared one.
+    const claudeSessions = path.join(workspaceStateDir(projectId, workspaceId), 'claude-sessions')
     // Pre-created so they are server-owned (and so writable in-pod) rather
     // than root-owned. None may overlap the main clone's mount.
     const cacheVolumeEntries = Object.entries(config.cacheVolumes ?? {})
@@ -1114,6 +1122,7 @@ export async function createWorkspace(
       ...[
         claude, codex, opencodeConfig, opencodeCheckpoint, pi, attachments,
         ...(acpLogs !== undefined ? [acpLogs] : []),
+        ...(sandboxed ? [claudeSessions] : []),
         ...cacheVolumeEntries.map(([key]) => cacheVolumeDir(projectId, key)),
       ].map((dir) => fs.mkdir(dir, { recursive: true })),
     ])
@@ -1195,7 +1204,7 @@ export async function createWorkspace(
       toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
       builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
       claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-      cachedPackages, acpLogs, attachments,
+      cachedPackages, acpLogs, attachments, claudeSessions,
     }
   })()
 
@@ -1208,7 +1217,7 @@ export async function createWorkspace(
     toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
     builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
     claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi,
-    cachedPackages, acpLogs, attachments,
+    cachedPackages, acpLogs, attachments, claudeSessions,
   } = prep
 
   const env: string[] = []
@@ -1394,8 +1403,9 @@ export async function createWorkspace(
     { source: { kind: 'hostPath', path: history('codex-sqlite') }, mountPath: CODEX_SQLITE_CONTAINER_DIR },
     { source: { kind: 'hostPath', path: history('pi') }, mountPath: PI_SESSIONS_CONTAINER_DIR },
     // The rest sit inside the shared tool homes, so they are layered over
-    // them, with claude's shared project memory put back on top. Without
-    // layering, convergeAgentHistory links them instead.
+    // them, with claude's shared project memory put back on top, and the
+    // pod's own claude `sessions/` beside them. Without layering,
+    // convergeAgentHistory links the history in instead.
     ...(sandboxed
       ? [
         { source: { kind: 'hostPath' as const, path: history('claude') }, mountPath: `${CLAUDE_CONTAINER_HOME}/projects` },
@@ -1404,6 +1414,7 @@ export async function createWorkspace(
           mountPath: `${CLAUDE_CONTAINER_HOME}/projects/${CLAUDE_POD_CWD}/memory`,
         },
         { source: { kind: 'hostPath' as const, path: history('claude-file-history') }, mountPath: `${CLAUDE_CONTAINER_HOME}/file-history` },
+        { source: { kind: 'hostPath' as const, path: claudeSessions }, mountPath: `${CLAUDE_CONTAINER_HOME}/sessions` },
         { source: { kind: 'hostPath' as const, path: history('codex') }, mountPath: `${CODEX_CONTAINER_HOME}/sessions` },
       ]
       : []),

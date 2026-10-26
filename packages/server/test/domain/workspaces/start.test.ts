@@ -57,6 +57,7 @@ import {
   piDir,
   repoDir,
   workspaceDir,
+  workspaceStateDir,
 } from '@yaac/shared/project-paths'
 import { CONTAINER_TMUX_DIR, projectConfigDir } from '@yaac/shared/paths'
 import {
@@ -484,6 +485,15 @@ describe('prepareStart', () => {
       })
       // The tmux socket needs no host dir: every client reaches it in-pod.
       expect(mounts).toContainEqual({ source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR })
+      // claude names its presence files by pid, and claudes in different
+      // pods often get the same pid, so each pod gets a sessions/ of its own
+      // over the project's claude home, made server-owned before launch.
+      const claudeSessions = path.join(workspaceStateDir(DEMO_PROJECT_ID, workspaceId), 'claude-sessions')
+      expect(mounts).toContainEqual({
+        source: { kind: 'hostPath', path: claudeSessions }, mountPath: '/home/yaac/.claude/sessions',
+      })
+      expect((await fs.stat(claudeSessions)).isDirectory()).toBe(true)
+      expect((await fs.stat(path.join(claudeDir(DEMO_PROJECT_ID), 'sessions'))).isDirectory()).toBe(true)
       expect(postStartExec).toEqual(['/usr/local/bin/yaac-workspace-init'])
       // The shipped helper commands are mounted where the agent finds them.
       const helpers = mounts.map((m) => m.mountPath).filter((p) => p.startsWith('/usr/local/bin/'))
