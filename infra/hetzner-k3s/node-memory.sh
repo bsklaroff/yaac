@@ -2,7 +2,7 @@
 # Memory setup for a node that runs workspaces (docs/cluster-setup.md
 # "Memory pressure"): swap the size of RAM behind zswap, the host's own
 # services kept off it, and the kubelet settings that bound each pod's
-# swap and evict the workspace that grew when RAM runs out. node.sh.tftpl
+# swap. node.sh.tftpl
 # and control.sh.tftpl run it; on a node that predates it, run it by hand
 # (README.md "Upgrading"). Every step is idempotent, and k3s restarts only
 # when the kubelet's settings change, which leaves running pods alone.
@@ -50,11 +50,9 @@ swapon --show=NAME | grep -q '^/dev/dm-' || swapon /dev/mapper/yaac-swap
 systemctl set-property system.slice MemorySwapMax=0
 
 # kubelet: LimitedSwap bounds a runc container's swap by its request (netd
-# bounds gVisor pods'); pod stats from the CRI stay fresh despite the 300s
-# housekeeping interval, so eviction ranks the pod that grew first; and
-# eviction at 200Mi, low because a node swapping cold pages runs a few
-# hundred MB from empty. evictionHard replaces k3s's whole map, so its disk
-# signals are repeated.
+# bounds gVisor pods'), and pod stats come from the CRI so they stay fresh
+# despite the 300s housekeeping interval. No memory eviction threshold: netd
+# kills the workspace thrashing the node, on memory pressure.
 dropin=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-yaac-memory.conf
 mkdir -p "$(dirname "$dropin")"
 want='apiVersion: kubelet.config.k8s.io/v1beta1
@@ -62,11 +60,7 @@ kind: KubeletConfiguration
 featureGates:
   PodAndContainerStatsFromCRI: true
 memorySwap:
-  swapBehavior: LimitedSwap
-evictionHard:
-  memory.available: 200Mi
-  imagefs.available: 5%
-  nodefs.available: 5%'
+  swapBehavior: LimitedSwap'
 if [ "$(cat "$dropin" 2>/dev/null)" != "$want" ]; then
   printf '%s\n' "$want" > "$dropin"
   for unit in k3s k3s-agent; do

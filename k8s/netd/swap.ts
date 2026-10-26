@@ -10,11 +10,13 @@
  * pressure").
  */
 
-/** A pod on netd's node, as the swap bound needs it. */
+/** A pod on netd's node, as the swap bound and the pressure kill need it. */
 export interface NodePod {
   name: string
   uid: string
   memoryRequestBytes: number
+  /** A workspace pod, the only kind the pressure kill may pick. */
+  workspace: boolean
 }
 
 const QUANTITY_SUFFIX: Record<string, number> = {
@@ -61,6 +63,12 @@ export function swapBoundBytes(requestBytes: number, memTotal: number, swapTotal
   const bytes = Math.floor((requestBytes / memTotal) * swapTotal)
   return bytes - (bytes % 4096)
 }
+
+/**
+ * The cgroup holding every pod, relative to the cgroup root, in the same
+ * three layouts as podCgroupCandidates. A node has exactly one of them.
+ */
+export const KUBEPODS_CGROUPS = ['kubepods.slice', 'kubelet.slice/kubelet-kubepods.slice', 'kubepods']
 
 /**
  * Candidate pod cgroups, relative to the cgroup root: the systemd driver's

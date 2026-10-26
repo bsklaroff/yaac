@@ -72,7 +72,7 @@ describe('applySwapBounds', () => {
       },
     }
   }
-  const pod = (name: string, uid: string, gib: number): NodePod => ({ name, uid, memoryRequestBytes: gib * GiB })
+  const pod = (name: string, uid: string, gib: number): NodePod => ({ name, uid, memoryRequestBytes: gib * GiB, workspace: true })
 
   it('bounds each pod on whichever cgroup layout the node uses, then leaves a correct value alone', async () => {
     const fs = cgroups({

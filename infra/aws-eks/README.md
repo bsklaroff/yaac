@@ -261,9 +261,9 @@ yet exercised:
   the file system policy, which refuses any client without the node role's
   IAM credentials.
 - **No swap on the nodes.** Unlike kind and Hetzner nodes, an idle
-  workspace's pages stay in RAM, so a node runs out sooner; the kubelet then
-  evicts the workspace furthest over its request (docs/cluster-setup.md
-  "Memory pressure").
+  workspace's pages stay in RAM, so a node runs out sooner; netd then kills
+  the workspace furthest over its request (docs/cluster-setup.md "Memory
+  pressure").
 
 ## Tear down
 

@@ -86,13 +86,22 @@ describe('mapPod', () => {
 describe('mapNodePod', () => {
   it('maps a running pod to its uid and memory request, init containers included', () => {
     expect(mapNodePod({
-      metadata: { name: 'ws', uid: 'a1-b2' },
+      metadata: { name: 'ws', uid: 'a1-b2', labels: { 'yaac.workspace-id': 'a1' } },
       status: { phase: 'Running' },
       spec: {
         containers: [{ resources: { requests: { memory: '2Gi' } } }],
         initContainers: [{ resources: { requests: { memory: '16Mi' } } }],
       },
-    })).toEqual({ name: 'ws', uid: 'a1-b2', memoryRequestBytes: 2 * 1024 ** 3 })
+    })).toEqual({ name: 'ws', uid: 'a1-b2', memoryRequestBytes: 2 * 1024 ** 3, workspace: true })
+  })
+
+  it('marks as workspaces only what the workspace selector matches', () => {
+    const running = (labels?: Record<string, string>) =>
+      mapNodePod({ metadata: { name: 'p', uid: 'u', labels }, status: { phase: 'Running' } })?.workspace
+    expect(running({ 'yaac.workspace-id': 'a1' })).toBe(true)
+    expect(running({ 'yaac.workspace-id': 'a1', app: 'yaac-proxy' })).toBe(false)
+    expect(running({ app: 'yaac-registry' })).toBe(false)
+    expect(running()).toBe(false)
   })
 
   it('drops a pod that is not running or has no uid', () => {
