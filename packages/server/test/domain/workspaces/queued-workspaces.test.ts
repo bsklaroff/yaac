@@ -28,6 +28,7 @@ import {
   queueWorkspace,
   resumeQueuedWorkspaces,
   runQueuedWorkspace,
+  setGroupWorkspaceLimit,
   startScheduledWorkspaces,
   updateQueuedWorkspace,
 } from '#domain/workspaces'
@@ -449,6 +450,38 @@ describe('discardQueuedWorkspace', () => {
     await expect(discardQueuedWorkspace(local, b.id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await claimQueuedLaunch(a.id, 'w')
     await expect(discardQueuedWorkspace(local, a.id)).rejects.toMatchObject({ code: 'CONFLICT' })
+  })
+
+  // docs/workspace-groups.md
+  it('hands its children what it waited in: a release, or a failure that waits for the user', async () => {
+    const { groupId } = await createWorkspaceGroup(PROJ, 'workers', null)
+    await setWorkspaceGroupLimit(PROJ, groupId, 1)
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'busy', groupId })
+    await workspace(P)
+
+    // Released by its parent's stop, then waiting for room: its child is
+    // released too, since the stopped parent will never release it.
+    const released = await queueWorkspace(local, PROJ, { parent: P, prompt: 'released', group: groupId }, 'user')
+    const afterReleased = await queueWorkspace(local, PROJ, { parent: released.id, prompt: 'after released' }, 'user')
+    await releaseQueuedWorkspace(released.id)
+    // Failed with no parent: its child keeps waiting for the user rather
+    // than launching once the group has room.
+    const failed = await queueWorkspace(local, PROJ, { prompt: 'failed', group: groupId }, 'user')
+    const afterFailed = await queueWorkspace(local, PROJ, { parent: failed.id, prompt: 'after failed' }, 'user')
+    await claimQueuedLaunch(failed.id, 'failed-launch')
+    await failQueuedLaunch(failed.id, 'failed-launch', 'branch not found')
+
+    await discardQueuedWorkspace(local, released.id)
+    await discardQueuedWorkspace(local, failed.id)
+    expect(await getQueuedWorkspaceRow(afterReleased.id)).toMatchObject({ parentWorkspaceId: P, releasedAt: expect.any(Date) as Date })
+    expect(await getQueuedWorkspaceRow(afterFailed.id)).toMatchObject({ launchError: expect.stringContaining('was discarded') as string })
+
+    await setGroupWorkspaceLimit(PROJ, groupId, null)
+    await launched(1)
+    expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('after released')
+    await settled(afterReleased.id, true)
+    expect((await getQueuedWorkspaceRow(afterFailed.id))?.launchWorkspaceId).toBeUndefined()
+    expect(mockCreate).toHaveBeenCalledTimes(1)
   })
 })
 

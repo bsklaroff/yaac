@@ -8,6 +8,7 @@
 #   yaac-mama queue [--parent-workspace W | --start-at T | --start-in D] [opts] "<prompt>"
 #   yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
 #   yaac-mama run-queued <queued>
+#   yaac-mama delete-queued <queued>
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
 #                 [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]
 #   yaac-mama send [--conversation C] <workspace> "<message>"
@@ -28,7 +29,8 @@
 # workspaces into named groups, and stop or restart one. Stopping is in reach
 # because it is reversible — the checkout and the conversation survive it —
 # and restarting a stopped workspace only undoes a stop, in a permission mode
-# no more permissive than the caller's. Nothing here deletes anything. The
+# no more permissive than the caller's. The one thing it deletes is a queued
+# workspace, which has never run, so only its prompt is lost. The
 # settings it changes are the caller's own base branch and a group's
 # workspace limit, which an orchestrator sets for the workers it queues
 # there; the rest stays with the user.
@@ -77,6 +79,7 @@ Usage:
   yaac-mama edit-queued [opts] <queued> ["<prompt>"]
                                                    # change a queued one
   yaac-mama run-queued <queued>                    # start a queued one now
+  yaac-mama delete-queued <queued>                 # discard a queued one
   yaac-mama send [--conversation <c>] <workspace> "<message>"
                                                    # message its running agent
   Any "<prompt>" or "<message>" can instead be - (read from stdin) or
@@ -165,6 +168,12 @@ or a new --tool (whose permission mode is then resolved at or below it).
 run-queued starts a queued workspace now, whatever it waits on. It is
 refused while its group is at its workspace limit, and for one more
 permissive than this workspace (lower it with edit-queued first).
+
+delete-queued discards a queued workspace. Whatever was queued after it
+moves up to wait on its parent or start time instead; with neither, each
+child starts once its own group has room, at once if that group has no
+limit. Children of one that failed to start, or whose start time has
+passed, fail too and wait for the user.
 
 group set-limit caps how many of a group's workspaces run or start at once
 (none removes the cap). Create, restart and group move into a full group are
@@ -736,6 +745,15 @@ EOF
     run run-queued '' queued "$1"
     ;;
 
+  delete-queued)
+    shift
+    if [ $# -ne 1 ] || [ -z "$1" ]; then
+      echo 'usage: yaac-mama delete-queued <queued>' >&2
+      exit 2
+    fi
+    run delete-queued '' queued "$1"
+    ;;
+
   group)
     shift
     [ $# -gt 0 ] || { echo 'usage: yaac-mama group create|move|set-limit …' >&2; exit 2; }
@@ -773,7 +791,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, send, rename, stop, restart, group, models, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, send, rename, stop, restart, group, models, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

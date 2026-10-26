@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, lte, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { queuedWorkspaces, routines } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
@@ -171,12 +171,21 @@ function closesCycle(id: string, parent: QueuedParent, entries: QueuedWorkspaceR
  *  start time had passed, so taking that time over would launch it at once. */
 const ORPHANED_PAST_START = 'what it was queued after was discarded after its start time; run it when you are ready'
 
+/** The error a failed entry's children take when it is discarded. */
+const DISCARDED_FAILED_PARENT = 'the queued workspace it waited on failed to start and was discarded'
+
 /**
  * Delete an entry, moving its children up to its own parent (or start time)
- * in the same transaction. A start time already past would launch them on
- * the next pass although their parent never ran, so they take it with an
- * error and wait for the user. Returns false if the entry is absent or
+ * in the same transaction. Returns false if the entry is absent or
  * mid-launch.
+ *
+ * The children also take over what the entry was waiting in, so a discard
+ * never changes whether they may start. Those of a failed entry get an
+ * error, so they wait for the user as it did instead of launching as soon
+ * as their group has room. So do those taking over a start time already
+ * past, which would launch them on the next pass although their parent
+ * never ran. Those of a released entry are released, since the parent they
+ * move to has already stopped and will not release them.
  */
 export async function deleteQueuedWorkspace(id: string): Promise<boolean> {
   const db = await getDb()
@@ -191,7 +200,13 @@ export async function deleteQueuedWorkspace(id: string): Promise<boolean> {
         parentWorkspaceId: row.parentWorkspaceId,
         parentQueuedId: row.parentQueuedId,
         startAt: row.startAt,
-        ...(pastStart ? { launchError: ORPHANED_PAST_START } : {}),
+        ...(row.launchError !== null
+          ? { launchError: sql`coalesce(${queuedWorkspaces.launchError}, ${DISCARDED_FAILED_PARENT})` }
+          : pastStart
+            ? { launchError: ORPHANED_PAST_START }
+            : row.releasedAt !== null
+              ? { releasedAt: sql`coalesce(${queuedWorkspaces.releasedAt}, ${row.releasedAt})` }
+              : {}),
       })
       .where(and(eq(queuedWorkspaces.parentQueuedId, id), pending))
     return true

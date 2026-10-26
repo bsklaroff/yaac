@@ -882,6 +882,37 @@ describe('runMamaCommand', () => {
     })
   })
 
+  describe('delete-queued', () => {
+    beforeEach(async () => {
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
+    })
+
+    it('discards one by short id, whatever its posture, moving its children up', async () => {
+      // The user queued this above the caller; discarding it starts nothing.
+      const above = await queueWorkspace(local, PROJ, {
+        parent: 'caller-workspace', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
+      }, 'user')
+      const child = await output('queue', 'after it', { 'parent-workspace': above.id, tool: 'claude' })
+      const foreign = await queueWorkspace(local, OTHER, {
+        parent: 'foreign-workspace', prompt: 'theirs', tool: 'claude',
+      }, 'user')
+      for (const args of [{}, { queued: 'nope' }, { queued: foreign.id }] as Array<Record<string, string>>) {
+        expect((await run('delete-queued', '', args)).ok, JSON.stringify(args)).toBe(false)
+      }
+
+      expect(await output('delete-queued', '', { queued: above.id.slice(0, 8) }))
+        .toBe(`Discarded queued workspace ${above.id.slice(0, 8)}.`)
+      const rows = await listQueuedWorkspaceRows(PROJ)
+      expect(rows.map((r) => r.id)).toEqual([child])
+      expect(rows[0]).toMatchObject({ parentWorkspaceId: 'caller-workspace' })
+      expect(await listQueuedWorkspaceRows(OTHER)).toHaveLength(1)
+      expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
+    })
+  })
+
   describe('rename', () => {
     beforeEach(async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
