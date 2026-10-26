@@ -47,6 +47,9 @@ export interface SpawnRequest {
   group?: string
   /** The new workspace's title; given, it is not auto-titled. */
   title?: string
+  /** Minutes until the server stops it. No ceiling: a timeout only
+   *  restrains. */
+  timeout?: number
 }
 
 /** What the server decided about one spawn request. */
@@ -120,6 +123,7 @@ export async function decideSpawn(request: SpawnRequest): Promise<SpawnDecision>
       ...(request.branch !== undefined ? { branch: request.branch } : {}),
       ...(request.group !== undefined ? { group: request.group } : {}),
       ...(request.title !== undefined ? { title: request.title } : {}),
+      ...(request.timeout !== undefined ? { deadline: new Date(Date.now() + request.timeout * 60_000) } : {}),
       rememberDefaults: false,
       // The caller gets this id; a spare has its own.
       claimSpare: false,
@@ -148,6 +152,9 @@ export interface RestartRequest {
   callerPermissionMode: PermissionMode
   /** The workspace to restart, an exact id in the caller's project. */
   workspaceId: string
+  /** Minutes from the restart until the server stops it. A workspace that
+   *  had a timeout keeps its length, or this if shorter. */
+  timeout?: number
 }
 
 /** What the server decided about one restart request: how many
@@ -202,12 +209,20 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
     }
   }
 
+  // A timeout only the user may lift: one the workspace had comes back at
+  // the same length, or shorter if the caller asks.
+  const previous = row.timeoutMinutes
+  const timeout = previous === undefined ? request.timeout : Math.min(request.timeout ?? previous, previous)
+
   const caller = request.callerWorkspaceId
   const release = reserveLaunch(caller)
   if (release === undefined) return fail(TOO_MANY_LAUNCHES)
   let run: Awaited<ReturnType<typeof prepareRestart>>
   try {
-    run = await prepareRestart(request.principal, workspaceId, { stoppedOnly: true })
+    run = await prepareRestart(request.principal, workspaceId, {
+      stoppedOnly: true,
+      ...(timeout !== undefined ? { deadline: new Date(Date.now() + timeout * 60_000) } : {}),
+    })
   } catch (err) {
     release()
     if (err instanceof ServerError && (err.code === 'CONFLICT' || err.code === 'VALIDATION')) return fail(err.message)

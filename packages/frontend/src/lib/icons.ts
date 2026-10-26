@@ -99,6 +99,8 @@ export {
   ChevronsUpDown as ExpandAllIcon,
   Diff as DiffIcon,
   Clock as QueuedIcon,
+  Repeat as RoutineIcon,
+  Timer as TimeoutIcon,
   PencilLine as DraftIcon,
   ArrowUp as SendIcon,
   Square as StopIcon,

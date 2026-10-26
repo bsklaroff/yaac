@@ -3,7 +3,8 @@ import { eq } from 'drizzle-orm'
 import { buildApp } from '@yaac/server/main/server'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { closeDb, getDb } from '@yaac/server/db/client'
-import { draftWorkspaces, gitCredentials, queuedWorkspaces } from '@yaac/server/db/schema'
+import { draftWorkspaces, gitCredentials, queuedWorkspaces, routines } from '@yaac/server/db/schema'
+import { insertRoutine } from '@yaac/server/db/routine-store'
 import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { insertQueuedWorkspace } from '@yaac/server/db/queued-workspace-store'
 import { insertDraftWorkspace } from '@yaac/server/db/draft-workspace-store'
@@ -79,6 +80,7 @@ const ID = {
   workspace: '6f2a1d3b-8c4e-4f9a-8b7d-1e2f3a4b5c6d',
   queued: '7a3b2e4c-9d5f-4a0b-8c8e-2f3a4b5c6d7e',
   draft: '8b4c3f5d-0e6a-4b1c-9d9f-3a4b5c6d7e8f',
+  routine: 'c3d4e5f6-a7b8-4c9d-8e1f-2a3b4c5d6e7f',
   provisioning: '9c5d4a6e-1f7b-4c2d-8e0a-4b5c6d7e8f9a',
   group: 'g1',
   credential: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
@@ -177,6 +179,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   // An unknown workspace is a plain 404; later failures travel in the
   // NDJSON stream.
   { method: 'POST', path: '/api/workspace/restart', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/timeout', body: { workspaceId: ID.workspace, timeout: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: ID.workspace }, access: 'owner', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/delete', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/mark-death-seen', body: { projectId: ID.project, workspaceId: ID.workspace }, access: 'reader', k8s: MISSING, containerless: MISSING },
@@ -196,11 +199,21 @@ const ROUTE_MATRIX: RouteCase[] = [
     why: 'the egress proxy relays a pod\'s git to the yaac-mama listener', k8s: UNSUPPORTED, containerless: 401 },
   { method: 'POST', path: '/api/workspace/git/:repo/git-receive-pack', request: `/api/workspace/git/${ID.project}.git/git-receive-pack`, access: 'public',
     why: 'the egress proxy relays a pod\'s git to the yaac-mama listener', k8s: UNSUPPORTED, containerless: 401 },
+  { method: 'GET', path: '/api/workspace/queue/list', access: 'reader', k8s: 200, containerless: 200 },
   { method: 'POST', path: '/api/workspace/queue/create', body: { project: ID.project, parent: ID.workspace, prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/update', body: { id: ID.queued, prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/discard', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/queue/run', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/prompt', request: `/api/workspace/prompt?id=${ID.queued}`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  // ── routines (docs/routines.md) ───────────────────────────────────────
+  { method: 'GET', path: '/api/routine/list', access: 'reader', k8s: 200, containerless: 200 },
+  { method: 'GET', path: '/api/routine/runs', request: `/api/routine/runs?id=${ID.routine}`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/create', body: { project: ID.project, name: 'n', cron: '@daily', prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/update', body: { id: ID.routine, name: 'n' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/pause', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/resume', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/run', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/delete', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/draft/save', body: { project: ID.project, prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/draft/discard', body: { id: ID.draft }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/group/list', access: 'reader', k8s: 200, containerless: 200 },
@@ -344,6 +357,10 @@ async function seedOwnedFixtures(): Promise<void> {
   await db.update(queuedWorkspaces).set({ id: ID.queued }).where(eq(queuedWorkspaces.id, queued.id))
   const draft = await insertDraftWorkspace(ID.project, settings)
   await db.update(draftWorkspaces).set({ id: ID.draft }).where(eq(draftWorkspaces.id, draft.id))
+  const routine = await insertRoutine(ID.project, {
+    ...settings, name: 'n', cron: '@daily', timeZone: 'UTC', model: 'm', branch: 'main',
+  }, null)
+  await db.update(routines).set({ id: ID.routine }).where(eq(routines.id, routine.id))
   const credential = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
   await db.update(gitCredentials).set({ id: ID.credential }).where(eq(gitCredentials.id, credential.id))
   registerProvisioning({ workspaceId: ID.provisioning, projectId: ID.project, tool: 'claude', kind: 'create' })

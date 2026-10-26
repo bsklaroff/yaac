@@ -80,5 +80,6 @@ export function ownedBy(snapshot: ServerSnapshot, userId: string): ServerSnapsho
     queuedWorkspaces: theirs(snapshot.queuedWorkspaces),
     heldWorkspaces: theirs(snapshot.heldWorkspaces),
     draftWorkspaces: theirs(snapshot.draftWorkspaces),
+    routines: theirs(snapshot.routines),
   }
 }

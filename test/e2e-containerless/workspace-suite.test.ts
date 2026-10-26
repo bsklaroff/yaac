@@ -53,6 +53,11 @@ let workspaceId: string
 let projectId: string
 
 const NAME = 'cl-demo'
+/** The project the timed cases run in, so their launches stay out of
+ *  `NAME`'s listings. */
+const SCHED = 'cl-sched'
+/** The workspace the timed cases give a one-minute timeout. */
+let timedId = ''
 /** The project's git credential: an HTTPS token, assigned in beforeAll. */
 const GIT_TOKEN = 'ghp_containerless_test'
 /**
@@ -279,6 +284,10 @@ function sockFor(id: string): string {
 
 interface ListedWorkspace {
   workspaceId: string
+  projectId: string
+  prompt?: string
+  deadline?: string
+  routineId?: string
   status: string
   title?: string
   groupId?: string
@@ -347,7 +356,9 @@ async function createWorkspaceFrom(...args: string[]): Promise<{ workspaceId: st
     throw new Error(`create failed (exit ${String(exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
   }
   const after = await listWorkspaces()
-  const fresh = after.find((w) => !before.has(w.workspaceId))
+  // This project's only: the scheduling cases' project starts workspaces of
+  // its own on the server's clock.
+  const fresh = after.find((w) => !before.has(w.workspaceId) && w.projectId === projectId)
   if (!fresh) {
     throw new Error(
       `create reported success but listed no new workspace\n${stdout}\n`
@@ -563,6 +574,53 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const res = await fetch(`${origin()}/api/config/time-zone`)
     expect(await res.json()).toEqual({ timeZone: CLI_TIME_ZONE, pinned: false })
     expect((await paneEnv(workspaceId)).TZ).toBe(CLI_TIME_ZONE)
+  })
+
+  // The timed cases (docs/routines.md) act on the server's minute resync, so
+  // a one-minute timeout or start lands within two. They start here, in a
+  // project of their own so their launches never land in this project's
+  // listings, and are checked near the end of the file, so the wait overlaps
+  // the cases between.
+  it('queues a timed workspace and a scheduled one, and lists both with their times', async () => {
+    const schedRepo = await createTestRepo(path.join(testEnv.scratchDir, SCHED))
+    await addTestProject(server, schedRepo, { remoteUrl: `https://github.com/test/${SCHED}.git` })
+    await assignTestGitCredential(server, SCHED, GIT_TOKEN)
+
+    const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
+    const timed = await runYaac(cliEnv(), 'workspace', 'create', SCHED, '--tool', 'claude', '--mode', 'tui',
+      '--timeout', '1m', '--prompt', 'timed')
+    expect(timed.exitCode, timed.stderr).toBe(0)
+    timedId = (await listWorkspaces()).find((w) => !before.has(w.workspaceId))?.workspaceId ?? ''
+    expect((await listWorkspaces()).find((w) => w.workspaceId === timedId)?.deadline).toBeDefined()
+    const child = await fetch(`${origin()}/api/workspace/queue/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: SCHED, parent: timedId, prompt: 'after the timeout', tool: 'claude', mode: 'tui' }),
+    })
+    expect(child.status, await child.clone().text()).toBe(200)
+
+    const scheduled = await runYaac(cliEnv(), 'workspace', 'create', SCHED, '--tool', 'claude', '--mode', 'tui',
+      '--start-in', '1m', '--prompt', 'scheduled start')
+    expect(scheduled.exitCode, scheduled.stderr).toBe(0)
+    // Shown in the zone the CLI reported.
+    expect(scheduled.stdout).toMatch(new RegExp(`^Queued workspace [0-9a-f-]{36}: starts at about .+ ${CLI_TIME_ZONE}\\.`))
+
+    const list = await runYaac(cliEnv(), 'workspace', 'list', SCHED)
+    expect(list.stdout).toMatch(new RegExp(`STOPS \\(${CLI_TIME_ZONE}\\)`))
+    expect(list.stdout).toContain('Scheduled:')
+    expect(list.stdout).toContain('scheduled start')
+  }, 120_000)
+
+  it('sets and clears a running workspace\'s timeout, which its agent reads through yaac-mama', async () => {
+    const set = await runYaac(cliEnv(), 'workspace', 'timeout', workspaceId.slice(0, 8), '3h')
+    expect(set.exitCode, set.stderr).toBe(0)
+    expect(set.stdout).toMatch(new RegExp(`stops at about .+ ${CLI_TIME_ZONE}\\.$`, 'm'))
+    const { out } = await runMama('list', workspaceId.slice(0, 8))
+    expect(out).toMatch(new RegExp(`STOPS \\(${CLI_TIME_ZONE}\\)`))
+    expect(out).toMatch(/\(in (2h 59m|3h)\)/)
+    const cleared = await runYaac(cliEnv(), 'workspace', 'timeout', workspaceId, 'none')
+    expect(cleared.stdout).toContain('has no timeout')
+    expect((await listWorkspaces()).find((w) => w.workspaceId === workspaceId)?.deadline).toBeUndefined()
   })
 
   it('reports the running workspace\'s memory, and the host\'s, on the server health report', async () => {
@@ -1630,6 +1688,51 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       }
       expect(workspaces.find((w) => w.workspaceId === workspaceId)?.effort).toBe('max')
     }, { timeout: 30_000, interval: 500 })
+  }, 120_000)
+
+  it('stops the timed workspace at its deadline, starting its child, and starts the scheduled one', async () => {
+    const stoppedAs = async (): Promise<string> =>
+      (await runYaac(cliEnv(), 'workspace', 'list', SCHED, '--stopped')).stdout
+    await vi.waitFor(async () => {
+      expect(await stoppedAs()).toMatch(new RegExp(`${timedId.slice(0, 8)}.*timed out`))
+    }, { timeout: 180_000, interval: 2_000 })
+    await vi.waitFor(async () => {
+      const prompts = (await listWorkspaces()).map((w) => w.prompt)
+      expect(prompts).toContain('after the timeout')
+      expect(prompts).toContain('scheduled start')
+    }, { timeout: 180_000, interval: 2_000 })
+
+    // A restart clears the timeout unless it sets one, counted from the restart.
+    const restarted = await runYaac(cliEnv(), 'workspace', 'restart', timedId, '--timeout', '1h')
+    expect(restarted.exitCode, restarted.stderr).toBe(0)
+    const deadline = (await listWorkspaces()).find((w) => w.workspaceId === timedId)?.deadline ?? ''
+    expect(new Date(deadline).getTime()).toBeGreaterThan(Date.now() + 55 * 60_000)
+    for (const w of await listWorkspaces()) {
+      if (w.projectId !== projectId) await runYaac(serverEnv, 'workspace', 'stop', w.workspaceId)
+    }
+  }, 400_000)
+
+  it('runs a routine now, filed in its group and stopped at its next tick', async () => {
+    const created = await runYaac(cliEnv(), 'routine', 'create', SCHED, '--name', 'Half-hourly sweep', '--cron', '*/30 * * * *',
+      '--prompt', 'sweep', '--tool', 'claude', '--mode', 'tui')
+    expect(created.exitCode, created.stderr).toBe(0)
+    const routineId = /Created routine ([0-9a-f-]{36})/.exec(created.stdout)?.[1] ?? ''
+    const routine = ((await (await fetch(`${origin()}/api/routine/list`)).json()) as Array<{
+      id: string; groupId?: string; nextRuns: string[]
+    }>).find((r) => r.id === routineId)
+    const nextTick = new Date(routine?.nextRuns[0] ?? '').getTime()
+
+    const ran = await runYaac(cliEnv(), 'routine', 'run', routineId.slice(0, 8))
+    expect(ran.exitCode, ran.stderr).toBe(0)
+    const runId = /Started workspace ([0-9a-f-]{36})/.exec(ran.stdout)?.[1] ?? ''
+    await vi.waitFor(async () => {
+      const run = (await listWorkspaces()).find((w) => w.workspaceId === runId)
+      expect(run).toMatchObject({ routineId, groupId: routine?.groupId })
+      // Exactly the next tick, however close to it the run started.
+      expect(new Date(run?.deadline ?? '').getTime()).toBe(nextTick)
+    }, { timeout: 60_000, interval: 500 })
+    await runYaac(serverEnv, 'workspace', 'stop', runId)
+    await runYaac(cliEnv(), 'routine', 'delete', routineId)
   }, 120_000)
 
   // Destroys its subject — keep last.

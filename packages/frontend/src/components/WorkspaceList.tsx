@@ -25,6 +25,7 @@ import type {
   StoppedWorkspaceEntry,
   ProvisioningWorkspaceEntry,
   QueuedWorkspaceEntry,
+  RoutineEntry,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -34,9 +35,11 @@ import {
   QueuedRows,
   QueuedSet,
   QueuedWorkspaceRow,
+  ScheduledSection,
   type QueueContextValue,
   type QueueParent,
 } from '#components/sidebar/QueuedRows'
+import { RoutinesSection } from '#components/sidebar/RoutineRows'
 import {
   isTerminating,
   ProvisioningRow,
@@ -84,6 +87,9 @@ export interface SidebarLayout {
   /** Queued workspaces whose parent has no row (e.g. its create failed),
    *  shown at the top of the list. */
   orphans: QueuedWorkspaceEntry[]
+  /** Queued workspaces that start at a time, soonest first. A routine's
+   *  runs are left to its own row. */
+  scheduled: QueuedWorkspaceEntry[]
 }
 
 /** A held workspace as a stopped row. */
@@ -99,6 +105,8 @@ function heldAsStopped(h: HeldWorkspaceEntry): StoppedWorkspaceEntry {
     agentSessions: [],
     ...(h.deathReason !== undefined ? { deathReason: h.deathReason } : {}),
     ...(h.deathDetail !== undefined ? { deathDetail: h.deathDetail } : {}),
+    ...(h.timedOut ? { timedOut: true } : {}),
+    ...(h.endedAtNextRun ? { endedAtNextRun: true } : {}),
     deathSeenBy: h.deathSeenBy,
     ...(h.groupId !== undefined ? { groupId: h.groupId } : {}),
   }
@@ -118,6 +126,7 @@ export interface ProjectScope {
   queued: QueuedWorkspaceEntry[]
   held: HeldWorkspaceEntry[]
   drafts: DraftWorkspaceEntry[]
+  routines: RoutineEntry[]
   /** Hosts that rejected the project's git credential (project-wide). */
   gitAuthFailures: GitAuthFailure[]
 }
@@ -178,8 +187,9 @@ export function ListBadges({ scope, className }: { scope: ProjectScope; classNam
  * A held workspace (stopped, with queued workspaces waiting on it) keeps a
  * stopped row in its usual place and keeps its group shown, so its queue
  * stays visible. Each queued workspace nests under the row it waits on, or
- * with no parent under its group's header, which it keeps shown; those
- * without either go in `orphans`.
+ * with no parent under its group's header, which it keeps shown; one that
+ * starts at a time heads its chain in `scheduled`, and those waiting on no
+ * row go in `orphans`.
  */
 export function sidebarLayout(
   workspaces: WorkspaceListEntry[],
@@ -197,7 +207,8 @@ export function sidebarLayout(
   const shownHeld = held.filter((h) => !liveIds.has(h.workspaceId))
   const heldIds = new Set(shownHeld.map((h) => h.workspaceId))
   const heldRows = shownHeld.map(heldAsStopped).sort(byCreatedAt)
-  const parentless = queued.filter((e) => e.parentWorkspaceId === undefined && e.parentQueuedId === undefined)
+  const parentless = queued.filter((e) => e.parentWorkspaceId === undefined && e.parentQueuedId === undefined
+    && e.startAt === undefined)
   // Provisioning rows keep the order they were started in (the caller sorts
   // them), so they don't move under the pointer.
   const sections = shownGroups(groups, [...workspaces, ...provisioning, ...shownHeld, ...parentless])
@@ -219,9 +230,11 @@ export function sidebarLayout(
     defaultHeld,
     groups: sections,
     queuedChildren: queuedChildren(queued),
-    orphans: queued.filter((e) => e.parentQueuedId !== undefined
+    orphans: queued.filter((e) => e.startAt === undefined && (e.parentQueuedId !== undefined
       ? !queuedIds.has(e.parentQueuedId)
-      : e.orphaned === true || !onScreen.has(queuedParentId(e))),
+      : e.orphaned === true || !onScreen.has(queuedParentId(e)))),
+    scheduled: queued.filter((e) => e.startAt !== undefined && e.routineId === undefined)
+      .sort((a, b) => (a.startAt ?? '').localeCompare(b.startAt ?? '')),
   }
 }
 
@@ -331,8 +344,8 @@ interface RowDrag {
 
 /**
  * The workspace list: a search box and status filter over the scrolling
- * rows, which are drafts, provisioning rows, ungrouped workspaces, group
- * sections and the Stopped section. It has no outer chrome, so the desktop
+ * rows, which are drafts, scheduled workspaces, routines, provisioning rows,
+ * ungrouped workspaces, group sections and the Stopped section. It has no outer chrome, so the desktop
  * `Sidebar` and the mobile workspaces screen can each wrap it.
  *
  * A search filters the rows here and the stopped list on the server. A
@@ -351,6 +364,7 @@ export function WorkspaceList({
   queued,
   held,
   drafts,
+  routines,
 }: {
   projectId: string | null
   /** The active project's stopped counts, from the snapshot. */
@@ -365,6 +379,7 @@ export function WorkspaceList({
   held: HeldWorkspaceEntry[]
   /** The active project's draft workspaces. */
   drafts: DraftWorkspaceEntry[]
+  routines: RoutineEntry[]
 }): JSX.Element {
   // Keeps stopping rows out of `rowIds`.
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
@@ -401,7 +416,12 @@ export function WorkspaceList({
   const narrowed = searching || filtering
   const shown = narrowRows(query, statuses, { workspaces, provisioning, queued, held, drafts })
   const layout = sidebarLayout(shown.workspaces, groups, shown.provisioning, shown.queued, shown.held)
+  // A status filter hides rows with no status: orphans, scheduled entries
+  // and routines.
   const orphans = filtering ? [] : layout.orphans
+  const scheduled = filtering ? [] : layout.scheduled
+  const q = query.trim().toLowerCase()
+  const shownRoutines = filtering ? [] : routines.filter((r) => `${r.name}\n${r.prompt}`.toLowerCase().includes(q))
   const sections = narrowed
     ? layout.groups.filter((s) => s.provisioning.length + s.members.length + s.held.length + s.waiting.length > 0)
     : layout.groups
@@ -491,7 +511,8 @@ export function WorkspaceList({
   // So a stop from a row's menu can select the next row.
   const rowIds = sidebarRowIds(provisioning, workspaces, groups, pendingDeleteIds)
   // Every queued row nests under a counted row or is an orphan.
-  const visibleCount = layout.defaultList.length + layout.defaultHeld.length + orphans.length
+  const visibleCount = layout.defaultList.length + layout.defaultHeld.length + orphans.length + scheduled.length
+    + shownRoutines.length
     + sections.reduce((n, s) => n + s.members.length + s.held.length + s.waiting.length, 0)
   const nothingLive = visibleCount === 0 && shown.provisioning.length === 0 && shown.drafts.length === 0
   // Names of possible parents, for a queued row's discard dialog.
@@ -678,7 +699,7 @@ export function WorkspaceList({
                 : 'Pick a project from the rail on the left.'}
             />
           )}
-          {projectId && !narrowed
+          {projectId && !narrowed && routines.length === 0
             && !projectHasWorkspaces(projectId, { workspaces, provisioning, queued, held, drafts }, project?.stoppedCount ?? 0)
             && (
             <EmptyState
@@ -716,6 +737,8 @@ export function WorkspaceList({
             </div>
           )}
           {shown.drafts.length > 0 && <DraftsSection drafts={shown.drafts} />}
+          {scheduled.length > 0 && <ScheduledSection entries={scheduled} />}
+          {shownRoutines.length > 0 && <RoutinesSection routines={shownRoutines} />}
           {orphans.map((e) => (
             <Fragment key={e.id}>
               <QueuedWorkspaceRow entry={e} depth={0} />

@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "timeout_minutes" integer;

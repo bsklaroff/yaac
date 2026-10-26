@@ -5,17 +5,17 @@
 #   yaac-mama list [<workspace>...]
 #   yaac-mama list --stopped [--search S] [--group G] [--limit N] [--cursor C]
 #   yaac-mama create [opts] "<prompt>"
-#   yaac-mama queue [--parent-workspace W] [opts] "<prompt>"
-#   yaac-mama edit-queued [--parent-workspace W | --no-parent] [opts] <queued> ["<prompt>"]
+#   yaac-mama queue [--parent-workspace W | --start-at T | --start-in D] [opts] "<prompt>"
+#   yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] [opts] <queued> ["<prompt>"]
 #   yaac-mama run-queued <queued>
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
-#                 [--ui-mode U] [--branch B] [--group G] [--title T]
+#                 [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]
 #   yaac-mama send [--conversation C] <workspace> "<message>"
 #   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
 #   yaac-mama set-base <branch>
 #   yaac-mama stop [<workspace>]
-#   yaac-mama restart <workspace>
+#   yaac-mama restart [--timeout D] <workspace>
 #   yaac-mama group create "<name>"
 #   yaac-mama group move <workspace> ["<group>"]
 #   yaac-mama group set-limit "<group>" <limit|none>
@@ -71,6 +71,9 @@ Usage:
                                                    # start one once a group
                                                    # with a workspace limit
                                                    # has room
+  yaac-mama queue --start-at <time> [opts] "<prompt>"
+  yaac-mama queue --start-in <duration> [opts] "<prompt>"
+                                                   # start one at a time
   yaac-mama edit-queued [opts] <queued> ["<prompt>"]
                                                    # change a queued one
   yaac-mama run-queued <queued>                    # start a queued one now
@@ -81,7 +84,7 @@ Usage:
   yaac-mama rename [<workspace>] "<title>"          # retitle (default: yourself)
   yaac-mama set-base <branch>                      # change your base branch
   yaac-mama stop [<workspace>]                      # stop it (default: yourself)
-  yaac-mama restart <workspace>                    # restart a stopped one
+  yaac-mama restart [--timeout <d>] <workspace>    # restart a stopped one
   yaac-mama group create "<name>"                  # make an empty group
   yaac-mama group move <workspace> ["<group>"]      # omit the group to ungroup
   yaac-mama group set-limit "<group>" <n|none>     # cap how many run at once
@@ -125,8 +128,13 @@ Options for create, queue and edit-queued:
                    and a prompt can be up to 200,000 characters. A prompt of
                    - reads it from stdin instead. An empty or unreadable file
                    is an error.
+  --timeout <d>    stop the new workspace this long after it starts, in whole
+                   minutes or more: 45m, 2h, 1h30m, 1d. The server checks
+                   every minute. For a queued workspace with a start time it
+                   counts from that time. edit-queued can shorten a queued
+                   workspace's timeout but not lengthen it.
 
-queue also takes:
+queue also takes at most one of:
   --parent-workspace <id>
                    what the queued workspace waits on: a workspace in this
                    project ("$YAAC_WORKSPACE_ID" for this one), or a queued
@@ -140,6 +148,12 @@ queue also takes:
                    oldest first. Its omitted options default as create's do.
                    A group without a limit is refused (use create), and so is
                    a group name that matches none: queue does not create one.
+  --start-at <time>
+                   start it at a time: HH:MM (its next occurrence),
+                   YYYY-MM-DD HH:MM, or ISO 8601 with an offset, read in the
+                   user's yaac time zone (not this workspace's TZ). Up to a
+                   minute late. Options it omits default as create's do.
+  --start-in <d>   start it this long from now, like 30m or 2h.
 
 edit-queued changes the queued workspace <queued> names: each option given
 replaces its setting (--parent-workspace re-parents it; --no-parent has it
@@ -166,9 +180,13 @@ list with ids (running, queued or stopped, or unique prefixes) shows only
 those, then each one's full prompt, which the table cuts short: a "Prompt of
 <id>:" line, then the prompt with every line indented two spaces.
 
+list shows each running workspace's timeout as STOPS (yours included, on
+the "(you)" row: `yaac-mama list "$YAAC_WORKSPACE_ID"`), and each queued
+workspace with a start time under an "at <time>:" heading.
+
 list --stopped lists this project's stopped workspaces, newest stop first,
-25 at a time (--limit up to 200). HOW says whether one was stopped or died
-(oom, crashed, evicted, …). --search matches titles, first prompts and tool
+25 at a time (--limit up to 200). HOW says whether one was stopped, timed
+out, or died (oom, crashed, evicted, …). --search matches titles, first prompts and tool
 names; --group keeps one group's. A page that has more ends with the command
 for the next one (--cursor).
 
@@ -551,10 +569,11 @@ EOF
   create|queue|edit-queued)
     cmd=$1; shift
     tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
+    timeout=""; start_at=""; start_in=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file)
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
@@ -569,10 +588,17 @@ EOF
         --group) group=$2 ;;
         --title) title=$2 ;;
         --parent-workspace) parent=$2 ;;
+        --timeout) timeout=$2 ;;
+        --start-at) start_at=$2 ;;
+        --start-in) start_in=$2 ;;
       esac
       shift 2
     done
-    opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T]'
+    opts='[--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]'
+    if [ "$cmd" = create ] && { [ -n "$parent" ] || [ -n "$start_at" ] || [ -n "$start_in" ]; }; then
+      echo 'yaac-mama: create starts now; use queue for --parent-workspace, --start-at or --start-in' >&2
+      exit 2
+    fi
     queued=""; prompt=""
     # The positional arguments after <queued>, if any: the prompt.
     given=$#; [ "$cmd" != edit-queued ] || given=$(($# - 1))
@@ -587,11 +613,11 @@ EOF
         prompt=${1:-}
         ;;
       queue)
-        # Whether a missing parent is allowed (a group with a workspace
-        # limit) is the server's to say.
+        # Whether a missing parent is allowed (a start time, or a group with
+        # a workspace limit) is the server's to say.
         if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
         elif [ $# -ne 1 ] || [ -z "$1" ]; then
-          echo "usage: yaac-mama queue [--parent-workspace W] $opts \"<prompt>\" | - | --prompt-file F" >&2
+          echo "usage: yaac-mama queue [--parent-workspace W | --start-at T | --start-in D] $opts \"<prompt>\" | - | --prompt-file F" >&2
           exit 2
         fi
         prompt=${1:-}
@@ -601,7 +627,7 @@ EOF
         # is present and empty is refused: `edit-queued "$id" "$p"` with $p
         # unset meant to change the prompt, not to leave it.
         if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ] || { [ $# -eq 2 ] && [ -z "$2" ]; }; then
-          echo "usage: yaac-mama edit-queued [--parent-workspace W | --no-parent] $opts <queued> [\"<prompt>\" | - | --prompt-file F]" >&2
+          echo "usage: yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] $opts <queued> [\"<prompt>\" | - | --prompt-file F]" >&2
           exit 2
         fi
         queued=$1; prompt=${2:-}
@@ -609,7 +635,8 @@ EOF
     esac
     read_prompt
     set -- "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" no-parent "$no_parent" tool "$tool" model "$model" \
-      effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title"
+      effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title" \
+      timeout "$timeout" start-at "$start_at" start-in "$start_in"
     [ "$cmd" = queue ] || run "$@"
     # The queued id alone on stdout, for `id=$(yaac-mama queue …)`; any note
     # the server adds after it goes to stderr.
@@ -688,11 +715,16 @@ EOF
 
   restart)
     shift
+    timeout=""
+    if [ "${1:-}" = --timeout ]; then
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo 'yaac-mama: --timeout needs a value' >&2; exit 2; }
+      timeout=$2; shift 2
+    fi
     if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama restart <workspace>' >&2
+      echo 'usage: yaac-mama restart [--timeout D] <workspace>' >&2
       exit 2
     fi
-    run restart '' workspace "$1"
+    run restart '' workspace "$1" timeout "$timeout"
     ;;
 
   run-queued)

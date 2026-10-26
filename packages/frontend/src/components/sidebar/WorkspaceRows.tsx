@@ -9,7 +9,7 @@ import {
 import clsx from 'clsx'
 import { useMutation } from '@tanstack/react-query'
 import { Dialog } from '@base-ui/react/dialog'
-import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon } from '#lib/icons'
+import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon, TimeoutIcon } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StatusMark } from '#components/StatusMark'
 import { StopWorkspaceDialog } from '#components/StopWorkspaceDialog'
@@ -21,7 +21,7 @@ import { api } from '#lib/api'
 import { dismissProvisioning } from '#lib/createWorkspace'
 import { stopProvisioning, stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlow'
 import { useUiStore, isUnreadWaiting, isUnseenDeath } from '#lib/store'
-import { relativeAge } from '#lib/time'
+import { relativeAge, timeUntil, useNow } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
 import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
 import { useRestartStopped } from '#lib/useStoppedWorkspaces'
@@ -188,6 +188,7 @@ export function WorkspaceRow({
   const unread = isUnreadWaiting(workspace, me)
   const teammate = useTeammateName()
   const stopping = isTerminating(workspace, pendingDeleteIds)
+  const now = useNow()
 
   const onConfirmDelete = (): void => {
     setConfirmDelete(false)
@@ -217,10 +218,17 @@ export function WorkspaceRow({
     )
   }
 
-  // The age, agent count and tool line, shown under the title or rename input.
+  // The age, timeout, agent count and tool line, shown under the title or
+  // rename input.
   const metaLine = (
     <span className="flex items-center gap-2 text-xs text-text-faint">
       <span className="shrink-0">{relativeAge(workspace.createdAt)}</span>
+      {workspace.deadline !== undefined && (
+        <span role="img" aria-label={`Stops in ${timeUntil(workspace.deadline, now)}`}
+          title={`Stops in ${timeUntil(workspace.deadline, now)}`} className="shrink-0">
+          <TimeoutIcon size={11} />
+        </span>
+      )}
       {/* Only shown for more than one active agent. */}
       {openAgentCount(workspace) > 1 && (
         <span
@@ -467,7 +475,7 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
 
   const stopLine = entry.deathReason
     ? `died ${relativeAge(entry.stoppedAt)} — ${describeWorkspaceDeathReason(entry.deathReason)}`
-    : `stopped ${relativeAge(entry.stoppedAt)}`
+    : `${entry.endedAtNextRun ? 'ended at next run' : entry.timedOut ? 'timed out' : 'stopped'} ${relativeAge(entry.stoppedAt)}`
 
   return (
     <div className="group relative mx-2">

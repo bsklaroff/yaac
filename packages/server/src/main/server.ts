@@ -11,6 +11,7 @@ import { mamaRelayApp, workspaceApp } from '#routes/workspaces'
 import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
+import { routineApp } from '#routes/routines'
 import { imageApp } from '#routes/images'
 import { serverApp } from '#routes/server'
 import { workspaceDriver } from '#drivers/driver'
@@ -139,6 +140,7 @@ function apiRoutes(
     .route('/auth', authApp)
     .route('/shortcuts', shortcutsApp)
     .route('/config', configApp)
+    .route('/routine', routineApp)
     .route('/image', imageApp)
     .route('/server', serverApp)
 }

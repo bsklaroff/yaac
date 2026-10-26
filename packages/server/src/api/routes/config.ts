@@ -8,20 +8,7 @@ import { requireDriverFeature } from '#api/http/driver-features'
 import type { IdentityEnv } from '#api/http/web-auth'
 import { getGitIdentity, getTimeZone, setGitIdentity, setTimeZone } from '#db'
 import { ServerError } from '@yaac/shared/errors'
-
-/**
- * A zone name `Intl` knows. The charset check keeps it to IANA names, since
- * `Intl` also takes offsets like `+05:00`, and the value lands in `TZ`.
- */
-function isTimeZone(timeZone: string): boolean {
-  if (!/^[A-Za-z0-9_+\-/]+$/.test(timeZone)) return false
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone })
-    return true
-  } catch {
-    return false
-  }
-}
+import { isTimeZone } from '@yaac/shared/schedule'
 
 /**
  * The caller's own (not project-scoped) editable config: the git identity

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, notInArray, or, sql, type SQL } from 'drizzle-orm'
+import { and, count, desc, eq, exists, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
 import { agentSessions, workspaceAgentSessions, workspaceGroups, workspaces } from './schema'
 import { deleteWorkspaceAgentSessions } from './agent-session-store'
@@ -54,6 +54,8 @@ export interface WorkspaceCreatedInput {
   effort?: string
   /** The zone it launches with as `TZ`. */
   timeZone?: string
+  /** When the server stops it. */
+  deadline?: Date
 }
 
 type Row = typeof workspaces.$inferSelect
@@ -103,6 +105,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
       ...(input.mode !== undefined ? { mode: input.mode } : {}),
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.timeZone !== undefined ? { timeZone: input.timeZone } : {}),
+      ...(input.deadline !== undefined ? timeoutColumns(input.deadline) : {}),
     })
     .onConflictDoNothing({ target: workspaces.workspaceId })
     .returning({ workspaceId: workspaces.workspaceId })
@@ -123,7 +126,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
 export async function recordWorkspaceResumed(
   input: Pick<
     WorkspaceCreatedInput,
-    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'effort' | 'timeZone'
+    'projectId' | 'workspaceId' | 'permissionMode' | 'model' | 'mode' | 'effort' | 'timeZone' | 'deadline'
   >,
 ): Promise<void> {
   const db = await getDb()
@@ -134,6 +137,8 @@ export async function recordWorkspaceResumed(
     ...(input.effort !== undefined ? { effort: input.effort } : {}),
     // A resume launches a new process, in the zone the create read now.
     timeZone: input.timeZone ?? null,
+    // A restart stops only at a timeout the restart itself set.
+    ...timeoutColumns(input.deadline ?? null),
   }).where(key(input.projectId, input.workspaceId))
     .returning({ workspaceId: workspaces.workspaceId })
   if (!rows[0]) {
@@ -299,6 +304,44 @@ export async function setWorkspaceTitle(projectId: string, workspaceId: string, 
     .set({ title: normalized === '' ? null : normalized })
     .where(key(projectId, workspaceId))
   notifyWorkspaceListChanged()
+}
+
+/** Set (or, with null, clear) when the server stops a workspace. A no-op
+ *  for a stopped one, whose next deadline only a restart sets. Returns
+ *  whether a running workspace's row changed. */
+export async function setWorkspaceDeadline(projectId: string, workspaceId: string, deadline: Date | null): Promise<boolean> {
+  const db = await getDb()
+  const rows = await db.update(workspaces)
+    .set(timeoutColumns(deadline))
+    .where(and(key(projectId, workspaceId), isNull(workspaces.stoppedAt)))
+    .returning({ workspaceId: workspaces.workspaceId })
+  if (rows.length > 0) notifyWorkspaceListChanged()
+  return rows.length > 0
+}
+
+/** A deadline and the length of the timeout that set it, counted from now
+ *  (whole minutes, at least one). */
+function timeoutColumns(deadline: Date | null): { deadline: Date | null; timeoutMinutes: number | null; deadlineIsNextRun: false } {
+  return {
+    deadline,
+    deadlineIsNextRun: false,
+    timeoutMinutes: deadline === null ? null : Math.max(1, Math.round((deadline.getTime() - Date.now()) / 60_000)),
+  }
+}
+
+/** Mark a routine run's deadline as its routine's next tick
+ *  (`workspaces.deadlineIsNextRun`). A later deadline write clears it. */
+export async function markDeadlineIsNextRun(projectId: string, workspaceId: string): Promise<void> {
+  const db = await getDb()
+  await db.update(workspaces).set({ deadlineIsNextRun: true }).where(key(projectId, workspaceId))
+}
+
+/** Rows not recorded as stopped whose deadline is at or before `now`. */
+export async function listOverdueWorkspaceRows(now: Date): Promise<WorkspaceRow[]> {
+  const db = await getDb()
+  const rows = await db.select().from(workspaces)
+    .where(and(isNull(workspaces.stoppedAt), lte(workspaces.deadline, now)))
+  return rows.map(toRow)
 }
 
 /** Record a generated title, only if the workspace has none yet, checked in

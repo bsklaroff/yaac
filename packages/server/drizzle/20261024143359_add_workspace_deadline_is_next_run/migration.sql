@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ADD COLUMN "deadline_is_next_run" boolean DEFAULT false NOT NULL;

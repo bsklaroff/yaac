@@ -98,10 +98,18 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       ...(prompt !== undefined ? { prompt } : {}),
       ...(title !== undefined ? { title } : {}),
       ...(r.deathReason !== undefined ? { deathReason: r.deathReason } : {}),
+      ...(timedOut(r) ? { timedOut: true as const, ...(r.deadlineIsNextRun ? { endedAtNextRun: true as const } : {}) } : {}),
       ...(r.deathDetail !== undefined ? { deathDetail: r.deathDetail } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
     }
   })
+}
+
+/** Stopped by its timeout: a natural stop (no death reason) recorded at or
+ *  after its deadline. A restart replaces the deadline, so it is always the
+ *  last life's. */
+function timedOut(r: WorkspaceRow): boolean {
+  return r.deathReason === undefined && r.deadline !== undefined && r.stoppedAt !== undefined && r.stoppedAt >= r.deadline
 }
 
 /** Ids the runtime reports running; none when it is unreachable, since the

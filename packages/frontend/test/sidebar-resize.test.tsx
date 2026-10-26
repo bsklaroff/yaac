@@ -45,7 +45,7 @@ function renderSidebar(): HTMLElement {
     <Sidebar
       scope={{
         projectId: null, project: undefined, workspaces: [], groups: [], provisioning: [],
-        queued: [], held: [], drafts: [], gitAuthFailures: [],
+        queued: [], held: [], drafts: [], routines: [], gitAuthFailures: [],
       }}
       connected
     />,

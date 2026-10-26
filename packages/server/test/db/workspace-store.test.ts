@@ -16,11 +16,14 @@ import {
   listStoppedWorkspaceRows,
   listWorkspaceRows,
   listProjectWorkspaceIds,
+  listOverdueWorkspaceRows,
   recordDeathSeen,
   recordWaitingSeen,
   recordWorkspaceCreated,
   recordWorkspaceLife,
+  recordWorkspaceResumed,
   recordWorkspaceStopped,
+  setWorkspaceDeadline,
   clearWorkspaceStopped,
   setWorkspaceGeneratedTitle,
   setWorkspaceTitle,
@@ -83,6 +86,32 @@ describe('session store', () => {
       expect(orphan?.title).toBeUndefined()
       expect(orphan?.groupId).toBeUndefined()
       await expect(create('filed')).rejects.toMatchObject({ code: 'CONFLICT' })
+    })
+  })
+
+  describe('deadline', () => {
+    it('is stored at create, changed only while running, listed once overdue, and replaced by a restart', async () => {
+      const at = new Date('2026-10-24T09:00:00Z')
+      await create('timed', { deadline: at })
+      await create('untimed')
+      expect((await getWorkspaceRow(PROJ, 'timed'))?.deadline).toEqual(at)
+      expect(await listOverdueWorkspaceRows(new Date('2026-10-24T08:59:00Z'))).toEqual([])
+      expect((await listOverdueWorkspaceRows(at)).map((r) => r.workspaceId)).toEqual(['timed'])
+
+      const later = new Date('2026-10-24T10:00:00Z')
+      pushes = 0
+      expect(await setWorkspaceDeadline(PROJ, 'untimed', later)).toBe(true)
+      expect(pushes).toBe(1)
+      expect((await listOverdueWorkspaceRows(later)).map((r) => r.workspaceId).sort()).toEqual(['timed', 'untimed'])
+
+      // Stopped rows are not overdue, and only a restart sets their next one.
+      await recordWorkspaceStopped(PROJ, 'timed')
+      expect((await listOverdueWorkspaceRows(later)).map((r) => r.workspaceId)).toEqual(['untimed'])
+      expect(await setWorkspaceDeadline(PROJ, 'timed', null)).toBe(false)
+      await recordWorkspaceResumed({ projectId: PROJ, workspaceId: 'timed' })
+      expect((await getWorkspaceRow(PROJ, 'timed'))?.deadline).toBeUndefined()
+      await recordWorkspaceResumed({ projectId: PROJ, workspaceId: 'timed', deadline: later })
+      expect((await getWorkspaceRow(PROJ, 'timed'))?.deadline).toEqual(later)
     })
   })
 

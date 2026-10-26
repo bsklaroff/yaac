@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, SendIcon, TerminalIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
@@ -12,7 +13,9 @@ import { Typeahead } from '#components/ui/Typeahead'
 import { api } from '#lib/api'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { shownGroups } from '#lib/groups'
-import { entryStart, START_WHEN_ROOM, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
+import { entryStart, SCHEDULE, START_AT, START_IN, START_WHEN_ROOM, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
+import { compileRepeat, DEFAULT_REPEAT, EVERY_MINUTES, parseRepeat, REPEAT_KINDS, WEEK, type Repeat, type RepeatKind } from '#lib/routines'
+import { useTimeZone, zonedInputInstant, zonedInputValue } from '#lib/time'
 import { useProjectBranches } from '#lib/useProjectBranches'
 import { clip, fetchFullPrompt, queuedDescendants, queuedInTreeOrder, queuedParentId, queuedTitle } from '#lib/queued'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
@@ -29,6 +32,7 @@ import {
   toolSupportsPermissionMode,
 } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
+import { cronError, formatInZone, isTimeZone, nextCronRuns, parseDuration } from '@yaac/shared/schedule'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import type {
   AgentMode,
@@ -48,6 +52,12 @@ const MODE_HELP: Record<AgentMode, string> = {
 
 const SELECT = 'min-w-0 flex-1 rounded-md border border-border bg-surface-2 h-[26px] px-1 text-xs text-text '
   + 'outline-none hover:bg-surface-3'
+
+const INPUT = 'h-[26px] min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs text-text '
+  + 'outline-none placeholder:text-text-faint focus:border-border-strong'
+
+/** A note under a form row, lined up with the controls. */
+const NOTE = '-mt-1 mb-1 pl-[92px] text-[11px] text-text-faint'
 
 const BUTTON = 'flex items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs '
   + 'text-text-dim outline-none transition hover:bg-surface-3 hover:text-text disabled:cursor-not-allowed '
@@ -102,12 +112,15 @@ function entrySeed(e: QueuedWorkspaceEntry): Seed {
 
 /** The Group dropdown's "+ New group" option, which swaps it for a name box. */
 const NEW_GROUP = '\u0000new'
+/** A new routine's untouched group: one the server makes, named after it. */
+const ROUTINE_GROUP = '\u0000routine'
 
 const workspaceName = (w: { title?: string; prompt?: string }): string =>
   clip(w.title || w.prompt || 'New workspace', 40)
 
 const DRAFT_FIELDS = [
   'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'branch', 'startAfter', 'title', 'groupId',
+  'startAt', 'timeout', 'cron', 'timeZone',
 ] as const satisfies
   readonly (keyof DraftWorkspaceSettings)[]
 
@@ -132,8 +145,10 @@ const blankForm = (projectId: string): NewWorkspaceForm => ({ projectId, prompt:
  * the chat composer, its permission mode and effort beside it as a chat's
  * are, and its other settings where the conversation would be. Sending
  * creates it now, or queues it to start after another workspace stops
- * (docs/queued-workspaces.md); the same pane edits a queued entry or
- * reopens a draft.
+ * (docs/queued-workspaces.md), at a time or after a delay; "On a schedule…"
+ * turns it into a routine's form, whose title is the routine's name
+ * (docs/routines.md). The same pane edits a queued entry or a routine, or
+ * reopens a draft. Times are typed and shown in the user's zone.
  *
  * Send needs a prompt. A workspace starts without one only from a button
  * pressed for it: "Start without a prompt", or the bar's New Shell, Files and
@@ -186,8 +201,12 @@ export function NewWorkspacePane({ projectId, bar }: {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
+  const zone = useTimeZone()
   const entries = (snapshot?.queuedWorkspaces ?? []).filter((e) => e.projectId === projectId)
   const editing = form.editId !== undefined ? entries.find((e) => e.id === form.editId) : undefined
+  const editingRoutine = form.editRoutineId !== undefined
+    ? (snapshot?.routines ?? []).find((r) => r.id === form.editRoutineId)
+    : undefined
   const draft = form.draftId !== undefined
     ? (snapshot?.draftWorkspaces ?? []).find((d) => d.id === form.draftId)
     : undefined
@@ -195,8 +214,8 @@ export function NewWorkspacePane({ projectId, bar }: {
 
   // Replace the seeded preview with the whole prompt. Until it arrives the
   // prompt is read-only and nothing is sent, so a save can never cut it.
-  const loadingPrompt = fromRow !== undefined && form.savedPrompt === undefined
-  const fromRowId = fromRow?.id
+  const loadingPrompt = (fromRow ?? editingRoutine) !== undefined && form.savedPrompt === undefined
+  const fromRowId = (fromRow ?? editingRoutine)?.id
   useEffect(() => {
     if (!loadingPrompt || fromRowId === undefined) return
     let current = true
@@ -207,16 +226,18 @@ export function NewWorkspacePane({ projectId, bar }: {
     return () => { current = false }
   }, [loadingPrompt, fromRowId])
 
-  // Start options: now, each live workspace (newest first), then each queued
-  // entry in sidebar order. An edit excludes the entry and its descendants
-  // (a cycle could never start) and always offers its current parent.
+  // Start options: now, each live workspace (newest first), each queued
+  // entry in sidebar order, then a time, a delay or a schedule. An edit
+  // excludes the entry and its descendants (a cycle could never start),
+  // always offers its current parent, and cannot become a routine; a
+  // routine stays one.
   const live = (snapshot?.workspaces ?? [])
     .filter((w) => w.projectId === projectId && !w.stopping)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   const excluded = editing !== undefined
     ? new Set([editing.id, ...queuedDescendants(entries, editing.id)])
     : new Set<string>()
-  const options: StartOption[] = [
+  const options: StartOption[] = editingRoutine !== undefined ? [{ value: SCHEDULE, label: 'On a schedule…' }] : [
     { value: '', label: 'Now' },
     ...live.map((w) => ({ value: w.workspaceId, label: `After “${workspaceName(w)}” stops`, seed: workspaceSeed(w) })),
     ...queuedInTreeOrder(entries).filter((e) => !excluded.has(e.id)).map((e) => ({
@@ -224,6 +245,9 @@ export function NewWorkspacePane({ projectId, bar }: {
       label: `After queued “${clip(queuedTitle(e), 40)}” stops`,
       seed: entrySeed(e),
     })),
+    { value: START_AT, label: 'At a time…' },
+    { value: START_IN, label: 'After a delay…' },
+    ...(editing === undefined ? [{ value: SCHEDULE, label: 'On a schedule…' }] : []),
   ]
   if (start !== '' && start !== START_WHEN_ROOM && !options.some((o) => o.value === start)) {
     const held = (snapshot?.heldWorkspaces ?? []).find((h) => h.workspaceId === start)
@@ -241,6 +265,24 @@ export function NewWorkspacePane({ projectId, bar }: {
   }
   const seed = options.find((o) => o.value === start)?.seed
   const queued = start !== ''
+  const routineMode = start === SCHEDULE
+  const afterParent = queued && start !== START_AT && start !== START_IN && !routineMode
+  const startIn = start === START_IN ? parseDuration(form.startIn ?? '') : undefined
+  const timeoutText = (form.timeout ?? '').trim()
+  const timeout = timeoutText === '' ? undefined : parseDuration(timeoutText)
+
+  // A routine's schedule, previewed as the server will fire it.
+  const cron = (form.cron ?? compileRepeat(DEFAULT_REPEAT)).trim()
+  const routineZone = form.timeZone ?? zone
+  const upcoming = routineMode && isTimeZone(routineZone) && cronError(cron) === undefined
+    ? nextCronRuns(cron, routineZone, new Date(), 4)
+    : []
+  const scheduleError = !routineMode ? undefined
+    : !isTimeZone(routineZone) ? `Unknown time zone ${routineZone}`
+    : cronError(cron) ?? (upcoming.length === 0 ? 'It never runs' : undefined)
+  // A timeout past the shortest gap between runs lets them overlap.
+  const gaps = upcoming.slice(1).map((d, i) => (d.getTime() - upcoming[i].getTime()) / 60_000)
+  const overlaps = routineMode && timeout !== undefined && gaps.length > 0 && timeout > Math.min(...gaps)
 
   const groups = (snapshot?.workspaceGroups ?? [])
     .filter((g) => g.projectId === projectId)
@@ -258,6 +300,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   }
   // Offer the sidebar's groups, groups queued workspaces will launch into
   // (the sidebar doesn't show those yet), and the current choice.
+  const routineGroup = routineMode && editingRoutine === undefined && form.groupId === undefined
   const offeredGroups = shownGroups(groups, [
     ...(snapshot?.workspaces ?? []),
     ...(snapshot?.provisioning ?? []),
@@ -330,7 +373,9 @@ export function NewWorkspacePane({ projectId, bar }: {
   // prompt until the prompt changes.
   const text = prompt.trim()
   const generatedTitle = text === form.savedPrompt ? fromRow?.generatedTitle : undefined
-  const shownTitle = titleText || generatedTitle || (editing !== undefined ? 'Queued workspace' : 'New workspace')
+  const shownTitle = titleText || (routineMode ? 'New routine'
+    : generatedTitle || (editing !== undefined ? 'Queued workspace' : 'New workspace'))
+  // A draft keeps a delay as the time it comes to.
   const current: DraftWorkspaceSettings = {
     prompt: text,
     tool,
@@ -339,14 +384,18 @@ export function NewWorkspacePane({ projectId, bar }: {
     ...(model !== '' ? { model } : {}),
     ...(effort !== undefined ? { effort } : {}),
     ...(branchValue !== '' ? { branch: branchValue } : {}),
-    ...(start !== '' && start !== START_WHEN_ROOM ? { startAfter: start } : {}),
+    ...(afterParent && start !== START_WHEN_ROOM ? { startAfter: start } : {}),
+    ...(start === START_AT && form.startAt !== undefined ? { startAt: form.startAt } : {}),
+    ...(startIn !== undefined ? { startAt: new Date(Date.now() + startIn * 60_000).toISOString() } : {}),
+    ...(timeout !== undefined ? { timeout } : {}),
+    ...(routineMode ? { cron, timeZone: routineZone } : {}),
     ...(titleText !== '' ? { title: titleText } : {}),
     ...(groupId !== null ? { groupId } : {}),
   }
   // Leaving loses a typed prompt on a create (not an edit of a queued
-  // entry), unless it matches the reopened draft exactly.
+  // entry or routine), unless it matches the reopened draft exactly.
   const saved = draft !== undefined ? { ...draft, prompt: form.savedPrompt ?? draft.prompt } : undefined
-  const pending: PendingDraft | null = form.editId === undefined && text !== ''
+  const pending: PendingDraft | null = form.editId === undefined && form.editRoutineId === undefined && text !== ''
     && (saved === undefined || DRAFT_FIELDS.some((k) => current[k] !== saved[k]))
     ? { projectId, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
@@ -368,8 +417,16 @@ export function NewWorkspacePane({ projectId, bar }: {
     : storesEntry && model === '' ? 'Pick a model'
     : storesEntry && branchValue === '' ? 'Pick a branch'
     : newGroup !== null && newGroupName === '' ? 'Name the new group'
-    : null
-  const submitLabel = editing !== undefined ? 'Save' : queued ? 'Queue' : 'Create'
+    : timeoutText !== '' && timeout === undefined ? 'Give the timeout as a duration like 1h30m'
+    : start === START_AT && form.startAt === undefined ? 'Pick a start time'
+    : start === START_IN && startIn === undefined ? 'Give the delay as a duration like 2h30m'
+    : routineMode && titleText === '' ? 'Name the routine'
+    : scheduleError ?? null
+  const submitLabel = editing !== undefined || editingRoutine !== undefined ? 'Save'
+    : routineMode ? 'Create routine' : queued ? 'Queue' : 'Create'
+
+  // A routine needs a name, so its name box opens as soon as it is one.
+  useEffect(() => { if (routineMode && titleText === '') titleEdit.start() }, [routineMode])
 
   /** Run `op`, showing its failure; the form is dropped once it succeeds. */
   const run = (op: Promise<unknown>): void => {
@@ -402,8 +459,48 @@ export function NewWorkspacePane({ projectId, bar }: {
       ...(branchValue !== '' ? { branch: branchValue } : {}),
       ...group,
       ...(draft !== undefined && text !== '' ? { draftId: draft.id } : {}),
+      ...(timeout !== undefined ? { timeout } : {}),
       ...(pane !== undefined ? { pane } : {}),
     })
+  }
+
+  /** Create or save the routine, then show its pane. A draft it was made
+   *  from is discarded once it exists. */
+  const saveRoutine = (): void => {
+    const settings = {
+      name: titleText,
+      cron,
+      timeZone: routineZone,
+      prompt: text,
+      tool,
+      model,
+      mode,
+      permissionMode,
+      ...(effort !== undefined ? { effort } : {}),
+      branch: branchValue,
+    }
+    const group = newGroup !== null ? newGroupName : groupId
+    const show = (id: string): void => {
+      setForm(null)
+      useUiStore.getState().openRoutine(projectId, id)
+    }
+    run(editingRoutine !== undefined
+      ? api.routine.update.$post({ json: { id: editingRoutine.id, ...settings, group, timeout: timeout ?? null } })
+        .then(() => show(editingRoutine.id))
+      : api.routine.create.$post({
+        json: {
+          project: projectId,
+          ...settings,
+          ...(routineGroup ? {} : { group }),
+          ...(timeout !== undefined ? { timeout } : {}),
+        },
+      }).then((r) => {
+        if (draft !== undefined) {
+          api.workspace.draft.discard.$post({ json: { id: draft.id } })
+            .catch((e: unknown) => console.error('draft discard failed', e))
+        }
+        show(r.id)
+      }))
   }
 
   /** Send: create, queue or save the entry, which needs a prompt. */
@@ -411,6 +508,10 @@ export function NewWorkspacePane({ projectId, bar }: {
     if (busy || blocked !== null || text === '') return
     if (!storesEntry) {
       startNow()
+      return
+    }
+    if (routineMode) {
+      saveRoutine()
       return
     }
     const settings = {
@@ -424,22 +525,32 @@ export function NewWorkspacePane({ projectId, bar }: {
       title: titleText,
       group: newGroup !== null ? newGroupName : groupId,
     }
-    // Expand the sidebar section the entry lands in.
-    const reveal = (e: QueuedWorkspaceEntry): void =>
-      useUiStore.getState().setRevealQueued({ id: e.id, parent: queuedParentId(e) })
-    const moved = editing !== undefined && queued && start !== entryStart(editing)
-    const parent = start === START_WHEN_ROOM ? null : start
+    // Expand the sidebar section the entry lands in, if it is under a parent
+    // or waits for room.
+    const reveal = (e: QueuedWorkspaceEntry): void => {
+      if (e.startAt === undefined) useUiStore.getState().setRevealQueued({ id: e.id, parent: queuedParentId(e) })
+    }
+    const when = start === START_AT ? { startAt: form.startAt ?? '' }
+      : start === START_IN ? { startIn: startIn ?? 0 }
+      : start === START_WHEN_ROOM ? {}
+      : { parent: start }
+    const moved = editing !== undefined && queued && (start === START_IN
+      || (start === START_AT ? form.startAt !== editing.startAt : start !== entryStart(editing)))
     const queue = api.workspace.queue
     run(editing === undefined
       ? queue.create.$post({
         json: {
           project: projectId,
-          ...(parent !== null ? { parent } : {}),
+          ...when,
           ...settings,
+          ...(timeout !== undefined ? { timeout } : {}),
           ...(draft !== undefined ? { draftId: draft.id } : {}),
         },
       }).then(reveal)
-      : queue.update.$post({ json: { id: editing.id, ...settings, ...(moved ? { parent } : {}) } })
+      : queue.update.$post({ json: {
+        id: editing.id, ...settings, timeout: timeout ?? null,
+        ...(moved ? start === START_WHEN_ROOM ? { parent: null } : when : {}),
+      } })
         .then(async (e) => {
           // "Now" on a queued workspace is Save then Run now.
           if (!queued) await queue.run.$post({ json: { id: editing.id } })
@@ -456,12 +567,16 @@ export function NewWorkspacePane({ projectId, bar }: {
     submit()
   }
 
-  // The queued entry started or was discarded since it was opened.
-  if (form.editId !== undefined && editing === undefined) {
+  // The queued entry started or was discarded, or the routine deleted, since
+  // it was opened.
+  const routineGone = form.editRoutineId !== undefined && editingRoutine === undefined
+  if ((form.editId !== undefined && editing === undefined) || routineGone) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-bg px-6 text-center">
-        <p className="text-sm font-medium text-text-dim">Queued workspace gone</p>
-        <p className="text-xs text-text-faint">It has already started or been discarded.</p>
+        <p className="text-sm font-medium text-text-dim">{routineGone ? 'Routine gone' : 'Queued workspace gone'}</p>
+        <p className="text-xs text-text-faint">
+          {routineGone ? 'It has been deleted.' : 'It has already started or been discarded.'}
+        </p>
         <button type="button" onClick={() => setForm(null)} className={BUTTON}>Start a new workspace</button>
       </div>
     )
@@ -477,9 +592,9 @@ export function NewWorkspacePane({ projectId, bar }: {
             {titleEdit.editing ? (
               <input
                 ref={titleEdit.inputRef}
-                aria-label="Workspace title"
+                aria-label={routineMode ? 'Routine name' : 'Workspace title'}
                 defaultValue={titleEdit.seed}
-                placeholder="Generated from the prompt"
+                placeholder={routineMode ? 'Routine name' : 'Generated from the prompt'}
                 maxLength={MAX_TITLE_LENGTH}
                 onKeyDown={(e) => {
                   // Enter and Escape finish the title, not the form.
@@ -496,8 +611,8 @@ export function NewWorkspacePane({ projectId, bar }: {
                 <button
                   type="button"
                   onClick={titleEdit.start}
-                  title="Rename workspace"
-                  aria-label="Rename workspace"
+                  title={routineMode ? 'Name routine' : 'Rename workspace'}
+                  aria-label={routineMode ? 'Name routine' : 'Rename workspace'}
                   className="no-drag flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint
                     transition hover:bg-surface-2 hover:text-text"
                 >
@@ -538,18 +653,55 @@ export function NewWorkspacePane({ projectId, bar }: {
               {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </Row>
+          {start === START_AT && (
+            <Row label="Time">
+              <input
+                type="datetime-local"
+                aria-label={`Start time (${zone})`}
+                value={form.startAt !== undefined ? zonedInputValue(form.startAt, zone) : ''}
+                onChange={(e) => update({ startAt: zonedInputInstant(e.target.value, zone) })}
+                className={INPUT}
+              />
+              <span className="shrink-0 pt-[5px] text-text-faint">{zone}</span>
+            </Row>
+          )}
+          {start === START_IN && (
+            <Row label="Delay">
+              <input
+                aria-label="Delay"
+                value={form.startIn ?? ''}
+                onChange={(e) => update({ startIn: e.target.value })}
+                placeholder="e.g. 2h30m"
+                className={INPUT}
+              />
+            </Row>
+          )}
+          {routineMode && (
+            <RoutineSchedule
+              cron={cron}
+              custom={form.customCron === true}
+              timeZone={routineZone}
+              upcoming={upcoming}
+              error={scheduleError}
+              onChange={update}
+            />
+          )}
 
           <Row label="Group">
             {newGroup === null ? (
               <select
                 aria-label="Group"
-                value={groupId ?? ''}
+                value={routineGroup ? ROUTINE_GROUP : groupId ?? ''}
                 onChange={(e) => {
                   if (e.target.value === NEW_GROUP) setNewGroup('')
+                  else if (e.target.value === ROUTINE_GROUP) update({ groupId: undefined })
                   else update({ groupId: e.target.value === '' ? null : e.target.value })
                 }}
                 className={SELECT}
               >
+                {routineMode && editingRoutine === undefined && (
+                  <option value={ROUTINE_GROUP}>New group: {titleText || 'the routine’s name'}</option>
+                )}
                 <option value="">None</option>
                 {offeredGroups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
                 <option value={NEW_GROUP}>+ New group</option>
@@ -570,8 +722,7 @@ export function NewWorkspacePane({ projectId, bar }: {
                     setNewGroup(null)
                   }}
                   placeholder="New group name"
-                  className="h-[26px] min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs
-                    text-text outline-none placeholder:text-text-faint focus:border-border-strong"
+                  className={INPUT}
                 />
                 <button
                   type="button"
@@ -586,6 +737,17 @@ export function NewWorkspacePane({ projectId, bar }: {
               </div>
             )}
           </Row>
+
+          <Row label="Timeout">
+            <input
+              aria-label="Timeout"
+              value={form.timeout ?? ''}
+              onChange={(e) => update({ timeout: e.target.value })}
+              placeholder={routineMode ? 'until next run' : 'No limit'}
+              className={INPUT}
+            />
+          </Row>
+          {overlaps && <div className={NOTE}>Runs may overlap</div>}
 
           <Row label="Base branch">
             <div className="min-w-0 flex-1">
@@ -604,9 +766,7 @@ export function NewWorkspacePane({ projectId, bar }: {
               />
             </div>
           </Row>
-          {queued && (
-            <div className="-mt-1 mb-1 pl-[92px] text-[11px] text-text-faint">latest from origin when it starts</div>
-          )}
+          {queued && <div className={NOTE}>latest from origin when it starts</div>}
 
           <Row label="Agent">
             <select
@@ -675,7 +835,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             />
           )}
 
-          {editing === undefined && (
+          {editing === undefined && editingRoutine === undefined && (
             <div className="mt-3 flex gap-2 px-1 max-md:flex-col">
               {!queued && (
                 <button
@@ -720,7 +880,7 @@ export function NewWorkspacePane({ projectId, bar }: {
           className={COMPOSER_INPUT}
         />
         <div className="flex items-center justify-between px-2 pb-2">
-          <div className="mr-auto flex items-center">
+          <div className="mr-auto flex min-w-0 items-center">
             {signedIn && (
               <PermissionModeSelect
                 current={permissionMode}
@@ -737,6 +897,9 @@ export function NewWorkspacePane({ projectId, bar }: {
                 onSelect={(e) => setPicks({ effort: e })}
               />
             )}
+            {routineMode && (
+              <span className="ml-1 truncate text-[11px] text-text-faint" title={UNATTENDED}>{UNATTENDED}</span>
+            )}
           </div>
           <button
             type="button"
@@ -751,6 +914,177 @@ export function NewWorkspacePane({ projectId, bar }: {
         </div>
       </ChatBottomBar>
     </div>
+  )
+}
+
+const UNATTENDED = 'Runs start unattended. A run that asks for permission waits for you until it is stopped.'
+
+const REPEAT_COPY: Record<RepeatKind, string> = {
+  minutes: 'Every N minutes',
+  hourly: 'Hourly',
+  daily: 'Daily',
+  weekdays: 'Weekdays',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+}
+
+const SMALL_INPUT = 'h-[26px] w-14 shrink-0 rounded-md border border-border bg-surface-2 px-1.5 text-xs text-text '
+  + 'outline-none focus:border-border-strong'
+
+/** Every zone this browser knows, for the routine zone picker. */
+const ZONES = [...new Set(['UTC', ...Intl.supportedValuesOf('timeZone')])].map((z) => ({ value: z, label: z }))
+
+/**
+ * A routine's Repeats row: a preset with its own inputs, or Custom with the
+ * cron itself, and a chip for the zone the schedule is read in. Under it,
+ * the cron a preset compiles to (clicking it switches to Custom) and the
+ * next runs, or why the schedule is no good.
+ */
+function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: {
+  cron: string
+  custom: boolean
+  timeZone: string
+  upcoming: Date[]
+  error: string | undefined
+  onChange: (patch: Pick<NewWorkspaceForm, 'cron' | 'customCron' | 'timeZone'>) => void
+}): JSX.Element {
+  const repeat = custom ? undefined : parseRepeat(cron)
+  const set = (patch: Partial<Repeat>): void => onChange({ cron: compileRepeat({ ...(repeat ?? DEFAULT_REPEAT), ...patch }) })
+  /** A number input that ignores values outside `min`–`max`. */
+  const num = (label: string, value: number, min: number, max: number, apply: (n: number) => void): JSX.Element => (
+    <input
+      type="number"
+      aria-label={label}
+      min={min}
+      max={max}
+      value={value}
+      onChange={(e) => {
+        const n = Number(e.target.value)
+        if (Number.isInteger(n) && n >= min && n <= max) apply(n)
+      }}
+      className={SMALL_INPUT}
+    />
+  )
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  // null = the chip; a string = the zone picker's query.
+  const [zoneQuery, setZoneQuery] = useState<string | null>(null)
+  const picker = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (zoneQuery !== null) picker.current?.querySelector('input')?.focus() }, [zoneQuery !== null])
+
+  return (
+    <>
+      <Row label="Repeats">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          <select
+            aria-label="Repeats"
+            value={repeat?.kind ?? 'custom'}
+            onChange={(e) => {
+              const kind = e.target.value
+              if (kind === 'custom') onChange({ customCron: true })
+              else onChange({ customCron: false, cron: compileRepeat({ ...(parseRepeat(cron) ?? DEFAULT_REPEAT), kind: kind as RepeatKind }) })
+            }}
+            className={SELECT}
+          >
+            {REPEAT_KINDS.map((k) => <option key={k} value={k}>{REPEAT_COPY[k]}</option>)}
+            <option value="custom">Custom (cron)</option>
+          </select>
+          {repeat === undefined ? (
+            <input
+              aria-label="Cron expression"
+              value={cron}
+              onChange={(e) => onChange({ cron: e.target.value })}
+              placeholder="0 9 * * 1-5"
+              className={clsx(INPUT, 'font-mono')}
+            />
+          ) : repeat.kind === 'minutes' ? (
+            <select
+              aria-label="Minutes between runs"
+              value={repeat.every}
+              onChange={(e) => set({ every: Number(e.target.value) })}
+              className={SELECT}
+            >
+              {EVERY_MINUTES.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          )
+            : repeat.kind === 'hourly' ? num('Minute past the hour', repeat.minute, 0, 59, (minute) => set({ minute }))
+            : (
+              <>
+                {repeat.kind === 'weekly' && WEEK.map((d) => {
+                  const on = repeat.days.includes(d.day)
+                  return (
+                    <button
+                      key={d.day}
+                      type="button"
+                      aria-label={d.name}
+                      aria-pressed={on}
+                      // The last day stays on: a week of no days never runs.
+                      onClick={() => { if (!on || repeat.days.length > 1) set({ days: on ? repeat.days.filter((x) => x !== d.day) : [...repeat.days, d.day] }) }}
+                      className={clsx('h-[26px] w-6 shrink-0 rounded-md border text-[11px]', on
+                        ? 'border-border-strong bg-surface-3 text-text'
+                        : 'border-border text-text-faint hover:text-text-dim')}
+                    >
+                      {d.short}
+                    </button>
+                  )
+                })}
+                {repeat.kind === 'monthly' && num('Day of month', repeat.day, 1, 31, (day) => set({ day }))}
+                <input
+                  type="time"
+                  aria-label="Time of day"
+                  value={`${pad(repeat.hour)}:${pad(repeat.minute)}`}
+                  onChange={(e) => {
+                    const [hour, minute] = e.target.value.split(':').map(Number)
+                    if (Number.isInteger(hour) && Number.isInteger(minute)) set({ hour, minute })
+                  }}
+                  className={clsx(SMALL_INPUT, 'w-auto')}
+                />
+              </>
+            )}
+          <button
+            type="button"
+            onClick={() => setZoneQuery('')}
+            title="Change the time zone it runs in"
+            aria-label={`Time zone: ${timeZone}`}
+            className="h-[26px] shrink-0 rounded-md bg-surface-2 px-2 text-[11px] text-text-dim transition
+              hover:bg-surface-3 hover:text-text"
+          >
+            {timeZone}
+          </button>
+        </div>
+      </Row>
+      {zoneQuery !== null && (
+        <Row label="Time zone">
+          <div ref={picker} className="min-w-0 flex-1">
+            <Typeahead
+              items={ZONES}
+              query={zoneQuery}
+              onQueryChange={setZoneQuery}
+              onSelect={(z) => { onChange({ timeZone: z }); setZoneQuery(null) }}
+              showList
+              ariaLabel="Time zone"
+              autoHighlight
+              onBlur={() => setZoneQuery(null)}
+              onDismiss={() => setZoneQuery(null)}
+            />
+          </div>
+        </Row>
+      )}
+      <div className={NOTE}>
+        {repeat !== undefined && (
+          <button
+            type="button"
+            onClick={() => onChange({ customCron: true })}
+            title="Edit it as cron"
+            className="block font-mono hover:text-text-dim"
+          >
+            cron: {cron}
+          </button>
+        )}
+        <p role="status" className={clsx(error !== undefined && 'text-danger')}>
+          {error ?? `Next: ${upcoming.slice(0, 3).map((d) => formatInZone(d, timeZone)).join(' · ')}`}
+        </p>
+      </div>
+    </>
   )
 }
 

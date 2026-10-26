@@ -1,6 +1,7 @@
 import { api, projectScope, resolveProjectId } from '#commands/api'
 import { printTable } from '#commands/table'
-import type { GitAuthFailure, StoppedWorkspacePage, WorkspaceListEntry } from '@yaac/shared/types'
+import { formatDuration, formatInZone } from '@yaac/shared/schedule'
+import type { GitAuthFailure, QueuedWorkspaceEntry, StoppedWorkspacePage, WorkspaceListEntry } from '@yaac/shared/types'
 
 export interface WorkspaceListOptions {
   stopped?: boolean
@@ -30,19 +31,24 @@ export async function workspaceList(
   }
 
   const ids = new Set(projectId ? [projectId] : scope.projects.map((p) => p.id))
-  const [result, { groups }] = await Promise.all([
+  const [result, { groups }, queued, { timeZone }] = await Promise.all([
     api.workspace.list.$get({ query: {} }),
     api.workspace.group.list.$get({ query: {} }),
+    api.workspace.queue.list.$get(),
+    api.config['time-zone'].$get(),
   ])
+  const zone = timeZone ?? 'UTC'
   const workspaces = result.workspaces.filter((w) => ids.has(w.projectId))
+  const scheduled = queued.filter((e) => ids.has(e.projectId) && e.startAt !== undefined)
 
   if (workspaces.length === 0) {
     const suffix = project ? ` for project "${project}"` : ''
     console.log(`No running workspaces${suffix}. Create one with: yaac workspace create <project>`)
   } else {
-    renderRunning(workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names)
+    renderRunning(workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names, zone)
     renderBlockedHosts(workspaces)
   }
+  if (scheduled.length > 0) renderScheduled(scheduled, names, zone)
   // Shown even with no workspaces: a rejected credential also blocks creates.
   const failures = Object.fromEntries(Object.entries(result.gitAuthFailures).filter(([id]) => ids.has(id)))
   renderGitAuthFailures(failures, names)
@@ -52,6 +58,7 @@ function renderRunning(
   workspaces: WorkspaceListEntry[],
   groupNames: Map<string, string>,
   projectNames: Map<string, string>,
+  zone: string,
 ): void {
   const statusOrder: Record<string, number> = { waiting: 0, background: 1, running: 2 }
   const sorted = [...workspaces].sort((a, b) =>
@@ -62,8 +69,8 @@ function renderRunning(
   printTable(
     [
       { header: 'WORKSPACE' }, { header: 'PROJECT' }, { header: 'TOOL' }, { header: 'STATUS' },
-      { header: 'AGENTS' }, { header: 'GROUP', optional: true }, { header: 'TITLE', optional: true },
-      { header: 'CREATED' }, { header: 'PROMPT' },
+      { header: 'AGENTS' }, { header: 'GROUP', optional: true }, { header: `STOPS (${zone})`, optional: true },
+      { header: 'TITLE', optional: true }, { header: 'CREATED' }, { header: 'PROMPT' },
     ],
     sorted.map((w) => [
       (w.workspaceId || '?').slice(0, 8),
@@ -72,9 +79,30 @@ function renderRunning(
       w.status,
       String(w.agentSessions.filter((a) => a.active).length || 1),
       w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
+      w.deadline !== undefined ? formatInZone(new Date(w.deadline), zone) : '',
       w.title ?? '',
       w.createdAt,
       w.prompt ?? '',
+    ]),
+  )
+}
+
+/** Workspaces queued to start at a time, soonest first. */
+function renderScheduled(entries: QueuedWorkspaceEntry[], projectNames: Map<string, string>, zone: string): void {
+  console.log('Scheduled:')
+  printTable(
+    [
+      { header: 'QUEUED' }, { header: 'PROJECT' }, { header: 'TOOL' }, { header: `STARTS (${zone})` },
+      { header: 'TIMEOUT', optional: true }, { header: 'FAILED', optional: true }, { header: 'TITLE' },
+    ],
+    [...entries].sort((a, b) => (a.startAt ?? '').localeCompare(b.startAt ?? '')).map((e) => [
+      e.id.slice(0, 8),
+      projectNames.get(e.projectId) ?? e.projectId,
+      e.tool,
+      formatInZone(new Date(e.startAt ?? ''), zone),
+      e.timeoutMinutes !== undefined ? formatDuration(e.timeoutMinutes) : '',
+      e.launchError ?? '',
+      e.title ?? e.generatedTitle ?? e.prompt.split('\n')[0],
     ]),
   )
 }
@@ -132,18 +160,18 @@ function renderStopped(
     return
   }
 
-  // DIED is the reaper's recorded reason.
+  // HOW is the reaper's recorded reason for a death, or a timeout.
   printTable(
     [
       { header: 'WORKSPACE' }, { header: 'PROJECT' }, { header: 'TOOL' }, { header: 'STOPPED' },
-      { header: 'DIED', optional: true }, { header: 'TITLE', optional: true }, { header: 'PROMPT' },
+      { header: 'HOW', optional: true }, { header: 'TITLE', optional: true }, { header: 'PROMPT' },
     ],
     stopped.map((s) => [
       s.workspaceId.slice(0, 8),
       projectNames.get(s.projectId) ?? s.projectId,
       s.tool,
       s.stoppedAt,
-      s.deathReason ?? '',
+      s.endedAtNextRun === true ? 'ended at next run' : s.timedOut === true ? 'timed out' : s.deathReason ?? '',
       s.title ?? '',
       s.prompt ?? '',
     ]),

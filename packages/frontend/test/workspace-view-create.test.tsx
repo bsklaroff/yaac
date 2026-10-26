@@ -39,6 +39,7 @@ const snapshot = {
   queuedWorkspaces: [],
   heldWorkspaces: [],
   draftWorkspaces: [],
+  routines: [],
 } as unknown as ServerSnapshot
 
 const creating = (over: Partial<ProvisioningWorkspaceEntry> = {}): ProvisioningWorkspaceEntry => ({

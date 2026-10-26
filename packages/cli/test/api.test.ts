@@ -65,11 +65,22 @@ describe('workspaceList', () => {
     api.on('GET /api/workspace/list', { json: { workspaces: [running('mine-1', MINE), running('hers-1', HERS)], gitAuthFailures: {} } })
     api.on('GET /api/workspace/group/list', { json: { groups: [] } })
     api.on('GET /api/workspace/list-stopped', { json: { entries: [], total: 0 } })
+    const scheduled = (id: string, projectId: string, prompt: string): object => ({
+      id, projectId, prompt, tool: 'claude', model: 'm', mode: 'tui', permissionMode: 'manual', branch: 'main',
+      createdAt: '', startAt: '2099-01-01T09:00:00.000Z',
+    })
+    api.on('GET /api/workspace/queue/list', { json: [scheduled('q-mine', MINE, 'my later'), scheduled('q-hers', HERS, 'her later')] })
+    api.on('GET /api/config/time-zone', { json: { timeZone: 'Asia/Tokyo', pinned: true } })
     const printed = (): string => logSpy.mock.calls.map((c) => String(c[0])).join('\n')
 
     await workspaceList()
     expect(printed()).toContain('mine-1')
     expect(printed()).not.toContain('hers-1')
+    // Scheduled ones are scoped the same way, and timed in the user's zone.
+    expect(printed()).toContain('my later')
+    expect(printed()).toContain('STARTS (Asia/Tokyo)')
+    expect(printed()).toContain('Thu Jan 1 18:00')
+    expect(printed()).not.toContain('her later')
 
     logSpy.mockClear()
     scopeToUser('ada@example.com')

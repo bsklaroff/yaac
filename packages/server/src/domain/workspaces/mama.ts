@@ -22,12 +22,13 @@ import { listActiveWorkspaces } from './list'
 import { inFlightWorkspaceIds } from './provisioning'
 import { listWorkspaceGroups, resolveGroup } from './groups'
 import { moveWorkspaceToGroup, setGroupWorkspaceLimit } from './group-edits'
-import { queueWorkspace, runQueuedWorkspace, updateQueuedWorkspace, type QueueRequest } from './queued-workspaces'
+import { queueWorkspace, runQueuedWorkspace, updateQueuedWorkspace, type QueueRequest, type QueueStart } from './queued-workspaces'
 import { resolveProjectWorkspace, resolveWorkspaceContainer } from './resolve'
 import { stopWorkspace } from './stop'
 import {
   getProjectRow,
   getProjectWorkspaceRows,
+  getTimeZone,
   applyWorkspaceEvent,
   getWorkspaceRow,
   listActiveAgentSessions,
@@ -39,6 +40,7 @@ import {
 import { ServerError } from '@yaac/shared/errors'
 import { stripControlChars } from '@yaac/shared/ansi'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
+import { formatDuration, formatInZone, minutesUntil, parseDuration } from '@yaac/shared/schedule'
 import {
   AGENT_MODES,
   AGENT_TOOLS,
@@ -48,6 +50,7 @@ import {
   PERMISSION_MODES,
   isRankedPermissionMode,
   morePermissive,
+  timeoutMinutesSchema,
   type AgentMode,
   type AgentTool,
   type PermissionMode,
@@ -126,7 +129,7 @@ const STOPPED_PAGE_DEFAULT = 25
 const STOPPED_PAGE_MAX = 200
 
 /** The options every command that makes a workspace takes. */
-const CREATE_ARGS = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'group', 'title'] as const
+const CREATE_ARGS = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'group', 'title', 'timeout'] as const
 
 /**
  * Options each command accepts. Others are refused rather than ignored, so a
@@ -139,13 +142,13 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   rename: ['workspace'],
   'set-base': [],
   stop: ['workspace'],
-  restart: ['workspace'],
+  restart: ['workspace', 'timeout'],
   'group-create': [],
   'group-move': ['workspace'],
   'group-set-limit': ['limit'],
   models: [],
-  queue: ['parent-workspace', ...CREATE_ARGS],
-  'edit-queued': ['queued', 'parent-workspace', 'no-parent', ...CREATE_ARGS],
+  queue: ['parent-workspace', 'start-at', 'start-in', ...CREATE_ARGS],
+  'edit-queued': ['queued', 'parent-workspace', 'no-parent', 'start-at', 'start-in', ...CREATE_ARGS],
   'run-queued': ['queued'],
   fetch: ['workspace'],
   history: ['workspace', 'conversation', 'files', 'file'],
@@ -215,12 +218,14 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   const stray = STOPPED_ARGS.find((a) => request.args[a] !== undefined)
   if (stray !== undefined) return { ok: false, error: `list takes '--${stray}' only with --stopped` }
 
-  const [active, groups, allQueued, rows] = await Promise.all([
+  const [active, groups, allQueued, rows, zone] = await Promise.all([
     listActiveWorkspaces(caller.projectId),
     listWorkspaceGroups(caller.projectId),
     listQueuedWorkspaceRows(caller.projectId),
     getProjectWorkspaceRows(caller.projectId),
+    ownerTimeZone(caller.projectId),
   ])
+  const clock = { zone, now: new Date() }
   let workspaces = active.workspaces
   let queued = allQueued
   // A restart keeps its stop until it succeeds, so one under way is left
@@ -259,7 +264,7 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     if (wanted.length === 0) lines.push('No running workspaces in this project.')
   } else {
     lines.push('Running workspaces in this project:', '')
-    lines.push(...renderWorkspaces(workspaces, names, caller.workspaceId))
+    lines.push(...renderWorkspaces(workspaces, names, caller.workspaceId, clock))
   }
   if (stopped.length > 0) {
     if (lines.length > 0) lines.push('')
@@ -267,8 +272,8 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   }
   if (queued.length > 0) {
     if (lines.length > 0) lines.push('')
-    lines.push('Queued workspaces (each starts when what it is under is stopped, or when its group has room):', '')
-    lines.push(...renderQueued(queued, names, caller.workspaceId))
+    lines.push('Queued workspaces (each starts when what it is under is stopped, at its time, or when its group has room):', '')
+    lines.push(...renderQueued(queued, names, caller.workspaceId, clock))
   }
   lines.push('')
   if (wanted.length === 0 && allStopped.length > 0) {
@@ -342,10 +347,27 @@ function shellQuote(value: string): string {
   return /^[\w./:@-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
 }
 
+/** The zone times are shown in: the project owner's, else UTC
+ *  (docs/routines.md "Times and zones"). */
+async function ownerTimeZone(projectId: string): Promise<string> {
+  const owner = (await getProjectRow(projectId))?.owner
+  return (owner !== undefined ? (await getTimeZone(owner)).timeZone : null) ?? 'UTC'
+}
+
+/** The zone and instant a listing renders times against. */
+interface ListClock { zone: string; now: Date }
+
+/** `Fri Oct 24 14:30 (in 38m)`, in the listing's zone. */
+function when(iso: string | Date, { zone, now }: ListClock): string {
+  const at = new Date(iso)
+  return `${formatInZone(at, zone)} (in ${formatDuration(minutesUntil(at, now))})`
+}
+
 function renderWorkspaces(
   workspaces: WorkspaceListEntry[],
   groupNames: Map<string, string>,
   callerId: string,
+  clock: ListClock,
 ): string[] {
   const rows = [...workspaces]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -354,15 +376,17 @@ function renderWorkspaces(
       tool: w.tool,
       status: w.status,
       group: w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
+      stops: w.deadline !== undefined ? when(w.deadline, clock) : '',
       title: flatten(w.title ?? '', 40),
       prompt: flatten(w.prompt ?? '', 60),
     }))
-  // Titles let an agent see its `rename` results; the column is shown only
-  // when some workspace has one.
+  // Titles let an agent see its `rename` results, and STOPS its deadline;
+  // each column is shown only when some workspace has a value.
   const hasTitles = rows.some((r) => r.title !== '')
+  const hasStops = rows.some((r) => r.stops !== '')
   return table(
-    ['WORKSPACE', 'TOOL', 'STATUS', 'GROUP', ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
-    rows.map((r) => [r.id, r.tool, r.status, r.group, ...(hasTitles ? [r.title] : []), r.prompt]),
+    ['WORKSPACE', 'TOOL', 'STATUS', 'GROUP', ...(hasStops ? [`STOPS (${clock.zone})`] : []), ...(hasTitles ? ['TITLE'] : []), 'PROMPT'],
+    rows.map((r) => [r.id, r.tool, r.status, r.group, ...(hasStops ? [r.stops] : []), ...(hasTitles ? [r.title] : []), r.prompt]),
   )
 }
 
@@ -376,7 +400,9 @@ function renderStopped(entries: StoppedWorkspaceEntry[], groupNames: Map<string,
     id: e.workspaceId.slice(0, 8),
     tool: e.tool,
     stopped: e.stoppedAt.slice(0, 16),
-    how: e.deathReason === undefined ? 'stopped'
+    how: e.endedAtNextRun === true ? 'ended at next run'
+      : e.timedOut === true ? 'timed out'
+      : e.deathReason === undefined ? 'stopped'
       : e.deathDetail !== undefined ? `${e.deathReason}: ${flatten(e.deathDetail, 40)}`
       : e.deathReason,
     group: e.groupId !== undefined ? groupNames.get(e.groupId) ?? '' : '',
@@ -400,11 +426,18 @@ function table(header: string[], rows: string[][]): string[] {
 }
 
 /** Queued entries as a tree under the workspace each waits on, or under
- *  the group one with no parent waits for room in. */
-function renderQueued(rows: QueuedWorkspaceRow[], groupNames: Map<string, string>, callerId: string): string[] {
+ *  the group one with no parent waits for room in, with a scheduled entry
+ *  heading its own tree. */
+function renderQueued(
+  rows: QueuedWorkspaceRow[],
+  groupNames: Map<string, string>,
+  callerId: string,
+  clock: ListClock,
+): string[] {
   const children = new Map<string, QueuedWorkspaceRow[]>()
   const rooms = new Map<string, string>()
   for (const r of rows) {
+    if (r.startAt !== undefined) continue
     let parent = r.parentQueuedId ?? r.parentWorkspaceId
     if (parent === undefined) {
       parent = `room:${r.groupId ?? ''}`
@@ -414,15 +447,25 @@ function renderQueued(rows: QueuedWorkspaceRow[], groupNames: Map<string, string
   }
   const ids = new Set(rows.map((r) => r.id))
   const lines: string[] = []
+  const line = (r: QueuedWorkspaceRow): string => {
+    const status = r.launchWorkspaceId !== undefined ? `launching as ${r.launchWorkspaceId.slice(0, 8)}`
+      : r.launchError !== undefined ? `failed: ${flatten(r.launchError, 60)}`
+      : r.releasedAt !== undefined || (r.parentWorkspaceId ?? r.parentQueuedId ?? r.startAt) === undefined
+        ? 'waiting for room'
+        : 'queued'
+    const stops = r.timeoutMinutes !== undefined ? `  stops after ${formatDuration(r.timeoutMinutes)}` : ''
+    return `${r.id.slice(0, 8)}  ${r.tool}  ${status}${stops}  ${flatten(r.prompt, 60)}`
+  }
   const walk = (parent: string, depth: number): void => {
     for (const r of children.get(parent) ?? []) {
-      const status = r.launchWorkspaceId !== undefined ? `launching as ${r.launchWorkspaceId.slice(0, 8)}`
-        : r.launchError !== undefined ? `failed: ${flatten(r.launchError, 60)}`
-        : r.releasedAt !== undefined || (r.parentWorkspaceId ?? r.parentQueuedId) === undefined ? 'waiting for room'
-        : 'queued'
-      lines.push(`${'  '.repeat(depth + 1)}${r.id.slice(0, 8)}  ${r.tool}  ${status}  ${flatten(r.prompt, 60)}`)
+      lines.push(`${'  '.repeat(depth + 1)}${line(r)}`)
       walk(r.id, depth + 1)
     }
+  }
+  for (const r of rows.filter((e) => e.startAt !== undefined)
+    .sort((a, b) => (a.startAt?.getTime() ?? 0) - (b.startAt?.getTime() ?? 0))) {
+    lines.push(`at ${when(r.startAt ?? clock.now, clock)}:`, `  ${line(r)}`)
+    walk(r.id, 1)
   }
   for (const parent of children.keys()) {
     if (ids.has(parent)) continue
@@ -485,15 +528,25 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
  */
 async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const parent = request.args['parent-workspace']?.trim() ?? ''
+  const start = startArgs(request.args)
+  if (!start.ok) return start
+  if (parent !== '' && start.start !== undefined) {
+    return { ok: false, error: 'queue takes one of --parent-workspace, --start-at and --start-in' }
+  }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
   const entry = await queueWorkspace(caller.principal, caller.projectId, {
+    ...(start.start !== undefined ? { start: start.start } : {}),
     prompt: request.body,
     ...(parent !== ''
       ? { parent }
       : { ...(caller.tool !== undefined ? { tool: caller.tool } : {}), mode: caller.mode }),
     ...queueFields(settings.settings),
   }, { ceiling: caller.permissionMode })
+  if (entry.startAt !== undefined) {
+    const zone = await ownerTimeZone(caller.projectId)
+    return { ok: true, output: `${entry.id}\nnote: starts at about ${when(entry.startAt, { zone, now: new Date() })} ${zone}` }
+  }
   // The id alone on the first line, so `a=$(yaac-mama queue …)` can chain
   // the next one after it; the script prints any note after it to stderr.
   const parentId = entry.parentWorkspaceId
@@ -523,13 +576,16 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   if (!settings.ok) return settings
   const parent = request.args['parent-workspace']?.trim()
   const noParent = request.args['no-parent'] !== undefined
-  if (noParent && parent !== undefined) {
-    return { ok: false, error: 'edit-queued takes --parent-workspace or --no-parent, not both' }
+  const start = startArgs(request.args)
+  if (!start.ok) return start
+  if ([noParent, parent !== undefined && parent !== '', start.start !== undefined].filter(Boolean).length > 1) {
+    return { ok: false, error: 'edit-queued takes one of --parent-workspace, --no-parent, --start-at and --start-in' }
   }
   const patch: Partial<QueueRequest> = {
     ...(request.body !== '' ? { prompt: request.body } : {}),
     ...(parent !== undefined && parent !== '' ? { parent } : {}),
     ...(noParent ? { parent: null } : {}),
+    ...(start.start !== undefined ? { start: start.start } : {}),
     ...queueFields(settings.settings),
   }
   if (Object.keys(patch).length === 0) {
@@ -687,7 +743,7 @@ async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<M
 /** Settings shared by `create`, `queue` and `edit-queued`. */
 type CreateSettings = Pick<
   SpawnRequest,
-  'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'group' | 'title'
+  'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'group' | 'title' | 'timeout'
 >
 
 /**
@@ -723,6 +779,8 @@ function createSettings(
   if (branch !== undefined && branch.trim() === '') return { ok: false, error: 'branch must not be empty' }
   const title = args.title !== undefined ? normalizeTitle(args.title) : undefined
   if (title === '') return { ok: false, error: 'title must not be empty' }
+  const timeout = parseTimeout(args.timeout)
+  if (timeout === null) return { ok: false, error: `invalid timeout '${args.timeout}' (${DURATION_HINT})` }
   return {
     ok: true,
     settings: {
@@ -734,8 +792,33 @@ function createSettings(
       ...(branch !== undefined ? { branch: branch.trim() } : {}),
       ...(group !== undefined ? { group } : {}),
       ...(title !== undefined ? { title } : {}),
+      ...(timeout !== undefined ? { timeout } : {}),
     },
   }
+}
+
+/** `--start-at` (read by the queue in the owner's zone) or `--start-in`;
+ *  at most one. */
+function startArgs(args: Record<string, string>): { ok: true; start?: QueueStart } | { ok: false; error: string } {
+  const at = args['start-at']?.trim()
+  const inText = args['start-in']
+  if (at !== undefined && inText !== undefined) return { ok: false, error: 'give --start-at or --start-in, not both' }
+  if (at !== undefined) return at === '' ? { ok: false, error: '--start-at must not be empty' } : { ok: true, start: { at } }
+  if (inText === undefined) return { ok: true }
+  const minutes = parseTimeout(inText)
+  return minutes == null
+    ? { ok: false, error: `invalid --start-in '${inText}' (${DURATION_HINT})` }
+    : { ok: true, start: { inMinutes: minutes } }
+}
+
+/** How a duration is written, for refusals. */
+const DURATION_HINT = 'whole minutes or more, like 45m, 2h or 1h30m'
+
+/** A `--timeout` in minutes: undefined when absent, null when invalid. */
+function parseTimeout(text: string | undefined): number | undefined | null {
+  if (text === undefined) return undefined
+  const minutes = parseDuration(text)
+  return minutes !== undefined && timeoutMinutesSchema.safeParse(minutes).success ? minutes : null
 }
 
 /** The same settings in the shape a queue write takes. */
@@ -859,6 +942,8 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
 async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'restart needs a workspace id' }
+  const timeout = parseTimeout(request.args.timeout)
+  if (timeout === null) return { ok: false, error: `invalid timeout '${request.args.timeout}' (${DURATION_HINT})` }
   const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   const decision = await decideRestart({
     principal: caller.principal,
@@ -866,6 +951,7 @@ async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promis
     callerProjectId: caller.projectId,
     callerPermissionMode: caller.permissionMode,
     workspaceId,
+    ...(timeout !== undefined ? { timeout } : {}),
   })
   if (!decision.ok) return decision
   const short = workspaceId.slice(0, 8)

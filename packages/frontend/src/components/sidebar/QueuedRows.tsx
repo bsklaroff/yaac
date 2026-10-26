@@ -1,4 +1,4 @@
-import { Fragment, useState, type JSX, createContext, useContext } from 'react'
+import { Fragment, useState, type JSX, type ReactNode, createContext, useContext } from 'react'
 import clsx from 'clsx'
 import { Collapsible } from '@base-ui/react/collapsible'
 import { ChevronIcon, DraftIcon, QueuedIcon } from '#lib/icons'
@@ -9,8 +9,9 @@ import { api } from '#lib/api'
 import { fetchFullPrompt, queuedTitle, clip } from '#lib/queued'
 import { useUiStore } from '#lib/store'
 import { useCreateWorkspace } from '#lib/useCreateDefaults'
-import { relativeAge } from '#lib/time'
+import { relativeAge, timeUntil, useNow, useTimeZone } from '#lib/time'
 import { useReadOnly } from '#lib/viewer'
+import { formatInZone } from '@yaac/shared/schedule'
 import type { DraftWorkspaceEntry, QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /** The row a discarded entry's children would move under, as its discard
@@ -90,12 +91,14 @@ export function QueuedRows({ parentId, depth }: { parentId: string; depth: numbe
   )
 }
 
-/** Where a discarded entry's children go, and whether they then run. */
-function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextValue): string {
+/** Where a discarded entry's children go, and whether they then run. A
+ *  scheduled entry hands them its start time. */
+function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextValue, timeZone: string): string {
   const lost = `“${clip(queuedTitle(entry))}” will not run.`
   const n = context.children.get(entry.id)?.length ?? 0
   if (n === 0) return lost
   const them = n === 1 ? 'The workspace queued after it' : `The ${n} workspaces queued after it`
+  if (entry.startAt !== undefined) return `${lost} ${them} will start at about ${formatInZone(new Date(entry.startAt), timeZone)} instead.`
   if (entry.parentWorkspaceId === undefined && entry.parentQueuedId === undefined) {
     return `${lost} ${them} will wait for room in ${n === 1 ? 'its' : 'their'} group instead.`
   }
@@ -111,9 +114,11 @@ function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextVa
 
 /**
  * A queued workspace: a create saved to start when the row above it stops
- * (docs/queued-workspaces.md). Clicking it edits it; its menu runs it now,
- * edits it, queues another after it, or discards it. A failed launch shows
- * its error until run again. Not selectable (see `sidebarRowIds`).
+ * (docs/queued-workspaces.md), or at a time (docs/routines.md), which it
+ * shows relative to now and in full on hover. Clicking it edits it; its
+ * menu runs it now, edits it, queues another after it, or discards it. A
+ * failed launch shows its error until run again. Not selectable (see
+ * `sidebarRowIds`).
  */
 export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEntry; depth: number }): JSX.Element {
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
@@ -124,6 +129,8 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
   const report = (e: unknown): void => setError(e instanceof Error ? e.message : String(e))
   const failure = error ?? entry.launchError
   const readOnly = useReadOnly()
+  const zone = useTimeZone()
+  const now = useNow()
 
   return (
     <div className="group relative mx-2" style={{ paddingLeft: depth * 12 }}>
@@ -142,7 +149,12 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
         <span className="flex items-center gap-2 text-xs text-text-faint">
           {failure !== undefined
             ? <span className="truncate text-danger" title={failure}>{failure}</span>
-            : <span className="truncate">{agentLabel(entry.tool, entry)} · {entry.waitingForRoom === true ? 'waiting for room' : 'queued'}</span>}
+            : entry.startAt !== undefined
+              ? <span className="truncate" title={`${formatInZone(new Date(entry.startAt), zone)} ${zone}`}>
+                  in ~{timeUntil(entry.startAt, now)} · {agentLabel(entry.tool, entry)}
+                  {entry.waitingForRoom === true ? ' · waiting for room' : ''}
+                </span>
+              : <span className="truncate">{agentLabel(entry.tool, entry)} · {entry.waitingForRoom === true ? 'waiting for room' : 'queued'}</span>}
           {entry.orphaned === true && <span className="ml-auto shrink-0">parent gone</span>}
         </span>
       </button>
@@ -171,7 +183,7 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
         open={confirmDiscard}
         onOpenChange={setConfirmDiscard}
         title="Discard queued workspace?"
-        description={discardDescription(entry, context)}
+        description={discardDescription(entry, context, zone)}
         confirmLabel="Discard"
         onConfirm={() => {
           setConfirmDiscard(false)
@@ -182,27 +194,46 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
   )
 }
 
-/**
- * The project's draft workspaces (docs/draft-workspaces.md), in a
- * collapsible section at the top of the list.
- */
-export function DraftsSection({ drafts }: { drafts: DraftWorkspaceEntry[] }): JSX.Element {
+/** A collapsible section at the top of the list (Drafts, Scheduled,
+ *  Routines), with its count. */
+export function SidebarSection({ label, count, children }: { label: string; count: number; children: ReactNode }): JSX.Element {
   const [open, setOpen] = useState(true)
   return (
-    <div role="group" aria-label="Drafts" className="py-1">
+    <div role="group" aria-label={label} className="py-1">
       <Collapsible.Root open={open} onOpenChange={setOpen}>
         <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
           text-text-faint outline-none transition hover:text-text-dim">
           <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-          <span>Drafts</span>
-          <span className="text-text-faint/70">{drafts.length}</span>
+          <span>{label}</span>
+          <span className="text-text-faint/70">{count}</span>
         </Collapsible.Trigger>
-        <Collapsible.Panel>
-          {/* Newest first, like the rest of the list. */}
-          {[...drafts].reverse().map((d) => <DraftWorkspaceRow key={d.id} draft={d} />)}
-        </Collapsible.Panel>
+        <Collapsible.Panel>{children}</Collapsible.Panel>
       </Collapsible.Root>
     </div>
+  )
+}
+
+/** The project's draft workspaces (docs/draft-workspaces.md), newest first. */
+export function DraftsSection({ drafts }: { drafts: DraftWorkspaceEntry[] }): JSX.Element {
+  return (
+    <SidebarSection label="Drafts" count={drafts.length}>
+      {[...drafts].reverse().map((d) => <DraftWorkspaceRow key={d.id} draft={d} />)}
+    </SidebarSection>
+  )
+}
+
+/** Queued workspaces that start at a time, soonest first, each with the
+ *  chain queued after it. */
+export function ScheduledSection({ entries }: { entries: QueuedWorkspaceEntry[] }): JSX.Element {
+  return (
+    <SidebarSection label="Scheduled" count={entries.length}>
+      {entries.map((e) => (
+        <Fragment key={e.id}>
+          <QueuedWorkspaceRow entry={e} depth={0} />
+          <QueuedRows parentId={e.id} depth={1} />
+        </Fragment>
+      ))}
+    </SidebarSection>
   )
 }
 

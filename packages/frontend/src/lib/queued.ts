@@ -5,8 +5,13 @@ import type { QueuedWorkspaceEntry } from '@yaac/shared/types'
  * Helpers over the snapshot's queued workspaces (docs/queued-workspaces.md).
  * Each entry waits on one parent (a workspace or another entry), so the
  * entries form trees rooted at workspace ids. One with no parent waits for
- * room in its group (docs/workspace-groups.md), and roots at `roomKey`.
+ * room in its group (docs/workspace-groups.md), and roots at `roomKey`,
+ * unless it starts at a time (docs/routines.md): those head their own trees
+ * in the sidebar's Scheduled section, and root at `SCHEDULED_KEY`.
  */
+
+/** What entries that start at a time root at; nothing nests under it. */
+export const SCHEDULED_KEY = 'at:'
 
 /** What entries with no parent nest under: their group's section. */
 export function roomKey(groupId: string | undefined): string {
@@ -21,7 +26,8 @@ export async function fetchFullPrompt(id: string): Promise<string> {
 
 /** The id an entry waits on, whichever kind it is. */
 export function queuedParentId(entry: QueuedWorkspaceEntry): string {
-  return entry.parentWorkspaceId ?? entry.parentQueuedId ?? roomKey(entry.groupId)
+  return entry.parentWorkspaceId ?? entry.parentQueuedId
+    ?? (entry.startAt !== undefined ? SCHEDULED_KEY : roomKey(entry.groupId))
 }
 
 /** Entries grouped by the id they wait on, each list oldest first. */
