@@ -121,7 +121,8 @@ export function repoDir(projectId: string): string {
  * GLOBAL: mounted at `/home/yaac/.claude` in every workspace of the project
  * and set as `CLAUDE_CONFIG_DIR`, so claude's `.claude.json` lives inside
  * it. Its `projects/` (except the shared auto-memory) and `file-history/`
- * are per-workspace, mounted over it from {@link agentHistoryDir}.
+ * are per-workspace, mounted over it from {@link agentHistoryDir}, and in a
+ * pod so is `sessions/`, from {@link workspaceStateDir}.
  */
 export function claudeDir(projectId: string): string {
   return globalProjectPath(projectId, 'claude')
