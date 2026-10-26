@@ -4,6 +4,7 @@ import {
   listHeldWorkspaces,
   listProvisioning,
   listQueuedWorkspaces,
+  listRoutines,
   listWorkspaceGroups,
 } from '#domain/workspaces'
 import { countStoppedWorkspaces } from '#db'
@@ -35,6 +36,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   ))
   const [
     { active, held: heldWorkspaces, provisioning }, workspaceGroups, projects, usage, queuedWorkspaces, draftWorkspaces,
+    routines,
   ] = await Promise.all([
     rows,
     listWorkspaceGroups(undefined, stoppedCounts),
@@ -42,6 +44,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     planUsageForSnapshot(),
     listQueuedWorkspaces(),
     listDraftWorkspaces(),
+    listRoutines(),
   ])
   const imageBuilds = workspaceDriver().listImageBuilds()
   // A workspace with a provisioning entry is mid-create or mid-restart (or
@@ -62,6 +65,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     queuedWorkspaces: queuedWorkspaces.map((e) => previewed(e)),
     heldWorkspaces: heldWorkspaces.filter((w) => !hidden.has(w.workspaceId)).map((h) => previewed(h)),
     draftWorkspaces: draftWorkspaces.map((d) => previewed(d)),
+    routines: routines.map((r) => previewed(r)),
     gitAuthFailures: active.gitAuthFailures,
     imageBuilds,
     ...usage,

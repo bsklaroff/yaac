@@ -1,4 +1,4 @@
-import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileWorkspaceRetention } from '#domain/workspaces'
+import { gcOrphanEphemeralModuleDirs, reapOrphanNodeLocal, reconcileAgentSessions, reconcilePrewarmPool, reconcileRevokedShares, reconcileStoppedAgentSessions, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshProjectOrigins } from '#domain/projects'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
@@ -50,6 +50,16 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // stop or a create already past its owner check left running.
     { name: 'revoked-shares', triggers: ['workspaces'],
       run: (ctx) => reconcileRevokedShares(ctx.snapshot()) },
+    // Timeouts, routine ticks and scheduled starts all run on the resync,
+    // whose minute is the resolution they promise (docs/routines.md). In
+    // this order, so a routine's previous run is stopped in the pass that
+    // launches the next.
+    { name: 'workspace-timeouts', triggers: [], run: (ctx) => reconcileWorkspaceTimeouts(ctx.snapshot()) },
+    // Due routine ticks become scheduled entries, launched by the next step.
+    { name: 'routines', triggers: [], run: () => reconcileRoutines() },
+    // Due scheduled entries are released and launched where their groups
+    // have room; the rest of the queue is event-driven.
+    { name: 'scheduled-workspaces', triggers: [], run: () => startScheduledWorkspaces() },
     // Runtime work that must precede the pool: a spare's create should join
     // image builds already running, and anything holding capacity should be
     // freed first.

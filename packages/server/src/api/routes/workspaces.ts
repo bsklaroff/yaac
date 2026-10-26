@@ -4,13 +4,14 @@ import type { Context } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getAgentSessionTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toAgentSessionEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, type QueueStart, listQueuedWorkspaces, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
   findWorkspaceByMamaToken,
   findWorkspaceRow,
   getQueuedWorkspaceRow,
+  getRoutineRow,
   listDraftWorkspaceRows,
   listWorkspaceAgentSessions,
   recordAllDeathsSeen,
@@ -39,6 +40,7 @@ import {
   MAX_PROMPT_LENGTH,
   promptText,
   queuedWorkspaceSettingsSchema,
+  timeoutMinutesSchema,
 } from '@yaac/shared/types'
 
 const queuedSettings = queuedWorkspaceSettingsSchema.shape
@@ -49,10 +51,33 @@ const queuedSettings = queuedWorkspaceSettingsSchema.shape
 // names an existing group with a workspace limit, which it waits for room in.
 const queuedGroup = z.string().min(1).max(MAX_TITLE_LENGTH).nullable().optional()
 
+// When a queued workspace starts instead of after a parent
+// (docs/routines.md): `startAt` is read in the owner's zone, and `startIn`
+// counts minutes from the server's clock, so the client's does not matter.
+const queueStart = {
+  startAt: z.string().min(1).max(64).optional(),
+  startIn: timeoutMinutesSchema.optional(),
+}
+
+/** The start a queue request names, if any. Naming both is refused. */
+function startOf(body: { startAt?: string; startIn?: number }): QueueStart | undefined {
+  if (body.startAt !== undefined && body.startIn !== undefined) {
+    throw new ServerError('VALIDATION', 'give startAt or startIn, not both')
+  }
+  return body.startAt !== undefined ? { at: body.startAt }
+    : body.startIn !== undefined ? { inMinutes: body.startIn }
+    : undefined
+}
+
 // The draft a create or queue is made from (docs/draft-workspaces.md). It is
 // claimed for the request, hidden while it runs, and deleted only after
 // success, so a failure keeps the draft.
 const draftId = z.string().min(1).optional()
+
+/** `minutes` from now, as a deadline. */
+function minutesFromNow(minutes: number): Date {
+  return new Date(Date.now() + minutes * 60_000)
+}
 
 /** A full git object id, SHA-1 or SHA-256. */
 const GIT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
@@ -239,6 +264,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(title ? { title } : {}),
         ...(generatedTitle !== undefined ? { generatedTitle } : {}),
         ...(body.group !== undefined ? { group: body.group } : {}),
+        ...(body.timeout !== undefined ? { deadline: minutesFromNow(body.timeout) } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,
         claimSpare: true,
@@ -261,10 +287,32 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // No `mode`: a workspace restarts in the mode it had, read from its
       // first conversation, else its row. No `gitUser`: the commit identity is a server
       // setting.
+      // Minutes from the restart until the server stops it; without one the
+      // restart clears any timeout it had.
+      timeout: timeoutMinutesSchema.optional(),
     })),
     // Checked and registered before streaming, so an unknown workspace or
     // one already provisioning is a plain 404 or 409.
-    async (c) => streamProvisioned(c, await prepareRestart(c.get('principal'), c.req.valid('json').workspaceId)),
+    async (c) => {
+      const { workspaceId, timeout } = c.req.valid('json')
+      return streamProvisioned(c, await prepareRestart(c.get('principal'), workspaceId, {
+        ...(timeout !== undefined ? { deadline: minutesFromNow(timeout) } : {}),
+      }))
+    },
+  )
+  // Give a running workspace a timeout counted from now, or clear it with
+  // null (docs/routines.md "Timeouts"). User-only: no `yaac-mama` verb
+  // reaches it, so an agent cannot extend its own life.
+  .post(
+    '/timeout',
+    zv('json', z.object({
+      workspaceId: z.string().min(1),
+      timeout: timeoutMinutesSchema.nullable(),
+    })),
+    async (c) => {
+      const { workspaceId, timeout } = c.req.valid('json')
+      return c.json(await setWorkspaceTimeout(c.get('principal'), workspaceId, timeout))
+    },
   )
   .post(
     '/stop',
@@ -326,20 +374,26 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // JSON rather than a provisioning stream, since queueing is fast and a "Run
   // now" reports progress through its provisioning row. No permission ceiling
   // applies here; that only limits agents (`yaac-mama queue`).
+  // Every project's queued workspaces not launching, oldest first: the
+  // snapshot's feed, for the CLI.
+  .get('/queue/list', async (c) => c.json(await listQueuedWorkspaces()))
   .post(
     '/queue/create',
     zv('json', z.object({
       project: projectRef,
       // A workspace id or queued entry id, or a unique prefix of either.
-      // Omitted, the entry waits for room in its group
-      // (docs/workspace-groups.md).
+      // Omitted with no start, the entry waits for room in its group
+      // (docs/workspace-groups.md). Not with a start.
       parent: z.string().min(1).optional(),
+      ...queueStart,
       ...queuedSettings,
       group: queuedGroup,
       draftId,
     })),
     async (c) => {
-      const { project, draftId: fromDraft, ...request } = c.req.valid('json')
+      const { project, draftId: fromDraft, startAt, startIn, ...rest } = c.req.valid('json')
+      const start = startOf({ startAt, startIn })
+      const request = { ...rest, ...(start !== undefined ? { start } : {}) }
       const principal = c.get('principal')
       const draft = await claimDraft(principal, project, fromDraft)
       return c.json(await draft.run(() => queueWorkspace(principal, project, request, 'user', draft.generatedTitle(request.prompt))))
@@ -350,14 +404,19 @@ export const workspaceApp = new Hono<IdentityEnv>()
     zv('json', z.object({
       id: z.string().min(1),
       // null leaves it waiting for room in its group, as a queue with no
-      // parent does.
+      // parent does. Not with a start.
       parent: z.string().min(1).nullable().optional(),
+      ...queueStart,
       ...queuedSettings,
       prompt: queuedSettings.prompt.optional(),
       group: queuedGroup,
+      // Null clears it.
+      timeout: timeoutMinutesSchema.nullable().optional(),
     })),
     async (c) => {
-      const { id, ...patch } = c.req.valid('json')
+      const { id, startAt, startIn, ...rest } = c.req.valid('json')
+      const start = startOf({ startAt, startIn })
+      const patch = { ...rest, ...(start !== undefined ? { start } : {}) }
       return c.json(await updateQueuedWorkspace(c.get('principal'), id, patch, 'user'))
     },
   )
@@ -374,9 +433,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
     zv('json', z.object({ id: z.string().min(1) })),
     async (c) => c.json(await runQueuedWorkspace(c.get('principal'), c.req.valid('json').id)),
   )
-  // A queued entry's or draft's whole prompt, which the snapshot carries
-  // only a preview of (`PROMPT_PREVIEW_LENGTH`). Open to every user, as the
-  // snapshot is.
+  // A queued entry's, draft's or routine's whole prompt, which the snapshot
+  // carries only a preview of (`PROMPT_PREVIEW_LENGTH`). Open to every user,
+  // as the snapshot is.
   .get(
     '/prompt',
     zv('query', z.object({ id: z.string().min(1) })),
@@ -384,7 +443,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const { id } = c.req.valid('query')
       const prompt = (await getQueuedWorkspaceRow(id))?.prompt
         ?? (await listDraftWorkspaceRows()).find((d) => d.id === id)?.prompt
-      if (prompt === undefined) throw new ServerError('NOT_FOUND', `no queued workspace or draft ${id}`)
+        ?? (await getRoutineRow(id))?.prompt
+      if (prompt === undefined) throw new ServerError('NOT_FOUND', `no queued workspace, draft or routine ${id}`)
       return c.json({ prompt })
     },
   )

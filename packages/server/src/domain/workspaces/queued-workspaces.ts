@@ -1,8 +1,9 @@
 /**
  * Queued workspaces (docs/queued-workspaces.md): create requests that run
  * when their parent (a workspace or another entry) stops naturally, so they
- * chain to any depth, or that wait with no parent for room in a group with
- * a workspace limit (docs/workspace-groups.md).
+ * chain to any depth, that start at a time (docs/routines.md), or that wait
+ * with no parent for room in a group with a workspace limit
+ * (docs/workspace-groups.md).
  *
  * Settings are resolved when queued, so the sidebar shows exactly what will
  * launch. Launches go through `prepareStart` without claiming a spare,
@@ -24,6 +25,7 @@ import {
   removeProvisioning,
 } from './provisioning'
 import { resolveWorkspace } from './resolve'
+import { workspaceDriver } from '#drivers/driver'
 import { prepareStart } from './start'
 import { toStoppedEntries } from './stopped-list'
 import { modelDisplayName, modelEfforts } from '#domain/auth'
@@ -33,14 +35,19 @@ import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
   failQueuedLaunch,
+  findWorkspaceRow,
   finishQueuedLaunch,
   firstAgentSession,
   getProjectRow,
   getProjectWorkspaceRows,
   getQueuedWorkspaceRow,
+  getRoutineRow,
+  getTimeZone,
   insertQueuedWorkspace,
   listQueuedWorkspaceRows,
   listWorkspaceRows,
+  markDeadlineIsNextRun,
+  releaseDueQueuedWorkspaces,
   releaseQueuedChildren,
   releaseQueuedWorkspace,
   updateQueuedWorkspace as updateQueuedWorkspaceRow,
@@ -53,6 +60,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { normalizeTitle } from '@yaac/shared/titles'
+import { nextCronRuns, resolveStartAt } from '@yaac/shared/schedule'
 import {
   agentPermissionMode,
   MAX_PROMPT_LENGTH,
@@ -66,13 +74,24 @@ import {
   type QueuedWorkspaceEntry,
 } from '@yaac/shared/types'
 
+/**
+ * When a scheduled entry starts: a `--start-at` text, read in the project
+ * owner's zone (`resolveStartAt`), or minutes from the server's now.
+ */
+export type QueueStart = { at: string } | { inMinutes: number }
+
 /** What a queue write asks for. Every field but the prompt is optional and
  *  resolved from the parent, then from the project's create defaults. */
 export interface QueueRequest {
   /** A workspace id, or a queued entry's id — or a unique prefix of either.
-   *  Absent or null, the entry waits for room in `group`, which must name a
-   *  group with a workspace limit. */
+   *  Absent or null with no `start`, the entry waits for room in `group`,
+   *  which must name a group with a workspace limit. */
   parent?: string | null
+  /** Start at a time instead of after a parent; refused with one. */
+  start?: QueueStart
+  /** Minutes until the launched workspace is stopped, counted from its start
+   *  time if it has one; null (on an edit) clears it. */
+  timeout?: number | null
   prompt: string
   tool?: AgentTool
   model?: string
@@ -125,18 +144,40 @@ export async function queueWorkspace(
 ): Promise<QueuedWorkspaceEntry> {
   await authorizeProject(principal, projectId)
   checkPrompt(request.prompt)
-  const parent = request.parent == null
-    ? await roomToWaitIn(projectId, request.group)
-    : await resolveParent(projectId, request.parent)
+  if (request.parent != null && request.start !== undefined) {
+    throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
+  }
+  const parent = request.start !== undefined
+    ? { pointer: { startAt: await resolveStart(projectId, request.start) } }
+    : request.parent == null
+      ? await roomToWaitIn(projectId, request.group)
+      : await resolveParent(projectId, request.parent)
   const settings = await resolveSettings(projectId, parent, {
     ...request,
     ...(parent.pointer === null ? { group: parent.groupId ?? null } : {}),
   }, source)
   refuseDeletedParent(parent.pointer)
-  const row = await insertQueuedWorkspace(projectId, parent.pointer, settings, generatedTitle)
+  const row = await insertQueuedWorkspace(projectId, parent.pointer, settings,
+    generatedTitle !== undefined ? { generatedTitle } : {})
   const [entry] = await toEntries([row])
   await startWaitingWorkspaces(projectId)
   return entry
+}
+
+/**
+ * The instant a start names. A wall-clock text is read in the project
+ * owner's zone (queue writes are the owner's), else UTC.
+ */
+async function resolveStart(projectId: string, start: QueueStart): Promise<Date> {
+  if ('inMinutes' in start) return new Date(Date.now() + start.inMinutes * 60_000)
+  const owner = (await getProjectRow(projectId))?.owner
+  const zone = (owner !== undefined ? (await getTimeZone(owner)).timeZone : null) ?? 'UTC'
+  const at = resolveStartAt(start.at, zone, new Date())
+  if (at === undefined) {
+    throw new ServerError('VALIDATION', `'${start.at}' is not a start time: give HH:MM, YYYY-MM-DD HH:MM, `
+      + 'or an ISO 8601 time with an offset')
+  }
+  return at
 }
 
 /**
@@ -154,13 +195,26 @@ export async function updateQueuedWorkspace(
 ): Promise<QueuedWorkspaceEntry> {
   const row = await editableRow(principal, id)
   if (patch.prompt !== undefined) checkPrompt(patch.prompt)
+  if (patch.parent !== undefined && patch.start !== undefined) {
+    throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
+  }
+  // A timeout restrains what launches, so an agent may set or shorten one
+  // but not lengthen or clear one the user gave.
+  if (source !== 'user' && patch.timeout !== undefined && row.timeoutMinutes !== undefined
+    && (patch.timeout === null || patch.timeout > row.timeoutMinutes)) {
+    throw new ServerError('VALIDATION', `this queued workspace stops after ${row.timeoutMinutes}m; `
+      + 'only the user can give it longer')
+  }
   // An entry left with no parent must still have a limited group to wait in.
-  const parentless = patch.parent === null || (patch.parent === undefined && pointerOf(row) === null)
-  const parent = parentless && (patch.parent === null || patch.group !== undefined)
-    ? await roomToWaitIn(row.projectId, patch.group !== undefined ? patch.group : row.groupId ?? null)
-    : patch.parent != null
-      ? await resolveParent(row.projectId, patch.parent)
-      : await parentInfo(row.projectId, pointerOf(row))
+  const parentless = patch.start === undefined
+    && (patch.parent === null || (patch.parent === undefined && pointerOf(row) === null))
+  const parent = patch.start !== undefined
+    ? { pointer: { startAt: await resolveStart(row.projectId, patch.start) } }
+    : parentless && (patch.parent === null || patch.group !== undefined)
+      ? await roomToWaitIn(row.projectId, patch.group !== undefined ? patch.group : row.groupId ?? null)
+      : patch.parent != null
+        ? await resolveParent(row.projectId, patch.parent)
+        : await parentInfo(row.projectId, pointerOf(row))
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
   const keptEffort = patch.effort ?? (retooled ? undefined : keepableEffort(row, patch.model))
   const settings = await resolveSettings(row.projectId, parent, {
@@ -176,11 +230,12 @@ export async function updateQueuedWorkspace(
       ? { permissionMode: patch.permissionMode }
       : retooled ? {} : { permissionMode: row.permissionMode }),
     ...(keptEffort !== undefined ? { effort: keptEffort } : {}),
+    timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
   }, source)
   refuseDeletedParent(parent.pointer)
   const updated = await updateQueuedWorkspaceRow(id, {
     ...settings,
-    ...(patch.parent !== undefined ? { parent: parent.pointer } : {}),
+    ...(patch.parent !== undefined || patch.start !== undefined ? { parent: parent.pointer } : {}),
   })
   if (!updated) throw launchingConflict()
   const [entry] = await toEntries([updated])
@@ -207,14 +262,17 @@ export async function discardQueuedWorkspace(principal: Actor, id: string): Prom
 /**
  * Run an entry now. Returns the new workspace id once the launch is claimed;
  * the launch continues detached as a provisioning row. Refused while its
- * group is at its workspace limit.
+ * group is at its workspace limit. Its timeout counts from now, except a
+ * routine's run's, which counts from its tick so it never outlives the next
+ * one (docs/routines.md).
  */
 export async function runQueuedWorkspace(principal: Actor, id: string): Promise<{ workspaceId: string }> {
   const row = await editableRow(principal, id)
   refuseFullGroup(await readGroupRoom(row.projectId, row.groupId), '')
   const released = await releaseQueuedWorkspace(id)
   if (!released) throw launchingConflict()
-  const launched = await launch(released)
+  const launched = await launch(released,
+    released.routineId !== undefined && released.startAt !== undefined ? released.startAt : new Date())
   if (launched === undefined) throw launchingConflict()
   // Released, so it starts as soon as a slot frees.
   if (launched === 'full') throw new ServerError('CONFLICT', 'its group filled up meanwhile; it starts once there is room')
@@ -226,6 +284,16 @@ export async function runQueuedWorkspace(principal: Actor, id: string): Promise<
 export async function startQueuedChildren(projectId: string, workspaceId: string): Promise<void> {
   await releaseQueuedChildren(projectId, workspaceId)
   await startWaitingWorkspaces(projectId)
+}
+
+/**
+ * Release every scheduled entry whose time has come and launch it where its
+ * group has room, on the reconciler's resync (docs/routines.md). One that
+ * failed waits for the user, and one whose group is full waits for room.
+ */
+export async function startScheduledWorkspaces(): Promise<void> {
+  const released = await releaseDueQueuedWorkspaces(new Date())
+  for (const projectId of new Set(released.map((r) => r.projectId))) await startWaitingWorkspaces(projectId)
 }
 
 /**
@@ -251,7 +319,9 @@ export async function startWaitingWorkspaces(projectId?: string): Promise<void> 
     const key = `${row.projectId}/${row.groupId ?? ''}`
     if (full.has(key)) continue
     try {
-      if (await launch(row) === 'full') full.add(key)
+      // A scheduled entry's timeout counts from its start time, so one that
+      // waited may find its window already gone.
+      if (await launch(row, row.startAt ?? new Date()) === 'full') full.add(key)
     } catch (err) {
       serverLog(`[queue] launching queued workspace ${row.id.slice(0, 8)}... failed: ${String(err)}`)
     }
@@ -289,24 +359,34 @@ export async function listHeldWorkspaces(): Promise<HeldWorkspaceEntry[]> {
 
 /**
  * Pick the queue up where a previous server left it, once at boot:
- * - A claimed launch not running here was interrupted, so it is marked
- *   failed rather than guessed at (a live workspace does not prove the
- *   launch finished). The stale reaper handles any half-made workspace.
+ * - A claimed launch not running here was interrupted. If its workspace has
+ *   a row and is running, the create got that far and the entry is
+ *   finished, since running it again would start a second workspace beside
+ *   it (routines make such restarts common, a tick's launch taking a few
+ *   seconds). Otherwise it is marked failed. A half-made workspace that dies
+ *   is a death like any other, and the stale reaper handles a dead one.
  * - Then whatever waits only for room is launched where there is room
  *   (`startWaitingWorkspaces`): a release the previous server never
  *   launched, and slots freed while no server ran.
- * After this, stops, deaths, failures and group edits launch directly.
+ * After this, stops, deaths, failures and group edits launch directly, and
+ * the resync starts scheduled entries (`startScheduledWorkspaces`).
  */
 export async function resumeQueuedWorkspaces(): Promise<void> {
   for (const row of await listQueuedWorkspaceRows()) {
     // Per row: a "Run now" may have started since the read.
-    if (row.launchWorkspaceId === undefined || launching.has(row.id)) continue
-    await failQueuedLaunch(
-      row.id, row.launchWorkspaceId,
-      'interrupted by a server restart; run it again once you have checked what it left',
-    ).catch((err: unknown) => {
-      serverLog(`[queue] putting back queued workspace ${row.id.slice(0, 8)}... failed: ${String(err)}`)
-    })
+    const workspaceId = row.launchWorkspaceId
+    if (workspaceId === undefined || launching.has(row.id)) continue
+    try {
+      const unit = await workspaceDriver().find(workspaceId)
+      if (unit?.running === true && !unit.terminating && await findWorkspaceRow(workspaceId) !== undefined) {
+        await finishQueuedLaunch(row.id, workspaceId)
+      } else {
+        await failQueuedLaunch(row.id, workspaceId,
+          'interrupted by a server restart; run it again once you have checked what it left')
+      }
+    } catch (err) {
+      serverLog(`[queue] resolving queued workspace ${row.id.slice(0, 8)}... failed: ${String(err)}`)
+    }
   }
   await startWaitingWorkspaces()
 }
@@ -315,11 +395,12 @@ export async function resumeQueuedWorkspaces(): Promise<void> {
  * Take a slot in the entry's group and claim its launch, then start it
  * detached. Returns the new workspace's id, `'full'` if the group has no
  * room, or undefined if another launcher claimed it. Claiming first means a
- * double-click or a race starts only one workspace.
+ * double-click or a race starts only one workspace. The entry's timeout
+ * counts from `timeoutFrom`; one already over fails the launch.
  */
-async function launch(row: QueuedWorkspaceRow): Promise<{ workspaceId: string } | 'full' | undefined> {
+async function launch(row: QueuedWorkspaceRow, timeoutFrom: Date): Promise<{ workspaceId: string } | 'full' | undefined> {
   if (launching.has(row.id)) return undefined
-  const room = await readGroupRoom(row.projectId, row.groupId)
+  const [room, nextTick] = await Promise.all([readGroupRoom(row.projectId, row.groupId), nextRunOf(row)])
   const workspaceId = crypto.randomUUID()
   // Synchronous from here to the reservation, so the slot is ours.
   if (launching.has(row.id)) return undefined
@@ -337,9 +418,21 @@ async function launch(row: QueuedWorkspaceRow): Promise<{ workspaceId: string } 
   }
   if (!claimed) return undefined
 
+  const deadline = nextTick ?? (row.timeoutMinutes !== undefined
+    ? new Date(timeoutFrom.getTime() + row.timeoutMinutes * 60_000)
+    : undefined)
   void (async () => {
     let failed = false
     try {
+      if (deadline !== undefined && deadline.getTime() <= Date.now()) {
+        // Run again, a routine's run counts from its tick once more, so only
+        // the routine can give it a fresh window.
+        throw new Error(nextTick !== undefined
+          ? 'its window ended at the routine\'s next tick; start a fresh run from the routine'
+          : row.routineId !== undefined
+            ? 'its timeout ran out before it could start; start a fresh run from the routine'
+            : 'its scheduled window passed before it could start; run it again to give it a fresh one')
+      }
       // The server launches it: whoever queued or ran the entry was
       // authorized then.
       const run = await prepareStart(systemPrincipal, {
@@ -355,19 +448,25 @@ async function launch(row: QueuedWorkspaceRow): Promise<{ workspaceId: string } 
         ...(row.title !== undefined ? { title: row.title } : {}),
         ...(row.title === undefined && row.generatedTitle !== undefined ? { generatedTitle: row.generatedTitle } : {}),
         ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
+        ...(deadline !== undefined ? { deadline } : {}),
         rememberDefaults: false,
         // Children point at `workspaceId`; a spare has a different id.
         claimSpare: false,
       })
       await run()
+      // The listings say "ended at next run" for such a stop, not "timed out".
+      if (nextTick !== undefined) await markDeadlineIsNextRun(row.projectId, workspaceId)
       await finishQueuedLaunch(row.id, workspaceId)
     } catch (err) {
       failed = true
       // Show the error on the queued row only, not as a provisioning row. A
       // stop is no error: the entry just goes back to waiting, except one
-      // with no parent, which would relaunch at once.
+      // that would relaunch at once: one with no parent, or one whose start
+      // time has passed.
       const error = err instanceof ProvisionStoppedError
-        ? pointerOf(row) === null ? 'stopped before its agent started' : null
+        ? pointerOf(row) === null ? 'stopped before its agent started'
+          : row.startAt !== undefined ? 'stopped before it started; run it again when you are ready'
+          : null
         : err instanceof Error ? err.message : String(err)
       await failQueuedLaunch(row.id, workspaceId, error)
         .catch((e: unknown) => serverLog(`[queue] recording a failed launch failed: ${String(e)}`))
@@ -380,6 +479,19 @@ async function launch(row: QueuedWorkspaceRow): Promise<{ workspaceId: string } 
     if (failed) await startWaitingWorkspaces(row.projectId)
   })()
   return { workspaceId }
+}
+
+/**
+ * When a routine's run with no timeout of its own stops: its routine's next
+ * tick after the run's start, exactly, so it never overlaps the next run,
+ * even one started seconds before a tick (whole minutes could not say so).
+ * Undefined for any other entry.
+ */
+async function nextRunOf(row: QueuedWorkspaceRow): Promise<Date | undefined> {
+  if (row.routineId === undefined || row.startAt === undefined) return undefined
+  const routine = await getRoutineRow(row.routineId)
+  if (routine === undefined || routine.timeoutMinutes !== undefined) return undefined
+  return nextCronRuns(routine.cron, routine.timeZone, row.startAt, 1)[0]
 }
 
 /** An entry that exists and is not mid-launch — what every edit needs. */
@@ -412,9 +524,12 @@ function refuseDeletedParent(pointer: QueuedParent): void {
   if (pointer !== null && 'parentWorkspaceId' in pointer) refuseDeleting(pointer.parentWorkspaceId)
 }
 
+/** What an entry waits on; null only for one waiting for room, never a
+ *  scheduled one. */
 function pointerOf(row: QueuedWorkspaceRow): QueuedParent {
   return row.parentQueuedId !== undefined ? { parentQueuedId: row.parentQueuedId }
     : row.parentWorkspaceId !== undefined ? { parentWorkspaceId: row.parentWorkspaceId }
+    : row.startAt !== undefined ? { startAt: row.startAt }
     : null
 }
 
@@ -486,7 +601,7 @@ async function resolveParent(projectId: string, parent: string): Promise<ParentI
  *  conversation (current model) and row, falling back to what an in-flight
  *  create asked for. */
 async function parentInfo(projectId: string, pointer: QueuedParent): Promise<ParentInfo> {
-  if (pointer === null) return { pointer }
+  if (pointer === null || 'startAt' in pointer) return { pointer }
   if ('parentQueuedId' in pointer) {
     const entry = await getQueuedWorkspaceRow(pointer.parentQueuedId)
     return { pointer, ...(entry !== undefined ? settingsOf(entry) : {}) }
@@ -535,7 +650,7 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
 async function resolveSettings(
   projectId: string,
   parent: ParentInfo,
-  request: Omit<QueueRequest, 'parent'>,
+  request: Omit<QueueRequest, 'parent' | 'start'>,
   source: QueueSource,
 ): Promise<QueuedWorkspaceSettings> {
   const tool = request.tool ?? parent.tool ?? (await getProjectRow(projectId))?.lastTool ?? 'claude'
@@ -591,7 +706,19 @@ async function resolveSettings(
     branch: request.branch ?? parent.branch ?? await getDefaultBranch(repoDir(projectId)),
     ...(title !== '' ? { title } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
+    ...(request.timeout != null ? { timeoutMinutes: request.timeout } : {}),
   }
+}
+
+/**
+ * Settings for an entry with no parent to inherit from (a routine's runs):
+ * the request's, else the project's create defaults.
+ */
+export async function resolveParentlessSettings(
+  projectId: string,
+  request: Omit<QueueRequest, 'parent' | 'start'>,
+): Promise<QueuedWorkspaceSettings> {
+  return await resolveSettings(projectId, { pointer: { startAt: new Date() } }, request, 'user')
 }
 
 /** Wire entries, flagging the ones whose parent workspace is gone. */
@@ -609,6 +736,9 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       projectId: r.projectId,
       ...(r.parentWorkspaceId !== undefined ? { parentWorkspaceId: r.parentWorkspaceId } : {}),
       ...(r.parentQueuedId !== undefined ? { parentQueuedId: r.parentQueuedId } : {}),
+      ...(r.startAt !== undefined ? { startAt: r.startAt.toISOString() } : {}),
+      ...(r.timeoutMinutes !== undefined ? { timeoutMinutes: r.timeoutMinutes } : {}),
+      ...(r.routineId !== undefined ? { routineId: r.routineId } : {}),
       prompt: r.prompt,
       tool: r.tool,
       model: r.model,

@@ -24,6 +24,8 @@ import { useIsMobile } from '#lib/viewport'
 import { WorkspaceTitle } from '#components/WorkspaceTitle'
 import { AcpStartingPane, CreatingPane } from '#components/CreatingPane'
 import { NewWorkspacePane } from '#components/NewWorkspacePane'
+import { RoutinePane } from '#components/RoutinePane'
+import { DeadlineChip } from '#components/DeadlineChip'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { ChevronIcon, CloseIcon, PreviewIcon } from '#lib/icons'
@@ -113,6 +115,8 @@ export function WorkspaceView({
   provisioning: ProvisioningWorkspaceEntry[]
 }): JSX.Element {
   const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
+  const selectedRoutineId = useUiStore((s) => s.selectedRoutineId)
+  const openRoutine = useUiStore((s) => s.openRoutine)
   const focusNonce = useUiStore((s) => s.focusNonce)
   const terminalNonces = useUiStore((s) => s.terminalNonces)
   const layouts = useUiStore((s) => s.layouts)
@@ -134,6 +138,10 @@ export function WorkspaceView({
   const workspaces = snapshot?.workspaces ?? []
   const workspace = workspaces.find((s) => s.workspaceId === selectedWorkspaceId)
   const sid = workspace?.workspaceId ?? null
+  const routines = (snapshot?.routines ?? []).filter((r) => r.projectId === activeProjectId)
+  // A deleted routine's pane falls back to the new-workspace pane.
+  const routine = routines.find((r) => r.id === selectedRoutineId)
+  const routineOf = routines.find((r) => r.id === workspace?.routineId)
   // Project-wide, but shown here since it breaks git in this workspace too.
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
 
@@ -467,6 +475,20 @@ export function WorkspaceView({
             workspaceId={workspace.workspaceId}
             title={workspace.title ?? ''}
             prompt={workspace.prompt ?? ''}
+            after={routineOf !== undefined && (
+              <button
+                type="button"
+                onClick={() => openRoutine(routineOf.projectId, routineOf.id)}
+                title="Open the routine it is a run of"
+                className="no-drag min-w-0 shrink truncate text-[11px] text-text-faint hover:text-text-dim hover:underline"
+              >
+                from {routineOf.name}
+              </button>
+            )}
+          />
+          <DeadlineChip
+            workspaceId={workspace.workspaceId}
+            {...(workspace.deadline !== undefined ? { deadline: workspace.deadline } : {})}
           />
           <ContainerlessBadge />
           {!isMobile && (
@@ -558,7 +580,7 @@ export function WorkspaceView({
           )}
         </header>
       ) : activeProjectId ? (
-        // The new-workspace pane fills this bar (`NewWorkspacePane`).
+        // The new-workspace pane or a routine's fills this bar.
         <header className={headerClass}>
           {leading}
           <div ref={setNewWorkspaceBar} className="contents" />
@@ -574,10 +596,13 @@ export function WorkspaceView({
       {/* `isolate` keeps the z-30 provisioning overlay below from painting
           over portaled dropdowns. */}
       <div ref={wsRef} className="relative isolate min-h-0 flex-1">
-        {/* With nothing selected, the pane starts a new workspace. */}
+        {/* With nothing selected, the pane shows a routine or starts a new
+            workspace. */}
         {!workspace && !creatingHere && activeProjectId && (
           <PaneCard headerH={headerH}>
-            <NewWorkspacePane projectId={activeProjectId} bar={newWorkspaceBar} />
+            {routine !== undefined
+              ? <RoutinePane routine={routine} bar={newWorkspaceBar} />
+              : <NewWorkspacePane projectId={activeProjectId} bar={newWorkspaceBar} />}
           </PaneCard>
         )}
 

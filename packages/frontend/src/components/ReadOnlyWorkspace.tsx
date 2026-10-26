@@ -144,7 +144,8 @@ function Facts({ subject, owner }: { subject: ReadOnlySubject; owner?: string })
   } else {
     const e = subject.entry
     facts.push(['Last active', relativeAge(e.lastActiveAt) || '—'])
-    facts.push([e.deathReason ? 'Died' : 'Stopped', relativeAge(e.stoppedAt) || '—'])
+    facts.push([e.deathReason ? 'Died' : e.endedAtNextRun ? 'Ended at next run' : e.timedOut ? 'Timed out' : 'Stopped',
+      relativeAge(e.stoppedAt) || '—'])
     if (e.deathReason) facts.push(['Cause', describeWorkspaceDeathReason(e.deathReason, e.deathDetail)])
   }
   return (

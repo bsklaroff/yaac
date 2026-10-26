@@ -4,6 +4,7 @@ import {
   getProjectWorkspaceRows,
   conversationTitle,
   openingPrompt,
+  routineRunWorkspaces,
   type AgentSessionLinkRow,
   type WorkspaceRow,
 } from '#db'
@@ -59,6 +60,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
   ))
   const rowFor = (w: WorkspaceRuntimeReport): WorkspaceRow | undefined =>
     w.projectId && w.workspaceId ? rowsByProject.get(w.projectId)?.get(w.workspaceId) : undefined
+  const routineRuns = report.workspaces.length > 0 ? await routineRunWorkspaces() : new Map<string, string>()
 
   const idsByProject = new Map<string, string[]>()
   for (const w of report.workspaces) {
@@ -88,6 +90,8 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       groupId: row?.groupId,
       ...(row !== undefined ? { mode: row.mode, permissionMode: row.permissionMode } : {}),
       ...(row?.effort !== undefined ? { effort: row.effort } : {}),
+      ...(row?.deadline !== undefined ? { deadline: row.deadline.toISOString() } : {}),
+      ...(routineRuns.has(w.workspaceId) ? { routineId: routineRuns.get(w.workspaceId) } : {}),
     }
     if (w.phase === 'terminating') {
       // Non-interactive placeholder: no ports, and `running` so no attention

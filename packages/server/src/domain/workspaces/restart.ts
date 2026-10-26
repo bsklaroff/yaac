@@ -42,7 +42,9 @@ import {
 export async function prepareRestart(
   principal: Actor,
   idOrPrefix: string,
-  opts: { stoppedOnly?: boolean } = {},
+  /** `deadline`: when the server stops it, which a restart otherwise
+   *  clears. */
+  opts: { stoppedOnly?: boolean; deadline?: Date } = {},
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   // The runtime is asked directly, never skipped when unreachable: a unit
   // this missed would keep running beside the relaunch.
@@ -129,6 +131,7 @@ export async function prepareRestart(
       permissionMode: row.permissionMode,
       ...(launch.model !== undefined ? { model: launch.model } : {}),
       ...(launch.effort !== undefined ? { effort: launch.effort } : {}),
+      ...(opts.deadline !== undefined ? { deadline: opts.deadline } : {}),
       onProgress,
     })
 

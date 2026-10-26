@@ -13,6 +13,11 @@ must have a workspace limit, and runs once the group has a free slot
 (docs/workspace-groups.md). This lets an orchestrator queue many workers
 into one group and have at most N run at once.
 
+An entry can instead start at a time, with no parent, then launching once
+its group has room. Scheduled starts, the timeout an entry can give what it
+launches, and the routines that queue one per cron tick are in
+docs/routines.md.
+
 The parent can be a workspace or another entry, so requests chain to any
 depth. An entry under an entry waits for its parent to launch and then stop
 naturally. Entries are not workspaces: they have no `workspaces` row,
@@ -141,14 +146,18 @@ and delivers the prompt like any create.
   becoming a draft.
 - **Server restart mid-launch.** `resumeQueuedWorkspaces` handles it, once
   at boot, when the driver has attached. An entry claimed by nothing in this
-  process is put back with an "interrupted" error, prompt and children
-  intact, for the user to check and rerun. A claim made since boot (a Run
-  now served first) is this process's own and is left alone. It does not
-  guess whether the launch finished, because the workspace exists long
-  before a create is done; any half-made workspace is the stale reaper's
-  job. A released entry that never launched, or one with no parent, is then
-  launched where its group has room. After boot nothing polls: stops,
-  deaths, failed launches and group edits launch directly.
+  process is resolved. If its workspace has a row and is running, the launch
+  got that far and the entry is finished, since running it again would start
+  a second workspace beside the first (routines make such restarts common, a
+  tick's launch taking a few seconds). Otherwise it is put back with an
+  "interrupted" error, prompt and children intact, for the user to check and
+  rerun. A claim made since boot (a Run now served first) is this process's
+  own and is left alone. A half-made workspace that dies is a death like any
+  other, and the stale reaper handles a dead one. A released entry that never
+  launched, or one with no parent, is then launched where its group has
+  room. After boot only scheduled starts poll, on the resync
+  (docs/routines.md): stops, deaths, failed launches and group edits launch
+  directly.
 
 An entry mid-launch cannot be edited or discarded (`CONFLICT`), and the
 snapshot omits it while its provisioning row stands in for it.
@@ -161,9 +170,9 @@ snapshot omits it while its provisioning row stands in for it.
   refused. The check walks up from the new parent, stepping from a workspace
   that some entry launched to that entry, so a launching entry cannot hide
   its ancestry.
-- **Discard** deletes the entry and moves its children up to its parent, so
-  the rest of the chain runs one link sooner. With no parent, they wait for
-  room in their own groups.
+- **Discard** deletes the entry and moves its children up to its parent (or
+  its start time), so the rest of the chain runs one link sooner. With no
+  parent, they wait for room in their own groups.
 - **Run now** releases one entry regardless of its parent. Mid-chain, it
   leaves the chain once its launch succeeds, and its children follow it to
   the new workspace. It is refused while the entry's group is at its

@@ -141,6 +141,21 @@ describe('listStoppedWorkspaces', () => {
     expect(removed?.deathDetail).toBeUndefined()
   })
 
+  it('marks a natural stop at or after the deadline timed out, but not a death or an earlier stop', async () => {
+    const past = new Date(Date.now() - 60_000)
+    for (const id of ['timedout', 'died', 'early']) {
+      await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: id, deadline: id === 'early' ? new Date(Date.now() + 3_600_000) : past })
+    }
+    await recordWorkspaceStopped(DEMO_PROJECT_ID, 'timedout')
+    await recordWorkspaceStopped(DEMO_PROJECT_ID, 'died', { reason: 'evicted' })
+    await recordWorkspaceStopped(DEMO_PROJECT_ID, 'early')
+    const byId = new Map((await entries()).map((e) => [e.workspaceId, e]))
+    expect(byId.get('timedout')?.timedOut).toBe(true)
+    expect(byId.get('died')).toMatchObject({ deathReason: 'evicted' })
+    expect(byId.get('died')?.timedOut).toBeUndefined()
+    expect(byId.get('early')?.timedOut).toBeUndefined()
+  })
+
   it("carries the title, the agent's own when the user gave none, and the sidebar group", async () => {
     await seedWorkspace(DEMO_PROJECT_ID, 'sid', { deleted: true })
     await recordAgentSessions(DEMO_PROJECT_ID, 'sid', [

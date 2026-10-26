@@ -1,6 +1,6 @@
-import { and, asc, eq, isNull } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, lte } from 'drizzle-orm'
 import { getDb } from './client'
-import { queuedWorkspaces } from './schema'
+import { queuedWorkspaces, routines } from './schema'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { isUuid } from '#lib/uuid'
 import { nullsToUndefined, type NullsToUndefined } from '#lib/nulls'
@@ -13,8 +13,8 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  *
  * Nothing observes an entry, so every write here notifies the snapshot hub
  * itself. Every write keeps at most one parent column set: an entry waits on
- * a workspace, on another entry, or with neither for room in its group
- * (docs/workspace-groups.md).
+ * a workspace, on another entry, for a time (docs/routines.md), or with
+ * none for room in its group (docs/workspace-groups.md).
  *
  * A set `launchWorkspaceId` means the entry is mid-launch. Every edit
  * requires it to be null, so nothing changes an entry under a running create.
@@ -24,9 +24,9 @@ import type { AgentMode, AgentTool, PermissionMode } from '@yaac/shared/types'
  * skip it, and every read here filters it out.
  */
 
-/** What an entry waits on: a workspace, another entry, or (`null`) room in
- *  its group. */
-export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string } | null
+/** What an entry waits on: a workspace, another entry, a time, or (`null`)
+ *  room in its group. */
+export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string } | { startAt: Date } | null
 
 /** An entry's settings: what an insert takes and an update replaces. An
  *  absent title, group or effort is stored as null. */
@@ -40,6 +40,8 @@ export interface QueuedWorkspaceSettings {
   branch: string
   title?: string
   groupId?: string
+  /** The launched workspace's timeout (`queued_workspaces.timeoutMinutes`). */
+  timeoutMinutes?: number
 }
 
 type Row = typeof queuedWorkspaces.$inferSelect
@@ -51,16 +53,27 @@ function toRow({ launchedWorkspaceId: _, ...r }: Row): QueuedWorkspaceRow {
   return nullsToUndefined(r)
 }
 
-/** Both parent columns: at most one set. */
-function parentColumns(parent: QueuedParent): { parentWorkspaceId: string | null; parentQueuedId: string | null } {
-  if (parent === null) return { parentWorkspaceId: null, parentQueuedId: null }
-  return 'parentWorkspaceId' in parent
-    ? { parentWorkspaceId: parent.parentWorkspaceId, parentQueuedId: null }
-    : { parentWorkspaceId: null, parentQueuedId: parent.parentQueuedId }
+/** The three parent columns: at most one set. */
+function parentColumns(parent: QueuedParent): {
+  parentWorkspaceId: string | null
+  parentQueuedId: string | null
+  startAt: Date | null
+} {
+  return {
+    parentWorkspaceId: parent !== null && 'parentWorkspaceId' in parent ? parent.parentWorkspaceId : null,
+    parentQueuedId: parent !== null && 'parentQueuedId' in parent ? parent.parentQueuedId : null,
+    startAt: parent !== null && 'startAt' in parent ? parent.startAt : null,
+  }
 }
 
 function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspaces.$inferInsert, 'projectId'> {
-  return { ...s, title: s.title ?? null, groupId: s.groupId ?? null, effort: s.effort ?? null }
+  return {
+    ...s,
+    title: s.title ?? null,
+    groupId: s.groupId ?? null,
+    effort: s.effort ?? null,
+    timeoutMinutes: s.timeoutMinutes ?? null,
+  }
 }
 
 /** Not mid-launch: the guard on every edit. */
@@ -69,12 +82,13 @@ const notLaunching = isNull(queuedWorkspaces.launchWorkspaceId)
 /** Not launched yet: the filter on every read. */
 const pending = isNull(queuedWorkspaces.launchedWorkspaceId)
 
-/** `generatedTitle` is the one generated for the draft the entry came from. */
+/** `generatedTitle` is the one generated for the draft the entry came from;
+ *  `routineId` names the routine the entry is a run of. */
 export async function insertQueuedWorkspace(
   projectId: string,
   parent: QueuedParent,
   settings: QueuedWorkspaceSettings,
-  generatedTitle?: string,
+  extra: { generatedTitle?: string; routineId?: string } = {},
 ): Promise<QueuedWorkspaceRow> {
   const db = await getDb()
   const [row] = await db.insert(queuedWorkspaces)
@@ -82,7 +96,8 @@ export async function insertQueuedWorkspace(
       projectId,
       ...parentColumns(parent),
       ...settingsColumns(settings),
-      generatedTitle: generatedTitle ?? null,
+      generatedTitle: extra.generatedTitle ?? null,
+      routineId: extra.routineId ?? null,
     })
     .returning()
   notifyWorkspaceListChanged()
@@ -121,6 +136,8 @@ export async function updateQueuedWorkspace(
         ...settingsColumns(settings),
         ...(parent !== undefined ? parentColumns(parent) : {}),
         ...(self.prompt !== settings.prompt ? { generatedTitle: null } : {}),
+        // A new start time is a new attempt, so its old failure goes.
+        ...(parent != null && 'startAt' in parent ? { launchError: null } : {}),
       })
       .where(and(eq(queuedWorkspaces.id, id), notLaunching))
       .returning()
@@ -137,7 +154,7 @@ function closesCycle(id: string, parent: QueuedParent, entries: QueuedWorkspaceR
   const seen = new Set<string>()
   let cur: QueuedParent = parent
   for (;;) {
-    if (cur === null) return false
+    if (cur === null || 'startAt' in cur) return false
     const next: QueuedWorkspaceRow | undefined = 'parentQueuedId' in cur
       ? byId.get(cur.parentQueuedId)
       : byLaunch.get(cur.parentWorkspaceId)
@@ -150,9 +167,16 @@ function closesCycle(id: string, parent: QueuedParent, entries: QueuedWorkspaceR
   }
 }
 
+/** Why an entry waits: what it was queued after was discarded once its
+ *  start time had passed, so taking that time over would launch it at once. */
+const ORPHANED_PAST_START = 'what it was queued after was discarded after its start time; run it when you are ready'
+
 /**
- * Delete an entry, moving its children up to its own parent in the same
- * transaction. Returns false if the entry is absent or mid-launch.
+ * Delete an entry, moving its children up to its own parent (or start time)
+ * in the same transaction. A start time already past would launch them on
+ * the next pass although their parent never ran, so they take it with an
+ * error and wait for the user. Returns false if the entry is absent or
+ * mid-launch.
  */
 export async function deleteQueuedWorkspace(id: string): Promise<boolean> {
   const db = await getDb()
@@ -161,13 +185,70 @@ export async function deleteQueuedWorkspace(id: string): Promise<boolean> {
       .where(and(eq(queuedWorkspaces.id, id), notLaunching))
       .returning()
     if (!row) return false
+    const pastStart = row.startAt !== null && row.startAt.getTime() <= Date.now()
     await tx.update(queuedWorkspaces)
-      .set({ parentWorkspaceId: row.parentWorkspaceId, parentQueuedId: row.parentQueuedId })
+      .set({
+        parentWorkspaceId: row.parentWorkspaceId,
+        parentQueuedId: row.parentQueuedId,
+        startAt: row.startAt,
+        ...(pastStart ? { launchError: ORPHANED_PAST_START } : {}),
+      })
       .where(and(eq(queuedWorkspaces.parentQueuedId, id), pending))
     return true
   })
   if (deleted) notifyWorkspaceListChanged()
   return deleted
+}
+
+/**
+ * Queue a routine's run at `startAt`, in one transaction, so a tick is fired
+ * exactly once: a rollback leaves it due for the next pass.
+ * - With `advance`, first move the routine's next tick from `from` to `to`
+ *   by compare-and-set; if another pass (or a pause) got there first,
+ *   nothing is written and this returns undefined.
+ * - The routine's earlier runs that never launched are replaced, so a broken
+ *   routine shows one failed run, and anything queued after them moves onto
+ *   the new run rather than being promoted onto their past start times. The
+ *   new run takes the oldest one's place in line (`createdAt`), so a run
+ *   waiting for room in a busy group is not sent to the back each tick.
+ */
+export async function insertRoutineRun(
+  routineId: string,
+  projectId: string,
+  startAt: Date,
+  settings: QueuedWorkspaceSettings,
+  advance?: { from: Date; to: Date | null },
+): Promise<QueuedWorkspaceRow | undefined> {
+  const db = await getDb()
+  const row = await db.transaction(async (tx) => {
+    if (advance !== undefined) {
+      const moved = await tx.update(routines)
+        .set({ nextRunAt: advance.to, lastRunAt: startAt })
+        .where(and(eq(routines.id, routineId), eq(routines.nextRunAt, advance.from), eq(routines.paused, false)))
+        .returning({ id: routines.id })
+      if (moved.length === 0) return undefined
+    }
+    const staleRows = await tx.select({ id: queuedWorkspaces.id, createdAt: queuedWorkspaces.createdAt })
+      .from(queuedWorkspaces)
+      .where(and(eq(queuedWorkspaces.routineId, routineId), notLaunching, pending))
+      .orderBy(asc(queuedWorkspaces.createdAt))
+    const stale = staleRows.map((r) => r.id)
+    const [inserted] = await tx.insert(queuedWorkspaces)
+      .values({
+        projectId, ...parentColumns({ startAt }), ...settingsColumns(settings), routineId,
+        ...(staleRows[0] !== undefined ? { createdAt: staleRows[0].createdAt } : {}),
+      })
+      .returning()
+    if (stale.length > 0) {
+      await tx.update(queuedWorkspaces)
+        .set({ parentWorkspaceId: null, parentQueuedId: inserted.id, startAt: null })
+        .where(and(inArray(queuedWorkspaces.parentQueuedId, stale), pending))
+      await tx.delete(queuedWorkspaces).where(inArray(queuedWorkspaces.id, stale))
+    }
+    return inserted
+  })
+  notifyWorkspaceListChanged()
+  return row ? toRow(row) : undefined
 }
 
 export async function getQueuedWorkspaceRow(id: string): Promise<QueuedWorkspaceRow | undefined> {
@@ -222,6 +303,27 @@ export async function releaseQueuedChildren(
       eq(queuedWorkspaces.projectId, projectId),
       eq(queuedWorkspaces.parentWorkspaceId, workspaceId),
       notLaunching,
+    ))
+    .returning()
+  if (rows.length > 0) notifyWorkspaceListChanged()
+  return rows.map(toRow)
+}
+
+/**
+ * Release every scheduled entry whose start time has come. Skips one that
+ * failed, which waits for the user rather than retrying every pass.
+ * Returns the released entries.
+ */
+export async function releaseDueQueuedWorkspaces(now: Date): Promise<QueuedWorkspaceRow[]> {
+  const db = await getDb()
+  const rows = await db.update(queuedWorkspaces)
+    .set({ releasedAt: now })
+    .where(and(
+      lte(queuedWorkspaces.startAt, now),
+      isNull(queuedWorkspaces.releasedAt),
+      isNull(queuedWorkspaces.launchError),
+      notLaunching,
+      pending,
     ))
     .returning()
   if (rows.length > 0) notifyWorkspaceListChanged()

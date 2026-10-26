@@ -28,9 +28,10 @@ import {
   queueWorkspace,
   resumeQueuedWorkspaces,
   runQueuedWorkspace,
+  startScheduledWorkspaces,
   updateQueuedWorkspace,
 } from '#domain/workspaces'
-import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
+import { clearQueuedLaunchesForTests, startQueuedChildren } from '#domain/workspaces/queued-workspaces'
 import {
   clearAllProvisioningForTests,
   listProvisioning,
@@ -39,6 +40,7 @@ import {
 } from '#domain/workspaces/provisioning'
 import {
   BUILT_IN_USER_ID,
+  setTimeZone,
   setToolCredential,
   applyWorkspaceEvent,
   createWorkspaceGroup,
@@ -50,10 +52,12 @@ import {
   claimQueuedLaunch,
   failQueuedLaunch,
   getQueuedWorkspaceRow,
+  insertRoutineRun,
   releaseQueuedWorkspace,
   setQueuedWorkspaceTitle,
 } from '#db/queued-workspace-store'
 import { recordProject, recordProjectCreate } from '#db/project-store'
+import { insertRoutine } from '#db/routine-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
@@ -265,6 +269,27 @@ describe('queueWorkspace', () => {
       .toBe('neuralwatt/m')
   })
 
+  it('starts at a time instead, read in the owner\'s zone, with the project\'s defaults and a timeout', async () => {
+    await setTimeZone(BUILT_IN_USER_ID, 'America/New_York', true)
+    const entry = await queueWorkspace(local, PROJ, { start: { at: '2099-03-04 09:30' }, prompt: 'later', timeout: 90 }, 'user')
+    // 09:30 in New York, in March before the clocks change, is 14:30 UTC.
+    expect(entry).toMatchObject({ startAt: '2099-03-04T14:30:00.000Z', timeoutMinutes: 90, tool: 'claude' })
+    expect(entry.parentWorkspaceId ?? entry.parentQueuedId).toBeUndefined()
+    expect(entry.groupId).toBeUndefined()
+    const before = Date.now()
+    const soon = await queueWorkspace(local, PROJ, { start: { inMinutes: 30 }, prompt: 'soon' }, 'user')
+    expect(new Date(soon.startAt ?? '').getTime()).toBeGreaterThanOrEqual(before + 30 * 60_000)
+    // Chaining after a scheduled entry works as after any entry.
+    expect((await queueWorkspace(local, PROJ, { parent: entry.id, prompt: 'after' }, 'user')).parentQueuedId).toBe(entry.id)
+
+    await workspace(P)
+    await expect(queueWorkspace(local, PROJ, { parent: P, start: { inMinutes: 5 }, prompt: 'x' }, 'user'))
+      .rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(queueWorkspace(local, PROJ, { prompt: 'x' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(queueWorkspace(local, PROJ, { start: { at: 'tomorrowish' }, prompt: 'x' }, 'user'))
+      .rejects.toThrow(/not a start time/)
+  })
+
   it('holds an agent to its own posture as the ceiling', async () => {
     await workspace('sibling', { permissionMode: 'bypass' })
     const ceiling = { ceiling: 'accept-edits' as const }
@@ -318,6 +343,16 @@ describe('queueWorkspace', () => {
 // docs/workspace-groups.md
 
 describe('updateQueuedWorkspace', () => {
+  it('lets an agent set or shorten a timeout, but not lengthen or clear one', async () => {
+    await workspace(P, { permissionMode: 'accept-edits' })
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', timeout: 60 }, 'user')
+    const agent = { ceiling: 'accept-edits' as const }
+    expect((await updateQueuedWorkspace(local, entry.id, { timeout: 30 }, agent)).timeoutMinutes).toBe(30)
+    await expect(updateQueuedWorkspace(local, entry.id, { timeout: 90 }, agent)).rejects.toThrow(/only the user can give it longer/)
+    await expect(updateQueuedWorkspace(local, entry.id, { timeout: null }, agent)).rejects.toThrow(/only the user/)
+    expect((await updateQueuedWorkspace(local, entry.id, { timeout: null }, 'user')).timeoutMinutes).toBeUndefined()
+  })
+
   it('replaces what it names, re-resolving a new tool\'s model and posture', async () => {
     await workspace(P, { tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan' })
     const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x' }, 'user')
@@ -499,6 +534,39 @@ describe('runQueuedWorkspace', () => {
   })
 })
 
+describe('runQueuedWorkspace on a scheduled entry', () => {
+  it('counts a routine\'s run from its tick, so a late run never outlives the next one', async () => {
+    const routine = await insertRoutine(PROJ, {
+      name: 'r', cron: '*/30 * * * *', timeZone: 'UTC', prompt: 'p', tool: 'claude', model: 'claude-sonnet-5',
+      mode: 'tui', permissionMode: 'auto', branch: 'main', timeoutMinutes: 30,
+    }, null)
+    const settings = { prompt: 'late run', tool: 'claude', model: 'claude-sonnet-5', mode: 'tui', permissionMode: 'auto', branch: 'main' } as const
+    const tick = new Date(Date.now() - 10 * 60_000)
+    const run = await insertRoutineRun(routine.id, PROJ, tick, { ...settings, timeoutMinutes: 30 })
+    await runQueuedWorkspace(local, run!.id)
+    await launched(1)
+    expect(mockCreate.mock.calls[0][1].deadline).toEqual(new Date(tick.getTime() + 30 * 60_000))
+
+    // One whose window is already over says where a fresh run comes from.
+    const stale = await insertRoutineRun(routine.id, PROJ, new Date(Date.now() - 60 * 60_000), { ...settings, timeoutMinutes: 30 })
+    await runQueuedWorkspace(local, stale!.id)
+    await settled(stale!.id, false)
+    // Its window was its own timeout, not the next tick.
+    expect((await getQueuedWorkspaceRow(stale!.id))?.launchError)
+      .toBe('its timeout ran out before it could start; start a fresh run from the routine')
+  })
+
+  it('runs it early, counting its timeout from now rather than its start time', async () => {
+    const entry = await queueWorkspace(local, PROJ, { start: { at: '2099-01-01T00:00Z' }, prompt: 'early', timeout: 60 }, 'user')
+    const before = Date.now()
+    await runQueuedWorkspace(local, entry.id)
+    await launched(1)
+    const deadline = mockCreate.mock.calls[0][1].deadline?.getTime() ?? 0
+    expect(deadline).toBeGreaterThanOrEqual(before + 60 * 60_000)
+    expect(deadline).toBeLessThan(before + 61 * 60_000)
+  })
+})
+
 describe('listQueuedWorkspaces', () => {
   it('hides a launching entry and flags one whose parent workspace is gone', async () => {
     await workspace(P)
@@ -539,22 +607,31 @@ describe('listHeldWorkspaces', () => {
 })
 
 describe('resumeQueuedWorkspaces', () => {
-  it('puts an interrupted launch back with the error, whether or not its workspace came up', async () => {
+  it('resolves a launch a restart interrupted: launched if its workspace runs, else back with the error', async () => {
     await workspace(P)
     const up = await queueWorkspace(local, PROJ, { parent: P, prompt: 'up' }, 'user')
-    const upChild = await queueWorkspace(local, PROJ, { parent: up.id, prompt: 'after up' }, 'user')
-    // A server restart mid-launch leaves a stale claim. A live workspace does
-    // not prove the agent started or got its prompt, so it is not done.
+    const down = await queueWorkspace(local, PROJ, { parent: P, prompt: 'down' }, 'user')
+    const downChild = await queueWorkspace(local, PROJ, { parent: down.id, prompt: 'after down' }, 'user')
+    // A server restart mid-launch leaves stale claims. One whose workspace
+    // got a row and runs is that workspace; launching again would start a
+    // second beside it.
     await claimQueuedLaunch(up.id, 'came-up')
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'came-up' })
+    await claimQueuedLaunch(down.id, 'never-ran')
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'never-ran' })
+    installFakeWorkspaceDriver({
+      find: (id) => Promise.resolve(id === 'came-up' ? handleFixture({ workspaceId: id, projectId: PROJ }) : undefined),
+    })
 
     await resumeQueuedWorkspaces()
 
-    expect(await getQueuedWorkspaceRow(up.id)).toMatchObject({
-      prompt: 'up', launchError: expect.stringContaining('interrupted by a server restart') as string,
+    expect(await getQueuedWorkspaceRow(up.id)).toBeUndefined()
+    expect(await getQueuedWorkspaceRow(down.id)).toMatchObject({
+      prompt: 'down', launchError: expect.stringContaining('interrupted by a server restart') as string,
     })
-    expect((await getQueuedWorkspaceRow(up.id))?.launchWorkspaceId).toBeUndefined()
+    expect((await getQueuedWorkspaceRow(down.id))?.launchWorkspaceId).toBeUndefined()
     // Its children are back under it, and nothing was launched again.
-    expect((await getQueuedWorkspaceRow(upChild.id))?.parentQueuedId).toBe(up.id)
+    expect((await getQueuedWorkspaceRow(downChild.id))?.parentQueuedId).toBe(down.id)
     await new Promise((r) => setTimeout(r, 10))
     expect(mockCreate).not.toHaveBeenCalled()
   })
@@ -626,5 +703,66 @@ describe('resumeQueuedWorkspaces', () => {
     await settled(a.id, true)
     expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('a')
     expect((await getQueuedWorkspaceRow(b.id))?.releasedAt).toBeUndefined()
+  })
+})
+
+describe('startScheduledWorkspaces', () => {
+  it('launches a scheduled entry once its time comes, its timeout counted from that time', async () => {
+    const startAt = new Date(Date.now() - 5 * 60_000)
+    const due = await queueWorkspace(local, PROJ, { start: { at: startAt.toISOString() }, prompt: 'due', timeout: 60 }, 'user')
+    const later = await queueWorkspace(local, PROJ, { start: { inMinutes: 60 }, prompt: 'later' }, 'user')
+
+    await startScheduledWorkspaces()
+    await launched(1)
+    await settled(due.id, true)
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({
+      initialPrompt: 'due',
+      deadline: new Date(startAt.getTime() + 60 * 60_000),
+    })
+    expect((await getQueuedWorkspaceRow(later.id))?.releasedAt).toBeUndefined()
+  })
+
+  it('fails a scheduled entry whose window passed or whose launch failed, and waits for the user', async () => {
+    const gone = await queueWorkspace(local, PROJ,
+      { start: { at: new Date(Date.now() - 2 * 3_600_000).toISOString() }, prompt: 'gone', timeout: 60 }, 'user')
+    const broken = await queueWorkspace(local, PROJ, { start: { inMinutes: 1 }, prompt: 'broken' }, 'user')
+    await updateQueuedWorkspace(local, broken.id, { start: { at: new Date(Date.now() - 60_000).toISOString() } }, 'user')
+    mockCreate.mockRejectedValue(new Error('image build exploded'))
+
+    await startScheduledWorkspaces()
+    await settled(gone.id, false)
+    await settled(broken.id, false)
+    expect((await getQueuedWorkspaceRow(gone.id))?.launchError).toMatch(/window passed/)
+    expect((await getQueuedWorkspaceRow(broken.id))?.launchError).toBe('image build exploded')
+    // Only the broken one reached the create; neither is retried.
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    await startScheduledWorkspaces()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+
+    // A stopped launch is past its time too, so it also waits for the user.
+    mockCreate.mockRejectedValue(new ProvisionStoppedError())
+    await runQueuedWorkspace(local, broken.id)
+    await settled(broken.id, false)
+    expect((await getQueuedWorkspaceRow(broken.id))?.launchError).toMatch(/stopped before it started/)
+  })
+
+  it('launches a due entry only where its group has room, and never one not yet due as waiting for room', async () => {
+    const { groupId } = await createWorkspaceGroup(PROJ, 'workers', null)
+    await setWorkspaceGroupLimit(PROJ, groupId, 1)
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'busy', groupId })
+    const due = await queueWorkspace(local, PROJ, { start: { at: new Date(Date.now() - 60_000).toISOString() }, prompt: 'due', group: groupId }, 'user')
+    const later = await queueWorkspace(local, PROJ, { start: { inMinutes: 60 }, prompt: 'later', group: groupId }, 'user')
+    expect((await listQueuedWorkspaces()).find((e) => e.id === later.id)?.waitingForRoom).toBeUndefined()
+
+    await startScheduledWorkspaces()
+    // Due, but its group is full: it waits for room, released.
+    expect(await getQueuedWorkspaceRow(due.id)).toMatchObject({ releasedAt: expect.any(Date) as Date })
+    expect(mockCreate).not.toHaveBeenCalled()
+    await recordWorkspaceStopped(PROJ, 'busy')
+    await startQueuedChildren(PROJ, 'busy')
+    await launched(1)
+    expect(mockCreate.mock.calls[0][1].initialPrompt).toBe('due')
+    expect((await getQueuedWorkspaceRow(later.id))?.releasedAt).toBeUndefined()
   })
 })

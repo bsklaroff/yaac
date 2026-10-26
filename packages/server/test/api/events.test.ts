@@ -41,7 +41,7 @@ function emptySnapshot(): ServerSnapshot {
   return {
     driver: 'k8s',
     workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], gitAuthFailures: {},
-    queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [],
+    queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], routines: [],
     imageBuilds: [],
     planUsage: {},
     codexPlanUsage: {},
