@@ -3,7 +3,9 @@
  * into the yaac proxy: nat DNAT rules at each pod's host-side veth, plus
  * the co-located Envoy's listeners and clusters.
  *
- * It also bounds each pod's swap (swap.ts), on the same passes.
+ * It also bounds each pod's swap (swap.ts), on the same passes, and on its
+ * own timer kills the workspace thrashing a node out of memory
+ * (pressure.ts).
  *
  * netd does not decide what is allowed; NetworkPolicy (enforced by
  * Calico) does, and netd's rules only add a path to the proxy. A pod netd
@@ -39,6 +41,7 @@ import {
 } from 'yaac-netd/iptables'
 import { normalizeVethPrefix, parsePodVeths } from 'yaac-netd/routes'
 import { applySwapBounds } from 'yaac-netd/swap'
+import { createPressureGuard } from 'yaac-netd/pressure'
 import { DEFAULT_LISTENER_RANGE, type ListenerRange, type ListenerTrio, trioPorts } from 'yaac-netd/ports'
 import { createTrioAllocator, fileTrioStore, probeTrioFree } from 'yaac-netd/listeners'
 import { redirectChainName, renderNatRestore, renderRedirectRules } from 'yaac-netd/rules'
@@ -83,6 +86,8 @@ const DEBOUNCE_MS = 200
 /** Delay before retrying a failed pass. */
 const RETRY_DELAY_MS = 2_000
 const RESYNC_INTERVAL_MS = 30_000
+/** How often the pressure kill reads PSI, which averages over 10s itself. */
+const PRESSURE_POLL_MS = 2_000
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name]
@@ -107,7 +112,8 @@ export interface NetdConfig {
   sshSentinelPort: number
   transparentPorts: TransparentPorts
   listenerRange: ListenerRange
-  /** Where the host's cgroup2 tree is mounted, for the swap bounds. */
+  /** Where the host's cgroup2 tree is mounted, for the swap bounds and
+   *  the pressure kill. */
   cgroupRoot: string
 }
 
@@ -324,6 +330,24 @@ async function run(): Promise<void> {
   }
   setInterval(() => { resync = true; request() }, RESYNC_INTERVAL_MS)
 
+  const cgroupFile = (file: string): string => path.join(config.cgroupRoot, file)
+  const checkPressure = createPressureGuard({
+    pods: nodePods,
+    pressure: () => fs.readFile('/proc/pressure/memory', 'utf8').catch(() => null),
+    read: (file) => fs.readFile(cgroupFile(file), 'utf8').catch(() => null),
+    write: (file, value) => fs.writeFile(cgroupFile(file), value),
+    now: () => performance.now(),
+    log,
+  })
+  let checking = false
+  setInterval(() => {
+    if (checking) return
+    checking = true
+    checkPressure()
+      .catch((err: unknown) => { log(`[netd] pressure check failed: ${String(err)}`) })
+      .finally(() => { checking = false })
+  }, PRESSURE_POLL_MS)
+
   for (;;) {
     if (!dirty) await new Promise<void>((resolve) => { wake = resolve })
     await sleep(DEBOUNCE_MS)
@@ -354,8 +378,8 @@ async function run(): Promise<void> {
       const bounded = await applySwapBounds({
         pods: nodePods,
         meminfo: () => fs.readFile('/proc/meminfo', 'utf8'),
-        read: (file) => fs.readFile(path.join(config.cgroupRoot, file), 'utf8').catch(() => null),
-        write: (file, value) => fs.writeFile(path.join(config.cgroupRoot, file), value),
+        read: (file) => fs.readFile(cgroupFile(file), 'utf8').catch(() => null),
+        write: (file, value) => fs.writeFile(cgroupFile(file), value),
       })
       if (bounded.length > 0) log(`[netd] swap bounds ${bounded.join(' ')}`)
     } catch (err) {

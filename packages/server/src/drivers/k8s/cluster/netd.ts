@@ -142,8 +142,9 @@ interface NetdDaemonSetOptions {
  * - Only netd has a readiness probe; it goes ready only once Envoy is
  *   serving the current config.
  * - netd mounts the host's cgroup tree to write each pod's swap bound
- *   (k8s/netd/swap.ts). It is mounted outside /sys, where the runtime's
- *   AppArmor profile denies writes.
+ *   (k8s/netd/swap.ts) and to kill the workspace thrashing the node
+ *   (k8s/netd/pressure.ts). It is mounted outside /sys, where the
+ *   runtime's AppArmor profile denies writes.
  */
 function buildNetdDaemonSetManifest(opts: NetdDaemonSetOptions): Record<string, unknown> {
   const envoyDir = '/etc/yaac-envoy'

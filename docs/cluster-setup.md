@@ -754,8 +754,8 @@ out the count.
 Memory and disk are capped because they cannot be throttled, and one
 workspace must not take the node down. The memory limit leaves room for a
 workspace driving a headless browser; a node that runs out before its
-workspaces reach their limits is handled by eviction (see "Memory
-pressure"). The cpu limit is for gVisor: runsc
+workspaces reach their limits is handled by netd's pressure kill (see
+"Memory pressure"). The cpu limit is for gVisor: runsc
 sizes the sandbox's virtual cpu count from the cpu quota
 (`-cpu-num-from-quota`), and starts one systrap stub process per virtual
 cpu. With no limit, every sandbox sees all host cores, and one
@@ -786,25 +786,51 @@ all grow needs far more than its RAM. Four settings keep that safe.
   pod cgroup of every pod of its install on its node (k8s/netd/swap.ts),
   so the bounds add up to at most the node's swap and no workspace crowds
   the others out of it.
-- **Eviction at 200Mi.** When the node's available memory drops under
-  200Mi, the kubelet evicts one pod: pods over their request first, then
-  the lowest priority, then the furthest over its request. That is usually
-  the workspace that grew, and it shows `evicted`. Workspaces have yaac's
-  lowest priority, so a DaemonSet the cluster runs below it (priority 0 is
-  the default) is evicted, and recreated, in a workspace's place: give
-  such DaemonSets `system-node-critical`. The threshold is low because a
-  node that is swapping idle pages runs a few hundred MB from empty, and a
-  higher one would evict while swap is still absorbing the pressure.
-- **Fresh pod stats.** Eviction ranks pods by working set. With the 300s
-  housekeeping interval, cAdvisor's pod stats are up to five minutes old
-  and a workspace that just grew looks idle, so the
-  `PodAndContainerStatsFromCRI` gate has the kubelet read them from the
-  runtime instead.
+- **A kill on memory pressure.** A gVisor sandbox's memory is shmem, which
+  only swap can free, so the kubelet counts gigabytes as available that
+  the kernel cannot reclaim, and a node of busy sandboxes thrashes to a
+  halt with every workspace under its limit and `memory.available` above
+  any eviction threshold. So no node sets a memory eviction threshold.
+  netd (k8s/netd/pressure.ts) reads the host-wide PSI `full` average in
+  `/proc/pressure/memory`, and once the whole node spends a tenth of its
+  time stalled on memory for 20s, it kills the workspace of its install
+  furthest over its request by working set, the pod the kubelet's eviction
+  would rank first. It writes the pod cgroup's `cgroup.kill`, which takes
+  the whole sandbox at once, then waits 10s before the pressure may start
+  holding toward another kill, so kills come at least 30s apart, after
+  even a 100% average has fallen under the limit. containerd does not see
+  that as an OOM, so the workspace shows `crashed` with exit code 128
+  (gVisor's code for a killed sandbox), and netd's log names the kill.
+  Only workspaces are picked, never infrastructure or a builder. The
+  reading is host-wide because the kubelet, containerd and the rest of the
+  host stall with the pods, and one pod still making progress holds the
+  pods' own reading down. netd also requires the pods' cgroup to show at
+  least 1% `some` stall; a thrashing node's pods read 1-10% there while
+  the host reads 15-30%. That keeps pressure from outside Kubernetes (a
+  build on a kind host, another cluster) from costing workspaces once it
+  is under way, though in its first minute, while it swaps idle pods'
+  pages out and their cgroup stalls with it, it can still kill one or two.
+  Pressure from a pod netd may not kill (this install's infrastructure or
+  a builder, or another tenant's pod) does keep the pods' cgroup stalled,
+  so netd kills its workspaces one at a time, 30s apart, until the node
+  recovers or none is left; that cost is accepted so that a thrashing node
+  is always relieved. Each install's netd on a shared node watches the
+  same pressure, so each may kill one of its own workspaces. A node where
+  netd is not running (not yet scheduled, or crash-looping) or whose
+  kernel has PSI off (some distributions need `psi=1` on the kernel
+  command line, and netd logs that once) gets no kill at all, only the
+  backstop below.
+- **Fresh pod stats.** With the 300s housekeeping interval, cAdvisor's pod
+  stats are up to five minutes old and a workspace that just grew looks
+  idle, so the `PodAndContainerStatsFromCRI` gate has the kubelet read
+  them from the runtime instead, for `kubectl top` and yaac's usage view.
 
 The kernel's OOM killer remains the backstop. kubelet caps all pods
 together at the node's capacity less `system-reserved`, and if they fill
-that faster than eviction's ten-second loop, the kernel picks a process by
-its own score.
+that faster than netd's 20s window, the kernel picks a process by its own
+score. With swap on, it acts only once swap is full too, after the node
+has thrashed for as long as that takes, which on a node without a working
+netd can be hours.
 
 kind sets the kubelet's part in `k8s/kind-config.yaml`, which applies only
 when kind creates the node. Hetzner nodes get it with an encrypted swap file

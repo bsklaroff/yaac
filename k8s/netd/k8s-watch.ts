@@ -46,7 +46,7 @@ export interface NetdService {
 }
 
 interface RawObject {
-  metadata?: { name?: string; namespace?: string; uid?: string }
+  metadata?: { name?: string; namespace?: string; uid?: string; labels?: Record<string, string> }
   status?: { podIP?: string; phase?: string }
   spec?: { clusterIP?: string } & Parameters<typeof podMemoryRequestBytes>[0]
 }
@@ -65,15 +65,23 @@ export function mapPod(raw: unknown): NetdPod | null {
 }
 
 /**
- * Map one API Pod on netd's node to the swap bound's shape; null unless it
- * is running, since only a running pod is sure to have its cgroup.
+ * Map one API Pod on netd's node to the shape the swap bound and the
+ * pressure kill read; null unless it is running, since only a running pod
+ * is sure to have its cgroup. A workspace is what WORKSPACE_POD_SELECTOR
+ * matches.
  */
 export function mapNodePod(raw: unknown): NodePod | null {
   const { metadata, status, spec } = raw as RawObject
   const name = metadata?.name
   const uid = metadata?.uid
   if (!name || !uid || status?.phase !== 'Running') return null
-  return { name, uid, memoryRequestBytes: podMemoryRequestBytes(spec ?? {}) }
+  const labels = metadata?.labels ?? {}
+  return {
+    name,
+    uid,
+    memoryRequestBytes: podMemoryRequestBytes(spec ?? {}),
+    workspace: 'yaac.workspace-id' in labels && labels.app !== 'yaac-proxy',
+  }
 }
 
 /** Map one API Service object to netd's shape; null when unusable. */
@@ -108,7 +116,8 @@ export function watchPods(client: WatchClient, onChange: () => void): () => Netd
 
 /**
  * Watch every pod of this install on one node, builders and infrastructure
- * included, for their swap bounds (swap.ts).
+ * included, for their swap bounds (swap.ts) and the pressure kill
+ * (pressure.ts).
  */
 export function watchNodePods(client: WatchClient, nodeName: string, onChange: () => void): () => NodePod[] {
   const { core, namespace } = client
