@@ -172,7 +172,12 @@ snapshot omits it while its provisioning row stands in for it.
   its ancestry.
 - **Discard** deletes the entry and moves its children up to its parent (or
   its start time), so the rest of the chain runs one link sooner. With no
-  parent, they wait for room in their own groups.
+  parent, each child starts once its own group has room, at once if that
+  group has no limit. The children also take over what the entry was
+  waiting in: those of a released entry are released, since the stopped
+  parent they move to will not release them again, and those of a failed
+  entry, or taking over a start time already past, get an error so they
+  wait for the user.
 - **Run now** releases one entry regardless of its parent. Mid-chain, it
   leaves the chain once its launch succeeds, and its children follow it to
   the new workspace. It is refused while the entry's group is at its
@@ -209,7 +214,12 @@ snapshot omits it while its provisioning row stands in for it.
   queueing does.
 - **`yaac-mama run-queued`** is Run now for an agent, held to the same cap:
   an entry above the caller's posture is refused, since running it would
-  start the user's grant on the agent's say. Discard is user-only.
+  start the user's grant on the agent's say.
+- **`yaac-mama delete-queued`** is Discard for an agent, with no cap. A
+  discard moves the children of a live entry onto what the entry was
+  waiting on, which the agent could already set off by stopping a
+  workspace or raising a group's limit. The children of a failed entry,
+  or of one whose start time has passed, keep waiting for the user.
 - **Webapp.** One new-workspace pane (shown whenever no workspace is
   selected: Alt+N, the sidebar's +, a row's `…` menu, a queued row) with
   a **Start** field: `Now`, after a live workspace or queued entry stops,

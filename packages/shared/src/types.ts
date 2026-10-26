@@ -2053,8 +2053,9 @@ export const MAX_MODEL_LENGTH = 128
  * caps how many of a group's workspaces run at once, which an orchestrating
  * agent sets for the workers it queues there (docs/workspace-groups.md). Any
  * agent may raise or clear a limit, its own group's included, so a limit
- * schedules agents and does not contain them. Anything that deletes stays
- * the user's.
+ * schedules agents and does not contain them. `delete-queued` discards a
+ * queued workspace, which loses only a prompt that never ran; deleting a
+ * workspace stays the user's.
  * `fetch` reads another workspace's branches into the caller's checkout, and
  * `history` its conversations, never writing to theirs. `send` messages a
  * running one's agent, held to the caller's permission mode. `set-base`
@@ -2074,6 +2075,7 @@ export const MAMA_COMMANDS = [
   'queue',
   'edit-queued',
   'run-queued',
+  'delete-queued',
   'fetch',
   'history',
   'send',

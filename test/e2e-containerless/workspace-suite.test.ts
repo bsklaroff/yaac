@@ -2573,11 +2573,12 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         groupId: group?.groupId,
       })
       expect(group).toBeDefined()
-      await fetch(`${origin()}/api/workspace/queue/discard`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: grandchild }),
-      })
+      await expect(mamaAs(childWorkspace!, 'delete-queued')).rejects.toThrow(/usage: yaac-mama delete-queued/)
+      expect(await mamaAs(childWorkspace!, 'delete-queued', grandchild.slice(0, 8)))
+        .toBe(`Discarded queued workspace ${grandchild.slice(0, 8)}.`)
+      await vi.waitFor(() => {
+        expect(latest().queuedWorkspaces.some((q) => q.id === grandchild)).toBe(false)
+      }, { timeout: 10_000, interval: 250 })
     } finally {
       watch.ws.close()
       if (childWorkspace !== undefined) await runYaac(serverEnv, 'workspace', 'stop', childWorkspace)
