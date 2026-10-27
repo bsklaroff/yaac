@@ -177,7 +177,7 @@ import {
   BUILDER_MEMORY_LIMIT_BYTES,
   BUILDER_MEMORY_REQUEST_BYTES,
 } from '#drivers/k8s/images/builder-pod'
-import { BUILDER_LOCAL_TAG } from '#drivers/k8s/cluster/builder-image'
+import { BUILDER_MIRROR_TAG } from '#drivers/k8s/cluster/builder-image'
 import { builderEgress } from '#drivers/k8s/cluster/policy-manifests'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
@@ -330,7 +330,7 @@ beforeEach(() => {
   // Only the pinned podman-stable mirror is in the registry, so
   // `ensureBuilderImage` resolves without pulling or pushing.
   fakeRegistry.install()
-  fakeRegistry.tags.add(BUILDER_LOCAL_TAG)
+  fakeRegistry.mirror(BUILDER_MIRROR_TAG)
   mockEnsureMainRegistry.mockResolvedValue(undefined)
   execState.calls.length = 0
   execState.error = null
@@ -535,8 +535,10 @@ describe('ensureImage', () => {
     })
     expect(BUILDER_MEMORY_REQUEST_BYTES).toBeLessThan(BUILDER_MEMORY_LIMIT_BYTES)
     expect(pod.spec.containers[0].command).toEqual(['sleep', 'infinity'])
-    // The pinned podman-stable mirror, never the user-customizable image.
-    expect(pod.spec.containers[0].image).toBe(`${CLUSTER_HOST}/${BUILDER_LOCAL_TAG}`)
+    // The pinned podman-stable mirror by its recorded digest, never its
+    // rewritable tag or the user-customizable image.
+    expect(pod.spec.containers[0].image)
+      .toBe(`${CLUSTER_HOST}/podman-stable@${fakeRegistry.digestOf(BUILDER_MIRROR_TAG)}`)
     expect(pod.spec.containers[0].imagePullPolicy).toBe('IfNotPresent')
     expect(pod.spec.containers[0].securityContext.capabilities.add).toContain('SETFCAP')
     // Graphroot on a gVisor tmpfs emptyDir.

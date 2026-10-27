@@ -1,15 +1,17 @@
 import path from 'node:path'
 import { execFileAsync } from '#drivers/k8s/substrate'
-import { buildImage, ensureImageByTag, imageExists, pushImageToRegistry } from './host-images'
+import { buildImage, ensureImageByTag, imageExists, pushImageToRegistry, pushMirrorImage } from './host-images'
 import { reapOrphanedPodmanProcs } from './host-procs'
 import { gcHostImages } from './image-gc'
 import {
-  BUILDER_LOCAL_TAG,
+  BUILDER_MIRROR_TAG,
   BUILDER_UPSTREAM_IMAGE,
   ENVOY_MIRROR_TAG,
   ENVOY_UPSTREAM_IMAGE,
   NGINX_MIRROR_TAG,
   NGINX_UPSTREAM_IMAGE,
+  mirrorMatchesRecord,
+  recordMirrorDigest,
   REGISTRY_MIRROR_TAG,
   REGISTRY_UPSTREAM_IMAGE,
   registryRef,
@@ -80,11 +82,13 @@ export function assertMirrorArch(
 
 /**
  * Mirror one digest-pinned upstream into the local registry: pull, check
- * the architecture, retag, push. A wrong-arch image would otherwise only
- * show up as a pod crashlooping on `exec format error`.
+ * the architecture, retag, push, and record the digest podman pushed it as
+ * (`recordMirrorDigest`). Skipped only while the tag still names its
+ * recorded digest, so a rewritten tag is put back. A wrong-arch image would
+ * otherwise only show up as a pod crashlooping on `exec format error`.
  */
-async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<string> {
-  if (await registryTagState(mirrorTag) === 'present') return registryRef(mirrorTag)
+async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<void> {
+  if (await mirrorMatchesRecord(mirrorTag)) return
   if (!await imageExists(mirrorTag)) {
     await execFileAsync('podman', ['pull', upstream], { timeout: 600_000 })
     const { stdout: arch } = await execFileAsync('podman', [
@@ -93,7 +97,7 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<s
     assertMirrorArch(upstream, arch)
     await execFileAsync('podman', ['tag', upstream, mirrorTag])
   }
-  return pushImageToRegistry(mirrorTag)
+  await recordMirrorDigest(mirrorTag, await pushMirrorImage(mirrorTag))
 }
 
 /**
@@ -104,7 +108,7 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<s
 export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG)
   await mirrorPinnedImage(ENVOY_UPSTREAM_IMAGE, ENVOY_MIRROR_TAG)
-  await mirrorPinnedImage(BUILDER_UPSTREAM_IMAGE, BUILDER_LOCAL_TAG)
+  await mirrorPinnedImage(BUILDER_UPSTREAM_IMAGE, BUILDER_MIRROR_TAG)
   await mirrorPinnedImage(GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG)
   await mirrorPinnedImage(VERDACCIO_UPSTREAM_IMAGE, VERDACCIO_MIRROR_TAG)
   await mirrorPinnedImage(NGINX_UPSTREAM_IMAGE, NGINX_MIRROR_TAG)

@@ -127,7 +127,7 @@ function shellFunction(script: string, name: string): string {
 beforeEach(() => {
   vi.clearAllMocks()
   fakeRegistry.install()
-  fakeRegistry.tags.add(GVISOR_INSTALLER_MIRROR_TAG)
+  fakeRegistry.mirror(GVISOR_INSTALLER_MIRROR_TAG)
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   mockExec.mockImplementation((() => {
     callsBeforeRollout = fakeCluster.calls.length
@@ -199,9 +199,10 @@ describe('ensureGvisorRuntime', () => {
       type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1 },
     })
 
-    // Runs from the mirrored upstream image, with the node name for the
-    // label patch.
-    expect(pod.containers[0].image).toBe(registryRef(GVISOR_INSTALLER_MIRROR_TAG))
+    // Runs from the mirrored upstream image by the digest install recorded
+    // (it is full node root), with the node name for the label patch.
+    expect(pod.containers[0].image)
+      .toBe(registryRef(`curlimages/curl@${fakeRegistry.digestOf(GVISOR_INSTALLER_MIRROR_TAG)}`))
     expect(pod.containers[0].command[0]).toBe('sh')
     expect(pod.containers[0].command[2]).toContain('nsenter -t 1 -m -- systemctl restart containerd')
     // The same pass also tunes the node (docs/cluster-setup.md).
@@ -243,8 +244,9 @@ describe('ensureGvisorRuntime', () => {
       ['rollout', 'status', `daemonset/${GVISOR_INSTALLER_APP_NAME}`, '-n', 'test-ns', '--timeout=300s'],
       expect.anything(),
     )
+    // The ConfigMap is the mirror digest record the image is looked up in.
     expect(fakeCluster.calls.slice(0, callsBeforeRollout).map((c) => c.kind))
-      .toEqual(['ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'DaemonSet', 'Node'])
+      .toEqual(['ConfigMap', 'ServiceAccount', 'ClusterRole', 'ClusterRoleBinding', 'DaemonSet', 'Node'])
 
     // Restarting containerd kills port-forwards. The registry forward is
     // dropped after the rollout so the next lookup reconnects instead of
@@ -292,6 +294,7 @@ describe('ensureGvisorRuntime', () => {
 
   it('refuses, naming the command that mirrors it, when the registry lacks the tag', async () => {
     fakeRegistry.tags.clear()
+    fakeRegistry.collect()
     await expect(ensureGvisorRuntime()).rejects.toThrow(/missing.*yaac cluster install/s)
     expect(mockExec).not.toHaveBeenCalled()
     expect(applied()).toHaveLength(0)

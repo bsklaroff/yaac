@@ -71,7 +71,7 @@ Pod spec (`drivers/k8s/images/builder-pod.ts`):
 
 - Name `yaac-builder-<tag-hash8>-<rand>`, label `yaac.role: builder` plus
   install labels, in the yaac namespace. Image: the mirrored, digest-pinned
-  `quay.io/podman/stable`.
+  `quay.io/podman/stable`, by its recorded digest (below).
 - `runtimeClassName: gvisor` (chroot isolation needs no raw sockets),
   `NESTED_ENGINE_CAPS`, `automountServiceAccountToken: false`, seccomp
   `RuntimeDefault`, an 8Gi memory limit, and `activeDeadlineSeconds`
@@ -330,6 +330,28 @@ As a result, a builder cannot write the trusted chain
 the server image, or any other project's images and step cache. Nothing
 verifies the digest in a mirror's tag name; the gate is what keeps the
 bytes under it the ones install pushed.
+
+Two mirrors are not left to the gate alone: the builder image, which runs
+as root over node or shared data (builder pods, the image-store writer, the
+node-local sweep and root removals, the old-node-tree removal, a workspace
+Job's `node-dirs` init container), and the gVisor installer's curl, which
+is full node root. Install records the manifest digest podman reports for
+each mirror push in the `yaac-mirror-digests` ConfigMap beside the
+registry, and these pods pull `<repo>@<digest>` from that record, so
+containerd checks the bytes. That takes out of the trust path the parties
+with no API identity: a leaked admin push authfile, a bypass of the gate,
+or a compromised registry pod or its storage. It does not defend against
+anyone who can write the ConfigMap (a kubeconfig holder, or the server,
+whose ClusterRole covers ConfigMaps), since they can also mint `*` grants.
+Pods take images `IfNotPresent`, so by tag or by digest, this only
+matters on a node that has to pull. Envoy and the other mirrors, and the content-hash images
+(netd, proxy, server), are still pulled by tag.
+
+The mirror tags carry their upstream pin, so re-pinning re-mirrors, and
+install also re-mirrors any tag that no longer names its recorded digest.
+A record is written only if the tag still names the pushed digest right
+after the push, so a racing writer fails the install instead of being
+recorded.
 
 `yaac cluster check` starts an anonymous upload and fails if the registry
 accepts it, which catches a registry deployed without the gate. Re-running

@@ -55,7 +55,7 @@ export {
   syncProxyCredentials,
   vapAvailable,
 } from './proxy-apply'
-export { BUILDER_LOCAL_TAG, BUILDER_UPSTREAM_IMAGE, ensureBuilderImage } from './builder-image'
+export { BUILDER_MIRROR_TAG, BUILDER_UPSTREAM_IMAGE, ensureBuilderImage } from './builder-image'
 export { ensureProxyImage, resolveProxyImageTag } from './proxy-image'
 export {
   ENVOY_MIRROR_TAG,
@@ -89,8 +89,11 @@ export {
 } from './main-registry'
 export {
   invalidateRegistryEndpoint,
+  mirrorMatchesRecord,
+  mirrorRef,
   missingPrebuiltImage,
   prebuiltRef,
+  recordMirrorDigest,
   registryEndpoint,
   registryHost,
   registryReachable,

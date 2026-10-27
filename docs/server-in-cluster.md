@@ -568,6 +568,8 @@ kubelet creates each one root-owned before the init container runs. That
 container runs the digest-pinned builder image rather than the workspace's
 own, whose binaries the project controls: as root over the install's whole
 node directory, a planted `sh` could poison every project's node-local data.
+Like every pod that runs the builder image, it pulls it by the digest install
+recorded for the mirror, not by its tag (docs/trust-split-builds.md).
 
 **`yaac-checkouts`** is a second volume over the same `global/` directory,
 which workspace pods mount their checkout through. It exists for its mount

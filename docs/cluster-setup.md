@@ -66,8 +66,13 @@ HEAD per image and re-running install is cheap. The server image's hash is
 taken over the built bundle (`dist/`), so a rebuilt server is a new image
 and therefore a rollout.
 
+Install records the digest podman pushed each mirror as, in the
+`yaac-mirror-digests` ConfigMap beside the registry, and re-mirrors any
+mirror whose tag no longer names its recorded digest.
+
 The server builds none of these. It looks each one up in the registry by
-tag, and a missing tag is an error that names this command, not a build
+tag (the builder and gVisor installer images by their recorded digest),
+and a missing one is an error that names this command, not a build
 trigger. That is why the server needs no container engine
 (docs/trust-split-builds.md). The only images the server builds are the
 ones a project or user wrote, and only inside sandboxed builder pods.
