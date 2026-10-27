@@ -20,6 +20,7 @@ import {
 } from '#drivers/k8s/substrate'
 import { PRE_STOP_GRACE_SECONDS, buildPodJobManifest } from './pod-job'
 import {
+  ensureBuilderImage,
   ensureProjectRegistry,
   projectRegistryConfDropIn,
   proxyServiceClusterIp,
@@ -296,6 +297,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // Created on the node by the pod's own init container.
     nodeLocalDirs: nodeLocalDirsOf(mounts),
     nodeLocalRoot: nodeLocalNodePath(),
+    nodeDirsImage: await ensureBuilderImage(),
   })
 
   spec.onProgress?.(`Creating session job ${jobName}...`)

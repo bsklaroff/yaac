@@ -564,7 +564,10 @@ to that file, so every global file a pod mounts must exist before its Job
 is applied; kubelet would otherwise create it as a root-owned directory.
 The node-local directories a pod mounts are chowned to the pod's uid by its
 own init container, running as root, because hostPath ignores `fsGroup` and
-kubelet creates each one root-owned before the init container runs.
+kubelet creates each one root-owned before the init container runs. That
+container runs the digest-pinned builder image rather than the workspace's
+own, whose binaries the project controls: as root over the install's whole
+node directory, a planted `sh` could poison every project's node-local data.
 
 **`yaac-checkouts`** is a second volume over the same `global/` directory,
 which workspace pods mount their checkout through. It exists for its mount

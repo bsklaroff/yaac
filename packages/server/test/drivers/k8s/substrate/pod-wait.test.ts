@@ -200,6 +200,20 @@ describe('waitForJobPodReady', () => {
     }
   })
 
+  it('rejects when the init container cannot pull its image', async () => {
+    const initPulling = pod({
+      phase: 'Pending',
+      initContainerStatuses: [{ ready: false, state: { waiting: { reason: 'ImagePullBackOff' } } } as never],
+      containerStatuses: [{ ready: false, state: { waiting: { reason: 'PodInitializing' } } } as never],
+    })
+    const { deps } = fakeDeps(
+      () => Promise.resolve({ resourceVersion: '1', pods: [initPulling] }),
+      [],
+    )
+    await expect(waitForJobPodReady('job-a', 2_000, deps))
+      .rejects.toThrow('cannot pull its image (ImagePullBackOff)')
+  })
+
   it('gates on the FIRST container status (the session container)', async () => {
     const sidecarReady = pod({
       phase: 'Running',

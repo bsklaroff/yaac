@@ -19,8 +19,8 @@ type PodReadyVerdict =
  * Classify a workspace pod's status. The container has no readiness probe,
  * and its postStart hook (yaac-workspace-init) runs before it counts as
  * running, so ready means in-pod setup finished. Terminal phases and image
- * pull failures are fatal: tags are content hashes, so a failed pull will
- * not fix itself.
+ * pull failures, the init container's included, are fatal: tags are content
+ * hashes or pinned mirrors, so a failed pull will not fix itself.
  */
 function evaluatePodReady(pod: V1Pod): PodReadyVerdict {
   const phase = pod.status?.phase ?? 'Unknown'
@@ -35,11 +35,14 @@ function evaluatePodReady(pod: V1Pod): PodReadyVerdict {
       : ''
     return { kind: 'fatal', reason: `reached terminal phase ${phase}${detail}` }
   }
-  const waiting = cs?.state?.waiting
-  if (waiting?.reason === 'ErrImagePull' || waiting?.reason === 'ImagePullBackOff') {
-    const detail = `${waiting.reason}${waiting.message ? `: ${waiting.message}` : ''}`
+  const pullFailure = [...pod.status?.initContainerStatuses ?? [], ...cs ? [cs] : []]
+    .map((s) => s.state?.waiting)
+    .find((w) => w?.reason === 'ErrImagePull' || w?.reason === 'ImagePullBackOff')
+  if (pullFailure) {
+    const detail = `${pullFailure.reason}${pullFailure.message ? `: ${pullFailure.message}` : ''}`
     return { kind: 'fatal', reason: `cannot pull its image (${detail})` }
   }
+  const waiting = cs?.state?.waiting
   const detail = waiting?.reason
     ? `${waiting.reason}${waiting.message ? `: ${waiting.message}` : ''}`
     : `phase ${phase}`

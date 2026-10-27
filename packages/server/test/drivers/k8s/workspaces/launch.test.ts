@@ -28,6 +28,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   proxyServiceClusterIp: mockProxyClusterIp,
   ensureProjectRegistry: mockEnsureProjectRegistry,
   servingNpmCacheUrl: mockNpmCacheUrl,
+  ensureBuilderImage: () => Promise.resolve('registry.local/podman-stable:v5.5'),
 }))
 
 // Mock the node image store, which runs pods of its own.
@@ -54,6 +55,7 @@ import path from 'node:path'
 import { setDataDir } from '@yaac/shared/paths'
 import {
   cachedPackagesDir,
+  opencodeDataDir,
   claudeDir,
   imageStoreDir,
   projectDir,
@@ -113,7 +115,7 @@ interface JobManifest {
       metadata: { labels: Record<string, string> }
       spec: {
         terminationGracePeriodSeconds?: number
-        initContainers?: Array<{ name: string; command: string[]; volumeMounts: Array<{ mountPath: string }> }>
+        initContainers?: Array<{ name: string; image: string; command: string[]; volumeMounts: Array<{ mountPath: string }> }>
         containers: Array<{
           image: string
           env: Array<{ name: string; value: string }>
@@ -399,10 +401,7 @@ describe('launchWorkspace', () => {
           mountPath: '/home/yaac/.claude/settings.json',
         },
         { source: { kind: 'hostPath', path: cachedPackagesDir(PROJECT_ID) }, mountPath: '/home/yaac/.cached-packages' },
-        {
-          source: { kind: 'hostPath', path: path.join(cachedPackagesDir(PROJECT_ID), 'modules', 's1', 'node_modules') },
-          mountPath: '/workspace/node_modules',
-        },
+        { source: { kind: 'hostPath', path: opencodeDataDir(PROJECT_ID, 's1') }, mountPath: '/home/yaac/.local/share/opencode' },
         { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
       ],
       preStopExec: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'],
@@ -427,9 +426,11 @@ describe('launchWorkspace', () => {
     // The init container creates exactly the node-local dirs.
     const [init] = pod.initContainers ?? []
     expect(init?.name).toBe('node-dirs')
+    // The pinned builder image, never the workspace's own.
+    expect(init?.image).toBe('registry.local/podman-stable:v5.5')
     expect(init?.command.slice(-2)).toEqual([
       `/node/projects/${PROJECT_ID}/.cached-packages`,
-      `/node/projects/${PROJECT_ID}/.cached-packages/modules/s1/node_modules`,
+      `/node/projects/${PROJECT_ID}/opencode-data/s1`,
     ])
     expect(volume('node-root')?.hostPath).toEqual({ path: NODE_ROOT, type: 'DirectoryOrCreate' })
     // A grace period long enough for the preStop hook.
