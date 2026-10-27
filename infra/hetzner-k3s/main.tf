@@ -230,7 +230,7 @@ resource "terraform_data" "control" {
   }
 
   provisioner "remote-exec" {
-    inline = ["bash /root/yaac-control.sh", "rm -f /root/yaac-control.sh"]
+    inline = ["bash /root/yaac-control.sh; s=$?; rm -f /root/yaac-control.sh; exit $s"]
   }
 
   depends_on = [hcloud_volume_attachment.nfs]
