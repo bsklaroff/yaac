@@ -160,17 +160,20 @@ unpacking:
   capabilities a workspace otherwise sees, and a cache hit on such a
   layer builds a silently wrong image. The gofer also refuses real device
   nodes, though not the 0:0 whiteouts.
-- **Root with a minimal capability set.** Root is needed to give each file
-  the image's owner. All capabilities are dropped except those a faithful
-  unpack uses: CHOWN, DAC_OVERRIDE, FOWNER and FSETID for ownership and
-  modes, MKNOD for whiteouts and device nodes, SETFCAP for file
-  capabilities, and SYS_CHROOT for containers/storage's chrooted untar
-  (which uses a plain `chroot` when it lacks CAP_SYS_ADMIN). The pod also
-  runs with the runtime's default seccomp profile and no privilege
-  escalation.
-- **No CAP_SYS_ADMIN.** A pull does not need it (it untars into the layer
-  directory and mounts nothing). Withholding it is what makes the
-  opaque-directory rewrite below possible.
+- **No CAP_SYS_ADMIN.** A pull does not need it, since it untars into the
+  layer directory. Withholding it is what makes the
+  opaque-directory rewrite below possible: as root without CAP_SYS_ADMIN,
+  podman takes its rootless path and pulls from inside a user namespace,
+  where containers/storage records opaque directories in the `user.`
+  xattr namespace.
+- **Otherwise the default capabilities and no seccomp profile.** That
+  user namespace is why the writer cannot be trimmed further. The
+  runtime's default seccomp profile (`RuntimeDefault`) refuses the `clone(CLONE_NEWUSER)` that creates
+  it. Mapping its ids runs `newuidmap`, which needs CAP_SETUID/SETGID and
+  privilege escalation. Without the namespace, containers/storage's overlay
+  driver cannot run its startup mount check, so no pull works at all. The
+  writer therefore fails a refresh in which the registry lists tags but no
+  pull succeeds, rather than publish an empty store.
 - **The pod network.** The writer's own NetworkPolicy lets it reach its
   project's registry and nothing else, and the registry's ingress admits
   it by label. On the host network it would count as the node, which every

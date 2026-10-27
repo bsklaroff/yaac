@@ -4,7 +4,7 @@
  * mounted into every nested workspace at `/var/lib/shared-images`. It is
  * only a cache of the registry. docs/nested-containers.md "The node-local
  * image store" explains the writer pod's shape (runc rather than gVisor,
- * pod network, a minimal capability set) and why opaque directories are
+ * the pod network, no CAP_SYS_ADMIN) and why opaque directories are
  * rewritten.
  *
  * Generations are write-once: `<store>/gen-<stamp>/`, completed by writing
@@ -52,15 +52,6 @@ export const STORE_POD_PATH = '/store'
 /** Written last in a generation directory to mark it complete. A crashed
  *  build leaves none, so it is never mounted and the next run drops it. */
 export const DONE_MARKER = '.yaac-store-done'
-
-/**
- * The capabilities a root pull needs to lay out a hostile image faithfully,
- * and nothing more: ownership and modes (CHOWN, DAC_OVERRIDE, FOWNER,
- * FSETID), whiteouts and device nodes (MKNOD), file capabilities (SETFCAP),
- * and containers/storage's chrooted untar (SYS_CHROOT). Never SYS_ADMIN:
- * see the opaque-directory rewrite in docs/nested-containers.md.
- */
-const STORE_WRITER_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'MKNOD', 'SETFCAP', 'SYS_CHROOT']
 
 /** How often one project's store is refreshed. A salvage that pushed
  *  something forces an earlier refresh. */
@@ -135,7 +126,8 @@ export async function nodeImageStoreMount(projectId: string): Promise<PodMount |
  *     cost is only what changed (pulls never edit a layer in place).
  *     podman's own database is dropped: it records its graphroot path.
  *  2. Pull the working set chosen by `rankedRegistryTagsScript`, restoring
- *     bare names for named tags.
+ *     bare names for named tags. If tags exist but no pull succeeds, the
+ *     engine is broken, so fail rather than publish an empty store.
  *  3. Rewrite opaque directories into explicit whiteouts.
  *  4. Assert every layer has a recorded diff size.
  *  5. Write the DONE marker, then drop generations not kept.
@@ -169,18 +161,20 @@ function buildStoreWriterScript(registryEndpoint: string, genName: string): stri
     'export CONTAINERS_STORAGE_CONF=/tmp/yaac-store.conf',
     `REG=${registryEndpoint}`,
     rankedRegistryTagsScript(),
-    'n=0',
+    'n=0; tried=0',
     'for repo in $repos; do',
     '  for tag in $(ranked_tags "$repo"); do',
     '    ref="$REG/$repo:$tag"',
-    '    podman pull -q --tls-verify=false "$ref" >/dev/null 2>&1 || continue',
+    '    tried=$((tried+1))',
+    '    podman pull -q --tls-verify=false "$ref" >/dev/null 2>/tmp/yaac-pull.err || continue',
     // Keep only the bare name, which is what workspaces refer to.
     `    case "$tag" in ${CACHE_TAG_PREFIX}*) ;; *) podman tag "$ref" "$repo:$tag" >/dev/null 2>&1 || true;; esac`,
     '    podman untag "$ref" "$ref" >/dev/null 2>&1 || true',
     '    n=$((n+1))',
     '  done',
     'done',
-    'echo "store-pulled $n"',
+    'echo "store-pulled $n of $tried"',
+    'if [ "$tried" -gt 0 ] && [ "$n" -eq 0 ]; then tail -n 3 /tmp/yaac-pull.err >&2; exit 1; fi',
     // An empty store must still have the layout the post-passes and the
     // workspace engine expect.
     'mkdir -p "$GEN/overlay" "$GEN/overlay-images" "$GEN/overlay-layers"',
@@ -419,9 +413,9 @@ export async function ensureNodeImageStore(
 }
 
 /**
- * Run one writer pod per node: root on runc with {@link STORE_WRITER_CAPS},
- * on the pod network, with the project's store directory mounted.
- * docs/nested-containers.md explains why it is not sandboxed by gVisor.
+ * Run one writer pod per node: root on runc, on the pod network, with the
+ * project's store directory mounted. docs/nested-containers.md explains
+ * why it is not sandboxed by gVisor and keeps the default capabilities.
  * False when nothing was published (no project registry, or every node
  * failed).
  */
@@ -449,12 +443,7 @@ async function writeOneStore(projectId: string): Promise<boolean> {
         '--', STORE_POD_PATH, ...keepNames,
       ],
       container: {
-        securityContext: {
-          runAsUser: 0,
-          allowPrivilegeEscalation: false,
-          seccompProfile: { type: 'RuntimeDefault' },
-          capabilities: { drop: ['ALL'], add: STORE_WRITER_CAPS },
-        },
+        securityContext: { runAsUser: 0 },
         volumeMounts: [{ name: 'store', mountPath: STORE_POD_PATH }],
       },
       spec: {

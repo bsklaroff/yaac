@@ -1,8 +1,8 @@
 /**
  * The node-local image store, through its four barrel functions.
  *
- * The pod manifest is asserted directly (node-pinned, pod network, runc
- * with a minimal capability set, store dir mounted rw). The build script is run for real
+ * The pod manifest is asserted directly (node-pinned, pod network, root on
+ * runc without CAP_SYS_ADMIN, store dir mounted rw). The build script is run for real
  * against a stub registry (files its `curl` fetches) and a stub `podman` that
  * records pulls. That checks generation ranking, publish order (nothing is
  * mountable before the DONE marker) and generation GC.
@@ -179,7 +179,7 @@ async function runStoreWriterScript(
   script: string,
   storeRoot: string,
   keep: string[],
-  opts: { layers?: unknown[]; overlay?: boolean; breakLowerChain?: boolean } = {},
+  opts: { layers?: unknown[]; overlay?: boolean; breakLowerChain?: boolean; failPulls?: boolean } = {},
 ): Promise<ScriptRun> {
   const dir = await fs.mkdtemp(path.join(tmpDataDir, 'script-'))
   const fx = path.join(dir, 'fx')
@@ -245,6 +245,7 @@ async function runStoreWriterScript(
 
   await stub('podman', [
     `g=$(sed -n 's/^graphroot = "\\(.*\\)"$/\\1/p' "\${CONTAINERS_STORAGE_CONF:-/dev/null}")`,
+    ...(opts.failPulls ? ['[ "$1" = pull ] && { echo "Error: cannot re-exec process" >&2; exit 125; }'] : []),
     'case "$1" in',
     `  pull) shift; for a in "$@"; do case "$a" in -*) ;; *) echo "$a" >> "${pullLog}";; esac; done`,
     '    mkdir -p "$g/overlay/l" "$g/overlay-layers"',
@@ -295,7 +296,7 @@ async function runStoreWriterScript(
 }
 
 describe('ensureNodeImageStore', () => {
-  it('runs a node-pinned runc pod off the host network, holding only the caps a pull needs', async () => {
+  it('runs a node-pinned runc pod off the host network, without CAP_SYS_ADMIN', async () => {
     stageLiveCluster()
     await expect(ensureNodeImageStore(PROJECT)).resolves.toBe(true)
 
@@ -313,19 +314,13 @@ describe('ensureNodeImageStore', () => {
     // skips the scheduler but not taint eviction.
     expect(pod.spec.runtimeClassName).toBeUndefined()
     expect(pod.spec.tolerations).toEqual([{ operator: 'Exists' }])
-    // Root, for image ownership, but with only the unpacking caps. Never
-    // SYS_ADMIN: without it containers/storage records opaque dirs in
-    // `user.` xattrs, which the rewrite pass reads.
+    // Root with the default capabilities and seccomp profile. Without
+    // SYS_ADMIN podman pulls from inside a user namespace, so
+    // containers/storage records opaque dirs in `user.` xattrs, which the
+    // rewrite pass reads; creating that namespace needs the defaults.
     const ctr = pod.spec.containers[0]
-    expect(ctr.securityContext).toEqual({
-      runAsUser: 0,
-      allowPrivilegeEscalation: false,
-      seccompProfile: { type: 'RuntimeDefault' },
-      capabilities: {
-        drop: ['ALL'],
-        add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'MKNOD', 'SETFCAP', 'SYS_CHROOT'],
-      },
-    })
+    expect(ctr.securityContext).toEqual({ runAsUser: 0 })
+    expect(JSON.stringify(pod)).not.toContain('SYS_ADMIN')
     expect(JSON.stringify(pod)).not.toContain('privileged')
     // The store dir, rw, using the node's path under this install's
     // node-local tree, not the server's.
@@ -406,7 +401,7 @@ describe('ensureNodeImageStore', () => {
     expect(published).toBe(true)
   })
 
-  it('publishes nothing when the lower chain it must read is broken', async () => {
+  it('publishes nothing when the lower chain it must read is broken, or no pull succeeds', async () => {
     stageLiveCluster()
     await ensureNodeImageStore(PROJECT)
     const storeRoot = await fs.mkdtemp(path.join(tmpDataDir, 'store-'))
@@ -419,6 +414,16 @@ describe('ensureNodeImageStore', () => {
     })).rejects.toThrow(/cannot resolve lower/)
     for (const g of await fs.readdir(storeRoot)) {
       await expect(fs.access(path.join(storeRoot, g, DONE_MARKER))).rejects.toThrow()
+    }
+
+    // The registry lists tags but the engine cannot pull any of them. An
+    // empty store would look healthy and every workspace would run cold,
+    // so the build fails, showing the engine's error.
+    const storeRoot2 = await fs.mkdtemp(path.join(tmpDataDir, 'store2-'))
+    await expect(runStoreWriterScript(podCommand().script, storeRoot2, [], { failPulls: true }))
+      .rejects.toThrow(/cannot re-exec process/)
+    for (const g of await fs.readdir(storeRoot2)) {
+      await expect(fs.access(path.join(storeRoot2, g, DONE_MARKER))).rejects.toThrow()
     }
   })
 
