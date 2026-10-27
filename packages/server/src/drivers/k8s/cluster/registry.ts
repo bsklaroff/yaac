@@ -1,5 +1,12 @@
 import { env, testEnv } from '@yaac/shared/env'
-import { invalidatePortForward, resolvePortForward } from '#drivers/k8s/substrate'
+import {
+  apiStatus,
+  createObject,
+  invalidatePortForward,
+  patchObject,
+  readObject,
+  resolvePortForward,
+} from '#drivers/k8s/substrate'
 
 /**
  * Client for the main OCI registry (the workload is main-registry.ts). It
@@ -85,24 +92,21 @@ export async function registryReachable(): Promise<boolean> {
 }
 
 /**
- * Whether the registry holds `repo:tag`: `present`, `absent` (a 404), or
- * `unknown` (unreachable, timeout, other status). Tags are content hashes,
- * so `present` means the bytes are there. Callers acting on absence must
- * not treat `unknown` as absent.
+ * HEAD the manifest `ref` names, `repo:tag` or `repo@digest`. Null when the
+ * registry cannot be asked: a ref with neither, or no answer.
  */
-export async function registryTagState(tag: string): Promise<'present' | 'absent' | 'unknown'> {
-  const idx = tag.lastIndexOf(':')
-  if (idx < 0) return 'unknown'
-  const repo = tag.slice(0, idx)
-  const ref = tag.slice(idx + 1)
+async function headManifest(ref: string): Promise<Response | null> {
+  const at = ref.indexOf('@')
+  const idx = at >= 0 ? at : ref.lastIndexOf(':')
+  if (idx < 0) return null
   let endpoint: string
   try {
     endpoint = await registryEndpoint()
   } catch {
-    return 'unknown'
+    return null
   }
   try {
-    const res = await fetch(`http://${endpoint}/v2/${repo}/manifests/${ref}`, {
+    return await fetch(`http://${endpoint}/v2/${ref.slice(0, idx)}/manifests/${ref.slice(idx + 1)}`, {
       method: 'HEAD',
       headers: {
         Accept: 'application/vnd.oci.image.manifest.v1+json'
@@ -111,12 +115,32 @@ export async function registryTagState(tag: string): Promise<'present' | 'absent
       },
       signal: AbortSignal.timeout(5000),
     })
-    if (res.ok) return 'present'
-    return res.status === 404 ? 'absent' : 'unknown'
   } catch {
     invalidateRegistryEndpoint()
-    return 'unknown'
+    return null
   }
+}
+
+/**
+ * Whether the registry holds `repo:tag` (or `repo@digest`): `present`,
+ * `absent` (a 404), or `unknown` (unreachable, timeout, other status). Tags
+ * are content hashes, so `present` means the bytes are there. Callers
+ * acting on absence must not treat `unknown` as absent.
+ */
+export async function registryTagState(tag: string): Promise<'present' | 'absent' | 'unknown'> {
+  const res = await headManifest(tag)
+  if (res?.ok) return 'present'
+  return res?.status === 404 ? 'absent' : 'unknown'
+}
+
+/** A manifest digest as an image ref may carry it after `@`. */
+const DIGEST = /^sha256:[0-9a-f]{64}$/
+
+/** The manifest digest `repo:tag` names now, or null if it cannot be read. */
+async function registryDigest(tag: string): Promise<string | null> {
+  const res = await headManifest(tag)
+  const digest = res?.ok ? res.headers.get('docker-content-digest') : null
+  return digest && DIGEST.test(digest) ? digest : null
 }
 
 /**
@@ -140,4 +164,71 @@ export function missingPrebuiltImage(what: string, tag: string): Error {
 export async function prebuiltRef(what: string, tag: string): Promise<string> {
   if (await registryTagState(tag) === 'present') return registryRef(tag)
   throw missingPrebuiltImage(what, tag)
+}
+
+/**
+ * The ConfigMap, beside the registry, where install records the manifest
+ * digest podman pushed each pinned upstream mirror as, keyed by mirror tag.
+ * The builder image's pods and the gVisor installer take their mirror by
+ * that digest (`mirrorRef`) rather than by its tag, so the registry cannot
+ * swap the bytes under them; the next install re-mirrors a tag that no
+ * longer names its record. e2e runs share it with the real install, as they
+ * share the registry.
+ */
+const MIRROR_DIGESTS = {
+  apiVersion: 'v1',
+  kind: 'ConfigMap',
+  name: 'yaac-mirror-digests',
+  namespace: REGISTRY_NAMESPACE,
+}
+
+/** A ConfigMap key admits only `[-._a-zA-Z0-9]`. */
+function mirrorDigestKey(tag: string): string {
+  return tag.replace(/[/:]/g, '_')
+}
+
+/** The digest install recorded for mirror `tag`, if a well-formed one. */
+async function recordedMirrorDigest(tag: string): Promise<string | undefined> {
+  const record = await readObject<{ data?: Record<string, string> }>(MIRROR_DIGESTS)
+  const digest = record?.data?.[mirrorDigestKey(tag)]
+  return digest && DIGEST.test(digest) ? digest : undefined
+}
+
+/** Whether mirror `tag` still names the digest install recorded for it. */
+export async function mirrorMatchesRecord(tag: string): Promise<boolean> {
+  const recorded = await recordedMirrorDigest(tag)
+  return recorded !== undefined && await registryDigest(tag) === recorded
+}
+
+/**
+ * Record `digest`, the one podman just pushed mirror `tag` as. Refuses when
+ * the tag names anything else by now, since another writer raced the push.
+ * A merge patch, so the records another checkout wrote (an e2e rig on a
+ * newer pin) survive.
+ */
+export async function recordMirrorDigest(tag: string, digest: string): Promise<void> {
+  if (!DIGEST.test(digest)) throw new Error(`podman reported a malformed digest for ${tag}: ${JSON.stringify(digest)}`)
+  const named = await registryDigest(tag)
+  if (named !== digest) {
+    throw new Error(
+      `${tag} names ${named ?? 'nothing readable'} right after this install pushed it as ${digest}: `
+      + 'another writer pushed it meanwhile. Re-run `yaac cluster install`.',
+    )
+  }
+  const data = { [mirrorDigestKey(tag)]: digest }
+  const { name, namespace, ...type } = MIRROR_DIGESTS
+  try {
+    await createObject({ ...type, metadata: { name, namespace }, data })
+  } catch (err) {
+    if (apiStatus(err) !== 409) throw err
+    await patchObject(MIRROR_DIGESTS, { data })
+  }
+}
+
+/** The in-cluster `repo@digest` ref of a pinned mirror, as install
+ *  recorded it, or `missingPrebuiltImage`. */
+export async function mirrorRef(what: string, tag: string): Promise<string> {
+  const digest = await recordedMirrorDigest(tag)
+  if (!digest) throw missingPrebuiltImage(what, tag)
+  return prebuiltRef(what, `${tag.slice(0, tag.lastIndexOf(':'))}@${digest}`)
 }

@@ -54,10 +54,14 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
+import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import {
   invalidateRegistryEndpoint,
+  mirrorMatchesRecord,
+  mirrorRef,
   missingPrebuiltImage,
   prebuiltRef,
+  recordMirrorDigest,
   registryEndpoint,
   registryHost,
   registryReachable,
@@ -96,6 +100,19 @@ afterEach(() => {
 
 function fetchResponse(init: { ok: boolean; status?: number }): Response {
   return { ok: init.ok, status: init.status ?? (init.ok ? 200 : 500) } as Response
+}
+
+const DIGEST_A = `sha256:${'a'.repeat(64)}`
+const DIGEST_B = `sha256:${'b'.repeat(64)}`
+
+/** A manifest HEAD hit naming `digest`. */
+function manifestAt(digest: string): Response {
+  return new Response(null, { status: 200, headers: { 'docker-content-digest': digest } })
+}
+
+/** The mirror digests install has recorded, by ConfigMap key. */
+function mirrorRecord(): Record<string, string> | undefined {
+  return fakeCluster.get<{ data?: Record<string, string> }>('ConfigMap', 'yaac-mirror-digests', 'yaac')?.data
 }
 
 describe('registryHost', () => {
@@ -192,6 +209,12 @@ describe('registryTagState', () => {
     await expect(registryTagState('yaac-tools:abc')).resolves.toBe('unknown')
   })
 
+  it('asks by digest for a `repo@digest` ref', async () => {
+    fetchMock.mockResolvedValueOnce(fetchResponse({ ok: true }))
+    await expect(registryTagState(`podman-stable@${DIGEST_A}`)).resolves.toBe('present')
+    expect(fetchMock.mock.calls[0][0]).toBe(`http://${ENDPOINT}/v2/podman-stable/manifests/${DIGEST_A}`)
+  })
+
   it('reports unknown for a ref without a tag, without asking', async () => {
     await expect(registryTagState('no-tag-here')).resolves.toBe('unknown')
     expect(fetchMock).not.toHaveBeenCalled()
@@ -226,5 +249,71 @@ describe('prebuiltRef', () => {
     await expect(prebuiltRef('netd', 'yaac-netd:abc123')).rejects.toThrow(/netd image yaac-netd:abc123 is missing/)
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
     await expect(prebuiltRef('netd', 'yaac-netd:abc123')).rejects.toThrow(/netd image yaac-netd:abc123 is missing/)
+  })
+})
+
+describe('recordMirrorDigest', () => {
+  const TAG = 'podman-stable:v5.5-25d49cf99084'
+
+  it('records the pushed digest, keeping what other mirrors recorded', async () => {
+    fetchMock.mockResolvedValueOnce(manifestAt(DIGEST_A))
+    await recordMirrorDigest(TAG, DIGEST_A)
+    fetchMock.mockResolvedValueOnce(manifestAt(DIGEST_B))
+    await recordMirrorDigest('envoyproxy/envoy:v1.34.0-45d37d848802', DIGEST_B)
+
+    expect(mirrorRecord()).toEqual({
+      'podman-stable_v5.5-25d49cf99084': DIGEST_A,
+      'envoyproxy_envoy_v1.34.0-45d37d848802': DIGEST_B,
+    })
+  })
+
+  it('lets two first records race without either failing', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve(manifestAt(DIGEST_A)))
+    await Promise.all([recordMirrorDigest(TAG, DIGEST_A), recordMirrorDigest(TAG, DIGEST_A)])
+    expect(mirrorRecord()).toEqual({ 'podman-stable_v5.5-25d49cf99084': DIGEST_A })
+  })
+
+  it('refuses when the tag names other bytes after the push, or the digest is malformed', async () => {
+    // Another writer, or the registry, moved the tag: never record that.
+    fetchMock.mockResolvedValueOnce(manifestAt(DIGEST_B))
+    await expect(recordMirrorDigest(TAG, DIGEST_A)).rejects.toThrow(/another writer/)
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 200, headers: { 'docker-content-digest': 'x/../y' } }))
+    await expect(recordMirrorDigest(TAG, DIGEST_A)).rejects.toThrow(/names nothing readable/)
+    await expect(recordMirrorDigest(TAG, 'v5.5')).rejects.toThrow(/malformed digest/)
+    expect(mirrorRecord()).toBeUndefined()
+  })
+})
+
+describe('mirrorMatchesRecord', () => {
+  it('holds only while the tag names the digest install recorded', async () => {
+    const tag = 'podman-stable:v5.5-25d49cf99084'
+    // Nothing recorded: the tag is not trusted, whatever it names.
+    fetchMock.mockResolvedValue(manifestAt(DIGEST_A))
+    await expect(mirrorMatchesRecord(tag)).resolves.toBe(false)
+
+    await recordMirrorDigest(tag, DIGEST_A)
+    await expect(mirrorMatchesRecord(tag)).resolves.toBe(true)
+
+    // Rewritten, or unreadable.
+    fetchMock.mockResolvedValue(manifestAt(DIGEST_B))
+    await expect(mirrorMatchesRecord(tag)).resolves.toBe(false)
+    fetchMock.mockRejectedValue(new Error('ECONNREFUSED'))
+    await expect(mirrorMatchesRecord(tag)).resolves.toBe(false)
+  })
+})
+
+describe('mirrorRef', () => {
+  it('answers the recorded digest while the registry serves it, else refuses', async () => {
+    fetchMock.mockResolvedValue(manifestAt(DIGEST_A))
+    await expect(mirrorRef('gVisor installer', 'curlimages/curl:8.18.0-d94d07ba9e7d'))
+      .rejects.toThrow(/gVisor installer image curlimages\/curl:8.18.0-d94d07ba9e7d is missing/)
+
+    await recordMirrorDigest('curlimages/curl:8.18.0-d94d07ba9e7d', DIGEST_A)
+    await expect(mirrorRef('gVisor installer', 'curlimages/curl:8.18.0-d94d07ba9e7d'))
+      .resolves.toBe(registryRef(`curlimages/curl@${DIGEST_A}`))
+    expect(fetchMock.mock.calls.at(-1)![0]).toBe(`http://${ENDPOINT}/v2/curlimages/curl/manifests/${DIGEST_A}`)
+
+    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
+    await expect(mirrorRef('gVisor installer', 'curlimages/curl:8.18.0-d94d07ba9e7d')).rejects.toThrow(/is missing/)
   })
 })

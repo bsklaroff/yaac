@@ -12,6 +12,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { fakeRegistry } from '#test/support/fake-registry'
+import { BUILDER_MIRROR_TAG } from '#drivers/k8s/cluster/builder-image'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import fs from 'node:fs/promises'
@@ -58,6 +59,7 @@ beforeEach(async () => {
   // Every mirrored image the pods run is in the main registry.
   fakeRegistry.install()
   fakeRegistry.holdsAll = true
+  fakeRegistry.mirror(BUILDER_MIRROR_TAG)
   tmpDataDir = await createTempDataDir()
 })
 

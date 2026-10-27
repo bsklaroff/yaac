@@ -101,20 +101,38 @@ export async function pushImageToRegistry(
 ): Promise<string> {
   const ref = registryRef(localTag)
   if (await registryTagState(localTag) === 'present') return ref
+  await podmanPush(localTag, opts.compressionFormat ? ['--compression-format', opts.compressionFormat] : [])
+  return ref
+}
 
+/**
+ * Push a pinned upstream mirror, over its tag if present, and return the
+ * manifest digest podman computed for what it uploaded. The digest comes
+ * from podman, never from the registry, so neither the registry nor a
+ * racing writer can choose it.
+ */
+export async function pushMirrorImage(localTag: string): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-push-digest-'))
+  try {
+    const digestFile = path.join(dir, 'digest')
+    await podmanPush(localTag, ['--digestfile', digestFile])
+    return (await fs.readFile(digestFile, 'utf8')).trim()
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+}
+
+async function podmanPush(localTag: string, extraArgs: string[]): Promise<void> {
   const engineEndpoint = await podmanRegistryEndpoint()
   const target = `${engineEndpoint}/${localTag}`
-  const compressionArgs = opts.compressionFormat
-    ? ['--compression-format', opts.compressionFormat]
-    : []
   const authDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-push-auth-'))
   const authFile = path.join(authDir, 'auth.json')
   try {
     await fs.writeFile(authFile, await registryAuthFile(engineEndpoint, '*', 3600), { mode: 0o600 })
-    serverLog(`[registry] pushing ${localTag} -> ${ref}`)
+    serverLog(`[registry] pushing ${localTag} -> ${registryRef(localTag)}`)
     // Tracked like builds, since an orphaned push holds the store lock.
     await runTrackedPodman([
-      'push', '--tls-verify=false', '--authfile', authFile, ...compressionArgs, localTag, target,
+      'push', '--tls-verify=false', '--authfile', authFile, ...extraArgs, localTag, target,
     ], {
       tag: localTag,
       logPrefix: `[push ${localTag}] `,
@@ -123,5 +141,4 @@ export async function pushImageToRegistry(
   } finally {
     await fs.rm(authDir, { recursive: true, force: true })
   }
-  return ref
 }

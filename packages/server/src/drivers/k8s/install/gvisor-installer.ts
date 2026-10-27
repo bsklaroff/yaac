@@ -5,7 +5,7 @@ import {
   listObjects,
   waitForRollout,
 } from '#drivers/k8s/substrate'
-import { invalidateRegistryEndpoint, prebuiltRef } from '#drivers/k8s/cluster'
+import { invalidateRegistryEndpoint, mirrorRef } from '#drivers/k8s/cluster'
 import {
   GVISOR_INSTALLER_READY_FILE,
   buildRuntimeClassManifests,
@@ -45,9 +45,10 @@ export const GVISOR_INSTALLER_UPSTREAM_IMAGE = `docker.io/curlimages/curl@${CURL
 export const GVISOR_INSTALLER_MIRROR_TAG =
   `curlimages/curl:${CURL_VERSION}-${CURL_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
 
-/** The mirrored installer image's ref; throws if it was never mirrored. */
+/** The mirrored installer image's ref, by the digest install recorded (it
+ *  runs as full node root); throws if it was never mirrored. */
 async function ensureGvisorInstallerImage(): Promise<string> {
-  return prebuiltRef('gVisor installer', GVISOR_INSTALLER_MIRROR_TAG)
+  return mirrorRef('gVisor installer', GVISOR_INSTALLER_MIRROR_TAG)
 }
 
 function buildGvisorInstallerServiceAccountManifest(): Record<string, unknown> {
@@ -207,7 +208,7 @@ export async function ensureGvisorRuntime(): Promise<void> {
     timeoutMs: ROLLOUT_PER_NODE_MS * Math.max(1, nodes),
   })
   // A containerd restart kills port-forwards into the node, including the
-  // cached registry forward. Drop it, or `prebuiltRef` would read the
+  // cached registry forward. Drop it, or `mirrorRef` would read the
   // dead forward as a missing image.
   invalidateRegistryEndpoint()
   for (const manifest of buildRuntimeClassManifests()) {

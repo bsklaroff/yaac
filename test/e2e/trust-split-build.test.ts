@@ -20,9 +20,11 @@ import {
   registryEndpoint,
   registryHost,
   registryReachable,
+  mirrorMatchesRecord,
   registryRef,
   registryTagState,
 } from '@yaac/server/drivers/k8s/cluster/registry'
+import { BUILDER_MIRROR_TAG } from '@yaac/server/drivers/k8s/cluster/builder-image'
 import { registryGrant } from '@yaac/server/drivers/k8s/cluster/registry-grant'
 import {
   MAIN_REGISTRY_APP_LABEL,
@@ -207,7 +209,9 @@ describe('trust-split builds', () => {
 
     // Reads need no grant.
     expect((await fetch(`${base}/v2/_catalog`)).status).toBe(200)
-    await expect(registryTagState('podman-stable:v5.5')).resolves.toBe('present')
+    await expect(registryTagState(BUILDER_MIRROR_TAG)).resolves.toBe('present')
+    // Root pods run the builder by the digest the mirror step recorded.
+    await expect(mirrorMatchesRecord(BUILDER_MIRROR_TAG)).resolves.toBe(true)
 
     // A project grant pushes a whole image into the repo it names.
     const config = Buffer.from('{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}')
@@ -289,7 +293,7 @@ describe('trust-split builds', () => {
       spec: {
         restartPolicy: 'Never',
         ...(gvisor ? { runtimeClassName: RUNTIME_CLASS_GVISOR } : {}),
-        containers: [{ name: 'c', image: registryRef('podman-stable:v5.5'), command: ['true'] }],
+        containers: [{ name: 'c', image: registryRef(BUILDER_MIRROR_TAG), command: ['true'] }],
       },
     })
     const applyAs = (manifest: object, as?: string): Promise<{ stdout: string }> =>
