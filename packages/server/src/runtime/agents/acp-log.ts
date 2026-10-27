@@ -20,8 +20,8 @@ import { StringDecoder } from 'node:string_decoder'
 import { acpLogDir } from '@yaac/shared/project-paths'
 import { agentSessionIdSchema } from '@yaac/shared/types'
 import {
-  ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, backgroundWorkReport, sessionEffort,
-  sessionModeId, sessionModel, sessionModels, sessionStateModeId, toContentList,
+  ACP, ACPD, AcpProjection, CLAUDE_SDK_MESSAGE, agentRunningReport, backgroundWorkReport, fromOtherSession,
+  sessionEffort, sessionModeId, sessionModel, sessionModels, sessionStateModeId, toContentList,
   type AcpConfigOption, type AcpEffort, type AcpSessionModes,
 } from './acp-protocol'
 import { asRecord, asString } from '#lib/narrow'
@@ -541,7 +541,7 @@ export class RecordProjection {
     // An adapter's own state report, the only boundary a run the agent
     // started itself has.
     const running = agentRunningReport(msg.method, msg.params)
-    if (running !== undefined) return projection.agentState(running)
+    if (running !== undefined) return projection.agentState(running, msg.params)
     // The client's own prompts. The agent echoes user messages only when
     // replaying under `session/load`, so live prompts appear only here.
     if (msg.method === ACP.sessionPrompt) {
@@ -816,6 +816,8 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
   let model: { id: string; name?: string } | undefined
   let offered: AcpRecovery['offered']
   let launchUnsettled = false
+  // The conversation's own session, as the handshake names it.
+  let sessionId: string | undefined
   for await (const line of lines) {
     const msg = parseLine(line)
     if (msg === undefined) continue
@@ -847,6 +849,7 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
         continue
       case ACP.sessionNew:
       case ACP.sessionLoad:
+        sessionId = asString(asRecord(msg.params)?.sessionId)
         if (id !== undefined) asked.set(String(id), { handshake: true })
         continue
       case ACP.sessionSetMode: {
@@ -861,6 +864,7 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
         continue
       }
       case ACP.sessionUpdate: {
+        if (fromOtherSession(msg.params, sessionId)) continue
         const update = asRecord(asRecord(msg.params)?.update)
         if (update !== undefined) {
           modeId = sessionModeId(update) ?? modeId
@@ -887,6 +891,7 @@ async function recover(lines: AsyncIterable<string>): Promise<AcpRecovery> {
       model = sessionModel(result) ?? (ask?.model !== undefined ? { id: ask.model } : model)
       if (ask !== undefined) modeId = ask.modeId ?? sessionStateModeId(result) ?? modeId
       if (ask?.handshake === true) {
+        sessionId = asString(result?.sessionId) ?? sessionId
         const available = asRecord(result?.modes)?.availableModes
         offered = {
           ...(Array.isArray(available) ? { modes: { availableModes: available as AcpSessionModes['availableModes'] } } : {}),

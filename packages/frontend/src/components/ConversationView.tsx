@@ -4,7 +4,7 @@ import {
 } from 'react'
 import clsx from 'clsx'
 import {
-  AcpTranscript, active, groupEvents, SUBAGENT_CATEGORY, taskCategory, USER_BUBBLE, type Group,
+  AcpTranscript, active, groupEvents, subagentCategory, taskCategory, USER_BUBBLE, type Group,
 } from '#components/AcpTranscript'
 import {
   ActivityTitleBar, callOf, latestActivity, StopTaskButton, SubagentPrompt, TaskView, type ActivityTarget,
@@ -165,7 +165,7 @@ export function useConversationView({
     ),
     titleBar: subagent !== undefined ? (
       <ActivityTitleBar
-        category={SUBAGENT_CATEGORY}
+        category={subagentCategory(subagent)}
         title={subagent.name}
         state={subagent.state}
         live={live}

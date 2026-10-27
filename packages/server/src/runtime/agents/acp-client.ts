@@ -53,6 +53,7 @@ import {
   chooseAllowOption,
   clientCapabilities,
   agentRunningReport,
+  fromOtherSession,
   backgroundWorkReport,
   permissionReply,
   sessionEffort,
@@ -646,7 +647,9 @@ export class AcpConversation {
         // Content is ignored here; panes get it only from acpd's record (see
         // attachAcp). Session state is tracked: a model switch arrives as
         // `config_option_update`, a mode change as `current_mode_update` or a
-        // `config_option_update` for the `mode` option.
+        // `config_option_update` for the `mode` option. A subagent's session
+        // says nothing about this one (`fromOtherSession`).
+        if (fromOtherSession(params, this.sessionId)) return
         const update = asRecord(asRecord(params)?.update)
         if (update?.sessionUpdate === 'config_option_update') {
           this.setModel(sessionModel(update))

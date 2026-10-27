@@ -1,7 +1,7 @@
 import { useEffect, useRef, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
-  active, MAX_TOOL_OUTPUT_CHARS, StateMark, SUBAGENT_CATEGORY, taskCategory, ToolRow, type ActivityCategory,
+  active, MAX_TOOL_OUTPUT_CHARS, StateMark, subagentCategory, taskCategory, ToolRow, type ActivityCategory,
 } from '#components/AcpTranscript'
 import { NavBackIcon, StopIcon } from '#lib/icons'
 import type { TaskOutput } from '#lib/acp'
@@ -64,7 +64,7 @@ export function ActivityBar({
 }): JSX.Element | null {
   const chips = [
     ...[...subagents.values()].filter(active).map((s) => (
-      { kind: 'subagent' as const, id: s.id, name: s.name, category: SUBAGENT_CATEGORY, state: s.state }
+      { kind: 'subagent' as const, id: s.id, name: s.name, category: subagentCategory(s), state: s.state }
     )),
     ...[...tasks.values()].filter((t) => active(t) && t.ambient !== true).map((t) => (
       { kind: 'task' as const, id: t.id, name: t.name, category: taskCategory(t), state: t.state }
@@ -112,7 +112,7 @@ export function ActivityBar({
  *  task's view, in the composer's place: the way back and, beneath it, any
  *  view `controls`. */
 export function ActivityTitleBar({
-  category: { icon: Icon, label, tint },
+  category: { icon: Icon, label, tint, hint },
   title,
   state,
   live,
@@ -142,7 +142,7 @@ export function ActivityTitleBar({
           Back
         </button>
         <Icon size={14} className={clsx('shrink-0', tint)} />
-        <span className="shrink-0 text-text-faint">{label}</span>
+        <span className="shrink-0 text-text-faint" title={hint}>{label}</span>
         <span className="min-w-0 flex-1 wrap-anywhere text-text">{title}</span>
         {children}
         <StateMark state={state} live={live} />

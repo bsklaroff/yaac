@@ -136,7 +136,7 @@ describe('ensureAgentReporters', () => {
     expect((await fs.lstat(path.join(homes.codexDir, 'hooks.json'))).isFile()).toBe(true)
   })
 
-  // Against the extension API of pi 1.3.0.
+  // Against the extension API of pi 1.4.0.
   it("reports pi's conversation, model and thinking level, ends each conversation as pi does, and submits messages sent to it", async () => {
     await ensureAgentReporters(await roots())
     const messages = path.join(dir, 'pi-agent', 'yaac-messages')
@@ -181,7 +181,7 @@ describe('ensureAgentReporters', () => {
     await expect(fs.access(path.join(messages, 'pi-1.txt'))).rejects.toThrow()
   })
 
-  // Against opencode 2.0.30's events. An agent switch arrives with the next
+  // Against opencode 2.1.4's events. An agent switch arrives with the next
   // prompt as `session.agent.selected`; subagent sessions (`parentID`) are
   // not the pane's.
   it("reports opencode's conversation, model, variant and agent, and ends the conversation on dispose", async () => {

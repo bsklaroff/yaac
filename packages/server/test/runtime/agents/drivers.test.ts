@@ -1118,11 +1118,20 @@ describe('agentDriver', () => {
     pi.feed(helloLine(false))
     await vi.waitFor(() => expect([of('codex').at(-1), of('pi').at(-1)]).toEqual(['waiting', 'waiting']))
 
-    // A goal continuation: codex brackets it with its thread status.
-    const threadStatus = (type: string): string =>
-      updateLine('acp-codex', { sessionUpdate: 'session_info_update', _meta: { codex: { threadStatus: { type } } } })
+    // A goal continuation: codex brackets it with its thread status. A
+    // subagent's status comes on its own session and says nothing of it.
+    const threadStatus = (type: string, session = 'acp-codex'): string =>
+      updateLine(session, { sessionUpdate: 'session_info_update', _meta: { codex: { threadStatus: { type } } } })
     codex.feed(threadStatus('active'))
     await vi.waitFor(() => expect(of('codex').at(-1)).toBe('running'))
+    codex.feed(threadStatus('idle', 'sub-1'))
+    // A model switch after it, seen once both lines are read.
+    codex.feed(updateLine('acp-codex', {
+      sessionUpdate: 'config_option_update',
+      configOptions: [{ id: 'model', currentValue: 'gpt-sync', options: [{ value: 'gpt-sync' }] }],
+    }))
+    await vi.waitFor(() => expect(seen.some((o) => o.kind === 'live-agents' && o.agents.some((a) => a.model === 'gpt-sync'))).toBe(true))
+    expect(of('codex').at(-1)).toBe('running')
     codex.feed(threadStatus('idle'))
     await vi.waitFor(() => expect(of('codex').at(-1)).toBe('waiting'))
 
@@ -1540,6 +1549,11 @@ describe('agentDriver', () => {
     }))
     await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
     stream.feed(helloLine(false))
+    // A subagent's model, reported on the subagent's own session.
+    stream.feed(updateLine('sub-1', {
+      sessionUpdate: 'config_option_update',
+      configOptions: [{ id: 'model', currentValue: 'gpt-5.2-mini', options: [{ value: 'gpt-5.2-mini' }] }],
+    }))
     stream.feed(updateLine('acp-1', {
       sessionUpdate: 'config_option_update',
       configOptions: [
@@ -1548,6 +1562,9 @@ describe('agentDriver', () => {
       ],
     }))
     await vi.waitFor(() => expect(reportedModes(seen).at(-1)).toBe('agent-full-access'))
+    const models = seen.flatMap((o) => (o.kind === 'live-agents' ? o.agents.map((a) => a.model) : []))
+    expect(models).toContain('gpt-5.2-codex')
+    expect(models).not.toContain('gpt-5.2-mini')
   })
 
   /** Each conversation answers asks by its own adapter's mode. */
@@ -2981,7 +2998,7 @@ describe('agentDriver', () => {
           // A shared background server would run yaac's hooks outside the pane.
           '-c', 'features.daemon_auto_start=false',
           // Its worktrees would go in the project's shared codex home.
-          '-c', 'features.worktrees=false',
+          '-c', 'mcp_servers.codex_worktrees={command="false",enabled=false}',
           // Trust the folder and run yaac's hooks without asking, so no startup
           // screen swallows the pasted prompt.
           '-c', 'projects={"/data/wt"={trust_level="trusted"}}',

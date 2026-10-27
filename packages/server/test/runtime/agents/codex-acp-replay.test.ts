@@ -134,9 +134,9 @@ describe('codexTranscriptAsAcp', () => {
     const events = codexTranscriptAsAcp(AGENTS)
 
     expect(conversation(events)).toEqual([
+      // A subagent's running state, reported on its own session, opens no
+      // run of the parent's.
       'user: t-followup please', '--',
-      // A subagent reports its running state on the same channel.
-      '--',
       'thought (subagent): Child thinking.',
       'agent (subagent): Hi from the child.',
       // Its follow-up turn is not shown: the adapter drops a finished
@@ -144,7 +144,7 @@ describe('codexTranscriptAsAcp', () => {
       'agent: Followed up.',
       'user: t-edge please', '--', 'agent: Edged.',
       'user: t-interrupt please', '--', 'agent: Interrupted it.',
-      'user: t-cancelwait please', '--', '--',
+      'user: t-cancelwait please', '--',
     ])
     expect(events.flatMap((e) => (e.type === 'subagent' ? [[e.subagent.name, e.subagent.state]] : []))).toEqual([
       ['Helper', 'running'], ['Helper', 'completed'],

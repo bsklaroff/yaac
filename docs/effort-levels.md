@@ -82,13 +82,13 @@ Every tool saves an in-session effort change into its home: claude's
 per-model thinking levels. A project's workspaces share those homes, so a
 launch that names nothing would run at whatever another workspace last
 picked. The launch values outrank those files (checked live for claude's
-`--effort` against 2.1.301 and pi's `--thinking` against 1.3.0).
+`--effort` against 2.1.310 and pi's `--thinking` against 1.4.0).
 
 opencode is the exception both ways. Its TUI saves its per-model variant in
 its state directory (`model.json`), which is not in a shared tool home (a
 pod's own under k8s, the workspace's private `$HOME` under containerless),
 so no other workspace reaches it. But within one workspace that saved pick
-outranks the launch's agent `variant` (checked against 2.0.30): a restart
+outranks the launch's agent `variant` (checked against 2.1.4): a restart
 after a `/variants` pick runs at the pick, which is also the level the row
 followed.
 

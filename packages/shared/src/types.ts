@@ -137,12 +137,12 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
 /** claude's `AGENT_CLIS.claude.binarySha256`, typed to be looked up by any
  *  platform name. */
 const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
-  'darwin-arm64': '1f04c69e1c24e4d0a716a863af0aad8fc64d49a499334c29701f073700276b99',
-  'darwin-x64': '3439427bfce962fddcf557c5a058ca914fa63e06fee894f8e12a3f10e04d1871',
-  'linux-arm64': '1e119036a802d359ba5f9886428e031586e8796f7a858d5a8ee179ac7b8604f0',
-  'linux-x64': 'bc1aad9982c7b59c7d889ff92595d61cf46e0a6eae074cb551d932a989bcd222',
-  'linux-arm64-musl': 'd0a6b24d157d061cd5c406eb4b8f3d4016b646c8802b47babd3625c636e4433d',
-  'linux-x64-musl': '081a7219cf075e5c5d2a39796517ae2fa06610d99f3498e7ee5c577f0da687fa',
+  'darwin-arm64': 'ffb64331bc0ee1b69efb7c2c428bd3ab516bc31b75bf60886b356c97c1c25ffd',
+  'darwin-x64': '28fdbed5a84ef7d4205b5751c7f021e79151c4e319c4a401e48fe6aae86bbb39',
+  'linux-arm64': '9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54',
+  'linux-x64': 'b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56',
+  'linux-arm64-musl': 'adfd1f0ef12a3bcafa66e33491fc3e4204e41aeb4a7305ffc311c16c26793825',
+  'linux-x64-musl': '2ceb05e0a97b09be4c14717464a2156e8d087dea9867a399dd75d3b898ca4824',
 }
 
 /**
@@ -156,6 +156,8 @@ const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
  * Bump the matching `ACP_ADAPTERS` entry with it, since codex-acp and pi-acp
  * depend on their CLI's version. Then run `pnpm gen:providers`: the claude
  * catalog and every tool's effort levels are read from the pinned CLIs.
+ * For codex, also check that its TUI offers no `create_worktree` tool
+ * (`codexLaunchConfig`), which no test covers.
  *
  * The auth daemon's Install button and the workspace image run only what
  * matches a SHA-256 pinned here, since release assets can be replaced in
@@ -169,16 +171,16 @@ const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
 export const AGENT_CLIS = {
   claude: {
     package: '@anthropic-ai/claude-code',
-    version: '2.1.301',
+    version: '2.1.310',
     binarySha256: CLAUDE_BINARY_SHA256,
   },
   codex: {
     package: '@openai/codex',
-    version: '0.163.0',
-    installScriptSha256: '150e3cf675682efeaac115aa3747add3f27887896d04ce6d0b56478d8b428bf6',
+    version: '0.164.0',
+    installScriptSha256: '95d14ccaba915e52a3f0cc590638ca5ac510086ff6a23dc9ac9f77e957403a93',
   },
-  opencode: { package: '@opencode/cli', version: '2.0.30' },
-  pi: { package: '@earendil-works/pi-coding-agent', version: '1.3.0' },
+  opencode: { package: '@opencode/cli', version: '2.1.4' },
+  pi: { package: '@earendil-works/pi-coding-agent', version: '1.4.0' },
 } as const satisfies Record<AgentTool, {
   package: string
   version: string
@@ -202,13 +204,13 @@ export const ACP_ADAPTERS = {
   claude: {
     binary: 'claude-agent-acp',
     package: '@agentclientprotocol/claude-agent-acp',
-    verified: '0.91.0',
+    verified: '0.97.0',
     needsCli: false,
   },
   codex: {
     binary: 'codex-acp',
     package: '@agentclientprotocol/codex-acp',
-    verified: '2.2.2',
+    verified: '2.3.0',
     needsCli: true,
   },
   opencode: {

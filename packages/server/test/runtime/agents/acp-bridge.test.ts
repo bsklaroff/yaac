@@ -522,6 +522,13 @@ describe('attachAcp', () => {
     expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false, agentRunning: true })
     await record([...life, JSON.parse(threadStatus('idle')) as unknown])
     expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false, agentRunning: false })
+    // A subagent's status comes on its own session and says nothing of it.
+    const load = { jsonrpc: '2.0', id: 'h1', method: 'session/load', params: { sessionId: 'acp-1', cwd: '/w', mcpServers: [] } }
+    const subagentIdle = { jsonrpc: '2.0', method: 'session/update', params: {
+      sessionId: 'sub-1', update: { sessionUpdate: 'session_info_update', _meta: { codex: { threadStatus: { type: 'idle' } } } },
+    } }
+    await record([load, { jsonrpc: '2.0', id: 'h1', result: {} }, ...life, subagentIdle])
+    expect((await readAcpRecovery(ref)).inFlight).toEqual({ prompt: false, agentRunning: true })
     // A report no idle followed is dropped, as live, by a refused prompt or a
     // Stop with no prompt running.
     const refused = [

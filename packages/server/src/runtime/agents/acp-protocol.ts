@@ -595,8 +595,11 @@ export class AcpProjection {
   /** What a boundary reported before its compaction appeared. */
   private pendingFacts: CompactionFacts | undefined
 
-  /** Follow a state report; a run starting is an `agent-turn` boundary. */
-  agentState(running: boolean): AcpEventInit[] {
+  /** Follow a state report; a run starting is an `agent-turn` boundary.
+   *  One sent on a subagent's own session (codex-acp's) is about that
+   *  subagent, so it is ignored; see `threadOf`. */
+  agentState(running: boolean, params?: unknown): AcpEventInit[] {
+    if (this.threadOf(params) !== undefined) return []
     const started = running && !this.agentRunning
     this.agentRunning = running
     return started ? this.startRun() : []
@@ -733,6 +736,9 @@ export class AcpProjection {
     }
     const translated = translateSessionUpdate(params)
     if (!translated) return out
+    // The models a pane offers are the main session's, not a subagent's
+    // (see `threadOf`).
+    if (thread !== undefined && translated.kind === 'event' && translated.event.type === 'models') return out
     const tag = thread !== undefined ? { thread } : {}
     if (translated.kind === 'event' && translated.event.type === 'user') {
       const messageId = asString(update?.messageId)
@@ -804,6 +810,7 @@ export class AcpProjection {
           ...this.parentOf(toolUseId),
           name: asString(m.description) ?? known?.name ?? 'Subagent',
           task: asString(m.prompt) ?? known?.task ?? '',
+          ...(m.subagent_type === 'fork' || known?.fork === true ? { fork: true as const } : {}),
           state: 'running',
         })]
       }
@@ -914,6 +921,7 @@ export class AcpProjection {
       const report = /The report follows:\n([\s\S]*?)\nagentId: /.exec(output)?.[1]?.replace(/^ {2}/gm, '')
       return [this.setSubagent({
         ...(known ?? { id, name: call.title, task: asString(raw?.prompt) ?? '' }),
+        ...(raw?.subagent_type === 'fork' ? { fork: true as const } : {}),
         state: ends ? call.status as 'completed' | 'failed' : 'running',
         ...(report !== undefined ? { summary: report } : {}),
       })]
@@ -1227,7 +1235,12 @@ export class AcpProjection {
   }
 
   /** The subagent a message's `sessionId` names, or undefined for the main
-   *  conversation. */
+   *  conversation. The projection knows no main session id, so it asks
+   *  whether the session is a subagent already announced, where the live
+   *  client and recovery ask whether it is other than the main one
+   *  (`fromOtherSession`). The two agree because an adapter announces a
+   *  subagent (`subagent_spawned`) before anything from its session, live
+   *  and under `session/load`. */
   private threadOf(params: unknown): string | undefined {
     const sessionId = asString(asRecord(params)?.sessionId)
     return sessionId !== undefined && this.subagents.has(sessionId) ? sessionId : undefined
@@ -1620,9 +1633,13 @@ export const CLAUDE_SDK_MESSAGE = '_claude/sdkMessage'
  * report, the task messages are how claude reports subagents and background
  * tasks to a client that is not AIR (`AcpProjection.applyClaudeSdk`), and a
  * compaction's boundary is where its trigger and token counts are.
+ *
+ * `promptSuggestions` is off because the adapter otherwise has claude
+ * predict a follow-up prompt after every turn, which yaac does not show.
  */
 export const CLAUDE_SESSION_META = {
   claudeCode: {
+    options: { promptSuggestions: false },
     emitRawSDKMessages: [
       'session_state_changed', 'task_started', 'task_updated', 'task_progress', 'task_notification',
       'background_tasks_changed', 'compact_boundary',
@@ -1650,6 +1667,16 @@ export function agentRunningReport(method: unknown, params: unknown): boolean | 
   if (threadStatus !== undefined) return threadStatus === 'active'
   const running = asRecord(meta?.piAcp)?.running
   return typeof running === 'boolean' ? running : undefined
+}
+
+/**
+ * Whether a message names a session other than `sessionId`. codex-acp
+ * reports each subagent's model and running state on the subagent's own
+ * session, which says nothing about the conversation's.
+ */
+export function fromOtherSession(params: unknown, sessionId: string | undefined): boolean {
+  const named = asString(asRecord(params)?.sessionId)
+  return sessionId !== undefined && named !== undefined && named !== sessionId
 }
 
 /**

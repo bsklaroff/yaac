@@ -376,7 +376,7 @@ it writes it down:
 
 - **claude.** Its hooks carry the mode as `permission_mode` (`manual` arrives
   as `default`), but no hook fires on the change itself, and its statusLine
-  input lacks the mode (checked against the pinned 2.1.301). So the reporter
+  input lacks the mode (checked against the pinned 2.1.310). So the reporter
   (`workspace-bin/yaac-agent-report`, which also reports the model) runs on
   `UserPromptSubmit` and `Stop` and sets the pane option
   `@yaac-permission-mode`. A Shift+Tab is seen at the next prompt or turn

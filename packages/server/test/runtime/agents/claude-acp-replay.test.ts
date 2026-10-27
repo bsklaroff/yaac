@@ -410,6 +410,34 @@ describe('claudeSubagentThreads', () => {
         at('p6', 'p5', 'assistant', { id: 'msg_2', content: [{ type: 'text', text: 'Two calls done.' }] }),
       ]
     })
+    // A fork, as claude 2.1.310 writes one: a reference to the parent's
+    // history, then the parent's call that launched it, a placeholder result
+    // for that call, and the fork's directive.
+    await subagent('a4', 'toolu_fork', (extra) => [
+      { type: 'fork-context-ref', agentId: 'a4', parentSessionId: SESSION },
+      assistant([{ type: 'tool_use', id: 'toolu_fork', name: 'Agent', input: { description: 'Fork', subagent_type: 'fork', prompt: 'Reply FORKED' } }], extra),
+      user([
+        { type: 'tool_result', tool_use_id: 'toolu_fork', content: 'Fork started — that fork is you.' },
+        { type: 'text', text: '<fork-boilerplate>\nReply FORKED\n</fork-boilerplate>' },
+      ], extra),
+      assistant([{ type: 'text', text: 'FORKED' }], extra),
+    ])
+    // A fork whose inherited message also holds the parent's text and a
+    // sibling's call, which claude copies whole.
+    await subagent('a5', 'toolu_fork_a', (extra) => [
+      { type: 'fork-context-ref', agentId: 'a5', parentSessionId: SESSION },
+      assistant([
+        { type: 'text', text: 'Forking two workers' },
+        { type: 'tool_use', id: 'toolu_fork_a', name: 'Agent', input: { description: 'A', subagent_type: 'fork', prompt: 'Do A' } },
+        { type: 'tool_use', id: 'toolu_fork_b', name: 'Agent', input: { description: 'B', subagent_type: 'fork', prompt: 'Do B' } },
+      ], extra),
+      user([
+        { type: 'tool_result', tool_use_id: 'toolu_fork_a', content: 'Fork started — that fork is you.' },
+        { type: 'tool_result', tool_use_id: 'toolu_fork_b', content: "This is the parent's call, not yours." },
+        { type: 'text', text: '<fork-boilerplate>\nDo A\n</fork-boilerplate>' },
+      ], extra),
+      assistant([{ type: 'text', text: 'DID A' }], extra),
+    ])
     // A meta too large to read, sorted first, is skipped rather than failing
     // the rest.
     await fs.writeFile(path.join(subagents, 'agent-0big.meta.json'), 'x'.repeat(65 * 1024))
@@ -437,6 +465,15 @@ describe('claudeSubagentThreads', () => {
     const calls = new Set(parallel.flatMap((e) => (e.type === 'tool' ? [e.call.toolCallId] : [])))
     expect([...calls].sort()).toEqual(['tu_a', 'tu_b'])
     expect(parallel.at(-1)).toMatchObject({ type: 'agent', content: [{ type: 'text', text: 'Two calls done.' }] })
+
+    // A fork's thread is its own work alone: what it inherited is the
+    // parent's, and its directive is its task.
+    const fork = await claudeSubagentThreads(session, ['toolu_fork'])
+    expect(threads(fork)).toEqual([['agent', 'toolu_fork']])
+    expect(fork[0]).toMatchObject({ content: [{ type: 'text', text: 'FORKED' }] })
+    const sibling = await claudeSubagentThreads(session, ['toolu_fork_a'])
+    expect(threads(sibling)).toEqual([['agent', 'toolu_fork_a']])
+    expect(sibling[0]).toMatchObject({ content: [{ type: 'text', text: 'DID A' }] })
 
     // Nothing for a session with no subagents.
     expect(await claudeSubagentThreads({ ...session, rel: 'other.jsonl' }, ['toolu_count'])).toEqual([])

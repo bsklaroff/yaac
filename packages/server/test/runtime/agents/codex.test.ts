@@ -34,7 +34,7 @@ describe('getCodexRolloutSettings', () => {
     return jsonl
   }
 
-  // Profiles codex 0.163.0 writes: full access is `disabled`; a managed
+  // Profiles codex 0.164.0 writes: full access is `disabled`; a managed
   // profile is workspace-write if it grants a write, else read-only.
   const FULL = { type: 'disabled' }
   const WORKSPACE = {
@@ -116,7 +116,7 @@ describe('getCodexRolloutSettings', () => {
   })
 
   // codex writes the level as `effort` in each turn context (checked against
-  // codex-cli 0.163.0) and as `reasoning_effort` in a settings change.
+  // codex-cli 0.164.0) and as `reasoning_effort` in a settings change.
   it('reads the effort beside the posture, from either entry', async () => {
     const turn = await rollout([turnContext({ effort: 'xhigh' })])
     expect(await getCodexRolloutSettings(at(turn))).toMatchObject({ permissionMode: 'accept-edits', effort: 'xhigh' })
