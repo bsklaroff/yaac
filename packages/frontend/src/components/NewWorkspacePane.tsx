@@ -9,6 +9,7 @@ import { ChatBottomBar, COMPOSER_INPUT, ROUND_BUTTON } from '#components/Convers
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { PaneBarActions, PaneOverflowMenu } from '#components/PaneBar'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { NumberInput } from '#components/ui/NumberInput'
 import { Typeahead } from '#components/ui/Typeahead'
 import { api } from '#lib/api'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
@@ -952,8 +953,7 @@ function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: 
   const set = (patch: Partial<Repeat>): void => onChange({ cron: compileRepeat({ ...(repeat ?? DEFAULT_REPEAT), ...patch }) })
   /** A number input that ignores values outside `min`–`max`. */
   const num = (label: string, value: number, min: number, max: number, apply: (n: number) => void): JSX.Element => (
-    <input
-      type="number"
+    <NumberInput
       aria-label={label}
       min={min}
       max={max}
@@ -962,7 +962,7 @@ function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: 
         const n = Number(e.target.value)
         if (Number.isInteger(n) && n >= min && n <= max) apply(n)
       }}
-      className={SMALL_INPUT}
+      className="h-[26px] w-14 shrink-0 bg-surface-2"
     />
   )
   const pad = (n: number): string => String(n).padStart(2, '0')

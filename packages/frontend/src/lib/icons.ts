@@ -27,6 +27,8 @@ export {
   TriangleAlert as WarningIcon,
   LoaderCircle as LoadingIcon,
   ChevronRight as ChevronIcon,
+  ChevronUp as StepUpIcon,
+  ChevronDown as StepDownIcon,
   X as CloseIcon,
   ImagePlus as AttachImageIcon,
   KeyRound as KeyIcon,

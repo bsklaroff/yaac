@@ -13,6 +13,7 @@ import { RowMenu } from '#components/sidebar/RowMenu'
 import { QueuedSet } from '#components/sidebar/QueuedRows'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { Modal } from '#components/ui/Modal'
+import { NumberInput } from '#components/ui/NumberInput'
 import { roomKey } from '#lib/queued'
 import { StoppedRows } from '#components/sidebar/StoppedRows'
 import { isTerminating, ProvisioningRow, StoppedWorkspaceRow, WorkspaceRow, type SidebarDrag } from '#components/sidebar/WorkspaceRows'
@@ -261,17 +262,15 @@ function WorkspaceLimitDialog({ group, open, onOpenChange }: {
         refused, and queued workspaces wait for room. Leave it empty for no limit.
       </Dialog.Description>
       <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
-        <input
+        <NumberInput
           name="limit"
-          type="number"
           min={1}
           step={1}
           autoFocus
           aria-label="Workspace limit"
           placeholder="No limit"
           defaultValue={group.workspaceLimit ?? ''}
-          className="rounded-md border border-border bg-bg px-3 py-2 text-xs text-text outline-none
-            focus:border-border-strong"
+          className="h-8 bg-bg"
         />
         {save.error && <p className="text-xs text-red-400">{save.error.message}</p>}
         <div className="flex justify-end gap-2">
