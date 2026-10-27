@@ -16,7 +16,7 @@ import { SocksClient } from 'socks'
 import type { ProxyObjects } from './object-watch'
 import type { HostInjectionRule, RefreshedBundles, UpstreamRedirect } from './objects'
 import type { RefreshFlights } from './refresh-flight'
-import { dialOptions, failFastIfNonPublic, pinnedLookup, type DirectUpstream } from './upstream'
+import { dialOptions, failFastIfNonPublic, pinnedLookup, upstreamHost, type DirectUpstream } from './upstream'
 import {
   CLAUDE_TOKEN_URL_HOST,
   CLAUDE_TOKEN_URL_PATH,
@@ -216,6 +216,9 @@ export function handleMitm(
       path: reqPath,
       method: req.method,
       headers,
+      // Pinned, or Node takes the SNI and the name the certificate is
+      // checked against from the Host header.
+      servername: net.isIP(hostname) ? '' : hostname,
       ...route,
     })
     if (direct !== null) {
@@ -225,6 +228,12 @@ export function handleMitm(
   }
 
   const mitmServer = http.createServer((req, res) => {
+    const misdirect = misdirected(req, hostname, workspaceId)
+    if (misdirect !== null) {
+      res.writeHead(421, { 'Content-Type': 'text/plain' })
+      res.end(misdirect)
+      return
+    }
     const { path: reqPath, headers, bodyInjections } = prepare(req, `${req.method} https://`, true)
 
     // An OAuth token-endpoint request: swap the real refresh token in on the
@@ -333,6 +342,11 @@ export function handleMitm(
   // not speak WS, so behind a redirect the client gets a plain response and
   // falls back to HTTP.
   mitmServer.on('upgrade', (req: http.IncomingMessage, wsClientSocket: Duplex, head: Buffer) => {
+    const misdirect = misdirected(req, hostname, workspaceId)
+    if (misdirect !== null) {
+      wsClientSocket.end(`HTTP/1.1 421 Misdirected Request\r\nContent-Type: text/plain\r\n\r\n${misdirect}\n`)
+      return
+    }
     const { path: reqPath, headers } = prepare(req, 'UPGRADE wss://', false)
     const upstreamReq = openUpstream(req, reqPath, headers)
 
@@ -375,6 +389,34 @@ export function handleMitm(
       console.error(`[proxy] TLS error for ${hostname}:`, err.message)
     }
   })
+}
+
+/**
+ * Why `req` may not be forwarded on a connection to `hostname`, or null when
+ * it may; a refusal is logged. Credentials are injected for `hostname`, so a
+ * request whose Host header or absolute-form target named another host (one
+ * on the same CDN, say) would carry them to that host.
+ */
+function misdirected(req: http.IncomingMessage, hostname: string, workspaceId: string): string | null {
+  const host = req.headers.host ?? ''
+  const reason = !(req.url ?? '').startsWith('/') ? `request target ${req.url ?? ''} is not a path`
+    : namesHost(host, hostname) ? null : `Host ${host} is not ${hostname}`
+  if (reason !== null) console.log(`[proxy] REFUSED ${req.method ?? ''} on ${workspaceId}'s connection to ${hostname}: ${reason}`)
+  return reason
+}
+
+/**
+ * True when the Host header value `host` names `hostname`. Both are read as
+ * `upstreamHost` reads a destination, less one trailing dot, which curl
+ * keeps in Host but drops from the SNI.
+ */
+function namesHost(host: string, hostname: string): boolean {
+  const canonical = (name: string): string => upstreamHost(name).replace(/\.$/, '')
+  try {
+    return canonical(host.replace(/:\d+$/, '')) === canonical(hostname)
+  } catch {
+    return false
+  }
 }
 
 /** An upstream response's status line and headers, as raw HTTP/1.1. */

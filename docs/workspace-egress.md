@@ -318,6 +318,18 @@ hosts, at `http://yaac.internal/api/workspace/git/<project id>.git`
 with the headers git needs (`yaac-relay.ts`). The server checks that the
 named workspace belongs to that project.
 
+## One host per MITM'd connection
+
+A MITM'd connection is admitted, and has its credentials chosen, for one
+host: the SNI or CONNECT target it arrived with (`k8s/proxy/mitm.ts`). The
+proxy answers 421, and logs the refusal, to any request on it whose Host
+header does not name that host, and to any absolute-form target
+(`POST https://chatgpt.com/...`). Otherwise a request on a `chatgpt.com`
+connection carrying `Host: evil.example` could go out with the real token to
+a site that shares chatgpt.com's CDN. The upstream dial's TLS SNI and
+certificate check are pinned to the admitted host as well, rather than taken
+from the Host header.
+
 ## Non-public destinations
 
 Two layers keep workspaces and builds off the cluster's internal network and
