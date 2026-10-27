@@ -298,10 +298,12 @@ export function builderEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Re
  * policies, with the workspace egress policy and `wideEgress`, keep
  * untrusted pods out. `yaac cluster check` verifies this. Node addresses
  * reach the API only behind the forwarder, where the one node is the
- * install's own machine; on a cluster of shared nodes any host-networked
- * process could otherwise claim any identity. The proxy is admitted only to
- * SERVER_MAMA_PORT, never to the API: it forwards workspace traffic, so a
- * workspace could otherwise reach the API through it.
+ * install's own machine; on a cluster of shared nodes a host-networked
+ * process on another node could otherwise claim any identity. Calico
+ * admits the server pod's own node whatever this says. The proxy is
+ * admitted only to SERVER_MAMA_PORT, never to the API: it forwards
+ * workspace traffic, so a workspace could otherwise reach the API through
+ * it.
  *
  * Separate from the fronting half because the server's node-sync re-renders
  * this one when the node set changes, while fronting is fixed at install.

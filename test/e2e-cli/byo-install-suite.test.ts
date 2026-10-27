@@ -9,7 +9,7 @@ import { TEST_CLI_ENTRY, runYaac } from '#support/cli'
 import { startKubectlForward, type KubectlForward } from '@yaac/test-utils/kubectl-forward'
 import { kindByoLayout } from '#support/kind-byo-layout'
 import { e2eMkdtemp, removeScratchTree } from '@yaac/test-utils/tmp'
-import { SERVER_POD_PORT } from '@yaac/server/drivers/k8s/substrate'
+import { SERVER_POD_PORT, SERVER_PROBE_PORT } from '@yaac/server/drivers/k8s/substrate'
 
 const execFileAsync = promisify(execFile)
 
@@ -321,6 +321,38 @@ describe('yaac cluster install --byo, on kind-byo', () => {
     expect(check.stdout).toMatch(/✓ probe: .*cross-node round trip/)
     expect(check.stdout).toMatch(/- node-fixups: a byo install/)
   }, INSTALL_TIMEOUT)
+
+  it('admits another node to the server\'s probe port, never its API', async () => {
+    // Under the operator fronting no node address is admitted to the API: a
+    // host-networked process on a shared node could otherwise forge any
+    // identity (docs/server-in-cluster.md "The ingress policy is the
+    // wall"). Calico admits a pod's own node whatever the policy says, so
+    // the probe pod is pinned to a different node, by `nodeName` so the
+    // control-plane taint does not matter. The server image has curl.
+    const [serverIp, serverNode] = (await kubectl('get', 'pods', '-n', 'yaac', '-l', 'app=yaac-server',
+      '-o', 'jsonpath={.items[0].status.podIP} {.items[0].spec.nodeName}')).trim().split(' ')
+    const other = (await kubectl('get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}'))
+      .trim().split(' ').find((n) => n !== serverNode)
+    expect(other).toBeDefined()
+    const image = (await kubectl('get', 'deployment', 'yaac-server', '-n', 'yaac',
+      '-o', 'jsonpath={.spec.template.spec.containers[0].image}')).trim()
+    const curl = (port: number, tag: string): string =>
+      `curl -s -m 4 -H 'Host: 127.0.0.1' http://${serverIp}:${String(port)}/api/health >/dev/null `
+      + `&& echo ${tag}_OPEN || echo ${tag}_LOCKED`
+    const name = 'yaac-e2e-node-wall-probe'
+    await kubectl('run', name, '-n', 'yaac', `--image=${image}`, '--restart=Never',
+      `--overrides=${JSON.stringify({ apiVersion: 'v1', spec: { hostNetwork: true, nodeName: other } })}`,
+      '--command', '--', 'sh', '-c', `${curl(SERVER_POD_PORT, 'NP_API')}; ${curl(SERVER_PROBE_PORT, 'NP_PROBE')}`)
+    try {
+      await kubectl('wait', `pod/${name}`, '-n', 'yaac', '--for=jsonpath={.status.phase}=Succeeded', '--timeout=120s')
+      const logs = await kubectl('logs', name, '-n', 'yaac')
+      // Both legs, so a path dropped for some other reason fails the probe leg.
+      expect(logs).toContain('NP_API_LOCKED')
+      expect(logs).toContain('NP_PROBE_OPEN')
+    } finally {
+      await kubectl('delete', 'pod', name, '-n', 'yaac', '--wait=false')
+    }
+  }, 180_000)
 
   it('cluster delete refuses, printing the uninstall instead', async () => {
     const del = await runYaac(operatorEnv, 'cluster', 'delete', '--yes')

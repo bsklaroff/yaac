@@ -235,15 +235,14 @@ Kubernetes unions):
   only `GET /api/health`, for the kubelet's readiness probe. While the kind
   forwarder Deployment exists (kind, and `--tailnet <host>`) it admits them
   to the API too, since the forwarder dials from its node. Under the
-  operator fronting, on kind or byo, they never reach the API: on a cluster
-  whose nodes run other tenants' host-networked pods, any of those could
-  otherwise send a forged `Tailscale-User-Login` and be that user, the
+  operator fronting, on kind or byo, other nodes never reach the API: on a
+  cluster whose nodes run other tenants' host-networked pods, any of those
+  could otherwise send a forged `Tailscale-User-Login` and be that user, the
   install's owner included. Install applies it once the fronting's objects
   exist, and **the server re-applies it whenever the node set changes**
   (and once after every start), along with the other node-address
-  policies, since nodes can be added to a running install and a pod
-  rescheduled onto a new node must admit that node's kubelet or it never
-  becomes Ready. Both read whether the forwarder exists from the cluster
+  policies, since nodes can be added to a running install. Both read
+  whether the forwarder exists from the cluster
   (`applyServerIngress`). This is the only policy the server renders for
   itself; it never changes its own Deployment.
 - `yaac-server-ingress-front`, the **fronting half**: the fronting's peers.
@@ -256,6 +255,12 @@ Kubernetes unions):
 No pod in the install namespace and no pod CIDR is admitted to the API. A
 workspace pod dialing the Service or the pod IP presents its own address
 (Calico enforces a workload's source) and matches nothing.
+
+The policy cannot cover the node the server pod runs on. Calico admits
+traffic from a pod's own node whatever the pod's policy says, so a process
+in that node's host network reaches the API regardless. On a cluster that
+runs untrusted host-networked workloads, the node hosting the server pod
+must therefore be trusted.
 
 The node half has one more rule: the egress proxy may reach the server's
 second listener (`SERVER_MAMA_PORT`, behind the `yaac-server-mama` Service

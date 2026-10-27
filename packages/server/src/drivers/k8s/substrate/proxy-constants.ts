@@ -170,7 +170,7 @@ export const SERVER_MAMA_SERVICE_NAME = 'yaac-server-mama'
  * The server's third listener, which serves only `GET /api/health`, for the
  * kubelet's readiness probe. A port of its own so the server's ingress
  * policy can admit node addresses here without admitting them to the API,
- * where any process on a node could claim to be any user
+ * where a host-networked process on another node could claim to be any user
  * (docs/server-in-cluster.md "The ingress policy is the wall").
  */
 export const SERVER_PROBE_PORT = 8789
