@@ -48,6 +48,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     ephemeralStorageLimitBytes: 16 * 1024 ** 3,
     // The proxy Service's ClusterIP, never a DNS name.
     proxyHost: '10.96.0.179',
+    nodeDirsImage: 'registry.local/podman-stable:v5.5',
     ...overrides,
   }
 }
@@ -333,7 +334,7 @@ describe('buildPodJobManifest', () => {
     expect(only.lifecycle).toEqual({ preStop: { exec: { command: ['x'] } } })
   })
 
-  it('creates the node-local dirs with an init container: the pod image, as root, chowning to the pod identity', () => {
+  it('creates the node-local dirs with an init container: the pinned builder image, as root, chowning to the pod identity', () => {
     const m = build({
       nodeLocalRoot: '/var/lib/yaac/node/ddh',
       nodeLocalDirs: [
@@ -345,8 +346,8 @@ describe('buildPodJobManifest', () => {
     const [init] = spec.initContainers ?? []
     expect(init).toBeDefined()
     expect(init.name).toBe('node-dirs')
-    // Reuses the pod's own image, so nothing extra is pulled.
-    expect(init.image).toBe('localhost:5000/yaac-tools:abc')
+    // Never the workspace image, whose `sh` the project controls.
+    expect(init.image).toBe('registry.local/podman-stable:v5.5')
     expect(init.securityContext).toEqual({ runAsUser: 0, runAsGroup: 0 })
     expect(init.volumeMounts).toEqual([{ name: 'node-root', mountPath: '/node' }])
     expect(spec.volumes.find((v) => v.name === 'node-root')).toEqual({
@@ -361,7 +362,7 @@ describe('buildPodJobManifest', () => {
     // chowned: kubelet has already created the leaf before the init runs.
     const { runAsUser, runAsGroup } = installSecurityContext()
     expect(init.command?.[2]).toContain('[ -d "$p" ] || mkdir "$p"')
-    expect(init.command?.[2]).toContain(`\n    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
+    expect(init.command?.[2]).toContain(`\n    chown -h ${String(runAsUser)}:${String(runAsGroup)} "$p"`)
   })
 
   it('limits every container, init included, so kubelet caps the pod cgroup gVisor relies on', () => {
@@ -431,6 +432,13 @@ describe('buildPodJobManifest', () => {
     expect(build().spec.template.spec.initContainers).toBeUndefined()
     expect(build({ nodeLocalDirs: [], nodeLocalRoot: '/x' }).spec.template.spec.initContainers).toBeUndefined()
     expect(() => build({ nodeLocalDirs: ['/x/y'] })).toThrow(/nodeLocalRoot/)
+    expect(() => build({ nodeLocalDirs: ['/x/y'], nodeLocalRoot: '/x', nodeDirsImage: undefined }))
+      .toThrow(/nodeDirsImage/)
+    // The walk is safe only while no pod can write a component it visits.
+    expect(() => build({
+      nodeLocalRoot: '/x',
+      nodeLocalDirs: ['/x/projects/demo/.cached-packages', '/x/projects/demo/.cached-packages/modules/s1'],
+    })).toThrow(/inside another/)
   })
 
   it('emits no lifecycle block without postStartExec', () => {

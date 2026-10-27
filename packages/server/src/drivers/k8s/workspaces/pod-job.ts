@@ -172,12 +172,16 @@ export interface PodJobParams {
    * Node-local directories (node paths under `nodeLocalRoot`) for the
    * `node-dirs` init container to create and chown to the pod's identity.
    * hostPath ignores `fsGroup` and `DirectoryOrCreate` creates root-owned
-   * dirs, so the pod must do it itself.
+   * dirs, so the pod must do it itself. None may be inside another; the
+   * build throws if one is.
    */
   nodeLocalDirs?: string[]
   /** The node root the init container mounts to create `nodeLocalDirs`
    *  under; required when they are given. */
   nodeLocalRoot?: string
+  /** The init container's image (the pinned builder image); required when
+   *  `nodeLocalDirs` are given. */
+  nodeDirsImage?: string
   /** Defaults to 5 seconds. */
   terminationGracePeriodSeconds?: number
 }
@@ -234,12 +238,17 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
 
   const initContainers: Array<Record<string, unknown>> = []
   if (p.nodeLocalDirs && p.nodeLocalDirs.length > 0) {
-    if (!p.nodeLocalRoot) throw new Error('nodeLocalDirs given without nodeLocalRoot')
+    if (!p.nodeLocalRoot || !p.nodeDirsImage) {
+      throw new Error('nodeLocalDirs given without nodeLocalRoot and nodeDirsImage')
+    }
+    const dirs = p.nodeLocalDirs
+    const nested = dirs.find((d) => dirs.some((o) => d.startsWith(`${o}/`)))
+    if (nested) throw new Error(`node-local dir ${nested} is inside another the pod mounts`)
     volumes.push({
       name: 'node-root',
       hostPath: { path: p.nodeLocalRoot, type: 'DirectoryOrCreate' },
     })
-    initContainers.push(nodeDirsInitContainer(p.image, p.nodeLocalRoot, p.nodeLocalDirs))
+    initContainers.push(nodeDirsInitContainer(p.nodeDirsImage, p.nodeLocalRoot, p.nodeLocalDirs))
   }
 
   if (p.nested) {
@@ -368,13 +377,22 @@ const NODE_ROOT_MOUNT = '/node'
 export const PRE_STOP_GRACE_SECONDS = 60
 
 /**
- * The `node-dirs` init container: the pod's own image, run as root. For
- * each node-local directory it walks the path one component at a time,
- * creating missing ones and chowning each (not recursively) to the pod's
- * identity. The chown is unconditional because kubelet has already created
- * `DirectoryOrCreate` leaves as root. Symlinks are replaced with
- * directories, since other pods of the project can write this tree and
- * could plant one.
+ * The `node-dirs` init container, run as root. For each node-local
+ * directory it walks the path one component at a time, creating missing
+ * ones and chowning each (not recursively) to the pod's identity. The chown
+ * is unconditional because kubelet has already created `DirectoryOrCreate`
+ * leaves as root. The parents are chowned too: under rootful kind this tree
+ * is the host's `<dataDir>/node-local`, which the host user must be able
+ * to delete. A symlink found on the walk is replaced with a directory and
+ * `chown -h` never follows one. That does not make the walk race-free; it
+ * is safe because a workspace can write only inside the leaves it mounts,
+ * and no leaf may be inside another (enforced by `buildPodJobManifest`), so
+ * no workspace can write a component the walk visits.
+ *
+ * It runs the digest-pinned builder image, never the workspace's own: that
+ * image comes from an agent-editable Dockerfile, so its `sh` could act as
+ * root on every project's node-local data, and gVisor does not contain
+ * hostPath writes.
  *
  * It declares limits like every container in the pod: kubelet sets the pod
  * cgroup's memory cap only when all of them do, and gVisor enforces no
@@ -398,7 +416,7 @@ function nodeDirsInitContainer(
     '    p="$p/$seg"',
     '    if [ -L "$p" ]; then rm -f "$p"; fi',
     '    [ -d "$p" ] || mkdir "$p"',
-    `    chown ${String(runAsUser)}:${String(runAsGroup)} "$p"`,
+    `    chown -h ${String(runAsUser)}:${String(runAsGroup)} "$p"`,
     '    IFS=/',
     '  done',
     '  IFS=$oldifs',
