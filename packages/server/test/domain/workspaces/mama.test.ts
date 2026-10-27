@@ -28,7 +28,7 @@ import { recordProject } from '#db/project-store'
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
-import { listProvisioning, queueWorkspace, runMamaCommand } from '#domain/workspaces'
+import { createRoutine, listProvisioning, listRoutines, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
 import type { MamaCaller } from '#domain/workspaces/mama'
 import { SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE } from '#domain/workspaces/spawn-policy'
 import { recordProjectCreate } from '#db/project-store'
@@ -730,9 +730,15 @@ describe('runMamaCommand', () => {
       expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)).toMatchObject({
         startAt: new Date('2099-03-04T14:30:00Z'), timeoutMinutes: 45, permissionMode: 'accept-edits',
       })
-      await output('edit-queued', '', { queued: id.slice(0, 8), 'start-in': '10m' })
-      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)?.startAt?.getTime())
-        .toBeLessThan(Date.now() + 11 * 60_000)
+      await output('edit-queued', '', { queued: id.slice(0, 8), 'start-in': '10m', timeout: '3h' })
+      const edited = (await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)
+      expect(edited?.startAt?.getTime()).toBeLessThan(Date.now() + 11 * 60_000)
+      expect(edited?.timeoutMinutes).toBe(180)
+      await output('edit-queued', '', { queued: id, timeout: 'none' })
+      expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)?.timeoutMinutes).toBeUndefined()
+      expect(await run('edit-queued', '', { queued: id, timeout: 'next' })).toEqual({
+        ok: false, error: expect.stringContaining('or none for no timeout') as string,
+      })
       const refusals: Array<Record<string, string>> = [
         { ...ME, 'start-in': '5m' },
         { 'start-at': '10:00', 'start-in': '5m' },
@@ -910,6 +916,114 @@ describe('runMamaCommand', () => {
       expect(rows[0]).toMatchObject({ parentWorkspaceId: 'caller-workspace' })
       expect(await listQueuedWorkspaceRows(OTHER)).toHaveLength(1)
       expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
+    })
+  })
+
+  // docs/routines.md
+  describe('routine-*', () => {
+    beforeEach(async () => {
+      await recordWorkspaceCreated({
+        projectId: PROJ, workspaceId: 'caller-workspace', permissionMode: 'accept-edits', baseBranch: 'main',
+      })
+      await setTimeZone(BUILT_IN_USER_ID, 'America/New_York', true)
+    })
+
+    const routineOf = async (id: string) => (await listRoutines()).find((r) => r.id === id)
+
+    it('makes a routine held to the caller\'s posture, which list then shows', async () => {
+      const text = await output('routine-create', 'triage new issues', {
+        name: ' Nightly triage ', cron: '0 9 * * 1-5', model: 'opus', branch: 'main', timeout: '2h',
+      })
+      const [id, note] = text.split('\n')
+      expect(id).toMatch(/^[0-9a-f-]{36}$/)
+      expect(note).toMatch(/^note: next runs at about .* 09:00, .* \(America\/New_York\)$/)
+      const group = (await listWorkspaceGroupRows(PROJ)).find((g) => g.name === 'Nightly triage')
+      // The caller's tool and mode, its own posture, and a group named after it.
+      expect(await routineOf(id)).toMatchObject({
+        projectId: PROJ, name: 'Nightly triage', tool: CALLER.tool, model: 'opus', mode: (await callerFor()).mode,
+        permissionMode: 'accept-edits', timeZone: 'America/New_York', timeoutMinutes: 120, groupId: group?.groupId,
+      })
+
+      const listed = await output('list')
+      expect(listed).toContain('Routines (each starts a fresh workspace on its cron schedule):')
+      expect(listed).toMatch(new RegExp(
+        `\\n${id.slice(0, 8)}\\s+codex\\s+Nightly triage\\s+0 9 \\* \\* 1-5 \\(America/New_York\\)\\s+.*after 2h\\s+triage new issues`))
+      expect(await output('list', id.slice(0, 8))).toContain(`Prompt of ${id.slice(0, 8)}:\n  triage new issues`)
+
+      const refusals: Array<[string, Record<string, string>]> = [
+        ['x', { name: 'r', cron: '@daily', tool: 'claude', 'permission-mode': 'bypass' }],
+        ['x', { name: 'r', cron: 'every day', tool: 'claude' }],
+        ['x', { name: 'r', cron: '@daily', tz: 'Mars/Olympus', tool: 'claude' }],
+        ['x', { name: '  ', cron: '@daily', tool: 'claude' }],
+        ['x', { name: 'r', cron: '@daily', title: 'runs are titled from the name' }],
+        ['x', { cron: '@daily' }],
+        ['', { name: 'r', cron: '@daily' }],
+      ]
+      for (const [body, args] of refusals) {
+        expect((await run('routine-create', body, args)).ok, JSON.stringify([body, args])).toBe(false)
+      }
+      expect(await listRoutines()).toHaveLength(1)
+    })
+
+    it('edits, pauses, resumes, runs and deletes one, never past the caller\'s posture', async () => {
+      // The user made this one at `bypass`, above the caller.
+      const theirs = await createRoutine(local, PROJ, {
+        name: 'Weekly', cron: '0 6 * * 1', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
+        branch: 'main', timeout: 60,
+      }, 'user')
+      const short = theirs.id.slice(0, 8)
+      const above = "runs in permission mode 'bypass', more than this workspace's own"
+      for (const command of ['routine-run', 'routine-resume']) {
+        expect(await run(command, '', { routine: short })).toEqual({
+          ok: false, error: expect.stringContaining(above) as string,
+        })
+      }
+      expect(await run('routine-edit', 'agent wrote this', { routine: short })).toMatchObject({ ok: false })
+      expect(await routineOf(theirs.id)).toMatchObject({ prompt: 'user wrote this', permissionMode: 'bypass' })
+
+      // Pausing only restrains, whatever the posture.
+      expect(await output('routine-pause', '', { routine: short })).toBe(`Paused routine ${short} ("Weekly").`)
+      expect(await routineOf(theirs.id)).toMatchObject({ paused: true, nextRuns: [] })
+
+      const edited = await output('routine-edit', 'agent wrote this', {
+        routine: short, 'permission-mode': 'manual', cron: '0 7 * * 1', timeout: '2h',
+      })
+      expect(edited).toBe(`Updated routine ${short} ("Weekly"): 0 7 * * 1, claude ${theirs.model}, manual; paused`)
+      // The user's hour is lengthened, then cleared so each run stops at the next tick.
+      expect(await routineOf(theirs.id)).toMatchObject({
+        prompt: 'agent wrote this', permissionMode: 'manual', cron: '0 7 * * 1', timeoutMinutes: 120, paused: true,
+      })
+      await output('routine-edit', '', { routine: short, timeout: 'next' })
+      expect((await routineOf(theirs.id))?.timeoutMinutes).toBeUndefined()
+      // Each command's refusal names its own clearing word.
+      expect(await run('routine-edit', '', { routine: short, timeout: 'none' })).toEqual({
+        ok: false, error: expect.stringContaining('or next to stop each run at the next tick') as string,
+      })
+      expect(await output('routine-resume', '', { routine: short }))
+        .toMatch(new RegExp(`^Resumed routine ${short} \\("Weekly"\\); next runs at about .* 07:00`))
+
+      expect(await output('routine-run', '', { routine: short })).toMatch(new RegExp(`^Started routine ${short} \\("Weekly"\\) as `))
+      await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
+      expect(vi.mocked(createWorkspace).mock.calls[0][1]).toMatchObject({ initialPrompt: 'agent wrote this' })
+
+      await setRoutinePaused(local, theirs.id, true)
+      expect(await output('routine-delete', '', { routine: short }))
+        .toBe(`Deleted routine ${short} ("Weekly"). Runs already started keep going until they stop.`)
+      expect(await routineOf(theirs.id)).toBeUndefined()
+    })
+
+    it('reaches only the caller\'s project\'s routines', async () => {
+      await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', baseBranch: 'main' })
+      const foreign = await createRoutine(local, OTHER, {
+        name: 'Theirs', cron: '@daily', prompt: 'theirs', tool: 'claude', branch: 'main',
+      }, 'user')
+      expect(await output('list')).not.toContain('Theirs')
+      for (const command of ['routine-edit', 'routine-pause', 'routine-resume', 'routine-run', 'routine-delete']) {
+        for (const args of [{}, { routine: 'nope' }, { routine: foreign.id }] as Array<Record<string, string>>) {
+          expect((await run(command, 'x', args)).ok, `${command} ${JSON.stringify(args)}`).toBe(false)
+        }
+      }
+      expect(await routineOf(foreign.id)).toMatchObject({ prompt: 'theirs', paused: false })
     })
   })
 
@@ -1139,7 +1253,7 @@ describe('runMamaCommand', () => {
       expect(listProvisioning()).toEqual([])
     })
 
-    it('restarts with a timeout counted from the restart, never longer than one it had', async () => {
+    it('restarts with a timeout counted from the restart: the one it had, another, or none', async () => {
       const before = Date.now()
       await output('restart', '', { workspace: 'sibling', timeout: '1h' })
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
@@ -1147,19 +1261,29 @@ describe('runMamaCommand', () => {
       expect(deadline).toBeGreaterThanOrEqual(before + 60 * 60_000)
 
       // A workspace the user's 30-minute timeout stopped comes back with 30
-      // minutes, whether the agent names none or a longer one.
+      // minutes unless the agent names a longer one, or none.
       await recordWorkspaceCreated({
         projectId: PROJ, workspaceId: 'timed-sibling', permissionMode: 'manual', deadline: new Date(Date.now() + 30 * 60_000),
       })
       await recordAgentSessions(PROJ, 'timed-sibling', [{ tool: 'claude', agentSessionId: 'timed-conv' }])
       await recordWorkspaceStopped(PROJ, 'timed-sibling')
-      for (const args of [{ workspace: 'timed-sib' }, { workspace: 'timed-sib', timeout: '7d' }] as Array<Record<string, string>>) {
+      const cases: Array<[Record<string, string>, number | undefined]> = [
+        [{ workspace: 'timed-sib' }, 30],
+        [{ workspace: 'timed-sib', timeout: '7d' }, 7 * 24 * 60],
+        [{ workspace: 'timed-sib', timeout: 'none' }, undefined],
+      ]
+      for (const [args, minutes] of cases) {
         vi.mocked(createWorkspace).mockClear()
         await output('restart', '', args)
         await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
-        const given = (vi.mocked(createWorkspace).mock.calls[0][1].deadline?.getTime() ?? 0) - Date.now()
-        expect(given).toBeLessThanOrEqual(30 * 60_000)
-        expect(given).toBeGreaterThan(29 * 60_000)
+        const deadline = vi.mocked(createWorkspace).mock.calls[0][1].deadline
+        if (minutes === undefined) {
+          expect(deadline, JSON.stringify(args)).toBeUndefined()
+        } else {
+          const given = (deadline?.getTime() ?? 0) - Date.now()
+          expect(given).toBeLessThanOrEqual(minutes * 60_000)
+          expect(given).toBeGreaterThan((minutes - 1) * 60_000)
+        }
         await settle()
         await vi.waitFor(() => { expect(listProvisioning()).toEqual([]) })
         await recordWorkspaceStopped(PROJ, 'timed-sibling')

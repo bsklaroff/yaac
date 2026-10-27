@@ -189,8 +189,9 @@ since it may have been recorded before a tool update.
 
 ### A spawned workspace's posture
 
-`yaac-mama create`, `yaac-mama queue` and `yaac-mama edit-queued`
-(docs/queued-workspaces.md) resolve the posture with `agentPermissionMode`
+`yaac-mama create`, `yaac-mama queue`, `yaac-mama edit-queued` and
+`yaac-mama routine create|edit` (docs/queued-workspaces.md,
+docs/routines.md) resolve the posture with `agentPermissionMode`
 (`@yaac/shared/types`) instead. It treats the **caller's** posture (read from the
 caller's row, never from the request) as a ceiling: a sibling may run at
 most as permissively as its parent, in the order `bypass > auto >
@@ -209,9 +210,10 @@ person (see "Following the agent") and shows as waiting.
   the parent workspace's or the stored posture of the entry it chains after)
   and lowered to the most permissive the tool has at or below both it and the
   ceiling. If there is none (pi under a non-`bypass` caller), it is refused.
-- `edit-queued` treats the stored posture as named, so an entry above the
-  ceiling is refused, unless the edit changes the tool, which re-resolves it
-  as unnamed.
+- `edit-queued` and `routine edit` treat the stored posture as named, so
+  an entry or routine above the ceiling is refused, unless the edit changes
+  the tool, which re-resolves it as unnamed. `run-queued`, `routine run`
+  and `routine resume` refuse one above the ceiling outright.
 
 `yaac-mama send`, which hands a running workspace's agent a message, holds
 the **target's** posture to the same ceiling: a message is as good as a

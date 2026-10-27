@@ -198,13 +198,6 @@ export async function updateQueuedWorkspace(
   if (patch.parent !== undefined && patch.start !== undefined) {
     throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
   }
-  // A timeout restrains what launches, so an agent may set or shorten one
-  // but not lengthen or clear one the user gave.
-  if (source !== 'user' && patch.timeout !== undefined && row.timeoutMinutes !== undefined
-    && (patch.timeout === null || patch.timeout > row.timeoutMinutes)) {
-    throw new ServerError('VALIDATION', `this queued workspace stops after ${row.timeoutMinutes}m; `
-      + 'only the user can give it longer')
-  }
   // An entry left with no parent must still have a limited group to wait in.
   const parentless = patch.start === undefined
     && (patch.parent === null || (patch.parent === undefined && pointerOf(row) === null))
@@ -712,13 +705,15 @@ async function resolveSettings(
 
 /**
  * Settings for an entry with no parent to inherit from (a routine's runs):
- * the request's, else the project's create defaults.
+ * the request's, else the project's create defaults. An agent's posture
+ * defaults to its ceiling.
  */
 export async function resolveParentlessSettings(
   projectId: string,
   request: Omit<QueueRequest, 'parent' | 'start'>,
+  source: QueueSource,
 ): Promise<QueuedWorkspaceSettings> {
-  return await resolveSettings(projectId, { pointer: { startAt: new Date() } }, request, 'user')
+  return await resolveSettings(projectId, { pointer: { startAt: new Date() } }, request, source)
 }
 
 /** Wire entries, flagging the ones whose parent workspace is gone. */

@@ -11,6 +11,10 @@
 #   yaac-mama delete-queued <queued>
 #     where opts: [--tool T] [--model M] [--effort E] [--permission-mode P]
 #                 [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]
+#   yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
+#   yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
+#   yaac-mama routine pause|resume|run|delete <routine>
+#     where opts are create's but --title
 #   yaac-mama send [--conversation C] <workspace> "<message>"
 #   (each prompt or message also as - for stdin, or as --prompt-file F)
 #   yaac-mama rename [<workspace>] "<title>"
@@ -29,9 +33,10 @@
 # workspaces into named groups, and stop or restart one. Stopping is in reach
 # because it is reversible — the checkout and the conversation survive it —
 # and restarting a stopped workspace only undoes a stop, in a permission mode
-# no more permissive than the caller's. The one thing it deletes is a queued
-# workspace, which has never run, so only its prompt is lost. The
-# settings it changes are the caller's own base branch and a group's
+# no more permissive than the caller's, which also caps what a routine it
+# makes or edits launches. The things it deletes are a queued workspace,
+# which never ran, and a routine, whose schedule and run history go but
+# whose runs' workspaces stay. The settings it changes are the caller's own base branch and a group's
 # workspace limit, which an orchestrator sets for the workers it queues
 # there; the rest stays with the user.
 # `fetch` reads another workspace's branches into this
@@ -80,6 +85,11 @@ Usage:
                                                    # change a queued one
   yaac-mama run-queued <queued>                    # start a queued one now
   yaac-mama delete-queued <queued>                 # discard a queued one
+  yaac-mama routine create --name <name> --cron "<expr>" [--tz <zone>] [opts] "<prompt>"
+                                                   # start one on a schedule
+  yaac-mama routine edit [opts] <routine> ["<prompt>"]
+                                                   # change a routine
+  yaac-mama routine pause|resume|run|delete <routine>
   yaac-mama send [--conversation <c>] <workspace> "<message>"
                                                    # message its running agent
   Any "<prompt>" or "<message>" can instead be - (read from stdin) or
@@ -99,7 +109,8 @@ Usage:
                                                    # save every file of one/all
   yaac-mama --help
 
-Options for create, queue and edit-queued:
+Options for create, queue and edit-queued (routine create and edit take all
+but --title):
   --tool <tool>    agent for the new workspace: claude, codex, opencode, or pi.
                    Omitted, inherits this workspace's tool, then the project
                    default, then claude. Must be logged in on the host (see
@@ -134,8 +145,9 @@ Options for create, queue and edit-queued:
   --timeout <d>    stop the new workspace this long after it starts, in whole
                    minutes or more: 45m, 2h, 1h30m, 1d. The server checks
                    every minute. For a queued workspace with a start time it
-                   counts from that time. edit-queued can shorten a queued
-                   workspace's timeout but not lengthen it.
+                   counts from that time. edit-queued can change a queued
+                   workspace's timeout to any length, or clear it with
+                   --timeout none.
 
 queue also takes at most one of:
   --parent-workspace <id>
@@ -157,6 +169,22 @@ queue also takes at most one of:
                    user's yaac time zone (not this workspace's TZ). Up to a
                    minute late. Options it omits default as create's do.
   --start-in <d>   start it this long from now, like 30m or 2h.
+
+routine create makes a routine: a fresh workspace started on every tick of
+a cron schedule ("0 9 * * 1-5", or @daily-style), read in --tz (an IANA
+zone; omitted, the user's yaac time zone). Each run stops at the next tick
+unless --timeout gives it a length of its own, and is filed in a group named
+after the routine unless --group names one. It takes create's options but
+--title, defaulting as a queue --start-at does, its permission mode capped at
+this workspace's own. It prints the routine's id, then its next runs on
+stderr. routine edit takes the same options plus a new prompt; like
+edit-queued it refuses a routine more permissive than this workspace until
+the edit lowers it. --timeout next clears its timeout, so each run stops at
+the next tick again. routine run starts a run now and routine resume
+restarts the schedule, both refused for a routine more permissive than this
+workspace. routine pause stops the schedule, and routine delete removes the
+routine and its run history; runs already started keep going either way,
+and every run's workspace stays. list shows the project's routines.
 
 edit-queued changes the queued workspace <queued> names: each option given
 replaces its setting (--parent-workspace re-parents it; --no-parent has it
@@ -248,8 +276,10 @@ must outlive the workspace (commit, push, report) before you run it.
 restart brings a stopped workspace back under its id, resuming the
 conversations it had, in its recorded permission mode — so one more
 permissive than this workspace is refused, as is a running one (restarting
-it would end its agent's turn). It prints once the restart is under way;
-watch `yaac-mama list` for it to run, then `send` it what to do next.
+it would end its agent's turn). One that had a timeout gets the same length
+again unless --timeout names another, or none to have no timeout. It prints
+once the restart is under way; watch `yaac-mama list` for it to run, then
+`send` it what to do next.
 EOF
 }
 
@@ -479,6 +509,15 @@ fetch_workspace() {
 
 [ $# -gt 0 ] || { usage >&2; exit 2; }
 
+# `routine <verb>` is the server's `routine-<verb>`, parsed below beside the
+# queue commands it mirrors.
+if [ "$1" = routine ]; then
+  case "${2:-}" in
+    create|edit|pause|resume|run|delete) sub=$2; shift 2; set -- "routine-$sub" "$@" ;;
+    *) echo 'usage: yaac-mama routine create|edit|pause|resume|run|delete …' >&2; exit 2 ;;
+  esac
+fi
+
 case "$1" in
   -h|--help) usage; exit 0 ;;
 
@@ -575,18 +614,21 @@ EOF
     exit 0
     ;;
 
-  create|queue|edit-queued)
+  create|queue|edit-queued|routine-create|routine-edit)
     cmd=$1; shift
     tool=""; model=""; effort=""; perm=""; ui_mode=""; branch=""; group=""; title=""; parent=""; no_parent=""; prompt_file=""
-    timeout=""; start_at=""; start_in=""
+    timeout=""; start_at=""; start_in=""; routine_name=""; cron=""; tz=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --no-parent) no_parent=1; shift; continue ;;
-        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in)
+        --tool|--model|--effort|--permission-mode|--ui-mode|--branch|--group|--title|--parent-workspace|--prompt-file|--timeout|--start-at|--start-in|--name|--cron|--tz)
           [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
         *) break ;;
       esac
       case "$1" in
+        --name) routine_name=$2 ;;
+        --cron) cron=$2 ;;
+        --tz) tz=$2 ;;
         --prompt-file) prompt_file=$2 ;;
         --tool) tool=$2 ;;
         --model) model=$2 ;;
@@ -608,46 +650,48 @@ EOF
       echo 'yaac-mama: create starts now; use queue for --parent-workspace, --start-at or --start-in' >&2
       exit 2
     fi
-    queued=""; prompt=""
-    # The positional arguments after <queued>, if any: the prompt.
-    given=$#; [ "$cmd" != edit-queued ] || given=$(($# - 1))
-    [ -z "$prompt_file" ] || [ "$given" -lt 1 ] || both_prompts
+    ropts='--name N --cron C [--tz Z] [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--timeout D]'
     case "$cmd" in
-      create)
-        if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
-        elif [ $# -ne 1 ] || [ -z "$1" ]; then
-          echo "usage: yaac-mama create $opts \"<prompt>\" | - | --prompt-file F" >&2
-          exit 2
-        fi
-        prompt=${1:-}
-        ;;
-      queue)
-        # Whether a missing parent is allowed (a start time, or a group with
-        # a workspace limit) is the server's to say.
-        if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
-        elif [ $# -ne 1 ] || [ -z "$1" ]; then
-          echo "usage: yaac-mama queue [--parent-workspace W | --start-at T | --start-in D] $opts \"<prompt>\" | - | --prompt-file F" >&2
-          exit 2
-        fi
-        prompt=${1:-}
-        ;;
-      edit-queued)
+      create) use="create $opts" ;;
+      # Whether a missing parent is allowed (a start time, or a group with
+      # a workspace limit) is the server's to say.
+      queue) use="queue [--parent-workspace W | --start-at T | --start-in D] $opts" ;;
+      routine-create) use="routine create $ropts" ;;
+      edit-queued) use="edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] $opts <queued>" ;;
+      routine-edit) use="routine edit [$ropts] <routine>" ;;
+    esac
+    queued=""; routine=""; prompt=""
+    case "$cmd" in
+      edit-queued|routine-edit)
+        # The positional arguments after the id, if any: the prompt.
+        [ -z "$prompt_file" ] || [ $# -lt 2 ] || both_prompts
         # The prompt is optional (omitted keeps the stored one), but one that
         # is present and empty is refused: `edit-queued "$id" "$p"` with $p
         # unset meant to change the prompt, not to leave it.
         if [ $# -lt 1 ] || [ $# -gt 2 ] || [ -z "$1" ] || { [ $# -eq 2 ] && [ -z "$2" ]; }; then
-          echo "usage: yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --start-in D] $opts <queued> [\"<prompt>\" | - | --prompt-file F]" >&2
+          echo "usage: yaac-mama $use [\"<prompt>\" | - | --prompt-file F]" >&2
           exit 2
         fi
-        queued=$1; prompt=${2:-}
+        if [ "$cmd" = edit-queued ]; then queued=$1; else routine=$1; fi
+        prompt=${2:-}
+        ;;
+      *)
+        [ -z "$prompt_file" ] || [ $# -lt 1 ] || both_prompts
+        if [ -n "$prompt_file" ] && [ $# -eq 0 ]; then :
+        elif [ $# -ne 1 ] || [ -z "$1" ]; then
+          echo "usage: yaac-mama $use \"<prompt>\" | - | --prompt-file F" >&2
+          exit 2
+        fi
+        prompt=${1:-}
         ;;
     esac
     read_prompt
-    set -- "$cmd" "$prompt" queued "$queued" parent-workspace "$parent" no-parent "$no_parent" tool "$tool" model "$model" \
-      effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" group "$group" title "$title" \
-      timeout "$timeout" start-at "$start_at" start-in "$start_in"
-    [ "$cmd" = queue ] || run "$@"
-    # The queued id alone on stdout, for `id=$(yaac-mama queue …)`; any note
+    set -- "$cmd" "$prompt" queued "$queued" routine "$routine" parent-workspace "$parent" no-parent "$no_parent" \
+      tool "$tool" model "$model" effort "$effort" permission-mode "$perm" ui-mode "$ui_mode" branch "$branch" \
+      group "$group" title "$title" timeout "$timeout" start-at "$start_at" start-in "$start_in" \
+      name "$routine_name" cron "$cron" tz "$tz"
+    case "$cmd" in queue|routine-create) ;; *) run "$@" ;; esac
+    # The new id alone on stdout, for `id=$(yaac-mama queue …)`; any note
     # the server adds after it goes to stderr.
     ask "$@"
     printf '%s\n' "$text" | head -n 1
@@ -736,22 +780,14 @@ EOF
     run restart '' workspace "$1" timeout "$timeout"
     ;;
 
-  run-queued)
-    shift
+  run-queued|delete-queued|routine-pause|routine-resume|routine-run|routine-delete)
+    cmd=$1; shift
+    case "$cmd" in routine-*) noun=routine ;; *) noun=queued ;; esac
     if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama run-queued <queued>' >&2
+      echo "usage: yaac-mama $(printf '%s' "$cmd" | sed 's/^routine-/routine /') <$noun>" >&2
       exit 2
     fi
-    run run-queued '' queued "$1"
-    ;;
-
-  delete-queued)
-    shift
-    if [ $# -ne 1 ] || [ -z "$1" ]; then
-      echo 'usage: yaac-mama delete-queued <queued>' >&2
-      exit 2
-    fi
-    run delete-queued '' queued "$1"
+    run "$cmd" '' "$noun" "$1"
     ;;
 
   group)
@@ -791,7 +827,7 @@ EOF
     ;;
 
   *)
-    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, send, rename, stop, restart, group, models, fetch, history)" >&2
+    echo "yaac-mama: unknown command '$1' (expected: list, create, queue, edit-queued, run-queued, delete-queued, routine, send, rename, stop, restart, group, models, fetch, history)" >&2
     echo 'run "yaac-mama --help" for usage' >&2
     exit 2
     ;;

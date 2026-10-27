@@ -70,7 +70,7 @@ afterEach(async () => {
 })
 
 const routine = (over: Partial<Parameters<typeof createRoutine>[2]> = {}) =>
-  createRoutine(local, PROJ, { name: 'Nightly triage', cron: '0 9 * * *', prompt: 'triage the issues', tool: 'claude', ...over })
+  createRoutine(local, PROJ, { name: 'Nightly triage', cron: '0 9 * * *', prompt: 'triage the issues', tool: 'claude', ...over }, 'user')
 
 /** Make a routine's next tick already due, as the clock moving past it
  *  would. */
@@ -103,22 +103,22 @@ describe('updateRoutine', () => {
   it('replaces what it names, re-reading the next tick only when the schedule changes', async () => {
     const r = await routine({ timeout: 30 })
     const before = (await getRoutineRow(r.id))!.nextRunAt
-    const renamed = await updateRoutine(local, r.id, { name: 'Renamed', timeout: null })
+    const renamed = await updateRoutine(local, r.id, { name: 'Renamed', timeout: null }, 'user')
     expect(renamed).toMatchObject({ name: 'Renamed', groupId: r.groupId })
     expect(renamed.timeoutMinutes).toBeUndefined()
     expect((await getRoutineRow(r.id))!.nextRunAt).toEqual(before)
 
-    const moved = await updateRoutine(local, r.id, { cron: '30 6 * * 1', timeZone: 'Europe/Paris' })
+    const moved = await updateRoutine(local, r.id, { cron: '30 6 * * 1', timeZone: 'Europe/Paris' }, 'user')
     expect((await getRoutineRow(r.id))!.nextRunAt).toEqual(nextCronRuns('30 6 * * 1', 'Europe/Paris', new Date(), 1)[0])
     expect(moved.cron).toBe('30 6 * * 1')
-    await expect(updateRoutine(local, r.id, { cron: '61 * * * *' })).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(updateRoutine(local, r.id, { cron: '61 * * * *' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
   })
 
   it('never writes back a tick fired, or a pause made, while it ran', async () => {
     const r = await routine({ cron: '*/5 * * * *', timeZone: 'UTC' })
     await due(r.id, latestCronRun('*/5 * * * *', 'UTC', new Date())!)
     await Promise.all([
-      updateRoutine(local, r.id, { name: 'renamed' }),
+      updateRoutine(local, r.id, { name: 'renamed' }, 'user'),
       reconcileRoutines().then(() => startScheduledWorkspaces()),
     ])
     await reconcileRoutines()
@@ -128,7 +128,7 @@ describe('updateRoutine', () => {
     expect(launched).toHaveLength(1)
     expect((await getRoutineRow(r.id))!.nextRunAt!.getTime()).toBeGreaterThan(Date.now())
 
-    await Promise.all([setRoutinePaused(local, r.id, true), updateRoutine(local, r.id, { name: 'again' })])
+    await Promise.all([setRoutinePaused(local, r.id, true), updateRoutine(local, r.id, { name: 'again' }, 'user')])
     expect(await getRoutineRow(r.id)).toMatchObject({ paused: true, name: 'again' })
   })
 })
@@ -269,7 +269,7 @@ describe('listRoutineRunPage', () => {
     const db = await getDb()
     await db.update(workspaces).set({ deadline: new Date(Date.now() - 60_000) }).where(eq(workspaces.workspaceId, workspaceId))
     await recordWorkspaceStopped(PROJ, workspaceId)
-    await updateRoutine(local, r.id, { timeout: 30 })
+    await updateRoutine(local, r.id, { timeout: 30 }, 'user')
     expect((await listRoutineRunPage(r.id, { limit: 1 })).runs[0]).toMatchObject({ state: 'ended' })
     expect((await listStoppedWorkspaces({ project: PROJ })).entries[0]).toMatchObject({ timedOut: true, endedAtNextRun: true })
     await clearWorkspaceStopped(PROJ, workspaceId)

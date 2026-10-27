@@ -6,9 +6,11 @@
  * so runs never overlap.
  *
  * Settings are resolved when the routine is saved, as a queued entry's are,
- * so what the UI shows is what each run launches with.
+ * so what the UI shows is what each run launches with. An agent's writes
+ * (`yaac-mama routine …`) are held to its permission mode, as its queue
+ * writes are (`QueueSource`).
  */
-import { resolveParentlessSettings, runQueuedWorkspace } from './queued-workspaces'
+import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource } from './queued-workspaces'
 import { authorizeProject, type Actor } from '#domain/access'
 import { modelDisplayName } from '#domain/auth'
 import {
@@ -48,9 +50,10 @@ export async function createRoutine(
   principal: Actor,
   projectId: string,
   request: RoutineSettings,
+  source: QueueSource,
 ): Promise<RoutineEntry> {
   await authorizeProject(principal, projectId)
-  const fields = await resolveRoutine(projectId, request)
+  const fields = await resolveRoutine(projectId, request, source)
   const row = await insertRoutine(projectId, fields, nextTick(fields.cron, fields.timeZone, new Date()))
   return (await toEntries([row]))[0]
 }
@@ -66,6 +69,7 @@ export async function updateRoutine(
   principal: Actor,
   id: string,
   patch: Partial<RoutineSettings>,
+  source: QueueSource,
 ): Promise<RoutineEntry> {
   const row = await routineFor(principal, id)
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
@@ -85,7 +89,7 @@ export async function updateRoutine(
       : retooled ? {} : { permissionMode: row.permissionMode }),
     ...(patch.effort !== undefined ? { effort: patch.effort }
       : !retooled && patch.model === undefined && row.effort !== undefined ? { effort: row.effort } : {}),
-  })
+  }, source)
   const rescheduled = fields.cron !== row.cron || fields.timeZone !== row.timeZone
   const updated = await updateRoutineRow(id, fields,
     rescheduled && !row.paused ? nextTick(fields.cron, fields.timeZone, new Date()) : undefined)
@@ -235,7 +239,7 @@ function nextTick(cron: string, timeZone: string, from: Date): Date | null {
  * owner's, else UTC; a create that names no group files runs under one
  * named after the routine, made if need be.
  */
-async function resolveRoutine(projectId: string, request: RoutineSettings): Promise<RoutineFields> {
+async function resolveRoutine(projectId: string, request: RoutineSettings, source: QueueSource): Promise<RoutineFields> {
   const cron = request.cron.trim()
   const invalid = cronError(cron)
   if (invalid !== undefined) throw new ServerError('VALIDATION', `invalid cron '${cron}': ${invalid}`)
@@ -251,7 +255,7 @@ async function resolveRoutine(projectId: string, request: RoutineSettings): Prom
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     group: request.group !== undefined ? request.group : name,
-  })
+  }, source)
   return {
     name,
     cron,

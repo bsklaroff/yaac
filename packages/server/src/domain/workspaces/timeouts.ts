@@ -39,8 +39,7 @@ export async function reconcileWorkspaceTimeouts(snapshot: RuntimeSnapshot): Pro
 
 /**
  * Give a running workspace a timeout counted from now, or clear it with
- * null. User-only: no `yaac-mama` verb reaches this, so an agent cannot
- * extend its own life. Returns the new deadline.
+ * null. No `yaac-mama` verb reaches this. Returns the new deadline.
  */
 export async function setWorkspaceTimeout(
   principal: Actor,

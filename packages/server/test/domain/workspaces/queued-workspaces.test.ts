@@ -344,14 +344,13 @@ describe('queueWorkspace', () => {
 // docs/workspace-groups.md
 
 describe('updateQueuedWorkspace', () => {
-  it('lets an agent set or shorten a timeout, but not lengthen or clear one', async () => {
+  it('lets an agent shorten, lengthen or clear a timeout the user gave', async () => {
     await workspace(P, { permissionMode: 'accept-edits' })
     const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', timeout: 60 }, 'user')
     const agent = { ceiling: 'accept-edits' as const }
     expect((await updateQueuedWorkspace(local, entry.id, { timeout: 30 }, agent)).timeoutMinutes).toBe(30)
-    await expect(updateQueuedWorkspace(local, entry.id, { timeout: 90 }, agent)).rejects.toThrow(/only the user can give it longer/)
-    await expect(updateQueuedWorkspace(local, entry.id, { timeout: null }, agent)).rejects.toThrow(/only the user/)
-    expect((await updateQueuedWorkspace(local, entry.id, { timeout: null }, 'user')).timeoutMinutes).toBeUndefined()
+    expect((await updateQueuedWorkspace(local, entry.id, { timeout: 90 }, agent)).timeoutMinutes).toBe(90)
+    expect((await updateQueuedWorkspace(local, entry.id, { timeout: null }, agent)).timeoutMinutes).toBeUndefined()
   })
 
   it('replaces what it names, re-resolving a new tool\'s model and posture', async () => {
