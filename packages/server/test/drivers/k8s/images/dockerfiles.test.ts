@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
+import { LLAMA_CPP_SHA256, LLAMA_CPP_TAG } from '#domain/workspaces/llama-cpp'
 
 const read = (name: string): Promise<string> =>
   fs.readFile(path.join(DOCKERFILES_DIR, name), 'utf8')
@@ -92,7 +93,7 @@ describe('Dockerfile.tools', () => {
     const content = await read('Dockerfile.tools')
     expect(content).toMatch(/^ARG BASE_IMAGE\n/m)
     expect(content).toMatch(/^FROM \$\{BASE_IMAGE\}/m)
-    expect(content).toContain('claude.ai/install.sh')
+    expect(content).toContain('downloads.claude.ai/claude-code-releases/')
     expect(content).toContain('@openai/codex')
     expect(content).toContain('@opencode/cli')
   })
@@ -164,6 +165,13 @@ describe('Dockerfile.nestable', () => {
 })
 
 describe('Dockerfile.server', () => {
+  it('bakes the llama.cpp release the server would download', async () => {
+    const content = await read('Dockerfile.server')
+    expect(content).toContain(`ARG LLAMA_CPP_TAG=${LLAMA_CPP_TAG}\n`)
+    expect(content).toContain(`ARCH=x64 SHA256=${LLAMA_CPP_SHA256['ubuntu-x64'] ?? 'x'} `)
+    expect(content).toContain(`ARCH=arm64 SHA256=${LLAMA_CPP_SHA256['ubuntu-arm64'] ?? 'x'} `)
+  })
+
   it('runs the server as the same uid-agnostic yaac user', async () => {
     const content = await read('Dockerfile.server')
     // The server pod runs as the install host's uid, like a workspace pod,
@@ -194,6 +202,36 @@ describe('Dockerfile.server', () => {
 })
 
 describe('every shipped Dockerfile', () => {
+  it('pins every upstream image by digest and checks every download', async () => {
+    // A tag or a release asset can be replaced in place upstream; a pinned
+    // digest or SHA-256 makes the build fail instead. `${BASE_IMAGE}` is
+    // yaac's own layer, already pinned by its content-hash tag.
+    for (const name of [...SHIPPED, '../k8s/proxy/Dockerfile', '../k8s/netd/Dockerfile']) {
+      const steps = (await read(name)).replace(/\\\n/g, ' ').split('\n')
+      for (const from of steps.filter((l) => /^FROM\s/.test(l) && !l.includes('${BASE_IMAGE}'))) {
+        expect(from, name).toMatch(/^FROM \S+@sha256:[0-9a-f]{64}(\s|$)/)
+      }
+      expect(steps.filter((l) => /^ADD\s.*\bhttps?:/.test(l)), name).toEqual([])
+      for (const step of steps.filter((l) => /^RUN\s/.test(l))) {
+        const where = `${name}: ${step.slice(0, 120)}`
+        expect(step, where).not.toMatch(/\bwget\s+[-"'$h]/)
+        // Each curl writes a file, and that same file is what a
+        // `sha256sum -c` in the step reads.
+        const curls = step.replace(/^RUN\s+/, '').split(/&&|\||;/).map((c) => c.trim())
+          .filter((c) => /^curl\s/.test(c))
+        for (const curl of curls) {
+          const url = /\s["']?(https?:\/\/[^\s"']+)/.exec(curl)?.[1] ?? ''
+          const file = /\s-o\s+["']?([^\s"']+)/.exec(curl)?.[1]
+            ?? (/\s-[a-zA-Z]*O[a-zA-Z]*\s/.test(curl) ? url.slice(url.lastIndexOf('/') + 1) : undefined)
+          expect(file, `${where}: curl must write a file`).toBeDefined()
+          const escaped = (file ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+          expect(step, `${where}: ${file ?? ''} is never checked`)
+            .toMatch(new RegExp(`${escaped}["']\\s*\\|\\s*sha256sum -c`))
+        }
+      }
+    }
+  })
+
   it('sets umask 002 on every RUN step that runs as yaac', async () => {
     // A step running as `yaac` must create group-writable files, since the
     // pod runs as another uid and reaches them through group 0

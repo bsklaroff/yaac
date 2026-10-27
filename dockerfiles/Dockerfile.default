@@ -1,4 +1,7 @@
-FROM docker.io/ubuntu:26.04
+# Every download is pinned to a digest or SHA-256, so a release asset
+# replaced upstream fails the build instead of entering the image. apt
+# packages need no pin: apt checks them against the signed archive index.
+FROM docker.io/ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential ca-certificates catatonit curl file fonts-liberation git \
@@ -11,6 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen && update-locale LANG=en_US.UTF-8 && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo '6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b  /usr/share/keyrings/githubcli-archive-keyring.gpg' | \
+      sha256sum -c - && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] \
       https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && \
     apt-get update && apt-get install -y --no-install-recommends gh && \
@@ -39,9 +44,13 @@ exec /usr/bin/tar "$@"
 EOF
 # Dockerfile.server and the proxy/netd images use the same Node version.
 ARG NODE_VERSION=24.21.0
-RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" | \
-    tar -xJ -C /usr/local --strip-components=1
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) ARCH=x64 SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;; \
+      arm64) ARCH=arm64 SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;; \
+    esac && \
+    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" && \
+    echo "${SHA256}  /tmp/node.tar.xz" | sha256sum -c - && \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm /tmp/node.tar.xz
 RUN corepack enable
 # streamd: the in-pod stream daemon (PTY/ctrl/exec/tcp streams) the server
 # dials through the proxy relay. Started by the pod's setup, not the

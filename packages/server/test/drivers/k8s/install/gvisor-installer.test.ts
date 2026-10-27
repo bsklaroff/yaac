@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
@@ -44,6 +45,7 @@ import {
   GVISOR_INSTALL_LOCK_TIMEOUT_S,
   GVISOR_NODE_VERSION_LABEL,
   GVISOR_RELEASE_BASE,
+  GVISOR_SHA512,
   GVISOR_VERSION,
   NODE_BIN_DIR,
   NODE_CONTAINERD_CERTS_DIR,
@@ -373,29 +375,25 @@ describe('ensureGvisorRuntime', () => {
 
     it('installs the pinned, checksum-verified release and registers both handlers', () => {
 
-      // Pinned version per arch, with the sha512 verified in a scratch dir
-      // before anything reaches the node's PATH.
+      // Pinned version per arch, checked against the SHA-512 pinned here
+      // (never one fetched beside it) in a scratch dir before anything
+      // reaches the node's PATH.
       expect(script).toContain(`version='${GVISOR_VERSION}'`)
       expect(script).toContain(`base='${GVISOR_RELEASE_BASE}'`)
       expect(script).toContain('curl -fsSL "$base/$arch/$1" -o "$1"')
-      expect(script).toContain('curl -fsSL "$base/$arch/$1.sha512" -o "$1.sha512"')
-      expect(script).toContain('sha512sum -c "$1.sha512" >/dev/null')
+      expect(script).not.toContain('.sha512"')
       // Both uname spellings of each arch.
-      expect(script).toContain('x86_64|amd64) arch=x86_64')
-      expect(script).toContain('aarch64|arm64) arch=aarch64')
+      expect(script).toContain(`x86_64|amd64) arch=x86_64 sum=${GVISOR_SHA512.x86_64} ;;`)
+      expect(script).toContain(`aarch64|arm64) arch=aarch64 sum=${GVISOR_SHA512.aarch64} ;;`)
       expect(script).toContain('unsupported node architecture for gVisor')
 
       // The cache outlives the pod, so a hit is re-verified; otherwise an
       // interrupted write would be installed forever.
       expect(script).toContain(`cache='/host${NODE_GVISOR_CACHE_DIR}'`)
-      expect(script).toContain('if [ -f "$dest" ] && [ -f "$dest.sha512" ] \\')
-      expect(script).toContain('&& (cd "$(dirname "$dest")" && sha512sum -c "$1.sha512" >/dev/null 2>&1); then')
+      expect(script).toContain('if [ -f "$dest" ] && pinned "$dest"; then')
       // Staged in the cache dir so publishing is an atomic rename, not a
       // cross-device copy (busybox makes the file executable while partial).
       expect(script).toContain('tmp="$(dirname "$dest")/.tmp-$$"')
-      // The checksum is written before the binary.
-      expect(script.indexOf('mv "$1.sha512" "$dest.sha512"'))
-        .toBeLessThan(script.indexOf('mv "$1" "$dest"'))
 
       // runsc (which the version check reads) is moved in after the sidecars
       // and shim, so a pass that dies midway is not mistaken for converged.
@@ -504,7 +502,8 @@ describe('ensureGvisorRuntime', () => {
           await fs.writeFile(path.join(src, f), `#!/bin/sh\necho ${f} new\n`, { mode: 0o755 })
         }
         await fs.mkdir(srv)
-        await runSh('sh', ['-c', `tar -cjf '${srv}/gvisor.tar.bz2' -C '${src}' . && cd '${srv}' && sha512sum gvisor.tar.bz2 > gvisor.tar.bz2.sha512`])
+        await runSh('sh', ['-c', `tar -cjf '${srv}/gvisor.tar.bz2' -C '${src}' .`])
+        const sum = crypto.createHash('sha512').update(await fs.readFile(path.join(srv, 'gvisor.tar.bz2'))).digest('hex')
 
         // A node as releases before the tarball left it: separate runsc and
         // shim binaries, no gvisor-bin/, and a cache of those binaries. A
@@ -521,10 +520,11 @@ describe('ensureGvisorRuntime', () => {
         await fs.mkdir(path.join(cache, '.install-lock'))
         await fs.writeFile(path.join(cache, '.install-lock', 'taken-at'), '1')
 
-        const install = (): Promise<{ stdout: string }> => runSh('sh', ['-c', [
+        const install = (pin = sum): Promise<{ stdout: string }> => runSh('sh', ['-c', [
           'set -eu',
-          `bin='${bin}' cache='${cache}' version=v1 arch=x86_64 base=http://release`,
+          `bin='${bin}' cache='${cache}' version=v1 arch=x86_64 base=http://release sum=${pin}`,
           `curl() { echo "GET $2"; cp "${srv}/\${2##*/}" "$4"; }`,
+          shellFunction(script, 'pinned') + '\n}',
           shellFunction(script, 'fetch') + '\n}',
           shellFunction(script, 'install_release') + '\n}',
           shellFunction(script, 'prune_cache') + '\n}',
@@ -559,6 +559,13 @@ describe('ensureGvisorRuntime', () => {
         await fs.mkdir(path.join(bin, '.yaac-gvisor-new', 'gvisor-bin'), { recursive: true })
         await fs.appendFile(path.join(cache, 'v1', 'x86_64', 'gvisor.tar.bz2'), 'x')
         expect((await install()).stdout).toContain('GET http://release/x86_64/gvisor.tar.bz2')
+        await expectInstalled()
+
+        // A release that does not match its pin is never installed.
+        await fs.appendFile(path.join(cache, 'v1', 'x86_64', 'gvisor.tar.bz2'), 'x')
+        await expect(install('0'.repeat(128))).rejects
+          .toMatchObject({ stderr: expect.stringContaining('does not match its pinned SHA-512') as unknown })
+        await expect(fs.access(path.join(cache, 'v1', 'x86_64', 'gvisor.tar.bz2'))).rejects.toThrow()
         await expectInstalled()
       } finally {
         await fs.rm(dir, { recursive: true, force: true })

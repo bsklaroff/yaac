@@ -2,13 +2,16 @@
 #
 # Under the k8s driver the server runs as an in-cluster Deployment
 # (docs/server-in-cluster.md). The build context is `dist/`, the npm bundle:
-# cli.js, the SPA, drizzle migrations, the other images' build contexts, and a
-# `package.json` naming cli.js's externals with catalog pins resolved
-# (scripts/write-dist-manifest.ts), since the build host may lack pnpm.
+# cli.js, the SPA, drizzle migrations, the other images' build contexts, and
+# the `package.json` and `npm-shrinkwrap.json` that pin cli.js's externals to
+# pnpm-lock.yaml (scripts/write-dist-manifest.ts), since the build host may
+# lack pnpm.
 #
 # Built by `yaac cluster install` on the CLI's machine, never in-cluster
 # (docs/trust-split-builds.md), and tagged by the context's content hash.
-FROM docker.io/ubuntu:26.04
+# Every download is pinned to a digest or SHA-256, so a release asset
+# replaced upstream fails the build instead of entering the image.
+FROM docker.io/ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 # Keep in step with Dockerfile.default's Node version.
 ARG NODE_VERSION=24.21.0
@@ -16,8 +19,8 @@ ARG NODE_VERSION=24.21.0
 # version of the kind node's Kubernetes.
 ARG KUBECTL_VERSION=v1.37.1
 # Baked so auto-titles need no download, since a pod's $HOME does not
-# survive a roll. The builder passes LLAMA_CPP_TAG from
-# domain/workspaces/llama-cpp.ts.
+# survive a roll. The tag and checksums are `LLAMA_CPP_TAG` and
+# `LLAMA_CPP_SHA256` in domain/workspaces/llama-cpp.ts (a test checks).
 ARG LLAMA_CPP_TAG=b11313
 
 # catatonit: node is PID 1 here and would never reap the orphans of the
@@ -29,13 +32,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates catatonit curl git libgomp1 netcat-openbsd openssh-client tar xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
-RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" | \
-    tar -xJ -C /usr/local --strip-components=1
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) ARCH=x64 SHA256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 ;; \
+      arm64) ARCH=arm64 SHA256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;; \
+    esac && \
+    curl -fsSL -o /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.xz" && \
+    echo "${SHA256}  /tmp/node.tar.xz" | sha256sum -c - && \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm /tmp/node.tar.xz
 
-RUN ARCH="$(dpkg --print-architecture)" && \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) ARCH=amd64 SHA256=65691ff77eb6fa44c908b77a1082c9f092c3b9733b5cefabec0d1104890e21a8 ;; \
+      arm64) ARCH=arm64 SHA256=ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7 ;; \
+    esac && \
     curl -fsSL -o /usr/local/bin/kubectl \
       "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl" && \
+    echo "${SHA256}  /usr/local/bin/kubectl" | sha256sum -c - && \
     chmod 0755 /usr/local/bin/kubectl && \
     kubectl version --client
 
@@ -47,18 +58,22 @@ RUN userdel -r ubuntu 2>/dev/null; useradd -m -u 1000 -g 0 -s /bin/bash yaac && 
     chmod -R g=u /home/yaac && \
     chgrp 0 /etc/passwd && chmod g=u /etc/passwd
 
-RUN mkdir -p /home/yaac/.cache/yaac/llama-cpp && \
-    ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x64; fi && \
-    curl -fsSL "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-ubuntu-${ARCH}.tar.gz" \
-      | tar -xz -C /home/yaac/.cache/yaac/llama-cpp && \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) ARCH=x64 SHA256=da91b61d1d944f5fa09f9577f8e1af1fd2842f80b82231594f6cddb546452045 ;; \
+      arm64) ARCH=arm64 SHA256=c286e8aa4a7759812da9ef7a2c1dd53692053d5db837ee170caa091181a57869 ;; \
+    esac && \
+    curl -fsSL -o /tmp/llama.tar.gz \
+      "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-ubuntu-${ARCH}.tar.gz" && \
+    echo "${SHA256}  /tmp/llama.tar.gz" | sha256sum -c - && \
+    mkdir -p /home/yaac/.cache/yaac/llama-cpp && \
+    tar -xzf /tmp/llama.tar.gz -C /home/yaac/.cache/yaac/llama-cpp && rm /tmp/llama.tar.gz && \
     chown -R yaac:0 /home/yaac && chmod -R g=u /home/yaac
 
 COPY . /opt/yaac/
-# Install cli.js's unbundled externals from the manifest shipped beside it
-# (checked at build time by scripts/check-cli-externals.ts), under the repo's
-# release-age window (release-age.npmrc, from scripts/write-dist-manifest.ts).
-RUN cd /opt/yaac && npm install --userconfig ./release-age.npmrc \
-      --omit=dev --no-audit --no-fund --no-package-lock && \
+# Install cli.js's unbundled externals (checked at build time by
+# scripts/check-cli-externals.ts) exactly as the shipped lockfile pins them.
+# No install scripts, as pnpm runs none for these packages.
+RUN cd /opt/yaac && npm ci --omit=dev --ignore-scripts --no-audit --no-fund && \
     npm cache clean --force && \
     chown -R yaac:0 /opt/yaac && chmod -R g=u /opt/yaac && \
     chmod 0755 /opt/yaac/dockerfiles/server-entrypoint.sh

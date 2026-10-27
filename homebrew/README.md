@@ -44,6 +44,10 @@ next newer tap version or removed by `brew uninstall --cask`.
 
 - **`Formula/yaac-server.rb`** installs the published npm tarball (`@bsklaroff/yaac`;
   the unscoped `yaac` name was taken) into `libexec` and links `bin/yaac`.
+  Its dependencies come from `npm ci` against the tarball's
+  `dist/npm-shrinkwrap.json`, which `pnpm build` writes from `pnpm-lock.yaml`,
+  so a brew install gets the versions and integrity hashes the repo locked
+  under its release-age gate, never a fresh resolution.
   - Depends on core `node`, plus what the containerless driver needs on the
     host, which has no session image: `tmux` (runs each workspace) and
     `socat` (the ACP chat transport), which a create refuses to run without,

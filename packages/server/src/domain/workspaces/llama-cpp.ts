@@ -23,6 +23,16 @@ import { serverLocalPath } from '@yaac/shared/paths'
 /** Pinned llama.cpp release tag; CPU archives exist for linux/macOS × x64/arm64. */
 export const LLAMA_CPP_TAG = 'b11313'
 
+/** SHA-256 of each `llama-<tag>-bin-<platform>.tar.gz` of the pinned release
+ *  (the `digest` GitHub lists for the asset), checked before extraction.
+ *  Dockerfile.server bakes the ubuntu pair. Bump with the tag. */
+export const LLAMA_CPP_SHA256: Partial<Record<string, string>> = {
+  'ubuntu-x64': 'da91b61d1d944f5fa09f9577f8e1af1fd2842f80b82231594f6cddb546452045',
+  'ubuntu-arm64': 'c286e8aa4a7759812da9ef7a2c1dd53692053d5db837ee170caa091181a57869',
+  'macos-x64': '3d6e209c12f82516ffa0a641e0306025f414900a73b00f5546ecd1f72bd0f553',
+  'macos-arm64': 'fb4d119c4e41d73ddbb2ef1e254856ff887881903602bbb40ddf174781d23d72',
+}
+
 /** The system library the ubuntu CPU archive links against but doesn't ship.
  *  Without it, no binary in the release starts. */
 const OPENMP_SONAME = 'libgomp.so.1'
@@ -44,20 +54,26 @@ export function llamaCppDir(): string {
 /**
  * Ensure the pinned llama.cpp release is present and runnable, downloading
  * it once (~10-16MB) via a tmp dir and rename so a torn download never
- * half-populates the target. Returns the `llama-completion` path. Throws if
- * the runtime can't run, so the caller reports one backed-off setup error.
+ * half-populates the target, and extracting it only if it matches its
+ * pinned SHA-256 (macOS ships `shasum`, not `sha256sum`). Returns the
+ * `llama-completion` path. Throws if the runtime can't run, so the caller
+ * reports one backed-off setup error.
  */
 export async function ensureLlamaCpp(): Promise<string> {
   const dir = llamaCppDir()
   const bin = path.join(dir, 'llama-completion')
   if (!(await fileExists(bin))) {
-    const osName = process.platform === 'darwin' ? 'macos' : 'ubuntu'
-    const archName = process.arch === 'arm64' ? 'arm64' : 'x64'
+    const platform = `${process.platform === 'darwin' ? 'macos' : 'ubuntu'}-${process.arch === 'arm64' ? 'arm64' : 'x64'}`
     const url = 'https://github.com/ggml-org/llama.cpp/releases/download/'
-      + `${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-${osName}-${archName}.tar.gz`
+      + `${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-${platform}.tar.gz`
+    const sha256 = process.platform === 'darwin' ? 'shasum -a 256' : 'sha256sum'
     const tmp = `${dir}.tmp`
+    const archive = `${tmp}/release.tar.gz`
     await execFileAsync('sh', ['-c',
-      `rm -rf '${tmp}' && mkdir -p '${tmp}' && curl -fsSL '${url}' | tar -xz -C '${tmp}' `
+      `rm -rf '${tmp}' && mkdir -p '${tmp}' && curl -fsSL -o '${archive}' '${url}' `
+      + `&& { [ "$(${sha256} '${archive}' | cut -d' ' -f1)" = '${LLAMA_CPP_SHA256[platform] ?? 'unpinned'}' ] `
+      + `|| { echo '${url} does not match its pinned SHA-256' >&2; exit 1; }; } `
+      + `&& tar -xzf '${archive}' -C '${tmp}' `
       + `&& rm -rf '${dir}' && mv '${tmp}/llama-${LLAMA_CPP_TAG}' '${dir}' && rm -rf '${tmp}'`,
     ], { timeout: 300_000 })
   }

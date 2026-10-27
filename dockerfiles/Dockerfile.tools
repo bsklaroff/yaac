@@ -9,7 +9,7 @@ ARG BASE_IMAGE
 # stage once gVisor (google/gvisor#13532) or bubblewrap
 # (containers/bubblewrap#745) is fixed and codex bundles the fix; the check
 # in test/e2e/codex-sandbox.test.ts fails when that happens.
-FROM docker.io/ubuntu:26.04 AS bwrap
+FROM docker.io/ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944 AS bwrap
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gcc libc6-dev libcap-dev meson ninja-build patch pkg-config xz-utils
 RUN curl -fsSLO https://github.com/containers/bubblewrap/releases/download/v0.13.0/bubblewrap-0.13.0.tar.xz && \
@@ -64,15 +64,24 @@ COPY --from=bwrap /bubblewrap-0.13.0/_build/bwrap /usr/bin/bwrap
 # Neovim lives here rather than in Dockerfile.default so a version bump does
 # not rebuild the slow base image.
 USER root
-RUN ARCH="$(dpkg --print-architecture)" && if [ "$ARCH" = "amd64" ]; then ARCH=x86_64; fi && \
-    curl -fsSL "https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-${ARCH}.tar.gz" | \
-    tar -xz -C /usr/local --strip-components=1 && \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) ARCH=x86_64 SHA256=bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875 ;; \
+      arm64) ARCH=arm64 SHA256=1aa5ca085249580ae0f91eb14f27ec0919773ff2d99a163d03f3d6c21ac29725 ;; \
+    esac && \
+    curl -fsSL -o /tmp/nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-${ARCH}.tar.gz" && \
+    echo "${SHA256}  /tmp/nvim.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/nvim.tar.gz -C /usr/local --strip-components=1 && rm /tmp/nvim.tar.gz && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vi && \
     ln -sf /usr/local/bin/nvim /usr/local/bin/vim
 # fd for pi's file-search tool. Without it on PATH, pi downloads the latest
 # fd release from GitHub on first use. Keep in step with fd's latest release.
-RUN curl -fsSL "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-$(uname -m)-unknown-linux-gnu.tar.gz" | \
-    tar -xz -C /usr/local/bin --strip-components=1 --wildcards '*/fd'
+RUN case "$(uname -m)" in \
+      x86_64) SHA256=a1259cd129636efbc3fef123525c1b49e88fe5088c012630983c310e52fdfa95 ;; \
+      aarch64) SHA256=c0ee43802e3313a317c5af2f4eabd6ba13eeedd595af9775f05e18a13ac4f52c ;; \
+    esac && \
+    curl -fsSL -o /tmp/fd.tar.gz "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-$(uname -m)-unknown-linux-gnu.tar.gz" && \
+    echo "${SHA256}  /tmp/fd.tar.gz" | sha256sum -c - && \
+    tar -xzf /tmp/fd.tar.gz -C /usr/local/bin --strip-components=1 --wildcards '*/fd' && rm /tmp/fd.tar.gz
 USER yaac
 ENV EDITOR=nvim
 
@@ -100,11 +109,23 @@ RUN umask 002 && npm install -g @opencode/cli@2.0.30
 # pi. pi-acp (below) depends on pi's unstable `--mode rpc` event shapes, so
 # bump the two together and re-run the acp e2e tier.
 RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
-# Claude Code via its installer. The installer creates some dirs without
-# group write (~/.claude/sessions is 0700), so fix modes in the same layer.
-# If one of these paths stops existing, `find` fails the build.
-RUN umask 002 && curl -fsSL https://claude.ai/install.sh | bash -s 2.1.301 && \
-    find /home/yaac/.claude* /home/yaac/.local/share/claude \
+# Claude Code: the pinned release binary, checked against its SHA-256 in
+# `AGENT_CLIS.claude.binarySha256` (a test checks they match), then its own
+# `install`. That downloads the version again into
+# ~/.local/share/claude/versions and links ~/.local/bin/claude to it, so the
+# second check holds that copy to the same pin. `install` creates some dirs
+# without group write (~/.claude/sessions is 0700), so fix modes in the same
+# layer. If one of these paths stops existing, `find` fails the build.
+RUN umask 002 && case "$(dpkg --print-architecture)" in \
+      amd64) PLATFORM=linux-x64 SHA256=bc1aad9982c7b59c7d889ff92595d61cf46e0a6eae074cb551d932a989bcd222 ;; \
+      arm64) PLATFORM=linux-arm64 SHA256=1e119036a802d359ba5f9886428e031586e8796f7a858d5a8ee179ac7b8604f0 ;; \
+    esac && \
+    curl -fsSL -o /tmp/claude "https://downloads.claude.ai/claude-code-releases/2.1.301/${PLATFORM}/claude" && \
+    echo "${SHA256}  /tmp/claude" | sha256sum -c - && \
+    chmod 755 /tmp/claude && /tmp/claude install 2.1.301 && rm /tmp/claude && \
+    echo "${SHA256}  /home/yaac/.local/share/claude/versions/2.1.301" | sha256sum -c - && \
+    find /home/yaac/.claude /home/yaac/.local/share/claude /home/yaac/.local/state/claude \
+      /home/yaac/.cache/claude \
       ! -perm -g+w -exec chmod g=u {} +
 # ACP adapters for yaac's `acp` mode (docs/agent-modes.md), launched under
 # acpd. yaac maps each adapter's advertised session modes to permission

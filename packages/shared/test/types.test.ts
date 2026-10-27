@@ -156,11 +156,16 @@ describe('AGENT_CLIS', () => {
     )
     for (const tool of AGENT_TOOLS) {
       const { package: pkg, version } = AGENT_CLIS[tool]
-      // claude goes through its own installer, which takes the version.
+      // claude is its release binary, downloaded by version.
       const installed = tool === 'claude'
-        ? /install\.sh \| bash -s (\S+)/.exec(dockerfile)?.[1]
+        ? /claude-code-releases\/([^/]+)\//.exec(dockerfile)?.[1]
         : new RegExp(`${pkg.replace(/[/@.]/g, '\\$&')}@(\\S+)`).exec(dockerfile)?.[1]
       expect(installed, `${tool}: ${pkg} is not pinned in Dockerfile.tools`).toBe(version)
+    }
+    // The image checks claude's binary against the same SHA-256s.
+    const { binarySha256 } = AGENT_CLIS.claude
+    for (const platform of ['linux-x64', 'linux-arm64']) {
+      expect(dockerfile).toContain(`PLATFORM=${platform} SHA256=${binarySha256[platform] ?? '(unpinned)'} `)
     }
   })
 })
