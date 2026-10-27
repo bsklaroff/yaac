@@ -41,6 +41,7 @@ import {
 } from '#drivers/k8s/images'
 import {
   SERVER_MAMA_PORT,
+  SERVER_PROBE_PORT,
   bootStreamd,
   dialCtrlStream,
   dialPtyStream,
@@ -133,5 +134,6 @@ export function createK8sDriver(): WorkspaceDriver {
     removeAsRoot: (dir, names) => removeAsRoot(dir, names),
 
     mamaRelay: { port: SERVER_MAMA_PORT, authenticate: (bearer) => isProxyAuthSecret(bearer) },
+    probePort: SERVER_PROBE_PORT,
   }
 }

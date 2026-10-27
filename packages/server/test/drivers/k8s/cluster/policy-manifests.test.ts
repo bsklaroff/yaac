@@ -24,6 +24,7 @@ import {
   SERVER_INGRESS_NP_NAME,
   SERVER_MAMA_PORT,
   SERVER_POD_PORT,
+  SERVER_PROBE_PORT,
   POD_STREAM_PORT,
   WORKSPACE_EGRESS_NP_NAME,
 } from '#drivers/k8s/substrate/proxy-constants'
@@ -122,24 +123,33 @@ interface IngressSpec {
 }
 
 describe('buildServerIngressNpManifest', () => {
-  it('admits the node addresses it is given to the API, and the proxy only to the mama port', () => {
-    // No pod may reach the API: the kubelet probe and, on kind, the
-    // forwarder's dial come from node addresses. The proxy forwards
-    // workspace traffic, so it reaches only the mama listener.
-    const np = buildServerIngressNpManifest(['10.89.0.2/32', '10.244.93.192/32']) as unknown as {
+  it('admits node addresses to the probe, to the API only when forwarded, and the proxy only to the mama port', () => {
+    // No pod may reach the API. Node addresses reach it only behind the kind
+    // forwarder, whose dial comes from the node; elsewhere a host-networked
+    // process could claim any identity there. The proxy forwards workspace
+    // traffic, so it reaches only the mama listener.
+    const nodes = ['10.89.0.2/32', '10.244.93.192/32']
+    const render = (forwarded: boolean) => buildServerIngressNpManifest(nodes, forwarded) as unknown as {
       metadata: { name: string }
       spec: IngressSpec
     }
+    const np = render(true)
     expect(np.metadata.name).toBe(SERVER_INGRESS_NP_NAME)
     expect(np.spec.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
     expect(np.spec.policyTypes).toEqual(['Ingress'])
-    expect(np.spec.ingress).toEqual([{
-      from: [{ ipBlock: { cidr: '10.89.0.2/32' } }, { ipBlock: { cidr: '10.244.93.192/32' } }],
-      ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
-    }, {
+    const fromNodes = [{ ipBlock: { cidr: '10.89.0.2/32' } }, { ipBlock: { cidr: '10.244.93.192/32' } }]
+    const fromProxy = {
       from: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
       ports: [{ protocol: 'TCP', port: SERVER_MAMA_PORT }],
-    }])
+    }
+    expect(np.spec.ingress).toEqual([{
+      from: fromNodes,
+      ports: [{ protocol: 'TCP', port: SERVER_PROBE_PORT }, { protocol: 'TCP', port: SERVER_POD_PORT }],
+    }, fromProxy])
+    expect(render(false).spec.ingress).toEqual([
+      { from: fromNodes, ports: [{ protocol: 'TCP', port: SERVER_PROBE_PORT }] },
+      fromProxy,
+    ])
   })
 })
 

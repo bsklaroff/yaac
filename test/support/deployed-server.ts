@@ -10,7 +10,7 @@ import {
   processIdentity,
   waitForRollout,
 } from '@yaac/server/drivers/k8s/substrate'
-import { buildServerIngressNpManifest, ensureNamespace, nodeIpBlocks } from '@yaac/server/drivers/k8s/cluster'
+import { applyServerIngress, ensureNamespace, nodeIpBlocks } from '@yaac/server/drivers/k8s/cluster'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster'
 import {
   buildServerClusterRoleBindingManifest,
@@ -92,7 +92,7 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   await applyObject(buildServerClusterRoleBindingManifest())
   // Only the node-side ingress rule, which admits the kubelet's readiness
   // probe. `kubectl port-forward` bypasses network policy.
-  await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
+  await applyServerIngress(await nodeIpBlocks())
   await applyObject(testServerDeploymentManifest(imageRef, opts.env))
   try {
     await waitForRollout({ workload: `deployment/${SERVER_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 300_000 })

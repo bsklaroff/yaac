@@ -144,16 +144,16 @@ export const PROXY_PROJECT_SECRETS_PREFIX = 'yaac-proxy-secrets'
 export const SERVER_APP_NAME = 'yaac-server'
 export const SERVER_SA_NAME = 'yaac-server'
 /**
- * NetworkPolicy admitting the server pod's API from node addresses (the
- * kubelet's readiness probe and, on kind, the fronting forwarder), and its
- * mama listener from the proxy. Both install and server start apply it,
- * since nodes can be added later.
+ * NetworkPolicy admitting node addresses to the server pod's probe listener
+ * (and to its API while the kind forwarder fronts it), and the proxy to its
+ * mama listener. Both install and server start apply it, since nodes can be
+ * added later.
  */
 export const SERVER_INGRESS_NP_NAME = 'yaac-server-ingress'
 /**
  * NetworkPolicy admitting the server pod's API from whatever fronts its
  * Service, such as the Tailscale operator's proxy pod. Applied by install
- * only. On kind the host-networked forwarder is covered by the node policy.
+ * only. The host-networked kind forwarder is covered by the node policy.
  */
 export const SERVER_FRONT_INGRESS_NP_NAME = 'yaac-server-ingress-front'
 /** Port the server listens on inside its pod (container + Service port). */
@@ -166,6 +166,14 @@ export const SERVER_POD_PORT = 8787
  */
 export const SERVER_MAMA_PORT = 8788
 export const SERVER_MAMA_SERVICE_NAME = 'yaac-server-mama'
+/**
+ * The server's third listener, which serves only `GET /api/health`, for the
+ * kubelet's readiness probe. A port of its own so the server's ingress
+ * policy can admit node addresses here without admitting them to the API,
+ * where any process on a node could claim to be any user
+ * (docs/server-in-cluster.md "The ingress policy is the wall").
+ */
+export const SERVER_PROBE_PORT = 8789
 /**
  * Deployment/ConfigMap name and pod selector label of the kind fronting: a
  * hostNetwork Envoy on the control-plane node that forwards the port the

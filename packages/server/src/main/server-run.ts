@@ -1,6 +1,6 @@
 import { serve, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
-import { buildApp, buildMamaRelayApp } from '#main/server'
+import { buildApp, buildMamaRelayApp, probeFetch } from '#main/server'
 import { pushCredentialsToRuntime, refreshPlanUsage } from '#domain/auth'
 import { closeDb, DbRefusal, listProjectRows, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
@@ -92,7 +92,8 @@ function bindServer(
  * A loopback request that did not come through `tailscale serve` is
  * treated as the machine's owner. A non-loopback bind would let anyone who
  * reaches it send `Host: 127.0.0.1`, so it is refused, except in the pod,
- * whose ingress policy admits only the node and the fronting.
+ * whose ingress policy admits only the fronting to the API
+ * (docs/server-in-cluster.md "The ingress policy is the wall").
  */
 function refuseUnsupportedExposure(): void {
   const bind = env.bindAddr
@@ -198,6 +199,15 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     })
   }, LEASE_HEARTBEAT_MS)
   leaseTimer.unref?.()
+  // The readiness probe's listener (`WorkspaceDriver.probePort`), up as
+  // long as the API is, so a refused start is still Ready and can say why.
+  const probePort = workspaceDriver().probePort
+  const probeServer = probePort === null ? null : serve({
+    fetch: probeFetch(app),
+    port: probePort,
+    hostname: env.bindAddr,
+  })
+  probeServer?.on('error', (err: Error) => serverLog(`[server] probe listener failed: ${errorText(err)}`))
   // A refused start stays up answering `/health` with the reason, which
   // `yaac server start` and `yaac cluster install` print, and serves
   // nothing else.
@@ -316,7 +326,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // close() drains in-flight requests. Bounded to 3s so a wedged request
     // cannot delay lock removal, which the CLI waits on.
     await Promise.race([
-      Promise.all([server, relayServer].map((s) => new Promise<void>((resolve) => {
+      Promise.all([server, relayServer, probeServer].map((s) => new Promise<void>((resolve) => {
         if (s) s.close(() => resolve())
         else resolve()
       }))),

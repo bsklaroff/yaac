@@ -215,31 +215,42 @@ and the e2e harness) the kind fronting.
 
 The server identifies callers the same way a host server does
 (docs/remote-hosting.md): a request that did not come through `tailscale
-serve` and names a loopback `Host` is the owner. On kind the forwarder is
-plain TCP, so the pod sees exactly what a host process sent. That makes the
-ingress policy part of authentication, not just reachability: a workspace
-pod that reached the server could send `Host: 127.0.0.1` and be the owner.
-So every path to the server must come from a node or from the fronting.
+serve` and names a loopback `Host` is the owner, and one that carries
+`Tailscale-User-Login` is that tailnet user. The server cannot tell a header
+serve stamped from one a caller wrote, and on kind the forwarder is plain
+TCP, so the pod sees exactly what a host process sent. That makes the
+ingress policy part of authentication, not just reachability: anything
+that reached the API could claim to be the owner or any user. So the API
+admits only the fronting, and nodes only where the node is the install's
+own machine.
 
 The server pod's ingress is an explicit allow in two NetworkPolicies (which
 Kubernetes unions):
 
 - `yaac-server-ingress`, the **node half**: one `ipBlock` per node address,
   meaning every node's InternalIP plus its Calico tunnel address
-  (`nodeIpBlocks()`, which the proxy's ingress policy uses too). Two flows
-  arrive this way: the kubelet's readiness probe, and on kind the
-  forwarder. Install applies it, and **the server re-applies it whenever
-  the node set changes** (and once after every start), along with the
-  other node-address policies, since nodes can be added to a running install
-  and a pod rescheduled onto a new node must admit that node's kubelet or
-  it never becomes Ready. This is the only policy the server renders for
+  (`nodeIpBlocks()`, which the proxy's ingress policy uses too). It admits
+  them to the server's probe listener (`SERVER_PROBE_PORT`), which serves
+  only `GET /api/health`, for the kubelet's readiness probe. While the kind
+  forwarder Deployment exists (kind, and `--tailnet <host>`) it admits them
+  to the API too, since the forwarder dials from its node. Under the
+  operator fronting, on kind or byo, they never reach the API: on a cluster
+  whose nodes run other tenants' host-networked pods, any of those could
+  otherwise send a forged `Tailscale-User-Login` and be that user, the
+  install's owner included. Install applies it once the fronting's objects
+  exist, and **the server re-applies it whenever the node set changes**
+  (and once after every start), along with the other node-address
+  policies, since nodes can be added to a running install and a pod
+  rescheduled onto a new node must admit that node's kubelet or it never
+  becomes Ready. Both read whether the forwarder exists from the cluster
+  (`applyServerIngress`). This is the only policy the server renders for
   itself; it never changes its own Deployment.
 - `yaac-server-ingress-front`, the **fronting half**: the fronting's peers.
   Under `--tailnet` that is the operator's proxy pod, selected by its
   namespace and its `tailscale.com/parent-resource*` labels. With the
-  forwarder (kind, and `--tailnet <host>`) it is empty, because the host-networked forwarder is already covered by the
-  node half. It is applied even when empty, so switching fronting replaces
-  the old peer. Only install writes it.
+  forwarder it is empty, because the host-networked forwarder is already
+  covered by the node half. It is applied even when empty, so switching
+  fronting replaces the old peer. Only install writes it.
 
 No pod in the install namespace and no pod CIDR is admitted to the API. A
 workspace pod dialing the Service or the pod IP presents its own address
@@ -277,10 +288,13 @@ untrusted code from becoming the server's owner. `yaac cluster check`'s
 lacks the policy above, and a workspace-labelled probe pod must fail to dial
 the server. The `server` e2e suite checks the same.
 
-The Host check has one side effect: the kubelet dials the pod IP, so its
-readiness probe would send `Host: <pod ip>` and get a 403 from the
-DNS-rebind check. The probe therefore sends `Host: 127.0.0.1` explicitly,
-standing in for a client of the published origin.
+The probe listener hands `/api/health` to the full app and answers 404 to
+anything else, so a node gets nothing there an identity guards. The app's
+Host check still runs: the kubelet dials the pod IP, so its readiness probe
+would send `Host: <pod ip>` and get a 403 from the DNS-rebind check. The
+probe therefore sends `Host: 127.0.0.1` explicitly, standing in for a client
+of the published origin. The listener is up as long as the API is, so a
+refused start is still Ready and can report why.
 
 Egress is the reverse: the server pod is **excluded** from the install
 namespace's world-egress default-deny. It clones and fetches git remotes

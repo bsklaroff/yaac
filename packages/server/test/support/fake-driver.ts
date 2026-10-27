@@ -203,5 +203,6 @@ function defaultRuntime(): WorkspaceDriver {
     reapNodeLocal: () => Promise.resolve(),
     removeAsRoot: () => Promise.resolve(false),
     mamaRelay: null,
+    probePort: null,
   }
 }

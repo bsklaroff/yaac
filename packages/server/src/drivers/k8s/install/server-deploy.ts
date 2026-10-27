@@ -26,6 +26,7 @@ import {
   SERVER_APP_NAME,
   SERVER_LOCAL_CLAIM_NAME,
   SERVER_POD_PORT,
+  SERVER_PROBE_PORT,
   SERVER_SA_NAME,
   applyObject,
   deleteObject,
@@ -46,8 +47,8 @@ import {
 import { waitFor } from '@yaac/shared/wait-for'
 import { ensureStorageClaims, type StorageShape } from './storage'
 import {
+  applyServerIngress,
   buildServerFrontIngressNpManifest,
-  buildServerIngressNpManifest,
   contextHash,
   imagePrefix,
   nodeIpBlocks,
@@ -353,12 +354,12 @@ export function buildServerDeploymentManifest(
               // pods don't get this: root inside them is a feature (sudo),
               // and gVisor is their boundary.
               securityContext: { allowPrivilegeEscalation: false },
-              ports: [{ containerPort: SERVER_POD_PORT }],
+              ports: [{ containerPort: SERVER_POD_PORT }, { containerPort: SERVER_PROBE_PORT }],
               env: buildServerEnv(envOpts),
               readinessProbe: {
                 httpGet: {
                   path: '/api/health',
-                  port: SERVER_POD_PORT,
+                  port: SERVER_PROBE_PORT,
                   // The server's DNS-rebind guard would reject the pod
                   // IP as Host.
                   httpHeaders: [{ name: 'Host', value: '127.0.0.1' }],
@@ -394,8 +395,11 @@ export function buildServerDeploymentManifest(
 /**
  * Apply the server workload and its fronting, wait for both to roll out,
  * and return the published origin. Order matters: RBAC before the pod;
- * ingress policies before the Service, so workspaces never see an open
- * API; and the fronting before the Deployment, whose env needs the origin.
+ * the fronting half of the ingress policy before the Service, so
+ * workspaces never see an open API; the node half once the fronting's
+ * objects exist, since it admits nodes to the API only behind the kind
+ * forwarder; and the fronting before the Deployment, whose env needs the
+ * origin.
  */
 async function ensureServerDeployment(
   imageRef: string,
@@ -406,7 +410,6 @@ async function ensureServerDeployment(
   await applyObject(buildServerServiceAccountManifest())
   await applyObject(buildServerClusterRoleManifest())
   await applyObject(buildServerClusterRoleBindingManifest())
-  await applyObject(buildServerIngressNpManifest(await nodeIpBlocks()))
   await applyObject(buildServerFrontIngressNpManifest(fronting.ingressPeers()))
   // Wait, so `installedFronting` never reads a retired Ingress that is
   // still terminating behind the tailnet operator's finalizer.
@@ -415,6 +418,7 @@ async function ensureServerDeployment(
   }
   const manifests = fronting.manifests()
   for (const manifest of manifests) await applyObject(manifest)
+  await applyServerIngress(await nodeIpBlocks())
   const origin = await fronting.resolveOrigin()
   await applyObject(buildServerDeploymentManifest(imageRef, identity, {
     ...envOpts,

@@ -847,6 +847,14 @@ export interface WorkspaceDriver {
    * calling workspace and presenting a bearer `authenticate` checks.
    */
   mamaRelay: MamaRelay | null
+
+  /**
+   * A port to serve only `GET /api/health` on from the moment the API is
+   * bound, or null for none. Under k8s it is the kubelet's readiness probe,
+   * on a port of its own so node addresses never need to reach the API
+   * (docs/server-in-cluster.md "The ingress policy is the wall").
+   */
+  probePort: number | null
 }
 
 /** See `WorkspaceDriver.mamaRelay`. */

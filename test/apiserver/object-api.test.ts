@@ -56,7 +56,7 @@ describe('object writes and reads', () => {
       buildWorkspaceIngressLockNpManifest(),
       buildProxyIngressNpManifest(cidrs),
       buildProxyEgressNpManifest(cidrs, ['10.96.0.10/32'], { cidrs: ['172.18.0.3/32'], ports: [6443] }),
-      buildServerIngressNpManifest(cidrs),
+      buildServerIngressNpManifest(cidrs, true),
       buildServerFrontIngressNpManifest([{ podSelector: { matchLabels: { app: 'fronting' } } }]),
       buildEgressWorldDenyNpManifest(),
     ]

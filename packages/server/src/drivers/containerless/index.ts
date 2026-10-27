@@ -137,5 +137,6 @@ export function createContainerlessDriver(): WorkspaceDriver {
 
     // yaac-mama posts directly to `/workspace/mama` here.
     mamaRelay: null,
+    probePort: null,
   }
 }

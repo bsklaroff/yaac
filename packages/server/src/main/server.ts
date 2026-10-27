@@ -103,6 +103,18 @@ export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<bool
 }
 
 /**
+ * The fetch handler on a driver's probe listener (`WorkspaceDriver.probePort`):
+ * `GET /api/health` answered by `app`, and 404 for anything else, since the
+ * peers this port admits must reach nothing that takes an identity.
+ */
+export function probeFetch(app: { fetch: (req: Request) => Response | Promise<Response> }) {
+  return (req: Request): Response | Promise<Response> =>
+    req.method === 'GET' && new URL(req.url).pathname === '/api/health'
+      ? app.fetch(req)
+      : new Response(null, { status: 404 })
+}
+
+/**
  * Every HTTP route, mounted under `/api` (like the WebSocket routes,
  * `#api/ws-routes`) so none collide with SPA paths. `AppType` is this sub-app;
  * `createApiClient` adds the prefix.

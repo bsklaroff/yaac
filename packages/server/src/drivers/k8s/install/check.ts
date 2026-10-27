@@ -1571,10 +1571,11 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
             + 'claiming a loopback Host makes it the server\'s owner, so any session '
             + 'could drive the control plane that manages every other one',
           fix: `The ${SERVER_INGRESS_NP_NAME} and ${SERVER_FRONT_INGRESS_NP_NAME} `
-            + 'NetworkPolicies must admit the server port from the node addresses '
-            + 'and the fronting alone, so a pod dialing the Service or pod IP is '
-            + 'dropped. Re-run `yaac cluster install`, which applies both with '
-            + 'the Deployment (the server re-applies the node half on start).',
+            + 'NetworkPolicies must admit the server port from the fronting alone '
+            + '(and the node addresses behind the kind forwarder), so a pod dialing '
+            + 'the Service or pod IP is dropped. Re-run `yaac cluster install`, which '
+            + 'applies both with the Deployment (the server re-applies the node half '
+            + 'on start).',
         },
       },
       ...nfsServers.map((nfs, i) => ({

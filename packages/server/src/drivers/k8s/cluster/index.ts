@@ -27,7 +27,7 @@ export {
   podCidrSources,
   resetClusterCidrCache,
 } from './cluster-cidrs'
-export { reconcileNodeSet } from './node-sync'
+export { applyServerIngress, reconcileNodeSet } from './node-sync'
 export {
   PROJECT_REGISTRY_PORT,
   REGISTRY_APP_LABEL,

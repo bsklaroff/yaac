@@ -28,8 +28,10 @@ carries `Tailscale-User-Login` is taken as coming through serve, so a
 forged login gets that user's writes and attaches. The ownership code
 runs unchanged there and gives grouping, read-only views and attribution,
 not protection; the webapp says that this substrate does not separate
-users. Under `k8s` only the host can forge those headers, since workspace
-pods cannot reach the server.
+users. Under `k8s` workspace pods cannot reach the server, and node
+addresses reach its API only behind the kind forwarder, so only the
+install's own machine can forge those headers (docs/server-in-cluster.md
+"The ingress policy is the wall").
 
 ## Users and owners
 

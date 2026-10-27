@@ -72,8 +72,11 @@ import { kindFronting, tailnetFronting } from '#drivers/k8s/install/server-front
 import {
   SERVER_APP_NAME,
   SERVER_FRONT_APP_NAME,
+  SERVER_FRONT_INGRESS_NP_NAME,
   SERVER_FRONT_PORT,
+  SERVER_INGRESS_NP_NAME,
   SERVER_POD_PORT,
+  SERVER_PROBE_PORT,
   TAILSCALE_OPERATOR_NAMESPACE,
   processIdentity,
 } from '#drivers/k8s/substrate'
@@ -124,6 +127,7 @@ interface PodSpec {
     command?: string[]
     env: Array<{ name: string; value: string }>
     securityContext?: Record<string, unknown>
+    readinessProbe?: { httpGet?: { port: number } }
     volumeMounts: Array<{ name: string; mountPath: string }>
   }>
 }
@@ -191,6 +195,16 @@ function deploy(
 
 function applied(kind: string): Manifest[] {
   return fakeCluster.callsOf('apply', kind).map((c) => c.body as unknown as Manifest)
+}
+
+/** The server pod's two ingress policies, as applied. */
+function serverPolicies(): { nodeHalf: Manifest; frontHalf: Manifest } {
+  const named = (name: string): Manifest => {
+    const np = applied('NetworkPolicy').find((m) => (m.metadata as { name: string }).name === name)
+    if (!np) throw new Error(`no ${name} NetworkPolicy was applied`)
+    return np
+  }
+  return { nodeHalf: named(SERVER_INGRESS_NP_NAME), frontHalf: named(SERVER_FRONT_INGRESS_NP_NAME) }
 }
 
 /** The pod spec of an applied Deployment (the server's by default). */
@@ -410,15 +424,17 @@ describe('deployServerWorkload', () => {
     // Only node addresses and the fronting. A workspace pod has a pod
     // source address and is dropped; one that got through could claim a
     // loopback Host and act as the owner (cluster check probes this). The
-    // kind forwarder is host-networked, so it needs no extra peer.
-    const [nodeHalf, frontHalf] = applied('NetworkPolicy')
+    // kind forwarder is host-networked, so the node half admits nodes to
+    // the API as well as to the readiness probe's port.
+    const { nodeHalf, frontHalf } = serverPolicies()
     expect(nodeHalf.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
     expect(nodeHalf.spec?.policyTypes).toEqual(['Ingress'])
     // (Its proxy rule, to the mama port only, is pinned in policy-manifests.)
     expect(nodeHalf.spec?.ingress).toContainEqual({
       from: [{ ipBlock: { cidr: '10.89.0.2/32' } }],
-      ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
+      ports: [{ protocol: 'TCP', port: SERVER_PROBE_PORT }, { protocol: 'TCP', port: SERVER_POD_PORT }],
     })
+    expect(deployedPodSpec().containers[0].readinessProbe?.httpGet?.port).toBe(SERVER_PROBE_PORT)
     expect(frontHalf.spec?.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
     expect(frontHalf.spec?.ingress).toEqual([])
 
@@ -472,10 +488,13 @@ describe('deployServerWorkload', () => {
     expect(actions).toContain(`delete Deployment ${SERVER_FRONT_APP_NAME}`)
 
     // The fronting policy admits the operator's proxy pod for this Service.
-    const [nodeHalf, frontHalf] = applied('NetworkPolicy')
+    // With no forwarder, node addresses reach only the readiness probe's
+    // port: on shared nodes any host-networked process could otherwise
+    // send a forged Tailscale-User-Login and be that user.
+    const { nodeHalf, frontHalf } = serverPolicies()
     expect(nodeHalf.spec?.ingress).toContainEqual({
       from: [{ ipBlock: { cidr: '10.89.0.2/32' } }],
-      ports: [{ protocol: 'TCP', port: SERVER_POD_PORT }],
+      ports: [{ protocol: 'TCP', port: SERVER_PROBE_PORT }],
     })
     expect(frontHalf.spec?.ingress).toEqual([{
       from: [{

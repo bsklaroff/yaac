@@ -1,6 +1,6 @@
 import { beforeEach, describe, it, expect } from 'vitest'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
-import { buildApp } from '#main/server'
+import { buildApp, probeFetch } from '#main/server'
 
 describe('GET /health', () => {
   beforeEach(() => { installFakeWorkspaceDriver() })
@@ -39,5 +39,22 @@ describe('GET /health', () => {
     const whoami = await app.request('/api/whoami')
     expect(whoami.status).toBe(503)
     expect(await whoami.text()).toContain('the server refused to start: no')
+  })
+})
+
+describe('probeFetch', () => {
+  beforeEach(() => { installFakeWorkspaceDriver() })
+
+  it('answers the health probe as the API does, and nothing else', async () => {
+    const app = buildApp({ buildId: 'bid-1' })
+    const probe = probeFetch(app)
+    const health = await probe(new Request('http://10.0.0.7:8789/api/health', { headers: { host: '127.0.0.1' } }))
+    expect(health.status).toBe(200)
+    expect(await health.json()).toMatchObject({ ok: true, buildId: 'bid-1' })
+
+    // Node addresses reach this port, so an identity header gets them nowhere.
+    const forged = { host: '127.0.0.1', 'tailscale-user-login': 'owner@example.com' }
+    expect((await probe(new Request('http://10.0.0.7:8789/api/whoami', { headers: forged }))).status).toBe(404)
+    expect((await probe(new Request('http://10.0.0.7:8789/api/health', { method: 'POST', headers: forged }))).status).toBe(404)
   })
 })

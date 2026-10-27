@@ -19,6 +19,7 @@ import {
   SERVER_INGRESS_NP_NAME,
   SERVER_MAMA_PORT,
   SERVER_POD_PORT,
+  SERVER_PROBE_PORT,
   WORKSPACE_EGRESS_NP_NAME,
   WORKSPACE_INGRESS_LOCK_NP_NAME,
   SSH_AGENT_PORT,
@@ -286,21 +287,26 @@ export function builderEgress(nodeCidrs: string[], dnsCidrs: string[]): Array<Re
 }
 
 /**
- * Server-pod ingress, node half: the API from node addresses (kubelet probe,
- * and on kind the fronting forwarder), plus the mama-only listener from the
- * egress proxy.
+ * Server-pod ingress, node half: the probe listener from node addresses
+ * (the kubelet's readiness probe), the API from them too while the kind
+ * forwarder fronts the server (`forwarded`), and the mama-only listener
+ * from the egress proxy.
  *
- * Essential for security: the server binds `0.0.0.0` and treats a
- * loopback-Host request as its owner (docs/remote-hosting.md), so these
- * policies, with the workspace egress policy and `wideEgress`,
- * keep untrusted pods out. `yaac cluster check` verifies this. The proxy is
- * admitted only to SERVER_MAMA_PORT, never to the API: it forwards workspace
- * traffic, so a workspace could otherwise reach the API through it.
+ * Essential for security: the server binds `0.0.0.0` and takes its
+ * caller's identity from the request (a loopback Host is the owner, a
+ * `Tailscale-User-Login` that user; docs/remote-hosting.md), so these
+ * policies, with the workspace egress policy and `wideEgress`, keep
+ * untrusted pods out. `yaac cluster check` verifies this. Node addresses
+ * reach the API only behind the forwarder, where the one node is the
+ * install's own machine; on a cluster of shared nodes any host-networked
+ * process could otherwise claim any identity. The proxy is admitted only to
+ * SERVER_MAMA_PORT, never to the API: it forwards workspace traffic, so a
+ * workspace could otherwise reach the API through it.
  *
  * Separate from the fronting half because the server's node-sync re-renders
  * this one when the node set changes, while fronting is fixed at install.
  */
-export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
+export function buildServerIngressNpManifest(nodeCidrs: string[], forwarded: boolean): Record<string, unknown> {
   return np(
     SERVER_INGRESS_NP_NAME,
     k8sNamespace(),
@@ -308,7 +314,10 @@ export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string
       podSelector: { matchLabels: { app: SERVER_APP_NAME } },
       policyTypes: ['Ingress'],
       ingress: [
-        { from: ipBlocks(nodeCidrs), ports: [tcp(SERVER_POD_PORT)] },
+        {
+          from: ipBlocks(nodeCidrs),
+          ports: [tcp(SERVER_PROBE_PORT), ...(forwarded ? [tcp(SERVER_POD_PORT)] : [])],
+        },
         {
           from: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
           ports: [tcp(SERVER_MAMA_PORT)],
@@ -321,8 +330,9 @@ export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string
 
 /**
  * Server-pod ingress, fronting half: the API from whatever fronts the
- * Service (the tailnet operator's proxy pod). Empty on kind (the node half
- * covers it), but still applied so a re-install replaces an old peer.
+ * Service (the tailnet operator's proxy pod). Empty behind the kind
+ * forwarder (the node half covers it), but still applied so a re-install
+ * replaces an old peer.
  */
 export function buildServerFrontIngressNpManifest(
   peers: Array<Record<string, unknown>>,

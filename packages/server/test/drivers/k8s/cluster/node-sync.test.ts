@@ -5,19 +5,20 @@ import { fakeRegistry } from '#test/support/fake-registry'
 // mirrored image) are the boundaries. The cluster folder runs for real
 // behind them, including the hosts.toml writer pods `runOnEachNode` drives.
 
-import { reconcileNodeSet } from '#drivers/k8s/cluster'
+import { applyServerIngress, reconcileNodeSet } from '#drivers/k8s/cluster'
 // Test hooks, not units under test.
 import { _nodeSyncSettledForTests, _resetNodeSyncForTests } from '#drivers/k8s/cluster/node-sync'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { projectRegistryName } from '#drivers/k8s/cluster/project-registry'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { SERVER_POD_PORT, SERVER_PROBE_PORT } from '#drivers/k8s/substrate'
 
 interface Applied {
   kind: string
   metadata: { name: string }
   spec?: {
     nodeName?: string
-    ingress?: Array<{ from?: Array<{ ipBlock?: { cidr: string } }> }>
+    ingress?: Array<{ from?: Array<{ ipBlock?: { cidr: string } }>; ports?: Array<{ port: number }> }>
     egress?: Array<{ to?: Array<{ ipBlock?: { cidr: string } }>; ports?: Array<{ port: number }> }>
     volumes?: Array<{ hostPath?: { path: string } }>
   }
@@ -198,5 +199,29 @@ describe('reconcileNodeSet', () => {
     clearCalls()
     await pass()
     expect(hostsWrites().map((w) => w.split(' ')[0])).toEqual(['node-b'])
+  })
+})
+
+describe('applyServerIngress', () => {
+  /** The server ports the last apply of its node half admits node addresses to. */
+  const nodePorts = (): number[] => {
+    const np = applied().filter((m) => m.kind === 'NetworkPolicy' && m.metadata.name === 'yaac-server-ingress').pop()
+    return (np?.spec?.ingress ?? []).filter((r) => r.from?.some((f) => f.ipBlock))
+      .flatMap((r) => r.ports ?? []).map((p) => p.port)
+  }
+
+  it('admits nodes to the API only while the kind forwarder fronts the server', async () => {
+    // The operator fronting (and byo): nodes reach only the probe listener,
+    // so no host-networked process can claim an identity at the API.
+    await applyServerIngress(['10.0.1.5/32'])
+    expect(admittedNodes('yaac-server-ingress')).toEqual(['10.0.1.5/32'])
+    expect(nodePorts()).toEqual([SERVER_PROBE_PORT])
+
+    // Behind the forwarder, whose dial into the server comes from the node.
+    fakeCluster.seed({
+      apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'yaac-server-front', namespace: 'test-ns' },
+    })
+    await applyServerIngress(['10.0.1.5/32'])
+    expect(nodePorts()).toEqual([SERVER_PROBE_PORT, SERVER_POD_PORT])
   })
 })

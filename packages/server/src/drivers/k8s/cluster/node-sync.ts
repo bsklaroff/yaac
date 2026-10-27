@@ -1,4 +1,4 @@
-import { applyObject, listObjects } from '#drivers/k8s/substrate'
+import { SERVER_FRONT_APP_NAME, applyObject, k8sNamespace, listObjects, readObject } from '#drivers/k8s/substrate'
 import { serverLog } from '#lib/log'
 import { apiserverEndpoints, clusterDnsCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
@@ -40,6 +40,19 @@ interface RawNode {
 }
 
 /**
+ * Apply the server pod's node-half ingress (`buildServerIngressNpManifest`)
+ * for `nodeCidrs`. Node addresses reach the API only while the kind
+ * forwarder Deployment exists, which is read from the cluster because
+ * nothing else records which fronting is installed.
+ */
+export async function applyServerIngress(nodeCidrs: string[]): Promise<void> {
+  const forwarder = await readObject({
+    apiVersion: 'apps/v1', kind: 'Deployment', name: SERVER_FRONT_APP_NAME, namespace: k8sNamespace(),
+  })
+  await applyObject(buildServerIngressNpManifest(nodeCidrs, forwarder !== null))
+}
+
+/**
  * Re-render the node-address policies if the address set (or the DNS
  * Service's or apiserver's, which the proxy's egress names) changed, and
  * start writing hosts.toml to Ready nodes that do not have it yet.
@@ -50,8 +63,8 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
   const apiserver = await apiserverEndpoints()
   const addresses = JSON.stringify([nodeCidrs, dnsCidrs, apiserver])
   if (addresses !== renderedAddresses) {
+    await applyServerIngress(nodeCidrs)
     for (const manifest of [
-      buildServerIngressNpManifest(nodeCidrs),
       buildWorkspaceEgressNpManifest(nodeCidrs),
       buildProxyIngressNpManifest(nodeCidrs),
       buildProxyEgressNpManifest(nodeCidrs, dnsCidrs, apiserver),
