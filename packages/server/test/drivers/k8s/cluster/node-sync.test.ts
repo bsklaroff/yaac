@@ -147,6 +147,11 @@ describe('reconcileNodeSet', () => {
       'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress',
     ]))
     expect(hostsWrites()).toEqual(['node-a yaac-registry.yaac.svc.cluster.local:5000'])
+    // The first pass after a start also re-applies each project registry's
+    // client allows, so a registry made before the store writer was a
+    // client admits it. p2 has no registry, so it gets nothing.
+    const reg = applied().map((m) => m.metadata.name).filter((n) => n.startsWith('yaac-reg-'))
+    expect(reg.sort()).toEqual(['sessions', 'store', 'ingress'].map((s) => `${projectRegistryName('p1')}-${s}`).sort())
     // The apiserver at its real endpoint, and DNS at the kube-dns Service.
     expect(proxyPeers(443)).toEqual(['172.20.0.10/32'])
     expect(proxyPeers(53)).toEqual(['10.96.0.10/32', '169.254.0.0/16'])

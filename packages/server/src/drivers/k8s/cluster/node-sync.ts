@@ -9,7 +9,7 @@ import {
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
-import { applyProjectRegistryIngress } from './project-registry'
+import { applyProjectRegistryAccess } from './project-registry'
 
 /**
  * Keeps per-node state current as nodes join, as they do when an autoscaler
@@ -58,7 +58,7 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)
     await applyMainRegistryIngress(nodeCidrs)
-    for (const projectId of projectIds) await applyProjectRegistryIngress(projectId, nodeCidrs)
+    for (const projectId of projectIds) await applyProjectRegistryAccess(projectId, nodeCidrs)
     renderedAddresses = addresses
   }
 

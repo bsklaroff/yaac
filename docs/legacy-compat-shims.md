@@ -291,6 +291,27 @@ claimed still has a labelled Job.
   remain: every workspace running at the upgrade has since been stopped or
   restarted, since both replace the Job.
 
+## Project registries made before the store writer was a client
+
+The image-store writer runs on the pod network and reaches its project's
+registry through a `yaac-reg-<id>-store` egress allow plus a peer in the
+registry's ingress (docs/nested-containers.md). `ensureProjectRegistry`
+applies both, but it runs only on a nested workspace create, so a registry
+from an older server would lack the allow until the project's next create.
+
+- **What it reads.** `applyProjectRegistryAccess` in
+  `packages/server/src/drivers/k8s/cluster/project-registry.ts`, run by
+  `reconcileNodeSet` on the first pass after every server start, applies
+  each registry's client egress allows along with the node-address ingress
+  it exists to re-render. Only the client-allow loop is the shim.
+- **What breaks silently if it is deleted too early.** A project that
+  creates no new nested workspace keeps a writer that cannot reach its
+  registry. Every store refresh fails and retries, only the server log says
+  so, and new workspaces keep mounting an ever older generation.
+- **When it is safe to remove.** When every project registry has its
+  `-store` policy: `kubectl get networkpolicy -l app=yaac-registry` lists
+  one `yaac-reg-<id>-store` beside each `yaac-reg-<id>-sessions`.
+
 ## A compaction recorded as a `Compact conversation` tool call
 
 yaac declares `session.compaction`, so an adapter reports a compaction as

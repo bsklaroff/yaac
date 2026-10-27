@@ -529,12 +529,17 @@ export async function ensureProjectRegistry(projectId: string): Promise<void> {
 
 /**
  * Re-render the project registry's node-address ingress, for a node set
- * that changed after `ensureProjectRegistry` ran (`reconcileNodeSet`). A
- * no-op for a project with no registry.
+ * that changed after `ensureProjectRegistry` ran (`reconcileNodeSet`), and
+ * its clients' egress allows. The client allows go along only for a
+ * registry created before it had a store-writer client
+ * (docs/legacy-compat-shims.md). A no-op for a project with no registry.
  */
-export async function applyProjectRegistryIngress(projectId: string, nodeCidrs: string[]): Promise<void> {
+export async function applyProjectRegistryAccess(projectId: string, nodeCidrs: string[]): Promise<void> {
   await registryEnsureMutex(projectId, async () => {
     if (!await projectRegistryClusterIp(projectId)) return
+    for (const client of registryClients(projectId)) {
+      await applyObject(buildRegistryClientNetworkPolicyManifest(projectId, client))
+    }
     await applyObject(buildRegistryIngressNetworkPolicyManifest(projectId, nodeCidrs))
   })
 }
