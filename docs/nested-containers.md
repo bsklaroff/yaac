@@ -146,17 +146,37 @@ can be deleted once no pod mounts it.
 **The writer pod** builds nothing. It pulls what the registry holds and
 lays it out on a node path, so it is not a trust-split builder pod and has
 none of their identity. It only reuses their pinned `quay.io/podman/stable`
-image. Like the pods that write the main registry's `hosts.toml`, it runs
-on runc as plain root, pinned with `nodeName`, tolerating every taint, with
-the store path hostPath-mounted read-write. Two choices matter:
+image. It is pinned with `nodeName`, tolerates every taint, and
+hostPath-mounts the store directory read-write. What it unpacks is
+untrusted (images built from agent-editable Dockerfiles, plus whatever
+salvage pushed), so its shape is about containing a bug in pulling or
+unpacking:
 
-- **hostNetwork.** The project registry's ingress policy already admits the
-  node's addresses for containerd pulls. On the host network the writer is
-  the node, so it needs no NetworkPolicy of its own. It addresses the
-  registry by ClusterIP, because the node does not use cluster DNS.
-- **No CAP_SYS_ADMIN.** `podman pull --root` does not need it (a pull
-  untars into the layer directory and mounts nothing). Withholding it is
-  what makes the opaque-directory rewrite below possible.
+- **runc, not gVisor.** gVisor's gofer refuses to write `security.*`
+  xattrs to a host directory, while it does pass them through on read.
+  containers/storage treats the refused write as "no xattr support",
+  logs a warning and drops the capability. A writer under gVisor would
+  therefore publish layers whose binaries silently lack the file
+  capabilities a workspace otherwise sees, and a cache hit on such a
+  layer builds a silently wrong image. The gofer also refuses real device
+  nodes, though not the 0:0 whiteouts.
+- **Root with a minimal capability set.** Root is needed to give each file
+  the image's owner. All capabilities are dropped except those a faithful
+  unpack uses: CHOWN, DAC_OVERRIDE, FOWNER and FSETID for ownership and
+  modes, MKNOD for whiteouts and device nodes, SETFCAP for file
+  capabilities, and SYS_CHROOT for containers/storage's chrooted untar
+  (which uses a plain `chroot` when it lacks CAP_SYS_ADMIN). The pod also
+  runs with the runtime's default seccomp profile and no privilege
+  escalation.
+- **No CAP_SYS_ADMIN.** A pull does not need it (it untars into the layer
+  directory and mounts nothing). Withholding it is what makes the
+  opaque-directory rewrite below possible.
+- **The pod network.** The writer's own NetworkPolicy lets it reach its
+  project's registry and nothing else, and the registry's ingress admits
+  it by label. On the host network it would count as the node, which every
+  project's registry admits, and it could dial the proxy's node-only
+  transparent ports. The policy allows no DNS, so the writer addresses the
+  registry by ClusterIP.
 
 **A refresh** works like this:
 
@@ -325,14 +345,15 @@ the MITM proxy, not this registry.
   (`shared-images/<id>`). Ids are never reused, so a project added again
   gets a new, empty registry and store, even if the old project's removal
   failed.
-- **Three NetworkPolicies**:
+- **Four NetworkPolicies**:
   - an allow policy from the project's workspaces to its registry (the pod
     must carry the project's `yaac.project-id` label and a
     `yaac.workspace-id` label, which keeps the registry pod itself out);
+  - the same allow for the project's image-store writer pods;
   - deny-all egress on the registry pod;
-  - an ingress lock on the registry pod admitting only same-project
-    workspaces and the nodes' addresses (an `ipBlock`, for containerd
-    pulls and the kubelet probe).
+  - an ingress lock on the registry pod admitting only those same-project
+    workspaces and writers, and the nodes' addresses (an `ipBlock`, for
+    containerd pulls and the kubelet probe).
 - **Lifecycle**: `ensureProjectRegistry` creates it when a
   `nestedContainers` workspace is created; project removal deletes it. The
   `orphan-registry-gc` reconcile step deletes any of this install's
@@ -345,9 +366,8 @@ The proxy and project registry Services keep their allocator-assigned
 ClusterIPs because they are never deleted (server-side apply updates them in
 place). Workspace pods reach them by service-DNS name through the proxy's
 DNS, which forwards `*.cluster.local` to CoreDNS and blocks bare `.svc`
-names so DNS cannot carry data out. Nothing on the node pulls from a
-project registry by name: the image-store writer, a host-network pod with
-no cluster DNS, dials the live ClusterIP.
+names so DNS cannot carry data out. The image-store writer has no DNS
+egress at all, so it dials the live ClusterIP.
 
 ## Egress
 

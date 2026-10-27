@@ -1,8 +1,8 @@
 /**
  * The node-local image store, through its four barrel functions.
  *
- * The pod manifest is asserted directly (node-pinned, host network,
- * unprivileged runc, store dir mounted rw). The build script is run for real
+ * The pod manifest is asserted directly (node-pinned, pod network, runc
+ * with a minimal capability set, store dir mounted rw). The build script is run for real
  * against a stub registry (files its `curl` fetches) and a stub `podman` that
  * records pulls. That checks generation ranking, publish order (nothing is
  * mountable before the DONE marker) and generation GC.
@@ -39,6 +39,7 @@ import {
 import { CACHED_GENERATIONS_KEPT, CACHE_TAG_PREFIX } from '#drivers/k8s/images/image-promoter'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import { installId, k8sNamespace, nodeLocalHostPath, nodeLocalNodePath } from '#drivers/k8s/substrate'
+import { IMAGE_STORE_APP_LABEL } from '#drivers/k8s/cluster'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
@@ -294,28 +295,37 @@ async function runStoreWriterScript(
 }
 
 describe('ensureNodeImageStore', () => {
-  it('runs an unprivileged node-pinned builder that writes the store on the host network', async () => {
+  it('runs a node-pinned runc pod off the host network, holding only the caps a pull needs', async () => {
     stageLiveCluster()
     await expect(ensureNodeImageStore(PROJECT)).resolves.toBe(true)
 
     const [pod] = appliedPods()
     expect(pod.kind).toBe('Pod')
     expect(pod.spec.nodeName).toBe(NODE)
-    // On the host network the pod counts as the node, which the registry's
-    // ingress already admits. The node has no cluster DNS, so the registry
-    // is named by ClusterIP.
-    expect(pod.spec.hostNetwork).toBe(true)
+    // On the pod network, where its own policy admits it to its project's
+    // registry and the namespace's default-deny blocks everything else.
+    // That policy allows no DNS, so the registry is named by ClusterIP.
+    expect(pod.spec.hostNetwork).toBeUndefined()
+    expect(pod.metadata.labels).toMatchObject({ app: IMAGE_STORE_APP_LABEL, 'yaac.project-id': ID })
     expect(podCommand().script).toContain(`REG=${CLUSTER_IP}:5000`)
-    // Trusted infra on runc. Tolerates everything, since `nodeName` skips
-    // the scheduler but not taint eviction.
+    // runc, since gVisor's gofer cannot write the `security.capability`
+    // xattrs the store must keep. Tolerates everything, since `nodeName`
+    // skips the scheduler but not taint eviction.
     expect(pod.spec.runtimeClassName).toBeUndefined()
     expect(pod.spec.tolerations).toEqual([{ operator: 'Exists' }])
-    // Unprivileged: a pull needs no CAP_SYS_ADMIN, and without it
-    // containers/storage records opaque dirs in `user.` xattrs, which the
-    // rewrite pass reads.
+    // Root, for image ownership, but with only the unpacking caps. Never
+    // SYS_ADMIN: without it containers/storage records opaque dirs in
+    // `user.` xattrs, which the rewrite pass reads.
     const ctr = pod.spec.containers[0]
-    expect(ctr.securityContext).toEqual({ runAsUser: 0 })
-    expect(JSON.stringify(pod)).not.toContain('SYS_ADMIN')
+    expect(ctr.securityContext).toEqual({
+      runAsUser: 0,
+      allowPrivilegeEscalation: false,
+      seccompProfile: { type: 'RuntimeDefault' },
+      capabilities: {
+        drop: ['ALL'],
+        add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'MKNOD', 'SETFCAP', 'SYS_CHROOT'],
+      },
+    })
     expect(JSON.stringify(pod)).not.toContain('privileged')
     // The store dir, rw, using the node's path under this install's
     // node-local tree, not the server's.
@@ -468,7 +478,7 @@ describe('ensureNodeImageStore', () => {
   // Leftover pods from a crashed run are swept before every build.
   it('sweeps strays from a crashed run before building', async () => {
     stageLiveCluster()
-    const labels = { app: 'yaac-image-store', 'yaac.project-id': ID, 'yaac.install-id': installId() }
+    const labels = { app: IMAGE_STORE_APP_LABEL, 'yaac.project-id': ID, 'yaac.install-id': installId() }
     fakeCluster.seed({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'stray', namespace: k8sNamespace(), labels } })
     await ensureNodeImageStore(PROJECT)
     const verbs = fakeCluster.calls.map((c) => `${c.verb} ${c.name ?? ''}`)

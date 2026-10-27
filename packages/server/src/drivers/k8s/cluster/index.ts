@@ -29,6 +29,7 @@ export {
 } from './cluster-cidrs'
 export { reconcileNodeSet } from './node-sync'
 export {
+  IMAGE_STORE_APP_LABEL,
   PROJECT_REGISTRY_PORT,
   REGISTRY_APP_LABEL,
   REGISTRY_MIRROR_TAG,

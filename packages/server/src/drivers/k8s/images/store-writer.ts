@@ -3,8 +3,9 @@
  * (node, project), written from the project registry by a node-side pod and
  * mounted into every nested workspace at `/var/lib/shared-images`. It is
  * only a cache of the registry. docs/nested-containers.md "The node-local
- * image store" explains the writer pod's shape (hostNetwork, no
- * CAP_SYS_ADMIN) and why opaque directories are rewritten.
+ * image store" explains the writer pod's shape (runc rather than gVisor,
+ * pod network, a minimal capability set) and why opaque directories are
+ * rewritten.
  *
  * Generations are write-once: `<store>/gen-<stamp>/`, completed by writing
  * {@link DONE_MARKER} last. A new pod mounts the newest complete generation
@@ -30,8 +31,12 @@ import {
   type PodMount,
 } from '#drivers/k8s/substrate'
 import { createKeyedMutex } from '#lib/keyed-mutex'
-import { PROJECT_REGISTRY_PORT, projectRegistryClusterIp } from '#drivers/k8s/cluster'
-import { ensureBuilderImage } from '#drivers/k8s/cluster'
+import {
+  IMAGE_STORE_APP_LABEL,
+  PROJECT_REGISTRY_PORT,
+  ensureBuilderImage,
+  projectRegistryClusterIp,
+} from '#drivers/k8s/cluster'
 import { imageStoreDir } from '@yaac/shared/project-paths'
 import { CACHE_TAG_PREFIX, rankedRegistryTagsScript } from './image-promoter'
 import { serverLog } from '#lib/log'
@@ -48,8 +53,14 @@ export const STORE_POD_PATH = '/store'
  *  build leaves none, so it is never mounted and the next run drops it. */
 export const DONE_MARKER = '.yaac-store-done'
 
-/** `app` label of every store-writer pod. */
-const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
+/**
+ * The capabilities a root pull needs to lay out a hostile image faithfully,
+ * and nothing more: ownership and modes (CHOWN, DAC_OVERRIDE, FOWNER,
+ * FSETID), whiteouts and device nodes (MKNOD), file capabilities (SETFCAP),
+ * and containers/storage's chrooted untar (SYS_CHROOT). Never SYS_ADMIN:
+ * see the opaque-directory rewrite in docs/nested-containers.md.
+ */
+const STORE_WRITER_CAPS = ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'FSETID', 'MKNOD', 'SETFCAP', 'SYS_CHROOT']
 
 /** How often one project's store is refreshed. A salvage that pushed
  *  something forces an earlier refresh. */
@@ -408,10 +419,11 @@ export async function ensureNodeImageStore(
 }
 
 /**
- * Run one writer pod per node: root, with the project's store directory
- * mounted. docs/nested-containers.md explains hostNetwork and the default
- * capabilities. False when nothing was published (no project registry, or
- * every node failed).
+ * Run one writer pod per node: root on runc with {@link STORE_WRITER_CAPS},
+ * on the pod network, with the project's store directory mounted.
+ * docs/nested-containers.md explains why it is not sandboxed by gVisor.
+ * False when nothing was published (no project registry, or every node
+ * failed).
  */
 async function writeOneStore(projectId: string): Promise<boolean> {
   const clusterIp = await projectRegistryClusterIp(projectId)
@@ -423,6 +435,8 @@ async function writeOneStore(projectId: string): Promise<boolean> {
   // Same name on every node, since the server picks the mount from its
   // own node's generations.
   const genName = generationName()
+  // The writer's policies allow the registry and nothing else, DNS
+  // included, hence the ClusterIP.
   const registryEndpoint = `${clusterIp}:${PROJECT_REGISTRY_PORT}`
   const runs = await runOnEachNode({
     name: `yaac-store-${projectId}`,
@@ -435,13 +449,15 @@ async function writeOneStore(projectId: string): Promise<boolean> {
         '--', STORE_POD_PATH, ...keepNames,
       ],
       container: {
-        securityContext: { runAsUser: 0 },
+        securityContext: {
+          runAsUser: 0,
+          allowPrivilegeEscalation: false,
+          seccompProfile: { type: 'RuntimeDefault' },
+          capabilities: { drop: ['ALL'], add: STORE_WRITER_CAPS },
+        },
         volumeMounts: [{ name: 'store', mountPath: STORE_POD_PATH }],
       },
       spec: {
-        // The registry admits node addresses; the node has no cluster DNS,
-        // hence the ClusterIP endpoint.
-        hostNetwork: true,
         volumes: [{
           name: 'store',
           hostPath: { path: nodeLocalHostPath(imageStoreDir(projectId)), type: 'DirectoryOrCreate' },

@@ -20,6 +20,9 @@ import { serverLog } from '#lib/log'
 
 /** `app` label value shared by every per-project registry pod. */
 export const REGISTRY_APP_LABEL = 'yaac-registry'
+/** `app` label of every image-store writer pod (#drivers/k8s/images),
+ *  which the registry's policies admit by it. */
+export const IMAGE_STORE_APP_LABEL = 'yaac-image-store'
 /** Label on the one-shot node-write pods (value: the pod's kind), so the
  *  stray sweep never selects the registry's own pod. */
 export const LABEL_NODE_WRITE = 'yaac.node-write'
@@ -55,8 +58,8 @@ export function projectRegistryName(projectId: string): string {
 
 /**
  * The registry's full `.svc.cluster.local` name. Workspaces resolve it via
- * the proxy's DNS, which forwards only `.cluster.local` to CoreDNS. Nothing
- * on the node pulls by it: the image-store writer dials the ClusterIP.
+ * the proxy's DNS, which forwards only `.cluster.local` to CoreDNS. The
+ * image-store writer has no DNS egress, so it dials the ClusterIP.
  */
 export function projectRegistryHostname(projectId: string): string {
   return `${projectRegistryName(projectId)}.${k8sNamespace()}.svc.cluster.local`
@@ -245,27 +248,45 @@ function buildProjectRegistryServiceManifest(projectId: string): Record<string, 
 }
 
 /**
- * Egress policy letting this project's workspaces (and only them) reach its
- * registry; the install-wide workspace policy cannot scope by project.
- * Registries are per project because registry:2 has no path ACLs. The
- * workspace-id term keeps the registry pod itself out.
+ * The pods that may reach a project's registry: its workspaces (the
+ * workspace-id term keeps the registry's own pods out) and its image-store
+ * writers. Selected by project id, so no other project's pod matches.
  */
-function buildRegistryWorkspacesNetworkPolicyManifest(
+function registryClients(projectId: string): Array<{ suffix: string; podSelector: Record<string, unknown> }> {
+  return [
+    {
+      suffix: 'sessions',
+      podSelector: {
+        matchLabels: { [LABEL_PROJECT_ID]: projectId },
+        matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
+      },
+    },
+    {
+      suffix: 'store',
+      podSelector: { matchLabels: { app: IMAGE_STORE_APP_LABEL, [LABEL_PROJECT_ID]: projectId } },
+    },
+  ]
+}
+
+/**
+ * Egress policy letting one kind of registry client reach this project's
+ * registry. The install-wide policies cannot scope by project, and
+ * registries are per project because registry:2 has no path ACLs.
+ */
+function buildRegistryClientNetworkPolicyManifest(
   projectId: string,
+  client: { suffix: string; podSelector: Record<string, unknown> },
 ): Record<string, unknown> {
   return {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
     metadata: {
-      name: `${projectRegistryName(projectId)}-sessions`,
+      name: `${projectRegistryName(projectId)}-${client.suffix}`,
       namespace: k8sNamespace(),
       labels: registryLabels(projectId),
     },
     spec: {
-      podSelector: {
-        matchLabels: { [LABEL_PROJECT_ID]: projectId },
-        matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
-      },
+      podSelector: client.podSelector,
       policyTypes: ['Egress'],
       egress: [
         {
@@ -278,9 +299,9 @@ function buildRegistryWorkspacesNetworkPolicyManifest(
 }
 
 /**
- * Registry ingress: same-project workspace pods, and the node (kubelet
- * probe, containerd pulls) by `ipBlock`. A receiving-side check, so a later
- * egress change cannot open cross-project access.
+ * Registry ingress: the project's {@link registryClients}, and the node
+ * (kubelet probe, containerd pulls) by `ipBlock`. A receiving-side check,
+ * so a later egress change cannot open cross-project access.
  */
 function buildRegistryIngressNetworkPolicyManifest(
   projectId: string,
@@ -300,12 +321,7 @@ function buildRegistryIngressNetworkPolicyManifest(
       policyTypes: ['Ingress'],
       ingress: [
         {
-          from: [{
-            podSelector: {
-              matchLabels: { [LABEL_PROJECT_ID]: projectId },
-              matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
-            },
-          }],
+          from: registryClients(projectId).map(({ podSelector }) => ({ podSelector })),
           ports: [registryPort],
         },
         {
@@ -465,8 +481,8 @@ async function ensureRegistryImage(): Promise<string> {
 
 /**
  * The registry Service's ClusterIP, or null if none yet (or unreachable).
- * Consumers without cluster DNS (the hostNetwork image-store builder) must
- * read it fresh.
+ * Consumers without DNS egress (the image-store writer) must read it
+ * fresh.
  */
 export async function projectRegistryClusterIp(projectId: string): Promise<string | null> {
   const svc = await readObject<{ spec?: { clusterIP?: string } }>({
@@ -495,7 +511,9 @@ export async function ensureProjectRegistry(projectId: string): Promise<void> {
     await applyObject(buildProjectRegistryPvcManifest(projectId))
     await applyObject(buildProjectRegistryDeploymentManifest(projectId, imageRef))
     await applyObject(buildProjectRegistryServiceManifest(projectId))
-    await applyObject(buildRegistryWorkspacesNetworkPolicyManifest(projectId))
+    for (const client of registryClients(projectId)) {
+      await applyObject(buildRegistryClientNetworkPolicyManifest(projectId, client))
+    }
     await applyObject(buildRegistryIngressNetworkPolicyManifest(projectId, await nodeIpBlocks()))
     await applyObject(buildRegistryEgressNetworkPolicyManifest(projectId))
     await waitForRollout({

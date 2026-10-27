@@ -44,6 +44,7 @@ import {
 } from '#drivers/k8s/cluster'
 // Setup values and test hooks, not units under test.
 import {
+  IMAGE_STORE_APP_LABEL,
   LABEL_NODE_WRITE,
   LABEL_REGISTRY_SERVES,
   PROJECT_REGISTRY_PORT,
@@ -160,7 +161,7 @@ describe('ensureProjectRegistry', () => {
     // missing volume.
     expect(kinds).toEqual([
       'PersistentVolumeClaim', 'Deployment', 'Service',
-      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
+      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
     ])
     expect(kubectlArgs()).toContainEqual([
       'rollout', 'status', `deployment/${projectRegistryName(ID)}`, '-n', 'test-ns', '--timeout=120s',
@@ -175,7 +176,7 @@ describe('ensureProjectRegistry', () => {
     const objects = applied<{ kind: string; metadata: { name: string; labels: Record<string, string> } }>()
       .filter((m) => m.kind !== 'Pod')
     expect(objects.map((m) => m.kind).sort()).toEqual([
-      'Deployment', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
+      'Deployment', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
       'PersistentVolumeClaim', 'Service',
     ])
     for (const { metadata } of objects) {
@@ -252,13 +253,13 @@ describe('ensureProjectRegistry', () => {
     const first = ensureProjectRegistry(ID)
     const second = ensureProjectRegistry(ID)
     await new Promise((r) => setTimeout(r, 10))
-    // While the first ensure waits on its rollout, only its six object
+    // While the first ensure waits on its rollout, only its seven object
     // applies have happened; the second has not started.
-    expect(applied()).toHaveLength(6)
+    expect(applied()).toHaveLength(7)
 
     releaseRollout()
     await Promise.all([first, second])
-    expect(applied()).toHaveLength(12)
+    expect(applied()).toHaveLength(14)
   })
 
   it('runs the registry as untrusted-free infra off its own claim', async () => {
@@ -328,7 +329,7 @@ describe('ensureProjectRegistry', () => {
     expect(serving).toMatchObject(svc.spec.selector)
   })
 
-  it('fences the registry to its own project: sessions in, nothing out', async () => {
+  it('fences the registry to its own project: workspaces and store writers in, nothing out', async () => {
     await ensureProjectRegistry(ID)
 
     const nps = appliedAllKind('NetworkPolicy') as unknown as Array<{
@@ -336,22 +337,43 @@ describe('ensureProjectRegistry', () => {
       spec: {
         podSelector: { matchLabels: Record<string, string>; matchExpressions?: unknown }
         policyTypes: string[]
-        egress?: Array<Record<string, unknown>>
+        egress?: Array<{ to?: unknown; ports?: unknown }>
         ingress?: Array<{ from?: unknown; ports?: Array<{ protocol: string; port: number }> }>
       }
     }>
     const name = projectRegistryName(ID)
+    const toRegistry = [{
+      to: [{ podSelector: { matchLabels: { app: REGISTRY_APP_LABEL, 'yaac.project-id': ID } } }],
+      ports: [{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }],
+    }]
 
-    // Only this project's workspaces may reach its registry. Selected by
-    // id, so a later project with the same name is not admitted.
+    // Only this project's workspaces and image-store writers may reach its
+    // registry. Selected by id, so a later project with the same name is
+    // not admitted.
     const sessions = nps.find((m) => m.metadata.name === `${name}-sessions`)!
-    expect(sessions.spec.podSelector.matchLabels).toEqual({ 'yaac.project-id': ID })
+    expect(sessions.spec.podSelector).toEqual({
+      matchLabels: { 'yaac.project-id': ID },
+      matchExpressions: [{ key: 'yaac.workspace-id', operator: 'Exists' }],
+    })
     expect(sessions.spec.policyTypes).toEqual(['Egress'])
+    expect(sessions.spec.egress).toEqual(toRegistry)
+    // The writer is on the pod network, so it needs its own allow past the
+    // namespace's default-deny egress.
+    const writer = { matchLabels: { app: IMAGE_STORE_APP_LABEL, 'yaac.project-id': ID } }
+    const store = nps.find((m) => m.metadata.name === `${name}-store`)!
+    expect(store.spec.podSelector).toEqual(writer)
+    expect(store.spec.policyTypes).toEqual(['Egress'])
+    expect(store.spec.egress).toEqual(toRegistry)
 
-    // Ingress admits same-project workspaces and the node (containerd
-    // pulls), the node by address.
+    // Ingress admits exactly those two clients, plus the node (kubelet
+    // probe, containerd pulls) by address.
     const ingress = nps.find((m) => m.metadata.name === `${name}-ingress`)!
     expect(ingress.spec.policyTypes).toEqual(['Ingress'])
+    const pods = ingress.spec.ingress!.find((r) => JSON.stringify(r.from).includes('podSelector'))
+    expect(pods?.from).toEqual([
+      { podSelector: sessions.spec.podSelector },
+      { podSelector: writer },
+    ])
     const node = ingress.spec.ingress!.find((r) => JSON.stringify(r.from).includes(NODE_IP))
     expect(node?.ports).toEqual([{ protocol: 'TCP', port: PROJECT_REGISTRY_PORT }])
 
