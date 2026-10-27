@@ -67,8 +67,10 @@ const THREAD_EVENTS = new Set<AcpEvent['type']>(['user', 'agent', 'thought', 'to
  * transcripts of `toolUseIds` are then read in order, together at most
  * `maxBytes` (each at most 16 MB, the default); one that would go past it
  * is left out,
- * as is one that is missing. The prompt that opens each is left out too,
- * since a subagent's view shows its task already.
+ * as is one that is missing. Everything up to the first user message is left
+ * out too: for a subagent that message is the prompt, which its view shows
+ * as its task already, and a fork (`subagent_type: "fork"`) has before its
+ * directive what it inherited from the parent's message that launched it.
  */
 export async function claudeSubagentThreads(
   session: SandboxFile,
@@ -102,7 +104,7 @@ export async function claudeSubagentThreads(
     const replay = new ClaudeTranscriptReplay(path.basename(session.rel, '.jsonl'), true)
     await replay.append(raw.toString('utf8'))
     const events = replay.events.filter((e) => THREAD_EVENTS.has(e.type))
-    const body = events[0]?.type === 'user' ? events.slice(1) : events
+    const body = events.slice(events.findIndex((e) => e.type === 'user') + 1)
     out.push(...body.map(({ seq: _seq, ...e }) => ({ ...e, thread: toolUseId }) as AcpEventInit))
   }
   return out

@@ -278,7 +278,7 @@ export function workspaceAttachmentsDir(projectId: string, workspaceId: string):
  * The directory claude files a conversation under for a cwd: every
  * non-alphanumeric character replaced with `-` (`/workspace` becomes
  * `-workspace`), and past 200 characters truncated and suffixed with a hash
- * of the whole path. Matches claude 2.1.301's project-dir function (string
+ * of the whole path. Matches claude 2.1.310's project-dir function (string
  * hash `(h << 5) - h + c | 0`); a test pins it.
  */
 export function claudeProjectDirName(cwd: string): string {
@@ -304,14 +304,14 @@ export const CLAUDE_POD_REPO = claudeProjectDirName('/repo')
 /**
  * The thread id from a codex rollout's filename,
  * `rollout-<YYYY-MM-DDTHH-MM-SS>-<thread id>.jsonl` (also `.jsonl.zst`;
- * codex-cli 0.163.0). Undefined for other files.
+ * codex-cli 0.164.0). Undefined for other files.
  */
 export function codexRolloutThreadId(fileName: string): string | undefined {
   return /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+?)\.jsonl(\.zst)?$/.exec(fileName)?.[1]
 }
 
 /** How much of a rollout's head to read for its first line (`session_meta`
- *  holds ~20 KB of base instructions in 0.163.0). */
+ *  holds ~20 KB of base instructions in 0.164.0). */
 const ROLLOUT_META_BYTES = 256 * 1024
 
 /**

@@ -80,7 +80,7 @@ describe('getAgentSessionFirstMessage', () => {
       undefined],
     ['codex user_message event', 'codex',
       [{ type: 'session_start' }, codexEvent({ type: 'user_message', message: 'fix the login bug' })], 'fix the login bug'],
-    // As codex 0.163.0 writes it.
+    // As codex 0.164.0 writes it.
     ['codex completed UserMessage item', 'codex', [
       codexBootstrap('hello'),
       codexEvent({ type: 'item_completed', item: { type: 'AgentMessage', content: [{ type: 'Text', text: 'hi' }] } }),

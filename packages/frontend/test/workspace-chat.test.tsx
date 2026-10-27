@@ -1671,6 +1671,25 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(screen.getByRole('button', { name: '1 tool call' })).toBeTruthy()
   })
 
+  it('labels a fork as one in the strip, on its card and atop its view, saying what it means', () => {
+    stream.events = [
+      ...stream.events,
+      { type: 'subagent', seq: 5, subagent: { id: 'sub-f', name: 'Try the other fix', task: 'try it', fork: true, state: 'running' } },
+    ]
+    show()
+    const strip = screen.getByRole('group', { name: 'Running in the background' })
+    expect(within(strip).getByRole('group', { name: 'Agents' }).textContent).toMatch(/^Agents 1/)
+    expect(within(strip).getByRole('group', { name: 'Forks' }).textContent).toMatch(/^Forks 1/)
+    const hint = "Started from a copy of its parent's conversation, then given its task"
+    const card = screen.getByRole('button', { name: /^Fork\s*Try the other fix/ })
+    expect(within(card).getByTitle(hint).textContent).toBe('Fork')
+    expect(screen.getByRole('button', { name: /^Agent\s*Explore/ })).toBeTruthy()
+
+    fireEvent.click(within(strip).getByRole('button', { name: 'Fork: Try the other fix' }))
+    expect(screen.getByText('try it')).toBeTruthy()
+    expect(screen.getByTitle(hint).textContent).toBe('Fork')
+  })
+
   it('opens a finished subagent from its card, though it has left the strip', () => {
     stream.events = [...stream.events, subagent(5, 'completed')]
     show()

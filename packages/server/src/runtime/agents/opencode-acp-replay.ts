@@ -6,7 +6,7 @@
  * `opencode acp` would have streamed to yaac live, and replays that through
  * `replayAcpLog`.
  *
- * The mapping follows @opencode/cli 2.0.30 (the version
+ * The mapping follows @opencode/cli 2.1.4 (the version
  * dockerfiles/Dockerfile.tools installs): its `session/load` replay for each
  * message part, and its live stream where the two differ, since that is what
  * an `acp` conversation shows. So the user's prompts become `session/prompt`

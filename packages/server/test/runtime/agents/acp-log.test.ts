@@ -597,7 +597,7 @@ describe('replayAcpLog', () => {
   })
 
   it('names what woke the agent into a run it started itself', () => {
-    // As claude-agent-acp 0.91.0 sends them: a finished task's notification
+    // As claude-agent-acp 0.97.0 sends them: a finished task's notification
     // comes after a run's result, just before the run it starts; a monitor's
     // event comes with nothing before the run, whose result names a task
     // notification as its origin. While a background subagent works, claude
@@ -662,7 +662,7 @@ describe('replayAcpLog', () => {
 
   it('rebuilds subagents and tasks from a session/load replay, and what each woke', () => {
     // As `claudeTranscriptAsAcp` replays history through claude-agent-acp
-    // 0.91.0: no state reports or task messages, only the launching calls,
+    // 0.97.0: no state reports or task messages, only the launching calls,
     // and each notification a user message of markup. A monitor's event
     // names no call.
     const call = (id: string, toolName: string, title: string, rawInput: Record<string, unknown>): string => update({
@@ -695,7 +695,7 @@ describe('replayAcpLog', () => {
     const events = replayAcpLog([
       line({ jsonrpc: '2.0', id: 'l-1', method: 'session/load', params: { sessionId: 'acp-1' } }),
       user('start the work'),
-      call('toolu_fg', 'Agent', 'quick look', { prompt: 'look around' }),
+      call('toolu_fg', 'Agent', 'quick look', { prompt: 'look around', subagent_type: 'fork' }),
       result('toolu_fg', [{ type: 'text', text: '[Subagent hand-back] The report follows:\n  all clear\n  twice\nagentId: a0 (…)' }]),
       call('toolu_agent', 'Agent', 'count files', { prompt: 'count them', run_in_background: true }),
       result('toolu_agent', [{ type: 'text', text: 'Async agent launched successfully.\nagentId: a1 (internal ID)' }]),
@@ -742,7 +742,7 @@ describe('replayAcpLog', () => {
     const subagents = latest(events.flatMap((e) => (e.type === 'subagent' ? [e.subagent] : [])))
     const tasks = latest(events.flatMap((e) => (e.type === 'task' ? [e.task] : [])))
     expect([...subagents.values()]).toEqual([
-      { id: 'toolu_fg', name: 'quick look', task: 'look around', state: 'completed', summary: 'all clear\ntwice' },
+      { id: 'toolu_fg', name: 'quick look', task: 'look around', fork: true, state: 'completed', summary: 'all clear\ntwice' },
       { id: 'toolu_agent', name: 'count files', task: 'count them', state: 'completed', summary: '12 files' },
     ])
     expect([...tasks.values()]).toEqual([
@@ -917,6 +917,12 @@ describe('replayAcpLog', () => {
       }),
       under('sub-1', { sessionUpdate: 'tool_call', toolCallId: 's1', title: 'grep router', kind: 'search', status: 'pending' }),
       under('sub-1', { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'found it' } }),
+      // codex-acp reports a subagent's model on its session. The models the
+      // pane offers are the main session's, so this shows nothing.
+      under('sub-1', {
+        sessionUpdate: 'config_option_update',
+        configOptions: [{ id: 'model', type: 'select', currentValue: 'gpt-5.2-mini', options: [{ value: 'gpt-5.2-mini', name: 'Mini' }] }],
+      }),
       line({
         jsonrpc: '2.0',
         id: 9,
@@ -1021,7 +1027,7 @@ describe('replayAcpLog', () => {
   })
 
   it('projects pi\'s bash output, which it sends as `terminal_output` without being asked', () => {
-    // Shapes as pi-acp 0.0.34 sends them, running pi 1.3.0.
+    // Shapes as pi-acp 0.0.34 sends them, running pi 1.4.0.
     const events = replayAcpLog([
       update({
         sessionUpdate: 'tool_call', toolCallId: 'call_1', title: 'echo hello-from-bash; echo line2', kind: 'execute', status: 'pending',
@@ -1048,7 +1054,7 @@ describe('replayAcpLog', () => {
   })
 
   it('builds claude\'s subagents and background shells from the Agent SDK messages it forwards', () => {
-    // Shapes as claude-agent-acp 0.91.0 sends them to a client that is not
+    // Shapes as claude-agent-acp 0.97.0 sends them to a client that is not
     // AIR, with the task messages asked for in the session's `_meta`.
     const sdk = (message: Record<string, unknown>): string =>
       line({ jsonrpc: '2.0', method: '_claude/sdkMessage', params: { sessionId: 'acp-1', message: { type: 'system', ...message } } })
@@ -1096,6 +1102,17 @@ describe('replayAcpLog', () => {
     expect(events[5]).toMatchObject({ task: { id: 'b1', outputFile: '/tmp/c/tasks/b1.output', state: 'running' } })
     expect(events[7]).toMatchObject({ subagent: { id: 'toolu_agent', state: 'completed', summary: 'two files' } })
     expect(events[8]).toMatchObject({ task: { id: 'b1', state: 'completed' } })
+    expect(events[3]).not.toHaveProperty('subagent.fork')
+
+    // A fork, which began from its parent's conversation, says so.
+    const forked = replayAcpLog([
+      claudeUpdate({ sessionUpdate: 'tool_call', toolCallId: 'toolu_fork', title: 'Fork it', kind: 'think', status: 'pending' }, { toolName: 'Agent' }),
+      sdk({
+        subtype: 'task_started', task_id: 'a2', tool_use_id: 'toolu_fork', description: 'Fork it',
+        subagent_type: 'fork', is_backgrounded: false, task_type: 'local_agent', prompt: 'Reply FORKED',
+      }),
+    ].join('\n'))
+    expect(forked.find((e) => e.type === 'subagent')).toMatchObject({ subagent: { id: 'toolu_fork', task: 'Reply FORKED', fork: true } })
   })
 
   it('files claude\'s ask about a subagent\'s call under its thread, and ends what an exit left running', () => {
@@ -1128,7 +1145,7 @@ describe('replayAcpLog', () => {
   })
 
   it('shows a claude Monitor as a monitor, and marks an artifact watch ambient', () => {
-    // As claude-agent-acp 0.91.0 (claude 2.1.300) sends them: the Monitor
+    // As claude-agent-acp 0.97.0 (claude 2.1.310) sends them: the Monitor
     // call comes first, then its task, which claude reports as a backgrounded
     // shell; the live set comes before a task's start and after its end.
     const sdk = (message: Record<string, unknown>): string =>

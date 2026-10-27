@@ -129,14 +129,14 @@ interface OpencodeConfig {
 
 /**
  * The permission actions opencode knows, read off the pinned binary
- * (`@opencode/cli@2.0.30`): its tools plus the wildcard and
+ * (`@opencode/cli@2.1.4`): its tools plus the wildcard and
  * `external_directory`. Unknown actions are accepted silently and match
- * nothing, so `agent-command.test.ts` checks every action used below against
+ * nothing, so `drivers.test.ts` checks every action used below against
  * this list. Re-read it when the pin in dockerfiles/Dockerfile.tools moves.
  */
 export const OPENCODE_ACTIONS: readonly string[] = [
   '*', 'browser', 'edit', 'glob', 'grep', 'question', 'read', 'shell', 'skill',
-  'subagent', 'webfetch', 'websearch', 'execute', 'external_directory',
+  'subagent', 'todowrite', 'webfetch', 'websearch', 'execute', 'external_directory',
   'opencode_list_mcp_resources', 'opencode_read_mcp_resource',
 ]
 
@@ -187,7 +187,7 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  *
  * An effort is a model variant, which opencode's config takes only on an
  * agent, beside the model it applies to (a `model#variant` there is dropped
- * as a legacy reference, checked against 2.0.30). It goes on both built-in
+ * as a legacy reference, checked against 2.1.4). It goes on both built-in
  * agents, so a Shift+Tab between them keeps it. `default` (no variant) needs no
  * entry.
  */

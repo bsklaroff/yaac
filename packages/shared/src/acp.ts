@@ -140,6 +140,9 @@ export interface AcpSubagent {
   name: string
   /** What it was asked to do. */
   task: string
+  /** It began from a copy of its parent's conversation up to the call that
+   *  launched it, rather than from its task alone (claude's fork). */
+  fork?: true
   state: AcpSubagentState
   /** Its final report, when the adapter sends one apart from its messages
    *  (claude does). */

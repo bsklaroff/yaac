@@ -18,8 +18,8 @@ import { PI_MESSAGE_KEY } from './agent-command'
  * opencode's run one at a time, in order, since pane options are
  * last-write-wins.
  *
- * Verified against claude 2.1.301, codex-cli 0.163.0, pi 1.3.0 and
- * @opencode/cli 2.0.30.
+ * Verified against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0 and
+ * @opencode/cli 2.1.4.
  */
 
 /**

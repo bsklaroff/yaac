@@ -10,8 +10,8 @@ import { fileLinksIn, resolveFilePath, type CheckoutFiles, type FileRef } from '
 import { languageForFence, languageForPath } from '#lib/highlight'
 import { messageTime, useTimeZone } from '#lib/time'
 import {
-  ChevronIcon, CompactionIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, InProgressIcon, LoadingIcon, MoveIcon,
-  InterruptedIcon, MonitorIcon, MoreIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
+  ChevronIcon, CompactionIcon, DeleteIcon, DoneIcon, ExecuteIcon, FailedIcon, FileTextIcon, ForkIcon, InProgressIcon, LoadingIcon,
+  InterruptedIcon, MonitorIcon, MoreIcon, MoveIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
   ThinkingIcon, ToolIcon, WarningIcon, WorkflowIcon, type Icon,
 } from '#lib/icons'
 import { stripAnsi } from '@yaac/shared/ansi'
@@ -1080,17 +1080,30 @@ function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
  * What kind of background work a subagent or task is, named and drawn the
  * same way wherever it appears (the running strip, its transcript card, the
  * header of its own view). The tint tells the kinds apart at a glance; the
- * label says it in words.
+ * label says it in words, and `hint`, shown on hovering the label, says what
+ * the word means where it is not obvious.
  */
 export interface ActivityCategory {
   icon: Icon
   label: string
   plural: string
   tint: string
+  hint?: string
 }
 
-export const SUBAGENT_CATEGORY: ActivityCategory = {
+const SUBAGENT_CATEGORY: ActivityCategory = {
   icon: SubagentIcon, label: 'Agent', plural: 'Agents', tint: 'text-purple',
+}
+
+/** A subagent that began from a copy of its parent's conversation, so it
+ *  knows everything its parent did up to the launch, not just its task. */
+const FORK_CATEGORY: ActivityCategory = {
+  icon: ForkIcon, label: 'Fork', plural: 'Forks', tint: 'text-purple',
+  hint: "Started from a copy of its parent's conversation, then given its task",
+}
+
+export function subagentCategory(subagent: AcpSubagent): ActivityCategory {
+  return subagent.fork === true ? FORK_CATEGORY : SUBAGENT_CATEGORY
 }
 
 const TASK_CATEGORIES: Record<string, ActivityCategory> = {
@@ -1131,7 +1144,7 @@ export function StateMark({ state, live }: { state: (AcpSubagent | AcpTask)['sta
 /** A subagent or task in the transcript; opens its own view when the
  *  caller can show one. */
 function ActivityCard({
-  category: { icon: Icon, label, tint },
+  category: { icon: Icon, label, tint, hint },
   title,
   detail,
   state,
@@ -1156,7 +1169,7 @@ function ActivityCard({
       <Icon size={14} className={clsx('shrink-0', tint)} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-1.5">
-          <span className="shrink-0 text-text-faint">{label}</span>
+          <span className="shrink-0 text-text-faint" title={hint}>{label}</span>
           <span className="truncate text-text">{title}</span>
         </span>
         {detail !== undefined && detail !== '' && <span className="truncate text-text-faint">{detail}</span>}
@@ -1261,7 +1274,7 @@ export function AcpTranscript({
             </DisclosureRow>
           ) : g.kind === 'subagent' ? (
             <ActivityCard
-              category={SUBAGENT_CATEGORY}
+              category={subagentCategory(g.subagent)}
               title={g.subagent.name}
               detail={g.subagent.task}
               state={g.subagent.state}

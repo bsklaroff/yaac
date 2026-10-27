@@ -48,6 +48,7 @@ export {
   ListChevronsDownUp as CondenseIcon,
   ListChevronsUpDown as UncondenseIcon,
   GitBranch as BranchIcon,
+  GitFork as ForkIcon,
   Globe as PreviewIcon,
   ArrowLeft as NavBackIcon,
   ArrowRight as NavForwardIcon,

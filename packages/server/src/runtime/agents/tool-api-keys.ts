@@ -25,7 +25,7 @@ import { toolApiKeyEnvVar, type ToolProviderInfo } from '@yaac/shared/tool-provi
  * Entries for providers the user has since switched away from are kept:
  * each names only its own provider's variable, which then goes unset.
  *
- * Verified against pi 1.3.0 and @opencode/cli 2.0.30.
+ * Verified against pi 1.4.0 and @opencode/cli 2.1.4.
  */
 
 /** Larger than any hand-written models.json; a bigger one is left alone. */

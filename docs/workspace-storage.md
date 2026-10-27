@@ -237,7 +237,7 @@ hand-started one reports as well:
 Each tool also ends its conversation (claude's and codex's `SessionEnd`, pi's
 `session_shutdown`, the plugin's dispose), which clears the option when the
 agent quits. That matters in a shell pane that outlives the agent. (Verified
-against claude 2.1.301, codex-cli 0.163.0, pi 1.3.0 and @opencode/cli 2.0.30.)
+against claude 2.1.310, codex-cli 0.164.0, pi 1.4.0 and @opencode/cli 2.1.4.)
 
 A conversation is **active** exactly when a live agent names it. A pane option
 dies with its pane, and a new pod's tmux starts with none, so a previous pod's
@@ -812,8 +812,11 @@ codex's TUI offers its agent a `create_worktree` tool in a trusted folder,
 which yaac makes every checkout. Those worktrees go under
 `$CODEX_HOME/worktrees`, the project's shared codex home, so each one would
 outlive the workspace, and under k8s its install would land on the shared
-tier. So yaac launches every codex TUI with its worktrees feature off
-(`features.worktrees=false`, in `codexLaunchConfig`), and the image's
-`/etc/codex/requirements.toml` turns it off for a codex started by hand in a
-pod. Under containerless, a codex started by hand still has the tool. An
-`acp` codex runs `codex app-server`, which does not offer it.
+tier. codex has no setting that turns the tool off: the TUI serves it from
+an MCP server of its own, `codex_worktrees`, and starts none when a
+configured server already has that name. So yaac launches every codex TUI
+with a disabled server of that name (`codexLaunchConfig`), and under k8s
+the image's `/etc/codex/config.toml` declares the same server, so a codex
+started by hand in a pod lacks the tool too. Under containerless one started
+by hand still has it. An `acp` codex runs `codex app-server`, which does not
+offer it.

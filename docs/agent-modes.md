@@ -580,7 +580,10 @@ beside the conversation's, with a `.meta.json` naming the Agent call.
 skipping any it cannot read), then reads the transcripts asked for in order
 under one byte budget, through the adapter's converter, the same way a tui
 transcript is rendered. Each event is tagged with its subagent's thread.
-The live pane asks for one subagent's over its socket
+A thread leaves out everything up to its first user message: for a
+subagent that is the prompt, which its view already shows as its task, and
+a fork (`subagent_type: "fork"`) has before its directive what it inherited
+from the parent's message that launched it. The live pane asks for one subagent's over its socket
 (`subagent-transcript`) when it opens a finished subagent that has no thread
 in the record. A stopped conversation's transcript has those threads filled
 in before it is served, under what is left of the transcript cap.
@@ -842,7 +845,11 @@ way, and the projection turns every answer into the same `subagent` and
   running/idle report). A subagent is keyed by the Agent call that spawned
   it, which is what its own updates name (`_meta.claudeCode.parentToolUseId`),
   so its card stands in for that call; its final report arrives in its
-  `task_notification` and ends its view. That notification can be skipped,
+  `task_notification` and ends its view. A fork (`subagent_type: "fork"`,
+  in its `task_started` or, in a replay, its Agent call's input) starts
+  from a copy of the parent's conversation rather than from its task
+  alone, so it is labeled Fork, with an icon and count of its own, and its
+  label's tooltip says so. That notification can be skipped,
   so a terminal `task_updated` ends a subagent too, and
   `background_tasks_changed`, which lists every live background task, ends
   a background task or subagent it no longer lists as stopped (cancelled,

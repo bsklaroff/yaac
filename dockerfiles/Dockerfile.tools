@@ -99,16 +99,16 @@ ENV EDITOR=nvim
 RUN umask 002 && npm install -g chrome-devtools-mcp@1.10.1
 # Bump with codex-acp below, which drives this CLI's app-server. Its sandbox
 # must keep using /usr/bin/bwrap (test/e2e/codex-sandbox.test.ts checks).
-RUN umask 002 && npm install -g @openai/codex@0.163.0
+RUN umask 002 && npm install -g @openai/codex@0.164.0
 # opencode 2 (`@opencode/cli`). The workspace env sets
 # OPENCODE_DISABLE_AUTOUPDATE=1 (domain/workspaces/create.ts) so it stays on
 # the pin. The 1.x line (`opencode-ai`) from 1.0.143 on never renders in our
 # tmux: it waits for a terminal query tmux never answers
 # (anomalyco/opencode#29802). Check the pane still draws when bumping.
-RUN umask 002 && npm install -g @opencode/cli@2.0.30
+RUN umask 002 && npm install -g @opencode/cli@2.1.4
 # pi. pi-acp (below) depends on pi's unstable `--mode rpc` event shapes, so
 # bump the two together and re-run the acp e2e tier.
-RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
+RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0
 # Claude Code: the pinned release binary, checked against its SHA-256 in
 # `AGENT_CLIS.claude.binarySha256` (a test checks they match), then its own
 # `install`. That downloads the version again into
@@ -117,13 +117,13 @@ RUN umask 002 && npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 # without group write (~/.claude/sessions is 0700), so fix modes in the same
 # layer. If one of these paths stops existing, `find` fails the build.
 RUN umask 002 && case "$(dpkg --print-architecture)" in \
-      amd64) PLATFORM=linux-x64 SHA256=bc1aad9982c7b59c7d889ff92595d61cf46e0a6eae074cb551d932a989bcd222 ;; \
-      arm64) PLATFORM=linux-arm64 SHA256=1e119036a802d359ba5f9886428e031586e8796f7a858d5a8ee179ac7b8604f0 ;; \
+      amd64) PLATFORM=linux-x64 SHA256=b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56 ;; \
+      arm64) PLATFORM=linux-arm64 SHA256=9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54 ;; \
     esac && \
-    curl -fsSL -o /tmp/claude "https://downloads.claude.ai/claude-code-releases/2.1.301/${PLATFORM}/claude" && \
+    curl -fsSL -o /tmp/claude "https://downloads.claude.ai/claude-code-releases/2.1.310/${PLATFORM}/claude" && \
     echo "${SHA256}  /tmp/claude" | sha256sum -c - && \
-    chmod 755 /tmp/claude && /tmp/claude install 2.1.301 && rm /tmp/claude && \
-    echo "${SHA256}  /home/yaac/.local/share/claude/versions/2.1.301" | sha256sum -c - && \
+    chmod 755 /tmp/claude && /tmp/claude install 2.1.310 && rm /tmp/claude && \
+    echo "${SHA256}  /home/yaac/.local/share/claude/versions/2.1.310" | sha256sum -c - && \
     find /home/yaac/.claude /home/yaac/.local/share/claude /home/yaac/.local/state/claude \
       /home/yaac/.cache/claude \
       ! -perm -g+w -exec chmod g=u {} +
@@ -133,11 +133,11 @@ RUN umask 002 && case "$(dpkg --print-architecture)" in \
 # that drops one silently runs in its default. A unit test ties each pin here
 # to the version that table was verified against. opencode's adapter is
 # `opencode acp`, part of the CLI above.
-RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.91.0
+RUN umask 002 && npm install -g @agentclientprotocol/claude-agent-acp@0.97.0
 # Runs the codex CLI above (`codex app-server`, via the CODEX_PATH its launch
 # sets), so bump the two together within codex-acp's `@openai/codex`
 # dependency range. Its own codex copy still installs, unused.
-RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@2.2.2
+RUN umask 002 && npm install -g --ignore-scripts @agentclientprotocol/codex-acp@2.3.0
 # Runs the pinned pi CLI above (`pi --mode rpc`). Patched after install
 # (dockerfiles/agent-patches/pi-acp.js says what it changes and when it can
 # go); the patch fails the build if the release no longer matches it. It is
@@ -152,11 +152,15 @@ RUN umask 002 && npm install -g --ignore-scripts pi-acp@0.0.34 && \
 # requirements.toml keeps the hook engine on, disables the codex_apps MCP
 # server, whose handshake fails (openai/codex#16550), and stops a codex
 # started by hand from spawning the shared background server, whose hooks
-# would report to the first launcher's pane, or create worktrees in the
-# shared codex home (docs/workspace-storage.md). config.toml skips the
-# startup update check so unattended sessions do not stall on it.
+# would report to the first launcher's pane. config.toml skips the startup
+# update check so unattended sessions do not stall on it, and holds the
+# name of the TUI's worktree server with a disabled one, so a codex started
+# by hand creates no worktrees in the shared codex home
+# (docs/workspace-storage.md). That works only while daemon_auto_start is
+# off, as `codexLaunchConfig` in packages/server/src/runtime/agents/codex.ts
+# explains.
 USER root
 RUN mkdir -p /etc/codex \
-  && printf 'check_for_update_on_startup = false\n' > /etc/codex/config.toml \
-  && printf '[features]\nhooks = true\napps = false\ndaemon_auto_start = false\nworktrees = false\n' > /etc/codex/requirements.toml
+  && printf 'check_for_update_on_startup = false\n\n[mcp_servers.codex_worktrees]\ncommand = "false"\nenabled = false\n' > /etc/codex/config.toml \
+  && printf '[features]\nhooks = true\napps = false\ndaemon_auto_start = false\n' > /etc/codex/requirements.toml
 USER yaac
