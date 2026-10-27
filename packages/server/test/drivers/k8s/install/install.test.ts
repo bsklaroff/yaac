@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import type * as apiModule from '#drivers/k8s/substrate/api'
 import type * as clusterBarrel from '#drivers/k8s/cluster'
@@ -303,6 +304,10 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   if (file === 'kind' && args[0] === 'get' && args[1] === 'nodes') {
     return Promise.resolve({ stdout: 'yaac-control-plane\n', stderr: '' })
   }
+  // The kind node mounts this data dir, as one install created it.
+  if (file === 'podman' && args[0] === 'inspect' && args[2]?.includes('.Mounts')) {
+    return Promise.resolve({ stdout: nodeMounts(bind(getDataDir())), stderr: '' })
+  }
   if (file === 'podman' && args[0] === 'exec' && args.includes('uname')) {
     return Promise.resolve({ stdout: 'aarch64\n', stderr: '' })
   }
@@ -317,6 +322,16 @@ function happyRun(file: string, args: string[]): Promise<{ stdout: string; stder
   }
   return Promise.resolve({ stdout: '', stderr: '' })
 }
+
+/** A bind mount at `p`, as a kind extraMount appears to podman; its source is the resolved host path. */
+const bind = (p: string): object => ({ Type: 'bind', Source: `/resolved${p}`, Destination: p })
+
+/** `podman inspect` of a kind node's mounts: kind's own `/var` volume and `/lib/modules` bind, plus `extra`. */
+const nodeMounts = (...extra: object[]): string => JSON.stringify([
+  { Type: 'volume', Source: '/var/lib/containers/storage/volumes/x/_data', Destination: '/var' },
+  { Type: 'bind', Source: '/lib/modules', Destination: '/lib/modules' },
+  ...extra,
+])
 
 /**
  * deps.run for a machine with no cluster yet: `kind get nodes` is empty on
@@ -344,7 +359,7 @@ const FAKE_CALICO_SHA256 = crypto.createHash('sha256')
 /**
  * Stand-in kind config in the shape the renderer needs: cluster-wide
  * settings first, then a final `nodes:` list with one control-plane entry
- * (with the $HOME extraMount) that `--nodes` copies into workers.
+ * that `--nodes` copies into workers.
  */
 const FAKE_KIND_CONFIG = [
   'kind: Cluster',
@@ -354,9 +369,6 @@ const FAKE_KIND_CONFIG = [
   '    config_path = "/etc/containerd/certs.d"',
   'nodes:',
   '- role: control-plane',
-  '  extraMounts:',
-  '  - hostPath: $HOME',
-  '    containerPath: $HOME',
   '',
 ].join('\n')
 
@@ -688,8 +700,9 @@ describe('runClusterInstall', () => {
     expect(runCalls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     const createCall = deps.runStreaming.mock.calls.find(([f, a]) => f === 'kind' && a[0] === 'create')
     expect(createCall).toBeDefined()
-    expect(createCall?.[2]?.input).toContain('/home/tester')
-    expect(createCall?.[2]?.input).not.toContain('$HOME')
+    // The node mounts the data dir and nothing else of the home directory.
+    expect(createCall?.[2]?.input).toContain(`hostPath: ${getDataDir()}\n`)
+    expect(createCall?.[2]?.input).not.toContain('/home/tester')
     // The config carries the server's port mapping. kind sets mappings only
     // at create, which is why an older cluster is refused.
     expect(createCall?.[2]?.input).toContain(`containerPort: ${String(SERVER_FRONT_PORT)}`)
@@ -827,21 +840,20 @@ describe('runClusterInstall', () => {
     expect(logged(deps)).toContain('could not be determined')
   })
 
-  it('renders one worker per extra --nodes, each carrying the home extraMount', async () => {
+  it('renders one worker per extra --nodes, each carrying the data dir extraMount', async () => {
     const deps = makeDeps({ run: freshRun() })
     await runClusterInstall({ nodes: 3 }, deps)
 
     const input = deps.runStreaming.mock.calls
       .find(([f, a]) => f === 'kind' && a[0] === 'create')?.[2]?.input ?? ''
     // One control plane and two workers copied from it, so every node gets
-    // the $HOME bind that keeps hostPaths consistent.
+    // the data dir bind that keeps hostPaths consistent.
     expect(input.match(/^- role: control-plane$/gm)).toHaveLength(1)
     expect(input.match(/^- role: worker$/gm)).toHaveLength(2)
-    expect(input.match(/hostPath: \/home\/tester$/gm)).toHaveLength(3)
+    expect(input.match(new RegExp(`hostPath: ${getDataDir()}$`, 'gm'))).toHaveLength(3)
     // Each node also gets the node-local bind.
     expect(input.match(new RegExp(`hostPath: ${nodeLocalRoot()}$`, 'gm'))).toHaveLength(3)
     expect(input.match(new RegExp(`containerPath: ${nodeLocalNodePath()}$`, 'gm'))).toHaveLength(3)
-    expect(input).not.toContain('$HOME')
     // Cluster-wide settings are not duplicated; kind applies them to all
     // nodes.
     expect(input.match(/config_path/g)).toHaveLength(1)
@@ -1045,6 +1057,31 @@ describe('runClusterInstall', () => {
     expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
   })
 
+  it('refuses a cluster whose nodes do not bind this data dir, and accepts one binding an ancestor', async () => {
+    const mounting = (mounts: string): RunMock => vi.fn((file: string, args: string[]) => (
+      file === 'podman' && args[0] === 'inspect' && args[2]?.includes('.Mounts')
+        ? Promise.resolve({ stdout: mounts, stderr: '' })
+        : happyRun(file, args)
+    ))
+    // Another data dir's cluster: its PVs would resolve inside the node.
+    await expect(runClusterInstall({}, makeDeps({ run: mounting(nodeMounts(bind(`${getDataDir()}-other`))) })))
+      .rejects.toThrow(/does not mount this data dir/)
+    // kind's `/var` volume is no bind, so a data dir under /var (a Silverblue
+    // home) is refused as well.
+    const from = getDataDir()
+    setDataDir('/var/home/tester/.yaac-cluster')
+    try {
+      await expect(runClusterInstall({}, makeDeps({ run: mounting(nodeMounts(bind('/var/home/tester/other'))) })))
+        .rejects.toThrow(/does not mount this data dir/)
+    } finally {
+      setDataDir(from)
+    }
+    expect(ran('ensureMainRegistry')).toBe(0)
+    // A cluster that mounts the home directory still covers it.
+    await runClusterInstall({}, makeDeps({ run: mounting(nodeMounts(bind(path.dirname(getDataDir())))) }))
+    expect(ran('ensureMainRegistry')).toBe(1)
+  })
+
   it('keeps the hash an older kind cluster\'s node mount and volumes are named after, labelling with the install id', async () => {
     const HASH = '0123456789abcdef'
     fakeCluster.seed({
@@ -1084,7 +1121,7 @@ describe('runClusterInstall', () => {
       let readyzAsked = 0
       const deps = makeDeps({
         run: vi.fn((file: string, args: string[]) => {
-          if (file === 'podman' && args[0] === 'inspect') {
+          if (file === 'podman' && args[0] === 'inspect' && args[2]?.includes('.State.Running')) {
             return Promise.resolve({ stdout: 'false\n', stderr: '' })
           }
           if (file === 'kubectl' && args.includes('/readyz') && ++readyzAsked < 3) {

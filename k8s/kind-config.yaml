@@ -6,22 +6,21 @@
 #      in-cluster Service, which the node cannot resolve by cluster DNS;
 #      one-shot pods hostPath-mount that directory and write its live
 #      ClusterIP into it.
-#   2. extraMounts: your home directory, visible to the node at the same
-#      path — the storage claims (`yaac-global`, `yaac-server-local`,
-#      `yaac-checkouts`) bind static hostPath PVs into the data dir, which
-#      resolve on the NODE, not the host. `yaac cluster install` renders a SECOND entry
-#      beside it, `<dataDir>/node-local` → `/var/lib/yaac/node/<install id>`,
-#      so the node-local tier (pnpm stores, image stores) lives on the host
-#      disk too and survives a cluster delete; it is per install (the
-#      install id) and cannot be added to a running cluster.
-#
-# Substitute $HOME for your real home directory before use (kind does not
-# expand environment variables), e.g.:
-#   sed "s|\$HOME|$HOME|g" k8s/kind-config.yaml | kind create cluster --name yaac --config -
+#   2. extraMounts, which `yaac cluster install` renders onto the node
+#      entry below rather than this file naming them: the data dir at its
+#      own path, since the storage claims (`yaac-global`,
+#      `yaac-server-local`, `yaac-checkouts`) bind static hostPath PVs into
+#      it, which resolve on the NODE, not the host; and
+#      `<dataDir>/node-local` → `/var/lib/yaac/node/<install id>`, so the
+#      node-local tier (pnpm stores, image stores) lives on the host disk
+#      too and survives a cluster delete. Only the data dir is mounted, so
+#      a process inside a node cannot read the rest of your home directory
+#      through it. The node is still a privileged container, so this narrows
+#      what such a process sees, not what an escape from it can reach.
 #
 # MULTI-NODE: `yaac cluster install --nodes N` renders this file into an
 # N-node cluster by COPYING the control-plane entry below into N-1 `role:
-# worker` entries — so both extraMounts land on every node, which is what
+# worker` entries — so the extraMounts land on every node, which is what
 # keeps the PVs and the node-local path resolving when a session schedules
 # off the control plane (all kind node containers share the one host
 # filesystem). The `nodes:` list must therefore hold exactly one entry. Everything else is
@@ -86,6 +85,3 @@ nodes:
   # installed kind release publishes (its release notes list them) — this
   # is kind v0.33.0's default.
   image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
-  extraMounts:
-  - hostPath: $HOME
-    containerPath: $HOME

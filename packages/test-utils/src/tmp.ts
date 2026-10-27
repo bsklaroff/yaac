@@ -1,7 +1,6 @@
 import os from 'node:os'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ambientDataDir } from '@yaac/shared/paths'
 
 let hermeticScratch = false
 
@@ -24,15 +23,14 @@ export function setHermeticScratch(on: boolean): void {
  *
  *  - api and e2e runs hostPath-mount scratch into pods, so it must have the
  *    same absolute path on the host and the node. On a kind host `/tmp` is
- *    the node's own tmpfs, so they use `<data dir>/e2e-tmp`, which
- *    `yaac cluster check` proves the node can see.
- *
- * Uses {@link ambientDataDir}, not `getDataDir()`, because each test's data
- * dir is created under this base.
+ *    the node's own tmpfs, and the node mounts only the cluster's data dir,
+ *    so they use `<data dir>/e2e-tmp`: `YAAC_DATA_DIR` when set, else the
+ *    default cluster data dir `~/.yaac-cluster`. Each test's data dir is
+ *    created under this base, so it ignores `setDataDir()`.
  */
 export function testTmpBase(): string {
   if (hermeticScratch) return os.tmpdir()
-  return path.join(ambientDataDir(), 'e2e-tmp')
+  return path.join(process.env.YAAC_DATA_DIR || path.join(os.homedir(), '.yaac-cluster'), 'e2e-tmp')
 }
 
 /** mkdtemp under the test temp base (see {@link testTmpBase}). */
