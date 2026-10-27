@@ -9,6 +9,7 @@ import { readLock } from '@yaac/shared/lock'
 import {
   RUNTIME_CLASS_GVISOR,
   SERVER_POD_PORT,
+  SERVER_PROBE_PORT,
   runPodToCompletion,
   workspaceIdLabels,
 } from '@yaac/server/drivers/k8s/substrate'
@@ -75,12 +76,13 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
     expect(list.stdout).toContain('No projects found')
   })
 
-  it('walls the API off from a workspace-labelled pod, while the kubelet still reaches it', async () => {
-    // The server pod's ingress policy admits only the node addresses and
-    // whatever fronts the Service; it is what keeps workspace code off the
-    // control plane (docs/server-in-cluster.md). A workspace-like pod
-    // dialing the pod IP must be dropped. The allowed side is shown by the
-    // fixture's rollout: the node's readiness probe got through.
+  it('walls the API off from workspace pods and node addresses, which reach only the probe port', async () => {
+    // The server pod's ingress policy admits the API only from whatever
+    // fronts the Service (and node addresses behind the kind forwarder,
+    // which this fixture does not deploy); node addresses reach only the
+    // readiness probe's port. It is what keeps workspace code, and any
+    // other host-networked process, off the control plane
+    // (docs/server-in-cluster.md "The ingress policy is the wall").
     const { stdout: podIp } = await execFileAsync('kubectl', [
       'get', 'pods', '-n', TEST_NAMESPACE, '-l', 'app=yaac-server',
       '-o', 'jsonpath={.items[0].status.podIP}',
@@ -110,6 +112,30 @@ describe('yaac cluster start|stop|restart|logs|status against the in-cluster Dep
     expect(phase).toBe('Succeeded')
     expect(logs).toContain('NP_SERVER_LOCKED')
     expect(logs).not.toContain('NP_SERVER_OPEN')
+
+    // A host-networked pod presents its node's address, as a node's own
+    // processes and other tenants' DaemonSets do: the probe answers, the
+    // API does not. Plain runc, since gVisor has no host network.
+    const curl = (port: number, tag: string): string =>
+      `curl -s -m 4 -H 'Host: 127.0.0.1' http://${podIp.trim()}:${String(port)}/api/health >/dev/null `
+      + `&& echo ${tag}_OPEN || echo ${tag}_LOCKED`
+    const host = await runPodToCompletion({
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'yaac-e2e-server-wall-host-probe', namespace: TEST_NAMESPACE },
+      spec: {
+        restartPolicy: 'Never',
+        hostNetwork: true,
+        containers: [{
+          name: 'probe',
+          image: await resolveTestBaseImageRef(),
+          command: ['sh', '-c', `${curl(SERVER_POD_PORT, 'NP_API')}; ${curl(SERVER_PROBE_PORT, 'NP_PROBE')}`],
+        }],
+      },
+    }, { timeoutMs: 120_000 })
+    expect(host.phase).toBe('Succeeded')
+    expect(host.logs).toContain('NP_API_LOCKED')
+    expect(host.logs).toContain('NP_PROBE_OPEN')
   })
 
   it('`cluster start` against a rolled-out Deployment is idempotent', async () => {

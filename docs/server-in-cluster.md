@@ -31,16 +31,17 @@ one mounts two (see "Storage claims").
    which adds nothing to a role that already has cluster-wide `pods/exec`.
    A rule added here reaches a running install at its next
    `yaac cluster install`, the step that also rolls the server.
-4. **The two ingress NetworkPolicies**, before the Service, so the server's
-   port is never reachable from pods before the policy exists (see "The
-   ingress policy is the wall").
+4. **The fronting half of the ingress policy**, before the Service, so the
+   server's port is never reachable from pods before a policy selects it
+   (see "The ingress policy is the wall").
 5. **The Service** (ClusterIP) and its **fronting**, meaning how the Service
    is reached from outside the cluster: a forwarder on kind (with this
    machine's `tailscale serve` in front of it under `--tailnet <host>`), the
    Tailscale operator's Ingress under `--tailnet` (see "Reachability"). Objects of the
-   other fronting are deleted first. The fronting comes before the
-   Deployment because the origin it publishes goes into the Deployment's
-   environment.
+   other fronting are deleted first. Then the node half of the ingress
+   policy, which reads whether the forwarder now exists. The fronting comes
+   before the Deployment because the origin it publishes goes into the
+   Deployment's environment.
 6. **The Deployment**: `replicas: 1`, `strategy: Recreate`, `yaac-infra`
    priority, plain runc, `runAsUser` set to the install uid (see "The uid
    everything runs as"), three mounts (`yaac-global`, `yaac-server-local` and the node's
