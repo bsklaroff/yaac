@@ -4,14 +4,16 @@
  * both.
  *
  * An agent may list the project's workspaces (running, queued or stopped),
- * create or queue one, edit, run or discard a queued one, send a running
- * one a message, retitle, group, stop one (its own included), restart a
- * stopped one, fetch another's branches and read another's conversation
- * history, and change its own reference branch. Stopping is allowed
- * because it is reversible: the checkout, row and conversations are kept.
- * Restarting a stopped workspace only undoes a stop, and is held to the
- * caller's own permission mode. Discarding a queued workspace loses only
- * a prompt and settings that never ran. Deleting a workspace and
+ * create or queue one, edit, run or discard a queued one, manage routines,
+ * send a running one a message, retitle, group, stop one (its own
+ * included), restart a stopped one, fetch another's branches and read
+ * another's conversation history, and change its own reference branch.
+ * Stopping is allowed because it is reversible: the checkout, row and
+ * conversations are kept. Restarting a stopped workspace only undoes a
+ * stop, and is held to the caller's own permission mode, as is everything a
+ * routine launches. Discarding a queued workspace loses only a prompt and
+ * settings that never ran; deleting a routine loses its schedule and the
+ * run history it lists, but no run's workspace. Deleting a workspace and
  * reconfiguring stay the user's.
  *
  * The caller's identity comes from the transport (pod IP under k8s, a
@@ -33,6 +35,14 @@ import {
   type QueueStart,
 } from './queued-workspaces'
 import { resolveProjectWorkspace, resolveWorkspaceContainer } from './resolve'
+import {
+  createRoutine,
+  deleteRoutine,
+  listRoutines,
+  runRoutineNow,
+  setRoutinePaused,
+  updateRoutine,
+} from './routines'
 import { stopWorkspace } from './stop'
 import {
   getProjectRow,
@@ -59,11 +69,14 @@ import {
   PERMISSION_MODES,
   isRankedPermissionMode,
   morePermissive,
+  routineSettingsSchema,
   timeoutMinutesSchema,
   type AgentMode,
   type AgentTool,
   type PermissionMode,
   type MamaCommand,
+  type RoutineEntry,
+  type RoutineSettings,
   type StoppedWorkspaceEntry,
   type WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -140,6 +153,9 @@ const STOPPED_PAGE_MAX = 200
 /** The options every command that makes a workspace takes. */
 const CREATE_ARGS = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'branch', 'group', 'title', 'timeout'] as const
 
+/** The options a routine write takes. Its runs are titled from its name. */
+const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== 'title')]
+
 /**
  * Options each command accepts. Others are refused rather than ignored, so a
  * request never silently does less than it said. Checked here so both
@@ -160,6 +176,12 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
   'edit-queued': ['queued', 'parent-workspace', 'no-parent', 'start-at', 'start-in', ...CREATE_ARGS],
   'run-queued': ['queued'],
   'delete-queued': ['queued'],
+  'routine-create': ROUTINE_ARGS,
+  'routine-edit': ['routine', ...ROUTINE_ARGS],
+  'routine-pause': ['routine'],
+  'routine-resume': ['routine'],
+  'routine-run': ['routine'],
+  'routine-delete': ['routine'],
   fetch: ['workspace'],
   history: ['workspace', 'conversation', 'files', 'file'],
   send: ['workspace', 'conversation'],
@@ -208,6 +230,12 @@ export async function runMamaCommand(
       case 'edit-queued': return await runEditQueued(caller, request)
       case 'run-queued': return await runRunQueued(caller, request)
       case 'delete-queued': return await runDeleteQueued(caller, request)
+      case 'routine-create': return await runRoutineCreate(caller, request)
+      case 'routine-edit': return await runRoutineEdit(caller, request)
+      case 'routine-pause': return await runRoutinePause(caller, request, true)
+      case 'routine-resume': return await runRoutinePause(caller, request, false)
+      case 'routine-run': return await runRoutineRun(caller, request)
+      case 'routine-delete': return await runRoutineDelete(caller, request)
       case 'fetch': return await runFetch(caller, request)
       case 'history': return await runHistory(caller, request)
       case 'send': return await runSend(caller, request)
@@ -219,26 +247,29 @@ export async function runMamaCommand(
 
 /**
  * The caller's project, as it would look in the sidebar: what runs, what is
- * queued, and how many are stopped. Ids (or unique prefixes) in the body,
- * whitespace-separated, narrow it to those workspaces, running, queued or
- * stopped, and add each one's full prompt, which the table cuts short,
- * indented under a header. `--stopped` lists the stopped ones instead.
+ * queued, its routines, and how many are stopped. Ids (or unique prefixes)
+ * in the body, whitespace-separated, narrow it to those workspaces (running,
+ * queued or stopped) and routines, and add each one's full prompt, which
+ * the table cuts short, indented under a header. `--stopped` lists the
+ * stopped ones instead.
  */
 async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   if (request.args.stopped !== undefined) return await runListStopped(caller, request)
   const stray = STOPPED_ARGS.find((a) => request.args[a] !== undefined)
   if (stray !== undefined) return { ok: false, error: `list takes '--${stray}' only with --stopped` }
 
-  const [active, groups, allQueued, rows, zone] = await Promise.all([
+  const [active, groups, allQueued, rows, zone, allRoutines] = await Promise.all([
     listActiveWorkspaces(caller.projectId),
     listWorkspaceGroups(caller.projectId),
     listQueuedWorkspaceRows(caller.projectId),
     getProjectWorkspaceRows(caller.projectId),
     ownerTimeZone(caller.projectId),
+    projectRoutines(caller.projectId),
   ])
   const clock = { zone, now: new Date() }
   let workspaces = active.workspaces
   let queued = allQueued
+  let routines = allRoutines
   // A restart keeps its stop until it succeeds, so one under way is left
   // out as the webapp's sidebar leaves it out.
   const notStopped = new Set([...workspaces.map((w) => w.workspaceId), ...inFlightWorkspaceIds(Date.now())])
@@ -253,6 +284,7 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     const entries: Array<{ id: string; prompt?: string }> = [
       ...workspaces.map((w) => ({ id: w.workspaceId, prompt: w.prompt ?? '' })),
       ...queued.map((r) => ({ id: r.id, prompt: r.prompt })),
+      ...routines.map((r) => ({ id: r.id, prompt: r.prompt })),
       ...allStopped.map((r) => ({ id: r.workspaceId })),
     ]
     const picked: Array<{ id: string; prompt?: string }> = []
@@ -264,6 +296,7 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     const ids = new Set(picked.map((p) => p.id))
     workspaces = workspaces.filter((w) => ids.has(w.workspaceId))
     queued = queued.filter((r) => ids.has(r.id))
+    routines = routines.filter((r) => ids.has(r.id))
     stopped = await toStoppedEntries(allStopped.filter((r) => ids.has(r.workspaceId)))
     for (const p of picked) {
       prompts.push({ id: p.id, prompt: p.prompt ?? stopped.find((e) => e.workspaceId === p.id)?.prompt ?? '' })
@@ -285,6 +318,10 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     if (lines.length > 0) lines.push('')
     lines.push('Queued workspaces (each starts when what it is under is stopped, at its time, or when its group has room):', '')
     lines.push(...renderQueued(queued, names, caller.workspaceId, clock))
+  }
+  if (routines.length > 0) {
+    if (lines.length > 0) lines.push('')
+    lines.push('Routines (each starts a fresh workspace on its cron schedule):', '', ...renderRoutines(routines, clock))
   }
   lines.push('')
   if (wanted.length === 0 && allStopped.length > 0) {
@@ -436,6 +473,25 @@ function table(header: string[], rows: string[][]): string[] {
   return [line(header), ...rows.map(line)]
 }
 
+/** Routines as listed: STOPS is when each run stops, ERROR why the newest
+ *  run failed to start, shown only when one did. */
+function renderRoutines(routines: RoutineEntry[], clock: ListClock): string[] {
+  const hasErrors = routines.some((r) => r.lastError !== undefined)
+  return table(
+    ['ROUTINE', 'TOOL', 'NAME', 'CRON', `NEXT RUN (${clock.zone})`, 'STOPS', ...(hasErrors ? ['ERROR'] : []), 'PROMPT'],
+    routines.map((r) => [
+      r.id.slice(0, 8),
+      r.tool,
+      flatten(r.name, 30),
+      `${r.cron} (${r.timeZone})`,
+      r.paused ? 'paused' : r.nextRuns[0] !== undefined ? when(r.nextRuns[0], clock) : 'never',
+      r.timeoutMinutes !== undefined ? `after ${formatDuration(r.timeoutMinutes)}` : 'at next run',
+      ...(hasErrors ? [flatten(r.lastError ?? '', 40)] : []),
+      flatten(r.prompt, 60),
+    ]),
+  )
+}
+
 /** Queued entries as a tree under the workspace each waits on, or under
  *  the group one with no parent waits for room in, with a scheduled entry
  *  heading its own tree. */
@@ -574,16 +630,17 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
 /**
  * Edit a queued workspace in the caller's project: prompt (an empty body
  * keeps it), settings or parent, or `--no-parent` to have it wait for room
- * in a group with a workspace limit instead. The permission mode is capped
- * at the caller's own, as in `queue`, so an agent cannot reuse a higher
- * grant the user gave an entry.
+ * in a group with a workspace limit instead; `--timeout none` clears its
+ * timeout. The permission mode is capped at the caller's own, as in
+ * `queue`, so an agent cannot reuse a higher grant the user gave an entry.
  */
 async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.queued?.trim() ?? ''
   if (target === '') return { ok: false, error: 'edit-queued needs a queued workspace id' }
   const picked = pickOne(await listQueuedWorkspaceRows(caller.projectId), target, 'queued workspace')
   if (!picked.ok) return picked
-  const settings = createSettings(request.args)
+  const { args, cleared } = takeCleared(request.args, 'none')
+  const settings = createSettings(args, 'none')
   if (!settings.ok) return settings
   const parent = request.args['parent-workspace']?.trim()
   const noParent = request.args['no-parent'] !== undefined
@@ -598,6 +655,7 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
     ...(noParent ? { parent: null } : {}),
     ...(start.start !== undefined ? { start: start.start } : {}),
     ...queueFields(settings.settings),
+    ...(cleared ? { timeout: null } : {}),
   }
   if (Object.keys(patch).length === 0) {
     return { ok: false, error: 'edit-queued needs a new prompt or an option to change' }
@@ -622,14 +680,8 @@ async function runRunQueued(caller: MamaCaller, request: MamaRequestInput): Prom
   if (!picked.ok) return picked
   const { id, permissionMode } = picked.entry
   const short = id.slice(0, 8)
-  if (!isRankedPermissionMode(permissionMode) || !isRankedPermissionMode(caller.permissionMode)
-    || morePermissive(permissionMode, caller.permissionMode)) {
-    return {
-      ok: false,
-      error: `${short} runs in permission mode '${permissionMode}', more than this workspace's own `
-        + `('${caller.permissionMode}'); lower it with edit-queued --permission-mode first`,
-    }
-  }
+  const above = aboveCaller(caller, short, permissionMode, 'edit-queued')
+  if (above !== undefined) return above
   const { workspaceId } = await runQueuedWorkspace(caller.principal, id)
   return { ok: true, output: `Started queued workspace ${short} as ${workspaceId.slice(0, 8)}.` }
 }
@@ -649,6 +701,161 @@ async function runDeleteQueued(caller: MamaCaller, request: MamaRequestInput): P
   if (!picked.ok) return picked
   await discardQueuedWorkspace(caller.principal, picked.entry.id)
   return { ok: true, output: `Discarded queued workspace ${picked.entry.id.slice(0, 8)}.` }
+}
+
+/**
+ * A refusal for starting `short`, which runs in `permissionMode`, if that is
+ * more than the caller's own; `edit` names the command that lowers it.
+ */
+function aboveCaller(
+  caller: MamaCaller,
+  short: string,
+  permissionMode: PermissionMode,
+  edit: string,
+): { ok: false; error: string } | undefined {
+  if (isRankedPermissionMode(permissionMode) && isRankedPermissionMode(caller.permissionMode)
+    && !morePermissive(permissionMode, caller.permissionMode)) return undefined
+  return {
+    ok: false,
+    error: `${short} runs in permission mode '${permissionMode}', more than this workspace's own `
+      + `('${caller.permissionMode}'); lower it with ${edit} --permission-mode first`,
+  }
+}
+
+/** The caller's project's routines. */
+async function projectRoutines(projectId: string): Promise<RoutineEntry[]> {
+  return (await listRoutines()).filter((r) => r.projectId === projectId)
+}
+
+/** The routine `--routine` names in the caller's project. */
+async function pickRoutine(
+  caller: MamaCaller,
+  request: MamaRequestInput,
+): Promise<{ ok: true; entry: RoutineEntry } | { ok: false; error: string }> {
+  const target = request.args.routine?.trim() ?? ''
+  if (target === '') return { ok: false, error: `${request.command} needs a routine id` }
+  return pickOne(await projectRoutines(caller.projectId), target, 'routine')
+}
+
+/**
+ * The routine fields a request gives: create's options (but the title), its
+ * name, cron and zone, and its body as the prompt. `--timeout next` clears
+ * the timeout, so each run stops at the next tick. Bounded as the routine
+ * routes bound them.
+ */
+function routineFields(
+  request: MamaRequestInput,
+): { ok: true; fields: Partial<RoutineSettings> } | { ok: false; error: string } {
+  const { name, cron, tz } = request.args
+  const { args, cleared } = takeCleared(request.args, 'next')
+  const settings = createSettings(args, 'next')
+  if (!settings.ok) return settings
+  const parsed = routineSettingsSchema.partial().safeParse({
+    ...queueFields(settings.settings),
+    ...(cleared ? { timeout: null } : {}),
+    ...(name !== undefined ? { name } : {}),
+    ...(cron !== undefined ? { cron } : {}),
+    ...(tz !== undefined ? { timeZone: tz } : {}),
+    ...(request.body !== '' ? { prompt: request.body } : {}),
+  })
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]
+    return { ok: false, error: `invalid ${String(issue.path[0] ?? 'routine')}: ${issue.message}` }
+  }
+  return { ok: true, fields: parsed.data }
+}
+
+/** When a routine runs next, in its own zone. */
+function nextRuns(routine: RoutineEntry): string {
+  if (routine.paused) return 'paused'
+  const runs = routine.nextRuns.map((r) => formatInZone(new Date(r), routine.timeZone))
+  return runs.length > 0 ? `next runs at about ${runs.join(', ')} (${routine.timeZone})` : 'its cron never fires again'
+}
+
+/**
+ * Make a routine in the caller's project (docs/routines.md). Settings it
+ * omits default as `queue --start-at`'s do, and what it launches is held
+ * to the caller's permission mode. Prints the id, then a note.
+ */
+async function runRoutineCreate(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const parsed = routineFields(request)
+  if (!parsed.ok) return parsed
+  const { name, cron, prompt } = parsed.fields
+  if (name === undefined || cron === undefined || prompt === undefined) {
+    return { ok: false, error: 'routine-create needs --name, --cron and a prompt' }
+  }
+  const routine = await createRoutine(caller.principal, caller.projectId, {
+    ...(caller.tool !== undefined ? { tool: caller.tool } : {}),
+    mode: caller.mode,
+    ...parsed.fields,
+    name,
+    cron,
+    prompt,
+  }, { ceiling: caller.permissionMode })
+  return { ok: true, output: `${routine.id}
+note: ${nextRuns(routine)}` }
+}
+
+/**
+ * Edit a routine in the caller's project. As in `edit-queued`, its stored
+ * permission mode counts as requested, so one above the caller's is refused
+ * until the edit lowers it.
+ */
+async function runRoutineEdit(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const picked = await pickRoutine(caller, request)
+  if (!picked.ok) return picked
+  const parsed = routineFields(request)
+  if (!parsed.ok) return parsed
+  if (Object.keys(parsed.fields).length === 0) {
+    return { ok: false, error: 'routine-edit needs a new prompt or an option to change' }
+  }
+  const r = await updateRoutine(caller.principal, picked.entry.id, parsed.fields, { ceiling: caller.permissionMode })
+  return {
+    ok: true,
+    output: `Updated routine ${r.id.slice(0, 8)} ("${r.name}"): ${r.cron}, ${r.tool} ${r.model}, `
+      + `${r.permissionMode}; ${nextRuns(r)}`,
+  }
+}
+
+/** Pause a routine, or resume one no more permissive than the caller. */
+async function runRoutinePause(
+  caller: MamaCaller,
+  request: MamaRequestInput,
+  paused: boolean,
+): Promise<MamaOutcome> {
+  const picked = await pickRoutine(caller, request)
+  if (!picked.ok) return picked
+  const short = picked.entry.id.slice(0, 8)
+  if (!paused) {
+    const above = aboveCaller(caller, short, picked.entry.permissionMode, 'routine edit')
+    if (above !== undefined) return above
+  }
+  const r = await setRoutinePaused(caller.principal, picked.entry.id, paused)
+  return { ok: true, output: `${paused ? 'Paused' : 'Resumed'} routine ${short} ("${r.name}")${paused ? '' : `; ${nextRuns(r)}`}.` }
+}
+
+/** Start a run of a routine now, as the webapp's Run now does, refused
+ *  above the caller's permission mode as `run-queued` is. */
+async function runRoutineRun(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const picked = await pickRoutine(caller, request)
+  if (!picked.ok) return picked
+  const short = picked.entry.id.slice(0, 8)
+  const above = aboveCaller(caller, short, picked.entry.permissionMode, 'routine edit')
+  if (above !== undefined) return above
+  const { workspaceId } = await runRoutineNow(caller.principal, picked.entry.id)
+  return { ok: true, output: `Started routine ${short} ("${picked.entry.name}") as ${workspaceId.slice(0, 8)}.` }
+}
+
+/** Delete a routine and its runs that never started. */
+async function runRoutineDelete(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
+  const picked = await pickRoutine(caller, request)
+  if (!picked.ok) return picked
+  await deleteRoutine(caller.principal, picked.entry.id)
+  return {
+    ok: true,
+    output: `Deleted routine ${picked.entry.id.slice(0, 8)} ("${picked.entry.name}"). `
+      + 'Runs already started keep going until they stop.',
+  }
 }
 
 /** Deliveries under way, by sender and by target conversation. */
@@ -781,6 +988,7 @@ type CreateSettings = Pick<
  */
 function createSettings(
   args: Record<string, string>,
+  clear?: ClearWord,
 ): { ok: true; settings: CreateSettings } | { ok: false; error: string } {
   const { tool, model, effort, branch, group } = args
   const permissionMode = args['permission-mode']
@@ -808,7 +1016,7 @@ function createSettings(
   const title = args.title !== undefined ? normalizeTitle(args.title) : undefined
   if (title === '') return { ok: false, error: 'title must not be empty' }
   const timeout = parseTimeout(args.timeout)
-  if (timeout === null) return { ok: false, error: `invalid timeout '${args.timeout}' (${DURATION_HINT})` }
+  if (timeout === null) return timeoutRefusal(args.timeout, clear)
   return {
     ok: true,
     settings: {
@@ -842,11 +1050,37 @@ function startArgs(args: Record<string, string>): { ok: true; start?: QueueStart
 /** How a duration is written, for refusals. */
 const DURATION_HINT = 'whole minutes or more, like 45m, 2h or 1h30m'
 
+/** The `--timeout` words that clear a timeout, by what each clears it to. */
+const CLEAR_WORDS = {
+  none: 'none for no timeout',
+  next: 'next to stop each run at the next tick',
+} as const
+type ClearWord = keyof typeof CLEAR_WORDS
+
+/** A refusal of a `--timeout`, naming the word that clears one where the
+ *  command takes one, since it differs between commands. */
+function timeoutRefusal(text: string | undefined, clear?: ClearWord): { ok: false; error: string } {
+  const hint = clear !== undefined ? `, or ${CLEAR_WORDS[clear]}` : ''
+  return { ok: false, error: `invalid timeout '${text}' (${DURATION_HINT}${hint})` }
+}
+
 /** A `--timeout` in minutes: undefined when absent, null when invalid. */
 function parseTimeout(text: string | undefined): number | undefined | null {
   if (text === undefined) return undefined
   const minutes = parseDuration(text)
   return minutes !== undefined && timeoutMinutesSchema.safeParse(minutes).success ? minutes : null
+}
+
+/**
+ * `args` without a `--timeout` of `word` (`none`, or a routine's `next`),
+ * which clears a timeout rather than giving one, and whether it had one.
+ */
+function takeCleared(
+  args: Record<string, string>,
+  word: ClearWord,
+): { args: Record<string, string>; cleared: boolean } {
+  const { timeout, ...rest } = args
+  return timeout?.trim().toLowerCase() === word ? { args: rest, cleared: true } : { args, cleared: false }
 }
 
 /** The same settings in the shape a queue write takes. */
@@ -970,8 +1204,9 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
 async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'restart needs a workspace id' }
-  const timeout = parseTimeout(request.args.timeout)
-  if (timeout === null) return { ok: false, error: `invalid timeout '${request.args.timeout}' (${DURATION_HINT})` }
+  const { cleared } = takeCleared(request.args, 'none')
+  const timeout = cleared ? null : parseTimeout(request.args.timeout)
+  if (timeout === null && !cleared) return timeoutRefusal(request.args.timeout, 'none')
   const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
   const decision = await decideRestart({
     principal: caller.principal,

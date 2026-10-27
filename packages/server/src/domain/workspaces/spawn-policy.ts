@@ -152,9 +152,9 @@ export interface RestartRequest {
   callerPermissionMode: PermissionMode
   /** The workspace to restart, an exact id in the caller's project. */
   workspaceId: string
-  /** Minutes from the restart until the server stops it. A workspace that
-   *  had a timeout keeps its length, or this if shorter. */
-  timeout?: number
+  /** Minutes from the restart until the server stops it, or null for no
+   *  timeout. Omitted, a workspace that had a timeout keeps its length. */
+  timeout?: number | null
 }
 
 /** What the server decided about one restart request: how many
@@ -209,10 +209,7 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
     }
   }
 
-  // A timeout only the user may lift: one the workspace had comes back at
-  // the same length, or shorter if the caller asks.
-  const previous = row.timeoutMinutes
-  const timeout = previous === undefined ? request.timeout : Math.min(request.timeout ?? previous, previous)
+  const timeout = request.timeout !== undefined ? request.timeout : row.timeoutMinutes
 
   const caller = request.callerWorkspaceId
   const release = reserveLaunch(caller)
@@ -221,7 +218,7 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
   try {
     run = await prepareRestart(request.principal, workspaceId, {
       stoppedOnly: true,
-      ...(timeout !== undefined ? { deadline: new Date(Date.now() + timeout * 60_000) } : {}),
+      ...(timeout != null ? { deadline: new Date(Date.now() + timeout * 60_000) } : {}),
     })
   } catch (err) {
     release()

@@ -2082,6 +2082,11 @@ export const MAX_MODEL_LENGTH = 128
  * schedules agents and does not contain them. `delete-queued` discards a
  * queued workspace, which loses only a prompt that never ran; deleting a
  * workspace stays the user's.
+ * The `routine-*` commands manage routines (docs/routines.md) on the same
+ * terms as the queue commands: what a routine launches is held to the
+ * caller's permission mode. `routine-delete` loses a schedule, its prompt
+ * and the run history it lists, but no run's workspace, and runs already
+ * started keep going.
  * `fetch` reads another workspace's branches into the caller's checkout, and
  * `history` its conversations, never writing to theirs. `send` messages a
  * running one's agent, held to the caller's permission mode. `set-base`
@@ -2102,6 +2107,12 @@ export const MAMA_COMMANDS = [
   'edit-queued',
   'run-queued',
   'delete-queued',
+  'routine-create',
+  'routine-edit',
+  'routine-pause',
+  'routine-resume',
+  'routine-run',
+  'routine-delete',
   'fetch',
   'history',
   'send',

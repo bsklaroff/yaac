@@ -25,7 +25,7 @@ import { ACP_ADAPTERS, AGENT_TOOLS, MAX_PROMPT_LENGTH } from '@yaac/shared/types
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { FALLBACK_MODELS, PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers'
 import type {
-  AgentSessionEntry, AgentTool, ResourceReport, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
+  AgentSessionEntry, AgentTool, ResourceReport, RoutineEntry, ServerSnapshot, WorkspaceChanges, WorkspaceTerminalEntry,
 } from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -1205,6 +1205,47 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       await runYaac(serverEnv, 'workspace', 'stop', sibling)
     }
   }, 120_000)
+
+  it('makes and manages a routine through the script, never above its own posture', async () => {
+    const above = await runMama('routine', 'create', '--name', 'r', '--cron', '@daily', '--permission-mode', 'bypass', 'x')
+    expect(above.code).toBe(1)
+    expect(above.out).toContain("more permissive than this workspace's own ('accept-edits')")
+    expect((await runMama('routine', 'frobnicate', 'x')).code).toBe(2)
+    expect((await runMama('routine', 'pause')).code).toBe(2)
+
+    const made = await runMama('routine', 'create', '--name', 'Nightly e2e', '--cron', '0 3 * * *', '--tz', 'UTC',
+      '--timeout', '30m', 'check the build')
+    expect(made.code).toBe(0)
+    // The id on stdout, then the note the script sends to stderr.
+    const [id, note] = made.out.trim().split('\n')
+    expect(id).toMatch(/^[0-9a-f-]{36}$/)
+    expect(note).toMatch(/^note: next runs at about .* 03:00, .*\(UTC\)$/)
+    const short = id.slice(0, 8)
+    const routine = async () => (await (await fetch(`${origin()}/api/routine/list`)).json() as RoutineEntry[])
+      .find((r) => r.id === id)
+    try {
+      expect(await routine()).toMatchObject({
+        name: 'Nightly e2e', prompt: 'check the build', permissionMode: 'accept-edits', timeoutMinutes: 30,
+      })
+      expect((await runMama('list')).out).toMatch(new RegExp(`${short}\\s+\\S+\\s+Nightly e2e\\s+0 3 \\* \\* \\* \\(UTC\\)`))
+
+      const edited = await runMama('routine', 'edit', '--cron', '0 4 * * *', '--timeout', '15m', short, 'check it twice')
+      expect(edited.code).toBe(0)
+      expect(edited.out).toContain(`Updated routine ${short} ("Nightly e2e"): 0 4 * * *`)
+      expect(await routine()).toMatchObject({ cron: '0 4 * * *', prompt: 'check it twice', timeoutMinutes: 15 })
+      expect((await runMama('routine', 'edit', '--timeout', '1h', short)).code).toBe(0)
+      expect(await routine()).toMatchObject({ timeoutMinutes: 60 })
+      expect((await runMama('routine', 'edit', '--timeout', 'next', short)).code).toBe(0)
+      expect((await routine())?.timeoutMinutes).toBeUndefined()
+      expect((await runMama('routine', 'pause', short)).out).toContain(`Paused routine ${short}`)
+      expect(await routine()).toMatchObject({ paused: true })
+      expect((await runMama('routine', 'resume', short)).code).toBe(0)
+      expect(await routine()).toMatchObject({ paused: false })
+    } finally {
+      expect((await runMama('routine', 'delete', short)).code).toBe(0)
+    }
+    expect(await routine()).toBeUndefined()
+  })
 
   it('attributes a request to the token\u2019s OWN workspace, not the one asking', async () => {
     // Requests never name the caller, so the token alone must decide it:

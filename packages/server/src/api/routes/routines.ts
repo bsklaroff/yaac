@@ -39,7 +39,7 @@ export const routineApp = new Hono<IdentityEnv>()
     zv('json', routineSettingsSchema.extend({ project: projectRef })),
     async (c) => {
       const { project, ...request } = c.req.valid('json')
-      return c.json(await createRoutine(c.get('principal'), project, request))
+      return c.json(await createRoutine(c.get('principal'), project, request, 'user'))
     },
   )
   .post(
@@ -47,7 +47,7 @@ export const routineApp = new Hono<IdentityEnv>()
     zv('json', routineSettingsSchema.partial().extend({ id: z.string().min(1) })),
     async (c) => {
       const { id, ...patch } = c.req.valid('json')
-      return c.json(await updateRoutine(c.get('principal'), id, patch))
+      return c.json(await updateRoutine(c.get('principal'), id, patch, 'user'))
     },
   )
   .post(

@@ -1,6 +1,6 @@
 ---
 name: yaac-mama
-description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), edit or discard a queued workspace, send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change or drop one already queued), send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
+description: Ask the yaac server running this workspace to list the project's workspaces (running, queued, or stopped — searchable), start a sibling workspace with a prompt (now, or queued to start when a workspace stops or a group with a workspace limit has room), edit or discard a queued workspace, make or manage a routine (a fresh workspace started on a cron schedule), send a message to a running workspace's agent, retitle a workspace, change this workspace's base branch, stop a workspace (a sibling, or this one), restart a stopped one, file workspaces into named groups, or fetch another workspace's branches into this checkout — via the in-workspace `yaac-mama` command. Use when the user asks to spawn, fork, or kick off another yaac workspace (or "session"), queue a follow-up to run after this one (or change or drop one already queued), schedule a recurring task (nightly, weekly, every hour …) or pause, change or remove one, send/tell/nudge/steer a running workspace (or "session") with a message or follow-up instruction, farm a task out to a parallel one, see what else is running, rename/retitle a workspace, rebase this workspace's diff onto another branch (e.g. when stacking on another PR), stop/shut down/wind down a workspace or this one when its work is done, find an old or stopped workspace by what it was about, restart/revive/resume a stopped workspace, organize workspaces into groups, read what another workspace committed (its branches, log, diffs), or read another workspace's agent conversations (full session transcripts, subagents included), running or stopped.
 ---
 
 You are running **inside a yaac workspace**. The `yaac-mama` command (already on
@@ -20,6 +20,10 @@ yaac-mama edit-queued [--parent-workspace W | --no-parent | --start-at T | --sta
 yaac-mama run-queued <queued>                       # start a queued one now
 yaac-mama delete-queued <queued>                    # discard a queued one
   # opts: [--tool T] [--model M] [--effort E] [--permission-mode P] [--ui-mode U] [--branch B] [--group G] [--title T] [--timeout D]
+yaac-mama routine create --name N --cron C [--tz Z] [opts] "<prompt>"
+yaac-mama routine edit [--name N] [--cron C] [--tz Z] [opts] <routine> ["<prompt>"]
+yaac-mama routine pause|resume|run|delete <routine>
+  # routine opts: create's, but not --title
 yaac-mama send [--conversation C] <workspace> "<message>"  # to its running agent
   # any "<prompt>" or "<message>": also - (stdin) or --prompt-file F before the arguments
 yaac-mama rename [<workspace>] "<title>"            # omit the workspace to rename yourself
@@ -39,12 +43,13 @@ yaac-mama --help
 
 That list is the whole surface. `yaac-mama` is a **strict subset** of the
 `yaac` CLI, enforced by the server: it observes, labels, makes one new thing
-(now or queued for later), messages a running one, and stops or restarts
-one. Stopping is in reach precisely because it is reversible — a stopped
+(now, queued for later, or on a schedule), messages a running one, and stops
+or restarts one. Stopping is in reach precisely because it is reversible — a stopped
 workspace keeps its checkout and its conversation — and restarting a
 stopped one only undoes a stop, never in a more permissive mode than yours.
-Nothing that has run can be deleted (only a queued workspace can be
-discarded), and there is no config beyond your own base branch. If a task
+Nothing that ran is deleted: only a queued workspace (which never ran) or a
+routine (its schedule and run history, not its runs' workspaces) can be,
+and there is no config beyond your own base branch. If a task
 needs one of those, ask the user rather than looking for a way around it.
 
 Everything is scoped to **this workspace's project**, which is not a flag you
@@ -70,6 +75,10 @@ pass — the server resolves who is calling and answers for that project only.
     sibling's included: ask the user if you need longer.
   - A queued workspace with a start time is listed under an `at <time>:`
     heading; stopped ones that ran out of time say `timed out`.
+  - The project's routines follow under `Routines`, each with its cron and
+    zone, when it next runs (or `paused`), when each run stops, and an
+    ERROR column when a run failed to start. `list <routine>` shows its
+    full prompt.
 
 - **`list --stopped`** — this project's stopped workspaces, newest stop
   first, 25 to a page. Use it to find earlier work by what it was about,
@@ -136,7 +145,8 @@ pass — the server resolves who is calling and answers for that project only.
     whole minutes or more, like `45m`, `2h` or `1h30m`. The server checks
     every minute, so it stops up to a minute late. Its checkout is kept and
     what is queued after it starts, as for any stop. A sibling that might
-    run away is a good candidate.
+    run away is a good candidate. `edit-queued` and `restart` also take
+    `--timeout none`, for no timeout at all.
 
 - **`queue --parent-workspace <id> "<prompt>"`** — save a workspace to start
   **when a workspace stops**. Prints the queued workspace's id.
@@ -213,6 +223,43 @@ pass — the server resolves who is calling and answers for that project only.
   it takes any queued workspace in this project, so discard one you did not
   queue only when the user asked. One that is already starting cannot be discarded.
 
+- **`routine create --name <name> --cron "<expr>" "<prompt>"`** — make a
+  **routine**: a fresh workspace started with this prompt on every tick of
+  a cron schedule, unattended, until it is paused or deleted. Prints its id,
+  then its next runs on stderr.
+  - **`--cron`**: five fields (`0 9 * * 1-5` is weekdays at 09:00) or a
+    nickname like `@daily`. Runs start up to a minute late.
+  - **`--tz <zone>`**: the IANA zone the cron is read in (`Europe/Paris`).
+    Omitted, the user's yaac time zone, not this workspace's `TZ`.
+  - **`--timeout`**: how long each run lasts. Omitted, each run stops at
+    the next tick, so runs never overlap.
+  - **`--group`**: omitted, runs are filed under a group named after the
+    routine.
+  - Takes `create`'s other options (not `--title`: each run is titled with
+    the routine's name and tick), defaulting as a `queue --start-at` does.
+    Every run launches in the routine's permission mode, capped at yours.
+  - A routine keeps starting agents after you are gone, so make one only
+    when the user asked for a recurring task, and write its prompt
+    self-contained: each run starts from origin with no memory of the last.
+
+- **`routine edit <routine> ["<prompt>"]`** — change a routine: each option
+  given replaces that setting, and a prompt given replaces its prompt. Like
+  `edit-queued`, one whose permission mode is above yours is refused until
+  the edit names one at or below it. `--timeout` sets any length, and
+  `--timeout next` clears it so each run stops at the next tick again. Runs
+  already started keep their settings.
+
+- **`routine pause <routine>`** / **`routine resume <routine>`** — stop or
+  restart the schedule; resuming picks up from the next tick, with no
+  catch-up for ticks missed. **`routine run <routine>`** starts a run now
+  without moving the schedule. Resume and run are refused for a routine
+  more permissive than you (lower it with `routine edit --permission-mode`
+  first). **`routine delete <routine>`** removes it, its run history and
+  any run that has not started; runs already going keep going until they
+  stop, and every run's workspace stays. Like the queue
+  commands these take any routine in this project, so change one you did
+  not make only when the user asked.
+
 - **`send <workspace> "<message>"`** — hand a message to another **running**
   workspace's agent (a stopped one is refused; `restart` it first), exactly
   as if the user had typed it into its terminal or chat pane. It goes to the
@@ -284,8 +331,8 @@ pass — the server resolves who is calling and answers for that project only.
   provisions in the background like a `create`, and shows as running in
   `list` once it is up. Its agent resumes idle — `send` it what to do next.
   One that had a timeout gets the same length again, counted from the
-  restart; `--timeout` can only make it shorter. One with none gets
-  whatever `--timeout` you give it.
+  restart, unless `--timeout` gives another length or `none`. One with none
+  gets whatever `--timeout` you give it.
   - Refused for a workspace that is running (restarting it would end its
     agent's turn), for yourself, for one whose permission mode is **more
     permissive than yours** (counting a tool that lacks its mode, which comes

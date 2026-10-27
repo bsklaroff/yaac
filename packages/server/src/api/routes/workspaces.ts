@@ -301,8 +301,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     },
   )
   // Give a running workspace a timeout counted from now, or clear it with
-  // null (docs/routines.md "Timeouts"). User-only: no `yaac-mama` verb
-  // reaches it, so an agent cannot extend its own life.
+  // null (docs/routines.md "Timeouts"). No `yaac-mama` verb reaches it.
   .post(
     '/timeout',
     zv('json', z.object({

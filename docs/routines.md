@@ -97,13 +97,14 @@ deadline with `stopWorkspace`, as the system:
 - **A restart replaces the deadline.** Without a timeout of its own it
   clears it: a workspace the user brings back is theirs to stop, and a past
   deadline would stop it again at once.
-- **Only the user lifts one.** `/workspace/timeout` sets a deadline from
-  now or clears it; no `yaac-mama` verb reaches it, so an agent cannot extend
-  its own life. A timeout only restrains, so an agent may set or shorten
-  one, but `yaac-mama restart` gives a workspace that had a timeout the same
-  length again (or a shorter one it names), and `edit-queued` refuses to
-  lengthen or clear a queued entry's. Agents read deadlines, their own
-  included, from `yaac-mama list`.
+- **Agents set timeouts as the user does, short of a running one's.**
+  `/workspace/timeout` sets a running workspace's deadline from now or
+  clears it, and no `yaac-mama` verb reaches it. Everywhere else an agent
+  may give any length or none: `edit-queued --timeout <d|none>`,
+  `routine edit --timeout <d|next>`, and `yaac-mama restart`, which gives a
+  workspace that had a timeout the same length again unless `--timeout`
+  names another or `none`. Agents read deadlines, their own included, from
+  `yaac-mama list`.
 
 ## Routines
 
@@ -163,11 +164,20 @@ workspace deletes its record too, so the history holds only runs whose
 workspaces still exist: with a project's stopped-workspace retention set,
 it reaches back only that many days.
 
-**Only the user makes routines.** A routine keeps starting unattended agents
-after whatever asked for it is gone, a standing grant beyond queueing one
-follow-up, so `yaac-mama` has no verb for it. A run that asks for
-permission waits until its timeout stops it; the routine form says so
-beside the permission mode.
+**Agents make routines on the queue's terms.** `yaac-mama routine
+create|edit|pause|resume|run|delete` reach the same functions as the
+routes, with the calling workspace's permission mode as the ceiling
+(`QueueSource`), as for a queue write: a routine an agent makes or edits
+launches at most as permissively as that agent, one already above it is
+refused until the edit lowers it, and resume and run (which set runs off)
+are refused for it. Pause only restrains, and delete loses a prompt, a
+schedule and the run history the routine lists, but no running work and
+no run's workspace, so neither is held to the ceiling. A routine
+keeps starting unattended agents after whatever made it is gone, which is
+why its ceiling is fixed when it is saved rather than read at each tick.
+
+A run that asks for permission waits until its timeout stops it; the
+routine form says so beside the permission mode.
 
 ## Surfaces
 
@@ -186,9 +196,11 @@ beside the permission mode.
   `workspace list` and discarded by `workspace delete`, and `yaac routine
   create|list|edit|pause|resume|run|delete` (docs/cli.md).
 - **yaac-mama.** `create`, `queue`, `edit-queued` and `restart` take
-  `--timeout`; `queue` and `edit-queued` take `--start-at`/`--start-in`;
-  `list` shows deadlines (STOPS), scheduled entries under their time, and
-  `timed out`.
+  `--timeout` (`none` clears one on `edit-queued` and `restart`); `queue`
+  and `edit-queued` take `--start-at`/`--start-in`; `list` shows deadlines
+  (STOPS), scheduled entries under their time, the project's routines, and
+  `timed out`. `routine create|edit|pause|resume|run|delete` manage
+  routines (above).
 - **Webapp.** The new-workspace pane's Start offers a time, a delay, or a
   schedule (a routine form with schedule presets that compile to cron, a
   zone, and a live preview of the next runs), and a Timeout row. The sidebar
