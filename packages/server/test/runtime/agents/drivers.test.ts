@@ -2878,6 +2878,7 @@ describe('agentDriver', () => {
       const read = (name: string): string => (existsSync(file(name)) ? readFileSync(file(name), 'utf8') : '')
       return {
         status: res.status ?? -1,
+        stderr: res.stderr,
         calls: read('calls').trim().split('\n').filter(Boolean),
         submitted: read('transcript'),
         input: read('input'),
@@ -2930,10 +2931,13 @@ describe('agentDriver', () => {
 
     it('types nothing into an agent showing a dialog, and never submits into one', async () => {
       const refused = { status: 3, calls: [], submitted: '' }
-      // claude reports `waiting` under a permission prompt or a question,
-      // and has no presence file before its startup dialogs are through.
-      expect(await send('claude', { claude: 'waiting' })).toMatchObject(refused)
-      expect(await send('claude', { claude: null })).toMatchObject(refused)
+      // claude reports `waiting` under a permission prompt or a question.
+      // With no presence file (before its startup dialogs are through, or
+      // once the file is lost) its state is unknown, and the refusal says so.
+      expect(await send('claude', { claude: 'waiting' }))
+        .toMatchObject({ ...refused, stderr: expect.stringContaining('showing a prompt') as string })
+      expect(await send('claude', { claude: null }))
+        .toMatchObject({ ...refused, stderr: expect.stringContaining('no status file') as string })
       // A dialog that opens once the text is in gets no Enter.
       expect(await send('claude', { raise: 'waiting' })).toMatchObject({ status: 4, calls: ['paste'], submitted: '' })
       // codex titles approvals, and hides its cursor under every dialog, its
