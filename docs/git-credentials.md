@@ -93,8 +93,17 @@ Ed25519.
 
 ## Who uses a credential, where
 
-- **The server's own git** (clones, fetches) puts an HTTPS token in the request
-  URL for that one command. For a key it signs through an ssh-agent the server
+- **The server's own git** (clones, fetches) gets an HTTPS token from a
+  credential helper scoped to the remote's origin, set through `GIT_CONFIG_*`
+  in that one command's environment, with the token in an env var the helper
+  echoes. It never goes in the URL: argv is visible to every local user,
+  while a process's environment is readable only by its own uid (under
+  containerless that uid also runs every workspace, which already holds
+  real credentials). Git asks helpers per request host, so a redirect, a
+  user's `insteadOf` or an LFS storage host elsewhere never sees the token.
+  An empty `credential.helper` ahead of it drops the user's own helpers, so
+  git neither offers their login nor erases it when the token is rejected.
+  For a key it signs through an ssh-agent the server
   runs in-process (`domain/git/agent.ts`): a UNIX socket in the install-keyed
   temp dir that answers only two requests, list identities and sign.
   Identities come from the public column, and a seed is decrypted only inside

@@ -20,7 +20,8 @@ export type GitTarget =
   | { kind: 'none' }
 
 export interface GitRunOptions {
-  /** The full env from `gitEnvForCredential` (ssh command, Tor proxy). */
+  /** The full env from `gitEnvForCredential` (https token helper, ssh
+   *  command, Tor proxy). */
   env?: NodeJS.ProcessEnv
   /** The remote this call talks to, if any. Only its transport is allowed;
    *  without it, no transport is. */

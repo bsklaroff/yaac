@@ -5,7 +5,6 @@ import path from 'node:path'
 import {
   fetchKnownHostsEntry,
   gitEnvForCredential,
-  injectTokenIntoUrl,
   isGitAuthError,
   torEnv,
   writeKnownHostsFile,
@@ -19,24 +18,6 @@ const SSH_CREDENTIAL = {
   publicKey: PUBLIC_KEY,
   knownHostsEntry: 'git.example.com ssh-ed25519 AAAA',
 }
-
-describe('injectTokenIntoUrl', () => {
-  it('injectTokenIntoUrl embeds credentials in HTTPS URL', () => {
-    const result = injectTokenIntoUrl('https://github.com/org/repo.git', 'ghp_abc123')
-    const parsed = new URL(result)
-    expect(parsed.username).toBe('x-access-token')
-    expect(parsed.password).toBe('ghp_abc123')
-    expect(parsed.hostname).toBe('github.com')
-    expect(parsed.pathname).toBe('/org/repo.git')
-    expect(parsed.protocol).toBe('https:')
-  })
-
-  it('injectTokenIntoUrl handles URL without path', () => {
-    const result = injectTokenIntoUrl('https://github.com', 'tok')
-    expect(result).toContain('x-access-token')
-    expect(result).toContain('tok')
-  })
-})
 
 describe('torEnv', () => {
   const originalUseTor = process.env.YAAC_USE_TOR
@@ -104,7 +85,7 @@ describe('gitEnvForCredential', () => {
 
   it('names the agent, the public key and the host key — nothing private', async () => {
     delete process.env.YAAC_USE_TOR
-    const env = await gitEnvForCredential(SSH_CREDENTIAL)
+    const env = await gitEnvForCredential(SSH_CREDENTIAL, 'ssh://git.example.com/r.git')
     const cmd = env!.GIT_SSH_COMMAND!
     expect(cmd).toMatch(/^ssh -F \/dev\/null /)
     expect(cmd).toContain(`-o IdentityAgent=${path.join(os.tmpdir(), 'yaac-')}`)
@@ -124,17 +105,33 @@ describe('gitEnvForCredential', () => {
 
   it('adds ProxyCommand when YAAC_USE_TOR=1, single-quoted so git tokenization keeps it intact', async () => {
     process.env.YAAC_USE_TOR = '1'
-    const env = await gitEnvForCredential(SSH_CREDENTIAL)
+    const env = await gitEnvForCredential(SSH_CREDENTIAL, 'ssh://git.example.com/r.git')
     expect(env!.GIT_SSH_COMMAND).toContain("'ProxyCommand=nc -X 5 -x 127.0.0.1:9050 %h %p'")
     expect(env!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
   })
 
-  it('is the Tor env, or nothing, for https and for no credential', async () => {
+  it('is the Tor env, or nothing, for no credential', async () => {
     delete process.env.YAAC_USE_TOR
-    expect(await gitEnvForCredential({ kind: 'https', token: 't' })).toBeUndefined()
-    expect(await gitEnvForCredential(null)).toBeUndefined()
+    expect(await gitEnvForCredential(null, 'https://example.com/r.git')).toBeUndefined()
     process.env.YAAC_USE_TOR = '1'
-    expect((await gitEnvForCredential(null))!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
+    expect((await gitEnvForCredential(null, 'https://example.com/r.git'))!.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
+  })
+
+  it('answers an https token from a helper scoped to the remote origin, after any config the env already sets', async () => {
+    process.env.YAAC_USE_TOR = '1'
+    process.env.GIT_CONFIG_COUNT = '1'
+    try {
+      const env = (await gitEnvForCredential({ kind: 'https', token: 'ghp_abc' }, 'https://github.com:443/org/r.git'))!
+      expect(env.GIT_CONFIG_COUNT).toBe('3')
+      expect([env.GIT_CONFIG_KEY_1, env.GIT_CONFIG_VALUE_1]).toEqual(['credential.helper', ''])
+      expect(env.GIT_CONFIG_KEY_2).toBe('credential.https://github.com.helper')
+      expect(env.GIT_CONFIG_VALUE_2).not.toContain('ghp_abc')
+      expect(env.YAAC_GIT_TOKEN).toBe('ghp_abc')
+      expect(env.ALL_PROXY).toBe('socks5h://127.0.0.1:9050')
+      expect(process.env.GIT_CONFIG_KEY_1).toBeUndefined()
+    } finally {
+      delete process.env.GIT_CONFIG_COUNT
+    }
   })
 })
 

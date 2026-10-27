@@ -1,12 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs/promises'
+import type { AddressInfo } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { createAdaptorServer } from '@hono/node-server'
 import {
   cloneRepo,
   createCheckout,
   fetchOrigin,
   getDefaultBranch,
+  initHostedRepo,
   lastFetchedAtMs,
   listRemoteBranches,
   listTreeSubdirs,
@@ -14,6 +18,7 @@ import {
   readBlobAt,
   remoteBranchExists,
   resolveRemoteRef,
+  serveGitHttp,
   setOriginHead,
 } from '#domain/git'
 import { git } from '@yaac/test-utils/git'
@@ -377,17 +382,69 @@ describe('fetchOrigin', () => {
     expect(await subjectAt(cloneDir, `origin/${defaultBranch}`)).toBe('late commit')
   })
 
-  it('with a token, fetches the authenticated URL rather than a remote name', async () => {
+  it('with a token, answers only the remote\'s own challenge, and never on the command line', async () => {
     const cloneDir = path.join(tmpDir, 'clone-token')
     await cloneRepo(sourceRepo, cloneDir, null)
+    // A challenges every request, except that it redirects `/moved/` to B
+    // on another port, as GitHub does for a renamed repo. B serves the
+    // source without auth, so git goes on to POST there.
+    const bare = path.join(tmpDir, 'b', 'repo')
+    await initHostedRepo(bare)
+    await git(sourceRepo, ['push', '-q', bare, 'HEAD:main'])
+    const seen = { a: [] as (string | null)[], b: [] as (string | null)[] }
+    const b = createAdaptorServer({
+      fetch: (req) => {
+        seen.b.push(req.headers.get('authorization'))
+        return serveGitHttp(bare, req, new URL(req.url).pathname.replace(/^\/repo/, ''), { allowPush: false, guardDefaultBranch: false })
+      },
+    })
+    const a = createAdaptorServer({
+      fetch: (req) => {
+        seen.a.push(req.headers.get('authorization'))
+        const { pathname, search } = new URL(req.url)
+        return pathname.startsWith('/moved/')
+          ? Response.redirect(`http://127.0.0.1:${(b.address() as AddressInfo).port}${pathname.slice('/moved'.length)}${search}`, 302)
+          : new Response(null, { status: 401, headers: { 'www-authenticate': 'Basic realm="r"' } })
+      },
+    })
+    for (const s of [a, b]) await new Promise<void>((r) => s.listen(0, '127.0.0.1', r))
+    const aOrigin = `http://127.0.0.1:${(a.address() as AddressInfo).port}`
 
-    // The fetch fails to connect, but not with "does not appear to be a git
-    // repository", which would mean the refspec was passed as the remote.
+    // Every git process is started through a PATH wrapper that logs its
+    // argv. The user's own credential helper holds an entry for A, which a
+    // rejected token must not erase.
+    const bin = path.join(tmpDir, 'bin')
+    const argvLog = path.join(tmpDir, 'argv.log')
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+    await fs.mkdir(bin)
+    await fs.writeFile(path.join(bin, 'git'), `#!/bin/sh\necho "$@" >> '${argvLog}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 })
+    const store = path.join(tmpDir, 'user-credentials')
+    await fs.writeFile(store, `${aOrigin.replace('//', '//me:mine@')}\n`)
+    const globalConfig = path.join(tmpDir, 'user-gitconfig')
+    await fs.writeFile(globalConfig, `[credential]\n\thelper = store --file=${store}\n`)
+    const saved = { PATH: process.env.PATH, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL }
+    process.env.PATH = `${bin}:${process.env.PATH}`
+    process.env.GIT_CONFIG_GLOBAL = globalConfig
     try {
-      await fetchOrigin(cloneDir, 'https://localhost/test/repo', { kind: 'https', token: 'fake-token' })
-    } catch (err) {
-      const msg = (err as Error).message
-      expect(msg).not.toContain('does not appear to be a git repository')
+      const credential = { kind: 'https' as const, token: 'fake-token' }
+      const err = await fetchOrigin(cloneDir, `${aOrigin}/repo`, credential).catch((e: unknown) => e as Error)
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).not.toContain('fake-token')
+      expect(seen.a).toContain(`Basic ${Buffer.from('x-access-token:fake-token').toString('base64')}`)
+      expect(await fs.readFile(store, 'utf8')).toContain('me:mine@')
+
+      await fetchOrigin(cloneDir, `${aOrigin}/moved/repo`, credential)
+      expect(seen.b.length).toBeGreaterThan(1)
+      expect(seen.b.every((h) => h === null)).toBe(true)
+      const argv = await fs.readFile(argvLog, 'utf8')
+      expect(argv).toContain('fetch')
+      expect(argv).not.toContain('fake-token')
+    } finally {
+      process.env.PATH = saved.PATH
+      if (saved.GIT_CONFIG_GLOBAL === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = saved.GIT_CONFIG_GLOBAL
+      a.close()
+      b.close()
     }
   })
 })

@@ -10,9 +10,9 @@ import { gitSshAgentSock } from './agent'
 
 /**
  * Turns a resolved credential into a runnable git invocation: the
- * token-bearing URL, the ssh command and the public files it names, and the
- * environment (including Tor when enabled). Repository operations live in
- * `repo.ts`.
+ * environment carrying the https token's credential helper, or the ssh
+ * command and the public files it names (including Tor when enabled).
+ * Repository operations live in `repo.ts`.
  */
 
 /**
@@ -30,13 +30,6 @@ export type ResolvedGitCredential =
   | { kind: 'https'; token: string }
   | { kind: 'ssh'; id: string; publicKey: string; knownHostsEntry: string }
   | { kind: 'hosted' }
-
-export function injectTokenIntoUrl(url: string, token: string): string {
-  const parsed = new URL(url)
-  parsed.username = 'x-access-token'
-  parsed.password = token
-  return parsed.toString()
-}
 
 /**
  * Heuristic: whether a git error is a rejected credential (expired or
@@ -86,15 +79,39 @@ async function contentKeyedFile(dir: string, suffix: string, content: string): P
 }
 
 /**
- * The environment for `runGit` under a credential. For ssh, writes two
- * public files: the host key (so an unknown host fails rather than being
- * trusted) and the public key (so `IdentitiesOnly` offers only this key, not
- * every key the agent holds, which could trigger a lockout). Signing uses the
- * in-process agent named by `IdentityAgent`.
+ * The environment for `runGit` against `remoteUrl` under a credential.
+ *
+ * An https token is answered by a credential helper scoped to the remote's
+ * origin, set through `GIT_CONFIG_*`, with the token itself in an env var:
+ * argv is visible to every local user (`ps`), a process's environment only
+ * to its own uid. Git asks helpers per request host, so a redirect, a user's
+ * `insteadOf` or an LFS storage host never gets the token, as an
+ * `http.extraHeader` would. The empty `credential.helper` first drops the
+ * helpers inherited from the user's config, which would otherwise be asked
+ * too and, on a rejected token, have their own entry erased.
+ *
+ * For ssh, writes two public files: the host key (so an unknown host fails
+ * rather than being trusted) and the public key (so `IdentitiesOnly` offers
+ * only this key, not every key the agent holds, which could trigger a
+ * lockout). Signing uses the in-process agent named by `IdentityAgent`.
  */
 export async function gitEnvForCredential(
   credential: ResolvedGitCredential | null,
+  remoteUrl: string,
 ): Promise<NodeJS.ProcessEnv | undefined> {
+  if (credential?.kind === 'https') {
+    // eslint-disable-next-line no-process-env -- forward the full host env to the git subprocess (PATH/HOME/…)
+    const base = torEnv() ?? { ...process.env }
+    const { origin } = new URL(remoteUrl)
+    const i = Number(base.GIT_CONFIG_COUNT ?? 0)
+    base.GIT_CONFIG_COUNT = String(i + 2)
+    base[`GIT_CONFIG_KEY_${i}`] = 'credential.helper'
+    base[`GIT_CONFIG_VALUE_${i}`] = ''
+    base[`GIT_CONFIG_KEY_${i + 1}`] = `credential.${origin}.helper`
+    base[`GIT_CONFIG_VALUE_${i + 1}`] = '!f() { echo username=x-access-token; echo "password=$YAAC_GIT_TOKEN"; }; f'
+    base.YAAC_GIT_TOKEN = credential.token
+    return base
+  }
   if (credential?.kind !== 'ssh') return torEnv()
   const knownHostsPath = await contentKeyedFile(
     os.tmpdir(), '.known_hosts', credential.knownHostsEntry,
