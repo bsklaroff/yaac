@@ -266,15 +266,19 @@ class TuiConnection extends ControlModeConnection {
   }
 }
 
-/** What each `buildMessageCmd` exit code tells the sender. */
+/**
+ * What each `buildMessageCmd` exit code tells the sender. Codes with several
+ * causes (`MESSAGE_REFUSAL_DETAILED`) are followed by the one the script
+ * named on its last stderr line.
+ */
 const MESSAGE_REFUSALS: Partial<Record<number, string>> = {
   1: 'the message never showed in the agent\'s input; nothing was submitted',
-  3: 'the agent is showing a prompt (a permission request, a question or another dialog); '
-    + 'nothing was typed, so try again once it is answered',
+  3: 'nothing was typed',
   4: 'the agent is showing a prompt (a permission request, a question or another dialog) that '
     + 'opened after the message was typed, which sits unsubmitted in its input',
   5: 'its user\'s draft could not be set aside, so nothing was typed',
 }
+const MESSAGE_REFUSAL_DETAILED = new Set([3, 5])
 
 export const tuiDriver: AgentDriver = {
   mode: 'tui',
@@ -313,9 +317,9 @@ export const tuiDriver: AgentDriver = {
       stdin,
     }).catch((err: unknown) => {
       if (!(err instanceof WorkspaceExecError) || MESSAGE_REFUSALS[err.code] === undefined) throw err
-      // The script's own last line names the cause where there are several.
+      const refusal = MESSAGE_REFUSALS[err.code]
       const detail = err.stderr.trim().split('\n').at(-1) ?? ''
-      throw new Error(err.code === 5 && detail !== '' ? `${MESSAGE_REFUSALS[5]}: ${detail}` : MESSAGE_REFUSALS[err.code])
+      throw new Error(MESSAGE_REFUSAL_DETAILED.has(err.code) && detail !== '' ? `${refusal}: ${detail}` : refusal)
     })
   },
 }

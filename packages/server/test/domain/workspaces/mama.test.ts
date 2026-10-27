@@ -1468,7 +1468,7 @@ describe('runMamaCommand', () => {
       // The paste script found a dialog up, so it typed nothing.
       exec.mockRejectedValue(new WorkspaceExecError('paste', 3, '', 'showing a prompt'))
       const asking = await run('send', 'go', { workspace: 'sibling' })
-      expect(asking.ok === false && asking.error).toContain('nothing was typed')
+      expect(asking.ok === false && asking.error).toContain('nothing was typed: showing a prompt')
     })
 
     it('delivers one message at a time per sender and per conversation', async () => {

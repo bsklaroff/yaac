@@ -441,7 +441,9 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9._-]+$/
  *
  *  - 0: submitted, and any draft of the user's is back in the input box.
  *  - 1: the paste never showed; nothing was submitted, and the draft is back.
- *  - 3: the agent shows a dialog (`atInputTest`), so nothing was typed.
+ *  - 3: nothing was typed, for the reason its last stderr line gives: the
+ *    agent shows a dialog (`atInputTest`), its state cannot be read, or its
+ *    input box is not on screen.
  *  - 4: a dialog opened once the text was in; it sits unsubmitted, and any
  *    draft stays set aside.
  *  - 5: the user's draft could not be set aside, so nothing was typed.
@@ -510,7 +512,11 @@ keys() { at_input && { box; [ $? != 2 ]; } && tm send-keys ${target} "$@"; }
 had=0
 fail() { [ $had = 1 ] && box && { ${draft.unstash}; }; echo "$2" >&2; exit $1; }
 ${copies ?? 'copies() { echo 1; }; '}
-at_input || { echo "the agent is showing a prompt" >&2; exit 3; }
+at_input; case $? in
+  0) ;;
+  2) echo "claude has no status file for this conversation, so whether it is showing a prompt cannot be told; it may still be starting up" >&2; exit 3 ;;
+  *) echo "the agent is showing a prompt (a permission request, a question or another dialog); try again once it is answered" >&2; exit 3 ;;
+esac
 box; state=$?
 [ $state = 2 ] && { echo "its input box is not on screen" >&2; exit 3; }
 ${draft.prepare}
@@ -549,8 +555,10 @@ export const PI_MESSAGE_KEY = 'f9'
  *    pod numbers its processes from 1, so claudes in different pods often
  *    get the same pid; a pod therefore has a `sessions/` of its own
  *    (docs/workspace-storage.md). The newest naming the conversation
- *    is read, since a resumed conversation leaves its old process's behind;
- *    there is none until the TUI is past its startup dialogs.
+ *    is read, since a resumed conversation leaves its old process's behind.
+ *    There is none until the TUI is past its startup dialogs, and none if
+ *    the file was lost; the test then fails with 2, so the sender is told
+ *    the state is unknown rather than that a dialog is up.
  *  - codex titles its pane "Action Required" under an approval or a
  *    question, and hides the cursor under every dialog, its "Implement this
  *    plan?" prompt and startup screens included; at the composer, idle or
@@ -564,7 +572,7 @@ function atInputTest(tool: AgentTool, TMUX: string, target: string, agentSession
     case 'claude':
       return 'f=$(ls -t "$CLAUDE_CONFIG_DIR"/sessions/*.json 2>/dev/null | while read -r x; do '
         + `grep -qF "\\"sessionId\\":\\"${agentSessionId}\\"" "$x" && { echo "$x"; break; }; done); `
-        + '[ -n "$f" ] && case "$(sed -n "s/.*\\"status\\":\\"\\([a-z]*\\)\\".*/\\1/p" "$f")" in '
+        + '[ -n "$f" ] || return 2; case "$(sed -n "s/.*\\"status\\":\\"\\([a-z]*\\)\\".*/\\1/p" "$f")" in '
         + 'idle|busy) true ;; *) false ;; esac'
     case 'codex':
       return `case "$(${TMUX} display -p ${target} "#{pane_title}")" in *"Action Required"*) false ;; *) `
