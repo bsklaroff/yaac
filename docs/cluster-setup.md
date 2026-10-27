@@ -294,7 +294,7 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    It is a DaemonSet rather than a loop of `podman exec <node>` so it works
    on nodes yaac has no shell on, and a replaced node sets itself up. It is
    idempotent: binaries are downloaded only when the node's cached copy
-   fails the release's sha512, and containerd restarts only when a config
+   fails the SHA-512 pinned for the release, and containerd restarts only when a config
    changed. Passes take a node-local lock, so installs sharing a node (an
    e2e run's) must pin the same gVisor version. The installer image is
    digest-pinned upstream `curlimages/curl`. Editing a managed node's

@@ -83,15 +83,16 @@ tarball ships. So the same Dockerfile works from a source checkout and from
 rebuilt bundle is a new image that the Deployment rolls onto, and an
 unchanged one costs one registry HEAD request.
 
-`dist/cli.js` leaves npm dependencies external, so the image runs `npm
-install` from `dist/package.json`. `scripts/write-dist-manifest.ts` writes
-that file at build time from the root manifest, resolving the `catalog:`
-pins (the build machine may not have pnpm's catalog). The root manifest is
-the dependency list, already checked by `scripts/check-cli-externals.ts`.
-npm resolves everything below those exact pins when the image is built, so
-the same script writes `release-age.npmrc` from pnpm's `minimumReleaseAge`
-and its excludes, and the install reads it: the image takes no package
-published more recently than the repo's own installs would.
+`dist/cli.js` leaves npm dependencies external, so the image runs `npm ci`
+from `dist/package.json` and `dist/npm-shrinkwrap.json`.
+`scripts/write-dist-manifest.ts` writes both at build time (the build
+machine may not have pnpm): the manifest is the root dependency list
+(already checked by `scripts/check-cli-externals.ts`) with its `catalog:`
+pins resolved, and the lockfile is `pnpm-lock.yaml`'s resolution of it laid
+out as an npm tree. So the image installs exactly the versions and
+integrity hashes the repo's own installs locked under pnpm's
+`minimumReleaseAge`, and npm resolves nothing. The Homebrew formula
+installs the same way.
 
 The image includes node, `kubectl`, `git`, and the pinned llama.cpp release
 at the path `llamaCppDir()` resolves under the pod's `$HOME`, so auto-titles

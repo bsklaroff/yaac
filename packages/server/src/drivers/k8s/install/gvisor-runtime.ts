@@ -31,10 +31,17 @@ import { NODE_SYSTEMD_CONF_DIR, nodeTuningScript } from './node-tuning'
  *  sidecar binaries together). */
 export const GVISOR_VERSION = '20261005.0'
 
-/** Release-artifact directory: one `<arch>/gvisor.tar.bz2` per arch, with a
- *  `.sha512` sibling. */
+/** Release-artifact directory: one `<arch>/gvisor.tar.bz2` per arch. */
 export const GVISOR_RELEASE_BASE =
   `https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}`
+
+/** SHA-512 of each arch's `gvisor.tar.bz2` in the pinned release (its
+ *  published `.sha512` sibling), so a node installs nothing else. Bump with
+ *  the version. */
+export const GVISOR_SHA512 = {
+  x86_64: '79869ae9a589355a46d46fdac068d9a954e741741ffe77c64e38c56ea955498c1cb04e9bce44e1cce5155333e6b76bee72347c6661bb7c78fd2fe3aad198c8fe',
+  aarch64: '1bc58be6f881264ced1df8ff61db0205531abedcace005585ac5637c5c987831062b365f99f270ef0939849f130344b84e0f1a663294406f798b8f7c8cd326ac',
+}
 
 /** Node label naming the runsc version the installer put on a node, so a
  *  node still running an older one shows. */
@@ -304,8 +311,8 @@ export function gvisorInstallScript(): string {
     `trap 'rm -f "$ready"; if [ "$held" = 1 ]; then rm -rf "$lock"; fi' EXIT`,
     '',
     'case "$(uname -m)" in',
-    '  x86_64|amd64) arch=x86_64 ;;',
-    '  aarch64|arm64) arch=aarch64 ;;',
+    `  x86_64|amd64) arch=x86_64 sum=${GVISOR_SHA512.x86_64} ;;`,
+    `  aarch64|arm64) arch=aarch64 sum=${GVISOR_SHA512.aarch64} ;;`,
     '  *) echo "unsupported node architecture for gVisor: $(uname -m)" >&2; exit 1 ;;',
     'esac',
     '',
@@ -339,17 +346,21 @@ export function gvisorInstallScript(): string {
     '  rm -rf "$lock"',
     '}',
     '',
+    '# Whether file $1 is the pinned release artifact.',
+    'pinned() {',
+    '  [ "$(sha512sum "$1" | cut -d " " -f 1)" = "$sum" ]',
+    '}',
+    '',
     '# One release artifact in the node-local cache, checksum-verified.',
     'fetch() {',
     '  dest="$cache/$version/$arch/$1"',
     '  # Re-verify on a cache HIT, not just after a download. The cache is',
     '  # node state that outlives this pod, and treating "the file is there"',
     '  # as proof would let one bad copy be installed forever.',
-    '  if [ -f "$dest" ] && [ -f "$dest.sha512" ] \\',
-    '     && (cd "$(dirname "$dest")" && sha512sum -c "$1.sha512" >/dev/null 2>&1); then',
+    '  if [ -f "$dest" ] && pinned "$dest"; then',
     '    return 0',
     '  fi',
-    '  rm -f "$dest" "$dest.sha512"',
+    '  rm -f "$dest"',
     '  echo "yaac-gvisor: downloading pinned $1 $version ($arch)"',
     '  mkdir -p "$(dirname "$dest")"',
     '  # Stage INSIDE the cache directory so the move below is a',
@@ -360,13 +371,10 @@ export function gvisorInstallScript(): string {
     '  mkdir -p "$tmp"',
     '  cd "$tmp"',
     '  curl -fsSL "$base/$arch/$1" -o "$1"',
-    '  # The published checksum file names the artifact\'s original basename,',
-    '  # so verification has to happen here, under that name.',
-    '  curl -fsSL "$base/$arch/$1.sha512" -o "$1.sha512"',
-    '  sha512sum -c "$1.sha512" >/dev/null',
-    '  # Checksum first: the artifact\'s presence is what a later pass keys on,',
-    '  # so it must never be the file that lands without its proof.',
-    '  mv "$1.sha512" "$dest.sha512"',
+    '  if ! pinned "$1"; then',
+    '    echo "yaac-gvisor: $1 $version ($arch) does not match its pinned SHA-512" >&2',
+    '    exit 1',
+    '  fi',
     '  mv "$1" "$dest"',
     '  cd /',
     '  rm -rf "$tmp"',

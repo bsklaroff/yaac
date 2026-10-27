@@ -134,6 +134,17 @@ export const AGENT_MODES: readonly AgentMode[] = ['tui', 'acp']
  *  remembered choice for the tool names one. */
 export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
 
+/** claude's `AGENT_CLIS.claude.binarySha256`, typed to be looked up by any
+ *  platform name. */
+const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
+  'darwin-arm64': '1f04c69e1c24e4d0a716a863af0aad8fc64d49a499334c29701f073700276b99',
+  'darwin-x64': '3439427bfce962fddcf557c5a058ca914fa63e06fee894f8e12a3f10e04d1871',
+  'linux-arm64': '1e119036a802d359ba5f9886428e031586e8796f7a858d5a8ee179ac7b8604f0',
+  'linux-x64': 'bc1aad9982c7b59c7d889ff92595d61cf46e0a6eae074cb551d932a989bcd222',
+  'linux-arm64-musl': 'd0a6b24d157d061cd5c406eb4b8f3d4016b646c8802b47babd3625c636e4433d',
+  'linux-x64-musl': '081a7219cf075e5c5d2a39796517ae2fa06610d99f3498e7ee5c577f0da687fa',
+}
+
 /**
  * Each tool's agent CLI, pinned. `dockerfiles/Dockerfile.tools` installs the
  * same versions (a test checks) and so does a host install.
@@ -146,13 +157,21 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
  * depend on their CLI's version. Then run `pnpm gen:providers`: the claude
  * catalog and every tool's effort levels are read from the pinned CLIs.
  *
- * `installScriptSha256` is the SHA-256 of the `install.sh` asset of codex's
- * release, which the auth daemon's Install button runs. Release assets can
- * be replaced in place, so the daemon refuses a script that does not match.
- * Bump it with the version (`curl -fsSL <url> | shasum -a 256`).
+ * The auth daemon's Install button and the workspace image run only what
+ * matches a SHA-256 pinned here, since release assets can be replaced in
+ * place. Bump the sums with the version:
+ *
+ * - `binarySha256`: claude's release binary per platform, the `checksum`s in
+ *   `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`.
+ * - `installScriptSha256`: the `install.sh` asset of codex's release
+ *   (`curl -fsSL <url> | shasum -a 256`).
  */
 export const AGENT_CLIS = {
-  claude: { package: '@anthropic-ai/claude-code', version: '2.1.301' },
+  claude: {
+    package: '@anthropic-ai/claude-code',
+    version: '2.1.301',
+    binarySha256: CLAUDE_BINARY_SHA256,
+  },
   codex: {
     package: '@openai/codex',
     version: '0.163.0',
@@ -160,7 +179,12 @@ export const AGENT_CLIS = {
   },
   opencode: { package: '@opencode/cli', version: '2.0.30' },
   pi: { package: '@earendil-works/pi-coding-agent', version: '1.3.0' },
-} as const satisfies Record<AgentTool, { package: string; version: string; installScriptSha256?: string }>
+} as const satisfies Record<AgentTool, {
+  package: string
+  version: string
+  binarySha256?: typeof CLAUDE_BINARY_SHA256
+  installScriptSha256?: string
+}>
 
 /**
  * The ACP adapter each tool uses in `acp` mode. The image install steps, the

@@ -33,9 +33,17 @@ class YaacServer < Formula
   uses_from_macos "git"
   uses_from_macos "lsof"
 
+  # `npm ci` from the bundle's own lockfile (dist/npm-shrinkwrap.json, which
+  # pins every package to pnpm-lock.yaml's version and integrity hash), so
+  # npm resolves nothing and the install gets exactly what the repo tested.
+  # No install scripts run, as pnpm runs none for these packages.
   def install
-    system "npm", "install", *std_npm_args
-    bin.install_symlink Dir["#{libexec}/bin/*"]
+    libexec.install "dist"
+    cd libexec/"dist" do
+      system "npm", "ci", "--omit=dev", "--ignore-scripts", *std_npm_args(prefix: false)
+    end
+    chmod 0755, libexec/"dist/cli.js"
+    bin.install_symlink libexec/"dist/cli.js" => "yaac"
   end
 
   def caveats

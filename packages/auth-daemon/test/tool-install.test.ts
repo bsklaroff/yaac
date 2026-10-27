@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import type * as cliResolveModule from '#cli-resolve'
 
 // Mocked so the tests don't depend on what is installed locally.
@@ -70,14 +73,26 @@ describe('tool install sessions', () => {
     expect(getToolInstall(started.id).error).toContain('still cannot be found')
   })
 
-  describe('codex install.sh', () => {
-    const { version } = AGENT_CLIS.codex
-    const url = `https://github.com/openai/codex/releases/download/rust-v${version}/install.sh`
-    // Stands in for the pinned release asset: it reports how it was run.
-    const script = 'echo "ran $* non-interactive=$CODEX_NON_INTERACTIVE"\n'
+  describe('pinned downloads', () => {
+    beforeEach(() => {
+      delete process.env.YAAC_E2E_CLAUDE_INSTALL_CLI
+      delete process.env.YAAC_E2E_CODEX_INSTALL_CLI
+    })
+    afterEach(() => {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    })
 
-    beforeEach(() => { delete process.env.YAAC_E2E_CODEX_INSTALL_CLI })
-    afterEach(() => { vi.unstubAllGlobals() })
+    // Stands in for the pinned asset: it reports how it was run, and as
+    // claude's `install` it downloads a copy of itself.
+    const script = [
+      '#!/bin/sh',
+      'echo "ran $* non-interactive=$CODEX_NON_INTERACTIVE"',
+      'if [ "$1" = install ]; then',
+      '  mkdir -p "$HOME/.local/share/claude/versions" && echo copy > "$HOME/.local/share/claude/versions/$2"',
+      'fi',
+      '',
+    ].join('\n')
 
     function serve(body: string) {
       const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response(body)))
@@ -85,24 +100,67 @@ describe('tool install sessions', () => {
       return fetchMock
     }
 
-    it('runs the pinned release\'s script non-interactively when its SHA-256 matches', async () => {
-      vi.spyOn(crypto, 'createHash').mockImplementationOnce(() => {
-        const real = crypto.createHash('sha256')
-        return Object.assign(real, { digest: () => AGENT_CLIS.codex.installScriptSha256 })
-      })
+    /** Make the next `times` SHA-256s come out as `sum()`. */
+    function matchPin(sum: () => string | undefined, times = 1): void {
+      const real = crypto.createHash.bind(crypto)
+      const spy = vi.spyOn(crypto, 'createHash')
+      for (let i = 0; i < times; i++) {
+        spy.mockImplementationOnce(() => Object.assign(real('sha256'), { digest: sum }))
+      }
+    }
+
+    it('runs the pinned codex release\'s script non-interactively when its SHA-256 matches', async () => {
+      const { version, installScriptSha256 } = AGENT_CLIS.codex
+      matchPin(() => installScriptSha256)
       const fetchMock = serve(script)
       const started = startToolInstall('codex')
       await waitForStatus(started.id, 'success')
-      expect(fetchMock.mock.calls[0][0]).toBe(url)
+      expect(fetchMock.mock.calls[0][0])
+        .toBe(`https://github.com/openai/codex/releases/download/rust-v${version}/install.sh`)
       expect(getToolInstall(started.id).output).toContain(`ran --release ${version} non-interactive=1`)
     })
 
-    it('refuses a script that does not match the pinned SHA-256', async () => {
+    it('runs the pinned claude binary\'s own install and keeps its copy only if that matches too', async () => {
+      const { version, binarySha256 } = AGENT_CLIS.claude
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-claude-home-'))
+      const installed = path.join(home, '.local', 'share', 'claude', 'versions', version)
+      vi.stubEnv('HOME', home)
+      try {
+        const fetchMock = serve(script)
+        // The URL names the platform build, whose pin the hash must match.
+        const pin = (): string | undefined =>
+          binarySha256[/\/([^/]+)\/claude$/.exec(fetchMock.mock.calls[0][0] as string)?.[1] ?? '']
+
+        // The download and the copy `install` leaves both match.
+        matchPin(pin, 2)
+        const ok = startToolInstall('claude')
+        await waitForStatus(ok.id, 'success')
+        expect(fetchMock.mock.calls[0][0] as string)
+          .toMatch(new RegExp(`^https://downloads\\.claude\\.ai/claude-code-releases/${version}/[a-z0-9-]+/claude$`))
+        expect(getToolInstall(ok.id).output).toContain(`ran install ${version}`)
+        expect(await fs.readFile(installed, 'utf8')).toBe('copy\n')
+
+        // `install` downloads the version again, and a copy that does not
+        // match the pin is deleted rather than left on PATH.
+        matchPin(pin, 1)
+        const bad = startToolInstall('claude')
+        await waitForStatus(bad.id, 'error')
+        expect(getToolInstall(bad.id).error).toContain('does not match its pinned SHA-256, so it was deleted')
+        await expect(fs.access(installed)).rejects.toThrow()
+      } finally {
+        vi.unstubAllEnvs()
+        await fs.rm(home, { recursive: true, force: true })
+      }
+    })
+
+    it('refuses a download that does not match the pinned SHA-256', async () => {
       serve(script)
-      const started = startToolInstall('codex')
-      await waitForStatus(started.id, 'error')
-      expect(getToolInstall(started.id).error).toContain('does not match its pinned SHA-256')
-      expect(getToolInstall(started.id).output).toBe('')
+      for (const tool of ['claude', 'codex'] as const) {
+        const started = startToolInstall(tool)
+        await waitForStatus(started.id, 'error')
+        expect(getToolInstall(started.id).error).toContain('does not match its pinned SHA-256')
+        expect(getToolInstall(started.id).output).toBe('')
+      }
     })
   })
 

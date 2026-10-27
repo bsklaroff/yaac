@@ -10,20 +10,32 @@ RUN apt-get update && \
 # (a podman dependency). Under gVisor, crun 1.21 fails every container start
 # ("cannot resolve `null` under rootfs") and 1.29+ fails to mount tmpfs on
 # sys/firmware; 1.22-1.28 work. Check nested `docker run` before bumping.
-RUN curl -fsSL -o /usr/local/bin/crun \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) SHA256=2aa6b7024a9c9f153895c0d11ae233d3758f54844011c3a039e3e89048d01d42 ;; \
+      arm64) SHA256=cc1e8ec89aef1422e0741be196f9ed099e2e09d2f48f30f27cd44a22ef1f0342 ;; \
+    esac && \
+    curl -fsSL -o /usr/local/bin/crun \
       "https://github.com/containers/crun/releases/download/1.28/crun-1.28-linux-$(dpkg --print-architecture)" && \
+    echo "${SHA256}  /usr/local/bin/crun" | sha256sum -c - && \
     chmod 755 /usr/local/bin/crun
 
 # Docker CLI + compose plugin, pointed (DOCKER_HOST below) at the rootful
 # podman socket, which serves the Docker Engine API. No buildx: its default
 # driver pulls moby/buildkit, which the egress proxy blocks; compose falls
 # back to the classic build endpoint podman implements.
-RUN ARCH="$(uname -m)" && \
-    curl -fsSL "https://download.docker.com/linux/static/stable/${ARCH}/docker-29.8.2.tgz" | \
-      tar -xz -C /usr/local/bin --strip-components=1 docker/docker && \
+RUN ARCH="$(uname -m)" && case "$ARCH" in \
+      x86_64) DOCKER_SHA256=995d1ef289677f74fd58d8d2c35727b6a4ee389c69db8638a3e42d0487aa5b0f \
+              COMPOSE_SHA256=db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576 ;; \
+      aarch64) DOCKER_SHA256=76a624e4a8e5da654d1150e808175125efb5a6f1b6aa1cbd9caee18f51047a50 \
+               COMPOSE_SHA256=732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7 ;; \
+    esac && \
+    curl -fsSL -o /tmp/docker.tgz "https://download.docker.com/linux/static/stable/${ARCH}/docker-29.8.2.tgz" && \
+    echo "${DOCKER_SHA256}  /tmp/docker.tgz" | sha256sum -c - && \
+    tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker && rm /tmp/docker.tgz && \
     mkdir -p /usr/local/lib/docker/cli-plugins && \
     curl -fsSL "https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-${ARCH}" \
       -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    echo "${COMPOSE_SHA256}  /usr/local/lib/docker/cli-plugins/docker-compose" | sha256sum -c - && \
     chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
 # Rootful podman inside the gVisor sandbox, as in gVisor's docker-in-gvisor

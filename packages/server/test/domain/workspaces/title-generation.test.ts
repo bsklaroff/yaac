@@ -22,7 +22,7 @@ vi.mock('#lib/shell', async (importOriginal) => ({
 import { reconcileGeneratedTitles } from '#domain/workspaces'
 import { _resetTitleGenerationForTests } from '#domain/workspaces/title-generation'
 import { _resetTitleSummarizerForTests } from '#domain/workspaces/title-summarizer'
-import { LLAMA_CPP_TAG } from '#domain/workspaces/llama-cpp'
+import { LLAMA_CPP_SHA256, LLAMA_CPP_TAG } from '#domain/workspaces/llama-cpp'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import { setWorkspaceGeneratedTitle } from '#db/workspace-store'
 import type { AgentTool } from '@yaac/shared/types'
@@ -206,6 +206,8 @@ describe('reconcileGeneratedTitles', () => {
       `releases/download/${LLAMA_CPP_TAG}/llama-${LLAMA_CPP_TAG}-bin-ubuntu-arm64.tar.gz`)
     expect(release).toContain('.tmp')
     expect(release).toContain('mv ')
+    // Extracted only if it matches the pinned SHA-256.
+    expect(release).toMatch(new RegExp(`sha256sum .* = '${LLAMA_CPP_SHA256['ubuntu-arm64'] ?? 'x'}' .*&& tar -xzf`))
     // Qwen2.5-0.5B-Instruct at IQ4_XS, fetched into server-local/models.
     const target = path.join(dataDir, 'server-local', 'models', MODEL_FILE)
     expect(model).toContain('huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF')
@@ -248,6 +250,8 @@ describe('reconcileGeneratedTitles', () => {
     await reconcileGeneratedTitles()
     await flush()
     expect(downloads()[0]).toContain(`llama-${LLAMA_CPP_TAG}-bin-macos-x64.tar.gz`)
+    expect(downloads()[0]).toContain('shasum -a 256 ')
+    expect(downloads()[0]).toContain(`= '${LLAMA_CPP_SHA256['macos-x64'] ?? 'x'}'`)
   })
 
   it('strips the end-of-text marker, wrapping quotes and trailing periods, then normalizes', async () => {
