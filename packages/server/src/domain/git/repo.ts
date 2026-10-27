@@ -6,7 +6,7 @@ import { serverLocalPath } from '@yaac/shared/paths'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { runGit } from './run'
 import type { GitTarget } from './run'
-import { gitEnvForCredential, injectTokenIntoUrl, torEnv } from './transport'
+import { gitEnvForCredential } from './transport'
 import type { ResolvedGitCredential } from './transport'
 
 /**
@@ -23,20 +23,11 @@ export async function cloneRepo(
   destPath: string,
   credential: ResolvedGitCredential | null,
 ): Promise<void> {
+  await runGit({ kind: 'none' }, ['clone', remoteUrl, destPath], {
+    env: await gitEnvForCredential(credential, remoteUrl),
+    remoteUrl,
+  })
   const config = path.join(destPath, '.git', 'config')
-  if (credential?.kind === 'https') {
-    const authedUrl = injectTokenIntoUrl(remoteUrl, credential.token)
-    await runGit({ kind: 'none' }, ['clone', authedUrl, destPath], { env: torEnv(), remoteUrl })
-    // Strip credentials from the stored remote URL.
-    await runGit({ kind: 'none' }, ['config', '--file', config, 'remote.origin.url', remoteUrl])
-  } else {
-    // SSH signs through the in-process agent; with no credential the clone
-    // is unauthenticated (fine for public HTTPS repos).
-    await runGit({ kind: 'none' }, ['clone', remoteUrl, destPath], {
-      env: await gitEnvForCredential(credential),
-      remoteUrl,
-    })
-  }
   // Git run directly in the main clone (by a user or a containerless agent,
   // without the server's pins) must not auto-gc away borrowed objects.
   for (const key of NEVER_PRUNE_KEYS) await runGit({ kind: 'none' }, ['config', '--file', config, key, 'never'])
@@ -160,11 +151,9 @@ export function fetchOrigin(
   const run = fetchOriginMutex(repoPath, async () => {
     // Started, so later callers need a new queued fetch.
     queuedFetches.delete(repoPath)
-    const url = credential?.kind === 'https' ? injectTokenIntoUrl(remoteUrl, credential.token) : remoteUrl
-    const env = credential?.kind === 'https' ? torEnv() : await gitEnvForCredential(credential)
     await runGit(repo(repoPath), [
-      'fetch', '--prune', url, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok',
-    ], { env, remoteUrl })
+      'fetch', '--prune', remoteUrl, '+refs/heads/*:refs/remotes/origin/*', '--update-head-ok',
+    ], { env: await gitEnvForCredential(credential, remoteUrl), remoteUrl })
     await fs.mkdir(path.dirname(fetchRecord(repoPath)), { recursive: true })
     await fs.writeFile(fetchRecord(repoPath), String(Date.now()))
   })

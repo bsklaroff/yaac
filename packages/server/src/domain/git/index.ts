@@ -17,7 +17,6 @@
 export {
   fetchKnownHostsEntry,
   gitEnvForCredential,
-  injectTokenIntoUrl,
   isGitAuthError,
   torEnv,
   writeKnownHostsFile,
