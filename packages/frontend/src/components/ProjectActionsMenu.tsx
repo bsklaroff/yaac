@@ -6,24 +6,17 @@ import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { removeProjectInBackground } from '#lib/projectOps'
 import { useReadOnly } from '#lib/viewer'
-import { useProjectName } from '#lib/projectIdentity'
 import { useSnapshot } from '#lib/useSnapshot'
+import type { ProjectSummary } from '@yaac/shared/types'
 
 /** The project name as a menu trigger. The only action is Remove, which
  *  asks for confirmation and then runs in the background (#lib/projectOps).
  *  A teammate's project shows its plain name. */
-export function ProjectActionsMenu({ projectId, remoteUrl }: {
-  projectId: string
-  /** The project's git remote, typed back to confirm removal (the name,
-   *  for a remote yaac hosts). */
-  remoteUrl: string
-}): JSX.Element {
+export function ProjectActionsMenu({ project }: { project: ProjectSummary }): JSX.Element {
   const [confirm, setConfirm] = useState(false)
-  const name = useProjectName()(projectId)
-  const projects = useSnapshot()?.projects ?? []
-  const project = projects.find((p) => p.id === projectId)
-  const hosted = project?.hosted === true
-  const shares = projects.filter((p) => p.sharedFrom?.projectId === projectId).length
+  const { id: projectId, name, remoteUrl } = project
+  const hosted = project.hosted === true
+  const shares = (useSnapshot()?.projects ?? []).filter((p) => p.sharedFrom?.projectId === projectId).length
   const readOnly = useReadOnly()
   if (readOnly) return <span className="truncate font-semibold tracking-tight">{name}</span>
 
@@ -49,7 +42,7 @@ export function ProjectActionsMenu({ projectId, remoteUrl }: {
         open={confirm}
         onOpenChange={setConfirm}
         title="Remove project?"
-        description={project?.sharedFrom
+        description={project.sharedFrom
           ? `Removes "${name}" and all its workspaces. Its repository stays with the project it was shared from. `
             + 'This can\'t be undone.'
           : hosted

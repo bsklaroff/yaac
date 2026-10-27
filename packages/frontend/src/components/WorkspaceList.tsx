@@ -132,11 +132,11 @@ export interface ProjectScope {
 }
 
 /** The list header's title: the project's actions menu, or the app name
- *  with no project. */
-export function ListTitle({ scope }: { scope: ProjectScope }): JSX.Element {
-  return scope.projectId
-    ? <ProjectActionsMenu projectId={scope.projectId} remoteUrl={scope.project?.remoteUrl ?? ''} />
-    : <span className="font-semibold tracking-tight">yaac</span>
+ *  with no project. Before the first snapshot frame lists the selected
+ *  project, it shows nothing rather than the project's raw id. */
+export function ListTitle({ scope }: { scope: ProjectScope }): JSX.Element | null {
+  if (scope.project) return <ProjectActionsMenu project={scope.project} />
+  return scope.projectId ? null : <span className="font-semibold tracking-tight">yaac</span>
 }
 
 /** The list header's actions: a reconnect notice and new workspace. */
