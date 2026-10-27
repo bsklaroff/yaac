@@ -71,7 +71,10 @@ beforeAll(async () => {
   }
 }, 60_000)
 
-afterAll(() => { for (const s of servers) s.close() })
+afterAll(() => {
+  keepAlive.destroy()
+  for (const s of servers) s.close()
+})
 
 /** POST a refresh grant through the MITM, as claude would. */
 function refresh(refreshToken: string, workspaceId = 'wa'): Promise<Record<string, unknown>> {
@@ -96,7 +99,56 @@ function refresh(refreshToken: string, workspaceId = 'wa'): Promise<Record<strin
   })
 }
 
+/** Alice's MITM over one kept-alive connection, so every request after the first rides it. */
+const keepAlive = new https.Agent({ keepAlive: true, maxSockets: 1 })
+
+/** A request through `keepAlive` (an upgrade when `upgrade`); resolves with its status and whether it reused the connection. */
+function send(path: string, host: string, upgrade = false): Promise<{ status: number; reused: boolean }> {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      host: '127.0.0.1',
+      port: mitmPorts.wa,
+      // Pinned, or Node would take the SNI from the Host header.
+      servername: 'platform.claude.com',
+      ca: ctx.ca.pem,
+      agent: keepAlive,
+      method: upgrade ? 'GET' : 'POST',
+      path,
+      headers: upgrade
+        ? { host, connection: 'Upgrade', upgrade: 'websocket' }
+        : { host, 'content-type': 'application/json' },
+    }, (res) => {
+      res.resume()
+      res.on('end', () => { resolve({ status: res.statusCode ?? 0, reused: req.reusedSocket }) })
+    })
+    req.on('error', reject)
+    req.end(upgrade ? undefined : '{}')
+  })
+}
+
 describe('handleMitm', () => {
+  it('refuses every request on a connection that names another host than the connection\'s', async () => {
+    // Credentials are chosen for platform.claude.com; a Host header or an
+    // absolute-form target naming a CDN neighbor must not carry them there,
+    // on the connection's first request or any later one.
+    upstreamBodies = []
+    const results = []
+    for (const [path, host, upgrade] of [
+      ['/v1/oauth/token', 'platform.claude.com', false],
+      ['/v1/oauth/token', 'evil.example', false],
+      ['https://evil.example/v1/oauth/token', 'platform.claude.com', false],
+      // The same host, with its case, port or trailing dot spelled otherwise.
+      ['/v1/oauth/token', 'Platform.Claude.com.:443', false],
+      ['/ws', 'evil.example', true],
+      ['wss://evil.example/ws', 'platform.claude.com', true],
+    ] as const) {
+      results.push(await send(path, host, upgrade))
+    }
+    expect(results.map((r) => r.status)).toEqual([200, 421, 421, 200, 421, 421])
+    expect(results.slice(1, 5).every((r) => r.reused)).toBe(true)
+    expect(upstreamBodies).toHaveLength(2)
+  }, 60_000)
+
   it('spends the real refresh token only for the placeholder, and captures that rotation', async () => {
     // A refresh token the proxy did not hand out travels as itself, and
     // its answer is neither captured nor rewritten.
