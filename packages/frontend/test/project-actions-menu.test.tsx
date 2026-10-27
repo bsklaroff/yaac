@@ -5,12 +5,13 @@ import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ProjectOpPane } from '#components/ProjectOpPane'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
-import type { ServerSnapshot } from '@yaac/shared/types'
+import type { ProjectSummary, ServerSnapshot } from '@yaac/shared/types'
 
 
 const REMOTE = 'https://github.com/acme/widgets.git'
 
 const ID = 'f3b1c2d4-0000-4000-8000-000000000001'
+const PROJECT = { id: ID, name: 'widgets', remoteUrl: REMOTE } as ProjectSummary
 const REMOVE = `DELETE /api/project/${ID}`
 let server: FetchMock
 
@@ -24,13 +25,13 @@ beforeEach(() => {
  *  runs, as the shell shows it. */
 function Harness(): JSX.Element {
   const op = useUiStore((s) => s.projectOps.find((o) => o.id === s.activeProjectId))
-  return op ? <ProjectOpPane op={op} /> : <ProjectActionsMenu projectId={ID} remoteUrl={REMOTE} />
+  return op ? <ProjectOpPane op={op} /> : <ProjectActionsMenu project={PROJECT} />
 }
 
 /** Render the menu, labeled with the project's name, and click through to
  *  the remove-confirm dialog. */
 async function openConfirm(): Promise<void> {
-  useUiStore.setState({ snapshot: { projects: [{ id: ID, name: 'widgets' }] } as ServerSnapshot })
+  useUiStore.setState({ snapshot: { projects: [PROJECT] } as ServerSnapshot })
   renderWithClient(<Harness />)
   fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
   fireEvent.click(await screen.findByText('Remove project'))

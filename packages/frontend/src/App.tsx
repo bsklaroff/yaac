@@ -163,22 +163,29 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // naming the project instead; else the selected workspace says which
   // project it is in. Failing all, fall back to the first project, with
   // restoreActiveProject because the user did not choose it, so on mobile it
-  // must not navigate into the project. A pending add is selectable before
-  // it is listed.
+  // must not navigate into the project. With no projects at all, the
+  // selection is cleared and mobile goes back to the project list, where
+  // the welcome pane is. A pending add is selectable before it is listed.
   useEffect(() => {
     const owner = all?.projects.find((p) => p.id === activeProjectId)?.owner
     if (owner !== undefined && owner !== viewedUserId) {
       useUiStore.setState({ viewedUserId: owner })
       return
     }
-    if (projects.length === 0 || projectOp) return
+    if (!snapshot || projectOp) return
+    if (projects.length === 0) {
+      if (activeProjectId !== null) {
+        useUiStore.setState({ activeProjectId: null, selectedWorkspaceId: null, mobileScreen: 'projects' })
+      }
+      return
+    }
     if (activeProjectId && projects.some((p) => p.id === activeProjectId)) return
     const { selectedWorkspaceId } = useUiStore.getState()
     const found = projects.find((p) => p.name === activeProjectId)?.id
       ?? workspaces.find((w) => w.workspaceId === selectedWorkspaceId)?.projectId
     if (found !== undefined) useUiStore.setState({ activeProjectId: found })
     else restoreActiveProject(projects[0].id)
-  }, [all, viewedUserId, activeProjectId, projectOp, projects, workspaces, restoreActiveProject])
+  }, [all, snapshot, viewedUserId, activeProjectId, projectOp, projects, workspaces, restoreActiveProject])
 
   const inProject = <T extends { projectId: string }>(rows: T[] | undefined): T[] =>
     (rows ?? []).filter((r) => r.projectId === activeProjectId)

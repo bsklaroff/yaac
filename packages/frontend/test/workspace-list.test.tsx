@@ -26,10 +26,10 @@ vi.mock('#lib/stopWorkspaceFlow', () => ({ stopWorkspaceOptimistic: vi.fn() }))
 const provision = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
 
-import { WorkspaceList } from '#components/WorkspaceList'
+import { ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, serverError, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, serverSnapshot, testQueryClient, TEST_USER_ID, type FetchCall, type FetchMock } from './harness'
 import { intersect, intersection } from './setup'
 
 /** Scroll every load-more marker into view: jsdom has no layout, so the
@@ -1441,5 +1441,17 @@ describe('WorkspaceList', () => {
     fireEvent.click(screen.getByText('Their run'))
     expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
     expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
+  })
+})
+
+describe('ListTitle', () => {
+  it('shows nothing for a project the snapshot does not list yet, then its name', () => {
+    const project = { id: 'proj', name: 'widgets', remoteUrl: 'https://github.com/acme/widgets.git' } as ProjectSummary
+    const scope = { projectId: 'proj', project: undefined } as ProjectScope
+    const { container, unmount } = renderWithClient(<ListTitle scope={scope} />)
+    expect(container.textContent).toBe('')
+    unmount()
+    renderWithClient(<ListTitle scope={{ ...scope, project }} />)
+    expect(screen.getByRole('button', { name: 'widgets' })).toBeTruthy()
   })
 })
