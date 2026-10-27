@@ -4,6 +4,7 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import { contextHash, resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/install/podman'
+import { kindEnv, nodeBindsPath } from '@yaac/server/drivers/k8s/install/install'
 import { ensureImageByTag, pushImageToRegistry } from '@yaac/server/drivers/k8s/install/host-images'
 import {
   TRUSTED_PARENT_COMPRESSION,
@@ -14,6 +15,8 @@ import { NETD_DIR, PROXY_DIR } from '@yaac/shared/project-paths'
 import { buildCliBundle } from '#support/cli-bundle'
 import { buildTestServerImage, testServerImageTag } from '#support/deployed-server'
 import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
+import { testTmpBase } from '@yaac/test-utils/tmp'
+import { env } from '@yaac/shared/env'
 import { gcTestImages } from '#support/test-images'
 import { requireKindByo } from '#support/kind-byo'
 import { testBackend } from '#support/kind-byo-layout'
@@ -87,6 +90,24 @@ async function cleanupLeakedTestNamespaces(): Promise<void> {
 }
 
 /**
+ * Fail fast when the kind nodes cannot see the test scratch. Its hostPaths
+ * would otherwise be created inside the node container, so pods would run
+ * against empty dirs or hang Pending. Skipped when there is no kind cluster.
+ */
+async function requireNodeVisibleScratch(): Promise<void> {
+  const nodes = await execFileAsync('kind', ['get', 'nodes', '--name', env.kindCluster], { env: kindEnv() })
+    .then(({ stdout }) => stdout.split('\n').map((l) => l.trim()).filter(Boolean), () => [])
+  const base = testTmpBase()
+  for (const node of nodes) {
+    if (await nodeBindsPath(execFileAsync, node, base)) continue
+    throw new Error(
+      `kind node ${node} does not mount the test scratch ${base}. Point YAAC_DATA_DIR at a dir `
+      + 'under the data dir that created the cluster (~/.yaac-cluster by default) for this run.',
+    )
+  }
+}
+
+/**
  * Build the CLI, pre-build every image the e2e tests use, and push them to
  * the local registry so cluster pods can pull them. Each tag is a content
  * hash of its sources (e.g. yaac-test-base:<hash>), which tests compute the
@@ -115,6 +136,7 @@ export async function setup(project: TestProject): Promise<void> {
   } catch { /* not installed or not running */ }
   if (!podmanAvailable) return
 
+  if (testBackend() === 'kind') await requireNodeVisibleScratch()
   // Leaked containers with dead conmons hang podman under build load.
   await pruneTestContainers()
 

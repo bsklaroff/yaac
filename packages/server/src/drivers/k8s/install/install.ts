@@ -295,6 +295,7 @@ export async function runClusterInstall(
       resetClusterCidrCache()
       for (const node of await kindNodes(deps, cluster)) {
         await startStoppedKindNode(deps, node)
+        await requireDataDirMount(deps, cluster, node)
         await applyKindNodeFixups(deps, node)
       }
       await waitForApiServer(deps, cluster)
@@ -353,15 +354,18 @@ interface KindNode {
 }
 
 /**
- * The config for `kind create cluster`: `$HOME` substituted (kind expands no
- * env vars), the node-local extraMount and server port mapping added, and
- * worker nodes appended.
+ * The config for `kind create cluster`: the extraMounts and server port
+ * mapping added, and worker nodes appended.
  *
- * Each node gets two extraMounts. `$HOME → $HOME` lets the static PVs
- * behind the storage claims resolve on the node (docs/server-in-cluster.md
- * "Storage claims"). The second binds `<dataDir>/node-local` to
- * `/var/lib/yaac/node/<install id>`, so node-local data (pnpm and image stores,
- * working copies) lives on host disk and survives a cluster delete.
+ * Each node gets two extraMounts. The data dir at its own path lets the
+ * static PVs behind the storage claims resolve on the node
+ * (docs/server-in-cluster.md "Storage claims"). The second binds
+ * `<dataDir>/node-local` to `/var/lib/yaac/node/<install id>`, so node-local
+ * data (pnpm and image stores, working copies) lives on host disk and
+ * survives a cluster delete. Nothing else of the host is mounted, so a
+ * process inside a node cannot read the rest of the home directory through
+ * it. The node is still a privileged container, so this narrows what such a
+ * process sees, not what an escape from it can reach.
  *
  * Workers are copies of the control-plane entry with the role swapped, so
  * they carry the same mounts. All nodes share the host filesystem, so the
@@ -372,25 +376,26 @@ interface KindNode {
 function renderKindConfig(
   raw: string,
   opts: {
-    homedir: string
+    dataDir: string
     nodes: number
     serverHostPort: number
     nodeLocalHostPath: string
     nodeLocalNodePath: string
   },
 ): string {
-  const config = parseYaml(raw.replaceAll('$HOME', opts.homedir)) as { nodes?: KindNode[] }
+  const config = parseYaml(raw) as { nodes?: KindNode[] }
   const [node, ...rest] = config.nodes ?? []
   if (!node || rest.length > 0 || node.role !== 'control-plane') {
     throw new ClusterInstallError(
       'The bundled kind config no longer holds a single control-plane node '
       + 'entry, so --nodes cannot render worker copies of it. Restore the '
       + '`nodes:` list of k8s/kind-config.yaml to one `- role: control-plane` '
-      + 'entry carrying the $HOME extraMount.',
+      + 'entry.',
     )
   }
   const extraMounts = [
     ...(node.extraMounts ?? []),
+    { hostPath: opts.dataDir, containerPath: opts.dataDir },
     { hostPath: opts.nodeLocalHostPath, containerPath: opts.nodeLocalNodePath },
   ]
   config.nodes = [
@@ -530,6 +535,42 @@ async function startStoppedKindNode(deps: ClusterInstallDeps, node: string): Pro
   await deps.run('podman', ['start', node])
 }
 
+/**
+ * Refuse a kind cluster whose node does not mount this data dir, which is
+ * one created for another data dir. Its static PVs would resolve to the node
+ * container's own filesystem, so the install would seem to work while its
+ * data never reached the host.
+ */
+async function requireDataDirMount(deps: ClusterInstallDeps, cluster: string, node: string): Promise<void> {
+  const dataDir = getDataDir()
+  if (await nodeBindsPath(deps.run, node, dataDir)) return
+  throw new ClusterInstallError(
+    `The kind cluster "${cluster}" does not mount this data dir (${dataDir}) into its node ${node}, `
+    + 'so it was created for another one. kind mounts are fixed at creation: install from the '
+    + 'data dir that created it, set YAAC_KIND_CLUSTER to give this one its own cluster, or '
+    + '`yaac cluster delete` and install again (this loses running workspaces).',
+  )
+}
+
+/**
+ * Whether kind node `node` has a bind mount at path `p`, or at a directory
+ * above it, so the node sees the host's bytes there. Only binds count: kind
+ * gives every node a named volume at `/var`, which would otherwise cover any
+ * path under it (all of `$HOME` on Fedora Silverblue). The bind's source is
+ * not compared, since podman may report it with symlinks resolved. A cluster
+ * that mounts the whole home directory covers every data dir in it.
+ */
+export async function nodeBindsPath(
+  run: (file: string, args: string[]) => Promise<{ stdout: string }>,
+  node: string,
+  p: string,
+): Promise<boolean> {
+  const { stdout } = await run('podman', ['inspect', '--format', '{{json .Mounts}}', node])
+  const mounts = JSON.parse(stdout) as Array<{ Type?: string; Destination?: string }>
+  return mounts.some(({ Type, Destination: dest }) => Type === 'bind' && dest
+    && (p === dest || p.startsWith(dest.endsWith('/') ? dest : `${dest}/`)))
+}
+
 const API_SERVER_TIMEOUT_MS = 120_000
 
 /**
@@ -576,7 +617,7 @@ async function createKindCluster(
   // podman refuses a missing bind source, or creates it as root.
   await fs.mkdir(nodeLocalRoot(), { recursive: true })
   const config = renderKindConfig(raw, {
-    homedir: deps.homedir(),
+    dataDir: getDataDir(),
     nodes,
     // kind sets port mappings only at cluster creation.
     serverHostPort: env.serverPort ?? DEFAULT_CLUSTER_SERVER_PORT,

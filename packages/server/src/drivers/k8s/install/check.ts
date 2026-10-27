@@ -85,7 +85,7 @@ const KIND_SETUP_FIX = [
   'Create a kind cluster wired for yaac — or restart one a host reboot',
   'left stopped — by running:',
   '  yaac cluster install',
-  'It provisions the podman machine (macOS), the kind cluster (home and',
+  'It provisions the podman machine (macOS), the kind cluster (data dir and',
   'node-local extraMounts), Calico, the kind node fixups, every built-in',
   'image, the in-cluster registry, and the storage claims.',
 ].join('\n')
@@ -1126,7 +1126,7 @@ async function runEndToEndProbe(identity: InstallIdentity): Promise<CheckResult>
           + 'install`.\nIf it failed mounting /probe, the '
           + `${GLOBAL_CLAIM_NAME} claim or its volume is broken on the node — `
           + 'on kind the volume is a hostPath into the data dir, which the '
-          + 'node needs the home extraMount to see; `yaac cluster install` '
+          + 'node needs the data dir extraMount to see; `yaac cluster install` '
           + 're-applies the claim.\n'
           + 'If it never got past Pending or failed with a runsc/'
           + 'RuntimeClass error, the gvisor runtime is broken — run '
@@ -1332,7 +1332,7 @@ const PER_NODE_FIX =
   'Each node needs what a session pod needs from it: the runsc handler (the '
   + 'yaac-gvisor-install DaemonSet), the containerd `hosts.toml` for the registry, '
   + `and the ${GLOBAL_CLAIM_NAME} volume, which on kind is a hostPath into the data `
-  + 'dir that the node sees through the home-directory extraMount. The kubelet event '
+  + 'dir that the node sees through the data dir extraMount. The kubelet event '
   + 'quoted above names which is missing. `yaac cluster install` re-applies the first '
   + 'two on every node and renders the extraMount onto every node it creates; on a '
   + 'cloud cluster the volume itself has to attach on every node.'

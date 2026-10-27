@@ -243,7 +243,7 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    "The write gate"). Install creates the key on its first run, as the
    Secret `yaac-registry-grant-key` in its own `yaac-registry-keys`
    namespace.
-2. **Two extraMounts per node.** Your home directory, at the same path: the
+2. **Two extraMounts per node.** The data dir, at the same path: the
    storage claims (`yaac-global`, `yaac-server-local`, and `yaac-checkouts`
    over `global/` again) bind static hostPath volumes onto the data dir's
    `global/` and `server-local/` folders, and a hostPath resolves on the node, so this mount is what makes
@@ -251,8 +251,16 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    claims"). And `<dataDir>/node-local` at `/var/lib/yaac/node/<install id>`,
    holding the node-local tier (package caches, image stores, opencode
    working copies). On kind that tier is therefore host disk and survives a
-   cluster delete. Both mounts are on every node, and the second is per
-   install.
+   cluster delete. Both mounts are on every node and fixed when the cluster
+   is created, so a cluster serves the data dir that created it, and install
+   refuses one whose nodes do not mount its own. Nothing else of the host is
+   mounted, so a process inside a node cannot read the rest of your home
+   directory (`~/.ssh`, `~/.kube`, cloud credentials, the host server's
+   `~/.yaac-server`) through it. It still reaches the whole data dir: the
+   server database with every stored credential, every project's checkouts
+   and histories, and the node's own etcd with every Secret. The node is a
+   rootful privileged container, so this narrows what such a process sees,
+   not what an escape from the container can reach.
 3. **The kind node fixups**: two settings that a node container needs and a
    real node does not, applied through podman.
    - A raised pids limit on the node container (32768). Podman's default of
@@ -347,9 +355,9 @@ that can run workspaces and `--nodes 3` gives two. **3 is the smallest
 topology that really exercises multi-node scheduling.** `yaac cluster
 check` reports both counts.
 
-`k8s/kind-config.yaml` holds one control-plane node entry with the `$HOME`
-extraMount. Install adds the node-local mount to it and copies the entry
-into `N-1` worker entries, so every node has both mounts. Because all kind
+`k8s/kind-config.yaml` holds one control-plane node entry. Install adds
+the data dir and node-local mounts to it and copies the entry into `N-1`
+worker entries, so every node has both mounts. Because all kind
 nodes share this host's filesystem, the claims' volumes resolve to the same
 bytes whichever node a workspace lands on, and the "node-local" tier is one
 host folder. The rest of the config (the containerd `config_path` patch,
@@ -939,7 +947,7 @@ without a probe. The gate also names the nodes it skipped and why (`not
 swept: yaac-worker3 (untolerated taint …)`).
 
 `yaac-global` must be the same bytes on every node. Multi-node kind gets
-that by mounting `$HOME` into every node container; a cloud cluster gets it
+that by mounting the data dir into every node container; a cloud cluster gets it
 from an RWX storage class.
 
 ## Deleting the cluster
@@ -973,6 +981,8 @@ dir can move:
   it creates the cluster. So the move rebuilds the cluster without losing
   data: `yaac cluster delete` (running workspaces are lost), `mv`, then
   `yaac cluster install`, which creates a cluster whose volumes and
-  extraMount point at the new path, under the same install id. The
-  `$HOME → $HOME` mount means a destination outside `$HOME` does not resolve
-  on the node.
+  extraMount point at the new path, under the same install id. Any
+  destination works on Linux, since the new data dir is itself mounted; on
+  macOS it must be a path the podman machine shares (`$HOME` by default).
+  Skipping `yaac cluster delete` gets a refusal, since the old cluster's
+  nodes do not mount the new path.

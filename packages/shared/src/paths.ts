@@ -41,23 +41,13 @@ let installDataDir: string | null = null
 let hostDefault: string | null = null
 
 /**
- * The data dir from the environment alone, ignoring any {@link setDataDir}
- * override. For the test harness, which places each test's data dir under
- * it; everything else uses {@link getDataDir}.
- */
-export function ambientDataDir(): string {
-  if (env.dataDirOverride) return env.dataDirOverride
-  return path.join(os.homedir(), '.yaac')
-}
-
-/**
  * The data dir that names this machine's client tier (its `-client`
  * sibling) and whose install record `server.json` mirrors: `~/.yaac` unless
  * overridden. With no override it is not where a host server keeps its
  * data ({@link hostDataDir}).
  */
 export function clientDataDir(): string {
-  return dataDir || ambientDataDir()
+  return dataDir || env.dataDirOverride || path.join(os.homedir(), '.yaac')
 }
 
 /**

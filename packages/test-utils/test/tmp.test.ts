@@ -26,12 +26,12 @@ describe('testTmpBase', () => {
     expect(testTmpBase()).toBe(os.tmpdir())
   })
 
-  it('hangs off the default data dir for a pod-facing (api/e2e) run', () => {
-    // `yaac cluster check` proves the data dir is visible to the node;
-    // os.tmpdir() has no such guarantee.
+  it('hangs off the default cluster data dir for a pod-facing (api/e2e) run', () => {
+    // A kind node mounts only the cluster's data dir; os.tmpdir() is the
+    // node's own tmpfs.
     setHermeticScratch(false)
     vi.stubEnv('YAAC_DATA_DIR', undefined)
-    expect(testTmpBase()).toBe(path.join(os.homedir(), '.yaac', 'e2e-tmp'))
+    expect(testTmpBase()).toBe(path.join(os.homedir(), '.yaac-cluster', 'e2e-tmp'))
   })
 
   it('follows YAAC_DATA_DIR for a pod-facing run (the nested-session case)', () => {
