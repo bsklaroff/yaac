@@ -2,7 +2,7 @@ import { execFile, type ExecFileOptions } from 'node:child_process'
 import { promisify } from 'node:util'
 import { ApiException, HttpMethod, PatchStrategy, type KubernetesObject } from '@kubernetes/client-node'
 import { testEnv } from '@yaac/shared/env'
-import { getObjectApi, getVersionApi } from './client'
+import { getKubeConfig, getObjectApi, getVersionApi } from './client'
 
 /**
  * Object reads and writes against the API server, for any kind, as raw
@@ -224,4 +224,15 @@ export async function ensureKubernetes(): Promise<void> {
       + `setup instructions.\n${k8sErrorSummary(err)}`,
     )
   }
+}
+
+/**
+ * The kubeconfig's current context, or null when it names none. With no
+ * kubeconfig file at all, client-node stands in a `loaded-context` aimed at
+ * http://localhost:8080, which counts as none. Throws when a kubeconfig is
+ * there but cannot be read.
+ */
+export function currentKubeContext(): string | null {
+  const context = getKubeConfig().getCurrentContext()
+  return context && context !== 'loaded-context' ? context : null
 }

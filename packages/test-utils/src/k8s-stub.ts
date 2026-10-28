@@ -140,6 +140,8 @@ class FakeCluster {
   pathGets: string[] = []
   /** When set, the version probe (`ensureKubernetes`) fails with it. */
   unreachable: Error | null = null
+  /** What `KubeConfig.getCurrentContext()` answers. */
+  kubeContext: string | undefined = 'kind-yaac'
   /** When set, answers `Watch.watch` (path, query, event callback). */
   onWatch: ((path: string, query: Record<string, unknown>, onEvent: (type: string, obj: unknown) => void)
     => { abort: () => void }) | null = null
@@ -153,6 +155,7 @@ class FakeCluster {
     this.paths.clear()
     this.pathGets = []
     this.unreachable = null
+    this.kubeContext = 'kind-yaac'
     this.onWatch = null
     this.nextUid = 1
   }
@@ -369,7 +372,7 @@ class KubeConfigStub {
   loadFromDefault(): void { /* the stub is already "loaded" — no kubeconfig is read */ }
   makeApiClient<T>(Api: new () => T): T { return new Api() }
   getCurrentCluster(): never { return unavailable('KubeConfig.getCurrentCluster()') }
-  getCurrentContext(): never { return unavailable('KubeConfig.getCurrentContext()') }
+  getCurrentContext(): string | undefined { return fakeCluster.kubeContext }
   applyToHTTPSOptions(): never { return unavailable('KubeConfig.applyToHTTPSOptions()') }
 }
 

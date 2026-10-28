@@ -16,6 +16,7 @@ import {
   apiStatus,
   applyObject,
   createObject,
+  currentKubeContext,
   deleteObject,
   deleteObjects,
   ensureKubernetes,
@@ -190,6 +191,16 @@ describe('k8sErrorSummary', () => {
     expect(k8sErrorSummary(refused())).toBe('fetch failed: connect ECONNREFUSED 127.0.0.1:6443')
     expect(k8sErrorSummary(fetchFailed(new AggregateError([]), 'ECONNREFUSED'))).toBe('fetch failed: ECONNREFUSED')
     expect(k8sErrorSummary(new Error('x'.repeat(300)))).toHaveLength(141)
+  })
+})
+
+describe('currentKubeContext', () => {
+  it('names the current context, and none for an empty one or client-node\'s stand-in', () => {
+    expect(currentKubeContext()).toBe('kind-yaac')
+    fakeCluster.kubeContext = 'loaded-context'
+    expect(currentKubeContext()).toBeNull()
+    fakeCluster.kubeContext = ''
+    expect(currentKubeContext()).toBeNull()
   })
 })
 

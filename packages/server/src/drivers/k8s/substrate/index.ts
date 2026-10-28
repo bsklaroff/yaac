@@ -22,6 +22,7 @@ export {
   apiStatus,
   applyObject,
   createObject,
+  currentKubeContext,
   deleteObject,
   deleteObjects,
   ensureKubernetes,

@@ -665,16 +665,38 @@ describe('runClusterCheck', () => {
     }
   })
 
-  it('short-circuits after the cluster check when the API server is unreachable', async () => {
-    stage()
+  it('short-circuits after the cluster check when the API server is unreachable, saying why', async () => {
+    // kind lists one cluster, "yaac", which the stub's kubeconfig context
+    // (`kind-yaac`) names.
+    stage({
+      run: vi.fn((file: string, args: string[]) => (file === 'kind' && args[0] === 'get'
+        ? Promise.resolve({ stdout: 'yaac\n', stderr: '' })
+        : happyResponses(file, args))),
+    })
     fakeCluster.reset()
-    fakeCluster.unreachable = new Error('connect ECONNREFUSED 127.0.0.1:6443')
-    const { ok, results } = await runClusterCheck()
+    const detail = async (): Promise<string | undefined> => {
+      fakeCluster.unreachable = new Error('connect ECONNREFUSED 127.0.0.1:6443')
+      const { ok, results } = await runClusterCheck()
+      expect(ok).toBe(false)
+      expect(results.map((r) => r.name)).toEqual(['kubectl', 'cluster'])
+      expect(byName(results, 'cluster')).toMatchObject({ status: 'fail' })
+      expect(byName(results, 'cluster')?.fix).toContain('yaac cluster install')
+      return byName(results, 'cluster')?.detail
+    }
 
-    expect(ok).toBe(false)
-    expect(results.map((r) => r.name)).toEqual(['kubectl', 'cluster'])
-    expect(byName(results, 'cluster')).toMatchObject({ status: 'fail' })
-    expect(byName(results, 'cluster')?.detail).toBe('API server unreachable (connect ECONNREFUSED 127.0.0.1:6443)')
+    // The cluster exists but does not answer, as after a reboot.
+    expect(await detail()).toBe('API server unreachable (connect ECONNREFUSED 127.0.0.1:6443)')
+
+    // A context naming a kind cluster kind does not have.
+    fakeCluster.kubeContext = 'kind-gone'
+    expect(await detail()).toBe('kind cluster gone does not exist')
+
+    // No kubeconfig at all, where client-node stands in its own context,
+    // and one with an empty current-context.
+    for (const context of ['loaded-context', '']) {
+      fakeCluster.kubeContext = context
+      expect(await detail()).toBe('no cluster configured (no kubeconfig context)')
+    }
   })
 
   it('runs a session pod on every session-eligible node of a multi-node cluster', async () => {
