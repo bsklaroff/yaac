@@ -142,6 +142,8 @@ class FakeCluster {
   unreachable: Error | null = null
   /** What `KubeConfig.getCurrentContext()` answers. */
   kubeContext: string | undefined = 'kind-yaac'
+  /** When set, `KubeConfig.loadFromDefault()` fails with it, as for a malformed file. */
+  kubeconfigError: Error | null = null
   /** When set, answers `Watch.watch` (path, query, event callback). */
   onWatch: ((path: string, query: Record<string, unknown>, onEvent: (type: string, obj: unknown) => void)
     => { abort: () => void }) | null = null
@@ -156,6 +158,7 @@ class FakeCluster {
     this.pathGets = []
     this.unreachable = null
     this.kubeContext = 'kind-yaac'
+    this.kubeconfigError = null
     this.onWatch = null
     this.nextUid = 1
   }
@@ -369,7 +372,10 @@ class VersionApiStub {
 }
 
 class KubeConfigStub {
-  loadFromDefault(): void { /* the stub is already "loaded" — no kubeconfig is read */ }
+  loadFromDefault(): void {
+    // No kubeconfig is read: the stub is already "loaded", unless told to fail.
+    if (fakeCluster.kubeconfigError) throw fakeCluster.kubeconfigError
+  }
   makeApiClient<T>(Api: new () => T): T { return new Api() }
   getCurrentCluster(): never { return unavailable('KubeConfig.getCurrentCluster()') }
   getCurrentContext(): string | undefined { return fakeCluster.kubeContext }

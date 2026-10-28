@@ -30,6 +30,7 @@ import type { CheckResult } from '@yaac/shared/types'
 import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { registryReachable, registryTagState } from '#drivers/k8s/cluster/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
+import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
 import { GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY, buildPriorityClassManifests } from '#drivers/k8s/substrate'
 // Setup values, not units under test.
 import { buildRuntimeClassManifests } from '#drivers/k8s/install/gvisor-runtime'
@@ -689,7 +690,17 @@ describe('runClusterCheck', () => {
 
     // A context naming a kind cluster kind does not have.
     fakeCluster.kubeContext = 'kind-gone'
-    expect(await detail()).toBe('kind cluster gone does not exist')
+    expect(await detail()).toBe('no kind cluster gone under podman')
+
+    // A kubeconfig that cannot be read reports its own error.
+    _resetK8sClientForTests()
+    fakeCluster.kubeconfigError = new Error('unexpected end of the stream')
+    try {
+      expect(await detail()).toMatch(/^API server unreachable \(.*unexpected end of the stream\)$/)
+    } finally {
+      fakeCluster.kubeconfigError = null
+      _resetK8sClientForTests()
+    }
 
     // No kubeconfig at all, where client-node stands in its own context,
     // and one with an empty current-context.

@@ -94,7 +94,7 @@ const KIND_SETUP_FIX = [
 
 /**
  * Why the API server did not answer. A host with no kubeconfig context, or
- * one naming a kind cluster that is gone, gets that said plainly: otherwise
+ * one naming a kind cluster podman's kind does not have, gets that said plainly: otherwise
  * the cause is client-node's error from dialing a stand-in address, which
  * reads like a TLS problem. Anything else, such as a node left stopped by a
  * reboot, reports the cause ensureKubernetes puts on its last line.
@@ -104,7 +104,7 @@ async function unreachableDetail(err: unknown): Promise<string> {
     const context = currentKubeContext()
     if (context === null) return 'no cluster configured (no kubeconfig context)'
     const kind = context.startsWith('kind-') ? context.slice('kind-'.length) : null
-    if (kind !== null && !await kindClusterExists(kind)) return `kind cluster ${kind} does not exist`
+    if (kind !== null && !await kindClusterExists(kind)) return `no kind cluster ${kind} under podman`
   } catch { /* an unreadable kubeconfig or no kind: report the raw cause */ }
   return `API server unreachable (${(err as Error).message.split('\n').pop() ?? ''})`
 }

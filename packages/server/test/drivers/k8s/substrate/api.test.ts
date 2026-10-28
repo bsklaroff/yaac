@@ -29,6 +29,8 @@ import {
   readObject,
   readPath,
 } from '#drivers/k8s/substrate'
+// A state-reset hook, to load the kubeconfig afresh.
+import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
 
 const cm = (name: string, labels: Record<string, string> = {}, data: Record<string, string> = {}) => ({
   apiVersion: 'v1', kind: 'ConfigMap', metadata: { name, namespace: 'yaac', labels }, data,
@@ -201,6 +203,18 @@ describe('currentKubeContext', () => {
     expect(currentKubeContext()).toBeNull()
     fakeCluster.kubeContext = ''
     expect(currentKubeContext()).toBeNull()
+  })
+
+  it('throws the load error, on every call, for a kubeconfig that cannot be read', () => {
+    _resetK8sClientForTests()
+    fakeCluster.kubeconfigError = new Error('unexpected end of the stream')
+    try {
+      expect(() => currentKubeContext()).toThrow('unexpected end of the stream')
+      expect(() => currentKubeContext()).toThrow('unexpected end of the stream')
+    } finally {
+      fakeCluster.kubeconfigError = null
+      _resetK8sClientForTests()
+    }
   })
 })
 
