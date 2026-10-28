@@ -1088,7 +1088,7 @@ describe('WorkspaceList', () => {
       renderList([], { routines, snapshot: serverSnapshot({ routines }) })
       expect(screen.queryByText('No workspaces yet')).toBeNull()
       const section = screen.getByRole('group', { name: 'Routines' })
-      expect(section.textContent).toMatch(/Triage.*Weekdays 09:00.*in ~3h.*Weekly.*Mon 08:30.*Paused.*Odd.*0 0 1 1 \*/)
+      expect(section.textContent).toMatch(/Triage.*At 09:00, Monday through Friday.*in ~3h.*Weekly.*At 08:30, only on Monday.*Paused.*Odd.*only in January/)
       expect(screen.getByRole('img', { name: 'Last run failed: no credential' })).toBeTruthy()
 
       fireEvent.click(screen.getByText('Triage'))

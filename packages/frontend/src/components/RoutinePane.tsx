@@ -23,9 +23,10 @@ const BAR_BUTTON = 'no-drag flex h-6 shrink-0 items-center gap-1 rounded px-1.5 
 /**
  * A routine in the main pane (docs/routines.md), opened from its sidebar
  * row or a run's header. The bar holds its name, Pause or Resume, Run now,
- * and Edit and Delete. The body shows its schedule and next runs (in the
- * routine's own zone, which its schedule is written in), what each run is
- * started with, and its runs newest first, each opening its workspace.
+ * and Edit and Delete. The body shows its schedule in words over its cron
+ * (unless the words are only the cron), its next runs (in the routine's own
+ * zone, which its schedule is written in), what each run is started with,
+ * and its runs newest first, each opening its workspace.
  */
 export function RoutinePane({ routine, bar }: {
   routine: RoutineEntry
@@ -36,6 +37,7 @@ export function RoutinePane({ routine, bar }: {
   const actions = useRoutineActions(routine)
   const [promptOpen, setPromptOpen] = useState(false)
   const group = snapshot?.workspaceGroups.find((g) => g.groupId === routine.groupId)
+  const schedule = describeSchedule(routine.cron)
 
   return (
     <div className="h-full overflow-y-auto bg-bg px-4 py-4">
@@ -73,7 +75,8 @@ export function RoutinePane({ routine, bar }: {
       )}
       <div className="mx-auto flex max-w-xl flex-col gap-5 text-xs">
         <Section title="Schedule">
-          <p className="text-text">{describeSchedule(routine.cron)} <span className="text-text-faint">· {routine.timeZone}</span></p>
+          <p className="text-text">{schedule} <span className="text-text-faint">· {routine.timeZone}</span></p>
+          {schedule !== routine.cron && <p className="font-mono text-[11px] text-text-faint">{routine.cron}</p>}
           <p className="text-text-dim">
             {routine.paused ? 'Paused'
               : `Next: ${routine.nextRuns.map((r) => formatInZone(new Date(r), routine.timeZone)).join(' · ')}`}

@@ -77,7 +77,7 @@ describe('the routine pane', () => {
     }))
     expect(screen.getByRole('heading', { name: 'Nightly triage' })).toBeTruthy()
     // The schedule and its next runs read in the routine's own zone.
-    expect(screen.getByText('Weekdays 09:00')).toBeTruthy()
+    expect(screen.getByText('At 09:00, Monday through Friday')).toBeTruthy()
     expect(screen.getByText('Next: Mon Oct 26 09:00 · Tue Oct 27 09:00 · Wed Oct 28 09:00')).toBeTruthy()
     for (const fact of ['Claude · Opus 5.5', 'Chat', 'Accept edits', 'Triage runs', 'after 1h 30m']) {
       expect(screen.getByText(fact)).toBeTruthy()

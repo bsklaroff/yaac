@@ -80,6 +80,7 @@ function RoutineRow({ routine }: { routine: RoutineEntry }): JSX.Element {
   const actions = useRoutineActions(routine)
   const failure = actions.error ?? routine.lastError
   const next = routine.nextRuns[0]
+  const schedule = describeSchedule(routine.cron)
   const items: RowMenuItem[] = [
     { label: 'Run now', onSelect: actions.run },
     { label: routine.paused ? 'Resume' : 'Pause', onSelect: () => actions.setPaused(!routine.paused) },
@@ -106,7 +107,7 @@ function RoutineRow({ routine }: { routine: RoutineEntry }): JSX.Element {
           )}
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
-          <span className="truncate">{describeSchedule(routine.cron)}</span>
+          <span className="truncate" title={`${schedule} (${routine.timeZone})`}>{schedule}</span>
           {routine.paused
             ? <span className="ml-auto shrink-0 rounded bg-surface-3 px-1 text-[10px]">Paused</span>
             : next !== undefined && (
