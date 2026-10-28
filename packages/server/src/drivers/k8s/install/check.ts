@@ -42,6 +42,7 @@ import {
   TRANSPARENT_HTTPS_PORT,
   applyObject,
   buildPriorityClassManifests,
+  currentKubeContext,
   installId,
   deleteObject,
   ensureKubernetes,
@@ -63,6 +64,7 @@ import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/sub
 import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode } from './cni-adopt'
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
 import { deployedInstallIdentity } from './server-deploy'
+import { kindClusterExists } from './delete'
 import { isNfsFamily } from './storage'
 import { YAAC_CLUSTER_INSTALL } from './arg-guards'
 import {
@@ -89,6 +91,23 @@ const KIND_SETUP_FIX = [
   'node-local extraMounts), Calico, the kind node fixups, every built-in',
   'image, the in-cluster registry, and the storage claims.',
 ].join('\n')
+
+/**
+ * Why the API server did not answer. A host with no kubeconfig context, or
+ * one naming a kind cluster podman's kind does not have, gets that said plainly: otherwise
+ * the cause is client-node's error from dialing a stand-in address, which
+ * reads like a TLS problem. Anything else, such as a node left stopped by a
+ * reboot, reports the cause ensureKubernetes puts on its last line.
+ */
+async function unreachableDetail(err: unknown): Promise<string> {
+  try {
+    const context = currentKubeContext()
+    if (context === null) return 'no cluster configured (no kubeconfig context)'
+    const kind = context.startsWith('kind-') ? context.slice('kind-'.length) : null
+    if (kind !== null && !await kindClusterExists(kind)) return `no kind cluster ${kind} under podman`
+  } catch { /* an unreadable kubeconfig or no kind: report the raw cause */ }
+  return `API server unreachable (${(err as Error).message.split('\n').pop() ?? ''})`
+}
 
 /**
  * The kind node container's pids limit, which install applies and the
@@ -146,10 +165,7 @@ export async function runClusterCheck(
     add({ name: 'cluster', status: 'pass', detail: 'API server reachable' })
   } catch (err) {
     add({
-      name: 'cluster', status: 'fail',
-      // ensureKubernetes puts the cause on its last line.
-      detail: `API server unreachable (${(err as Error).message.split('\n').pop() ?? ''})`,
-      fix: KIND_SETUP_FIX,
+      name: 'cluster', status: 'fail', detail: await unreachableDetail(err), fix: KIND_SETUP_FIX,
     })
     return { ok: false, results }
   }

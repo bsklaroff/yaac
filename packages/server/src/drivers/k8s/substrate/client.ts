@@ -26,10 +26,13 @@ let versionApi: VersionApi | null = null
 
 export function getKubeConfig(): KubeConfig {
   if (!kubeConfig) {
-    kubeConfig = new KubeConfig()
-    // With several files in KUBECONFIG, kubectl takes current-context from
-    // the first file that sets it; `true` keeps client-node in step.
-    kubeConfig.loadFromDefault(undefined, true)
+    // Kept only once loaded, so an unreadable kubeconfig fails every call
+    // with its own error rather than leaving an empty config behind. With
+    // several files in KUBECONFIG, kubectl takes current-context from the
+    // first file that sets it; `true` keeps client-node in step.
+    const kc = new KubeConfig()
+    kc.loadFromDefault(undefined, true)
+    kubeConfig = kc
   }
   return kubeConfig
 }

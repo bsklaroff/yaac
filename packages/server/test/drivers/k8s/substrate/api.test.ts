@@ -16,6 +16,7 @@ import {
   apiStatus,
   applyObject,
   createObject,
+  currentKubeContext,
   deleteObject,
   deleteObjects,
   ensureKubernetes,
@@ -28,6 +29,8 @@ import {
   readObject,
   readPath,
 } from '#drivers/k8s/substrate'
+// A state-reset hook, to load the kubeconfig afresh.
+import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
 
 const cm = (name: string, labels: Record<string, string> = {}, data: Record<string, string> = {}) => ({
   apiVersion: 'v1', kind: 'ConfigMap', metadata: { name, namespace: 'yaac', labels }, data,
@@ -190,6 +193,28 @@ describe('k8sErrorSummary', () => {
     expect(k8sErrorSummary(refused())).toBe('fetch failed: connect ECONNREFUSED 127.0.0.1:6443')
     expect(k8sErrorSummary(fetchFailed(new AggregateError([]), 'ECONNREFUSED'))).toBe('fetch failed: ECONNREFUSED')
     expect(k8sErrorSummary(new Error('x'.repeat(300)))).toHaveLength(141)
+  })
+})
+
+describe('currentKubeContext', () => {
+  it('names the current context, and none for an empty one or client-node\'s stand-in', () => {
+    expect(currentKubeContext()).toBe('kind-yaac')
+    fakeCluster.kubeContext = 'loaded-context'
+    expect(currentKubeContext()).toBeNull()
+    fakeCluster.kubeContext = ''
+    expect(currentKubeContext()).toBeNull()
+  })
+
+  it('throws the load error, on every call, for a kubeconfig that cannot be read', () => {
+    _resetK8sClientForTests()
+    fakeCluster.kubeconfigError = new Error('unexpected end of the stream')
+    try {
+      expect(() => currentKubeContext()).toThrow('unexpected end of the stream')
+      expect(() => currentKubeContext()).toThrow('unexpected end of the stream')
+    } finally {
+      fakeCluster.kubeconfigError = null
+      _resetK8sClientForTests()
+    }
   })
 })
 
