@@ -222,6 +222,15 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
   clusters to another Kubernetes minor. kind only guarantees an image works
   with the release that published it, so bump the pin and the kind minimum
   together. Existing clusters keep the version they were created with.
+- **Every install runs the same minor.** kind's node image, Hetzner's
+  `k3s_version` and EKS's `kubernetes_version` share one Kubernetes minor,
+  as do the envtest binaries the apiserver tests run
+  (`test/apiserver/global-setup.ts`) and the server image's kubectl
+  (`dockerfiles/Dockerfile.server`), so a behavior seen on one is the
+  behavior of all. Patch releases differ where one lags: kind publishes
+  node images only with its own releases. The cluster autoscaler
+  (`autoscaler_version` on Hetzner and EKS) may trail by a minor until it
+  releases the cluster's.
 - **podman 6 breaks older kind.** Podman 6.0 changed the container label
   format from a map to a slice, and kind <= v0.32.0 then fails to list its
   node containers (`kind get clusters` exits 125,
@@ -266,16 +275,10 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    and histories, and the node's own etcd with every Secret. The node is a
    rootful privileged container, so this narrows what such a process sees,
    not what an escape from the container can reach.
-3. **The kind node fixups**: two settings that a node container needs and a
-   real node does not, applied through podman.
-   - A raised pids limit on the node container (32768). Podman's default of
-     2048 is hit by subagent fan-out as `fork: resource temporarily
-     unavailable`.
-   - `--housekeeping-interval=300s` in the kubelet flags
-     (`kubeadm-flags.env`). At the 10s default, cAdvisor reads every open fd
-     of every process on each tick, and gVisor sandboxes hold ~9k fds each;
-     kubelet alone used 1.5–2 cores on a busy node. On a cluster yaac did
-     not create this is a node-pool setting.
+3. **The kind node fixup**: a raised pids limit on the node container
+   (32768), applied through podman because a real node does not need it.
+   Podman's default of 2048 is hit by subagent fan-out as `fork: resource
+   temporarily unavailable`.
 4. **The gVisor runtime and node tuning**, via the `yaac-gvisor-install`
    DaemonSet. On every node, a privileged pod installs a pinned `runsc`,
    `containerd-shim-runsc-v1` and the `gvisor-bin/` sidecar binaries runsc
@@ -450,10 +453,11 @@ run, so a node of the wrong kind added later is reported rather than
 failing to pull with no explanation.
 
 **What `--byo` never does:** exec into a node, or create host directories
-for the storage tiers. The kind node fixups are node-container settings, so
-the check's `node-fixups` gate skips on byo, and on a real pool the
-housekeeping interval is a pool setting. The node tuning still reaches
-every node through the gVisor installer DaemonSet.
+for the storage tiers. The kind node fixup is a node-container setting, so
+the check's `node-fixups` gate skips on byo, and the kubelet's
+`PodAndContainerStatsFromCRI` gate ("Memory pressure") is a pool setting.
+The node tuning still reaches every node through the gVisor installer
+DaemonSet.
 
 **containerd's registry config.** The installer supports stock containerd,
 restarted through the node's systemd, reading registry hosts from
@@ -726,11 +730,10 @@ DaemonSet's pod restarts with the node and its first pass puts them back.
 A node the `gvisor-installer` gate keeps reporting as not Ready is
 diagnosed from the installer's log (`kubectl -n yaac logs -l app=yaac-gvisor-install`).
 
-**The kind node fixups** are podman state and a kubelet flags file. Both
-survive a node container restart and are lost only when the container is,
-on a cluster re-create. Install re-applies them on every run, and the
-check's `node-fixups` gate points at `yaac cluster install` when they are
-missing.
+**The kind node fixup** is podman state. It survives a node container
+restart and is lost only when the container is, on a cluster re-create.
+Install re-applies it on every run, and the check's `node-fixups` gate
+points at `yaac cluster install` when it is missing.
 
 **The gVisor runtime** reinstalls itself on any new node, and install
 re-applies the DaemonSet, which is how a runsc version bump reaches an
@@ -833,10 +836,18 @@ all grow needs far more than its RAM. Four settings keep that safe.
   kernel has PSI off (some distributions need `psi=1` on the kernel
   command line, and netd logs that once) gets no kill at all, only the
   backstop below.
-- **Fresh pod stats.** With the 300s housekeeping interval, cAdvisor's pod
-  stats are up to five minutes old and a workspace that just grew looks
-  idle, so the `PodAndContainerStatsFromCRI` gate has the kubelet read
-  them from the runtime instead, for `kubectl top` and yaac's usage view.
+- **Pod stats from the runtime.** The `PodAndContainerStatsFromCRI` gate
+  has the kubelet read pod stats from containerd on each request, for
+  `kubectl top` and yaac's usage view, and from Kubernetes 1.37 it keeps
+  the kubelet's cAdvisor off pod cgroups entirely. Without it, cAdvisor
+  counts each pod's open fds every housekeeping pass by listing and
+  `readlink`ing `/proc/<pid>/fd` for every process. Each of a gVisor
+  sandbox's systrap stub processes (one per process the sandbox ever ran
+  at once, pooled for reuse) shares the sentry's table of thousands of
+  host fds, so one pass over a busy node makes some 20M `readlink`s. That
+  keeps a core of kubelet and kernel time busy and cycles gigabytes of
+  `/proc` inode cache through reclaim, which stalls the node enough to set
+  off the kill above.
 
 The kernel's OOM killer remains the backstop. kubelet caps all pods
 together at the node's capacity less `system-reserved`, and if they fill

@@ -17,7 +17,7 @@ yaac cluster install --byo --rwx-storage-class yaac-nfs
 | A private network (`10.0.0.0/16`, nodes in `10.0.1.0/24`) and a firewall that admits only ICMP and ssh from `ssh_source_cidrs` | Node and pod traffic stays on the private network. Nodes reach the internet through their own public addresses. The Kubernetes API and the yaac server are reached over the tailnet, never publicly. |
 | A control node (`control_server_type`, default cx43) running the k3s server | It also runs yaac's server and infrastructure and the first few workspaces, and it is where install runs: yaac builds its images with rootful podman on the machine running install, for that machine's architecture. |
 | k3s on Ubuntu, against the host's containerd from apt rather than k3s's embedded one | The gVisor installer writes `/etc/containerd/config.toml` and restarts containerd through systemd. k3s's embedded containerd regenerates its config on every start and is refused by install. |
-| kubelet `--housekeeping-interval=300s`, the iptables kube-proxy | The setting a kind install applies itself, and the kube-proxy mode netd's redirect sits beside (docs/workspace-egress.md). |
+| The iptables kube-proxy | The kube-proxy mode netd's redirect sits beside (docs/workspace-egress.md). |
 | kubelet `system-reserved` on every node (`control_system_reserved`, default 1 cpu and 2Gi; `worker_system_reserved`, default 500m and 1Gi) | The k3s server or agent, containerd and, on the control node, the datastore and the NFS server are host processes, outside the reach of yaac's PriorityClasses. The reservation keeps workspaces from being scheduled into their room, and caps what all pods together may hold. |
 | On every node (node-memory.sh): an encrypted swap file the size of RAM behind zswap, `system.slice` kept off swap, and a kubelet drop-in with `LimitedSwap` and the `PodAndContainerStatsFromCRI` gate | Workspaces request a quarter of their limit, so a node is overcommitted on purpose. Swap takes idle workspaces' cold pages, netd bounds each pod's share of it, and when the node starts thrashing netd kills the workspace furthest over its request (docs/cluster-setup.md "Memory pressure"). |
 | Calico from the Tigera operator: VXLAN, the iptables dataplane, MTU 1400 | yaac's egress wall is Calico NetworkPolicy plus netd's iptables redirect. Hetzner's network routes only the addresses it assigned, so pod traffic is encapsulated. |
@@ -189,11 +189,22 @@ done by hand.
 - **yaac**: on the control node as `yaac`, `cd ~/yaac`, check out the new
   ref, `pnpm install && pnpm build && npm install -g .`, then re-run
   install.
-- **k3s**: bump `k3s_version`, and `autoscaler_version` with it when the
-  Kubernetes minor changes, then apply. That re-runs the k3s installer on
-  the control node. New autoscaled workers join on the new version; a
-  manual worker moves when you drain it and
-  `tofu apply -replace='hcloud_server.worker["<name>"]'`.
+- **k3s**: bump `k3s_version` to the Kubernetes minor kind and EKS use
+  (docs/cluster-setup.md "kind and Kubernetes versions"), and
+  `autoscaler_version` with it once the autoscaler has released that minor,
+  then apply. That re-runs the k3s installer on the control node. New
+  autoscaled workers join on the new version. A running worker keeps its
+  version until you re-run the installer on it in place, which restarts
+  only `k3s-agent`; its workspaces keep running, because their containers
+  belong to the host's containerd:
+
+  ```sh
+  ssh root@<worker> "curl -fsSL 'https://raw.githubusercontent.com/k3s-io/k3s/<k3s_version, + as %2B>/install.sh' \
+    | INSTALL_K3S_VERSION='<k3s_version>' INSTALL_K3S_EXEC=agent sh -"
+  ```
+
+  Or drain it and `tofu apply -replace='hcloud_server.worker["<name>"]'`,
+  which also gives it any changed first-boot setup.
 - **Swap and the kubelet's memory settings**: user data runs only at a
   node's first boot, so a node bootstrapped before node-memory.sh has
   neither, and one bootstrapped before its current version still evicts at

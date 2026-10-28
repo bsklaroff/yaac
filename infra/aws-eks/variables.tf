@@ -11,9 +11,15 @@ variable "name" {
 }
 
 variable "kubernetes_version" {
-  description = "EKS Kubernetes version. Use one `aws eks describe-cluster-versions` lists in standard support, and keep the autoscaler chart (autoscaler.tf) on the same minor."
+  description = "EKS Kubernetes version. Use one `aws eks describe-cluster-versions` lists in standard support, with the same minor as kind's and k3s's (docs/cluster-setup.md \"kind and Kubernetes versions\"). EKS upgrades an existing cluster one minor per apply."
   type        = string
-  default     = "1.35"
+  default     = "1.37"
+}
+
+variable "autoscaler_version" {
+  description = "Cluster autoscaler image tag. Use the cluster's minor; until the autoscaler releases it, the newest release of the minor before."
+  type        = string
+  default     = "v1.36.1"
 }
 
 variable "architecture" {

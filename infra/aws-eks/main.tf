@@ -31,10 +31,8 @@ locals {
     efs = "AmazonEFSCSIDriverPolicy"
   }
 
-  # Both node groups share their image, disk and kubelet settings. At the
-  # default 10s housekeeping interval, cAdvisor walks every fd of every
-  # gVisor sandbox on each tick (docs/cluster-setup.md "What it wires up").
-  # The CRI stats gate keeps pod stats fresh anyway. evictionHard lists
+  # Both node groups share their image, disk and kubelet settings. The CRI
+  # stats gate keeps cAdvisor off pod cgroups, and evictionHard lists
   # AL2023's disk signals and no memory threshold: netd kills the workspace
   # thrashing a node, on memory pressure (docs/cluster-setup.md "Memory
   # pressure").
@@ -78,8 +76,6 @@ locals {
               evictionHard:
                 nodefs.available: 10%
                 nodefs.inodesFree: 5%
-            flags:
-              - --housekeeping-interval=300s
       EOT
     }]
   }

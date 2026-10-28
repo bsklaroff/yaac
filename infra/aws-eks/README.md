@@ -21,7 +21,7 @@ yaac cluster install --byo --rwx-storage-class yaac-efs
 | The EBS CSI driver and a default `gp3` class | `yaac-server-local`, the registries and the npm cache. |
 | An EFS file system, the EFS CSI driver and a `yaac-efs` class | `yaac-global`, the RWX claim every workspace mounts. A file system policy admits only the nodes' roles, over TLS with IAM, through an access point, so a pod that reaches a mount target on 2049 cannot mount the file system's root. |
 | The Tailscale Kubernetes operator | The only way onto a byo server is its tailnet Ingress. |
-| kubelet `--housekeeping-interval=300s` via nodeadm | The setting a kind install applies itself (docs/cluster-setup.md "What it wires up"). |
+| kubelet's `PodAndContainerStatsFromCRI` gate via nodeadm | Pod stats come from containerd, which keeps the kubelet's cAdvisor off pod cgroups (docs/cluster-setup.md "Memory pressure"). |
 | An install host (Ubuntu 26.04, m7i.xlarge), reached through SSM, stoppable between installs | yaac builds its images here with rootful podman and pushes them into the cluster. So it runs in the cluster's VPC, on the nodes' architecture. |
 
 Control-plane logging is off, because CloudWatch bills audit logs by the GB

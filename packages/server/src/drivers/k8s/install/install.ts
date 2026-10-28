@@ -55,11 +55,7 @@ import {
 } from './byo-gates'
 import { clusterRefusal, currentCluster, type CurrentCluster } from './cluster-identity'
 import { isNfsFamily } from './storage'
-import {
-  NODE_KUBELET_FLAGS_ENV,
-  NODE_KUBELET_HOUSEKEEPING_INTERVAL,
-  NODE_PIDS_LIMIT,
-} from './check'
+import { NODE_PIDS_LIMIT } from './check'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from './podman'
 import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
 import { BYO_INSTALL_IDENTITY, deployServerWorkload } from './server-deploy'
@@ -94,10 +90,10 @@ import { env } from '@yaac/shared/env'
  * classes, install identity), then applies the same in-cluster layers and
  * deploys the server behind the tailnet, without exec'ing into a node.
  *
- * Every run re-applies the kind node fixups (podman and kubelet settings
- * no in-cluster agent can set) and the in-cluster layers (gVisor runtime,
- * PriorityClasses, netd, images), which is how an existing cluster picks up
- * an upgrade. Node sysctls are applied by the gVisor installer DaemonSet
+ * Every run re-applies the kind node fixup (the node container's pids
+ * limit, which no in-cluster agent can set) and the in-cluster layers
+ * (gVisor runtime, PriorityClasses, netd, images), which is how an existing
+ * cluster picks up an upgrade. Node sysctls are applied by the gVisor installer DaemonSet
  * instead (node-tuning.ts).
  */
 
@@ -1049,23 +1045,11 @@ async function sideloadCalicoImages(
 }
 
 /**
- * Settings specific to kind node containers, which the installer DaemonSet
- * cannot apply:
- *
- *  - the kubelet housekeeping interval (NODE_KUBELET_HOUSEKEEPING_INTERVAL),
- *    written into kubeadm's flags file;
- *  - the node container's pids limit, which only podman can raise.
+ * The kind node container's pids limit, which only podman can raise and so
+ * the installer DaemonSet cannot apply.
  */
 async function applyKindNodeFixups(deps: ClusterInstallDeps, node: string): Promise<void> {
   deps.log(`Applying kind node fixups to ${node}...`)
-  // Replace any old value and restart kubelet, only if the flag is missing.
-  const hkFlag = `--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}`
-  await deps.run('podman', ['exec', node, 'sh', '-c',
-    `if ! grep -q -- '${hkFlag}' ${NODE_KUBELET_FLAGS_ENV}; then `
-    + `sed -i -e 's/ *--housekeeping-interval=[^ "]*//g' `
-    + `-e 's/^KUBELET_KUBEADM_ARGS="/KUBELET_KUBEADM_ARGS="${hkFlag} /' ${NODE_KUBELET_FLAGS_ENV}`
-    + ' && systemctl restart kubelet; fi',
-  ])
   await deps.run('podman', ['update', '--pids-limit', String(NODE_PIDS_LIMIT), node])
 }
 

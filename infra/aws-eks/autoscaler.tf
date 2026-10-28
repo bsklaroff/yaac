@@ -1,7 +1,7 @@
 # The Cluster Autoscaler, which grows the workspaces node group when a
 # workspace pod cannot be scheduled and removes nodes that have no
-# workspace left. Its image's minor version must match the cluster's
-# (chart 9.59.0 ships v1.35).
+# workspace left. Its image is var.autoscaler_version, not the chart's
+# default (v1.35.0 in chart 9.59.0).
 
 # The workspace group starts at zero, so the autoscaler plans its first
 # node from these tags rather than from a live node. yaac.gvisor is the
@@ -81,6 +81,7 @@ resource "helm_release" "cluster_autoscaler" {
   values = [yamlencode({
     autoDiscovery = { clusterName = module.eks.cluster_name }
     awsRegion     = var.region
+    image         = { tag = var.autoscaler_version }
     rbac          = { serviceAccount = { name = "cluster-autoscaler" } }
     # On a workspace node it could keep that node from scaling down.
     nodeSelector = { pool = "system" }

@@ -91,23 +91,11 @@ const KIND_SETUP_FIX = [
 ].join('\n')
 
 /**
- * Settings of the kind node container that install applies and the
+ * The kind node container's pids limit, which install applies and the
  * node-fixups check verifies. Node-level tuning that the installer
  * DaemonSet can apply lives in node-tuning.ts instead.
  */
 export const NODE_PIDS_LIMIT = 32768
-/**
- * kubelet cAdvisor housekeeping interval (default 10s). Each tick readlinks
- * every open fd in each container, and a gVisor sandbox holds ~9k host fds,
- * so at the default (and even at 60s) kubelet burned 1-2 cores. At 300s
- * cAdvisor's pod stats are up to five minutes old, too stale for memory
- * eviction to rank pods by, so nodes also enable the
- * `PodAndContainerStatsFromCRI` gate (docs/cluster-setup.md "Memory
- * pressure").
- */
-export const NODE_KUBELET_HOUSEKEEPING_INTERVAL = '300s'
-/** kubeadm's kubelet flags file on the kind node, edited by the fixup. */
-export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
 
 /**
  * Run the full preflight suite for the Kubernetes backend. Returns every
@@ -120,7 +108,7 @@ export const NODE_KUBELET_FLAGS_ENV = '/var/lib/kubelet/kubeadm-flags.env'
  * - podman present; the in-cluster registry answering; the namespace.
  * - storage: every claim Bound, `Retain`, and the right backing.
  * - PriorityClasses present.
- * - node-fixups (kind only, warn): kubelet housekeeping and pids limit.
+ * - node-fixups (kind only, warn): the node container's pids limit.
  * - gvisor: RuntimeClasses exist, a node is labeled, and a pod on the class
  *   really is sandboxed. gvisor-installer (warn): the installer DaemonSet
  *   is Ready on every node, which it only is once runsc and the node tuning
@@ -423,15 +411,14 @@ function nodeInventoryResult(nodes: ClusterNode[], idlePool: boolean): CheckResu
 }
 
 const NODE_FIXUPS_FIX =
-  'These are settings of the kind node CONTAINER (podman state, not node '
-  + 'state), which a cluster recreate drops. Re-apply them with: yaac cluster install'
+  'The pids limit is a setting of the kind node CONTAINER (podman state, not '
+  + 'node state), which a cluster recreate drops. Re-apply it with: yaac cluster install'
 
 /**
- * Warn if the kind-only node fixups `yaac cluster install` applies through
- * podman are missing: the kubelet housekeeping interval and the node
- * container's pids limit. Their absence shows up late (kubelet CPU burn,
- * workspaces dying under subagent fan-out). Skips byo installs and nodes
- * that are not podman containers.
+ * Warn if the kind-only node fixup `yaac cluster install` applies through
+ * podman, the node container's pids limit, is missing. Its absence shows up
+ * late, as workspaces dying under subagent fan-out. Skips byo installs and
+ * nodes that are not podman containers.
  */
 async function runNodeFixupsCheck(nodes: string[]): Promise<CheckResult> {
   // Checked explicitly: a byo install on kind also has podman node
@@ -439,49 +426,39 @@ async function runNodeFixupsCheck(nodes: string[]): Promise<CheckResult> {
   if ((await readInstallRecord())?.byo) {
     return {
       name: 'node-fixups', status: 'skip',
-      detail: 'a byo install — the kubelet and pids settings are the node pool\'s, not yaac\'s',
+      detail: 'a byo install — the pids limit is the node pool\'s, not yaac\'s',
     }
   }
   try {
     if (nodes.length === 0) {
       return { name: 'node-fixups', status: 'warn', detail: 'no nodes found — fixups unverified' }
     }
-    const missing = new Set<string>()
+    const short: string[] = []
     for (const node of nodes) {
-      let report: string
+      let pidsRaw: string
       try {
-        const res = await execFileAsync('podman', ['exec', node, 'sh', '-c',
-          `grep -q -- '--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}' `
-          + `${NODE_KUBELET_FLAGS_ENV} && echo hk=ok || echo hk=missing`,
-        ])
-        report = res.stdout
+        pidsRaw = (await execFileAsync('podman', [
+          'inspect', '--format', '{{.HostConfig.PidsLimit}}', node,
+        ])).stdout
       } catch {
         return {
           name: 'node-fixups', status: 'skip',
           detail: `node "${node}" is not a podman container — kind node fixups not applicable`,
         }
       }
-      if (report.includes('hk=missing')) {
-        missing.add('kubelet housekeeping-interval (cAdvisor stats CPU)')
-      }
-      const { stdout: pidsRaw } = await execFileAsync('podman', [
-        'inspect', '--format', '{{.HostConfig.PidsLimit}}', node,
-      ])
       const pids = Number(pidsRaw.trim())
-      if (Number.isFinite(pids) && pids > 0 && pids < NODE_PIDS_LIMIT) {
-        missing.add('node pids-limit (subagent fan-out)')
-      }
+      if (Number.isFinite(pids) && pids > 0 && pids < NODE_PIDS_LIMIT) short.push(node)
     }
-    if (missing.size > 0) {
+    if (short.length > 0) {
       return {
         name: 'node-fixups', status: 'warn',
-        detail: `missing on the node: ${[...missing].join(', ')}`,
+        detail: `pids limit below ${NODE_PIDS_LIMIT} (subagent fan-out) on ${short.join(', ')}`,
         fix: NODE_FIXUPS_FIX,
       }
     }
     return {
       name: 'node-fixups', status: 'pass',
-      detail: 'kubelet housekeeping and pids-limit in place',
+      detail: 'pids limit in place',
     }
   } catch (err) {
     return {

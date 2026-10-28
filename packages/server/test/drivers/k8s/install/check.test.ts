@@ -381,9 +381,6 @@ function happyResponse(file: string, args: string[]): { stdout: string; stderr: 
       stderr: '',
     }
   }
-  if (file === 'podman' && args[0] === 'exec') {
-    return { stdout: 'hk=ok\n', stderr: '' }
-  }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
   }
@@ -938,9 +935,6 @@ describe('runClusterCheck', () => {
   it('warns on node-fixups (pointing at install) when a kind fixup went missing', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'podman' && args[0] === 'exec') {
-        return { stdout: 'hk=missing\n', stderr: '' }
-      }
       if (file === 'podman' && args[0] === 'inspect') {
         return { stdout: '2048\n', stderr: '' } // podman's default pids ceiling
       }
@@ -950,8 +944,7 @@ describe('runClusterCheck', () => {
     const { ok, results } = await check()
     const fixups = byName(results, 'node-fixups')
     expect(fixups).toMatchObject({ status: 'warn' })
-    expect(fixups?.detail).toContain('kubelet housekeeping-interval')
-    expect(fixups?.detail).toContain('pids-limit')
+    expect(fixups?.detail).toContain('pids limit below 32768')
     expect(fixups?.fix).toContain('yaac cluster install')
     expect(ok).toBe(true) // warn-only: these fixups fail late, not at pod start
   })
@@ -959,7 +952,7 @@ describe('runClusterCheck', () => {
   it('skips node-fixups when the node is not a podman container (non-kind backend)', async () => {
     const run = happyRun()
     run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'podman' && args[0] === 'exec') {
+      if (file === 'podman' && args[0] === 'inspect') {
         return Promise.reject(new Error('no such container'))
       }
       return happyResponses(file, args)
@@ -1585,7 +1578,7 @@ describe('runClusterCheck', () => {
     const deps = stage()
     const { results } = await check()
     expect(byName(results, 'node-fixups')).toMatchObject({ status: 'skip' })
-    expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(false)
+    expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'inspect')).toBe(false)
   })
 
   it('warns (without failing) when the nested sentry mount fails', async () => {

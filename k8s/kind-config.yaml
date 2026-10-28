@@ -66,11 +66,10 @@ kubeadmConfigPatches:
 # pods proportionally to their memory request; netd applies the same bound
 # to gVisor pods, which LimitedSwap misses.
 #
-# Bounded swap, and pod stats from the CRI so they stay fresh despite the
-# 300s housekeeping fixup. No memory eviction threshold, which kind's own
-# evictionHard (disk signals only) leaves out too: netd kills the workspace
-# thrashing the node, on memory pressure (docs/cluster-setup.md "Memory
-# pressure").
+# Bounded swap, and pod stats from the CRI, which keeps cAdvisor off pod
+# cgroups. No memory eviction threshold, which kind's own evictionHard
+# (disk signals only) leaves out too: netd kills the workspace thrashing
+# the node, on memory pressure (docs/cluster-setup.md "Memory pressure").
 - |
   kind: KubeletConfiguration
   apiVersion: kubelet.config.k8s.io/v1beta1

@@ -80,13 +80,13 @@ variable "ssh_source_cidrs" {
 }
 
 variable "k3s_version" {
-  description = "k3s release every node installs. Keep its Kubernetes minor equal to the autoscaler's (autoscaler_version)."
+  description = "k3s release every node installs. Keep its Kubernetes minor equal to kind's and EKS's (docs/cluster-setup.md \"kind and Kubernetes versions\")."
   type        = string
-  default     = "v1.36.4+k3s1"
+  default     = "v1.37.1+k3s1"
 }
 
 variable "autoscaler_version" {
-  description = "Cluster autoscaler image tag. Its minor version must match the cluster's."
+  description = "Cluster autoscaler image tag. Use the cluster's minor; until the autoscaler releases it, the newest release of the minor before."
   type        = string
   default     = "v1.36.1"
 }

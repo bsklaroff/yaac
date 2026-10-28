@@ -45,12 +45,10 @@ locals {
 
   # Every node runs k3s against the host's containerd (node.sh.tftpl), with
   # the cloud controller (cluster.tf) owning node addresses and provider
-  # IDs. At the default 10s housekeeping interval, cAdvisor walks every fd
-  # of every gVisor sandbox on each tick (docs/cluster-setup.md "What it
-  # wires up"). netd's rules sit beside kube-proxy's iptables chains.
+  # IDs. netd's rules sit beside kube-proxy's iptables chains.
   k3s_node_config = {
     container-runtime-endpoint = "unix:///run/containerd/containerd.sock"
-    kubelet-arg                = ["cloud-provider=external", "cgroup-driver=systemd", "housekeeping-interval=300s"]
+    kubelet-arg                = ["cloud-provider=external", "cgroup-driver=systemd"]
     kube-proxy-arg             = ["proxy-mode=iptables"]
   }
 

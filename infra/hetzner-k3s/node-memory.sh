@@ -50,9 +50,10 @@ swapon --show=NAME | grep -q '^/dev/dm-' || swapon /dev/mapper/yaac-swap
 systemctl set-property system.slice MemorySwapMax=0
 
 # kubelet: LimitedSwap bounds a runc container's swap by its request (netd
-# bounds gVisor pods'), and pod stats come from the CRI so they stay fresh
-# despite the 300s housekeeping interval. No memory eviction threshold: netd
-# kills the workspace thrashing the node, on memory pressure.
+# bounds gVisor pods'), and pod stats come from the CRI, which keeps
+# cAdvisor off pod cgroups (docs/cluster-setup.md "Memory pressure"). No
+# memory eviction threshold: netd kills the workspace thrashing the node,
+# on memory pressure.
 dropin=/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/50-yaac-memory.conf
 mkdir -p "$(dirname "$dropin")"
 want='apiVersion: kubelet.config.k8s.io/v1beta1

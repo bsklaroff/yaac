@@ -81,8 +81,8 @@ included, and the overlay says how many that is.
   pages, so a node that swaps would show its workspaces using more memory
   than the node.
 - **A pod's CPU** is the sum of its containers. Without the gate the pod
-  level reports no CPU rate: cAdvisor computes one from consecutive samples,
-  and at a 300s housekeeping interval it reports 0.
+  level reports no CPU rate until cAdvisor has taken two samples, since it
+  computes one from consecutive samples.
 - **A node's swap** is the kubelet's root-cgroup figure, whose limit is the
   machine's `SwapTotal` whatever the kubelet's `swapBehavior`. So a node can
   show swap that its pods may not use, and `none` means the machine has none.

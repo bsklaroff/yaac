@@ -247,7 +247,6 @@ import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/install'
 import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/install/install'
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { apiError, fakeCluster, type ApiException, type FakeCall, type FakeObject } from '@yaac/test-utils/k8s-stub'
-import { NODE_KUBELET_HOUSEKEEPING_INTERVAL } from '#drivers/k8s/install/check'
 // Setup values: the installer DaemonSet's name, the server's names and
 // node port (which the kind config reserves).
 import { GVISOR_INSTALLER_APP_NAME } from '#drivers/k8s/install/gvisor-installer'
@@ -743,9 +742,9 @@ describe('runClusterInstall', () => {
       f === 'kubectl' && a.includes('rollout') && a.includes('daemonset/calico-node'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'kubectl' && a.includes('--for=condition=Ready'))).toBe(true)
 
-    // The kind node fixups: the kubelet housekeeping flag via podman exec,
-    // then the node container's pids limit. Sysctls and TasksMax belong to
-    // the installer DaemonSet, and registry wiring to in-cluster pods.
+    // The kind node fixup is the node container's pids limit. Sysctls and
+    // TasksMax belong to the installer DaemonSet, and registry wiring to
+    // in-cluster pods.
     const execCmds = runCalls
       .filter(([f, a]) => f === 'podman' && a[0] === 'exec')
       .map(([, a]) => a[a.length - 1])
@@ -753,12 +752,6 @@ describe('runClusterInstall', () => {
     expect(execCmds.some((c) => c.includes('DefaultTasksMax'))).toBe(false)
     expect(execCmds.some((c) => c.includes('min_free_kbytes'))).toBe(false)
     expect(execCmds.some((c) => c.includes('inotify'))).toBe(false)
-    // Idempotent kubeadm-flags.env edit; kubelet restarts only if the flag
-    // was missing.
-    expect(execCmds.some((c) =>
-      c.includes(`--housekeeping-interval=${NODE_KUBELET_HOUSEKEEPING_INTERVAL}`)
-      && c.includes('/var/lib/kubelet/kubeadm-flags.env')
-      && c.includes('systemctl restart kubelet'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))).toBe(true)
     expect(runCalls.some(([f, a]) => f === 'podman' && a[0] === 'network')).toBe(false)
 
@@ -877,17 +870,11 @@ describe('runClusterInstall', () => {
     await runClusterInstall({ nodes: 3 }, deps)
 
     const allNodes = ['yaac-control-plane', 'yaac-worker', 'yaac-worker2']
-    // The fixups are per node, so each node gets them.
-    const fixupWrites = run.mock.calls
-      .filter(([f, a]) => f === 'podman' && a[0] === 'exec'
-        && String(a[a.length - 1]).includes('--housekeeping-interval='))
-      .map(([, a]) => a[1])
-    expect(fixupWrites).toEqual(allNodes)
     // Registry hosts.toml is written by in-cluster pods that cover every node
     // (see main-registry.test.ts), never by a node exec.
     expect(run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec'
       && String(a[a.length - 1]).includes('hosts.toml'))).toBe(false)
-    // The pids limit is set on each node container.
+    // The fixup is per node: the pids limit is set on each node container.
     expect(run.mock.calls
       .filter(([f, a]) => f === 'podman' && a[0] === 'update' && a.includes('32768'))
       .map(([, a]) => a[a.length - 1])).toEqual(allNodes)
@@ -1046,8 +1033,8 @@ describe('runClusterInstall', () => {
     expect(ran('ensureMainRegistry')).toBe(1)
     expect(ran('ensureBuilderRoleGuard')).toBe(1)
     // Re-applied on every run, which is how an existing cluster picks up yaac
-    // upgrades. Install still owns only the kind node container settings (pids
-    // limit, kubelet flag); the installer DaemonSet does the rest per node.
+    // upgrades. Install still owns only the kind node container's pids
+    // limit; the installer DaemonSet does the rest per node.
     expect(ran('ensureNetd')).toBe(1)
     expect(ran('ensurePriorityClasses')).toBe(1)
     expect(ran('ensureGvisorRuntime')).toBe(1)
@@ -1056,7 +1043,7 @@ describe('runClusterInstall', () => {
     // live workspaces is safe.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
-    expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'exec')).toBe(true)
+    expect(deps.run.mock.calls.some(([f, a]) => f === 'podman' && a[0] === 'update')).toBe(true)
   })
 
   it('refuses a cluster whose nodes do not bind this data dir, and accepts one binding an ancestor', async () => {
@@ -1142,7 +1129,7 @@ describe('runClusterInstall', () => {
       const calls = deps.run.mock.calls.map(([f, a]) => `${f} ${a.join(' ')}`)
       const started = calls.indexOf('podman start yaac-control-plane')
       expect(started).toBeGreaterThanOrEqual(0)
-      expect(calls.findIndex((c) => c.startsWith('podman exec'))).toBeGreaterThan(started)
+      expect(calls.findIndex((c) => c.startsWith('podman update'))).toBeGreaterThan(started)
       expect(readyzAsked).toBe(3)
       expect(logged(deps)).toMatch(/Starting the stopped kind node yaac-control-plane/)
 
