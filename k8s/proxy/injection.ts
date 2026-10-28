@@ -115,6 +115,10 @@ function pathMatches(requestPath: string, pattern: string): boolean {
   return requestPath === pattern
 }
 
+/** Same rules as `hostMatchesPattern` in packages/server/src/lib/allowed-hosts.ts,
+ *  which this package cannot import: a label may hold `*` (`productionresultssa*`),
+ *  standing for `[a-z0-9_-]*`. The match is linear, not a regex, since patterns
+ *  reach it unvalidated and the label is chosen by the workspace. Change both together. */
 function hostMatches(hostname: string, pattern: string): boolean {
   if (pattern === hostname) return true
   if (!pattern.includes('*')) return false
@@ -122,11 +126,25 @@ function hostMatches(hostname: string, pattern: string): boolean {
     const suffix = pattern.slice(1) // e.g. ".example.com"
     return hostname.endsWith(suffix) && hostname.length > suffix.length
   }
-  // Other wildcards match label by label.
   const patternParts = pattern.split('.')
   const hostParts = hostname.split('.')
   if (patternParts.length !== hostParts.length) return false
-  return patternParts.every((p, i) => p === '*' || p === hostParts[i])
+  return patternParts.every((p, i) => labelMatches(hostParts[i], p))
+}
+
+function labelMatches(label: string, pattern: string): boolean {
+  if (pattern === '*' || pattern === label) return true
+  if (!pattern.includes('*') || !/^[a-z0-9_-]*$/.test(label)) return false
+  const [first, ...rest] = pattern.split('*')
+  const last = rest.pop()!
+  if (label.length < first.length + last.length || !label.startsWith(first) || !label.endsWith(last)) return false
+  let at = first.length
+  for (const piece of rest) {
+    at = label.indexOf(piece, at)
+    if (at === -1 || at + piece.length > label.length - last.length) return false
+    at += piece.length
+  }
+  return true
 }
 
 export function findRulesForHost(objects: ProxyObjects, workspaceId: string, hostname: string): HostInjectionRule[] {

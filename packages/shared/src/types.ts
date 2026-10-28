@@ -648,7 +648,7 @@ export interface PortForwardConfig {
  * env-var row (`ProjectEnvVar.rule`), never in the workspace.
  */
 export interface SecretProxyRule {
-  /** Hostnames to match (exact or wildcard like *.example.com) */
+  /** Hostnames to match (exact, or a wildcard like *.example.com or store*.example.com) */
   hosts: string[]
   /** Path pattern to match (default: "/*") */
   path?: string
@@ -713,7 +713,7 @@ export interface YaacConfig {
 /**
  * A project's egress allowlist (docs/workspace-egress.md): which hosts its
  * workspaces may reach through the proxy. Patterns are exact names
- * (`api.example.com`) or wildcards (`*.example.com`); a lone `*` allows
+ * (`api.example.com`) or wildcards (`*.example.com`, `store*.example.com`); a lone `*` allows
  * everything.
  */
 export interface EgressAllowlist {

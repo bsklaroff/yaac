@@ -6,6 +6,7 @@ import {
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { assertProjectExists } from './detail'
+import { HOST_PATTERN } from './allowlist'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
 import { authorizeProject, type Actor } from '#domain/access'
 import { workspaceDriver } from '#drivers/driver'
@@ -35,6 +36,10 @@ export function parseSecretProxyRule(name: string, raw: unknown): SecretProxyRul
   if (!Array.isArray(rule.hosts) || rule.hosts.length === 0
     || !rule.hosts.every((v) => typeof v === 'string' && v.length > 0)) {
     throw new ServerError('VALIDATION', `${name}: hosts must be a non-empty list of hostnames`)
+  }
+  const badHost = (rule.hosts as string[]).find((h) => !HOST_PATTERN.test(h.toLowerCase()))
+  if (badHost !== undefined) {
+    throw new ServerError('VALIDATION', `${name}: "${badHost}" is not a bare hostname or wildcard pattern`)
   }
   for (const field of ['path', 'header', 'prefix', 'bodyParam'] as const) {
     if (rule[field] !== undefined && typeof rule[field] !== 'string') {

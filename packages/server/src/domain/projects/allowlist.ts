@@ -14,7 +14,7 @@ import { authorizeProject, type Actor } from '#domain/access'
 /** A bare hostname, IPv4 address or wildcard pattern as `hostMatchesPattern`
  *  reads it; no scheme, path or port, and no IPv6 address, since the proxy
  *  dials IPv4 only (docs/workspace-egress.md "IPv4 only"). */
-const HOST_PATTERN = /^[a-z0-9*._-]+$/
+export const HOST_PATTERN = /^[a-z0-9*._-]+$/
 
 /** The project's allowlist. */
 export async function getProjectAllowlist(projectId: string): Promise<EgressAllowlist> {
@@ -35,7 +35,7 @@ export async function setProjectAllowlist(
   const hosts = [...new Set(allowlist.hosts.map((h) => h.trim().toLowerCase()))]
   const bad = hosts.find((h) => !HOST_PATTERN.test(h))
   if (bad !== undefined) {
-    throw new ServerError('VALIDATION', `"${bad}" is not a bare hostname or *.wildcard pattern`)
+    throw new ServerError('VALIDATION', `"${bad}" is not a bare hostname or wildcard pattern`)
   }
   const saved = { hosts, defaults: allowlist.defaults }
   await setProjectEgressAllowlist(projectId, saved)
