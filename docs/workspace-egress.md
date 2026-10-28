@@ -353,10 +353,11 @@ A refusal is not recorded as a blocked host, since the allowlist did admit
 it.
 
 The exception is an **exact** allowlist entry for the host, a hostname or an
-IPv4 address. Neither `*` nor a wildcard such as `*.corp.example` admits a
-non-public address: a wildcard covers names in zones others control, and
-plenty of public names answer privately (an AWS internal load balancer
-under `*.amazonaws.com`, or CoreDNS's `169-254-169-254.default.pod.cluster.local`).
+IPv4 address. Neither `*` nor a wildcard such as `*.corp.example` or
+`store*.corp.example` admits a non-public address: a wildcard covers names in
+zones others control, and plenty of public names answer privately (an AWS
+internal load balancer under `*.amazonaws.com`, or CoreDNS's
+`169-254-169-254.default.pod.cluster.local`).
 A dial admitted this way:
 
 - has a 5-second connect timeout, because the floor below drops it silently

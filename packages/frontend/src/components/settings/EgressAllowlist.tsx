@@ -54,7 +54,7 @@ export function EgressAllowlist({ projectId, readOnly = false }: {
       <SectionLabel>Egress allowlist</SectionLabel>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
         Hosts this project&apos;s workspaces may reach. Exact names or{' '}
-        <code className="text-text-dim">*.example.com</code> wildcards; <code className="text-text-dim">*</code>{' '}
+        <code className="text-text-dim">*.example.com</code> or <code className="text-text-dim">store*.example.com</code> wildcards; <code className="text-text-dim">*</code>{' '}
         allows everything. Applies to workspaces created after saving.
       </p>
 

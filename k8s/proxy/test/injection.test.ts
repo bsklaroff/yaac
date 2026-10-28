@@ -13,7 +13,9 @@ import {
   applyInjections,
   bodyHasPlaceholderRefreshToken,
   buildDynamicRules,
+  findRulesForHost,
   hostNeedsDynamicMitm,
+  isHostAllowed,
 } from 'yaac-proxy-sidecar/injection'
 
 /**
@@ -63,6 +65,47 @@ function send(
 const claudeOauth = (accessToken: string, expiresAt = 1) => ({
   kind: 'oauth',
   claudeAiOauth: { accessToken, refreshToken: `${accessToken}-r`, expiresAt, scopes: [] },
+})
+
+// Mirrors packages/server/test/lib/allowed-hosts.test.ts; keep the two tables equal.
+const LABEL_CASES: [host: string, pattern: string, expected: boolean][] = [
+  ['productionresultssa42.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', true],
+  ['productionresultssa.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', true],
+  ['otherstorage.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['productionresultssa42.evil.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['productionresultssa4.2.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['ab.example.com', 'a*b.example.com', true],
+  ['axyzb.example.com', 'a*b.example.com', true],
+  ['axyz.example.com', 'a*b.example.com', false],
+  ['xab.example.com', '*ab.example.com', true],
+  ['xa.example.com', '*ab.example.com', false],
+  ['abc.example.com', 'a*b*c.example.com', true],
+  ['axbyc.example.com', 'a*b*c.example.com', true],
+  ['acb.example.com', 'a*b*c.example.com', false],
+  ['ab.example.com', 'a*b*b.example.com', false],
+  ['ProductionResultsSA42.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['api.example.com', '(*.example.com', false],
+  ['apixyz.example.com', 'api|evil*.example.com', false],
+  ['api|evilx.example.com', 'api|evil*.example.com', false],
+]
+
+describe('isHostAllowed', () => {
+  it.each(LABEL_CASES)('matches %s against %s: %s', async (host, pattern, expected) => {
+    const objects = await load({}, { ws: { allowedHosts: [pattern] } })
+    expect(isHostAllowed(objects, 'ws', host)).toBe(expected)
+  })
+
+  it('answers quickly for many wildcards in one label', async () => {
+    const objects = await load({}, { ws: { allowedHosts: ['*a*a*a*a*a*a*b.example.com'] } })
+    const start = Date.now()
+    expect(isHostAllowed(objects, 'ws', `${'a'.repeat(200)}.example.com`)).toBe(false)
+    expect(Date.now() - start).toBeLessThan(200)
+  })
+
+  it('does not throw on a rule host holding regex metacharacters', async () => {
+    const objects = await load({}, { ws: { rules: [{ hostPattern: '(*.example.com' } as never] } })
+    expect(findRulesForHost(objects, 'ws', 'api.example.com')).toEqual([])
+  })
 })
 
 describe('buildDynamicRules', () => {

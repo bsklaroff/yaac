@@ -41,6 +41,28 @@ describe('NESTED_PULL_HOSTS', () => {
   })
 })
 
+// Mirrored in k8s/proxy/test/injection.test.ts; keep the two tables equal.
+const LABEL_CASES: [host: string, pattern: string, expected: boolean][] = [
+  ['productionresultssa42.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', true],
+  ['productionresultssa.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', true],
+  ['otherstorage.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['productionresultssa42.evil.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['productionresultssa4.2.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['ab.example.com', 'a*b.example.com', true],
+  ['axyzb.example.com', 'a*b.example.com', true],
+  ['axyz.example.com', 'a*b.example.com', false],
+  ['xab.example.com', '*ab.example.com', true],
+  ['xa.example.com', '*ab.example.com', false],
+  ['abc.example.com', 'a*b*c.example.com', true],
+  ['axbyc.example.com', 'a*b*c.example.com', true],
+  ['acb.example.com', 'a*b*c.example.com', false],
+  ['ab.example.com', 'a*b*b.example.com', false],
+  ['ProductionResultsSA42.blob.core.windows.net', 'productionresultssa*.blob.core.windows.net', false],
+  ['api.example.com', '(*.example.com', false],
+  ['apixyz.example.com', 'api|evil*.example.com', false],
+  ['api|evilx.example.com', 'api|evil*.example.com', false],
+]
+
 describe('hostMatchesPattern', () => {
   it('matches exact hostnames', () => {
     expect(hostMatchesPattern('example.com', 'example.com')).toBe(true)
@@ -71,6 +93,20 @@ describe('hostMatchesPattern', () => {
       'docker-images-dev.abc123.r2.cloudflarestorage.com',
       'docker-images-prod.*.r2.cloudflarestorage.com',
     )).toBe(false)
+  })
+
+  it.each(LABEL_CASES)('matches %s against %s: %s', (host, pattern, expected) => {
+    expect(hostMatchesPattern(host, pattern)).toBe(expected)
+  })
+
+  it('answers quickly for many wildcards in one label', () => {
+    const start = Date.now()
+    expect(hostMatchesPattern(`${'a'.repeat(200)}.example.com`, '*a*a*a*a*a*a*b.example.com')).toBe(false)
+    expect(Date.now() - start).toBeLessThan(200)
+  })
+
+  it('allows GitHub Actions blob storage by default', () => {
+    expect(DEFAULT_ALLOWED_HOSTS.some((p) => hostMatchesPattern('productionresultssa199.blob.core.windows.net', p))).toBe(true)
   })
 
   it('rejects interior wildcard when segment count differs', () => {

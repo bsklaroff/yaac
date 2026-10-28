@@ -827,7 +827,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     zv('json', z.object({
       // A bare hostname or wildcard pattern as hostMatchesPattern
       // (#lib/allowed-hosts) understands it; no scheme, path or port.
-      host: z.string().regex(/^[A-Za-z0-9*._-]+$/, 'host must be a bare hostname or *.wildcard pattern'),
+      host: z.string().regex(/^[A-Za-z0-9*._-]+$/, 'host must be a bare hostname or wildcard pattern'),
       persist: z.boolean().optional(),
     })),
     async (c) => {

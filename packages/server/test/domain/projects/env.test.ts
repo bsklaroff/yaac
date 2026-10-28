@@ -56,6 +56,8 @@ describe('parseSecretProxyRule', () => {
     // silently never arrives.
     expect(() => parseSecretProxyRule('K', NOPE)).toThrow(/needs a rule/)
     expect(() => parseSecretProxyRule('K', { hosts: [] })).toThrow(/non-empty list/)
+    expect(() => parseSecretProxyRule('K', { hosts: ['(*.example.com'] })).toThrow(/not a bare hostname/)
+    expect(() => parseSecretProxyRule('K', { hosts: ['api|evil*.example.com'] })).toThrow(/not a bare hostname/)
     expect(() => parseSecretProxyRule('K', { hosts: ['a.com'], path: 5 })).toThrow(/path must be/)
     expect(() => parseSecretProxyRule('K', {
       hosts: ['a.com'], header: 'x', bodyParam: 'y',

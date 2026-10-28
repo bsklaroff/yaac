@@ -49,6 +49,8 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'avatars.githubusercontent.com',
   'camo.githubusercontent.com',
   'gist.github.com',
+  // Actions blob storage (job summaries and logs)
+  'productionresultssa*.blob.core.windows.net',
 
   // Version control — GitLab & Bitbucket
   'gitlab.com',
@@ -326,7 +328,14 @@ export const NESTED_PULL_HOSTS: string[] = [
   'dl-cdn.alpinelinux.org',
 ]
 
-/** Check if a hostname matches a pattern (exact, *.suffix, or interior wildcard). */
+/**
+ * Check if a hostname matches a pattern: exact, `*.suffix`, or label by label
+ * where a label is `*` or contains `*` (`productionresultssa*`), which stands
+ * for `[a-z0-9_-]*` and never crosses a dot. The match is linear rather than a
+ * regex, since a label is chosen by the workspace and patterns reach it
+ * unvalidated. Keep in step with `hostMatches` in k8s/proxy/injection.ts,
+ * which cannot import this module.
+ */
 export function hostMatchesPattern(hostname: string, pattern: string): boolean {
   if (pattern === hostname) return true
   if (!pattern.includes('*')) return false
@@ -334,11 +343,25 @@ export function hostMatchesPattern(hostname: string, pattern: string): boolean {
     const suffix = pattern.slice(1) // e.g. ".example.com"
     return hostname.endsWith(suffix) && hostname.length > suffix.length
   }
-  // Interior or multi-segment wildcard: match segment-by-segment
   const patternParts = pattern.split('.')
   const hostParts = hostname.split('.')
   if (patternParts.length !== hostParts.length) return false
-  return patternParts.every((p, i) => p === '*' || p === hostParts[i])
+  return patternParts.every((p, i) => labelMatches(hostParts[i], p))
+}
+
+function labelMatches(label: string, pattern: string): boolean {
+  if (pattern === '*' || pattern === label) return true
+  if (!pattern.includes('*') || !/^[a-z0-9_-]*$/.test(label)) return false
+  const [first, ...rest] = pattern.split('*')
+  const last = rest.pop()!
+  if (label.length < first.length + last.length || !label.startsWith(first) || !label.endsWith(last)) return false
+  let at = first.length
+  for (const piece of rest) {
+    at = label.indexOf(piece, at)
+    if (at === -1 || at + piece.length > label.length - last.length) return false
+    at += piece.length
+  }
+  return true
 }
 
 const CRITICAL_HOSTS = [
