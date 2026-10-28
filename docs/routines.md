@@ -204,6 +204,7 @@ routine form says so beside the permission mode.
 - **Webapp.** The new-workspace pane's Start offers a time, a delay, or a
   schedule (a routine form with schedule presets that compile to cron, a
   zone, and a live preview of the next runs), and a Timeout row. The sidebar
-  has Scheduled and Routines sections; a routine opens in its own pane with
-  its runs; a workspace with a deadline shows a chip to extend or clear it,
+  has Scheduled and Routines sections, describing each routine's cron in
+  words (cronstrue); a routine opens in its own pane with its cron and its
+  runs; a workspace with a deadline shows a chip to extend or clear it,
   and a routine's run links back to its routine.
