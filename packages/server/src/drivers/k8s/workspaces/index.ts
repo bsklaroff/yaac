@@ -36,7 +36,7 @@ export {
   removeWorkspaceForwarder,
   stopAllWorkspaceForwarders,
 } from './port-forwarders'
-export { removeAsRoot } from './root-remove'
+export { removeAsRoot, runInStoppedCheckout } from './root-pod'
 export { reconcileImageSalvage } from './salvage-reconcile'
 export { createRuntimeSnapshot } from './snapshot'
 export {

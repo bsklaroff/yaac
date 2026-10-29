@@ -25,6 +25,7 @@ import {
   resolveProjectId,
   serveHostedRepo,
   setDefaultBranchGuard,
+  setKeptIgnoredPaths,
   shareProject,
 } from '#domain/projects'
 import { previewWorkspaceRetention, removeProject, setWorkspaceRetention, unshareProject } from '#domain/workspaces'
@@ -119,6 +120,16 @@ export const projectApp = new Hono<IdentityEnv>()
     async (c) => {
       await setDefaultBranchGuard(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').enabled)
       return c.body(null, 204)
+    },
+  )
+  // The gitignored paths a stop keeps. The current list is in the project
+  // summary.
+  .put(
+    '/:projectId/kept-ignored-paths',
+    zv('json', z.object({ paths: z.array(z.string()) })),
+    async (c) => {
+      const paths = await setKeptIgnoredPaths(c.get('principal'), await resolveProjectId(c.req.param('projectId')), c.req.valid('json').paths)
+      return c.json({ paths })
     },
   )
   // Stopped-workspace auto-delete. The GET counts what a retention of `days`

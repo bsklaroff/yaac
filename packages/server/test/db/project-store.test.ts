@@ -8,6 +8,7 @@ import {
   recordProject,
   recordProjectCreate,
   setProjectDefaultBranchGuard,
+  setProjectKeptIgnoredPaths,
   setProjectWorkspaceRetention,
   setProjectEgressAllowlist,
   setProjectGitCredential,
@@ -53,6 +54,7 @@ describe('recordProject', () => {
       hosted: false,
       guardDefaultBranch: true,
       shareRevoked: false,
+      keptIgnoredPaths: [],
     })
   })
 
@@ -145,6 +147,7 @@ describe('listProjectRows', () => {
         hosted: false,
         guardDefaultBranch: true,
         shareRevoked: false,
+        keptIgnoredPaths: [],
       },
     ])
   })
@@ -321,5 +324,26 @@ describe('setProjectShareRevoked', () => {
     expect(await setProjectShareRevoked(P, false)).toBe(true)
     expect(await getProjectRow(P)).toMatchObject({ shareRevoked: false })
     expect(await setProjectShareRevoked('0a0a0a0a-0000-4000-8000-0000000000ff', true)).toBe(false)
+  })
+})
+
+describe('setProjectKeptIgnoredPaths', () => {
+  let tmpDir: string
+
+  beforeEach(async () => {
+    tmpDir = await createTempDataDir()
+  })
+  afterEach(async () => {
+    await closeDb()
+    await cleanupTempDir(tmpDir)
+  })
+
+  it('replaces the kept paths, and reports an unknown projectId', async () => {
+    await recordProject({ id: APP, name: 'app', remoteUrl: 'https://example.com/x.git', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
+    expect(await setProjectKeptIgnoredPaths(APP, ['.env', 'data/dev.db'])).toBe(true)
+    expect((await getProjectRow(APP))?.keptIgnoredPaths).toEqual(['.env', 'data/dev.db'])
+    expect(await setProjectKeptIgnoredPaths(APP, [])).toBe(true)
+    expect((await getProjectRow(APP))?.keptIgnoredPaths).toEqual([])
+    expect(await setProjectKeptIgnoredPaths('0a0a0a0a-0000-4000-8000-0000000000ff', [])).toBe(false)
   })
 })

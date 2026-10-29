@@ -28,6 +28,7 @@ export type WorkspaceEvent =
   | EffortChanged
   | WaitingEnded
   | WorkspaceStopped
+  | IgnoredFilesCleaned
 
 /**
  * Provisioning has begun, emitted before anything is built so every user
@@ -258,4 +259,16 @@ export interface WorkspaceStopped {
   projectId: string
   workspaceId: string
   cause?: WorkspaceDeathCause
+}
+
+/**
+ * A removal of a stopped workspace's gitignored files that began at `at`
+ * finished. It counts only for a stop recorded by then, so a clean that
+ * outlived a restart does not answer for the next stop.
+ */
+export interface IgnoredFilesCleaned {
+  type: 'ignored-files-cleaned'
+  projectId: string
+  workspaceId: string
+  at: Date
 }

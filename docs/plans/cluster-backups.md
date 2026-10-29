@@ -282,13 +282,14 @@ before relying on it.
 ## Open questions
 
 - How should heavy gitignored build output be excluded, such as `target/`,
-  `.venv/` and `.next/`? A stop keeps everything in the checkout, gitignored
-  or not, so this output sits on GLOBAL and gets backed up. A running
-  workspace's rebuilds rewrite it, so every run would upload the changed
-  artifacts. Proposed answer: no backup-specific setting. A project lists
-  those directories in `ephemeralModulesPaths` (docs/project-config.md),
-  which makes them node-local and deleted at stop. That keeps them out of
-  every backup, and off NFS while the workspace runs. The cost is a cold
-  build on restart. The backup does no automatic detection of caches either:
-  which directories are disposable is the project's call, made explicitly.
-  The `cluster backup` docs should point users at `ephemeralModulesPaths`.
+  `.venv/` and `.next/`? A stop removes a checkout's gitignored files
+  (docs/workspace-storage.md "Ignored files at stop"), so a stopped
+  workspace's backup holds none, but a running workspace's output sits on
+  GLOBAL and its rebuilds rewrite it, so every backup taken while it runs
+  would upload the changed artifacts. Proposed answer: no backup-specific
+  setting. A project lists those directories in `ephemeralModulesPaths`
+  (docs/project-config.md), which makes them node-local while the workspace
+  runs. That keeps them out of every backup, and off NFS. The backup does no
+  automatic detection of caches either: which directories are disposable
+  while running is the project's call, made explicitly. The `cluster backup`
+  docs should point users at `ephemeralModulesPaths`.

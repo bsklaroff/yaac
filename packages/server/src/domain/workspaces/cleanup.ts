@@ -6,8 +6,9 @@ import { workspaceDriver } from '#drivers/driver'
 import { resolveEphemeralModulesPaths, resolveProjectConfig } from '#domain/projects'
 import { forgetWorkspaceChanges } from './changes'
 import { removeAgentHistory } from './history'
-import { inFlightWorkspaceIds } from './provisioning'
-import { applyWorkspaceEvent, listProjectRows } from '#db'
+import { deletionHeld, inFlightWorkspaceIds } from './provisioning'
+import { workspaceBinDir } from './workspace-bin'
+import { applyWorkspaceEvent, getProjectRow, listProjectRows, listUncleanedStoppedWorkspaces } from '#db'
 import {
   clearWorkspaceTerminating,
   evictWorkspaceStatus,
@@ -51,6 +52,20 @@ async function recordStop(
  */
 const detachedTeardowns = new Map<string, Promise<void>>()
 
+/**
+ * Register work on a workspace's files that a restart must wait for and a
+ * delete must not run beside. Call the result once the work is done.
+ */
+function holdTeardown(workspaceId: string): () => void {
+  let settle: () => void = () => undefined
+  const settled = new Promise<void>((resolve) => { settle = resolve })
+  detachedTeardowns.set(workspaceId, settled)
+  void settled.then(() => {
+    if (detachedTeardowns.get(workspaceId) === settled) detachedTeardowns.delete(workspaceId)
+  })
+  return settle
+}
+
 /** Resolves once no detached teardown is running for the workspace. */
 function detachedTeardownSettled(workspaceId: string): Promise<void> {
   return detachedTeardowns.get(workspaceId) ?? Promise.resolve()
@@ -89,6 +104,41 @@ async function checkoutEphemeralPaths(
     paths.push({ abs: path.join(checkout.real, rel), remove: () => checkout.removeTree(rel) })
   }
   return paths
+}
+
+/** How long one removal of a checkout's ignored files may run: unlinking
+ *  a large build tree on NFS takes minutes. */
+const IGNORED_CLEAN_TIMEOUT_MS = 5 * 60_000
+
+/** How long the fallback waits to try a checkout again after failing on it. */
+const IGNORED_CLEAN_RETRY_MS = 60 * 60_000
+
+/** The script that removes a checkout's ignored files. Run by its text, so
+ *  a workspace launched before an upgrade runs the current one. */
+async function cleanIgnoredScript(): Promise<string> {
+  return await fs.readFile(path.join(workspaceBinDir(), 'yaac-clean-ignored'), 'utf8')
+}
+
+/**
+ * Remove a stopping workspace's gitignored files from inside it, and stamp
+ * its row once that succeeds (docs/workspace-storage.md "Ignored files at
+ * stop"). Never rejects: a clean that fails or cannot run is left to
+ * `reconcileIgnoredFileCleans`.
+ */
+async function removeIgnoredFiles(target: TeardownTarget): Promise<void> {
+  const { projectId, workspaceId, unitName } = target
+  const at = new Date()
+  try {
+    const runtime = workspaceDriver()
+    const root = runtime.workspacePaths(unitName).workspaceDir
+    const [row, script] = await Promise.all([getProjectRow(projectId), cleanIgnoredScript()])
+    const kept = row?.keptIgnoredPaths ?? []
+    await runtime.exec(unitName, ['sh', '-c', script, 'sh', root, ...kept].map(shellQuote).join(' '),
+      { timeout: IGNORED_CLEAN_TIMEOUT_MS })
+    await applyWorkspaceEvent({ type: 'ignored-files-cleaned', projectId, workspaceId, at })
+  } catch (err) {
+    serverLog(`[server] ignored-file clean ${projectId}/${workspaceId} at stop: ${String(err)}`)
+  }
 }
 
 /**
@@ -263,13 +313,8 @@ export async function cleanupWorkspaceDetached(params: {
 }): Promise<void> {
   const { jobName, projectId, workspaceId, cause } = params
 
-  // Register before the first await so a restart always waits for it.
-  let settle: () => void = () => undefined
-  const settled = new Promise<void>((resolve) => { settle = resolve })
-  detachedTeardowns.set(workspaceId, settled)
-  void settled.then(() => {
-    if (detachedTeardowns.get(workspaceId) === settled) detachedTeardowns.delete(workspaceId)
-  })
+  // Before the first await, so a restart always waits for it.
+  const settle = holdTeardown(workspaceId)
   try {
     // The detached script's output is discarded, so log the teardown here.
     // The cause lands on the row only if no stop is recorded yet.
@@ -312,11 +357,11 @@ export async function cleanupWorkspaceDetached(params: {
       child.unref()
     }
 
-    // Salvage first, since it reaches into the workspace the script
-    // destroys. It has its own timeouts and never blocks the teardown. If
-    // the server dies meanwhile, the stale reaper resumes the teardown.
-    void runtime.salvageImages(target)
-      .catch(() => undefined)
+    // The salvage and the ignored-file clean first, since both reach into
+    // the workspace the script destroys. Each has its own deadline, and a
+    // failure of either never stops the teardown. If the server dies
+    // meanwhile, the stale reaper resumes the teardown.
+    void Promise.all([runtime.salvageImages(target).catch(() => undefined), removeIgnoredFiles(target)])
       .then(() => { spawnDetachedTeardown() })
   } catch (err) {
     settle()
@@ -370,6 +415,54 @@ export async function reapOrphanNodeLocal(view: RuntimeSnapshot): Promise<void> 
   const projectIds = new Set((await listProjectRows()).map((r) => r.id))
   for (const id of inFlightWorkspaceIds(view.takenAtMs)) workspaceIds.add(id)
   await workspaceDriver().reapNodeLocal({ projectIds, workspaceIds })
+}
+
+/** When each checkout the fallback failed on may be tried again. */
+const ignoredCleanRetryAt = new Map<string, number>()
+
+/** Whether a fallback clean is running. They run one at a time. */
+let ignoredCleanRunning = false
+
+/**
+ * Remove the ignored files of a stopped workspace whose stop did not: its
+ * runtime had already died, the clean failed (on a file written through
+ * `sudo`, say), or the server went away mid-teardown. One workspace per
+ * pass, in the background, run by the driver on the checkout as root
+ * (docs/workspace-storage.md "Ignored files at stop").
+ *
+ * A workspace the runtime still holds, or that is being created,
+ * restarted, deleted or torn down, is skipped. The pick and its
+ * registration as a teardown run with no await between, so a restart that
+ * starts later waits for the clean and a delete is refused until it ends.
+ */
+export async function reconcileIgnoredFileCleans(view: RuntimeSnapshot): Promise<void> {
+  const live = await liveWorkspaceIds(view)
+  const stopped = await listUncleanedStoppedWorkspaces()
+  if (ignoredCleanRunning) return
+  const inFlight = new Set(inFlightWorkspaceIds(view.takenAtMs))
+  const due = stopped.find(({ workspaceId: id }) => !live.has(id) && !inFlight.has(id) && !deletionHeld(id)
+    && !detachedTeardowns.has(id) && (ignoredCleanRetryAt.get(id) ?? 0) <= Date.now())
+  if (due === undefined) return
+  const { projectId, workspaceId } = due
+  ignoredCleanRunning = true
+  const settle = holdTeardown(workspaceId)
+  const at = new Date()
+  void (async () => {
+    // A checkout that is gone holds nothing to clean.
+    if (await fs.lstat(workspaceDir(projectId, workspaceId)).then((st) => st.isDirectory(), () => false)) {
+      const row = await getProjectRow(projectId)
+      await workspaceDriver().runInStoppedCheckout({ projectId, workspaceId }, await cleanIgnoredScript(),
+        row?.keptIgnoredPaths ?? [], { timeoutMs: IGNORED_CLEAN_TIMEOUT_MS })
+    }
+    await applyWorkspaceEvent({ type: 'ignored-files-cleaned', projectId, workspaceId, at })
+    ignoredCleanRetryAt.delete(workspaceId)
+  })().catch((err: unknown) => {
+    ignoredCleanRetryAt.set(workspaceId, Date.now() + IGNORED_CLEAN_RETRY_MS)
+    serverLog(`[server] ignored-file clean ${projectId}/${workspaceId}: ${String(err)}`)
+  }).finally(() => {
+    ignoredCleanRunning = false
+    settle()
+  })
 }
 
 /**

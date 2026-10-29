@@ -1,6 +1,7 @@
 import { runHost } from './host'
 import { workspaceRunEnvironment } from './launch'
 import { containerlessWorkspacePaths } from './paths'
+import { workspaceDir } from '@yaac/shared/project-paths'
 
 /**
  * Running commands "inside" a workspace: on the host, in its checkout, with
@@ -25,6 +26,18 @@ export async function execInWorkspace(
     ...(opts?.signal ? { signal: opts.signal } : {}),
     ...(opts?.stdin !== undefined ? { input: opts.stdin } : {}),
   })
+}
+
+/** See `WorkspaceDriver.runInStoppedCheckout`. A workspace writes as the
+ *  server's own user, so that user can do whatever the script needs. */
+export async function runInStoppedCheckout(
+  target: { projectId: string; workspaceId: string },
+  script: string,
+  args: string[],
+  opts: { timeoutMs: number },
+): Promise<void> {
+  const dir = workspaceDir(target.projectId, target.workspaceId)
+  await runHost(['sh', '-c', script, 'sh', dir, ...args], { cwd: dir, timeoutMs: opts.timeoutMs })
 }
 
 /** Whether a workspace's tmux server, on socket `sock`, answers. */

@@ -82,9 +82,10 @@ const initCommandsSchema = z.array(z.unknown(), { error: 'must be an array' })
     return z.NEVER
   })
 
-/** One `ephemeralModulesPaths` entry, relative to /workspace, with any
- *  surrounding slashes stripped. */
-const modulesPathSchema = z.string({ error: 'must be a string' })
+/** A path relative to the checkout (/workspace), with any surrounding
+ *  slashes stripped: an `ephemeralModulesPaths` entry, or a kept ignored
+ *  path (`./kept-paths`). */
+export const checkoutPathSchema = z.string({ error: 'must be a string' })
   .refine((raw) => !raw.startsWith('/'), 'must be relative to /workspace (no leading slash)')
   .transform((raw) => raw.replace(/^\/+|\/+$/g, ''))
   .refine((p) => p.length > 0, 'must not be empty')
@@ -121,7 +122,7 @@ const projectConfigSchema = z.object({
   ).optional(),
   nestedContainers: BOOLEAN,
   npmCache: BOOLEAN,
-  ephemeralModulesPaths: z.array(modulesPathSchema, { error: 'must be a string array' }).optional(),
+  ephemeralModulesPaths: z.array(checkoutPathSchema, { error: 'must be a string array' }).optional(),
 })
 
 /** Where an issue is, as a config key path: `initCommands[0].name`. */

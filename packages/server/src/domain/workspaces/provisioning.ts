@@ -80,6 +80,11 @@ interface ProvisioningInput {
  */
 const deleting = new Set<string>()
 
+/** Whether a delete holds the id. */
+export function deletionHeld(workspaceId: string): boolean {
+  return deleting.has(workspaceId)
+}
+
 /** Refuse an id a delete holds (`CONFLICT`). */
 export function refuseDeleting(workspaceId: string): void {
   if (deleting.has(workspaceId)) throw new ServerError('CONFLICT', `workspace ${workspaceId} is being deleted`)

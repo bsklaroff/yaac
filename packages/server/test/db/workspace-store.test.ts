@@ -14,6 +14,8 @@ import {
   getWorkspaceRow,
   countStoppedWorkspaces,
   listStoppedWorkspaceRows,
+  listUncleanedStoppedWorkspaces,
+  recordIgnoredFilesCleaned,
   listWorkspaceRows,
   listProjectWorkspaceIds,
   listOverdueWorkspaceRows,
@@ -366,6 +368,26 @@ describe('session store', () => {
         after = { stoppedAt: row.stoppedAt, workspaceId: row.workspaceId }
       }
       expect(seen).toEqual(['us-4', 'us-3', 'us-2', 'us-1'])
+    })
+  })
+
+  describe('listUncleanedStoppedWorkspaces', () => {
+    it('lists stopped workspaces not cleaned since their stop, oldest stop first', async () => {
+      for (const id of ['live', 'first', 'cleaned', 'second']) await recordWorkspaceCreated({ projectId: PROJ, workspaceId: id })
+      for (const id of ['first', 'cleaned', 'second']) {
+        await recordWorkspaceStopped(PROJ, id)
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      await recordIgnoredFilesCleaned(PROJ, 'cleaned', new Date())
+      expect(await listUncleanedStoppedWorkspaces()).toEqual([
+        { projectId: PROJ, workspaceId: 'first' },
+        { projectId: PROJ, workspaceId: 'second' },
+      ])
+
+      // A later stop needs another clean.
+      await clearWorkspaceStopped(PROJ, 'cleaned')
+      await recordWorkspaceStopped(PROJ, 'cleaned')
+      expect((await listUncleanedStoppedWorkspaces()).map((w) => w.workspaceId)).toEqual(['first', 'second', 'cleaned'])
     })
   })
 

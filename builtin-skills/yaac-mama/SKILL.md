@@ -45,9 +45,11 @@ That list is the whole surface. `yaac-mama` is a **strict subset** of the
 `yaac` CLI, enforced by the server: it observes, labels, makes one new thing
 (now, queued for later, or on a schedule), messages a running one, and stops
 or restarts one. Stopping is in reach precisely because it is reversible — a stopped
-workspace keeps its checkout and its conversation — and restarting a
+workspace keeps its checkout and its conversation, less the files its
+`.gitignore` matches (build output, but also an `.env` or a local database
+unless its project keeps them), which a stop deletes — and restarting a
 stopped one only undoes a stop, never in a more permissive mode than yours.
-Nothing that ran is deleted: only a queued workspace (which never ran) or a
+No workspace that ran is deleted: only a queued workspace (which never ran) or a
 routine (its schedule and run history, not its runs' workspaces) can be,
 and there is no config beyond your own base branch. If a task
 needs one of those, ask the user rather than looking for a way around it.

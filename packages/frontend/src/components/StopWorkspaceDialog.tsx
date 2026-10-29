@@ -84,8 +84,9 @@ export function StopWorkspaceDialog({
       open={workspace !== null}
       onOpenChange={onOpenChange}
       title={`Stop “${name}”?`}
-      description={'Stops and removes the workspace\'s container. The workspace history and workspace will be '
-        + 'saved, and can be restarted.'}
+      description={'Stops and removes the workspace\'s container. Its history and changes are kept, so it can '
+        + 'be restarted, but files its .gitignore matches (such as .env files and local databases) are '
+        + 'deleted, except the paths kept under Settings → Project Config.'}
       confirmLabel={direct.length > 0 ? `Stop and start ${direct.length} queued` : 'Stop'}
       onConfirm={onConfirm}
     >

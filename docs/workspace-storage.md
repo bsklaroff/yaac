@@ -16,7 +16,8 @@ label.
 A row corresponds to exactly one checkout: a clone that borrows the main
 clone's objects (docs/server-git.md). Teardown never removes the checkout, so a
 stopped row is a checkout still on disk, with its git state and diff, ready to
-restart.
+restart. It removes only the checkout's gitignored files (see "Ignored files at
+stop").
 
 A row can outlive its checkout's files (a crash, a network filesystem fault, a
 partial restore), so a restart checks what is there. A checkout that is gone,
@@ -678,6 +679,102 @@ on every backend:
 - **The node-local tier is disposable.** It holds re-derivable caches and
   working copies of a shared checkpoint, as opencode's database is.
   Checkouts stay on the shared tier.
+
+## Ignored files at stop
+
+A stop removes the checkout's gitignored files, so a stopped workspace does
+not hold build output and caches (`target/`, `.next/`, `dist/`) until it is
+deleted. The restart's init commands rebuild them. Untracked files that are
+not ignored stay, as does everything tracked. The rules are the repository's
+own: every `.gitignore` in the tree and `.git/info/exclude`, applied by
+`git clean -fdX`. A global excludes file does not count.
+
+That deletes more than build output. An `.env` someone typed in, a seeded
+database, `.claude/settings.local.json` and a new source file inside an
+ignored folder all go unless they are kept, and nothing rebuilds them. The
+rules are also the agent's to change: an uncommitted `.gitignore` edit or a
+line in `.git/info/exclude` counts. A `*` there hides every untracked file
+from `git status` and the changes list, and the next stop deletes them all.
+Tracked files are never touched.
+
+Two kinds of path are kept anyway:
+
+- **The project's kept paths** (`projects.keptIgnoredPaths`, set under
+  Settings → Project Config → Kept ignored files). Each is a literal path
+  relative to the checkout: a file, or a folder and everything in it, even
+  one inside an ignored folder.
+- **Every mount point under the checkout**, read from
+  `/proc/self/mountinfo` rather than the project config, which may have
+  changed since the workspace started. In a k8s pod those are the module
+  dirs and any cache volume mounted there, whose contents are shared with
+  other workspaces. Containerless realizes no mounts into the checkout
+  (docs/containerless-driver.md), so there a cache volume under
+  `/workspace` is a plain directory, removed like any other if ignored.
+
+Git never enters a nested repository. Under `-X` it reports only one inside
+an ignored folder (a claude worktree, since `createCheckout` excludes
+`/.claude/worktrees/`, or a clone under an ignored directory), and the clean
+runs again inside each, by that repository's own rules, up to 50 per stop.
+A nested clone that is not ignored is never entered. One inside a kept path
+is left alone. A submodule is tracked, so git neither removes nor enters it, and it
+keeps its ignored files.
+
+The clean is one script, `workspace-bin/yaac-clean-ignored`, which the
+server runs by its text, so a workspace launched before an upgrade runs the
+current one. A kept path is passed to git as gitignore's re-include recipe
+in `-e` patterns. Under `-X` they rank above every `.gitignore`, so `!`
+un-ignores the path and its contents. An ignored folder above it is
+un-ignored too, and its other entries are ignored again, because git would
+otherwise remove the folder whole. A pathspec exclude does not work: git
+still removes a folder whose other entries are all ignored, and the
+excluded path with it. So the script first asks git (`check-ignore`) which
+folders above a kept path are ignored, and skips a repository it cannot
+tell for. The repository's config is the agent's, so git runs with these
+pinned over it: the work tree; `core.fsmonitor` and hooks, which run
+commands; lazy fetches (`GIT_NO_LAZY_FETCH`) and every transport, since
+the fetch a partial clone makes for a missing `.gitignore` blob runs the
+remote's upload-pack or ssh command; and `core.excludesFile`.
+
+### Where it runs
+
+The server never runs git against a checkout itself (docs/server-git.md).
+A stop first runs the clean inside the workspace through `exec`, beside the
+image salvage and as the workspace's user. When that succeeds, the
+`ignored-files-cleaned` event stamps the row's `ignoredCleanedAt` with the
+time the clean began. A stamp older than the row's stop counts for nothing,
+so a clean that outlived a restart does not answer for the next stop.
+
+The `ignored-file-clean` reconcile step picks up every stopped row with no
+later stamp. That covers a runtime that had already died (an OOM-killed or
+evicted pod, an orphaned Job, a lost node), a clean that failed (on a file
+the agent wrote through `sudo`, say, or a project config that could not be
+read), and a server that went away mid-teardown. It cleans one such
+workspace per pass, in the background, through the driver's
+`runInStoppedCheckout`:
+
+- **Under k8s**, a one-shot root pod on the yaac base image, under gVisor
+  since git reads what the agent wrote. It mounts only the checkout, at
+  `/workspace` as the workspace saw it, so a claude worktree's git dir
+  still resolves. gVisor's root is real root on the claim, so files written
+  through `sudo` go too.
+- **Under containerless**, the host shell as the server's user, which is
+  what the workspace's own processes ran as.
+
+With the pod gone nothing is mounted under the checkout, so that run keeps
+only the kept paths. It skips a workspace the runtime still holds, or one
+being created, restarted or deleted. While it runs, a restart waits for it
+and a delete is refused, as for any teardown. A failure is tried again after an hour. A checkout that is
+gone is stamped without a run. Workspaces already stopped when the column
+was added were stamped by its migration, so an upgrade removes nothing until
+a workspace next stops.
+
+Two limits remain:
+
+- the agent's processes are still running during the in-workspace clean,
+  so a file one writes then can outlive it;
+- each run gets five minutes, since unlinking a large build tree on NFS
+  from inside gVisor is slow. git removes as it goes, so a run that times
+  out leaves the rest to the next.
 
 ## Package installs
 

@@ -142,6 +142,10 @@ export const projects = snakeCase.table('projects', {
    *  good (#domain/workspaces retention). Null keeps them forever. Set by
    *  the project's owner, so it covers only their own workspaces. */
   stoppedWorkspaceRetentionDays: integer(),
+  /** Gitignored paths, relative to the checkout, that a stop keeps when it
+   *  removes a workspace's ignored files (docs/workspace-storage.md
+   *  "Ignored files at stop"). */
+  keptIgnoredPaths: jsonb().$type<string[]>().notNull().default([]),
 }, (t) => [uniqueIndex().on(t.sharedFrom, t.owner)])
 
 /**
@@ -273,6 +277,10 @@ export const workspaces = snakeCase.table('workspaces', {
    * outlives the server process; a workspace restart gets a new one.
    */
   mamaTokenHash: text(),
+  /** When a removal of the checkout's gitignored files that began after the
+   *  last stop finished (docs/workspace-storage.md "Ignored files at stop").
+   *  A stopped row without one is still to be cleaned. */
+  ignoredCleanedAt: timestamp({ withTimezone: true }),
 }, (t) => [index().on(t.projectId)])
 
 /**

@@ -839,6 +839,20 @@ export interface WorkspaceDriver {
    * link swapped in there would redirect the removal.
    */
   removeAsRoot(dir: string, names: string[]): Promise<boolean>
+  /**
+   * Run the shell `script` on a stopped workspace's checkout, with the
+   * checkout's path as it sees it in `$1` and `args` after it: under k8s as
+   * root, in a one-shot pod that mounts nothing else and sees the checkout
+   * at the path its workspace did; under containerless as the server's
+   * user, on the host. Rejects if the script could not run or exited
+   * nonzero. The caller makes sure no runtime is using the checkout.
+   */
+  runInStoppedCheckout(
+    target: { projectId: string; workspaceId: string },
+    script: string,
+    args: string[],
+    opts: { timeoutMs: number },
+  ): Promise<void>
 
   /**
    * Where a sandboxed workspace's `yaac-mama` calls arrive, or null when

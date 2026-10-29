@@ -1192,7 +1192,8 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
     output: stopped.provisioning === true
       ? `Stopped ${short} while it was starting.`
       : `Stopped ${short}. Its checkout is kept, with its conversations, so it can be `
-        + `restarted: yaac-mama restart ${short}`,
+        + `restarted: yaac-mama restart ${short}. Files its .gitignore matches are deleted, `
+        + 'except the project\'s kept paths.',
   }
 }
 

@@ -13,7 +13,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   ...(await importOriginal<typeof hostModule>()),
   runHost: mockRunHost,
 }))
-import { execInWorkspace } from '#drivers/containerless/exec'
+import { execInWorkspace, runInStoppedCheckout } from '#drivers/containerless/exec'
 import { containerlessJobName, workspaceHome } from '#drivers/containerless/paths'
 import {
   _resetRegistryForTests,
@@ -104,5 +104,20 @@ describe('execInWorkspace', () => {
     const err: unknown = await execInWorkspace(JOB, 'tmux').catch((e: unknown) => e)
     expect(err).toBeInstanceOf(Error)
     expect(err).not.toBeInstanceOf(WorkspaceExecError)
+  })
+})
+
+describe('runInStoppedCheckout', () => {
+  it('runs the script on the host in the checkout, its path first, as the server\'s user', async () => {
+    await runInStoppedCheckout({ projectId: 'demo', workspaceId: UUID }, 'echo "$@"', ['.env'], { timeoutMs: 60_000 })
+    const [argv, opts] = mockRunHost.mock.calls[0] as [string[], { cwd: string; timeoutMs: number; env?: unknown }]
+    expect(argv).toEqual(['sh', '-c', 'echo "$@"', 'sh', workspaceDir('demo', UUID), '.env'])
+    expect(opts).toEqual({ cwd: workspaceDir('demo', UUID), timeoutMs: 60_000 })
+  })
+
+  it('rejects when the script exits nonzero', async () => {
+    mockRunHost.mockRejectedValueOnce(new WorkspaceExecError('exit 1', 1, '', 'failed to remove'))
+    await expect(runInStoppedCheckout({ projectId: 'demo', workspaceId: UUID }, 'false', [], { timeoutMs: 60_000 }))
+      .rejects.toThrow('exit 1')
   })
 })

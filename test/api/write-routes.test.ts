@@ -1096,6 +1096,18 @@ describe('write routes', () => {
       expect((await getProjectRow(project.id))?.guardDefaultBranch).toBe(false)
       expect((await guard.$put({ param: { projectId: DEMO }, json: { enabled: false } })).status).toBe(400)
     })
+
+    it('replaces the gitignored paths a stop keeps, refusing one outside the checkout', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const kept = client.project[':projectId']['kept-ignored-paths']
+
+      const res = await kept.$put({ param: { projectId: DEMO }, json: { paths: ['.env', 'target/release/'] } })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ paths: ['.env', 'target/release'] })
+      expect((await getProjectRow(DEMO))?.keptIgnoredPaths).toEqual(['.env', 'target/release'])
+      expect((await kept.$put({ param: { projectId: DEMO }, json: { paths: ['../up'] } })).status).toBe(400)
+      expect((await getProjectRow(DEMO))?.keptIgnoredPaths).toEqual(['.env', 'target/release'])
+    })
   })
 
   describe('workspace retention routes', () => {
