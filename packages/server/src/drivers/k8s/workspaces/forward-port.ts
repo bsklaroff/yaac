@@ -1,6 +1,6 @@
 import { isPrewarmed, readWorkspacePods, relayDial } from '#drivers/k8s/substrate'
 import { addWorkspaceForwarder, getWorkspacePorts } from './port-forwarders'
-import { getUnforwardedPorts, isDetectedPort } from './port-detector'
+import { getUnforwardedPorts } from './port-detector'
 import { ServerError } from '@yaac/shared/errors'
 import { serverLog } from '#lib/log'
 import type { Duplex } from 'node:stream'
@@ -56,19 +56,18 @@ export async function forwardWorkspacePort(
  * the caller resumes it once its reader is attached, and destroys it to
  * end the connection.
  *
- * Only a declared port or one the detector surfaced may be dialled, which
- * keeps yaac's own in-pod ports unreachable. A declared port is dialled
- * even if nothing listens yet, so a forward survives a dev server restart.
+ * Only a forwarded port may be dialled: one the config declares or the
+ * user chose to forward. A listener the detector merely surfaced stays
+ * unreachable until then, and yaac's own in-pod ports always do. A
+ * forwarded port is dialled even if nothing listens yet, so a forward
+ * survives a dev server restart.
  */
 export function dialWorkspacePort(
   workspaceId: string,
   containerPort: number,
 ): Promise<Duplex> {
-  const declared = getWorkspacePorts(workspaceId).some((p) => p.containerPort === containerPort)
-  if (!declared && !isDetectedPort(workspaceId, containerPort)) {
-    return Promise.reject(new Error(
-      `port ${String(containerPort)} is neither declared nor a detected listener of this workspace`,
-    ))
+  if (!getWorkspacePorts(workspaceId).some((p) => p.containerPort === containerPort)) {
+    return Promise.reject(new Error(`port ${String(containerPort)} is not forwarded for this workspace`))
   }
   return relayDial(workspaceId, { kind: 'tcp', port: containerPort })
 }

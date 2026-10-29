@@ -128,13 +128,13 @@ describe('WorkspaceView: open-preview', () => {
   afterEach(() => vi.restoreAllMocks())
 
   it('with several ports, offers them in a menu that returns focus where Alt+P was pressed', async () => {
-    // 3000 is reached here at another port, so its row shows both.
+    // Rows name the workspace's port, whatever host port it is offered at.
     renderView([{ containerPort: 3000, hostPort: 3001 }, port(5173)])
     const terminal = focusTerminal()
 
     altP()
     const items = await screen.findAllByRole('menuitem')
-    expect(items.map((i) => i.textContent)).toEqual([':3000→:3001', ':5173'])
+    expect(items.map((i) => i.textContent)).toEqual([':3000', ':5173'])
     await waitFor(() => expect(document.activeElement).toBe(items[0]))
     fireEvent.keyDown(items[0], { key: 'Escape' })
     await waitFor(() => expect(screen.queryByRole('menuitem')).toBeNull())
@@ -162,7 +162,7 @@ describe('WorkspaceView: open-preview', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: ':5173' }))
     await waitFor(() => expect(previewTabs()).toEqual([previewTarget(3000), previewTarget(5173)]))
     fireEvent.click(screen.getByRole('button', { name: 'Open preview' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: ':3000→:3001' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: ':3000' }))
     await waitFor(() => expect(useUiStore.getState().activeTabs.s1).toBe(previewTarget(3000)))
     expect(previewTabs()).toEqual([previewTarget(3000), previewTarget(5173)])
   })
@@ -202,11 +202,14 @@ describe('WorkspaceView: open-preview', () => {
     />)
     focusTerminal()
     altP()
+    // The page came from a server on loopback, which routes the
+    // workspace hostnames on its own port.
+    const home = `http://4000.s1.localhost:${window.location.port || '80'}/`
     const wv = document.querySelector('webview')
-    expect(wv?.getAttribute('src')).toBe('http://127.0.0.1:4000/')
+    expect(wv?.getAttribute('src')).toBe(home)
 
     // Electron rewrites `src` as the page navigates.
-    wv?.setAttribute('src', 'http://127.0.0.1:4000/settings')
+    wv?.setAttribute('src', `${home}settings`)
 
     act(() => useUiStore.getState().focusTerminal('s1', 'agent'))
     expect(document.querySelector('webview')).toBe(wv)
@@ -217,7 +220,7 @@ describe('WorkspaceView: open-preview', () => {
     act(() => useUiStore.getState().focusTerminal('s1', previewTarget(4000)))
     expect(document.querySelectorAll('webview')).toHaveLength(1)
     expect(document.querySelector('webview')).toBe(wv)
-    expect(wv?.getAttribute('src')).toBe('http://127.0.0.1:4000/settings')
+    expect(wv?.getAttribute('src')).toBe(`${home}settings`)
   })
 
   it('with no ports, opens nothing', () => {
@@ -257,11 +260,15 @@ describe('WorkspaceView: preview outside the desktop app', () => {
     expect(tabsOf()).toEqual(['agent'])
   })
 
-  it('offers no preview in a browser, which cannot reach a forward', () => {
-    renderView(ports)
+  it('in a browser on the server\'s machine, opens the port\'s hostname in a new tab', () => {
+    // The test page is on localhost, where the server routes the names. A
+    // browser on a remote origin has no router it can know of, and no
+    // preview.
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    renderView([ports[1]])
     fireEvent.keyDown(window, { code: 'KeyP', key: 'p', altKey: true })
-    expect(screen.queryByRole('button', { name: 'Open preview' })).toBeNull()
-    expect(screen.queryByRole('link')).toBeNull()
+    expect(open).toHaveBeenCalledWith(`http://5173.s1.localhost:${window.location.port || '80'}/`, '_blank', 'noopener')
     expect(previewTabs()).toEqual([])
+    open.mockRestore()
   })
 })

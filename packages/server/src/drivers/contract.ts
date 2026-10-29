@@ -758,23 +758,30 @@ export interface WorkspaceDriver {
    *  there. */
   awaitReady(handle: RuntimeHandle): Promise<void>
   /**
-   * Declare which workspace ports should be reachable and return the host
-   * port for each, held until `deregisterWorkspace`. Binds nothing: under
-   * `containerless` the workspace binds the ports itself (identity mapping);
-   * under `k8s` a client (`yaac forward`, the desktop app) binds the host
-   * port and tunnels through `dialPort` (docs/port-forward-tunnel.md).
-   * Called before launch, since the status bar shows the answer.
+   * Declare which workspace ports should be reachable and return one
+   * mapping per entry, in order, held until `deregisterWorkspace`. The
+   * mapping's `containerPort` is the port the workspace's own processes
+   * bind for the entry (its `YAAC_PORT_<n>`), and `hostPort` where a client
+   * reaches it. Binds nothing: under `k8s` the pod binds the entry's own
+   * port and a client (`yaac forward`, the desktop app) binds the host port
+   * and tunnels through `dialPort` (docs/port-forward-tunnel.md); under
+   * `containerless` the workspace's network is the host's, so the mapping
+   * is the identity at a port allocated for this workspace
+   * (docs/workspace-hostnames.md). Called before launch, since the status
+   * bar shows the answer.
    *
    * The driver allocates, so two workspaces asking for 3000 get different
-   * host ports. Conflicts with other programs surface when the client binds.
+   * host ports. Re-declaring for a workspace that already holds mappings
+   * returns them unchanged, since its dev servers are bound there.
    */
-  declareForwards(workspaceId: string, forwards: PortForwardConfig[]): PortMapping[]
+  declareForwards(workspaceId: string, forwards: PortForwardConfig[]): Promise<PortMapping[]>
   /**
    * Open one TCP connection to a running workspace's port, for a forward.
-   * Rejects if the workspace is gone or nothing answers; under
-   * `containerless`, also for a port the workspace's own processes were not
-   * seen listening on (the host is the user's machine). Destroy the stream
-   * to close it.
+   * Rejects if the workspace is gone or nothing answers, and for a port it
+   * does not forward (one not in `forwardedPorts`): under `k8s` a listener
+   * the detector only suggests, under `containerless` one the workspace's
+   * own processes were not seen listening on (the host is the user's
+   * machine). Destroy the stream to close it.
    *
    * Returned paused, so bytes sent right away are not lost before the
    * caller attaches a reader; the caller resumes it.

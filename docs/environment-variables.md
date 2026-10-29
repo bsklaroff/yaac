@@ -17,7 +17,8 @@ All yaac variables are read, with their defaults and validation, in
 | `YAAC_AUTO_TITLES` | on | Generate titles with a local model for drafts, queued entries and workspaces whose agent titles nothing (docs/workspace-titles.md). Off when empty, `0` or `false`. |
 | `EDITOR` / `VISUAL` | `vi` | Editor for `yaac config edit*` (`$EDITOR`, then `$VISUAL`, then `vi`). |
 
-Every workspace gets `YAAC_WORKSPACE_ID` set automatically. The other variables
+Every workspace gets `YAAC_WORKSPACE_ID` set automatically, and
+`YAAC_PORT_<n>` for each `portForward` entry (docs/workspace-hostnames.md). The other variables
 in `env.ts` are set by the build, the server's own Deployment, or the test
 harness.
 

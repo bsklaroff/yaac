@@ -9,8 +9,10 @@
 
 /**
  * Whether a URL is one a preview webview may load or navigate to: an http(s)
- * URL on loopback. Everything else (external hosts, file:, javascript:,
- * about:) is rejected.
+ * URL on loopback, which includes every `*.localhost` name (Chromium never
+ * resolves those elsewhere), as the workspace hostnames are
+ * (docs/workspace-hostnames.md). Everything else (external hosts, file:,
+ * javascript:, about:) is rejected.
  */
 export function isAllowedPreviewUrl(raw: string): boolean {
   let url: URL
@@ -21,7 +23,7 @@ export function isAllowedPreviewUrl(raw: string): boolean {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
   const host = url.hostname.replace(/^\[|\]$/g, '') // strip IPv6 brackets
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  return host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1' || host === '::1'
 }
 
 /**

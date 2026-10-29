@@ -1,3 +1,4 @@
+import type { Server } from 'node:http'
 import { serve, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
 import { buildApp, buildMamaRelayApp } from '#main/server'
@@ -6,6 +7,7 @@ import { closeDb, DbRefusal, listProjectRows, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
 import { EventHub } from '#api/events'
 import { registerWebSocketRoutes } from '#api/ws-routes'
+import { routeWorkspaceHosts } from '#api/http/workspace-hosts'
 import { attachConvergence, releaseConvergence, stopConvergence } from '#main/convergence'
 import { coalesceCalls, onWorkspaceListChanged } from '#lib/notify'
 import { readBuildId } from '@yaac/shared/build-id'
@@ -167,6 +169,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   const startPort = resolveServerPort(opts.port)
   const { server, port } = await bindServer(app.fetch, startPort)
+  // node-server makes a plain HTTP/1 server unless asked otherwise.
+  routeWorkspaceHosts(server as Server, () => access)
   if (startPort !== 0 && port !== startPort) {
     serverLog(`[server] preferred port ${startPort} in use; bound ${port} instead`)
   }

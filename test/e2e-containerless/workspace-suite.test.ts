@@ -957,6 +957,74 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
   }, 60_000)
 
+  it.skipIf(!CAN_RUN_PORTS)('gives each workspace of a project its own port for a config entry, served at its own hostname', async () => {
+    // Two workspaces whose init starts the same dev server would collide on
+    // its port, since they share the host's (docs/workspace-hostnames.md).
+    // The project's config names one port; each workspace's server binds
+    // the one it was told in YAAC_PORT_<n>, and the server routes each
+    // workspace's hostname to its own.
+    const PORTS = 'cl-ports'
+    const base = await freeLocalPort()
+    const portsRepo = await createTestRepo(path.join(testEnv.scratchDir, PORTS))
+    const portsProject = await addTestProject(server, portsRepo, { remoteUrl: `https://github.com/test/${PORTS}.git` })
+    await assignTestGitCredential(server, PORTS, GIT_TOKEN)
+    const script = path.join(testEnv.scratchDir, 'port-dev.cjs')
+    await fs.writeFile(script, `
+      const port = Number(process.env.YAAC_PORT_${String(base)})
+      require('http').createServer((req, res) => res.end(process.env.YAAC_WORKSPACE_ID + ' ' + req.headers.host))
+        .listen(port, '127.0.0.1')
+    `)
+    const put = await fetch(`${origin()}/api/project/${portsProject}/config`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ config: {
+        portForward: [{ containerPort: base, hostPortStart: base }],
+        initCommands: [`'${process.execPath}' '${script}'`],
+      } }),
+    })
+    expect(put.status, await put.text()).toBe(200)
+
+    const ids: string[] = []
+    for (let i = 0; i < 2; i++) {
+      const made = await runYaac(cliEnv(), 'workspace', 'create', PORTS, '--tool', 'claude', '--mode', 'tui')
+      expect(made.exitCode, made.stderr).toBe(0)
+      const fresh = (await listWorkspaces()).find((w) => w.projectId === portsProject && !ids.includes(w.workspaceId))
+      ids.push(fresh!.workspaceId)
+    }
+    try {
+      const ports = await vi.waitFor(async () => {
+        const listed = (await listWorkspaces()).filter((w) => ids.includes(w.workspaceId))
+        const found = ids.map((id) => listed.find((w) => w.workspaceId === id)?.forwardedPorts[0]?.containerPort)
+        expect(found.every((p) => p !== undefined)).toBe(true)
+        return found as number[]
+      }, { timeout: 30_000, interval: 500 })
+      expect(new Set(ports).size).toBe(2)
+      for (const [i, id] of ids.entries()) {
+        expect(ports[i]).toBeGreaterThanOrEqual(base)
+        expect(await workspaceEnvVar(id, `YAAC_PORT_${String(base)}`)).toBe(String(ports[i]))
+      }
+
+      // Each name reaches its own workspace through the server's own port,
+      // with the Host the browser sent.
+      for (const [i, id] of ids.entries()) {
+        const host = `${String(ports[i])}.${id.slice(0, 8)}.localhost:${String(server.lock.port)}`
+        const body = await new Promise<string>((resolve, reject) => {
+          http.get({ host: '127.0.0.1', port: server.lock.port, path: '/', headers: { host }, agent: false }, (res) => {
+            let got = ''
+            res.on('data', (c: Buffer) => { got += c.toString('utf8') })
+            res.on('end', () => resolve(got))
+          }).on('error', reject)
+        })
+        expect(body).toBe(`${id} ${host}`)
+      }
+      // The CLI lists the names.
+      const list = await runYaac(cliEnv(), 'workspace', 'list', PORTS)
+      expect(list.stdout).toContain(`http://${String(ports[0])}.${ids[0].slice(0, 8)}.localhost:${String(server.lock.port)}/`)
+    } finally {
+      for (const id of ids) await runYaac(cliEnv(), 'workspace', 'stop', id.slice(0, 8))
+    }
+  }, 120_000)
+
   it('records a conversation started by hand in a new terminal, through the registered hook', async () => {
     // Each link fails silently: the command registered in settings.json,
     // the script on the workspace's PATH, the pane option it sets, and the

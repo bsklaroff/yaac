@@ -1,4 +1,4 @@
-import type { LocalPortRemap, PortMapping } from '@yaac/shared/types'
+import type { PortMapping } from '@yaac/shared/types'
 
 /** True when the SPA is running inside the Electron desktop shell (vs a browser). */
 export function isElectron(): boolean {
@@ -24,11 +24,11 @@ interface YaacWindow {
   /** Show the shell's Servers page. */
   showServers: () => void
   /**
-   * Follow the forwards the desktop app bound at a fallback local port:
-   * called with the current table, then on every change. Returns an
-   * unsubscribe.
+   * Follow the local port the desktop app routes workspace hostnames at for
+   * a remote server (null when it routes none): called with the current
+   * port, then on every change. Returns an unsubscribe.
    */
-  onForwardRemaps?: (cb: (remaps: LocalPortRemap[]) => void) => () => void
+  onHostsPort?: (cb: (port: number | null) => void) => () => void
   /**
    * Preview a workspace's forwarded port in the shell's own view, which
    * forwards it to the shell's loopback: the iPhone app's (ios/README.md

@@ -1,9 +1,10 @@
 import net from 'node:net'
 import { MAX_SURFACED_PORTS, isForwardablePort } from '#lib/port-policy'
 import { descendantPids, listeningPorts, processTable, type Listener, type ProcessTable } from './host'
-import { listWorkspaces, tmuxPidOf } from './registry'
+import { ServerError } from '@yaac/shared/errors'
+import { listWorkspaces, markerPorts, runningWorkspacePorts, tmuxPidOf } from './registry'
 import type { Duplex } from 'node:stream'
-import type { PortMapping } from '@yaac/shared/types'
+import type { PortForwardConfig, PortMapping } from '@yaac/shared/types'
 
 /**
  * Which ports each running workspace is listening on, found by polling (no
@@ -25,6 +26,9 @@ const POLL_MS = 3_000
 const CPU_WINDOW_MS = 30_000
 
 const ports = new Map<string, Listener[]>()
+/** The ports this server allocated each workspace, from its declare until
+ *  it goes away; its marker keeps them across a restart. */
+const allocations = new Map<string, PortMapping[]>()
 /** The sweep's recent `ps` tables, oldest first. */
 const tables: ProcessTable[] = []
 let timer: NodeJS.Timeout | null = null
@@ -32,6 +36,7 @@ let timer: NodeJS.Timeout | null = null
 /** Test helper: drop all detector state. */
 export function _resetPortsForTests(): void {
   ports.clear()
+  allocations.clear()
   tables.length = 0
 }
 
@@ -99,9 +104,75 @@ export function stopPortSweep(): void {
   timer = null
 }
 
-/** Drop a workspace's ports when it goes away. */
+/** Drop a workspace's ports, and the ones it was allocated, when it goes
+ *  away. */
 export function forgetPorts(workspaceId: string): void {
   ports.delete(workspaceId)
+  allocations.delete(workspaceId)
+}
+
+/** The ports this server allocated a workspace, for its marker. */
+export function allocatedPorts(workspaceId: string): PortMapping[] {
+  return allocations.get(workspaceId) ?? []
+}
+
+/**
+ * Whether something on this host answers on `port`, at either loopback. A
+ * connect sees a listener on any address that reaches loopback, where a
+ * test bind can succeed beside a specific-address listener on macOS.
+ */
+async function answersHere(port: number): Promise<boolean> {
+  const tryHost = (host: string): Promise<boolean> => new Promise((resolve) => {
+    const socket = net.connect({ host, port })
+    const done = (open: boolean): void => {
+      socket.destroy()
+      resolve(open)
+    }
+    socket.once('connect', () => done(true))
+    socket.once('error', () => done(false))
+    socket.setTimeout(1_000, () => done(false))
+  })
+  return (await Promise.all(['127.0.0.1', '::1'].map(tryHost))).some(Boolean)
+}
+
+/**
+ * See `WorkspaceDriver.declareForwards`. Workspaces share the host's
+ * ports, so each config entry gets the first port at or above its
+ * `hostPortStart` that no running workspace holds and nothing here answers
+ * on, mapped to itself. A workspace that already holds ports (declared
+ * earlier, or recovered from its marker) gets them back, since its dev
+ * servers are bound there.
+ *
+ * Each candidate is reserved before it is probed, so a concurrent declare
+ * never picks it too. A port taken between the probe and the dev server's
+ * bind still collides, as any free-port check would.
+ */
+export async function declareWorkspacePorts(
+  workspaceId: string,
+  forwards: ReadonlyArray<PortForwardConfig>,
+): Promise<PortMapping[]> {
+  const held = allocations.get(workspaceId) ?? markerPorts(workspaceId)
+  if (held) return held
+  const mappings: PortMapping[] = []
+  allocations.set(workspaceId, mappings)
+  const busy = new Set<number>()
+  const taken = (port: number): boolean => busy.has(port)
+    || runningWorkspacePorts().includes(port)
+    || [...allocations.values()].some((m) => m.some((p) => p.containerPort === port))
+  for (const { hostPortStart } of forwards) {
+    let port = hostPortStart
+    for (;; port++) {
+      if (port > 65535) {
+        throw new ServerError('CONFLICT', `no free port at or above ${String(hostPortStart)}`)
+      }
+      if (taken(port)) continue
+      mappings.push({ containerPort: port, hostPort: port })
+      if (!await answersHere(port)) break
+      mappings.pop()
+      busy.add(port)
+    }
+  }
+  return mappings
 }
 
 /**

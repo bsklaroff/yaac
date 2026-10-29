@@ -4,22 +4,26 @@ import {
   snapshotForwards,
   type ForwardSet,
 } from '@yaac/shared/port-tunnel-set'
-import type { ServerTarget } from '@yaac/shared/server-api'
-import type { LocalPortRemap, ServerSnapshot } from '@yaac/shared/types'
+import { isLoopbackOrigin, type ServerTarget } from '@yaac/shared/server-api'
+import { WORKSPACE_HOSTS_PORT } from '@yaac/shared/workspace-hosts'
+import type { ServerSnapshot } from '@yaac/shared/types'
 
 /**
  * The desktop shell as a resident port forwarder. The server can't bind
  * ports on the user's machine (under `k8s` it is a pod), so a client holds
  * the listeners. This process is long-lived and already receives every
- * snapshot's `forwardedPorts` over `/events`, so the webapp's
- * `127.0.0.1:<port>` links work whenever the app runs. See
+ * snapshot's `forwardedPorts` over `/events`, so `127.0.0.1:<port>` reaches
+ * each workspace port whenever the app runs. See
  * docs/port-forward-tunnel.md.
  *
  * It binds loopback only. To publish forwards on the network, use
  * `yaac forward --bind`. A host port something else on this machine holds
- * is bound at the next free port instead, and the webapp asks for that
- * remap over IPC (`remaps`, `onRemaps`) so its preview and links reach the
- * workspace rather than whatever holds the port.
+ * is bound at the next free port instead, which the log reports.
+ *
+ * For a server on another machine it also routes the workspace hostnames
+ * (docs/workspace-hostnames.md) and tells the page where (`hostsPort`,
+ * `onHostsPort`), so the preview pane can load them. A server on this
+ * machine routes them on its own port.
  */
 
 export interface ForwarderDeps {
@@ -28,15 +32,15 @@ export interface ForwarderDeps {
   createSet?: typeof createForwardSet
   /** Bind failures and dropped connections, for the log. */
   onMessage?: (text: string) => void
-  /** The remap table changed. */
-  onRemaps?: (remaps: LocalPortRemap[]) => void
+  /** The hostname router came up at this port, or went away. */
+  onHostsPort?: (port: number | null) => void
 }
 
 export interface DesktopForwarder {
   /** Reconcile against a snapshot. Unchanged forwards are not restarted. */
   apply(snapshot: ServerSnapshot): void
-  /** Every live forward bound somewhere other than its offered host port. */
-  remaps(): LocalPortRemap[]
+  /** Where this app routes workspace hostnames, if it does. */
+  hostsPort(): number | null
   stop(): void
 }
 
@@ -50,18 +54,27 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
   // snapshots arrive faster than binds settle.
   let running: Promise<void> = Promise.resolve()
   let pending: ServerSnapshot | null = null
-  let remaps: LocalPortRemap[] = []
+  let hostsPort: number | null = null
+  const publishHostsPort = (port: number | null): void => {
+    if (port === hostsPort) return
+    hostsPort = port
+    deps.onHostsPort?.(port)
+  }
 
   /** Returns the origin the set targets; a new server gets a fresh set. */
   const rebuild = async (): Promise<string> => {
     const target = await deps.resolveTarget()
     if (set && targetUrl === target.baseUrl) return target.baseUrl
     set?.close()
+    publishHostsPort(null)
     targetUrl = target.baseUrl
     set = createSet(
       { baseUrl: target.baseUrl },
       {
         fallback: true,
+        ...(isLoopbackOrigin(target.baseUrl) ? {} : { hostsPort: WORKSPACE_HOSTS_PORT }),
+        onHostsBound: (port) => { if (!stopped) publishHostsPort(port) },
+        onHostsError: (message) => say(`workspace hostnames could not be routed: ${message}`),
         onChange: (f, state) => {
           if (state === 'up' && f.localPort !== f.hostPort) {
             say(`port ${String(f.hostPort)} is in use here; forwarding it at ${String(f.localPort)}`)
@@ -75,17 +88,6 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
     return target.baseUrl
   }
 
-  const publishRemaps = (): void => {
-    if (stopped) return
-    const next = (set?.live() ?? [])
-      .filter((f) => f.localPort !== f.hostPort)
-      .map(({ session, containerPort, hostPort, localPort }) =>
-        ({ workspaceId: session, containerPort, hostPort, localPort }))
-    if (JSON.stringify(next) === JSON.stringify(remaps)) return
-    remaps = next
-    deps.onRemaps?.(remaps)
-  }
-
   const step = async (snapshot: ServerSnapshot): Promise<void> => {
     try {
       const baseUrl = await rebuild()
@@ -93,7 +95,6 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
       // Nothing against a containerless server on this machine, whose
       // workspace processes already hold the ports themselves.
       await set?.reconcile(serverNeedsForwarder(snapshot.driver, baseUrl) ? snapshotForwards(snapshot) : [])
-      publishRemaps()
     } catch (err) {
       say(`forwarding paused: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -115,17 +116,16 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
       pending = snapshot
       drain()
     },
-    remaps: () => remaps,
+    hostsPort: () => hostsPort,
     stop() {
       stopped = true
       pending = null
       set?.close()
       set = null
       targetUrl = null
-      // The page may have this table from us; a successor starting empty
+      // The page may have the port from us; a successor starting empty
       // would never tell it otherwise.
-      if (remaps.length > 0) deps.onRemaps?.([])
-      remaps = []
+      publishHostsPort(null)
     },
   }
 }

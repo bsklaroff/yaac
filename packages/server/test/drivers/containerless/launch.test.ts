@@ -29,6 +29,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
 }))
 import { AGENT_SESSION_VARS, launchWorkspace } from '#drivers/containerless/launch'
 import { _resetRegistryForTests, listWorkspaces } from '#drivers/containerless/registry'
+import { _resetPortsForTests, declareWorkspacePorts } from '#drivers/containerless/ports'
 import { TOOL_HOME_VARS } from '#drivers/containerless/tool-homes'
 
 const execFileAsync = promisify(execFile)
@@ -105,6 +106,9 @@ describe('launchWorkspace', () => {
   })
 
   it('registers the workspace and writes the marker a restart recovers from', async () => {
+    _resetPortsForTests()
+    // Ports are allocated before launch; the marker keeps them.
+    const ports = await declareWorkspacePorts(UUID, [{ containerPort: 1, hostPortStart: 1 }])
     const handle = await launchWorkspace(spec())
     expect(handle.running).toBe(true)
     expect(listWorkspaces()).toHaveLength(1)
@@ -114,11 +118,13 @@ describe('launchWorkspace', () => {
     const marker = JSON.parse(await fsp.readFile(
       path.join(dataDir, 'global', 'projects', 'demo', 'sessions', UUID, 'containerless', 'workspace.json'),
       'utf8',
-    )) as { workspaceId: string; tool: string; tmuxPid: number }
+    )) as { workspaceId: string; tool: string; tmuxPid: number; ports: unknown }
     expect(marker.workspaceId).toBe(UUID)
     expect(marker.tool).toBe('claude')
     // Read from tmux, as the root of the port scan's process tree.
     expect(marker.tmuxPid).toBe(4242)
+    expect(marker.ports).toEqual(ports)
+    _resetPortsForTests()
   })
 
   it('writes the launch\'s own entries to the marker, and never a credential', async () => {

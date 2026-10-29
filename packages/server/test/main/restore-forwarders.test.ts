@@ -48,14 +48,14 @@ beforeEach(() => {
     forwardedPorts,
     exec,
     // A real allocator, so two workspaces asking for 3000 get different ports.
-    declareForwards: (workspaceId, forwards) => forwards.map(({ containerPort, hostPortStart }) => {
+    declareForwards: (workspaceId, forwards) => Promise.resolve(forwards.map(({ containerPort, hostPortStart }) => {
       const taken = new Set(declared.map((d) => d.mapping.hostPort))
       let hostPort = hostPortStart
       while (taken.has(hostPort)) hostPort++
       const mapping = { containerPort, hostPort }
       declared.push({ workspaceId, mapping })
       return mapping
-    }),
+    })),
   })
 })
 

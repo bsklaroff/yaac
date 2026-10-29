@@ -57,12 +57,13 @@ describe('resolveProjectId', () => {
 })
 
 describe('workspaceList', () => {
-  const running = (workspaceId: string, projectId: string): object => ({
-    workspaceId, projectId, tool: 'claude', status: 'running', agentSessions: [], blockedHosts: [], createdAt: '',
+  const running = (workspaceId: string, projectId: string, forwardedPorts: object[] = []): object => ({
+    workspaceId, projectId, tool: 'claude', status: 'running', agentSessions: [], blockedHosts: [], createdAt: '', forwardedPorts,
   })
 
   it("lists the workspaces of the projects in scope, and asks for the scoped user's stopped ones", async () => {
-    api.on('GET /api/workspace/list', { json: { workspaces: [running('mine-1', MINE), running('hers-1', HERS)], gitAuthFailures: {} } })
+    const port = { containerPort: 3001, hostPort: 3001 }
+    api.on('GET /api/workspace/list', { json: { workspaces: [running('mine-1', MINE, [port]), running('hers-1', HERS, [port])], gitAuthFailures: {} } })
     api.on('GET /api/workspace/group/list', { json: { groups: [] } })
     api.on('GET /api/workspace/list-stopped', { json: { entries: [], total: 0 } })
     const scheduled = (id: string, projectId: string, prompt: string): object => ({
@@ -76,6 +77,8 @@ describe('workspaceList', () => {
     await workspaceList()
     expect(printed()).toContain('mine-1')
     expect(printed()).not.toContain('hers-1')
+    // A server on this machine routes each port's hostname on its own port.
+    expect(printed()).toContain(`http://3001.mine-1.localhost:${new URL(api.url).port}/`)
     // Scheduled ones are scoped the same way, and timed in the user's zone.
     expect(printed()).toContain('my later')
     expect(printed()).toContain('STARTS (Asia/Tokyo)')

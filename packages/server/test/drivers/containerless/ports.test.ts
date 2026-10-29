@@ -17,7 +17,9 @@ vi.mock('node:child_process', async (importOriginal) => ({
 }))
 import {
   _resetPortsForTests,
+  declareWorkspacePorts,
   dialWorkspacePort,
+  forgetPorts,
   processWindow,
   sweepPorts,
   workspacePorts,
@@ -293,5 +295,47 @@ describe('dialWorkspacePort', () => {
     srv!.close()
     await offered(port)
     await expect(dialWorkspacePort(UUID, port)).rejects.toThrow()
+  })
+})
+
+describe('declareWorkspacePorts', () => {
+  const OTHER = '9d3a1c2e-0000-4000-8000-000000000000'
+  const THIRD = '7e1f0b44-0000-4000-8000-000000000000'
+  const forwards = (...starts: number[]): Array<{ containerPort: number; hostPortStart: number }> =>
+    starts.map((p) => ({ containerPort: p, hostPortStart: p }))
+
+  it('gives each workspace its own port, past what other workspaces hold and what answers here', async () => {
+    // A free port to start from, held here by something that is not a
+    // workspace, as a dev server the user started by hand would be.
+    const squatter = net.createServer((sock) => sock.on('error', () => { /* the probe hangs up */ }))
+    await new Promise<void>((resolve) => squatter.listen(0, '127.0.0.1', resolve))
+    const base = (squatter.address() as net.AddressInfo).port
+    try {
+      // A running workspace recovered from its marker holds base + 1.
+      rememberWorkspace({
+        projectId: 'demo', workspaceId: OTHER, tool: 'claude', mode: 'tui',
+        createdAtMs: 1_000, launchEnv: {}, ports: [{ containerPort: base + 1, hostPort: base + 1 }],
+      })
+      // Two entries in one config never share a port, and each maps to
+      // itself: the workspace's network is the host's.
+      expect(await declareWorkspacePorts(UUID, forwards(base, base))).toEqual([
+        { containerPort: base + 2, hostPort: base + 2 },
+        { containerPort: base + 3, hostPort: base + 3 },
+      ])
+      // A declare still in flight for another workspace holds its ports too.
+      expect(await declareWorkspacePorts(THIRD, forwards(base))).toEqual([{ containerPort: base + 4, hostPort: base + 4 }])
+
+      // Asked again, as a server restart's re-declare does, a workspace keeps
+      // what it has: its dev servers are bound there.
+      expect(await declareWorkspacePorts(UUID, forwards(base, base, base))).toHaveLength(2)
+      expect(await declareWorkspacePorts(OTHER, forwards(base))).toEqual([{ containerPort: base + 1, hostPort: base + 1 }])
+
+      // Once a workspace goes away its ports are free again.
+      forgetPorts(UUID)
+      expect(await declareWorkspacePorts('5c5c5c5c-0000-4000-8000-000000000000', forwards(base + 2)))
+        .toEqual([{ containerPort: base + 2, hostPort: base + 2 }])
+    } finally {
+      squatter.close()
+    }
   })
 })

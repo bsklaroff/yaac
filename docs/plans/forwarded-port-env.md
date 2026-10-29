@@ -16,10 +16,12 @@ callback URLs and anything else built from "my own port" point at
 `containerPort`, which on the user's machine belongs to a different
 workspace or to nothing, and the flow breaks.
 
-Under `containerless` the declared host port always equals
-`containerPort` (the workspace's processes bind host ports directly), so
-the problem only exists on `k8s`. The fix below still sets the variable
-on both drivers, so dev-server code needs no branch.
+Under `containerless` the declared host port is the port the workspace
+binds, which it already reads from `YAAC_PORT_<containerPort>`
+(docs/workspace-hostnames.md), so the problem only exists on `k8s`. The
+fix below still sets the variable on both drivers, so dev-server code
+needs no branch. `YAAC_PORT_<n>` is the port to bind; this variable is
+the port a client reaches it at, which differs only under `k8s`.
 
 ## Design
 
@@ -30,7 +32,7 @@ builds its own URLs, e.g. `http://localhost:${process.env.PUBLIC_PORT}/oauth/cal
 Decisions (confirmed with the user):
 
 - The user names the variable per entry. There is no `YAAC_*` naming
-  convention.
+  convention for it (unlike the bind port's `YAAC_PORT_<n>`).
 - Port number only. No URL variable, because the host part differs across
   setups (remote hosting, SSH tunnels).
 
@@ -101,9 +103,10 @@ writes `{containerPort, hostPortStart}` only.
   creates a workspace with `PORT_FORWARD`. Add `envVar` to one entry
   there and assert `printenv <var>` in the workspace equals the host port
   from the create output. Reuse the file's shared workspace; do not add a
-  new one. `test/e2e-containerless/workspace-suite.test.ts` configures no
-  `portForward` today; add one entry with an `envVar` to its shared
-  workspace and assert the value equals `containerPort`.
+  new one. `test/e2e-containerless/workspace-suite.test.ts` already has a
+  `portForward` case (two workspaces of `cl-ports`); add an `envVar` to
+  its entry and assert the value equals that workspace's
+  `YAAC_PORT_<n>`.
 
 ## Verification
 

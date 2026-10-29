@@ -31,7 +31,13 @@ Both are stored on the server, so this works against a remote server too.
   bound on a client, by the desktop app or `yaac forward`
   ([port-forward-tunnel.md](port-forward-tunnel.md)). The app also offers to
   forward ports it sees a workspace listening on
-  ([auto-forward-ports.md](auto-forward-ports.md)).
+  ([auto-forward-ports.md](auto-forward-ports.md)). Each workspace gets
+  `YAAC_PORT_<containerPort>`, the port its dev server should bind:
+  `containerPort` under k8s, and under containerless a port of its own from
+  `hostPortStart` up, since workspaces there share the host's ports. So start
+  the dev server with it (`pnpm dev --port $YAAC_PORT_3000`). Each port is
+  also served at `http://<port>.<workspace id prefix>.localhost:<port>/`
+  ([workspace-hostnames.md](workspace-hostnames.md)).
 - **cacheVolumes:** named directories that persist across workspaces. Keys
   are names (stored at `global/projects/<project id>/cache-volumes/<name>`),
   values are absolute paths in the workspace.

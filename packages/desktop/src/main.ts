@@ -510,7 +510,7 @@ function startEvents(): void {
   // on offer (docs/port-forward-tunnel.md).
   forwarder = startForwarder({
     resolveTarget,
-    onRemaps: (remaps) => { if (win && !win.isDestroyed()) win.webContents.send('forward:remaps', remaps) },
+    onHostsPort: (port) => { if (win && !win.isDestroyed()) win.webContents.send('forward:hosts-port', port) },
   })
   events = startEventsMonitor({
     resolveTarget,
@@ -673,10 +673,8 @@ ipcMain.on('window:show-servers', (e) => {
 ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)
 })
-// The forwards bound at a local port other than the one the server offers,
-// for the SPA's preview pane (forwarder.ts). Updates arrive on the same
-// channel.
-ipcMain.handle('forward:remaps', () => forwarder?.remaps() ?? [])
+// Where this app routes workspace hostnames for a remote server, or null.
+ipcMain.handle('forward:hosts-port', () => forwarder?.hostsPort() ?? null)
 
 // A hidden preview pane's lifecycle (preview-lifecycle.ts), for guests the
 // asking window embeds.

@@ -24,6 +24,7 @@ import {
   writeMarker,
   type WorkspaceMarker,
 } from './registry'
+import { allocatedPorts } from './ports'
 import { TOOL_HOME_VARS, overriddenToolHomeVars } from './tool-homes'
 import type { RuntimeHandle, WorkspaceMount, WorkspaceSpec } from '#drivers/contract'
 
@@ -444,6 +445,8 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ...(gitAuth.agentPid !== undefined ? { sshAgentPid: gitAuth.agentPid } : {}),
     launchEnv: persistableLaunchEnv(env, spec, gitAuth.env),
   }
+  const ports = allocatedPorts(spec.workspaceId)
+  if (ports.length > 0) marker.ports = ports
   await writeMarker(marker)
   return rememberWorkspace(marker, env)
 }

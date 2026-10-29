@@ -53,12 +53,6 @@ export function getUnforwardedPorts(workspaceId: string): number[] {
     .slice(0, MAX_SURFACED_PORTS)
 }
 
-/** Whether a port is a listener the workspace's detector has seen and the
- *  policy would surface — forwarded, dismissed or not. */
-export function isDetectedPort(workspaceId: string, port: number): boolean {
-  return isForwardablePort(port) && (detected.get(workspaceId)?.includes(port) ?? false)
-}
-
 /**
  * Stop offering a detected port for this workspace. In memory only: it
  * resets with the server and clears when the workspace goes away. Only a

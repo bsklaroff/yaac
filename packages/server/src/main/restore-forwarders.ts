@@ -77,7 +77,7 @@ async function provisionForwarders(
   jobName: string,
   portForward: PortForwardConfig[] | undefined,
 ): Promise<void> {
-  const declared = workspaceDriver().declareForwards(workspaceId, portForward ?? [])
+  const declared = await workspaceDriver().declareForwards(workspaceId, portForward ?? [])
 
   // Always refresh, to clear stale port info even when there are no
   // forwards.

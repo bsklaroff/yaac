@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { Menu } from '@base-ui/react/menu'
 import { windowApi } from '#lib/platform'
-import { previewUrl, normalizePreviewNav } from '#lib/preview'
+import { normalizePreviewNav } from '#lib/preview'
 import {
   NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
   MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
@@ -88,28 +88,27 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
  * reconcile it would reload the page on every parent render. While the pane
  * is hidden the page is frozen and later discarded, and showing the pane
  * again thaws it or reloads it at the URL it was on. Electron only: the
- * iPhone app previews in a native view, and a browser has no preview.
+ * iPhone app previews in a native view, and a browser in a new tab.
  */
 export function WorkspacePreview({
   workspaceId,
   containerPort,
-  hostPort,
+  url,
   visible,
   onStopForwarding,
 }: {
   workspaceId: string
   /** The workspace port the pane shows. */
   containerPort: number
-  /** Where this machine reaches it; undefined while it is not forwarded. */
-  hostPort: number | undefined
+  /** Where this machine reaches it (its workspace hostname); undefined
+   *  while it is not reachable yet. */
+  url: string | undefined
   /** Whether the pane is on screen. */
   visible: boolean
   /** Stop forwarding the shown port; omitted where there is no forward to
    *  stop. */
   onStopForwarding?: (containerPort: number) => void
 }): JSX.Element {
-  const url = hostPort !== undefined ? previewUrl(hostPort) : null
-
   const hostRef = useRef<HTMLDivElement>(null)
   const wvRef = useRef<PreviewWebview | null>(null)
   const [address, setAddress] = useState(url ?? '')
@@ -251,7 +250,7 @@ export function WorkspacePreview({
   const copyUrl = (): void => { void navigator.clipboard?.writeText(address || url || '') }
   const openExternal = (): void => { if (url) windowApi()?.openExternal(address || url) }
   const submitAddress = (): void => {
-    const dest = normalizePreviewNav(editing ?? '', hostPort)
+    const dest = normalizePreviewNav(editing ?? '', url)
     if (dest) void wvRef.current?.loadURL?.(dest)
     setEditing(null)
   }
@@ -332,7 +331,7 @@ export function WorkspacePreview({
             <Menu.Item className={MENU_ITEM} onClick={openDevTools}>
               <DevToolsIcon size={14} /> Open DevTools
             </Menu.Item>
-            {onStopForwarding && hostPort !== undefined && (
+            {onStopForwarding && url !== undefined && (
               <>
                 <div className="my-1 h-px bg-border" />
                 <Menu.Item className={MENU_ITEM} onClick={() => onStopForwarding(containerPort)}>
@@ -353,7 +352,7 @@ export function WorkspacePreview({
             className={clsx('h-full bg-white', deviceWidth !== null && 'border-x border-border')}
           />
         </div>
-        {hostPort === undefined ? (
+        {url === undefined ? (
           <PreviewOverlay>
             <LoadingIcon size={18} className="animate-spin text-text-faint" />
             <span>Waiting for the dev server on :{containerPort}…</span>

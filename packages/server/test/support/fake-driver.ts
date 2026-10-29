@@ -191,7 +191,7 @@ function defaultRuntime(): WorkspaceDriver {
     awaitReady: () => Promise.resolve(),
     // The identity, as for a runtime whose workspaces bind their own ports.
     declareForwards: (_w, forwards) =>
-      forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort })),
+      Promise.resolve(forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort }))),
     dialPort: () => Promise.reject(new Error('fake driver has no port to dial')),
     registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: () => Promise.resolve(),
