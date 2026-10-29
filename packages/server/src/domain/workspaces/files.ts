@@ -260,7 +260,8 @@ export async function getWorkspaceChanges(
   opts: { diff?: boolean; listing?: 'paths' | 'full'; known?: string; signal?: AbortSignal } = {},
 ): Promise<WorkspaceChanges> {
   const { jobName, projectId, workspaceId } = await runningWorkspace(idOrName)
-  const forkBranch = (await getWorkspaceRow(projectId, workspaceId))?.baseBranch
+  const row = await getWorkspaceRow(projectId, workspaceId)
+  const forkBranch = row?.baseBranch
   // The runtime treats a blank `base` as unset.
   const named = base?.trim()
   let reading: ChangesReading
@@ -289,7 +290,10 @@ export async function getWorkspaceChanges(
       : null
     if (fetchedAtMs !== null) comparison.fetchedAt = formatUtcTimestamp(fetchedAtMs)
   }
-  const listing = reading.listing && await finishListing(await openCheckout(idOrName), jobName, reading.listing)
+  const listing = reading.listing && await finishListing(
+    await openCheckout(idOrName), jobName, reading.listing,
+    { dirs: row?.scratchDirs ?? [], changed: reading.changes.files.map((f) => f.path) },
+  )
   return {
     ...reading.changes,
     branch: named || forkBranch || null,
@@ -332,8 +336,19 @@ function isListable(co: Checkout, rel: string): boolean {
  * The explorer's listing from what the script read: capped, with where each
  * symlink leads and, for a `full` listing, the folders holding no file. Its
  * `root` is where the workspace sees the checkout.
+ *
+ * A `full` listing also reports each of the workspace's scratch dirs
+ * (docs/project-config.md "Scratch directories") as a wholly ignored
+ * folder, so the explorer hides it like one, unless it holds a path of
+ * `paths` or a `changed` one (a tracked file deleted there): nothing git
+ * cares about is hidden. A dir counts as a real folder only when the empty
+ * folders name it or something in it, or the ignored entries name
+ * something in it.
  */
-async function finishListing(co: Checkout, jobName: string, read: NonNullable<ChangesReading['listing']>): Promise<WorkspaceFiles> {
+async function finishListing(
+  co: Checkout, jobName: string, read: NonNullable<ChangesReading['listing']>,
+  scratch: { dirs: string[]; changed: string[] },
+): Promise<WorkspaceFiles> {
   // The script runs in the workspace, so every list may name anything. Only
   // paths the file routes accept are kept, before any is opened or resolved.
   const listable = (list: string[]): string[] => list.filter((p) => isListable(co, p.replace(/\/$/, '')))
@@ -342,7 +357,17 @@ async function finishListing(co: Checkout, jobName: string, read: NonNullable<Ch
   // One cap for every list, so no checkout makes the answer unbounded.
   const truncated = listed.length > MAX_LISTED_PATHS || listedIgnored.length > MAX_LISTED_PATHS
   const paths = listed.slice(0, MAX_LISTED_PATHS)
-  const ignored = listedIgnored.slice(0, MAX_LISTED_PATHS)
+  let ignored = listedIgnored.slice(0, MAX_LISTED_PATHS)
+  let emptyDirs = read.untrackedDirs ? await findEmptyDirs(co, listable(read.untrackedDirs), paths, ignored) : []
+  // Sorted, so a dir inside another scratch dir is already under its entry.
+  for (const dir of [...scratch.dirs].sort()) {
+    const inDir = (p: string): boolean => p === dir || p.startsWith(`${dir}/`)
+    if (listed.some(inDir) || scratch.changed.some(inDir)) continue
+    if (ignored.some((e) => e.endsWith('/') && `${dir}/`.startsWith(e))) continue
+    if (!emptyDirs.some(inDir) && !ignored.some((e) => e.startsWith(`${dir}/`))) continue
+    ignored = [...ignored.filter((e) => !inDir(e)), `${dir}/`]
+    emptyDirs = emptyDirs.filter((p) => !inDir(p))
+  }
   // git records a link as one entry and never lists what is behind it.
   // Built in path order, so an unchanged listing hashes the same.
   const links = listable(read.links).slice(0, MAX_LISTED_PATHS)
@@ -353,7 +378,7 @@ async function finishListing(co: Checkout, jobName: string, read: NonNullable<Ch
     paths,
     symlinks,
     ignored,
-    emptyDirs: read.untrackedDirs ? await findEmptyDirs(co, listable(read.untrackedDirs), paths, ignored) : [],
+    emptyDirs,
     conflicted: listable(read.conflicted),
     truncated,
   }

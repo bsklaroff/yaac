@@ -66,7 +66,8 @@ cargo build can pass. The default dirs are `node_modules` and `target`. They
 are a project setting stored on the server rather than a `yaac-config.json`
 key: edit them under Settings → Project Config, or with
 `yaac config scratch-dirs <project> [dirs...]`, each dir `path` or `path:GiB`
-(`--none` for none).
+(`--none` for none). The webapp's file explorer hides them like ignored
+folders unless one holds a file git would list ([file-editor.md](file-editor.md)).
 
 A stop empties a scratch directory even where git tracks files in it: they
 stay in git history, and `git checkout` brings them back, but after a

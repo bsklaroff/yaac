@@ -259,6 +259,33 @@ describe('getWorkspaceChanges', () => {
     expect(emptyDirs.some((d) => d.startsWith('node_modules') || d.startsWith('pkg'))).toBe(false)
   })
 
+  it('reports the scratch dirs as wholly ignored folders unless one holds a path git lists or a change', async () => {
+    const scratch = await makeCheckout('scratch')
+    await recordWorkspaceCreated({
+      projectId: PROJECT, workspaceId: 'scratch',
+      scratchDirs: ['target', 'out', 'node_modules', 'node_modules/.cache', 'vendor', 'gone', 'src/lib', 'cache.log'],
+    })
+    await fs.mkdir(path.join(scratch, 'target'))
+    await write(scratch, 'out/run.log', 'ignored')
+    await fs.mkdir(path.join(scratch, 'out/sub'))
+    await write(scratch, 'node_modules/.cache/x', 'ignored')
+    await write(scratch, 'vendor/lib.js', 'untracked')
+    // A tracked file deleted, as a scratch volume hides it, keeps its folder
+    // and the folder's deleted mark.
+    await fs.rm(path.join(scratch, 'src/lib/util.ts'))
+    // A gitignored link at a scratch path stays the ignored file it is.
+    await fs.symlink('out', path.join(scratch, 'cache.log'))
+
+    const { paths, ignored, emptyDirs } = await listing('scratch')
+    expect([...ignored].sort()).toEqual(['cache.log', 'node_modules/', 'out/', 'target/'])
+    expect(emptyDirs.filter((d) => /^(target|out|vendor)\b/.test(d))).toEqual([])
+    expect(emptyDirs).toContain('src/lib')
+    expect(paths).toContain('vendor/lib.js')
+    // Only the explorer's `full` listing walks for them.
+    const { listing: cheap } = await getWorkspaceChanges('scratch', undefined, { diff: false, listing: 'paths' })
+    expect(cheap).toMatchObject({ ignored: [], emptyDirs: [] })
+  })
+
   it('reports merge conflicts without writing the index', async () => {
     await makeCheckout('status')
     const inWt = wtGit('status')
