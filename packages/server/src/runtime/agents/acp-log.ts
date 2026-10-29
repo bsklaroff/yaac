@@ -535,7 +535,7 @@ export class RecordProjection {
     if (msg.method === ACPD.exit) {
       this.skipping = undefined
       projection.agentState(false)
-      projection.forgetWakes()
+      projection.beginRun()
       return projection.endLife()
     }
     // An adapter's own state report, the only boundary a run the agent
@@ -545,7 +545,7 @@ export class RecordProjection {
     // The client's own prompts. The agent echoes user messages only when
     // replaying under `session/load`, so live prompts appear only here.
     if (msg.method === ACP.sessionPrompt) {
-      projection.forgetWakes()
+      projection.beginRun()
       const content = toContentList(asRecord(msg.params)?.prompt)
       const text = promptText(msg.params)
       if (id !== undefined && text !== undefined && COMPACT_COMMAND.test(text)) {
@@ -576,11 +576,13 @@ export class RecordProjection {
     if (msg.method === ACP.requestPermission) {
       return id === undefined ? [] : [projection.openPermission(id, msg.params)]
     }
-    // A reply settles a permission ask or a steer, carries the session's
-    // models (the handshake's `session/new` or `session/load`, or a model
-    // switch), or answers a `/compact`.
+    // A reply names the adapter (`initialize`'s), settles a permission ask
+    // or a steer, carries the session's models (the handshake's
+    // `session/new` or `session/load`, or a model switch), or answers a
+    // `/compact`.
     if (msg.method === undefined) {
       if (id === undefined) return []
+      projection.noteAgent(msg.result)
       const event = projection.closePermission(id, msg.result) ?? projection.closeSteer(id, msg.result)
       if (event !== undefined) return [event]
       const models = sessionModels(msg.result)

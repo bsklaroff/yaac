@@ -532,10 +532,10 @@ are taken when the run began:
 
 The adapter does not always report idle between runs. While a background
 subagent works it stays `running` and holds our prompt open, so a run that
-a notification starts then is found by its first output after a result.
-Without a notification waiting, output after a result continues the run:
-a steer aborts the cycle it interrupts, which sends a result of its own. A
-monitor event during such a hold therefore joins the run before it. A
+a notification or a monitor's event starts then is found by its first
+output after a result. A steer is the exception: it aborts the cycle it
+interrupts, which sends a result of its own, so a result that comes after an
+injected steer with no output between them does not end the run. A
 notification that arrives mid-run joins that run and wakes nothing. The
 notification text the agent itself received is not available: the CLI
 replays it only when it joins a running turn.
@@ -566,7 +566,15 @@ Anything else, such as a user quoting the markup, stays an ordinary
 message. Consecutive notifications wake one run. At the reply, what the
 replay rebuilt and left running is settled as stopped, since it died with
 the agent life before; nothing else is touched. A mid-run notification
-replays the same way, so after a reload it gets a caption too.
+replays the same way, so after a reload it gets a caption too. In the
+adapter's own replay, a message's output straight after another's, with
+nothing between them, begins a run, since that is where a notification it
+left out stood. The run has no caption. The adapter shows almost every tool
+call, but not a `TaskGet` or a failed Task call, so a run that made one
+between two messages is split there too. The rule applies only to the
+replay a record's `initialize` reply names claude's adapter for: yaac's own
+replay holds the notifications, and opencode's gives a message's reasoning
+an id of its own.
 
 A tui claude transcript is rendered through the same replay: its synthesized
 record opens with a `session/load` request but has no reply, because the

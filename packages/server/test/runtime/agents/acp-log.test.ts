@@ -16,7 +16,8 @@ import {
   type RecordOrigin,
 } from '#runtime/agents/acp-log'
 import { acpLogDir, setDataDir } from '@yaac/shared/project-paths'
-import { acpPageOf, ACP_PAGE_SPAN, type AcpEventInit } from '@yaac/shared/acp'
+import { acpPageOf, ACP_PAGE_SPAN, type AcpEventInit, type AcpWake } from '@yaac/shared/acp'
+import { ACP_ADAPTERS } from '@yaac/shared/types'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
 // Workspaces sandboxed, as under k8s; a test wanting containerless
@@ -611,6 +612,10 @@ describe('replayAcpLog', () => {
     })
     const text = (t: string): string => update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: t } })
     const done = (taskId: string): string => sdk({ subtype: 'task_notification', task_id: taskId, status: 'completed' })
+    const steer = (id: string, t: string): string[] => [
+      line({ jsonrpc: '2.0', id, method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: t }] } }),
+      line({ jsonrpc: '2.0', id, result: { outcome: 'injected' } }),
+    ]
     const events = replayAcpLog([
       prompt('start the background work'),
       state('running'),
@@ -625,7 +630,10 @@ describe('replayAcpLog', () => {
       // A notification mid-run joins the run and wakes nothing.
       done('f1'),
       text('Launched.'), result('human'),
-      done('s1'), done('a1'), text('The subagent reported.'), result('task-notification'), state('idle'),
+      done('s1'), done('a1'), text('The subagent reported.'), result('task-notification'),
+      // Still running: the monitor's event starts the next run with nothing
+      // before it.
+      text('Deploy finished.'), result('task-notification'), state('idle'),
       // Two finishing together wake one run.
       done('b1'), done('a1'), state('running'), result('task-notification'), state('idle'),
       // Nothing before a run: the running monitor's event woke it.
@@ -635,29 +643,103 @@ describe('replayAcpLog', () => {
       // A notification the prompt's run took in wakes nothing.
       done('b1'), prompt('thanks'), state('running'), result('human'), state('idle'),
       // A steer aborts the cycle it interrupts, which sends a result of its
-      // own; the steered reply goes on in the same run.
+      // own; the steered reply goes on in the same run. This one interrupted
+      // a command, which claude moved to the background; it finishes
+      // mid-run and wakes nothing.
       prompt('count'), state('running'), text('1, 2'),
-      line({ jsonrpc: '2.0', id: 's-1', method: '_session/steering', params: { sessionId: 'acp-1', prompt: [{ type: 'text', text: 'and 3' }] } }),
-      line({ jsonrpc: '2.0', id: 's-1', result: { outcome: 'injected' } }),
-      result('human'), text('3'), result('human'), state('idle'),
+      ...steer('s-1', 'and 3'),
+      started('b3', 'toolu_sleep', 'sleep 300', 'local_bash', { is_backgrounded: false }),
+      sdk({ subtype: 'task_updated', task_id: 'b3', patch: { is_backgrounded: true } }),
+      result('human'), text('3'), done('b3'), text('Still counting.'),
+      // A steer that aborts nothing: output follows it, so the next result
+      // ends the run.
+      ...steer('s-2', 'and 4'),
+      started('b4', 'toolu_build', 'Build'),
+      text('4'), result('human'),
+      // Held open by the build, whose notification wakes the next run.
+      done('b4'), text('Built.'), result('task-notification'), state('idle'),
     ].join('\n') + '\n')
-    expect(events.filter((e) => e.type === 'agent-turn' || e.type === 'woken').map((e) => (e.type === 'woken' ? e.causes : e.type)))
+    const said = (e: { content: Array<{ type: string; text?: string }> }): string => e.content.map((c) => c.text ?? '').join('')
+    expect(events.flatMap((e): Array<string | AcpWake[]> => (e.type === 'agent-turn' ? [e.type] : e.type === 'woken' ? [e.causes]
+      : e.type === 'agent' ? [said(e)] : e.type === 'user' ? [`> ${said(e)}${e.steered === true ? ' (steered)' : ''}`] : [])))
       .toEqual([
+        '> start the background work',
+        'agent-turn', 'Launched.',
+        'agent-turn', 'The subagent reported.', [{ kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
+        'agent-turn', 'Deploy finished.', [{ kind: 'monitor', id: 'm1', name: 'deploy events' }],
+        'agent-turn', [{ kind: 'task', id: 'b1', name: 'Run tests' }, { kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
+        'agent-turn', [{ kind: 'monitor', id: 'm1', name: 'deploy events' }],
         'agent-turn',
-        'agent-turn',
-        [{ kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
-        'agent-turn',
-        [{ kind: 'task', id: 'b1', name: 'Run tests' }, { kind: 'subagent', id: 'toolu_agent', name: 'count files' }],
-        'agent-turn',
-        [{ kind: 'monitor', id: 'm1', name: 'deploy events' }],
-        'agent-turn',
-        'agent-turn',
-        'agent-turn',
+        '> thanks', 'agent-turn',
+        '> count', 'agent-turn', '1, 2', '> and 3 (steered)', '3', 'Still counting.', '> and 4 (steered)', '4',
+        'agent-turn', 'Built.', [{ kind: 'task', id: 'b4', name: 'Build' }],
       ])
     // Credited at the run's result, once its origin says a notification
     // started it.
     const credited = events.findIndex((e) => e.type === 'woken')
     expect(events[credited - 1]).toMatchObject({ type: 'agent', content: [{ text: 'The subagent reported.' }] })
+  })
+
+  it('starts a run where claude\'s own session/load replay goes from one message straight to another', () => {
+    // As claude-agent-acp 0.97.0 replays history itself: no state reports
+    // or results, and no notification before a run one woke. Each message's
+    // chunks carry its id.
+    const said = (id: string, t: string, kind = 'agent_message_chunk'): string =>
+      update({ sessionUpdate: kind, content: { type: 'text', text: t }, messageId: id })
+    const call = (id: string, rawInput: Record<string, unknown>): string => update({
+      sessionUpdate: 'tool_call', toolCallId: id, title: 'npm test', kind: 'execute', status: 'pending', rawInput,
+      _meta: { claudeCode: { toolName: 'Bash' } },
+    })
+    const done = (id: string, rawOutput: string): string => update({
+      sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput,
+      content: [{ type: 'content', content: { type: 'text', text: rawOutput } }],
+    })
+    const replay = (adapter: string | undefined, history: string[], after: string[] = []): string[] => replayAcpLog([
+      ...(adapter === undefined ? [] : [
+        line({ jsonrpc: '2.0', id: 'i-1', method: 'initialize', params: { protocolVersion: 1 } }),
+        line({ jsonrpc: '2.0', id: 'i-1', result: { protocolVersion: 1, agentInfo: { name: adapter } } }),
+      ]),
+      line({ jsonrpc: '2.0', id: 'l-1', method: 'session/load', params: { sessionId: 'acp-1' } }),
+      update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'run the tests' } }),
+      ...history,
+      line({ jsonrpc: '2.0', id: 'l-1', result: {} }),
+      ...after,
+    ].join('\n') + '\n').flatMap((e) => (e.type === 'agent-turn' || e.type === 'woken' ? [e.type]
+      : e.type === 'agent' || e.type === 'thought' ? [`${e.type}: ${e.content.map((c) => (c.type === 'text' ? c.text : '')).join('')}`] : []))
+
+    expect(replay(ACP_ADAPTERS.claude.package, [
+      said('m1', 'Running '), said('m1', 'them.'),
+      call('toolu_bash', { command: 'npm test', run_in_background: true }),
+      done('toolu_bash', 'Command running in background with ID: b1. Output is being written to: /t/tasks/b1.output.'),
+      said('m2', 'Started.'),
+      // A monitor's event woke these runs, with nothing left between them.
+      said('m3', 'A deploy finished.'),
+      said('m4', 'Another one?', 'agent_thought_chunk'), said('m4', 'A second deploy.'),
+      // A notification the replay kept starts its run itself.
+      update({
+        sessionUpdate: 'user_message_chunk',
+        content: { type: 'text', text: '<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_bash</tool-use-id>\n<status>completed</status>\n</task-notification>' },
+      }),
+      said('m5', 'Tests passed.'),
+    ], [
+      // Live, the adapter's state reports and results mark runs instead.
+      said('m6', 'Live.'), said('m7', 'Still live.'),
+    ])).toEqual([
+      'agent: Running ', 'agent: them.', 'agent: Started.',
+      'agent-turn', 'agent: A deploy finished.',
+      'agent-turn', 'thought: Another one?', 'agent: A second deploy.',
+      'agent-turn', 'woken', 'agent: Tests passed.',
+      'agent: Live.', 'agent: Still live.',
+    ])
+    // The replay yaac rebuilds from claude's transcript holds no
+    // `initialize`. A `TaskGet` shows nothing in it, so one between two
+    // messages leaves them straight after each other in the same run.
+    expect(replay(undefined, [said('m1', 'Checking task 3.'), said('m2', 'Only the docs are left.')]))
+      .toEqual(['agent: Checking task 3.', 'agent: Only the docs are left.'])
+    // opencode gives a message's reasoning an id of its own.
+    expect(replay(ACP_ADAPTERS.opencode.package, [
+      said('msg_A:reasoning:0', 'Plan it.', 'agent_thought_chunk'), said('msg_A', 'Planned.'),
+    ])).toEqual(['thought: Plan it.', 'agent: Planned.'])
   })
 
   it('rebuilds subagents and tasks from a session/load replay, and what each woke', () => {
