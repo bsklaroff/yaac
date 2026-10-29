@@ -17,8 +17,9 @@
 #
 # Inputs (env, set by session-create): YAAC_TOOL, YAAC_GIT_NAME,
 # YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, for SSH-remote projects
-# YAAC_SSH_AGENT_UPSTREAM (+ SSH_AUTH_SOCK), for installs through the npm
-# cache YAAC_NPM_REGISTRY, and for nested-containers sessions
+# YAAC_SSH_AGENT_UPSTREAM (+ SSH_AUTH_SOCK), for installs through the
+# package caches YAAC_NPM_REGISTRY and YAAC_CRATES_CACHE, and for
+# nested-containers sessions
 # YAAC_NESTED_ENGINE=1 plus optional YAAC_REGISTRY_CONF_B64.
 set -eu
 
@@ -125,16 +126,13 @@ git config --global --add safe.directory /workspace
 # sync with CHECKOUT_WORKERS (packages/server/src/domain/git/repo.ts).
 git config --global checkout.workers 8
 
-# The install's npm cache as the DEFAULT registry, at user-config
-# precedence: pnpm (10 and 11) and npm read ~/.npmrc below the project's own
-# .npmrc, so a project that names a registry of its own keeps it — which an
-# env var would override. Skipped when the image already names one. The
-# file is created here, owned by the pod's uid, for the reason
-# Dockerfile.default gives for keeping npm's prefix out of it.
-if [ -n "${YAAC_NPM_REGISTRY:-}" ] && ! grep -qs '^registry=' "$HOME/.npmrc"; then
-  printf 'registry=%s\n' "$YAAC_NPM_REGISTRY" >> "$HOME/.npmrc" \
-    || echo "yaac: could not write the npm cache into ~/.npmrc; installs go to npmjs" >&2
-fi
+# The install's package caches, as the default npm registry and cargo's
+# crates.io source (yaac-package-cache). A cache that cannot be configured
+# only leaves installs on the upstream.
+yaac-package-cache npm "${YAAC_NPM_REGISTRY:-}" \
+  || echo "yaac: could not write the npm cache into ~/.npmrc; installs go to npmjs" >&2
+yaac-package-cache cargo "${YAAC_CRATES_CACHE:-}" \
+  || echo "yaac: could not write the crates.io cache into cargo's config; fetches go to crates.io" >&2
 
 # Open the tmux session with a placeholder keepalive (`sleep infinity`)
 # instead of the agent. The agent is respawned in by the server once the

@@ -2,7 +2,7 @@ import { applyObject, listObjects } from '#drivers/k8s/substrate'
 import { serverLog } from '#lib/log'
 import { apiserverEndpoints, clusterDnsCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
-import { syncNpmCacheNodes } from './npm-cache'
+import { CRATES_CACHE, NPM_CACHE, syncCacheNodes } from './package-cache'
 import {
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
@@ -56,7 +56,7 @@ export async function reconcileNodeSet(projectIds: string[]): Promise<void> {
       buildProxyIngressNpManifest(nodeCidrs),
       buildProxyEgressNpManifest(nodeCidrs, dnsCidrs, apiserver),
     ]) await applyObject(manifest)
-    await syncNpmCacheNodes(nodeCidrs)
+    for (const cache of [NPM_CACHE, CRATES_CACHE]) await syncCacheNodes(cache, nodeCidrs)
     await applyMainRegistryIngress(nodeCidrs)
     for (const projectId of projectIds) await applyProjectRegistryIngress(projectId, nodeCidrs)
     renderedAddresses = addresses

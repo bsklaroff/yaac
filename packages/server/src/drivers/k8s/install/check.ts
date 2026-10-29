@@ -11,8 +11,11 @@ import {
   registryEndpoint,
   registryHost,
   registryReachable,
-  servingNpmCacheUrl,
+  CRATES_CACHE,
+  NPM_CACHE,
+  servingCacheUrl,
   vapAvailable,
+  type PackageCache,
 } from '#drivers/k8s/cluster'
 import crypto from 'node:crypto'
 import dns from 'node:dns/promises'
@@ -24,12 +27,9 @@ import {
   GLOBAL_CLAIM_NAME,
   LABEL_CLAIM,
   LABEL_INSTALL_ID,
-  LABEL_NPM_CACHE,
   NESTED_ENGINE_CAPS,
   NETD_APP_NAME,
   NFS_PORT,
-  NPM_CACHE_APP_NAME,
-  NPM_CACHE_PORT,
   PROXY_APP_NAME,
   SERVER_APP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
@@ -239,7 +239,7 @@ export async function runClusterCheck(
 
   const PROBE_GATES = [
     'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'egress', 'npm-cache',
-    'datapath', 'veth-source', 'per-node', 'nested-mount', 'storage-semantics', 'vap',
+    'crates-cache', 'datapath', 'veth-source', 'per-node', 'nested-mount', 'storage-semantics', 'vap',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
     for (const name of PROBE_GATES.slice(PROBE_GATES.indexOf(from))) {
@@ -265,7 +265,9 @@ export async function runClusterCheck(
   }
   let sandboxResults: CheckResult[]
   if (idlePool) {
-    sandboxResults = ['probe', 'egress', 'npm-cache', 'nested-mount', 'per-node', 'storage-semantics'].map(idleSkip)
+    sandboxResults = [
+      'probe', 'egress', 'npm-cache', 'crates-cache', 'nested-mount', 'per-node', 'storage-semantics',
+    ].map(idleSkip)
   } else {
     // Probe pods run as the workspace uid/gid recorded on the server
     // Deployment, not this machine's. If it cannot be read, fail here rather
@@ -287,18 +289,19 @@ export async function runClusterCheck(
     sandboxResults = await Promise.all([
       runEndToEndProbe(identity),
       runNetworkPolicyProbe(),
-      runNpmCacheProbe(),
+      ...CACHE_PROBES.map(runPackageCacheProbe),
       runNestedMountProbe(),
       runPerNodeProbe(nodes, gvisorScheduling, identity),
       runStorageSemanticsProbe(identity),
     ])
   }
   const [
-    probeResult, egressResult, npmCacheResult, nestedMountResult, perNodeResult, semanticsResult,
+    probeResult, egressResult, npmCacheResult, cratesCacheResult, nestedMountResult, perNodeResult, semanticsResult,
   ] = sandboxResults
   add(probeResult)
   add(egressResult)
   add(npmCacheResult)
+  add(cratesCacheResult)
 
   add(await runDatapathCheck())
   // netd reports Ready even with no pod-to-veth mappings, so a wrong veth
@@ -1686,72 +1689,72 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
   }
 }
 
-const NPM_CACHE_PROBE_POD_NAME = 'yaac-cluster-check-npm-cache'
-
-/** A small, long-published tarball, fetched with its packument the way
- *  pnpm fetches one. */
-const NPM_CACHE_PROBE_PATHS = ['is-number', 'is-number/-/is-number-7.0.0.tgz']
-
-/** A function because the namespace must not be read at import time. */
-function npmCacheFix(): string {
-  return 'Re-run `yaac cluster install`, which deploys the npm cache. Inspect it with '
-    + `\`kubectl -n ${k8sNamespace()} get pods,pvc -l app=${NPM_CACHE_APP_NAME}\` and `
-    + `\`kubectl -n ${k8sNamespace()} logs deploy/${NPM_CACHE_APP_NAME} --all-containers\`.`
-}
+/**
+ * The package-cache gates: each fetches a small, long-published package
+ * the way its client does (an npm packument and tarball; a crate's index
+ * file and `.crate`).
+ */
+const CACHE_PROBES: Array<{ gate: string; cache: PackageCache; name: string; upstream: string; paths: string[] }> = [
+  {
+    gate: 'npm-cache', cache: NPM_CACHE, name: 'npm cache', upstream: 'npmjs',
+    paths: ['is-number', 'is-number/-/is-number-7.0.0.tgz'],
+  },
+  {
+    gate: 'crates-cache', cache: CRATES_CACHE, name: 'crates.io cache', upstream: 'crates.io',
+    paths: ['index/cf/g-/cfg-if', 'crates/cfg-if/cfg-if-1.0.0.crate'],
+  },
+]
 
 /**
- * Check the npm cache serves workspaces: a gVisor pod labeled like a
- * workspace of a cache-using project fetches a packument and tarball via
- * the cache's ClusterIP. This covers the network policies and the cache's
- * route to npmjs.
+ * Check a package cache serves workspaces: a gVisor pod labeled like a
+ * workspace of a cache-using project fetches through the cache's ClusterIP.
+ * This covers the network policies and the cache's route to its upstream.
  *
- * No ready cache is a warn: new workspaces then install from npmjs
- * (`servingNpmCacheUrl`). A ready cache that fails to serve is a fail,
- * since new workspaces would install through it.
+ * No ready cache is a warn: new workspaces then fetch from the upstream
+ * (`servingCacheUrl`). A ready cache that fails to serve is a fail, since
+ * new workspaces would fetch through it.
  */
-async function runNpmCacheProbe(): Promise<CheckResult> {
+async function runPackageCacheProbe(
+  { gate, cache, name, upstream, paths }: (typeof CACHE_PROBES)[number],
+): Promise<CheckResult> {
   const ns = k8sNamespace()
+  const fix = `Re-run \`yaac cluster install\`, which deploys the ${name}. Inspect it with `
+    + `\`kubectl -n ${ns} get pods,pvc -l app=${cache.app}\` and `
+    + `\`kubectl -n ${ns} logs deploy/${cache.app} --all-containers\`.`
   try {
-    const ip = await serviceIp(NPM_CACHE_APP_NAME, ns)
-    if (!ip || await servingNpmCacheUrl() === null) {
+    const ip = await serviceIp(cache.app, ns)
+    if (!ip || await servingCacheUrl(cache) === null) {
       return {
-        name: 'npm-cache', status: 'warn',
-        detail: `${ip ? 'the npm cache has no ready pod' : 'no npm cache in this install'} `
-          + '— workspaces install from npmjs',
-        fix: npmCacheFix(),
+        name: gate, status: 'warn',
+        detail: `${ip ? `the ${name} has no ready pod` : `no ${name} in this install`} `
+          + `— workspaces fetch from ${upstream}`,
+        fix,
       }
     }
-    const fetches = NPM_CACHE_PROBE_PATHS
-      .map((p) => `wget -q -T 60 -O /dev/null http://${ip}:${NPM_CACHE_PORT}/${p}`)
+    const fetches = paths
+      .map((p) => `wget -q -T 60 -O /dev/null http://${ip}:${cache.port}/${p}`)
       .join(' && ')
-    const { phase, logs } = await runProbePod(NPM_CACHE_PROBE_POD_NAME, {
+    const { phase, logs } = await runProbePod(`yaac-cluster-check-${gate}`, {
       timeoutMs: 150_000,
-      labels: { ...workspaceIdLabels('cluster-check-npm-cache-probe'), [LABEL_NPM_CACHE]: 'true' },
+      labels: { ...workspaceIdLabels(`cluster-check-${gate}-probe`), [cache.label]: 'true' },
       spec: { runtimeClassName: RUNTIME_CLASS_GVISOR },
       container: {
         image: await ensureProbeImage(),
-        command: ['sh', '-c', `(${fetches}) && echo NPM_CACHE_OK || echo NPM_CACHE_FAILED`],
+        command: ['sh', '-c', `(${fetches}) && echo CACHE_OK || echo CACHE_FAILED`],
       },
     })
-    if (phase === 'Succeeded' && logs.includes('NPM_CACHE_OK')) {
-      return {
-        name: 'npm-cache', status: 'pass',
-        detail: `a session pod fetched a package through ${NPM_CACHE_APP_NAME}`,
-      }
+    if (phase === 'Succeeded' && logs.includes('CACHE_OK')) {
+      return { name: gate, status: 'pass', detail: `a session pod fetched a package through ${cache.app}` }
     }
     return {
-      name: 'npm-cache', status: 'fail',
-      detail: `a session pod could not fetch a package through ${NPM_CACHE_APP_NAME} `
+      name: gate, status: 'fail',
+      detail: `a session pod could not fetch a package through ${cache.app} `
         + `(phase ${phase}${logs.trim() ? `, logs: ${logs.trim().slice(0, 80)}` : ''}), `
-        + 'so every session\'s pnpm install fails',
-      fix: npmCacheFix(),
+        + 'so every session\'s fetch through it fails',
+      fix,
     }
   } catch (err) {
-    return {
-      name: 'npm-cache', status: 'fail',
-      detail: `npm cache probe errored (${k8sErrorSummary(err)})`,
-      fix: npmCacheFix(),
-    }
+    return { name: gate, status: 'fail', detail: `${name} probe errored (${k8sErrorSummary(err)})`, fix }
   }
 }
 

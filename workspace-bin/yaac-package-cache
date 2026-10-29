@@ -1,0 +1,43 @@
+#!/bin/sh
+# yaac-package-cache — point this workspace's npm or cargo at the install's
+# package cache (docs/workspace-storage.md "Package installs"), or at no cache:
+#
+#   yaac-package-cache npm|cargo [<cache url>]
+#
+# Run by yaac-workspace-init at pod start, and by the server when a claimed
+# spare's cache is re-decided (drivers/k8s/workspaces/package-caches.ts).
+#
+# The cache's own entry is removed first. With a URL, an entry is then added
+# unless the file already configures a registry of its own. Both files are
+# user-level config, read below a project's own .npmrc or .cargo/config.toml,
+# so a project that names a registry keeps it, which an env var would
+# override. cargo can only take source replacement from a config file.
+set -eu
+
+url="${2:-}"
+case "$1" in
+  npm)
+    # Created owned by the pod's uid, for the reason Dockerfile.default gives
+    # for keeping npm's prefix out of it.
+    f="$HOME/.npmrc"
+    sed -i '/^registry=http:\/\/yaac-npm-cache\./d' "$f" 2>/dev/null || true
+    if [ -n "$url" ] && ! grep -qs '^registry=' "$f"; then
+      printf 'registry=%s\n' "$url" >> "$f"
+    fi
+    ;;
+  cargo)
+    # The image's CARGO_HOME (Dockerfile.default) is group-0 writable, so
+    # the pod's uid can write its config.
+    f="${CARGO_HOME:-$HOME/.cargo}/config.toml"
+    sed -i '/^# yaac-crates-cache begin$/,/^# yaac-crates-cache end$/d' "$f" 2>/dev/null || true
+    if [ -n "$url" ] && ! grep -qs '^\[source\.crates-io\]' "$f"; then
+      mkdir -p "$(dirname "$f")"
+      printf '%s\n' '# yaac-crates-cache begin' '[source.crates-io]' 'replace-with = "yaac-crates-cache"' \
+        '[source.yaac-crates-cache]' "registry = \"sparse+${url}index/\"" '# yaac-crates-cache end' >> "$f"
+    fi
+    ;;
+  *)
+    echo "usage: yaac-package-cache npm|cargo [<cache url>]" >&2
+    exit 2
+    ;;
+esac

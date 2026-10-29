@@ -2,7 +2,7 @@
 // SEALED_FOLDERS).
 //
 // This feature owns the in-cluster datapath (egress proxy, netd, the main
-// and per-project registries, the npm cache), the main registry's client
+// and per-project registries, the package caches), the main registry's client
 // and write grants, and the tag or digest of every image yaac ships.
 // Building and pushing those images is `#drivers/k8s/install`'s job.
 //
@@ -104,11 +104,13 @@ export {
   REGISTRY_SERVICE_PORT,
 } from './registry'
 export { REGISTRY_GRANT_NAMESPACE, registryAuthFile } from './registry-grant'
+export { VERDACCIO_MIRROR_TAG, VERDACCIO_UPSTREAM_IMAGE, ensureNpmCache } from './npm-cache'
+export { ensureCratesCache } from './crates-cache'
 export {
+  CRATES_CACHE,
   NGINX_MIRROR_TAG,
   NGINX_UPSTREAM_IMAGE,
-  VERDACCIO_MIRROR_TAG,
-  VERDACCIO_UPSTREAM_IMAGE,
-  ensureNpmCache,
-  servingNpmCacheUrl,
-} from './npm-cache'
+  NPM_CACHE,
+  servingCacheUrl,
+  type PackageCache,
+} from './package-cache'

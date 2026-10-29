@@ -215,6 +215,8 @@ const FSPROBE_ALL_PASS = [
 let npmCacheIp: string | null = null
 /** Whether a cache pod is ready behind that Service; a case edits. */
 let npmCacheReady = true
+/** The crates.io cache's Service IP, or null for none; a case edits. */
+let cratesCacheIp: string | null = null
 /** Service name -> ClusterIP, beyond the apiserver and the npm cache; a case adds. */
 let serviceIps: Record<string, string> = {}
 /** Whether the deployed proxy has its egress NetworkPolicy; a case edits. */
@@ -239,7 +241,8 @@ function logsFor(name: string): string {
     case 'yaac-cluster-check-gvisor': return 'GVISOR_SANDBOXED\n'
     case 'yaac-cluster-check-fsprobe': return FSPROBE_ALL_PASS
     case 'yaac-cluster-check-egress': return 'NP_BLOCKED\n'
-    case 'yaac-cluster-check-npm-cache': return 'NPM_CACHE_OK\n'
+    case 'yaac-cluster-check-npm-cache': return 'CACHE_OK\n'
+    case 'yaac-cluster-check-crates-cache': return 'CACHE_OK\n'
     case 'yaac-cluster-check-nested': return 'NESTED_MOUNT_OK\n'
     case 'yaac-cluster-check': {
       const [, nonce] = appliedPodArgs('yaac-cluster-check-peer')
@@ -289,6 +292,15 @@ function seedCluster(): void {
         kind: 'EndpointSlice',
         metadata: { name: 'yaac-npm-cache-x', namespace: NS, labels: { 'kubernetes.io/service-name': 'yaac-npm-cache' } },
         endpoints: [{ conditions: { ready: npmCacheReady } }],
+      },
+    ] : []),
+    ...(cratesCacheIp ? [
+      service('yaac-crates-cache', NS, cratesCacheIp),
+      {
+        apiVersion: 'discovery.k8s.io/v1',
+        kind: 'EndpointSlice',
+        metadata: { name: 'yaac-crates-cache-x', namespace: NS, labels: { 'kubernetes.io/service-name': 'yaac-crates-cache' } },
+        endpoints: [{ conditions: { ready: true } }],
       },
     ] : []),
     ...(proxyEgressPolicy
@@ -463,6 +475,7 @@ describe('runClusterCheck', () => {
     storageClassProvisioner = null
     npmCacheIp = '10.96.4.2'
     npmCacheReady = true
+    cratesCacheIp = '10.96.4.3'
     serviceIps = {}
     proxyEgressPolicy = true
     datapathReady = { 'calico-node': '1/1', 'yaac-netd': '1/1' }
@@ -507,6 +520,7 @@ describe('runClusterCheck', () => {
       ['probe', 'pass'],
       ['egress', 'pass'],
       ['npm-cache', 'pass'],
+      ['crates-cache', 'pass'],
       ['datapath', 'pass'],
       // Checked on every run: netd can be Ready with zero pod-to-veth
       // mappings, so nothing else would notice a wrong prefix.
@@ -885,7 +899,9 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'nodes')).toMatchObject({ status: 'warn' })
     expect(byName(results, 'nodes')?.detail).toContain('1 node(s), none taking workspaces')
     expect(byName(results, 'nodes')?.detail).toContain('the gates that run a sandboxed pod are skipped')
-    for (const gate of ['gvisor', 'probe', 'egress', 'npm-cache', 'nested-mount', 'per-node', 'storage-semantics']) {
+    for (const gate of [
+      'gvisor', 'probe', 'egress', 'npm-cache', 'crates-cache', 'nested-mount', 'per-node', 'storage-semantics',
+    ]) {
       expect(byName(results, gate)).toMatchObject({ status: 'skip' })
       expect(byName(results, gate)?.detail).toContain('no Ready node takes workspaces')
     }
@@ -1138,30 +1154,40 @@ describe('runClusterCheck', () => {
 
   // A workspace pod fetching through the Service checks the egress rule,
   // the cache's ingress policy and its route out at once.
-  it('passes npm-cache when a session pod fetches a package through the Service\'s IP', async () => {
+  it('passes each package-cache gate when a session pod fetches a package through its Service\'s IP', async () => {
     stage()
     const { results } = await check()
 
-    expect(byName(results, 'npm-cache')?.status).toBe('pass')
-    const pod = applied().map((c) => c[0] as {
+    const probePod = (name: string) => applied().map((c) => c[0] as {
       kind: string
       metadata: { name: string; labels: Record<string, string> }
       spec: { runtimeClassName?: string; containers: Array<{ command: string[] }> }
-    }).find((m) => m.metadata.name === 'yaac-cluster-check-npm-cache')
-    expect(pod?.metadata.labels['yaac.workspace-id']).toBeDefined()
-    expect(pod?.metadata.labels['yaac.npm-cache']).toBe('true')
-    expect(pod?.spec.runtimeClassName).toBe('gvisor')
-    expect(pod?.spec.containers[0].command[2])
-      .toContain('http://10.96.4.2:4873/is-number/-/is-number-7.0.0.tgz')
+    }).find((m) => m.metadata.name === name)
+    for (const [gate, fetched] of [
+      ['npm-cache', 'http://10.96.4.2:4873/is-number/-/is-number-7.0.0.tgz'],
+      ['crates-cache', 'http://10.96.4.3:4875/crates/cfg-if/cfg-if-1.0.0.crate'],
+    ]) {
+      expect(byName(results, gate)?.status).toBe('pass')
+      const pod = probePod(`yaac-cluster-check-${gate}`)
+      expect(pod?.metadata.labels['yaac.workspace-id']).toBeDefined()
+      // Labelled for its own cache only.
+      expect(Object.keys(pod?.metadata.labels ?? {}).filter((l) => l.endsWith('-cache'))).toEqual([`yaac.${gate}`])
+      expect(pod?.spec.runtimeClassName).toBe('gvisor')
+      expect(pod?.spec.containers[0].command[2]).toContain(fetched)
+    }
   })
 
-  it('warns, without failing, on an install with no npm cache', async () => {
+  it('warns, without failing, on an install with no npm or crates.io cache', async () => {
     npmCacheIp = null
+    cratesCacheIp = null
     stage()
     const { ok, results } = await check()
 
-    expect(byName(results, 'npm-cache')?.status).toBe('warn')
-    expect(byName(results, 'npm-cache')?.fix).toContain('yaac cluster install')
+    for (const gate of ['npm-cache', 'crates-cache']) {
+      expect(byName(results, gate)?.status).toBe('warn')
+      expect(byName(results, gate)?.fix).toContain('yaac cluster install')
+    }
+    expect(byName(results, 'crates-cache')?.detail).toContain('workspaces fetch from crates.io')
     expect(ok).toBe(true)
   })
 
@@ -1182,7 +1208,7 @@ describe('runClusterCheck', () => {
   // With a ready pod, workspaces use the cache, so one that cannot serve
   // breaks every install.
   it('fails npm-cache when the Service does not serve', async () => {
-    podLogs['yaac-cluster-check-npm-cache'] = 'wget: server returned error: HTTP/1.1 503\nNPM_CACHE_FAILED\n'
+    podLogs['yaac-cluster-check-npm-cache'] = 'wget: server returned error: HTTP/1.1 503\nCACHE_FAILED\n'
     stage()
     const { ok, results } = await check()
 

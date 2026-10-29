@@ -140,11 +140,14 @@ describe('reconcileNodeSet', () => {
     // Every node-address policy admits the node, and its containerd learns
     // the main registry. Project registries are reached by ClusterIP, so
     // none gets a hosts.toml.
-    for (const policy of ['yaac-server-ingress', 'yaac-proxy-ingress', 'yaac-npm-cache-ingress', 'yaac-registry-ingress']) {
+    for (const policy of [
+      'yaac-server-ingress', 'yaac-proxy-ingress', 'yaac-npm-cache-ingress', 'yaac-crates-cache-ingress',
+      'yaac-registry-ingress',
+    ]) {
       expect(admittedNodes(policy), policy).toEqual(['10.0.1.5/32'])
     }
     expect(applied().map((m) => m.metadata.name)).toEqual(expect.arrayContaining([
-      'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress',
+      'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress', 'yaac-crates-cache-egress',
     ]))
     expect(hostsWrites()).toEqual(['node-a yaac-registry.yaac.svc.cluster.local:5000'])
     // The apiserver at its real endpoint, and DNS at the kube-dns Service.

@@ -31,7 +31,7 @@ already collects, so watching it adds almost no load to the nodes.
 
   | `k8s` | `containerless` |
   |---|---|
-  | yaac server, main registry, project registries (one row each when expanded), npm cache, egress proxy, netd (summed over nodes), server front, image builders, prewarmed spares, maintenance pods (the installers, GC and sweeps), and "Kubernetes system and other" (what the nodes use beyond yaac's pods) | the yaac server process (PGlite runs inside it), the workspaces' ssh-agents, and "other host processes" (the host's usage beyond yaac's) |
+  | yaac server, main registry, project registries (one row each when expanded), npm cache, crates.io cache, egress proxy, netd (summed over nodes), server front, image builders, prewarmed spares, maintenance pods (the installers, GC and sweeps), and "Kubernetes system and other" (what the nodes use beyond yaac's pods) | the yaac server process (PGlite runs inside it), the workspaces' ssh-agents, and "other host processes" (the host's usage beyond yaac's) |
 
 - **Workspaces.** One row per workspace, sorted by memory: title, project,
   owner, node, CPU, memory against its limit, ephemeral storage, peak

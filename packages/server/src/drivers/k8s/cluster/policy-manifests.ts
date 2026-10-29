@@ -82,7 +82,7 @@ const workspacePodSelector = {
  * proxy only signs for workspaces whose remote is SSH, and only allows
  * list/sign requests.
  *
- * The npm cache and per-project registries are allowed by their own
+ * The package caches and per-project registries are allowed by their own
  * label-scoped policies. This install-wide policy cannot scope to one
  * project, and a blanket rule would let workspaces overwrite each other's
  * images (issue #17).
@@ -349,7 +349,7 @@ export function buildServerFrontIngressNpManifest(
  *  - workspace and builder pods, which have their own policies.
  *
  * Pods without these labels (registries, mocks, future pods) are covered by
- * default. Other policies' allows still apply, e.g. the npm cache's 443
+ * default. Other policies' allows still apply, e.g. the package caches' 443
  * (docs/workspace-egress.md).
  */
 export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {

@@ -815,14 +815,23 @@ pod is its own sandbox, so concurrent installs would corrupt it. A pod mounts
 no project-wide package tree at all, since one that every pod could write would
 be a channel between workspaces.
 
-So every install is a full fetch, which goes to the install's **npm cache**,
-one Verdaccio
-(`drivers/k8s/cluster/npm-cache.ts`). A package is downloaded from npmjs once
-per cluster, and installs keep working while npmjs is slow or down. The cache is
-read-only to workspaces, and pnpm checks every tarball against the lockfile's
-integrity hash regardless of source.
+So every install is a full fetch, and so is every cargo build, whose download
+cache starts empty in each pod. Both go to one of the install's two **package
+caches**: the npm cache (`drivers/k8s/cluster/npm-cache.ts`) and the crates.io
+cache (`drivers/k8s/cluster/crates-cache.ts`). A package is downloaded from its
+upstream once per cluster, and installs keep working while the upstream is slow
+or down. Both are read-only to workspaces, and both clients check every download
+against the lockfile regardless of source: pnpm each tarball's integrity hash,
+cargo each `.crate` against the index's checksum and `Cargo.lock`.
 
-Verdaccio sits behind an nginx sidecar that owns the cache port. Verdaccio is a
+They are separate Deployments of one shape (`cluster/package-cache.ts`: one
+replica over an RWO claim, nginx owning the port, label-gated policies). Kept
+apart, one failing never takes the other down, and each admits workspaces by its
+own label, since a NetworkPolicy gates by port rather than by path.
+
+#### The npm cache
+
+The npm cache is one Verdaccio. Verdaccio sits behind an nginx sidecar that owns the cache port. Verdaccio is a
 single Node process that reads and parses a package's whole metadata document
 on every request, and some of those documents are tens of MB. When many
 workspaces install at once, that starves the event loop until requests and the
@@ -846,31 +855,71 @@ keys, `pnpm audit signatures` finds none for the cache, checks no package, and
 still reports success. Installs need neither endpoint: pnpm reads attestations
 only for a publish time, and falls back to the metadata's `time` field.
 
-The cache is only ever the **default** registry. The init script writes it to
-the workspace's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`). pnpm 10+
-and npm all read that below a project's own `.npmrc`, so a project that names a
-registry there, globally or per scope, keeps it. That is also the opt-out:
+The cache is only ever the **default** registry.
+`yaac-package-cache` (`workspace-bin/`, run by the init script) writes it to the
+workspace's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`). pnpm 10+ and npm
+all read that below a project's own `.npmrc`, so a project that names a registry
+there, globally or per scope, keeps it. That is also the opt-out:
 `registry=https://registry.npmjs.org/` in the project `.npmrc`. A project that
 authenticates to npmjs with a token in that file needs it, because the cache
 fetches anonymously and never serves private packages.
 
-A workspace cannot use the cache at all (it is neither pointed at it nor
-allowed by NetworkPolicy) when any of these hold:
+#### The crates.io cache
 
-- its project sets `npmCache: false`;
-- its allowlist leaves out `registry.npmjs.org` (the cache fetches outside the
-  proxy, see docs/workspace-egress.md);
-- its project authenticates to npmjs through a proxied secret.
+The crates.io cache is one nginx serving cargo's sparse registry protocol,
+which is plain HTTP files, and it keeps its cache on its claim, so the cache
+survives a restart. Index files (`/index/...`, from `index.crates.io`) change
+with every publish, so nginx keeps them one minute (crates.io's CDN keeps them
+ten), revalidates them by ETag, and serves a stale copy while it refreshes or
+while crates.io is down. A 404 is kept as long, since cargo asks for names that
+do not exist. `.crate` files (`/crates/...`, from `static.crates.io`) never
+change once published, so they are kept a year. Identical concurrent misses wait
+on one upstream fetch. nginx answers the index's `config.json` itself, pointing
+downloads back at the cache and naming no API, so there is nowhere to publish.
+Past 2 GB of index or 16 GB of crates, or when the disk has under 2 GB free, it
+evicts least-recently-used entries.
 
-Whether a new workspace is pointed at the cache is decided at each create, by
+cargo takes a registry mirror only as source replacement, which no environment
+variable can set, so `yaac-package-cache` appends a marked block to
+`$CARGO_HOME/config.toml` (from `YAAC_CRATES_CACHE`):
+
+```toml
+[source.crates-io]
+replace-with = "yaac-crates-cache"
+[source.yaac-crates-cache]
+registry = "sparse+http://yaac-crates-cache.<namespace>.svc.cluster.local:4875/index/"
+```
+
+cargo reads that file below a project's own `.cargo/config.toml`, so a project
+that replaces crates.io itself keeps its replacement, and the block is left out
+when the file already replaces it. Replacement leaves `Cargo.lock` unchanged.
+
+Compiled artifacts are not shared. A cache of build output (sccache and the
+like) that every workspace could write would let one workspace plant objects
+that another links, and nothing like a lockfile checksum would catch it. So each
+workspace's `target` stays its own.
+
+#### Who uses a cache
+
+A workspace cannot use a cache at all (it is neither pointed at it nor allowed
+by NetworkPolicy) when any of these hold:
+
+- its project sets `npmCache: false` (or `cratesCache: false`);
+- its allowlist leaves out the cache's upstream (`registry.npmjs.org`; or
+  `crates.io`, `index.crates.io` and `static.crates.io`), since the cache
+  fetches outside the proxy (docs/workspace-egress.md);
+- its project authenticates to that upstream through a proxied secret.
+
+Whether a new workspace is pointed at a cache is decided at each create, by
 whether a cache pod is ready. A cache that is down or rolling leaves new
-workspaces on npmjs, which is only slower. A prewarmed spare is decided at
-warm-up and again at claim, which rewrites the cache line in its `~/.npmrc`.
-A workspace already pointed at the cache fails its installs while the cache is
-down. It is a single replica, so a rollout or a node drain is such a window;
-the main registry has the same exposure for image pulls. Nothing prunes the
-cache, and any workspace can grow it by fetching public packages. On kind its
-volume claim is node disk with no quota.
+workspaces on its upstream, which is only slower. A prewarmed spare is decided
+at warm-up and again at claim, which rewrites the cache's entry in its client
+config. Neither pnpm nor cargo falls back from the registry it is given, so a
+workspace already pointed at a cache fails its fetches while the cache is down.
+Each is a single replica, so a rollout or a node drain is such a window; the
+main registry has the same exposure for image pulls. Nothing prunes the npm
+cache, and any workspace can grow either cache by fetching public packages. On
+kind their volume claims are node disk with no quota.
 
 ### Under containerless
 

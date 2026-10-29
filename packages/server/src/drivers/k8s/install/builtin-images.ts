@@ -102,8 +102,8 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<v
 
 /**
  * Mirror every digest-pinned upstream yaac runs: `registry:2`, Envoy, the
- * builder pods' podman, the gVisor installer's curl, and the npm cache's
- * Verdaccio and nginx. The e2e global setup also calls this.
+ * builder pods' podman, the gVisor installer's curl, the npm cache's
+ * Verdaccio, and the nginx both package caches run. The e2e global setup also calls this.
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(REGISTRY_UPSTREAM_IMAGE, REGISTRY_MIRROR_TAG)

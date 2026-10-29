@@ -14,6 +14,14 @@ export const NPM_CACHE_PORT = 4873
  */
 export const LABEL_NPM_CACHE = 'yaac.npm-cache'
 /**
+ * Name, port and workspace-pod label of the install's crates.io cache
+ * (drivers/k8s/cluster/crates-cache.ts), alike in every other way; the label
+ * follows the project's `cratesCache` setting.
+ */
+export const CRATES_CACHE_APP_NAME = 'yaac-crates-cache'
+export const CRATES_CACHE_PORT = 4875
+export const LABEL_CRATES_CACHE = 'yaac.crates-cache'
+/**
  * Name of netd, the per-node egress redirect DaemonSet
  * (drivers/k8s/cluster/netd.ts).
  */

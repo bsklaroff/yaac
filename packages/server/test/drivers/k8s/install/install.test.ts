@@ -19,7 +19,7 @@ import type * as substrateBarrel from '#drivers/k8s/substrate'
 type Step =
   | 'ensurePriorityClasses' | 'ensureMainRegistry' | 'ensureBuilderRoleGuard'
   | 'buildBuiltinImages' | 'ensureGvisorRuntime' | 'ensureNetd'
-  | 'ensureNpmCache' | 'deployServerWorkload'
+  | 'ensureNpmCache' | 'ensureCratesCache' | 'deployServerWorkload'
 const { events, failing, reach, fakeStep } = vi.hoisted(() => {
   const events: Step[] = []
   /** Steps a case fails, with the error each throws. */
@@ -46,6 +46,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ensureBuilderRoleGuard: fakeStep('ensureBuilderRoleGuard'),
   ensureNetd: fakeStep('ensureNetd'),
   ensureNpmCache: fakeStep('ensureNpmCache'),
+  ensureCratesCache: fakeStep('ensureCratesCache'),
   registryTagState: vi.fn().mockResolvedValue('present'),
   mirrorMatchesRecord: vi.fn().mockResolvedValue(true),
   registryRef: (tag: string) => `reg.local:5000/${tag}`,
@@ -661,14 +662,19 @@ function calicoReads(rest: (p: string) => string | null) {
 }
 
 describe('runClusterInstall', () => {
-  // Workspaces fall back to npmjs, so a failed cache is only a note.
-  it('finishes the install when the npm cache cannot be deployed', async () => {
+  // Workspaces fall back to the upstream, so a failed cache is only a note,
+  // and one cache's failure does not keep the other from deploying.
+  it('finishes the install when the package caches cannot be deployed', async () => {
     const log = vi.fn()
     failing.set('ensureNpmCache', 'claim Pending')
+    failing.set('ensureCratesCache', 'rollout timed out')
     const deps = makeDeps({ run: freshRun(), log })
     await expect(runClusterInstall({}, deps)).resolves.toBeUndefined()
+    expect(ran('ensureCratesCache')).toBe(1)
     expect(ran('deployServerWorkload')).toBe(1)
     expect(log).toHaveBeenCalledWith(expect.stringContaining('could not deploy the npm cache (claim Pending)'))
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(
+      'could not deploy the crates.io cache (rollout timed out) — workspaces fetch from crates.io'))
   })
 
   it('creates the cluster and installs everything on a host that has none', async () => {
@@ -726,12 +732,13 @@ describe('runClusterInstall', () => {
       .toBeGreaterThan(order('ensureNetd'))
     expect(createCall?.[2]?.env?.KIND_EXPERIMENTAL_PROVIDER).toBe('podman')
 
-    // The npm cache, after its image is mirrored and before the server.
-    expect(ran('ensureNpmCache')).toBe(1)
-    expect(order('ensureNpmCache'))
-      .toBeGreaterThan(order('buildBuiltinImages'))
-    expect(order('ensureNpmCache'))
-      .toBeLessThan(order('deployServerWorkload'))
+    // The package caches, after their images are mirrored and before the
+    // server.
+    for (const step of ['ensureNpmCache', 'ensureCratesCache'] as const) {
+      expect(ran(step)).toBe(1)
+      expect(order(step)).toBeGreaterThan(order('buildBuiltinImages'))
+      expect(order(step)).toBeLessThan(order('deployServerWorkload'))
+    }
 
     // Calico is applied from the verified manifest, then the node must go
     // Ready (it cannot before the CNI is up).
@@ -768,7 +775,7 @@ describe('runClusterInstall', () => {
 
   })
 
-  // Every layer but the npm cache is fatal: a missing PriorityClass gets
+  // Every layer but the package caches is fatal: a missing PriorityClass gets
   // every pod naming it rejected, every image goes through the registry,
   // and nothing else builds the images, guards builder pods or redirects
   // workspace egress.

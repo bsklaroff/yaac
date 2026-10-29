@@ -695,6 +695,12 @@ export interface YaacConfig {
    * through the egress proxy. Unset → true.
    */
   npmCache?: boolean
+  /**
+   * Whether the project's workspaces may use the install's crates.io cache
+   * (k8s only). When false, a workspace can't reach it and cargo fetches
+   * from crates.io through the egress proxy. Unset → true.
+   */
+  cratesCache?: boolean
   /** Either a flat string list (collapsed into a single `init` window) or
    *  a list of `InitCommandSpec` objects (one tmux window per entry).
    *  Mixing the two forms is rejected by the config parser. */

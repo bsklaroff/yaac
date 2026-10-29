@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
-// `kubectl exec` (the ~/.npmrc rewrite) is the one child process.
+// `kubectl exec` (the package-cache rewrite) is the one child process.
 type ExecCallback = (err: unknown, res?: { stdout: string; stderr: string }) => void
 const execArgs: string[][] = []
 const execFailure = vi.hoisted(() => ({ error: null as Error | null }))
@@ -16,7 +16,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
 
 import { claimSpareWorkspace, registerWorkspace, unmarkClaimedJobs } from '#drivers/k8s/workspaces/claim'
 import { LABEL_INSTALL_ID, LABEL_PREWARMED, LABEL_TOOL, installId, k8sNamespace } from '#drivers/k8s/substrate'
-import { LABEL_NPM_CACHE, NPM_CACHE_APP_NAME } from '#drivers/k8s/substrate/proxy-constants'
+import { LABEL_CRATES_CACHE, LABEL_NPM_CACHE } from '#drivers/k8s/substrate/proxy-constants'
 import type { WorkspaceRegistration } from '#drivers/contract'
 
 /** A workspace pod of this install. */
@@ -62,16 +62,12 @@ function job(workspaceId: string): Parameters<typeof fakeCluster.seed>[0] {
   }
 }
 
-/** The npm cache's EndpointSlice, ready or not. */
-function cacheSlice(ready: boolean): Parameters<typeof fakeCluster.seed>[0] {
+/** A package cache's EndpointSlice, ready or not. */
+function cacheSlice(ready: boolean, app = 'yaac-npm-cache'): Parameters<typeof fakeCluster.seed>[0] {
   return {
     apiVersion: 'discovery.k8s.io/v1',
     kind: 'EndpointSlice',
-    metadata: {
-      name: `${NPM_CACHE_APP_NAME}-x`,
-      namespace: k8sNamespace(),
-      labels: { 'kubernetes.io/service-name': NPM_CACHE_APP_NAME },
-    },
+    metadata: { name: `${app}-x`, namespace: k8sNamespace(), labels: { 'kubernetes.io/service-name': app } },
     endpoints: [{ conditions: { ready } }],
   }
 }
@@ -170,42 +166,49 @@ describe('unmarkClaimedJobs', () => {
   })
 })
 
-describe('claimSpareWorkspace and the npm cache', () => {
-  /** Seed the spare's pod (on the cache or not) and the cache's readiness. */
-  function stage(opts: { admitted: boolean; serving: boolean }): void {
+describe('claimSpareWorkspace and the package caches', () => {
+  /** Seed the spare's pod (on each cache or not) and each cache's readiness. */
+  function stage(opts: { npm: boolean; crates?: boolean; serving: boolean }): void {
     fakeCluster.reset()
     execArgs.length = 0
     fakeCluster.seed(pod('s1', {
       [LABEL_PREWARMED]: 'true',
-      ...(opts.admitted ? { [LABEL_NPM_CACHE]: 'true' } : {}),
-    }), job('s1'), cacheSlice(opts.serving))
+      ...(opts.npm ? { [LABEL_NPM_CACHE]: 'true' } : {}),
+      ...(opts.crates ? { [LABEL_CRATES_CACHE]: 'true' } : {}),
+    }), job('s1'), cacheSlice(opts.serving), cacheSlice(opts.serving, 'yaac-crates-cache'))
   }
-  const execArgv = (): string[] | undefined => execArgs.find((a) => a[0] === 'exec')
+  /** The `yaac-package-cache` invocation for each client, by client. */
+  const rewrites = (): Record<string, string> => Object.fromEntries(execArgs
+    .filter((a) => a[0] === 'exec')
+    .map((a) => {
+      expect(a).toEqual(expect.arrayContaining(['exec', 'yaac-proj-s1-abcde', '--', 'yaac-package-cache']))
+      return [a.at(-2)!, a.at(-1)!]
+    }))
 
-  // The cache may have gone down since the spare was warmed.
-  it('re-decides a spare\'s registry against the cache as it is at claim time', async () => {
-    stage({ admitted: true, serving: false })
+  // A cache may have gone down since the spare was warmed.
+  it('re-decides each of a spare\'s caches against the cache as it is at claim time', async () => {
+    stage({ npm: true, crates: true, serving: false })
     await claimSpareWorkspace('s1', 'codex')
-    // In the background, off the claim's path.
-    await vi.waitFor(() => expect(execArgv()).toBeDefined())
-    const down = execArgv()!
-    expect(down).toEqual(expect.arrayContaining(['exec', 'yaac-proj-s1-abcde', '--']))
-    // No URL: the script only removes the cache's line.
-    expect(down.at(-1)).toBe('')
-    expect(down.join(' ')).toContain('registry=http://yaac-npm-cache')
+    // In the background, off the claim's path. No URL: only the cache's
+    // own entry is removed.
+    await vi.waitFor(() => expect(rewrites()).toEqual({ npm: '', cargo: '' }))
 
-    stage({ admitted: true, serving: true })
+    stage({ npm: true, crates: true, serving: true })
     await claimSpareWorkspace('s1', 'codex')
-    await vi.waitFor(() => expect(execArgv()!.at(-1)).toMatch(/^http:\/\/yaac-npm-cache\..*:4873\/$/))
+    await vi.waitFor(() => expect(rewrites()).toEqual({
+      npm: expect.stringMatching(/^http:\/\/yaac-npm-cache\..*:4873\/$/) as unknown,
+      cargo: expect.stringMatching(/^http:\/\/yaac-crates-cache\..*:4875\/$/) as unknown,
+    }))
   })
 
-  it('leaves a spare the cache does not admit alone, and never fails a claim over it', async () => {
-    stage({ admitted: false, serving: true })
+  it('leaves a cache the spare is not admitted to alone, and never fails a claim over it', async () => {
+    stage({ npm: false, crates: true, serving: true })
     await claimSpareWorkspace('s1', 'codex')
+    await vi.waitFor(() => expect(Object.keys(rewrites())).toEqual(['cargo']))
     await new Promise((r) => setTimeout(r, 20))
-    expect(execArgv()).toBeUndefined()
+    expect(Object.keys(rewrites())).toEqual(['cargo'])
 
-    stage({ admitted: true, serving: true })
+    stage({ npm: true, serving: true })
     execFailure.error = new Error('container not running')
     await expect(claimSpareWorkspace('s1', 'codex')).resolves.toBeUndefined()
   })
@@ -238,22 +241,27 @@ describe('registerWorkspace', () => {
     expect(execArgs).toEqual([])
   })
 
-  // The cache fetches outside the proxy, so a pod keeps npm access through
-  // it until its cache label is removed.
-  it('takes a pod off the npm cache once its allowlist stops admitting npmjs', async () => {
+  // A cache fetches outside the proxy, so a pod keeps access through it
+  // until its cache label is removed.
+  it('takes a pod off the npm cache once its allowlist stops admitting npmjs, and leaves it on the other', async () => {
     fakeCluster.reset()
-    fakeCluster.seed(pod('other', { [LABEL_NPM_CACHE]: 'true' }), pod('s1', { [LABEL_NPM_CACHE]: 'true' }))
-    // ~/.npmrc first, so installs never use a cache the pod cannot reach.
+    const both = { [LABEL_NPM_CACHE]: 'true', [LABEL_CRATES_CACHE]: 'true' }
+    fakeCluster.seed(pod('other', both), pod('s1', both))
+    // Client config first, so installs never use a cache the pod cannot
+    // reach.
     fakeCluster.intercept((c) => {
       if (c.verb === 'patch') expect(execArgs).toHaveLength(1)
     })
-    await registerWorkspace(reg({ allowlist: { hosts: ['api.example.com'], defaults: false } }))
+    const hosts = ['api.example.com', 'crates.io', '*.crates.io']
+    await registerWorkspace(reg({ allowlist: { hosts, defaults: false } }))
 
-    expect(registeredHosts()).toEqual(['api.example.com'])
+    expect(registeredHosts()).toEqual(hosts)
     const [exec] = execArgs
+    expect(execArgs).toHaveLength(1)
     expect(exec).toEqual(expect.arrayContaining(['yaac-proj-s1-abcde', '--']))
-    expect(exec.at(-1)).toBe('')
+    expect(exec.slice(-3)).toEqual(['yaac-package-cache', 'npm', ''])
     expect(labelsOf('s1')).not.toHaveProperty(LABEL_NPM_CACHE)
+    expect(labelsOf('s1')?.[LABEL_CRATES_CACHE]).toBe('true')
     expect(labelsOf('other')?.[LABEL_NPM_CACHE]).toBe('true')
   })
 

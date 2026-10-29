@@ -41,6 +41,10 @@ Both are stored on the server, so this works against a remote server too.
 - **npmCache:** whether workspaces use the install's npm cache (k8s only;
   default `true`). With `false`, pnpm goes to npmjs through the proxy. A
   project's own `.npmrc` `registry=` wins either way.
+- **cratesCache:** whether workspaces use the install's crates.io cache (k8s
+  only; default `true`). With `false`, cargo goes to crates.io through the
+  proxy. A source replacement in the project's own `.cargo/config.toml` wins
+  either way.
 A field not listed here is an error: saving the file refuses it, and so does
 every create while it is there, rather than ignoring a misspelt key.
 

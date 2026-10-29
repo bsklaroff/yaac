@@ -22,12 +22,12 @@ vi.mock('#drivers/k8s/egress/proxy-client', () => ({
 // Mock the cluster barrel, which runs pods of its own.
 const mockProxyClusterIp = vi.hoisted(() => vi.fn().mockResolvedValue('10.96.0.5'))
 const mockEnsureProjectRegistry = vi.hoisted(() => vi.fn())
-const mockNpmCacheUrl = vi.hoisted(() => vi.fn())
+const mockCacheUrl = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterModule>()),
   proxyServiceClusterIp: mockProxyClusterIp,
   ensureProjectRegistry: mockEnsureProjectRegistry,
-  servingNpmCacheUrl: mockNpmCacheUrl,
+  servingCacheUrl: mockCacheUrl,
   ensureBuilderImage: () => Promise.resolve('registry.local/podman-stable:v5.5'),
 }))
 
@@ -50,7 +50,7 @@ import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
 import type * as clusterModule from '#drivers/k8s/cluster'
 import { launchWorkspace, prepareWorkspaceSubstrate,
 } from '#drivers/k8s/workspaces/launch'
-import type { WorkspaceSpec, WorkspaceSubstrate } from '#drivers/contract'
+import type { SubstrateIntent, WorkspaceSpec, WorkspaceSubstrate } from '#drivers/contract'
 import path from 'node:path'
 import { setDataDir } from '@yaac/shared/paths'
 import {
@@ -153,7 +153,7 @@ beforeEach(() => {
   mockProxyClusterIp.mockResolvedValue('10.96.0.5')
   mockEnsureRunning.mockResolvedValue(undefined)
   mockStoreMount.mockResolvedValue(undefined)
-  mockNpmCacheUrl.mockResolvedValue(null)
+  mockCacheUrl.mockResolvedValue(null)
 })
 
 /** The registration ConfigMap a prepare applied, decoded. */
@@ -321,40 +321,66 @@ describe('launchWorkspace', () => {
     })
   })
 
-  // Passed to the init script, which writes it below the project's own
-  // .npmrc; an env var would override a project's own registry.
-  it('admits a workspace to the npm cache per its project, and points it there only while it serves', async () => {
-    const url = 'http://yaac-npm-cache.yaac.svc.cluster.local:4873/'
+  // Passed to the init script, which writes them below the project's own
+  // .npmrc and .cargo/config.toml; an env var would override a project's
+  // own registry.
+  it('admits a workspace to each package cache per its project, and points it there only while it serves', async () => {
+    const npm = 'http://yaac-npm-cache.yaac.svc.cluster.local:4873/'
+    const crates = 'http://yaac-crates-cache.yaac.svc.cluster.local:4875/'
     await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
     expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
+    expect(containerEnv()).not.toHaveProperty('YAAC_CRATES_CACHE')
 
-    // Not serving yet: no registry, but the label is set per the project.
-    expect(appliedJob().spec.template.metadata.labels['yaac.npm-cache']).toBe('true')
+    // Not serving yet: no URLs, but the labels are set per the project.
+    expect(appliedJob().spec.template.metadata.labels).toMatchObject({
+      'yaac.npm-cache': 'true', 'yaac.crates-cache': 'true',
+    })
 
-    mockNpmCacheUrl.mockResolvedValue(url)
+    // Each cache is asked about on its own.
+    mockCacheUrl.mockImplementation((cache: { app: string }) =>
+      Promise.resolve(cache.app === 'yaac-npm-cache' ? npm : null))
     fakeCluster.calls = []
     await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
-    expect(containerEnv().YAAC_NPM_REGISTRY).toBe(url)
+    expect(containerEnv().YAAC_NPM_REGISTRY).toBe(npm)
+    expect(containerEnv()).not.toHaveProperty('YAAC_CRATES_CACHE')
     for (const key of ['pnpm_config_registry', 'npm_config_registry']) {
       expect(containerEnv()).not.toHaveProperty(key)
     }
+    mockCacheUrl.mockImplementation((cache: { app: string }) =>
+      Promise.resolve(cache.app === 'yaac-npm-cache' ? npm : crates))
+    fakeCluster.calls = []
+    await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
+    expect(containerEnv().YAAC_CRATES_CACHE).toBe(crates)
 
-    // Each keeps the workspace off the cache (no registry, no label):
+    // Each keeps the workspace off one cache (no URL, no label) and leaves
+    // it on the other:
     //  - the project turned it off;
-    //  - the allowlist excludes npmjs (the cache bypasses the proxy);
-    //  - a proxied npmjs secret (the cache fetches anonymously).
-    for (const intent of [
-      { ...INTENT, config: { npmCache: false } },
-      { ...INTENT, allowlist: { hosts: ['github.com', 'api.anthropic.com'], defaults: false } },
-      {
+    //  - the allowlist excludes its upstream (the cache bypasses the proxy);
+    //  - a proxied secret for its upstream (the cache fetches anonymously).
+    const defaults = ['github.com', 'api.anthropic.com']
+    const cases: Array<[SubstrateIntent, 'npm' | 'crates', 'npm' | 'crates']> = [
+      [{ ...INTENT, config: { npmCache: false } }, 'npm', 'crates'],
+      [{ ...INTENT, config: { cratesCache: false } }, 'crates', 'npm'],
+      [{ ...INTENT, allowlist: { hosts: [...defaults, 'registry.npmjs.org'], defaults: false } }, 'crates', 'npm'],
+      [{ ...INTENT, allowlist: { hosts: [...defaults, '*.crates.io', 'crates.io'], defaults: false } }, 'npm', 'crates'],
+      [{
         ...INTENT,
         proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } },
-      },
-    ]) {
+      }, 'npm', 'crates'],
+      [{
+        ...INTENT,
+        proxySecretRules: { CARGO_REGISTRY_TOKEN: { hosts: ['crates.io'], header: 'Authorization' } },
+      }, 'crates', 'npm'],
+    ]
+    for (const [intent, off, on] of cases) {
       fakeCluster.calls = []
       await launchWorkspace(specOf(await prepareWorkspaceSubstrate(intent)))
-      expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
-      expect(appliedJob().spec.template.metadata.labels).not.toHaveProperty('yaac.npm-cache')
+      const env = { npm: 'YAAC_NPM_REGISTRY', crates: 'YAAC_CRATES_CACHE' }
+      expect(containerEnv()).not.toHaveProperty(env[off])
+      expect(containerEnv()).toHaveProperty(env[on])
+      const labels = appliedJob().spec.template.metadata.labels
+      expect(labels).not.toHaveProperty(`yaac.${off}-cache`)
+      expect(labels[`yaac.${on}-cache`]).toBe('true')
     }
   })
 

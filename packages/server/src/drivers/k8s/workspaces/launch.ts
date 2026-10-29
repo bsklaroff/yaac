@@ -2,7 +2,6 @@ import {
   LABEL_INSTALL_ID,
   LABEL_MODE,
   LABEL_NESTED,
-  LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_PROJECT_ID,
   LABEL_TOOL,
@@ -24,7 +23,7 @@ import {
   ensureProjectRegistry,
   projectRegistryConfDropIn,
   proxyServiceClusterIp,
-  servingNpmCacheUrl,
+  servingCacheUrl,
 } from '#drivers/k8s/cluster'
 import {
   applyProxyRegistration,
@@ -34,8 +33,7 @@ import {
   type ProxyRegistration,
 } from '#drivers/k8s/egress'
 import { ensureNodeImageStore, nodeImageStoreMount } from '#drivers/k8s/images'
-import { hostMatchesPattern } from '#lib/allowed-hosts'
-import type { SecretProxyRule, YaacConfig } from '@yaac/shared/types'
+import { WORKSPACE_CACHES, cacheApplies, type WorkspaceCache } from './package-caches'
 import type {
   RuntimeHandle,
   SubstrateIntent,
@@ -70,11 +68,9 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
   /** The project has its own push registry, so the in-pod engine needs its
    *  registries.conf drop-in. */
   projectRegistry: boolean
-  /** The pod is labelled for npm-cache access, whether or not the cache is
-   *  serving right now. */
-  npmCacheAllowed: boolean
-  /** The install's npm cache, when this workspace installs through it. */
-  npmRegistry: string | null
+  /** The package caches the pod is labelled for, each with its URL when it
+   *  is serving now, so that this workspace installs through it. */
+  caches: Array<{ cache: WorkspaceCache; url: string | null }>
   /** The workspace's proxy registration. Applied by `launch` just before the
    *  Job, so a prepare overlapping a long image build never leaves a
    *  registration with no pod behind it. */
@@ -155,9 +151,11 @@ export async function prepareWorkspaceSubstrate(
     secretRules: intent.proxySecretRules,
   })
 
-  // A failed lookup just skips the cache; npmjs serves the same packages.
-  const npmCacheAllowed = npmCacheApplies(config, registration.allowedHosts, intent.proxySecretRules)
-  const npmRegistry = npmCacheAllowed ? await servingNpmCacheUrl().catch(() => null) : null
+  // A failed lookup just skips the cache; the upstream serves the same
+  // packages.
+  const caches = await Promise.all(WORKSPACE_CACHES
+    .filter((cache) => cacheApplies(cache, config, registration.allowedHosts, intent.proxySecretRules))
+    .map(async (cache) => ({ cache, url: await servingCacheUrl(cache).catch(() => null) })))
 
   const receipt: K8sWorkspaceSubstrate = {
     kind: 'workspace-substrate',
@@ -165,35 +163,10 @@ export async function prepareWorkspaceSubstrate(
     streamToken,
     storeMounts,
     projectRegistry,
-    npmCacheAllowed,
-    npmRegistry,
+    caches,
     registration,
   }
   return receipt
-}
-
-/** The registry the npm cache stands in for. */
-const NPMJS_HOST = 'registry.npmjs.org'
-
-/**
- * Whether a workspace may use the npm cache. Not when the project sets
- * `npmCache: false`; not when its allowlist excludes npmjs (the cache
- * fetches outside the egress proxy); and not when the project
- * authenticates to npmjs through a proxied secret (the cache fetches
- * anonymously, so private packages would break). A token in the project's
- * own `.npmrc` is the project's concern (docs/workspace-storage.md).
- */
-export function npmCacheApplies(
-  config: YaacConfig,
-  allowedHosts: string[],
-  secretRules: Record<string, SecretProxyRule>,
-): boolean {
-  if (config.npmCache === false) return false
-  const allowed = (allowedHosts.length === 1 && allowedHosts[0] === '*')
-    || allowedHosts.some((pattern) => hostMatchesPattern(NPMJS_HOST, pattern))
-  const authenticated = Object.values(secretRules)
-    .some((rule) => rule.hosts.some((pattern) => hostMatchesPattern(NPMJS_HOST, pattern)))
-  return allowed && !authenticated
 }
 
 /**
@@ -231,9 +204,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     ? `${rootModules}/.pnpm-store`
     : '/home/yaac/.local/share/pnpm/store'
   env.push(`pnpm_config_store_dir=${store}`, `npm_config_store_dir=${store}`)
-  // The init script writes this into the user-level `~/.npmrc`, not env,
-  // because env would override a registry named in the project's `.npmrc`.
-  if (substrate.npmRegistry) env.push(`YAAC_NPM_REGISTRY=${substrate.npmRegistry}`)
+  // The init script writes these into user-level client config, not env,
+  // because env would override a registry the project names itself.
+  for (const { cache, url } of substrate.caches) if (url) env.push(`${cache.env}=${url}`)
   if (spec.nestedContainers && substrate.projectRegistry) {
     // Written by the in-pod init script before the engine starts. Base64
     // avoids quoting issues. Needed because the registry is plain HTTP.
@@ -267,8 +240,8 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // Lets image salvage tell from the pod alone whether there is anything
     // to salvage; the reconciler never sees the spec's env.
     ...(spec.nestedContainers ? { [LABEL_NESTED]: 'true' } : {}),
-    // Both of the npm cache's workspace policies select on this.
-    ...(substrate.npmCacheAllowed ? { [LABEL_NPM_CACHE]: 'true' } : {}),
+    // Both of each cache's workspace policies select on its label.
+    ...Object.fromEntries(substrate.caches.map(({ cache }) => [cache.label, 'true'])),
   }
 
   const manifest = buildPodJobManifest({

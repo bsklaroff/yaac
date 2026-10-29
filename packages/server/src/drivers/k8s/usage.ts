@@ -2,6 +2,7 @@ import { statfs } from 'node:fs/promises'
 import { MAIN_REGISTRY_APP_LABEL, REGISTRY_APP_LABEL } from '#drivers/k8s/cluster'
 import {
   CHECKOUTS_CLAIM_NAME,
+  CRATES_CACHE_APP_NAME,
   GLOBAL_CLAIM_NAME,
   GVISOR_NODE_LABEL,
   GVISOR_PENDING_TAINT,
@@ -208,6 +209,7 @@ function bucketKey(pod: PodObject): string | undefined {
     case MAIN_REGISTRY_APP_LABEL: return 'main-registry'
     case REGISTRY_APP_LABEL: return 'project-registries'
     case NPM_CACHE_APP_NAME: return 'npm-cache'
+    case CRATES_CACHE_APP_NAME: return 'crates-cache'
     case PROXY_APP_NAME: return 'proxy'
     case NETD_APP_NAME: return 'netd'
     case SERVER_FRONT_APP_NAME: return 'server-front'
@@ -222,6 +224,7 @@ function emptyBuckets(): Bucket[] {
     { key: 'main-registry', label: 'main registry', pods: [] },
     { key: 'project-registries', label: 'project registries', counted: true, pods: [] },
     { key: 'npm-cache', label: 'npm cache', pods: [] },
+    { key: 'crates-cache', label: 'crates.io cache', pods: [] },
     { key: 'proxy', label: 'egress proxy', pods: [] },
     { key: 'netd', label: 'netd', counted: true, pods: [] },
     { key: 'server-front', label: 'server front', pods: [] },

@@ -1,7 +1,6 @@
 /**
- * The npm cache's barrel functions: deploying Verdaccio behind its caching
- * nginx, and the URL a
- * workspace create reads to decide whether pnpm installs through it.
+ * The npm cache's barrel function: deploying Verdaccio behind its caching
+ * nginx.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcess from 'node:child_process'
@@ -31,7 +30,6 @@ import {
   VERDACCIO_MIRROR_TAG,
   ensureNpmCache,
   registryRef,
-  servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
 // A setup value: the claim name carries it.
 import { installId } from '#drivers/k8s/substrate'
@@ -196,29 +194,5 @@ describe('ensureNpmCache', () => {
     fakeRegistry.tags.add(VERDACCIO_MIRROR_TAG)
     await expect(ensureNpmCache()).rejects.toThrow(/nginx/)
     expect(applied()).toEqual([])
-  })
-})
-
-describe('servingNpmCacheUrl', () => {
-  // pnpm has no fallback registry, so a workspace pointed at a down cache
-  // fails every install. The URL is given only while a pod is ready, and
-  // is checked on every call.
-  it('names the Service only while a cache pod is ready behind it', async () => {
-    const slice = (name: string, service: string, ready: boolean) => ({
-      apiVersion: 'discovery.k8s.io/v1',
-      kind: 'EndpointSlice',
-      metadata: { name, namespace: 'test-ns', labels: { 'kubernetes.io/service-name': service } },
-      endpoints: [{ conditions: { ready } }],
-    })
-    const url = 'http://yaac-npm-cache.test-ns.svc.cluster.local:4873/'
-
-    await expect(servingNpmCacheUrl()).resolves.toBeNull()
-    // Another Service's ready endpoint says nothing about the cache.
-    fakeCluster.seed(slice('other', 'yaac-proxy', true), slice('cache-a', 'yaac-npm-cache', false))
-    await expect(servingNpmCacheUrl()).resolves.toBeNull()
-    fakeCluster.seed(slice('cache-a', 'yaac-npm-cache', true))
-    await expect(servingNpmCacheUrl()).resolves.toBe(url)
-    fakeCluster.seed(slice('cache-a', 'yaac-npm-cache', false))
-    await expect(servingNpmCacheUrl()).resolves.toBeNull()
   })
 })

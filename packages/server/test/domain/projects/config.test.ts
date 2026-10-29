@@ -203,11 +203,13 @@ describe('resolveProjectConfig', () => {
     })
   })
 
-  describe('npmCache', () => {
+  describe('npmCache and cratesCache', () => {
     it('round-trips the boolean and rejects anything else', async () => {
-      expect(await roundTrip({ npmCache: false })).toEqual({ npmCache: false })
-      expect(await roundTrip({ npmCache: true })).toEqual({ npmCache: true })
-      await expect(roundTrip({ npmCache: 'off' })).rejects.toThrow('npmCache must be a boolean')
+      for (const key of ['npmCache', 'cratesCache']) {
+        expect(await roundTrip({ [key]: false })).toEqual({ [key]: false })
+        expect(await roundTrip({ [key]: true })).toEqual({ [key]: true })
+        await expect(roundTrip({ [key]: 'off' })).rejects.toThrow(`${key} must be a boolean`)
+      }
     })
   })
 

@@ -153,34 +153,40 @@ not from the node CIDRs. It is TCP rather than a UNIX socket on a shared host
 directory because that would only work when the proxy and the workspace share a
 node, which nothing guarantees.
 
-## The npm cache: an exception to the allowlist
+## The package caches: an exception to the allowlist
 
-One more pod can be dialed directly: the install's npm cache
-(`drivers/k8s/cluster/npm-cache.ts`, docs/workspace-storage.md "Package
-installs"), on tcp/4873, which netd does not redirect. The cache fetches from
-`registry.npmjs.org` itself, not through the proxy, so what it serves reaches a
-workspace outside that workspace's allowlist.
+Two more pods can be dialed directly: the install's package caches
+(docs/workspace-storage.md "Package installs"), the npm cache
+(`drivers/k8s/cluster/npm-cache.ts`) on tcp/4873 and the crates.io cache
+(`drivers/k8s/cluster/crates-cache.ts`) on tcp/4875. netd redirects neither
+port. Each cache fetches from its upstream itself (`registry.npmjs.org`;
+`index.crates.io` and `static.crates.io`), not through the proxy, so what it
+serves reaches a workspace outside that workspace's allowlist.
 
-Why that is acceptable: it only brings npm content **in**. What goes out is
-package names (and `npm audit` bodies, and requests for npm's signing keys and
-attestations) sent to npmjs. Verdaccio serves a tarball
-only from a URL its upstream's own metadata named, forwards no credentials
-upstream, and accepts no publishes.
+Why that is acceptable: a cache only brings packages **in**. What goes out is
+package names (and, for npm, `npm audit` bodies and requests for npm's signing
+keys and attestations) sent to the upstream. A cache forwards no credentials
+upstream and accepts no publishes: Verdaccio serves a tarball only from a URL
+its upstream's own metadata named, and the crates.io cache's nginx passes GET
+and HEAD under `/index/` and `/crates/` to the two crates.io hosts and nothing
+else.
 
-Access is per project, so it is not in the install-wide workspace policy. The
+Access is per project, so it is not in the install-wide workspace policy. Each
 cache's own policies (egress on the workspace side, ingress on the cache) allow
-only workspace pods labelled `yaac.npm-cache`, which the server sets at launch.
-A workspace pod holds no API credential, so it cannot add the label itself. A
-pod gets the label unless its project sets `npmCache: false`, its allowlist
-leaves out `registry.npmjs.org`, or its project authenticates to npmjs through
-a proxied secret. Without the label, the pod can neither reach the cache nor is
-configured to use it; its pnpm uses npmjs through the proxy like any other host.
+only workspace pods labelled for it, `yaac.npm-cache` or `yaac.crates-cache`,
+which the server sets at launch. A workspace pod holds no API credential, so it
+cannot add a label itself. A pod gets a cache's label unless its project turns
+the cache off (`npmCache: false`, `cratesCache: false`), its allowlist leaves
+out one of the cache's upstream hosts (for crates.io, `crates.io` too), or its
+project authenticates to one of them through a proxied secret. Without the
+label, the pod can neither reach the cache nor is configured to use it; its
+client uses the upstream through the proxy like any other host.
 
 A prewarmed spare is re-checked when it is claimed. If its project's current
-config no longer allows the cache, the claim removes the cache from its
-`~/.npmrc` and removes the label, so a narrowed allowlist takes effect for new
-connections. The reverse is not re-checked: a spare warmed without the label
-stays on npmjs, which is only slower.
+config no longer allows a cache, the claim removes the cache from the pod's
+client config and removes the label, so a narrowed allowlist takes effect for
+new connections. The reverse is not re-checked: a spare warmed without a label
+stays on the upstream, which is only slower.
 
 ## What the proxy is told, and how
 

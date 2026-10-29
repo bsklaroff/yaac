@@ -20,7 +20,7 @@ Install is idempotent and safe to re-run at any time. In order, it:
    converged instead: stopped nodes are started and the fixups re-applied.
 3. Applies the PriorityClasses and the in-cluster image registry.
 4. Builds and pushes every image yaac ships (see "Images are built here").
-5. Applies the gVisor runtime installer, netd and the npm cache.
+5. Applies the gVisor runtime installer, netd and the package caches.
 6. Deploys the yaac server itself (docs/server-in-cluster.md), publishes it
    at a fixed host loopback origin, and writes the `server.json` that every
    client on this machine resolves the server through.
@@ -59,8 +59,8 @@ Every image yaac ships is built by `podman build` on the machine running
 the CLI and pushed to the in-cluster registry. That covers the
 base/tools/nestable workspace chain, the egress proxy, netd and the server.
 Install also mirrors the digest-pinned upstream images yaac uses
-(registry:2, Envoy, podman-stable, curl for the gVisor installer, Verdaccio and
-nginx for the npm cache).
+(registry:2, Envoy, podman-stable, curl for the gVisor installer, Verdaccio for
+the npm cache, and nginx for both package caches).
 Tags carry a content hash, so an unchanged source tree costs one registry
 HEAD per image and re-running install is cheap. The server image's hash is
 taken over the built bundle (`dist/`), so a rebuilt server is a new image
@@ -375,13 +375,14 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    (~235 MB) are pulled to the host engine and side-loaded onto the nodes,
    so they download once rather than on every re-create.
    `k8s/calico/README.md` has the steps for changing the pin.
-7. **The npm cache**: one Verdaccio (`yaac-npm-cache`) in the install
-   namespace, which every workspace's `pnpm install` goes through
-   (docs/workspace-storage.md "Package installs"), behind an nginx
-   sidecar that caches package metadata. A one-replica Deployment over an
-   RWO claim, like the registry. A new workspace uses it only while
-   a cache pod is ready; otherwise its pnpm goes to npmjs. Install carries on
-   if the cache fails, since installs are only slower without it.
+7. **The package caches**: two one-replica Deployments over RWO claims, like
+   the registry, in the install namespace, which workspaces fetch packages
+   through (docs/workspace-storage.md "Package installs"): `yaac-npm-cache`,
+   one Verdaccio behind an nginx sidecar that caches package metadata, for
+   every `pnpm install`, and `yaac-crates-cache`, one nginx caching crates.io
+   on its claim, for cargo. A new workspace uses a cache only while one of
+   its pods is ready; otherwise its client goes to the upstream. Install
+   carries on if a cache fails, since fetches are only slower without it.
 
 ## Multi-node
 
@@ -476,7 +477,7 @@ before the podman setup, so a refusal changes nothing:
 | Node OS and containerd | a runtime other than containerd; an immutable OS (Bottlerocket, Container-Optimized OS, Talos, Flatcar); EKS Fargate and GKE Autopilot; k3s or RKE2 on its embedded containerd, which regenerates its config from a template on every start. Either passes when run against the host's containerd (`--container-runtime-endpoint`), as `infra/hetzner-k3s` does |
 | CNI | everything in "The CNI gate" below |
 | Operator | no Tailscale operator or no `tailscale` IngressClass (an unanswered query is reported separately from "absent") |
-| Storage | an RWX class that is missing or not NFS-family, a missing RWO class, or no default class (the registry and npm cache use it) |
+| Storage | an RWX class that is missing or not NFS-family, a missing RWO class, or no default class (the registry and package caches use it) |
 | Identity | a live `yaac-server` Deployment of another install (its `yaac.install-id` label differs; installing over it would take over its storage), or a data dir recorded as containerless |
 | Cluster | a current context whose cluster is not the recorded one (below) |
 | Environment | `YAAC_USE_TOR`, which names a listener on this machine that no pod there can reach |
@@ -577,8 +578,8 @@ says otherwise, through the `yaac.workspaces` key:
   makes a node workspace-only. Both RuntimeClasses tolerate the key, with
   any value or effect, and Kubernetes merges that toleration into every pod
   naming them: workspace pods, builder pods and the check's probes, so
-  builds share the pool with workspaces. The server, registries, npm cache
-  and proxy declare no tolerations, so a rollout (an upgrade, `yaac server
+  builds share the pool with workspaces. The server, registries, package
+  caches and proxy declare no tolerations, so a rollout (an upgrade, `yaac server
   restart`) cannot move them onto a node an autoscaler may drain. Only
   per-node pods tolerate everything: the gVisor installer, netd and the
   one-shot node-write pods.
@@ -600,7 +601,7 @@ the check's `per-node` probe reports a pool node where one is missing.
 Ready node takes workspaces and at least one is infrastructure-only, as
 with an autoscaled pool at zero, the `nodes` gate warns and the gates that
 run a sandboxed pod (`gvisor`, `probe`, `egress`, `npm-cache`,
-`nested-mount`, `per-node`, `storage-semantics`) skip rather than fail.
+`crates-cache`, `nested-mount`, `per-node`, `storage-semantics`) skip rather than fail.
 Re-run the check while a workspace node is up to cover them.
 
 ### The CNI gate
@@ -948,9 +949,10 @@ order:
   dial the proxy's transparent ports directly, nor on byo the global
   volume's NFS server (on EFS, the mount target of each zone the nodes are
   in). This is the NetworkPolicy enforcement test.
-- `npm-cache`: a workspace-labelled pod fetches a package through the
-  cache. Warns when there is no ready cache pod; fails when a ready one
-  does not serve.
+- `npm-cache`, `crates-cache`: a pod labelled for that cache fetches a
+  package through it (an npm packument and tarball, a crate's index file
+  and `.crate`). Warns when there is no ready cache pod; fails when a ready
+  one does not serve.
 - `datapath`: calico-node and netd are Ready, meaning policy is enforced
   and a redirect exists.
 - `veth-source`: runs in each netd pod against that node's routing table

@@ -11,7 +11,7 @@ import { git } from '@yaac/test-utils/git'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
 import { kubectl } from '@yaac/test-utils/kubectl'
 import { cloneRepo } from '@yaac/server/domain/git'
-import { ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
+import { ensureCratesCache, ensureNpmCache } from '@yaac/server/drivers/k8s/cluster'
 import { reapNodeLocal } from '@yaac/server/drivers/k8s/workspaces'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
@@ -466,9 +466,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
       await skipClaudeOnboarding(projectPath)
 
-      // An install provides the npm cache; this namespace needs its own for
-      // the pnpm install in the last test.
+      // An install provides the package caches; this namespace needs its
+      // own for the pnpm install and cargo fetch in the last test.
       await ensureNpmCache()
+      await ensureCratesCache()
 
       const created = await createWorkspace('kitchen', '--tool', 'claude')
       jobName = created.jobName
@@ -1297,7 +1298,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await waitForListStatus('waiting', 30_000)
     }, 240_000)
 
-    it('keeps each scratch dir and pnpm\'s store on pod-local volumes, installing through the npm cache', async () => {
+    it('keeps each scratch dir and pnpm\'s store on pod-local volumes, installing through the package caches', async () => {
       // Last kitchen test: it stops the workspace.
       // Each scratch dir is a real directory on its own tmpfs, not a symlink
       // (which would break pnpm's mkdir).
@@ -1355,6 +1356,25 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       ])
       expect(projectRegistry.trim()).toBe('https://registry.npmjs.org/')
 
+      // cargo fetches through the crates.io cache: its config replaces
+      // crates.io with the cache, and the cache logs the index file and the
+      // .crate it served.
+      const { stdout: cargoConfig } = await execInJob(jobName, [
+        'sh', '-c',
+        'mkdir -p /tmp/kitchen-crate/src && cd /tmp/kitchen-crate && : > src/lib.rs'
+        + ' && printf \'[package]\\nname = "kitchen"\\nversion = "0.1.0"\\nedition = "2021"\\n'
+        + '[dependencies]\\ncfg-if = "=1.0.0"\\n\' > Cargo.toml'
+        + ' && cargo fetch 2>&1 && cat "$CARGO_HOME/config.toml"',
+      ], { timeout: 180_000 })
+      expect(cargoConfig).toContain('replace-with = "yaac-crates-cache"')
+      expect(cargoConfig).toContain(
+        `registry = "sparse+http://yaac-crates-cache.${k8sNamespace()}.svc.cluster.local:4875/index/"`)
+      const { stdout: cratesLog } = await kubectl([
+        'logs', '-n', k8sNamespace(), 'deployment/yaac-crates-cache',
+      ])
+      expect(cratesLog).toContain('GET /index/cf/g-/cfg-if')
+      expect(cratesLog).toContain('GET /crates/cfg-if/cfg-if-1.0.0.crate')
+
       const node = await podNode(workspaceId)
       for (const id of [workspaceId, secondPod.workspaceId]) {
         const { exitCode } = await runYaac(serverEnv, 'workspace', 'stop', id)
@@ -1385,14 +1405,16 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 360_000)
   })
 
-  describe('provisioning hand-off + no scratch dirs + npmCache false', () => {
+  describe('provisioning hand-off + no scratch dirs + package caches off', () => {
     it('a webapp create with a client id yields a real session of that id, and the provisioning row drops on hand-off', async () => {
-      // Also covers an empty scratch-dirs list and npmCache: false. The cache
-      // exists, so only the project setting keeps this pod off it.
+      // Also covers an empty scratch-dirs list and both package caches off.
+      // The caches exist, so only the project settings keep this pod off
+      // them.
       await ensureNpmCache()
+      await ensureCratesCache()
       await setupProject('no-scratch', {
         scratchDirs: [],
-        yaacConfig: { npmCache: false },
+        yaacConfig: { npmCache: false, cratesCache: false },
       })
       const workspaceId = randomUUID()
       onTestFinished(() => stopWorkspace(workspaceId))
@@ -1434,15 +1456,23 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         'test', '-e', '/workspace/node_modules',
       ])).rejects.toThrow()
 
-      // npmCache: false uses npmjs, and the pod lacks the label the cache's
-      // policy admits.
+      // Each cache turned off leaves its client on the upstream, and the pod
+      // lacks the label the cache's policy admits.
       const { stdout: registry } = await execInJob(pod.jobName, ['pnpm', 'config', 'get', 'registry'])
       expect(registry.trim()).toBe('https://registry.npmjs.org/')
-      const { stdout: dial } = await execInJob(pod.jobName, [
-        'sh', '-c',
-        `curl -s -o /dev/null -m 5 -w '%{http_code}' http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/-/ping || true`,
+      const { stdout: cargoConfig } = await execInJob(pod.jobName, [
+        'sh', '-c', 'cat "$CARGO_HOME/config.toml" 2>/dev/null || true',
       ])
-      expect(dial.trim()).toBe('000')
+      expect(cargoConfig).not.toContain('yaac-crates-cache')
+      for (const url of [
+        `http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/-/ping`,
+        `http://yaac-crates-cache.${k8sNamespace()}.svc.cluster.local:4875/index/config.json`,
+      ]) {
+        const { stdout: dial } = await execInJob(pod.jobName, [
+          'sh', '-c', `curl -s -o /dev/null -m 5 -w '%{http_code}' ${url} || true`,
+        ])
+        expect(dial.trim(), url).toBe('000')
+      }
     }, 240_000)
   })
 

@@ -3,6 +3,7 @@ import {
   ensureBuilderRoleGuard,
   ensureMainRegistry,
   ensureNetd,
+  ensureCratesCache,
   ensureNpmCache,
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
@@ -340,7 +341,8 @@ export async function runClusterInstall(
   })
   deps.log('Deploying the netd egress redirect (DaemonSet)...')
   await ensureNetd()
-  await deployNpmCache(deps)
+  await deployPackageCache(deps, 'npm cache', 'npmjs', ensureNpmCache)
+  await deployPackageCache(deps, 'crates.io cache', 'crates.io', ensureCratesCache)
   // Last: the server depends on every layer above.
   await deployServer(deps, opts, byoStorage)
   if (opts.byo && legacy.hash && !legacy.names) await retireLegacyNames(deps, legacy.hash)
@@ -851,7 +853,7 @@ interface RawStorageClass {
 /**
  * Check the byo storage classes: the RWX class exists and is NFS-family,
  * the RWO class (if named) exists, and there is a default class, which the
- * registry and npm cache use (and the RWO claim when none is named).
+ * registry and package caches use (and the RWO claim when none is named).
  */
 async function verifyStorageClasses(
   deps: ClusterInstallDeps,
@@ -879,7 +881,7 @@ async function verifyStorageClasses(
   }
   const fallback = classes.find(isDefault)?.metadata?.name
   if (!fallback) {
-    problems.push('the cluster has no default StorageClass: the image registry and the npm cache '
+    problems.push('the cluster has no default StorageClass: the image registry and the package caches '
       + 'provision their volumes through it. Mark a block class default '
       + '(`storageclass.kubernetes.io/is-default-class: "true"`).')
   }
@@ -1191,18 +1193,23 @@ async function hostAddrOnKindNetwork(deps: ClusterInstallDeps): Promise<string |
 }
 
 /**
- * Deploy the npm cache. Failure only logs: workspaces fall back to npmjs,
- * which is slower, and `cluster check` reports it.
+ * Deploy a package cache. Failure only logs: workspaces fall back to its
+ * upstream, which is slower, and `cluster check` reports it.
  */
-async function deployNpmCache(deps: ClusterInstallDeps): Promise<void> {
-  deps.log('Deploying the npm cache (Verdaccio)...')
+async function deployPackageCache(
+  deps: ClusterInstallDeps,
+  name: string,
+  upstream: string,
+  ensure: () => Promise<void>,
+): Promise<void> {
+  deps.log(`Deploying the ${name}...`)
   try {
-    await ensureNpmCache()
+    await ensure()
   } catch (err) {
     deps.log(
-      'note: could not deploy the npm cache '
+      `note: could not deploy the ${name} `
       + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
-      + 'workspaces install from npmjs until a re-run of `yaac cluster install` succeeds.',
+      + `workspaces fetch from ${upstream} until a re-run of \`yaac cluster install\` succeeds.`,
     )
   }
 }

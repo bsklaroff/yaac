@@ -105,6 +105,7 @@ const projectConfigSchema = z.object({
   ).optional(),
   nestedContainers: BOOLEAN,
   npmCache: BOOLEAN,
+  cratesCache: BOOLEAN,
 })
 
 /** Where an issue is, as a config key path: `initCommands[0].name`. */
